@@ -13,6 +13,7 @@ from precis.handlers.paper import PaperHandler, _maybe_resolve_doi, _parse_paper
 from precis.runtime import PrecisRuntime
 from precis.store import BlockInsert, Store
 from precis.store.types import Tag
+from tests.conftest import chunk_handle
 
 # ---------------------------------------------------------------------------
 # Slug parsing — pure logic, no DB
@@ -522,15 +523,15 @@ class TestSearch:
             blocks=["unrelated text"],
         )
         resp = handler.search(q="nitrate reduction", page_size=5)
-        assert "paper-a" in resp.body
+        assert chunk_handle(store, "paper-a") in resp.body
         assert "block hit" in resp.body
 
     def test_search_scoped(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, slug="aa", title="A", blocks=["nitrate cycle in soil"])
         _seed_paper(store, slug="bb", title="B", blocks=["nitrate cycle in water"])
         resp = handler.search(q="nitrate", scope="aa")
-        assert "aa~" in resp.body
-        assert "bb~" not in resp.body
+        assert chunk_handle(store, "aa") in resp.body
+        assert chunk_handle(store, "bb") not in resp.body
 
     def test_search_no_q_raises(self, handler: PaperHandler) -> None:
         with pytest.raises(BadInput):
@@ -654,7 +655,7 @@ class TestSearch:
         assert "paper-c" in full.body
         # With exclude: paper-a drops out.
         excluded = handler.search(q="photocatalytic", page_size=10, exclude=["paper-a"])
-        assert "paper-a~" not in excluded.body
+        assert chunk_handle(store, "paper-a") not in excluded.body
         assert "paper-b" in excluded.body
         assert "paper-c" in excluded.body
 
@@ -683,8 +684,8 @@ class TestSearch:
             page_size=10,
             exclude=["paper-a~0"],  # copy-pasted handle
         )
-        assert "paper-a~" not in resp.body
-        assert "paper-b~" in resp.body
+        assert chunk_handle(store, "paper-a") not in resp.body
+        assert chunk_handle(store, "paper-b") in resp.body
 
     def test_search_exclude_accepts_doi(
         self, store: Store, handler: PaperHandler
@@ -711,8 +712,8 @@ class TestSearch:
             page_size=10,
             exclude=["10.1111/jnc.13915"],
         )
-        assert "paper-a~" not in resp.body
-        assert "paper-b~" in resp.body
+        assert chunk_handle(store, "paper-a") not in resp.body
+        assert chunk_handle(store, "paper-b") in resp.body
 
     def test_search_exclude_silently_drops_stale_slugs(
         self, store: Store, handler: PaperHandler
@@ -745,8 +746,8 @@ class TestSearch:
             exclude=["does-not-exist", "paper-a"],
         )
         # Valid slug still drops; stale slug is no-op (no error).
-        assert "paper-a~" not in resp.body
-        assert "paper-b~" in resp.body
+        assert chunk_handle(store, "paper-a") not in resp.body
+        assert chunk_handle(store, "paper-b") in resp.body
 
     def test_search_exclude_total_header_reflects_remainder(
         self, store: Store, handler: PaperHandler
@@ -826,7 +827,7 @@ class TestSearch:
         body = resp.body
         # paper-a was the requested exclude; it must not show up
         # in the result handles.
-        assert "paper-a~" not in body
+        assert chunk_handle(store, "paper-a") not in body
         # And at least one of the non-excluded slugs is present.
         assert any(f"paper-{ch}~" in body for ch in "bcd")
 

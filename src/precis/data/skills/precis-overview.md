@@ -98,12 +98,17 @@ Useful for warm-up, inspiration, sanity-checking a fresh corpus.
 
 | Form | Meaning |
 |---|---|
-| `slug` | the whole ref |
-| `slug~N` | chunk N |
-| `slug~A..B` | chunk range A..B (inclusive) |
+| `pa<id>` | the whole ref by handle (e.g. `pa5`); legacy `slug` still resolves |
+| `pc<id>` | one chunk by handle (e.g. `pc40`) — what output now shows |
+| `slug~N` | chunk N (legacy form; still resolves on input) |
+| `slug~A..B` | chunk range A..B (inclusive) — ranges keep the slug form |
 | `slug/toc` | TOC of the ref (= `view='toc'`) |
 | `slug~A..B/toc` | sub-TOC, segments within the range |
 | `slug~A..B`, `view='toc'` | same as `slug~A..B/toc` |
+
+A single chunk is now addressed by its handle (`pc<chunk_id>`); ranges
+stay `slug~A..B` since a handle names one chunk, not a span. See
+`precis-addressing-help` for the full scheme.
 
 Currently TOC-capable: `paper`, `skill`. Other kinds pick up the
 grammar as their handlers wire `chunks_for_toc`.
@@ -127,10 +132,12 @@ get(kind='skill')                            # list every active skill
 
 ## How are things addressed?
 
-Today: `id=` is a slug (papers, drafts, …) or a numeric id (memories, todos, …);
-content is found with `q=`. **Rolling out (ADR 0036):** one universal **handle** —
-a 9-char type-prefixed code (`pa4m8p1rz` a paper, `dc…` a draft chunk) — becomes
-the single address, with the 2-char prefix telling you the kind. See
+Input still accepts a slug (papers, drafts, …) or a numeric id (memories,
+todos, …); content is found with `q=`. **Output now shows one universal
+**handle** (ADR 0036):** `<2-char type code><decimal id>` — `pa5` a paper,
+`pc10` a paper chunk, `me42` a memory, `td158` a todo — with the 2-char prefix
+telling you the kind (so `get(id='pa5')` needs no `kind=`). It is the thing to
+copy back into `get` / `link` / `like` / `source_handle`. See
 `get(kind='skill', id='precis-addressing-help')` for the handle format, the
 relative grammar (`+1`/`-1` sibling, `^` parent, `lo..hi` span), and the full
 2-char type-code table.

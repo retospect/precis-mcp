@@ -48,6 +48,7 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
 from precis.store.types import Tag
+from precis.utils import handle_registry
 from precis.utils.block_ingest import to_block_inserts
 from precis.utils.edit_resolve import (
     EditOp,
@@ -444,7 +445,10 @@ class PlaintextHandler(Handler):
         ]
         for block, ref, score in hits:
             slug = ref.slug or "???"
-            handle = f"{slug}~{block.slug or block.pos}"
+            handle = (
+                handle_registry.try_format(ref.kind, block.id, chunk=True)
+                or f"{slug}~{block.slug or block.pos}"
+            )
             preview = _excerpt(block.text)
             lines.append(f"\n## {handle}  (score={score:.4f})")
             lines.append(f"_{ref.title}_")
@@ -1542,7 +1546,10 @@ class PlaintextHandler(Handler):
                         options=options or None,
                         next=f"get(kind='{self._KIND}', id='{ref.slug}')",
                     )
-        handle = f"{ref.slug}~{block.slug or block.pos}"
+        handle = (
+            handle_registry.try_format(ref.kind, block.id, chunk=True)
+            or f"{ref.slug}~{block.slug or block.pos}"
+        )
         body = f"# {handle}\n{block.text}"
         body += render_next_section(
             [
@@ -1603,7 +1610,10 @@ class PlaintextHandler(Handler):
             b_end = int(meta.get("line_end") or 0)
             name = b.slug or str(b.pos)
             line_str = f"L{b_start}-{b_end}" if b_end != b_start else f"L{b_start}"
-            handle = f"{ref.slug}~{name}"
+            handle = (
+                handle_registry.try_format(ref.kind, b.id, chunk=True)
+                or f"{ref.slug}~{name}"
+            )
             pieces.append(f"# {handle}  (block {b.pos}, {line_str})\n{b.text}")
         body = "\n\n".join(pieces)
         first = matched[0]

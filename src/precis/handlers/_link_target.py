@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.utils import handle_registry
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -69,6 +70,28 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
         raise BadInput(
             "link target must be a non-empty string",
             next="link='kind:identifier' (e.g. 'paper:wang2020state')",
+        )
+
+    # ADR 0036: accept a bare universal handle (``pc40``, ``me73``, …) —
+    # the form search/list output now emits — and resolve it straight to a
+    # LinkTarget so a handle copied out of a result round-trips into
+    # link= / unlink= / like= without the agent re-deriving ``kind:slug~pos``.
+    # Only fires for a well-formed refs-backed handle; everything else (incl.
+    # the canonical ``kind:slug`` form, whose ``:`` defeats the handle parse)
+    # falls through to the legacy grammar below untouched.
+    handle = target.strip()
+    if handle_registry.parse(handle) is not None:
+        resolved = store.resolve_handle(handle)
+        if resolved is None:
+            raise NotFound(
+                f"link target {handle!r} resolves to no live ref",
+                next=f"check it exists: get(id={handle!r})",
+            )
+        return LinkTarget(
+            ref_id=resolved.ref_id,
+            pos=resolved.chunk_ord,
+            kind=resolved.kind,
+            raw=target,
         )
 
     if ":" not in target:

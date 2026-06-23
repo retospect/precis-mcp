@@ -13,8 +13,9 @@ notes, decisions, ideas, open questions, distilled summaries.
 Categorise with open tags (`topic:`, `project:`, `confidence-*`)
 and bare flags (`pinned`, `wip`). There is no enforced sub-kind.
 
-Server assigns an integer id on create. Both `id=47` and
-`id='memory:47'` are accepted (the link-target form).
+Server assigns an integer id on create. Its handle is `me<id>`
+(e.g. `me47`); `id=47` and `id='memory:47'` (link-target form) still
+resolve on input.
 
 ## Save a thought
 ## Capture a note
@@ -75,6 +76,7 @@ tag slice.
 ## Open a memory by id
 
 ```python
+get(id='me73')                       # handle — prefix infers kind=
 get(kind='memory', id=73)
 get(kind='memory', id='memory:73')   # link-target form also works
 ```

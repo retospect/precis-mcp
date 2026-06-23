@@ -130,14 +130,14 @@ delete(kind='job', id=143)
 # Option C — ask the owner.
 ask = put(kind='todo',
           parent_id=98,
-          text='Job #143 failed with X — retry / switch / skip?',
+          text='Job jo143 failed with X — retry / switch / skip?',
           tags=['ask-user'],
           meta={'auto_check': {
               'type': 'discord_reply_received',
               'ask_message_id': '<discord msg id>'}})
 put(kind='message',
     target='discord/<guild>/<channel>/<thread>',
-    text='Hey, #98 needs your call: ...')
+    text='Hey, td98 needs your call: ...')
 
 # Option D — give up.
 tag(kind='todo', id=98, add=["STATUS:won't-do"])

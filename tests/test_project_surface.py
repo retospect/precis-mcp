@@ -63,7 +63,9 @@ def handler(hub: Hub) -> TodoHandler:
 
 
 def _id_of(body: str) -> int:
-    return int(body.split("id=")[1].split()[0].rstrip(",.()"))
+    from tests.conftest import id_of
+
+    return id_of(body)
 
 
 _WS_META = {
@@ -116,7 +118,7 @@ def test_projects_view_lists_project_root(handler: TodoHandler) -> None:
     )
     rid = _id_of(root.body)
     out = handler.search(view="projects")
-    assert f"#{rid}" in out.body
+    assert f"td{rid}" in out.body
     assert "demo" in out.body  # slug
     assert "projects/demo" in out.body  # path
 

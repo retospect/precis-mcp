@@ -114,7 +114,7 @@ new descendants inherit the updated block.
 ## Drill into a subtree
 
 ```python
-get(kind='todo', id=42, view='tree')      # ASCII subtree under #42
+get(kind='todo', id=42, view='tree')      # ASCII subtree under td42
 ```
 
 Tree icons: `○` doable · `▶` doing · `◀ claimed-by:<x>` claimed ·

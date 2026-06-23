@@ -24,9 +24,9 @@ get(kind='paper', id='collins06', view='bibliography')
 # collins06 bibliography — 3 citations
 
 {id	claim	source	conf	quote}
-citation:42	MOF X achieves 12% FE for CO2 reduction	collins06~7	0.95	"we observed 12% Faradaic efficiency for CO2 reduction at -0.3 V"
-citation:51	Cu-MOF synthesis yields above 85% in solvothermal	collins06~3	0.91	"Yields exceeded 85 percent in all batches"
-citation:67	Operating window: −0.3 to −0.5 V vs RHE	collins06~14	0.88	"the device sustained −0.3 V vs RHE for 200 h"
+ci42	MOF X achieves 12% FE for CO2 reduction	pc7	0.95	"we observed 12% Faradaic efficiency for CO2 reduction at -0.3 V"
+ci51	Cu-MOF synthesis yields above 85% in solvothermal	pc3	0.91	"Yields exceeded 85 percent in all batches"
+ci67	Operating window: −0.3 to −0.5 V vs RHE	pc14	0.88	"the device sustained −0.3 V vs RHE for 200 h"
 ```
 
 One row per citation, oldest first. Empty for a paper nothing has
@@ -34,10 +34,12 @@ cited yet — that's the normal state for a freshly-ingested paper.
 
 ## What each column means
 
-- `id` — `citation:<N>` handle. Paste into `get(kind='citation', id=<N>)`
-  for the full record (verifier caveats, verified-at timestamp).
+- `id` — `ci<N>` handle. Paste into `get(id='ci<N>')` (or
+  `get(kind='citation', id=<N>)`) for the full record (verifier caveats,
+  verified-at timestamp).
 - `claim` — the persisted assertion, truncated to ~80 chars.
-- `source` — the chunk handle the quote came from (`<slug>~N` or `<slug>~A..B`).
+- `source` — the chunk handle the quote came from (`pc<chunk_id>`; a range
+  still renders as `<slug>~A..B`).
 - `conf` — verifier confidence in `[0.0, 1.0]`; `?` if unset.
 - `quote` — verbatim text from the source chunk, truncated to ~120 chars.
   Treat as verbatim — never paraphrase.
@@ -45,8 +47,9 @@ cited yet — that's the normal state for a freshly-ingested paper.
 ## Drill into one citation
 
 ```python
-get(kind='citation', id=42)          # full record
-get(kind='citation', id='citation:42')   # link-target form, equivalent
+get(id='ci42')                       # full record, by handle
+get(kind='citation', id=42)          # equivalent
+get(kind='citation', id='citation:42')   # legacy link-target form, equivalent
 ```
 
 ## Find citations across all papers

@@ -60,6 +60,7 @@ from precis.identity import make_finding_paper_id, make_pub_id
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert, Ref, Tag
+from precis.utils import handle_registry
 
 _STATUS_NAMESPACE = "STATUS"
 _STATUS_TRACING = "tracing"
@@ -752,10 +753,15 @@ class FindingHandler(NumericRefHandler):
             lines.append("misattributed via:")
             for link in misattrib:
                 target = self._fetch_ref_any_kind(link.dst_ref_id)
-                handle = target.slug or f"ref:{link.dst_ref_id}"
+                legacy = target.slug or f"ref:{link.dst_ref_id}"
                 pos = link.dst_pos
-                suffix = f"~{pos}" if pos is not None else ""
-                lines.append(f"  {handle}{suffix}")
+                # ADR 0036: ref-level → record universal handle; block-level
+                # keeps the legacy ``slug~pos`` (chunk_id unavailable here).
+                if pos is None:
+                    addr = handle_registry.try_format(target.kind, target.id) or legacy
+                else:
+                    addr = f"{legacy}~{pos}"
+                lines.append(f"  {addr}")
 
         status = _extract_status_tag(tags)
         lines.append("")

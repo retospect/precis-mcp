@@ -340,8 +340,41 @@ def id_of(body: str) -> int:
     test_todo_tree / test_schedule / test_nursery — moved here so a
     future trailer reword (Slice-3 ack changes, etc.) is a one-line
     fix instead of a sweep.
+
+    ADR 0036: the create-ack now reads ``created <kind> <handle>.``
+    (e.g. ``created memory me158.``). Prefer the first record handle in
+    the ack's leading line; fall back to the legacy ``id=N`` form (still
+    used by update/tag acks and code-less kinds).
     """
+    from precis.utils import handle_registry
+
+    head = body.split("\n", 1)[0]
+    for tok in head.replace(",", " ").replace(".", " ").split():
+        parsed = handle_registry.parse(tok)
+        if parsed is not None and not parsed[1]:  # a record (non-chunk) handle
+            return parsed[2]
     return int(body.split("id=", 1)[1].split()[0].rstrip(",.()"))
+
+
+def chunk_handle(store: Store, slug: str, *, kind: str = "paper", ord: int = 0) -> str:
+    """The ADR 0036 universal chunk handle (e.g. ``pc40``) for a
+    slug-addressed ref's body chunk at ``ord``.
+
+    The cutover replaced the legacy ``slug~pos`` in search/read output with
+    this computed handle; tests that asserted the old form now resolve the
+    chunk_id here and compute the handle the same way the emitters do.
+    """
+    from precis.utils import handle_registry
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT c.chunk_id FROM chunks c "
+            "JOIN ref_identifiers ri ON ri.ref_id = c.ref_id "
+            "WHERE ri.id_kind = 'cite_key' AND ri.id_value = %s AND c.ord = %s",
+            (slug, ord),
+        ).fetchone()
+    assert row is not None, f"no chunk for {slug}~{ord}"
+    return handle_registry.format_handle(kind, int(row[0]), chunk=True)
 
 
 # ---------------------------------------------------------------------------

@@ -19,8 +19,12 @@ def _proj(hub: Hub, text: str = "Project root") -> int:
 
 
 def _handle_of(put_body: str) -> str:
-    # "added 1 chunk(s) to <slug>: ¶<handle>"
-    return put_body.split("¶")[1].split()[0]
+    # ADR 0036: the put-ack carries the chunk's universal handle ``dc<id>``.
+    import re
+
+    m = re.search(r"dc\d+", put_body)
+    assert m is not None, f"no dc handle in {put_body!r}"
+    return m.group(0)
 
 
 @pytest.fixture
@@ -40,7 +44,7 @@ def _seed_draft(draft: DraftHandler, hub: Hub, *, slug: str) -> dict[str, str]:
         id=slug,
         chunk_kind="paragraph",
         text="Amine functionalization improves carbon dioxide uptake.",
-        at={"into": f"¶{sec_h}", "last": True},
+        at={"into": sec_h, "last": True},
     )
     p2 = draft.put(
         id=slug,
@@ -86,8 +90,8 @@ def test_search_supported_now(draft: DraftHandler) -> None:
 def test_lexical_finds_keyword(draft: DraftHandler, hub: Hub) -> None:
     h = _seed_draft(draft, hub, slug="d1")
     out = draft.search(q="amine", mode="lexical").body
-    assert f"¶{h['p1']}" in out
-    assert f"¶{h['p2']}" not in out  # 'amine' not in p2
+    assert f"{h['p1']}" in out
+    assert f"{h['p2']}" not in out  # 'amine' not in p2
 
 
 def test_cross_draft_search(draft: DraftHandler, hub: Hub) -> None:
@@ -111,24 +115,24 @@ def test_subtree_scope_via_handle(draft: DraftHandler, hub: Hub) -> None:
     # p1 is inside the 'Capture methods' heading subtree; p2 is a sibling
     # at top level. Scoping to the heading must exclude p2.
     out = draft.search(
-        q="carbon dioxide uptake", mode="lexical", scope=f"¶{h['sec']}"
+        q="carbon dioxide uptake", mode="lexical", scope=f"{h['sec']}"
     ).body
-    assert f"¶{h['p1']}" in out
-    assert f"¶{h['p2']}" not in out
+    assert f"{h['p1']}" in out
+    assert f"{h['p2']}" not in out
 
 
 def test_id_handle_is_scope_alias(draft: DraftHandler, hub: Hub) -> None:
     h = _seed_draft(draft, hub, slug="d1")
-    out = draft.search(id=f"¶{h['sec']}", q="amine uptake", mode="lexical").body
-    assert f"¶{h['p1']}" in out
-    assert f"¶{h['p2']}" not in out
+    out = draft.search(id=f"{h['sec']}", q="amine uptake", mode="lexical").body
+    assert f"{h['p1']}" in out
+    assert f"{h['p2']}" not in out
 
 
 def test_headings_only(draft: DraftHandler, hub: Hub) -> None:
     h = _seed_draft(draft, hub, slug="d1")
     out = draft.search(q="capture methods", mode="lexical", headings_only=True).body
-    assert f"¶{h['sec']}" in out  # the heading
-    assert f"¶{h['p1']}" not in out  # body paragraphs excluded
+    assert f"{h['sec']}" in out  # the heading
+    assert f"{h['p1']}" not in out  # body paragraphs excluded
 
 
 def test_semantic_mode_runs(draft: DraftHandler, hub: Hub) -> None:

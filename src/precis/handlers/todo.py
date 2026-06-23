@@ -55,6 +55,7 @@ from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
+from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
 
@@ -864,9 +865,9 @@ class TodoHandler(NumericRefHandler):
             self.store, child_id=child_id, new_parent_id=new_parent_id
         )
         self.store.set_parent(child_id, new_parent_id)
-        return Response(
-            body=f"moved {self._sense()} id={child_id} under #{new_parent_id}"
-        )
+        child_h = handle_registry.format_handle(self.kind, child_id)
+        parent_h = handle_registry.format_handle("todo", new_parent_id)
+        return Response(body=f"moved {self._sense()} {child_h} under {parent_h}")
 
     # ── delete: owner-only guard on strategic / tactical ──────────
 
@@ -990,9 +991,11 @@ class TodoHandler(NumericRefHandler):
 
     def _render_create_ack(self, ref_id: int) -> Response:
         parent = self._pending_parent_id
-        body = f"created {self.kind} id={ref_id} (STATUS:open)"
+        # ADR 0036: surface the universal handle (``td<id>``) in the ack.
+        handle = handle_registry.try_format(self.kind, ref_id) or f"id={ref_id}"
+        body = f"created {self.kind} {handle} (STATUS:open)"
         if parent is not None:
-            body += f" under #{parent}"
+            body += f" under {handle_registry.format_handle('todo', parent)}"
         body += "."
         body += render_next_section(
             [

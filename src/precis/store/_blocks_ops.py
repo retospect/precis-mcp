@@ -101,6 +101,7 @@ from precis.store._tag_filter import (
     wiki_fence,
 )
 from precis.store.types import Block, BlockInsert, Density, Ref
+from precis.utils import handle_registry
 from precis.utils.angle import angle_anchors
 
 # Default chunk_kind for inserts via this mixin. Phase 2 keeps the
@@ -844,6 +845,81 @@ class BlocksMixin:
             chunk_kinds=chunk_kinds,
             chunk_ids=chunk_ids,
         )
+
+    # -- relative navigation (ADR 0036) ------------------------------------
+
+    #: Kinds whose chunks form a tree (``parent_chunk_id`` + ``pos``) rather
+    #: than a flat ``ord`` sequence. Only ``draft`` today; its relative
+    #: navigation walks the hierarchy and is handled by the draft mixin.
+    _TREE_CHUNK_KINDS: frozenset[str] = frozenset({"draft"})
+
+    def resolve_relative(self, handle: str) -> tuple[str, str] | None:
+        """Resolve a relative chunk handle to ``(kind, per-kind selector)``.
+
+        Examples (flat ``ord``-based kinds — paper, plaintext, …):
+          ``pc<id>+1``    → the next chunk     → ``(kind, 'slug~<ord+1>')``
+          ``pc<id>-2``    → two chunks back    → ``(kind, 'slug~<ord-2>')``
+          ``pc<id>-2..3`` → a signed span      → ``(kind, 'slug~<lo>..<hi>')``
+          ``pc<id>^``     → no hierarchy (flat) → ``None``
+
+        Returns ``None`` when ``handle`` carries no valid operator (use the
+        absolute path), the base chunk is missing, the operator is
+        unsupported for the kind, or the target falls outside the document.
+        Tree-structured kinds (``draft``) are resolved by the draft mixin —
+        this method returns ``None`` for them so the caller can route there.
+        """
+        parsed = handle_registry.parse_relative(handle)
+        if parsed is None:
+            return None
+        kind, _is_chunk, chunk_id, op = parsed
+        if kind in self._TREE_CHUNK_KINDS:
+            return None  # draft tree walk lives in the draft mixin
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT c.ref_id, c.ord, r.kind, "
+                "(SELECT id_value FROM ref_identifiers ri "
+                " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
+                " LIMIT 1) AS slug "
+                "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+                "WHERE c.chunk_id = %s AND r.deleted_at IS NULL AND c.ord >= 0",
+                (chunk_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            ref_id, ord_, row_kind, slug = int(row[0]), int(row[1]), str(row[2]), row[3]
+            if row_kind != kind or slug is None:
+                return None  # kind/prefix mismatch, or no addressable slug
+            kind_tag, *rest = op
+            if kind_tag == "ancestor":
+                return None  # flat kinds have no enclosing structure to climb
+            max_row = conn.execute(
+                "SELECT max(ord) FROM chunks WHERE ref_id = %s AND ord >= 0",
+                (ref_id,),
+            ).fetchone()
+            max_ord = int(max_row[0]) if max_row and max_row[0] is not None else ord_
+
+            if kind_tag == "step":
+                (n,) = rest
+                target = ord_ + n
+                if target < 0 or target > max_ord:
+                    return None
+                # The neighbour must actually exist (ord can be sparse after
+                # card-chunk gaps, though body chunks are dense in practice).
+                exists = conn.execute(
+                    "SELECT 1 FROM chunks WHERE ref_id = %s AND ord = %s",
+                    (ref_id, target),
+                ).fetchone()
+                if exists is None:
+                    return None
+                return kind, f"{slug}~{target}"
+
+            # span: signed offsets around the anchor, clamped to the document.
+            lo_off, hi_off = rest
+            lo = max(0, ord_ + lo_off)
+            hi = min(max_ord, ord_ + hi_off)
+            if lo > hi:
+                return None
+            return kind, f"{slug}~{lo}..{hi}"
 
     # -- CRUD (Phase 2 — v2 chunks table) ----------------------------------
 

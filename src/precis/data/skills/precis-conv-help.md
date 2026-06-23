@@ -46,8 +46,9 @@ search(kind='conv', q='tag axis', scope='2026-04-28-tag-axes')   # scope to one 
 search(kind='conv', q='register endpoint', page_size=20)
 ```
 
-Lexical search over turn text. Results are `slug~pos` handles; paste
-one as `id=` to read the turn. Cross-kind search
+Lexical search over turn text. Each result is a turn chunk handle
+`cc<chunk_id>`; paste one as `id=` to read the turn (the legacy
+`slug~pos` form still resolves on input). Cross-kind search
 (`search(kind='*', q='...')`) folds conv hits in with paper / memory
 matches when a question spans both.
 
@@ -66,8 +67,9 @@ link(kind='conv', id='2026-04-26-spec~14',
      target='memory:88', rel='derived-into')
 ```
 
-Use a turn handle (`slug~pos`) as the link target to point at a
-specific message; use the bare slug to point at the conversation.
+Use a turn handle (`cc<chunk_id>`, or the legacy `slug~pos`) as the
+link target to point at a specific message; use the bare slug or `co<id>`
+to point at the conversation.
 
 ## Tag a conversation
 ## Mark a conversation as pivotal or topic:X

@@ -53,8 +53,9 @@ search(kind='paper', q='photocatalytic NOx reduction')
 search(kind='paper', q='photocatalytic NOx reduction', page_size=20)   # default 10, max 100
 ```
 
-Hybrid lexical + semantic. Results are `slug~chunk` handles; order is
-the relevance signal.
+Hybrid lexical + semantic. Each result is a chunk handle `pc<chunk_id>`
+(paste back into `get`/`link`); order is the relevance signal. The legacy
+`slug~chunk` form still resolves on input.
 
 ## Find a paper that mentions an exact term
 ## Grep papers for a unique token (compound, DOI, exact string)
@@ -110,7 +111,8 @@ get(kind='paper', id='<slug>', view='toc')           # start here
 get(kind='paper', id='<slug>~63..89')                # drill into a TOC handle
 get(kind='paper', id='<slug>~63..89', view='toc')    # sub-TOC of a range
 get(kind='paper', id='<slug>', view='abstract')
-get(kind='paper', id='<slug>~38')                    # single block
+get(id='pc<chunk_id>')                               # single block by handle
+get(kind='paper', id='<slug>~38')                    # legacy slug~pos still resolves
 get(kind='paper', id='<slug>~38..42')                # explicit block range
 get(kind='paper', id='<slug>')                       # full overview
 get(kind='paper', id='<slug>/toc')                   # path form = view='toc'

@@ -30,6 +30,7 @@ from precis.handlers.memory import MemoryHandler
 from precis.handlers.paper import PaperHandler
 from precis.store import BlockInsert, Store, Tag
 from precis.store._tag_filter import build_tag_filter
+from tests.conftest import chunk_handle
 
 # ── unit: build_tag_filter ──────────────────────────────────────────
 
@@ -241,8 +242,8 @@ class TestPaperHandlerSearchTags:
         a, _ = _seed_two_papers_with_blocks(store)
         h = PaperHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
         out = h.search(q="photocatalysis", tags=["topic-co2-capture"])
-        assert "paper-a" in out.body
-        assert "paper-b" not in out.body
+        assert chunk_handle(store, "paper-a") in out.body
+        assert chunk_handle(store, "paper-b") not in out.body
 
     def test_invalid_tag_rejected_at_handler(self, store: Store) -> None:
         h = PaperHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))

@@ -8,6 +8,31 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-23 — ADR 0036 cutover: universal handles are the address form, in and out)
+
+- Completed the ADR 0036 cutover on top of the computed-handle rebase below.
+  A universal handle (`pa5`, `pc10`, `me42`, `td158`) is now both what the
+  agent **sees** in output and what it can **feed back** into any verb.
+  - **Input** — a bare handle resolves wherever an address is consumed, not
+    just `id=`: `parse_link_target` (the shared resolver for `link=` /
+    `unlink=` / `like=` across ~15 call sites) decodes a handle straight to
+    its target; `citation` `source_handle` normalises a chunk handle to the
+    canonical `slug~ord`; `paper` `exclude=` resolves a handle to its paper.
+    Legacy forms (`kind:slug~pos`, slugs, numeric ids, draft `¶`) still
+    resolve, so nothing pre-existing breaks.
+  - **Output** — the emitters now print handles: per-kind search/list hit
+    tables (paper, plaintext, conv, presentation, patent, tex, cache-backed),
+    the numeric-ref hits table, create-acks, todo/project/attention trees
+    (`td`/`jo`), todo move/parent acks, random picks, finding misattribution,
+    and ref-level link displays. Deliberate residuals keep the legacy form
+    (valid input or not LLM-facing): `~N..M` ranges, markdown TOC anchors,
+    block-level link displays (chunk_id not available without a query), skill
+    file-backed headers, oracle (its `slug~pos` is meaningful), web-UI labels.
+  - **Skills** — `precis-addressing-help` rewritten as the canonical scheme
+    doc (decimal handles, the type-code table, address-vs-metadata); the
+    addressing-teaching skills updated to show handles with a legacy-still-works
+    note.
+
 ### Changed (2026-06-23 — ADR 0036 universal handles rebased to computed, id-encoded)
 
 - The universal-handle scheme (ADR 0036) is now **computed, not stored**. A

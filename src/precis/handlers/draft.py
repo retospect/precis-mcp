@@ -35,12 +35,30 @@ from precis.handlers._slug_ref_shared import (
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store._draft_ops import content_sha
+from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for
 from precis.utils.handles import is_handle
 
 log = logging.getLogger(__name__)
 
-_CHUNK_ADDR = re.compile(r"^¶(?P<h>[A-Za-z0-9]+)(?:-(?P<b>\d+))?(?:\+(?P<a>\d+))?$")
+# A draft chunk address + optional reading window (``-B`` before, ``+A``
+# after). Two forms: the ADR 0036 universal handle ``dc<chunk_id>`` and the
+# legacy ADR-0033 ``¶<base58>``.
+_CHUNK_ADDR = re.compile(
+    r"^(?:dc(?P<cid>\d+)|¶(?P<h>[A-Za-z0-9]+))"
+    r"(?:-(?P<b>\d+))?(?:\+(?P<a>\d+))?$"
+)
+
+#: Recognises a draft chunk address (either form, with optional window) —
+#: used by the surface to route ``get(id='dc42')`` with no ``kind=``.
+_DRAFT_CHUNK_ADDR_RE = re.compile(r"^(?:dc\d+|¶[A-Za-z0-9]+)(?:-\d+)?(?:\+\d+)?$")
+
+
+def _is_draft_chunk_addr(s: str) -> bool:
+    """True iff ``s`` addresses a draft chunk (``dc<id>`` or ``¶<base58>``,
+    optionally with a ``-B+A`` reading window)."""
+    return bool(_DRAFT_CHUNK_ADDR_RE.match(s.strip()))
+
 
 #: A figure's origin class (ADR 0034) — drives the clearance gate. ``original``
 #: is ours; ``own_graph`` is generated from data (ships a data supplement);
@@ -74,11 +92,12 @@ class DraftHandler(Handler):
             "Editable, chunk-native document (ADR 0033). put creates a "
             "draft (project=, born with a title heading) or adds a chunk "
             "(chunk_kind=, text=, at={first|last|into|before|after}); get "
-            "lists / outlines / reads a chunk window ¶handle-B+A; search "
-            "(q=, mode=lexical|semantic|hybrid, scope=slug|¶handle, "
+            "lists / outlines / reads a chunk window dc<id>-B+A; search "
+            "(q=, mode=lexical|semantic|hybrid, scope=slug|dc<id>, "
             "headings_only=) over prose; edit changes text or moves "
             "(move=); delete soft-retires (mode=cascade|promote). Chunks "
-            "addressed by ¶handle. See precis-draft-help."
+            "addressed by dc<chunk_id> (legacy ¶handle still resolves). "
+            "See precis-draft-help."
         ),
         supports_get=True,
         supports_search=True,
@@ -105,7 +124,7 @@ class DraftHandler(Handler):
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
         s = str(id).strip()
-        if s.startswith("¶"):
+        if _is_draft_chunk_addr(s):
             if view == "toc":  # TOC of the subtree under this heading
                 return self._render_toc(root_handle=s)
             return self._render_chunk(s)
@@ -156,7 +175,7 @@ class DraftHandler(Handler):
         chunk_ids: list[int] | None = None
         where = "all drafts"
         if raw_scope:
-            if raw_scope.startswith("¶"):
+            if _is_draft_chunk_addr(raw_scope):
                 chunk_ids = self.store.draft_subtree_chunk_ids(raw_scope)
                 if not chunk_ids:
                     raise NotFound(f"draft chunk {raw_scope} not found")
@@ -195,16 +214,15 @@ class DraftHandler(Handler):
                     "drop headings_only to search body text too."
                 )
             )
-        handles = self.store.draft_handles_for([b.id for b, _r, _s in hits])
         lines = [f"# {len(hits)} draft {noun} hit(s) for {q!r} — {where}\n"]
         for block, ref, _score in hits:
-            handle = handles.get(block.id, "?")
+            handle = handle_registry.format_handle("draft", block.id, chunk=True)
             draft = ref.slug or ref.id
             first = (block.text or "").strip().splitlines()[0] if block.text else ""
             if len(first) > 90:
                 first = first[:89] + "…"
-            lines.append(f"draft:{draft}  ¶{handle}  [{block.chunk_kind}] {first}")
-        lines.append("\nNext: get(id='¶<handle>') to read any hit in full.")
+            lines.append(f"draft:{draft}  {handle}  [{block.chunk_kind}] {first}")
+        lines.append("\nNext: get(id='dc<chunk_id>') to read any hit in full.")
         return Response(body="\n".join(lines))
 
     # ── put: create a draft, or add a chunk ──────────────────────────
@@ -250,7 +268,7 @@ class DraftHandler(Handler):
             if text is None or not str(text).strip():
                 raise BadInput(
                     "adding a draft chunk requires text=",
-                    next="put(kind='draft', id='nanotrans', chunk_kind='paragraph', text='…', at={'after': '¶<handle>'})",
+                    next="put(kind='draft', id='nanotrans', chunk_kind='paragraph', text='…', at={'after': 'dc<chunk_id>'})",
                 )
             kind = chunk_kind or "paragraph"
             # A glossary ``term`` files under an auto-created "Glossary"
@@ -267,7 +285,7 @@ class DraftHandler(Handler):
             )
             self._sync_draft_links(ref.id)
             self._attribute_touch([c.chunk_id for c in chunks])
-            handles = " ".join(f"¶{c.handle}" for c in chunks)
+            handles = " ".join(f"{c.dc}" for c in chunks)
             n = len(chunks)
             body = f"added {n} chunk{'' if n == 1 else 's'} to {slug}: {handles}"
             # Hint the LLM about abbreviations it just wrote (skip when the
@@ -293,7 +311,7 @@ class DraftHandler(Handler):
         )
         return Response(
             body=(
-                f"created draft '{slug}' (title heading ¶{title_chunk.handle}); "
+                f"created draft '{slug}' (title heading {title_chunk.dc}); "
                 f"linked draft-of project {project_ref_id}"
             )
         )
@@ -356,7 +374,7 @@ class DraftHandler(Handler):
         )
         self._sync_draft_links(ref_id)
         return Response(
-            body=f"added figure ¶{chunk.handle} [{org}] to {slug} ({len(raw)} bytes)"
+            body=f"added figure {chunk.dc} [{org}] to {slug} ({len(raw)} bytes)"
         )
 
     # ── edit: text or move ───────────────────────────────────────────
@@ -381,6 +399,12 @@ class DraftHandler(Handler):
             self.store.add_abbrev_ignore(ref.id, tokens)
             return Response(body=f"marked not-an-abbrev: {', '.join(tokens)}")
         handle = self._require_chunk_id(id, verb="edit")
+        # Normalize a ``dc<id>`` address to the legacy base-58 anchor the
+        # store mutators still key on; the agent-facing emit uses ``.dc``.
+        _base = self.store.get_draft_chunk(handle)
+        if _base is None:
+            raise NotFound(f"draft chunk {handle!r} not found")
+        handle = _base.handle
         if permission is not None or origin is not None:
             # Edit a figure's provenance (ADR 0034) — caption/bytes untouched.
             if origin is not None and origin not in _FIGURE_ORIGINS:
@@ -391,12 +415,12 @@ class DraftHandler(Handler):
             c = self.store.set_figure_provenance(
                 handle, permission=permission, origin=origin
             )
-            return Response(body=f"updated figure provenance ¶{c.handle}")
+            return Response(body=f"updated figure provenance {c.dc}")
         if move is not None:
             c = self.store.move_chunk(handle, move)
             if c is not None:
                 self._attribute_touch([c.chunk_id])
-            return Response(body=f"moved ¶{c.handle}")
+            return Response(body=f"moved {c.dc}")
         if text is not None:
             # Capture the prior text *before* the rewrite so the abbrev
             # hints fire only on what this edit introduced (not on
@@ -404,7 +428,7 @@ class DraftHandler(Handler):
             prior = self.store.get_draft_chunk(str(handle).lstrip("¶"))
             old_text = prior.text if prior else ""
             c = self.store.edit_text(handle, str(text), base_sha=base_sha)
-            body = f"edited ¶{c.handle}" if c else "edited"
+            body = f"edited {c.dc}" if c else "edited"
             if c is not None:
                 self._sync_draft_links(c.ref_id)
                 self._attribute_touch([c.chunk_id])
@@ -416,7 +440,7 @@ class DraftHandler(Handler):
         raise BadInput(
             "edit(kind='draft') requires text= (rewrite), move= (reorder/reparent), "
             "or not_abbrev= (silence the abbrev hint)",
-            next="edit(kind='draft', id='¶<handle>', text='…')",
+            next="edit(kind='draft', id='dc<chunk_id>', text='…')",
         )
 
     # ── delete: soft-retire ──────────────────────────────────────────
@@ -429,11 +453,12 @@ class DraftHandler(Handler):
         **_kw: Any,
     ) -> Response:
         handle = self._require_chunk_id(id, verb="delete")
-        chunk = self.store.get_draft_chunk(str(handle).lstrip("¶"))
-        self.store.retire_chunk(handle, mode=mode)
-        if chunk is not None:
-            self._sync_draft_links(chunk.ref_id)
-        return Response(body=f"retired ¶{handle}")
+        chunk = self.store.get_draft_chunk(handle)
+        if chunk is None:
+            raise NotFound(f"draft chunk {handle!r} not found")
+        self.store.retire_chunk(chunk.handle, mode=mode)
+        self._sync_draft_links(chunk.ref_id)
+        return Response(body=f"retired {chunk.dc}")
 
     # ── helpers ──────────────────────────────────────────────────────
 
@@ -531,8 +556,8 @@ class DraftHandler(Handler):
         """Resolve a draft ref from either its slug or a ¶handle (a chunk
         in it). Used by the draft-level ``not_abbrev`` op."""
         s = str(id or "").strip()
-        if s.startswith("¶"):
-            chunk = self.store.get_draft_chunk(s.lstrip("¶"))
+        if _is_draft_chunk_addr(s):
+            chunk = self.store.get_draft_chunk(s)
             if chunk is None:
                 raise NotFound(f"draft chunk {s} not found")
             ref = self.store.get_ref(kind="draft", id=int(chunk.ref_id))
@@ -542,10 +567,10 @@ class DraftHandler(Handler):
         return resolve_live_slug_ref(self.store, kind="draft", id=s)
 
     def _require_chunk_id(self, id: str | int | None, *, verb: str) -> str:
-        if id is None or not str(id).startswith("¶"):
+        if id is None or not _is_draft_chunk_addr(str(id)):
             raise BadInput(
-                f"{verb}(kind='draft') targets a chunk — id='¶<handle>'",
-                next=f"{verb}(kind='draft', id='¶5BL5xQ', …)",
+                f"{verb}(kind='draft') targets a chunk — id='dc<chunk_id>'",
+                next=f"{verb}(kind='draft', id='dc42', …)",
             )
         return str(id)
 
@@ -646,7 +671,7 @@ class DraftHandler(Handler):
             gloss = " ".join(gloss.split())
             if len(gloss) > 200:
                 gloss = gloss[:199] + "…"
-            lines.append(f"{'  ' * c.depth}¶{c.handle}  [{c.chunk_kind}] {gloss}")
+            lines.append(f"{'  ' * c.depth}{c.dc}  [{c.chunk_kind}] {gloss}")
         lines.extend(self._work_lines(ref.id))
         return Response(body="\n".join(lines))
 
@@ -683,16 +708,20 @@ class DraftHandler(Handler):
         if m is None:
             raise BadInput(
                 f"unparseable chunk address {addr!r}",
-                next="id='¶<handle>' or '¶<handle>-5+3' for a window",
+                next="id='dc<chunk_id>' or 'dc<chunk_id>-5+3' for a window",
             )
-        handle = m.group("h")
+        # Either form resolves the base chunk; ``get_draft_chunk`` accepts
+        # ``dc<id>`` and legacy ``¶<base58>`` alike.
+        core = ("dc" + m.group("cid")) if m.group("cid") else m.group("h")
         before = int(m.group("b") or 0)
         after = int(m.group("a") or 0)
-        chunk = self.store.get_draft_chunk(handle)
+        chunk = self.store.get_draft_chunk(core)
         if chunk is None:
-            raise NotFound(f"draft chunk ¶{handle} not found")
+            raise NotFound(f"draft chunk {addr!r} not found")
         order = self.store.reading_order(chunk.ref_id)
-        idx = next((i for i, c in enumerate(order) if c.handle == handle), None)
+        idx = next(
+            (i for i, c in enumerate(order) if c.chunk_id == chunk.chunk_id), None
+        )
         if idx is None:  # retired — show it alone
             window = [chunk]
         else:
@@ -704,7 +733,7 @@ class DraftHandler(Handler):
         # is needlessly long on every line. ``edit`` matches by prefix, so
         # a full 64-char sha still works.
         blocks = [
-            f"¶{c.handle}  [{c.chunk_kind}]  sha:{content_sha(c.text)[:12]}\n{c.text}"
+            f"{c.dc}  [{c.chunk_kind}]  sha:{content_sha(c.text)[:12]}\n{c.text}"
             for c in window
         ]
         body = "\n\n".join(blocks)
@@ -793,7 +822,7 @@ class DraftHandler(Handler):
             if chunk is None:
                 raise NotFound(f"draft heading {root_handle} not found")
             entries = self.store.draft_toc(chunk.ref_id, root_handle=root_handle)
-            header = f"# TOC under ¶{chunk.handle}: {chunk.text}"
+            header = f"# TOC under {chunk.dc}: {chunk.text}"
         else:
             entries = self.store.draft_toc(ref.id)
             header = f"# {ref.title} — table of contents"
@@ -806,7 +835,7 @@ class DraftHandler(Handler):
         # here — they'd rot on reorder and aren't a valid handle).
         rows = [
             {
-                "handle": f"¶{e.handle}",
+                "handle": e.dc,
                 "level": e.depth,
                 "title": e.title,
                 "gist": e.gist or (", ".join(e.keywords[:6]) if e.keywords else ""),

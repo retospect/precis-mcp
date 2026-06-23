@@ -75,7 +75,7 @@ The walker is mtime-gated — unchanged files are skipped.
 get(kind='markdown', id='notes/meeting.md')             # overview
 get(kind='markdown', id='notes/meeting.md~conclusion')  # one block by name
 get(kind='markdown', id='notes/meeting.md~L42-58')      # by line range
-get(kind='markdown', id='notes/meeting.md~3')           # by block pos
+get(kind='markdown', id='notes/meeting.md~3')           # by block pos (output shows the handle mc<id>; get(id='mc<id>') works too)
 get(kind='markdown', id='notes/meeting.md/toc')         # full TOC
 get(kind='markdown', id='notes/meeting.md/raw')         # source
 get(kind='markdown', id='/Users/bots/notes/meeting.md') # absolute path also works

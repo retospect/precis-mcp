@@ -29,6 +29,8 @@ kind has a code, so adding a kind without a code fails CI, not review.
 
 from __future__ import annotations
 
+import re
+
 CODE_LEN = 2
 
 # --- record codes (the addressable persistent-ref kinds) ------------------
@@ -197,3 +199,67 @@ def parse(handle: str) -> tuple[str, bool, int] | None:
 def is_well_formed(handle: str) -> bool:
     """True iff ``handle`` is a resolvable refs-backed decimal handle."""
     return parse(handle) is not None
+
+
+# --- relative navigation grammar (ADR 0036) -------------------------------
+# A *relative* handle is a chunk handle plus ONE trailing operator, resolved
+# against current structure (never stored). The store walks it to a target
+# chunk; see ``Store.resolve_relative``.
+
+#: ``<chunk-handle><operator>`` — base is ``<2-char code><digits>``; the
+#: operator is everything after the leading digit run.
+_REL_RE = re.compile(r"^([a-z]{2})(\d+)(.+)$")
+
+#: A parsed relative operator. One of:
+#:   ("step", n)         sibling step (signed n, e.g. +1 / -3)
+#:   ("ancestor", n)     n levels up (n >= 1)
+#:   ("span", lo, hi)    signed sibling span, anchor at 0 (e.g. -2..3)
+RelOp = tuple
+
+
+def _parse_op(op: str) -> RelOp | None:
+    """Parse one trailing operator (``+1`` / ``-3`` / ``^`` / ``^2`` / ``++`` /
+    ``--`` / ``^^`` / ``-2..3``) into a typed tuple, or ``None`` if malformed."""
+    if op in ("++", "--"):
+        return ("step", 1 if op == "++" else -1)
+    if op == "^^":
+        return ("ancestor", 2)
+    if op == "^":
+        return ("ancestor", 1)
+    if ".." in op:  # signed span: lo..hi
+        lo_s, _, hi_s = op.partition("..")
+        try:
+            return ("span", int(lo_s), int(hi_s))
+        except ValueError:
+            return None
+    m = re.fullmatch(r"\^(\d+)", op)
+    if m:
+        n = int(m.group(1))
+        return ("ancestor", n) if n >= 1 else None
+    m = re.fullmatch(r"([+-]\d+)", op)
+    if m:
+        n = int(m.group(1))
+        return ("step", n) if n != 0 else None
+    return None
+
+
+def parse_relative(handle: str) -> tuple[str, bool, int, RelOp] | None:
+    """Decode a relative chunk handle to ``(kind, is_chunk, pk, op)``.
+
+    ``None`` when ``handle`` carries no (valid) trailing operator — i.e. it
+    is an absolute handle (use :func:`parse`) or junk. Only refs-backed
+    chunk codes are eligible (relative nav walks chunk structure).
+    """
+    m = _REL_RE.match(normalize(handle))
+    if m is None:
+        return None
+    code, digits, op_str = m.group(1), m.group(2), m.group(3)
+    if code not in _DECIMAL_CODES:
+        return None
+    kind, is_chunk = _CODE_TO_KIND[code]
+    if not is_chunk:  # relative grammar is chunk-level only
+        return None
+    op = _parse_op(op_str)
+    if op is None:
+        return None
+    return kind, is_chunk, int(digits), op

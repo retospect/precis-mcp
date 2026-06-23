@@ -1,66 +1,69 @@
 ---
 id: precis-addressing-help
 title: precis — universal handles (the one address scheme)
-summary: the 9-char type-prefixed handle, the relative grammar, the 2-char type codes, address-vs-metadata
+summary: the type-prefixed handle (2-char code + decimal id), the relative grammar, the 2-char type codes, address-vs-metadata
 applies-to: get / edit / delete / tag / link (any verb that addresses an existing ref)
-status: rolling-out
+status: stable
 ---
 
 # precis-addressing-help — one handle for every ref and chunk
 
-> **Status — rolling out (ADR 0036).** Handles are being introduced as the
-> single address form. During the transition the legacy forms still work on
-> input (paper slugs `miller23`, numeric ids `158`, draft `¶<h>`); new output
-> moves to handles. The 2-char **type codes** below are the part worth knowing
-> now. Authoritative source of the codes: `src/precis/utils/handle_registry.py`.
+> **ADR 0036.** A handle is the single address form for every record and
+> addressable chunk. Legacy forms still resolve on **input** (paper slugs
+> `miller23`, numeric ids `158`, `kind:slug~pos`, draft `¶<h>`), so nothing you
+> already know breaks — but **output now shows handles**, and a handle is the
+> thing to copy back into `get` / `link` / `like` / `source_handle`.
+> Authoritative source of the codes: `src/precis/utils/handle_registry.py`.
 
 ## What a handle is
 
-A **handle** is the one address for every persistent ref and every addressable
-body chunk:
+A **handle** is `<2-char type code><decimal id>` — the row's primary key with a
+type prefix. Bare ASCII, no separators, variable length, self-delimiting (letters
+= type, digits = id):
 
 ```
-[2-char type code][7-char Crockford base32]      = 9 chars, lowercase
-pa4m8p1rz   a paper          pc7k9q2mx   a paper chunk
-dr7k9q2mx   a draft          dc4m8p1rz   a draft chunk
-td9q2mx4p   a todo           me1rz7k9q   a memory
+pa5     a paper (ref_id 5)        pc10    a paper chunk (chunk_id 10)
+me42    a memory                  td158   a todo
+gr7     a gripe                   jo101   a job
 ```
 
-- **The type code tells you what it is** — see `pa…` → a paper. So
-  `get(id='pa4m8p1rz')` needs no `kind=`; the prefix infers it. (`kind=` stays
-  required for `put`/`search`, which name a *class*, not a record.)
-- **Flat & stable.** A handle is opaque identity, minted once, immutable. It is
-  *not* positional — unlike the retired `miller23~4`, it never rots when a doc
-  is re-chunked.
-- **Crockford base32** (no `i l o u`, case-insensitive) so it survives
-  lowercasing / OCR / read-aloud / copy-paste. Bare, no internal separators.
+- **The type code tells you what it is** — `pa…` → a paper. So
+  `get(id='pa5')` needs no `kind=`; the prefix infers it. (`kind=` stays
+  required for `put` / `search`, which name a *class*, not a record.)
+- **Computed, not stored.** A handle is a pure function of `(kind, id)` — there
+  is no separate "handle" to mint or look up. `pc10` *is* chunk 10.
+- **Flat & stable identity.** The handle names the row, not a position; unlike
+  the retired `miller23~4` it does not rot when a doc is re-chunked (the
+  chunk keeps its `chunk_id`).
 
 ## Relative grammar (navigation sugar — never stored)
 
 Off a stable handle anchor; resolves against *current* structure, yields another
-handle. Use for reading/navigation; the durable reference is always the bare
+handle. Use for reading / navigation; the durable reference is always the bare
 handle.
 
 ```
-dc4m8p1rz          this chunk
-dc4m8p1rz+1 / -1   next / previous sibling  (next/prev heading at that level;
-                                             on a flat paper = next/prev block)
-dc4m8p1rz+3        three siblings forward
-dc4m8p1rz-2..3     signed sibling span: 2 before … 3 after (inclusive)
-dc4m8p1rz^         parent / enclosing heading
-dc4m8p1rz^2        two levels up
+pc10          this chunk
+pc10+1 / -1   next / previous sibling  (on a flat paper = next/prev block)
+pc10+3        three siblings forward
+pc10-2..3     signed sibling span: 2 before … 3 after (inclusive)
+dc4^          parent / enclosing heading      ── hierarchical kinds only
+dc4^2         two levels up                       (drafts); flat papers have
+                                                  no ancestor
 ```
 
 `..` present ⇒ range, absent ⇒ single step. `++`/`--`/`^^` accepted as aliases
 of `+1`/`-1`/`^2`. One trailing operator (no chaining); resolve and re-address to
-compose.
+compose. **Sibling steps + spans** work on any chunk-bearing kind; **`^`
+ancestor** needs a hierarchical document (drafts) — on a flat paper it has no
+target.
 
 ## Address vs metadata
 
 A handle is the **internal** pointer. A ref's **external** identity — DOI,
 arXiv, source URL, Discord path, filesystem path — is **metadata, kept as data**
 (bibliography, dedup, re-fetch, verify links), *not* the handle. They coexist:
-`pa4m8p1rz` ↔ `doi:10.1234/…`.
+`pa5` ↔ `doi:10.1234/…`.
 
 ## The 2-char type codes
 
@@ -75,15 +78,19 @@ agent-facing copy.
 | news | `nw` | `nc` | | finding | `fi` | `fb` |
 | draft | `dr` | `dc` | | citation | `ci` | — |
 | conv | `co` | `cc` | | flashcard | `fc` | — |
-| pres | `pr` | `ps` | | random | `rn` | — |
-| markdown | `md` | `mc` | | todo | `td` | — |
-| plaintext | `pl` | `lc` | | job | `jo` | `jc` |
-| tex | `tx` | `xc` | | alert | `al` | — |
-| python | `py` | — | | agentlog | `ag` | — |
-| gripe | `gr` | `gc` | | cron | `cr` | `cp` |
-| skill | `sk` | — | | message | `ms` | `mb` |
-| tag | `tg` | — | | | | |
+| pres | `pr` | `ps` | | todo | `td` | — |
+| markdown | `md` | `mc` | | job | `jo` | `jc` |
+| plaintext | `pl` | `lc` | | alert | `al` | — |
+| tex | `tx` | `xc` | | agentlog | `ag` | — |
+| python | `py` | — | | cron | `cr` | `cp` |
+| gripe | `gr` | `gc` | | message | `ms` | `mb` |
+| skill | `sk` | — | | tag | `tg` | — |
 
-Providers (`web`, `youtube`, `wikipedia`, `semanticscholar`, `websearch`,
-`perplexity-*`) and stateless tools (`calc`, `math`, `provenance`) have **no
-handle** — they are addressed by URL / query / compute.
+- **`skill` / `python` / `tag`** carry codes for completeness but are still
+  addressed by their slug/path or `kind=`+id — a bare `sk…`/`py…`/`tg…` is not
+  yet a resolvable handle. Skills: `get(kind='skill', id='precis-tasks-help')`.
+- **`draft`** chunks currently keep their ADR-0033 `¶<handle>` form; the `dr`/`dc`
+  codes are reserved for a later unification.
+- **Providers** (`web`, `youtube`, `wikipedia`, `semanticscholar`, `websearch`,
+  `perplexity-*`) and **stateless tools** (`calc`, `math`, `provenance`,
+  `random`) have **no handle** — addressed by URL / query / compute.

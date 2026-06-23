@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.draft import DraftHandler
+
+
+def _dc(body: str) -> str:
+    """Extract the ADR 0036 ``dc<id>`` handle from a draft response."""
+    m = re.search(r"dc\d+", body)
+    assert m is not None, f"no dc handle in {body!r}"
+    return m.group(0)
 
 
 @pytest.fixture
@@ -30,7 +39,7 @@ def test_create_requires_project_then_outlines(draft: DraftHandler, hub: Hub) ->
     r = draft.put(id="nt", title="Title", project=proj)
     assert "created draft 'nt'" in r.body
     out = draft.get(id="nt").body
-    assert "Title" in out and "¶" in out and "[heading]" in out
+    assert "Title" in out and bool(re.search(r"dc\d+", out)) and "[heading]" in out
 
 
 def test_add_read_edit_move_delete(draft: DraftHandler, hub: Hub) -> None:
@@ -179,8 +188,8 @@ def test_toc_view_headings_only_numbered_and_subtree(
     assert "level" in toc  # TOON schema column
     assert "Introduction" in toc and "Methods" in toc
     assert "prose body here" not in toc
-    bg = _handle_of(hub, "Background")
-    assert f"¶{bg}" in toc and "Background" in toc
+    bg = next(c for c in _order(hub, "nt") if c.text == "Background")
+    assert bg.dc in toc and "Background" in toc
 
     # TOC rooted at a heading (any hierarchy level)
     sub = draft.get(id="¶" + intro, view="toc").body
@@ -201,20 +210,20 @@ def test_edit_base_sha_blocks_stale_overwrite(draft: DraftHandler, hub: Hub) -> 
     draft.put(
         id="nt", chunk_kind="paragraph", text="original", at={"after": "¶" + title_h}
     )
-    para_h = _order(hub, "nt")[1].handle
+    para_h = _order(hub, "nt")[1].dc
 
     stale = content_sha("original")
     # correct base_sha → succeeds, chunk now says v2
-    draft.edit(id=f"¶{para_h}", text="v2", base_sha=stale)
+    draft.edit(id=para_h, text="v2", base_sha=stale)
     assert hub.store.get_draft_chunk(para_h).text == "v2"
 
     # the same (now stale) base_sha → rejected, text unchanged
     with pytest.raises(BadInput, match="changed since you read it"):
-        draft.edit(id=f"¶{para_h}", text="v3", base_sha=stale)
+        draft.edit(id=para_h, text="v3", base_sha=stale)
     assert hub.store.get_draft_chunk(para_h).text == "v2"
 
     # no base_sha → force overwrite still works
-    draft.edit(id=f"¶{para_h}", text="v4")
+    draft.edit(id=para_h, text="v4")
     assert hub.store.get_draft_chunk(para_h).text == "v4"
 
 
@@ -240,14 +249,14 @@ def test_edit_accepts_short_sha_prefix(draft: DraftHandler, hub: Hub) -> None:
     para = draft.put(
         id="nt", chunk_kind="paragraph", text="original", at={"last": True}
     )
-    para_h = para.body.split("¶")[1].split()[0]
+    para_h = _dc(para.body)
 
     short = content_sha("original")[:12]
-    draft.edit(id=f"¶{para_h}", text="v2", base_sha=short)  # prefix → succeeds
+    draft.edit(id=para_h, text="v2", base_sha=short)  # prefix → succeeds
     assert hub.store.get_draft_chunk(para_h).text == "v2"
 
     full = content_sha("v2")  # full digest is also a valid prefix
-    draft.edit(id=f"¶{para_h}", text="v3", base_sha=full)
+    draft.edit(id=para_h, text="v3", base_sha=full)
     assert hub.store.get_draft_chunk(para_h).text == "v3"
 
 
@@ -259,9 +268,9 @@ def test_edit_rejects_too_short_sha(draft: DraftHandler, hub: Hub) -> None:
     para = draft.put(
         id="nt", chunk_kind="paragraph", text="original", at={"last": True}
     )
-    para_h = para.body.split("¶")[1].split()[0]
+    para_h = _dc(para.body)
     with pytest.raises(BadInput, match="too short"):
-        draft.edit(id=f"¶{para_h}", text="v2", base_sha="abc")
+        draft.edit(id=para_h, text="v2", base_sha="abc")
 
 
 def test_abbrev_loop_hint_define_and_silence(draft: DraftHandler, hub: Hub) -> None:
@@ -278,7 +287,7 @@ def test_abbrev_loop_hint_define_and_silence(draft: DraftHandler, hub: Hub) -> N
         at={"after": "¶" + title_h},
     )
     assert "undefined abbreviation" in r.body and "KSJW" in r.body and "MOF" in r.body
-    para_h = next(c.handle for c in _order(hub, "nt") if c.text.startswith("We graft"))
+    para_h = next(c.dc for c in _order(hub, "nt") if c.text.startswith("We graft"))
 
     # define KSJW (filed under an auto-created Glossary heading)
     draft.put(
@@ -294,7 +303,7 @@ def test_abbrev_loop_hint_define_and_silence(draft: DraftHandler, hub: Hub) -> N
     draft.edit(id="nt", not_abbrev=["MOF"])
 
     # re-edit the paragraph → both now resolved, no abbrev hint
-    r2 = draft.edit(id=f"¶{para_h}", text="We graft KSJW onto the MOF again.")
+    r2 = draft.edit(id=para_h, text="We graft KSJW onto the MOF again.")
     assert "undefined abbreviation" not in r2.body
 
 
@@ -394,11 +403,11 @@ def test_edit_does_not_renag_preexisting_abbrev(draft: DraftHandler, hub: Hub) -
         text="MOF systems are promising.",
         at={"last": True},
     )
-    h = p.body.split("¶")[1].split()[0]
+    h = _dc(p.body)
     # First write nags about MOF (newly introduced).
     assert "MOF" in p.body
     # Editing the same chunk (MOF still present, not newly introduced) → no MOF nag.
-    out = draft.edit(id=f"¶{h}", text="MOF systems are very promising.").body
+    out = draft.edit(id=h, text="MOF systems are very promising.").body
     assert "undefined abbreviation" not in out
 
 
@@ -411,9 +420,9 @@ def test_edit_nags_only_new_abbrev(draft: DraftHandler, hub: Hub) -> None:
         text="MOF systems are promising.",
         at={"last": True},
     )
-    h = p.body.split("¶")[1].split()[0]
+    h = _dc(p.body)
     # Introduce a NEW acronym (DAC) on edit → it should be nagged, MOF should not.
-    out = draft.edit(id=f"¶{h}", text="MOF systems help DAC efforts.").body
+    out = draft.edit(id=h, text="MOF systems help DAC efforts.").body
     assert "DAC" in out and "undefined abbreviation" in out
 
 
@@ -522,8 +531,8 @@ def test_dangling_finding_marker_flagged(draft: DraftHandler, hub: Hub) -> None:
         text="See [finding #amdursky-azurin-review] and [finding #dahl-cytochrome].",
         at={"after": "¶" + title_h},
     )
-    para_h = _order(hub, "nt")[1].handle
-    out = draft.get(id=f"¶{para_h}").body
+    para_h = _order(hub, "nt")[1].dc
+    out = draft.get(id=para_h).body
     assert "unresolved finding reference" in out
     assert "#amdursky-azurin-review" in out
     assert "#dahl-cytochrome" in out
@@ -539,8 +548,8 @@ def test_clean_chunk_has_no_finding_warning(draft: DraftHandler, hub: Hub) -> No
         text="Plain prose with no markers at all.",
         at={"after": "¶" + title_h},
     )
-    para_h = _order(hub, "nt")[1].handle
-    out = draft.get(id=f"¶{para_h}").body
+    para_h = _order(hub, "nt")[1].dc
+    out = draft.get(id=para_h).body
     assert "unresolved finding" not in out
 
 
@@ -556,8 +565,8 @@ def test_numeric_chunk_ref_flagged(draft: DraftHandler, hub: Hub) -> None:
         text="As shown in [¶45650], the effect holds.",
         at={"after": "¶" + title_h},
     )
-    para_h = _order(hub, "nt")[1].handle
-    out = draft.get(id=f"¶{para_h}").body
+    para_h = _order(hub, "nt")[1].dc
+    out = draft.get(id=para_h).body
     assert "unresolved chunk reference" in out
     assert "¶45650" in out
 
@@ -573,6 +582,6 @@ def test_valid_chunk_ref_not_flagged(draft: DraftHandler, hub: Hub) -> None:
         text=f"See the title at [¶{title_h}] for context.",
         at={"after": "¶" + title_h},
     )
-    para_h = _order(hub, "nt")[1].handle
-    out = draft.get(id=f"¶{para_h}").body
+    para_h = _order(hub, "nt")[1].dc
+    out = draft.get(id=para_h).body
     assert "unresolved chunk reference" not in out

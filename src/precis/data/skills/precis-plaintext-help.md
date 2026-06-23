@@ -21,7 +21,7 @@ If you want headings or code fences, use `kind='markdown'` instead.
 ```python
 get(kind='plaintext', id='logs/2026-05.txt')           # path form, with extension
 get(kind='plaintext', id='logs--2026-05')              # canonical slug form
-get(kind='plaintext', id='logs/2026-05.txt~3')         # paragraph by position
+get(kind='plaintext', id='logs/2026-05.txt~3')         # paragraph by pos (output shows handle lc<id>; get(id='lc<id>') works too)
 get(kind='plaintext', id='logs/2026-05.txt~opened-laptop-at-0915')  # by content slug
 get(kind='plaintext', id='logs/2026-05.txt~L42-58')    # by line range
 get(kind='plaintext', id='logs/2026-05.txt/raw')       # full source
@@ -55,7 +55,7 @@ carries the new slug.
 ```python
 get(kind='plaintext')                                  # index of all files
 get(kind='plaintext', id='logs/2026-05.txt')           # overview
-get(kind='plaintext', id='logs/2026-05.txt~3')         # one paragraph
+get(kind='plaintext', id='logs/2026-05.txt~3')         # one paragraph (output shows handle lc<id>; get(id='lc<id>') works too)
 search(kind='plaintext', q='deployment issue')
 search(kind='plaintext', q='deployment issue',
        scope='logs/2026-05.txt')                       # one file

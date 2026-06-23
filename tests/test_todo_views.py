@@ -21,7 +21,9 @@ def handler(hub: Hub) -> TodoHandler:
 
 
 def _id_of(body: str) -> int:
-    return int(body.split("id=")[1].split()[0].rstrip(",.()"))
+    from tests.conftest import id_of
+
+    return id_of(body)
 
 
 # ── view='roots' ──────────────────────────────────────────────────
@@ -36,7 +38,7 @@ def test_roots_lists_one_strategic(handler: TodoHandler) -> None:
     r = handler.put(text="Build the platform.", tags=["level:strategic"])
     rid = _id_of(r.body)
     out = handler.search(view="roots")
-    assert f"#{rid}" in out.body
+    assert f"td{rid}" in out.body
     assert "Build the platform." in out.body
 
 
@@ -60,8 +62,8 @@ def test_strategic_lists_tacticals_under_root(handler: TodoHandler) -> None:
     handler.put(text="leaf 1", parent_id=tac_id)
     handler.put(text="leaf 2", parent_id=tac_id)
     out = handler.search(view="strategic")
-    assert f"#{root_id}" in out.body
-    assert f"#{tac_id}" in out.body
+    assert f"td{root_id}" in out.body
+    assert f"td{tac_id}" in out.body
     # 2 leaves, both open → 2/2 open
     assert "[2/2 open]" in out.body
 
@@ -80,9 +82,9 @@ def test_tree_renders_descendants(handler: TodoHandler) -> None:
     assert "Root." in out.body
     assert "Child A." in out.body
     assert "Grand A." in out.body
-    assert f"#{root_id}" in out.body
-    assert f"#{child_id}" in out.body
-    assert f"#{grand_id}" in out.body
+    assert f"td{root_id}" in out.body
+    assert f"td{child_id}" in out.body
+    assert f"td{grand_id}" in out.body
 
 
 def test_tree_renders_status_icons(handler: TodoHandler) -> None:
@@ -106,7 +108,7 @@ def test_doable_lists_open_leaf(handler: TodoHandler) -> None:
     leaf_id = _id_of(leaf.body)
     out = handler.search(view="doable")
     assert "A doable thing." in out.body
-    assert f"#{leaf_id}" in out.body
+    assert f"td{leaf_id}" in out.body
 
 
 def test_doable_skips_done_leaves(handler: TodoHandler) -> None:
@@ -302,11 +304,11 @@ def test_doable_excludes_child_failed_parents(
     rid = id_of(r.body)
     # Pre-flight: the parent IS doable.
     out_before = handler.search(view="doable")
-    assert f"#{rid}" in out_before.body
+    assert f"td{rid}" in out_before.body
     # Bubble a child-failed tag on it.
     store.add_tag(rid, Tag.open("child-failed:999"), set_by="system")
     out = handler.search(view="doable")
-    assert f"#{rid}" not in out.body
+    assert f"td{rid}" not in out.body
 
 
 def test_attention_view_empty_when_nothing_pending(
@@ -328,7 +330,7 @@ def test_attention_view_lists_ask_user_leaves(
     store.add_tag(rid, Tag.open("ask-user"), set_by="agent")
     out = handler.search(view="attention")
     assert "Ask user (1)" in out.body
-    assert f"#{rid}" in out.body
+    assert f"td{rid}" in out.body
     assert "Need the owner" in out.body
 
 
@@ -363,8 +365,8 @@ def test_attention_view_lists_child_failed_parents(
     _ = job
     out = handler.search(view="attention")
     assert "Child-failed parents (1)" in out.body
-    assert f"#{rid}" in out.body
-    assert "job #143" in out.body
+    assert f"td{rid}" in out.body
+    assert "jo143" in out.body
 
 
 def test_attention_view_unions_both_signals(handler: TodoHandler, store: Store) -> None:
@@ -396,10 +398,10 @@ def test_doable_excludes_halted_leaves(handler: TodoHandler, store: Store) -> No
     r = handler.put(text="paused work")
     rid = id_of(r.body)
     out_before = handler.search(view="doable")
-    assert f"#{rid}" in out_before.body
+    assert f"td{rid}" in out_before.body
     store.add_tag(rid, Tag.open("halt"), set_by="user")
     out = handler.search(view="doable")
-    assert f"#{rid}" not in out.body
+    assert f"td{rid}" not in out.body
 
 
 def test_attention_view_lists_halted_leaves(handler: TodoHandler, store: Store) -> None:
@@ -416,7 +418,7 @@ def test_attention_view_lists_halted_leaves(handler: TodoHandler, store: Store) 
     store.add_tag(rid, Tag.open("halt"), set_by="user")
     out = handler.search(view="attention")
     assert "Halted (1)" in out.body
-    assert f"#{rid}" in out.body
+    assert f"td{rid}" in out.body
     assert "Need a thought" in out.body
 
 
@@ -448,7 +450,7 @@ def test_halt_remove_is_owner_only(
     monkeypatch.delenv("PRECIS_SOURCE", raising=False)
     handler.tag(id=rid, remove=["halt"])
     out = handler.search(view="doable")
-    assert f"#{rid}" in out.body
+    assert f"td{rid}" in out.body
 
 
 def test_tree_view_includes_child_jobs(handler: TodoHandler) -> None:
@@ -462,7 +464,7 @@ def test_tree_view_includes_child_jobs(handler: TodoHandler) -> None:
         kind="job", slug=None, title="fix_gripe attempt", meta={}, parent_id=rid
     )
     out = handler.get(id=rid, view="tree")
-    assert f"#{job.id}" in out.body
+    assert f"jo{job.id}" in out.body
     assert "fix_gripe attempt" in out.body
     # Gear glyph distinguishes the job row from todo rows.
     assert "⚙" in out.body

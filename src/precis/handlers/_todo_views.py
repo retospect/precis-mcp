@@ -19,10 +19,16 @@ from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, NotFound
 from precis.response import Response
+from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
 if TYPE_CHECKING:
     from precis.store import Store
+
+
+def _h(ref_id: int | str, kind: str = "todo") -> str:
+    """ADR 0036 universal handle for a todo/job row (e.g. ``td158``)."""
+    return handle_registry.format_handle(kind, int(ref_id))
 
 
 # ── doable / dispatch exclusion registry ──────────────────────────
@@ -295,7 +301,7 @@ def render_roots(store: Store) -> Response:
         if status == "paused":
             suffix = " [paused]"
         lines.append(
-            f"#{ref_id:<4} {first_line:<60}  7d: {n_picks:>2} picks{suffix}{marker}"
+            f"{_h(ref_id):<6} {first_line:<60}  7d: {n_picks:>2} picks{suffix}{marker}"
         )
     if active_ids:
         total_picks = sum(picks.get(i, 0) for i in active_ids)
@@ -322,7 +328,7 @@ def render_roots(store: Store) -> Response:
             cron = w["cron"] or "(folder)"
             last = w["last_tick"] or "never"
             lines.append(
-                f"#{w['id']:<4} {first_line:<50}  cron: {cron:<14}  last: {last}"
+                f"{_h(w['id']):<6} {first_line:<50}  cron: {cron:<14}  last: {last}"
             )
     body = "\n".join(lines)
     body += render_next_section(
@@ -435,7 +441,7 @@ def render_projects(store: Store) -> Response:
             first_line = first_line[:48].rstrip() + "…"
         files = "?" if p["files"] is None else str(p["files"])
         lines.append(
-            f"#{p['id']:<4} {slug:<20} {first_line:<48}  "
+            f"{_h(p['id']):<6} {slug:<20} {first_line:<48}  "
             f"open: {p['open']:>3}  files: {files:>3}  ({p['format']})"
         )
         lines.append(f"       {p['path']}")
@@ -681,7 +687,7 @@ def render_strategic(store: Store) -> Response:
         if strategic_id != last_strategic:
             lines.append("")
             first_line = (strat_title or "").split("\n", 1)[0]
-            lines.append(f"#{strategic_id} {first_line}")
+            lines.append(f"{_h(strategic_id)} {first_line}")
             last_strategic = strategic_id
         if tactical_id is None:
             continue
@@ -689,7 +695,7 @@ def render_strategic(store: Store) -> Response:
         if len(tac_first) > 60:
             tac_first = tac_first[:60].rstrip() + "…"
         lines.append(
-            f"  └─ #{int(tactical_id):<4} {tac_first:<60} "
+            f"  └─ {_h(tactical_id):<6} {tac_first:<60} "
             f"[{int(open_count or 0)}/{int(total_count or 0)} open]"
         )
     body = "\n".join(lines)
@@ -845,7 +851,9 @@ def _render_node(
     # things; we reuse it for jobs.
     kind_marker = "⚙ " if node.get("kind") == "job" else ""
     icon = _status_icon(status, claimed=claimed, waiting=waiting, asking=asking)
-    line += f"#{node['id']} {kind_marker}{icon} {first_line}"
+    line += (
+        f"{_h(node['id'], node.get('kind') or 'todo')} {kind_marker}{icon} {first_line}"
+    )
     out.append(line)
     children = by_parent.get(node["id"], [])
     if not children:
@@ -926,7 +934,7 @@ def render_doable(
         if len(first_line) > 76:
             first_line = first_line[:76].rstrip() + "…"
         lines.append("")
-        lines.append(f"#{leaf['id']:<4} {first_line}")
+        lines.append(f"{_h(leaf['id']):<6} {first_line}")
         chain = leaf["ancestry"]
         if chain:
             crumb = " / ".join(a["title"][:30] for a in chain)
@@ -1173,7 +1181,7 @@ def render_waiting(store: Store) -> Response:
     for ref_id, title, waits in rows:
         first_line = (title or "").split("\n", 1)[0]
         wait_str = ", ".join(sorted(w for w in waits))
-        lines.append(f"#{int(ref_id):<4} {first_line:<60}  {wait_str}")
+        lines.append(f"{_h(ref_id):<6} {first_line:<60}  {wait_str}")
     return Response(body="\n".join(lines))
 
 
@@ -1204,8 +1212,8 @@ def render_blocked(store: Store) -> Response:
     lines = [f"# {len(rows)} blocked"]
     for ref_id, title, blockers in rows:
         first_line = (title or "").split("\n", 1)[0]
-        blocker_ids = ", ".join(f"#{int(b)}" for b in blockers)
-        lines.append(f"#{int(ref_id):<4} {first_line:<60}  blocked-by {blocker_ids}")
+        blocker_ids = ", ".join(_h(b) for b in blockers)
+        lines.append(f"{_h(ref_id):<6} {first_line:<60}  blocked-by {blocker_ids}")
     return Response(body="\n".join(lines))
 
 
@@ -1242,7 +1250,7 @@ def render_ask_user(store: Store) -> Response:
         first_line = (title or "").split("\n", 1)[0]
         if len(first_line) > 70:
             first_line = first_line[:70].rstrip() + "…"
-        lines.append(f"#{int(ref_id):<4} {first_line}")
+        lines.append(f"{_h(ref_id):<6} {first_line}")
     body = "\n".join(lines)
     body += render_next_section(
         [
@@ -1306,7 +1314,7 @@ def render_attention(store: Store) -> Response:
             first = (a["title"] or "").split("\n", 1)[0]
             if len(first) > 76:
                 first = first[:76].rstrip() + "…"
-            lines.append(f"#{a['id']:<4} {first}")
+            lines.append(f"{_h(a['id']):<6} {first}")
     if child_failed:
         lines.append("")
         lines.append(f"## Child-failed parents ({len(child_failed)})")
@@ -1315,12 +1323,12 @@ def render_attention(store: Store) -> Response:
             first = (f["title"] or "").split("\n", 1)[0]
             if len(first) > 70:
                 first = first[:70].rstrip() + "…"
-            lines.append(f"#{f['id']:<4} {first}")
+            lines.append(f"{_h(f['id']):<6} {first}")
             for tag in f["child_failed_tags"]:
                 # Strip ``child-failed:`` prefix → the bare job id.
                 job_id = tag.removeprefix("child-failed:")
                 lines.append(
-                    f"      job #{job_id}: {f['reasons'].get(job_id, '(no event chunk yet)')}"
+                    f"      {_h(job_id, 'job')}: {f['reasons'].get(job_id, '(no event chunk yet)')}"
                 )
     if halted:
         lines.append("")
@@ -1330,7 +1338,7 @@ def render_attention(store: Store) -> Response:
             first = (h["title"] or "").split("\n", 1)[0]
             if len(first) > 76:
                 first = first[:76].rstrip() + "…"
-            lines.append(f"#{h['id']:<4} {first}")
+            lines.append(f"{_h(h['id']):<6} {first}")
     body = "\n".join(lines)
     body += render_next_section(
         [
@@ -1531,7 +1539,7 @@ def render_ancestry_section(store: Store, ref_id: int) -> str:
         )
         title = node["title"] or ""
         marker = "→" if node["id"] == ref_id else "└─"
-        lines.append(f"{indent}{marker} #{node['id']} [{level_tag}] {title}")
+        lines.append(f"{indent}{marker} {_h(node['id'])} [{level_tag}] {title}")
     return "\n".join(lines)
 
 

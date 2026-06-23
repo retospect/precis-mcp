@@ -79,11 +79,12 @@ with `put(kind='memory', link='finding:<id>')`.
 ## Look up a finding by id
 ## What does finding 42 say?
 
-Both forms work — bare `id=42` and `id='finding:42'`:
+All three work — handle `id='fi42'`, bare `id=42`, and legacy `id='finding:42'`:
 
 ```python
+get(id='fi42')                              # by handle (prefix infers kind)
 get(kind='finding', id=42)
-get(kind='finding', id='finding:42')
+get(kind='finding', id='finding:42')        # legacy form, still resolves
 get(kind='finding', id=42, view='log')      # chase event history
 ```
 

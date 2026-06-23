@@ -20,7 +20,7 @@ against LaTeX syntax.
 ```python
 get(kind='tex', id='chapters/intro.tex')        # path form
 get(kind='tex', id='chapters--intro')           # slug form (path / → --)
-get(kind='tex', id='chapters/intro.tex~3')      # block by pos
+get(kind='tex', id='chapters/intro.tex~3')      # block by pos (output shows handle xc<id>; get(id='xc<id>') works too)
 get(kind='tex', id='chapters/intro.tex~kinetics')   # block by name
 get(kind='tex', id='chapters/intro.tex~L42-58') # block by line range
 get(kind='tex', id='chapters/intro.tex/toc')    # TOC view

@@ -32,8 +32,9 @@ Patent ids only accept the `~` chunk separator. Pass `view=` as a
 kwarg; there is no `slug/view` path form.
 
 ```python
-get(kind='patent', id='ep1234567b1~5')        # single block
-get(kind='patent', id='ep1234567b1~5..12')    # block range
+get(id='pk<chunk_id>')                         # single block by handle
+get(kind='patent', id='ep1234567b1~5')         # legacy id~pos still resolves
+get(kind='patent', id='ep1234567b1~5..12')     # block range (ranges stay id~N..M)
 ```
 
 ## What does a patent id look like?

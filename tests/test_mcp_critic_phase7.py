@@ -493,7 +493,8 @@ class TestSigilKindInference:
                 "at": {"last": True},
             },
         )
-        return re.search(r"¶(\w+)", add).group(1)  # type: ignore[union-attr]
+        # ADR 0036: the put-ack carries the chunk's ``dc<id>`` handle.
+        return re.search(r"(dc\d+)", add).group(1)  # type: ignore[union-attr]
 
     def test_paragraph_sigil_reads_chunk_without_kind(
         self, runtime: PrecisRuntime

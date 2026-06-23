@@ -88,6 +88,10 @@ _SIGIL_KIND: dict[str, tuple[str, bool]] = {
     "§": ("paper", False),
 }
 
+#: A draft chunk handle ``dc<chunk_id>`` with an optional ``-B+A`` reading
+#: window — the group captures the bare ``<chunk_id>`` for the existence probe.
+_DRAFT_DC_RE = re.compile(r"^dc(\d+)(?:-\d+)?(?:\+\d+)?$")
+
 #: Per-(kind, verb) recovery hints for "kind does not support verb" — a
 #: generic "try get(kind=…)" is a dead-end when the right move is a
 #: *different shape entirely*. Drafts are the case that bites: an agent
@@ -1726,6 +1730,57 @@ class PrecisRuntime:
         if kind is not None and kind in live_kinds:
             args["kind"] = kind
 
+    def _maybe_route_draft_chunk(self, args: dict[str, Any], ident: str) -> bool:
+        """ADR 0036: route a draft chunk handle ``dc<id>[-B][+A]`` to the
+        draft handler (which has no slug, so it can't go through the generic
+        ``slug~ord`` chunk-handle rewrite). Confirms the base chunk exists so
+        a bogus ``dc999`` falls through to a clean not-found. Returns ``True``
+        if it routed."""
+        if self.store is None:
+            return False
+        m = _DRAFT_DC_RE.match(ident)
+        if m is None:
+            return False
+        explicit = args.get("kind")
+        if explicit is not None and explicit != "draft":
+            return False
+        try:
+            if self.store.get_draft_chunk("dc" + m.group(1)) is None:
+                return False
+        except Exception:  # pragma: no cover — store outage etc.
+            log.exception("draft chunk routing lookup failed")
+            return False
+        args["kind"] = "draft"
+        args["id"] = ident
+        return True
+
+    def _maybe_infer_kind_from_relative(self, args: dict[str, Any], ident: str) -> bool:
+        """ADR 0036 relative navigation: route ``pc10+1`` / ``pc10-2..3``.
+
+        Resolves the relative chunk handle to its kind + the per-kind chunk
+        selector (e.g. ``slug~ord`` for a paper) and rewrites ``args`` so the
+        existing per-kind ``get`` renders the target with no change. Returns
+        ``True`` if it routed a relative handle, ``False`` otherwise (not a
+        relative handle, unresolvable, out of range, or an explicit ``kind=``
+        that disagrees) so the caller falls through untouched.
+        """
+        if self.store is None:
+            return False
+        try:
+            resolved = self.store.resolve_relative(ident)
+        except Exception:  # pragma: no cover — store outage etc.
+            log.exception("resolve_relative lookup failed")
+            return False
+        if resolved is None:
+            return False
+        kind, selector = resolved
+        explicit = args.get("kind")
+        if explicit is not None and explicit != kind:
+            return False
+        args["kind"] = kind
+        args["id"] = selector
+        return True
+
     def _maybe_infer_kind_from_handle(self, args: dict[str, Any], ident: str) -> bool:
         """ADR 0036 surface dispatch: route a universal handle.
 
@@ -1809,7 +1864,19 @@ class PrecisRuntime:
         if ident.startswith("/"):
             return
         if ":" not in ident:
-            # ADR 0036: a universal handle (type-prefixed, 9-char Crockford)
+            # ADR 0036: a draft chunk handle ``dc<id>`` (optionally with a
+            # ``-B+A`` reading window) routes to the draft handler, which
+            # parses the window. Drafts have no slug, so the generic
+            # chunk-handle path below can't rewrite them to ``slug~ord``.
+            if self._maybe_route_draft_chunk(args, ident):
+                return
+            # ADR 0036 relative navigation: ``pc10+1`` / ``pc10-2..3`` /
+            # ``pc10^`` resolves against current structure to a per-kind
+            # chunk selector. Try this before the absolute-handle path
+            # (a relative handle is not a well-formed absolute one).
+            if self._maybe_infer_kind_from_relative(args, ident):
+                return
+            # ADR 0036: a universal handle (``<2-char code><decimal id>``)
             # self-identifies — resolve it to (kind, public_id) before the
             # bare-slug fallback, so it isn't mis-read as a slug.
             if self._maybe_infer_kind_from_handle(args, ident):

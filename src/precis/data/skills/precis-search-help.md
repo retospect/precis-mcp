@@ -8,9 +8,10 @@ status: active
 
 # precis-search-help — search across kinds
 
-Hybrid lexical + semantic search. Returns ranked handles (`slug~N`)
-you paste into `get` to drill in. Order is the relevance signal —
-there is no honest numeric score.
+Hybrid lexical + semantic search. Returns ranked handles (`pc<chunk_id>`,
+e.g. `pc40`) you paste straight into `get(id=…)` to drill in — the handle's
+prefix infers the kind. Order is the relevance signal — there is no honest
+numeric score.
 
 ## What knobs does search have?
 ## Quick reference for search arguments
@@ -64,7 +65,7 @@ always first.
 | `source` | str | Patent only: `'both'` (default) / `'local'` / `'remote'`. |
 | `view` | str | Alternate result shape. `view='dreamable'` returns a salience-focus-region pick from the most-due seed (cross-kind only; `q=` not required for this view). `view='stubs'` returns the paper-acquisition backlog — paper refs with an external id but no PDF yet (`q=` ignored; see `precis-stubs-help`). |
 | `angle` | float | Salience-rotation search; pairs with `like=` (or `q=` for a seed). See `precis-dreaming-help`. |
-| `like` | str | Seed ref handle for `angle=` search; e.g. `like='paper:wang2020state~5'`. |
+| `like` | str | Seed ref handle for `angle=` search; e.g. `like='pc40'` (a handle also works) or the legacy `like='paper:wang2020state~5'`. |
 | `status` | str | Finding-only shorthand for `tags=['STATUS:<value>']`. Default is `'established'` (the "what evidence do we have?" cohort); pass `'tracing'`/`'multi_candidate'`/`'dead_chain'` for a specific cohort, or `'*'` for all findings regardless. Ignored on every other kind. |
 
 ## Search the whole corpus

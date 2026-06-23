@@ -29,19 +29,23 @@ Re-adding the same `(source, target, rel)` is a no-op.
 ## What does target= take?
 ## How do I point at a block of a paper, not the whole paper?
 
-Targets use one shape: `kind:identifier[~selector]`.
+A target is a universal handle, or the legacy `kind:identifier[~selector]`.
 
 ```text
-paper:wang2020state                # ref-level
-paper:wang2020state~38             # block 38 of that paper
+pa5                                # a paper by handle (= paper:wang2020state)
+pc38                               # block 38 of that paper by handle
+td158                              # a todo by handle
+paper:wang2020state                # legacy ref-level form, still resolves
+paper:wang2020state~38             # legacy block form
 patent:ep4123456a1
 todo:158                           # numeric-id ref
 markdown:notes/foo.md
 markdown:notes/foo.md~intro        # block in a file
 ```
 
-The `kind:` prefix is required — slug shapes overlap across kinds
-and the parser won't guess.
+A handle (`pa5`, `pc38`) self-identifies its kind. On the legacy form the
+`kind:` prefix is required — slug shapes overlap across kinds and the parser
+won't guess.
 
 ## Remove an edge I added earlier
 ## Drop a link between two refs

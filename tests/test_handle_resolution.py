@@ -162,6 +162,122 @@ def test_block_emitter_computes_chunk_handle() -> None:
     assert hits[0].uhandle == "pc40"
 
 
+# --- input acceptance (ADR 0036 cutover): handles round-trip ------------
+
+
+def test_parse_link_target_accepts_record_handle(store: Store) -> None:
+    from precis.handlers._link_target import parse_link_target
+
+    ref = store.insert_ref(kind="memory", slug=None, title="link me")
+    h = handle_registry.format_handle("memory", ref.id)  # 'me<id>'
+    tgt = parse_link_target(h, store=store)
+    assert tgt.ref_id == ref.id
+    assert tgt.kind == "memory"
+    assert tgt.pos is None  # record handle → ref-level
+
+
+def test_parse_link_target_accepts_chunk_handle(store: Store) -> None:
+    from precis.handlers._link_target import parse_link_target
+
+    ref = store.insert_ref(kind="paper", slug="adr36-link-chunk", title="p")
+    chunk_id = _insert_chunk(store, ref.id, ord_=2)
+    h = handle_registry.format_handle("paper", chunk_id, chunk=True)  # 'pc<id>'
+    tgt = parse_link_target(h, store=store)
+    assert tgt.ref_id == ref.id
+    assert tgt.pos == 2  # chunk handle → block pos (== chunks.ord)
+
+
+def test_parse_link_target_unresolvable_handle_is_not_found(store: Store) -> None:
+    from precis.errors import NotFound
+    from precis.handlers._link_target import parse_link_target
+
+    with pytest.raises(NotFound):
+        parse_link_target("me999999", store=store)  # well-formed, no such ref
+
+
+def test_parse_link_target_legacy_kindslug_still_works(store: Store) -> None:
+    # The canonical kind:slug form keeps working (its ':' defeats the
+    # handle parse, so it falls through to the legacy grammar).
+    from precis.handlers._link_target import parse_link_target
+
+    ref = store.insert_ref(kind="memory", slug=None, title="legacy")
+    tgt = parse_link_target(f"memory:{ref.id}", store=store)
+    assert tgt.ref_id == ref.id
+
+
+@_NEEDS_PAPER_EXTRA
+def test_paper_exclude_accepts_handle(store: Store) -> None:
+    from precis.handlers.paper import _normalise_exclude_slug
+
+    ref = store.insert_ref(kind="paper", slug="adr36-excl", title="p")
+    chunk_id = _insert_chunk(store, ref.id)
+    h = handle_registry.format_handle("paper", chunk_id, chunk=True)
+    # A chunk handle resolves to the owning paper slug (coarse, ref-level).
+    assert _normalise_exclude_slug(h, store=store) == "adr36-excl"
+    # A record handle too.
+    rh = handle_registry.format_handle("paper", ref.id)
+    assert _normalise_exclude_slug(rh, store=store) == "adr36-excl"
+
+
+# --- relative navigation (ADR 0036) — flat ord kinds --------------------
+
+
+def test_resolve_relative_sibling_steps(store: Store) -> None:
+    ref = store.insert_ref(kind="paper", slug="adr36-rel", title="p")
+    cids = [_insert_chunk(store, ref.id, ord_=i) for i in range(4)]
+    h1 = handle_registry.format_handle("paper", cids[1], chunk=True)  # ord 1
+    assert store.resolve_relative(f"{h1}+1") == ("paper", "adr36-rel~2")
+    assert store.resolve_relative(f"{h1}+2") == ("paper", "adr36-rel~3")
+    assert store.resolve_relative(f"{h1}-1") == ("paper", "adr36-rel~0")
+    assert store.resolve_relative(f"{h1}++") == ("paper", "adr36-rel~2")
+
+
+def test_resolve_relative_out_of_range_is_none(store: Store) -> None:
+    ref = store.insert_ref(kind="paper", slug="adr36-rel-edge", title="p")
+    cids = [_insert_chunk(store, ref.id, ord_=i) for i in range(3)]
+    last = handle_registry.format_handle("paper", cids[2], chunk=True)  # ord 2 = max
+    first = handle_registry.format_handle("paper", cids[0], chunk=True)  # ord 0
+    assert store.resolve_relative(f"{last}+1") is None  # past the end
+    assert store.resolve_relative(f"{first}-1") is None  # before the start
+
+
+def test_resolve_relative_span_clamps(store: Store) -> None:
+    ref = store.insert_ref(kind="paper", slug="adr36-span", title="p")
+    cids = [_insert_chunk(store, ref.id, ord_=i) for i in range(5)]
+    h2 = handle_registry.format_handle("paper", cids[2], chunk=True)  # ord 2
+    assert store.resolve_relative(f"{h2}-1..1") == ("paper", "adr36-span~1..3")
+    # clamps to the document bounds [0, 4]
+    assert store.resolve_relative(f"{h2}-9..9") == ("paper", "adr36-span~0..4")
+
+
+def test_resolve_relative_ancestor_on_flat_kind_is_none(store: Store) -> None:
+    ref = store.insert_ref(kind="paper", slug="adr36-flat", title="p")
+    cid = _insert_chunk(store, ref.id, ord_=0)
+    h = handle_registry.format_handle("paper", cid, chunk=True)
+    assert store.resolve_relative(f"{h}^") is None  # papers have no hierarchy
+
+
+def test_resolve_relative_non_relative_is_none(store: Store) -> None:
+    ref = store.insert_ref(kind="paper", slug="adr36-abs", title="p")
+    cid = _insert_chunk(store, ref.id, ord_=0)
+    h = handle_registry.format_handle("paper", cid, chunk=True)
+    assert store.resolve_relative(h) is None  # absolute handle, no operator
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_relative_routes_to_sibling(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    ref = store.insert_ref(kind="paper", slug="adr36-rel-surface", title="p")
+    cids = [_insert_chunk(store, ref.id, ord_=i) for i in range(3)]
+    h0 = handle_registry.format_handle("paper", cids[0], chunk=True)
+    # get(id='pc<id0>+1') with no kind= → the next chunk, same as the explicit
+    # slug~1 selector.
+    via_relative = runtime_with_store.dispatch("get", {"id": f"{h0}+1"})
+    via_selector = runtime_with_store.dispatch("get", {"id": "adr36-rel-surface~1"})
+    assert via_relative == via_selector
+
+
 @_NEEDS_PAPER_EXTRA
 def test_surface_get_chunk_handle_routes_to_selector(
     runtime_with_store: PrecisRuntime, store: Store

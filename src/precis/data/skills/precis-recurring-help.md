@@ -102,9 +102,9 @@ event log directly.
 
 ```
 ## Watches (3 recurring)
-#12 Check arxiv weekly                cron: 0 9 * * 1   last: 2026-06-08T09:00
-#13 Weather                           cron: 0 7 * * *   last: 2026-06-14T07:00
-#14 Dream nightly                     cron: 0 3 * * *   last: 2026-06-14T03:00
+td12 Check arxiv weekly               cron: 0 9 * * 1   last: 2026-06-08T09:00
+td13 Weather                          cron: 0 7 * * *   last: 2026-06-14T07:00
+td14 Dream nightly                    cron: 0 3 * * *   last: 2026-06-14T03:00
 ```
 
 Spawned subtasks land in `view='doable'` like any other PRIO-2 work

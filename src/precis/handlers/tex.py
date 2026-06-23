@@ -36,6 +36,7 @@ from precis.handlers.plaintext import PlaintextHandler
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Ref
+from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 from precis.utils.tex_parse import TEX_SECTION_NAMES, TexBlock, parse_tex
 
@@ -182,7 +183,10 @@ class TexHandler(PlaintextHandler):
                 indent = "  " * (depth + rel_depth)
                 title = meta.get("section_title") or ""
                 command = TEX_SECTION_NAMES[level + 2]  # offset for part=-2
-                handle = f"{ref.slug}~{block.slug}"
+                handle = (
+                    handle_registry.try_format(ref.kind, block.id, chunk=True)
+                    or f"{ref.slug}~{block.slug}"
+                )
                 lines.append(f"{indent}- \\{command}{{{title}}}  (`{handle}`)")
                 n_emitted += 1
 

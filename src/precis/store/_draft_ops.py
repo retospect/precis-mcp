@@ -21,6 +21,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput
+from precis.utils import handle_registry
 from precis.utils.fractional import key_between, n_keys_between
 from precis.utils.handles import new_handle
 
@@ -37,13 +38,19 @@ def content_sha(text: str) -> str:
 class DraftChunk:
     chunk_id: int
     ref_id: int
-    handle: str
+    handle: str  # legacy ADR-0033 base-58 anchor (internal key, retiring)
     chunk_kind: str
     text: str
     pos: str
     parent_chunk_id: int | None
     depth: int
     meta: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def dc(self) -> str:
+        """ADR 0036 universal handle for this draft chunk (e.g. ``dc42``).
+        The agent-facing address; supersedes the legacy ``¶<base58>``."""
+        return handle_registry.format_handle("draft", self.chunk_id, chunk=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,11 +60,17 @@ class TocEntry:
     ``depth`` is relative to the TOC root; the §-number is computed by
     the renderer from the depth sequence."""
 
-    handle: str
+    handle: str  # legacy base-58 anchor (internal)
     depth: int
     title: str
     keywords: list[str]
     gist: str | None
+    chunk_id: int = 0
+
+    @property
+    def dc(self) -> str:
+        """ADR 0036 universal handle for this heading (e.g. ``dc42``)."""
+        return handle_registry.format_handle("draft", self.chunk_id, chunk=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,13 +233,22 @@ class DraftMixin:
         return {int(r[0]): str(r[1]) for r in rows}
 
     def get_draft_chunk(self, handle: str) -> DraftChunk | None:
-        """A single live-or-retired draft chunk by its handle."""
+        """A single live-or-retired draft chunk by its address.
+
+        Accepts the ADR 0036 universal handle ``dc<chunk_id>`` (looked up by
+        ``chunk_id``) or the legacy ADR-0033 ``¶<base58>`` / bare base-58
+        anchor (looked up by ``chunks.handle``)."""
+        parsed = handle_registry.parse(handle.strip())
+        if parsed is not None and parsed[0] == "draft" and parsed[1]:
+            where, key = "chunk_id = %s", parsed[2]
+        else:
+            where, key = "handle = %s", _bare(handle)
         with self.pool.connection() as conn:
             row = conn.execute(
-                """SELECT chunk_id, handle, chunk_kind, text, pos,
+                f"""SELECT chunk_id, handle, chunk_kind, text, pos,
                           parent_chunk_id, ref_id, meta
-                     FROM chunks WHERE handle = %s""",
-                (_bare(handle),),
+                     FROM chunks WHERE {where}""",
+                (key,),
             ).fetchone()
         if row is None:
             return None
@@ -457,7 +479,8 @@ class DraftMixin:
                 SELECT h.handle, h.depth, h.text, h.keywords,
                        (SELECT s.text FROM chunk_summaries s
                          WHERE s.chunk_id = h.chunk_id
-                           AND s.summarizer = 'llm-v1' LIMIT 1) AS gist
+                           AND s.summarizer = 'llm-v1' LIMIT 1) AS gist,
+                       h.chunk_id
                   FROM h ORDER BY h.sort_path COLLATE "C" ASC
                 """,
                 (ref_id, root_id),
@@ -469,6 +492,7 @@ class DraftMixin:
                 title=r[2],
                 keywords=list(r[3] or []),
                 gist=r[4],
+                chunk_id=int(r[5]),
             )
             for r in rows
         ]

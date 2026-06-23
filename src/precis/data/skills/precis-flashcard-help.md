@@ -61,10 +61,12 @@ immediately. Empty queue returns `no flashcards due` with hints to
 ```python
 get(kind='flashcard')                  # /recent (default)
 get(kind='flashcard', id='/recent')    # 20 newest
+get(id='fc204')                        # handle — prefix infers kind=
 get(kind='flashcard', id=204)          # one card — body + schedule meta
 ```
 
-Both `id=204` and `id='flashcard:204'` are accepted.
+The card's handle is `fc<id>` (e.g. `fc204`); `id=204` and
+`id='flashcard:204'` still resolve on input.
 
 ## Review a card
 ## Quiz myself on a due card

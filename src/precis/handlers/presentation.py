@@ -43,6 +43,7 @@ from precis.handlers._slug_ref_shared import (
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert
+from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -283,8 +284,12 @@ class PresentationHandler(Handler):
             )
             verb = "created + appended" if created else "appended"
         assert inserted, "insert_blocks returned no rows"
+        handle = (
+            handle_registry.try_format("pres", inserted[0].id, chunk=True)
+            or f"{slug}~{inserted[0].pos}"
+        )
         return Response(
-            body=f"{verb} {slug}~{inserted[0].pos}"
+            body=f"{verb} {handle}"
             + (f" (subtype={subtype!r})" if (created and subtype) else "")
         )
 

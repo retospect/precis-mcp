@@ -140,3 +140,32 @@ def test_unknown_kind_and_code_raise() -> None:
         hr.code_for_kind("websearch")  # a provider, not a record
     with pytest.raises(KeyError):
         hr.kind_for_code("zz")
+
+
+# --- relative navigation grammar (ADR 0036) -----------------------------
+
+
+def test_parse_relative_step() -> None:
+    assert hr.parse_relative("pc10+1") == ("paper", True, 10, ("step", 1))
+    assert hr.parse_relative("pc10-3") == ("paper", True, 10, ("step", -3))
+    assert hr.parse_relative("pc10++") == ("paper", True, 10, ("step", 1))
+    assert hr.parse_relative("pc10--") == ("paper", True, 10, ("step", -1))
+
+
+def test_parse_relative_ancestor() -> None:
+    assert hr.parse_relative("dc4^") == ("draft", True, 4, ("ancestor", 1))
+    assert hr.parse_relative("dc4^^") == ("draft", True, 4, ("ancestor", 2))
+    assert hr.parse_relative("dc4^3") == ("draft", True, 4, ("ancestor", 3))
+
+
+def test_parse_relative_span() -> None:
+    assert hr.parse_relative("pc10-2..3") == ("paper", True, 10, ("span", -2, 3))
+    assert hr.parse_relative("pc10+1..4") == ("paper", True, 10, ("span", 1, 4))
+
+
+def test_parse_relative_rejects_non_relative_and_junk() -> None:
+    assert hr.parse_relative("pc10") is None  # absolute, no operator
+    assert hr.parse_relative("me5+1") is None  # record code, not a chunk
+    assert hr.parse_relative("pc10+0") is None  # zero step is a no-op
+    assert hr.parse_relative("miller23+1") is None  # legacy slug
+    assert hr.parse_relative("pc10+x") is None  # malformed operator

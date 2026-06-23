@@ -44,6 +44,7 @@ from precis.errors import BadInput, NotFound
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Store
+from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
 # Crockford-style: lowercase letters + digits, minus visually
@@ -222,15 +223,16 @@ class RandomHandler(Handler):
 
 
 def _handle(ref: Any, block: Any) -> str:
-    """Canonical ``kind:identifier~pos`` handle for the picked block.
+    """Universal handle (ADR 0036) for the picked block.
 
-    Slug kinds use ``ref.slug``; numeric kinds fall back to the
-    ref's integer id (which is the public identifier there). Either
-    form is a valid ``link=`` target and a valid ``id=`` for the
-    owning handler's ``get``.
+    Returns the computed chunk handle (``pc<chunk_id>``) for a kind with a
+    chunk code, falling back to the legacy ``kind:identifier~pos`` for a
+    code-less kind. Either form is a valid ``link=`` / ``id=`` address.
     """
     ident = ref.slug if ref.slug else str(ref.id)
-    return f"{ref.kind}:{ident}~{block.pos}"
+    return handle_registry.try_format(ref.kind, block.id, chunk=True) or (
+        f"{ref.kind}:{ident}~{block.pos}"
+    )
 
 
 def _drill_down(ref: Any, block: Any) -> str:

@@ -77,7 +77,7 @@ wasted.
 ```python
 put(kind='citation',
     text='Peak QY 68 ± 4 % for CdSe/ZnS aqueous synthesis at 290 K',
-    source_handle='liu2024~12',
+    source_handle='liu2024~12',   # a chunk handle pc<id> also works here
     source_quote='We measured a peak quantum yield of 68 ± 4 % '
                  'across n=12 batches…',
     verifier_confidence=0.95,

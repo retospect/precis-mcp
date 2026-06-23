@@ -21,7 +21,8 @@ exact source span.
 ```python
 put(kind='citation',
     text='MOF X improves CO2 reduction by 12%',          # the claim
-    source_handle='collins06~7',                          # the chunk
+    source_handle='pc7',                                  # the chunk by handle
+    #                  (legacy 'collins06~7' also resolves)
     source_quote='we observed 12% Faradaic efficiency '   # verbatim
                  'for CO2 reduction at -0.3 V vs RHE',
     verifier_confidence=0.95,
@@ -45,15 +46,16 @@ audit trail.
 ## Show me citation 42
 
 ```python
-get(kind='citation', id=42)
-get(kind='citation', id='citation:42')   # link-target form, equivalent
+get(id='ci42')                           # by handle (prefix infers kind)
+get(kind='citation', id=42)              # equivalent
+get(kind='citation', id='citation:42')   # legacy link-target form, equivalent
 ```
 
 ```text
 # citation 42
 _MOF X improves CO2 reduction by 12%_
 
-source: `collins06~7`
+source: `pc7`
 quote: "we observed 12% Faradaic efficiency for CO2 reduction at -0.3 V vs RHE"
 verifier_confidence: 0.95
 verified_at: 2026-05-31T14:23:00Z

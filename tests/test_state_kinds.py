@@ -22,6 +22,7 @@ from precis.handlers.oracle import OracleHandler
 from precis.handlers.presentation import PresentationHandler
 from precis.store import Store
 from precis.store.types import BlockInsert
+from tests.conftest import chunk_handle
 
 # ── GripeHandler — first-class bug tracker ──────────────────────────
 
@@ -526,7 +527,7 @@ class TestConversation:
             ref_meta={"platform": "discord", "channel_id": "c"},
         )
         assert "created + appended" in out.body
-        assert "discord/g/c/t~0" in out.body
+        assert chunk_handle(conv.store, "discord/g/c/t", kind="conv", ord=0) in out.body
         ref = conv.store.get_ref(kind="conv", id="discord/g/c/t")
         assert ref is not None
         assert ref.title == "kickoff"
@@ -599,7 +600,9 @@ class TestPresentation:
             ref_meta={"venue": "demo day", "date": "2026-06-04"},
         )
         assert "created + appended" in out.body
-        assert "2026-06-talk-foo~0" in out.body
+        assert (
+            chunk_handle(pres.store, "2026-06-talk-foo", kind="pres", ord=0) in out.body
+        )
         assert "subtype='slides'" in out.body
         ref = pres.store.get_ref(kind="pres", id="2026-06-talk-foo")
         assert ref is not None

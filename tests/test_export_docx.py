@@ -42,12 +42,14 @@ def _make_draft(draft: DraftHandler, hub: Hub) -> object:
     )
     draft.put(id="d1", title="CO2 Capture in MOFs", project=pid)
     sec = draft.put(id="d1", chunk_kind="heading", text="Methods", at={"last": True})
-    sec_h = sec.body.split("¶")[1].split()[0]
+    import re
+
+    sec_h = re.search(r"dc\d+", sec.body).group(0)  # type: ignore[union-attr]
     draft.put(
         id="d1",
         chunk_kind="paragraph",
         text="Amine **functionalization** improves uptake [§miller2020~0].",
-        at={"into": f"¶{sec_h}", "last": True},
+        at={"into": sec_h, "last": True},
     )
     draft.put(
         id="d1",

@@ -26,17 +26,19 @@ to keep spinning.
 
 ```text
 # random
-`paper:miller2000food~5`
+`pc5`
 
 Food security depends on resilient supply chains that …
 
 Next:
-  get(kind='paper', id='miller2000food~5') — read this block
-  get(kind='random')                       — another random pick
+  get(id='pc5')              — read this block
+  get(kind='random')         — another random pick
 ```
 
-The handle is copy-pasteable into any `link=` target or `id=`. Numeric
-kinds (memory / todo / …) drop the `~pos`; slug kinds keep it.
+The handle is copy-pasteable into any `link=` target or `id=`. For a
+slug kind with a chunk code the pick is that chunk handle (paper →
+`pc<id>`); numeric kinds and oracle stay on the legacy `kind:slug~pos`
+form.
 
 ## Sanity-check a fresh corpus
 

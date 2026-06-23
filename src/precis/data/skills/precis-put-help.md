@@ -27,8 +27,9 @@ put(kind='memory',
     link='paper:wang2020state', rel='cites')
 ```
 
-Omit `id=` to mint a fresh numeric ref. The response returns the
-new id; paste it into `get(kind='memory', id=<N>)` to read back.
+Omit `id=` to mint a fresh numeric ref. The response returns the new
+id and its handle (`me<N>`); read back with `get(id='me<N>')` (the
+prefix infers the kind) or `get(kind='memory', id=<N>)`.
 
 ## File a todo
 ## Add a task to my list

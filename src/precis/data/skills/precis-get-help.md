@@ -101,14 +101,17 @@ search(kind='paper', q='perovskite', offset=20)   # next page of hits
 ## What does slug~N mean?
 
 ```python
-get(kind='paper', id='<slug>~38')         # one block
-get(kind='paper', id='<slug>~38..42')     # block range
+get(id='pc38')                            # one block by handle (prefix infers kind)
+get(kind='paper', id='<slug>~38')         # legacy single-block form, still resolves
+get(kind='paper', id='<slug>~38..42')     # block range (ranges keep the slug form)
 get(kind='paper', id='<slug>', view='toc')
 get(kind='paper', id='<slug>~38..42', view='toc')   # sub-TOC of a range
 ```
 
-Paste a TOC handle (`slug~A..B`) as `id=` to drill in. The address
-grammar is shared across TOC-capable kinds — see `precis-overview`.
+A single chunk is addressed by its handle `pc<chunk_id>` (e.g. `pc38`) — what
+search and TOC output now show; the legacy `slug~38` still resolves on input.
+Ranges stay `slug~A..B`. The grammar is shared across TOC-capable kinds — see
+`precis-overview` and `precis-addressing-help`.
 
 ## Pick a view by path or by kwarg
 ## slug/view and view= are equivalent

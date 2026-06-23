@@ -24,7 +24,7 @@ get(kind='markdown', id='notes/meeting.md')        # path form
 get(kind='markdown', id='notes--meeting')          # slug form ('/' ↔ '--')
 get(kind='markdown', id='notes/meeting.md~L42-58') # line range (1-indexed inclusive)
 get(kind='markdown', id='notes/meeting.md~conclusion')  # name selector
-get(kind='markdown', id='notes/meeting.md~3')      # pos selector
+get(kind='markdown', id='notes/meeting.md~3')      # by block pos (output shows the handle mc<id>; get(id='mc<id>') works too)
 get(kind='markdown', id='/Users/me/notes/meeting.md')   # absolute path also accepted
 ```
 

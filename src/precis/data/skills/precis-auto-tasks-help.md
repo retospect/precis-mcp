@@ -69,7 +69,7 @@ for doi in ['10.x/y1', '10.x/y2', '10.x/y3']:
 tag(kind='todo', id=103, add=['STATUS:done'])     # discovery is done
 ```
 
-The consumer leaf (`#108`) drops out of `view='doable'` until every
+The consumer leaf (`td108`) drops out of `view='doable'` until every
 linked `wait` resolves.
 
 ## Pattern 2 — ask the owner on Discord

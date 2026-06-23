@@ -44,6 +44,7 @@ from precis.handlers._slug_ref_shared import (
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Block, Ref
+from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit
 
@@ -386,7 +387,10 @@ class OracleHandler(Handler):
         for block in blocks:
             title = _entry_title(block) or f"(entry {block.pos})"
             preview = _first_line(block.text)
-            handle = f"{slug}~{block.pos}"
+            handle = (
+                handle_registry.try_format(ref.kind, block.id, chunk=True)
+                or f"{slug}~{block.pos}"
+            )
             if preview and preview != title:
                 lines.append(f"- **{block.pos}. {title}** - {preview}  `{handle}`")
             else:

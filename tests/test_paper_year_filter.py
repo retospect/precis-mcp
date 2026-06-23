@@ -15,6 +15,7 @@ from precis.embedder import MockEmbedder
 from precis.errors import BadInput
 from precis.handlers.paper import PaperHandler
 from precis.store import BlockInsert, Store
+from tests.conftest import chunk_handle
 
 _TEXT = "quantum batteries store energy efficiently"
 
@@ -113,8 +114,8 @@ def test_handler_after_filters(store: Store) -> None:
     _seed(store, slug="p2018", year=2018, embed=False)
     _seed(store, slug="p2022", year=2022, embed=False)
     out = _handler(store).search(q=_TEXT, after=2020)
-    assert "p2022~0" in out.body
-    assert "p2018" not in out.body
+    assert chunk_handle(store, "p2022", ord=0) in out.body
+    assert chunk_handle(store, "p2018") not in out.body
 
 
 def test_handler_after_gt_before_rejected(store: Store) -> None:
@@ -136,6 +137,6 @@ def test_handler_surfaces_yearless_omission(store: Store) -> None:
     _seed(store, slug="pNone", year=None, embed=False)
     _seed(store, slug="p2022", year=2022, embed=False)
     out = _handler(store).search(q=_TEXT, after=2000)
-    assert "p2022~0" in out.body
+    assert chunk_handle(store, "p2022", ord=0) in out.body
     assert "omitted" in out.body  # the NULL-year heads-up
     assert "/papers/triage" in out.body

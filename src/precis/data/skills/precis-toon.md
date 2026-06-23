@@ -18,9 +18,9 @@ data rows. Column keys appear once, in the header.
 
 ```text
 {handle	chunk_keywords}
-wang2020state~14	z-scheme, heterojunction, photocatalysis
-wang2020state~38	cocatalyst, oxygen evolution, water splitting
-kim2024electrocatalytic~7	noxrr, copper, faradaic efficiency
+pc14	z-scheme, heterojunction, photocatalysis
+pc38	cocatalyst, oxygen evolution, water splitting
+pc207	noxrr, copper, faradaic efficiency
 ```
 
 - First non-blank line is the header: column names wrapped in literal
@@ -34,13 +34,13 @@ kim2024electrocatalytic~7	noxrr, copper, faradaic efficiency
 
 ```text
 {handle	chunk_keywords}
-abazari2024design~22	mof, linker design, photocatalytic
-wang2020state~14	z-scheme, heterojunction, photocatalysis
+pc22	mof, linker design, photocatalytic
+pc14	z-scheme, heterojunction, photocatalysis
 ```
 
-One row per hit. `handle` is `slug~N` — paste it as
-`get(kind='paper', id='<handle>')` to drill in. Order is the
-relevance signal.
+One row per hit. The `handle` column now carries the universal handle
+(`pc<chunk_id>`, e.g. `pc14`) — paste it straight into `get(id='<handle>')`
+(the `pc` prefix infers the kind). Order is the relevance signal.
 
 ## TOC shape
 

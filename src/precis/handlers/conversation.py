@@ -36,6 +36,7 @@ from precis.handlers._slug_ref_shared import (
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert
+from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -179,7 +180,11 @@ class ConversationHandler(Handler):
         for block, ref, score in hits:
             slug = ref.slug or "?"
             preview = (block.text[:160] + "…") if len(block.text) > 160 else block.text
-            lines.append(f"\n## {slug}~{block.pos}  (score={score:.4f})")
+            handle = (
+                handle_registry.try_format(ref.kind, block.id, chunk=True)
+                or f"{slug}~{block.pos}"
+            )
+            lines.append(f"\n## {handle}  (score={score:.4f})")
             lines.append(f"_{ref.title}_")
             lines.append(preview)
         return Response(body="\n".join(lines))
@@ -313,10 +318,13 @@ class ConversationHandler(Handler):
             existing = self.store.list_blocks_for_ref(ref.id)
             for b in existing:
                 if (b.meta or {}).get("msg_id") == msg_id_s:
+                    handle = (
+                        handle_registry.try_format("conv", b.id, chunk=True)
+                        or f"{slug}~{b.pos}"
+                    )
                     return Response(
                         body=(
-                            f"{slug}~{b.pos}: already captured "
-                            f"(msg_id={msg_id_s!r}); no-op"
+                            f"{handle}: already captured (msg_id={msg_id_s!r}); no-op"
                         )
                     )
             next_pos = (existing[-1].pos + 1) if existing else 0
@@ -339,9 +347,13 @@ class ConversationHandler(Handler):
         )
         assert inserted, "insert_blocks returned no rows"
         verb = "created + appended" if created else "appended"
+        handle = (
+            handle_registry.try_format("conv", inserted[0].id, chunk=True)
+            or f"{slug}~{inserted[0].pos}"
+        )
         return Response(
             body=(
-                f"{verb} {slug}~{inserted[0].pos} "
+                f"{verb} {handle} "
                 f"(author={author_s!r}"
                 + (f", msg_id={msg_id_s!r}" if msg_id_s else "")
                 + ")"
@@ -497,7 +509,10 @@ class ConversationHandler(Handler):
         for b in tail:
             meta = b.meta or {}
             author = meta.get("author") or "?"
-            lines.append(f"~{b.pos} [{author}]")
+            lines.append(
+                f"{handle_registry.try_format('conv', b.id, chunk=True) or f'~{b.pos}'}"
+                f" [{author}]"
+            )
             lines.append(b.text)
             trailer = _compact_trailer(meta)
             if trailer:

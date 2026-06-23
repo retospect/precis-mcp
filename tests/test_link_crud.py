@@ -28,6 +28,7 @@ from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.handlers.memory import MemoryHandler
 from precis.store import BlockInsert, Store
 from precis.store.types import Relation
+from precis.utils import handle_registry
 from tests.conftest import id_of
 
 # ── unit: parse_link_target ─────────────────────────────────────────
@@ -444,7 +445,10 @@ class TestMemoryHandlerLinksView:
         new_id = id_of(m.body)
         out = memory_handler.get(id=new_id, view="links")
         assert "outbound" in out.body
-        assert "→ paper:wang2020state" in out.body
+        # ADR 0036: a ref-level link renders the target's record handle.
+        paper_ref = store.get_ref(kind="paper", id="wang2020state")
+        assert paper_ref is not None
+        assert f"→ {handle_registry.format_handle('paper', paper_ref.id)}" in out.body
         assert "(cites)" in out.body
 
     def test_inbound_rendering(
@@ -459,7 +463,7 @@ class TestMemoryHandlerLinksView:
 
         out = memory_handler.get(id=b_id, view="links")
         assert "inbound" in out.body
-        assert f"← memory:{a_id}" in out.body
+        assert f"← {handle_registry.format_handle('memory', a_id)}" in out.body
         assert "(cites)" in out.body
 
     def test_block_pos_in_rendering(

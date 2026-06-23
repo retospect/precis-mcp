@@ -17,6 +17,7 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._patent_ops import FakeOpsClient
 from precis.handlers.patent import PatentHandler
 from precis.store import Store, Tag
+from tests.conftest import chunk_handle
 
 FIXTURES = Path(__file__).parent / "fixtures" / "patent"
 
@@ -147,15 +148,21 @@ class TestGetChunks:
     def test_single_chunk(self, handler: PatentHandler) -> None:
         handler.get(id="EP1234567B1")  # ingest
         r = handler.get(id="ep1234567b1~0")
-        assert "ep1234567b1~0" in r.body
+        assert (
+            chunk_handle(handler.store, "ep1234567b1", kind="patent", ord=0) in r.body
+        )
         # First description paragraph mentions photocatalytic systems.
         assert "photocatalytic" in r.body.lower()
 
     def test_chunk_range(self, handler: PatentHandler) -> None:
         handler.get(id="EP1234567B1")
         r = handler.get(id="ep1234567b1~0..2")
-        assert "ep1234567b1~0" in r.body
-        assert "ep1234567b1~2" in r.body
+        assert (
+            chunk_handle(handler.store, "ep1234567b1", kind="patent", ord=0) in r.body
+        )
+        assert (
+            chunk_handle(handler.store, "ep1234567b1", kind="patent", ord=2) in r.body
+        )
 
     def test_chunk_out_of_range(self, handler: PatentHandler) -> None:
         handler.get(id="EP1234567B1")

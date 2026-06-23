@@ -58,6 +58,7 @@ from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
+from precis.utils import handle_registry
 from precis.utils.authors import to_name_dicts
 from precis.utils.embed_query import embed_query, query_vec_for
 from precis.utils.next_block import render_next_section
@@ -147,6 +148,12 @@ def _normalise_exclude_slug(raw: str, *, store: Any) -> str | None:
     cleaned = raw.strip()
     if not cleaned:
         return None
+    # ADR 0036: an exclude entry copied from a hit is now a universal handle
+    # (``pa5`` / ``pc40``). Resolve it to the owning paper slug (ref-level,
+    # coarse) so ``exclude=['pc40']`` drops that paper's blocks.
+    if handle_registry.parse(cleaned) is not None:
+        resolved_handle = store.resolve_handle(cleaned)
+        return resolved_handle.public_id if resolved_handle is not None else None
     # Coarse-only: trim the first ``~`` (chunk selector) or ``/``
     # (view path). DOI-form ids carry ``/`` in the suffix, but
     # _maybe_resolve_doi runs first and replaces the whole DOI with
@@ -936,7 +943,13 @@ class PaperHandler(Handler):
         table_rows: list[dict[str, str]] = []
         for block, ref, _score in hits:
             slug = ref.slug or "???"
-            handle = f"{slug}~{block.pos}"
+            # ADR 0036: the computed chunk handle (``pc<chunk_id>``) is the
+            # one address form; fall back to the legacy ``slug~pos`` only for
+            # a kind with no chunk code.
+            handle = (
+                handle_registry.try_format(ref.kind, block.id, chunk=True)
+                or f"{slug}~{block.pos}"
+            )
             kw_list = block.keywords or []
             if kw_list:
                 kw_display = ", ".join(kw_list[:5])

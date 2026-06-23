@@ -53,6 +53,7 @@ from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import Ref
+from precis.utils import handle_registry
 
 
 class CitationHandler(NumericRefHandler):
@@ -143,6 +144,15 @@ class CitationHandler(NumericRefHandler):
                     "'collins06~7' or 'collins06~5..8'"
                 ),
             )
+        # ADR 0036: accept a universal chunk handle (``pc<id>``) — the form
+        # search output now emits — and normalize it to the canonical
+        # ``slug~ord`` form so paper validation, storage, and the downstream
+        # bibtex / \citequote macros stay unchanged.
+        sh = str(source_handle).strip()
+        if handle_registry.parse(sh) is not None:
+            resolved = self.store.resolve_handle(sh)
+            if resolved is not None and resolved.chunk_ord is not None:
+                sh = f"{resolved.public_id}~{resolved.chunk_ord}"
         if not source_quote or not str(source_quote).strip():
             raise BadInput(
                 "put(kind='citation') requires source_quote=<verbatim text>",
@@ -168,7 +178,7 @@ class CitationHandler(NumericRefHandler):
         # next-hint that routes to the right recovery: mint a finding
         # to start the chase. Runs after the shape checks so callers
         # that get the shape wrong still see the shape error first.
-        paper_slug = _extract_paper_slug(str(source_handle).strip())
+        paper_slug = _extract_paper_slug(sh)
         if paper_slug is not None:
             paper_ref = self.store.get_ref(kind="paper", id=paper_slug)
             if paper_ref is None:
@@ -189,7 +199,7 @@ class CitationHandler(NumericRefHandler):
 
         record: dict[str, Any] = {
             "claim": text.strip(),
-            "source_handle": str(source_handle).strip(),
+            "source_handle": sh,
             "source_quote": str(source_quote).strip(),
             "char_offset": int(char_offset) if char_offset is not None else None,
             "verifier_confidence": (

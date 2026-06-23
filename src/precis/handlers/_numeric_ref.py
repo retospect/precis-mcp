@@ -45,6 +45,7 @@ from precis.handlers._link_target import parse_link_target
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Link, Ref, Tag
+from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
@@ -974,12 +975,19 @@ class NumericRefHandler(Handler):
         if ref is None:
             target = f"<unknown ref {other_id}>"
         else:
-            handle = ref.slug if ref.slug is not None else str(ref.id)
-            target = f"{ref.kind}:{handle}"
+            ident = ref.slug if ref.slug is not None else str(ref.id)
+            # ADR 0036: ref-level link → the record's universal handle.
+            # A block-level link keeps the legacy ``kind:slug~pos`` (still
+            # valid input); the chunk handle needs the chunk_id, which this
+            # static render doesn't have.
+            if other_pos is None:
+                target = handle_registry.try_format(ref.kind, ref.id) or (
+                    f"{ref.kind}:{ident}"
+                )
+            else:
+                target = f"{ref.kind}:{ident}~{other_pos}"
             if ref.deleted_at is not None:
                 target += " (deleted)"
-        if other_pos is not None:
-            target += f"~{other_pos}"
         return f"{arrow} {target}  ({link.relation})"
 
     # F8: rel-name → inbound-passive-form. Symmetric rels (no
@@ -1129,9 +1137,17 @@ class NumericRefHandler(Handler):
             handle = f"<unknown ref {ref_id}>"
         else:
             ident = ref.slug if ref.slug is not None else str(ref.id)
-            handle = f"{ref.kind}:{ident}"
+            # ADR 0036: ref-level → record universal handle; block-level keeps
+            # the legacy ``kind:slug~pos`` (valid input; chunk_id unavailable).
+            if pos is None:
+                handle = handle_registry.try_format(ref.kind, ref.id) or (
+                    f"{ref.kind}:{ident}"
+                )
+            else:
+                handle = f"{ref.kind}:{ident}~{pos}"
             if ref.deleted_at is not None:
                 handle += " (deleted)"
+            return handle
         if pos is not None:
             handle += f"~{pos}"
         return handle
@@ -1202,7 +1218,9 @@ class NumericRefHandler(Handler):
             rows.append(
                 {
                     "kind": self.kind,
-                    "id": str(r.id),
+                    # ADR 0036: the universal handle (e.g. ``me158``) is the
+                    # one address form, replacing the bare numeric id.
+                    "id": handle_registry.try_format(self.kind, r.id) or str(r.id),
                     "summary": summary,
                     "remaining_words": str(remaining_words),
                     "links": str(link_counts.get(r.id, 0)),
@@ -1224,7 +1242,11 @@ class NumericRefHandler(Handler):
         Subclasses override to add kind-specific hints (e.g. todo's
         STATUS:doing transition, gripe's append-comment recipe).
         """
-        body = f"created {self.kind} id={ref_id}."
+        # ADR 0036: surface the universal handle on create so the agent
+        # learns the one address form it'll see in output (e.g. ``me158``).
+        handle = handle_registry.try_format(self.kind, ref_id)
+        ident = handle or f"id={ref_id}"
+        body = f"created {self.kind} {ident}."
         body += render_next_section(self._create_ack_next_hints(ref_id))
         return Response(body=body)
 

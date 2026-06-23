@@ -1556,8 +1556,14 @@ def test_paper_search_preview_strips_image_markers(store: Store) -> None:
     out = handler.search(q="photocatalytic")
     body = out.body
 
-    # The search hit MUST be present (this is the path under test).
-    assert "markerleak2026probe" in body
+    # The search hit MUST be present (this is the path under test). ADR 0036:
+    # the hit is addressed by its computed chunk handle (``pc<chunk_id>``),
+    # not the slug — assert whichever of the two seeded blocks matched.
+    from tests.conftest import chunk_handle
+
+    h10 = chunk_handle(store, "markerleak2026probe", ord=10)
+    h11 = chunk_handle(store, "markerleak2026probe", ord=11)
+    assert h10 in body or h11 in body
     # Neither leak token is allowed in the rendered body.
     assert "![](" not in body, (
         f"search preview must scrub image markers; got body={body!r}"

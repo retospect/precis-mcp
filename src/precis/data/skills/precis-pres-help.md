@@ -73,7 +73,7 @@ put(kind='pres',
 ```python
 get(kind='pres', id='2026-06-talk-precis-architecture')        # overview
 get(kind='pres', id='2026-06-talk-precis-architecture/full')   # all blocks
-get(kind='pres', id='2026-06-talk-precis-architecture~2')      # single block
+get(kind='pres', id='2026-06-talk-precis-architecture~2')      # single block (output shows handle ps<id>; get(id='ps<id>') works too)
 ```
 
 ## Browse what's been stored

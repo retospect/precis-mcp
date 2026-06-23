@@ -43,6 +43,7 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
 from precis.store._mappers import _REFS_COLS_ALIASED, _row_to_ref
+from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import (
     SearchHit,
@@ -559,7 +560,9 @@ class PatentHandler(Handler):
         slug = ref.slug or "?"
         lines: list[str] = []
         for b in blocks:
-            lines.append(f"# {slug}~{b.pos}")
+            lines.append(
+                f"# {handle_registry.try_format(ref.kind, b.id, chunk=True) or f'{slug}~{b.pos}'}"
+            )
             lines.append(b.text)
             lines.append("")
         return Response(body="\n".join(lines).rstrip())

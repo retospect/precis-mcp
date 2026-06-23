@@ -50,6 +50,7 @@ from precis.protocol import Handler
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import BlockInsert, Tag
+from precis.utils import handle_registry
 from precis.utils.block_ingest import to_block_inserts
 from precis.utils.embed_query import embed_query, query_vec_for
 from precis.utils.md_parse import block_meta, parse_markdown
@@ -800,7 +801,10 @@ class CacheBackedHandler(Handler):
         ]
         for block, ref, score in hits:
             slug = ref.slug or "???"
-            handle = f"{slug}~{block.slug or block.pos}"
+            handle = (
+                handle_registry.try_format(ref.kind, block.id, chunk=True)
+                or f"{slug}~{block.slug or block.pos}"
+            )
             preview = _excerpt(block.text)
             lines.append(f"\n## {handle}  (score={score:.4f})")
             lines.append(f"_{ref.title}_")

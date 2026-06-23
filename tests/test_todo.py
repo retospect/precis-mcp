@@ -19,7 +19,7 @@ def handler(hub: Hub) -> TodoHandler:
 
 def test_create_assigns_id_and_default_status(handler: TodoHandler) -> None:
     r = handler.put(text="finish the report")
-    assert "created todo id=" in r.body
+    assert "created todo td" in r.body  # ADR 0036 handle (e.g. td5)
     # The create-ack carries the initial closed-prefix tag inline as
     # ``(STATUS:open)`` — matches the canonical tag form rather than
     # the prose ``status: open`` we used pre-Slice 1.

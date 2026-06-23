@@ -24,7 +24,8 @@ def handler(hub: Hub) -> MemoryHandler:
 
 def test_create_returns_id(handler: MemoryHandler) -> None:
     r = handler.put(text="my first memory")
-    assert "created memory id=" in r.body
+    # ADR 0036: the ack now surfaces the universal handle (``me<id>``).
+    assert "created memory me" in r.body
 
 
 def test_create_requires_text(handler: MemoryHandler) -> None:
@@ -345,7 +346,7 @@ def test_memory_search_does_not_bump_for_dream_actor(
 
 def test_runtime_create_memory(runtime_with_store: PrecisRuntime) -> None:
     out = runtime_with_store.dispatch("put", {"kind": "memory", "text": "via dispatch"})
-    assert "created memory id=" in out
+    assert "created memory me" in out
 
 
 def test_runtime_create_then_get(runtime_with_store: PrecisRuntime) -> None:

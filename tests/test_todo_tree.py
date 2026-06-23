@@ -25,8 +25,11 @@ def handler(hub: Hub) -> TodoHandler:
 
 
 def _id_of(resp_body: str) -> int:
-    """Parse ``created todo id=N ...`` out of a put-create ack."""
-    return int(resp_body.split("id=")[1].split()[0].rstrip(",.()"))
+    """Parse the created todo's id out of a put-create ack (ADR 0036
+    ``created todo td<id> ...`` handle, or the legacy ``id=N`` form)."""
+    from tests.conftest import id_of
+
+    return id_of(resp_body)
 
 
 # ── parent_id wiring ───────────────────────────────────────────────
@@ -255,9 +258,9 @@ def test_get_descendant_includes_ancestry(handler: TodoHandler) -> None:
     leaf_id = _id_of(leaf.body)
     out = handler.get(id=leaf_id)
     assert "Ancestry:" in out.body
-    assert f"#{root_id}" in out.body
-    assert f"#{mid_id}" in out.body
-    assert f"#{leaf_id}" in out.body
+    assert f"td{root_id}" in out.body
+    assert f"td{mid_id}" in out.body
+    assert f"td{leaf_id}" in out.body
 
 
 # ── status:done event emission ────────────────────────────────────
@@ -306,7 +309,7 @@ def test_put_ack_mentions_parent(handler: TodoHandler) -> None:
     root = handler.put(text="root")
     rid = _id_of(root.body)
     child = handler.put(text="child", parent_id=rid)
-    assert f"under #{rid}" in child.body
+    assert f"under td{rid}" in child.body
 
 
 def test_put_without_parent_has_no_under_phrase(handler: TodoHandler) -> None:
@@ -325,7 +328,7 @@ def test_reparent_via_link_moves_under_new_parent(handler: TodoHandler) -> None:
     leaf = handler.put(text="leaf", parent_id=a_id)
     leaf_id = _id_of(leaf.body)
     resp = handler.link(id=leaf_id, target=f"todo:{b_id}", rel="parent")
-    assert f"under #{b_id}" in resp.body
+    assert f"under td{b_id}" in resp.body
     ref = handler.store.get_ref(kind="todo", id=leaf_id)
     assert ref is not None and ref.parent_id == b_id
 
