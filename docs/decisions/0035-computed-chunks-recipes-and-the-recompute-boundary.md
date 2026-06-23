@@ -221,13 +221,25 @@ Code-figures-first (decision 2026-06-23): build the capability we actually want
 (atom models / custom viz) now, behind cheap phase-1 isolation; refine the jail
 later. No declarative fast-path in v1.
 
+> **Landed since drafting (2026-06-23), integrate — don't rebuild:** ADR 0034
+> shipped `chunk_blobs` + a `figure` chunk path (`store.add_figure`,
+> base64 `image=`, `origin`/`permission` clearance gate, `/drafts/blob/<handle>`
+> serving). ADR 0036 shipped record-level universal handles (`refs.handle`
+> minted in `insert_ref`; chunk handles are a *later* slice, so draft/figure
+> chunks keep the `¶` base-58 handle for now). So the render output goes into a
+> figure's **`chunk_blobs` row via the existing figure store** (not to disk),
+> and a render `job` (a *record*) gets a typed `jo…` handle for free.
+
 1. **Data/table chunk** — `meta.table` canonical + derived markdown `text` +
-   `meta.regen`. No execution. **Shipped** (`8e66080`).
-2. **Render lane (phase-1 isolation) + code figures** — `figure` chunk with
-   `meta.render={kind:'code'}` + `plots` links; a render `kind='job'` that runs
-   the code in a stripped subprocess (scrubbed env, rlimits, timeout, single
-   lane); the `ord<0` image blob; the lazy mark-stale → claim-queue →
-   last-good-on-`get()` cache. **This is the next slice.**
+   `meta.regen`. No execution. **Shipped** (`8e66080`/`271a1d2`).
+1b. **Render engine** — `precis.render.sandbox.render_python` (phase-1 isolation:
+   subprocess, scrubbed env, rlimits, timeout, `-I`). **Shipped** (`2f68324`).
+2. **Code figures + render lane** — *extend the landed `figure` path*: accept a
+   `render={kind:'code'}` recipe + `plots` links instead of an inline `image=`
+   (origin defaults to `own_graph`), image deferred. A render `kind='job'` loads
+   the code + plotted data, calls the §1b engine, and writes the PNG into the
+   figure's **`chunk_blobs`** row (regenerable). Then the lazy mark-stale →
+   claim-queue → last-good-on-`get()` cache. **This is the next slice.**
 3. **Export render barrier** — fold the §4a staleness sweep + child-render fence
    into the existing `draft_export` job.
 4. **Docker jail (phase 2)** — swap the subprocess for the hardened render image

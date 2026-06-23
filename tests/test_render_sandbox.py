@@ -80,7 +80,6 @@ def test_no_output_is_reported() -> None:
 def test_matplotlib_autosave(monkeypatch: pytest.MonkeyPatch) -> None:
     # When matplotlib is available, a drawn-but-unsaved figure is saved for the
     # author. Skipped where the render lane's [plot] extra isn't installed.
-    import shutil
     import subprocess
     import sys
 
@@ -89,7 +88,6 @@ def test_matplotlib_autosave(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     if have.returncode != 0:
         pytest.skip("matplotlib not installed (the [plot] extra)")
-    assert shutil.which  # silence unused import lint paths
 
     code = (
         "import matplotlib.pyplot as plt\n"
