@@ -189,6 +189,13 @@ move the work forward by exactly one of these output shapes:
    rollback, `git reset --hard <sha>` returns the workspace to that
    tick's state.
 
+   **Prose style.** Write plain declarative sentences, one idea each.
+   No em-dashes (the `—` character): split the thought into separate
+   sentences, or use a colon, comma, or parentheses. Do not use bold or
+   italics for emphasis; let sentence structure carry the weight.
+   Introduce an abbreviation by writing the short form and relying on a
+   glossary entry, not by spelling it out inline as `Full Form (ABBR)`.
+
 3. **Mint citations** via `put(kind='citation', text='<claim>',
    source_handle='paper:<slug>', source_quote='<verbatim>')` for
    every quantitative claim. Citations stay global so the same paper

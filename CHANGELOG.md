@@ -8,6 +8,15 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-23 — planner prose style: no em-dashes, no emphasis, short-form abbrevs)
+
+- The **planner contract** (`planner_prompt`) now carries the same prose-style
+  rule the draft skill got: plain declarative sentences, no em-dashes (split
+  the thought or use a colon / comma / parentheses), no bold/italic emphasis,
+  and introduce an abbreviation by its short form plus a glossary entry rather
+  than an inline `Full Form (ABBR)`. Keeps the LaTeX paper output and the
+  draft editor telling one story.
+
 ### Changed (2026-06-23 — draft authoring style: short-form abbrevs, no emphasis / em-dashes, ¶-ref guard)
 
 - **Abbreviation authoring guidance flipped to short-form-only.**
