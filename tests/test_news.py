@@ -97,3 +97,29 @@ def test_article_blocks_nonempty() -> None:
     blocks = article_blocks("# Heading\n\nA paragraph of news.", embedder=None)
     assert blocks
     assert all(b.embedding is None for b in blocks)  # deferred embedding
+
+
+# ── RSS-content ingestion (feedparser-only, no trafilatura) ────────────
+
+
+def test_strip_html_drops_tags_and_unescapes() -> None:
+    out = news_poll._strip_html("<p>Hello <b>world</b></p><p>Second &amp; line</p>")
+    assert "Hello world" in out
+    assert "Second & line" in out
+    assert "<" not in out
+
+
+def test_entry_body_prefers_full_content() -> None:
+    entry = SimpleNamespace(
+        content=[{"value": "<p>Full article text.</p>"}], summary="just a blurb"
+    )
+    assert news_poll._entry_body(entry) == "Full article text."
+
+
+def test_entry_body_falls_back_to_summary() -> None:
+    entry = SimpleNamespace(summary="<p>A summary.</p>")
+    assert news_poll._entry_body(entry) == "A summary."
+
+
+def test_entry_body_empty_when_no_fields() -> None:
+    assert news_poll._entry_body(SimpleNamespace()) == ""

@@ -8,10 +8,13 @@ along a curated feed list. Each pass:
 2. parses each feed (``feedparser``), taking up to ``max_items`` entries;
 3. for each entry, canonicalizes the article URL and skips it if a
    ``news`` ref already caches that URL (idempotent — re-polls are cheap);
-4. otherwise fetches + extracts the article (:func:`fetch_article`) and
-   mints a pinned ``news`` ref via :meth:`Store.put_cache_entry`, stamped
-   ``category:news`` + ``source:<slug>`` (+ the feed's ``default_tags``
-   and a ``published:<date>`` tag when the entry carries a date);
+4. otherwise takes the article body straight from the feed entry
+   (``content``/``summary``, HTML-stripped — feedparser only, no page
+   fetch / trafilatura) and mints a pinned ``news`` ref via
+   :meth:`Store.put_cache_entry`, stamped ``category:news`` +
+   ``source:<slug>`` (+ the feed's ``default_tags`` and a
+   ``published:<date>`` tag when the entry carries a date). Full-page
+   extraction is opt-in via the ``fetch`` arg (needs ``[external]``);
 5. records ``last_polled_at`` / ``last_status`` on the source row.
 
 Embedding is deferred: blocks are written with ``embedding=None`` and
@@ -27,14 +30,16 @@ table.
 from __future__ import annotations
 
 import hashlib
+import html
 import logging
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
 
 from precis.handlers._link_tag_ops import apply_tag_ops
-from precis.handlers.news import canonical_url, fetch_article
+from precis.handlers.news import article_blocks, canonical_url
 from precis.store import Store
 from precis.utils.slug import slug_from_text
 
@@ -44,14 +49,55 @@ log = logging.getLogger(__name__)
 #: misconfigured feed can't mint thousands of refs in one pass.
 _ABS_MAX_ITEMS = 200
 
+#: Per-item body cap (chars). RSS bodies are short, but a feed shipping
+#: full-text content[] can run long; the block-splitter chunks this.
+_MAX_BODY_CHARS = 40_000
+
 FeedParser = Callable[[str], Any]
+#: Optional full-page fetcher (url -> FetchResult). When supplied, the
+#: poller fetches+extracts the article page instead of using the feed's
+#: own content — opt-in only, since it pulls in the trafilatura/httpx
+#: ``[external]`` stack. Default is feed-content ingestion (feedparser
+#: alone), so the poller needs no page-fetch dependency.
 ArticleFetcher = Callable[[str], Any]
+
+_BREAK_RE = re.compile(r"<br\s*/?>|</p\s*>|</li\s*>", re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"[ \t]*\n[ \t]*(?:\n[ \t]*)+")
 
 
 def _request_hash(canonical: str) -> str:
     """Mirror ``CacheBackedHandler._hash`` so the poller and on-demand
     ``get(kind='news', id=url)`` dedup against the same cache key."""
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _strip_html(raw: str) -> str:
+    """Light HTML → text, no trafilatura. Block tags become newlines,
+    remaining tags drop, entities unescape. Good enough for RSS bodies
+    (feedparser already sanitizes scripts/styles out of ``summary``)."""
+    text = _BREAK_RE.sub("\n", raw)
+    text = _TAG_RE.sub("", text)
+    text = html.unescape(text)
+    return _WS_RE.sub("\n\n", text).strip()
+
+
+def _entry_body(entry: Any) -> str:
+    """Article body straight from the feed entry — ``content[].value`` if
+    the feed ships full text, else ``summary``. Lifted from the retired
+    rss_ingest ``extract_content``; HTML-stripped to plain text."""
+    raw = ""
+    content = getattr(entry, "content", None)
+    if content:
+        first = content[0]
+        raw = (
+            first.get("value")
+            if isinstance(first, dict)
+            else getattr(first, "value", "")
+        ) or ""
+    if not raw:
+        raw = getattr(entry, "summary", "") or ""
+    return _strip_html(raw)[:_MAX_BODY_CHARS]
 
 
 def _entry_pub_date(entry: Any) -> datetime | None:
@@ -134,11 +180,13 @@ def run_news_pass(
     Returns ``{claimed, ok, failed}``: ``claimed`` = feeds polled,
     ``ok`` = new articles minted, ``failed`` = feeds that errored.
 
-    ``parse_feed`` / ``fetch`` are injectable for tests; defaults call
-    feedparser and the live :func:`fetch_article`.
+    By default the article body comes straight from the feed entry
+    (feedparser only — no page fetch, no trafilatura). Pass ``fetch`` to
+    enable full-page extraction instead (opt-in, needs ``[external]``).
+
+    ``parse_feed`` / ``fetch`` are injectable for tests.
     """
     parse = parse_feed or _default_parse_feed
-    fetch_one = fetch or (lambda url: fetch_article(url, embedder=None))
 
     sources = _enabled_sources(store, limit_sources)
     claimed = 0
@@ -169,24 +217,34 @@ def run_news_pass(
             if store.get_cache_entry(provider="news", request_hash=rh) is not None:
                 continue  # already have this article
 
-            try:
-                fr = fetch_one(key)
-            except Exception as exc:
-                log.info("news_poll: fetch failed for %s: %s", key, exc)
-                continue
+            title = (getattr(entry, "title", "") or key).strip()
+            if fetch is not None:
+                # Opt-in full-page extraction.
+                try:
+                    fr = fetch(key)
+                except Exception as exc:
+                    log.info("news_poll: full fetch failed for %s: %s", key, exc)
+                    continue
+                title = (fr.title or title).strip()
+                body_blocks = fr.body_blocks
+                extra_meta = {**(fr.meta or {})}
+            else:
+                # Default: body straight from the feed entry, no page fetch.
+                body = _entry_body(entry) or f"(no body in feed)\n\n{title}\n{key}"
+                body_blocks = article_blocks(body, embedder=None)
+                extra_meta = {"url": key, "via": "rss"}
 
-            title = (fr.title or getattr(entry, "title", "") or key).strip()
             slug = slug_from_text(title, max_len=72) or slug_from_text(key, max_len=72)
             ref, _cache = store.put_cache_entry(
                 kind="news",
                 slug=slug or "news-article",
                 title=title,
-                body_blocks=fr.body_blocks,
+                body_blocks=body_blocks,
                 provider="news",
                 request_hash=rh,
                 ttl_seconds=None,  # pinned — articles are records
                 ref_meta={"url": key, "source": src["source_slug"]},
-                cache_meta={**(fr.meta or {}), "source": src["source_slug"]},
+                cache_meta={**extra_meta, "source": src["source_slug"]},
             )
             apply_tag_ops(
                 store,
