@@ -88,9 +88,9 @@ _SIGIL_KIND: dict[str, tuple[str, bool]] = {
     "§": ("paper", False),
 }
 
-#: A draft chunk handle ``dc<chunk_id>`` with an optional ``-B+A`` reading
-#: window — the group captures the bare ``<chunk_id>`` for the existence probe.
-_DRAFT_DC_RE = re.compile(r"^dc(\d+)(?:-\d+)?(?:\+\d+)?$")
+#: A draft chunk handle ``dc<chunk_id>`` and any trailing relative operator;
+#: group 1 is the bare ``<chunk_id>`` (existence probe), group 2 the operator.
+_DRAFT_DC_RE = re.compile(r"^dc(\d+)(.*)$")
 
 #: Per-(kind, verb) recovery hints for "kind does not support verb" — a
 #: generic "try get(kind=…)" is a dead-end when the right move is a
@@ -1731,15 +1731,20 @@ class PrecisRuntime:
             args["kind"] = kind
 
     def _maybe_route_draft_chunk(self, args: dict[str, Any], ident: str) -> bool:
-        """ADR 0036: route a draft chunk handle ``dc<id>[-B][+A]`` to the
-        draft handler (which has no slug, so it can't go through the generic
-        ``slug~ord`` chunk-handle rewrite). Confirms the base chunk exists so
-        a bogus ``dc999`` falls through to a clean not-found. Returns ``True``
-        if it routed."""
+        """ADR 0036: route a draft chunk handle ``dc<id>`` (optionally with a
+        relative operator ``^`` / ``+N`` / ``-lo..hi``) to the draft handler,
+        which resolves it (drafts have no slug, so they can't go through the
+        generic ``slug~ord`` chunk-handle rewrite). Confirms the base chunk
+        exists so a bogus ``dc999`` falls through to a clean not-found.
+        Returns ``True`` if it routed."""
         if self.store is None:
             return False
         m = _DRAFT_DC_RE.match(ident)
         if m is None:
+            return False
+        # A trailing operator must be a valid relative handle, else this is
+        # not a draft address (``dc42garbage`` falls through).
+        if m.group(2) and handle_registry.parse_relative(ident) is None:
             return False
         explicit = args.get("kind")
         if explicit is not None and explicit != "draft":

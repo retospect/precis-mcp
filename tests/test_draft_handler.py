@@ -7,7 +7,7 @@ import re
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers.draft import DraftHandler
 
 
@@ -152,13 +152,56 @@ def test_reading_window(draft: DraftHandler, hub: Hub) -> None:
         id="nt", chunk_kind="paragraph", text="a\n\nb\n\nc", at={"after": "¶" + title_h}
     )
     order = _order(hub, "nt")  # T, a, b, c
-    mid = order[2].handle  # "b"
-    body = draft.get(id=f"¶{mid}-1+1").body  # 1 before, 1 after → a, b, c
+    mid = order[2].dc  # "b"
+    # ADR 0036 sibling span (supersedes the legacy -B+A window): 1 before,
+    # 1 after → a, b, c.
+    body = draft.get(id=f"{mid}-1..1").body
     assert "a" in body and "b" in body and "c" in body
 
 
 def _handle_of(hub: Hub, text: str) -> str:
     return next(c.handle for c in _order(hub, "nt") if c.text == text)
+
+
+def _dc_of(hub: Hub, text: str) -> str:
+    """The ``dc<id>`` handle of the chunk whose text is ``text``."""
+    return next(c.dc for c in _order(hub, "nt") if c.text == text)
+
+
+def test_relative_navigation_sibling_ancestor_span(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """ADR 0036 relative nav over the draft tree: ^ (ancestor), +N/-N
+    (sibling step), -lo..hi (sibling span)."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    draft.put(id="nt", chunk_kind="heading", text="Intro", at={"after": "¶" + title_h})
+    intro_h = _handle_of(hub, "Intro")
+    draft.put(id="nt", chunk_kind="paragraph", text="p1", at={"into": "¶" + intro_h})
+    draft.put(id="nt", chunk_kind="paragraph", text="p2", at={"into": "¶" + intro_h})
+    draft.put(
+        id="nt", chunk_kind="heading", text="Methods", at={"after": "¶" + intro_h}
+    )
+
+    p1, p2 = _dc_of(hub, "p1"), _dc_of(hub, "p2")
+    intro, methods = _dc_of(hub, "Intro"), _dc_of(hub, "Methods")
+
+    # sibling step
+    assert "p2" in draft.get(id=f"{p1}+1").body
+    assert "p1" in draft.get(id=f"{p2}-1").body
+    # ancestor → enclosing heading
+    assert "Intro" in draft.get(id=f"{p1}^").body
+    # sibling step across headings
+    assert "Methods" in draft.get(id=f"{intro}+1").body
+    # span = reading window among siblings
+    span = draft.get(id=f"{p1}-0..1").body
+    assert "p1" in span and "p2" in span
+    # out of range / no ancestor → clean not-found
+    with pytest.raises(NotFound):
+        draft.get(id=f"{p2}+1")  # p2 is the last child
+    with pytest.raises(NotFound):
+        draft.get(id=f"{_dc_of(hub, 'T')}^")  # root has no enclosing heading
 
 
 def test_toc_view_headings_only_numbered_and_subtree(

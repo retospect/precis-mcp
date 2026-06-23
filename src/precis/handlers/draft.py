@@ -41,22 +41,20 @@ from precis.utils.handles import is_handle
 
 log = logging.getLogger(__name__)
 
-# A draft chunk address + optional reading window (``-B`` before, ``+A``
-# after). Two forms: the ADR 0036 universal handle ``dc<chunk_id>`` and the
-# legacy ADR-0033 ``¶<base58>``.
-_CHUNK_ADDR = re.compile(
-    r"^(?:dc(?P<cid>\d+)|¶(?P<h>[A-Za-z0-9]+))"
-    r"(?:-(?P<b>\d+))?(?:\+(?P<a>\d+))?$"
-)
+# A bare draft chunk address: the ADR 0036 universal handle ``dc<chunk_id>``
+# or the legacy ADR-0033 ``¶<base58>``. Relative navigation (``^`` / ``+N`` /
+# ``-lo..hi``) is parsed separately via ``handle_registry.parse_relative``.
+_CHUNK_ADDR = re.compile(r"^(?:dc(?P<cid>\d+)|¶(?P<h>[A-Za-z0-9]+))$")
 
-#: Recognises a draft chunk address (either form, with optional window) —
-#: used by the surface to route ``get(id='dc42')`` with no ``kind=``.
-_DRAFT_CHUNK_ADDR_RE = re.compile(r"^(?:dc\d+|¶[A-Za-z0-9]+)(?:-\d+)?(?:\+\d+)?$")
+#: Recognises a draft chunk address — bare or with an ADR 0036 relative
+#: operator (``^``/``+``/``-``/``..``) — used to tell a chunk address from a
+#: draft slug in ``get`` / ``search``.
+_DRAFT_CHUNK_ADDR_RE = re.compile(r"^(?:dc\d+|¶[A-Za-z0-9]+)(?:[+\-^].*|\.\..*)?$")
 
 
 def _is_draft_chunk_addr(s: str) -> bool:
-    """True iff ``s`` addresses a draft chunk (``dc<id>`` or ``¶<base58>``,
-    optionally with a ``-B+A`` reading window)."""
+    """True iff ``s`` addresses a draft chunk (``dc<id>`` / ``¶<base58>``,
+    optionally with a relative operator)."""
     return bool(_DRAFT_CHUNK_ADDR_RE.match(s.strip()))
 
 
@@ -704,28 +702,35 @@ class DraftHandler(Handler):
         return out
 
     def _render_chunk(self, addr: str) -> Response:
-        m = _CHUNK_ADDR.match(addr)
-        if m is None:
-            raise BadInput(
-                f"unparseable chunk address {addr!r}",
-                next="id='dc<chunk_id>' or 'dc<chunk_id>-5+3' for a window",
-            )
-        # Either form resolves the base chunk; ``get_draft_chunk`` accepts
-        # ``dc<id>`` and legacy ``¶<base58>`` alike.
-        core = ("dc" + m.group("cid")) if m.group("cid") else m.group("h")
-        before = int(m.group("b") or 0)
-        after = int(m.group("a") or 0)
-        chunk = self.store.get_draft_chunk(core)
-        if chunk is None:
-            raise NotFound(f"draft chunk {addr!r} not found")
-        order = self.store.reading_order(chunk.ref_id)
-        idx = next(
-            (i for i, c in enumerate(order) if c.chunk_id == chunk.chunk_id), None
-        )
-        if idx is None:  # retired — show it alone
-            window = [chunk]
+        # ADR 0036 relative navigation: ``dc<id>^N`` (ancestor), ``+N``/``-N``
+        # (sibling step), ``-lo..hi`` (signed sibling span — the reading
+        # window). Resolved against the draft tree; supersedes the legacy
+        # ``-B+A`` reading-order window.
+        rel = self.store.draft_relative_chunk_ids(addr)
+        if rel is not None:
+            if not rel:
+                raise NotFound(
+                    f"draft chunk {addr!r} resolves to nothing "
+                    "(out of range, or no enclosing heading)"
+                )
+            window = [
+                c
+                for cid in rel
+                if (c := self.store.get_draft_chunk(f"dc{cid}")) is not None
+            ]
         else:
-            window = order[max(0, idx - before) : idx + after + 1]
+            m = _CHUNK_ADDR.match(addr)
+            if m is None:
+                raise BadInput(
+                    f"unparseable chunk address {addr!r}",
+                    next="id='dc<chunk_id>' (or dc<id>^ / +1 / -2..3 to navigate)",
+                )
+            # ``get_draft_chunk`` accepts ``dc<id>`` and legacy ``¶<base58>``.
+            core = ("dc" + m.group("cid")) if m.group("cid") else m.group("h")
+            chunk = self.store.get_draft_chunk(core)
+            if chunk is None:
+                raise NotFound(f"draft chunk {addr!r} not found")
+            window = [chunk]
         # ``sha:`` is a short prefix of the chunk's content_sha — pass it
         # back as ``edit(base_sha=…)`` for an optimistic edit that won't
         # clobber a change that landed since this read. 12 hex chars (48

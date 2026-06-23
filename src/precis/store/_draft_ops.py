@@ -264,6 +264,61 @@ class DraftMixin:
             meta=dict(row[7] or {}),
         )
 
+    def draft_relative_chunk_ids(self, addr: str) -> list[int] | None:
+        """Resolve an ADR 0036 relative draft handle to target chunk id(s).
+
+        ``dc<id>^N`` walks ``N`` ancestors (via ``parent_chunk_id``);
+        ``dc<id>+N`` / ``-N`` steps ``N`` siblings (ordered by ``pos`` under
+        the same parent); ``dc<id>-lo..hi`` is the signed sibling span (the
+        reading-context window). Returns the target ids (one for a
+        step/ancestor, the contiguous sibling run for a span), an **empty
+        list** when the target is out of range / past the root, or ``None``
+        when ``addr`` is not a relative draft handle (so the caller can try
+        the absolute path).
+        """
+        parsed = handle_registry.parse_relative(addr)
+        if parsed is None:
+            return None
+        kind, _is_chunk, chunk_id, op = parsed
+        if kind != "draft":
+            return None
+        base = self.get_draft_chunk(
+            handle_registry.format_handle("draft", chunk_id, chunk=True)
+        )
+        if base is None:
+            return []
+        op_kind, *rest = op
+        with self.pool.connection() as conn:
+            if op_kind == "ancestor":
+                (n,) = rest
+                cur = base.chunk_id
+                for _ in range(n):
+                    row = conn.execute(
+                        "SELECT parent_chunk_id FROM chunks WHERE chunk_id = %s",
+                        (cur,),
+                    ).fetchone()
+                    if row is None or row[0] is None:
+                        return []  # climbed past the document root
+                    cur = int(row[0])
+                return [cur]
+            siblings = self._children(conn, base.ref_id, base.parent_chunk_id)
+        idx = next(
+            (i for i, c in enumerate(siblings) if c.chunk_id == base.chunk_id), None
+        )
+        if idx is None:
+            return []
+        if op_kind == "step":
+            (n,) = rest
+            target = idx + n
+            return [siblings[target].chunk_id] if 0 <= target < len(siblings) else []
+        # span: signed offsets around the anchor, clamped to the sibling run.
+        lo_off, hi_off = rest
+        lo = max(0, idx + lo_off)
+        hi = min(len(siblings) - 1, idx + hi_off)
+        if lo > hi:
+            return []
+        return [siblings[i].chunk_id for i in range(lo, hi + 1)]
+
     def _children(
         self,
         conn: psycopg.Connection,
