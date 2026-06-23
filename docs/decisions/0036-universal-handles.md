@@ -1,6 +1,8 @@
 # ADR 0036 — Universal handles: one address system for every record and chunk
 
-- **Status**: Draft / proposed (2026-06-23) — design plan; not yet implemented
+- **Status**: Accepted (2026-06-23) — the **Final design** (computed,
+  id-encoded) below is implemented; the design-history sections that follow
+  it describe a superseded intermediate scheme, kept for the record.
 - **Deciders**: Reto + agent
 - **Builds on**:
   - [ADR 0006 — Tri-identifier scheme](./0006-tri-identifier-scheme.md)
@@ -17,6 +19,49 @@
     This ADR is the realisation of 0033's "Future work → Universal terse
     handles", but it goes **further than "additive"** — it *replaces* the
     per-kind address forms rather than coexisting with them.
+
+## Final design — id-encoded, computed (revises the scheme below)
+
+> The sections below record the *design history* (a random, Crockford-base32,
+> stored-and-minted, then briefly sigil-marked handle). We simplified to a
+> bare, id-encoded, **computed** handle — strictly less machinery. This section
+> is the authoritative current design.
+
+**Anatomy:** `<2-char type code><raw id>` — e.g. `pa5` (paper, `ref_id` 5),
+`pc10` (paper chunk, `chunk_id` 10), `tg42` (tag, `tag_id` 42). Bare ASCII.
+
+- **Computed, not stored.** The handle is a pure function of `(kind, id)`. No
+  handle column, no minting, no backfill, no NOT NULL, **no data migration**.
+  `resolve()` decodes; emit formats. (The `chunks.handle` / `refs.handle`
+  columns added by earlier iterations become unused — drop or leave nullable.)
+- **Body = the row's decimal primary key:** `ref_id` for the 21 refs-backed
+  kinds, `chunk_id` for their chunks, `tag_id` for `tag` (the `tags` table,
+  routed by prefix). **No Crockford** — decimal digits are already unambiguous,
+  so base32 only bought compactness, not worth the encode/decode. Variable
+  length, no padding; **self-delimiting** (letters = type, then digits = id).
+- **Not rows, folded in by prefix:** `skill` (`sk`) and `python` (`py`) are
+  *file-backed* — body is the slug/path, and `resolve()` routes `sk`/`py` to a
+  file lookup. `random` is a stateless generator → **no handle**.
+- **No sigil.** Recognition is the 2-char code over the known registry (a
+  lookup / `\b(pa|pc|…)\d+\b` regex), confirmed by `resolve()`. A distinctive
+  Unicode marker (`🄿` / boxed glyphs) was considered for at-a-glance grep but
+  rejected: astral-codepoint token cost, transport fragility, untypeable, and
+  poor terminal rendering. Any badge styling is a render-time concern, not the
+  canonical handle.
+- **`resolve()`** = 2-char prefix selects table+kind → `int(body)` PK lookup
+  (or slug/path lookup for `sk`/`py`) → validate the prefix matches the row's
+  kind (typo guard). Per-table PK; the prefix disambiguates → **no shared
+  index**.
+- **Relative grammar unchanged** (`+N`/`-N` sibling, `^N` ancestor, `lo..hi`
+  span) — resolved against current structure, off the computed anchor.
+
+**Supersedes, from the sections below:** the random body, Crockford base32, the
+stored handle column, mint-on-insert, the `chunk_handles` backfill pass, and the
+entire NOT-NULL / eager-mint / backfill discussion — all unnecessary once the
+handle is `(kind, id)` computed. **Code impact:** rewrite the registry
+(id-encode, drop the alphabet/minter), `resolve()` (decode + PK), and emit
+(compute); delete the `chunk_handles` pass + mint-on-insert; the merged
+stored-handle columns go unused.
 
 ## Context
 

@@ -8,6 +8,31 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-23 — ADR 0036 universal handles rebased to computed, id-encoded)
+
+- The universal-handle scheme (ADR 0036) is now **computed, not stored**. A
+  handle is a pure function of `(kind, id)` — `<2-char type code><decimal
+  primary key>`, e.g. `pa5` (paper `ref_id` 5), `pc10` (paper chunk
+  `chunk_id` 10), `me4217` (memory). No handle column, no minting, no
+  backfill, no data migration. `handle_registry.format_handle` encodes;
+  `Store.resolve_handle` decodes the prefix to a table + kind and does a
+  primary-key lookup, validating the decoded kind against the row's actual
+  kind (a typo guard, so `td5` only resolves if id 5 really is a todo). This
+  **supersedes** the briefly-merged random-Crockford-base32, stored-and-minted
+  variant from earlier in this branch.
+  - `handle_registry` rewritten: dropped the alphabet + random minter; added
+    `format_handle` / `try_format` / `parse`. `skill` (`sk`) / `python` (`py`)
+    are file-backed and `tag` (`tg`) lives in its own table — they carry codes
+    for registry completeness but keep their existing `kind` + slug/id
+    addressing (folding them into `resolve_handle` is a later slice). `random`
+    is stateless and has no handle.
+  - Search emitters (`utils/search_merge.py`) compute the per-hit handle from
+    `(kind, chunk_id|ref_id)` instead of reading a stored column.
+  - Deleted the `chunk_handles` backfill worker + its registration; removed
+    the mint-on-insert path in `store.insert_ref`. The merged `refs.handle`
+    column (migration `0036_ref_handle.sql`) is now vestigial — left nullable,
+    never read or written (forward-only migrations, ADR 0005).
+
 ### Changed (2026-06-23 — planner prose style: no em-dashes, no emphasis, short-form abbrevs)
 
 - The **planner contract** (`planner_prompt`) now carries the same prose-style

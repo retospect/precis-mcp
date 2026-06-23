@@ -1,9 +1,10 @@
-"""ADR 0036 handle persistence + surface dispatch — DB-backed.
+"""ADR 0036 handle resolution + surface dispatch — DB-backed.
 
-Proves the resolution slice end-to-end: every new ref is minted a handle
-(``insert_ref``), the store resolves it back (``resolve_handle``), and the
-verb surface infers ``kind`` from a handle id with no ``kind=`` — routing
-identically to the explicit ``kind=`` path.
+Handles are *computed*, not stored: ``<2-char code><decimal pk>``. This
+proves the resolution slice end-to-end — the store decodes a handle back
+to its ref/chunk (``resolve_handle``), and the verb surface infers
+``kind`` from a handle id with no ``kind=``, routing identically to the
+explicit ``kind=`` path.
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ import pytest
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.utils import handle_registry
-from precis.workers import chunk_handles
 
 # The full-hub fixture (runtime_with_store) boots every handler, which needs
 # the [paper] extra (pysbd). Absent on host; present in the container gate.
@@ -25,26 +25,9 @@ _NEEDS_PAPER_EXTRA = pytest.mark.skipif(
 )
 
 
-def _handle_of(store: Store, ref_id: int) -> str | None:
-    with store.pool.connection() as c:
-        row = c.execute(
-            "SELECT handle FROM refs WHERE ref_id = %s", (ref_id,)
-        ).fetchone()
-    return row[0] if row is not None else None
-
-
-def test_insert_ref_mints_a_well_formed_typed_handle(store: Store) -> None:
-    ref = store.insert_ref(kind="memory", slug=None, title="handle test")
-    h = _handle_of(store, ref.id)
-    assert h is not None
-    assert handle_registry.is_well_formed(h)
-    assert h[:2] == handle_registry.KIND_CODES["memory"]  # 'me'
-
-
 def test_resolve_handle_numeric_kind(store: Store) -> None:
     ref = store.insert_ref(kind="memory", slug=None, title="resolve me")
-    h = _handle_of(store, ref.id)
-    assert h is not None
+    h = handle_registry.format_handle("memory", ref.id)  # 'me<ref_id>'
     resolved = store.resolve_handle(h)
     assert resolved is not None
     assert resolved.kind == "memory"
@@ -54,25 +37,32 @@ def test_resolve_handle_numeric_kind(store: Store) -> None:
 
 def test_resolve_handle_slug_kind(store: Store) -> None:
     ref = store.insert_ref(kind="oracle", slug="adr36-oracle", title="o")
-    h = _handle_of(store, ref.id)
-    assert h is not None
-    assert h[:2] == handle_registry.KIND_CODES["oracle"]  # 'or'
+    h = handle_registry.format_handle("oracle", ref.id)  # 'or<ref_id>'
+    assert h[:2] == handle_registry.KIND_CODES["oracle"]
     resolved = store.resolve_handle(h)
     assert resolved is not None
     assert resolved.public_id == "adr36-oracle"  # slug kind → slug
 
 
-def test_resolve_handle_rejects_unminted_legacy_and_chunk(store: Store) -> None:
-    assert store.resolve_handle("me0000000") is None  # well-formed but unminted
+def test_resolve_handle_kind_mismatch_is_rejected(store: Store) -> None:
+    # A memory's id under the *todo* code must not resolve — the prefix
+    # claims a kind the row doesn't have (typo guard).
+    ref = store.insert_ref(kind="memory", slug=None, title="mismatch")
+    wrong = handle_registry.format_handle("todo", ref.id)  # 'td<ref_id>'
+    assert store.resolve_handle(wrong) is None
+
+
+def test_resolve_handle_rejects_unknown_legacy_and_unresolvable(store: Store) -> None:
+    assert store.resolve_handle("me0") is None  # no ref_id 0
     assert store.resolve_handle("miller23") is None  # legacy slug
-    assert store.resolve_handle("dc4m8p1rz") is None  # chunk handle (reserved)
+    assert store.resolve_handle("tg42") is None  # tag code (not refs-backed)
+    assert store.resolve_handle("pc999999") is None  # no such chunk
 
 
-def test_resolve_handle_is_case_insensitive(store: Store) -> None:
+def test_resolve_handle_folds_prefix_case(store: Store) -> None:
     ref = store.insert_ref(kind="memory", slug=None, title="fold")
-    h = _handle_of(store, ref.id)
-    assert h is not None
-    assert store.resolve_handle(h.upper()) is not None  # Crockford case-fold
+    h = handle_registry.format_handle("memory", ref.id)
+    assert store.resolve_handle(h.upper()) is not None  # 'ME5' → memory
 
 
 @_NEEDS_PAPER_EXTRA
@@ -80,8 +70,7 @@ def test_surface_get_by_handle_routes_like_explicit_kind(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
     ref = store.insert_ref(kind="memory", slug=None, title="dispatch eq")
-    h = _handle_of(store, ref.id)
-    assert h is not None
+    h = handle_registry.format_handle("memory", ref.id)
     # get with NO kind= — the handle self-identifies its kind.
     via_handle = runtime_with_store.dispatch("get", {"id": h})
     via_explicit = runtime_with_store.dispatch(
@@ -90,7 +79,7 @@ def test_surface_get_by_handle_routes_like_explicit_kind(
     assert via_handle == via_explicit
 
 
-# --- chunk handles (ADR 0036 backfill pass + resolution) -----------------
+# --- chunk handles (ADR 0036 — computed from chunk_id) -------------------
 
 
 def _insert_chunk(store: Store, ref_id: int, *, ord_: int = 0) -> int:
@@ -104,52 +93,29 @@ def _insert_chunk(store: Store, ref_id: int, *, ord_: int = 0) -> int:
     return int(row[0])
 
 
-def _chunk_handle(store: Store, chunk_id: int) -> str | None:
-    with store.pool.connection() as c:
-        row = c.execute(
-            "SELECT handle FROM chunks WHERE chunk_id = %s", (chunk_id,)
-        ).fetchone()
-    return row[0] if row is not None else None
-
-
-def test_chunk_handle_mint_and_resolve(store: Store) -> None:
+def test_chunk_handle_resolves_to_chunk_and_owning_ref(store: Store) -> None:
     ref = store.insert_ref(kind="paper", slug="adr36-chunk-paper", title="p")
     chunk_id = _insert_chunk(store, ref.id)
-    assert _chunk_handle(store, chunk_id) is None  # precondition
-    # Mint deterministically on this chunk (avoids the pass's chunk_id-ASC
-    # claim ordering, which wouldn't reach a freshly-inserted row).
-    with store.pool.connection() as c:
-        assert chunk_handles._mint_one(c, chunk_id, "paper") is True
-    h = _chunk_handle(store, chunk_id)
-    assert h is not None
-    assert handle_registry.is_well_formed(h)
+    h = handle_registry.format_handle("paper", chunk_id, chunk=True)  # 'pc<id>'
     assert h[:2] == handle_registry.CHUNK_CODES["paper"]  # 'pc'
     resolved = store.resolve_handle(h)
     assert resolved is not None
     assert resolved.kind == "paper"
     assert resolved.chunk_id == chunk_id
     assert resolved.ref_id == ref.id
+    assert resolved.chunk_ord == 0
     assert resolved.public_id == "adr36-chunk-paper"  # owning ref's slug
 
 
-def test_chunk_handles_pass_is_healthy(store: Store) -> None:
-    # Ensure there's at least one handle-less corpus chunk, then drain a
-    # batch; assert the pass succeeds (every claimed chunk minted). No
-    # assertion on *which* chunks — claim order is chunk_id ASC.
-    ref = store.insert_ref(kind="paper", slug="adr36-pass-health", title="p")
-    _insert_chunk(store, ref.id)
-    r = chunk_handles.run_chunk_handles_pass(store, batch_size=200)
-    assert r["failed"] == 0
-    assert r["ok"] == r["claimed"]
+def test_chunk_handle_kind_mismatch_is_rejected(store: Store) -> None:
+    # A paper chunk's id under the *draft* chunk code must not resolve.
+    ref = store.insert_ref(kind="paper", slug="adr36-mismatch", title="p")
+    chunk_id = _insert_chunk(store, ref.id)
+    wrong = handle_registry.format_handle("draft", chunk_id, chunk=True)  # 'dc<id>'
+    assert store.resolve_handle(wrong) is None
 
 
-def test_pass_excludes_draft() -> None:
-    # Drafts keep their ADR-0033 base-58 handle until the wipe.
-    assert "draft" not in chunk_handles._KINDS
-    assert "paper" in chunk_handles._KINDS
-
-
-def test_render_emits_handle_replacing_legacy() -> None:
+def test_render_prefers_computed_uhandle_over_legacy() -> None:
     # Pure render test (no DB): a hit with a universal handle emits the
     # handle and NOT the legacy slug~pos (ADR 0036 cutover).
     from precis.utils.search_merge import SearchHit, _render_hit
@@ -161,13 +127,13 @@ def test_render_emits_handle_replacing_legacy() -> None:
         preview="p",
         slug="miller23",
         pos=4,
-        uhandle="pc4m8p1r2",
+        uhandle="pc40",
     )
     out = _render_hit(1, hit, show_label=False)
-    assert "pc4m8p1r2" in out  # universal handle emitted
-    assert "miller23~4" not in out  # legacy form removed from output
+    assert "pc40" in out  # universal handle emitted
+    assert "miller23~4" not in out  # legacy form not emitted
 
-    # No handle yet (un-backfilled) → header is legacy-only, no appended handle.
+    # No uhandle (code-less kind) → header falls back to legacy.
     bare = _render_hit(
         1,
         SearchHit(score=1.0, kind="paper", title="t", preview="p", slug="x", pos=0),
@@ -177,16 +143,32 @@ def test_render_emits_handle_replacing_legacy() -> None:
     assert header == "## 1. x~0"
 
 
+def test_block_emitter_computes_chunk_handle() -> None:
+    # The block→SearchHit adapter computes uhandle from (kind, chunk_id).
+    from precis.utils.search_merge import block_hits_to_search_hits
+
+    class _Block:
+        id = 40
+        pos = 4
+        text = "body"
+        keywords: list[str] = []
+
+    class _Ref:
+        id = 7
+        slug = "miller23"
+        title = "t"
+
+    hits = block_hits_to_search_hits([(_Block(), _Ref(), 1.0)], kind="paper")
+    assert hits[0].uhandle == "pc40"
+
+
 @_NEEDS_PAPER_EXTRA
 def test_surface_get_chunk_handle_routes_to_selector(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
     ref = store.insert_ref(kind="paper", slug="adr36-chunk-surface", title="p")
     chunk_id = _insert_chunk(store, ref.id, ord_=0)
-    with store.pool.connection() as c:
-        chunk_handles._mint_one(c, chunk_id, "paper")
-    h = _chunk_handle(store, chunk_id)
-    assert h is not None
+    h = handle_registry.format_handle("paper", chunk_id, chunk=True)
     # get(id='pc…') with no kind= → translated to the `slug~ord` selector,
     # returning the chunk identically to the explicit selector.
     via_handle = runtime_with_store.dispatch("get", {"id": h})

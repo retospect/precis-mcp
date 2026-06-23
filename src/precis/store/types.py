@@ -179,9 +179,6 @@ class Ref:
     # 2 = cron tick spawns; 3..10 share the 1/N strategic rotation. See
     # docs/design/todo-tree-plan.md for the spawn-default table.
     prio: int | None = None
-    # ADR 0036 universal handle; NULL until backfilled (mint-on-insert sets it
-    # for new refs, the ref backfill pass fills pre-migration rows).
-    handle: str | None = None
 
     @property
     def public_id(self) -> str:
@@ -228,7 +225,6 @@ class Block:
     # fixtures that construct Blocks by hand don't all need updates.
     chunk_kind: str = "paragraph"
     keywords: list[str] | None = None  # NULL until the chunk_keywords worker runs
-    handle: str | None = None  # ADR 0036 universal chunk handle; NULL until backfilled
 
 
 @dataclass(frozen=True, slots=True)

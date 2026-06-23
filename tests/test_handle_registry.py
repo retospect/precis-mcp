@@ -1,8 +1,12 @@
-"""ADR 0036 handle registry — totality + format guards.
+"""ADR 0036 handle registry — totality + computed-format guards.
 
 The totality test is the point: a new persistent-ref kind added without a
 2-char code fails here, so coverage is enforced by CI, not manual review
 (``news``/``message``/``cron`` all slipped through manual lists).
+
+Handles are *computed*, not stored: ``<2-char code><decimal pk>`` (e.g.
+``pa5``, ``pc10``, ``tg42``). No alphabet, no minter — :func:`format_handle`
+encodes, :func:`parse` decodes.
 """
 
 from __future__ import annotations
@@ -14,11 +18,12 @@ import pytest
 from precis.utils import handle_registry as hr
 
 # Mirror of the addressable persistent-ref kinds registered in
-# ``dispatch.boot()`` (the 25 records; providers web/youtube/wikipedia/
-# semanticscholar/perplexity-* and tools calc/math/provenance are
-# addressed by URL/query/compute, not handles). TODO: derive from the
-# live hub registry so this can never drift, once a lightweight kind-list
-# accessor exists that doesn't boot the heavy handler graph.
+# ``dispatch.boot()`` (providers web/youtube/wikipedia/semanticscholar/
+# perplexity-* and stateless tools calc/math/provenance/random are
+# addressed by URL/query/compute, not handles). ``random`` is a stateless
+# generator — no row, no handle. TODO: derive from the live hub registry
+# so this can never drift, once a lightweight kind-list accessor exists
+# that doesn't boot the heavy handler graph.
 EXPECTED_PERSISTENT_KINDS = frozenset(
     {
         "paper",
@@ -36,7 +41,6 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "finding",
         "citation",
         "flashcard",
-        "random",
         "todo",
         "job",
         "alert",
@@ -69,20 +73,17 @@ def test_chunk_codes_only_for_known_kinds() -> None:
     assert set(hr.CHUNK_CODES) <= set(hr.KIND_CODES)
 
 
-def test_alphabet_is_crockford32() -> None:
-    assert len(hr.CROCKFORD32) == 32
-    assert "i" not in hr.CROCKFORD32 and "l" not in hr.CROCKFORD32
-    assert "o" not in hr.CROCKFORD32 and "u" not in hr.CROCKFORD32
+def test_format_handle_is_code_plus_decimal_pk() -> None:
+    assert hr.format_handle("paper", 5) == "pa5"
+    assert hr.format_handle("memory", 4217) == "me4217"
+    assert hr.format_handle("paper", 10, chunk=True) == "pc10"
+    assert hr.format_handle("tag", 42) == "tg42"
 
 
-def test_mint_is_well_formed_and_typed() -> None:
-    h = hr.mint("paper")
-    assert hr.is_well_formed(h)
-    assert len(h) == hr.HANDLE_LEN
-    assert hr.kind_for_code(h[:2]) == ("paper", False)
-
-    c = hr.mint("draft", chunk=True)
-    assert hr.kind_for_code(c[:2]) == ("draft", True)
+def test_try_format_is_none_for_codeless_kind_or_id() -> None:
+    assert hr.try_format("websearch", 5) is None  # provider, no code
+    assert hr.try_format("paper", None) is None
+    assert hr.try_format("paper", 5) == "pa5"
 
 
 def test_round_trip_code_lookup() -> None:
@@ -94,19 +95,44 @@ def test_round_trip_code_lookup() -> None:
         assert hr.kind_for_code(code) == (kind, True)
 
 
-def test_normalize_folds_case_and_body_confusables_but_not_prefix() -> None:
-    # 'ci' (citation) prefix keeps its 'i'; body i/l -> 1, o -> 0.
-    assert hr.normalize("CI4M8P1RZ") == "ci4m8p1rz"
-    assert hr.normalize("paILO2345") == "pa1102345"
+def test_parse_decodes_refs_backed_decimal_handles() -> None:
+    assert hr.parse("pa5") == ("paper", False, 5)
+    assert hr.parse("me4217") == ("memory", False, 4217)
+    assert hr.parse("pc10") == ("paper", True, 10)
+    # Prefix is case-folded; the decimal body has no case.
+    assert hr.parse("ME5") == ("memory", False, 5)
+
+
+def test_parse_rejects_file_backed_and_other_table_codes() -> None:
+    # skill/python are file-backed, tag lives in its own table — they
+    # carry codes for registry completeness but aren't decimal handles
+    # ``parse`` resolves (they keep their kind+id addressing).
+    assert hr.parse("sktoc") is None
+    assert hr.parse("pysome.module") is None
+    assert hr.parse("tg42") is None
+
+
+def test_parse_rejects_junk() -> None:
+    assert hr.parse("miller23") is None  # legacy slug
+    assert hr.parse("zz5") is None  # unknown code
+    assert hr.parse("pa") is None  # no body
+    assert hr.parse("paxyz") is None  # non-digit body
+    assert hr.parse("¶YP377G") is None  # legacy draft sigil handle
+
+
+def test_is_well_formed_tracks_parse() -> None:
+    assert hr.is_well_formed("pa5")
+    assert hr.is_well_formed("pc10")
+    assert not hr.is_well_formed("miller23")
+    assert not hr.is_well_formed("tg42")
+    assert not hr.is_well_formed("zz5")
+
+
+def test_normalize_folds_prefix_case_only() -> None:
+    assert hr.normalize("ME5") == "me5"
+    assert hr.normalize("  pa42 ") == "pa42"
     # idempotent
-    assert hr.normalize(hr.normalize("co0O0o123")) == hr.normalize("co0O0o123")
-
-
-def test_is_well_formed_rejects_junk() -> None:
-    assert not hr.is_well_formed("miller23")  # legacy slug
-    assert not hr.is_well_formed("zz4m8p1rz")  # unknown code
-    assert not hr.is_well_formed("pa4m8p1r")  # too short
-    assert not hr.is_well_formed("pa4m8p1rzz")  # too long
+    assert hr.normalize(hr.normalize("CO123")) == hr.normalize("CO123")
 
 
 def test_unknown_kind_and_code_raise() -> None:

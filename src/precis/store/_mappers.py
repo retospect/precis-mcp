@@ -204,9 +204,6 @@ def _row_to_block(row: tuple) -> Block:
     keywords = row[13] if len(row) > 13 else None
     if keywords is not None and not isinstance(keywords, list):
         keywords = list(keywords)
-    # ADR 0036: universal chunk handle appended at index 14. Optional
-    # (len > 14) so projections that don't select it map to handle=None.
-    handle = row[14] if len(row) > 14 else None
     return Block(
         id=row[0],
         ref_id=row[1],
@@ -221,7 +218,6 @@ def _row_to_block(row: tuple) -> Block:
         updated_at=row[10],
         chunk_kind=str(chunk_kind),
         keywords=keywords,
-        handle=handle,
     )
 
 
@@ -247,8 +243,7 @@ _CHUNKS_COLS = (
     "   WHERE ct.chunk_id = chunks.chunk_id AND t.namespace = 'DENSITY' "
     "   LIMIT 1) AS density, "
     "chunks.meta, chunks.created_at, chunks.created_at AS updated_at, "
-    "chunks.section_path, chunks.chunk_kind, chunks.keywords, "
-    "chunks.handle"
+    "chunks.section_path, chunks.chunk_kind, chunks.keywords"
 )
 _CHUNKS_COLS_ALIASED = (
     "c.chunk_id AS id, c.ref_id, c.ord AS pos, "
@@ -259,14 +254,13 @@ _CHUNKS_COLS_ALIASED = (
     "   WHERE ct.chunk_id = c.chunk_id AND t.namespace = 'DENSITY' "
     "   LIMIT 1) AS density, "
     "c.meta, c.created_at, c.created_at AS updated_at, "
-    "c.section_path, c.chunk_kind, c.keywords, "
-    "c.handle"
+    "c.section_path, c.chunk_kind, c.keywords"
 )
 #: Column count produced by the above projections. Slicing callers
 #: (search / random / list-blocks combined with refs) reference this
 #: constant rather than a hard-coded ``12`` so adding columns is a
 #: one-line change at the projection site.
-_CHUNKS_COLS_LEN = 15  # ADR 0036: + chunks.handle appended at index 14
+_CHUNKS_COLS_LEN = 14
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +302,7 @@ _REFS_COLS = (
     "retraction_url, retraction_checked_at, "
     "pdf_sha256, pdf_pages::text AS pdf_pages, pdf_role, "
     "auto_refresh_days, refreshed_at, "
-    "parent_id, prio, handle"
+    "parent_id, prio"
 )
 _REFS_COLS_ALIASED = (
     "r.ref_id AS id, "
@@ -322,13 +316,13 @@ _REFS_COLS_ALIASED = (
     "r.retraction_url, r.retraction_checked_at, "
     "r.pdf_sha256, r.pdf_pages::text AS pdf_pages, r.pdf_role, "
     "r.auto_refresh_days, r.refreshed_at, "
-    "r.parent_id, r.prio, r.handle"
+    "r.parent_id, r.prio"
 )
 #: Column count produced by ``_REFS_COLS`` / ``_REFS_COLS_ALIASED``.
 #: Joined-projection slicers (chunks ⋈ refs in ``_blocks_ops``)
 #: reference this so adding a column to the projection list above
 #: doesn't silently drift the downstream row layout.
-_REFS_COLS_LEN = 28  # ADR 0036: + refs.handle appended at index 27
+_REFS_COLS_LEN = 27
 
 
 def _row_to_ref(row: tuple) -> Ref:
@@ -395,7 +389,6 @@ def _row_to_ref(row: tuple) -> Ref:
         refreshed_at=row[24],
         parent_id=row[25],
         prio=row[26],
-        handle=row[27] if len(row) > 27 else None,
     )
 
 

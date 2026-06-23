@@ -39,7 +39,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from psycopg import Connection
-from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
@@ -186,23 +185,9 @@ class RefsMixin:
             row = c.execute(insert_sql, insert_params).fetchone()
             assert row is not None
             ref_id = int(row[0])
-            # ADR 0036: mint a universal handle for kinds that carry a type
-            # code (every persistent record kind does). Uniqueness is
-            # enforced by ``refs_handle_key``; retry under a savepoint on
-            # the (cosmically rare) 34-billion-space clash. A kind without
-            # a code just stays handle-NULL — additive, never fatal.
-            if kind in handle_registry.KIND_CODES:
-                for _ in range(8):
-                    candidate = handle_registry.mint(kind)
-                    try:
-                        with c.transaction():
-                            c.execute(
-                                "UPDATE refs SET handle = %s WHERE ref_id = %s",
-                                (candidate, ref_id),
-                            )
-                        break
-                    except UniqueViolation:
-                        continue
+            # ADR 0036: no handle minting — a universal handle is computed
+            # from ``(kind, ref_id)`` on demand (handle_registry.format_handle),
+            # never stored.
             if slug is not None:
                 # Routing decision (ADR 0008 + plan): every slug-addressed
                 # kind uses id_kind='cite_key' uniformly so the
@@ -234,34 +219,40 @@ class RefsMixin:
     ) -> ResolvedHandle | None:
         """Resolve a universal handle (ADR 0036) to its ref or chunk.
 
-        Routes on the 2-char type code: a record code resolves to a ref, a
-        chunk code resolves to a chunk (``chunk_id`` set). Returns ``None``
-        for an ill-formed or unknown/deleted handle, so the caller falls
-        through to legacy id resolution untouched. (The legacy ADR-0033
-        draft base-58 chunk handles are 6-char, so they are not well-formed
-        under this scheme and never reach here — they keep the ``¶`` path.)
+        The handle is computed, not stored: its 2-char type code selects a
+        table + kind and the decimal body is the row's primary key. A record
+        code (``me5``) does a ``refs`` PK lookup; a chunk code (``pc10``) a
+        ``chunks`` PK lookup (``chunk_id`` / ``chunk_ord`` set). The decoded
+        kind is validated against the row's actual kind (a typo guard, e.g.
+        ``td5`` must really be a todo). Returns ``None`` for anything that is
+        not a well-formed, live, kind-matching handle, so the caller falls
+        through to legacy id resolution untouched — including the file-backed
+        (``sk``/``py``) and other-table (``tg``) codes, the legacy ADR-0033
+        draft ``¶`` chunk handles, plain slugs, and bare numerics.
         """
-        normalized = handle_registry.normalize(handle)
-        if not handle_registry.is_well_formed(normalized):
+        parsed = handle_registry.parse(handle)
+        if parsed is None:
             return None
-        _kind, is_chunk = handle_registry.kind_for_code(normalized[:2])
+        kind, is_chunk, pk = parsed
         if is_chunk:
-            return self._resolve_chunk_handle(normalized, conn=conn)
+            return self._resolve_chunk_handle(pk, kind, conn=conn)
         sql = (
-            "SELECT r.ref_id, r.kind, "
+            "SELECT r.kind, "
             "(SELECT id_value FROM ref_identifiers ri "
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
             " LIMIT 1) AS slug "
-            "FROM refs r WHERE r.handle = %s AND r.deleted_at IS NULL"
+            "FROM refs r WHERE r.ref_id = %s AND r.deleted_at IS NULL"
         )
 
         def _do(c: Connection) -> ResolvedHandle | None:
-            row = c.execute(sql, (normalized,)).fetchone()
+            row = c.execute(sql, (pk,)).fetchone()
             if row is None:
                 return None
-            ref_id, kind, slug = int(row[0]), str(row[1]), row[2]
-            public_id = slug if slug is not None else str(ref_id)
-            return ResolvedHandle(ref_id=ref_id, kind=kind, public_id=public_id)
+            row_kind, slug = str(row[0]), row[1]
+            if row_kind != kind:  # prefix/kind mismatch — not this handle
+                return None
+            public_id = slug if slug is not None else str(pk)
+            return ResolvedHandle(ref_id=pk, kind=row_kind, public_id=public_id)
 
         if conn is not None:
             return _do(conn)
@@ -269,33 +260,39 @@ class RefsMixin:
             return _do(c)
 
     def _resolve_chunk_handle(
-        self, normalized: str, *, conn: Connection | None = None
+        self, chunk_id: int, kind: str, *, conn: Connection | None = None
     ) -> ResolvedHandle | None:
-        """Resolve a (well-formed) chunk handle to its chunk + owning ref."""
+        """Resolve a chunk handle (``chunk_id`` PK) to its chunk + owning ref.
+
+        ``kind`` is the kind decoded from the chunk code; we confirm the
+        owning ref's kind matches so e.g. ``pc10`` only resolves when chunk
+        10 really belongs to a paper.
+        """
         sql = (
-            "SELECT c.chunk_id, c.ref_id, c.ord, r.kind, "
+            "SELECT c.ref_id, c.ord, r.kind, "
             "(SELECT id_value FROM ref_identifiers ri "
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
             " LIMIT 1) AS slug "
             "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
-            "WHERE c.handle = %s AND r.deleted_at IS NULL"
+            "WHERE c.chunk_id = %s AND r.deleted_at IS NULL"
         )
 
         def _do(c: Connection) -> ResolvedHandle | None:
-            row = c.execute(sql, (normalized,)).fetchone()
+            row = c.execute(sql, (chunk_id,)).fetchone()
             if row is None:
                 return None
-            chunk_id, ref_id, ord_, kind, slug = (
+            ref_id, ord_, row_kind, slug = (
                 int(row[0]),
                 int(row[1]),
-                int(row[2]),
-                str(row[3]),
-                row[4],
+                str(row[2]),
+                row[3],
             )
+            if row_kind != kind:  # prefix/kind mismatch — not this handle
+                return None
             public_id = slug if slug is not None else str(ref_id)
             return ResolvedHandle(
                 ref_id=ref_id,
-                kind=kind,
+                kind=row_kind,
                 public_id=public_id,
                 chunk_id=chunk_id,
                 chunk_ord=ord_,

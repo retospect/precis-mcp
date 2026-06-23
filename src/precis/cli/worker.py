@@ -52,7 +52,6 @@ HandlerKey = Literal[
     "embed",
     "summarize",
     "chunk_keywords",
-    "chunk_handles",
     "chase",
     "fetch",
     "gp_fetch",
@@ -125,7 +124,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "embed",
             "summarize",
             "chunk_keywords",
-            "chunk_handles",
             "chase",
             "fetch",
             "gp_fetch",
@@ -290,7 +288,6 @@ def run(args: argparse.Namespace) -> None:
                 "embed",
                 "summarize",
                 "chunk_keywords",
-                "chunk_handles",
                 "chase",
                 "fetch",
                 "gp_fetch",
@@ -391,24 +388,6 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_chunk_keywords_pass)
-
-        # Chunk-handles pass (ADR 0036). Lazy backfill that mints a
-        # universal handle for chunks lacking one (addressable kinds, draft
-        # excluded). No embedder / LLM; drains chunks.handle IS NULL.
-        if _pass_enabled("chunk_handles"):
-            from precis.workers.chunk_handles import run_chunk_handles_pass
-            from precis.workers.runner import BatchResult as _BatchResult
-
-            def _chunk_handles_pass(batch_size: int) -> _BatchResult:
-                r = run_chunk_handles_pass(store, batch_size=batch_size)
-                return _BatchResult(
-                    handler="chunk_handles",
-                    claimed=r["claimed"],
-                    ok=r["ok"],
-                    failed=r["failed"],
-                )
-
-            ref_passes.append(_chunk_handles_pass)
 
         # Finding-chase pass — same sibling-worker pattern, but for
         # STATUS:tracing findings. Default-off LLM hooks via

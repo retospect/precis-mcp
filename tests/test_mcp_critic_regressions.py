@@ -261,6 +261,7 @@ def test_cross_kind_search_forwards_exclude_to_supporting_kinds(
     """
     from precis.embedder import MockEmbedder
     from precis.store import BlockInsert
+    from precis.utils import handle_registry
 
     e = MockEmbedder(dim=store.embedding_dim())
     # Paper that will match the query.
@@ -269,7 +270,7 @@ def test_cross_kind_search_forwards_exclude_to_supporting_kinds(
         slug="paper-a",
         title="A",
     )
-    store.insert_blocks(
+    blocks = store.insert_blocks(
         paper.id,
         [
             BlockInsert(
@@ -279,6 +280,9 @@ def test_cross_kind_search_forwards_exclude_to_supporting_kinds(
             ),
         ],
     )
+    # ADR 0036 cutover: search output addresses the paper hit by its
+    # computed chunk handle (``pc<chunk_id>``), not the legacy ``slug~pos``.
+    paper_handle = handle_registry.format_handle("paper", blocks[0].id, chunk=True)
     # Memory with the same query word — proves the merge actually
     # crosses kinds, and that exclude doesn't blow up memory's path.
     runtime_with_store.dispatch(
@@ -290,7 +294,7 @@ def test_cross_kind_search_forwards_exclude_to_supporting_kinds(
         "search", {"kind": "*", "q": "unique-marker"}
     )
     assert "[error:" not in out_full
-    assert "paper-a" in out_full
+    assert paper_handle in out_full
 
     # With exclude=['paper-a']: paper drops from the merged result;
     # memory side still appears (handler ignores the kwarg via the
@@ -300,7 +304,7 @@ def test_cross_kind_search_forwards_exclude_to_supporting_kinds(
         {"kind": "*", "q": "unique-marker", "exclude": ["paper-a"]},
     )
     assert "[error:" not in out_excl
-    assert "paper-a" not in out_excl
+    assert paper_handle not in out_excl
     # Memory hit should still be there — exclude= is silently ignored
     # by handlers without the kwarg, not poisoning the whole call.
     assert "memory side" in out_excl

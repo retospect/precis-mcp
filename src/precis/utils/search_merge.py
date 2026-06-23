@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from precis.response import Response
+from precis.utils import handle_registry
 from precis.utils.search_header import format_search_headline
 
 # Reciprocal-rank-fusion constant.  60 is the value Cormack et al.
@@ -127,9 +128,10 @@ class SearchHit:
     # means "no keywords for this hit" — surfaced as an empty cell in
     # ``view='keywords'``. See :func:`_render_keywords_table`.
     keywords: tuple[str, ...] = ()
-    # ADR 0036: the universal handle for this hit's chunk (or ref), shown
-    # alongside the legacy ``slug~pos`` in output (dual-emit). None until
-    # the chunk/ref is backfilled with a handle.
+    # ADR 0036: the computed universal handle for this hit's chunk (or
+    # ref) — ``<type-code><chunk_id|ref_id>`` (e.g. ``pc40``, ``me5``).
+    # Preferred over the legacy ``slug~pos`` / ``#ref_id`` form by the
+    # renderers. None for a kind with no handle code.
     uhandle: str | None = None
 
     @property
@@ -532,7 +534,11 @@ def block_hits_to_search_hits(
                 ref_id=getattr(ref, "id", None),
                 dedupe_key=dedupe,
                 keywords=tuple(kw) if kw else (),
-                uhandle=getattr(block, "handle", None),
+                # ADR 0036: the chunk handle is computed from
+                # ``(kind, chunk_id)`` — ``block.id`` is the chunk_id.
+                uhandle=handle_registry.try_format(
+                    kind, getattr(block, "id", None), chunk=True
+                ),
             )
         )
     return out
@@ -593,7 +599,9 @@ def ref_hits_to_search_hits(
                 source=source,
                 ref_id=ref_id,
                 dedupe_key=dedupe,
-                uhandle=getattr(ref, "handle", None),
+                # ADR 0036: the record handle is computed from
+                # ``(kind, ref_id)``.
+                uhandle=handle_registry.try_format(kind, ref_id, chunk=False),
             )
         )
     return out
