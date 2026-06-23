@@ -211,7 +211,7 @@ def test_reader_renders_per_block_grid(draft_client: TestClient) -> None:
     # so wrapping x-show in double quotes terminates the attribute mid-array
     # and Alpine never evaluates vis() — collapse silently no-ops on every
     # nested row. Guard the well-formed form and the broken one's absence.
-    assert 'x-show=\'vis(["AAAAAA"])\'' in r.text
+    assert "x-show='vis([\"AAAAAA\"])'" in r.text
     assert 'x-show="vis(["AAAAAA"])"' not in r.text
     # per-block change box posts to the anchored-todo route
     assert 'action="/drafts/nt/request"' in r.text

@@ -108,12 +108,14 @@ one-line caption — don't leave a "paragraph" that is structure without
 saying anything. (Why it happens: it's easy to drop the evidence and
 move on; the prose that ties it to the argument is the actual writing.)
 
-**Style: prose, lightly marked.** Write in plain declarative prose.
-**Do not bold for emphasis** — heavy `**bold**` reads as shouting and
-clutters the page. Reach for *italics* only **occasionally**, for a
-genuinely emphasised word or a term on first mention; most paragraphs
-need no emphasis at all. Let sentence structure carry the weight, not
-markup. (Headings already stand out — you don't need bold on top.)
+**Style: plain prose, no emphasis markup.** Write in plain declarative
+sentences, one idea each. **Do not use bold or italics for emphasis.**
+`_italic_` and a single `*word*` are not rendered and leave literal `_`
+and `*` markers in the text; `**bold**` does render but reads as shouting
+in a research write-up. Let sentence structure carry the weight.
+**No em-dashes** (the `—` character): split the thought into separate
+sentences, or use a colon, comma, or parentheses instead. (Headings
+already stand out, so you do not need bold on top.)
 
 ## Figures & images (ADR 0034)
 
@@ -349,20 +351,23 @@ pending]` (if you mark the spot) then has something behind it. See
 (the wait-on-ingest pattern in full), and `precis-paper-help` (S2 nav +
 held-paper citing).
 
-**Abbreviations — use them freely; we'll ask you to define what we don't
-recognise.** Write with abbreviations naturally. After any `put`/`edit`,
-the response **hints any undefined acronyms in what you just wrote**,
+**Abbreviations — write the short form; define it once via a term call.**
+Use the abbreviation itself in prose (`TTA`, `PEI`, `FET`). **Do not spell
+it out inline** as `Term To Abbrev (TTA)`: the reader shows the definition
+on hover wherever the short form appears (including plural forms like
+`FETs`), so the expansion in the sentence is redundant clutter. After any
+`put`/`edit`, the response **hints any undefined acronyms you just wrote**,
 with copy-ready calls. For each, either:
 
 - **define it** — `put(kind='draft', id='<slug>', chunk_kind='term',
   text='Kil Solvent Joule Warbler', meta={'short': 'KSJW'})` (filed
-  under an auto-created **Glossary** heading); or
+  under an auto-created **Glossary** heading). This term call **is** what
+  "define an abbreviation" means here — not an inline parenthetical; or
 - **mark it not-an-abbreviation** (a chemical formula, a model name, …)
   — `edit(kind='draft', id='<slug>', not_abbrev=['CO2'])` — to silence
   the hint.
 
-An inline `Full Form (ABBR)` first-use also counts as a definition. Once
-defined or silenced, a token stops being hinted. Reference a term with
+Once defined or silenced, a token stops being hinted. Reference a term with
 `[PEI](¶<term-handle>)`; explicit
 terms win over auto-detected ones. **Thoughts** (memory / think / finding) are
 referenceable but **not citeable** — they get a `[[…]]` link only,
@@ -379,13 +384,17 @@ reference its real handle; if it doesn't exist yet, `put(kind='finding',
 …)` it first (and remember: a finding is a `[[…]]` link, not a `[§…]`
 citation). Don't leave dangling `#name` placeholders in the prose.
 
-**Formatting.** Prose is markdown: `**bold**` renders bold and
-`` `code` `` renders inline code. Reach for emphasis **sparingly** — a
-research write-up reads as prose, not a slide deck; bold the occasional
-key quantity or term, not whole sentences. Math is `$…$` / `$$…$$`
-(KaTeX). Inline citations/cross-refs render as a compact `§`/`¶` marker
-in the reader, so don't worry about handles cluttering the sentence —
-write `[§miller89~4]` and it shows as a small superscript.
+**Formatting.** Prose is plain text with a small markup subset:
+`` `code` `` renders inline code, `$…$` / `$$…$$` is math (KaTeX), and
+`<sub>`/`<sup>` render for chemistry and units (`NH<sub>2</sub>`,
+`g<sup>-1</sup>`). **Do not use emphasis markup.** `_italic_` and a single
+`*word*` are not rendered at all and leave literal `_`/`*` in the text;
+`**bold**` does render but reads as shouting, so skip it. Inline
+citations and cross-refs render as a compact `§`/`¶` marker in the reader,
+so handles do not clutter the sentence: write `[§miller89~4]` and it shows
+as a small superscript. A `¶` cross-ref must use the target chunk's
+**opaque handle** (e.g. `[¶1asdf1]`), the 6-char code shown in the outline
+— never a numeric id like `¶45650`, which resolves to no chunk.
 
 Bare `kind:ref` mentions (`paper:miller89~4`, `memory:6184`) are
 recognised too — the bracket forms are the *superset* over the same

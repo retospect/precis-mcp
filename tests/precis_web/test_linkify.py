@@ -503,3 +503,31 @@ def test_abbrev_highlight_skips_tags_and_attrs() -> None:
 def test_abbrev_highlight_noop_without_dict() -> None:
     out = str(linkify_refs("PEI everywhere", abbrevs=None))
     assert "<abbr" not in out
+
+
+def test_abbrev_highlight_covers_plural_inflection() -> None:
+    """A defined short form's plural / possessive inflection (FET → FETs /
+    FET's) inherits the same hover-definition — we store only the base."""
+    out = str(
+        linkify_refs(
+            "one FET, several FETs, the FET's gate",
+            abbrevs={"FET": "field-effect transistor"},
+        )
+    )
+    assert out.count('<abbr class="pa"') == 3
+    assert ">FETs<span" in out  # the plural form is the visible text
+    assert out.count("field-effect transistor") == 3
+
+
+def test_invalid_pilcrow_ref_flagged_not_anchored() -> None:
+    """A ¶ token that isn't a minted 6-char handle (e.g. a numeric id an
+    LLM invented, ¶45650) renders as a flagged span, never a live anchor —
+    in both compact and verbose modes, bracketed or display-link form."""
+    for text in ("see [¶45650]", "[the intro](¶45650)"):
+        for compact in (True, False):
+            out = str(linkify_refs(text, compact=compact))
+            assert "unresolved chunk reference" in out
+            assert "/c/45650" not in out
+    # a real handle still resolves to a live anchor
+    ok = str(linkify_refs("see [¶1asdf1]", compact=True))
+    assert "/c/1asdf1" in ok

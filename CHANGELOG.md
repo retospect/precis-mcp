@@ -8,6 +8,40 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-23 — draft authoring style: short-form abbrevs, no emphasis / em-dashes, ¶-ref guard)
+
+- **Abbreviation authoring guidance flipped to short-form-only.**
+  `precis-draft-help` now tells the author to write the bare short form
+  (`TTA`, `FET`) and **never** spell it out inline as `Term To Abbrev
+  (TTA)` — the reader already shows the definition on hover wherever the
+  short appears. "Define an abbreviation" is clarified to mean the MCP
+  `chunk_kind='term'` call (filed under Glossary), surfaced by the
+  post-write undefined-acronym hint, not an inline parenthetical.
+- **Plural / possessive abbreviations now inherit the hover.** The
+  reader's abbrev highlighter (`_highlight_abbrevs`) matches a defined
+  short plus an optional inflection (`FET` → `FETs` / `FET's`), so an
+  inflected mention gets the same instant tooltip. Only the base form is
+  stored; the suffix is matched at render time.
+- **No emphasis markup, no em-dashes in draft prose.** Guidance now
+  forbids bold/italics for emphasis (`_italic_` / single `*word*` don't
+  render anyway and leave literal markers; `**bold**` reads as shouting)
+  and bans the `—` em-dash in favour of separate sentences or a colon /
+  comma / parentheses. The `Formatting` section is corrected to match
+  what actually renders (code, `$…$` math, `<sub>`/`<sup>`).
+
+### Fixed (2026-06-23 — numeric ¶ chunk references flagged instead of silently dead)
+
+- **A `¶<numeric-id>` cross-ref (e.g. `¶45650`) is now flagged, not
+  rendered as a dead link.** Draft chunk handles are opaque 6-char
+  base-58 codes, independent of the numeric `chunk_id`; an LLM that
+  imported the `memory:6184` / `todo:<id>` numeric-id convention into the
+  `¶` slot produced references that resolve to nothing. The draft `get`
+  read now appends a `⚠ unresolved chunk reference(s)` hint (mirroring the
+  dangling-finding hint) pointing the author at the real handle in the
+  outline, and the web reader (`linkify`) renders any non-handle-shaped
+  `¶` token as a flagged span instead of a live-looking `/c/<id>` anchor —
+  in compact, verbose, bracketed, and display-link forms.
+
 ### Changed (2026-06-23 — figure permission UX: labelled form + editable badge)
 
 - The third-party **permission upload form** now carries a small legend

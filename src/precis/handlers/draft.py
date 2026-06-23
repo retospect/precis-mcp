@@ -36,6 +36,7 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store._draft_ops import content_sha
 from precis.utils.embed_query import query_vec_for
+from precis.utils.handles import is_handle
 
 log = logging.getLogger(__name__)
 
@@ -707,7 +708,9 @@ class DraftHandler(Handler):
             for c in window
         ]
         body = "\n\n".join(blocks)
-        body += self._dangling_finding_hint("\n\n".join(c.text for c in window))
+        window_text = "\n\n".join(c.text for c in window)
+        body += self._dangling_finding_hint(window_text)
+        body += self._dangling_chunk_hint(window_text)
         return Response(body=body)
 
     #: ``[finding #<slug>]`` / ``citation pending — finding #<slug>`` — the
@@ -744,6 +747,39 @@ class DraftHandler(Handler):
             "citations, and won't autolink or export. For each, either create "
             "the finding (put(kind='finding', …)) and cite it by its handle "
             "(finding:<pub_id>), or remove the marker."
+        )
+
+    #: A ``¶<token>`` chunk cross-ref in prose. Token is any alphanumeric
+    #: run; validity (a real minted 6-char handle) is checked against the
+    #: store, so a numeric ``¶45650`` an LLM invented gets flagged.
+    _CHUNK_REF = re.compile(r"¶(?P<h>[0-9A-Za-z]+)")
+
+    def _dangling_chunk_hint(self, text: str) -> str:
+        """Flag ``¶<token>`` cross-refs that resolve to no chunk. A real
+        chunk handle is an opaque 6-char base-58 code minted by the draft;
+        an LLM that imports the numeric-id convention (``memory:6184``,
+        ``todo:<id>``) into the ``¶`` slot writes things like ``¶45650``,
+        which can never resolve and renders as a dead link in the reader.
+        Warn here so the author fixes it to the real handle."""
+        seen: list[str] = []
+        dangling: list[str] = []
+        for m in self._CHUNK_REF.finditer(text):
+            h = m.group("h")
+            if h in seen:
+                continue
+            seen.append(h)
+            if is_handle(h) and self.store.get_draft_chunk(h) is not None:
+                continue
+            dangling.append(h)
+        if not dangling:
+            return ""
+        toks = ", ".join(f"¶{h}" for h in dangling)
+        return (
+            f"\n\n⚠ unresolved chunk reference(s): {toks}. A ¶ cross-ref must be "
+            "an opaque 6-char handle minted by the draft (e.g. ¶1asdf1), not a "
+            "numeric id — these point at no chunk and won't link or navigate. "
+            "Find the target's handle in the outline (get(kind='draft', "
+            "id='<slug>')) and use that, or remove the reference."
         )
 
     def _render_toc(

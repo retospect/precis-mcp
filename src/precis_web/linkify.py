@@ -48,6 +48,8 @@ from html import escape
 
 from markupsafe import Markup
 
+from precis.utils.handles import is_handle as _is_handle
+
 # Grammar moved to ``precis.utils.mentions`` so the write-time
 # autolinker shares it (single source). Re-exported here under the
 # historical private names every web call site already imports —
@@ -208,7 +210,18 @@ def _render_chunk_anchor(handle: str, label: str) -> str:
     """A ``¶<handle>`` draft-chunk cross-ref. Same hover-preview +
     click-navigate as a ``kind:ref`` anchor: hover fetches a chunk card
     from ``/preview/chunk/<handle>``; click navigates via ``/c/<handle>``
-    (which redirects into the draft reader, anchored at that chunk)."""
+    (which redirects into the draft reader, anchored at that chunk).
+
+    A ``¶`` whose token isn't a minted handle (a 6-char base-58 code) —
+    e.g. an LLM that wrote a numeric id ``¶45650`` — can never resolve, so
+    flag it visibly instead of emitting a dead-looking live anchor."""
+    if not _is_handle(handle):
+        return (
+            f'<span style="color:#b91c1c;text-decoration:underline wavy #f87171;'
+            f'cursor:help" title="unresolved chunk reference — not a valid '
+            f'¶handle (must be a 6-char code, not a numeric id)">'
+            f"{escape(label)}</span>"
+        )
     safe_h = escape(handle)
     return _anchor_html(
         href=f"/c/{safe_h}",
@@ -259,7 +272,9 @@ def _render_bare_bracket(bare: str, *, compact: bool = False) -> str:
     """
     if bare.startswith("¶"):
         handle = bare[1:]
-        if compact:
+        # An invalid token (e.g. a numeric ``¶45650``) never resolves —
+        # flag it in both modes rather than emit a dead 1-char sigil.
+        if compact and _is_handle(handle):
             # Full-size 1-char ¶ — keeps the sentence flowing but stays an
             # easy hover/click target (a superscript was too small to grab).
             return _anchor_html(
@@ -369,14 +384,20 @@ def _highlight_abbrevs(html: str, abbrevs: dict[str, str]) -> str:
     shorts = sorted((s for s in abbrevs if s), key=len, reverse=True)
     if not shorts:
         return html
+    # Match the defined short, plus an optional plural / possessive
+    # inflection (``FET`` → ``FETs`` / ``FET's``) so an inflected mention
+    # inherits the same hover-definition. We only store the base form; the
+    # suffix is matched here, not in ``defined_abbrevs``.
     pat = re.compile(
-        r"(?<![\w-])(" + "|".join(re.escape(s) for s in shorts) + r")(?![\w-])"
+        r"(?<![\w-])(" + "|".join(re.escape(s) for s in shorts) + r")"
+        r"(?:s|es|'s|’s)?(?![\w-])"
     )
 
     def _wrap(m: re.Match[str]) -> str:
-        short = m.group(1)
+        short = m.group(1)  # the defined key
+        shown = m.group(0)  # short + any inflection, e.g. "FETs"
         return (
-            f'<abbr class="pa" tabindex="0">{short}'
+            f'<abbr class="pa" tabindex="0">{shown}'
             f'<span class="pa-pop">{escape(abbrevs[short])}</span></abbr>'
         )
 
