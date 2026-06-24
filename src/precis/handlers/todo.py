@@ -506,6 +506,28 @@ class TodoHandler(NumericRefHandler):
                 project_tag = project_tag_for_path(ws.get("path"))
         if project_tag and (not tags or project_tag not in tags):
             tags = [*(tags or []), project_tag]
+        # A *project root* — a workspace-owning todo with no parent — is by
+        # definition a strategic root ("a project is a strategic-root todo
+        # that owns ``meta.workspace``"). Auto-stamp ``level:strategic`` so
+        # that invariant holds however the root is minted. ``/drafts/new``
+        # already passes it, but a CLI / test / script write that sets
+        # ``meta.workspace`` on a fresh root would otherwise leave it
+        # non-strategic — and the nursery then flags the entire subtree as
+        # orphaned (no ``level:strategic`` ancestor), flooding alerts (the
+        # ``draft:test01`` scratch-project flood). Scoped tightly:
+        #   * roots only (``parent_int is None``) — inheriting children keep
+        #     ``level:subtask`` and must not all become strategic;
+        #   * owner sources only (``is_owner()``) — workers physically can't
+        #     mint strategic refs, so never stamp one onto a worker write;
+        #   * skip when the caller already chose any ``level:*`` tier.
+        if (
+            parent_int is None
+            and guards.is_owner()
+            and isinstance(meta, dict)
+            and isinstance(meta.get("workspace"), dict)
+            and not (tags and any(t.startswith("level:") for t in tags))
+        ):
+            tags = [*(tags or []), guards.LEVEL_STRATEGIC]
         # Default a *generated* (parented) todo to ``LLM:opus`` so it
         # actually runs: an untagged todo with no executor is inert —
         # ``dispatch`` only mints a ``plan_tick`` under an ``LLM:*`` todo,

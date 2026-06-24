@@ -104,6 +104,52 @@ def test_put_without_workspace_has_no_project_tag(handler: TodoHandler) -> None:
     assert not any(t.startswith("project:") for t in tags)
 
 
+# ── workspace root auto-stamps level:strategic (orphan-flood fix) ──
+
+
+def test_put_workspace_root_auto_stamps_strategic(handler: TodoHandler) -> None:
+    # A project root minted WITHOUT an explicit level tag (e.g. a CLI or
+    # script write that only sets meta.workspace) must still become
+    # strategic — otherwise the nursery flags its whole subtree as orphaned.
+    r = handler.put(text="Project root, no level tag.", meta=_WS_META)
+    rid = _id_of(r.body)
+    tags = [str(t) for t in handler.store.tags_for(rid)]
+    assert "level:strategic" in tags
+
+
+def test_put_workspace_root_respects_explicit_level(handler: TodoHandler) -> None:
+    # An explicit tier choice is honoured — we don't override it with
+    # strategic just because the root owns a workspace.
+    r = handler.put(
+        text="Workspace root, explicitly tactical.",
+        tags=["level:tactical"],
+        meta=_WS_META,
+    )
+    rid = _id_of(r.body)
+    tags = [str(t) for t in handler.store.tags_for(rid)]
+    assert "level:tactical" in tags
+    assert "level:strategic" not in tags
+
+
+def test_workspace_child_not_auto_strategic(handler: TodoHandler) -> None:
+    # A child inherits the workspace block but is NOT a project root, so it
+    # stays a subtask — only the originating root is strategic.
+    root = handler.put(text="Root.", meta=_WS_META)
+    root_id = _id_of(root.body)
+    child = handler.put(text="A leaf under the project.", parent_id=root_id)
+    child_id = _id_of(child.body)
+    child_tags = [str(t) for t in handler.store.tags_for(child_id)]
+    assert "level:strategic" not in child_tags
+
+
+def test_put_root_without_workspace_not_strategic(handler: TodoHandler) -> None:
+    # No workspace → no auto-strategic; a plain root stays untiered.
+    r = handler.put(text="Plain root, no workspace, no level.")
+    rid = _id_of(r.body)
+    tags = [str(t) for t in handler.store.tags_for(rid)]
+    assert "level:strategic" not in tags
+
+
 # ── view='projects' (DB) ──────────────────────────────────────────
 
 
