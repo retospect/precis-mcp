@@ -169,3 +169,57 @@ def test_parse_relative_rejects_non_relative_and_junk() -> None:
     assert hr.parse_relative("pc10+0") is None  # zero step is a no-op
     assert hr.parse_relative("miller23+1") is None  # legacy slug
     assert hr.parse_relative("pc10+x") is None  # malformed operator
+
+
+# --- plugin-contributed codes (ADR 0036 — handle_codes entry point) ------
+
+
+def _fake_eps(monkeypatch: pytest.MonkeyPatch, **codes: dict) -> None:
+    """Reset the lazy plugin state and inject one fake handle-code plugin."""
+    import types
+
+    mod = types.SimpleNamespace(
+        RECORD_CODES=codes.get("records", {}),
+        CHUNK_CODES=codes.get("chunks", {}),
+    )
+    ep = types.SimpleNamespace(name="fake_plugin", load=lambda: mod)
+    monkeypatch.setattr(hr, "entry_points", lambda group: [ep])
+    monkeypatch.setattr(hr, "_plugins_loaded", False)
+    monkeypatch.setattr(hr, "_plugin_kind_codes", {})
+    monkeypatch.setattr(hr, "_plugin_chunk_codes", {})
+
+
+def test_plugin_codes_merge_into_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_eps(
+        monkeypatch,
+        records={"service": "sv", "payment": "pm"},
+        chunks={"payment": "pb"},
+    )
+    assert hr.code_for_kind("service") == "sv"
+    assert hr.code_for_kind("payment", chunk=True) == "pb"
+    assert hr.format_handle("payment", 5) == "pm5"
+    assert hr.kind_for_code("sv") == ("service", False)
+    # plugin codes resolve as refs-backed decimal handles
+    assert hr.parse("pm5") == ("payment", False, 5)
+    assert hr.parse("pb7") == ("payment", True, 7)
+    assert hr.is_well_formed("sv12")
+    # built-ins still work alongside
+    assert hr.parse("pa5") == ("paper", False, 5)
+
+
+def test_plugin_code_colliding_with_builtin_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_eps(monkeypatch, records={"evil": "pa"})  # 'pa' is paper
+    with pytest.raises(KeyError):
+        hr.code_for_kind("evil")
+    assert hr.kind_for_code("pa") == ("paper", False)  # built-in wins
+
+
+def test_plugin_codes_do_not_change_builtin_totality(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The built-in SSOT (and its totality test) is unaffected by plugins.
+    _fake_eps(monkeypatch, records={"service": "sv"})
+    hr.code_for_kind("service")  # trigger load
+    assert set(hr.KIND_CODES) == EXPECTED_PERSISTENT_KINDS

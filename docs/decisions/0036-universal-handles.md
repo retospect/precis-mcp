@@ -194,6 +194,18 @@ and get **no code** — they are addressed by URL / query / compute.
 The only hard rules: 2 lowercase chars, globally distinct (records ∪ chunks),
 one row per addressable kind.
 
+**Plugin-contributed codes.** A plugin's refs-backed kinds (e.g. precis-chain's
+`service`/`x402`/`payment`) get first-class handles without precis-mcp knowing
+the kinds: a plugin advertises a `precis.handle_codes` entry point pointing at a
+module with `RECORD_CODES` / `CHUNK_CODES` dicts, mirroring the
+`precis.handlers` / `precis.skills` / `precis.migrations` groups. The registry
+loads these lazily and merges them into the lookup/parse maps **only** — the
+built-in `KIND_CODES` (and its totality test) stay the SSOT for precis-mcp's own
+kinds. A plugin code that collides with a built-in (or another plugin) is
+dropped with a warning; built-ins win. Plugin kinds are assumed refs-backed
+(decimal-pk) handles. This keeps precis-mcp chain-unaware while the universal
+address system spans installed plugins.
+
 ### 2 — Flat, not path; distinct chunk type codes
 
 A chunk handle is **its own flat handle** (`dc4m8p1rz`), not the document handle

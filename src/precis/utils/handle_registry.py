@@ -29,9 +29,23 @@ kind has a code, so adding a kind without a code fails CI, not review.
 
 from __future__ import annotations
 
+import logging
 import re
+from importlib.metadata import entry_points
+
+log = logging.getLogger(__name__)
 
 CODE_LEN = 2
+
+#: Entry-point group a plugin advertises its handle codes under (ADR 0036).
+#: Mirrors ``precis.handlers`` / ``precis.skills`` / ``precis.migrations`` so
+#: a plugin's persistent-ref kinds get first-class universal handles without
+#: precis-mcp knowing the kinds. Value points at a module exposing
+#: ``RECORD_CODES`` / ``CHUNK_CODES`` dicts (``{kind: 2-char-code}``)::
+#:
+#:     [project.entry-points."precis.handle_codes"]
+#:     precis_chain = "precis_chain.handles"
+PLUGIN_GROUP = "precis.handle_codes"
 
 # --- record codes (the addressable persistent-ref kinds) ------------------
 # Authoritative kind list: dispatch.boot() composition root. Providers
@@ -120,12 +134,100 @@ _DECIMAL_CODES: frozenset[str] = frozenset(
 )
 
 
+# --- plugin-contributed codes (ADR 0036, lazy) ----------------------------
+# Built-in KIND_CODES / CHUNK_CODES above stay the totality-tested SSOT for
+# precis-mcp's own kinds. Plugins (e.g. precis-chain's service/x402/payment)
+# contribute their refs-backed codes via the entry-point group; we merge
+# them into the lookup maps only, so the built-in totality test is unchanged.
+# Plugin codes are assumed refs-backed decimal handles (no file/other-table
+# plugin kinds), so they join _DECIMAL_CODES.
+
+_plugins_loaded = False
+_plugin_kind_codes: dict[str, str] = {}
+_plugin_chunk_codes: dict[str, str] = {}
+
+
+def _valid_code(code: object, taken: set[str]) -> bool:
+    return (
+        isinstance(code, str)
+        and re.fullmatch(r"[a-z]{2}", code) is not None
+        and code not in taken
+    )
+
+
+def _load_plugin_codes() -> None:
+    """Discover plugin handle codes once (idempotent, failure-tolerant).
+
+    A bad plugin must not brick handle resolution: every error is logged
+    and skipped, and a code that collides with a built-in or an
+    already-claimed plugin code is dropped (built-ins win, first plugin
+    wins).
+    """
+    global _plugins_loaded
+    if _plugins_loaded:
+        return
+    _plugins_loaded = True
+    try:
+        eps = entry_points(group=PLUGIN_GROUP)
+    except Exception as exc:  # defensive — importlib surface is stable
+        log.warning("handle-code plugin discovery failed: %s", exc)
+        return
+    taken = set(KIND_CODES.values()) | set(CHUNK_CODES.values())
+    for ep in eps:
+        name = getattr(ep, "name", "<unknown>")
+        try:
+            mod = ep.load()
+            records = dict(getattr(mod, "RECORD_CODES", {}) or {})
+            chunks = dict(getattr(mod, "CHUNK_CODES", {}) or {})
+        except Exception as exc:
+            log.warning("handle-code plugin %r failed to load: %s", name, exc)
+            continue
+        for kind, code in records.items():
+            if _valid_code(code, taken):
+                _plugin_kind_codes[kind] = code
+                taken.add(code)
+            else:
+                log.warning("handle-code plugin %r: bad/dup record %r", name, code)
+        for kind, code in chunks.items():
+            if _valid_code(code, taken):
+                _plugin_chunk_codes[kind] = code
+                taken.add(code)
+            else:
+                log.warning("handle-code plugin %r: bad/dup chunk %r", name, code)
+
+
+def _kind_codes() -> dict[str, str]:
+    _load_plugin_codes()
+    return {**KIND_CODES, **_plugin_kind_codes}
+
+
+def _chunk_codes() -> dict[str, str]:
+    _load_plugin_codes()
+    return {**CHUNK_CODES, **_plugin_chunk_codes}
+
+
+def _code_to_kind() -> dict[str, tuple[str, bool]]:
+    return {
+        **{c: (k, False) for k, c in _kind_codes().items()},
+        **{c: (k, True) for k, c in _chunk_codes().items()},
+    }
+
+
+def _decimal_codes() -> frozenset[str]:
+    _load_plugin_codes()
+    # Plugin kinds are refs-backed (no file/other-table plugin kinds), so
+    # all of them are decimal-pk handles parse() can resolve.
+    return _DECIMAL_CODES | set(_plugin_kind_codes.values()) | set(
+        _plugin_chunk_codes.values()
+    )
+
+
 # --- lookups --------------------------------------------------------------
 
 
 def code_for_kind(kind: str, *, chunk: bool = False) -> str:
     """Return the 2-char code for ``kind`` (its chunk code if ``chunk``)."""
-    table = CHUNK_CODES if chunk else KIND_CODES
+    table = _chunk_codes() if chunk else _kind_codes()
     try:
         return table[kind]
     except KeyError:
@@ -136,7 +238,7 @@ def code_for_kind(kind: str, *, chunk: bool = False) -> str:
 def kind_for_code(code: str) -> tuple[str, bool]:
     """Resolve a 2-char code to ``(kind, is_chunk)``."""
     try:
-        return _CODE_TO_KIND[code.lower()]
+        return _code_to_kind()[code.lower()]
     except KeyError:
         raise KeyError(f"unknown handle type code {code!r}") from None
 
@@ -190,9 +292,9 @@ def parse(handle: str) -> tuple[str, bool, int] | None:
     if len(s) <= CODE_LEN:
         return None
     code, body = s[:CODE_LEN], s[CODE_LEN:]
-    if code not in _DECIMAL_CODES or not body.isdigit():
+    if code not in _decimal_codes() or not body.isdigit():
         return None
-    kind, is_chunk = _CODE_TO_KIND[code]
+    kind, is_chunk = _code_to_kind()[code]
     return kind, is_chunk, int(body)
 
 
@@ -254,9 +356,9 @@ def parse_relative(handle: str) -> tuple[str, bool, int, RelOp] | None:
     if m is None:
         return None
     code, digits, op_str = m.group(1), m.group(2), m.group(3)
-    if code not in _DECIMAL_CODES:
+    if code not in _decimal_codes():
         return None
-    kind, is_chunk = _CODE_TO_KIND[code]
+    kind, is_chunk = _code_to_kind()[code]
     if not is_chunk:  # relative grammar is chunk-level only
         return None
     op = _parse_op(op_str)
