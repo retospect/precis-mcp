@@ -88,6 +88,23 @@ def test_search_semantic_degrades_to_keyword_without_embedder(client, runtime) -
     assert resp.json()["results"][0]["ord"] == 1
 
 
+def test_search_semantic_reports_similarity_best_first(client, runtime) -> None:
+    """With an embedder wired the semantic path stays semantic and reports
+    cosine *similarity* (1 - distance), in the store's best-first order."""
+    runtime.hub = SimpleNamespace(embedder=SimpleNamespace(embed_one=lambda q: [0.1]))
+    runtime.store.nav_hits[10] = [
+        (_block(7, "closest chunk", ["k"]), None, 0.2),  # distance 0.2 -> sim 0.8
+        (_block(9, "further chunk", ["k"]), None, 0.5),  # distance 0.5 -> sim 0.5
+    ]
+    resp = client.get("/papers/10/search", params={"q": "x", "mode": "semantic"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mode"] == "semantic"
+    assert [r["ord"] for r in data["results"]] == [7, 9]  # best-first preserved
+    assert data["results"][0]["score"] == 0.8  # similarity, higher = better
+    assert data["results"][0]["score"] > data["results"][1]["score"]
+
+
 def test_search_empty_query_returns_empty(client) -> None:
     resp = client.get("/papers/10/search", params={"q": "  ", "mode": "keyword"})
     assert resp.status_code == 200

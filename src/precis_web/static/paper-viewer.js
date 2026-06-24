@@ -84,11 +84,30 @@ function paperDoc(paperId, citedOrd, hasPdf) {
       });
     },
     _phrase(text) {
-      // pdf.js find matches against whitespace-normalised page text, so a
-      // short distinctive run of words matches more reliably than the
-      // whole (multi-line, hyphenated) chunk. Take the first ~10 words.
-      const words = (text || '').replace(/\s+/g, ' ').trim().split(' ');
-      return words.slice(0, 10).join(' ');
+      // pdf.js find matches the PDF's *rendered* text layer and needs the
+      // whole query to match contiguously. Marker chunk text carries
+      // markup the rendered page doesn't have ($d_k$, [3], \alpha), so a
+      // naive first-N-words phrase fails the moment it hits one. Pick the
+      // first contiguous run of plain alphabetic words (skipping any token
+      // with math / citation / symbol chars) — that run exists verbatim on
+      // the page. Fall back to the first few raw words if none is found.
+      const norm = (text || '').replace(/\s+/g, ' ').trim();
+      if (!norm) return '';
+      const toks = norm.split(' ');
+      const isClean = (t) => /^[A-Za-z][A-Za-z'-]*[.,;:]?$/.test(t) && t.length > 1;
+      let best = [], cur = [];
+      for (const t of toks) {
+        if (isClean(t)) {
+          cur.push(t.replace(/[.,;:]$/, ''));
+          if (cur.length >= 8) { best = cur; break; }
+        } else {
+          if (cur.length > best.length) best = cur;
+          cur = [];
+        }
+      }
+      if (cur.length > best.length) best = cur;
+      const run = best.slice(0, 8);
+      return run.length >= 3 ? run.join(' ') : toks.slice(0, 6).join(' ');
     },
 
     // ── navigate: search + toc ──────────────────────────────────────
@@ -110,6 +129,9 @@ function paperDoc(paperId, citedOrd, hasPdf) {
       } catch (e) { this.results = []; }
       this.loading = false;
       this.searched = true;
+      // Surface the best match immediately: jump the PDF to the top hit
+      // (cosine-closest for semantic, top ts_rank for keyword) and ring it.
+      if (this.results.length) this.gotoResult(this.results[0], 0);
     },
     async loadToc() {
       try {

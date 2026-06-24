@@ -74,7 +74,7 @@
                         :class="{'active': activeIdx === i}">
                   <div class="flex items-center justify-between text-[10px] text-slate-400">
                     <span class="font-mono">chunk <span x-text="r.ord"></span><template x-if="r.page"> · p<span x-text="r.page"></span></template></span>
-                    <span x-show="mode === 'semantic'" x-text="r.score"></span>
+                    <span x-show="mode === 'semantic'" :title="'cosine similarity ' + r.score" x-text="'sim ' + r.score"></span>
                   </div>
                   <p class="mt-0.5 text-xs leading-snug text-slate-700" x-text="r.text"></p>
                   <div class="mt-1 flex flex-wrap gap-1" x-show="r.keywords.length">
@@ -225,5 +225,12 @@
   </div>
 </div>
 
-<script src="/static/paper-viewer.js" defer></script>
+{# NB: no `defer`. Alpine's CDN build is deferred and calls start() the
+   moment it runs (readyState 'interactive'), walking the DOM right then.
+   A deferred paper-viewer.js would load *after* that walk, so
+   `x-data="paperDoc(...)"` would see paperDoc undefined and the whole
+   reader (sidebar, toggle) would silently die. A non-deferred script at
+   body-end executes during parse — before the deferred Alpine — so
+   paperDoc is defined in time (same as drafts' inline component). #}
+<script src="/static/paper-viewer.js"></script>
 {% endblock %}

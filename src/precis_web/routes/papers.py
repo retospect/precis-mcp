@@ -518,13 +518,17 @@ async def search_in_paper(
         hits = store.search_blocks_lexical(q=q, scope_ref_id=ref.id, limit=_NAV_LIMIT)
 
     pages = store.chunk_pages(ref.id, [b.pos for b, _r, _s in hits])
+    is_sem = m == "semantic"
     results = [
         {
             "ord": b.pos,
             "page": pages.get(b.pos),
             "text": _nav_snippet(b.text),
             "keywords": b.keywords or [],
-            "score": round(float(score), 4),
+            # Semantic: report cosine *similarity* (1 - distance, higher =
+            # better) so the best-first ordering reads naturally; keyword:
+            # the ts_rank. Either way the list is already returned best-first.
+            "score": round(1.0 - float(score), 3) if is_sem else round(float(score), 4),
         }
         for b, _r, score in hits
     ]

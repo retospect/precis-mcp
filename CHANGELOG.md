@@ -86,6 +86,9 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   of `search_blocks_semantic` / `search_blocks_lexical`; degrades semantic
   → keyword when the embedder is down; `GET /papers/<id>/toc` →
   `toc_db.build_toc_segments`, a structured clickable cluster list).
+  Results are returned best-first (semantic = cosine-closest, shown as a
+  *similarity* 1-distance so higher reads as better); a search auto-jumps
+  the viewer to the top hit so the best-match chunk surfaces immediately.
   *Jump* — by verbatim text, page number, or chunk ord
   (`GET /papers/<id>/chunk/<ord>`). *Meta* — all metadata + the
   edit / triage / delete forms (moved to `papers/_meta_forms.html.j2`).
