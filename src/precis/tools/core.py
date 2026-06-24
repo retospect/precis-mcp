@@ -524,16 +524,11 @@ def put(
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
-    `mode=`: file kinds (markdown/plaintext/tex/python) use 'create'
-    (region edits on `edit`, whole-file deletes on `delete`); paid-import
-    kinds (websearch, perplexity-*) use 'import' to ingest an existing
-    payload without re-running the call; numeric-ref kinds (memory, todo,
-    gripe, conv, flashcard) omit `mode=` to create.
-    `tags=` adds, `untags=` removes. `link=`/`unlink=` use canonical
-    `kind:identifier[~selector]` form; `rel=` defaults to `related-to`.
+    `mode=`: file kinds use 'create'; paid-import kinds use 'import';
+    numeric-ref kinds omit it. `tags=`/`untags=` add/remove; `link=`/`unlink=`
+    use `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
 
-    Full reference: get(kind='skill', id='precis-put-help'), or
-    search(kind='skill', q='saving a note') for a topical lookup.
+    Full reference: get(kind='skill', id='precis-put-help').
     """
     err = _check_text_payload_size("put", text)
     if err is not None:
