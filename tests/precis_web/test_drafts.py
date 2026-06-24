@@ -208,23 +208,51 @@ def test_new_draft_form_toggles_and_offers_doctype(draft_client: TestClient) -> 
     assert "Patent application" in r.text
 
 
-def test_new_draft_folds_doctype_into_brief(
+def test_new_draft_seeds_planner_prompt_and_doctype_brief(
     draft_client: TestClient, draft_runtime: FakeRuntime
 ) -> None:
-    """Creating a draft mints the project todo carrying the workspace; the
+    """Creating a draft mints the project todo carrying the workspace. The
     chosen document type lands as ``meta.workspace.doc_type`` and its
-    guidance leads the brief (so the planner writes in that register)."""
+    guidance IS the brief (the planner's standing ``## Project context``).
+    The user's description becomes the todo body (the planner's initial
+    prompt), and ``LLM:opus`` is the auto-run signal that starts it."""
     draft_client.post(
         "/drafts/new",
-        data={"title": "Widget Patent", "doctype": "patent", "summary": "Be terse."},
+        data={
+            "title": "Widget Patent",
+            "doctype": "patent",
+            "summary": "A widget that folds itself.",
+        },
         follow_redirects=False,
     )
     verb, args = draft_runtime.calls[0]
     assert verb == "put" and args["kind"] == "todo"
     ws = args["meta"]["workspace"]
     assert ws["doc_type"] == "patent"
+    # doc-type guidance is the brief — and ONLY the guidance, not the
+    # description (which is the task, not standing context).
     assert "patent application" in ws["brief"].lower()
-    assert ws["brief"].endswith("Be terse.")
+    assert "folds itself" not in ws["brief"]
+    # the description is the planner's initial prompt (the todo body), and
+    # the LLM tag is what makes the dispatcher auto-run the first tick.
+    assert args["text"] == "A widget that folds itself."
+    assert "LLM:opus" in args["tags"]
+    assert "level:strategic" in args["tags"]
+
+
+def test_new_draft_blank_description_falls_back(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    """With no description, the todo body falls back to a bare instruction
+    so the planner still has something to act on."""
+    draft_client.post(
+        "/drafts/new",
+        data={"title": "Widget Patent", "doctype": "patent", "summary": ""},
+        follow_redirects=False,
+    )
+    _, args = draft_runtime.calls[0]
+    assert args["text"] == 'Write a patent titled "Widget Patent".'
+    assert "LLM:opus" in args["tags"]
 
 
 def test_reader_renders_per_block_grid(draft_client: TestClient) -> None:

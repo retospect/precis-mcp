@@ -8,6 +8,24 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-24 — "+ New draft" description now seeds the planner's initial prompt)
+
+- **The description typed into the web "+ New draft" dialog is now the
+  planner's initial prompt, not buried standing context.** Previously the
+  `summary` field was folded into `meta.workspace.brief` (the `## Project
+  context` block) and the project todo was minted *untagged*, so nothing
+  ever ran — the description was persisted but invisible and inert, and the
+  todo body was just the title. Now `new_draft`
+  (`src/precis_web/routes/drafts.py`) makes the description the project
+  todo's **body** (`refs.title` → the `## Body` of every `plan_tick`) and
+  tags the todo `LLM:opus`, the dispatcher's auto-run signal, so the planner
+  starts on it at the next `dispatch` pass. The document-type guidance line
+  stays as `meta.workspace.brief` (standing register/voice context) — but
+  *only* the guidance, no longer the user's description. Blank descriptions
+  fall back to `Write a <doctype> titled "<title>".`. The form label /
+  placeholder were retitled "Description (what to write — becomes the
+  planner's initial prompt)" to kill the prior expectation mismatch.
+
 ### Changed (2026-06-23 — ADR 0036 cutover: universal handles are the address form, in and out)
 
 - Completed the ADR 0036 cutover on top of the computed-handle rebase below.

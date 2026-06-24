@@ -441,8 +441,14 @@ async def new_draft(
 
     ``doctype`` (paper / patent / report / …) sets the document's style:
     it is stored as ``meta.workspace.doc_type`` and its standing guidance
-    line is folded into the project brief, so the planner writes in the
-    right register from the first tick."""
+    line becomes the project brief (the planner's ``## Project context``),
+    so the planner writes in the right register from the first tick.
+
+    ``summary`` is the user's description of *what to write* — it becomes
+    the project todo's body (the ``## Body`` of every planner tick), i.e.
+    the planner's **initial prompt**, not just standing context. The
+    ``LLM:opus`` tag is the dispatcher's auto-run signal, so the planner
+    starts on the description as soon as the next ``dispatch`` pass runs."""
     title = title.strip()
     if not title:
         return RedirectResponse(url="/drafts", status_code=303)
@@ -451,20 +457,29 @@ async def new_draft(
     doctype = doctype.strip() or "paper"
     if doctype in _DOC_TYPE_BRIEF:
         workspace["doc_type"] = doctype
-    # The brief is the planner's standing ``## Project context``; lead it
-    # with the document-type guidance, then the user's own summary.
-    brief_parts = [p for p in (_DOC_TYPE_BRIEF.get(doctype, ""), summary.strip()) if p]
-    if brief_parts:
-        workspace["brief"] = "\n\n".join(brief_parts)
+    # The brief is the planner's standing ``## Project context`` — the
+    # document-type register/voice guidance only. The user's description is
+    # the *task*, so it rides as the todo body below (and cascades to child
+    # ticks the planner mints), not buried here as background context.
+    guidance = _DOC_TYPE_BRIEF.get(doctype, "")
+    if guidance:
+        workspace["brief"] = guidance
 
-    # 1) project root that owns the workspace.
+    # The description IS the planner's initial prompt: it becomes the
+    # project todo's body (``refs.title`` → the ``## Body`` block read by
+    # ``plan_tick``). Fall back to a bare instruction when the user left it
+    # blank. ``LLM:opus`` is the closed-vocab auto-run tag the dispatcher
+    # keys on to mint the first ``plan_tick`` job (no ``meta.executor``).
+    task_text = summary.strip() or f'Write a {doctype} titled "{title}".'
+
+    # 1) project root that owns the workspace + drives the planner.
     body, is_error = await await_dispatch(
         request,
         "put",
         {
             "kind": "todo",
-            "text": title,
-            "tags": ["level:strategic"],
+            "text": task_text,
+            "tags": ["level:strategic", "LLM:opus"],
             "meta": {"workspace": workspace},
         },
     )
