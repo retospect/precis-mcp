@@ -243,13 +243,56 @@ def _quick_context(**overrides: Any) -> dict[str, Any]:
     return ctx
 
 
+#: Verbs that a ``GET /console?verb=…&args_text=…`` deep-link is
+#: allowed to *run* on load. The rest still prepopulate the form (so a
+#: link can stage a ``put``/``edit`` for the operator to eyeball and
+#: hit Run), but never fire — a GET must stay safe/idempotent so a
+#: shared link or a browser prefetch can't mutate the tree.
+_GET_RUNNABLE_VERBS = frozenset({"get", "search"})
+
+
+async def _run_verb(request: Request, verb: str, args_text: str) -> tuple[Any, bool]:
+    """Parse + dispatch one verb call; return ``(result, is_error)``.
+
+    Shared by the POST ``/run`` form and the GET deep-link so both
+    honour the same arg-parse / error-surfacing path.
+    """
+    try:
+        payload = _parse_args(verb, args_text)
+    except ValueError as exc:
+        return f"[input error] {exc}", True
+    return await await_dispatch(request, verb, payload)
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
+    """Render the console — optionally prepopulated / pre-run.
+
+    A bare ``/console`` lands on a blank form. A deep-link carrying
+    ``?verb=&args_text=`` query params prefills the verb form, and —
+    for read-only verbs (:data:`_GET_RUNNABLE_VERBS`) — runs the call
+    and renders the result, so a single shareable URL like
+
+        /console?verb=search&args_text=kind%3Dpaper+q%3Dtransformer
+
+    lands on a filled-in, already-run query. ``args_text`` absent ⇒
+    blank landing; present (even empty) ⇒ prepopulate.
+    """
+    verb = request.query_params.get("verb", "search")
+    args_text = request.query_params.get("args_text")
+    if args_text is None:
+        return templates.TemplateResponse(request, "console.html.j2", _quick_context())
+    result: Any = None
+    is_error = False
+    if verb in _GET_RUNNABLE_VERBS:
+        result, is_error = await _run_verb(request, verb, args_text)
     return templates.TemplateResponse(
         request,
         "console.html.j2",
-        _quick_context(),
+        _quick_context(
+            verb=verb, args_text=args_text, result=result, is_error=is_error
+        ),
     )
 
 
@@ -260,13 +303,7 @@ async def run(
     args_text: str = Form(""),
 ) -> HTMLResponse:
     """Execute one verb call and render its output."""
-    is_error = False
-    try:
-        payload = _parse_args(verb, args_text)
-    except ValueError as exc:
-        result, is_error = f"[input error] {exc}", True
-    else:
-        result, is_error = await await_dispatch(request, verb, payload)
+    result, is_error = await _run_verb(request, verb, args_text)
     return templates.TemplateResponse(
         request,
         "console.html.j2",

@@ -1574,6 +1574,62 @@ def test_console_get(client) -> None:
     assert "Tool console" in resp.text
 
 
+def test_console_get_blank_does_not_dispatch(client, runtime) -> None:
+    """A bare ``/console`` (no args_text query param) runs nothing."""
+    resp = client.get("/console")
+    assert resp.status_code == 200
+    assert runtime.calls == []
+
+
+def test_console_get_deeplink_runs_search(client, runtime) -> None:
+    """``GET /console?verb=search&args_text=…`` prefills *and* runs the
+    read-only verb, so a shared link lands on an already-run query."""
+    resp = client.get(
+        "/console",
+        params={"verb": "search", "args_text": 'kind=paper q="attention"'},
+    )
+    assert resp.status_code == 200
+    verb, args = runtime.calls[-1]
+    assert verb == "search"
+    assert args["kind"] == "paper"
+    assert args["q"] == "attention"
+    # Form is prefilled with the args + the result rendered.
+    assert "value='kind=paper q=\"attention\"'" in resp.text or (
+        "kind=paper q=&#34;attention&#34;" in resp.text
+    )
+    assert "[search] ok" in resp.text
+
+
+def test_console_get_deeplink_runs_get_toc(client, runtime) -> None:
+    """The TOC deep-link dispatches ``get`` with ``view=toc``."""
+    resp = client.get(
+        "/console",
+        params={"verb": "get", "args_text": "kind=paper id=pa2928 view=toc"},
+    )
+    assert resp.status_code == 200
+    verb, args = runtime.calls[-1]
+    assert verb == "get"
+    assert args == {"kind": "paper", "id": "pa2928", "view": "toc"}
+
+
+def test_console_get_deeplink_mutation_verb_prefills_only(client, runtime) -> None:
+    """A GET must stay safe: a ``delete``/``put`` deep-link prefills the
+    form but never fires (so a prefetch / shared link can't mutate)."""
+    resp = client.get(
+        "/console",
+        params={"verb": "delete", "args_text": "kind=memory id=42"},
+    )
+    assert resp.status_code == 200
+    assert runtime.calls == []  # not dispatched
+
+
+def test_console_get_deeplink_bad_arg_surfaces_error(client, runtime) -> None:
+    resp = client.get("/console", params={"verb": "search", "args_text": "novalue"})
+    assert resp.status_code == 200
+    assert "input error" in resp.text
+    assert runtime.calls == []
+
+
 def test_console_run_dispatches(client, runtime) -> None:
     resp = client.post(
         "/console/run", data={"verb": "search", "args_text": "kind=paper q=foo"}

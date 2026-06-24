@@ -178,6 +178,32 @@ def _normalise_exclude_slug(raw: str, *, store: Any) -> str | None:
     return resolved or None
 
 
+def _dedup_card_hits(
+    hits: list[tuple[Any, Any, float]],
+) -> list[tuple[Any, Any, float]]:
+    """Drop a paper's synthetic ``card_*`` hit when a body block of the
+    same paper is also on the page.
+
+    Paper search opts ``card_combined`` into the legs so a title / meta
+    query can surface a paper that has no matching body block. But when
+    a real (quotable) body block of that paper *also* matched, the card
+    is redundant noise — the body block is the better hit. So a card
+    hit survives only for refs that have no body hit in this page; for
+    refs with both, the card is dropped and ordering is otherwise
+    preserved.
+    """
+    body_ref_ids = {
+        ref.id
+        for block, ref, _score in hits
+        if not block.chunk_kind.startswith("card_")
+    }
+    return [
+        (block, ref, score)
+        for block, ref, score in hits
+        if not (block.chunk_kind.startswith("card_") and ref.id in body_ref_ids)
+    ]
+
+
 def _suggest_paper_slugs(slug: str, *, store: Any) -> list[str]:
     """Return up to ``_SUGGEST_TOP_N`` paper slugs that look like ``slug``.
 
@@ -802,6 +828,12 @@ class PaperHandler(Handler):
         # caller passing ``page=0`` doesn't blow the query up.
         search_offset = max(0, (int(page) - 1) * int(page_size))
 
+        # ``card_combined`` (the embedded title+authors+abstract+keywords
+        # card, ``ord=-1``) is opted into the search so a *title* / meta
+        # query surfaces the paper even when no body block matches — the
+        # card is reachable in both the lexical and semantic legs. Body
+        # chunks still win per paper (see the dedup below); the card is
+        # only a fallback introducer, not a quotable hit.
         hits = self.store.search_blocks(
             q=q,
             query_vec=query_vec,
@@ -815,7 +847,9 @@ class PaperHandler(Handler):
             exclude_ref_ids=exclude_ref_ids or None,
             year_from=year_from,
             year_to=year_to,
+            card_kinds=("card_combined",),
         )
+        hits = _dedup_card_hits(hits)
 
         # When a publish-date filter is active, count papers that match
         # the query but have NO year — they're silently dropped by the
@@ -922,6 +956,7 @@ class PaperHandler(Handler):
             scope_ref_id=scope_ref_id,
             tags=normalized_tags,
             exclude_ref_ids=exclude_ref_ids or None,
+            card_kinds=("card_combined",),
         )
 
         # Hits arrive sorted by RRF fused rank — best first. The
@@ -1125,6 +1160,9 @@ class PaperHandler(Handler):
             query_vec = None
         elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
+        # Opt the title/meta card in (same as :meth:`search`) so a paper
+        # is reachable by title in the cross-kind merge too, then dedup
+        # so a body hit wins over its own card.
         triples = self.store.search_blocks(
             q=q,
             query_vec=query_vec,
@@ -1134,7 +1172,9 @@ class PaperHandler(Handler):
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
             exclude_ref_ids=exclude_ref_ids or None,
+            card_kinds=("card_combined",),
         )
+        triples = _dedup_card_hits(triples)
         # Salience bump (block-level); no-op for dream-actor reads.
         self.store.bump_salience([block.id for block, _ref, _score in triples])
         return block_hits_to_search_hits(triples, kind="paper")

@@ -57,6 +57,15 @@ Hybrid lexical + semantic. Each result is a chunk handle `pc<chunk_id>`
 (paste back into `get`/`link`); order is the relevance signal. The legacy
 `slug~chunk` form still resolves on input.
 
+Search also matches a paper's **title / authors / abstract** (via its
+embedded metadata card), so a title query surfaces the paper even when
+the body never repeats the title. When a real body block of the same
+paper also matches, that body block is shown instead of the card — the
+card is a fallback introducer, not a duplicate hit. A paper whose
+metadata is missing (a bad-import stub) can still be unfindable; repair
+it with `edit(kind='paper', id='<slug>', title=…, authors=[…], year=…)`,
+which rebuilds the card.
+
 ## Find a paper that mentions an exact term
 ## Grep papers for a unique token (compound, DOI, exact string)
 ## Where does any paper mention this specific string?

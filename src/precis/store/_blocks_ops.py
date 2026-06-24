@@ -183,6 +183,33 @@ def _chunk_scope_clauses(
     return out
 
 
+def _ord_card_clause(card_kinds: tuple[str, ...] | None) -> str:
+    """The body-vs-card scope predicate for a search leg.
+
+    Search defaults to body chunks only (``c.ord >= 0``) — synthetic
+    cards (``ord < 0``) are ref-level introducers an agent searching
+    for *content* doesn't want in the hit list. When a caller opts in
+    via ``card_kinds`` (e.g. paper title search wanting the embedded
+    ``card_combined`` to be reachable), the listed card kinds are
+    unioned back in: ``(c.ord >= 0 OR c.chunk_kind IN ('card_combined'))``.
+
+    Returns a single literal (no bind params) so it splices safely into
+    both CTEs of the fused query — same double-splice contract as
+    :func:`_chunk_scope_clauses`. Card kinds are validated against the
+    strict ``card_[a-z_]+`` shape so the interpolation has no injection
+    surface.
+    """
+    if not card_kinds:
+        return "c.ord >= 0"
+    import re
+
+    for k in card_kinds:
+        if not re.fullmatch(r"card_[a-z_]+", k):
+            raise BadInput(f"bad card_kind {k!r}")
+    joined = ",".join(f"'{k}'" for k in card_kinds)
+    return f"(c.ord >= 0 OR c.chunk_kind IN ({joined}))"
+
+
 def _strip_abstract_label(text: str) -> str:
     """Drop a leading ``Abstract`` / ``ABSTRACT`` heading word."""
     import re
@@ -305,17 +332,19 @@ class BlocksMixin:
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
+        card_kinds: tuple[str, ...] | None = None,
     ) -> int:
         """Count chunks matching the lexical filter (no LIMIT).
 
         Companion to :meth:`search_blocks_lexical` for pagination
-        headers. Same WHERE clause (including the noise-floor guard)
-        so the "you're seeing N of K" header reflects the exact
-        universe the search would return at infinite limit.
+        headers. Same WHERE clause (including the noise-floor guard and
+        the ``card_kinds`` opt-in) so the "you're seeing N of K" header
+        reflects the exact universe the search would return at infinite
+        limit.
         """
         clauses = [
             "r.deleted_at IS NULL",
-            "c.ord >= 0",
+            _ord_card_clause(card_kinds),
             "c.tsv @@ qq.qq",
             *_block_noise_clauses(text_alias="c.text"),
         ]
@@ -437,12 +466,14 @@ class BlocksMixin:
         year_to: int | None = None,
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
+        card_kinds: tuple[str, ...] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Lexical search over ``chunks.tsv``.
 
         Returns ``(block, ref, rank)`` tuples sorted by
         ``ts_rank_cd DESC``. Only live (non-deleted) refs and body
-        chunks (``ord >= 0``) are considered.
+        chunks (``ord >= 0``) are considered — unless ``card_kinds`` opts
+        the listed synthetic cards back in (see :func:`_ord_card_clause`).
 
         Chunks whose text strips to fewer than 4 characters are
         excluded — they're punctuation, section markers, or other
@@ -451,7 +482,7 @@ class BlocksMixin:
         """
         clauses = [
             "r.deleted_at IS NULL",
-            "c.ord >= 0",
+            _ord_card_clause(card_kinds),
             "c.tsv @@ qq.qq",
             *_block_noise_clauses(text_alias="c.text"),
         ]
@@ -508,13 +539,17 @@ class BlocksMixin:
         year_to: int | None = None,
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
+        card_kinds: tuple[str, ...] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Cosine-distance semantic search via ``chunk_embeddings``.
 
         Returns ``(block, ref, distance)`` tuples sorted by distance
         ASC. Excludes chunks that have no embedding under the
         default embedder, chunks with ``ord < 0`` (synthetic cards),
-        and chunks whose text strips to <4 characters.
+        and chunks whose text strips to <4 characters. ``card_kinds``
+        opts the listed cards back in (see :func:`_ord_card_clause`) so
+        a paper's embedded ``card_combined`` is reachable by semantic
+        title/meta search.
 
         ``max_distance`` is a relevance floor on the cosine distance
         column. Without it, a nonsense query still returns the top-K
@@ -527,7 +562,7 @@ class BlocksMixin:
 
         clauses = [
             "r.deleted_at IS NULL",
-            "c.ord >= 0",
+            _ord_card_clause(card_kinds),
             "ce.vector IS NOT NULL",
             "ce.status = 'ok'",
             *_block_noise_clauses(text_alias="c.text"),
@@ -602,6 +637,7 @@ class BlocksMixin:
         year_to: int | None = None,
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
+        card_kinds: tuple[str, ...] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Hybrid search via reciprocal rank fusion over lex + sem.
 
@@ -614,6 +650,9 @@ class BlocksMixin:
         ``offset`` (default 0) skips the first N fused rows for
         pagination. The inner CTEs widen by ``offset`` to keep enough
         candidates for the outer LIMIT/OFFSET slice to be populated.
+
+        ``card_kinds`` opts the listed synthetic cards back into both
+        legs (see :func:`_ord_card_clause`).
         """
         if query_vec is None:
             return self.search_blocks_lexical(
@@ -629,6 +668,7 @@ class BlocksMixin:
                 year_to=year_to,
                 chunk_kinds=chunk_kinds,
                 chunk_ids=chunk_ids,
+                card_kinds=card_kinds,
             )
 
         with self.pool.connection() as conn:
@@ -636,7 +676,7 @@ class BlocksMixin:
 
         clauses = [
             "r.deleted_at IS NULL",
-            "c.ord >= 0",
+            _ord_card_clause(card_kinds),
             *_block_noise_clauses(text_alias="c.text"),
         ]
         params: list[Any] = []
@@ -774,6 +814,7 @@ class BlocksMixin:
         year_to: int | None = None,
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
+        card_kinds: tuple[str, ...] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Mode-dispatched block search — one entry point over the three
         ranking strategies, so callers pick a mode instead of choosing a
@@ -812,6 +853,7 @@ class BlocksMixin:
                 year_to=year_to,
                 chunk_kinds=chunk_kinds,
                 chunk_ids=chunk_ids,
+                card_kinds=card_kinds,
             )
         if m == "lexical" or query_vec is None:
             return self.search_blocks_lexical(
@@ -827,6 +869,7 @@ class BlocksMixin:
                 year_to=year_to,
                 chunk_kinds=chunk_kinds,
                 chunk_ids=chunk_ids,
+                card_kinds=card_kinds,
             )
         return self.search_blocks_fused(
             q=q,
@@ -844,6 +887,7 @@ class BlocksMixin:
             year_to=year_to,
             chunk_kinds=chunk_kinds,
             chunk_ids=chunk_ids,
+            card_kinds=card_kinds,
         )
 
     # -- relative navigation (ADR 0036) ------------------------------------

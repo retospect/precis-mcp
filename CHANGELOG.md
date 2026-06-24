@@ -8,6 +8,51 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-24 — Paper search matches titles/authors via the embedded card)
+
+- `search(kind='paper')` now surfaces a paper by its **title / authors /
+  abstract**, not just body text. The mechanism was already there but unused:
+  every paper carries a synthetic `card_combined` chunk (`ord = -1`,
+  title+authors+abstract+keywords) that the embed worker vectorises like any
+  other chunk — but both search legs hard-filtered `c.ord >= 0`, so the card
+  was never consulted. A title query therefore only hit a paper if its body
+  happened to repeat the title, and a chunkless / metadata-stub paper was
+  unfindable. Now an opt-in `card_kinds=` param on the three `search_blocks_*`
+  legs + `count_blocks_lexical` (helper `_ord_card_clause`) unions the listed
+  cards back in, and `PaperHandler.search` / `search_hits` pass
+  `card_kinds=('card_combined',)`. A body block still wins per paper —
+  `_dedup_card_hits` drops a paper's card hit when a real (quotable) body
+  block of the same paper is also on the page, so content queries are
+  unchanged and the card is only a fallback introducer. Default behaviour for
+  every other kind/caller is untouched (`card_kinds` defaults to `None` ⇒ the
+  old `c.ord >= 0`). Tests: `tests/test_paper_card_search.py` (lexical +
+  semantic opt-in, count, bad-card-kind guard, handler title-only surfacing,
+  handler body-wins dedup).
+  - **Caveat for the canonical "Attention Is All You Need":** its surviving
+    ref (2928) has empty title/authors, so its card text is literally
+    `[no metadata]` — title search can't help until the metadata is repaired
+    (`edit(kind='paper', id='pa2928', title=…, year=2017, authors=[…])`,
+    which rebuilds + re-embeds the card). The title-bearing row (41745) is a
+    superseded 0-chunk stub and stays unfindable by content/semantic search.
+
+### Added (2026-06-24 — Console deep-links: shareable, prefilled-and-run verb URLs)
+
+- The `/console` page now accepts `?verb=&args_text=` query params. A bare
+  `/console` still lands on a blank form; a deep-link **prefills** the verb
+  form, and — for the read-only verbs `get` / `search` — **runs** the call
+  on load and renders the result. So a single shareable URL like
+  `/console?verb=search&args_text=kind%3Dpaper+q%3D%22attention%22` lands on
+  an already-run query. Mutation verbs (`put` / `edit` / `delete` / …) still
+  prefill but never fire over GET (`_GET_RUNNABLE_VERBS`), so a shared link
+  or a browser prefetch can't mutate the tree — GET stays safe/idempotent.
+  The page also grows a small **Examples** block of one-click links
+  (search-a-paper, paper TOC via `get kind=paper id=pa2928 view=toc`, paper
+  overview). Note a paper with no minted cite_key is addressed by its
+  universal handle (`pa<ref_id>`, e.g. `pa2928`), not a bare numeric id —
+  the console arg-parser types `id=` as a *string*, so a bare `2928` takes
+  `get_ref`'s slug branch and 404s. `index()` and the POST `/run` form now
+  share one `_run_verb` parse+dispatch helper.
+
 ### Fixed (2026-06-24 — Status page: chunk-pipeline passes show real movement)
 
 - The Status page's "Chunk pipeline backlog" (last-done column) and "Recent
