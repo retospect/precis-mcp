@@ -22,7 +22,7 @@ from precis.handlers.oracle import OracleHandler
 from precis.handlers.presentation import PresentationHandler
 from precis.store import Store
 from precis.store.types import BlockInsert
-from tests.conftest import chunk_handle
+from tests.conftest import chunk_handle, record_handle
 
 # ── GripeHandler — first-class bug tracker ──────────────────────────
 
@@ -243,7 +243,7 @@ class TestOracle:
             body_text="Verify every claim against its cited source.",
         )
         out = oracle.get(id="reviewer-rigor")
-        assert "reviewer-rigor" in out.body
+        assert record_handle(oracle.store, "reviewer-rigor", kind="oracle") in out.body
         assert "Verify every claim" in out.body
 
     def test_get_missing_404s(self, oracle: OracleHandler) -> None:
@@ -477,7 +477,7 @@ class TestConversation:
     def test_overview_lists_turn_count(self, conv: ConversationHandler) -> None:
         self._seed_conv(conv.store, "thread-1", "About auth", ["hi", "hello"])
         out = conv.get(id="thread-1")
-        assert "thread-1" in out.body
+        assert record_handle(conv.store, "thread-1", kind="conv") in out.body
         assert "2 turns" in out.body
         assert "participants" in out.body
 
@@ -497,7 +497,7 @@ class TestConversation:
     def test_single_turn(self, conv: ConversationHandler) -> None:
         self._seed_conv(conv.store, "thread-1", "x", ["alpha", "beta", "gamma"])
         out = conv.get(id="thread-1~1")
-        assert "thread-1~1" in out.body
+        assert chunk_handle(conv.store, "thread-1", kind="conv", ord=1) in out.body
         assert "beta" in out.body
         assert "alpha" not in out.body
         assert "gamma" not in out.body
@@ -682,7 +682,9 @@ class TestPresentation:
         pres.put(id="d", text="beta")
         pres.put(id="d", text="gamma")
         out = pres.get(id="d~1")
-        assert "d~1 (slide)" in out.body
+        assert (
+            f"{chunk_handle(pres.store, 'd', kind='pres', ord=1)} (slide)" in out.body
+        )
         assert "beta" in out.body
         assert "alpha" not in out.body
 

@@ -17,7 +17,7 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._patent_ops import FakeOpsClient
 from precis.handlers.patent import PatentHandler
 from precis.store import Store, Tag
-from tests.conftest import chunk_handle
+from tests.conftest import chunk_handle, record_handle
 
 FIXTURES = Path(__file__).parent / "fixtures" / "patent"
 
@@ -112,7 +112,9 @@ class TestGetIngestFlow:
     ) -> None:
         response = handler.get(id="EP1234567B1")
         assert "Photocatalytic NOx" in response.body
-        assert "ep1234567b1" in response.body
+        assert (
+            record_handle(handler.store, "ep1234567b1", kind="patent") in response.body
+        )
         # Three OPS endpoints called.
         endpoints = {c[0] for c in fake_ops.calls}
         assert endpoints == {"biblio", "description", "claims"}

@@ -150,7 +150,11 @@ class PresentationHandler(Handler):
         for block, ref, score in hits:
             slug = ref.slug or "?"
             preview = (block.text[:160] + "…") if len(block.text) > 160 else block.text
-            lines.append(f"\n## {slug}~{block.pos}  (score={score:.4f})")
+            handle = (
+                handle_registry.try_format("pres", block.id, chunk=True)
+                or f"{slug}~{block.pos}"
+            )
+            lines.append(f"\n## {handle}  (score={score:.4f})")
             lines.append(f"_{ref.title}_")
             lines.append(preview)
         return Response(body="\n".join(lines))
@@ -387,7 +391,8 @@ class PresentationHandler(Handler):
     def _render_overview(self, slug: str, ref: Any) -> Response:
         n_blocks = self.store.count_blocks(ref.id)
         meta = ref.meta or {}
-        lines = [f"# {slug}", f"_{ref.title}_"]
+        handle = handle_registry.format_handle("pres", ref.id)
+        lines = [f"# {handle}", f"_{ref.title}_"]
         venue = meta.get("venue")
         date = meta.get("date")
         if venue or date:
@@ -402,12 +407,12 @@ class PresentationHandler(Handler):
         body += render_next_section(
             [
                 (
-                    f"get(kind='pres', id='{slug}/full')",
+                    f"get(id='{handle}/full')",
                     "read the whole body",
                 ),
-                (f"get(kind='pres', id='{slug}~0')", "read the first block"),
+                (f"get(id='{handle}~0')", "read the first block"),
                 (
-                    f"search(kind='pres', q='...', scope='{slug}')",
+                    f"search(kind='pres', q='...', scope='{handle}')",
                     "search this presentation",
                 ),
             ]
@@ -418,7 +423,8 @@ class PresentationHandler(Handler):
         blocks = self.store.list_blocks_for_ref(ref.id)
         if not blocks:
             return Response(body=f"{slug}: no blocks")
-        lines = [f"# {slug} - full", f"_{ref.title}_", ""]
+        handle = handle_registry.format_handle("pres", ref.id)
+        lines = [f"# {handle} - full", f"_{ref.title}_", ""]
         for b in blocks:
             label = "slide" if b.chunk_kind == "pres_slide" else "block"
             lines.append(f"## {label} ~{b.pos}")
@@ -435,7 +441,10 @@ class PresentationHandler(Handler):
             )
         b = blocks[0]
         label = "slide" if b.chunk_kind == "pres_slide" else "block"
-        return Response(body=f"# {slug}~{pos} ({label})\n{b.text}")
+        chunk_handle = (
+            handle_registry.try_format("pres", b.id, chunk=True) or f"{slug}~{pos}"
+        )
+        return Response(body=f"# {chunk_handle} ({label})\n{b.text}")
 
 
 def _parse_pres_id(raw: str) -> tuple[str, int | None, str | None]:

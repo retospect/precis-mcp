@@ -440,7 +440,8 @@ class ConversationHandler(Handler):
         n_blocks = self.store.count_blocks(ref.id)
         meta = ref.meta or {}
         participants = meta.get("participants") or []
-        lines = [f"# {slug}", f"_{ref.title}_"]
+        handle = handle_registry.format_handle("conv", ref.id)
+        lines = [f"# {handle}", f"_{ref.title}_"]
         if participants:
             lines.append("participants: " + ", ".join(map(str, participants)))
         lines.append("")
@@ -449,12 +450,12 @@ class ConversationHandler(Handler):
         body += render_next_section(
             [
                 (
-                    f"get(kind='conv', id='{slug}/transcript')",
+                    f"get(id='{handle}/transcript')",
                     "read the whole transcript",
                 ),
-                (f"get(kind='conv', id='{slug}~0')", "read the first turn"),
+                (f"get(id='{handle}~0')", "read the first turn"),
                 (
-                    f"search(kind='conv', q='...', scope='{slug}')",
+                    f"search(kind='conv', q='...', scope='{handle}')",
                     "search this thread",
                 ),
             ]
@@ -465,7 +466,8 @@ class ConversationHandler(Handler):
         blocks = self.store.list_blocks_for_ref(ref.id)
         if not blocks:
             return Response(body=f"{slug}: no turns")
-        lines = [f"# {slug} - transcript", f"_{ref.title}_", ""]
+        handle = handle_registry.format_handle("conv", ref.id)
+        lines = [f"# {handle} - transcript", f"_{ref.title}_", ""]
         for b in blocks:
             lines.append(f"## turn ~{b.pos}")
             lines.append(b.text)
@@ -480,7 +482,10 @@ class ConversationHandler(Handler):
                 next=f"get(kind='conv', id='{slug}/transcript')",
             )
         b = blocks[0]
-        return Response(body=f"# {slug}~{pos}\n{b.text}")
+        chunk_handle = (
+            handle_registry.try_format("conv", b.id, chunk=True) or f"{slug}~{pos}"
+        )
+        return Response(body=f"# {chunk_handle}\n{b.text}")
 
     # ── asa_bot preamble views ──────────────────────────────────────
 
@@ -556,8 +561,9 @@ class ConversationHandler(Handler):
         window = all_blocks[lower:upper]
         if not window:
             return Response(body=f"{slug}: digest empty")
+        handle = handle_registry.format_handle("conv", ref.id)
         lines = [
-            f"# {slug} - digest of turns ~{window[0].pos}..~{window[-1].pos}",
+            f"# {handle} - digest of turns ~{window[0].pos}..~{window[-1].pos}",
             f"_{ref.title}_",
             "",
         ]

@@ -38,6 +38,7 @@ from precis.handlers.plaintext import PlaintextHandler
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Ref
+from precis.utils import handle_registry
 from precis.utils.md_parse import MdBlock, block_meta, parse_markdown
 from precis.utils.next_block import render_next_section
 
@@ -130,9 +131,10 @@ class MarkdownHandler(PlaintextHandler):
         blocks = self.store.list_blocks_for_ref(ref.id)
         if not blocks:
             return Response(body=f"{ref.slug}: no blocks indexed")
+        handle = handle_registry.format_handle(self._KIND, ref.id)
         toc = build_toc(blocks)
         if not toc or not any(s.title for s in toc):
-            return Response(body=f"# {ref.slug}\n_{ref.title}_\n\nno headings")
+            return Response(body=f"# {handle}\n_{ref.title}_\n\nno headings")
         blocks_by_pos = {b.pos: b for b in blocks}
         body = render_toc(
             slug=ref.slug or "?",
@@ -186,6 +188,7 @@ class MarkdownHandler(PlaintextHandler):
         self, ref: Ref
     ) -> list[tuple[str, str]]:
         """Markdown's hint set mentions ``/toc`` and ``block`` nouns."""
+        handle = handle_registry.format_handle(self._KIND, ref.id)
         return [
             (f"get(kind='markdown', id='{ref.slug}/toc')", "full TOC"),
             (f"get(kind='markdown', id='{ref.slug}/raw')", "full source"),
@@ -194,7 +197,7 @@ class MarkdownHandler(PlaintextHandler):
                 "read one block by slug",
             ),
             (
-                f"search(kind='markdown', q='...', scope='{ref.slug}')",
+                f"search(kind='markdown', q='...', scope='{handle}')",
                 "search inside this file",
             ),
         ]

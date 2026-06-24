@@ -460,6 +460,7 @@ class PatentHandler(Handler):
     def _render_overview(self, ref: Ref) -> Response:
         meta = ref.meta or {}
         slug = ref.slug or "?"
+        handle = handle_registry.format_handle("patent", ref.id)
         pub_date = meta.get("publication_date")
         family = meta.get("family_id")
         applicants = ", ".join(
@@ -467,7 +468,7 @@ class PatentHandler(Handler):
         )
         cpc = meta.get("cpc_classes") or []
 
-        lines = [f"# {slug}", f"_{ref.title}_"]
+        lines = [f"# {handle}", f"_{ref.title}_"]
         if applicants:
             lines.append(applicants)
         bib_line: list[str] = []
@@ -514,6 +515,7 @@ class PatentHandler(Handler):
     def _render_view(self, ref: Ref, view: str) -> Response:
         meta = ref.meta or {}
         slug = ref.slug or "?"
+        handle = handle_registry.format_handle("patent", ref.id)
 
         if view == "abstract":
             abstract = meta.get("abstract")
@@ -534,7 +536,7 @@ class PatentHandler(Handler):
             # (description in the early third, claims in the last);
             # for now the pure dump matches what the ingester labels.
             section = "Description" if view == "description" else "Claims"
-            lines = [f"# {slug} - {section}"]
+            lines = [f"# {handle} - {section}"]
             for b in blocks:
                 lines.append(b.text)
                 lines.append("")
@@ -551,11 +553,12 @@ class PatentHandler(Handler):
 
     def _render_chunks(self, ref: Ref, chunk: tuple[int, int]) -> Response:
         lo, hi = chunk
+        handle = handle_registry.format_handle("patent", ref.id)
         blocks = self.store.list_blocks_for_ref(ref.id, pos_range=(lo, hi))
         if not blocks:
             raise NotFound(
                 f"no blocks in {ref.slug} for range ~{lo}..{hi}",
-                next=f"get(kind='patent', id={ref.slug!r})",
+                next=f"get(id={handle!r})",
             )
         slug = ref.slug or "?"
         lines: list[str] = []
@@ -745,7 +748,8 @@ def _ops_hit_to_search_hit(hit: OpsHit) -> SearchHit:
 
 def _format_biblio(ref: Ref, meta: dict[str, Any]) -> str:
     slug = ref.slug or "?"
-    lines = [f"# {slug} - Bibliographic data", f"_{ref.title}_", ""]
+    handle = handle_registry.format_handle("patent", ref.id)
+    lines = [f"# {handle} - Bibliographic data", f"_{ref.title}_", ""]
     pairs: list[tuple[str, str]] = []
     pairs.append(("DOCDB id", slug.upper()))
     if meta.get("publication_date"):

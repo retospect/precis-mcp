@@ -106,11 +106,14 @@ class OracleHandler(Handler):
         effective_view = view or path_view
 
         ref = resolve_live_slug_ref(self.store, kind="oracle", id=slug)
+        handle = handle_registry.format_handle("oracle", ref.id)
         blocks = self.store.list_blocks_for_ref(ref.id)
 
         # Empty oracle — no blocks, body lives in the title only.
         if not blocks:
-            return Response(body=f"# oracle {slug}\n_{ref.title}_\n\n(empty tradition)")
+            return Response(
+                body=f"# oracle {handle}\n_{ref.title}_\n\n(empty tradition)"
+            )
 
         # Explicit view takes precedence over the selector.
         if effective_view is not None:
@@ -118,10 +121,7 @@ class OracleHandler(Handler):
                 raise BadInput(
                     f"unknown oracle view {effective_view!r}",
                     options=list(_ORACLE_VIEWS),
-                    next=(
-                        f"get(kind='oracle', id={slug!r}, view='index') "
-                        "to list entry handles"
-                    ),
+                    next=(f"get(id={handle!r}, view='index') to list entry handles"),
                 )
             return self._render_index(ref, blocks)
 
@@ -134,7 +134,7 @@ class OracleHandler(Handler):
                     f"oracle selector must be an integer entry position, "
                     f"got {selector!r}",
                     next=(
-                        f"get(kind='oracle', id={slug!r}, view='index') "
+                        f"get(id={handle!r}, view='index') "
                         "to see available entry positions"
                     ),
                 ) from None
@@ -145,7 +145,7 @@ class OracleHandler(Handler):
         # hints toward the deterministic paths.
         if len(blocks) == 1:
             body = blocks[0].text
-            return Response(body=f"# oracle {slug}\n_{ref.title}_\n\n{body}")
+            return Response(body=f"# oracle {handle}\n_{ref.title}_\n\n{body}")
         return self._render_random_entry(ref, blocks)
 
     def search(  # type: ignore[override]
@@ -296,16 +296,17 @@ class OracleHandler(Handler):
         idx = secrets.randbelow(len(blocks))
         block = blocks[idx]
         slug = ref.slug or "???"
+        handle = handle_registry.format_handle("oracle", ref.id)
         title = _entry_title(block) or f"entry {block.pos}"
         body = f"# oracle {slug}~{block.pos}\n_{ref.title} - {title}_\n\n{block.text}"
         body += render_next_section(
             [
                 (
-                    f"get(kind='oracle', id={slug!r})",
+                    f"get(id={handle!r})",
                     "consult again (random pick)",
                 ),
                 (
-                    f"get(kind='oracle', id='{slug}/index')",
+                    f"get(id='{handle}/index')",
                     f"see all {len(blocks)} entries",
                 ),
                 (
@@ -328,6 +329,7 @@ class OracleHandler(Handler):
         """
         block = next((b for b in blocks if b.pos == pos), None)
         slug = ref.slug or "???"
+        handle = handle_registry.format_handle("oracle", ref.id)
         if block is None:
             lo = min(b.pos for b in blocks)
             hi = max(b.pos for b in blocks)
@@ -335,7 +337,7 @@ class OracleHandler(Handler):
             raise NotFound(
                 f"oracle {slug!r} has no entry at position {pos} "
                 f"(valid range: {range_hint})",
-                next=(f"get(kind='oracle', id='{slug}/index') to list entry positions"),
+                next=(f"get(id='{handle}/index') to list entry positions"),
             )
         title = _entry_title(block) or f"entry {pos}"
         body = f"# oracle {slug}~{pos}\n_{ref.title} - {title}_\n\n{block.text}"
@@ -357,13 +359,13 @@ class OracleHandler(Handler):
             )
         nav.append(
             (
-                f"get(kind='oracle', id={slug!r})",
+                f"get(id={handle!r})",
                 "another random entry",
             )
         )
         nav.append(
             (
-                f"get(kind='oracle', id='{slug}/index')",
+                f"get(id='{handle}/index')",
                 "full entry catalog",
             )
         )
@@ -379,8 +381,9 @@ class OracleHandler(Handler):
         default produced.
         """
         slug = ref.slug or "???"
+        handle = handle_registry.format_handle("oracle", ref.id)
         lines = [
-            f"# oracle {slug}/index",
+            f"# oracle {handle}/index",
             f"_{ref.title}_",
             f"\n{len(blocks)} entries:",
         ]
@@ -399,7 +402,7 @@ class OracleHandler(Handler):
         body += render_next_section(
             [
                 (
-                    f"get(kind='oracle', id={slug!r})",
+                    f"get(id={handle!r})",
                     "random entry (default)",
                 ),
                 (

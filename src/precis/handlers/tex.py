@@ -131,13 +131,14 @@ class TexHandler(PlaintextHandler):
         n_sections = self._toc_walk(ref, visited=visited, lines=lines, depth=0)
         if n_sections == 0:
             lines.append("(no sectioning commands found)")
+        handle = handle_registry.format_handle(self._KIND, ref.id)
         body = "\n".join(lines)
         body += render_next_section(
             [
                 (f"get(kind='{self._KIND}', id='{ref.slug}/raw')", "full source"),
-                (f"get(kind='{self._KIND}', id='{ref.slug}')", "overview"),
+                (f"get(id='{handle}')", "overview"),
                 (
-                    f"search(kind='{self._KIND}', q='...', scope='{ref.slug}')",
+                    f"search(kind='{self._KIND}', q='...', scope='{handle}')",
                     "search inside this file",
                 ),
             ]
@@ -184,7 +185,7 @@ class TexHandler(PlaintextHandler):
                 title = meta.get("section_title") or ""
                 command = TEX_SECTION_NAMES[level + 2]  # offset for part=-2
                 handle = (
-                    handle_registry.try_format(ref.kind, block.id, chunk=True)
+                    handle_registry.try_format(self._KIND, block.id, chunk=True)
                     or f"{ref.slug}~{block.slug}"
                 )
                 lines.append(f"{indent}- \\{command}{{{title}}}  (`{handle}`)")

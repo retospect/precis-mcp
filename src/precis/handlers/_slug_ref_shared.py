@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 
 from precis.errors import BadInput, NotFound
 from precis.response import Response
+from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
@@ -86,7 +87,10 @@ def search_slug_refs(
     ]
     for ref, rank in hits:
         preview = (ref.title[:140] + "…") if len(ref.title) > 140 else ref.title
-        lines.append(f"\n## {kind} {ref.slug}  (rank={rank:.2f})\n{preview}")
+        # ADR 0036: the record's universal handle (e.g. ``or123``) is the
+        # address; it self-identifies the kind.
+        handle = handle_registry.try_format(kind, ref.id) or f"{kind} {ref.slug}"
+        lines.append(f"\n## {handle}  (rank={rank:.2f})\n{preview}")
     return Response(body="\n".join(lines))
 
 
@@ -167,10 +171,13 @@ def render_slug_ref_list(
         preview = (
             (r.title[:preview_len] + "…") if len(r.title) > preview_len else r.title
         )
+        # ADR 0036: lead each row with the record handle (the address); keep
+        # the slug/path too — it's the human key for browsing (esp. files).
+        handle = handle_registry.try_format(kind, r.id) or "?"
         slug = r.slug or "?"
         if len(slug) > slug_col_width:
             slug = slug[: slug_col_width - 1] + "…"
-        lines.append(f"  {slug:<{slug_col_width}}  {preview}")
+        lines.append(f"  {handle:<8}{slug:<{slug_col_width}}  {preview}")
     body = "\n".join(lines)
     if populated_next:
         body += render_next_section(populated_next)
@@ -239,7 +246,13 @@ def resolve_live_slug_ref(
                   is therefore unreachable through ``get_ref``).
     """
     slug = str(id).strip()
-    ref = store.get_ref(kind=kind, id=slug)
+    # ADR 0036: accept the universal record handle (e.g. ``or123``) — the
+    # form output now emits — resolving it by ref_id; else the slug path.
+    parsed = handle_registry.parse(slug)
+    if parsed is not None and parsed[0] == kind and not parsed[1]:
+        ref = store.get_ref(kind=kind, id=parsed[2])
+    else:
+        ref = store.get_ref(kind=kind, id=slug)
     if ref is None:
         raise NotFound(
             f"{kind} slug {slug!r} not found",

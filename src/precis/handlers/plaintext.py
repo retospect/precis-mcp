@@ -1454,8 +1454,9 @@ class PlaintextHandler(Handler):
         # use a different block grammar (markdown = blocks, tex =
         # section-scoped blocks) override :meth:`_overview_blocks_label`
         # for the right word.
+        handle = handle_registry.format_handle(self._KIND, ref.id)
         lines = [
-            f"# {ref.slug}",
+            f"# {handle}",
             f"_{ref.title}_",
             "",
             f"path:        {rel}",
@@ -1484,6 +1485,7 @@ class PlaintextHandler(Handler):
 
     def _overview_next_hints(self, ref: Ref) -> list[tuple[str, str]]:
         """Next: hint list for the overview response."""
+        handle = handle_registry.format_handle(self._KIND, ref.id)
         return [
             (f"get(kind='{self._KIND}', id='{ref.slug}/raw')", "full source"),
             (
@@ -1491,7 +1493,7 @@ class PlaintextHandler(Handler):
                 "read one paragraph by slug",
             ),
             (
-                f"search(kind='{self._KIND}', q='...', scope='{ref.slug}')",
+                f"search(kind='{self._KIND}', q='...', scope='{handle}')",
                 "search inside this file",
             ),
         ]
@@ -1511,7 +1513,9 @@ class PlaintextHandler(Handler):
             if block is None:
                 raise NotFound(
                     f"no {self._block_noun()} at ~{pos} in {ref.slug!r}",
-                    next=f"get(kind='{self._KIND}', id='{ref.slug}')",
+                    next=(
+                        f"get(id='{handle_registry.format_handle(self._KIND, ref.id)}')"
+                    ),
                 )
         else:
             block = self.store.get_block(ref.id, slug=sel.value)
@@ -1544,17 +1548,21 @@ class PlaintextHandler(Handler):
                     raise NotFound(
                         msg,
                         options=options or None,
-                        next=f"get(kind='{self._KIND}', id='{ref.slug}')",
+                        next=(
+                            "get(id="
+                            f"'{handle_registry.format_handle(self._KIND, ref.id)}')"
+                        ),
                     )
         handle = (
-            handle_registry.try_format(ref.kind, block.id, chunk=True)
+            handle_registry.try_format(self._KIND, block.id, chunk=True)
             or f"{ref.slug}~{block.slug or block.pos}"
         )
+        record_handle = handle_registry.format_handle(self._KIND, ref.id)
         body = f"# {handle}\n{block.text}"
         body += render_next_section(
             [
                 (
-                    f"get(kind='{self._KIND}', id='{ref.slug}')",
+                    f"get(id='{record_handle}')",
                     "back to overview",
                 ),
                 (
@@ -1601,7 +1609,7 @@ class PlaintextHandler(Handler):
         if not matched:
             raise NotFound(
                 (f"no block intersects L{line_start}-{line_end} in {ref.slug!r}"),
-                next=f"get(kind='{self._KIND}', id='{ref.slug}')",
+                next=(f"get(id='{handle_registry.format_handle(self._KIND, ref.id)}')"),
             )
         pieces: list[str] = []
         for b in matched:
@@ -1611,7 +1619,7 @@ class PlaintextHandler(Handler):
             name = b.slug or str(b.pos)
             line_str = f"L{b_start}-{b_end}" if b_end != b_start else f"L{b_start}"
             handle = (
-                handle_registry.try_format(ref.kind, b.id, chunk=True)
+                handle_registry.try_format(self._KIND, b.id, chunk=True)
                 or f"{ref.slug}~{name}"
             )
             pieces.append(f"# {handle}  (block {b.pos}, {line_str})\n{b.text}")
