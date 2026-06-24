@@ -1792,7 +1792,10 @@ class PrecisRuntime:
         If ``ident`` is a well-formed, resolvable record handle, set
         ``args['kind']`` from its 2-char type code and rewrite
         ``args['id']`` to the per-kind public id (slug or ``str(ref_id)``)
-        — so the existing per-kind handler resolves it with no change.
+        — so the existing per-kind handler resolves it with no change. A
+        record handle may carry a trailing chunk/view selector
+        (``pa123~0..5``, ``pa123/toc``), which is reattached to the public
+        id so the per-kind handler parses it as it would on a slug.
 
         Returns ``True`` if it routed the handle, ``False`` otherwise
         (non-handle, unknown/chunk handle, or an explicit ``kind=`` that
@@ -1801,7 +1804,11 @@ class PrecisRuntime:
         """
         if self.store is None:
             return False
-        normalized = handle_registry.normalize(ident)
+        # Split off a trailing ``~selector`` / ``/view`` so the base handle
+        # parses; the suffix is reattached to the resolved public id below.
+        mm = re.match(r"^([a-zA-Z]{2}\d+)([~/].*)$", ident.strip())
+        base, suffix = (mm.group(1), mm.group(2)) if mm else (ident, "")
+        normalized = handle_registry.normalize(base)
         if not handle_registry.is_well_formed(normalized):
             return False
         resolved = self.store.resolve_handle(normalized)
@@ -1814,14 +1821,19 @@ class PrecisRuntime:
             # Chunk handle → per-kind chunk selector. Slug-document kinds take
             # ``slug~ord`` (Block.pos == chunks.ord). Numeric-chunk kinds
             # (gripe/message/…) have no ``~ord`` selector yet, so fall through
-            # (a chunk handle has no slug match → natural NotFound).
-            if resolved.chunk_ord is None or resolved.public_id == str(resolved.ref_id):
+            # (a chunk handle has no slug match → natural NotFound). A chunk
+            # handle takes no further selector.
+            if (
+                suffix
+                or resolved.chunk_ord is None
+                or resolved.public_id == str(resolved.ref_id)
+            ):
                 return False
             args["kind"] = resolved.kind
             args["id"] = f"{resolved.public_id}~{resolved.chunk_ord}"
             return True
         args["kind"] = resolved.kind
-        args["id"] = resolved.public_id
+        args["id"] = resolved.public_id + suffix
         return True
 
     def _maybe_split_prefixed_id(self, args: dict[str, Any]) -> None:

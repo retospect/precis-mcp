@@ -356,6 +356,16 @@ def id_of(body: str) -> int:
     return int(body.split("id=", 1)[1].split()[0].rstrip(",.()"))
 
 
+def record_handle(store: Store, slug: str, *, kind: str = "paper") -> str:
+    """The ADR 0036 universal record handle (e.g. ``pa123``) for a
+    slug-addressed ref — the form output now emits for the record itself."""
+    from precis.utils import handle_registry
+
+    ref = store.get_ref(kind=kind, id=slug)
+    assert ref is not None, f"no live {kind} {slug!r}"
+    return handle_registry.format_handle(kind, ref.id)
+
+
 def chunk_handle(store: Store, slug: str, *, kind: str = "paper", ord: int = 0) -> str:
     """The ADR 0036 universal chunk handle (e.g. ``pc40``) for a
     slug-addressed ref's body chunk at ``ord``.

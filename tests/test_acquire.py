@@ -14,6 +14,7 @@ from precis.errors import BadInput
 from precis.handlers import paper as paper_mod
 from precis.handlers.paper import PaperHandler, _parse_acquire_identifier
 from precis.store import Store
+from tests.conftest import record_handle
 
 
 @pytest.fixture
@@ -116,9 +117,9 @@ def test_acquire_is_idempotent(handler: PaperHandler, store: Store) -> None:
     # A collapse hit returns the existing paper, not just "already tracked":
     # the slug handle + a get hint so the caller can read it directly.
     second_ref = store.get_ref(kind="paper", id=first)
-    assert second_ref is not None
-    assert f"paper:{second_ref.slug}" in second.body
-    assert "get(kind='paper'" in second.body
+    assert second_ref is not None and second_ref.slug is not None
+    assert record_handle(store, second_ref.slug) in second.body
+    assert "get(id=" in second.body
 
 
 def test_acquire_title_only_mints_backlog_stub(
@@ -161,8 +162,8 @@ def test_acquire_does_not_retag_existing_paper(
     assert "already tracked" in r.body
     assert _ref_id(r.body) == existing.id
     # the response returns the existing paper: its handle + a get hint
-    assert "paper:held2020" in r.body
-    assert "get(kind='paper'" in r.body
+    assert record_handle(store, "held2020") in r.body
+    assert "get(id=" in r.body
     # never slap DREAM:acquire onto an already-held paper
     assert "DREAM:acquire" not in _tags(store, existing.id)
 

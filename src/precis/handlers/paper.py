@@ -68,6 +68,12 @@ from precis.utils.text import excerpt as _excerpt
 from precis.utils.toc import ChunksForToc
 from precis.utils.toc_db import render_from_store
 
+
+def _pa(ref: Ref) -> str:
+    """ADR 0036 paper record handle (e.g. ``pa123``)."""
+    return handle_registry.format_handle("paper", ref.id)
+
+
 # ---------------------------------------------------------------------------
 # Public spec
 # ---------------------------------------------------------------------------
@@ -577,10 +583,10 @@ class PaperHandler(Handler):
                 held = getattr(existing, "pdf_sha256", None) is not None
                 title = (existing.title or "").split("\n", 1)[0].strip()
                 where = "held" if held else "stub (awaiting fetch)"
-                line = f"\n→ {where}: paper:{slug}"
+                line = f"\n→ {where}: {_pa(existing)}"
                 if title and title.lower() != "paper":
                     line += f" — {title[:120]}"
-                line += f"\n  get(kind='paper', id='{slug}') to read it"
+                line += f"\n  get(id='{_pa(existing)}') to read it"
                 body += line
 
         return Response(body=body)
@@ -670,10 +676,10 @@ class PaperHandler(Handler):
             # MCP critic flagged ``id={slug!r}~{lo}..{hi}/toc`` as
             # producing ``id='slug'~38..38/toc`` (slug repr'd, suffix
             # outside the quotes) which is a SyntaxError when pasted.
-            recovery_id = f"{slug}~{chunk_spec[0]}..{chunk_spec[1]}/toc"
+            recovery_id = f"{_pa(ref)}~{chunk_spec[0]}..{chunk_spec[1]}/toc"
             raise BadInput(
                 f"cannot combine chunk selector (~N..M) with view={effective_view!r}",
-                next=f"get(kind='paper', id={recovery_id!r})",
+                next=f"get(id={recovery_id!r})",
             )
 
         if chunk_spec is not None:
@@ -730,15 +736,26 @@ class PaperHandler(Handler):
 
         scope_ref_id: int | None = None
         if scope is not None:
-            scope_slug = _maybe_resolve_doi(self.store, str(scope))
-            scope_ref = resolve_live_slug_ref(
-                self.store,
-                kind="paper",
-                id=scope_slug,
-                next_hint="search(kind='paper', q='...') to find one",
-                options=_suggest_paper_slugs(scope, store=self.store),
+            # ADR 0036: ``scope=`` accepts a universal handle (``pa<id>`` /
+            # ``pc<id>``) — the form output now emits — resolving it to the
+            # paper's ref_id; else the legacy slug / DOI path.
+            scope_resolved = (
+                self.store.resolve_handle(str(scope))
+                if handle_registry.parse(str(scope)) is not None
+                else None
             )
-            scope_ref_id = scope_ref.id
+            if scope_resolved is not None:
+                scope_ref_id = scope_resolved.ref_id
+            else:
+                scope_slug = _maybe_resolve_doi(self.store, str(scope))
+                scope_ref = resolve_live_slug_ref(
+                    self.store,
+                    kind="paper",
+                    id=scope_slug,
+                    next_hint="search(kind='paper', q='...') to find one",
+                    options=_suggest_paper_slugs(scope, store=self.store),
+                )
+                scope_ref_id = scope_ref.id
 
         # ``exclude=['slug1', 'slug2']`` drops every block of the
         # listed papers from the result set. Coarse / ref-level: a
@@ -987,10 +1004,14 @@ class PaperHandler(Handler):
         # response shape consistent across kinds.
         nav: list[tuple[str, str]] = []
         if hits:
-            first_handle = f"{hits[0][1].slug or '???'}~{hits[0][0].pos}"
+            # ADR 0036: point at the top hit by its computed chunk handle.
+            first_handle = (
+                handle_registry.try_format(hits[0][1].kind, hits[0][0].id, chunk=True)
+                or f"{hits[0][1].slug or '???'}~{hits[0][0].pos}"
+            )
             nav.append(
                 (
-                    f"get(kind='paper', id='{first_handle}')",
+                    f"get(id='{first_handle}')",
                     "read the full text of any hit (paste any handle above)",
                 )
             )
@@ -1015,7 +1036,12 @@ class PaperHandler(Handler):
                     )
                 )
             else:
-                top_slug = (hits[0][1].slug or "???") if hits else None
+                # ADR 0036: scope by the top hit's paper record handle.
+                top_handle = (
+                    handle_registry.format_handle("paper", hits[0][1].id)
+                    if hits
+                    else None
+                )
 
                 # Pagination continuation: bump page=N. page= is the
                 # canonical pagination knob; exclude= is a hand-skip
@@ -1030,11 +1056,11 @@ class PaperHandler(Handler):
                         )
                     )
 
-                if scope is None and top_slug is not None:
+                if scope is None and top_handle is not None:
                     nav.append(
                         (
-                            f"search(kind='paper', q={q!r}, scope={top_slug!r})",
-                            f"narrow to blocks inside {top_slug}",
+                            f"search(kind='paper', q={q!r}, scope='{top_handle}')",
+                            f"narrow to blocks inside {top_handle}",
                         )
                     )
                 # Round-2 picky F-9, 2026-05-30: previous wording was
@@ -1349,7 +1375,7 @@ class PaperHandler(Handler):
         if banner:
             lines.append(banner)
             lines.append("")
-        lines.extend([f"# {ref.slug}", f"_{_clean_inline_text(ref.title)}_"])
+        lines.extend([f"# {_pa(ref)}", f"_{_clean_inline_text(ref.title)}_"])
         if authors:
             lines.append(authors)
         venue: list[str] = []
@@ -1380,19 +1406,19 @@ class PaperHandler(Handler):
         body += render_next_section(
             [
                 (
-                    f"get(kind='paper', id='{ref.slug}', view='toc')",
+                    f"get(id='{_pa(ref)}', view='toc')",
                     "see the TOC",
                 ),
                 (
-                    f"get(kind='paper', id='{ref.slug}~0..5')",
+                    f"get(id='{_pa(ref)}~0..5')",
                     "read the first 6 chunks",
                 ),
                 (
-                    f"get(kind='paper', id='{ref.slug}', view='bibtex')",
+                    f"get(id='{_pa(ref)}', view='bibtex')",
                     "get the BibTeX entry",
                 ),
                 (
-                    f"search(kind='paper', q='...', scope='{ref.slug}')",
+                    f"search(kind='paper', q='...', scope='{_pa(ref)}')",
                     "search blocks within this paper",
                 ),
             ]
@@ -1422,15 +1448,15 @@ class PaperHandler(Handler):
                 body += render_next_section(
                     [
                         (
-                            f"get(kind='paper', id='{slug}', view='toc')",
+                            f"get(id='{_pa(ref)}', view='toc')",
                             "see the TOC and pick a section",
                         ),
                         (
-                            f"get(kind='paper', id='{slug}~0..5')",
+                            f"get(id='{_pa(ref)}~0..5')",
                             "read the first 6 chunks (often include the abstract)",
                         ),
                         (
-                            f"search(kind='paper', q='abstract', scope={slug!r})",
+                            f"search(kind='paper', q='abstract', scope='{_pa(ref)}')",
                             "search blocks within this paper",
                         ),
                     ]
@@ -1451,11 +1477,11 @@ class PaperHandler(Handler):
             body += render_next_section(
                 [
                     (
-                        f"get(kind='paper', id='{slug}', view='toc')",
+                        f"get(id='{_pa(ref)}', view='toc')",
                         "see the TOC",
                     ),
                     (
-                        f"get(kind='paper', id='{slug}', view='bibtex')",
+                        f"get(id='{_pa(ref)}', view='bibtex')",
                         "get the BibTeX entry",
                     ),
                 ]
@@ -1557,7 +1583,7 @@ class PaperHandler(Handler):
             body += render_next_section(
                 [
                     (
-                        f"get(kind='paper', id='{slug}', view='toc')",
+                        f"get(id='{_pa(ref)}', view='toc')",
                         "browse segments to find drillable claims",
                     ),
                     (
@@ -1672,7 +1698,7 @@ class PaperHandler(Handler):
         except Exception as exc:
             raise BadInput(
                 f"paper view='health': cannot read identifiers for {ref.slug}: {exc}",
-                next=f"get(kind='paper', id='{ref.slug}', view='bibtex')",
+                next=f"get(id='{_pa(ref)}', view='bibtex')",
             ) from exc
 
         doi: str | None = None
@@ -1686,7 +1712,7 @@ class PaperHandler(Handler):
             raise BadInput(
                 f"paper view='health': no DOI on file for {slug} — "
                 "provenance checks require a DOI",
-                next=f"get(kind='paper', id='{slug}', view='abstract')",
+                next=f"get(id='{_pa(ref)}', view='abstract')",
             )
 
         # Inherit the mailto convention from the env, same as the
@@ -1703,7 +1729,7 @@ class PaperHandler(Handler):
         if not blocks:
             raise NotFound(
                 f"no blocks in {ref.slug} for range ~{lo}..{hi}",
-                next=f"get(kind='paper', id='{ref.slug}', view='toc')",
+                next=f"get(id='{_pa(ref)}', view='toc')",
             )
 
         # Figure-and-caption coalescing: when a single-block request
@@ -1770,14 +1796,14 @@ class PaperHandler(Handler):
         if single_block:
             nav.append(
                 (
-                    f"search(kind='paper', q='your query', scope='{ref.slug}')",
+                    f"search(kind='paper', q='your query', scope='{_pa(ref)}')",
                     "search inside this paper "
                     "(fused lexical+embedding) - usually beats paging",
                 )
             )
             nav.append(
                 (
-                    f"get(kind='paper', id='{ref.slug}', view='toc')",
+                    f"get(id='{_pa(ref)}', view='toc')",
                     "TOC - structural map of the paper",
                 )
             )
@@ -1817,13 +1843,13 @@ class PaperHandler(Handler):
             # Range mode: full TOC is the structural escape hatch.
             nav.append(
                 (
-                    f"get(kind='paper', id='{ref.slug}', view='toc')",
+                    f"get(id='{_pa(ref)}', view='toc')",
                     "see the full TOC",
                 )
             )
         nav.append(
             (
-                f"get(kind='paper', id='{ref.slug}', view='bibtex')",
+                f"get(id='{_pa(ref)}', view='bibtex')",
                 "get the BibTeX entry",
             )
         )
@@ -1976,7 +2002,7 @@ class PaperHandler(Handler):
             # (MCP critic MINOR — list view leaks raw HTML/JATS.)
             preview = _excerpt(_clean_inline_text(r.title), limit=80)
             yr = f"  ({year})" if year else ""
-            lines.append(f"  {r.slug:<30}{yr}  {preview}")
+            lines.append(f"  {_pa(r):<30}{yr}  {preview}")
         body = "\n".join(lines)
         body += render_next_section(
             [
@@ -1985,8 +2011,8 @@ class PaperHandler(Handler):
                     "find a specific paper by topic",
                 ),
                 (
-                    "get(kind='paper', id='<slug>')",
-                    "open one paper from the list",
+                    "get(id='pa<id>')",
+                    "open one paper from the list (paste any handle above)",
                 ),
             ]
         )

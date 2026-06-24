@@ -265,6 +265,21 @@ def test_resolve_relative_non_relative_is_none(store: Store) -> None:
 
 
 @_NEEDS_PAPER_EXTRA
+def test_surface_record_handle_carries_chunk_selector(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    ref = store.insert_ref(kind="paper", slug="adr36-pa-sel", title="p")
+    for i in range(3):
+        _insert_chunk(store, ref.id, ord_=i)
+    pa = handle_registry.format_handle("paper", ref.id)  # 'pa<id>'
+    # A record handle with a trailing chunk selector resolves like the slug
+    # form: pa<id>~0..2 == slug~0..2.
+    assert runtime_with_store.dispatch("get", {"id": f"{pa}~0..2"}) == (
+        runtime_with_store.dispatch("get", {"id": "adr36-pa-sel~0..2"})
+    )
+
+
+@_NEEDS_PAPER_EXTRA
 def test_surface_get_relative_routes_to_sibling(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:

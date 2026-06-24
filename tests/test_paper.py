@@ -13,7 +13,7 @@ from precis.handlers.paper import PaperHandler, _maybe_resolve_doi, _parse_paper
 from precis.runtime import PrecisRuntime
 from precis.store import BlockInsert, Store
 from precis.store.types import Tag
-from tests.conftest import chunk_handle
+from tests.conftest import chunk_handle, record_handle
 
 # ---------------------------------------------------------------------------
 # Slug parsing — pure logic, no DB
@@ -137,7 +137,7 @@ class TestResolveDoi:
     def test_get_by_doi_end_to_end(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, slug="wang2020state", doi="10.1111/jnc.13915")
         resp = handler.get(id="10.1111/jnc.13915")
-        assert "wang2020state" in resp.body
+        assert record_handle(store, "wang2020state") in resp.body
         assert "State of the art" in resp.body
 
     def test_get_by_doi_with_view_kwarg(
@@ -225,7 +225,8 @@ class TestOverview:
         _seed_paper(store)
         resp = handler.get(id="wang2020state")
         body = resp.body
-        assert "wang2020state" in body
+        # ADR 0036: the paper is addressed by its record handle (pa<id>).
+        assert record_handle(store, "wang2020state") in body
         assert "State of the art in nitrate reduction" in body
         assert "Wang, Q." in body
         assert "Nature" in body
@@ -246,8 +247,8 @@ class TestOverview:
         # Total corpus depth in the header (#38683): two papers, four
         # body chunks each from ``_seed_paper`` → 8 chunks.
         assert "(8 chunks)" in resp.body
-        assert "aaa" in resp.body
-        assert "bbb" in resp.body
+        assert record_handle(store, "aaa") in resp.body
+        assert record_handle(store, "bbb") in resp.body
 
     def test_no_id_no_papers(self, handler: PaperHandler) -> None:
         resp = handler.get()
@@ -475,9 +476,8 @@ class TestChunks:
         resp = handler.get(id="wang2020state~3")
         assert "Next:" in resp.body
         # Promoted: in-paper semantic search.
-        assert (
-            "search(kind='paper', q='your query', scope='wang2020state')" in resp.body
-        )
+        _pa = record_handle(store, "wang2020state")
+        assert f"search(kind='paper', q='your query', scope='{_pa}')" in resp.body
         # Promoted: TOC.
         assert "view='toc'" in resp.body
         # Forward read is a 5-block span via relative nav (ADR 0036), not a
@@ -829,8 +829,8 @@ class TestSearch:
         # paper-a was the requested exclude; it must not show up
         # in the result handles.
         assert chunk_handle(store, "paper-a") not in body
-        # And at least one of the non-excluded slugs is present.
-        assert any(f"paper-{ch}~" in body for ch in "bcd")
+        # And at least one of the non-excluded papers' chunk handles is present.
+        assert any(chunk_handle(store, f"paper-{ch}") in body for ch in "bcd")
 
     @pytest.mark.xfail(
         reason=(
