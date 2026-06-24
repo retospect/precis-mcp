@@ -48,7 +48,7 @@ from fastapi.responses import (
     Response,
 )
 
-from precis.utils import draft_markup, mentions
+from precis.utils import draft_markup, handle_registry, mentions
 from precis.utils.embed_query import embed_query
 from precis_web.deps import (
     await_dispatch,
@@ -273,6 +273,11 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
         rows.append(
             {
                 "handle": c.handle,
+                # ADR 0036 universal handle (``dc<chunk_id>``) — the agent- and
+                # human-facing address. ``handle`` (base-58) stays the internal
+                # DOM/nav key the JS collapse/find machinery already threads.
+                "dc": handle_registry.try_format("draft", c.chunk_id, chunk=True)
+                or c.handle,
                 "chunk_kind": c.chunk_kind,
                 "text": c.text,
                 "depth": c.depth,

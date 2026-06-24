@@ -156,7 +156,7 @@
     {% endif %}
     <div class="flex items-center gap-2">
       <a href="#c-{{ r.handle }}"
-         class="font-mono text-[10px] text-slate-300 opacity-0 group-hover:opacity-100">¶{{ r.handle }}</a>
+         class="font-mono text-[10px] text-slate-300 opacity-0 group-hover:opacity-100">{{ r.dc }}</a>
       <button @click="raw = !raw"
               class="text-[10px] text-slate-300 opacity-0 group-hover:opacity-100 hover:text-slate-600"
               x-text="raw ? 'hide raw' : 'raw'"></button>

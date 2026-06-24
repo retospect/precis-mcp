@@ -249,6 +249,11 @@ def test_reader_renders_per_block_grid(draft_client: TestClient) -> None:
     assert 'x-show="vis(["AAAAAA"])"' not in r.text
     # per-block change box posts to the anchored-todo route
     assert 'action="/drafts/nt/request"' in r.text
+    # ADR 0036: the gray per-block indicator shows the universal handle
+    # (dc<chunk_id>), not the legacy ¶<base58> anchor. The DOM/nav key stays
+    # the base-58 handle (id="c-…"), so only the visible label changes.
+    assert ">dc1<" in r.text and ">dc2<" in r.text
+    assert ">¶AAAAAA<" not in r.text
 
 
 def test_figure_renders_img_and_origin_chip(draft_client: TestClient) -> None:
