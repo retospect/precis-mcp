@@ -823,6 +823,41 @@ class DraftMixin:
             return None
         return bytes(row[0]), row[1]
 
+    def upsert_chunk_blob(
+        self,
+        chunk_id: int,
+        image: bytes,
+        mime: str,
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Insert or **replace** a chunk's blob (`chunk_blobs` row).
+
+        Unlike :meth:`add_figure` (insert-only, at figure creation), this is
+        the render path: a computed figure's image is a *regenerable* artifact
+        (ADR 0035 §3), so re-rendering overwrites the bytes in place keyed on
+        ``chunk_id``. Re-derives ``sha256`` / ``size`` / dims from the bytes."""
+        sha = hashlib.sha256(image).hexdigest()
+        width, height = _image_dims(image)
+
+        def _do(c: psycopg.Connection) -> None:
+            c.execute(
+                """INSERT INTO chunk_blobs
+                       (chunk_id, bytes, mime, sha256, size_bytes, width, height)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (chunk_id) DO UPDATE SET
+                       bytes = EXCLUDED.bytes, mime = EXCLUDED.mime,
+                       sha256 = EXCLUDED.sha256, size_bytes = EXCLUDED.size_bytes,
+                       width = EXCLUDED.width, height = EXCLUDED.height""",
+                (chunk_id, image, mime, sha, len(image), width, height),
+            )
+
+        if conn is not None:
+            _do(conn)
+        else:
+            with self.tx() as c:
+                _do(c)
+
     def set_figure_provenance(
         self,
         handle: str,
