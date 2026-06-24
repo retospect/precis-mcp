@@ -150,11 +150,14 @@ put(kind='draft', id='nanotrans', chunk_kind='figure',
 ```
 
 `origin` ∈ `{original, own_graph, third_party}` records where the figure
-came from and drives a **clearance gate** (a figure must be ours,
-data-backed, or validly licensed before it ships). A `third_party`
-figure **must** carry a `permission` paper-trail — that is the whole
-point: track *with whose permission*, *which permission number*, *when
-requested/granted*. `mime=` is sniffed from the bytes when omitted.
+came from and drives a **clearance gate**: a `third_party` figure is
+cleared only with a **granted, unexpired** permission. The reader shows a
+warning banner listing any uncleared figures (and an all-clear note when
+every figure passes), and **export fails** on an uncleared figure — so an
+unlicensed image can't ship. A `third_party` figure **must** carry a
+`permission` paper-trail — that is the whole point: track *with whose
+permission*, *which permission number*, *when requested/granted*, *when it
+expires*. `mime=` is sniffed from the bytes when omitted.
 Permission lives in `meta.figure.permission`; the reader shows an origin
 chip + a ✓/✗ clearance badge, and serves the image at
 `/drafts/blob/<handle>`. In the **web reader** a per-block **"＋ figure"**

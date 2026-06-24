@@ -100,6 +100,66 @@ def test_blob_row_count_and_size(store: Store) -> None:
     assert row == (len(_PNG), "image/png")
 
 
+# ── clearance gate (ADR 0034 §4) ─────────────────────────────────────
+
+
+def test_figure_status_rules() -> None:
+    from precis.utils.figure_clearance import figure_status
+
+    assert figure_status({"origin": "original"})[0] is True
+    assert figure_status({"origin": "own_graph"})[0] is True
+    assert figure_status({"origin": "third_party", "permission": {"status": "granted"}})[
+        0
+    ]
+    # not granted → uncleared
+    assert not figure_status(
+        {"origin": "third_party", "permission": {"status": "requested"}}
+    )[0]
+    # granted but expired → uncleared
+    cleared, reason = figure_status(
+        {
+            "origin": "third_party",
+            "permission": {"status": "granted", "expires_at": "2000-01-01"},
+        }
+    )
+    assert not cleared and "expired" in reason
+    # granted, future expiry → cleared
+    assert figure_status(
+        {
+            "origin": "third_party",
+            "permission": {"status": "granted", "expires_at": "2999-01-01"},
+        }
+    )[0]
+
+
+def test_draft_figure_clearance_rollup(store: Store) -> None:
+    from precis.utils.figure_clearance import draft_figure_clearance
+
+    ref, title = _draft(store)
+    store.add_figure(
+        ref_id=ref.id,
+        caption="ours",
+        origin="original",
+        image=_PNG,
+        mime="image/png",
+        at={"after": title.handle},
+    )
+    store.add_figure(
+        ref_id=ref.id,
+        caption="borrowed, not granted",
+        origin="third_party",
+        image=_PNG,
+        mime="image/png",
+        at={"after": title.handle},
+        figure_meta={"permission": {"status": "requested"}},
+    )
+    summary = draft_figure_clearance(store, ref.id)
+    assert summary.total == 2
+    assert len(summary.uncleared) == 1
+    assert summary.uncleared[0].origin == "third_party"
+    assert summary.all_clear is False
+
+
 # ── set_figure_provenance (edit) ─────────────────────────────────────
 
 

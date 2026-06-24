@@ -243,7 +243,13 @@ into the caption or a generated Permissions appendix. Built after the storage
    correspondence blobs.
 3. **Graph recipe** — `figure_code` + `figure_data` chunk_kinds, `derived-from`
    link sync, Figures panel showing the recipe.
-4. **Clearance gate** — lint in review + (stub) export, Figures-panel clearance
-   badges, optional expiring-permission `alert`.
+4. **Clearance gate** — ✅ landed. Shared `utils/figure_clearance`
+   (`figure_status` / `draft_figure_clearance`): a `third_party` figure is
+   cleared only with a granted, **unexpired** permission. Surfaced as a top
+   **warning banner** (uncleared list) / end **all-clear note** in the reader,
+   the per-figure ✓/✗ badge, and a **hard gate at export** (the `draft_export`
+   job fails on any uncleared figure). `own_graph` data-supplement enforcement
+   waits on the graph recipe (Phase 3); an expiring-permission `alert` is
+   optional follow-up.
 5. **Export** — `pics/`/`data/`/scripts materialisation, `required_credit`
    injection, supplement manifest, (later) data→plot regeneration step.

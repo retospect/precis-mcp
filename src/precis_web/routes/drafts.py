@@ -50,6 +50,7 @@ from fastapi.responses import (
 
 from precis.utils import draft_markup, handle_registry, mentions
 from precis.utils.embed_query import embed_query
+from precis.utils.figure_clearance import draft_figure_clearance, figure_status
 from precis_web.deps import (
     await_dispatch,
     get_runtime,
@@ -309,15 +310,9 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
 
 
 def _figure_cleared(fig: dict[str, Any]) -> bool:
-    """Lightweight clearance read for the reader badge (ADR 0034 §4). The
-    authoritative gate (data-supplement presence, expiry) lands with the
-    review/export lint; here we only flag the obvious: a third-party figure
-    needs a granted permission."""
-    origin = fig.get("origin")
-    if origin == "third_party":
-        perm = fig.get("permission") or {}
-        return perm.get("status") == "granted"
-    return True  # original / own_graph optimistic until the full gate lands
+    """Per-figure clearance for the reader badge — the shared ADR 0034 §4
+    rule (third-party needs a granted, unexpired permission)."""
+    return figure_status(fig)[0]
 
 
 def _ref_view(ref: Any) -> dict[str, Any]:
@@ -603,6 +598,7 @@ async def reader(request: Request, ident: str) -> Response:
             "ref": _ref_view(ref),
             "rows": _rows_for(store, ref),
             "work": _work_items(store, ref.id),
+            "clearance": draft_figure_clearance(store, ref.id),
         },
     )
 

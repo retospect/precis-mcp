@@ -293,6 +293,15 @@ def test_figure_renders_img_and_origin_chip(draft_client: TestClient) -> None:
     assert "original" in r.text and "cleared" in r.text
 
 
+def test_reader_shows_all_clear_note(draft_client: TestClient) -> None:
+    # Both fixture figures are cleared (original + granted third-party), so
+    # the end-of-document all-clear note shows and no warning banner.
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert "cleared to ship" in r.text
+    assert "not cleared to ship" not in r.text
+
+
 def test_blob_route_serves_bytes_with_mime(draft_client: TestClient) -> None:
     r = draft_client.get("/drafts/blob/FIGFIG")
     assert r.status_code == 200

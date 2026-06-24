@@ -8,6 +8,20 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-24 — figure clearance gate is enforced: reader warning + export block)
+
+- **A draft's figures are now gated on clearance** (ADR 0034 §4), with one
+  shared rule (`utils/figure_clearance`): a `third_party` figure is cleared
+  only with a **granted, unexpired** permission (`original`/`own_graph` pass;
+  the `own_graph` data-supplement check waits on the graph recipe). This fixes
+  the prior badge gap that ignored `expires_at`.
+- **Reader**: a top **warning banner** lists every uncleared figure (handle,
+  caption, reason) when any fail; an **all-clear note** rides at the end when
+  every figure passes. The per-figure ✓/✗ badge uses the same rule.
+- **Export is a hard gate**: the `draft_export` job **fails** before render if
+  any figure is uncleared — an unlicensed image can't ship (the way a bare
+  `\cite` fails review).
+
 ### Added (2026-06-24 — Paper search matches titles/authors via the embedded card)
 
 - `search(kind='paper')` now surfaces a paper by its **title / authors /

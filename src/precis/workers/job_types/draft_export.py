@@ -97,6 +97,20 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"draft_export: no draft {slug!r}")
         return
 
+    # Figure clearance gate (ADR 0034 §4): an uncleared figure must not
+    # ship, so it fails the export — the way a bare ``\cite`` fails review.
+    from precis.utils.figure_clearance import draft_figure_clearance
+
+    clearance = draft_figure_clearance(ctx.store, ref.id)
+    if clearance.uncleared:
+        lines = "; ".join(f"{f.dc} ({f.reason})" for f in clearance.uncleared)
+        ctx.record_failure(
+            f"draft_export: {len(clearance.uncleared)} of {clearance.total} "
+            f"figure(s) not cleared to ship — {lines}. Clear each (grant/renew "
+            "the permission, or fix the origin) and re-export."
+        )
+        return
+
     out_dir, in_workspace = _resolve_out_dir(ctx, slug)
     where = (
         "project workspace (shows on the task page)" if in_workspace else "export dir"

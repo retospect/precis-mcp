@@ -99,6 +99,28 @@ def test_dispatch_exports_and_skips_pdf_without_latexmk(hub: Hub) -> None:
     assert "export_dir" in ctx.meta_set
 
 
+def test_dispatch_fails_on_uncleared_figure(hub: Hub) -> None:
+    """The clearance gate (ADR 0034 §4): a third-party figure without a
+    granted permission must not ship — the export fails before render."""
+    import base64
+
+    _pid, slug = _make_project_and_draft(hub)
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
+    DraftHandler(hub=hub).put(
+        id=slug,
+        chunk_kind="figure",
+        text="Fig 1 (borrowed).",
+        image=png,
+        origin="third_party",
+        permission={"publisher": "X", "permission_id": "Y", "status": "requested"},
+    )
+    spec = get_job_type("draft_export")
+    ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": slug}})
+    assert spec is not None and spec.dispatch is not None
+    spec.dispatch(ctx, spec)
+    assert any("not cleared" in f for f in ctx.failures), ctx.failures
+
+
 def test_dispatch_fails_on_unknown_draft(hub: Hub) -> None:
     spec = get_job_type("draft_export")
     ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": "nope"}})
