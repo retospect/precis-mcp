@@ -1521,6 +1521,24 @@ class BlocksMixin:
         with self.pool.connection() as conn:
             return _fetch_blocks(conn, where, params, with_embedding=with_embedding)
 
+    def chunk_pages(self, ref_id: int, ords: list[int]) -> dict[int, int]:
+        """Map body-chunk ``ord`` → ``page_first`` for the given ords.
+
+        Feeds the paper sidebar nav: a semantic / keyword / TOC hit
+        carries a chunk ``ord``, and the in-browser PDF viewer jumps to
+        the chunk's first page. Chunks with a NULL ``page_first`` (no
+        page provenance) are omitted from the map. One batched query.
+        """
+        if not ords:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ord, page_first FROM chunks "
+                "WHERE ref_id = %s AND ord = ANY(%s) AND page_first IS NOT NULL",
+                (ref_id, list(ords)),
+            ).fetchall()
+        return {int(r[0]): int(r[1]) for r in rows}
+
     def ref_ids_with_chunks(self, ref_ids: list[int]) -> set[int]:
         """Subset of ``ref_ids`` that have at least one body chunk (ord>=0).
 

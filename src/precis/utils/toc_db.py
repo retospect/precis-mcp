@@ -158,6 +158,83 @@ def render_from_store(
     return "\n".join(parts)
 
 
+def build_toc_segments(
+    *,
+    store: Any,
+    ref_id: int,
+    slug: str,
+    scope: tuple[int, int] | None = None,
+) -> list[dict[str, Any]]:
+    """Structured TOC for clickable web nav — the data behind the prose.
+
+    Same segmentation as :func:`render_from_store` (it reuses the very
+    same helpers), but returns a list of segment dicts instead of a
+    Markdown TOON table::
+
+        [{"handle": "slug~0..14", "lo": 0, "hi": 14,
+          "keywords": ["x", "y", ...], "n": 15}, ...]
+
+    Short ranges (< ``_BUCKETING_THRESHOLD``) yield one segment per
+    chunk (``lo == hi``); larger ranges cluster. ``keywords`` is the
+    per-segment label (top-K). The web layer adds the PDF page for each
+    segment's ``lo`` chunk (a separate ``chunk_pages`` lookup) so a row
+    click can jump the viewer. Returns ``[]`` for an empty range.
+    """
+    blocks = store.list_blocks_for_ref(ref_id, pos_range=scope)
+    if not blocks:
+        return []
+
+    n = len(blocks)
+    if n < _BUCKETING_THRESHOLD:
+        return [
+            {
+                "handle": f"{slug}~{b.pos}",
+                "lo": b.pos,
+                "hi": b.pos,
+                "keywords": _top_keywords([b], top_k=_LABEL_TOP_K),
+                "n": 1,
+            }
+            for b in blocks
+        ]
+
+    distances = _adjacent_jaccard_distances(blocks)
+    if not distances:
+        return [
+            {
+                "handle": f"{slug}~{b.pos}",
+                "lo": b.pos,
+                "hi": b.pos,
+                "keywords": _top_keywords([b], top_k=_LABEL_TOP_K),
+                "n": 1,
+            }
+            for b in blocks
+        ]
+
+    raw_segments = segment_dp(distances, k=_bucket_count(n))
+    segments = _collapse_singletons(raw_segments, min_size=_MIN_CLUSTER_SIZE)
+
+    out: list[dict[str, Any]] = []
+    for seg in segments:
+        bucket = blocks[seg.start : seg.end + 1]
+        if not bucket:
+            continue
+        lo_pos = bucket[0].pos
+        hi_pos = bucket[-1].pos
+        handle = (
+            f"{slug}~{lo_pos}" if lo_pos == hi_pos else f"{slug}~{lo_pos}..{hi_pos}"
+        )
+        out.append(
+            {
+                "handle": handle,
+                "lo": lo_pos,
+                "hi": hi_pos,
+                "keywords": _top_keywords(bucket, top_k=_LABEL_TOP_K),
+                "n": len(bucket),
+            }
+        )
+    return out
+
+
 # ── helpers: cluster shape ───────────────────────────────────────────
 
 
@@ -333,4 +410,4 @@ def _empty_body(*, slug: str, kind: str, scope: tuple[int, int] | None) -> str:
     )
 
 
-__all__ = ["render_from_store"]
+__all__ = ["build_toc_segments", "render_from_store"]

@@ -67,6 +67,37 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   `get_ref`'s slug branch and 404s. `index()` and the POST `/run` form now
   share one `_run_verb` parse+dispatch helper.
 
+### Added (2026-06-24 — Paper reader: sidebar nav + in-document search over a pdf.js viewer)
+
+- **The paper detail page (`/papers/<id>`) is rebuilt as a two-pane reader:
+  a collapsible left sidebar + a tall pdf.js viewer that gets the full
+  viewport height** (the old layout stacked all the metadata above an
+  80vh `<iframe>`, so little of the paper showed). The viewer is the
+  vendored Mozilla pdf.js generic build (`static/pdfjs/`, v4.0.379, maps /
+  cmaps / non-en locales stripped), embedded same-origin so the page can
+  drive its find + page API.
+- **Slug addressing.** The route now accepts the cite_key slug
+  (`/papers/<slug>`, canonical) as well as the numeric id; a numeric id
+  that owns a slug 301-redirects to the slug URL (query preserved, so
+  `?chunk=N` citation deep links still work). `_resolve_paper` resolves
+  either form via `fetch_ref_ids_by_slugs`.
+- **Sidebar nav, three tabs.** *Navigate* — Semantic / Keyword / TOC over
+  the paper's body chunks (`GET /papers/<id>/search?q&mode`, scoped reuse
+  of `search_blocks_semantic` / `search_blocks_lexical`; degrades semantic
+  → keyword when the embedder is down; `GET /papers/<id>/toc` →
+  `toc_db.build_toc_segments`, a structured clickable cluster list).
+  *Jump* — by verbatim text, page number, or chunk ord
+  (`GET /papers/<id>/chunk/<ord>`). *Meta* — all metadata + the
+  edit / triage / delete forms (moved to `papers/_meta_forms.html.j2`).
+- **In-document highlight.** A nav/jump hit jumps the viewer to the chunk's
+  first page (`chunk_pages`, ord → `page_first`) and runs pdf.js's find for
+  a distinctive phrase from the chunk text, so the passage highlights in the
+  rendered PDF — plus the chunk's plain text + keywords show in the sidebar
+  alongside. No per-chunk bbox is stored (marker drops it at ingest), so the
+  highlight is text-layer-based (best-effort) with the page jump as the
+  always-correct fallback; precise per-chunk overlay boxes await a bbox
+  backfill.
+
 ### Fixed (2026-06-24 — Status page: chunk-pipeline passes show real movement)
 
 - The Status page's "Chunk pipeline backlog" (last-done column) and "Recent

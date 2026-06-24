@@ -1,225 +1,229 @@
 {% extends "base.html.j2" %}
 {% block title %}{{ paper.title }}{% endblock %}
 {% block content %}
-<a href="/papers" class="text-sm text-slate-500 underline">&larr; papers</a>
+<style>
+  [x-cloak]{display:none!important}
+  /* sidebar nav: each result is a button; the active one rings amber */
+  .nav-result.active{box-shadow:inset 0 0 0 2px #f59e0b;background:#fffbeb}
+  .nav-kw{font-size:10px;background:#f1f5f9;border-radius:3px;padding:0 4px;color:#475569}
+  #pdf-frame{border:0}
+</style>
 
-{# Cited passage — when arrived via a ``?chunk=N`` citation click, surface
-   the exact cited chunk as a highlighted card so "the relevant thing" is
-   front and centre, with a PDF-page link for the surrounding context.
-   Math/sub-sup render (render_markdown + KaTeX). #}
-{% if cited %}
-<div id="cited" class="mt-3 rounded-lg border-l-4 border-amber-400 bg-amber-50 p-3">
-  <div class="flex items-center justify-between text-xs text-amber-800">
-    <span class="font-mono">cited passage · chunk {{ cited.ord }}</span>
-    {% if cited.page %}<a class="underline hover:text-amber-900"
-       href="/papers/{{ paper.id }}/pdf#page={{ cited.page }}"
-       target="_blank" rel="noopener">view page {{ cited.page }} in PDF →</a>{% endif %}
-  </div>
-  <p class="mt-1 text-sm leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ cited.text | render_markdown }}</p>
-</div>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
-  onload="renderMathInElement(document.getElementById('cited'),{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false})"></script>
-{% endif %}
-<div class="mt-2 mb-4">
-  <h1 class="text-lg font-semibold">{{ paper.title }}</h1>
-  <p class="text-sm text-slate-500">
-    #{{ paper.id }}
-    {% if paper.slug %}· <span class="font-mono">{{ paper.slug }}</span>{% endif %}
-    {% if paper.year %}· {{ paper.year }}{% endif %}
-  </p>
-  {% if authors_display %}
-  <p class="text-sm text-slate-600 mt-1">
-    {{ authors_display }}
-  </p>
-  {% endif %}
-  {# Ingestion timeline — when the ref was minted, when its PDF landed,
-     and when the first body chunk was written. Each shows relative time
-     with the absolute UTC timestamp on hover. Stages that haven't
-     happened yet (stub with no PDF / un-chunked) read "—". #}
-  <p class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
-    <span>
-      <span class="text-slate-400">ref</span>
-      <span title="{{ ingested.ref | abs_ts }}">{{ ingested.ref | ago or '—' }}</span>
-    </span>
-    <span>
-      <span class="text-slate-400">PDF</span>
-      <span title="{{ ingested.pdf | abs_ts }}">{{ ingested.pdf | ago or '—' }}</span>
-    </span>
-    <span>
-      <span class="text-slate-400">first chunk</span>
-      <span title="{{ ingested.first_chunk | abs_ts }}">{{ ingested.first_chunk | ago or '—' }}</span>
-    </span>
-  </p>
-  {% if paper.links.doi_url or paper.links.arxiv_url %}
-  <p class="mt-2 flex flex-wrap gap-3 text-sm">
-    {% if paper.links.doi_url %}
-    <a href="{{ paper.links.doi_url }}" target="_blank" rel="noopener"
-       class="text-sky-700 hover:underline">DOI: {{ paper.links.doi }}</a>
-    {% endif %}
-    {% if paper.links.arxiv_url %}
-    <a href="{{ paper.links.arxiv_url }}" target="_blank" rel="noopener"
-       class="text-sky-700 hover:underline">arXiv: {{ paper.links.arxiv }}</a>
-    {% endif %}
-  </p>
-  {% endif %}
-  {# Triage panel — shown for papers tagged needs-triage (metadata
-     automation gave up). The operator pastes the real title; the server
-     looks it up on Semantic Scholar and re-renders this page with the
-     edit form pre-filled. Saving applies it and clears needs-triage. #}
-  {% if is_triage %}
-  <div class="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs">
-    <p class="font-medium text-amber-800">Needs triage — metadata couldn't be recovered automatically.</p>
-    {% if triage_msg %}
-    <p class="mt-1 text-amber-900">{{ triage_msg }}</p>
-    {% endif %}
-    <form method="post" action="/papers/{{ paper.id }}/triage-lookup"
-          class="mt-2 flex flex-wrap items-end gap-2">
-      <label class="block grow">
-        <span class="text-amber-700">Paste the paper's real title</span>
-        <input name="title" value="{{ prefill.title if prefill else '' }}"
-               placeholder="e.g. Ballistic carbon nanotube field-effect transistors"
-               class="w-full rounded border border-amber-300 px-2 py-1 text-xs" />
-      </label>
-      <button type="submit"
-              class="px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-700">
-        Look up on Semantic Scholar
-      </button>
-    </form>
-    {# Manual dismissal: saving a metadata edit clears needs-triage
-       automatically, but a paper that's already fine (or fixed by hand)
-       can be taken out of the queue directly. #}
-    <form method="post" action="/papers/{{ paper.id }}/untriage"
-          class="mt-2 border-t border-amber-200 pt-2">
-      <input type="hidden" name="return_to" value="/papers/triage" />
-      <button type="submit"
-              class="px-2 py-1 rounded border border-amber-400 text-amber-800 hover:bg-amber-100">
-        ✓ Looks fine — remove needs-triage
-      </button>
-    </form>
-  </div>
-  {% endif %}
-  {# Edit / delete affordances. Edit is an Alpine-toggled inline form
-     so an operator who wants to repair a parse error (wrong DOI, missing
-     authors, off-by-one year) can fix it without leaving the page.
-     Delete soft-deletes the paper; it's a web-only affordance (the POST
-     route calls the store directly, so `paper` stays without the `delete`
-     verb on the agent MCP surface — a deliberate policy call). It returns
-     to the triage queue when reached from triage, else the papers list. #}
-  <div class="mt-3 flex items-center gap-2 text-xs"
-       x-data="{ editing: {{ 'true' if prefill else 'false' }} }">
-    <button type="button" @click="editing = !editing"
-            class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">
-      <span x-show="!editing">✎ Edit metadata</span>
-      <span x-show="editing" x-cloak>Cancel</span>
+{# The viewer fills the viewport below the nav header; the sidebar scrolls
+   internally so the PDF keeps maximum height (the old layout pushed the
+   PDF below a tall metadata block). #}
+<div x-data="paperDoc({{ paper.id }}, {{ cited.ord if cited else -1 }}, {{ pdf_on_disk | lower }})"
+     x-init="init()"
+     class="flex flex-col" style="height: calc(100vh - 4.5rem)">
+
+  {# compact header strip — title + canonical handle + sidebar toggle #}
+  <div class="flex items-center gap-3 py-2">
+    <a href="/papers" class="text-sm text-slate-500 hover:underline">&larr; papers</a>
+    <h1 class="truncate text-base font-semibold" title="{{ paper.title }}">{{ paper.title }}</h1>
+    <span class="shrink-0 font-mono text-xs text-slate-400">{{ handle }}</span>
+    <button type="button" @click="sidebarOpen = !sidebarOpen"
+            class="ml-auto shrink-0 rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">
+      <span x-text="sidebarOpen ? '⟨ hide panel' : 'show panel ⟩'"></span>
     </button>
-    <form method="post" action="/papers/{{ paper.id }}/delete" class="inline"
-          onsubmit="return confirm('Delete paper #{{ paper.id }}? This soft-deletes it (removes it from listings).');">
-      <input type="hidden" name="return_to"
-             value="{{ '/papers/triage' if is_triage else '/papers' }}" />
-      <button type="submit"
-              class="px-2 py-1 rounded border border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100">
-        🗑 Delete paper
-      </button>
-    </form>
-    <div x-show="editing" x-cloak class="basis-full mt-2">
-      <form method="post" action="/papers/{{ paper.id }}/edit" class="space-y-2"
-            x-data="{ slug: '{{ slug_default }}' }">
-        <p class="text-slate-500">
-          Leave a field blank to keep its current value.
-          Authors: one per line, ``Lastname, First`` or ``Lastname`` alone.
-        </p>
-        <div class="grid grid-cols-2 gap-2">
-          <label class="block">
-            <span class="text-slate-500">Title</span>
-            <input name="title" value="{{ prefill.title if prefill else paper.title }}"
+  </div>
+
+  <div class="flex min-h-0 flex-1 gap-3">
+    {# ── sidebar ───────────────────────────────────────────────── #}
+    <aside x-show="sidebarOpen"
+           class="flex w-[22rem] shrink-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
+      {# tab strip #}
+      <div class="flex shrink-0 border-b border-slate-200 text-xs font-medium">
+        <template x-for="t in ['Navigate','Jump','Meta']" :key="t">
+          <button type="button" @click="tab = t"
+                  class="flex-1 px-2 py-2 hover:bg-slate-50"
+                  :class="tab === t ? 'border-b-2 border-emerald-500 text-emerald-700' : 'text-slate-500'"
+                  x-text="t"></button>
+        </template>
+      </div>
+
+      <div class="min-h-0 flex-1 overflow-y-auto p-3 text-sm">
+        {# ── Navigate: semantic / keyword search + TOC ──────────── #}
+        <div x-show="tab === 'Navigate'">
+          <div class="flex gap-1 text-xs">
+            <template x-for="m in [['semantic','Semantic'],['keyword','Keyword'],['toc','TOC']]" :key="m[0]">
+              <button type="button" @click="setMode(m[0])"
+                      class="rounded px-2 py-1"
+                      :class="mode === m[0] ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                      x-text="m[1]"></button>
+            </template>
+          </div>
+
+          <form x-show="mode !== 'toc'" @submit.prevent="runSearch()" class="mt-2 flex gap-1">
+            <input x-model="q" x-ref="qbox"
+                   :placeholder="mode === 'semantic' ? 'search meaning…' : 'search words…'"
                    class="w-full rounded border border-slate-300 px-2 py-1 text-xs" />
-          </label>
-          <label class="block">
-            <span class="text-slate-500">Year</span>
-            <input name="year" value="{{ prefill.year if prefill else (paper.year or '') }}" inputmode="numeric"
-                   class="w-full rounded border border-slate-300 px-2 py-1 text-xs" />
-          </label>
-          <label class="block">
-            <span class="text-slate-500">DOI</span>
-            <input name="doi" value="{{ prefill.doi if prefill else (paper.links.doi or '') }}" placeholder="10.xxxx/yyyy"
-                   class="w-full rounded border border-slate-300 px-2 py-1 text-xs font-mono" />
-          </label>
-          <label class="block">
-            <span class="text-slate-500">arXiv id</span>
-            <input name="arxiv" value="{{ prefill.arxiv if prefill else (paper.links.arxiv or '') }}" placeholder="2501.01234"
-                   class="w-full rounded border border-slate-300 px-2 py-1 text-xs font-mono" />
-          </label>
+            <button type="submit"
+                    class="shrink-0 rounded bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700">Go</button>
+          </form>
+
+          <p x-show="loading" x-cloak class="mt-3 text-xs text-slate-400">searching…</p>
+          <p x-show="!loading && searched && !results.length && mode !== 'toc'" x-cloak
+             class="mt-3 text-xs text-slate-400">no matches in this paper.</p>
+
+          {# search results — plain-text snippets, click to highlight in PDF #}
+          <ul x-show="mode !== 'toc'" class="mt-2 space-y-1.5">
+            <template x-for="(r, i) in results" :key="i">
+              <li>
+                <button type="button" @click="gotoResult(r, i)"
+                        class="nav-result w-full rounded border border-slate-200 p-2 text-left hover:border-amber-300"
+                        :class="{'active': activeIdx === i}">
+                  <div class="flex items-center justify-between text-[10px] text-slate-400">
+                    <span class="font-mono">chunk <span x-text="r.ord"></span><template x-if="r.page"> · p<span x-text="r.page"></span></template></span>
+                    <span x-show="mode === 'semantic'" x-text="r.score"></span>
+                  </div>
+                  <p class="mt-0.5 text-xs leading-snug text-slate-700" x-text="r.text"></p>
+                  <div class="mt-1 flex flex-wrap gap-1" x-show="r.keywords.length">
+                    <template x-for="kw in r.keywords.slice(0,6)" :key="kw">
+                      <span class="nav-kw" x-text="kw"></span>
+                    </template>
+                  </div>
+                </button>
+              </li>
+            </template>
+          </ul>
+
+          {# TOC — keyword-clustered segments, click to jump to the cluster #}
+          <div x-show="mode === 'toc'">
+            <p x-show="!toc.length" x-cloak class="mt-3 text-xs text-slate-400">no chunks to outline.</p>
+            <ul class="mt-2 space-y-1.5">
+              <template x-for="(s, i) in toc" :key="i">
+                <li>
+                  <button type="button" @click="gotoSeg(s, i)"
+                          class="nav-result w-full rounded border border-slate-200 p-2 text-left hover:border-amber-300"
+                          :class="{'active': activeSeg === i}">
+                    <div class="flex items-center justify-between text-[10px] text-slate-400">
+                      <span class="font-mono" x-text="s.handle"></span>
+                      <template x-if="s.page"><span>p<span x-text="s.page"></span></span></template>
+                    </div>
+                    <div class="mt-1 flex flex-wrap gap-1">
+                      <template x-for="kw in s.keywords" :key="kw">
+                        <span class="nav-kw" x-text="kw"></span>
+                      </template>
+                    </div>
+                  </button>
+                </li>
+              </template>
+            </ul>
+          </div>
         </div>
-        <label class="block">
-          <span class="text-slate-500">Short handle (cite_key)</span>
-          <input name="cite_key" x-model="slug" placeholder="e.g. piela07"
-                 class="w-full rounded border border-slate-300 px-2 py-1 text-xs font-mono" />
-          <span class="text-slate-400">
-            The paper's citation handle; also names its PDF on disk (renaming moves the file).
-            {% if suggested_slug and suggested_slug != slug_default %}
-            Suggested:
-            <button type="button" @click="slug = '{{ suggested_slug }}'"
-                    class="font-mono text-sky-700 underline">{{ suggested_slug }}</button>
-            {% endif %}
-          </span>
-        </label>
-        <label class="block">
-          <span class="text-slate-500">Authors (one per line)</span>
-          <textarea name="authors" rows="4" placeholder="Smith, Jane&#10;Jones, Bob"
-                    class="w-full rounded border border-slate-300 px-2 py-1 text-xs font-mono">{% if prefill %}{{ prefill.authors }}{% else %}{% for line in author_lines -%}
-{{ line }}
-{% endfor -%}{% endif %}</textarea>
-        </label>
-        <label class="block">
-          <span class="text-slate-500">Abstract</span>
-          <textarea name="abstract" rows="4"
-                    class="w-full rounded border border-slate-300 px-2 py-1 text-xs">{{ prefill.abstract if prefill else (abstract or '') }}</textarea>
-        </label>
-        <button type="submit"
-                class="px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-700">
-          Save changes
-        </button>
-      </form>
-    </div>
+
+        {# ── Jump: chunk ord / page / verbatim text ─────────────── #}
+        <div x-show="tab === 'Jump'" x-cloak class="space-y-3 text-xs">
+          <form @submit.prevent="jumpText()">
+            <label class="block text-slate-500">Find verbatim text</label>
+            <div class="mt-1 flex gap-1">
+              <input x-model="jtext" placeholder="exact phrase from the paper"
+                     class="w-full rounded border border-slate-300 px-2 py-1" />
+              <button class="shrink-0 rounded bg-emerald-600 px-2 py-1 text-white hover:bg-emerald-700">Find</button>
+            </div>
+          </form>
+          <form @submit.prevent="jumpPage()">
+            <label class="block text-slate-500">Go to page</label>
+            <div class="mt-1 flex gap-1">
+              <input x-model="jpage" type="number" min="1" placeholder="page #"
+                     class="w-full rounded border border-slate-300 px-2 py-1" />
+              <button class="shrink-0 rounded bg-emerald-600 px-2 py-1 text-white hover:bg-emerald-700">Go</button>
+            </div>
+          </form>
+          <form @submit.prevent="jumpOrd()">
+            <label class="block text-slate-500">Go to chunk (ord)</label>
+            <div class="mt-1 flex gap-1">
+              <input x-model="jord" type="number" min="0" placeholder="chunk #"
+                     class="w-full rounded border border-slate-300 px-2 py-1" />
+              <button class="shrink-0 rounded bg-emerald-600 px-2 py-1 text-white hover:bg-emerald-700">Go</button>
+            </div>
+          </form>
+          {# resolved chunk text shown alongside the PDF highlight #}
+          <div x-show="jumpChunk" x-cloak class="rounded border-l-4 border-amber-400 bg-amber-50 p-2">
+            <div class="font-mono text-[10px] text-amber-700">chunk <span x-text="jumpChunk && jumpChunk.ord"></span><template x-if="jumpChunk && jumpChunk.page"> · p<span x-text="jumpChunk && jumpChunk.page"></span></template></div>
+            <p class="mt-1 text-xs leading-snug text-slate-700" x-text="jumpChunk && jumpChunk.text"></p>
+          </div>
+        </div>
+
+        {# ── Meta: full metadata + edit / triage / delete ───────── #}
+        <div x-show="tab === 'Meta'" x-cloak class="space-y-3">
+          <dl class="space-y-1 text-xs">
+            <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">id</dt><dd>#{{ paper.id }}</dd></div>
+            {% if paper.slug %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">handle</dt><dd class="font-mono">{{ paper.slug }}</dd></div>{% endif %}
+            {% if paper.year %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">year</dt><dd>{{ paper.year }}</dd></div>{% endif %}
+            <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">chunks</dt><dd>{{ n_chunks }}</dd></div>
+            <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">pdf</dt><dd>{{ 'on disk' if pdf_on_disk else ('held, missing file' if paper.has_pdf else 'stub (no pdf)') }}</dd></div>
+            {% if authors_display %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">authors</dt><dd>{{ authors_display }}</dd></div>{% endif %}
+            {% if paper.links.doi_url %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">DOI</dt><dd><a class="text-sky-700 hover:underline" href="{{ paper.links.doi_url }}" target="_blank" rel="noopener">{{ paper.links.doi }}</a></dd></div>{% endif %}
+            {% if paper.links.arxiv_url %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">arXiv</dt><dd><a class="text-sky-700 hover:underline" href="{{ paper.links.arxiv_url }}" target="_blank" rel="noopener">{{ paper.links.arxiv }}</a></dd></div>{% endif %}
+          </dl>
+
+          {# ingestion timeline #}
+          <div class="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-100 pt-2 text-[11px] text-slate-500">
+            <span><span class="text-slate-400">ref </span><span title="{{ ingested.ref | abs_ts }}">{{ ingested.ref | ago or '—' }}</span></span>
+            <span><span class="text-slate-400">PDF </span><span title="{{ ingested.pdf | abs_ts }}">{{ ingested.pdf | ago or '—' }}</span></span>
+            <span><span class="text-slate-400">first chunk </span><span title="{{ ingested.first_chunk | abs_ts }}">{{ ingested.first_chunk | ago or '—' }}</span></span>
+          </div>
+
+          {% if tags %}
+          <div class="flex flex-wrap gap-1 border-t border-slate-100 pt-2">
+            {% for ns, val in tags %}
+            <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">{% if ns and ns not in ('TAG','') %}<span class="text-slate-400">{{ ns }}:</span>{% endif %}{{ val }}</span>
+            {% endfor %}
+          </div>
+          {% endif %}
+
+          {% if abstract %}
+          <div class="border-t border-slate-100 pt-2">
+            <p class="text-[11px] uppercase tracking-wide text-slate-400">Abstract</p>
+            <p class="mt-1 text-xs leading-relaxed text-slate-700">{{ abstract }}</p>
+          </div>
+          {% endif %}
+
+          {% include "papers/_meta_forms.html.j2" %}
+        </div>
+      </div>
+    </aside>
+
+    {# ── main: PDF.js reader ─────────────────────────────────────── #}
+    <section class="min-w-0 flex-1 overflow-hidden rounded-lg border border-slate-200 bg-white">
+      {% if pdf_on_disk %}
+        <iframe id="pdf-frame" class="h-full w-full"
+                src="/static/pdfjs/web/viewer.html?file={{ ('/papers/' ~ paper.id ~ '/pdf') | urlencode }}"></iframe>
+      {% elif not paper.has_pdf %}
+        <div class="m-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          No PDF on disk for this paper (it's a stub — queued for fetch).
+          The Navigate / Jump panels still work over its ingested chunks (if any).
+        </div>
+      {% else %}
+        <div class="m-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+          <p class="font-medium">This paper is held but the file isn't where the server looked.</p>
+          {% if cite_key %}
+            <p class="mt-1">cite_key: <span class="font-mono break-all">{{ cite_key }}</span></p>
+            <p class="mt-1">Looked at:</p>
+            <ul class="mt-0.5 ml-4 list-disc">
+              {% for p in pdf_lookup_paths | default([], true) %}
+              <li class="font-mono break-all">{{ p }}</li>
+              {% else %}
+              <li>(none)</li>
+              {% endfor %}
+            </ul>
+            <p class="mt-2 text-rose-700">
+              If the file lives elsewhere, add its root to
+              <span class="font-mono">PRECIS_CORPUS_DIR</span> for the web
+              process (<span class="font-mono">{{ ':' }}</span>-separated) and restart.
+            </p>
+          {% else %}
+            <p class="mt-1">This paper has no <span class="font-mono">cite_key</span> (slug),
+              so the server can't address a file for it on disk.</p>
+            <p class="mt-1">corpus roots:
+              <span class="font-mono break-all">{{ (corpus_dirs | default([], true)) | join(', ') or "(unset)" }}</span></p>
+          {% endif %}
+        </div>
+      {% endif %}
+    </section>
   </div>
 </div>
 
-{% if pdf_on_disk %}
-  <iframe src="/papers/{{ paper.id }}/pdf" class="w-full rounded-lg border border-slate-200 bg-white"
-          style="height: 80vh"></iframe>
-{% elif not paper.has_pdf %}
-  <div class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-    No PDF on disk for this paper (it's a stub — queued for fetch).
-  </div>
-{% else %}
-  <div class="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
-    <p class="font-medium">This paper is held but the file isn't where the server looked.</p>
-    {% if cite_key %}
-      <p class="mt-1">cite_key: <span class="font-mono break-all">{{ cite_key }}</span></p>
-      <p class="mt-1">Looked at:</p>
-      <ul class="mt-0.5 ml-4 list-disc">
-        {% for p in pdf_lookup_paths | default([], true) %}
-        <li class="font-mono break-all">{{ p }}</li>
-        {% else %}
-        <li>(none)</li>
-        {% endfor %}
-      </ul>
-      <p class="mt-2 text-rose-700">
-        If the file lives elsewhere (e.g. an NFS mount mounted at a
-        different path on this host), add its root to
-        <span class="font-mono">PRECIS_CORPUS_DIR</span> for the web
-        process (multiple roots are
-        <span class="font-mono">{{ ':' }}</span>-separated) and restart.
-      </p>
-    {% else %}
-      <p class="mt-1">This paper has no <span class="font-mono">cite_key</span> (slug),
-        so the server can't address a file for it on disk
-        (layout is <span class="font-mono">&lt;corpus_dir&gt;/&lt;letter&gt;/&lt;cite_key&gt;.pdf</span>).</p>
-      <p class="mt-1">corpus roots:
-        <span class="font-mono break-all">{{ (corpus_dirs | default([], true)) | join(', ') or "(unset)" }}</span></p>
-    {% endif %}
-  </div>
-{% endif %}
+<script src="/static/paper-viewer.js" defer></script>
 {% endblock %}

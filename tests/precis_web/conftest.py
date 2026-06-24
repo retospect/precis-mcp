@@ -79,6 +79,9 @@ class FakeStore:
         #: collision branch can be exercised.
         self.identifier_writes: list[tuple[int, str, str]] = []
         self.taken_cite_keys: set[str] = set()
+        #: Canned sidebar-nav hits per scope_ref_id: lists of
+        #: (block, ref, score) for the search_blocks_* fakes.
+        self.nav_hits: dict[int, list[Any]] = {}
         self.todos = [
             make_ref(id=1, kind="todo", title="Build the thing", parent_id=None),
             make_ref(id=2, kind="todo", title="Draft the spec", parent_id=1),
@@ -183,6 +186,27 @@ class FakeStore:
 
     def list_blocks_for_ref(self, ref_id: int, **kw: Any) -> list[Any]:
         return list(self._conv_blocks.get(ref_id, []))
+
+    def fetch_ref_ids_by_slugs(self, slugs, *, kind: str):
+        """Resolve cite_key slugs → ref ids (the slug-addressed detail
+        route). Live papers in the fixture pool only."""
+        wanted = {s for s in slugs if s}
+        return [r.id for r in self._for_kind(kind) if r.slug in wanted]
+
+    def chunk_pages(self, ref_id: int, ords) -> dict[int, int]:
+        """No page provenance in the fake corpus — sidebar nav still
+        works, the PDF jump just has no page hint."""
+        return {}
+
+    def search_blocks_semantic(self, *, query_vec, scope_ref_id=None, limit=20, **kw):
+        """Return canned (block, ref, distance) hits for the paper-nav
+        search route. Tests populate ``self.nav_hits`` per ref."""
+        return list(self.nav_hits.get(scope_ref_id, []))
+
+    def search_blocks_lexical(self, *, q, scope_ref_id=None, limit=20, **kw):
+        """Keyword path — same canned hits as the semantic path so the
+        route's result-shaping is exercised either way."""
+        return list(self.nav_hits.get(scope_ref_id, []))
 
     def ref_ids_with_chunks(self, ref_ids) -> set[int]:
         # Fake corpus has no body chunks — the "has chunks" badge/filter

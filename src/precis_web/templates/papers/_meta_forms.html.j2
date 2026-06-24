@@ -1,0 +1,99 @@
+{# Metadata edit / triage / delete affordances for the paper detail
+   sidebar. Split out of detail.html.j2 so the two-pane layout stays
+   readable; relies on the detail context (paper, prefill, is_triage,
+   triage_msg, slug_default, suggested_slug, author_lines, abstract). #}
+
+{% if is_triage %}
+<div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs">
+  <p class="font-medium text-amber-800">Needs triage — metadata couldn't be recovered automatically.</p>
+  {% if triage_msg %}<p class="mt-1 text-amber-900">{{ triage_msg }}</p>{% endif %}
+  <form method="post" action="/papers/{{ paper.id }}/triage-lookup" class="mt-2 space-y-2">
+    <label class="block">
+      <span class="text-amber-700">Paste the paper's real title</span>
+      <input name="title" value="{{ prefill.title if prefill else '' }}"
+             placeholder="e.g. Ballistic carbon nanotube field-effect transistors"
+             class="w-full rounded border border-amber-300 px-2 py-1" />
+    </label>
+    <button type="submit" class="rounded bg-amber-600 px-3 py-1.5 text-white hover:bg-amber-700">
+      Look up on Semantic Scholar
+    </button>
+  </form>
+  <form method="post" action="/papers/{{ paper.id }}/untriage" class="mt-2 border-t border-amber-200 pt-2">
+    <input type="hidden" name="return_to" value="/papers/triage" />
+    <button type="submit" class="rounded border border-amber-400 px-2 py-1 text-amber-800 hover:bg-amber-100">
+      ✓ Looks fine — remove needs-triage
+    </button>
+  </form>
+</div>
+{% endif %}
+
+<div class="border-t border-slate-100 pt-2 text-xs" x-data="{ editing: {{ 'true' if prefill else 'false' }} }">
+  <div class="flex items-center gap-2">
+    <button type="button" @click="editing = !editing"
+            class="rounded border border-slate-300 px-2 py-1 hover:bg-slate-50">
+      <span x-show="!editing">✎ Edit metadata</span>
+      <span x-show="editing" x-cloak>Cancel</span>
+    </button>
+    <form method="post" action="/papers/{{ paper.id }}/delete" class="inline"
+          onsubmit="return confirm('Delete paper #{{ paper.id }}? This soft-deletes it (removes it from listings).');">
+      <input type="hidden" name="return_to" value="{{ '/papers/triage' if is_triage else '/papers' }}" />
+      <button type="submit"
+              class="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-rose-700 hover:bg-rose-100">
+        🗑 Delete paper
+      </button>
+    </form>
+  </div>
+
+  <form x-show="editing" x-cloak method="post" action="/papers/{{ paper.id }}/edit"
+        class="mt-2 space-y-2" x-data="{ slug: '{{ slug_default }}' }">
+    <p class="text-slate-500">Leave a field blank to keep its current value. Authors: one per line.</p>
+    <label class="block">
+      <span class="text-slate-500">Title</span>
+      <input name="title" value="{{ prefill.title if prefill else paper.title }}"
+             class="w-full rounded border border-slate-300 px-2 py-1" />
+    </label>
+    <div class="grid grid-cols-2 gap-2">
+      <label class="block">
+        <span class="text-slate-500">Year</span>
+        <input name="year" value="{{ prefill.year if prefill else (paper.year or '') }}" inputmode="numeric"
+               class="w-full rounded border border-slate-300 px-2 py-1" />
+      </label>
+      <label class="block">
+        <span class="text-slate-500">DOI</span>
+        <input name="doi" value="{{ prefill.doi if prefill else (paper.links.doi or '') }}" placeholder="10.xxxx/yyyy"
+               class="w-full rounded border border-slate-300 px-2 py-1 font-mono" />
+      </label>
+      <label class="block">
+        <span class="text-slate-500">arXiv id</span>
+        <input name="arxiv" value="{{ prefill.arxiv if prefill else (paper.links.arxiv or '') }}" placeholder="2501.01234"
+               class="w-full rounded border border-slate-300 px-2 py-1 font-mono" />
+      </label>
+      <label class="block">
+        <span class="text-slate-500">Short handle</span>
+        <input name="cite_key" x-model="slug" placeholder="e.g. piela07"
+               class="w-full rounded border border-slate-300 px-2 py-1 font-mono" />
+      </label>
+    </div>
+    {% if suggested_slug and suggested_slug != slug_default %}
+    <p class="text-slate-400">Suggested handle:
+      <button type="button" @click="slug = '{{ suggested_slug }}'"
+              class="font-mono text-sky-700 underline">{{ suggested_slug }}</button>
+      (renaming moves the PDF on disk)</p>
+    {% endif %}
+    <label class="block">
+      <span class="text-slate-500">Authors (one per line)</span>
+      <textarea name="authors" rows="3" placeholder="Smith, Jane&#10;Jones, Bob"
+                class="w-full rounded border border-slate-300 px-2 py-1 font-mono">{% if prefill %}{{ prefill.authors }}{% else %}{% for line in author_lines -%}
+{{ line }}
+{% endfor -%}{% endif %}</textarea>
+    </label>
+    <label class="block">
+      <span class="text-slate-500">Abstract</span>
+      <textarea name="abstract" rows="4"
+                class="w-full rounded border border-slate-300 px-2 py-1">{{ prefill.abstract if prefill else (abstract or '') }}</textarea>
+    </label>
+    <button type="submit" class="rounded bg-emerald-600 px-3 py-1.5 text-white hover:bg-emerald-700">
+      Save changes
+    </button>
+  </form>
+</div>

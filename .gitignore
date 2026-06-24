@@ -3,6 +3,9 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+# …but the vendored pdf.js ships a `build/` dir (pdf.mjs + worker) that
+# must be tracked — the `build/` rule above would otherwise drop it.
+!src/precis_web/static/pdfjs/build/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/

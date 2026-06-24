@@ -20,14 +20,18 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
+    JSONResponse,
     RedirectResponse,
     Response,
 )
 
 from precis.errors import BadInput, NotFound
 from precis.utils.authors import author_names
+from precis.utils.embed_query import embed_query
+from precis.utils.toc_db import build_toc_segments
 from precis_web.deps import (
     await_dispatch,
+    get_runtime,
     get_store,
     get_web_config,
     redirect_or_error,
@@ -343,6 +347,8 @@ def _render_detail(
     )
     has_triage = triage or store.has_tag(ref_id, "OPEN", _TRIAGE_TAG)
     stamps = store.ingest_timestamps(ref_id)
+    n_chunks = store.count_blocks(ref_id)
+    tags = [(t.namespace, t.value) for t in store.tags_for(ref_id)]
     # Suggest a real cite_key from the (fixed) author + year. Pre-fill the
     # field with it only when the current handle is the anon placeholder —
     # otherwise default to the existing handle so a save is a no-op unless
@@ -358,6 +364,9 @@ def _render_detail(
         {
             "active_tab": "papers",
             "paper": paper,
+            "handle": cite_key or str(ref_id),
+            "n_chunks": n_chunks,
+            "tags": tags,
             "authors_display": _authors_str(ref),
             "author_lines": _author_edit_lines(ref),
             "abstract": _abstract_full(ref),
@@ -407,20 +416,150 @@ def _cited_chunk(store: Any, ref_id: int, chunk: str | None) -> dict[str, Any] |
     return {"ord": ord_, "text": row[0], "page": row[1]}
 
 
-@router.get("/{ref_id}", response_class=HTMLResponse)
-async def detail(
-    request: Request, ref_id: int, triage: int = 0, chunk: str | None = None
-) -> HTMLResponse:
-    """Paper detail: metadata + embedded PDF viewer. ``?chunk=N`` (a
-    citation click) surfaces that chunk's text as a highlighted card."""
-    store = get_store(request)
-    refs = store.fetch_refs_by_ids([ref_id], include_deleted=False)
-    ref = refs.get(ref_id)
+def _resolve_paper(store: Any, ident: str) -> Any | None:
+    """Resolve a path ``ident`` (numeric id *or* cite_key slug) to a paper ref.
+
+    All-digit idents are treated as the numeric ref id (back-compat with
+    the old ``/papers/<id>`` URLs + ``?chunk=`` citation deep links); any
+    other ident is a slug, resolved through ``ref_identifiers``. Returns
+    ``None`` when nothing live + ``kind='paper'`` matches.
+    """
+    if ident.isdigit():
+        ref = store.fetch_refs_by_ids([int(ident)], include_deleted=False).get(
+            int(ident)
+        )
+    else:
+        ids = store.fetch_ref_ids_by_slugs([ident], kind="paper")
+        ref = (
+            store.fetch_refs_by_ids(ids, include_deleted=False).get(ids[0])
+            if ids
+            else None
+        )
     if ref is None or ref.kind != "paper":
-        raise NotFound(f"paper id={ref_id} not found")
+        return None
+    return ref
+
+
+#: Cap on sidebar-nav result rows (semantic / keyword) — enough to scan,
+#: bounded so a broad query doesn't return the whole paper.
+_NAV_LIMIT = 80
+
+#: Per-result snippet length shown in the sidebar (chars).
+_NAV_SNIPPET = 320
+
+
+def _nav_snippet(text: str) -> str:
+    """Collapse a chunk's text to a bounded single-paragraph preview."""
+    s = _WS_RE.sub(" ", text or "").strip()
+    if len(s) > _NAV_SNIPPET:
+        s = s[:_NAV_SNIPPET].rstrip() + "…"
+    return s
+
+
+@router.get("/{ident}", response_class=HTMLResponse, response_model=None)
+async def detail(
+    request: Request, ident: str, triage: int = 0, chunk: str | None = None
+) -> HTMLResponse | RedirectResponse:
+    """Paper detail: metadata sidebar + PDF.js reader. ``?chunk=N`` (a
+    citation click) surfaces that chunk's text as a highlighted card.
+
+    Addressable by cite_key slug (canonical) or numeric id; a numeric id
+    that owns a slug 301-redirects to the slug URL so links settle on the
+    stable handle while old ``/papers/<id>`` deep links keep working.
+    """
+    store = get_store(request)
+    ref = _resolve_paper(store, ident)
+    if ref is None:
+        raise NotFound(f"paper {ident!r} not found")
+    if ident.isdigit() and ref.slug:
+        target = f"/papers/{ref.slug}"
+        if request.url.query:
+            target = f"{target}?{request.url.query}"
+        return RedirectResponse(url=target, status_code=301)
     return _render_detail(
-        request, ref, triage=bool(triage), cited=_cited_chunk(store, ref_id, chunk)
+        request, ref, triage=bool(triage), cited=_cited_chunk(store, ref.id, chunk)
     )
+
+
+@router.get("/{ref_id}/search")
+async def search_in_paper(
+    request: Request, ref_id: int, q: str = "", mode: str = "semantic"
+) -> JSONResponse:
+    """Sidebar nav search, scoped to this paper's body chunks.
+
+    Returns ranked ``{ord, page, text, keywords, score}`` rows (plain
+    text for display; ``page`` drives the PDF jump):
+
+    * ``mode='semantic'`` — cosine-ranked over the paper's chunk
+      embeddings. Degrades to ``keyword`` when the embedder is down or
+      the query won't embed (the search-embed guard).
+    * ``mode='keyword'`` — lexical (``chunks.tsv`` / ``ts_rank_cd``).
+    """
+    store = get_store(request)
+    ref = _resolve_paper(store, str(ref_id))
+    q = q.strip()
+    if ref is None or not q:
+        return JSONResponse({"results": [], "mode": mode})
+
+    m = (mode or "semantic").strip().lower()
+    hits: list[Any] = []
+    if m == "semantic":
+        hub = getattr(get_runtime(request), "hub", None)
+        embedder = getattr(hub, "embedder", None)
+        vec = embed_query(embedder, q)
+        if vec is not None:
+            hits = store.search_blocks_semantic(
+                query_vec=vec, scope_ref_id=ref.id, limit=_NAV_LIMIT, max_distance=None
+            )
+        else:
+            m = "keyword"  # embedder down → degrade to a lexical find
+    if m != "semantic":
+        m = "keyword"
+        hits = store.search_blocks_lexical(q=q, scope_ref_id=ref.id, limit=_NAV_LIMIT)
+
+    pages = store.chunk_pages(ref.id, [b.pos for b, _r, _s in hits])
+    results = [
+        {
+            "ord": b.pos,
+            "page": pages.get(b.pos),
+            "text": _nav_snippet(b.text),
+            "keywords": b.keywords or [],
+            "score": round(float(score), 4),
+        }
+        for b, _r, score in hits
+    ]
+    return JSONResponse({"results": results, "mode": m})
+
+
+@router.get("/{ref_id}/toc")
+async def toc_in_paper(request: Request, ref_id: int) -> JSONResponse:
+    """Clickable TOC: keyword-clustered segments of this paper's body.
+
+    Each segment carries its ``handle``, chunk range, label keywords,
+    and the PDF ``page`` of its first chunk (for the viewer jump).
+    """
+    store = get_store(request)
+    ref = _resolve_paper(store, str(ref_id))
+    if ref is None:
+        return JSONResponse({"segments": []})
+    slug = ref.slug or f"id{ref.id}"
+    segments = build_toc_segments(store=store, ref_id=ref.id, slug=slug)
+    pages = store.chunk_pages(ref.id, [seg["lo"] for seg in segments])
+    for seg in segments:
+        seg["page"] = pages.get(seg["lo"])
+    return JSONResponse({"segments": segments})
+
+
+@router.get("/{ref_id}/chunk/{ord}")
+async def chunk_in_paper(request: Request, ref_id: int, ord: int) -> JSONResponse:
+    """Resolve a single chunk ``ord`` → ``{ord, page, text}`` for the
+    sidebar "jump to chunk" affordance. 404-as-empty when absent."""
+    store = get_store(request)
+    ref = _resolve_paper(store, str(ref_id))
+    if ref is None:
+        return JSONResponse({"chunk": None})
+    cited = _cited_chunk(store, ref.id, str(ord))
+    return JSONResponse({"chunk": cited})
 
 
 @router.post("/{ref_id}/triage-lookup", response_model=None)

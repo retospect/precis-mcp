@@ -243,8 +243,15 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
 - **`precis web`** — browser UI (Tasks / Papers / Console /
   Conversations / Status). Papers carry DOI/arXiv verify links and
   presence filters (`has_pdf` / `has_chunks`); PDFs serve from a
-  multi-root `PRECIS_CORPUS_DIR` (ADR 0029); per-todo compiled-PDF
-  viewer; "ask a follow-up" on any thought spawns a `conv` thread
+  multi-root `PRECIS_CORPUS_DIR` (ADR 0029). The **paper detail page**
+  (`routes/papers.py`, slug- or id-addressed; numeric→slug 301) is a
+  two-pane reader: a collapsible sidebar (Navigate = semantic/keyword/TOC
+  over the paper's chunks via `/papers/<id>/search` + `/toc`; Jump by
+  text/page/ord via `/chunk/<ord>`; Meta = all metadata + edit/triage)
+  beside the vendored Mozilla **pdf.js** viewer (`static/pdfjs/`, driven
+  same-origin to jump pages + highlight chunk text via its find API; no
+  per-chunk bbox yet, so highlight is text-layer best-effort). Also a
+  per-todo compiled-PDF viewer; "ask a follow-up" on any thought spawns a `conv` thread
   linked `derived-from` the source. Status page has a Background
   Health panel (active spin loops + failed passes, 24h). `precis_web`
   is a sibling package over the handler layer (ADR 0026).
