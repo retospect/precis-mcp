@@ -387,7 +387,8 @@ class CacheMixin:
 _REFS_COLS_FOR_CACHE = (
     "refs.ref_id AS id, "
     "(SELECT id_value FROM ref_identifiers "
-    " WHERE ref_id = refs.ref_id AND id_kind = 'cite_key') AS slug, "
+    " WHERE ref_id = refs.ref_id AND id_kind = 'cite_key'"
+    " ORDER BY created_at DESC LIMIT 1) AS slug, "
     "refs.kind, refs.title, refs.provider, refs.meta, "
     "refs.created_at, refs.updated_at, refs.deleted_at, "
     "refs.set_by, refs.authors, refs.year, "

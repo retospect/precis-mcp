@@ -293,7 +293,8 @@ _CHUNKS_COLS_LEN = 14
 _REFS_COLS = (
     "ref_id AS id, "
     "(SELECT id_value FROM ref_identifiers "
-    " WHERE ref_id = refs.ref_id AND id_kind = 'cite_key') AS slug, "
+    " WHERE ref_id = refs.ref_id AND id_kind = 'cite_key'"
+    " ORDER BY created_at DESC LIMIT 1) AS slug, "
     "kind, title, provider, meta, "
     "created_at, updated_at, deleted_at, "
     "set_by, authors, year, "
@@ -307,7 +308,8 @@ _REFS_COLS = (
 _REFS_COLS_ALIASED = (
     "r.ref_id AS id, "
     "(SELECT id_value FROM ref_identifiers "
-    " WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS slug, "
+    " WHERE ref_id = r.ref_id AND id_kind = 'cite_key'"
+    " ORDER BY created_at DESC LIMIT 1) AS slug, "
     "r.kind, r.title, r.provider, r.meta, "
     "r.created_at, r.updated_at, r.deleted_at, "
     "r.set_by, r.authors, r.year, "

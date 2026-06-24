@@ -8,6 +8,21 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-24 — `/papers` 500 (CardinalityViolation) on papers with >1 cite_key)
+
+- The `slug` column is a correlated scalar subquery over
+  `ref_identifiers (id_kind='cite_key')`, but prod accumulated papers
+  carrying two or three cite_key rows (re-slugs / merges), so the
+  subquery returned multiple rows and Postgres raised `CardinalityViolation`
+  — taking down `/papers` (list), and the detail / lexical-search reads
+  that share `_REFS_COLS`. The subquery now picks one deterministically
+  (`ORDER BY created_at DESC LIMIT 1`, latest cite_key wins) in
+  `_mappers.py`, `_cache_ops.py`, and `_tags_ops.py` (the last already had
+  a bare `LIMIT 1`; aligned for a stable slug across views). Real-PG
+  regression: `tests/test_dup_cite_key_slug.py` (the web FakeStore doesn't
+  execute SQL, so route tests sailed past it). The duplicate cite_key rows
+  themselves are a separate data-hygiene cleanup.
+
 ### Added (2026-06-24 — figure clearance gate is enforced: reader warning + export block)
 
 - **A draft's figures are now gated on clearance** (ADR 0034 §4), with one
