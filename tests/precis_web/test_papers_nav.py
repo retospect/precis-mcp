@@ -36,7 +36,8 @@ def test_detail_by_slug_renders(client) -> None:
     the sidebar-nav reader."""
     resp = client.get("/papers/smith2024", follow_redirects=False)
     assert resp.status_code == 200
-    assert "smith2024" in resp.text
+    assert "smith2024" in resp.text  # cite_key still shown
+    assert "pa10" in resp.text  # universal handle (pa<ref_id>)
     assert "/static/paper-viewer.js" in resp.text
 
 

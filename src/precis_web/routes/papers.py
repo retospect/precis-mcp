@@ -28,6 +28,7 @@ from fastapi.responses import (
 from precis.errors import BadInput, NotFound
 from precis.utils.authors import author_names
 from precis.utils.embed_query import embed_query
+from precis.utils.handle_registry import format_handle
 from precis.utils.toc_db import build_toc_segments
 from precis_web.deps import (
     await_dispatch,
@@ -364,6 +365,9 @@ def _render_detail(
         {
             "active_tab": "papers",
             "paper": paper,
+            # Universal handle (ADR 0036, ``pa<ref_id>``) — the address that
+            # works regardless of whether a cite_key slug is minted.
+            "pa_handle": format_handle("paper", ref_id),
             "handle": cite_key or str(ref_id),
             "n_chunks": n_chunks,
             "tags": tags,

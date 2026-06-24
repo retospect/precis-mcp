@@ -20,7 +20,7 @@
   <div class="flex items-center gap-3 py-2">
     <a href="/papers" class="text-sm text-slate-500 hover:underline">&larr; papers</a>
     <h1 class="truncate text-base font-semibold" title="{{ paper.title }}">{{ paper.title }}</h1>
-    <span class="shrink-0 font-mono text-xs text-slate-400">{{ handle }}</span>
+    <span class="shrink-0 font-mono text-xs text-slate-400">{{ pa_handle }}{% if paper.slug %} · {{ paper.slug }}{% endif %}</span>
     <button type="button" @click="sidebarOpen = !sidebarOpen"
             class="ml-auto shrink-0 rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">
       <span x-text="sidebarOpen ? '⟨ hide panel' : 'show panel ⟩'"></span>
@@ -148,8 +148,9 @@
         {# ── Meta: full metadata + edit / triage / delete ───────── #}
         <div x-show="tab === 'Meta'" x-cloak class="space-y-3">
           <dl class="space-y-1 text-xs">
+            <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">handle</dt><dd class="font-mono">{{ pa_handle }}</dd></div>
             <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">id</dt><dd>#{{ paper.id }}</dd></div>
-            {% if paper.slug %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">handle</dt><dd class="font-mono">{{ paper.slug }}</dd></div>{% endif %}
+            {% if paper.slug %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">cite_key</dt><dd class="font-mono">{{ paper.slug }}</dd></div>{% endif %}
             {% if paper.year %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">year</dt><dd>{{ paper.year }}</dd></div>{% endif %}
             <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">chunks</dt><dd>{{ n_chunks }}</dd></div>
             <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">pdf</dt><dd>{{ 'on disk' if pdf_on_disk else ('held, missing file' if paper.has_pdf else 'stub (no pdf)') }}</dd></div>
