@@ -597,34 +597,34 @@ def test_clean_chunk_has_no_finding_warning(draft: DraftHandler, hub: Hub) -> No
 
 
 def test_numeric_chunk_ref_flagged(draft: DraftHandler, hub: Hub) -> None:
-    # An LLM that writes a numeric id (¶45650) where an opaque handle
-    # belongs gets warned on read.
+    # An LLM that writes a numeric id ([[45650]]) where a handle belongs
+    # gets warned on read.
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    title_h = _order(hub, "nt")[0].handle
+    title_h = _order(hub, "nt")[0].dc
     draft.put(
         id="nt",
         chunk_kind="paragraph",
-        text="As shown in [¶45650], the effect holds.",
-        at={"after": "¶" + title_h},
+        text="As shown in [[45650]], the effect holds.",
+        at={"after": title_h},
     )
     para_h = _order(hub, "nt")[1].dc
     out = draft.get(id=para_h).body
-    assert "unresolved chunk reference" in out
-    assert "¶45650" in out
+    assert "unresolved reference" in out
+    assert "[[45650]]" in out
 
 
 def test_valid_chunk_ref_not_flagged(draft: DraftHandler, hub: Hub) -> None:
-    # A real, resolvable ¶handle cross-ref must NOT trip the warning.
+    # A real, resolvable [[dc<id>]] reference must NOT trip the warning.
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    title_h = _order(hub, "nt")[0].handle
+    title_h = _order(hub, "nt")[0].dc
     draft.put(
         id="nt",
         chunk_kind="paragraph",
-        text=f"See the title at [¶{title_h}] for context.",
-        at={"after": "¶" + title_h},
+        text=f"See the title at [[{title_h}]] for context.",
+        at={"after": title_h},
     )
     para_h = _order(hub, "nt")[1].dc
     out = draft.get(id=para_h).body
-    assert "unresolved chunk reference" not in out
+    assert "unresolved reference" not in out

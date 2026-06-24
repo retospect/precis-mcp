@@ -337,16 +337,16 @@ def test_user_prompt_surfaces_anchor_chunk(hub: Hub, store: Store) -> None:
         id="d1",
         chunk_kind="paragraph",
         text="The quick brown fox paragraph to remove.",
-        at={"after": f"¶{title_h}"},
+        at={"after": title_h},
     )
     para_h = next(
         c.handle for c in store.reading_order(dref.id) if c.text.startswith("The quick")
     )
     todo = store.insert_ref(kind="todo", slug=None, title="remove this paragraph")
-    store.stamp_ref_meta(todo.id, {"anchor": f"¶{para_h}"})
+    store.stamp_ref_meta(todo.id, {"anchor": para_h})
 
     prompt = _build_user_prompt(store, ref_id=todo.id, model="opus")
-    assert f"¶{para_h}" in prompt
+    assert para_h in prompt
     assert "The quick brown fox paragraph to remove." in prompt
     assert "Act on THIS chunk" in prompt
 
@@ -355,9 +355,9 @@ def test_user_prompt_anchor_missing_chunk(hub: Hub, store: Store) -> None:
     """An anchor pointing at a nonexistent chunk tells the agent to ask a
     grounded question, not guess."""
     todo = store.insert_ref(kind="todo", slug=None, title="fix it")
-    store.stamp_ref_meta(todo.id, {"anchor": "¶ZZZZZZ"})
+    store.stamp_ref_meta(todo.id, {"anchor": "dc999999"})
     prompt = _build_user_prompt(store, ref_id=todo.id, model="opus")
-    assert "¶ZZZZZZ" in prompt and "no longer exists" in prompt
+    assert "dc999999" in prompt and "no longer exists" in prompt
 
 
 def test_anchor_block_lists_linked_connections(hub: Hub, store: Store) -> None:
@@ -374,7 +374,7 @@ def test_anchor_block_lists_linked_connections(hub: Hub, store: Store) -> None:
         id="d2",
         chunk_kind="paragraph",
         text="A claim to support.",
-        at={"after": f"¶{title_h}"},
+        at={"after": title_h},
     )
     para = next(c for c in store.reading_order(dref.id) if c.text.startswith("A claim"))
     mem = store.insert_ref(kind="memory", slug=None, title="Supporting evidence")
@@ -385,7 +385,7 @@ def test_anchor_block_lists_linked_connections(hub: Hub, store: Store) -> None:
             (dref.id, para.chunk_id, mem.id),
         )
     todo = store.insert_ref(kind="todo", slug=None, title="support this claim")
-    store.stamp_ref_meta(todo.id, {"anchor": f"¶{para.handle}"})
+    store.stamp_ref_meta(todo.id, {"anchor": para.handle})
 
     prompt = _build_user_prompt(store, ref_id=todo.id, model="opus")
     assert "Linked to this chunk" in prompt

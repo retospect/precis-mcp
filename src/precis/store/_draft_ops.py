@@ -1130,17 +1130,18 @@ class _AbbrevMixin:
     add_chunks: Any  # provided by DraftMixin
 
     def ensure_glossary_heading(self, ref_id: int) -> str:
-        """Handle of the draft's "Glossary" heading, creating it (at the
-        end) if absent. Glossary ``term`` chunks file under it."""
+        """``dc<chunk_id>`` handle of the draft's "Glossary" heading (ADR
+        0036), creating it (at the end) if absent. Glossary ``term`` chunks
+        file under it."""
         with self.pool.connection() as conn:
             row = conn.execute(
-                "SELECT handle FROM chunks WHERE ref_id = %s "
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s "
                 "AND chunk_kind = 'heading' AND retired_at IS NULL "
                 "AND pos IS NOT NULL AND lower(text) = 'glossary' LIMIT 1",
                 (ref_id,),
             ).fetchone()
         if row:
-            return str(row[0])
+            return handle_registry.format_handle("draft", int(row[0]), chunk=True)
         created = self.add_chunks(
             ref_id=ref_id, chunk_kind="heading", text="Glossary", at={"last": True}
         )

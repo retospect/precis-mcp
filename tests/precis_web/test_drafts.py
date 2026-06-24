@@ -341,7 +341,7 @@ def test_edit_figure_permission_dispatches_edit(
     assert r.status_code == 303
     assert r.headers["location"] == "/drafts/nt#c-FIGTPF"
     verb, args = draft_runtime.calls[-1]
-    assert verb == "edit" and args["kind"] == "draft" and args["id"] == "¶FIGTPF"
+    assert verb == "edit" and args["kind"] == "draft" and args["id"] == "FIGTPF"
     assert args["origin"] == "third_party"
     assert args["permission"]["publisher"] == "Elsevier"
     assert args["permission"]["permission_id"] == "EL-999"
@@ -373,7 +373,7 @@ def test_figure_upload_dispatches_put(
     assert verb == "put" and args["kind"] == "draft"
     assert args["chunk_kind"] == "figure" and args["origin"] == "original"
     assert args["image"] == _b64.b64encode(png).decode()
-    assert args["at"] == {"after": "¶BBBBBB"}
+    assert args["at"] == {"after": "BBBBBB"}
     assert args["mime"] == "image/png"
     assert "permission" not in args
 
@@ -469,7 +469,7 @@ def test_change_request_dispatches_anchored_todo(
     verb, args = draft_runtime.calls[-1]
     assert verb == "put" and args["kind"] == "todo"
     assert args["parent_id"] == 1  # the draft-of project
-    assert args["meta"]["anchor"] == "¶BBBBBB"
+    assert args["meta"]["anchor"] == "BBBBBB"
 
 
 def test_ref_chips_dedup_sigil_and_kindref() -> None:
@@ -626,7 +626,7 @@ def test_review_dropdown_and_dispatch(
     assert r.status_code == 303
     verb, args = draft_runtime.calls[-1]
     assert verb == "put" and args["kind"] == "todo"
-    assert args["parent_id"] == 1 and args["meta"]["anchor"] == "¶AAAAAA"
+    assert args["parent_id"] == 1 and args["meta"]["anchor"] == "AAAAAA"
     assert (
         args["meta"]["review"] == "structural" and "Structural review" in args["text"]
     )

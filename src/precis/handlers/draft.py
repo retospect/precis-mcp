@@ -8,13 +8,14 @@ existing seven verbs — **no new verbs**:
 - ``put``   — create a draft (`project=`, born with a title heading) or
   add a chunk (`chunk_kind=`, `text=`, placed by `at=`).
 - ``get``   — list drafts (no id), a draft's outline (`id='<slug>'`), or
-  a chunk verbatim with a reading window (`id='¶<handle>[-B][+A]'`).
+  a chunk verbatim with a relative window (`id='dc<id>'`, `dc<id>-2..3`).
 - ``edit``  — change a chunk's text (`text=`) or move it (`move=`).
 - ``delete``— soft-retire a chunk (`mode='cascade'|'promote'` for a
   heading with children).
 
-Chunks are addressed by the opaque ``¶<handle>``; the draft itself by
-its slug (the universal ``id=``). See ``precis-draft-help``.
+Chunks are addressed by the computed ``dc<chunk_id>`` handle (ADR 0036;
+the legacy ``¶<base58>`` still resolves during the transition); the draft
+itself by its slug (the universal ``id=``). See ``precis-draft-help``.
 """
 
 from __future__ import annotations
@@ -37,7 +38,6 @@ from precis.response import Response
 from precis.store._draft_ops import content_sha
 from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for
-from precis.utils.handles import is_handle
 
 log = logging.getLogger(__name__)
 
@@ -152,10 +152,10 @@ class DraftHandler(Handler):
     ) -> Response:
         """Search draft prose. ``mode='lexical'`` is verbatim/keyword,
         ``mode='semantic'`` is by meaning, default ``hybrid`` fuses both.
-        Scope: a ``¶handle`` searches the subtree under that chunk, a
-        draft slug searches that whole draft, nothing searches every
-        draft. ``headings_only=True`` restricts hits to section headings
-        (a semantic TOC jump)."""
+        Scope: a ``dc<id>`` chunk handle searches the subtree under that
+        chunk, a draft slug searches that whole draft, nothing searches
+        every draft. ``headings_only=True`` restricts hits to section
+        headings (a semantic TOC jump)."""
         if q is None or not str(q).strip():
             raise BadInput(
                 "search(kind='draft') requires q=",
@@ -273,7 +273,7 @@ class DraftHandler(Handler):
             # heading (the doc's glossary subtree) unless the caller placed
             # it explicitly.
             if kind == "term" and at is None:
-                at = {"into": "¶" + self.store.ensure_glossary_heading(ref.id)}
+                at = {"into": self.store.ensure_glossary_heading(ref.id)}
             chunks = self.store.add_chunks(
                 ref_id=ref.id,
                 chunk_kind=kind,
@@ -783,37 +783,38 @@ class DraftHandler(Handler):
             "(finding:<pub_id>), or remove the marker."
         )
 
-    #: A ``¶<token>`` chunk cross-ref in prose. Token is any alphanumeric
-    #: run; validity (a real minted 6-char handle) is checked against the
-    #: store, so a numeric ``¶45650`` an LLM invented gets flagged.
-    _CHUNK_REF = re.compile(r"¶(?P<h>[0-9A-Za-z]+)")
+    #: A ``[[<handle>]]`` reference in prose (no colon — a universal handle,
+    #: not a legacy ``[[kind:id]]`` mention). Validity is checked against the
+    #: store, so a numeric ``[[45650]]`` an LLM invented gets flagged.
+    _CHUNK_REF = re.compile(r"\[\[(?P<h>[^\[\]:]+)\]\]")
 
     def _dangling_chunk_hint(self, text: str) -> str:
-        """Flag ``¶<token>`` cross-refs that resolve to no chunk. A real
-        chunk handle is an opaque 6-char base-58 code minted by the draft;
-        an LLM that imports the numeric-id convention (``memory:6184``,
-        ``todo:<id>``) into the ``¶`` slot writes things like ``¶45650``,
-        which can never resolve and renders as a dead link in the reader.
-        Warn here so the author fixes it to the real handle."""
+        """Flag ``[[<handle>]]`` references that resolve to nothing. A handle
+        is a ref to *something* (a chunk ``dc<id>``, a memory ``me<id>``, a
+        paper chunk ``pc<id>``, …); an LLM that writes a numeric id
+        (``[[45650]]``) or a typo'd handle produces a dead link. Warn here so
+        the author fixes it to a handle the outline / search actually shows."""
         seen: list[str] = []
         dangling: list[str] = []
         for m in self._CHUNK_REF.finditer(text):
-            h = m.group("h")
+            h = m.group("h").strip()
             if h in seen:
                 continue
             seen.append(h)
-            if is_handle(h) and self.store.get_draft_chunk(h) is not None:
+            try:
+                if self.store.resolve_handle(h) is not None:
+                    continue
+            except Exception:  # pragma: no cover — store hiccup, don't nag
                 continue
             dangling.append(h)
         if not dangling:
             return ""
-        toks = ", ".join(f"¶{h}" for h in dangling)
+        toks = ", ".join(f"[[{h}]]" for h in dangling)
         return (
-            f"\n\n⚠ unresolved chunk reference(s): {toks}. A ¶ cross-ref must be "
-            "an opaque 6-char handle minted by the draft (e.g. ¶1asdf1), not a "
-            "numeric id — these point at no chunk and won't link or navigate. "
-            "Find the target's handle in the outline (get(kind='draft', "
-            "id='<slug>')) and use that, or remove the reference."
+            f"\n\n⚠ unresolved reference(s): {toks}. A `[[…]]` reference must be a "
+            "handle that resolves to something (a chunk `dc<id>`, a memory "
+            "`me<id>`, a paper chunk `pc<id>`, …), not a numeric id — use the "
+            "handle the outline / search shows, or remove the reference."
         )
 
     def _render_toc(

@@ -151,6 +151,15 @@ by sandboxed jobs"; neither lives on the live document path.
   from data" fall out.
 * Embedding cost stays bounded: data text + render code + small data embed;
   image/large binaries never do.
+* **Addressing (ADR 0036).** Every computed chunk — a `figure`, a data
+  `table`, a `figure_code`/`figure_data` recipe chunk — is a draft chunk, so
+  its handle is the ADR 0036 computed `dc<chunk_id>` (a pure function of
+  `chunk_id`; the `derived-from` / `plots` edges are links, not part of the
+  handle). The `ord<0` rendered-image variant is a derived chunk and stays
+  unaddressed (regenerable, out of reading order). **Current state:** draft
+  chunks (figures included) now address by `dc<chunk_id>` end-to-end (ADR
+  0036's draft slice has landed); the recompute/sandbox machinery here is
+  unaffected by the addressing scheme.
 
 ## Open decisions
 

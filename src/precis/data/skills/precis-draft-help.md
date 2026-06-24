@@ -1,7 +1,7 @@
 ---
 id: precis-draft-help
 title: precis — the editable document kind
-summary: author a living document as chunks — create, read (outline/verbatim), edit text, reorder/reparent, soft-delete; markdown-ish prose with ¶/§/[[ ]] references
+summary: author a living document as chunks — create, read (outline/verbatim), edit text, reorder/reparent, soft-delete; markdown-ish prose with [[dc…]] references (any handle) and [§paper~n] citations
 applies-to: get/search/put/edit/delete (kind='draft')
 status: active
 ---
@@ -27,7 +27,7 @@ refs embedded in prose, and the per-chunk autolinker materialises a
 ```python
 search(kind='draft', q='direct air capture')                  # across ALL drafts
 search(kind='draft', q='direct air capture', scope='test01')  # one draft
-search(kind='draft', q='amine sites', scope='¶jUcyv8')        # subtree under a heading
+search(kind='draft', q='amine sites', scope='dc8')        # subtree under a heading
 search(kind='draft', q='capture', mode='lexical')             # verbatim / keyword
 search(kind='draft', q='capture', mode='semantic')            # by meaning (default: hybrid)
 search(kind='draft', q='methods', headings_only=True)         # jump to a section heading
@@ -35,10 +35,10 @@ search(kind='draft', q='methods', headings_only=True)         # jump to a sectio
 
 `mode=` is the same axis as everywhere else: `lexical` (exact / keyword),
 `semantic` (meaning), default `hybrid` (both, fused). `scope=` narrows to
-one draft (slug) or one section (a `¶handle` → that chunk's subtree); omit
-it to search every draft. `search(id='¶handle', q='…')` is accepted too —
-the `¶` already names the kind and the chunk is the scope. Each hit shows
-its `draft:<slug>` and `¶handle`; read one with `get(id='¶<handle>')`.
+one draft (slug) or one section (a `dc<id>` → that chunk's subtree); omit
+it to search every draft. `search(id='dc<id>', q='…')` is accepted too —
+the handle already names the kind and the chunk is the scope. Each hit
+shows its `draft:<slug>` and `dc<id>`; read one with `get(id='dc<id>')`.
 
 ## Find a project's draft
 
@@ -54,14 +54,16 @@ To go project → draft, resolve the project todo and follow its
 `draft-of` link. (The planner prompt also tells an editor agent which
 draft it is in, so this is rarely needed mid-edit.)
 
-## Addressing — opaque handles, never numbers
+## Addressing — universal handles, never numbers
 
-Each chunk has a minted, opaque **handle** (e.g. `5BL5xQ`). The
-inline/prose sigil is `¶`, so a chunk is `¶5BL5xQ`; in verbs use
-`id='¶5BL5xQ'` (handles are globally unique — no draft name needed).
-You **never** type or compute a handle for a *new* chunk — `put`
-returns it. Numeric `~N` ordinals are **not** offered for drafts (they
-rot on insert); use handles.
+Each chunk has a stable **handle**: the computed universal handle
+`dc<chunk_id>` (e.g. `dc41`) — `dc` = draft chunk, then its id. In verbs
+just pass it: `id='dc41'` (handles are globally unique — no draft name
+needed); the draft *record* is addressed by its name/slug or its `dr<id>`
+handle. You **never** type or compute a handle for a *new* chunk — `put`
+returns it. Reading windows use the relative grammar (`dc41-2..3`,
+`dc41+1`, `dc41^`). Positional `~N` ordinals are **not** offered for
+drafts (they rot on insert); use handles.
 
 ## Start a new draft
 
@@ -70,22 +72,22 @@ A draft is **born with a title heading** (so it is never empty), bound
 project's `meta.workspace.brief`; the draft carries `path`/`format`.
 
 ```python
-# 1 — create the draft (returns the draft + its title heading ¶t0)
+# 1 — create the draft (returns the draft + its title heading dc1)
 put(kind='draft', id='nanotrans', project='<project-todo-id>',
     title='Nanoscale Transistors',
     meta={'workspace': {'path': 'projects/nanotrans', 'format': 'tex'}})
 
 # 2 — add a section heading after the title
 put(kind='draft', id='nanotrans', chunk_kind='heading',
-    text='Introduction', at={'after': '¶t0'})       # → returns ¶k7m2aQ
+    text='Introduction', at={'after': 'dc1'})       # → returns dc12
 
 # 3 — a paragraph under it
 put(kind='draft', id='nanotrans', chunk_kind='paragraph',
-    text='Nanoscale transistors …', at={'into': '¶k7m2aQ', 'last': True})
+    text='Nanoscale transistors …', at={'into': 'dc12', 'last': True})
 ```
 
 `at` places the new chunk (all parts optional): `{'first'|'last': True}`,
-`{'into': '¶<heading>'}`, `{'before'|'after': '¶<handle>'}`.
+`{'into': 'dc<id>'}`, `{'before'|'after': 'dc<id>'}`.
 
 ## Add prose — one paragraph per put
 
@@ -95,8 +97,8 @@ handle per chunk:
 
 ```python
 put(kind='draft', id='nanotrans', chunk_kind='paragraph',
-    text='First para.\n\nSecond para.', at={'after': '¶k7m2aQ'})
-# → returns [¶aa1, ¶aa2]
+    text='First para.\n\nSecond para.', at={'after': 'dc12'})
+# → returns [dc13, dc14]
 ```
 
 **Every block carries prose — write the sentences, not just the
@@ -117,7 +119,7 @@ in a research write-up. Let sentence structure carry the weight.
 sentences, or use a colon, comma, or parentheses instead. (Headings
 already stand out, so you do not need bold on top.)
 
-## Figures & images (ADR 0034)
+## Figures & images
 
 A **figure** is a chunk whose caption is the face (`text`) and whose
 image bytes live in the database (a `chunk_blobs` row, 1:1 with the
@@ -128,7 +130,7 @@ caption as `text`, the image **base64** in `image=`, and an `origin=`:
 # our own diagram / schematic
 put(kind='draft', id='nanotrans', chunk_kind='figure',
     text='Fig 1. Device cross-section.', image='<base64>',
-    origin='original', at={'after': '¶k7m2aQ'})
+    origin='original', at={'after': 'dc12'})
 
 # a plot we generated from data (ships a data supplement — see graphs)
 put(kind='draft', id='nanotrans', chunk_kind='figure',
@@ -160,23 +162,23 @@ control uploads an image file directly (multipart) — for a `third_party`
 image it reveals the permission form inline — so a human can drop in a
 figure without base64. The clearance badge under a rendered figure is
 **editable**: hover for the paper-trail, click to edit it. Programmatic
-edits use `edit(kind='draft', id='¶<handle>', origin='third_party',
+edits use `edit(kind='draft', id='dc<id>', origin='third_party',
 permission={…})` — caption and image bytes stay put.
 
 > Graph regeneration (the plot's data + code as `figure_code` /
 > `figure_data` chunks linked `derived-from`) and the export step that
-> writes images out to `pics/` are later phases (ADR 0034).
+> writes images out to `pics/` are later phases.
 
 ## Read the document
 
 ```python
 get(kind='draft', id='nanotrans')          # outline: handle | §-path | gist
-get(id='¶k7m2aQ')                           # one chunk, verbatim source
-get(id='¶k7m2aQ-5+3')                       # that chunk + 5 before, 3 after
+get(id='dc12')                           # one chunk, verbatim source
+get(id='dc12-5..3')                      # that chunk + 5 before, 3 after
 ```
 
 Navigate the **outline** first (cheap — one line per chunk), then pull
-**verbatim** only for the region you act on. `¶<handle>-B+A` is a
+**verbatim** only for the region you act on. `dc<id>-2..3` is a
 reading window (B before, A after, in reading order).
 
 The outline ends with a **`## Work in progress`** block when todos are
@@ -192,7 +194,7 @@ silently stalling.
 ## Change a chunk's text
 
 ```python
-edit(id='¶k7m2aQ', text='Nanoscale transistors, defined as …')
+edit(id='dc12', text='Nanoscale transistors, defined as …')
 ```
 
 In-place: the handle (and every reference to it) survives; embeddings /
@@ -201,9 +203,9 @@ keywords / gist re-derive automatically.
 ## Reorder / move (structure, not a new verb)
 
 ```python
-edit(id='¶B', move={'before': '¶A'})                  # reorder among siblings
-edit(id='¶3', move={'parent': '¶secB', 'after': '¶7'}) # move into another section
-edit(id='¶x', move={'into': '¶heading', 'last': True}) # to a section's end
+edit(id='dc16', move={'before': 'dc15'})                  # reorder among siblings
+edit(id='dc17', move={'parent': 'dc20', 'after': 'dc18'}) # move into another section
+edit(id='dc19', move={'into': 'dc20', 'last': True}) # to a section's end
 ```
 
 Send the *intent* with handles; the system computes the ordering and
@@ -213,9 +215,9 @@ carries its whole subtree.
 ## Soft-delete (retire) — `delete`, reversible
 
 ```python
-delete(id='¶k7m2aQ')                       # retire a chunk (un-delete restores)
-delete(id='¶secB', mode='promote')         # remove heading, keep contents (lift to parent)
-delete(id='¶secB', mode='cascade')         # delete heading AND its contents
+delete(id='dc12')                       # retire a chunk (un-delete restores)
+delete(id='dc20', mode='promote')         # remove heading, keep contents (lift to parent)
+delete(id='dc20', mode='cascade')         # delete heading AND its contents
 ```
 
 A **heading with children requires a `mode`** — `promote` (keep
@@ -224,37 +226,33 @@ that destructive choice. Retired chunks drop out of the document but
 their history (and any anchor to them) survives. You **cannot delete
 the last live chunk** — a draft is never empty.
 
-## References in prose — markdown links
+## References in prose — one link form
 
-Prose is **markdown**; references are markdown links the renderer
-resolves per target:
+Prose is **markdown**. To reference anything, write `[[<handle>]]` — a
+handle is a ref to *something*, and the system resolves it. That single
+rule covers every cross-reference: a chunk in this draft (`[[dc41]]`), a
+memory or finding (`[[me5]]`), a paper chunk (`[[pc10]]`). Use
+`[text](<handle>)` when you want display words. The only non-handle form
+is a **paper citation**, which is keyed on the cite_key so it can build a
+bibliography:
 
 | write | means | renders |
 |---|---|---|
+| `[[<handle>]]` | reference to whatever the handle names | a link (chunk → §/number; record → link) |
+| `[the prior result](<handle>)` | reference with display text | hyperlinked text |
+| `[§<cite_key>~<n>]` | **paper citation** | `[n]` + bibliography |
 | `[DuckDuckGo](https://…)` | web link | hyperlink |
-| `[¶<handle>]` | cross-ref to this draft | computed §/number |
-| `[§<paper>~<n>]` | **citation** to a paper chunk | `[n]` + bibliography |
-| `[the prior result](¶<handle>)` | cross-ref with display text | hyperlinked text |
-| `[surface words](¶<term-handle>)` | glossary term | first-use / abbreviation |
-| `[[memory:<id>]]` | **authoring** link (any thought) | nothing (provenance only) |
 
 Cite the **exact** paper chunk that holds the detail (`[§miller89~4]`),
 not the whole paper.
 
-**Always cite by `[§<cite_key>~<n>]` — the cite_key, never a numeric
-ref id.** `[§singlemolecule13~2]` is right; `paper:liu24~3` and
-`paper:1837~3` are **wrong** in a draft. Three forms technically
-resolve — `[§liu24~3]` (the canonical sigil), `paper:liu24~3` (the bare
-`kind:ref` mention, sugar), and `paper:<numeric-ref-id>~3` — but only the
-`§cite_key` form is portable: it exports to a real `\cite{liu24}` and
-reads as a citation, whereas a numeric ref id is opaque, unstable across
-re-ingest, and produces no bibliography entry. If a tool result hands you
-a paper as a number or a `paper:` mention, **translate it to its
-`cite_key`** before you write it (the cite_key is the bare slug in
-`get(kind='paper', id=…)` / search output; `[§<cite_key>~<chunk>]`).
-Write **one** form per citation — never both `[§slug~n]` and
-`paper:slug~n` for the same reference, or the reader shows a redundant
-chip.
+**Always cite a paper by `[§<cite_key>~<n>]` — the cite_key, never a
+numeric id.** `[§singlemolecule13~2]` is right. The `§cite_key` form is
+the portable one: it exports to a real `\cite{singlemolecule13}` and
+reads as a citation, whereas a numeric id is opaque and produces no
+bibliography entry. If a tool result hands you a paper as a number,
+**translate it to its `cite_key`** before you write it (the cite_key is
+the bare slug in `get(kind='paper', id=…)` / search output).
 
 **Citation rigor (be strict).** A citation must **directly and
 substantively support the specific claim** — you must be able to quote
@@ -368,7 +366,7 @@ with copy-ready calls. For each, either:
   the hint.
 
 Once defined or silenced, a token stops being hinted. Reference a term with
-`[PEI](¶<term-handle>)`; explicit
+`[PEI](<dc-term-handle>)`; explicit
 terms win over auto-detected ones. **Thoughts** (memory / think / finding) are
 referenceable but **not citeable** — they get a `[[…]]` link only,
 never a bibliography entry. Math is `$…$` / `$$…$$` (LaTeX, rendered by
@@ -390,18 +388,17 @@ citation). Don't leave dangling `#name` placeholders in the prose.
 `g<sup>-1</sup>`). **Do not use emphasis markup.** `_italic_` and a single
 `*word*` are not rendered at all and leave literal `_`/`*` in the text;
 `**bold**` does render but reads as shouting, so skip it. Inline
-citations and cross-refs render as a compact `§`/`¶` marker in the reader,
+citations and cross-refs render as a compact marker in the reader,
 so handles do not clutter the sentence: write `[§miller89~4]` and it shows
-as a small superscript. A `¶` cross-ref must use the target chunk's
-**opaque handle** (e.g. `[¶1asdf1]`), the 6-char code shown in the outline
-— never a numeric id like `¶45650`, which resolves to no chunk.
+as a small superscript. A chunk cross-ref must use the target chunk's
+**`dc<id>` handle** (e.g. `[[dc41]]`), shown in the outline — never a
+numeric id like `[[45650]]`, which resolves to nothing.
 
-Bare `kind:ref` mentions (`paper:miller89~4`, `memory:6184`) are
-recognised too — the bracket forms are the *superset* over the same
-grammar notes use. **Every** reference you write auto-materialises a
-`related-to` backlink (the same shared autolinker), so the draft is
+**Every** reference you write (a `[§paper~n]` citation or a `[[dc<id>]]`
+link to a chunk/thought) auto-materialises a
+`related-to` backlink, so the draft is
 discoverable from the cited paper/thought's side; remove a reference and
-its link drops on the next edit. Intra-draft `¶` cross-refs are
+its link drops on the next edit. Intra-draft `[[dc<id>]]` cross-refs are
 document-internal (TOC / `\ref`), not graph edges.
 
 ## Writing well — structure + common mistakes
@@ -446,8 +443,8 @@ You usually don't rewrite prose directly; you **steer**:
 ```python
 edit(id='nanotrans', meta={'workspace': {'brief': '…updated brief…'}})
 put(kind='todo', parent_id='<project>', text='tighten this paragraph',
-    meta={'anchor': '¶k7m2aQ'}, ...)        # a change request, anchored
-link(src='¶k7m2aQ', rel='derived-from', dst='memory:7x2')  # provenance
+    meta={'anchor': 'dc12'}, ...)        # a change request, anchored
+link(src='dc12', rel='derived-from', dst='memory:7x2')  # provenance
 ```
 
 A change-request `todo` anchored to a handle flows through the normal
@@ -456,10 +453,10 @@ one job or fan out per section.
 
 **If you (the executor) can't complete a request, ask clearly.** When
 you yield an `ask-user:`, write a real question a human can act on, and
-**reference chunks by their `¶handle`** — never a numeric "chunk 0"
+**reference chunks by their `dc<id>`** — never a numeric "chunk 0"
 (drafts have no numeric chunk addresses; the reader can't find it). Bad:
 `ask-user:see-chunk-0`. Good: `ask-user: '"remove this para" is anchored
-at ¶MwJjhD (the intro); did you mean ¶MwJjhD or the sibling ¶k7m2aQ?'`.
+at dc5 (the intro); did you mean dc5 or the sibling dc12?'`.
 The ask surfaces on the draft block as a 🔔, linking to your run.
 
 ## Export (LaTeX) — `precis draft export`
@@ -480,7 +477,7 @@ recompiles after an edit. Hosts without a TeX toolchain get a friendly
 The export is a one-way resolution pass; the output is **disposable**
 (re-export from the draft, never hand-edit the `.tex`). Everything
 resolves automatically: each block gets a `\label{chunk:<handle>}` and a
-`[¶h]` cross-ref becomes `\cref{chunk:h}`; `[§slug~n]` / `paper:slug~n`
+`[[dc<id>]]` cross-ref becomes `\cref{chunk:h}`; `[§slug~n]` / `paper:slug~n`
 citations become `\cite{slug}` with a `refs.bib` generated from the cited
 papers (DOI/arXiv included when known); every defined abbreviation
 becomes a `\newacronym` and each occurrence a `\gls{…}` (first use full,
@@ -518,8 +515,7 @@ export marks a stub + warns.
 
 A *freeze* copies the draft's current chunks into an immutable
 `paper`-like ref (versioned, searchable, citable), linked `snapshot-of`
-the draft. The draft keeps evolving. (Operational verb TBD; see
-ADR 0033.)
+the draft. The draft keeps evolving. (Operational verb TBD.)
 
 ## See also
 
@@ -530,5 +526,3 @@ get(kind='skill', id='precis-stubs-help')       # request a paper we don't have 
 get(kind='skill', id='precis-finding-help')     # flag a claim / chase an un-ingested DOI
 get(kind='skill', id='precis-auto-tasks-help')  # wait-on-ingest (paper_ingested) leaf pattern
 ```
-
-Design: ADR 0033.

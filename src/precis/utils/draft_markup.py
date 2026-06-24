@@ -14,23 +14,23 @@ references. Two surfaces consume the *same* grammar (DRY, mirroring how
 The regex *atoms* live in :mod:`precis.utils.mentions` (the grammar
 SSOT); this module is the draft-specific parser + resolver over them.
 
-Reference forms, by the renderer's dispatch:
+Reference forms:
 
-* ``[¶<handle>]``            — cross-reference to a chunk in this draft
-* ``[§<paper>~<n>]``         — citation to an external corpus chunk
-* ``[text](¶<handle>)``      — cross-ref / glossary with display text
-                               (glossary when the target is a term chunk)
-* ``[text](§<paper>~<n>)``   — citation with display text
-* ``[text](https://…)``      — a web link
-* ``[[<address>]]``          — an authoring link (memory / think / …);
-                               renders to nothing
+* ``[[<handle>]]``           — **the** reference form: a handle is a ref to
+                               *something* (``dc41`` a draft chunk, ``me5`` a
+                               memory, ``pc10`` a paper chunk, …), resolved by
+                               the one ADR 0036 decoder ``store.resolve_handle``.
+* ``[text](<handle>)``       — same, with display text.
+* ``[§<paper>~<n>]``         — paper **citation** (cite_key-keyed; exports to
+                               a cite + bibliography — the one non-handle
+                               exception, since the bibliography needs the key).
+* ``[text](https://…)``      — a web link.
 
-Bare ``kind:ref`` mentions (``paper:miller89~4``, ``memory:6184``) are
-*also* recognised — by the shared :func:`mentions.resolve_link_targets`
-— so the resolvable superset is the bracket forms ∪ those bare handles.
+Legacy, still resolved during the transition: ``[¶<handle>]`` chunk
+cross-refs and bare ``kind:ref`` mentions (``paper:miller89~4``).
 
-The classes here are *syntactic* — whether a ``¶`` target is a section
-or a glossary term is resolved later against the target's ``chunk_kind``.
+The classes here are *syntactic* — what a handle points at (a section, a
+glossary term, a memory) is resolved later against the target.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from precis.utils import handle_registry
 from precis.utils.mentions import (
     DRAFT_CITE_PATTERN,
     DRAFT_MARKUP_PATTERN,
@@ -147,13 +148,40 @@ def resolve_draft_handle(
     return LinkTarget(int(row[0]), int(row[1]))
 
 
+def resolve_universal_handle(store: Any, token: str) -> LinkTarget | None:
+    """A bare ADR 0036 universal handle (``dc41`` a draft chunk, ``me5`` a
+    memory, ``pc10`` a paper chunk, …) → a live ``LinkTarget`` via the one
+    decoder ``store.resolve_handle``. This is the simple, uniform rule the
+    LLM relies on: *a handle is a ref to something*. ``None`` if the token
+    is not a well-formed / resolvable handle (so the caller falls through
+    to the legacy ``kind:id`` / ``¶`` / ``§`` paths)."""
+    if not handle_registry.is_well_formed(handle_registry.normalize(token)):
+        return None
+    try:
+        r = store.resolve_handle(token)
+    except Exception:
+        log.debug("draft_markup: resolve_handle failed for %r", token, exc_info=True)
+        return None
+    if r is None:
+        return None
+    pos = r.chunk_ord if getattr(r, "chunk_id", None) is not None else None
+    return LinkTarget(int(r.ref_id), pos)
+
+
 def _resolve_reference(store: Any, ref: Reference) -> LinkTarget | None:
     """One parsed bracket reference → a live ``LinkTarget`` (or ``None``).
 
-    ``WEB`` is external (no graph edge); ``AUTHORING`` carries a bare
-    ``kind:id`` that :func:`mentions.resolve_link_targets` already picks
-    up, so only ``XREF`` (¶) and ``CITE`` (§) resolve here.
+    A handle-shaped target (``[[dc41]]`` / ``[label](me5)``) resolves
+    through the universal ADR 0036 decoder first — one rule, any kind.
+    ``WEB`` is external (no graph edge); the legacy ``¶`` (XREF), ``§``
+    (CITE), and bare ``kind:id`` (AUTHORING, via
+    :func:`mentions.resolve_link_targets`) forms still resolve during the
+    transition.
     """
+    if ref.cls in (AUTHORING, XREF):
+        universal = resolve_universal_handle(store, ref.target.lstrip("¶"))
+        if universal is not None:
+            return universal
     if ref.cls == XREF:
         return resolve_draft_handle(store, ref.target)
     if ref.cls == CITE:

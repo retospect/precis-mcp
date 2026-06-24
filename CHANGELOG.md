@@ -48,6 +48,33 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   placeholder were retitled "Description (what to write — becomes the
   planner's initial prompt)" to kill the prior expectation mismatch.
 
+### Changed (2026-06-24 — drafts + figures address by `dc<id>` handles, hints and inputs)
+
+- **The draft slice of the ADR 0036 handle cutover.** Draft chunks (and
+  figures) now use the computed `dc<chunk_id>` universal handle as the address
+  **both ways**: the `DraftChunk.handle` property computes it, `get` / `edit` /
+  `delete` / `search`-scope accept it, the runtime routes a bare `dc<id>`
+  (+ relative ops `^`/`+N`/`-lo..hi`) straight to the draft handler, and every
+  agent-facing **hint** now shows `dc<id>` — the handler `next=`/render output,
+  the **planner prompt** (draft + anchor blocks), the `precis-draft-help`
+  skill, and the web reader.
+- **Web change-request / review / figure anchors store the bare handle** (was
+  `¶<handle>`); this also fixes a latent `¶dc<id>` double-prefix once the
+  reader template began emitting computed handles. `_requests_by_handle` and
+  the planner anchor block stay `¶`-tolerant so legacy anchors still resolve.
+- `ensure_glossary_heading` returns the computed `dc<id>`. The dangling-ref
+  hint validates against the store (the old base-58 `is_handle` check is gone).
+- **In-prose references unified onto handles.** `[[<handle>]]` (or
+  `[label](<handle>)`) is now the one cross-reference form — a handle is a ref
+  to *something*, resolved by the single `resolve_handle` decoder for any kind
+  (`[[dc41]]` chunk, `[[me5]]` memory, `[[pc10]]` paper chunk). `draft_markup`
+  (autolinker), `linkify` (reader), and the dangling-ref hint all speak it; the
+  one non-handle exception is the paper citation `[§<cite_key>~<n>]` (the
+  bibliography needs the key).
+- Intentional transition residue: the legacy `¶` address + `[¶<handle>]` prose
+  form still **resolve** on input, and `_insert_draft_chunk` still writes a
+  (now-vestigial) base-58 `chunks.handle`.
+
 ### Changed (2026-06-23 — ADR 0036 cutover: universal handles are the address form, in and out)
 
 - Completed the ADR 0036 cutover on top of the computed-handle rebase below.

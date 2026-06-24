@@ -166,7 +166,9 @@ def _requests_by_handle(
     and is suppressed only while a request is actively running."""
     if not handles:
         return {}
-    anchors = [f"¶{h}" for h in handles]
+    # Match both the new bare ``dc<id>`` anchors and any legacy ``¶<handle>``
+    # ones still stored (transition); the group key below normalises to bare.
+    anchors = list(handles) + [f"¶{h}" for h in handles]
     sql = (
         "SELECT r.ref_id, r.title, r.meta->>'anchor' AS anchor, "
         "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
@@ -827,7 +829,7 @@ async def request_change(
     args: dict[str, Any] = {
         "kind": "todo",
         "text": text.strip(),
-        "meta": {"anchor": f"¶{handle}"},
+        "meta": {"anchor": handle},
     }
     if project is not None:
         args["parent_id"] = project
@@ -841,19 +843,19 @@ async def request_change(
 #: ``all`` files one todo that tells the planner to fan out sequentially.
 _REVIEW_BRIEFS: dict[str, str] = {
     "structural": (
-        "Structural review of the draft section under ¶{h}. Check it against "
+        "Structural review of the draft section under {h}. Check it against "
         "the project brief: drift, contradictions with sibling sections, gaps, "
         "depth/fanout problems, weak or missing topic sentences. File concrete "
         "change requests (anchored at the offending chunks) for what to fix."
     ),
     "deep_review": (
-        "Deep review of the draft section under ¶{h}. Scrutinise the rigor of "
+        "Deep review of the draft section under {h}. Scrutinise the rigor of "
         "every claim and citation — does each cited passage actually and "
         "strongly support its claim? Prune redundancy, rebalance, and flag "
         "anything overstated. File concrete change requests."
     ),
     "all": (
-        "Review the draft section under ¶{h} thoroughly. Do this as SEQUENTIAL "
+        "Review the draft section under {h} thoroughly. Do this as SEQUENTIAL "
         "subtasks: (1) a structural review (drift, contradictions, gaps, topic-"
         "sentence structure), then (2) a deep review (claim/citation rigor, "
         "redundancy, overstatement). File concrete change requests from each."
@@ -881,7 +883,7 @@ async def review_block(
     args: dict[str, Any] = {
         "kind": "todo",
         "text": brief.format(h=handle),
-        "meta": {"anchor": f"¶{handle}", "review": reviewer},
+        "meta": {"anchor": handle, "review": reviewer},
     }
     project = _project_id(store, ref.id)
     if project is not None:
@@ -925,7 +927,7 @@ async def add_figure(
         "text": caption,
         "image": base64.b64encode(data).decode(),
         "origin": origin,
-        "at": {"after": f"¶{handle}"},
+        "at": {"after": handle},
     }
     if file.content_type:
         args["mime"] = file.content_type
@@ -973,7 +975,7 @@ async def edit_figure_permission(
     validation stays single-sourced; only ``meta.figure`` changes (caption
     and image bytes are untouched)."""
     back = f"/drafts/{ident}#c-{handle}"
-    args: dict[str, Any] = {"kind": "draft", "id": f"¶{handle}", "origin": origin}
+    args: dict[str, Any] = {"kind": "draft", "id": handle, "origin": origin}
     if origin == "third_party":
         args["permission"] = {
             k: v.strip()
@@ -1025,7 +1027,7 @@ async def goto_chunk(request: Request, handle: str) -> Response:
                 "active_tab": "drafts",
                 "title": "Chunk not found",
                 "status": 404,
-                "detail": f"no chunk ¶{handle}",
+                "detail": f"no chunk {handle}",
             },
             status_code=404,
         )
@@ -1044,7 +1046,7 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
         return templates.TemplateResponse(
             request,
             "preview/popover.html.j2",
-            {"kind": "chunk", "label": f"¶{handle}", "missing": True},
+            {"kind": "chunk", "label": handle, "missing": True},
         )
     # Show the chunk's verbatim text (≤ ~20 lines) as the quote — the
     # "what does ¶handle actually say?" a hover should answer.
@@ -1058,9 +1060,9 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
         "preview/popover.html.j2",
         {
             "kind": chunk.chunk_kind,
-            "label": f"¶{handle}",
+            "label": handle,
             "ref_id": handle,
-            "title": f"¶{handle}",
+            "title": handle,
             "quote": quote.strip() or "(empty)",
             "chunk_label": "",
             "body_preview": "",

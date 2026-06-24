@@ -48,6 +48,7 @@ from html import escape
 
 from markupsafe import Markup
 
+from precis.utils import handle_registry
 from precis.utils.handles import is_handle as _is_handle
 
 # Grammar moved to ``precis.utils.mentions`` so the write-time
@@ -254,6 +255,9 @@ def _render_display_link(disp: str, tgt: str, raw: str) -> str:
             )
     if tgt.startswith(("http://", "https://")):
         return _render_ext_anchor(tgt, label)
+    universal = _render_universal_handle(tgt, label)
+    if universal is not None:
+        return universal
     m = _REF_PATTERN.fullmatch(tgt)
     if m is not None and m.group("kind") in _LINKIFY_KINDS:
         if m.group("kind") not in _LOW_SIGNAL_KINDS:
@@ -343,10 +347,33 @@ def _md_inline(escaped: str) -> str:
     return re.sub(r"\x00(\d+)\x00", _restore, s)
 
 
+def _render_universal_handle(handle: str, label: str) -> str | None:
+    """An ADR 0036 universal handle (``dc41`` chunk, ``me5`` record, …) →
+    an anchor. The one rule: a handle is a ref to something. A chunk
+    navigates via ``/c/<handle>``; a record via ``/r/<kind>/<pk>``.
+    ``None`` if ``handle`` isn't a well-formed universal handle."""
+    parsed = handle_registry.parse(handle)
+    if parsed is None:
+        return None
+    kind, is_chunk, pk = parsed
+    if is_chunk:
+        h = escape(handle_registry.normalize(handle))
+        return _anchor_html(
+            href=f"/c/{h}", preview_url=f"/preview/chunk/{h}", label=escape(label)
+        )
+    return _anchor_html(
+        href=f"/r/{kind}/{pk}", preview_url=f"/preview/{kind}/{pk}", label=escape(label)
+    )
+
+
 def _render_authoring(addr: str) -> str:
-    """``[[kind:id]]`` — an authoring link. Renders to nothing in the
-    exported document, but here (the web editor) we surface the inner
-    handle as an anchor for discoverability when it is a known kind."""
+    """``[[<handle>]]`` — the universal reference form. A handle resolves
+    to an anchor (chunk / record); a legacy ``[[kind:id]]`` authoring link
+    surfaces its inner handle for discoverability when it is a known kind;
+    anything else stays literal."""
+    universal = _render_universal_handle(addr, addr)
+    if universal is not None:
+        return universal
     m = _REF_PATTERN.fullmatch(addr)
     if m is not None and m.group("kind") in _LINKIFY_KINDS:
         if m.group("kind") not in _LOW_SIGNAL_KINDS:

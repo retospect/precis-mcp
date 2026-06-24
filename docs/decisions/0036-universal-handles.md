@@ -428,6 +428,36 @@ and the rule is **accept-old-on-input, emit-new-on-output**.
   first) to avoid false positives. Run it "for a bit" during the cutover, then
   retire. This is the enforcement mechanism behind the policy above.
 
+### Rollout status by kind (running)
+
+- **Done:** records (`pa…`/`me…`/`td…`/… — slug-kinds via `pa123`-style;
+  numeric kinds by `<code><ref_id>`), paper chunks (`pc<chunk_id>`, emit +
+  chunk-READ relative nav), handle-emitting search output.
+- **Done — the draft slice (addressing).** Draft chunks (and therefore
+  **figures**, `chunk_kind='figure'` — ADR 0034/0035) emit and accept
+  `dc<chunk_id>` end-to-end: the `DraftChunk.handle` property computes it,
+  `get`/`edit`/`delete`/`search`-scope take it, the runtime routes `dc<id>`
+  (+ relative ops) straight to the draft handler (drafts keep the bare handle
+  rather than the paper `slug~ord` rewrite), and all the agent-facing **hints**
+  — handler `next=`/render, the planner-prompt draft + anchor blocks, the
+  `precis-draft-help` skill, and the web reader/anchors — now show `dc<id>`.
+  Change-request / review / figure anchors are stored bare; readers
+  (`_requests_by_handle`, the planner anchor block) stay `¶`-tolerant so
+  legacy anchors keep resolving.
+- **In-prose references unified onto handles.** A `[[<handle>]]` (or
+  `[label](<handle>)`) is the one cross-reference form — *a handle is a ref to
+  something* — resolved through the single `store.resolve_handle` decoder for
+  any kind (`[[dc41]]` a chunk, `[[me5]]` a memory, `[[pc10]]` a paper chunk).
+  `draft_markup` (autolinker), `linkify` (reader render), and the dangling-ref
+  hint all speak it; the skill/planner teach it. The one non-handle exception
+  is the paper **citation** `[§<cite_key>~<n>]`, kept because the bibliography
+  is keyed on the cite_key.
+- **Residual (intentional transition):** `_insert_draft_chunk` still writes a
+  base-58 `chunks.handle` (now vestigial — `DraftChunk.dc` computes the handle),
+  and the legacy `¶` address + `[¶<handle>]` prose form still **resolve** on
+  input. Dropping the base-58 write + `¶` resolution is a later cleanup once no
+  legacy anchors/prose remain.
+
 ## Open questions
 
 1. **Paper-chunk stability across re-chunk** — mostly moot (ingest-once); the

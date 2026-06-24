@@ -12,6 +12,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.draft import DraftHandler
+from precis.utils import handle_registry
 
 
 @pytest.fixture
@@ -45,6 +46,26 @@ def test_kind_ref_mention_materialises_link(draft: DraftHandler, hub: Hub) -> No
         chunk_kind="paragraph",
         text=f"as shown in memory:{target}, the effect holds",
         at={"after": "¶" + title_h},
+    )
+    assert (target, None) in _auto_links(hub, "nt")
+
+
+def test_universal_handle_ref_materialises_link(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The simple rule: a ``[[<handle>]]`` is a ref to *something*. A bare
+    ``[[me<id>]]`` universal handle resolves via the one decoder and
+    materialises a related-to edge — no `kind:`/sigil needed."""
+    target = hub.store.insert_ref(kind="memory", slug=None, title="cited note").id
+    me_handle = handle_registry.format_handle("memory", target)  # e.g. me42
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)[0].dc
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"as shown in [[{me_handle}]], the effect holds",
+        at={"after": title_h},
     )
     assert (target, None) in _auto_links(hub, "nt")
 

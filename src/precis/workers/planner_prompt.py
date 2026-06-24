@@ -582,10 +582,10 @@ def _render_draft_identity(store: Store, ref_id: int) -> str:
     return (
         f"## Draft\n\n"
         f"You are editing draft **{title}** (`id={ident}`). Read it with "
-        f"`get(kind='draft', id='{ident}')` (outline) and `get(id='¶<handle>')` "
+        f"`get(kind='draft', id='{ident}')` (outline) and `get(id='dc<id>')` "
         f"(one chunk); search within it via "
         f"`search(kind='draft', q='…', scope='{ident}')`. Address chunks by "
-        f"their `¶handle`; cross-reference by embedding `[¶<handle>]` in prose."
+        f"their `dc<id>` handle; cross-reference by embedding `[[dc<id>]]` in prose."
     )
 
 
@@ -593,7 +593,7 @@ def _render_anchor_context(store: Store, ref_id: int) -> str:
     """Surface the draft chunk a change request is anchored to.
 
     The web "around here…" box and the per-heading "review ▾" menu file a
-    todo carrying ``meta.anchor='¶<handle>'`` — *where* the request is
+    todo carrying ``meta.anchor='dc<id>'`` — *where* the request is
     about. Without surfacing it, the agent only sees the body ("remove
     this paragraph") with no pointer to which chunk, so it (correctly,
     per the ambiguity guidance) yields ``ask-user:`` — the "see chunk 0"
@@ -602,7 +602,7 @@ def _render_anchor_context(store: Store, ref_id: int) -> str:
 
     No-op when the todo has no ``meta.anchor``. When the anchor points at
     a chunk that no longer exists, say so (so the agent asks a *grounded*
-    question by ``¶handle`` rather than guessing)."""
+    question by ``dc<id>`` handle rather than guessing)."""
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT meta->>'anchor' FROM refs WHERE ref_id = %s", (ref_id,)
@@ -613,11 +613,11 @@ def _render_anchor_context(store: Store, ref_id: int) -> str:
     chunk = store.get_draft_chunk(handle)
     if chunk is None:
         return (
-            f"## Anchor — requested at ¶{handle}\n\n"
-            f"This request is anchored to draft chunk ¶{handle}, but that "
+            f"## Anchor — requested at {handle}\n\n"
+            f"This request is anchored to draft chunk {handle}, but that "
             "chunk no longer exists (retired or never created). Don't guess "
             "at another chunk — yield `ask-user:` with a question that names "
-            f"¶{handle} and asks what to target instead."
+            f"{handle} and asks what to target instead."
         )
     draft = store.get_ref(kind="draft", id=int(chunk.ref_id))
     dident = draft.slug if draft and draft.slug else chunk.ref_id
@@ -626,8 +626,8 @@ def _render_anchor_context(store: Store, ref_id: int) -> str:
         text = text[:1500].rstrip() + "…"
     quoted = "\n".join("> " + ln for ln in text.splitlines()) or "> (empty)"
     parts = [
-        f"## Anchor — requested at ¶{handle}\n",
-        f"This change request is anchored to chunk **¶{handle}** of "
+        f"## Anchor — requested at {handle}\n",
+        f"This change request is anchored to chunk **{handle}** of "
         f"`draft:{dident}` (a {chunk.chunk_kind}). Act on THIS chunk "
         "directly — edit / delete / cite it by its handle; don't ask which "
         "one it is. Its current text:\n",
@@ -644,7 +644,7 @@ def _render_anchor_context(store: Store, ref_id: int) -> str:
             parts.append(f"- {c['kind']}:{c['ident']} ({c['relation']}){desc}")
     parts.append(
         "\nIf you still must ask the user something, reference chunks by "
-        '`¶handle` (never "chunk 0").'
+        'their `dc<id>` handle (never "chunk 0").'
     )
     return "\n".join(parts)
 

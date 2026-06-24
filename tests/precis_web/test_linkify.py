@@ -364,6 +364,19 @@ def test_bare_bracket_xref_renders_handle_anchor() -> None:
     assert 'href="/c/5BL5xQ"' in out and ">¶5BL5xQ<" in out
 
 
+def test_universal_handle_renders_anchor() -> None:
+    # The one rule: a handle is a ref to something. A chunk handle navigates
+    # via /c/, a record handle via /r/<kind>/<pk>.
+    out = str(linkify_refs("see [[dc41]] and [[me5]]"))
+    assert 'href="/c/dc41"' in out
+    assert 'href="/r/memory/5"' in out
+
+
+def test_display_link_to_handle_renders_anchor() -> None:
+    out = str(linkify_refs("[the intro](dc41)"))
+    assert 'href="/c/dc41"' in out and ">the intro<" in out
+
+
 def test_bare_bracket_citation_renders_paper_anchor() -> None:
     out = str(linkify_refs("see [§miller89~4]"))
     assert "/r/paper/miller89" in out and ">§miller89~4<" in out
