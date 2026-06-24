@@ -1,593 +1,272 @@
-# Patent-drafting merge: bringing `patentorney-mcp` into precis
+# Patent drafting — a genre over the draft model
 
-> Status: **proposal**. Decision: Option A (full seven-verb mapping) with
-> engagement-triggered kind registration. Supersedes the brief Option D
-> (side-channel domain tools) discussed earlier in the thread.
+> Status: **proposal** (rewritten 2026-06-22). Patent drafting is an
+> **application of [ADR 0037](../decisions/0037-heading-styles-and-numbering-lock.md)**
+> (self-contained heading styles = skills, behavior styles, numbering
+> lock) over the [ADR 0033](../decisions/0033-draft-chunks-editable-document.md)
+> editable-document model and [ADR 0034](../decisions/0034-figure-assets-and-permission-provenance.md)
+> figure assets. **There is no `patent` document kind, no `patent-*`
+> kind family, and no `.patent.yaml` side-store.**
+>
+> **This supersedes the earlier framing of this file** — the
+> "bring `patentorney-mcp` in as a `patent-*` kind family behind an
+> engagement-triggered `.patent.yaml`" proposal. That predated the
+> `draft` kind; with drafts, claims/figures/numerals are just **managed
+> chunks in a styled draft**, not new kinds. The git history holds the
+> old version. The existing read-only `kind='patent'` (EPO OPS lookup)
+> is untouched and unrelated to drafting.
 
 ## TL;DR
 
-`patentorney-mcp` becomes a sub-system inside `precis-mcp`. Its 8
-domain tools collapse onto seven precis verbs over a family of new
-kinds (`patent-claim`, `patent-figure`, …). The sub-kinds are
-**hidden until the user engages with patent drafting**, at which
-point a single `put(kind='patent', mode='init', …)` call:
+A patent **is a `draft`** whose **`meta.workspace.doc_type` is `patent`**
+(the shipped document-type picker; ADR 0037 §1). That genre leads the
+brief (shipped) and selects a scaffold skill that lays the sections down.
+Each section is a **styled subtree**, not a new kind:
 
-1. Creates `${PRECIS_ROOT}/.patent.yaml`
-2. Registers the patent-drafting sub-kinds for the rest of the session
-3. Hint-bus surfaces "you can now draft claims, figures, numerals…"
-
-This keeps `tools/list` minimal for non-patent users, preserves
-precis's seven-verb purity, and gives patent users full domain
-ergonomics. One MCP server, one config entry, one repo to maintain.
-
-## Goals
-
-- **One MCP endpoint, one wheel, one repo.** Retire
-  `pips/packages/patentorney-mcp` after the merge.
-- **No verb-model violation.** Every patent operation lands on
-  `get / search / put / edit / delete / tag / link`. Domain
-  bulk-ops use a new precis-wide `id='*'` sentinel (Section 5).
-- **No tool-list pollution.** Non-patent users never see the
-  drafting kinds. Existing `kind='patent'` (EPO OPS lookup) stays
-  always-on — that already works for everyone.
-- **Discoverability via skills.** Patent-drafting agent help ships
-  as `precis-patent-help` + per-kind `precis-patent-<kind>-help`
-  skills, surfaced through the new TOC + semantic skill search
-  landed in May 2026 (commits `5bdd6b9` + `872ca8f`).
-
-## Non-goals (this proposal)
-
-- Cross-corpus linking (`prior_art doi=…` → `link target='paper:<slug>'`)
-  is documented but **deferred to phase 4**. Phase 1-3 land without it.
-- New verb introduction. The seven verbs stay.
-- Replacing the existing read-only `kind='patent'` (EPO OPS lookup)
-  in `docs/user-facing/patent-kind-spec.md`. The new modes (`init`,
-  `set-root`, `export-*`) **extend** that kind; the search/get
-  surface for foreign patents is untouched.
-
----
-
-## 1. Architecture: lazy kind families
-
-### 1.1 Trigger mechanism
-
-Two paths reach the same end-state — patent-drafting kinds become
-visible in `tools/list` for the rest of the precis-mcp process:
-
-**Boot-time trigger.** If `${PRECIS_ROOT}/.patent.yaml` exists
-when `dispatch.boot()` runs, the patent-drafting handlers register
-just like markdown/plaintext/tex do today (see
-`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/src/precis/dispatch.py:560-570`).
-Existing projects "just work" after restart.
-
-**Engagement-time trigger.** If no `.patent.yaml` exists, only
-`kind='patent'` (the OPS lookup kind) is visible. The agent calls
-`put(kind='patent', mode='init', id='<project-slug>')`. The handler:
-
-1. Validates `precis_root` is configured
-2. Creates `${PRECIS_ROOT}/.patent.yaml` with a stub structure
-3. Calls `hub.register_handler(...)` for each drafting sub-kind
-4. Emits a hint via `hub.emit_hint(...)` listing the newly-available
-   verbs
-
-The MCP protocol fires `notifications/tools/list_changed` so clients
-refresh their tool list. (FastMCP's `Tool.add` already triggers this;
-we just call it from inside the handler.)
-
-### 1.2 Why engagement-triggered (not always-on)
-
-- **Cold token cost.** Every kind contributes ~3-5 lines to
-  `tools/list` and ~200-400 tokens to the `_INSTRUCTIONS` block
-  agents see at handshake. Six new kinds × hundreds of agents that
-  never touch patents = real waste.
-- **Mental-load cost.** A 7B agent staring at 23 kinds reasons
-  worse than one staring at 17.
-- **Discoverability is preserved.** The skill corpus's
-  `precis-patent-help` is always visible (skills aren't gated). An
-  agent searching skills for "patent" finds the help, which tells
-  it to call `put(kind='patent', mode='init', …)` first.
-
-### 1.3 Why a hidden file (`.patent.yaml`)
-
-`.` prefix follows the same convention as `.envrc`, `.gitignore`,
-`.precis-config`. It signals "tooling-managed; humans usually
-shouldn't hand-edit". Doesn't appear in `ls` by default. Multi-project
-users still address it explicitly via
-`put(kind='patent', mode='set-root', text='/path/to/project')`.
-
----
-
-## 2. Kind catalogue
-
-Six new sub-kinds plus mode extensions to the existing `patent` kind:
-
-| Kind | Numbering | Owns | Notes |
+| Patent section | section style (archetype) | `manages` (leaf chunk_kind) | notes |
 |---|---|---|---|
-| `patent` *(extended)* | n/a | project lifecycle | Adds `mode='init'`, `mode='set-root'`, `mode='export-*'`, plus `view='status'`/`'check'`/`'tree'`/`'ids-check'`. Search/get for OPS-lookup unchanged. |
-| `patent-claim` | numeric pos (1, 2, 3…) | claim text + structured elements | Slug-addressed; presentation number computed from list order. |
-| `patent-figure` | numeric pos (FIG. 1…) | figure metadata + numerals_shown | Slug-addressed. |
-| `patent-numeral` | series (100, 110…) | reference numerals | Slug-addressed; series derived from owning figure. |
-| `patent-prior-art` | n/a | citations | Slug-addressed. Cross-link to `paper:<slug>` is opt-in (phase 4). |
-| `patent-ids-submission` | numeric (auto) | IDS filings | Numeric-ref kind (like `memory`/`todo`). Each submission references `patent-prior-art` slugs. |
-| `patent-term` | n/a | glossary entries | Slug-addressed (lowercase term). |
-
-### 2.1 Kind-name policy precedent
-
-This proposal is the **first multi-word kind family** in precis
-(every existing kind is a single word: `paper`, `oracle`, `random`,
-`youtube`, etc.). Naming rule going forward:
-
-> Kind names use lowercase ASCII alphanumerics + hyphens, matching
-> `^[a-z0-9][a-z0-9-]*$`. Domain families use a domain prefix
-> (`patent-`, future `legal-`, `clinical-`) followed by an entity
-> name. Single-word kinds remain bare.
-
-Add this rule to `docs/user-facing/file-kinds-unified-addressing.md`.
-
-### 2.2 Why `patent-ids-submission` is its own kind
-
-The existing patentorney `prior_art` tool conflates two things:
-prior-art records (one per cited document) and IDS submissions
-(filings to the USPTO that list which prior art was disclosed and
-when). They have distinct lifecycles, distinct addressing, and
-agents need to query them differently ("what have I cited?" vs
-"what have I disclosed?"). Splitting them into two kinds is
-*more* honest than the original tool surface.
-
----
-
-## 3. Verb mapping (full table)
-
-| Patentorney action | Precis call | Notes |
-|---|---|---|
-| `set_root(path)` | `put(kind='patent', mode='set-root', text=path)` | Mutates per-process state. |
-| `guide(topic)` | `search(kind='skill', q=topic)` | Removed — TOC + semantic skill search supersedes it. |
-| `claim("add", id, …)` | `put(kind='patent-claim', id=…, text=<payload>)` | Structured payload — see §4. |
-| `claim("get", id)` | `get(kind='patent-claim', id=…)` | |
-| `claim("update", id, …)` | `edit(kind='patent-claim', id=…, mode='replace', text=…)` | |
-| `claim("remove", id)` | `delete(kind='patent-claim', id=…)` | |
-| `claim("move", id, after)` | `edit(kind='patent-claim', id=…, mode='reorder', after=…)` | First concrete consumer of `mode='reorder'` (declared in protocol, deferred today). |
-| `claim("rename", old, new)` | `edit(kind='patent-claim', id=old, mode='rename', text=new)` | |
-| `claim("tree")` | `get(kind='patent', view='tree')` | Project-level rollup. |
-| `figure("list")` | `get(kind='patent-figure')` | Bare-id index view (precis convention). |
-| `figure("add" / "get" / "update" / "remove")` | `put / get / edit / delete (kind='patent-figure', …)` | Same shape as claim. |
-| `figure("move", id, position)` | `edit(kind='patent-figure', id=…, mode='reorder', after=…)` | Triggers cascading numeral-series renumber as a side-effect (§5). |
-| `figure("rename", old, new)` | `edit(kind='patent-figure', id=old, mode='rename', text=new)` | |
-| `numeral("add" / "get" / "update" / "remove")` | `put / get / edit / delete (kind='patent-numeral', …)` | |
-| `numeral("renumber")` | `edit(kind='patent-numeral', id='*', mode='renumber')` | Bulk; uses precis-wide `id='*'` sentinel (§5). |
-| `numeral("rename", old, new)` | `edit(kind='patent-numeral', id=old, mode='rename', text=new)` | |
-| `numeral("lookup", label)` | `search(kind='patent-numeral', q=label)` | |
-| `numeral("list")` | `get(kind='patent-numeral')` | |
-| `prior_art("add" / "get" / "update" / "remove" / "list")` | `put / get / edit / delete / get-bare (kind='patent-prior-art', …)` | |
-| `prior_art("ids_add", date, refs)` | `put(kind='patent-ids-submission', text=…)` | New kind — see §2.2. |
-| `prior_art("ids_list")` | `get(kind='patent-ids-submission')` | |
-| `prior_art("ids_check")` | `get(kind='patent', view='ids-check')` | Project-level check; reuses existing validator. |
-| `glossary("add" / "get" / "update" / "remove" / "list")` | `put / get / edit / delete / get-bare (kind='patent-term', …)` | |
-| `export("status")` | `get(kind='patent', view='status')` | Read-only computation. |
-| `export("check")` | `get(kind='patent', view='check')` | Runs `validators.run_checks`. |
-| `export("claims")` | `get(kind='patent-claim', view='text')` | Plain rendered claims. |
-| `export("drawings_description")` | `get(kind='patent-figure', view='description')` | Plain rendered drawings description. |
-| `export("claims_latex")` | `put(kind='patent', mode='export-claims-latex')` | Writes `sections/claims.tex`. |
-| `export("drawings_latex")` | `put(kind='patent', mode='export-drawings-latex')` | Writes `sections/drawings-description.tex`. |
-| `export("latex")` | `put(kind='patent', mode='export-latex')` | Writes both. |
-
-**Coverage**: every patentorney action maps. Three patterns appear:
-
-1. **Standard CRUD** — `put / get / edit / delete` per kind.
-2. **Project-level views** — `view='status'`, `view='check'`,
-   `view='tree'`, `view='ids-check'` on `kind='patent'`.
-3. **Codegen on `kind='patent'`** — `mode='export-*'` writes
-   generated files. See §6.
-
----
-
-## 4. The structured payload question
-
-`claim("add", elements=…)` takes a structured payload (preamble +
-transitional + list of elements, each with text + numeral
-associations). Precis's `put` is fundamentally text-shaped.
-
-Three options for representing structured claims:
-
-### 4.1 JSON in `text=` (recommended)
-
-```python
-put(kind='patent-claim', id='c1', text=json.dumps({
-    "preamble": "A method for synthesizing a metal-organic framework",
-    "transitional": "comprising",
-    "elements": [
-        {"text": "providing a metal salt and an organic ligand",
-         "numerals": ["100", "110"]},
-        {"text": "dissolving them in a solvent",
-         "numerals": ["120"]},
-    ],
-}))
-```
-
-Pros: matches precis's text discipline; `get(kind='patent-claim', id='c1')`
-can return either rendered prose (default view) or the JSON
-(`view='raw'`). Round-trippable.
-
-Cons: agents have to construct JSON. But they already do this for
-similar use cases (`fc` flashcard payloads).
-
-### 4.2 Markdown convention
-
-```python
-put(kind='patent-claim', id='c1', text="""
-# preamble
-A method for synthesizing a metal-organic framework
-
-# transitional
-comprising
-
-# elements
-- providing a metal salt and an organic ligand [100, 110]
-- dissolving them in a solvent [120]
-""")
-```
-
-Pros: more human-readable on round-trip.
-
-Cons: parsing is fragile; bracket syntax for numerals is
-non-obvious; the patent kind handler ends up shipping a custom
-mini-DSL parser. Reject.
-
-### 4.3 Mode-keyed putters
-
-```python
-put(kind='patent-claim', mode='add-element', id='c1', text='dissolving them...')
-edit(kind='patent-claim', mode='set-preamble', id='c1', text='A method...')
-```
-
-Pros: each call is simple.
-
-Cons: turns a single conceptual action ("add a claim") into 5+
-calls. Worst of both worlds. Reject.
-
-**Decision: 4.1 (JSON in `text=`).** Helper view `view='example'`
-on the kind returns a copy-pasteable skeleton.
-
----
-
-## 5. The `id='*'` bulk sentinel
-
-### 5.1 Motivation
-
-`numeral("renumber")` is genuinely a bulk operation — it touches
-every numeral in the project, not one. Forcing it through a per-id
-loop loses atomicity (the renumber needs to be transactional or
-the project is left in a half-state). A precis-wide bulk-edit
-sentinel solves this cleanly:
-
-```python
-edit(kind='patent-numeral', id='*', mode='renumber')
-```
-
-### 5.2 Specification
-
-Add to `docs/user-facing/edit-protocol-spec.md`:
-
-> When `id='*'` is supplied to `edit` or `delete`, the call is a
-> **bulk operation** over every ref of the kind that matches the
-> implicit scope (or an explicit `tags=`/`scope=` filter). Each
-> kind opts in via `KindSpec.supports_bulk: bool = False`. Kinds
-> that don't opt in raise `[error:Unsupported]` with a hint to
-> enumerate refs first.
-
-### 5.3 Per-kind opt-in
-
-Most kinds keep `supports_bulk=False`. Documenting:
-
-| Kind | `supports_bulk` | Why |
-|---|---|---|
-| `patent-numeral` | True | Renumber-by-figure-order is the canonical case. |
-| `patent-claim` | False | Move/reorder is per-claim; bulk delete is too footgun-y. Opt in later if a real use case emerges. |
-| `patent-figure` | False | Same reasoning. |
-| `memory`, `todo`, `gripe` | False | Numeric-ref kinds enumerate cheaply via `search`; no bulk verbs needed. |
-| `paper`, `patent` *(OPS)* | False | These are read-only as far as content; bulk delete would orphan blocks. |
-| `markdown`, `plaintext`, `tex` | False | File operations are per-file. Bulk delete = "rm -rf". Footgun. |
-
-### 5.4 Modes available under `id='*'`
-
-A bulk-supporting kind declares which modes accept the sentinel.
-For `patent-numeral`:
-
-- `mode='renumber'` — recompute series from figure order
-- `mode='delete'` (via `delete(kind='patent-numeral', id='*', tags=['orphaned'])`)
-  — bulk delete of tagged subset
-
-Per-kind modes documented in the kind's help skill. The protocol
-treats `id='*'` as a generic flag; semantics belong to the handler.
-
-### 5.5 Safety rails
-
-- `id='*'` without `tags=` or `scope=` against a non-bulk-aware kind
-  raises `[error:Unsupported]`.
-- `id='*'` with `dry_run=True` (existing `edit` kwarg) returns the
-  predicted change set without writing — strongly recommended in
-  the help skill.
-- The advisory-lock pattern from oracle_sync (`pg_try_advisory_lock`)
-  applies to bulk operations on store-backed kinds.
-
----
-
-## 6. The `mode='export-*'` codegen convention
-
-Patentorney's `export("latex")` writes generated `.tex` files into
-`sections/`. This is filesystem mutation, so it's `put` (not `get`).
-But it's not "create a new ref" either. Two existing precis patterns
-overlap:
-
-- File kinds (`markdown` / `plaintext` / `tex`) use `put(mode='create')`
-  to write files.
-- The new oracle_sync code uses `put` semantics implicitly for
-  store-side state mutations.
-
-Generalising: **`mode='export-*'` is the codegen verb on
-project-owning kinds**. The convention:
-
-- Lives on the project root kind (here: `kind='patent'`).
-- Reads from the project's store (or `.patent.yaml` here) and
-  writes generated files into the project tree.
-- Is idempotent — re-running with the same source produces the
-  same output.
-- Returns a manifest in the response body listing what was
-  written.
-
-Document this in `docs/user-facing/edit-protocol-spec.md` so the next
-project-owning kind (lab-mcp's `experiment`?) can reuse it.
-
----
-
-## 7. File / module layout
-
-```
-src/precis/
-├── handlers/
-│   ├── patent.py                     # extended: + mode='init', 'set-root', 'export-*', + view='status', 'check', 'tree', 'ids-check'
-│   ├── patent_claim.py               # PatentClaimHandler — thin shim over precis.patent.models
-│   ├── patent_figure.py
-│   ├── patent_numeral.py
-│   ├── patent_prior_art.py
-│   ├── patent_ids_submission.py
-│   └── patent_term.py
-├── patent/                           # back-end library; not touched by the seven-verb dispatch directly
-│   ├── __init__.py
-│   ├── models.py                     # ← from patentorney_mcp/models.py (verbatim)
-│   ├── validators.py                 # ← from patentorney_mcp/validators.py
-│   ├── exporters.py                  # ← extracted from patentorney_mcp/utils.py
-│   ├── store.py                      # PatentTransaction, file-locking, .patent.yaml I/O
-│   └── dispatch.py                   # register_drafting_kinds(hub) — called from boot() or from PatentHandler.put(mode='init')
-└── data/skills/
-    ├── precis-patent-help.md         # entry skill — covers init flow + sub-kind menu
-    ├── precis-patent-claim-help.md
-    ├── precis-patent-figure-help.md
-    ├── precis-patent-numeral-help.md
-    ├── precis-patent-prior-art-help.md
-    ├── precis-patent-ids-submission-help.md
-    └── precis-patent-term-help.md
-```
-
-### 7.1 Handler shape (representative)
-
-```python
-# src/precis/handlers/patent_claim.py
-class PatentClaimHandler(Handler):
-    spec = KindSpec(
-        kind="patent-claim",
-        title="Patent Claim",
-        description=(
-            "A claim within the active patent project. Enabled when "
-            "${PRECIS_ROOT}/.patent.yaml exists."
-        ),
-        supports_get=True,
-        supports_search=True,
-        supports_put=True,
-        supports_edit=True,
-        supports_delete=True,
-        supports_tag=False,
-        supports_link=True,
-        supports_bulk=False,
-    )
-
-    def __init__(self, *, hub: Hub) -> None:
-        # Lazy import keeps the patent back-end out of cold-start
-        # when the kind isn't registered. The hub mutation that
-        # triggers init() guarantees .patent.yaml exists by the
-        # time we run.
-        from precis.patent.store import PatentTransaction
-        self._tx_class = PatentTransaction
-
-    def put(self, *, id, text, mode=None, **kw):
-        # Parse JSON payload → ClaimBody → write through transaction.
-        ...
-```
-
-Each sub-handler is ~150-300 LOC: argument validation, payload
-parsing, delegation to `precis.patent.models` / `validators`, hint
-emission. The heavy lifting (data model, validation, file locking,
-LaTeX export) stays in `precis.patent.*` libraries.
-
----
-
-## 8. Skill-discovery integration
-
-Every kind ships its help skill. The TOC + semantic skill search
-landed in May 2026 (`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/src/precis/handlers/skill.py:209-279`)
-makes them findable:
-
-```python
-search(kind='skill', q='draft a patent claim')
-# → precis-patent-claim-help (semantic top hit, score ~0.6)
-
-search(kind='skill', q='renumber reference numerals')
-# → precis-patent-numeral-help
-
-get(kind='skill', id='precis-patent-help')
-# → entry document: init flow, sub-kind menu, JSON payload examples
-```
-
-The drafting kinds appear in `get(kind='skill', id='toc')` regardless
-of whether `.patent.yaml` exists, with an `[unwired]` marker (the
-existing `_availability_gap` mechanism in `skill.py:271-277`) when
-the project hasn't been initialised. Cold-start agents see them in
-the TOC, click through, follow the init flow.
-
----
-
-## 9. Cross-corpus links (deferred to phase 4)
-
-`prior_art add citation=… doi='10.1234/…'` could automatically
-write `link(kind='patent-prior-art', id=…, target='paper:<slug>')`
-when the paper exists in precis's store, or fetch-then-link when
-it doesn't (paper kind already supports DOI-as-id since
-`f241d40`). Cross-kind search then reaches into patent prior-art
-records:
-
-```python
-search(q='photocatalytic NOx reduction')
-# Cross-kind fan-out includes patent-prior-art entries that cite
-# papers matching the query.
-```
-
-Keep this opt-in via a config flag (`patent.cross_link_papers: bool`)
-because not every patent project wants its prior-art records
-showing up in unrelated `paper` searches. Defer until phase 4.
-
----
-
-## 10. Sequencing
-
-Each phase commits independently and leaves `pytest` green.
-
-### Phase 1 — back-end library copy-in
-
-- Copy `patentorney_mcp/{models,utils,validators}.py` → `precis/patent/`
-- Rename module-internal imports
-- Add `precis/patent/store.py` consolidating file-lock + transaction code
-- No MCP wiring, no boot changes
-- Tests: port `patentorney-mcp/tests/` → `precis-mcp/tests/test_patent_*.py`
-- **Definition of done**: 1801 + N existing tests pass; new
-  `tests/test_patent_models.py` etc. pass; no kind appears in
-  `tools/list` yet.
-
-### Phase 2 — extend `kind='patent'`
-
-- Add `mode='init'`, `mode='set-root'` to existing `PatentHandler`
-- Add `view='status'`, `view='check'`, `view='tree'`, `view='ids-check'`
-- Wire `register_drafting_kinds(hub)` helper that does the
-  in-process kind registration
-- Boot-time: if `${PRECIS_ROOT}/.patent.yaml` exists, call the
-  helper from `dispatch.boot()`
-- Engagement-time: `put(kind='patent', mode='init')` calls it
-  after creating the file
-- Tests: end-to-end init flow; idempotency; multi-project via
-  `set-root`
-- **Definition of done**: agents can run the init flow; sub-kinds
-  appear in `tools/list` mid-session.
-
-### Phase 3 — the six drafting handlers
-
-- One handler per kind: `patent-claim`, `patent-figure`,
-  `patent-numeral`, `patent-prior-art`, `patent-ids-submission`,
-  `patent-term`
-- Implement `mode='reorder'` for `edit` (was deferred in protocol
-  docstring; patent kinds are the first consumer)
-- Implement `id='*'` bulk sentinel + per-kind `supports_bulk`
-  flag in `KindSpec`
-- Implement `mode='export-*'` for `kind='patent'` (writes
-  `sections/*.tex`)
-- Tests: every action from §3's mapping table has a passing test
-- **Definition of done**: every patentorney use case works
-  through precis verbs.
-
-### Phase 4 — skills + cross-link + properly retire
-
-**Skill authoring**
-
-- Author seven help skills under `data/skills/precis-patent-*-help.md`
-- Verify TOC + semantic skill search surface them (run live
-  bge-m3 sanity check as in Phase B of the May 2026 work)
-
-**Cross-corpus link**
-
-- Implement opt-in `prior_art` → `paper:<slug>` link
-
-**Pip retirement (proper, not `rm -rf`)**
-
-- **PyPI**: ship a final `patentorney-mcp` v0.3.0 to PyPI whose
-  package is a single deprecation stub:
-  - `__main__.py` prints "patentorney-mcp has been merged into
-    precis-mcp; install `precis-mcp` and configure
-    `${PRECIS_ROOT}/.patent.yaml`. See
-    https://github.com/.../precis-mcp/blob/main/docs/design/patent-drafting-merge.md"
-    then exits 0
-  - `README.md` mirrors the same notice with the migration
-    cookbook (mapping from old MCP tool calls to new precis verb
-    calls; basically §3 of this doc rendered for end-users)
-  - `pyproject.toml` declares `precis-mcp` as a runtime
-    dependency so `pip install patentorney-mcp` pulls in the
-    real package
-  - Tag the v0.3.0 release with a `Deprecated:` line in the
-    GitHub release notes; pin to it for one full minor release
-    cycle of precis-mcp before yanking older versions
-- **Workspace cleanup**:
-  - Delete `pips/packages/patentorney-mcp/` from the monorepo
-  - Remove from `pips/manifest.yml`
-  - `grep -r 'patentorney-mcp' .` and update every reference:
-    workspace `README.md`, any Windsurf `.mcp.json` configs,
-    any sortie scripts that referenced the old MCP tools
-  - Remove the package from `uv.lock` workspace member list
-- **CI / release plumbing**:
-  - Update `/release` workflow to no longer release patentorney
-  - Update `/patrol` to skip patentorney's CI checks
-- **User comms**:
-  - Note in next precis-mcp release notes:
-    > **Migrated**: patentorney-mcp's drafting tools now live
-    > inside precis-mcp under `kind='patent'` and the
-    > `patent-*` family. Existing `patent.yaml` files are
-    > read; rename to `.patent.yaml` to use the new
-    > engagement trigger. See
-    > docs/design/patent-drafting-merge.md.
-
-**Definition of done**
-
-- `pips/packages/patentorney-mcp/` directory gone from the
-  monorepo
-- Final v0.3.0 stub published to PyPI with deprecation notice
-- No references to `patentorney-mcp` remaining anywhere in the
-  workspace except the migration note in release notes
-- One MCP package (`precis-mcp`) covers the full surface
-- Skill search round-trips on every `precis-patent-*-help` skill
-- Existing patentorney users following the README upgrade
-  cookbook can migrate without writing custom scripts
-
----
-
-## 11. Open risks and mitigations
-
-| Risk | Mitigation |
-|---|---|
-| Tool-list churn confuses MCP clients that don't handle `notifications/tools/list_changed` cleanly | FastMCP already emits this; document the expected behaviour in the help skill so users know to restart their client if it's stuck. |
-| `id='*'` becomes a slippery slope — every kind starts asking for it | Per-kind opt-in plus the safety-rails in §5.5. Document the rule: *opt in only when bulk is the natural shape, not as a shortcut for "loop over results"*. |
-| Exposing `mode='export-latex'` from `kind='patent'` blurs the kind/project boundary | Document `mode='export-*'` as the codegen convention (§6) — it lives on project-owning kinds explicitly, not as a generic verb. |
-| Structured-payload JSON is awkward for 7B agents | Ship a `view='example'` skeleton on every payload-taking kind so the agent can `get` an example, edit, and `put` it back. |
-| Patent-drafting users without precis_root configured can't do anything | Boot-time check: if patent kinds register via boot trigger but `precis_root` is unset, raise InitError with a hint. Engagement trigger always validates `precis_root` first. |
-| Two `kind='patent'` overloads (OPS lookup + drafting) confuse agents | The skill `precis-patent-help` opens with the disambiguation: search/get-on-id = lookup; init/set-root/export = drafting. |
-
----
-
-## 12. Decisions taken (vs. alternatives)
-
-- **Engagement-triggered registration** over always-on (Section 1.2)
-- **`patent-claim` over `pat-claim`** — full prefix wins on clarity
-  per user direction
-- **`id='*'` bulk sentinel** with per-kind opt-in over
-  implicit-cascade-only
-- **JSON-in-`text=`** for structured claim payloads over
-  markdown DSL or mode-keyed putters
-- **`mode='export-*'` on `kind='patent'`** over a generic
-  `kind='export'` or a side-channel CLI tool
-- **One MCP wheel**, retire `patentorney-mcp` after phase 4 — full
-  consolidation per user direction
+| Field / Background / Summary / Detailed description | `patent-description` (prose) | — | prose; patent voice from the brief (doc_type) |
+| Claims | `patent-claim` (managed) | `[claim]` (v1: `paragraph`) | one claim per leaf; number computed/pinned |
+| Drawings + reference numerals | `patent-image-part` (managed) | `[figure, part]` | figure leaves (0034 blobs) + part leaves (`term`); numeral in `meta` |
+| Prior art / IDS | `patent-prior-art` (managed) | `[reference]` | `reference` leaves → `[[pc…]]` to `paper`/`patent`; IDS is a *view* |
+| Glossary | a glossary section (prose) | `[term]` | `term` leaves (0033 §9) |
+
+Note the split: the rows above are **section styles**; the `manages`
+column names the **leaf chunk_kinds** they own. A claim/figure/part is a
+*leaf* (identity = handle, type = chunk_kind), **not** a style (ADR 0037
+§3).
+
+Each style is **self-contained** (its own complete prompt; no cascade).
+Everything else — search, embed, dream, export, freeze, the change-
+request/review loop — comes from the draft model for free.
+
+**v1 (ADR 0037 §0):** the simplest version is just these section
+**skills as prose prompts** — the LLM writes claim/figure numbers as
+prose, no engine. Managed numbering, behavior code, and the prior-art
+fetch path below are **additive expansions** built when the pain is
+real; none changes v1.
+
+## Why this replaces the kind family
+
+The old proposal created `patent-claim`, `patent-figure`,
+`patent-numeral`, `patent-prior-art`, `patent-ids-submission`,
+`patent-term` handlers plus a `.patent.yaml` store and an
+engagement-trigger that registered them mid-session. With ADR 0033/0037
+all of that collapses:
+
+- **Claims/figures/parts are managed chunks**, addressed by `dc…`,
+  in the one chunk store. No per-kind handler, no per-kind table.
+- **Distinct addressing** is already covered (handles); the presentation
+  number was always *computed*, not stored identity (ADR 0037 §5).
+- **Per-kind search** becomes scoped search:
+  `search(kind='draft', scope=<claims-heading>)` (ADR 0033).
+- **Per-kind validation** becomes a **patent review pass** (a `Reviewer`,
+  ADR 0037 §3a) emitting anchored change-requests — not per-style code.
+- **IDS** is not a kind — it is a `view`/export over the `prior-art`
+  references in the disclosures section.
+- **No side-store, no engagement trigger, no `id='*'` bulk sentinel.**
+  Numeral "renumber" is just the numbering engine recomputing from order
+  (ADR 0037 §5); it needs no bulk verb.
+
+## 1. The `patent` document type (`doc_type=patent`)
+
+Selecting `doc_type=patent` (the shipped picker) does three things
+(ADR 0037 §1–§4):
+
+1. **Voice + scaffold.** Leads the brief with the patent-drafting
+   guidance (formal patent prose, present tense, antecedent-basis
+   discipline — *shipped*) and — via the planner's genesis-from-brief
+   (ADR 0033) — **scaffolds the standard patent sections and sets each
+   subsection's style automatically**
+   (field, background, summary, detailed-description, claims, drawings,
+   abstract, prior-art). The standard section list is prose in this
+   skill; the author does not hand-pick styles for the common case
+   (ADR 0037 §2).
+2. **Names the self-contained styles** `patent-claim`,
+   `patent-image-part`, `patent-prior-art`, `patent-description` for the
+   sections it scaffolds. Each is standalone (its own prompt + render);
+   shared *mechanisms* (figure-asset storage 0034, the numbering engine,
+   the citation token) are reused, but the styles are not (ADR 0037 §3).
+3. **Configures the numbering series** (§3 below) — an expansion, not v1.
+
+A `book` or `sci-paper` root scaffolds different sections with their own
+self-contained styles; only the underlying mechanisms are shared.
+
+## 2. The managed sections
+
+### 2.1 Claims (`patent-claim` — managed section, `manages: [claim]`)
+
+- A claim is a chunk under a `patent-claim`-styled heading. Its **face**
+  (`text`) is the rendered claim prose; its **payload** (`meta`, ADR
+  0033 §9) is the structured form — preamble / transitional / elements,
+  each element optionally referencing parts by handle.
+- **Number** = computed from claim order, or pinned (ADR 0037 §5).
+  Dependent claims reference an antecedent by **handle** ("the method of
+  `[[dc…]]`"), rendered as "claim 1" — survives reordering.
+- **Correctness** (antecedent basis, single-vs-multiple dependency rules,
+  element/part cross-refs resolve) is the **claim style prompt's
+  discipline** while writing, backstopped by a **patent review pass**
+  (ADR 0037 §3a) that files anchored change-requests — not a `validate()`
+  the writer calls.
+- Authoring uses the mint-stub-then-review handoff (ADR 0037 §6) when a
+  prose section forward-references a claim that isn't written yet.
+
+### 2.2 Drawings registry (`patent-image-part` — unified, self-contained)
+
+- A **managed section** `manages: [figure, part]` — holding two **leaf
+  chunk_kinds**, `figure` and `part` (the reference numerals), because a
+  part exists *because* it is labelled on a drawing. Not split (numbering
+  binds to the *leaf*, not the section, so one section owning two series
+  is fine — ADR 0037 §5). Its **own** self-contained style (not a shared
+  figure style switched by context). Reuses the figure-asset mechanism
+  per **ADR 0034** (`chunk_blobs`, `meta.figure`) for drawing assets; its
+  render emits "FIG. n" + the drawings-description convention and lays out
+  the reference numerals.
+- `figure` leaves feed the `figures` series; `part` leaves the `parts`
+  series (each via `meta`, e.g. `numerals_shown`).
+- *Drawing generation (CAD/figure synthesis) is out of scope* — ADR
+  0034 covers storage/attachment of an asset; here a drawing may have no
+  rendered sheet yet and still drive numeral assignment.
+
+### 2.3 Parts (the `part` leaf chunk_kind, managed by `patent-image-part`)
+
+- A part is a **leaf** — a `term`-like chunk (ADR 0033 §9: `{short, long,
+  surface_forms}` in `meta`, v1 reuses `term`) with one extra `meta`
+  slot: its **numeral** (when pinned). It is **not** a kind of its own,
+  **not** a style, and **not** its own numbering machinery —
+  `patent-image-part` (the section style) owns the `part` leaves; the
+  description merely references them by `[[dc…]]`.
+- The detailed description references a part by **handle alongside the
+  noun phrase** — `the widget [[dc149]] meshes with the gear [[dc150]]` —
+  not a bare handle (ADR 0037 §7). This keeps export a pure
+  find-replace (`the widget [[dc149]]` → `the widget 100`) and lets a
+  **review pass** check the noun phrase against the part's `surface_forms`
+  (ADR 0037 §3a — catches handle/noun mismatches), rather than a
+  hardcoded validator.
+
+### 2.4 Prior art / IDS (`patent-prior-art` — managed, `manages: [reference]`)
+
+- A prior-art entry **refers to a corpus chunk directly** — a patent
+  chunk (EPO-OPS `kind='patent'`) or a `paper` chunk — using 0033 §8's
+  citation token (`[[pc…]]`), extended to patents. No bespoke link-or-fetch
+  engine: resolution is the corpus kind's existing behavior (the patent
+  kind fetches-on-`get`; a not-yet-ingested paper is the existing
+  request-a-missing-paper flow). The `patent-prior-art` section renders
+  its list as an IDS disclosure (its own style decides); a paper's inline
+  `[[pc…]]` tokens render instead as numbered references. (The inline `[[pc…]]`
+  token is 0033's citation mechanism, **not** a style; bibliographic
+  citation is not a section.) 0033's dangling-token policy is the
+  fallback. Reuses the `citation` kind + 0033 derived links.
+- **IDS** = a `view`/export over those references in the disclosures
+  section ("what was disclosed, when") — not a kind.
+
+## 3. Numbering series (ADR 0037 §5)
+
+The `patent` root configures these series for the one numbering engine:
+
+| Series | Scope | Ordering | Convention |
+|---|---|---|---|
+| claims | document | claim list order | "claim n" / bare n |
+| figures | document | first reference in reading order | "FIG. n" |
+| parts (reference signs) | document | first mention in description | increment (e.g. 100, 110, …) |
+| citations / prior-art | document | appearance | "[n]" + reference list |
+
+All numbers are computed at render unless **pinned**. `pinned` is the
+only dial (ADR 0037 §5): empty = fluid (the default, all of drafting —
+no auto-pin); one entry = a conscious override (`set FIG dc… to 120`);
+fully materialised = locked (the **last** step).
+
+**Drawings lock.** Once drawings are finalised, **materialise** the
+parts/figures numbering: write each numeral into its part's/figure's
+`meta`. A stored number *is* the lock (per-entity granularity); post-lock
+numbering is append-only with conflict-flagging (new part → next free
+numeral; deleted-but-pinned part → dangling warning; reassigning a
+pinned numeral → refused without a redraw decision). Pinning is a
+metadata-only write — no re-derive (ADR 0033 §4). *(Drawing synthesis
+itself is out of scope; the lock freezes the **assignment**, meaningful
+even before any sheet is rendered.)*
+
+## 4. Export
+
+Patent export is the ADR 0033 §7 target-parameterised DFS render with
+patent conventions wired into the behavior styles' `render[target]`:
+
+- **Claims** → numbered claim set (LaTeX/Word/web).
+- **Drawings description** → "FIG. n" prose; parts substituted to
+  numerals from the pinned/computed map.
+- **Detailed description** → part handles substituted to numerals
+  (find-replace, ADR 0037 §7).
+- **References / IDS** → reference list + disclosure table from the
+  `prior-art` links.
+
+No `mode='export-*'` codegen verb and no `sections/*.tex` side-files
+(both were artifacts of the pre-draft proposal); export is the draft's
+existing render pipeline.
+
+## 5. What is dropped from the old proposal
+
+- The six `patent-*` **kinds** and their handlers.
+- The `.patent.yaml` **side-store** and boot/engagement registration.
+- The `notifications/tools/list_changed` mid-session kind registration.
+- The `id='*'` **bulk sentinel** (numbering recompute needs no bulk verb).
+- The `mode='export-*'` codegen convention and `sections/*.tex` files.
+- The `patentorney-mcp` **merge/retirement** plan — there is no separate
+  package to fold in under this design; patent drafting is a genre of
+  the existing draft surface. (If a `patentorney-mcp` still exists in any
+  workspace, it is retired by reimplementation here, not by code port.)
+
+## 6. What is reused unchanged
+
+- Read-only `kind='patent'` (EPO OPS lookup) — the prior-art fetch
+  target.
+- `citation` kind + `\citequote` — prior-art references.
+- ADR 0033 draft: handles, DFS order, soft-delete, change-request/review
+  loop, derived reference links, export pipeline, freeze/snapshot.
+- ADR 0034 figures: `chunk_blobs`, `meta.figure` origin + permission.
+- The `claude_inproc` executor + skills for the behavior-style review
+  agents (ADR 0037 §6).
+- **Issues (ADR 0037 §3b) are the elicitation loop** — from a thin
+  disclosure the agent opens anchored issues (ball material? diameter?
+  welded or moulded?), the inventor answers in the sidebar, the agent
+  incorporates. This fills the patent-specific elicitation gap (a one-
+  line disclosure is never enough to draft from).
+
+## 7. Sequencing
+
+MVP first; expansions only when the pain is real (ADR 0037 §0). Each
+phase leaves the gate green.
+
+1. **v1 — `meta.style` + scaffold** (ADR 0037 §0–§1). Skill slug on
+   headings; authoring a section surfaces its skill; the `patent` root
+   skill scaffolds the standard sections. Draft a patent as **prose
+   sections** (`patent-claim` / `patent-description` / `patent-image-part`
+   / `patent-prior-art` skills); the LLM writes claim/figure numbers as
+   prose. *No engine, no behavior code.* This is the whole MVP.
+2. *(expansion)* **Numbering engine + `pinned`** (ADR 0037 §5) — the
+   shared `assignLabels` function, per-series config, metadata-only
+   pin/lock.
+3. *(expansion)* **`patent-claim` + `patent-image-part` render code** —
+   the patent render modules: claim formatting, "FIG. n", and numeral
+   substitution at export (the entity render half of behavior; `parse`
+   only if claims adopt a structured payload).
+4. **Patent review pass** (`Reviewer`, ADR 0037 §3a) — antecedent-basis,
+   numeral/part-name consistency, dangling references → anchored
+   change-requests. Reuses 0033's review framework; **available early**,
+   not gated behind the render/numbering work.
+5. *(expansion)* **`patent-prior-art` fetch path** — `[[pc…]]` to patent
+   chunks; inline find + fetch on the MCP path; deferred read subtask;
+   IDS view.
+6. *(expansion)* **Patent export conventions** — claim set, drawings
+   description, references/IDS in each `render[target]`.
+
+## 8. Open questions
+
+Inherited from ADR 0037 §"Open questions":
+
+1. Mint-rights guardrail — probably none (KISS); a non-patent genre
+   simply never reaches for `claim`/`part`.
+2. `meta.style` as a slug vs ordered list.
+3. Style-as-skill frontmatter schema + behavior code-binding home.
+4. Single `meta.style` vs split `render_type` — relevant here for **US
+   vs EP** claim/figure conventions: confirm whether they differ only in
+   render (one style, two contexts) or warrant a second field.
