@@ -343,6 +343,50 @@ def _work_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
     ]
 
 
+#: Document types offered by the "+ New draft" form. Each maps to a
+#: standing guidance line folded into the project brief (so the planner
+#: writes in the right register — the brief is injected as the
+#: ``## Project context`` block on every tick) and stashed structurally
+#: as ``meta.workspace.doc_type`` for the future export documentclass
+#: switch. ``brief`` is "" for the neutral default (adds no guidance).
+_DOC_TYPES: list[dict[str, str]] = [
+    {
+        "value": "paper",
+        "label": "Research paper",
+        "brief": "This is a research paper: an abstract, motivated "
+        "introduction, methods/results, and a discussion, with rigorous "
+        "citations throughout.",
+    },
+    {
+        "value": "patent",
+        "label": "Patent application",
+        "brief": "This is a patent application: write in patent register — "
+        "a technical field and background, a summary, a detailed description "
+        "of embodiments, and numbered claims. Be precise and broad in claim "
+        "scope; avoid marketing language.",
+    },
+    {
+        "value": "report",
+        "label": "Technical report",
+        "brief": "This is a technical report: an executive summary up front, "
+        "clearly sectioned findings, and concrete recommendations.",
+    },
+    {
+        "value": "review",
+        "label": "Review / survey",
+        "brief": "This is a review/survey article: synthesise and compare the "
+        "literature, organise by theme, and map open problems rather than "
+        "presenting new results.",
+    },
+    {
+        "value": "article",
+        "label": "General article",
+        "brief": "",
+    },
+]
+_DOC_TYPE_BRIEF: dict[str, str] = {d["value"]: d["brief"] for d in _DOC_TYPES}
+
+
 @router.get("/drafts", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     store = get_store(request)
@@ -355,10 +399,14 @@ async def index(request: Request) -> HTMLResponse:
         }
         for r in refs
     ]
+    doctypes = [
+        {"value": d["value"], "label": d["label"], "default": d["value"] == "paper"}
+        for d in _DOC_TYPES
+    ]
     return templates.TemplateResponse(
         request,
         "drafts/index.html.j2",
-        {"active_tab": "drafts", "drafts": drafts},
+        {"active_tab": "drafts", "drafts": drafts, "doctypes": doctypes},
     )
 
 
@@ -379,18 +427,30 @@ async def new_draft(
     title: str = Form(...),
     slug: str = Form(""),
     summary: str = Form(""),
+    doctype: str = Form("paper"),
 ) -> Response:
     """Create a draft from the /drafts page. A draft is 1:1 with a
     project, so this mints the owning strategic ``todo`` (carrying the
     workspace + optional brief), then the draft under it, and lands on the
-    new draft's reader. ``slug`` is derived from the title when blank."""
+    new draft's reader. ``slug`` is derived from the title when blank.
+
+    ``doctype`` (paper / patent / report / …) sets the document's style:
+    it is stored as ``meta.workspace.doc_type`` and its standing guidance
+    line is folded into the project brief, so the planner writes in the
+    right register from the first tick."""
     title = title.strip()
     if not title:
         return RedirectResponse(url="/drafts", status_code=303)
     slug = _slugify(slug.strip() or title)
     workspace: dict[str, Any] = {"path": f"projects/{slug}", "format": "tex"}
-    if summary.strip():
-        workspace["brief"] = summary.strip()
+    doctype = doctype.strip() or "paper"
+    if doctype in _DOC_TYPE_BRIEF:
+        workspace["doc_type"] = doctype
+    # The brief is the planner's standing ``## Project context``; lead it
+    # with the document-type guidance, then the user's own summary.
+    brief_parts = [p for p in (_DOC_TYPE_BRIEF.get(doctype, ""), summary.strip()) if p]
+    if brief_parts:
+        workspace["brief"] = "\n\n".join(brief_parts)
 
     # 1) project root that owns the workspace.
     body, is_error = await await_dispatch(

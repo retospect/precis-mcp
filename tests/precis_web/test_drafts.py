@@ -193,6 +193,40 @@ def test_index_lists_drafts(draft_client: TestClient) -> None:
     assert "Nano draft" in r.text and "/drafts/nt" in r.text
 
 
+def test_new_draft_form_toggles_and_offers_doctype(draft_client: TestClient) -> None:
+    """The '+ New draft' button drives an Alpine ``open`` flag on a shared
+    wrapper (not a stale ``$refs`` on a sibling), and the form offers the
+    document-type select."""
+    r = draft_client.get("/drafts")
+    assert r.status_code == 200
+    # the toggle is wired to a single x-data scope, not a dangling $ref.
+    assert "open = !open" in r.text
+    assert 'x-show="open"' in r.text
+    assert "$refs.newDraft" not in r.text
+    # document-type selector with the patent option present.
+    assert 'name="doctype"' in r.text
+    assert "Patent application" in r.text
+
+
+def test_new_draft_folds_doctype_into_brief(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    """Creating a draft mints the project todo carrying the workspace; the
+    chosen document type lands as ``meta.workspace.doc_type`` and its
+    guidance leads the brief (so the planner writes in that register)."""
+    draft_client.post(
+        "/drafts/new",
+        data={"title": "Widget Patent", "doctype": "patent", "summary": "Be terse."},
+        follow_redirects=False,
+    )
+    verb, args = draft_runtime.calls[0]
+    assert verb == "put" and args["kind"] == "todo"
+    ws = args["meta"]["workspace"]
+    assert ws["doc_type"] == "patent"
+    assert "patent application" in ws["brief"].lower()
+    assert ws["brief"].endswith("Be terse.")
+
+
 def test_reader_renders_per_block_grid(draft_client: TestClient) -> None:
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
