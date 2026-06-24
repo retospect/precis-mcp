@@ -50,8 +50,12 @@ Feeds live in the operator-editable `news_sources` table (one row per
 feed). The `news_poll` pass walks every enabled row, parses each feed
 (feedparser), and mints any new article as a `news` ref. By default the
 article **body comes straight from the feed entry** (`content`/`summary`,
-HTML-stripped) — feedparser only, no page fetch. Dedup is by canonical
-URL, so re-polls are cheap and idempotent.
+HTML-stripped) — feedparser only, no page fetch. **No duplicate stories:**
+each item is deduped on the feed's `<guid>` (the outlet's stable per-story
+id, source-scoped — so a story re-posted under a changed URL isn't taken
+twice) and on the canonical URL. **Polite polling:** a conditional GET
+(`etag`/`last-modified`) means an unchanged feed returns `304` and isn't
+re-downloaded. Article pages are never fetched at all (RSS-only).
 
 Run one pass by hand:
 

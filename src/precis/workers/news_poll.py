@@ -4,10 +4,15 @@ The news analog of :mod:`precis.workers.watch_poll`: instead of growing
 the paper corpus along the citation graph, it grows a ``news`` corpus
 along a curated feed list. Each pass:
 
-1. reads every enabled row from the ``news_sources`` registry;
-2. parses each feed (``feedparser``), taking up to ``max_items`` entries;
-3. for each entry, canonicalizes the article URL and skips it if a
-   ``news`` ref already caches that URL (idempotent — re-polls are cheap);
+1. reads every enabled row from the ``news_sources`` registry (a feed in
+   error backoff is skipped — see ``_enabled_sources``);
+2. parses each feed (``feedparser``) with a **conditional GET** (the
+   stored ``etag`` / ``last_modified``) — a ``304 Not Modified`` short-
+   circuits the whole feed, polite + cheap. Otherwise up to ``max_items``;
+3. for each entry, dedups twice: first on the feed's ``<guid>`` (the
+   outlet's stable per-story id, source-scoped — so a story re-published
+   under a *changed URL* isn't ingested twice), then on the canonical URL
+   hash (also the on-demand ``get`` cache key). Either hit → skip;
 4. otherwise takes the article body straight from the feed entry
    (``content``/``summary``, HTML-stripped — feedparser only, no page
    fetch / trafilatura) and mints a pinned ``news`` ref via
@@ -60,7 +65,10 @@ _MAX_BODY_CHARS = 40_000
 _BACKOFF_BASE_MIN = 30
 _BACKOFF_CAP_MIN = 1440
 
-FeedParser = Callable[[str], Any]
+#: Feed parser: ``(url, *, etag=None, modified=None) -> parsed feed`` with
+#: ``.entries`` and (on a conditional GET) ``.status`` (304 = unchanged) +
+#: ``.etag`` / ``.modified`` validators to persist for next poll.
+FeedParser = Callable[..., Any]
 #: Optional full-page fetcher (url -> FetchResult). When supplied, the
 #: poller fetches+extracts the article page instead of using the feed's
 #: own content — opt-in only, since it pulls in the trafilatura/httpx
@@ -149,7 +157,8 @@ def _enabled_sources(store: Store, limit: int | None) -> list[dict[str, Any]]:
     # held back. Keeps a broken/parked feed from being re-hit every tick
     # while still self-healing once it recovers — no manual disable needed.
     sql = (
-        "SELECT source_id, url, title, source_slug, default_tags, max_items "
+        "SELECT source_id, url, title, source_slug, default_tags, max_items, "
+        "       etag, last_modified "
         "FROM news_sources "
         "WHERE enabled = true "
         "  AND (consecutive_errors = 0 OR last_polled_at IS NULL "
@@ -170,19 +179,33 @@ def _enabled_sources(store: Store, limit: int | None) -> list[dict[str, Any]]:
             "source_slug": r[3],
             "default_tags": list(r[4] or []),
             "max_items": min(int(r[5] or 50), _ABS_MAX_ITEMS),
+            "etag": r[6],
+            "last_modified": r[7],
         }
         for r in rows
     ]
 
 
-def _record_status(store: Store, source_id: int, status: str) -> None:
+def _record_status(
+    store: Store,
+    source_id: int,
+    status: str,
+    *,
+    etag: str | None = None,
+    modified: str | None = None,
+) -> None:
     err = 0 if status == "ok" else 1
+    # COALESCE keeps the prior validator when this poll didn't supply a new
+    # one (e.g. an error, or a feed that doesn't send etag/last-modified).
     with store.tx() as conn:
         conn.execute(
             "UPDATE news_sources SET last_polled_at = now(), last_status = %s, "
             "consecutive_errors = CASE WHEN %s = 0 THEN 0 "
-            "ELSE consecutive_errors + 1 END WHERE source_id = %s",
-            (status[:200], err, source_id),
+            "ELSE consecutive_errors + 1 END, "
+            "etag = COALESCE(%s, etag), "
+            "last_modified = COALESCE(%s, last_modified) "
+            "WHERE source_id = %s",
+            (status[:200], err, etag, modified, source_id),
         )
 
 
@@ -214,29 +237,58 @@ def run_news_pass(
     for src in sources:
         claimed += 1
         try:
-            feed = parse(src["url"])
+            feed = parse(
+                src["url"], etag=src.get("etag"), modified=src.get("last_modified")
+            )
         except Exception as exc:  # feedparser is permissive, but be safe
             log.warning("news_poll: feed %s parse failed: %s", src["title"], exc)
             _record_status(store, src["source_id"], f"error: {exc}"[:200])
             failed += 1
             continue
 
+        # Conditional GET: 304 = unchanged since last poll → nothing to pull.
+        # Polite to the outlet (no body re-download) and cheap for us.
+        if getattr(feed, "status", None) == 304:
+            _record_status(store, src["source_id"], "ok")
+            log.info("news_poll: %s → 304 not modified", src["title"])
+            continue
+
         entries = list(getattr(feed, "entries", []) or [])[: src["max_items"]]
         new_here = 0
         for entry in entries:
             link = (getattr(entry, "link", "") or "").strip()
-            if not link:
+            # The feed's <guid> / Atom <id> — the outlet's stable per-story
+            # identity. Scoped per source so a non-unique guid can't dedup
+            # across outlets (we want the same syndicated story from two
+            # outlets as two refs).
+            guid = (getattr(entry, "id", "") or "").strip()
+            guid_id = f"{src['source_slug']}:{guid}" if guid else None
+
+            key: str | None = None
+            if link:
+                try:
+                    key = canonical_url(link)
+                except Exception:
+                    key = None
+            if key is None and guid_id is None:
+                continue  # nothing identifies this item — skip
+
+            # GUID dedup first: catches the same story re-published under a
+            # changed URL (which the URL hash would miss → a duplicate).
+            if (
+                guid_id is not None
+                and store.find_ref_by_identifier("guid", guid_id, kind="news")
+                is not None
+            ):
                 continue
-            try:
-                key = canonical_url(link)
-            except Exception:
-                continue  # unparseable URL — skip, don't fail the feed
-            rh = _request_hash(key)
+
+            # URL dedup: also the on-demand get(kind='news', id=url) cache key.
+            rh = _request_hash(key) if key else _request_hash(f"guid:{guid_id}")
             if store.get_cache_entry(provider="news", request_hash=rh) is not None:
                 continue  # already have this article
 
-            title = (getattr(entry, "title", "") or key).strip()
-            if fetch is not None:
+            title = (getattr(entry, "title", "") or key or guid).strip()
+            if fetch is not None and key is not None:
                 # Opt-in full-page extraction.
                 try:
                     fr = fetch(key)
@@ -248,7 +300,9 @@ def run_news_pass(
                 extra_meta = {**(fr.meta or {})}
             else:
                 # Default: body straight from the feed entry, no page fetch.
-                body = _entry_body(entry) or f"(no body in feed)\n\n{title}\n{key}"
+                body = (
+                    _entry_body(entry) or f"(no body in feed)\n\n{title}\n{key or ''}"
+                )
                 body_blocks = article_blocks(body, embedder=None)
                 extra_meta = {"url": key, "via": "rss"}
 
@@ -256,8 +310,8 @@ def run_news_pass(
             # NewsHandler._slug_for — NOT the title, which collides across
             # distinct articles sharing a headline and would clobber via
             # put_cache_entry's (kind, slug) replace. The article's handle
-            # (ADR 0036) is its identity; the URL is metadata.
-            slug = slug_from_text(key, max_len=72) or "news-article"
+            # (ADR 0036) is its identity; URL/guid are metadata.
+            slug = slug_from_text(key or guid_id or title, max_len=72) or "news-article"
             ref, _cache = store.put_cache_entry(
                 kind="news",
                 slug=slug,
@@ -266,9 +320,17 @@ def run_news_pass(
                 provider="news",
                 request_hash=rh,
                 ttl_seconds=None,  # pinned — articles are records
-                ref_meta={"url": key, "source": src["source_slug"]},
+                ref_meta={
+                    "url": key,
+                    "guid": guid or None,
+                    "source": src["source_slug"],
+                },
                 cache_meta={**extra_meta, "source": src["source_slug"]},
             )
+            # Record the source-scoped guid so a later poll dedups on it even
+            # if the article's URL changes (the case the URL hash misses).
+            if guid_id is not None:
+                store.insert_ref_identifiers(ref.id, [("guid", guid_id, "rss")])
             apply_tag_ops(
                 store,
                 "news",
@@ -279,7 +341,13 @@ def run_news_pass(
             new_here += 1
             minted += 1
 
-        _record_status(store, src["source_id"], "ok")
+        _record_status(
+            store,
+            src["source_id"],
+            "ok",
+            etag=getattr(feed, "etag", None),
+            modified=getattr(feed, "modified", None),
+        )
         log.info("news_poll: %s → %d new articles", src["title"], new_here)
 
     log.info(
@@ -291,11 +359,15 @@ def run_news_pass(
     return {"claimed": claimed, "ok": minted, "failed": failed}
 
 
-def _default_parse_feed(url: str) -> Any:
+def _default_parse_feed(
+    url: str, *, etag: str | None = None, modified: str | None = None
+) -> Any:
     from precis.utils.optional_deps import require_optional
 
     feedparser = require_optional("feedparser", extra="external")
-    return feedparser.parse(url)
+    # feedparser sends If-None-Match / If-Modified-Since from these and sets
+    # ``.status == 304`` (with empty ``.entries``) when the feed is unchanged.
+    return feedparser.parse(url, etag=etag or None, modified=modified or None)
 
 
 __all__ = ["run_news_pass"]

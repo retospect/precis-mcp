@@ -205,3 +205,118 @@ def test_news_help_skill_present_and_shaped() -> None:
     text = p.read_text()
     assert "id: precis-news-help" in text
     assert "news_poll" in text and "briefing" in text
+
+
+# ── run_news_pass: GUID dedup + conditional GET ────────────────────────
+
+
+class _PassConn:
+    def __init__(self, source_rows: list[tuple]) -> None:
+        self._rows = source_rows
+        self.updates: list[tuple] = []
+
+    def execute(self, sql: str, params: tuple = ()) -> _PassConn:
+        if "UPDATE news_sources" in sql:
+            self.updates.append(params)
+        self._is_select = "SELECT source_id" in sql
+        return self
+
+    def fetchall(self) -> list[tuple]:
+        return self._rows
+
+
+class _PassStore:
+    """Fake store exercising run_news_pass's dedup/conditional-GET paths."""
+
+    def __init__(
+        self,
+        source_rows: list[tuple],
+        *,
+        seen_guids: set[str] | None = None,
+        seen_rh: set[str] | None = None,
+    ) -> None:
+        self.conn = _PassConn(source_rows)
+        self.seen_guids = seen_guids or set()
+        self.seen_rh = seen_rh or set()
+        self.minted: list[dict] = []
+        self.identifiers: list[tuple] = []
+        self._idc = 5000
+
+    def tx(self):  # type: ignore[no-untyped-def]
+        import contextlib
+
+        @contextlib.contextmanager
+        def _cm():  # type: ignore[no-untyped-def]
+            yield self.conn
+
+        return _cm()
+
+    def find_ref_by_identifier(
+        self, scheme: str, value: str, *, kind: str | None = None
+    ) -> int | None:
+        return 7 if value in self.seen_guids else None
+
+    def get_cache_entry(self, *, provider: str, request_hash: str) -> object | None:
+        return object() if request_hash in self.seen_rh else None
+
+    def put_cache_entry(self, **kw: object):  # type: ignore[no-untyped-def]
+        self.minted.append(kw)
+        self._idc += 1
+        return SimpleNamespace(id=self._idc), None
+
+    def insert_ref_identifiers(
+        self, ref_id: object, identifiers: list, conn: object = None
+    ) -> None:
+        self.identifiers.append((ref_id, list(identifiers)))
+
+
+def _src_row(etag: str | None = None, modified: str | None = None) -> tuple:
+    # (source_id, url, title, source_slug, default_tags, max_items, etag, last_modified)
+    return (1, "http://feed", "Feed", "bbc", [], 50, etag, modified)
+
+
+def _feed(entries: list, *, status: int = 200, etag=None, modified=None):  # type: ignore[no-untyped-def]
+    return SimpleNamespace(entries=entries, status=status, etag=etag, modified=modified)
+
+
+def _e(link: str, guid: str = "", title: str = "t", summary: str = "body"):  # type: ignore[no-untyped-def]
+    return SimpleNamespace(link=link, id=guid, title=title, summary=summary)
+
+
+def test_guid_dedup_skips_already_seen_story(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(news_poll, "apply_tag_ops", lambda *a, **k: None)
+    store = _PassStore([_src_row()], seen_guids={"bbc:g-old"})
+    feed = _feed([_e("http://x/old", "g-old"), _e("http://x/new", "g-new")])
+    r = news_poll.run_news_pass(store, parse_feed=lambda url, **kw: feed)  # type: ignore[arg-type]
+    assert r["ok"] == 1  # only the unseen story minted
+    assert len(store.minted) == 1
+    # the new story's source-scoped guid is recorded for future dedup
+    assert store.identifiers == [(5001, [("guid", "bbc:g-new", "rss")])]
+
+
+def test_304_not_modified_mints_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(news_poll, "apply_tag_ops", lambda *a, **k: None)
+    store = _PassStore([_src_row(etag="etag-1")])
+    feed = _feed([_e("http://x/a", "g")], status=304)
+    r = news_poll.run_news_pass(store, parse_feed=lambda url, **kw: feed)  # type: ignore[arg-type]
+    assert r == {"claimed": 1, "ok": 0, "failed": 0}
+    assert store.minted == []
+
+
+def test_conditional_get_sends_and_saves_validators(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(news_poll, "apply_tag_ops", lambda *a, **k: None)
+    store = _PassStore([_src_row(etag="old-etag", modified="old-mod")])
+    seen: dict = {}
+
+    def parse(url: str, *, etag=None, modified=None):  # type: ignore[no-untyped-def]
+        seen["etag"], seen["modified"] = etag, modified
+        return _feed([], etag="new-etag", modified="new-mod")
+
+    news_poll.run_news_pass(store, parse_feed=parse)  # type: ignore[arg-type]
+    assert seen == {"etag": "old-etag", "modified": "old-mod"}  # sent stored validators
+    upd = store.conn.updates[-1]  # _record_status UPDATE params
+    assert "new-etag" in upd and "new-mod" in upd  # persisted the new ones
