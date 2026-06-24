@@ -73,6 +73,15 @@ _MAGIC_MIME: tuple[tuple[bytes, str], ...] = (
 )
 
 
+#: A 1×1 transparent PNG, the deferred-image placeholder for a computed graph
+#: figure (ADR 0035) — there's always a `chunk_blobs` row so the reader/export
+#: never hit a missing blob; the render pass overwrites it with the real chart.
+_PLACEHOLDER_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
 def _sniff_mime(raw: bytes) -> str:
     """Best-effort image mime from magic bytes; WEBP needs the RIFF check."""
     for sig, mime in _MAGIC_MIME:
@@ -243,6 +252,8 @@ class DraftHandler(Handler):
         table: dict[str, Any] | None = None,
         caption: str | None = None,
         regen: dict[str, Any] | None = None,
+        render: str | None = None,
+        plots: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None or not str(id).strip():
@@ -262,6 +273,19 @@ class DraftHandler(Handler):
                 mime=mime,
                 origin=origin,
                 permission=permission,
+                at=at,
+            )
+
+        # A computed figure (graph): render code + plots links, image deferred
+        # to the render pass (ADR 0035). text= is the caption.
+        if chunk_kind == "figure" and (render is not None or plots is not None):
+            ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
+            return self._add_graph_figure(
+                slug=slug,
+                ref_id=ref.id,
+                caption=text or caption,
+                render=render,
+                plots=plots,
                 at=at,
             )
 
@@ -387,6 +411,76 @@ class DraftHandler(Handler):
         self._sync_draft_links(ref_id)
         return Response(
             body=f"added figure {chunk.dc} [{org}] to {slug} ({len(raw)} bytes)"
+        )
+
+    def _add_graph_figure(
+        self,
+        *,
+        slug: str,
+        ref_id: int,
+        caption: str | None,
+        render: str | None,
+        plots: list[str] | None,
+        at: dict[str, Any] | None,
+    ) -> Response:
+        """Add a *computed* figure — a graph (ADR 0035): the render code goes to
+        ``meta.render``, ``plots`` links the data chunks it renders, and the image
+        is **deferred** (a placeholder blob until the render pass fills it).
+        ``origin='own_graph'``; the caption is the face (``text``)."""
+        if not render or not str(render).strip():
+            raise BadInput(
+                "a graph figure requires render= (the Python that draws it)",
+                next=(
+                    "put(kind='draft', id='…', chunk_kind='figure', "
+                    "render='import matplotlib.pyplot as plt; …', "
+                    "plots=['dc<data-id>'], text='Fig 1. …')"
+                ),
+            )
+        if not plots:
+            raise BadInput(
+                "a graph figure requires plots=[dc<id>] — the data chunk(s) it renders",
+                next="plots=['dc<table-chunk-id>']  (the table/data chunk handles)",
+            )
+        if caption is None or not str(caption).strip():
+            raise BadInput(
+                "a figure requires text= (the caption)",
+                next="put(kind='draft', …, chunk_kind='figure', render=…, plots=[…], text='Fig 1. …')",
+            )
+        # Resolve each plots target to a live chunk in *this* draft.
+        targets = []
+        for p in plots:
+            c = self.store.get_draft_chunk(str(p))
+            if c is None:
+                raise NotFound(f"plots target {p!r} not found")
+            if int(c.ref_id) != ref_id:
+                raise BadInput(
+                    f"plots target {p!r} is not a chunk in draft {slug!r}",
+                    next="plots= must reference data chunks in the same draft",
+                )
+            targets.append(c)
+
+        chunk = self.store.add_figure(
+            ref_id=ref_id,
+            caption=str(caption),
+            origin="own_graph",
+            image=_PLACEHOLDER_PNG,  # deferred — the render pass overwrites it
+            mime="image/png",
+            at=at,
+            figure_meta={"render_pending": True},
+        )
+        self.store.set_render_recipe(
+            chunk.chunk_id,
+            {"kind": "code", "lang": "python", "src": str(render)},
+        )
+        n = self.store.link_figure_plots(chunk.chunk_id, [t.chunk_id for t in targets])
+        self._sync_draft_links(ref_id)
+        self._attribute_touch([chunk.chunk_id])
+        return Response(
+            body=(
+                f"added graph figure {chunk.dc} to {slug} "
+                f"(plots {n} data source{'' if n == 1 else 's'}); "
+                "image renders out-of-band — render pending"
+            )
         )
 
     # ── edit: text or move ───────────────────────────────────────────

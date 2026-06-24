@@ -906,6 +906,62 @@ class DraftMixin:
                 (cached_key, figure_chunk_id),
             )
 
+    def set_render_recipe(
+        self,
+        chunk_id: int,
+        recipe: dict[str, Any],
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Stamp a figure chunk's `meta.render` recipe (the graph code). Set at
+        creation of a computed figure and rewritten on a recipe edit; a rewrite
+        clears any prior `cached_key`, so the figure is stale until re-rendered.
+        Logs a `recipe` chunk_event (ADR 0035 §2 — recipe history)."""
+
+        def _do(c: psycopg.Connection) -> None:
+            c.execute(
+                "UPDATE chunks SET meta = jsonb_set(meta, '{render}', %s::jsonb, true) "
+                "WHERE chunk_id = %s",
+                (Jsonb(recipe), chunk_id),
+            )
+            c.execute(
+                "INSERT INTO chunk_events (chunk_id, event_kind, source) "
+                "VALUES (%s, 'edited', %s)",
+                (chunk_id, Jsonb({"reason": "render-recipe"})),
+            )
+
+        if conn is not None:
+            _do(conn)
+        else:
+            with self.tx() as c:
+                _do(c)
+
+    def link_figure_plots(self, figure_chunk_id: int, data_chunk_ids: list[int]) -> int:
+        """Create the figure→data `plots` edges (chunk→chunk) for a computed
+        figure, by chunk_id. Resolves each chunk's `(ref_id, ord)` and routes
+        through :meth:`add_link` (dedup + validation). Returns the count.
+        All chunks must already exist (the caller validated the draft)."""
+        with self.tx() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id, ref_id, ord FROM chunks WHERE chunk_id = ANY(%s)",
+                ([figure_chunk_id, *data_chunk_ids],),
+            ).fetchall()
+            info = {int(r[0]): (int(r[1]), int(r[2])) for r in rows}
+            fig_ref, fig_ord = info[figure_chunk_id]
+            n = 0
+            for dcid in data_chunk_ids:
+                d_ref, d_ord = info[dcid]
+                self.add_link(
+                    src_ref_id=fig_ref,
+                    src_pos=fig_ord,
+                    dst_ref_id=d_ref,
+                    dst_pos=d_ord,
+                    relation="plots",
+                    conn=conn,
+                )
+                n += 1
+            return n
+
     def set_figure_provenance(
         self,
         handle: str,

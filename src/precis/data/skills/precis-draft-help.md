@@ -204,8 +204,33 @@ put(kind='draft', id='nanotrans', chunk_kind='table',
   (`dc<chunk_id>` is the chunk's address — `put` returns it; legacy `¶<handle>`
   still resolves on input.)
 
-(Plots that render a table as a figure — `chunk_kind='figure'` with a render
-recipe + `plots` links — are a later build step; see ADR 0035.)
+## Graph figures (computed from data)
+
+A **graph** is a `figure` (the umbrella `chunk_kind`) whose image is *computed
+from data*, not uploaded — `origin='own_graph'`. Instead of `image=`, give it
+**`render=`** (the Python that draws it) and **`plots=[dc<id>]`** (the data/table
+chunks it reads). The caption is `text=`, like any figure.
+
+```python
+put(kind='draft', id='nanotrans', chunk_kind='figure',
+    text='Fig 2. Band gap vs lattice constant.',
+    plots=['dc42'],                       # the data/table chunk(s) it renders
+    render=('import matplotlib.pyplot as plt\n'
+            't = data["tables"][0]\n'      # plotted chunks arrive as data["tables"]
+            'plt.scatter([r[0] for r in t["rows"]], [r[1] for r in t["rows"]])'),
+    at={'last': True})
+```
+
+- The render code runs **sandboxed, out-of-band** (never at `put` time): it
+  receives `data = {'tables': [...]}` (your `plots` chunks, in order) and `out`
+  (the PNG path); an unsaved matplotlib figure is auto-saved. The image is
+  **deferred** — a placeholder until the render lands, then it refreshes
+  automatically whenever the plotted data changes (the `plots` edge is the one
+  reactive recompute, ADR 0035).
+- An *image* figure (uploaded `image=`, `origin∈{original,third_party}`) and a
+  *graph* (computed, `own_graph`) are the **same `figure` kind** — they differ
+  only in where the pixels come from. Clearance, caption, blob serving, export
+  all apply identically.
 
 ## Read the document
 

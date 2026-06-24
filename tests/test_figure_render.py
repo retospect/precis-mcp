@@ -11,6 +11,7 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.draft import DraftHandler
 from precis.render.figure import invalidation_key, render_figure_chunk
 
@@ -124,6 +125,58 @@ def test_not_a_graph_is_reported(hub: Hub) -> None:
 def test_invalidation_key_is_order_independent() -> None:
     assert invalidation_key(["a", "b"]) == invalidation_key(["b", "a"])
     assert invalidation_key(["a", "b"]) != invalidation_key(["a", "c"])
+
+
+# ── the put surface: render=/plots= through the verbs ─────────────────
+
+
+def test_put_graph_figure_creates_recipe_plots_and_deferred_image(hub: Hub) -> None:
+    d = DraftHandler(hub=hub)
+    d.put(id="g", title="T", project=_proj(hub))
+    ref = hub.store.get_ref(kind="draft", id="g")
+    d.put(
+        id="g",
+        chunk_kind="table",
+        table={"header": ["x", "y"], "rows": [[1, 2], [3, 4]]},
+        at={"last": True},
+    )
+    data_c = next(c for c in hub.store.reading_order(ref.id) if c.chunk_kind == "table")
+
+    src = "open(out, 'wb').write(b'\\x89PNG\\r\\n\\x1a\\n' + bytes(len(data['tables'][0]['rows'])))\n"
+    r = d.put(
+        id="g",
+        chunk_kind="figure",
+        render=src,
+        plots=[data_c.dc],
+        text="Fig 1. y vs x.",
+        at={"last": True},
+    )
+    assert "added graph figure dc" in r.body and "plots 1 data source" in r.body
+    fig = next(c for c in hub.store.reading_order(ref.id) if c.chunk_kind == "figure")
+    meta = hub.store.draft_chunk_meta(fig.handle)
+    # recipe stamped, origin own_graph, image deferred (placeholder present)
+    assert meta["render"]["src"] == src
+    assert meta["figure"]["origin"] == "own_graph"
+    assert hub.store.get_chunk_blob(fig.handle) is not None  # placeholder seeded
+
+    # the plots link the put created drives the render end-to-end
+    out = render_figure_chunk(hub.store, fig.chunk_id)
+    assert out.ok, out.detail
+    blob = hub.store.get_chunk_blob(fig.handle)
+    assert blob is not None and blob[0].startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_put_graph_figure_requires_render_plots_and_caption(hub: Hub) -> None:
+    d = DraftHandler(hub=hub)
+    d.put(id="g", title="T", project=_proj(hub))
+    with pytest.raises(BadInput, match="requires render="):
+        d.put(id="g", chunk_kind="figure", plots=["dc1"], text="c", at={"last": True})
+    with pytest.raises(BadInput, match=r"requires plots="):
+        d.put(id="g", chunk_kind="figure", render="x=1", text="c", at={"last": True})
+    with pytest.raises(BadInput, match="requires text="):
+        d.put(
+            id="g", chunk_kind="figure", render="x=1", plots=["dc1"], at={"last": True}
+        )
 
 
 def test_real_matplotlib_render(hub: Hub) -> None:

@@ -498,6 +498,11 @@ def put(
     table: dict[str, Any] | None = None,
     caption: str | None = None,
     regen: dict[str, Any] | None = None,
+    # draft figure (chunk_kind='figure'): image=<base64> for an uploaded image
+    # (ADR 0034), or render=<python> + plots=[dc<id>] for a graph computed from
+    # data chunks (ADR 0035) — caption= is the legend either way.
+    render: str | None = None,
+    plots: list[str] | None = None,
     # conversation (see precis-conv-help):
     author: str | None = None,
     msg_id: str | None = None,
@@ -573,6 +578,8 @@ def put(
             "table": table,
             "caption": caption,
             "regen": regen,
+            "render": render,
+            "plots": plots,
             "author": author,
             "msg_id": msg_id,
             "target": target,
