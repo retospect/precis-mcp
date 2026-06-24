@@ -8,6 +8,28 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-24 — Status page: chunk-pipeline passes show real movement)
+
+- The Status page's "Chunk pipeline backlog" (last-done column) and "Recent
+  worker passes" panels both looked frozen for `embed` / `summarize` /
+  `chunk_keywords` even though those passes were churning ~30k chunks/24h.
+  Cause: chunk-level handlers all log through the runner's own logger, so
+  every `worker_logs` row lands under `pass='runner'` (the `pass` column is
+  derived from the *logger name*, not the handler) — the real pass name only
+  survives in `payload->>'handler'` (`embed:bge-m3`, `summarize:rake-lemma`,
+  `chunk_keywords`). Both status queries filtered on `pass IN (...)`, which
+  never matched. They now recover the pass name via
+  `split_part(payload->>'handler', ':', 1)`, constrained to `pass='runner'`
+  + a 6h window so the `(pass, ts)` index terminates early (per-pass
+  last-done is an indexed `ORDER BY ts DESC LIMIT 1`; was an 8s full scan,
+  now sub-ms). New real-PG regression test (`tests/precis_web/
+  test_status_sql.py`) covers both queries — the web FakeStore doesn't parse
+  SQL, so the existing route tests monkeypatched right past the bug. NB the
+  `last-done` column shows the *batch* write time (within seconds of the row
+  insert); `chunk_embeddings` / `chunk_summaries` do carry a true
+  `created_at`, but keywords are written in place with no per-row timestamp,
+  so the worker-log time is the one uniform source across all three passes.
+
 ### Fixed (2026-06-24 — "+ New draft" description now seeds the planner's initial prompt)
 
 - **The description typed into the web "+ New draft" dialog is now the

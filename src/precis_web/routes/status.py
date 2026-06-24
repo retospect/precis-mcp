@@ -254,25 +254,39 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
     # while pending sits flat. The chunks table carries no per-row
     # "processed_at" (keywords write in place; embeddings/summaries
     # live in their own tables) so the worker-pass log is the cheap,
-    # indexed source of "when did this pass last move". Failure here is
+    # indexed source of "when did this pass last move".
+    #
+    # NB the chunk-level handlers (embed / summarize / chunk_keywords)
+    # all log under ``pass='runner'`` — the runner's own logger
+    # (``precis.workers.runner``), since ``pass`` is derived from the
+    # logger name, not the handler. The real pass name lives in
+    # ``payload->>'handler'`` (e.g. ``embed:bge-m3``,
+    # ``summarize:rake-lemma``, ``chunk_keywords``); match on the prefix
+    # before the first ``:`` so it lines up with the backlog keys. One
+    # indexed ``ORDER BY ts DESC LIMIT 1`` per pass — the
+    # ``(pass, ts DESC)`` index terminates early since these passes fire
+    # constantly — bounded to 6h so a *stalled* pass simply shows no
+    # timestamp rather than scanning all of history. Failure here is
     # non-fatal — counts already rendered; we just skip the timestamp.
-    try:
-        with store.pool.connection() as conn:
-            last = conn.execute(
-                """
-                SELECT pass, max(ts)
-                  FROM worker_logs
-                 WHERE pass = ANY(%s)
-                   AND COALESCE((payload->>'ok')::int, 0) > 0
-                 GROUP BY pass
-                """,
-                (list(rows.keys()),),
-            ).fetchall()
-        for pass_name, ts in last:
-            if pass_name in rows:
-                rows[pass_name]["last_ts"] = ts
-    except Exception:
-        log.exception("status: backlog last-done query failed")
+    for pass_name in rows:
+        try:
+            with store.pool.connection() as conn:
+                row = conn.execute(
+                    """
+                    SELECT ts FROM worker_logs
+                     WHERE pass = 'runner'
+                       AND ts > now() - interval '6 hours'
+                       AND COALESCE((payload->>'ok')::int, 0) > 0
+                       AND split_part(payload->>'handler', ':', 1) = %s
+                     ORDER BY ts DESC
+                     LIMIT 1
+                    """,
+                    (pass_name,),
+                ).fetchone()
+            if row and row[0] is not None:
+                rows[pass_name]["last_ts"] = row[0]
+        except Exception:
+            log.exception("status: backlog last-done query for %s failed", pass_name)
 
     return rows
 
@@ -333,19 +347,29 @@ def _recent_passes(store: Any, limit: int = 5) -> list[dict[str, Any]]:
 
     ``Productive`` means ``claimed > 0`` — quiet idle ticks would
     otherwise drown out the real activity.
+
+    NB the chunk-level handlers all log under ``pass='runner'`` (the
+    runner's own logger; ``pass`` is the logger name, not the handler),
+    so we constrain on ``pass='runner'`` to ride the ``(pass, ts)``
+    index and recover the real pass name from ``payload->>'handler'``
+    (``embed:bge-m3`` → ``embed``). Bounded to 6h so the index walk
+    terminates fast.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT ts, host, pass,
+            SELECT ts, host,
+                   split_part(payload->>'handler', ':', 1) AS pass,
                    COALESCE((payload->>'claimed')::int, 0) AS claimed,
                    COALESCE((payload->>'ok')::int, 0)      AS ok,
                    COALESCE((payload->>'failed')::int, 0)  AS failed
               FROM worker_logs
-             WHERE pass IN ('chunk_keywords', 'summarize', 'embed',
-                            'tag_embeddings')
+             WHERE pass = 'runner'
+               AND ts > now() - interval '6 hours'
                AND payload IS NOT NULL
                AND COALESCE((payload->>'claimed')::int, 0) > 0
+               AND split_part(payload->>'handler', ':', 1)
+                   IN ('chunk_keywords', 'summarize', 'embed', 'tag_embeddings')
              ORDER BY ts DESC
              LIMIT %s
             """,
