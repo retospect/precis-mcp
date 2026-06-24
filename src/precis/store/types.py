@@ -69,6 +69,12 @@ Relation = Literal[
     # inverse (like `related-to`) — one row per edge, surfaced from
     # either end. Keep in sync with the `relations` seed in 0034.
     "touched",
+    # Computed chunks — migration 0037 (ADR 0035 §2/§4). `plots` binds a
+    # figure chunk to each data chunk it renders; the one *reactive* edge
+    # (editing the data marks the figure stale). Asymmetric, `plotted-by`
+    # inverse. Keep in sync with the `relations` seed in 0037.
+    "plots",
+    "plotted-by",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 

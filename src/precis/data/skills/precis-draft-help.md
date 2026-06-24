@@ -172,6 +172,66 @@ permission={…})` — caption and image bytes stay put.
 > `figure_data` chunks linked `derived-from`) and the export step that
 > writes images out to `pics/` are later phases.
 
+## Data / table chunks
+
+A `chunk_kind='table'` chunk holds **structured data, not prose**. Pass the
+canonical data as `table={header, rows}` — *not* `text=`. The markdown you
+read back is **derived** from that data (regenerated on every write, never
+hand-edited), so the numbers stay the single source of truth and stay
+searchable / numerics-indexable.
+
+```python
+put(kind='draft', id='nanotrans', chunk_kind='table',
+    table={'header': ['element', 'gap_eV'],
+           'rows': [['Si', 1.12], ['Ge', 0.67]]},
+    caption='Measured band gaps',          # the legend (optional)
+    regen={'source': 'dft', 'cmd': 'vasp relax'},  # how the data was made (optional, inert)
+    at={'last': True})
+```
+
+* **`caption=`** is the table's legend — it rides in the derived text so the
+  table is findable by it.
+* **`regen=`** records provenance / how to rebuild the data (a sim, a command,
+  an ingest pointer). It is **inert metadata** — recorded, never executed.
+* **Editing:** change the data, not the rendered text. `text=` is *rejected*
+  on a table chunk.
+
+  ```python
+  edit(kind='draft', id='dc42', table={'header': [...], 'rows': [...]})  # re-derives markdown
+  edit(kind='draft', id='dc42', caption='New legend')   # caption only; data kept
+  edit(kind='draft', id='dc42', regen={'source': 'manual'})  # provenance only
+  ```
+  (`dc<chunk_id>` is the chunk's address — `put` returns it; legacy `¶<handle>`
+  still resolves on input.)
+
+## Graph figures (computed from data)
+
+A **graph** is a `figure` (the umbrella `chunk_kind`) whose image is *computed
+from data*, not uploaded — `origin='own_graph'`. Instead of `image=`, give it
+**`render=`** (the Python that draws it) and **`plots=[dc<id>]`** (the data/table
+chunks it reads). The caption is `text=`, like any figure.
+
+```python
+put(kind='draft', id='nanotrans', chunk_kind='figure',
+    text='Fig 2. Band gap vs lattice constant.',
+    plots=['dc42'],                       # the data/table chunk(s) it renders
+    render=('import matplotlib.pyplot as plt\n'
+            't = data["tables"][0]\n'      # plotted chunks arrive as data["tables"]
+            'plt.scatter([r[0] for r in t["rows"]], [r[1] for r in t["rows"]])'),
+    at={'last': True})
+```
+
+- The render code runs **sandboxed, out-of-band** (never at `put` time): it
+  receives `data = {'tables': [...]}` (your `plots` chunks, in order) and `out`
+  (the PNG path); an unsaved matplotlib figure is auto-saved. The image is
+  **deferred** — a placeholder until the render lands, then it refreshes
+  automatically whenever the plotted data changes (the `plots` edge is the one
+  reactive recompute, ADR 0035).
+- An *image* figure (uploaded `image=`, `origin∈{original,third_party}`) and a
+  *graph* (computed, `own_graph`) are the **same `figure` kind** — they differ
+  only in where the pixels come from. Clearance, caption, blob serving, export
+  all apply identically.
+
 ## Read the document
 
 ```python

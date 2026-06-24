@@ -492,6 +492,17 @@ def put(
     # a chunk (chunk_kind=, text=) placed by at={first|last|into|before|after}.
     at: dict[str, Any] | None = None,
     project: str | int | None = None,
+    # draft data/table chunk (chunk_kind='table', ADR 0035): canonical data
+    # in table={header,rows}; the markdown text is derived. caption= is the
+    # legend; regen= records how the data was produced (provenance, inert).
+    table: dict[str, Any] | None = None,
+    caption: str | None = None,
+    regen: dict[str, Any] | None = None,
+    # draft figure (chunk_kind='figure'): image=<base64> for an uploaded image
+    # (ADR 0034), or render=<python> + plots=[dc<id>] for a graph computed from
+    # data chunks (ADR 0035) — caption= is the legend either way.
+    render: str | None = None,
+    plots: list[str] | None = None,
     # conversation (see precis-conv-help):
     author: str | None = None,
     msg_id: str | None = None,
@@ -513,21 +524,11 @@ def put(
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
-    `mode=` matrix:
-      - File kinds (`markdown`, `plaintext`, `tex`, `python`):
-        `mode='create'` (region edits live on `edit`,
-        whole-file deletes on `delete`).
-      - Paid-import kinds (`websearch`, `perplexity-reasoning`,
-        `perplexity-research`): `mode='import'` to ingest an existing
-        payload (e.g. a Perplexity report) without re-running the
-        upstream call.
-      - Numeric-ref kinds (`memory`, `todo`, `gripe`, `conv`, `flashcard`):
-        omit `mode=` to create.
-    `tags=` adds, `untags=` removes. `link=`/`unlink=` use canonical
-    `kind:identifier[~selector]` form; `rel=` defaults to `related-to`.
+    `mode=`: file kinds use 'create'; paid-import kinds use 'import';
+    numeric-ref kinds omit it. `tags=`/`untags=` add/remove; `link=`/`unlink=`
+    use `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
 
-    Full reference: get(kind='skill', id='precis-put-help'), or
-    search(kind='skill', q='saving a note') for a topical lookup.
+    Full reference: get(kind='skill', id='precis-put-help').
     """
     err = _check_text_payload_size("put", text)
     if err is not None:
@@ -569,6 +570,11 @@ def put(
             "chunk_kind": chunk_kind,
             "at": at,
             "project": project,
+            "table": table,
+            "caption": caption,
+            "regen": regen,
+            "render": render,
+            "plots": plots,
             "author": author,
             "msg_id": msg_id,
             "target": target,
@@ -614,6 +620,12 @@ def edit(
     # draft abbreviations: mark token(s) as NOT an abbreviation (chem
     # formula, model name, …) to silence the undefined-abbrev write hint.
     not_abbrev: list[str] | None = None,
+    # draft data/table chunk (chunk_kind='table', ADR 0035): replace the
+    # canonical data (table={header,rows}) / legend (caption=) / provenance
+    # (regen=); the markdown text re-derives. text= is rejected on a table.
+    table: dict[str, Any] | None = None,
+    caption: str | None = None,
+    regen: dict[str, Any] | None = None,
 ) -> str:
     """Edit a region within an existing ref's content (anchored).
 
@@ -654,6 +666,9 @@ def edit(
         "move": move,
         "base_sha": base_sha,
         "not_abbrev": not_abbrev,
+        "table": table,
+        "caption": caption,
+        "regen": regen,
     }
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("edit", payload)

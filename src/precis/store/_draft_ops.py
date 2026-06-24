@@ -232,6 +232,16 @@ class DraftMixin:
             ).fetchall()
         return {int(r[0]): str(r[1]) for r in rows}
 
+    def draft_chunk_meta(self, handle: str) -> dict[str, Any]:
+        """The raw ``chunks.meta`` JSON for a draft chunk (``{}`` if none).
+        Not on :class:`DraftChunk` — read it when re-deriving a table's
+        markdown from its canonical ``meta.table`` (ADR 0035 §1)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta FROM chunks WHERE handle = %s", (_bare(handle),)
+            ).fetchone()
+        return dict(row[0]) if row and row[0] else {}
+
     def get_draft_chunk(self, handle: str) -> DraftChunk | None:
         """A single live-or-retired draft chunk by its address.
 
@@ -729,11 +739,16 @@ class DraftMixin:
         text: str,
         at: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
+        split: bool = True,
     ) -> list[DraftChunk]:
         """Add one or more chunks (a multi-paragraph `text` splits at blank
         lines). Returns the created chunks in order. ``meta`` (e.g. a
-        ``term``'s ``{short, long}``) is stamped on each created chunk."""
-        blocks = _split_blocks(text)
+        ``term``'s ``{short, long}``) is stamped on each created chunk.
+
+        ``split=False`` inserts ``text`` verbatim as a single chunk — used
+        by chunks whose text is a derived projection that must not
+        fragment (a ``table``'s markdown render, ADR 0035 §1)."""
+        blocks = _split_blocks(text) if split else [text]
         with self.tx() as conn:
             parent, lo, hi = self._resolve_at(conn, ref_id, at)
             keys = n_keys_between(lo, hi, len(blocks))
@@ -807,6 +822,145 @@ class DraftMixin:
         if row is None:
             return None
         return bytes(row[0]), row[1]
+
+    def upsert_chunk_blob(
+        self,
+        chunk_id: int,
+        image: bytes,
+        mime: str,
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Insert or **replace** a chunk's blob (`chunk_blobs` row).
+
+        Unlike :meth:`add_figure` (insert-only, at figure creation), this is
+        the render path: a computed figure's image is a *regenerable* artifact
+        (ADR 0035 §3), so re-rendering overwrites the bytes in place keyed on
+        ``chunk_id``. Re-derives ``sha256`` / ``size`` / dims from the bytes."""
+        sha = hashlib.sha256(image).hexdigest()
+        width, height = _image_dims(image)
+
+        def _do(c: psycopg.Connection) -> None:
+            c.execute(
+                """INSERT INTO chunk_blobs
+                       (chunk_id, bytes, mime, sha256, size_bytes, width, height)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (chunk_id) DO UPDATE SET
+                       bytes = EXCLUDED.bytes, mime = EXCLUDED.mime,
+                       sha256 = EXCLUDED.sha256, size_bytes = EXCLUDED.size_bytes,
+                       width = EXCLUDED.width, height = EXCLUDED.height""",
+                (chunk_id, image, mime, sha, len(image), width, height),
+            )
+
+        if conn is not None:
+            _do(conn)
+        else:
+            with self.tx() as c:
+                _do(c)
+
+    def figure_render_bundle(self, figure_chunk_id: int) -> dict[str, Any] | None:
+        """Everything the render pass needs for a computed `figure` (ADR 0035):
+        its render recipe (`meta.render`) and, in plotted order, the `meta.table`
+        payload + `content_sha` of each data chunk it `plots`.
+
+        Returns ``None`` when the chunk isn't a figure carrying a `meta.render`
+        recipe (i.e. a plain uploaded *image* figure, not a *graph*). The
+        returned ``input_shas`` (render src + each data sha) are the inputs to
+        the content-addressed invalidation key."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT chunk_kind, meta FROM chunks WHERE chunk_id = %s",
+                (figure_chunk_id,),
+            ).fetchone()
+            if row is None or row[0] != "figure":
+                return None
+            meta = dict(row[1] or {})
+            render = meta.get("render")
+            if not isinstance(render, dict) or not render.get("src"):
+                return None  # an uploaded image, not a computed graph
+            # plotted data chunks, in their reading order
+            data_rows = conn.execute(
+                """SELECT c.chunk_id, c.meta, c.content_sha
+                     FROM links l JOIN chunks c ON c.chunk_id = l.dst_chunk_id
+                    WHERE l.src_chunk_id = %s AND l.relation = 'plots'
+                      AND c.retired_at IS NULL
+                    ORDER BY c.ord""",
+                (figure_chunk_id,),
+            ).fetchall()
+        tables = [dict(r[1] or {}).get("table") for r in data_rows]
+        return {
+            "render": render,
+            "tables": [t for t in tables if t is not None],
+            "input_shas": [str(render.get("src"))] + [str(r[2]) for r in data_rows],
+        }
+
+    def stamp_render_key(self, figure_chunk_id: int, cached_key: str) -> None:
+        """Record a freshly-rendered figure's invalidation key at
+        ``meta.render.cached_key`` (ADR 0035 §3) — a later mark-stale pass
+        compares it to the recomputed `hash(src, plotted data shas)`."""
+        with self.tx() as conn:
+            conn.execute(
+                "UPDATE chunks SET meta = "
+                "jsonb_set(meta, '{render,cached_key}', to_jsonb(%s::text), true) "
+                "WHERE chunk_id = %s",
+                (cached_key, figure_chunk_id),
+            )
+
+    def set_render_recipe(
+        self,
+        chunk_id: int,
+        recipe: dict[str, Any],
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Stamp a figure chunk's `meta.render` recipe (the graph code). Set at
+        creation of a computed figure and rewritten on a recipe edit; a rewrite
+        clears any prior `cached_key`, so the figure is stale until re-rendered.
+        Logs a `recipe` chunk_event (ADR 0035 §2 — recipe history)."""
+
+        def _do(c: psycopg.Connection) -> None:
+            c.execute(
+                "UPDATE chunks SET meta = jsonb_set(meta, '{render}', %s::jsonb, true) "
+                "WHERE chunk_id = %s",
+                (Jsonb(recipe), chunk_id),
+            )
+            c.execute(
+                "INSERT INTO chunk_events (chunk_id, event_kind, source) "
+                "VALUES (%s, 'edited', %s)",
+                (chunk_id, Jsonb({"reason": "render-recipe"})),
+            )
+
+        if conn is not None:
+            _do(conn)
+        else:
+            with self.tx() as c:
+                _do(c)
+
+    def link_figure_plots(self, figure_chunk_id: int, data_chunk_ids: list[int]) -> int:
+        """Create the figure→data `plots` edges (chunk→chunk) for a computed
+        figure, by chunk_id. Resolves each chunk's `(ref_id, ord)` and routes
+        through :meth:`add_link` (dedup + validation). Returns the count.
+        All chunks must already exist (the caller validated the draft)."""
+        with self.tx() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id, ref_id, ord FROM chunks WHERE chunk_id = ANY(%s)",
+                ([figure_chunk_id, *data_chunk_ids],),
+            ).fetchall()
+            info = {int(r[0]): (int(r[1]), int(r[2])) for r in rows}
+            fig_ref, fig_ord = info[figure_chunk_id]
+            n = 0
+            for dcid in data_chunk_ids:
+                d_ref, d_ord = info[dcid]
+                self.add_link(
+                    src_ref_id=fig_ref,
+                    src_pos=fig_ord,
+                    dst_ref_id=d_ref,
+                    dst_pos=d_ord,
+                    relation="plots",
+                    conn=conn,
+                )
+                n += 1
+            return n
 
     def set_figure_provenance(
         self,
@@ -905,6 +1059,7 @@ class DraftMixin:
         *,
         base_sha: str | None = None,
         source: dict[str, Any] | None = None,
+        meta_patch: dict[str, Any] | None = None,
     ) -> DraftChunk | None:
         """In-place text edit: bump `content_sha`, log an `edited` event with
         `prev_text`. The handle (and references to it) survive; derived data
@@ -914,6 +1069,11 @@ class DraftMixin:
         caller saw when it read the chunk) to fail the edit if the chunk
         changed underneath it — so two agents editing the same chunk don't
         silently clobber each other. Omit it for a force-overwrite.
+
+        ``meta_patch`` shallow-merges into ``chunks.meta`` (``meta || patch``,
+        NULL-safe) in the same statement — used to update a ``table``'s
+        canonical ``meta.table`` alongside its re-derived markdown ``text``
+        atomically (ADR 0035 §1).
         """
         sha = content_sha(text)
         with self.tx() as conn:
@@ -945,10 +1105,17 @@ class DraftMixin:
                             "current text + sha, then edit with the new base_sha="
                         ),
                     )
-            conn.execute(
-                "UPDATE chunks SET text = %s, content_sha = %s WHERE chunk_id = %s",
-                (text, sha, row[0]),
-            )
+            if meta_patch:
+                conn.execute(
+                    "UPDATE chunks SET text = %s, content_sha = %s, "
+                    "meta = meta || %s::jsonb WHERE chunk_id = %s",
+                    (text, sha, Jsonb(meta_patch), row[0]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE chunks SET text = %s, content_sha = %s WHERE chunk_id = %s",
+                    (text, sha, row[0]),
+                )
             conn.execute(
                 """INSERT INTO chunk_events
                        (chunk_id, event_kind, content_sha, prev_text, source)

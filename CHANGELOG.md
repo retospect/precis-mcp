@@ -296,6 +296,37 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   non-sticky page header into the `sticky top-0` find bar, so they stay
   reachable while scrolling a long draft.
 
+### Added (2026-06-22 — data/table chunks: canonical JSON + derived markdown)
+
+- **`chunk_kind='table'` draft chunks now carry structured data, not just
+  prose** (ADR 0035 §1, first build slice). A table chunk's canonical data
+  lives in `meta.table = {header, rows}` (cells kept as JSON scalars, so
+  numbers stay numbers for the `numerics` index); `chunks.text` is a
+  *derived* GFM markdown render, regenerated on every write and never
+  hand-edited — one source, no drift, same discipline as summaries / `ord<0`
+  cards. Add with `put(kind='draft', chunk_kind='table', table={…},
+  caption=…, regen=…)`; edit the **data** with `edit(… table=/caption=/
+  regen=)` — `text=` is rejected on a table chunk (it's derived). `caption`
+  is the legend (rides in the embeddable text); `regen` records how the data
+  was produced (provenance / sim / command / ingest pointer) and is **inert
+  metadata — recorded, never executed**. No migration (the `table`
+  `chunk_kind` was already seeded by 0031); no sandbox (a table is inert
+  payload — the figure render recipe + its sandbox are later steps). New:
+  `precis.utils.table_data` (pure normalise + markdown render), an
+  `add_chunks(split=False)` single-chunk path, `edit_text(meta_patch=)` for
+  atomic text+meta updates, and `Store.draft_chunk_meta`. `precis-draft-help`
+  gains a **"Data / table chunks"** section.
+- **ADR 0035 resolved + sequenced.** The computed-chunks ADR moves to
+  *Accepted*: sandbox = **Docker** (render image, `--network none`, runs only
+  where Docker exists); a **declarative scatter/line/bar fast-path** that
+  renders trusted-code-over-data in-worker and ships *before* the sandbox;
+  render recipe inline in `meta.render` with the figure `text` as its
+  caption; **lazy + access-gated** invalidation (mark stale cheap, render via
+  the claim queue, serve last-good on `get()`); and **export as the render
+  barrier** — `draft_export` forces every referenced figure fresh through the
+  existing `child_job_succeeded` fence, touching only the reactive `plots`
+  edge, never the inert `regen` edge.
+
 ### Added (2026-06-22 — request-a-missing-paper workflow + S2 citation-graph nav)
 
 - **Draft authoring now teaches "request a paper we don't have".** The
