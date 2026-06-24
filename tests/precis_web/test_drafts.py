@@ -112,7 +112,9 @@ class DraftFakeStore(FakeStore):
     def reading_order(self, ref_id):
         return list(self._chunks)
 
-    def search_blocks_semantic(self, *, query_vec, scope_ref_id, limit, max_distance):
+    def search_blocks_semantic(
+        self, *, query_vec, scope_ref_id=None, limit=None, max_distance=None, **kw
+    ):
         # Rank the heading ahead of the intro para (best-first), keyed by
         # chunk_id so the route's chunk_id→handle map resolves them.
         return [

@@ -217,8 +217,10 @@ def _decimal_codes() -> frozenset[str]:
     _load_plugin_codes()
     # Plugin kinds are refs-backed (no file/other-table plugin kinds), so
     # all of them are decimal-pk handles parse() can resolve.
-    return _DECIMAL_CODES | set(_plugin_kind_codes.values()) | set(
-        _plugin_chunk_codes.values()
+    return (
+        _DECIMAL_CODES
+        | set(_plugin_kind_codes.values())
+        | set(_plugin_chunk_codes.values())
     )
 
 

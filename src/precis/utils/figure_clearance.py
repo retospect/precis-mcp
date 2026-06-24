@@ -31,7 +31,10 @@ def figure_status(fig: dict[str, Any]) -> tuple[bool, str]:
         perm = fig.get("permission") or {}
         status = perm.get("status")
         if status != "granted":
-            return False, f"third-party figure, permission not granted ({status or 'none'})"
+            return (
+                False,
+                f"third-party figure, permission not granted ({status or 'none'})",
+            )
         exp = str(perm.get("expires_at") or "").strip()
         if exp:
             try:

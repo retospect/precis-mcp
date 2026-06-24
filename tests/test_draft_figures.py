@@ -108,9 +108,9 @@ def test_figure_status_rules() -> None:
 
     assert figure_status({"origin": "original"})[0] is True
     assert figure_status({"origin": "own_graph"})[0] is True
-    assert figure_status({"origin": "third_party", "permission": {"status": "granted"}})[
-        0
-    ]
+    assert figure_status(
+        {"origin": "third_party", "permission": {"status": "granted"}}
+    )[0]
     # not granted → uncleared
     assert not figure_status(
         {"origin": "third_party", "permission": {"status": "requested"}}

@@ -50,9 +50,7 @@ def test_kind_ref_mention_materialises_link(draft: DraftHandler, hub: Hub) -> No
     assert (target, None) in _auto_links(hub, "nt")
 
 
-def test_universal_handle_ref_materialises_link(
-    draft: DraftHandler, hub: Hub
-) -> None:
+def test_universal_handle_ref_materialises_link(draft: DraftHandler, hub: Hub) -> None:
     """The simple rule: a ``[[<handle>]]`` is a ref to *something*. A bare
     ``[[me<id>]]`` universal handle resolves via the one decoder and
     materialises a related-to edge — no `kind:`/sigil needed."""
