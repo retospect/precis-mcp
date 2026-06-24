@@ -858,6 +858,54 @@ class DraftMixin:
             with self.tx() as c:
                 _do(c)
 
+    def figure_render_bundle(self, figure_chunk_id: int) -> dict[str, Any] | None:
+        """Everything the render pass needs for a computed `figure` (ADR 0035):
+        its render recipe (`meta.render`) and, in plotted order, the `meta.table`
+        payload + `content_sha` of each data chunk it `plots`.
+
+        Returns ``None`` when the chunk isn't a figure carrying a `meta.render`
+        recipe (i.e. a plain uploaded *image* figure, not a *graph*). The
+        returned ``input_shas`` (render src + each data sha) are the inputs to
+        the content-addressed invalidation key."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT chunk_kind, meta FROM chunks WHERE chunk_id = %s",
+                (figure_chunk_id,),
+            ).fetchone()
+            if row is None or row[0] != "figure":
+                return None
+            meta = dict(row[1] or {})
+            render = meta.get("render")
+            if not isinstance(render, dict) or not render.get("src"):
+                return None  # an uploaded image, not a computed graph
+            # plotted data chunks, in their reading order
+            data_rows = conn.execute(
+                """SELECT c.chunk_id, c.meta, c.content_sha
+                     FROM links l JOIN chunks c ON c.chunk_id = l.dst_chunk_id
+                    WHERE l.src_chunk_id = %s AND l.relation = 'plots'
+                      AND c.retired_at IS NULL
+                    ORDER BY c.ord""",
+                (figure_chunk_id,),
+            ).fetchall()
+        tables = [dict(r[1] or {}).get("table") for r in data_rows]
+        return {
+            "render": render,
+            "tables": [t for t in tables if t is not None],
+            "input_shas": [str(render.get("src"))] + [str(r[2]) for r in data_rows],
+        }
+
+    def stamp_render_key(self, figure_chunk_id: int, cached_key: str) -> None:
+        """Record a freshly-rendered figure's invalidation key at
+        ``meta.render.cached_key`` (ADR 0035 §3) — a later mark-stale pass
+        compares it to the recomputed `hash(src, plotted data shas)`."""
+        with self.tx() as conn:
+            conn.execute(
+                "UPDATE chunks SET meta = "
+                "jsonb_set(meta, '{render,cached_key}', to_jsonb(%s::text), true) "
+                "WHERE chunk_id = %s",
+                (cached_key, figure_chunk_id),
+            )
+
     def set_figure_provenance(
         self,
         handle: str,
