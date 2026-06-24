@@ -3,6 +3,8 @@ JSON + derived markdown ``text``, inert ``meta.regen``. No execution."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.dispatch import Hub
@@ -20,10 +22,13 @@ def _proj(hub: Hub) -> int:
     return hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
 
 
-def _table_handle(hub: Hub, slug: str) -> str:
+def _table_chunk(hub: Hub, slug: str) -> Any:
+    """The draft's table chunk — carries both ``.dc`` (the agent-facing
+    ADR-0036 ``dc<id>`` address) and ``.handle`` (the legacy base-58 anchor
+    the low-level store ops still key on)."""
     ref = hub.store.get_ref(kind="draft", id=slug)
     order = hub.store.reading_order(ref.id)
-    return next(c.handle for c in order if c.chunk_kind == "table")
+    return next(c for c in order if c.chunk_kind == "table")
 
 
 # ── pure util ─────────────────────────────────────────────────────────
@@ -69,14 +74,14 @@ def test_put_table_derives_markdown_and_stores_canonical(
         regen={"source": "dft", "cmd": "vasp relax"},
         at={"last": True},
     )
-    assert "added table ¶" in r.body and "2 rows × 2 cols" in r.body
-    h = _table_handle(hub, "d")
-    chunk = hub.store.get_draft_chunk(h)
+    assert "added table dc" in r.body and "2 rows × 2 cols" in r.body
+    tc = _table_chunk(hub, "d")
+    chunk = hub.store.get_draft_chunk(tc.dc)  # dc<id> resolves
     # text is the derived markdown (caption + table), one block
     assert chunk.text.startswith("**Band gaps**\n| element | gap_eV |")
     assert "| Si | 1.12 |" in chunk.text and "\n\n" not in chunk.text
     # canonical data + provenance live in meta, numbers preserved
-    meta = hub.store.draft_chunk_meta(h)
+    meta = hub.store.draft_chunk_meta(tc.handle)
     assert meta["table"]["rows"] == [["Si", 1.12], ["Ge", 0.67]]
     assert meta["regen"] == {"source": "dft", "cmd": "vasp relax"}
     assert meta["caption"] == "Band gaps"
@@ -102,34 +107,30 @@ def test_edit_table_rederives_and_rejects_text(draft: DraftHandler, hub: Hub) ->
         caption="C",
         at={"last": True},
     )
-    h = _table_handle(hub, "d")
+    tc = _table_chunk(hub, "d")
 
     # text= is rejected — the markdown is derived, not hand-edited
     with pytest.raises(BadInput, match="derived from its data"):
-        draft.edit(id=f"¶{h}", text="| hand | edited |")
+        draft.edit(id=tc.dc, text="| hand | edited |")
 
     # new data re-derives the markdown; caption persists from meta
-    draft.edit(id=f"¶{h}", table={"header": ["x"], "rows": [[1], [2], [3]]})
-    chunk = hub.store.get_draft_chunk(h)
+    draft.edit(id=tc.dc, table={"header": ["x"], "rows": [[1], [2], [3]]})
+    chunk = hub.store.get_draft_chunk(tc.dc)
     assert chunk.text.startswith("**C**\n")  # caption preserved
     assert "| 3 |" in chunk.text
-    assert hub.store.draft_chunk_meta(h)["table"]["rows"] == [[1], [2], [3]]
+    assert hub.store.draft_chunk_meta(tc.handle)["table"]["rows"] == [[1], [2], [3]]
 
     # regen-only edit keeps the data, restamps provenance
-    draft.edit(id=f"¶{h}", regen={"source": "manual"})
-    assert hub.store.draft_chunk_meta(h)["regen"] == {"source": "manual"}
-    assert hub.store.draft_chunk_meta(h)["table"]["rows"] == [[1], [2], [3]]
+    draft.edit(id=tc.dc, regen={"source": "manual"})
+    assert hub.store.draft_chunk_meta(tc.handle)["regen"] == {"source": "manual"}
+    assert hub.store.draft_chunk_meta(tc.handle)["table"]["rows"] == [[1], [2], [3]]
 
 
 def test_edit_table_on_non_table_chunk_errors(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="d", title="T", project=proj)
     ref = hub.store.get_ref(kind="draft", id="d")
-    para_h = (
-        draft.put(id="d", chunk_kind="paragraph", text="prose", at={"last": True})
-        .body.split("¶")[1]
-        .split()[0]
-    )
+    draft.put(id="d", chunk_kind="paragraph", text="prose", at={"last": True})
+    para = hub.store.reading_order(ref.id)[-1]  # the paragraph just added
     with pytest.raises(BadInput, match="only to a chunk_kind='table'"):
-        draft.edit(id=f"¶{para_h}", table={"header": ["x"], "rows": [[1]]})
-    assert ref  # silence unused
+        draft.edit(id=para.dc, table={"header": ["x"], "rows": [[1]]})

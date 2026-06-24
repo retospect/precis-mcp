@@ -228,31 +228,30 @@ later. No declarative fast-path in v1.
 > `/drafts/blob/<handle>` serving). So render output goes into a figure's
 > **`chunk_blobs` row via the existing figure store** (not to disk).
 >
-> *ADR 0036 — the `ab123` handle scheme* (`[2-char type code][7-char Crockford
-> base32]`, 9 chars, e.g. `pa4m8p1rz`; the latest ADR, still "Draft" but
-> substantially landed). It is **already wired through the MCP interface**, so
-> our work inherits it for free:
-> - **Mint.** `insert_ref` mints a record handle for every kind in
->   `handle_registry.KIND_CODES`; the `chunk_handles` worker lazily backfills
->   chunk handles for chunk-coded kinds — **draft excepted** (draft chunks keep
->   their ADR-0033 `¶` base-58 handle until the wipe slice).
+> *ADR 0036 — the `ab123` handle scheme.* The ADR text proposed a 9-char
+> Crockford body, but **as landed the handle is `[2-char type code][decimal
+> primary key]`** — `handle_registry.format_handle(kind, id, chunk=)` returns
+> `code + str(id)`: a record is `pa123` (paper `ref_id` 123), a chunk is `dc42`
+> (draft `chunk_id` 42). Reuses the existing numeric PK instead of minting a
+> body. Already wired through the MCP interface, so our work inherits it:
+> - **Format / address.** `format_handle` (and `DraftChunk.dc`) is the
+>   agent-facing address; the internal `chunks.handle` base-58 anchor stays as
+>   the key low-level store ops mutate by. Draft chunks now **emit `dc<chunk_id>`**
+>   (the legacy `¶<base58>` still *resolves on input*).
 > - **Resolve / dispatch.** `runtime._maybe_infer_kind_from_handle` →
->   `store.resolve_handle`: `get(id='pa4m8p1rz')` infers the kind from the code
->   and rewrites `id` to the per-kind public id, so **no `kind=` needed** and
->   handlers are untouched. A chunk handle routes to `slug~ord`. Prefix is a
->   checksum (wrong code on a real body → error, not mis-route).
-> - **Emit.** Search renders (markdown / TOON / keywords) now emit the handle
->   when present (`block.handle` / `ref.handle`), legacy `slug~pos` only as a
->   transition fallback for un-backfilled rows. Cutover policy: **emit-new,
->   accept-old**; legacy forms stay valid on *input* only.
+>   `store.resolve_handle` (decodes `code + id`): `get(id='pa123')` infers the
+>   kind from the code, so **no `kind=` needed** and handlers are untouched.
+> - **Emit.** Search renders + the draft reader/handler now emit the `dc…`/`pa…`
+>   handle; legacy forms (`¶`, `slug~pos`) stay valid on *input* only.
+>   Cutover policy: **emit-new, accept-old**.
 >
 > What this means for the render slice:
-> - a render **`job` (a record)** gets a typed **`jo…`** handle automatically;
-> - a **figure / table chunk lives in a `draft`**, so it keeps the **`¶`
->   handle** for now — `plots` addresses a data chunk by its `¶handle`, and
->   `get(id='¶…')` already self-identifies as a draft chunk;
-> - we **mint / address nothing by hand** — `insert_ref` and the surface
->   dispatch do it; we only emit handles the framework already produced.
+> - a render **`job` (a record)** gets a `jo<ref_id>` handle automatically;
+> - a **figure / table chunk lives in a `draft`**, so it addresses as
+>   **`dc<chunk_id>`** (via `DraftChunk.dc`) — `plots` links a data chunk by that,
+>   and `get(id='dc<id>')` already self-identifies as a draft chunk;
+> - we **format, never mint by hand** — the numeric PK already exists;
+>   `format_handle` / `.dc` derive the address.
 
 1. **Data/table chunk** — `meta.table` canonical + derived markdown `text` +
    `meta.regen`. No execution. **Shipped** (`8e66080`/`271a1d2`).

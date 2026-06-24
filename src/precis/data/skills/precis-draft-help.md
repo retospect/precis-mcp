@@ -197,10 +197,12 @@ put(kind='draft', id='nanotrans', chunk_kind='table',
   on a table chunk.
 
   ```python
-  edit(kind='draft', id='¶aa1', table={'header': [...], 'rows': [...]})  # re-derives markdown
-  edit(kind='draft', id='¶aa1', caption='New legend')   # caption only; data kept
-  edit(kind='draft', id='¶aa1', regen={'source': 'manual'})  # provenance only
+  edit(kind='draft', id='dc42', table={'header': [...], 'rows': [...]})  # re-derives markdown
+  edit(kind='draft', id='dc42', caption='New legend')   # caption only; data kept
+  edit(kind='draft', id='dc42', regen={'source': 'manual'})  # provenance only
   ```
+  (`dc<chunk_id>` is the chunk's address — `put` returns it; legacy `¶<handle>`
+  still resolves on input.)
 
 (Plots that render a table as a figure — `chunk_kind='figure'` with a render
 recipe + `plots` links — are a later build step; see ADR 0035.)
