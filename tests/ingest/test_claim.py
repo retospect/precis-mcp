@@ -182,7 +182,15 @@ class TestClaimIntegration:
             assert after.acquired is True
 
     def test_different_hashes_dont_collide(self, sha: str) -> None:
-        other_sha = "0123456789abcdef" + "11" * 24
+        # ``other_sha`` must be a *fresh* random key, not a hardcoded
+        # constant: the test DB is a shared singleton, so a hardcoded
+        # second key collides across concurrent test runs (e.g. two
+        # ``/endsession`` gates on sibling worktrees) — both grab the
+        # same advisory lock and one sees ``acquired is False``, a
+        # false failure unrelated to the code under test. A fresh key
+        # per run keeps the "two distinct hashes" property while staying
+        # isolated, the same reason the ``sha`` fixture randomises.
+        other_sha = _fresh_sha()
         with Claim(_DSN, sha) as a, Claim(_DSN, other_sha) as b:
             assert a.acquired is True
             assert b.acquired is True

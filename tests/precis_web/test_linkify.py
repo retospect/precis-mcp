@@ -372,6 +372,24 @@ def test_universal_handle_renders_anchor() -> None:
     assert 'href="/r/memory/5"' in out
 
 
+def test_paper_chunk_handle_renders_hoverable_anchor() -> None:
+    # A paper-chunk handle [pc10] is a ref to a paper chunk — it must hover
+    # (the chunk preview) + click through, same as a draft chunk, not be
+    # left dead. Routes resolve any chunk kind via /c/ + /preview/chunk/.
+    out = str(linkify_refs("supported by [pc10]"))
+    assert 'href="/c/pc10"' in out
+    assert 'hx-get="/preview/chunk/pc10"' in out or "/preview/chunk/pc10" in out
+
+
+def test_paper_chunk_handle_is_section_sigil_in_compact() -> None:
+    # In the draft reader (compact) a paper-chunk handle collapses to a §
+    # citation sigil (hover carries the meaning); a draft chunk stays ¶.
+    paper = str(linkify_refs("text [pc10] here", compact=True))
+    assert "/preview/chunk/pc10" in paper and ">§<" in paper
+    draft = str(linkify_refs("text [dc41] here", compact=True))
+    assert "/preview/chunk/dc41" in draft and ">¶<" in draft
+
+
 def test_non_handle_bracket_stays_literal() -> None:
     # A bracketed non-handle isn't a ref — left as prose.
     out = str(linkify_refs("see [the note] below"))

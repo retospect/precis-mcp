@@ -1,7 +1,0 @@
-{# The document body as a windowed mix (on-demand loading): the first
-   blocks hydrated as full rows, the rest as placeholders that hydrate on
-   scroll. Used by the reader (via include) and the live-refresh poll
-   (GET /drafts/{ident}/doc). #}
-{% from "drafts/_row.html.j2" import draft_row %}
-{% from "drafts/_placeholder.html.j2" import draft_placeholder %}
-{% for it in items %}{% if it.loaded %}{{ draft_row(it.row, ref) }}{% else %}{{ draft_placeholder(it.ph) }}{% endif %}{% endfor %}

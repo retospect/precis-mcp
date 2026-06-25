@@ -163,6 +163,18 @@ class DraftFakeStore(FakeStore):
                 return c
         return None
 
+    def universal_chunk(self, handle):
+        # pc77 = a paper chunk (ref 10, ord 3); anything else unknown.
+        if handle == "pc77":
+            return {
+                "kind": "paper",
+                "ref_id": 10,
+                "ord": 3,
+                "chunk_kind": "paragraph",
+                "text": "A cited passage about nanoscale transport.",
+            }
+        return None
+
     def get_chunk_blob(self, handle):
         if handle == "FIGFIG":
             return (b"\x89PNG\r\n\x1a\n", "image/png")
@@ -267,13 +279,13 @@ def test_reader_stamps_last_viewed(
 ) -> None:
     """Opening the reader stamps the draft's access (drives the drafts
     list's most-recently-opened order). The full page-load does it; the
-    poll/rows/doc endpoints must not."""
+    poll/skeleton/version endpoints must not."""
     store = draft_runtime.store
     assert store.viewed == []
     assert draft_client.get("/drafts/nt").status_code == 200
     assert store.viewed == [500]
     # the live-poll endpoints don't re-stamp (else an open tab pins it).
-    draft_client.get("/drafts/nt/doc")
+    draft_client.get("/drafts/nt/skeleton")
     draft_client.get("/drafts/nt/version")
     assert store.viewed == [500]
 
@@ -468,59 +480,59 @@ def test_rows_fragment_has_all_blocks_no_chrome(draft_client: TestClient) -> Non
     assert "<h1" not in r.text and "draftDoc(" not in r.text
 
 
-def test_small_draft_renders_fully_no_placeholders(draft_client: TestClient) -> None:
-    # The fixture has fewer blocks than INITIAL_WINDOW, so the reader is
-    # entirely hydrated server-side — no on-demand placeholders, same as
-    # before the windowing change.
+def test_small_draft_renders_fully_in_the_window(draft_client: TestClient) -> None:
+    # The fixture has fewer blocks than INITIAL_WINDOW, so every block is in
+    # the server-rendered window — full content, and the spacer is zero.
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
-    assert 'data-ph="1"' not in r.text
-    # full content present (linkified ref proves the row is hydrated)
+    # the virtual-scroll shell is present
+    assert 'id="dr-win"' in r.text and 'id="dr-top"' in r.text and 'id="dr-bot"' in r.text
+    assert 'id="dr-skel"' in r.text  # embedded skeleton
+    # full content present (linkified ref proves the row is server-rendered)
     assert "/r/paper/smith2024" in r.text
+    # nothing off-window → bottom spacer is zero height
+    assert 'id="dr-bot" style="height:0px"' in r.text
 
 
-def test_reader_windows_late_blocks_as_placeholders(
+def test_reader_windows_only_first_blocks(
     draft_client: TestClient, monkeypatch
 ) -> None:
     # Shrink the initial window to 1: only the first block (the AAAAAA
-    # heading) hydrates; the rest land as INERT placeholders that hydrate on
-    # scroll. The placeholder keeps the collapse contract (id, ancestors)
-    # so deep-links / find / collapse work before the body loads — but
-    # carries NO Alpine (the 10k-block lag), only data-* hooks.
+    # heading) is server-rendered in #dr-win; the rest live ONLY in the
+    # skeleton (no DOM node — the whole point), with a non-zero bottom
+    # spacer reserving their space.
     from precis_web.routes import drafts as drafts_mod
 
     monkeypatch.setattr(drafts_mod, "INITIAL_WINDOW", 1)
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
-    # first block hydrated (its linkified ¶ self-anchor is present)
+    # first block is a real server-rendered row (its change box is present)
     assert 'id="c-AAAAAA"' in r.text
-    # BBBBBB is now a placeholder, not a hydrated row
-    assert 'data-ph="1"' in r.text
-    assert 'data-handle="BBBBBB"' in r.text
-    # the placeholder still carries the collapse ancestry + content-visibility
-    assert "data-anc='[\"AAAAAA\"]'" in r.text
-    assert "content-visibility:auto" in r.text
-    # …but NO Alpine binding, and NOT BBBBBB's hydrated body (change box)
-    assert "x-show='vis(" not in r.text
-    assert 'action="/drafts/nt/request"' not in r.text.split('data-ph="1"', 1)[1]
+    win = r.text.split('id="dr-win"', 1)[1].split('id="dr-bot"', 1)[0]
+    assert 'action="/drafts/nt/request"' in win  # the one window row is hydrated
+    # BBBBBB is NOT a DOM node — it lives in the skeleton JSON only
+    assert 'id="c-BBBBBB"' not in r.text
+    assert '"h": "BBBBBB"' in r.text or '"h":"BBBBBB"' in r.text
+    # bottom spacer reserves the off-window blocks (non-zero height)
+    assert 'id="dr-bot" style="height:0px"' not in r.text
 
 
-def test_doc_fragment_windows_and_has_no_chrome(
-    draft_client: TestClient, monkeypatch
-) -> None:
-    # The live-refresh poll swaps this in — windowed body, no <h1>/nav.
-    from precis_web.routes import drafts as drafts_mod
-
-    monkeypatch.setattr(drafts_mod, "INITIAL_WINDOW", 1)
-    r = draft_client.get("/drafts/nt/doc")
+def test_skeleton_endpoint_returns_blocks_and_version(draft_client: TestClient) -> None:
+    # The live poll refetches this to re-window after an edit.
+    r = draft_client.get("/drafts/nt/skeleton")
     assert r.status_code == 200
-    assert 'id="c-AAAAAA"' in r.text and 'data-handle="BBBBBB"' in r.text
-    assert "<h1" not in r.text and "draftDoc(" not in r.text
+    data = r.json()
+    assert "version" in data
+    handles = [b["h"] for b in data["skeleton"]]
+    assert handles == ["AAAAAA", "BBBBBB", "FIGFIG", "FIGTPF"]
+    # BBBBBB is nested under the AAAAAA heading (collapse ancestry preserved)
+    bbb = next(b for b in data["skeleton"] if b["h"] == "BBBBBB")
+    assert bbb["anc"] == ["AAAAAA"]
 
 
 def test_row_route_hydrates_a_windowed_block(draft_client: TestClient) -> None:
-    # The fragment the observer fetches for a placeholder — the full,
-    # enriched row for one block (linkified refs + change box + connections).
+    # The fragment the scroller fetches as a block enters the window — the
+    # full, enriched row for one block (linkified refs + change box).
     r = draft_client.get("/drafts/nt/row/BBBBBB")
     assert r.status_code == 200
     assert 'id="c-BBBBBB"' in r.text
@@ -607,6 +619,29 @@ def test_chunk_handle_redirects_into_reader(draft_client: TestClient) -> None:
 def test_unknown_chunk_handle_404s(draft_client: TestClient) -> None:
     r = draft_client.get("/c/ZZZZZZ", follow_redirects=False)
     assert r.status_code == 404
+
+
+def test_paper_chunk_handle_redirects_through_resolver(draft_client: TestClient) -> None:
+    # /c/<pc-handle> resolves a PAPER chunk (not a draft chunk) → the /r
+    # resolver at that chunk (paper → its PDF page via ?chunk=ord).
+    r = draft_client.get("/c/pc77", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/r/paper/10?chunk=3"
+
+
+def test_paper_chunk_preview_shows_quote(draft_client: TestClient) -> None:
+    # Hovering a paper-chunk handle resolves its quote "whatever it is",
+    # not a dead/missing card.
+    r = draft_client.get("/preview/chunk/pc77")
+    assert r.status_code == 200
+    assert "A cited passage about nanoscale transport." in r.text
+
+
+def test_unknown_universal_chunk_preview_is_missing(draft_client: TestClient) -> None:
+    # A dangling paper-chunk handle degrades to a graceful 'missing' card.
+    r = draft_client.get("/preview/chunk/pc999")
+    assert r.status_code == 200
+    assert "no such" in r.text
 
 
 def test_chunk_preview_fragment(draft_client: TestClient) -> None:
@@ -759,13 +794,13 @@ def test_tasks_gist_summarises_long_bodies_only() -> None:
     assert g and " · " in g  # joined keyword phrases
 
 
-def test_live_swap_reprocesses_htmx(draft_client: TestClient) -> None:
-    """After the poll swaps in fresh rows, htmx must re-wire the injected
-    hover-preview chips — else citation/¶ mouseovers open an empty slot
-    (they work on first load, break after a doc update)."""
+def test_hydrated_rows_reprocess_htmx(draft_client: TestClient) -> None:
+    """Each row the scroller fetches into the window must have htmx re-wire
+    its injected hover-preview chips — else citation/¶ mouseovers open an
+    empty slot. The virtual scroller htmx.process()es each inserted node."""
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
-    assert "htmx.process(doc)" in r.text
+    assert "htmx.process(node)" in r.text
 
 
 def test_reader_has_view_slider(draft_client: TestClient) -> None:

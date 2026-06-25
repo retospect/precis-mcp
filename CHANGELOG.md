@@ -8,24 +8,6 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
-### Fixed (2026-06-25 — compact reader collapses chunk handles to a kind sigil)
-
-- **A universal *chunk* handle now renders as a kind-specific sigil in the
-  draft reader.** `[¶h]` and `[§p~n]` already collapsed to a clean full-size
-  1-char marker in compact mode, but a universal chunk handle — `[pc123]` (a
-  paper's block), `[dc41]` (this draft's block), `[pk7]` (a patent's block) —
-  still spelled out the verbose code inline, breaking the reading flow and
-  reading as plain text rather than a block pointer. `_render_universal_handle`
-  now takes `compact` and maps the host kind to a sigil (`_CHUNK_SIGIL`):
-  **`§`** for a paper block (same glyph as the `[§slug~n]` citation form),
-  **`Ⓟ`** (full-size circled P, U+24C5) for a patent block, **`¶`** as the
-  generic block default
-  (draft cross-refs fall into it). The anchor keeps `/c/<handle>` navigation +
-  hover preview. Record handles (`me5`) and display links (`[text](dc41)`) are
-  unchanged — only the *bare* chunk handle collapses. Notes/dreams are not
-  inline chunk refs (they surface in the sidebar Connections panel), so they
-  carry no sigil.
-
 ### Added (2026-06-25 — drafts list ordered by most recently opened)
 
 - **`GET /drafts` now sorts most-recently-*opened* first.** The list was
@@ -41,6 +23,60 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   (`last_viewed_at DESC NULLS LAST, updated_at DESC` — never-opened drafts fall
   to the bottom) backs the list. The column is general to all kinds; only the
   draft reader stamps it today.
+
+### Added (2026-06-25 — paper-chunk handles (`pc<id>`) resolve + render as kind sigils)
+
+- A `pc<id>` (paper chunk) — and any non-draft chunk handle (`mc`/`lc`/…) —
+  used to route to the **draft-only** `/c/` + `/preview/chunk/` routes, so a
+  paper-chunk reference in a draft was a dead link (the hover resolved
+  nothing). Now any chunk handle resolves:
+  - `store.universal_chunk(handle)` resolves **any** chunk handle by
+    `chunk_id` → `{kind, ref_id, ord, chunk_kind, text}`.
+  - `/c/<handle>` and `/preview/chunk/<handle>` fall back to it: a paper
+    chunk **redirects through `/r/paper/<id>?chunk=<ord>`** (→ its PDF page)
+    and **hovers to its quote**; a dangling handle degrades to a graceful
+    'missing' card.
+  - linkify renders a chunk handle as a **kind-specific 1-char sigil** in the
+    compact reader via `_CHUNK_SIGIL`: **`§`** for a paper chunk (a citation;
+    same glyph as the `[§slug~n]` form), **`Ⓟ`** (full-size circled P, U+24C5)
+    for a patent chunk, **`¶`** for any other block (draft cross-refs fall into
+    it) — pointing at the generalised routes. Record handles (`me5`) and display
+    links (`[text](dc41)`) keep their label; notes/dreams aren't inline chunk
+    refs (sidebar Connections panel), so they carry no sigil.
+
+### Fixed (2026-06-25 — draft reader: heading fold + scroll after the virtual-scroll switch)
+
+- **Folding a heading did nothing** (the caret flipped back, nothing
+  collapsed): Alpine auto-calls a data method named `init()` *and* the
+  template had `x-init="init()"`, so `init()` ran twice and attached two
+  delegated caret-click listeners — every fold click fired `toggle()`
+  twice and cancelled itself out. `init()` is now guarded to run once.
+  Also, the first `render()` is deferred to `$nextTick`: running it
+  synchronously in `init()` mutated `#dr-win` mid-Alpine-walk, which
+  orphaned the rows' scope (`view is not defined`) and broke scroll
+  windowing. Verified end-to-end with Playwright on a 907-block nested
+  draft (fold removes the subtree, scroll windows, no console errors).
+
+### Performance (2026-06-25 — draft reader is now a true virtual scroller)
+
+- **Only the on-screen window of rows lives in the DOM** — the fix for the
+  9,700-block draft that "worked but with a minute lag." The earlier
+  windowing kept a node per block (inert + `content-visibility`), so the
+  browser still styled / laid-out / Alpine-walked all ~9,700, and the
+  `IntersectionObserver` load↔unload had a **feedback loop** that flickered
+  ~5×/s on small drafts (a row hydrates → its real height ≠ the estimate →
+  neighbours cross the observer margin → load/unload → repeat). Replaced
+  with a real virtual scroller: the reader embeds a compact **skeleton**
+  (one tiny record per block) and renders only the first window server-side;
+  sized `#dr-top`/`#dr-bot` spacers stand in for off-screen blocks. The
+  client reconciles `#dr-win` to the blocks intersecting the viewport on
+  scroll — **idempotent, no observer, no feedback** — fetching them in one
+  `/rows?handles=` batch and dropping rows that scroll away. ~a screenful of
+  nodes instead of 10k. Collapse recomputes the visible set + spacers; find
+  and deep-links scroll the target into the window first. New
+  `GET /drafts/<id>/skeleton` (JSON) feeds the live poll; the
+  placeholder-per-block templates are gone. Verified headless on a seeded
+  1,609-block draft: 32 DOM nodes, correct spacers, no JS errors.
 
 ### Fixed (2026-06-25 — fetch_oa CardinalityViolation + llm_summarize failed-retry)
 

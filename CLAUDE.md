@@ -253,23 +253,25 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
   per-chunk bbox yet, so highlight is text-layer best-effort). Also a
   per-todo compiled-PDF viewer; "ask a follow-up" on any thought spawns a `conv` thread
   linked `derived-from` the source. The **draft reader**
-  (`routes/drafts.py`, the per-block Tier-A grid) **loads blocks on
-  demand** — built for 10k-block drafts: it hydrates only the first
-  `INITIAL_WINDOW` (30) blocks server-side and emits the rest as **inert**
-  placeholders (plain DOM, no Alpine, CSS `content-visibility:auto` for
-  off-screen layout skipping — one Alpine node per block was the
-  minute-lag bug). A client `IntersectionObserver` **batch-hydrates**
-  placeholders near the viewport in one `/drafts/<id>/rows?handles=…`
-  request and unloads far rows, so live Alpine rows stay bounded. Collapse
-  is vanilla/imperative (a `.dr-hidden` class pass + delegated caret
-  click, no per-node binding). `_doc_state` memoises reading-order +
+  (`routes/drafts.py`, the per-block Tier-A grid) is a **true virtual
+  scroller** — built for 10k-block drafts: only the on-screen window of
+  rows lives in the DOM. The page embeds a compact **skeleton** (one tiny
+  record per block — `_skeleton`) + the server-rendered first
+  `INITIAL_WINDOW` (30) rows; sized `#dr-top`/`#dr-bot` spacers stand in
+  for off-screen blocks. Client JS (`draftDoc`) reconciles `#dr-win` to the
+  blocks intersecting the viewport on scroll — **idempotent, no
+  IntersectionObserver, no feedback loop** (the earlier node-per-block +
+  observer approach styled/Alpine-walked all ~9,700 → the minute-lag, and
+  load↔unload thrash flickered ~5×/s) — fetching them in one
+  `/drafts/<id>/rows?handles=…` batch and dropping rows that scroll away.
+  Collapse recomputes the visible set + spacers; find / deep-links scroll
+  the target into the window first. `_doc_state` memoises reading-order +
   version + abbrevs per `(ref,version)`; `_build_rows(want_idx)` scopes
   per-handle queries to wanted blocks + neighbours; the inline abbrev scan
-  is skipped above 300k chars. Find / deep-links / the live poll
-  (`/drafts/<id>/doc`) are window-aware. **Delete**: a name-confirmed
-  button → `POST /drafts/<id>/delete` → `store.soft_delete_draft` (ref
-  `deleted_at` + chunks retired in one txn; recoverable). Status page has a
-  Background
+  is skipped above 300k chars. `GET /drafts/<id>/skeleton` (JSON) feeds the
+  live poll. **Delete**: a name-confirmed button → `POST /drafts/<id>/delete`
+  → `store.soft_delete_draft` (ref `deleted_at` + chunks retired in one txn;
+  recoverable). Status page has a Background
   Health panel (active spin loops + failed passes, 24h). `precis_web`
   is a sibling package over the handler layer (ADR 0026).
 - **SSRF guard** — `src/precis/utils/safe_fetch.py`, used by
