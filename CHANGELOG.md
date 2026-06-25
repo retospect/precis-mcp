@@ -71,20 +71,22 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   (which wrapped to two lines, every tab equal weight):
   - **Zone 1 (always visible):** Drafts · Tags · Tasks · Papers — the
     daily-driver kinds.
-  - **Needs you** — a new unified "waiting on you" tab folding the old
-    **Asks** + **Papers Needed** tabs into one landing
-    (`routes/needs_you.py`, `/needs-you`): asks rendered fully interactive
-    (inline answer form still POSTs to the canonical `/asks/...` routes),
-    paper stubs as a compact preview with a "view all → `/papers-needed`"
-    deep-link. The standalone `/asks` and `/papers-needed` pages are kept
-    for their pagers / drop-zone hints and existing deep links.
-  - **Browse ▾** — the corpus look-up long tail (Triage · Clusters · Refs ·
-    Oracle · Patents) collapsed behind an Alpine dropdown.
+  - **Needs you** — a new unified "you must act" tab
+    (`routes/needs_you.py`, `/needs-you`) merging **Asks** (open
+    `ask-user` todos — answered inline, the form still POSTs to the
+    canonical `/asks/...` routes) with **Needs triage** (papers tagged
+    `needs-triage`, each row deep-linking to its detail page with the
+    triage panel open). The chunkless paper-stub *fetch* backlog is
+    deliberately NOT here — the fetcher works it automatically, so it
+    moved to Browse → `/papers-needed`. The standalone `/asks` and
+    `/papers/triage` pages keep their own pagers.
+  - **Browse ▾** — the corpus look-up long tail (Papers Needed · Clusters ·
+    Refs · Oracle · Patents) collapsed behind an Alpine dropdown.
   - **Right cluster:** Alerts · Status · **Ops ▾** (Agent Logs · Console ·
     Env) · global search.
 - **Live attention badges** (`precis_web/nav.py`, registered as a Starlette
   `context_processor` on the shared `templates`): a **red** `Needs you`
-  count (open `ask-user` todos + the chunkless paper-stub backlog) and an
+  count (open `ask-user` todos + papers tagged `needs-triage`) and an
   **amber** `Alerts` count (open `kind='alert'`), injected on every page so
   the badge is live wherever you are. Each count is fully defensive —
   any error (no runtime, SQL drift) degrades that badge to zero rather than

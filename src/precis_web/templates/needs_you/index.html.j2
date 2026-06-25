@@ -5,14 +5,15 @@
   <h1 class="text-lg font-semibold">Needs you</h1>
   <span class="text-sm text-slate-500">
     {{ asks|length }} ask{{ '' if asks|length == 1 else 's' }} ·
-    {{ stub_total }} paper{{ '' if stub_total == 1 else 's' }} needed
+    {{ triage_total }} to triage
   </span>
 </div>
 
-{% if not asks and not stubs %}
+{% if not asks and not triage %}
 <p class="text-sm text-slate-500">
   Nothing's waiting on you — no open
-  <span class="font-mono">ask-user</span> todos and no paper stubs awaiting a source.
+  <span class="font-mono">ask-user</span> todos and no papers flagged
+  <span class="font-mono">needs-triage</span>.
 </p>
 {% endif %}
 
@@ -73,39 +74,32 @@
 </section>
 {% endif %}
 
-{# ── Papers needed ──────────────────────────────────────────────── #}
-{% if stubs %}
+{# ── Needs triage ───────────────────────────────────────────────── #}
+{% if triage %}
 <section>
   <div class="flex items-baseline justify-between mb-3">
     <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400">
-      Papers needed <span class="text-slate-300">— stubs awaiting a source</span>
+      Needs triage <span class="text-slate-300">— papers with junk metadata to fix</span>
     </h2>
-    <a href="/papers-needed" class="text-xs text-emerald-700 hover:underline">
-      View all {{ stub_total }} &rarr;
+    <a href="/papers/triage" class="text-xs text-emerald-700 hover:underline">
+      View all {{ triage_total }} &rarr;
     </a>
   </div>
   <ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
-    {% for s in stubs %}
+    {% for s in triage %}
     <li class="flex items-baseline gap-3 px-4 py-2">
       <span class="text-xs text-slate-400 w-12 shrink-0 font-mono">#{{ s.id }}</span>
-      <div class="min-w-0 flex-1">
-        <a href="/papers/{{ s.id }}" class="text-sm text-slate-800 hover:text-emerald-700 break-words">
-          {{ s.title or s.cite_key or s.identifier }}
-        </a>
-        {% if s.identifier %}
-        <div class="text-xs text-slate-400 font-mono break-all">
-          {% if s.identifier_url %}<a href="{{ s.identifier_url }}" class="hover:underline" target="_blank" rel="noopener">{{ s.identifier }}</a>{% else %}{{ s.identifier }}{% endif %}
-        </div>
-        {% endif %}
-      </div>
-      <span class="text-xs text-slate-400 shrink-0">{{ s.state }}</span>
+      <a href="/papers/{{ s.id }}?triage=1" class="min-w-0 flex-1 text-sm text-slate-800 hover:text-emerald-700 break-words">
+        {{ s.title }}
+      </a>
+      {% if s.year %}<span class="text-xs text-slate-400 shrink-0">{{ s.year }}</span>{% endif %}
     </li>
     {% endfor %}
   </ul>
-  {% if stub_more %}
+  {% if triage_more %}
   <p class="mt-2 text-xs text-slate-400">
-    + {{ stub_more }} more on the
-    <a href="/papers-needed" class="text-emerald-700 hover:underline">Papers Needed</a> page.
+    + {{ triage_more }} more on the
+    <a href="/papers/triage" class="text-emerald-700 hover:underline">Triage</a> page.
   </p>
   {% endif %}
 </section>

@@ -1,19 +1,25 @@
 """Needs-you tab — the unified "waiting on you" queue.
 
-Folds the two queues where *you* are the blocker into one landing:
+Folds the two queues where *you* must act into one landing:
 
 * **Asks** — open ``kind='todo'`` refs carrying an ``ask-user`` tag
   (the planner is paused on a question). Rendered fully interactive:
   answer inline to unlock the todo. The answer / dismiss forms POST to
   ``/asks/...`` — the standalone Asks page is kept for those deep links
   and for its own pager.
-* **Papers needed** — the chunkless paper-stub backlog
-  (``store.stub_backlog``). Shown as a compact preview; the full
-  backlog page (pager, ``?awaiting=1`` filter, drop-zone hints) stays
-  at ``/papers-needed``.
+* **Needs triage** — ``kind='paper'`` refs tagged ``needs-triage``
+  (metadata automation gave up; a human must fix them). Shown as a
+  compact preview linking each row to its detail page with the triage
+  panel open (``?triage=1``); the full queue (pager) stays at
+  ``/papers/triage``.
 
-The top-bar "Needs you" badge counts both — see :mod:`precis_web.nav`.
-This route is the badge's destination; it does not own the writes.
+The chunkless paper-stub *fetch* backlog is intentionally NOT here —
+the fetcher works it automatically, so it lives under Browse →
+``/papers-needed``, not in the "needs you" queue.
+
+The top-bar "Needs you" badge counts asks + triage — see
+:mod:`precis_web.nav`. This route is the badge's destination; it does
+not own the writes.
 """
 
 from __future__ import annotations
@@ -25,40 +31,35 @@ from fastapi.responses import HTMLResponse
 
 from precis_web.deps import get_store, templates
 from precis_web.routes.asks import _load_asks
-from precis_web.routes.papers_needed import _doi_url, _title_for_ref
+from precis_web.routes.papers import _TRIAGE_TAG
 
 router = APIRouter(prefix="/needs-you", tags=["needs-you"])
 
 #: Asks shown inline (every ask is actionable; this is just a sanity cap).
 _ASK_CAP = 50
-#: Stub rows previewed inline before the "view all" deep-link.
-_STUB_PREVIEW = 20
+#: Triage rows previewed inline before the "view all" deep-link.
+_TRIAGE_PREVIEW = 20
 
 
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
-    """Combined asks + papers-needed landing."""
+    """Combined asks + needs-triage landing."""
     store = get_store(request)
     asks = _load_asks(store, limit=_ASK_CAP)
 
-    stub_total = store.stub_backlog_count(awaiting=False)
-    stub_rows = store.stub_backlog(limit=_STUB_PREVIEW, awaiting=False)
-    refs = store.fetch_refs_by_ids(
-        [row["ref_id"] for row in stub_rows], include_deleted=False
+    triage_total = store.count_refs(kind="paper", tags=[_TRIAGE_TAG])
+    triage_refs = store.list_refs(
+        kind="paper", tags=[_TRIAGE_TAG], limit=_TRIAGE_PREVIEW
     )
-    stubs: list[dict[str, Any]] = []
-    for row in stub_rows:
-        rid = row["ref_id"]
-        stubs.append(
+    triage: list[dict[str, Any]] = []
+    for r in triage_refs:
+        title = (getattr(r, "title", None) or "").strip()
+        triage.append(
             {
-                "id": rid,
-                "title": _title_for_ref(refs, rid),
-                "cite_key": row["cite_key"],
-                "identifier": row["identifier"],
-                "identifier_url": _doi_url(row["identifier"]),
-                "state": row["state"],
-                "last_attempt": row["last_attempt"],
+                "id": r.id,
+                "title": title or getattr(r, "slug", None) or f"#{r.id}",
+                "year": getattr(r, "year", None),
             }
         )
 
@@ -68,8 +69,8 @@ async def index(request: Request) -> HTMLResponse:
         {
             "active_tab": "needs-you",
             "asks": asks,
-            "stubs": stubs,
-            "stub_total": stub_total,
-            "stub_more": max(0, stub_total - len(stubs)),
+            "triage": triage,
+            "triage_total": triage_total,
+            "triage_more": max(0, triage_total - len(triage)),
         },
     )

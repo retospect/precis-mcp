@@ -2,10 +2,13 @@
 
 The nav shows two live counts:
 
-* **Needs you** — open ``ask-user`` todos + the chunkless paper-stub
-  backlog. Both are queues where *you* are the blocker: the planner is
-  paused on a question, or a paper has no source yet. The ``Needs you``
-  tab (:mod:`precis_web.routes.needs_you`) lands on both.
+* **Needs you** — open ``ask-user`` todos + papers tagged
+  ``needs-triage``. Both are queues where *you* must act: the planner is
+  paused on a question, or a paper's auto-derived metadata was junk and
+  needs a human fix. (The chunkless paper-stub *fetch* backlog is
+  deliberately excluded — the fetcher works that automatically; it lives
+  under Browse, not here.) The ``Needs you`` tab
+  (:mod:`precis_web.routes.needs_you`) lands on both.
 * **Alerts** — open ``kind='alert'`` rows (machine-detected ops /
   health conditions). A different colour from "Needs you" on purpose —
   system-flagged vs you-must-act, mirroring how ``alert`` is kept
@@ -97,9 +100,11 @@ def nav_badges(request: Request) -> dict[str, Any]:
     except Exception:
         log.debug("nav: asks count failed", exc_info=True)
     try:
-        needs_you += store.stub_backlog_count(awaiting=False)
+        # Papers whose metadata automation gave up — a human must fix
+        # them. Same filter the /papers/triage queue paginates over.
+        needs_you += store.count_refs(kind="paper", tags=["needs-triage"])
     except Exception:
-        log.debug("nav: stub-backlog count failed", exc_info=True)
+        log.debug("nav: triage count failed", exc_info=True)
     try:
         alerts = _alerts_count(store)
     except Exception:
