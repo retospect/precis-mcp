@@ -1857,6 +1857,38 @@ def test_console_quick_youtube_hint_rendered(client) -> None:
     assert "dQw4w9WgXcQ" in resp.text  # example video id in the hint
 
 
+def test_console_examples_grouped_box_rendered(client) -> None:
+    """The examples box renders every group's title + dropdown options,
+    spanning multiple kinds (not just paper)."""
+    from precis_web.routes.console import CONSOLE_EXAMPLES
+
+    resp = client.get("/console")
+    assert resp.status_code == 200
+    # The group dropdown (Alpine x-model) and every group title.
+    assert "All groups" in resp.text
+    assert 'x-model="grp"' in resp.text
+    for g in CONSOLE_EXAMPLES:
+        # Group titles carry ``&`` → HTML-escaped to ``&amp;`` on render.
+        assert g["group"].replace("&", "&amp;") in resp.text
+        assert f'value="{g["key"]}"' in resp.text
+    # Representative breadth: examples reach well beyond kind=paper.
+    for kind in ("kind=todo", "kind=skill", "kind=oracle", "kind=calc"):
+        assert kind in resp.text
+
+
+def test_console_result_echoes_request(client, runtime) -> None:
+    """The result panel prints the call that produced the output so the
+    request is read alongside the response."""
+    resp = client.get(
+        "/console",
+        params={"verb": "search", "args_text": "kind=paper q=foo"},
+    )
+    assert resp.status_code == 200
+    assert "request" in resp.text
+    # verb + args echoed in the panel.
+    assert "search kind=paper q=foo" in resp.text
+
+
 # ── alerts ─────────────────────────────────────────────────────────
 
 

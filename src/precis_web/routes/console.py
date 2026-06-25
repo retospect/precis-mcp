@@ -98,6 +98,172 @@ QUICK_SERVICES: list[dict[str, str]] = [
 _QUICK_BY_VALUE: dict[str, dict[str, str]] = {s["value"]: s for s in QUICK_SERVICES}
 
 
+#: Worked examples, grouped. Each example is a ``get``/``search`` call
+#: (the only verbs a GET deep-link will *run* — see
+#: :data:`_GET_RUNNABLE_VERBS`) so every link is one-click, prefills the
+#: form, and renders an already-run result. Kept as data (not template
+#: markup) so the set is one place to grow and the template just renders
+#: the group dropdown over it. ``key`` is an ascii handle the client-side
+#: group filter compares against (group titles carry spaces / ``&``).
+CONSOLE_EXAMPLES: list[dict[str, Any]] = [
+    {
+        "key": "papers",
+        "group": "Papers & research",
+        "examples": [
+            {
+                "verb": "search",
+                "args": 'kind=paper q="attention is all you need" page_size=5',
+                "note": "find a paper by title / topic",
+            },
+            {
+                "verb": "get",
+                "args": "kind=paper id=pa2928",
+                "note": "one paper's top-level overview (Attention Is All You Need)",
+            },
+            {
+                "verb": "get",
+                "args": "kind=paper id=pa2928 view=toc",
+                "note": "that paper's table of contents",
+            },
+            {
+                "verb": "search",
+                "args": 'kind=finding q="CO2 capture"',
+                "note": "chain-of-evidence findings over a citation chase",
+            },
+            {
+                "verb": "search",
+                "args": 'kind=citation q="efficiency"',
+                "note": "verified claims → their source quotes",
+            },
+        ],
+    },
+    {
+        "key": "tasks",
+        "group": "Tasks, jobs & ops",
+        "examples": [
+            {
+                "verb": "search",
+                "args": 'kind=todo q="ingest"',
+                "note": "open tasks matching a topic",
+            },
+            {
+                "verb": "search",
+                "args": "kind=todo view=projects",
+                "note": "the projects dashboard (workspace-owning roots)",
+            },
+            {
+                "verb": "search",
+                "args": 'kind=job q="fix_gripe"',
+                "note": "recent execution jobs",
+            },
+            {
+                "verb": "search",
+                "args": 'kind=gripe q="slow"',
+                "note": "the bug / niggle tracker",
+            },
+            {
+                "verb": "search",
+                "args": 'kind=memory q="deploy"',
+                "note": "agent notes & scratchpad",
+            },
+            {
+                "verb": "search",
+                "args": "kind=alert view=open",
+                "note": "open ops / health alerts",
+            },
+        ],
+    },
+    {
+        "key": "docs",
+        "group": "Skills & docs",
+        "examples": [
+            {
+                "verb": "get",
+                "args": "kind=skill id=precis-overview",
+                "note": "orientation: the seven verbs + kinds table",
+            },
+            {
+                "verb": "get",
+                "args": "kind=skill id=toc",
+                "note": "the full skill index",
+            },
+            {
+                "verb": "search",
+                "args": 'kind=skill q="how do I cite a paper"',
+                "note": "find the right how-to skill",
+            },
+            {
+                "verb": "search",
+                "args": 'kind=tex q="introduction"',
+                "note": "LaTeX section sources under PRECIS_ROOT",
+            },
+            {
+                "verb": "search",
+                "args": 'kind=markdown q="notes"',
+                "note": "markdown files in the editable sandbox",
+            },
+        ],
+    },
+    {
+        "key": "discovery",
+        "group": "Oracle & discovery",
+        "examples": [
+            {
+                "verb": "get",
+                "args": "kind=oracle",
+                "note": "list the wisdom traditions",
+            },
+            {
+                "verb": "search",
+                "args": 'kind=oracle q="patience"',
+                "note": "consult wisdom across traditions",
+            },
+            {
+                "verb": "get",
+                "args": "kind=random",
+                "note": "a random block — inspiration / warm-up",
+            },
+            {
+                "verb": "search",
+                "args": 'q="graphene"',
+                "note": "cross-kind fan-out (no kind= → searches everything)",
+            },
+        ],
+    },
+    {
+        "key": "tools",
+        "group": "Calculators & cached services",
+        "examples": [
+            {
+                "verb": "get",
+                "args": 'kind=calc q="2+3*4"',
+                "note": "local SymPy arithmetic (free)",
+            },
+            {
+                "verb": "get",
+                "args": 'kind=calc q="solve(Eq(x**2-4, 0), x)"',
+                "note": "symbolic solve (free)",
+            },
+            {
+                "verb": "search",
+                "args": 'kind=math q="population of Ireland"',
+                "note": "cached Wolfram Alpha answers (online run via Quick box below)",
+            },
+            {
+                "verb": "search",
+                "args": 'kind=websearch q="perovskite stability"',
+                "note": "cached Perplexity answers",
+            },
+            {
+                "verb": "search",
+                "args": 'kind=youtube q="transformer"',
+                "note": "cached video transcripts",
+            },
+        ],
+    },
+]
+
+
 # ---- smart-resolve detection ----------------------------------------
 #
 # Patterns checked in order; first match wins. Each maps to a target
@@ -238,6 +404,7 @@ def _quick_context(**overrides: Any) -> dict[str, Any]:
         "quick_mode": "online",
         "quick_query": "",
         "quick_call": None,
+        "console_examples": CONSOLE_EXAMPLES,
     }
     ctx.update(overrides)
     return ctx
