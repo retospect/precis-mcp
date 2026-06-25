@@ -464,10 +464,11 @@ and the rule is **accept-old-on-input, emit-new-on-output**.
   2-char prefix says what it is, and resolution gates it (a non-handle
   `[see note]` stays literal). `draft_markup` (autolinker), `linkify` (reader
   render), and the dangling-ref hint all speak it; the skill/planner teach it.
-  The one non-handle exception is the paper **citation** `[§<cite_key>~<n>]`,
-  kept because the bibliography is keyed on the cite_key. **Export still
-  renders the legacy `[¶…]`/`[§…]` forms — teaching it the `[<handle>]` /
-  `[[pc<id>]]` forms is a known follow-up.**
+  **LaTeX export** also resolves them: `[dc<id>]` → an intra-draft `\cref`
+  (chunk labels are `chunk:dc<id>`), and a paper handle `[pc<id>]` / `[pa<id>]`
+  → `\cite{cite_key}` (the cite_key from `resolve_handle`) — so a paper ref is
+  just a handle there too. A thought handle (`[me<id>]`) is provenance-only and
+  drops. `[§<cite_key>~<n>]` remains as an explicit cite-by-key form.
 - **Residual (intentional transition):** `_insert_draft_chunk` still writes a
   base-58 `chunks.handle` (now vestigial — `DraftChunk.dc` computes the handle),
   and the legacy `¶` address + `[¶<handle>]` prose form still **resolve** on

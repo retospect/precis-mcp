@@ -14,19 +14,38 @@ from precis.export import latex
 # ── inline rendering (no DB) ──────────────────────────────────────────
 
 
-def _ctx(text, abbrevs=None, known=None):
-    """Build a render context. ``known_handles`` auto-includes every ¶
-    handle in the text (so rendering tests don't trip the dangling-xref
-    downgrade) unless the caller pins a set to exercise that path."""
+def _ctx(text, abbrevs=None, known=None, store=None, legacy_to_dc=None):
+    """Build a render context. ``known_handles`` auto-includes every
+    ``dc<id>`` handle in the text (so rendering tests don't trip the
+    dangling-xref downgrade) unless the caller pins a set to exercise that
+    path."""
     if known is None:
-        known = set(re.findall(r"¶([A-Za-z0-9]+)", text))
-    return latex._Ctx(keymap=latex._acronym_keymap(abbrevs or {}), known_handles=known)
+        known = set(re.findall(r"\b(dc\d+)\b", text))
+    return latex._Ctx(
+        keymap=latex._acronym_keymap(abbrevs or {}),
+        known_handles=known,
+        store=store,
+        legacy_to_dc=legacy_to_dc or {},
+    )
 
 
-def _inline(text, abbrevs=None, known=None):
-    ctx = _ctx(text, abbrevs, known)
+def _inline(text, abbrevs=None, known=None, store=None, legacy_to_dc=None):
+    ctx = _ctx(text, abbrevs, known, store, legacy_to_dc)
     out = latex._render_inline(text, ctx)
     return out, ctx
+
+
+class _PaperStore:
+    """Minimal store: resolves a paper handle to its cite_key."""
+
+    def resolve_handle(self, h):
+        from precis.store.types import ResolvedHandle
+
+        if h in ("pc10", "pa99"):
+            return ResolvedHandle(
+                ref_id=99, kind="paper", public_id="kong24", chunk_id=10
+            )
+        return None
 
 
 def test_escapes_latex_specials() -> None:
@@ -50,23 +69,41 @@ def test_bold_code_sub_sup() -> None:
 
 
 def test_cross_ref_and_citation() -> None:
-    out, ctx = _inline("As shown in [¶abc123] and [§kong24~3] and paper:smith2024.")
-    assert r"\cref{chunk:abc123}" in out
+    out, ctx = _inline("As shown in [dc41] and [§kong24~3] and paper:smith2024.")
+    assert r"\cref{chunk:dc41}" in out
     assert r"\cite{kong24}" in out and r"\cite{smith2024}" in out
     assert ctx.cited == ["kong24", "smith2024"]
 
 
+def test_paper_handle_renders_citation() -> None:
+    # ADR 0036: a paper handle [pc10] / [pa99] → \cite via the cite_key.
+    out, ctx = _inline("see [pc10] here", store=_PaperStore())
+    assert r"\cite{kong24}" in out and ctx.cited == ["kong24"]
+
+
+def test_record_handle_renders_nothing() -> None:
+    # A thought handle [me5] is provenance-only in export — dropped.
+    out, ctx = _inline("aside [me5] here")
+    assert "me5" not in out and ctx.cited == []
+
+
+def test_legacy_pilcrow_xref_maps_to_dc() -> None:
+    # A legacy [¶abc123] still resolves via the base-58 → dc map.
+    out, _ = _inline("see [¶abc123]", legacy_to_dc={"abc123": "dc41"}, known={"dc41"})
+    assert r"\cref{chunk:dc41}" in out
+
+
 def test_dangling_cross_ref_downgrades() -> None:
-    # abc123 is NOT a live handle → no \cref, surface text kept, warned.
-    out, ctx = _inline("see [the intro](¶abc123) here", known=set())
+    # dc41 is NOT a live handle → no \cref, surface text kept, warned.
+    out, ctx = _inline("see [the intro](dc41) here", known=set())
     assert r"\cref" not in out and r"\hyperref" not in out
     assert "the intro" in out
-    assert any("abc123" in w for w in ctx.warnings)
+    assert any("dc41" in w for w in ctx.warnings)
 
 
 def test_display_link_and_url() -> None:
-    out, _ = _inline("[the intro](¶abc123) and [DDG](https://duckduckgo.com)")
-    assert r"\hyperref[chunk:abc123]{the intro}" in out
+    out, _ = _inline("[the intro](dc41) and [DDG](https://duckduckgo.com)")
+    assert r"\hyperref[chunk:dc41]{the intro}" in out
     assert r"\href{https://duckduckgo.com}{DDG}" in out
 
 

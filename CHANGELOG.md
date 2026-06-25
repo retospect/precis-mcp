@@ -8,6 +8,17 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-25 — LaTeX export renders the new `[handle]` reference forms)
+
+- **Export resolves the universal-handle refs**, closing the gap from the
+  handle migration (it previously only emitted the legacy `[¶…]`/`[§…]`).
+  `[dc<id>]` → an intra-draft `\cref` (chunk labels are now `chunk:dc<id>`);
+  a paper handle `[pc<id>]` / `[pa<id>]` → `\cite{cite_key}` (cite_key from
+  `resolve_handle`), so a paper citation is just a handle there too; a thought
+  handle (`[me<id>]`) is provenance-only and drops; a legacy `[¶<base58>]`
+  still resolves (mapped to its `dc<id>`). `[§<cite_key>~<n>]` stays as the
+  explicit cite-by-key form. Tests cover each (`tests/test_export_latex.py`).
+
 ### Added (2026-06-24 — draft reader loads blocks on demand (windowed virtualization))
 
 - **A massive draft no longer renders (or holds) all of its blocks at

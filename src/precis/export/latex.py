@@ -33,7 +33,7 @@ from typing import Any
 
 from pylatexenc.latexencode import UnicodeToLatexEncoder
 
-from precis.utils import mentions
+from precis.utils import handle_registry, mentions
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 
 #: Translate non-ASCII glyphs to LaTeX commands. ``non_ascii_only`` leaves
@@ -226,7 +226,9 @@ class _Ctx:
     """Per-export render state threaded through the inline pass."""
 
     keymap: dict[str, str]  # abbreviation short → glossary key
-    known_handles: set[str]  # every live ¶ handle in the draft
+    known_handles: set[str]  # every live dc<id> chunk handle in the draft
+    store: Any = None  # to resolve a paper handle (pc/pa) → cite_key
+    legacy_to_dc: dict[str, str] = field(default_factory=dict)  # ¶base58 → dc
     cited: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -288,21 +290,55 @@ def _render_reference(m: re.Match[str], ctx: _Ctx) -> str:
     return ""
 
 
-def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
-    """Render a bracket reference target (``¶h`` / ``§slug~n`` / URL).
+def _draft_xref(dc: str, surface: str | None, ctx: _Ctx) -> str:
+    """An intra-draft chunk cross-ref (``dc<id>``) → ``\\cref`` / hyperref,
+    downgraded to text + a warning when the chunk isn't live in this draft."""
+    if dc not in ctx.known_handles:
+        ctx.warnings.append(f"cross-ref {dc}: no such live chunk — downgraded")
+        return _encode_unicode(_latex_escape(surface or dc))
+    if surface:
+        return f"\\hyperref[chunk:{dc}]{{{_encode_unicode(_latex_escape(surface))}}}"
+    return f"\\cref{{chunk:{dc}}}"
 
-    A ``¶`` cross-ref whose handle isn't a live chunk in this draft is
+
+def _handle_cite_key(tgt: str, ctx: _Ctx) -> str | None:
+    """A paper handle (``pc<chunk_id>`` / ``pa<ref_id>``) → its cite_key, via
+    the one resolver. ``None`` if it doesn't resolve to a live paper."""
+    if ctx.store is None:
+        return None
+    try:
+        resolved = ctx.store.resolve_handle(tgt)
+    except Exception:  # pragma: no cover — store hiccup
+        return None
+    return resolved.public_id if resolved is not None else None
+
+
+def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
+    """Render a bracket reference target (``dc<id>`` / ``pc<id>`` / ``§slug~n``
+    / legacy ``¶h`` / URL).
+
+    A cross-ref whose handle isn't a live chunk in this draft is
     **downgraded** to its surface text (or the literal handle) + a
     warning — never a dangling ``\\cref`` (which would compile to a ``??``
     and break determinism / linkcheck)."""
-    if tgt.startswith("¶"):
-        handle = tgt[1:]
-        if handle not in ctx.known_handles:
-            ctx.warnings.append(f"cross-ref ¶{handle}: no such live chunk — downgraded")
-            return _encode_unicode(_latex_escape(surface or f"¶{handle}"))
-        if surface:
-            return f"\\hyperref[chunk:{handle}]{{{_encode_unicode(_latex_escape(surface))}}}"
-        return f"\\cref{{chunk:{handle}}}"
+    # ADR 0036 universal handle: ``[dc41]`` (this draft) → cross-ref;
+    # ``[pc10]`` / ``[pa5]`` (a paper) → a citation; a record handle for a
+    # thought (``[me5]``) is provenance-only → dropped.
+    parsed = handle_registry.parse(tgt)
+    if parsed is not None:
+        kind, is_chunk, _pk = parsed
+        if kind == "paper":
+            slug = _handle_cite_key(tgt, ctx)
+            return _cite(slug, ctx) if slug else ""
+        if kind == "draft" and is_chunk:
+            return _draft_xref(tgt, surface, ctx)
+        return ""  # other record/chunk handle — provenance only
+    if tgt.startswith("¶"):  # legacy base-58 chunk handle
+        dc = ctx.legacy_to_dc.get(tgt[1:])
+        if dc is None:
+            ctx.warnings.append(f"cross-ref {tgt}: no such live chunk — downgraded")
+            return _encode_unicode(_latex_escape(surface or tgt))
+        return _draft_xref(dc, surface, ctx)
     if tgt.startswith("§"):
         cm = DRAFT_CITE_PATTERN.fullmatch(tgt)
         if cm is not None:
@@ -350,11 +386,13 @@ def render_body(store: Any, ref: Any) -> RenderResult:
     abbrevs: dict[str, str] = store.defined_abbrevs(ref.id)
     ctx = _Ctx(
         keymap=_acronym_keymap(abbrevs),
-        known_handles={c.handle for c in chunks},
+        known_handles={c.dc for c in chunks},
+        store=store,
+        legacy_to_dc={c.handle: c.dc for c in chunks},
     )
     lines: list[str] = []
     for c in chunks:
-        label = f"\\label{{chunk:{c.handle}}}"
+        label = f"\\label{{chunk:{c.dc}}}"
         # term + Glossary heading don't render as body — but keep an
         # invisible label so any [¶handle] cross-ref to them still
         # resolves (to the glossary) rather than dangling.
