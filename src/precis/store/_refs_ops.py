@@ -410,14 +410,20 @@ class RefsMixin:
         sql = """
             WITH stubs AS (
                 SELECT r.ref_id,
-                       (SELECT id_value FROM ref_identifiers
+                       -- MIN() guarantees one row per scalar subquery: a ref
+                       -- may carry >1 identifier of the same kind (the PK is
+                       -- (id_kind, id_value), not (ref_id, id_kind)), and a
+                       -- bare scalar subquery over duplicates raises
+                       -- CardinalityViolation. MIN is NULL over an empty set,
+                       -- so the COALESCE cascade is preserved.
+                       (SELECT MIN(id_value) FROM ref_identifiers
                          WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
                        COALESCE(
-                         (SELECT id_value FROM ref_identifiers
+                         (SELECT MIN(id_value) FROM ref_identifiers
                            WHERE ref_id = r.ref_id AND id_kind = 'doi'),
-                         (SELECT 'arxiv:' || id_value FROM ref_identifiers
+                         (SELECT 'arxiv:' || MIN(id_value) FROM ref_identifiers
                            WHERE ref_id = r.ref_id AND id_kind = 'arxiv'),
-                         (SELECT 's2:' || id_value FROM ref_identifiers
+                         (SELECT 's2:' || MIN(id_value) FROM ref_identifiers
                            WHERE ref_id = r.ref_id AND id_kind = 's2')
                        ) AS identifier,
                        r.ref_id AS sort_key

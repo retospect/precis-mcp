@@ -8,6 +8,20 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-25 — `/papers-needed` 500 on duplicate same-kind identifiers)
+
+- **`store.stub_backlog` no longer raises `CardinalityViolation`.** The
+  `ref_identifiers` PK is `(id_kind, id_value)`, so a paper ref may carry
+  more than one identifier of the same kind (in prod, ~hundreds of stubs
+  have two `cite_key` rows). The backlog query selected each identifier
+  via a bare per-kind scalar subquery, which Postgres rejects the moment
+  one returns >1 row — 500ing `/papers-needed` (and `search(view='stubs')`)
+  while the sibling `stub_backlog_count` (no scalar subqueries) still
+  rendered the page header. Each subquery now wraps the value in `MIN(…)`
+  (single deterministic row; `NULL` over an empty set so the `COALESCE`
+  cascade is preserved) — matching the `min(id_value)` already used in
+  `fetch_oa` and the `ORDER BY … LIMIT 1` guard in the card mappers.
+
 ### Changed (2026-06-25 — the dreaming workflow prompt ships with precis)
 
 - **The dream-cycle prompt is now a packaged precis resource**
