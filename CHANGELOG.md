@@ -8,6 +8,35 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-25 — relative chunk handles accept a redundant `±0` step)
+
+- `pc<id>-0` / `pc<id>+0` (a zero-step relative chunk handle) now resolves to
+  the anchor chunk itself instead of erroring. It's redundant — `pc<id>` alone
+  addresses the same chunk — but it's unambiguous, `resolve_relative` already
+  computes `ord ± 0` correctly for flat (paper) and tree (draft) kinds, and the
+  span form `pc<id>-0..0` already worked, so rejecting only the bare `±0` step
+  (`handle_registry._parse_op` returned `None`) was an inconsistency.
+  `get(kind='paper', id='pc<id>-0')` now round-trips identically to the
+  absolute handle. (Reverses the deliberate "zero step is a no-op → reject"
+  stance pinned in `test_handle_registry`.)
+
+### Fixed (2026-06-25 — paper `view='toc'` handles are now copy-pasteable universal handles)
+
+- The dynamic paper TOC (`utils/toc_db.py`) labelled every cluster row and
+  `Next: drill into fat clusters` hint with the **slug**-based handle
+  (`vaswani17~0..8`, or the kind-prefixed `paper:vaswani17~0..8` form seen on
+  older builds). The `:` form is rejected by the `get` id parser, so a
+  copy-pasted drill-in hint dead-ended — and even the bare-slug form drifted
+  from the ADR-0036 universal handle (`pa<id>`) that the rest of the paper
+  surface (`_render_overview`, the `get(id='pa…~0..5')` hints) already emits.
+  `render_from_store` / `build_toc_segments` now take a `handle=` param
+  (the record's `pa<id>`), so every row + hint is a round-trippable
+  `get(id='pa<id>~lo..hi')` id; `_render_toc` passes `_pa(ref)` and the web
+  `/papers/<id>/toc` route passes `format_handle("paper", ref.id)`. Verified
+  end-to-end (real store → `PaperHandler.get` → feed the emitted handle back).
+- Dropped the superfluous `  # N chunks` comment trailing each drill-in
+  `get(...)` hint line.
+
 ### Fixed (2026-06-25 — llm_summarize claim was ~74s/batch; moved the digit filter to Python)
 
 - The `llm_summarize` claim query carried a `regexp_replace(text,'[^0-9]','')`
