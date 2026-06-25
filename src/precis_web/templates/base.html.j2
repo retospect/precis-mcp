@@ -13,47 +13,100 @@
   <div class="min-h-full">
     <header class="bg-slate-900 text-slate-100">
       <div class="mx-auto max-w-6xl px-4">
+        {# Nav, by attention priority (ADR-less; see precis_web.nav):
+             • Zone 1  — daily-driver kinds, always visible.
+             • Needs you — the unified "waiting on you" queue (asks +
+               paper stubs), red badge = nav_needs_you.
+             • Browse ▾ — the corpus look-up long tail, behind a dropdown.
+             • Right — ops: Alerts (amber badge), Status, Ops ▾, search. #}
         <nav class="flex flex-wrap items-center gap-0.5 py-1.5 text-xs">
           <span class="font-semibold tracking-tight text-emerald-400 mr-2">precis</span>
-          {% set tabs = [('tasks','Tasks','/tasks'), ('asks','Asks','/asks'), ('papers','Papers','/papers'), ('papers-needed','Papers Needed','/papers-needed'), ('triage','Triage','/papers/triage'), ('drafts','Drafts','/drafts'), ('clusters','Clusters','/clusters'), ('tags','Tags','/tags')] %}
+          {% set _tab_on = 'bg-slate-700 text-white' %}
+          {% set _tab_off = 'text-slate-300 hover:bg-slate-800 hover:text-white' %}
+
+          {# ── Zone 1: daily work ── #}
+          {% set tabs = [('drafts','Drafts','/drafts'), ('tags','Tags','/tags'), ('tasks','Tasks','/tasks'), ('papers','Papers','/papers')] %}
           {% for key, label, href in tabs %}
           <a href="{{ href }}"
-             class="px-2 py-1 rounded text-xs font-medium transition
-                    {% if active_tab == key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+             class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == key %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
             {{ label }}
           </a>
           {% endfor %}
+
           <span class="mx-1 h-4 w-px bg-slate-700"></span>
-          {# Refs is the consolidated browser (memory/conv/gripe/pres
-             pre-checked + checkboxes for the rest). Oracle and Patents
-             keep their own tabs — Oracle for its "roll the dice" UX,
-             Patents because of the OPS remote-search affordances. #}
-          {% set ref_tabs = [('refs','Refs','/refs'), ('refs:oracle','Oracle','/refs/oracle'),
-                             ('refs:patent','Patents','/refs/patent')] %}
-          {% for key, label, href in ref_tabs %}
-          <a href="{{ href }}"
-             class="px-2 py-1 rounded text-xs font-medium transition
-                    {% if active_tab == key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
-            {{ label }}
+
+          {# ── Needs you: asks + paper stubs, red attention badge ── #}
+          <a href="/needs-you"
+             class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab == 'needs-you' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
+            Needs you
+            {% if nav_needs_you %}
+            <span class="ml-1 inline-flex items-center justify-center rounded-full bg-rose-600 text-white text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_needs_you }}</span>
+            {% endif %}
           </a>
-          {% endfor %}
+
           <span class="mx-1 h-4 w-px bg-slate-700"></span>
-          {% set util_tabs = [('alerts','Alerts','/alerts'), ('agentlogs','Agent Logs','/agentlogs'), ('console','Console','/console'), ('env','Env','/env'), ('status','Status','/status')] %}
-          {% for key, label, href in util_tabs %}
-          <a href="{{ href }}"
-             class="px-2 py-1 rounded text-xs font-medium transition
-                    {% if active_tab == key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
-            {{ label }}
-          </a>
-          {% endfor %}
-          {# 🔍 loupe — global cross-kind search. Submits to /refs with
-             ``all=1`` so every browsable kind is in scope; the user can
-             then uncheck irrelevant ones on the results page. #}
-          <form method="get" action="/refs" class="ml-auto flex items-center gap-1">
-            <input type="hidden" name="all" value="1" />
-            <input name="q" placeholder="🔍 search everything…"
-                   class="bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-400 text-sm px-3 py-1 rounded w-48 focus:w-72 focus:outline-none focus:ring-1 focus:ring-emerald-500 transition-all" />
-          </form>
+
+          {# ── Browse ▾: the corpus look-up long tail ──
+             Refs is the consolidated browser (memory/conv/gripe/pres
+             pre-checked + checkboxes for the rest); Oracle keeps its
+             "roll the dice" UX and Patents its OPS remote-search. #}
+          {% set browse = [('triage','Triage','/papers/triage'), ('clusters','Clusters','/clusters'), ('refs','Refs','/refs'), ('refs:oracle','Oracle','/refs/oracle'), ('refs:patent','Patents','/refs/patent')] %}
+          {% set browse_keys = browse | map(attribute=0) | list %}
+          <div x-data="{open:false}" @click.outside="open=false" @keydown.escape="open=false" class="relative">
+            <button type="button" @click="open=!open"
+                    class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center gap-1 {% if active_tab in browse_keys %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
+              Browse <span class="text-[9px]">▾</span>
+            </button>
+            <div x-show="open" x-cloak x-transition.opacity
+                 class="absolute left-0 mt-1 z-30 min-w-[9rem] rounded-md border border-slate-700 bg-slate-800 py-1 shadow-lg">
+              {% for key, label, href in browse %}
+              <a href="{{ href }}"
+                 class="block px-3 py-1.5 text-xs font-medium transition {% if active_tab == key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-700 hover:text-white{% endif %}">
+                {{ label }}
+              </a>
+              {% endfor %}
+            </div>
+          </div>
+
+          {# ── Right: ops + global search ── #}
+          {% set ops = [('agentlogs','Agent Logs','/agentlogs'), ('console','Console','/console'), ('env','Env','/env')] %}
+          {% set ops_keys = ops | map(attribute=0) | list %}
+          <div class="ml-auto flex items-center gap-0.5">
+            <a href="/alerts"
+               class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab == 'alerts' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
+              Alerts
+              {% if nav_alerts %}
+              <span class="ml-1 inline-flex items-center justify-center rounded-full bg-amber-500 text-slate-900 text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_alerts }}</span>
+              {% endif %}
+            </a>
+            <a href="/status"
+               class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == 'status' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
+              Status
+            </a>
+            <div x-data="{open:false}" @click.outside="open=false" @keydown.escape="open=false" class="relative">
+              <button type="button" @click="open=!open"
+                      class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center gap-1 {% if active_tab in ops_keys %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
+                Ops <span class="text-[9px]">▾</span>
+              </button>
+              <div x-show="open" x-cloak x-transition.opacity
+                   class="absolute right-0 mt-1 z-30 min-w-[9rem] rounded-md border border-slate-700 bg-slate-800 py-1 shadow-lg">
+                {% for key, label, href in ops %}
+                <a href="{{ href }}"
+                   class="block px-3 py-1.5 text-xs font-medium transition {% if active_tab == key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-700 hover:text-white{% endif %}">
+                  {{ label }}
+                </a>
+                {% endfor %}
+              </div>
+            </div>
+            {# 🔍 loupe — global cross-kind search. Submits to /refs with
+               ``all=1`` so every browsable kind is in scope; the user can
+               then uncheck irrelevant ones on the results page. #}
+            <form method="get" action="/refs" class="ml-1 flex items-center gap-1">
+              <input type="hidden" name="all" value="1" />
+              <input name="q" placeholder="🔍 search everything…"
+                     class="bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-400 text-sm px-3 py-1 rounded w-44 focus:w-72 focus:outline-none focus:ring-1 focus:ring-emerald-500 transition-all" />
+            </form>
+          </div>
         </nav>
       </div>
     </header>

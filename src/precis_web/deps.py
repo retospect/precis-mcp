@@ -77,7 +77,14 @@ def _make_jinja_env() -> jinja2.Environment:
     return env
 
 
-templates = Jinja2Templates(env=_make_jinja_env())
+#: ``nav_badges`` is a Starlette context processor: it runs on every
+#: ``TemplateResponse(request, ...)`` and injects the top-bar attention
+#: counts (``nav_needs_you`` / ``nav_alerts``) so the badges stay live on
+#: whatever page is rendered, without each route threading them in. It is
+#: fully defensive (degrades to zero on any error), so it never 500s a page.
+from precis_web.nav import nav_badges
+
+templates = Jinja2Templates(env=_make_jinja_env(), context_processors=[nav_badges])
 
 
 def get_runtime(request: Request) -> Any:

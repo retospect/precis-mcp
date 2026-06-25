@@ -78,6 +78,7 @@ def create_app(
         console,
         drafts,
         env,
+        needs_you,
         papers,
         papers_needed,
         preview,
@@ -88,6 +89,7 @@ def create_app(
     )
 
     app.include_router(tasks.router)
+    app.include_router(needs_you.router)
     app.include_router(asks.router)
     app.include_router(papers.router)
     app.include_router(papers_needed.router)
