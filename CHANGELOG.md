@@ -8,6 +8,21 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-25 — the dreaming workflow prompt ships with precis)
+
+- **The dream-cycle prompt is now a packaged precis resource**
+  (`precis/data/prompts/dream-prompt.md`), and `dream_agent` loads it by
+  default. `PRECIS_DREAM_PROMPT_PATH` becomes an optional *override*
+  rather than a hard requirement — an unset/unreadable path falls back to
+  the packaged workflow instead of skipping the pass. The packaged prompt
+  is **persona-neutral** (no `user:asa` tags/voice): the dreaming
+  *workflow* is precis-domain and lives here; the *persona* stays in the
+  operator's system prompt (`PRECIS_DREAM_SOUL_PATH`, e.g. asa's SOUL.md).
+  This removes the operator-side duplication where the prompt — and the
+  precis ref-format convention inside it — was maintained in the cluster
+  ansible role. (Cluster `precis_dream` role: stop installing the prompt +
+  drop the env export; deploy *after* this ships.)
+
 ### Added (2026-06-25 — drafts list ordered by most recently opened)
 
 - **`GET /drafts` now sorts most-recently-*opened* first.** The list was

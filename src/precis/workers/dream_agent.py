@@ -13,14 +13,18 @@ unified :func:`precis.utils.claude_agent.call_claude_agent` so:
 * the cluster-side bash script collapses to a one-liner that just
   shells out to `precis worker --only dream_agent --once`.
 
-Inputs (env, all required for a meaningful run):
+Inputs (env):
 
-* ``PRECIS_DREAM_PROMPT_PATH`` — file containing the directive
-  prompt. The Ansible role installs it as
-  ``/opt/asa/files/dream-prompt.md`` (or similar — operator's
-  choice) alongside the worker.
+* ``PRECIS_DREAM_PROMPT_PATH`` — optional override file containing the
+  directive prompt. When unset (or unreadable), the worker falls back to
+  the **packaged** dreaming workflow at
+  ``precis/data/prompts/dream-prompt.md`` — the persona-neutral SSOT, so
+  the prompt no longer has to be shipped by the operator's deploy. Set
+  this only to override the default with a site-specific prompt.
 * ``PRECIS_DREAM_SOUL_PATH`` — file containing the agent's system
-  prompt (`--append-system-prompt`). For asa this is her SOUL.md.
+  prompt (`--append-system-prompt`). This is the **persona** layer (for
+  asa, her SOUL.md) — kept out of the packaged workflow prompt so the
+  workflow stays generic.
 * ``PRECIS_MCP_CONFIG`` — MCP config JSON the agent uses to call
   precis tools.
 
@@ -82,13 +86,14 @@ def run_dream_pass(store: Store) -> BatchResult:
         return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
     if skip_if_high_load("dream_agent"):
         return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
-    prompt_path = _env_path("PRECIS_DREAM_PROMPT_PATH")
     soul_path = _env_path("PRECIS_DREAM_SOUL_PATH")
     mcp_path = _env_path("PRECIS_MCP_CONFIG")
-    if prompt_path is None:
-        log.error("dream_agent: PRECIS_DREAM_PROMPT_PATH unset / unreadable; skipping")
+    prompt = _load_prompt()
+    if prompt is None:
+        log.error(
+            "dream_agent: no dream prompt available (override + packaged both failed); skipping"
+        )
         return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
-    prompt = prompt_path.read_text()
     try:
         result = call_claude_agent(
             prompt,
@@ -125,6 +130,34 @@ def run_dream_pass(store: Store) -> BatchResult:
 
 def _gate_enabled() -> bool:
     return env_flag("PRECIS_DREAM_AGENT")
+
+
+#: Packaged dreaming workflow — the SSOT prompt, persona-neutral. The
+#: operator's deploy no longer has to ship one; `PRECIS_DREAM_PROMPT_PATH`
+#: is now an optional override, and the persona lives in the system prompt
+#: (``PRECIS_DREAM_SOUL_PATH``), not here.
+_PACKAGED_PROMPT = "precis.data.prompts"
+_PACKAGED_PROMPT_FILE = "dream-prompt.md"
+
+
+def _load_prompt() -> str | None:
+    """The dream directive prompt: the ``PRECIS_DREAM_PROMPT_PATH``
+    override if set+readable, else the packaged default. ``None`` only if
+    both are unavailable (the packaged resource should always exist)."""
+    override = _env_path("PRECIS_DREAM_PROMPT_PATH")
+    if override is not None:
+        return override.read_text()
+    try:
+        from importlib import resources
+
+        return (
+            resources.files(_PACKAGED_PROMPT)
+            .joinpath(_PACKAGED_PROMPT_FILE)
+            .read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        log.exception("dream_agent: packaged dream prompt unreadable")
+        return None
 
 
 def _env_path(var: str) -> Path | None:
