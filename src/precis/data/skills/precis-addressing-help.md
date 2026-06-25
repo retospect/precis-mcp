@@ -35,6 +35,9 @@ gr7     a gripe                   jo101   a job
 - **Flat & stable identity.** The handle names the row, not a position; unlike
   the retired `miller23~4` it does not rot when a doc is re-chunked (the
   chunk keeps its `chunk_id`).
+- **Write it inline to reference.** Inside a memory or draft body, a bare
+  `[handle]` in the prose is a reference — it auto-links the writing ref to
+  the target (`related-to`). See `precis-memory-help` / `precis-draft-help`.
 
 ## Relative grammar (navigation sugar — never stored)
 

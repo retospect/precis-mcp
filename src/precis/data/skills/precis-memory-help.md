@@ -109,6 +109,30 @@ Targets always carry the `kind:` prefix. Relation vocabulary
 (`cites`, `contradicts`, `supports`, `derived-from`, …) lives in
 `precis-relations`.
 
+## Name another ref in the text — it auto-links
+## Cite a paper / patent / memory inline so the connection is traceable
+
+Naming another ref **inside the memory body** by its `[handle]` makes the
+memory a node in the graph: every `[handle]` you write resolves to a live
+`related-to` backlink, so the memory is discoverable from the *target's*
+side too — not just by its own text. A handle is a ref to *something*, so
+one rule covers every kind:
+
+```python
+put(kind='memory',
+    text="[pa812] free-energy bound mirrors [pt913] clamp circuit.",
+    tags=['topic:thermo'])
+# → related-to links to pa812 and pt913, materialised from the text
+```
+
+Write the `[handle]` exactly as a `search` / `get` result printed it
+(`[me5]` a memory, `[pa5]` / `[pc10]` a paper, `[pt6]` a patent,
+`[or3]` an oracle, …). Editing a mention out drops its link on the next
+write; adding one adds the link. This is the lightweight alternative to
+an explicit `link()` — reach for it when the reference lives naturally in
+the prose, and `link()` when it doesn't. See `precis-addressing-help` for
+the handle form.
+
 ## Promote a research cache to a durable memory
 ## Distil a Sonar deep-research answer into a note
 ## Save the gist of an expensive cache call

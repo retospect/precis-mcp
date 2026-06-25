@@ -117,6 +117,12 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   previously only the draft autolinker resolved them.
   `draft_markup.resolve_universal_handle` now delegates to the shared
   resolver (one lookup path).
+- **Documented the in-prose `[handle]` autolink convention** where it was
+  missing: `precis-memory-help` now has a "name another ref in the text —
+  it auto-links" section (memory is the one record kind that autolinks
+  from its body), and `precis-addressing-help` cross-refs it. So the
+  convention lives in the MCP-served skill layer (the SSOT), not baked
+  into operator prompts.
 
 ### Performance (2026-06-25 — draft `reading_order` via flat fetch + Python DFS)
 
