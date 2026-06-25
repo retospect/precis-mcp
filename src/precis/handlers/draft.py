@@ -36,7 +36,7 @@ from precis.handlers._slug_ref_shared import (
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store._draft_ops import content_sha
-from precis.utils import handle_registry
+from precis.utils import draft_regex, handle_registry
 from precis.utils.embed_query import query_vec_for
 from precis.utils.table_data import normalize_table, table_to_markdown
 
@@ -101,9 +101,11 @@ class DraftHandler(Handler):
             "draft (project=, born with a title heading) or adds a chunk "
             "(chunk_kind=, text=, at={first|last|into|before|after}); get "
             "lists / outlines / reads a chunk window dc<id>-B+A; search "
-            "(q=, mode=lexical|semantic|hybrid, scope=slug|dc<id>, "
-            "headings_only=) over prose; edit changes text, moves "
-            "(move=), or sets a heading's section style (style=<skill>); "
+            "(q=, mode=lexical|semantic|hybrid|regex, scope=slug|dc<id>, "
+            "headings_only=) over prose — mode=regex is a literal grep; edit "
+            "changes text, moves (move=), sets a heading's section style "
+            "(style=<skill>), or regex-substitutes across a draft/section "
+            "(sub={find,replace}, dry-run unless apply=True); "
             "delete soft-retires (mode=cascade|promote). Chunks "
             "addressed by dc<chunk_id> (legacy ¶handle still resolves). "
             "See precis-draft-help."
@@ -156,17 +158,21 @@ class DraftHandler(Handler):
         scope: str | int | None = None,
         id: str | int | None = None,
         mode: str | None = None,
+        flags: str | None = None,
         headings_only: bool = False,
         page_size: int = 10,
         page: int = 1,
         **_kw: Any,
     ) -> Response:
         """Search draft prose. ``mode='lexical'`` is verbatim/keyword,
-        ``mode='semantic'`` is by meaning, default ``hybrid`` fuses both.
-        Scope: a ``dc<id>`` chunk handle searches the subtree under that
-        chunk, a draft slug searches that whole draft, nothing searches
-        every draft. ``headings_only=True`` restricts hits to section
-        headings (a semantic TOC jump)."""
+        ``mode='semantic'`` is by meaning, default ``hybrid`` fuses both;
+        ``mode='regex'`` is a literal **grep** — ``q`` is a Python regex run
+        verbatim over chunk text (find ``\\*\\*\\w+\\*\\*`` bold, ``—`` em-dashes,
+        a malformed cite), with ``flags='i'``/``'s'`` opt-in. Scope: a
+        ``dc<id>`` chunk handle searches the subtree under that chunk (a
+        section, or just the chunk if a leaf), a draft slug searches that
+        whole draft, nothing searches every draft. ``headings_only=True``
+        restricts hits to section headings (a semantic TOC jump)."""
         if q is None or not str(q).strip():
             raise BadInput(
                 "search(kind='draft') requires q=",
@@ -180,6 +186,10 @@ class DraftHandler(Handler):
             (str(c).strip() for c in (scope, id) if c is not None and str(c).strip()),
             None,
         )
+        if (mode or "").strip() == "regex":
+            return self._regex_find(
+                q, raw_scope, flags=flags or "", page_size=page_size, page=page
+            )
         scope_ref_id: int | None = None
         chunk_ids: list[int] | None = None
         where = "all drafts"
@@ -232,6 +242,236 @@ class DraftHandler(Handler):
                 first = first[:89] + "…"
             lines.append(f"draft:{draft}  {handle}  [{block.chunk_kind}] {first}")
         lines.append("\nNext: get(id='dc<chunk_id>') to read any hit in full.")
+        return Response(body="\n".join(lines))
+
+    # ── regex find (grep) + substitute (s///) ────────────────────────
+
+    #: caps so a broad pattern can't return a wall of text
+    _RX_MATCHES_PER_CHUNK: ClassVar[int] = 10
+    _RX_LINE_CONTEXT: ClassVar[int] = 40  # chars of context each side of a hit
+    _RX_PREVIEW_CHUNKS: ClassVar[int] = 40  # substitute dry-run sample size
+
+    def _scope_chunks(
+        self, raw_scope: str | int | None, *, allow_all: bool
+    ) -> tuple[list[tuple[str, Any]], str]:
+        """Resolve a find/substitute scope to ``(slug, DraftChunk)`` pairs in
+        reading order, plus a human ``where`` label. Scope is the same axis as
+        ``search``: a draft slug (whole draft), a ``dc<id>`` handle (the
+        subtree under it — a section, or just the chunk if a leaf), or
+        ``None`` (every draft, only when ``allow_all``)."""
+        if not raw_scope:
+            if not allow_all:
+                raise BadInput(
+                    "substitute needs a scope — a draft slug or a dc<id> "
+                    "(no corpus-wide rewrite)",
+                    next="edit(kind='draft', id='<slug>', sub={'find':…,'replace':…})",
+                )
+            pairs: list[tuple[str, Any]] = []
+            for ref in self.store.list_refs(kind="draft", limit=10_000):
+                slug = ref.slug or str(ref.id)
+                pairs.extend((slug, c) for c in self.store.reading_order(ref.id))
+            return pairs, "all drafts"
+        raw = str(raw_scope).strip()
+        if _is_draft_chunk_addr(raw):
+            ids = self.store.draft_subtree_chunk_ids(raw)
+            if not ids:
+                raise NotFound(f"draft chunk {raw} not found")
+            root = self.store.get_draft_chunk(raw)
+            ref_id = int(root.ref_id)
+            ref = self.store.get_ref(kind="draft", id=ref_id)
+            slug = (ref.slug if ref and ref.slug else None) or str(ref_id)
+            keep = set(ids)
+            chunks = [c for c in self.store.reading_order(ref_id) if c.chunk_id in keep]
+            return [(slug, c) for c in chunks], f"subtree {raw}"
+        ref = resolve_live_slug_ref(self.store, kind="draft", id=raw)
+        slug = ref.slug or str(ref.id)
+        return [(slug, c) for c in self.store.reading_order(ref.id)], f"draft {raw!r}"
+
+    def _regex_find(
+        self,
+        pattern: str,
+        raw_scope: str | None,
+        *,
+        flags: str,
+        page_size: int,
+        page: int,
+    ) -> Response:
+        """``mode='regex'`` grep: run ``pattern`` over chunk text in scope and
+        list every hit with its handle, line, and the matched span. Read-only
+        — table/figure chunks are matched too (their derived/caption text)."""
+        rx = draft_regex.compile_pattern(pattern, flags)
+        pairs, where = self._scope_chunks(raw_scope, allow_all=True)
+        hits: list[tuple[str, Any, list[draft_regex.Match]]] = []
+        total = 0
+        for slug, c in pairs:
+            ms = draft_regex.find_in_text(rx, c.text or "")
+            if ms:
+                total += len(ms)
+                hits.append((slug, c, ms))
+        if not hits:
+            return Response(
+                body=(
+                    f"no draft chunk matches /{pattern}/ in {where}\n\n"
+                    "Next: loosen the pattern, add flags='i' (case-fold), or "
+                    "widen scope (drop scope= to grep every draft)."
+                )
+            )
+        npages = (len(hits) + page_size - 1) // page_size
+        pg = max(1, min(int(page), npages))
+        start = (pg - 1) * page_size
+        shown = hits[start : start + page_size]
+        head = f"# {total} match(es) in {len(hits)} chunk(s) for /{pattern}/ — {where}"
+        if npages > 1:
+            head += f"  (page {pg}/{npages})"
+        lines = [head, ""]
+        for slug, c, ms in shown:
+            lines.append(f"draft:{slug}  {c.dc}  [{c.chunk_kind}]")
+            for m in ms[: self._RX_MATCHES_PER_CHUNK]:
+                lines.append(f"  L{m.line_no}:{m.col}  {self._mark_line(m)}")
+            if len(ms) > self._RX_MATCHES_PER_CHUNK:
+                lines.append(
+                    f"  … +{len(ms) - self._RX_MATCHES_PER_CHUNK} more in this chunk"
+                )
+        lines.append(
+            "\nNext: get(id='dc<id>') to read a hit; substitute with "
+            "edit(kind='draft', id='<slug|dc<id>>', sub={'find':"
+            f"{pattern!r}, 'replace':'…'}}) (dry-run unless apply=True)."
+        )
+        return Response(body="\n".join(lines))
+
+    def _mark_line(self, m: draft_regex.Match) -> str:
+        """Render one match's physical line, trimmed to a window around the
+        hit and wrapping the matched span in »…« so it stands out."""
+        col, n, line = m.col, len(m.matched), m.line
+        ctx = self._RX_LINE_CONTEXT
+        lo = max(0, col - ctx)
+        hi = min(len(line), col + n + ctx)
+        pre = ("…" if lo > 0 else "") + line[lo:col]
+        mid = line[col : col + n]
+        post = line[col + n : hi] + ("…" if hi < len(line) else "")
+        return f"{pre}»{mid}«{post}"
+
+    def _substitute(
+        self, scope: str | int | None, sub: dict[str, Any] | str, *, apply: bool
+    ) -> Response:
+        """Regex substitute (vi ``:%s/find/replace/``) across a scope's prose.
+        ``sub`` is ``{'find':…, 'replace':…, 'flags':…}`` or a ``s/find/replace/``
+        string. Dry-run by default (reports counts + a per-chunk before→after
+        sample); ``apply=True`` rewrites each chunk via the normal edit path
+        (re-embed / keywords / links cascade). Replacement is a Python regex
+        template, so ``\\1`` backreferences resolve. Table/figure chunks are
+        skipped (derived / blob text)."""
+        if isinstance(sub, str):
+            find, replace, flags = draft_regex.parse_sed(sub)
+        elif isinstance(sub, dict):
+            if "find" not in sub or "replace" not in sub:
+                raise BadInput(
+                    "sub= needs both 'find' and 'replace' keys",
+                    next="sub={'find': '\\*\\*(\\w+)\\*\\*', 'replace': '\\\\1'}  # strip bold",
+                )
+            find = str(sub["find"])
+            replace = str(sub["replace"])
+            flags = str(sub.get("flags") or "")
+        else:
+            raise BadInput(
+                "sub= must be {'find':…,'replace':…} or a 's/find/replace/' string",
+                next="sub={'find':'—', 'replace':', '}  or  sub='s/—/, /'",
+            )
+        rx = draft_regex.compile_pattern(find, flags)
+        pairs, where = self._scope_chunks(scope, allow_all=False)
+
+        changes: list[tuple[str, Any, str, int]] = []
+        total_subs = 0
+        skipped: list[str] = []  # derived chunks a substitution would have hit
+        for slug, c in pairs:
+            old = c.text or ""
+            if c.chunk_kind in draft_regex.DERIVED_KINDS:
+                if rx.search(old):
+                    skipped.append(c.dc)
+                continue
+            new_text, n = draft_regex.sub_in_text(rx, replace, old)
+            if n and new_text != old:
+                changes.append((slug, c, new_text, n))
+                total_subs += n
+
+        if not changes:
+            note = ""
+            if skipped:
+                note = (
+                    f"\n\n(skipped {len(skipped)} derived table/figure chunk(s) "
+                    f"that match: {', '.join(skipped[:8])} — edit their data, not text)"
+                )
+            return Response(
+                body=f"no substitutable matches for /{find}/ in {where}{note}"
+            )
+
+        if not apply:
+            return self._sub_dryrun(
+                find, replace, flags, where, changes, skipped, total_subs
+            )
+
+        written = 0
+        for _slug, c, new_text, _n in changes:
+            res = self.store.edit_text(c.handle, new_text)
+            if res is not None:
+                self._sync_draft_links(res.ref_id)
+                self._attribute_touch([res.chunk_id])
+                written += 1
+        body = (
+            f"substituted /{find}/ → /{replace}/ in {where}: "
+            f"{total_subs} replacement(s) across {written} chunk(s)"
+        )
+        if skipped:
+            body += (
+                f"; skipped {len(skipped)} derived chunk(s) ({', '.join(skipped[:8])})"
+            )
+        body += "\n\nEach edited chunk re-embeds; the original text is kept in chunk history."
+        return Response(body=body)
+
+    def _sub_dryrun(
+        self,
+        find: str,
+        replace: str,
+        flags: str,
+        where: str,
+        changes: list[tuple[str, Any, str, int]],
+        skipped: list[str],
+        total_subs: int,
+    ) -> Response:
+        """Render the substitution preview: totals + a per-chunk before→after
+        on the first changed line of each chunk (capped), then the copy-ready
+        apply call."""
+        rx = draft_regex.compile_pattern(find, flags)
+        lines = [
+            f"# DRY RUN — /{find}/ → /{replace}/ in {where}",
+            f"{total_subs} replacement(s) across {len(changes)} chunk(s). "
+            "Nothing written yet.",
+            "",
+        ]
+        for _slug, c, _new, n in changes[: self._RX_PREVIEW_CHUNKS]:
+            ms = draft_regex.find_in_text(rx, c.text or "")
+            sample = ms[0].line if ms else ""
+            after = rx.sub(replace, sample)
+            lines.append(f"{c.dc}  [{c.chunk_kind}]  ({n}×)")
+            lines.append(f"  - {sample.strip()}")
+            lines.append(f"  + {after.strip()}")
+        if len(changes) > self._RX_PREVIEW_CHUNKS:
+            lines.append(f"… +{len(changes) - self._RX_PREVIEW_CHUNKS} more chunk(s)")
+        if skipped:
+            lines.append(
+                f"\nskipped {len(skipped)} derived table/figure chunk(s) that match: "
+                f"{', '.join(skipped[:8])} (edit their data, not text)"
+            )
+        # The scope label echoes back as a copy-ready apply call.
+        scope_hint = where.replace("draft ", "").replace("subtree ", "").strip("'")
+        if scope_hint == "all drafts":
+            scope_hint = "<slug>"
+        lines.append(
+            f"\nApply: edit(kind='draft', id={scope_hint!r}, "
+            f"sub={{'find': {find!r}, 'replace': {replace!r}"
+            + (f", 'flags': {flags!r}" if flags else "")
+            + "}, apply=True)"
+        )
         return Response(body="\n".join(lines))
 
     # ── put: create a draft, or add a chunk ──────────────────────────
@@ -495,6 +735,8 @@ class DraftHandler(Handler):
         style: str | None = None,
         base_sha: str | None = None,
         not_abbrev: list[str] | str | None = None,
+        sub: dict[str, Any] | str | None = None,
+        apply: bool = False,
         permission: dict[str, Any] | None = None,
         origin: str | None = None,
         table: dict[str, Any] | None = None,
@@ -509,6 +751,12 @@ class DraftHandler(Handler):
             ref = self._resolve_draft_any(id)
             self.store.add_abbrev_ignore(ref.id, tokens)
             return Response(body=f"marked not-an-abbrev: {', '.join(tokens)}")
+        # ``sub`` is a draft-level regex substitution (vi ``:%s/a/b/``) — id is
+        # the *scope* (a slug for the whole draft, or a dc<id> for one
+        # section/chunk), not a single chunk. Dry-run by default; apply=True
+        # commits.
+        if sub is not None:
+            return self._substitute(id, sub, apply=bool(apply))
         handle = self._require_chunk_id(id, verb="edit")
         # Normalize a ``dc<id>`` address to the legacy base-58 anchor the
         # store mutators still key on; the agent-facing emit uses ``.dc``.
@@ -567,8 +815,8 @@ class DraftHandler(Handler):
             return Response(body=body)
         raise BadInput(
             "edit(kind='draft') requires text= (rewrite), move= (reorder/reparent), "
-            "style= (set a heading's section style), or not_abbrev= (silence "
-            "the abbrev hint)",
+            "style= (set a heading's section style), sub= (regex substitute across "
+            "a draft/section), or not_abbrev= (silence the abbrev hint)",
             next="edit(kind='draft', id='dc<chunk_id>', text='…')",
         )
 

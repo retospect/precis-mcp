@@ -40,6 +40,66 @@ it to search every draft. `search(id='dc<id>', q='…')` is accepted too —
 the handle already names the kind and the chunk is the scope. Each hit
 shows its `draft:<slug>` and `dc<id>`; read one with `get(id='dc<id>')`.
 
+## Find & substitute by regex (vi `/pattern` and `:%s/a/b/`)
+
+Semantic / lexical search is about *meaning*; when you need a **literal**
+pattern — markup, punctuation, a malformed citation form — use the regex
+grep and substitute. The pattern is **Python regex** (`\w`, `\d`, groups,
+`|`), run verbatim over chunk text. This is the tool to audit and fix the
+house-style rules: stray `**bold**` / `_italic_`, em-dashes `—`, double
+spaces, a bare `paper:123` cite.
+
+**Find — `search(mode='regex')`:**
+
+```python
+search(kind='draft', mode='regex', q=r'\*\*\w+\*\*', scope='nanotrans')  # find **bold**
+search(kind='draft', mode='regex', q='—', scope='nanotrans')             # find em-dashes
+search(kind='draft', mode='regex', q='TODO', scope='nanotrans', flags='i')  # case-fold
+```
+
+Each hit shows `draft:<slug>  dc<id>  [kind]` and, per match, `L<line>:<col>`
+with the matched span wrapped in `»…«`. `flags='i'` case-folds, `flags='s'`
+makes `.` cross newlines; `^`/`$` always anchor per line. Find reads
+table/figure text too (read-only).
+
+**Substitute — `edit(sub=…)`, dry-run by default:**
+
+```python
+# dry-run: reports counts + a before→after sample per chunk, writes nothing
+edit(kind='draft', id='nanotrans', sub={'find': '—', 'replace': ', '})
+
+# commit it
+edit(kind='draft', id='nanotrans', sub={'find': '—', 'replace': ', '}, apply=True)
+
+# backreferences work — strip bold to plain text
+edit(kind='draft', id='nanotrans', sub={'find': r'\*\*(\w+)\*\*', 'replace': r'\1'}, apply=True)
+
+# the s/// string form is accepted too (delimiter is the char after s)
+edit(kind='draft', id='nanotrans', sub='s/  / /', apply=True)   # collapse double spaces
+```
+
+`replace` is a Python regex template, so `\1` / `\g<name>` resolve.
+Substitution always replaces **every** occurrence in each chunk. Each
+rewritten chunk goes through the **normal edit path** — re-embed, keywords,
+gist, autolinks all re-derive, and the prior text is kept in chunk history
+(so a bad `s///` is recoverable). **Table and figure chunks are skipped**
+(their text is derived / a caption — edit the data, not the text); the
+report names any that matched.
+
+**Scope (both find and substitute)** is the same axis as search, three
+levels:
+
+| `scope=` / `id=` | covers |
+|---|---|
+| a draft slug (`'nanotrans'`) | the **whole draft** |
+| a `dc<id>` **heading** | that **section** (the heading's subtree) |
+| a `dc<id>` **leaf** | just **that chunk** |
+| *(find only)* omitted | **every draft** |
+
+Substitute **requires** a scope (a slug or a `dc<id>`) — there is no
+corpus-wide rewrite. Point it at a section (`id='dc8'`) to confine a
+substitution to one part of the document.
+
 ## Find a project's draft
 
 A draft carries **no `project:` tag** — that tag lives on the project
