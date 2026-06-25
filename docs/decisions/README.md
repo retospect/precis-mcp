@@ -42,6 +42,7 @@ Per AGENTS.md: "sorted by number; never delete, only supersede".
 | Computed chunks (payload + recipe), sandboxed execution, recompute boundary | [0035](./0035-computed-chunks-recipes-and-the-recompute-boundary.md) | **draft/proposed**; refines 0034 §3 — data/render recipes, `plots` the only reactive edge |
 | Universal handles (one address system for every record + chunk) | [0036](./0036-universal-handles.md) | **draft/proposed**; flat type-prefixed Crockford handles; partially supersedes 0033 §1 (draft handle/sigil) |
 | Heading styles (self-contained sections) + numbering lock + issues | [0037](./0037-heading-styles-and-numbering-lock.md) | **proposed**; per-heading style=skill, genre=root style, entity-bound numbering with pinned/lock, anchored `issue` loop; extends 0033/0034/0035, uses 0036 handles. Drafting catalogue: `docs/design/draft-section-styles.md` |
+| Prompt assembly & prompt-engineering principles | [0038](./0038-prompt-assembly-and-principles.md) | **proposed**; one assembler + module library (markdown+frontmatter+`{{include}}`), cached/variable layers, agent/helper profiles, per-target adapters, the doc_context/tools/kinds/glossary tables, kind=code alias, conditional modules. Validation: `docs/design/prompt-assembly-shots.md` |
 
 ## Supersession graph
 
@@ -59,6 +60,7 @@ Per AGENTS.md: "sorted by number; never delete, only supersede".
 0026  ──→  0028          # precis-web surface → host-heartbeat Status tab (extends)
 0033  ──→  0034  ──→  0035  # editable-document model: figures, computed chunks (each extends)
 0033  ──→  0037            # heading styles / numbering / issues (extends; 0037 reframes design/patent-drafting-merge.md)
+0033 §8 (editor prompt) ──→ 0038   # prompt assembly: one assembler + modules (uses 0036/0037)
 ```
 
 ## Conventions
