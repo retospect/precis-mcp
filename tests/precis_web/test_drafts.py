@@ -394,6 +394,35 @@ def test_edit_figure_permission_dispatches_edit(
     assert args["permission"]["permission_id"] == "EL-999"
 
 
+def test_set_section_style_dispatches_edit(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    # The per-heading "style ▾" dropdown → edit(kind='draft', style=…) (ADR 0037).
+    r = draft_client.post(
+        "/drafts/nt/style",
+        data={"handle": "AAAAAA", "style": "patent-claim"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/drafts/nt#c-AAAAAA"
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "edit"
+    assert args["kind"] == "draft" and args["id"] == "AAAAAA"
+    assert args["style"] == "patent-claim"
+
+
+def test_clear_section_style_dispatches_empty(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    draft_client.post(
+        "/drafts/nt/style",
+        data={"handle": "AAAAAA", "style": ""},
+        follow_redirects=False,
+    )
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "edit" and args["style"] == ""
+
+
 def test_reader_has_add_figure_control(draft_client: TestClient) -> None:
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200

@@ -381,6 +381,9 @@ def _build_rows(
     views = _block_views(store, ref.id, want_handles)
     conns = store.chunk_connections(ref.id, list(scope))
     edits = store.chunk_edit_stats(ref.id, want_handles)
+    # The per-heading "style ▾" picker — same list for every heading in this
+    # draft, so compute once (ADR 0037; scoped to the genre).
+    section_styles = _section_styles_for(store, ref)
     rows: list[dict[str, Any]] = []
     for i in want:
         c = chunk_objs[i]
@@ -413,6 +416,12 @@ def _build_rows(
                 "text": c.text,
                 "depth": c.depth,
                 "is_heading": c.chunk_kind == "heading",
+                # section style (ADR 0037): the current meta.style + the
+                # genre's pickable styles, for the per-heading "style ▾" menu.
+                "style": (getattr(c, "meta", None) or {}).get("style")
+                if c.chunk_kind == "heading"
+                else None,
+                "section_styles": section_styles if c.chunk_kind == "heading" else None,
                 "is_figure": is_figure,
                 # figure provenance for the origin chip + clearance badge
                 "figure_origin": fig.get("origin") if is_figure else None,
@@ -590,6 +599,64 @@ _DOC_TYPES: list[dict[str, str]] = [
     },
 ]
 _DOC_TYPE_BRIEF: dict[str, str] = {d["value"]: d["brief"] for d in _DOC_TYPES}
+
+#: Section styles offered in the per-heading "style ▾" dropdown, keyed by
+#: ``doc_type``. Each ``(slug, label)`` sets ``meta.style`` on the heading
+#: (ADR 0037; the slug is a section-style skill served by ``get(kind=
+#: 'skill')``). The picker is scoped to the genre so the menu stays short;
+#: the scaffold normally sets these, this is the manual override.
+_SCI_SECTION = [
+    ("sci-abstract", "Abstract"),
+    ("sci-introduction", "Introduction"),
+    ("sci-related-work", "Related work"),
+    ("sci-methods", "Methods"),
+    ("sci-results", "Results"),
+    ("sci-discussion", "Discussion"),
+    ("sci-conclusion", "Conclusion"),
+]
+_SECTION_STYLES: dict[str, list[tuple[str, str]]] = {
+    "patent": [
+        ("patent-description", "Description"),
+        ("patent-claim", "Claim"),
+        ("patent-image-part", "Drawings + parts"),
+        ("patent-prior-art", "Prior art"),
+        ("patent-abstract", "Abstract"),
+    ],
+    "paper": _SCI_SECTION,
+    "report": _SCI_SECTION,
+    "review": [
+        ("sci-abstract", "Abstract"),
+        ("sci-introduction", "Introduction"),
+        ("sci-methods", "Scope & method"),
+        ("sci-survey-section", "Synthesis section"),
+        ("sci-discussion", "Discussion"),
+        ("sci-conclusion", "Conclusion"),
+    ],
+}
+
+
+def _doc_type(store: Any, ref: Any) -> str:
+    """The draft's ``doc_type`` (genre), read from the owning project's
+    ``meta.workspace`` (falling back to the draft's own meta). ``""`` when
+    unset or unreadable (defensive, so a stub store just yields no
+    section-style options rather than erroring)."""
+    try:
+        pid = _project_id(store, ref.id)
+        rid = pid if pid is not None else ref.id
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s", (rid,)
+            ).fetchone()
+        meta = (row[0] if row else None) or {}
+        return ((meta.get("workspace") or {}).get("doc_type") or "") or ""
+    except Exception:  # pragma: no cover - defensive (stub store / no pool)
+        return ""
+
+
+def _section_styles_for(store: Any, ref: Any) -> list[tuple[str, str]]:
+    """The section styles to offer for this draft's genre (empty → no
+    dropdown)."""
+    return _SECTION_STYLES.get(_doc_type(store, ref), [])
 
 
 @router.get("/drafts", response_class=HTMLResponse)
@@ -1181,6 +1248,30 @@ async def review_block(
         args["parent_id"] = project
     return await redirect_or_error(
         request, "put", args, redirect=back, error_title="Review error"
+    )
+
+
+@router.post("/drafts/{ident}/style")
+async def set_section_style(
+    request: Request,
+    ident: str,
+    handle: str = Form(...),
+    style: str = Form(""),
+) -> Response:
+    """Set (or clear) a heading's section style from the editor (ADR 0037).
+    ``style=""`` clears it. Routes through ``edit(kind='draft', style=…)``
+    so the handler's heading-only guard + error surface apply."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    back = f"/drafts/{ident}#c-{handle}"
+    if ref is None:
+        return RedirectResponse(url=back, status_code=303)
+    return await redirect_or_error(
+        request,
+        "edit",
+        {"kind": "draft", "id": handle, "style": style},
+        redirect=back,
+        error_title="Section style error",
     )
 
 
