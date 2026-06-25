@@ -45,7 +45,7 @@ def _render(blocks: list[_Stub], *, scope: tuple[int, int] | None = None) -> str
     return render_from_store(
         store=_StubStore(blocks),
         ref_id=1,
-        slug="paper",
+        handle="pa1",
         kind="paper",
         scope=scope,
     )
@@ -65,7 +65,7 @@ class TestPerChunkPath:
         assert "{handle\tkeywords}" in out
         # One row per chunk, with the chunk's own keyword as the label.
         for i in range(4):
-            assert f"paper~{i}\t" in out
+            assert f"pa1~{i}\t" in out
 
     def test_short_range_keywords_never_snippets(self) -> None:
         """Regression: the dropped preview path used to leak chunk
@@ -122,7 +122,7 @@ class TestBucketedPath:
         assert "shared" in topics_line
         # Lossless: 'shared' still appears in the per-row keyword
         # columns (not stripped). Count occurrences in row lines.
-        row_lines = [line for line in out.splitlines() if line.startswith("paper~")]
+        row_lines = [line for line in out.splitlines() if line.startswith("pa1~")]
         assert row_lines, "expected at least one row"
         assert all("shared" in line for line in row_lines), (
             "Topics promotion must NOT strip the keyword from row labels"
@@ -159,6 +159,24 @@ class TestDrillInHint:
         assert any(".." in line.split("'")[3] for line in next_lines), (
             f"expected a multi-chunk fat-cluster handle in hints: {next_lines}"
         )
+
+    def test_drill_in_hint_carries_universal_handle_no_chunk_comment(self) -> None:
+        """Drill-in hints address by the universal handle (``pa<id>~lo..hi``)
+        and drop the superfluous ``# N chunks`` trailing comment."""
+        blocks = [
+            _Stub(pos=i, keywords=["alpha", "beta", "gamma"]) for i in range(40)
+        ] + [_Stub(pos=i, keywords=["delta", "epsilon", "zeta"]) for i in range(40, 70)]
+        out = _render(blocks)
+        next_lines = [
+            line for line in out.splitlines() if "view='toc'" in line and "get(" in line
+        ]
+        assert next_lines
+        for line in next_lines:
+            # Universal handle prefix, never the legacy slug / kind:slug form.
+            assert "id='pa1~" in line
+            # The "# N chunks" comment is gone.
+            assert "#" not in line
+            assert "chunks" not in line
 
     def test_no_next_block_when_no_fat_cluster(self) -> None:
         """30-chunk body distributed across distinct micro-topics →

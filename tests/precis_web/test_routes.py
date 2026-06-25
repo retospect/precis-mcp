@@ -2013,7 +2013,7 @@ def test_status_background_health_panel_renders_anomalies(client, monkeypatch) -
             "failed_passes": [
                 {
                     "host": "melchior",
-                    "pass": "deep_review",
+                    "handler": "deep_review",
                     "failed": 3,
                     "ago": "5m ago",
                 }
@@ -2752,25 +2752,27 @@ def test_asks_page_renders_data(client, monkeypatch) -> None:
     assert 'name="remove"' in resp.text
 
 
-# ── needs-you (unified asks + paper-stub queue) ────────────────────
+# ── needs-you (unified asks + needs-triage queue) ──────────────────
 
 
-def test_needs_you_renders_stub_section(client) -> None:
-    """The merged page lists the paper-stub backlog with a 'view all' link.
+def test_needs_you_renders_triage_section(client) -> None:
+    """The merged page lists papers needing triage with a 'view all' link.
 
-    Under the fake store there are no asks (empty cursor) but two
-    canned stubs, so the Papers-needed section renders and the Asks
-    section is absent.
+    Under the fake store there are no asks (empty cursor); ``list_refs``
+    returns the canned papers, so the Needs-triage section renders and
+    each row deep-links to the detail page with the triage panel open.
     """
     resp = client.get("/needs-you")
     assert resp.status_code == 200
     assert "Needs you" in resp.text
-    assert "Papers needed" in resp.text
-    # Title lifted from the stub's ref (id 90).
+    assert "Needs triage" in resp.text
+    # A paper title from the fake's canned set.
     assert "Ballistic carbon nanotube" in resp.text
-    # Deep-link out to the full backlog page, with the live total.
-    assert "/papers-needed" in resp.text
-    assert "View all 2" in resp.text
+    # Rows open the detail page with the triage panel; "view all" goes to
+    # the full triage queue. (``/papers-needed`` still appears once — in
+    # the Browse ▾ dropdown — but the queue content here is triage.)
+    assert "?triage=1" in resp.text
+    assert "/papers/triage" in resp.text
 
 
 def test_needs_you_renders_asks_inline(client, monkeypatch) -> None:
@@ -2802,7 +2804,7 @@ def test_nav_badge_counts_on_every_page(client) -> None:
     """The global nav injects the Needs-you badge on an unrelated page.
 
     The badge processor sums asks (0 under the empty-cursor fake) and
-    the stub backlog (2), so the rose badge reads '2' even on /tasks.
+    the needs-triage paper count, so the rose badge shows on /tasks.
     """
     resp = client.get("/tasks")
     assert resp.status_code == 200

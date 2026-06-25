@@ -320,3 +320,89 @@ def test_conditional_get_sends_and_saves_validators(
     assert seen == {"etag": "old-etag", "modified": "old-mod"}  # sent stored validators
     upd = store.conn.updates[-1]  # _record_status UPDATE params
     assert "new-etag" in upd and "new-mod" in upd  # persisted the new ones
+
+
+# ── _default_parse_feed: bounded, SSRF-guarded, parses bytes (not url) ──
+
+
+class _AttrDict(dict):
+    """Minimal stand-in for ``feedparser.FeedParserDict`` (attr + item)."""
+
+    def __getattr__(self, k: str):  # type: ignore[no-untyped-def]
+        try:
+            return self[k]
+        except KeyError as exc:
+            raise AttributeError(k) from exc
+
+
+def _patch_feed_fetch(monkeypatch: pytest.MonkeyPatch, resp, *, parse_returns=None):
+    """Stub ``safe_get`` → ``resp`` and ``feedparser`` → records its parse arg.
+
+    Returns a ``captured`` dict carrying the url + client headers safe_get
+    saw and the object handed to ``feedparser.parse`` (None if uncalled).
+    """
+    captured: dict = {"parse_arg": None}
+
+    def fake_safe_get(client, url, /, **kw):  # type: ignore[no-untyped-def]
+        captured["url"] = url
+        captured["headers"] = dict(client.headers)
+        return resp
+
+    class _FakeFeedparser:
+        def parse(self, content, **kw):  # type: ignore[no-untyped-def]
+            captured["parse_arg"] = content
+            return _AttrDict(parse_returns or {"entries": []})
+
+    monkeypatch.setattr("precis.utils.safe_fetch.safe_get", fake_safe_get)
+    monkeypatch.setattr(
+        "precis.utils.optional_deps.require_optional",
+        lambda *a, **k: _FakeFeedparser(),
+    )
+    return captured
+
+
+def test_default_parse_feed_fetches_via_safe_get_and_parses_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    resp = httpx.Response(
+        200,
+        content=b"<rss><channel/></rss>",
+        headers={"ETag": "new-e", "Last-Modified": "new-m"},
+        request=httpx.Request("GET", "https://feeds.example.com/rss"),
+    )
+    cap = _patch_feed_fetch(monkeypatch, resp, parse_returns={"entries": ["one"]})
+
+    feed = news_poll._default_parse_feed(
+        "https://feeds.example.com/rss", etag="old-e", modified="old-m"
+    )
+
+    # Fetched the real URL through safe_get — NOT feedparser's own urllib GET.
+    assert cap["url"] == "https://feeds.example.com/rss"
+    # Conditional-GET validators were sent as request headers.
+    assert cap["headers"].get("if-none-match") == "old-e"
+    assert cap["headers"].get("if-modified-since") == "old-m"
+    # feedparser parsed the response BYTES (offline), never the url string.
+    assert cap["parse_arg"] == b"<rss><channel/></rss>"
+    # Result mirrors the feedparser contract the caller reads.
+    assert feed.status == 200
+    assert feed.entries == ["one"]
+    assert feed.etag == "new-e"
+    assert feed.modified == "new-m"
+
+
+def test_default_parse_feed_304_short_circuits_without_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    cap = _patch_feed_fetch(monkeypatch, httpx.Response(304))
+
+    feed = news_poll._default_parse_feed(
+        "https://feeds.example.com/rss", etag="e1", modified="m1"
+    )
+
+    assert feed.status == 304
+    assert feed.entries == []
+    assert cap["parse_arg"] is None  # no body parse on 'not modified'

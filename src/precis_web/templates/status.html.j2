@@ -125,14 +125,14 @@
     {% if fails %}
     <div class="rounded-lg border border-amber-200 bg-white overflow-hidden">
       <div class="px-4 py-2 text-xs uppercase tracking-wide text-amber-700 bg-amber-50 font-medium">
-        Failed passes ({{ fails|length }}) — 24h
+        Failed passes ({{ fails|length }}) — 24h, by handler
       </div>
       <table class="w-full text-sm">
         <tbody class="divide-y divide-slate-100">
           {% for f in fails %}
           <tr class="hover:bg-slate-50">
             <td class="px-4 py-2 font-mono text-slate-700">{{ f.host }}</td>
-            <td class="px-4 py-2 font-mono text-slate-600">{{ f.pass }}</td>
+            <td class="px-4 py-2 font-mono text-slate-600">{{ f.handler }}</td>
             <td class="px-4 py-2 text-right font-semibold text-amber-700 tabular-nums">{{ f.failed }}</td>
             <td class="px-4 py-2 text-right text-slate-400">{{ f.ago }}</td>
           </tr>

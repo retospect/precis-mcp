@@ -2002,7 +2002,10 @@ class PaperHandler(Handler):
         body = render_from_store(
             store=self.store,
             ref_id=ref.id,
-            slug=ref.slug or str(ref.id),
+            # ADR 0036: emit the universal record handle (``pa<id>``) so
+            # every row + drill-in hint is a copy-pasteable get id. The
+            # legacy ``kind:slug~pos`` form was unparseable on input.
+            handle=_pa(ref),
             kind="paper",
             scope=scope,
         )

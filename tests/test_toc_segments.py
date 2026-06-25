@@ -29,21 +29,21 @@ def _blk(pos, keywords):
 
 
 def test_empty_paper_yields_no_segments() -> None:
-    assert build_toc_segments(store=_Store([]), ref_id=1, slug="x") == []
+    assert build_toc_segments(store=_Store([]), ref_id=1, handle="pa1") == []
 
 
 def test_short_range_is_one_segment_per_chunk() -> None:
     blocks = [_blk(i, [f"kw{i}"]) for i in range(5)]
-    segs = build_toc_segments(store=_Store(blocks), ref_id=1, slug="smith24")
+    segs = build_toc_segments(store=_Store(blocks), ref_id=1, handle="pa42")
     assert len(segs) == 5
     assert segs[0] == {
-        "handle": "smith24~0",
+        "handle": "pa42~0",
         "lo": 0,
         "hi": 0,
         "keywords": ["kw0"],
         "n": 1,
     }
-    # Single-chunk segments carry the bare ``slug~pos`` handle (no range).
+    # Single-chunk segments carry the bare ``pa<id>~pos`` handle (no range).
     assert all(s["lo"] == s["hi"] for s in segs)
 
 
@@ -55,7 +55,7 @@ def test_large_range_clusters_into_ranges() -> None:
     blocks = [
         _blk(i, ["alpha", "beta"] if i < half else ["gamma", "delta"]) for i in range(n)
     ]
-    segs = build_toc_segments(store=_Store(blocks), ref_id=1, slug="p")
+    segs = build_toc_segments(store=_Store(blocks), ref_id=1, handle="pa7")
     # Clustered (fewer rows than chunks) and every segment spans a range.
     assert 1 < len(segs) < n
     assert segs[0]["lo"] == 0

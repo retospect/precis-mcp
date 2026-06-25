@@ -30,16 +30,19 @@ better. Both work on every TOC-capable kind (today: `paper`, `skill`).
 ## What do the columns mean?
 
 ```text
-# <slug> TOC — 142 chunks, 8 clusters
+# pa5 TOC — 142 chunks, 8 clusters
 
 {handle	keywords}
-<slug>~0..14	keyword phrases for this range
-<slug>~15..29	keyword phrases for the next range
+pa5~0..14	keyword phrases for this range
+pa5~15..29	keyword phrases for the next range
 …
 ```
 
-Each row is a `slug~A..B` handle. Paste any handle as `id=` to read
-that range. Keywords are most-distinctive first — `keywords[0]` is
+Each row is a `<handle>~A..B` handle, where `<handle>` is the record's
+universal handle (`pa<id>` for a paper). Paste any row handle straight
+back as `id=` to read that range — it round-trips verbatim. (A cite-key
+slug, `vaswani17~0..14`, also resolves on input, so older copy-pastes
+still work.) Keywords are most-distinctive first — `keywords[0]` is
 what makes the range unique, not what the whole document is about.
 
 Short documents render one row per chunk with a text preview instead

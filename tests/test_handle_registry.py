@@ -152,6 +152,13 @@ def test_parse_relative_step() -> None:
     assert hr.parse_relative("pc10--") == ("paper", True, 10, ("step", -1))
 
 
+def test_parse_relative_zero_step_is_identity() -> None:
+    """A ``±0`` step is a redundant no-op but resolves to the chunk itself
+    (idempotent / liberal-in-what-we-accept), mirroring the ``-0..0`` span."""
+    assert hr.parse_relative("pc10+0") == ("paper", True, 10, ("step", 0))
+    assert hr.parse_relative("pc10-0") == ("paper", True, 10, ("step", 0))
+
+
 def test_parse_relative_ancestor() -> None:
     assert hr.parse_relative("dc4^") == ("draft", True, 4, ("ancestor", 1))
     assert hr.parse_relative("dc4^^") == ("draft", True, 4, ("ancestor", 2))
@@ -166,7 +173,6 @@ def test_parse_relative_span() -> None:
 def test_parse_relative_rejects_non_relative_and_junk() -> None:
     assert hr.parse_relative("pc10") is None  # absolute, no operator
     assert hr.parse_relative("me5+1") is None  # record code, not a chunk
-    assert hr.parse_relative("pc10+0") is None  # zero step is a no-op
     assert hr.parse_relative("miller23+1") is None  # legacy slug
     assert hr.parse_relative("pc10+x") is None  # malformed operator
 

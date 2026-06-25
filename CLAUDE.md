@@ -363,3 +363,4 @@ the README lists only a sample). Cross-refs: `precis-tasks-help`,
   must use `safe_get` / `safe_stream` from
   `src/precis/utils/safe_fetch.py`. Raw `httpx.Client(...).get(url)`
   with `follow_redirects=True` is an SSRF.
+- there is no CHANGELOG.md file because it is all in git history.

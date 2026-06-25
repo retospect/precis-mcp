@@ -41,6 +41,7 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from types import SimpleNamespace
 from typing import Any
 
 from precis.handlers._link_tag_ops import apply_tag_ops
@@ -64,6 +65,21 @@ _MAX_BODY_CHARS = 40_000
 #: 30-min poll cadence, so one error skips ~one tick, doubling thereafter.
 _BACKOFF_BASE_MIN = 30
 _BACKOFF_CAP_MIN = 1440
+
+#: Per-feed HTTP timeout (seconds), applied to connect *and* read. The
+#: default fetcher used to call ``feedparser.parse(url)``, which does its
+#: own **un-timed** urllib GET — a feed server that accepts the TCP
+#: connection but never sends data wedged the single-threaded agent worker
+#: indefinitely (and with it every ``claude_inproc`` job, since that pass
+#: runs only on the agent profile). We fetch through ``safe_get`` with this
+#: bound instead, so a dead feed errors + backs off rather than hangs.
+_FEED_TIMEOUT_S = 20.0
+
+#: UA for feed fetches. Mirrors the ``web`` handler's default so outlets
+#: that 403 unknown agents keep serving us (feedparser sent its own UA).
+_FEED_USER_AGENT = (
+    "Mozilla/5.0 (compatible; precis-mcp/2.0; +https://github.com/retospect/precis-mcp)"
+)
 
 #: Feed parser: ``(url, *, etag=None, modified=None) -> parsed feed`` with
 #: ``.entries`` and (on a conditional GET) ``.status`` (304 = unchanged) +
@@ -362,12 +378,52 @@ def run_news_pass(
 def _default_parse_feed(
     url: str, *, etag: str | None = None, modified: str | None = None
 ) -> Any:
+    """Fetch + parse one feed, bounded by ``_FEED_TIMEOUT_S``.
+
+    We deliberately do **not** let ``feedparser`` fetch the URL — its
+    internal urllib GET has no timeout and also bypasses the SSRF guard.
+    Instead we ``safe_get`` the bytes (bounded + redirect-revalidated) and
+    hand them to ``feedparser.parse`` for *offline* parsing, then mirror the
+    subset of its result the caller reads: ``.status`` (304 short-circuit),
+    ``.entries``, and the ``.etag`` / ``.modified`` validators to persist.
+    """
+    import httpx
+
     from precis.utils.optional_deps import require_optional
+    from precis.utils.safe_fetch import safe_get
 
     feedparser = require_optional("feedparser", extra="external")
-    # feedparser sends If-None-Match / If-Modified-Since from these and sets
-    # ``.status == 304`` (with empty ``.entries``) when the feed is unchanged.
-    return feedparser.parse(url, etag=etag or None, modified=modified or None)
+
+    # Conditional GET: echo the validators feedparser would have sent so an
+    # unchanged feed answers 304 (no body re-download).
+    headers = {
+        "User-Agent": _FEED_USER_AGENT,
+        "Accept": (
+            "application/rss+xml, application/atom+xml, "
+            "application/xml;q=0.9, */*;q=0.8"
+        ),
+    }
+    if etag:
+        headers["If-None-Match"] = etag
+    if modified:
+        headers["If-Modified-Since"] = modified
+
+    # follow_redirects=False — safe_get walks the chain itself, revalidating
+    # every hop against the SSRF blocklist (feeds 301/302 routinely).
+    with httpx.Client(
+        timeout=_FEED_TIMEOUT_S, follow_redirects=False, headers=headers
+    ) as client:
+        resp = safe_get(client, url)
+
+    if resp.status_code == 304:
+        return SimpleNamespace(status=304, entries=[], etag=etag, modified=modified)
+    resp.raise_for_status()  # 4xx/5xx → caller records error + backs off
+
+    parsed = feedparser.parse(resp.content)  # bytes in → no network
+    parsed["status"] = resp.status_code
+    parsed["etag"] = resp.headers.get("ETag")
+    parsed["modified"] = resp.headers.get("Last-Modified")
+    return parsed
 
 
 __all__ = ["run_news_pass"]

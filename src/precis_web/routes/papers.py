@@ -594,8 +594,10 @@ async def toc_in_paper(request: Request, ref_id: int) -> JSONResponse:
     ref = _resolve_paper(store, str(ref_id))
     if ref is None:
         return JSONResponse({"segments": []})
-    slug = ref.slug or f"id{ref.id}"
-    segments = build_toc_segments(store=store, ref_id=ref.id, slug=slug)
+    # ADR 0036: prefix each segment with the universal record handle
+    # (``pa<id>``) so the web row mirrors the agent surface's get id.
+    handle = format_handle("paper", ref.id)
+    segments = build_toc_segments(store=store, ref_id=ref.id, handle=handle)
     pages = store.chunk_pages(ref.id, [seg["lo"] for seg in segments])
     for seg in segments:
         seg["page"] = pages.get(seg["lo"])
