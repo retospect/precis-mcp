@@ -44,6 +44,36 @@ def test_one_draft_per_project(store: Store) -> None:
         store.create_draft(name="d2", title="Two", project_ref_id=proj)
 
 
+def test_soft_delete_draft_is_atomic_and_recoverable(store: Store) -> None:
+    proj = _project(store)
+    ref, _title = store.create_draft(name="doomed", title="Doomed", project_ref_id=proj)
+    store.add_chunks(ref_id=ref.id, chunk_kind="paragraph", text="body one\n\nbody two")
+    n_live = len(store.reading_order(ref.id))
+    assert n_live >= 3  # title heading + two paragraphs
+
+    retired = store.soft_delete_draft(ref.id)
+    assert retired == n_live
+    # ref is soft-deleted (hidden from the kind lookup) and all chunks retired
+    assert store.get_ref(kind="draft", id=ref.id) is None
+    assert store.reading_order(ref.id) == []
+    with store.pool.connection() as conn:
+        dref = conn.execute(
+            "SELECT deleted_at FROM refs WHERE ref_id=%s", (ref.id,)
+        ).fetchone()
+        live_chunks = conn.execute(
+            "SELECT count(*) FROM chunks WHERE ref_id=%s AND retired_at IS NULL",
+            (ref.id,),
+        ).fetchone()
+    assert dref[0] is not None
+    assert live_chunks[0] == 0
+
+    # idempotent / guards a non-live draft
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput):
+        store.soft_delete_draft(ref.id)
+
+
 def test_add_chunks_positions_and_hierarchy(store: Store) -> None:
     proj = _project(store)
     ref, title = store.create_draft(name="nt", title="Title", project_ref_id=proj)

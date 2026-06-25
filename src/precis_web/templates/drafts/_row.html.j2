@@ -6,17 +6,15 @@
 <div id="c-{{ r.handle }}"
      {% if r.is_heading %}data-heading="{{ r.handle }}"{% endif %}
      data-anc='{{ r.ancestors | tojson }}'
-     x-show='vis({{ r.ancestors | tojson }})' x-cloak
-     class="grid grid-cols-1 lg:grid-cols-[1fr_20%_22%] gap-3 py-1.5 border-b border-slate-100 scroll-mt-4 group">
+     class="dr-block grid grid-cols-1 lg:grid-cols-[1fr_20%_22%] gap-3 py-1.5 border-b border-slate-100 scroll-mt-4 group">
   {# ── Col A: content ─────────────────────────────────────────── #
      `raw` (click-to-pin) shows the chunk's verbatim source — the
      markdown + ¶/§ markers behind the rendered view, for debugging. #}
   <div data-content style="padding-left: {{ r.depth }}rem" x-data="{ raw: false }">
     {% if r.is_heading %}
     <div class="flex items-start gap-1.5">
-      <button @click="toggle('{{ r.handle }}')"
-              class="mt-0.5 font-mono text-xs text-slate-400 hover:text-slate-700 select-none"
-              x-text="isC('{{ r.handle }}') ? '▸' : '▾'"></button>
+      <button data-toggle="{{ r.handle }}"
+              class="dr-toggle mt-0.5 font-mono text-xs text-slate-400 hover:text-slate-700 select-none">▾</button>
       <h3 class="font-semibold text-slate-900
                  {% if r.depth == 0 %}text-lg{% elif r.depth == 1 %}text-base{% else %}text-sm{% endif %}">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</h3>
       {# Run a standard reviewer on this heading's subtree (the doc root

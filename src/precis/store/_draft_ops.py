@@ -27,6 +27,13 @@ from precis.utils.handles import new_handle
 
 _HANDLE_RETRIES = 6
 
+#: Above this many characters of concatenated prose, skip the inline
+#: Schwartz-Hearst abbreviation scan in ``defined_abbrevs`` (regex over the
+#: whole draft — multi-second on a 1M+ char draft). Explicit ``term``
+#: chunks still populate the glossary; only the auto-detected inline pairs
+#: are dropped for very large drafts.
+_ABBREV_INLINE_SCAN_CAP = 300_000
+
 
 def content_sha(text: str) -> str:
     """Hash of the resolved-for-search text (markers are stripped later;
@@ -241,6 +248,27 @@ class DraftMixin:
                 "SELECT meta FROM chunks WHERE handle = %s", (_bare(handle),)
             ).fetchone()
         return dict(row[0]) if row and row[0] else {}
+
+    def soft_delete_draft(self, ref_id: int) -> int:
+        """Soft-delete a whole draft **atomically**: mark the draft ref
+        ``deleted_at`` and retire all its live chunks, in one transaction.
+        Recoverable (clear ``deleted_at`` + ``retired_at`` to restore).
+        Returns the number of chunks retired. Raises if the ref isn't a
+        live draft."""
+        with self.tx() as conn:
+            rc = conn.execute(
+                "UPDATE refs SET deleted_at = now() "
+                "WHERE ref_id = %s AND kind = 'draft' AND deleted_at IS NULL",
+                (ref_id,),
+            ).rowcount
+            if rc == 0:
+                raise BadInput(f"no live draft ref id={ref_id}")
+            chunks = conn.execute(
+                "UPDATE chunks SET retired_at = now() "
+                "WHERE ref_id = %s AND retired_at IS NULL",
+                (ref_id,),
+            ).rowcount
+        return int(chunks)
 
     def get_draft_chunk(self, handle: str) -> DraftChunk | None:
         """A single live-or-retired draft chunk by its address.
@@ -1378,8 +1406,12 @@ class _AbbrevMixin:
                 "AND ord >= 0 AND retired_at IS NULL",
                 (ref_id,),
             ).fetchone()
-            # Inline pairs first; explicit term chunks overwrite them.
-            if prow and prow[0]:
+            # Inline pairs first; explicit term chunks overwrite them. The
+            # Schwartz-Hearst scan is regex over the *whole* concatenated
+            # prose — multi-second on a huge draft (1M+ chars). Above the
+            # cap, skip it: the abbreviation highlight is a reader nicety,
+            # and explicit ``term`` chunks (below) still give the glossary.
+            if prow and prow[0] and len(prow[0]) <= _ABBREV_INLINE_SCAN_CAP:
                 out.update(_sh_find(prow[0]))
             for short, long in conn.execute(
                 "SELECT meta->>'short', text FROM chunks WHERE ref_id = %s "

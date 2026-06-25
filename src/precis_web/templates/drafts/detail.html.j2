@@ -3,6 +3,9 @@
 {% block content %}
 <style>
   [x-cloak]{display:none!important}
+  /* collapse hides a block + its subtree imperatively (vanilla, no Alpine
+     per-node binding — the reason a 10k-block draft stays responsive). */
+  .dr-hidden{display:none!important}
   /* in-draft find: every match gets a soft band, the active one a ring */
   .find-hit{background-color:#fef9c3}
   .find-current{box-shadow:0 0 0 2px #f59e0b;border-radius:.25rem}
@@ -71,6 +74,27 @@
         <button type="submit" class="text-slate-500 underline hover:text-slate-800">export →project</button>
       </form>
       <a href="/drafts" class="text-slate-500 underline hover:text-slate-800">all drafts</a>
+      {# Delete the whole draft. Two-step: a button reveals a type-the-name
+         confirm (the server re-checks the name and soft-deletes the ref +
+         retires its chunks in one transaction). The owning project stays. #}
+      <div class="relative" x-data="{ del: false }" @click.outside="del = false">
+        <button @click="del = !del"
+                class="text-rose-500 underline hover:text-rose-700">delete</button>
+        <form x-show="del" x-cloak method="post"
+              action="/drafts/{{ ref.ident }}/delete"
+              @submit="if (!confirm('Delete this draft? It can be recovered by an admin, but disappears from the app.')) $event.preventDefault()"
+              class="absolute right-0 z-40 mt-1 w-72 space-y-1.5 rounded border border-rose-300 bg-white p-2 text-left shadow-lg">
+          <p class="text-[11px] text-slate-600">Type the draft name
+            <span class="font-semibold text-slate-800">{{ ref.title }}</span>
+            to delete it (recoverable):</p>
+          <input name="confirm" autocomplete="off" placeholder="draft name…"
+                 class="w-full rounded border border-slate-200 px-2 py-1 text-xs focus:border-rose-400 focus:outline-none" />
+          <div class="flex items-center gap-2">
+            <button class="rounded bg-rose-600 px-2 py-0.5 text-[11px] text-white hover:bg-rose-700">delete draft</button>
+            <button type="button" @click="del = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+          </div>
+        </form>
+      </div>
     </div>
   </div>
 
@@ -215,6 +239,8 @@ function draftDoc(ident) {
     // when they drift far away. `_inflight` dedupes concurrent hydrates.
     observer: null,
     _inflight: {},
+    _pending: null,   // Set of handles queued to hydrate (batched)
+    _loadTimer: null,
     view: localStorage.getItem('draft-view:' + ident) || 'body',
     setView(v) { this.view = v; localStorage.setItem('draft-view:' + ident, v); },
     // compact rows: text drives row height, meta column scrolls internally.
@@ -229,61 +255,112 @@ function draftDoc(ident) {
     findMode: 'verbatim',
     findHits: [],
     findIdx: -1,
+    // ── collapse (vanilla, imperative) ───────────────────────────
+    // No per-node Alpine binding: at 10k blocks that was the lag. A flat
+    // `collapsed` list drives a class toggle (`.dr-hidden`) across the
+    // blocks, and the caret glyphs, in one O(N) pass on each change.
     collapsed: JSON.parse(localStorage.getItem(key) || '[]'),
     save() { localStorage.setItem(key, JSON.stringify(this.collapsed)); },
+    applyCollapse() {
+      const set = new Set(this.collapsed);
+      const doc = document.getElementById('doc');
+      doc.querySelectorAll('.dr-block').forEach((el) => {
+        let anc; try { anc = JSON.parse(el.dataset.anc || '[]'); } catch (e) { anc = []; }
+        el.classList.toggle('dr-hidden', anc.some((x) => set.has(x)));
+      });
+      doc.querySelectorAll('[data-toggle]').forEach((b) => {
+        b.textContent = set.has(b.dataset.toggle) ? '▸' : '▾';
+      });
+    },
+    _applyCollapseTo(nodes) {  // just-hydrated rows: respect current collapse
+      const set = new Set(this.collapsed);
+      nodes.forEach((el) => {
+        let anc; try { anc = JSON.parse(el.dataset.anc || '[]'); } catch (e) { anc = []; }
+        el.classList.toggle('dr-hidden', anc.some((x) => set.has(x)));
+      });
+    },
     toggle(h) {
       const i = this.collapsed.indexOf(h);
       if (i >= 0) this.collapsed.splice(i, 1); else this.collapsed.push(h);
       this.save();
+      this.applyCollapse();
     },
-    isC(h) { return this.collapsed.includes(h); },
-    vis(anc) { return !anc.some((x) => this.collapsed.includes(x)); },
     collapseAll() {
-      this.collapsed = Array.from(document.querySelectorAll('[data-heading]'))
+      this.collapsed = Array.from(document.querySelectorAll('#doc [data-heading]'))
         .map((e) => e.dataset.heading);
       this.save();
+      this.applyCollapse();
     },
-    expandAll() { this.collapsed = []; this.save(); },
-    // ── on-demand block loading ──────────────────────────────────
+    expandAll() { this.collapsed = []; this.save(); this.applyCollapse(); },
+    // ── on-demand block loading (batched) ────────────────────────
     // One IntersectionObserver with a generous margin: a placeholder
-    // within the margin hydrates; a hydrated row beyond it unloads. The
-    // margin is the hysteresis — you must cross it to flip a block, so a
-    // block hydrated just inside won't immediately unload.
+    // within the margin is QUEUED and the queue flushes as ONE request
+    // (GET /rows?handles=…) — not one HTTP per block. A hydrated row
+    // beyond the margin unloads back to an inert placeholder, so the
+    // count of live Alpine rows (and the DOM cost) stays bounded.
     setupVirtual() {
       if (this.observer) this.observer.disconnect();
+      this._pending = new Set();
+      if (this._loadTimer) { clearTimeout(this._loadTimer); this._loadTimer = null; }
       this.observer = new IntersectionObserver((entries) => {
         for (const e of entries) {
           const el = e.target;
           if (el.dataset.ph) {           // a placeholder
-            if (e.isIntersecting) this.loadRow(el);
+            if (e.isIntersecting) this.queueLoad(el);
           } else {                        // a hydrated row
             if (!e.isIntersecting) this.unloadRow(el);
           }
         }
-      }, { root: null, rootMargin: '1500px 0px 1500px 0px', threshold: 0 });
-      document.querySelectorAll('#doc > [id^="c-"]')
+      }, { root: null, rootMargin: '1200px 0px 1200px 0px', threshold: 0 });
+      document.querySelectorAll('#doc > .dr-block')
         .forEach((el) => this.observer.observe(el));
     },
-    loadRow(el) {
+    queueLoad(el) {
       const h = el.dataset.handle;
-      if (!h || !el.dataset.ph) return Promise.resolve();
-      if (this._inflight[h]) return this._inflight[h];
+      if (!h) return;
+      this._pending.add(h);
+      if (this._loadTimer) return;
+      this._loadTimer = setTimeout(() => {
+        this._loadTimer = null;
+        const hs = [...this._pending].filter((x) => {
+          const n = document.getElementById('c-' + x);
+          return n && n.dataset.ph && !this._inflight[x];
+        });
+        this._pending.clear();
+        if (hs.length) this.loadRows(hs);
+      }, 60);
+    },
+    loadRows(hs) {
+      const todo = hs.filter((h) => !this._inflight[h]);
+      if (!todo.length) {
+        return Promise.all(hs.map((h) => this._inflight[h]).filter(Boolean));
+      }
+      const qs = todo.map(encodeURIComponent).join(',');
       const p = (async () => {
         const html = await (await fetch(
-          `/drafts/${this.ident}/row/${h}`, {cache: 'no-store'})).text();
+          `/drafts/${this.ident}/rows?handles=${qs}`, {cache: 'no-store'})).text();
         const tpl = document.createElement('template');
         tpl.innerHTML = html.trim();
-        const node = tpl.content.firstElementChild;
-        if (!node) return;
-        this.observer.unobserve(el);
-        el.replaceWith(node);            // Alpine binds the new node (MutationObserver)
-        if (window.htmx) window.htmx.process(node);
-        __renderMath(node);
-        this.observer.observe(node);
-        // The hydrated block may be a current find hit — re-apply marks.
-        if (this.findQuery.trim() && this.findHits.includes(h)) this._markHits();
-      })().catch(() => {}).finally(() => { delete this._inflight[h]; });
-      this._inflight[h] = p;
+        const inserted = [];
+        [...tpl.content.children].forEach((node) => {
+          const ph = node.id && document.getElementById(node.id);
+          if (ph && ph.dataset.ph) {
+            this.observer.unobserve(ph);
+            ph.replaceWith(node);        // Alpine binds the new node (MutationObserver)
+            this.observer.observe(node);
+            inserted.push(node);
+          }
+        });
+        this._applyCollapseTo(inserted);
+        inserted.forEach((node) => {
+          if (window.htmx) window.htmx.process(node);
+          __renderMath(node);
+        });
+        if (this.findQuery.trim()) this._markHits();
+      })().catch(() => {}).finally(() => {
+        todo.forEach((h) => { delete this._inflight[h]; });
+      });
+      todo.forEach((h) => { this._inflight[h] = p; });
       return p;
     },
     unloadRow(el) {
@@ -298,23 +375,20 @@ function draftDoc(ident) {
       this.observer.observe(ph);
     },
     _makePlaceholder(el) {
-      // Rebuild a sized placeholder for a hydrated row: keep its id /
-      // ancestors / collapse binding, freeze its measured height so the
+      // Rebuild an INERT placeholder for a hydrated row (no Alpine), freeze
+      // its measured height (content-visibility intrinsic size) so the
       // scroll position doesn't jump as it unloads off-screen.
-      const anc = el.dataset.anc || '[]';
+      const px = Math.max(24, Math.round(el.offsetHeight));
       const ph = document.createElement('div');
       ph.id = el.id;
       ph.dataset.ph = '1';
       ph.dataset.handle = el.id.slice(2);   // strip 'c-'
-      ph.dataset.anc = anc;
-      ph.setAttribute('x-show', `vis(${anc})`);
-      ph.setAttribute('x-cloak', '');
-      ph.style.minHeight = el.offsetHeight + 'px';
-      ph.className = 'js-draft-ph grid grid-cols-1 lg:grid-cols-[1fr_20%_22%] '
-        + 'gap-3 py-1.5 border-b border-slate-100 scroll-mt-4 group';
-      ph.innerHTML = '<div data-content>'
-        + '<p class="text-sm italic text-slate-300 truncate select-none">…</p>'
-        + '</div><div></div><div></div>';
+      ph.dataset.anc = el.dataset.anc || '[]';
+      ph.style.contentVisibility = 'auto';
+      ph.style.containIntrinsicSize = `auto ${px}px`;
+      ph.className = 'dr-block grid grid-cols-1 lg:grid-cols-[1fr_20%_22%] '
+        + 'gap-3 py-1.5 border-b border-slate-100 scroll-mt-4';
+      ph.innerHTML = '<div></div><div></div><div></div>';
       return ph;
     },
     // Resolve once the block is a hydrated row — used by find + deep-link
@@ -322,7 +396,7 @@ function draftDoc(ident) {
     ensureLoaded(h) {
       const el = document.getElementById('c-' + h);
       if (!el || !el.dataset.ph) return Promise.resolve();
-      return this.loadRow(el);
+      return this.loadRows([h]);
     },
     // ── in-draft find ────────────────────────────────────────────
     setFindMode(m) { this.findMode = m; if (this.findQuery.trim()) this.runFind(); },
@@ -377,7 +451,7 @@ function draftDoc(ident) {
       if (this.findMode !== 'verbatim') return;
       this.findHits.forEach((h) => {
         const e = document.getElementById('c-' + h);
-        if (e) e.classList.add('find-hit');
+        if (e && !e.dataset.ph) e.classList.add('find-hit');  // skip inert placeholders
         this._markWord(h);
       });
     },
@@ -417,7 +491,9 @@ function draftDoc(ident) {
       if (el.dataset.anc) {
         const anc = JSON.parse(el.dataset.anc);
         const next = this.collapsed.filter((x) => !anc.includes(x));
-        if (next.length !== this.collapsed.length) { this.collapsed = next; this.save(); }
+        if (next.length !== this.collapsed.length) {
+          this.collapsed = next; this.save(); this.applyCollapse();
+        }
       }
       // The target may be an un-hydrated placeholder — load it so the
       // match content (and its word-marks) are actually visible.
@@ -432,6 +508,15 @@ function draftDoc(ident) {
     findNext() { this.gotoHit(this.findIdx + 1); },
     findPrev() { this.gotoHit(this.findIdx - 1); },
     init() {
+      this.applyCollapse();   // apply persisted collapse to the server DOM
+      // Single delegated collapse handler — placeholders are inert, so the
+      // caret click can't be an Alpine @click; both placeholder and
+      // hydrated heading carets go through here.
+      const doc = document.getElementById('doc');
+      doc.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-toggle]');
+        if (b && doc.contains(b)) { e.preventDefault(); this.toggle(b.dataset.toggle); }
+      });
       this.setupVirtual();
       this.$nextTick(async () => {
         // A #c-<handle> deep link must land visible: expand its ancestors,
@@ -441,8 +526,10 @@ function draftDoc(ident) {
           let el = document.getElementById(id);
           if (el && el.dataset.anc) {
             const anc = JSON.parse(el.dataset.anc);
-            this.collapsed = this.collapsed.filter((x) => !anc.includes(x));
-            this.save();
+            const next = this.collapsed.filter((x) => !anc.includes(x));
+            if (next.length !== this.collapsed.length) {
+              this.collapsed = next; this.save(); this.applyCollapse();
+            }
           }
           await this.ensureLoaded(id.slice(2));
           el = document.getElementById(id);
@@ -492,7 +579,8 @@ function draftDoc(ident) {
         // This is the "mouseovers stop working after the doc updates" bug.
         if (window.htmx) window.htmx.process(doc);
         __renderDocMath();
-        this.setupVirtual();  // re-observe the fresh block set
+        this.applyCollapse();  // re-apply collapse to the fresh DOM
+        this.setupVirtual();   // re-observe the fresh block set
         this.version = v;
         this.stale = false;
         if (this.findQuery.trim()) this.runFind();  // the swap wiped the marks

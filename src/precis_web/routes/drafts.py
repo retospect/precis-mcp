@@ -9,18 +9,23 @@ three columns —
   ├ meta    (terse: the refs this block makes + in-flight change-requests)
   └ change  (a per-block "around here…" box → an anchored todo)
 
-**On-demand loading (windowed virtualization).** A massive draft is not
-rendered all at once: the reader hydrates only the first ``INITIAL_WINDOW``
-blocks server-side and emits the rest as lightweight placeholders. Client
-JS (``draftDoc`` in ``detail.html.j2``) runs one ``IntersectionObserver``
-that hydrates a placeholder via ``/row/{handle}`` as it nears the viewport
-and unloads a hydrated row back to a sized placeholder when it drifts far
-away — so DOM + memory stay bounded regardless of draft size, and the
-per-block enrichment (requests / connections / summaries / abbrevs) moves
-from page-load to scroll-time. A draft with ≤ ``INITIAL_WINDOW`` blocks is
-fully hydrated and behaves exactly as before. Find, collapse, deep-links,
-and the live poll are all window-aware (they ensure a target placeholder
-hydrates before scrolling to it).
+**On-demand loading (windowed virtualization).** A massive draft (10k+
+blocks) is not rendered all at once: the reader hydrates only the first
+``INITIAL_WINDOW`` blocks server-side and emits the rest as **inert**
+placeholders — plain DOM, no Alpine, ``content-visibility:auto`` so the
+browser skips off-screen layout. (Carrying one Alpine-bound node per block
+was the "works but with a minute lag" bug — ~10k reactive nodes.) Client JS
+(``draftDoc`` in ``detail.html.j2``) runs one ``IntersectionObserver`` that
+**batch-hydrates** placeholders near the viewport in a single
+``/rows?handles=…`` request (not one HTTP per block) and unloads a hydrated
+row back to a sized placeholder when it drifts far away, so the count of
+live Alpine rows — and the DOM/enrichment cost — stays bounded. Collapse is
+vanilla and imperative (a class toggle, no per-node binding). The whole-
+draft inputs (reading order, version, abbrevs) are memoised per
+``(ref, version)`` so a hydrate doesn't re-scan the draft. A draft with ≤
+``INITIAL_WINDOW`` blocks is fully hydrated and behaves as a plain reader.
+Find, collapse, deep-links, and the live poll are all window-aware (they
+ensure a target placeholder hydrates before scrolling to it).
 
 Routes:
 
@@ -29,14 +34,16 @@ Routes:
 * ``GET /draft/{ident}`` — singular convenience alias → 303 to the reader.
 * ``POST /drafts/{ident}/request`` — file a change request (anchored todo
   parented on the draft's project; flows into the todo tree → dispatch).
+* ``POST /drafts/{ident}/delete`` — soft-delete the whole draft, gated on
+  typing its name (atomic: ref ``deleted_at`` + chunks retired; recoverable).
 * ``GET /c/{handle}`` — resolve a ``¶`` handle → redirect into the reader
   at ``#c-<handle>`` (the click target of every ``¶`` anchor).
 * ``GET /preview/chunk/{handle}`` — hover-popover fragment for a ``¶``.
-* ``GET /drafts/{ident}/row/{handle}`` — one hydrated row; the fragment the
-  ``IntersectionObserver`` swaps in for a placeholder (and the live poll).
+* ``GET /drafts/{ident}/row/{handle}`` — one hydrated row.
+* ``GET /drafts/{ident}/rows`` — ``?handles=a,b,…`` batch-hydrates those
+  blocks (the reader's window fetch); no param → the whole document.
 * ``GET /drafts/{ident}/doc`` — the windowed document body (first window
   hydrated + placeholders), no chrome; what the live poll swaps in.
-* ``GET /drafts/{ident}/rows`` — the whole document hydrated, no chrome.
 * ``GET /drafts/{ident}/version`` — a monotone version token (max
   ``chunk_events.event_id``) the poll compares against.
 
@@ -112,6 +119,40 @@ def _abbrevs_cached(store: Any, ref_id: int, version: int) -> dict[str, str]:
     while len(_ABBREV_CACHE) > _ABBREV_CACHE_MAX:
         _ABBREV_CACHE.popitem(last=False)
     return val
+
+
+#: Bounded ``(ref_id, version) → reading_order`` cache. ``reading_order``
+#: is a recursive CTE over the whole draft; without this, every on-demand
+#: row hydrate (one HTTP request per block) would re-run it — O(N) per
+#: block → O(N²) over a scroll of a 10k-chunk draft. The cached list is
+#: immutable (frozen ``DraftChunk`` dataclasses), so it's safe to share.
+#: Keyed by the version token, so any chunk create/edit/move invalidates.
+_RO_CACHE: OrderedDict[tuple[int, int], list[Any]] = OrderedDict()
+_RO_CACHE_MAX = 16
+
+
+def _reading_order_cached(store: Any, ref_id: int, version: int) -> list[Any]:
+    key = (ref_id, version)
+    hit = _RO_CACHE.get(key)
+    if hit is not None:
+        _RO_CACHE.move_to_end(key)
+        return hit
+    val = store.reading_order(ref_id)
+    _RO_CACHE[key] = val
+    _RO_CACHE.move_to_end(key)
+    while len(_RO_CACHE) > _RO_CACHE_MAX:
+        _RO_CACHE.popitem(last=False)
+    return val
+
+
+def _doc_state(store: Any, ref: Any) -> tuple[list[Any], int, dict[str, str]]:
+    """The whole-draft inputs every render path shares — reading order,
+    version token, abbreviations — each memoised per (ref, version) so a
+    big draft pays for them once, not once per hydrated block."""
+    version = _draft_version(store, ref.id)
+    chunk_objs = _reading_order_cached(store, ref.id, version)
+    abbrevs = _abbrevs_cached(store, ref.id, version)
+    return chunk_objs, version, abbrevs
 
 
 def _draft_ref(store: Any, ident: str) -> Any:
@@ -397,22 +438,25 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
     """Per-block row context for the **whole** draft (the live-refresh
     ``/rows`` fragment). The reader itself renders only an initial window
     fully — see ``_doc_items`` — and hydrates the rest on demand."""
-    chunk_objs = store.reading_order(ref.id)
-    abbrevs = store.defined_abbrevs(ref.id)
+    chunk_objs, _version, abbrevs = _doc_state(store, ref)
     return _build_rows(store, ref, chunk_objs, range(len(chunk_objs)), abbrevs=abbrevs)
 
 
+def _rows_for_handles(store: Any, ref: Any, handles: list[str]) -> list[dict[str, Any]]:
+    """Hydrate a *batch* of blocks by handle, in document order — the
+    on-demand fragment the reader swaps in for a window of placeholders.
+    One request hydrates many blocks (vs one HTTP per block), and the
+    shared cached reading-order means no per-block whole-draft re-scan."""
+    chunk_objs, _version, abbrevs = _doc_state(store, ref)
+    want = {h for h in handles}
+    idx = [i for i, c in enumerate(chunk_objs) if c.handle in want]
+    return _build_rows(store, ref, chunk_objs, idx, abbrevs=abbrevs)
+
+
 def _one_row(store: Any, ref: Any, handle: str) -> dict[str, Any] | None:
-    """Hydrate a single block by handle — the on-demand fragment the reader
-    swaps in as a placeholder scrolls into view. O(neighbours) enrichment,
-    not O(whole draft): only this block (plus its prev/next for the nearby
-    fold) hit the per-handle queries."""
-    chunk_objs = store.reading_order(ref.id)
-    idx = next((i for i, c in enumerate(chunk_objs) if c.handle == handle), None)
-    if idx is None:
-        return None
-    abbrevs = _abbrevs_cached(store, ref.id, _draft_version(store, ref.id))
-    rows = _build_rows(store, ref, chunk_objs, {idx}, abbrevs=abbrevs)
+    """Hydrate a single block by handle — O(neighbours) enrichment over the
+    cached reading order, not a whole-draft re-scan per block."""
+    rows = _rows_for_handles(store, ref, [handle])
     return rows[0] if rows else None
 
 
@@ -458,10 +502,14 @@ def _doc_items(store: Any, ref: Any) -> list[dict[str, Any]]:
     """The document body as a mix of hydrated rows (the first
     ``INITIAL_WINDOW`` blocks) and placeholders (the rest). Each item is
     ``{loaded: True, row: …}`` or ``{loaded: False, ph: …}``. Small drafts
-    are entirely loaded → identical to the old full render."""
-    chunk_objs = store.reading_order(ref.id)
+    are entirely loaded → identical to the old full render.
+
+    Placeholders are deliberately **inert** (plain DOM, no Alpine, CSS
+    ``content-visibility`` for off-screen layout skipping) so a 10k-chunk
+    draft doesn't pay Alpine reactivity per block — only the hydrated
+    window carries the interactive row machinery."""
+    chunk_objs, _version, abbrevs = _doc_state(store, ref)
     n = len(chunk_objs)
-    abbrevs = _abbrevs_cached(store, ref.id, _draft_version(store, ref.id))
     first = min(INITIAL_WINDOW, n)
     anc = _ancestor_headings(chunk_objs)
     full = _build_rows(store, ref, chunk_objs, range(first), abbrevs=abbrevs)
@@ -730,6 +778,52 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
     )
 
 
+def _delete_confirm_ok(ref: Any, confirm: str) -> bool:
+    """The type-the-name guard: the typed text must match the draft's title
+    or slug (trimmed, case-insensitive). Deliberately strict — a delete must
+    be intentional, not a stray click."""
+    typed = confirm.strip().casefold()
+    if not typed:
+        return False
+    candidates = [
+        str(ref.title or "").strip().casefold(),
+        str(ref.slug or "").strip().casefold(),
+    ]
+    return typed in [c for c in candidates if c]
+
+
+@router.post("/drafts/{ident}/delete")
+async def delete_draft(
+    request: Request, ident: str, confirm: str = Form("")
+) -> Response:
+    """Soft-delete a whole draft, gated on typing its name. Atomic
+    (``store.soft_delete_draft`` marks the ref deleted + retires its chunks
+    in one transaction); recoverable. The owning project todo is left
+    intact — this deletes the document, not the project."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return RedirectResponse(url="/drafts", status_code=303)
+    if not _delete_confirm_ok(ref, confirm):
+        # name mismatch — bounce back to the reader, nothing deleted.
+        return RedirectResponse(url=f"/drafts/{ident}", status_code=303)
+    try:
+        store.soft_delete_draft(ref.id)
+    except Exception as exc:  # pragma: no cover - defensive
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "active_tab": "drafts",
+                "title": "Delete draft error",
+                "status": 400,
+                "detail": str(exc),
+            },
+            status_code=400,
+        )
+    return RedirectResponse(url="/drafts", status_code=303)
+
+
 @router.get("/draft/{ident}")
 async def reader_alias(ident: str) -> RedirectResponse:
     """Singular ``/draft/<id>`` → the canonical plural reader."""
@@ -784,18 +878,28 @@ async def reader_row(request: Request, ident: str, handle: str) -> HTMLResponse:
 
 
 @router.get("/drafts/{ident}/rows", response_class=HTMLResponse)
-async def reader_rows(request: Request, ident: str) -> HTMLResponse:
-    """Every block hydrated, no page chrome — the whole-draft render. Kept
-    for callers that want the full document in one shot; the live reader
-    uses the windowed ``/doc`` fragment instead."""
+async def reader_rows(request: Request, ident: str, handles: str = "") -> HTMLResponse:
+    """Rendered rows, no page chrome.
+
+    * ``?handles=h1,h2,…`` — **batch hydrate** just those blocks, in
+      document order. This is what the reader fetches as a window of
+      placeholders scrolls into view: one request for the whole window
+      instead of one HTTP per block (the prior O(N) hydrate storm).
+    * no ``handles`` — every block hydrated (the whole-draft render);
+      kept for callers that want the full document in one shot."""
     store = get_store(request)
     ref = _draft_ref(store, ident)
     if ref is None:
         return HTMLResponse("", status_code=404)
+    if handles.strip():
+        wanted = [h for h in handles.split(",") if h.strip()]
+        rows = _rows_for_handles(store, ref, wanted)
+    else:
+        rows = _rows_for(store, ref)
     return templates.TemplateResponse(
         request,
         "drafts/_rows.html.j2",
-        {"rows": _rows_for(store, ref), "ref": _ref_view(ref)},
+        {"rows": rows, "ref": _ref_view(ref)},
     )
 
 

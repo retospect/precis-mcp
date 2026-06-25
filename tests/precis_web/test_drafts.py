@@ -112,6 +112,11 @@ class DraftFakeStore(FakeStore):
     def reading_order(self, ref_id):
         return list(self._chunks)
 
+    def soft_delete_draft(self, ref_id):
+        self.soft_deleted_drafts = getattr(self, "soft_deleted_drafts", [])
+        self.soft_deleted_drafts.append(ref_id)
+        return len(self._chunks)
+
     def search_blocks_semantic(
         self, *, query_vec, scope_ref_id=None, limit=None, max_distance=None, **kw
     ):
@@ -266,17 +271,20 @@ def test_reader_renders_per_block_grid(draft_client: TestClient) -> None:
     # ¶ ref → chunk route
     assert "/r/paper/smith2024" in r.text
     assert 'href="/c/AAAAAA"' in r.text
-    # collapse mechanics: heading carries data-heading; BBBBBB carries its
-    # ancestor heading so it hides when AAAAAA collapses
+    # collapse mechanics (vanilla, imperative — no per-node Alpine binding):
+    # the heading carries data-heading + a data-toggle caret; BBBBBB carries
+    # its ancestor heading in data-anc so the JS hides it when AAAAAA
+    # collapses. The anc JSON MUST be single-quoted (tojson emits double
+    # quotes; a double-quoted attribute would terminate mid-array).
     assert 'data-heading="AAAAAA"' in r.text
+    assert 'data-toggle="AAAAAA"' in r.text
     assert "collapse all" in r.text
-    assert '["AAAAAA"]' in r.text  # BBBBBB's ancestors json
-    # The collapse binding MUST be single-quoted: tojson emits double quotes,
-    # so wrapping x-show in double quotes terminates the attribute mid-array
-    # and Alpine never evaluates vis() — collapse silently no-ops on every
-    # nested row. Guard the well-formed form and the broken one's absence.
-    assert "x-show='vis([\"AAAAAA\"])'" in r.text
-    assert 'x-show="vis(["AAAAAA"])"' not in r.text
+    assert "data-anc='[\"AAAAAA\"]'" in r.text  # BBBBBB's ancestors json
+    assert 'data-anc="["AAAAAA"]"' not in r.text
+    # the old Alpine per-node collapse binding is gone (the 10k-block lag)
+    assert "x-show='vis(" not in r.text
+    # rows are tagged for the collapse/observer machinery
+    assert "dr-block" in r.text
     # per-block change box posts to the anchored-todo route
     assert 'action="/drafts/nt/request"' in r.text
     # ADR 0036: the gray per-block indicator shows the universal handle
@@ -459,10 +467,10 @@ def test_reader_windows_late_blocks_as_placeholders(
     draft_client: TestClient, monkeypatch
 ) -> None:
     # Shrink the initial window to 1: only the first block (the AAAAAA
-    # heading) hydrates; the rest land as placeholders that hydrate on
-    # scroll. The placeholder must keep the collapse contract (id, ancestors,
-    # the single-quoted vis() binding) so deep-links / find / collapse work
-    # before the body loads.
+    # heading) hydrates; the rest land as INERT placeholders that hydrate on
+    # scroll. The placeholder keeps the collapse contract (id, ancestors)
+    # so deep-links / find / collapse work before the body loads — but
+    # carries NO Alpine (the 10k-block lag), only data-* hooks.
     from precis_web.routes import drafts as drafts_mod
 
     monkeypatch.setattr(drafts_mod, "INITIAL_WINDOW", 1)
@@ -473,10 +481,11 @@ def test_reader_windows_late_blocks_as_placeholders(
     # BBBBBB is now a placeholder, not a hydrated row
     assert 'data-ph="1"' in r.text
     assert 'data-handle="BBBBBB"' in r.text
-    # the placeholder still carries the collapse machinery
+    # the placeholder still carries the collapse ancestry + content-visibility
     assert "data-anc='[\"AAAAAA\"]'" in r.text
-    assert "x-show='vis([\"AAAAAA\"])'" in r.text
-    # …but NOT BBBBBB's hydrated body (its change box / connections)
+    assert "content-visibility:auto" in r.text
+    # …but NO Alpine binding, and NOT BBBBBB's hydrated body (change box)
+    assert "x-show='vis(" not in r.text
     assert 'action="/drafts/nt/request"' not in r.text.split('data-ph="1"', 1)[1]
 
 
@@ -502,6 +511,75 @@ def test_row_route_hydrates_a_windowed_block(draft_client: TestClient) -> None:
     assert "/r/paper/smith2024" in r.text  # linkified
     assert 'action="/drafts/nt/request"' in r.text  # change box
     assert 'id="c-AAAAAA"' not in r.text  # only the one block
+
+
+def test_rows_batch_hydrates_multiple_blocks_in_one_request(
+    draft_client: TestClient,
+) -> None:
+    # The reader hydrates a whole window of placeholders in ONE request
+    # (?handles=a,b) instead of one HTTP per block. Rows come back in
+    # document order, no page chrome.
+    r = draft_client.get("/drafts/nt/rows?handles=BBBBBB,AAAAAA")
+    assert r.status_code == 200
+    assert 'id="c-AAAAAA"' in r.text and 'id="c-BBBBBB"' in r.text
+    assert "/r/paper/smith2024" in r.text  # BBBBBB hydrated + linkified
+    assert "<h1" not in r.text and "draftDoc(" not in r.text
+    # a figure block is not in the batch
+    assert 'id="c-FIGFIG"' not in r.text
+
+
+def test_reader_has_delete_button_and_name_confirm(draft_client: TestClient) -> None:
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert 'action="/drafts/nt/delete"' in r.text
+    assert 'name="confirm"' in r.text
+    # the form prompts for the draft's title
+    assert "Type the draft name" in r.text
+
+
+def test_delete_draft_with_matching_name_soft_deletes(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    # title is "Nano draft" — typing it deletes (soft) and lands on /drafts.
+    r = draft_client.post(
+        "/drafts/nt/delete", data={"confirm": "Nano draft"}, follow_redirects=False
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/drafts"
+    assert 500 in getattr(draft_runtime.store, "soft_deleted_drafts", [])
+
+
+def test_delete_draft_accepts_slug_too(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    r = draft_client.post(
+        "/drafts/nt/delete", data={"confirm": "  NT "}, follow_redirects=False
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/drafts"
+    assert 500 in getattr(draft_runtime.store, "soft_deleted_drafts", [])
+
+
+def test_delete_draft_wrong_name_does_nothing(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    r = draft_client.post(
+        "/drafts/nt/delete", data={"confirm": "not the name"}, follow_redirects=False
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/drafts/nt"  # bounced back to the reader
+    assert not getattr(draft_runtime.store, "soft_deleted_drafts", [])
+
+
+def test_delete_draft_blank_confirm_does_nothing(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    r = draft_client.post(
+        "/drafts/nt/delete", data={"confirm": ""}, follow_redirects=False
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/drafts/nt"
+    assert not getattr(draft_runtime.store, "soft_deleted_drafts", [])
 
 
 def test_chunk_handle_redirects_into_reader(draft_client: TestClient) -> None:

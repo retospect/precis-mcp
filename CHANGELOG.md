@@ -8,6 +8,33 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-25 — draft reader: make windowing actually bounded at 10k blocks)
+
+- **The first windowing pass cut server enrichment but not the DOM** — it
+  still emitted one **Alpine-bound** node per chunk (`x-show='vis()'`), so a
+  9,706-chunk draft built ~10k reactive nodes and "worked but with a minute
+  lag" (search, dropdowns, typing all stuttered). Three fixes make it
+  bounded:
+  - **Placeholders are now inert** — plain DOM, no Alpine, with CSS
+    `content-visibility:auto` so the browser skips off-screen layout. Only
+    the hydrated window (≤ `INITIAL_WINDOW` + scrolled-in rows) carries the
+    interactive row machinery; the rest are cheap boxes.
+  - **Collapse is vanilla + imperative** — a flat `collapsed` list drives a
+    single `.dr-hidden` class pass and the caret glyphs, replacing the
+    ~10k per-node `x-show='vis()'` bindings. One delegated click handler
+    serves both placeholder and hydrated headings.
+  - **Hydration is batched** — the observer collects placeholders entering
+    the viewport and fetches them in **one** `GET /rows?handles=…` request
+    instead of one HTTP per block (the prior O(N) hydrate storm), and the
+    whole-draft inputs (`reading_order`, version, `defined_abbrevs`) are
+    memoised per `(ref, version)` so a hydrate no longer re-runs the 9,706-
+    row reading-order CTE each time. The inline Schwartz-Hearst abbreviation
+    scan is skipped above 300k chars (explicit `term` chunks still apply).
+- **Delete a draft** — a `delete` button on the reader, gated on **typing
+  the draft's name**, soft-deletes the whole draft atomically
+  (`store.soft_delete_draft`: ref `deleted_at` + all chunks retired in one
+  transaction; recoverable). The owning project todo is left intact.
+
 ### Changed (2026-06-25 — LaTeX export renders the new `[handle]` reference forms)
 
 - **Export resolves the universal-handle refs**, closing the gap from the
