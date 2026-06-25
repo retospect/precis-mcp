@@ -41,6 +41,16 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from precis.handlers._skill_common import parse_frontmatter
+from precis.utils.prompt import (
+    AssemblyContext,
+    ClaudeAgentAdapter,
+    Layer,
+    Module,
+    assemble,
+    doc_context_table,
+    kinds_table,
+    tools_table,
+)
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -96,18 +106,23 @@ def build_planner_prompts(store: Store, *, ref_id: int, model: str) -> PlannerPr
 def _build_system_prompt(store: Store) -> str:
     """Build the stable, cache-friendly system prompt.
 
-    Pinned skill + skill index + planner contract. No timestamps,
-    no per-tick ids, no body text — keep the prefix as long-lived
-    as possible so the cache hits on every tick.
-    """
-    pinned = _load_pinned_skill(store)
-    index = _build_skill_index(store)
-    contract = _PLANNER_CONTRACT
-    return pinned + "\n\n" + index + "\n\n" + contract
+    Pinned skill + skill index + tools + kinds + planner contract — the
+    cached layer (ADR 0038 §1). Assembled from :data:`_CACHED_MODULES`
+    via the shared assembler so the planner shares one prompt surface
+    with the editor/reviewers (migration step 1). No timestamps, no
+    per-tick ids, no body text — the prefix stays long-lived so the
+    cache hits on every tick. Tolerates ``store=None`` (no cached module
+    dereferences it)."""
+    ctx = AssemblyContext(store=store, ref_id=0, model="")
+    system, _ = ClaudeAgentAdapter.render(assemble(_CACHED_MODULES, ctx))
+    return system
 
 
-def _load_pinned_skill(store: Store) -> str:
-    """Return the verbatim text of the pinned skill (precis-tasks-help)."""
+def _load_pinned_skill(store: Store | None = None) -> str:
+    """Return the verbatim text of the pinned skill (precis-tasks-help).
+
+    ``store`` is accepted for a uniform module-builder signature but
+    unused — the pinned skill is file-backed (loaded via importlib)."""
     try:
         from precis.handlers.skill import SkillHandler
 
@@ -119,7 +134,7 @@ def _load_pinned_skill(store: Store) -> str:
         return f"# {_PINNED_SKILL_ID}\n\n(skill load failed — fall back to MCP get)\n"
 
 
-def _build_skill_index(store: Store) -> str:
+def _build_skill_index(store: Store | None = None) -> str:
     """One-line entry per active skill, derived from ``summary:`` front-matter.
 
     Reads every shipped skill via :func:`SkillHandler._load_skills_map`
@@ -484,49 +499,16 @@ def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
     (visible via search). The parent's job is to read those if it
     needs them, not to re-process every word the children emitted.
     Saves thousands of tokens per re-tick.
-    """
-    from precis.handlers._todo_views import _ancestor_chain
 
-    ancestry = _ancestor_chain(store, ref_id)
-    ancestry_block = _render_ancestry_toon(ancestry, leaf_id=ref_id)
-    project_block = _render_project_brief(store, ref_id)
-    body = _load_ref_body(store, ref_id)
-    anchor_block = _render_anchor_context(store, ref_id)
-    style_block = _render_section_style(store, ref_id)
-    workspace_block = _render_workspace_status(store, ref_id)
-    children_block = _render_children_status(store, ref_id)
-    parts: list[str] = [
-        f"You are working on todo #{ref_id}. Model: {model}.",
-        "",
-        ancestry_block,
-    ]
-    if project_block:
-        parts.append("")
-        parts.append(project_block)
-    draft_block = _render_draft_identity(store, ref_id)
-    if draft_block:
-        parts.append("")
-        parts.append(draft_block)
-        glossary_block = _render_glossary(store, ref_id)
-        if glossary_block:
-            parts.append("")
-            parts.append(glossary_block)
-    parts.append("")
-    parts.append("## Body")
-    parts.append(body or "(empty)")
-    if anchor_block:
-        parts.append("")
-        parts.append(anchor_block)
-    if style_block:
-        parts.append("")
-        parts.append(style_block)
-    if workspace_block:
-        parts.append("")
-        parts.append(workspace_block)
-    if children_block:
-        parts.append("")
-        parts.append(children_block)
-    return "\n".join(parts)
+    Assembled from :data:`_VARIABLE_MODULES` via the shared assembler
+    (ADR 0038 migration step 1). Each block keeps its prior text — the
+    optional ones self-gate by returning ``""``, which the assembler
+    drops — and a new ``doc_context`` table rides after the anchor when
+    one is set.
+    """
+    ctx = AssemblyContext(store=store, ref_id=ref_id, model=model)
+    _, user = ClaudeAgentAdapter.render(assemble(_VARIABLE_MODULES, ctx))
+    return user
 
 
 def _render_project_brief(store: Store, ref_id: int) -> str:
@@ -1013,6 +995,130 @@ def _load_child_summaries(store: Store, ref_id: int) -> str:
         parts.append(str(summary_text))
         parts.append("")
     return "\n".join(parts).strip()
+
+
+# ── module library (ADR 0038) ─────────────────────────────────────
+#
+# The planner's blocks expressed as assembler modules. Each builder is a
+# thin ``(ctx) -> str`` wrapper over the ``_render_*`` / ``_build_*``
+# functions above, so the emitted text is unchanged — the assembler only
+# orders the blocks and the adapter splits them by cache layer. New to
+# the planner (vs the old hand-rolled concatenation): the cached
+# ``tools`` + ``kinds`` legend tables and the variable ``doc_context``
+# table (gated on an anchored change-request).
+
+
+def _m_pinned(ctx: AssemblyContext) -> str:
+    return _load_pinned_skill(ctx.store)
+
+
+def _m_skill_index(ctx: AssemblyContext) -> str:
+    return _build_skill_index(ctx.store)
+
+
+def _m_tools(ctx: AssemblyContext) -> str:
+    return tools_table()
+
+
+def _m_kinds(ctx: AssemblyContext) -> str:
+    return kinds_table()
+
+
+def _m_contract(ctx: AssemblyContext) -> str:
+    return _PLANNER_CONTRACT
+
+
+def _m_identity(ctx: AssemblyContext) -> str:
+    return f"You are working on todo #{ctx.ref_id}. Model: {ctx.model}."
+
+
+def _m_ancestry(ctx: AssemblyContext) -> str:
+    assert ctx.store is not None
+    from precis.handlers._todo_views import _ancestor_chain
+
+    chain = _ancestor_chain(ctx.store, ctx.ref_id)
+    return _render_ancestry_toon(chain, leaf_id=ctx.ref_id)
+
+
+def _m_project(ctx: AssemblyContext) -> str:
+    assert ctx.store is not None
+    return _render_project_brief(ctx.store, ctx.ref_id)
+
+
+def _m_draft(ctx: AssemblyContext) -> str:
+    assert ctx.store is not None
+    return _render_draft_identity(ctx.store, ctx.ref_id)
+
+
+def _m_glossary(ctx: AssemblyContext) -> str:
+    assert ctx.store is not None
+    return _render_glossary(ctx.store, ctx.ref_id)
+
+
+def _m_body(ctx: AssemblyContext) -> str:
+    assert ctx.store is not None
+    return "## Body\n" + (_load_ref_body(ctx.store, ctx.ref_id) or "(empty)")
+
+
+def _m_anchor(ctx: AssemblyContext) -> str:
+    assert ctx.store is not None
+    return _render_anchor_context(ctx.store, ctx.ref_id)
+
+
+def _m_doc_context(ctx: AssemblyContext) -> str:
+    """The new ``doc_context`` TOON table (ADR 0038 §6). Gated on
+    ``has_anchor``, which memoises the resolved handle in ``extras``."""
+    assert ctx.store is not None
+    anchor = ctx.extras.get("anchor")
+    if not anchor:
+        return ""
+    return doc_context_table(ctx.store, anchor)
+
+
+def _m_section_style(ctx: AssemblyContext) -> str:
+    assert ctx.store is not None
+    return _render_section_style(ctx.store, ctx.ref_id)
+
+
+def _m_workspace(ctx: AssemblyContext) -> str:
+    assert ctx.store is not None
+    return _render_workspace_status(ctx.store, ctx.ref_id)
+
+
+def _m_children(ctx: AssemblyContext) -> str:
+    assert ctx.store is not None
+    return _render_children_status(ctx.store, ctx.ref_id)
+
+
+#: Cached layer — one stable cache prefix across every planner tick.
+_CACHED_MODULES: list[Module] = [
+    Module(id="pinned-skill", layer=Layer.CACHED, build=_m_pinned),
+    Module(id="skill-menu", layer=Layer.CACHED, build=_m_skill_index),
+    Module(id="tools", layer=Layer.CACHED, build=_m_tools),
+    Module(id="kinds", layer=Layer.CACHED, build=_m_kinds),
+    Module(id="contract", layer=Layer.CACHED, build=_m_contract),
+]
+
+#: Variable layer — per-tick. Optional blocks self-gate (return ``""``)
+#: or carry an ``applies_when`` predicate; the assembler drops the rest.
+_VARIABLE_MODULES: list[Module] = [
+    Module(id="identity", layer=Layer.VARIABLE, build=_m_identity),
+    Module(id="ancestry", layer=Layer.VARIABLE, build=_m_ancestry),
+    Module(id="project", layer=Layer.VARIABLE, build=_m_project),
+    Module(id="draft", layer=Layer.VARIABLE, build=_m_draft),
+    Module(id="glossary", layer=Layer.VARIABLE, build=_m_glossary),
+    Module(id="body", layer=Layer.VARIABLE, build=_m_body),
+    Module(id="anchor", layer=Layer.VARIABLE, build=_m_anchor),
+    Module(
+        id="doc_context",
+        layer=Layer.VARIABLE,
+        build=_m_doc_context,
+        applies_when="has_anchor",
+    ),
+    Module(id="section-style", layer=Layer.VARIABLE, build=_m_section_style),
+    Module(id="workspace", layer=Layer.VARIABLE, build=_m_workspace),
+    Module(id="children", layer=Layer.VARIABLE, build=_m_children),
+]
 
 
 __all__ = [
