@@ -2013,7 +2013,7 @@ def test_status_background_health_panel_renders_anomalies(client, monkeypatch) -
             "failed_passes": [
                 {
                     "host": "melchior",
-                    "pass": "deep_review",
+                    "handler": "deep_review",
                     "failed": 3,
                     "ago": "5m ago",
                 }

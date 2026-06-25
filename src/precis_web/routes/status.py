@@ -534,9 +534,12 @@ def _background_anomalies(store: Any) -> dict[str, list[dict[str, Any]]]:
       no-op outcome that never clears the claim) shows up here long
       before it would surface anywhere else.
     * ``failed_passes`` — ``worker_logs`` rows with ``failed > 0`` in
-      24h, grouped by ``(host, pass)``. Distinct from the existing
-      "recent agent activity" panel, which only shows *productive*
-      passes; this one is specifically the failures.
+      24h, grouped by ``(host, handler)`` so the operator sees *which*
+      derived-queue handler is erroring rather than an opaque ``runner``
+      total. The ``schedule`` handler is excluded: its ``failed`` is a
+      *skipped-tick* counter, not errors (see the query comment). Distinct
+      from the existing "recent agent activity" panel, which only shows
+      *productive* passes; this one is specifically the failures.
 
     Both degrade to an empty list on any schema surprise (the outer
     ``_safe`` wrapper) so the panel can't 500 the page.
@@ -569,13 +572,23 @@ def _background_anomalies(store: Any) -> dict[str, list[dict[str, Any]]]:
         ]
         fail_rows = conn.execute(
             """
-            SELECT host, pass,
+            SELECT host,
+                   COALESCE(payload->>'handler', pass) AS handler,
                    sum(COALESCE((payload->>'failed')::int, 0))::int AS failed,
                    max(ts) AS last_ts
               FROM worker_logs
              WHERE ts > now() - interval '24 hours'
                AND COALESCE((payload->>'failed')::int, 0) > 0
-             GROUP BY host, pass
+               -- The schedule pass overloads BatchResult.failed to mean
+               -- "ticks *skipped* this pass" (collision-skip when the
+               -- previous spawned child is still open), not "errors". A
+               -- single recurring wedged behind an open child inflates
+               -- this to tens of thousands/day — pure noise here. The real
+               -- condition (a stalled recurring) surfaces as a nursery
+               -- 'stalled-recurring' alert, so drop the handler from this
+               -- error panel rather than cry wolf.
+               AND COALESCE(payload->>'handler', '') <> 'schedule'
+             GROUP BY host, COALESCE(payload->>'handler', pass)
              ORDER BY failed DESC
              LIMIT 20
             """,
@@ -583,7 +596,7 @@ def _background_anomalies(store: Any) -> dict[str, list[dict[str, Any]]]:
         failed_passes = [
             {
                 "host": r[0] or "?",
-                "pass": r[1] or "?",
+                "handler": r[1] or "?",
                 "failed": int(r[2]),
                 "ago": _ago(r[3]),
             }
