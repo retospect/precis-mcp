@@ -8,6 +8,56 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-25 — llm_summarize prompt rewritten as a non-duplicating navigation gloss)
+
+- Reworked the `build_messages` prompt ahead of the 1M-chunk `llm-v1` backfill,
+  since the summaries feed the draft/paper **navigation gloss** (outline / TOC /
+  reader view-slider), not a search index:
+  - **Additive two-part output.** BRIEF is a self-contained ≤15-word gist;
+    DETAIL adds *only* specifics absent from BRIEF (the reader shows BRIEF
+    alone, or BRIEF+DETAIL, never DETAIL alone), so they no longer duplicate.
+  - **Telegraphic register** for both lines (drop leading articles/pronouns),
+    plus style rules: spell out abbreviations unless standard (keep
+    unit/element symbols, DNA, pH), space between number and unit, quantities
+    verbatim, passage-grounded (the doc card disambiguates, never adds facts).
+  - **Prefix-cache friendly.** The document *kind* moved out of the
+    instruction's first line into the per-doc context line, so the whole
+    instruction block (now incl. seven worked examples) is byte-identical across
+    every chunk in the corpus and stays cache-hot on a llama-server slot even
+    across paper/patent/conv switches.
+  - **Non-prose handling.** Pure boilerplate / data gets a short parenthetical
+    tag instead of a hallucinated summary (verified on real chunks: the old
+    prompt turned a numeric table into *"computation time 0.478 ms"* — a cell it
+    mistook for a time). Two-pronged: the prompt tags borderline cases
+    (`(tabular data)`, `(copyright notice)`, `(publication metadata)`, …) with
+    an empty DETAIL, and `claim_chunks_without_summary` skips the blatant ones
+    up front — chunks with digit fraction > `MAX_DIGIT_FRACTION` (0.5,
+    coordinate/number dumps) or longer than `MAX_CHUNK_CHARS` (16k; the 99th
+    percentile of real passages is ~830 chars, and an oversized mis-chunk would
+    overflow the per-slot context) — so the model never spends a slot on them.
+  - Outline render (`draft._render_outline`) keeps the single-line flatten
+    (which already strips `\n`/`\r`/tabs) but **drops the 200-char truncation**
+    so the full gloss shows.
+
+### Added (2026-06-24 — llm_summarize can summarize a batch concurrently)
+
+- **`run_llm_summarize_pass` gained a `concurrency` knob** so one worker
+  process can keep several llama-server slots busy on the 1M-chunk `llm-v1`
+  backfill. The pass now runs in phases — claim → prefetch each ref's doc
+  card + build all prompts → **complete via a `ThreadPoolExecutor` of width
+  `concurrency`** → write outcomes back sequentially. Only the outbound HTTP
+  completion is parallelised; every DB read/write stays on the single
+  (non-thread-safe) psycopg connection, and `ex.map` preserves order so the
+  ok/failed accounting and per-row writes are deterministic. A poison chunk
+  still fails in isolation (ADR 0007) without taking its concurrent siblings
+  down. Width is set via `PRECIS_SUMMARIZE_CONCURRENCY` (`LlmConfig`, floored
+  at 1, default 1 = the prior sequential behaviour) and should match the
+  backend's llama-server `--parallel` slot count — fewer underfills the
+  slots, more just queues server-side (measured: no gain past the slot
+  count, and an A3B MoE only batches ~1.4× at 2 slots anyway). Wired through
+  `cli/worker.py`. This is the single-daemon alternative to running N
+  `precis worker --only llm_summarize` processes.
+
 ### Fixed (2026-06-25 — draft reader: make windowing actually bounded at 10k blocks)
 
 - **The first windowing pass cut server enrichment but not the DOM** — it

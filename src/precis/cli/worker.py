@@ -567,6 +567,7 @@ def run(args: argparse.Namespace) -> None:
                     client=_summarize_client,
                     summarizer=SUMMARIZER_NAME,
                     batch_size=min(batch_size, 16),
+                    concurrency=_summarize_cfg.concurrency,
                 )
                 return _BatchResult(
                     handler="llm_summarize",

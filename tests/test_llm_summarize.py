@@ -9,15 +9,18 @@ wire, env config, and the end-to-end pass.
 from __future__ import annotations
 
 import contextlib
+import threading
 from typing import Any
 
 import pytest
 
 from precis.workers.llm_summarize import (
+    MAX_CHUNK_CHARS,
     LlmClient,
     LlmConfig,
     _Claimed,
     build_messages,
+    claim_chunks_without_summary,
     parse_summary,
     run_llm_summarize_pass,
 )
@@ -135,6 +138,45 @@ def test_build_messages_falls_back_to_title_without_card() -> None:
     assert "Title: A study of MOF-5" in msgs[0]["content"]
 
 
+def test_build_messages_detail_is_additive_contract() -> None:
+    """The prompt instructs DETAIL to add only what BRIEF omits and never
+    repeat it — the no-duplication contract the reader relies on (BRIEF
+    alone, or BRIEF+DETAIL, never DETAIL alone)."""
+    system = build_messages(_Claimed(*_claim_row()), doc_card="")[0]["content"]
+    assert "appended to BRIEF" in system
+    assert "never repeat" in system
+    assert "NOT already in BRIEF" in system
+
+
+def test_build_messages_non_prose_tag_rule() -> None:
+    """Non-prose chunks (tables, coordinate dumps, copyright/masthead) get a
+    short parenthetical tag instead of a hallucinated summary."""
+    system = build_messages(_Claimed(*_claim_row()), doc_card="")[0]["content"]
+    assert "set BRIEF to a short" in system  # the rule
+    assert "(tabular data)" in system  # demonstrated by example
+    assert "(publication metadata)" in system
+
+
+def test_build_messages_instruction_prefix_is_kind_independent() -> None:
+    """The doc kind lives in the per-doc context line, not the instruction
+    block — so the cache-hot prefix is byte-identical across paper/patent/conv
+    and stays warm on a llama.cpp slot across document switches."""
+    paper = _Claimed(*_claim_row())  # ref_kind = "paper"
+    conv_fields = list(_claim_row())
+    conv_fields[8] = "conv"  # the ref_kind slot
+    conv = _Claimed(*conv_fields)
+
+    sys_paper = build_messages(paper, doc_card="")[0]["content"]
+    sys_conv = build_messages(conv, doc_card="")[0]["content"]
+
+    marker = "--- Document for context"
+    # Everything before the per-doc context divider is identical.
+    assert sys_paper.split(marker)[0] == sys_conv.split(marker)[0]
+    # The kind appears only in the per-doc context line, after the divider.
+    assert "(a scientific paper;" in sys_paper
+    assert "(a conversation;" in sys_conv
+
+
 # --------------------------------------------------------------------------
 # parser
 # --------------------------------------------------------------------------
@@ -204,6 +246,13 @@ def test_config_default_disabled() -> None:
     assert LlmConfig.from_env({}).enabled is False
 
 
+def test_config_concurrency_from_env() -> None:
+    assert LlmConfig.from_env({}).concurrency == 1  # default
+    assert LlmConfig.from_env({"PRECIS_SUMMARIZE_CONCURRENCY": "3"}).concurrency == 3
+    # Floors at 1 — 0 / negative would make the thread pool meaningless.
+    assert LlmConfig.from_env({"PRECIS_SUMMARIZE_CONCURRENCY": "0"}).concurrency == 1
+
+
 # --------------------------------------------------------------------------
 # end-to-end pass (offline)
 # --------------------------------------------------------------------------
@@ -241,3 +290,103 @@ def test_run_pass_marks_failed_on_transport_error() -> None:
     assert result == {"claimed": 1, "ok": 0, "failed": 1}
     # A failure marker row was written (status='failed').
     assert any("'failed'" in sql for sql, _ in conn.writes)
+
+
+# --------------------------------------------------------------------------
+# concurrency (thread-pooled completion phase)
+# --------------------------------------------------------------------------
+
+
+def test_run_pass_concurrent_summarizes_all() -> None:
+    """concurrency>1 completes every chunk; one HTTP call per chunk."""
+    rows = [_claim_row(chunk_id=i, ref_id=7) for i in range(1, 6)]
+    conn = _FakeConn(claim_rows=rows, card_text="Title: A study of MOF-5")
+    store = _FakeStore(conn)
+    t = _FakeTransport("BRIEF: g\nDETAIL: d.")
+    client = LlmClient(LlmConfig(), transport=t)
+
+    result = run_llm_summarize_pass(store, client=client, batch_size=10, concurrency=3)
+
+    assert result == {"claimed": 5, "ok": 5, "failed": 0}
+    assert len(conn.writes) == 5
+    assert len(t.calls) == 5  # exactly one completion per chunk
+
+
+def test_run_pass_concurrent_isolates_failure() -> None:
+    """A poison chunk fails on its own; its concurrent siblings still succeed."""
+
+    class _Selective:
+        """Raises only for the passage carrying the POISON marker."""
+
+        def __init__(self) -> None:
+            self.lock = threading.Lock()
+            self.n = 0
+
+        def post_json(
+            self,
+            url: str,
+            payload: dict[str, Any],
+            *,
+            headers: dict[str, str],
+            timeout: float,
+        ) -> dict[str, Any]:
+            with self.lock:
+                self.n += 1
+            if "POISON" in payload["messages"][-1]["content"]:
+                raise RuntimeError("backend rejected this passage")
+            return {
+                "choices": [{"message": {"content": "BRIEF: g\nDETAIL: d."}}],
+                "usage": {"total_tokens": 5},
+            }
+
+    good = _claim_row(chunk_id=1, ref_id=7)
+    poison = (
+        2,
+        7,
+        1,
+        "paragraph",
+        "POISON passage long enough to clear the min-chars gate for a summary.",
+        ["Results"],
+        ["k"],
+        [],
+        "paper",
+        "A study of MOF-5",
+    )
+    conn = _FakeConn(claim_rows=[good, poison], card_text="Title: x")
+    store = _FakeStore(conn)
+    client = LlmClient(LlmConfig(), transport=_Selective())
+
+    result = run_llm_summarize_pass(store, client=client, batch_size=10, concurrency=2)
+
+    assert result == {"claimed": 2, "ok": 1, "failed": 1}
+    # Exactly one failure marker and one successful insert.
+    assert sum(1 for sql, _ in conn.writes if "'failed'" in sql) == 1
+    assert sum(1 for sql, _ in conn.writes if "'failed'" not in sql) == 1
+
+
+# --------------------------------------------------------------------------
+# claim filters (real PG — the FakeConn above doesn't parse SQL)
+# --------------------------------------------------------------------------
+
+
+def test_claim_skips_oversized_and_numeric_chunks(store: Any) -> None:
+    """The claim query summarizes prose only — numeric/coordinate dumps (high
+    digit fraction) and over-long mis-chunks are filtered out, so the model
+    never wastes a slot hallucinating meaning from them."""
+    from tests.workers._helpers import seed_chunks
+
+    prose = (
+        "We synthesized a molecular catalyst and measured its turnover frequency "
+        "across several electrolysis runs, comparing it against the benchmark. "
+    ) * 2  # ~280 chars, low digit fraction
+    numeric = " ".join(f"{i}.{i}{i}" for i in range(120))  # >200 chars, mostly digits
+    oversized = "word " * (MAX_CHUNK_CHARS // 4)  # well over MAX_CHUNK_CHARS, prose
+
+    ref_id, (p_id, n_id, o_id) = seed_chunks(store, [prose, numeric, oversized])
+    with store.pool.connection() as conn:
+        claimed = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=10)
+
+    ids = {c.chunk_id for c in claimed}
+    assert p_id in ids  # prose is summarized
+    assert n_id not in ids  # numeric dump skipped (digit fraction > 0.5)
+    assert o_id not in ids  # oversized skipped (> MAX_CHUNK_CHARS)

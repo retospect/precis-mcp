@@ -49,6 +49,7 @@ import json
 import logging
 import os
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -76,6 +77,18 @@ SKIP_KINDS: frozenset[str] = frozenset(
 
 #: Below this length there is too little to summarize usefully.
 MIN_CHUNK_CHARS = 200
+
+#: Above this length a chunk is almost certainly a mis-chunked dump — the
+#: 99th percentile of real passages is ~830 chars. Summarizing it wastes a
+#: slot and can overflow the per-slot context (--ctx-size / --parallel), so
+#: skip it; the reader falls back to keywords / a text peek.
+MAX_CHUNK_CHARS = 16000
+
+#: Fraction of digit characters above which a chunk is a data table or
+#: coordinate dump, not prose. The model can only hallucinate meaning from
+#: these (it grabs a random cell and calls it a "time"), so skip them at
+#: claim time rather than spend a slot tagging each one.
+MAX_DIGIT_FRACTION = 0.5
 
 #: How many words/sentences the two parts should target. Enforced by
 #: the prompt, not the parser (the model occasionally overshoots; we
@@ -135,6 +148,13 @@ class LlmConfig:
     api_key: str = "dummy"  # loopback litellm has no master_key
     max_tokens: int = 220
     timeout: float = 120.0
+    #: How many chunks of a batch to summarize concurrently. The HTTP
+    #: completion is the only slow part, so a thread pool of this width
+    #: keeps that many llama-server slots busy from a single worker
+    #: process. Set it to the backend's ``--parallel`` slot count — fewer
+    #: underfills the slots, more just queues on the server (no gain).
+    #: Default 1 = the original sequential behaviour.
+    concurrency: int = 1
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> LlmConfig:
@@ -146,6 +166,9 @@ class LlmConfig:
             api_key=e.get("PRECIS_SUMMARIZE_LLM_KEY") or cls.api_key,
             max_tokens=int(e.get("PRECIS_SUMMARIZE_MAX_TOKENS") or cls.max_tokens),
             timeout=float(e.get("PRECIS_SUMMARIZE_TIMEOUT") or cls.timeout),
+            concurrency=max(
+                1, int(e.get("PRECIS_SUMMARIZE_CONCURRENCY") or cls.concurrency)
+            ),
         )
 
 
@@ -245,14 +268,25 @@ def claim_chunks_without_summary(
          WHERE cs.chunk_id IS NULL
            AND c.chunk_kind <> ALL(%s)
            AND length(c.text) >= %s
+           AND length(c.text) <= %s
            AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+           AND length(regexp_replace(c.text, '[^0-9]', '', 'g'))::numeric
+               / length(c.text) <= %s
          ORDER BY (CASE WHEN r.kind IN ('conv', 'draft') THEN 0 ELSE 1 END),
                   c.ref_id, c.ord
          LIMIT %s
            FOR UPDATE OF c SKIP LOCKED
     """
     rows = conn.execute(
-        sql, (summarizer, list(SKIP_KINDS), MIN_CHUNK_CHARS, limit)
+        sql,
+        (
+            summarizer,
+            list(SKIP_KINDS),
+            MIN_CHUNK_CHARS,
+            MAX_CHUNK_CHARS,
+            MAX_DIGIT_FRACTION,
+            limit,
+        ),
     ).fetchall()
     out: list[_Claimed] = []
     for r in rows:
@@ -309,23 +343,96 @@ def _kind_noun(ref_kind: str) -> str:
 def build_messages(claim: _Claimed, *, doc_card: str) -> list[dict[str, str]]:
     """Assemble the chat messages for one chunk.
 
-    The ``system`` message carries the fixed instruction **and** the
-    document header — both identical across every chunk of a document,
-    so they form the cache-hot prefix. The per-chunk material (section
-    path, keywords, numerics, the passage itself) is the volatile
-    ``user`` turn that follows.
+    Three cache layers, ordered most-stable first so llama.cpp's
+    longest-matching-prefix reuse pays off:
+
+    1. The **instruction block** — byte-identical for *every* chunk in
+       the corpus (no per-doc/per-chunk interpolation), so it stays
+       cache-hot on a slot even across document switches.
+    2. The **document header** (kind + card) — constant within a ref,
+       varies between refs; placed after the instructions.
+    3. The **per-chunk** material (section path, keywords, numerics,
+       passage) — the volatile ``user`` turn.
+
+    The document *kind* lives in layer 2 (the header line), not in the
+    instruction's first line, precisely so layer 1 never changes between a
+    paper, a patent and a conversation.
     """
     noun = _kind_noun(claim.ref_kind)
     header = doc_card.strip() or f"Title: {claim.title}".strip()
     system = (
-        f"You summarize a single passage from a {noun}, for a search index.\n"
-        f"Output EXACTLY two lines and nothing else:\n"
-        f"BRIEF: <the gist in one clause, at most {_BRIEF_MAX_WORDS} words>\n"
-        f"DETAIL: <1-3 sentences adding the specifics: method, finding, "
-        f"named entities, and any quantities>\n"
-        f"Be faithful to the passage — never invent facts. Write plainly; "
-        f"no preamble, no markdown.\n\n"
-        f"--- Document for context (do not summarize this header) ---\n"
+        "You summarize a single passage from a larger document, "
+        "as a navigation gloss.\n"
+        "Output EXACTLY two lines and nothing else:\n"
+        f"BRIEF: <a self-contained gist in one clause, at most {_BRIEF_MAX_WORDS} words>\n"
+        "DETAIL: <1-3 terse fragments adding specifics NOT already in BRIEF — "
+        "quantities, named entities, method, caveats>\n"
+        "DETAIL is always shown appended to BRIEF, never on its own, so it "
+        "must read as a continuation and never repeat anything in BRIEF.\n"
+        "Be faithful — never invent facts. Write both lines telegraphically: "
+        "plain, no preamble, no markdown, and drop leading articles and "
+        "pronouns. Spell out abbreviations when standard and unambiguous (keep "
+        "unit/element symbols, DNA, pH); never reuse source-only labels. Put a "
+        "space between a number and its unit and reproduce quantities verbatim.\n"
+        "If the passage is not prose — a data table, coordinate dump, reference "
+        "list, or copyright/masthead boilerplate — set BRIEF to a short "
+        "parenthetical tag naming it (e.g. (tabular data), (atomic coordinates), "
+        "(copyright notice), (publication metadata), (reference list)) and leave "
+        "DETAIL empty.\n\n"
+        "Seven examples (style only — do NOT summarize these):\n"
+        "PASSAGE: We synthesized a cobalt complex bearing pendant amine groups "
+        "and tested it for proton reduction in acidic acetonitrile. Cyclic "
+        "voltammetry and controlled-potential electrolysis gave a turnover "
+        "frequency of 12,000 h⁻¹ at 80 °C, roughly threefold the Pd benchmark "
+        "under identical conditions, with full activity retained over 200 cycles.\n"
+        "BRIEF: cobalt catalyst triples proton-reduction turnover over palladium, "
+        "stable to 200 cycles\n"
+        "DETAIL: 12,000 h⁻¹ at 80 °C in acidic acetonitrile; rate credited to "
+        "pendant-amine proton relays.\n\n"
+        "PASSAGE: Reviewing the quarter, we argue the budget shortfall stems "
+        "from the Q3 hiring freeze rather than weaker sales. Revenue held flat "
+        "against forecast — the top line in Table 2 is essentially unchanged — "
+        "so the gap must originate on the cost side.\n"
+        "BRIEF: attributes the budget shortfall to the Q3 hiring freeze, not "
+        "weaker sales\n"
+        "DETAIL: flat revenue vs forecast (unchanged top line, Table 2); gap is "
+        "cost-side.\n\n"
+        "PASSAGE: Contrary to our hypothesis, daily supplementation produced no "
+        "significant change in composite cognitive scores relative to placebo "
+        "(p = 0.42). We caution that the trial was underpowered, enrolling only "
+        "38 participants, and ran for just eight weeks.\n"
+        "BRIEF: supplementation gave no cognitive benefit over placebo, against "
+        "the hypothesis\n"
+        "DETAIL: non-significant (p = 0.42); underpowered at 38 participants, "
+        "eight-week trial.\n\n"
+        "PASSAGE: Immediately after collection, samples were flash-frozen in "
+        "liquid nitrogen within 30 s to halt metabolic activity, then moved to "
+        "long-term storage at −80 °C. Aliquots were thawed on ice only once, "
+        "just before analysis, to avoid freeze–thaw degradation.\n"
+        "BRIEF: samples flash-frozen then cold-stored to preserve them until "
+        "analysis\n"
+        "DETAIL: liquid nitrogen within 30 s of collection; stored at −80 °C; "
+        "thawed on ice once.\n\n"
+        "PASSAGE: Throughout this paper we define resilience as the capacity of "
+        "a system to absorb disturbance and reorganize while undergoing change, "
+        "so as to still retain essentially the same function, structure, "
+        "identity, and feedbacks — departing from engineering notions of return "
+        "time to a single equilibrium.\n"
+        "BRIEF: defines resilience as absorbing disturbance while keeping core "
+        "function\n"
+        "DETAIL: also reorganizes yet retains structure, identity, feedbacks; "
+        "rejects single-equilibrium view.\n\n"
+        "PASSAGE: 4822.296 273.86 10489.05 295511.5 [8,8] 54514 241665 491010 "
+        "41.07 354.3621 4309522 6228.624 352.84 13601.7 384269.5 [9,9] 68598 "
+        "304587 618714 51.14 443.5323 5437062\n"
+        "BRIEF: (tabular data)\n"
+        "DETAIL:\n\n"
+        "PASSAGE: Nature Energy February 2022 Copyright 2022 The Author(s), "
+        "under exclusive licence to Springer Nature Limited. All Rights "
+        "Reserved. Section: Pg. 130-143; Vol. 7; No. 2; ISSN: 2058-7546\n"
+        "BRIEF: (publication metadata)\n"
+        "DETAIL:\n\n"
+        f"--- Document for context (a {noun}; do not summarize this header) ---\n"
         f"{header}"
     )
 
@@ -428,20 +535,42 @@ def _mark_failed(conn: Any, chunk_id: int, *, summarizer: str, error: str) -> No
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _Outcome:
+    """Per-chunk result of the (parallelisable) completion phase."""
+
+    claim: _Claimed
+    prompt_hash: str
+    summary: str | None
+    token_count: int | None
+    error: Exception | None
+
+
 def run_llm_summarize_pass(
     store: Any,
     *,
     client: LlmClient,
     summarizer: str = SUMMARIZER_NAME,
     batch_size: int = 16,
+    concurrency: int = 1,
 ) -> dict[str, int]:
     """One pass over the LLM-summary queue.
 
     Returns ``{"claimed": N, "ok": K, "failed": F}``. Each chunk is its
     own transaction-of-record via the per-row write; a poison-pill chunk
-    is marked failed and the batch continues (ADR 0007). The doc card is
-    cached per ref so a document's chunks share both the DB read and the
-    cache-hot prompt prefix.
+    is marked failed and the batch continues (ADR 0007).
+
+    Phases, so ``concurrency > 1`` is safe on a single DB connection:
+
+    1. **Claim** the batch (one connection).
+    2. **Prefetch** each distinct ref's doc card — the shared, cache-hot
+       prompt prefix — and build every prompt up front (pure CPU).
+    3. **Complete** via a thread pool of width ``concurrency``. Only the
+       outbound HTTP call runs in the workers; nothing touches the DB
+       connection (psycopg connections are *not* thread-safe). Width
+       should match the backend's ``--parallel`` slot count.
+    4. **Write** the outcomes back sequentially on the one connection,
+       in claim order, so ``ok``/``failed`` accounting is deterministic.
     """
     claimed = ok = failed = 0
     card_cache: dict[int, str] = {}
@@ -450,31 +579,54 @@ def run_llm_summarize_pass(
             conn, summarizer=summarizer, limit=batch_size
         )
         claimed = len(rows)
+        if not rows:
+            return {"claimed": 0, "ok": 0, "failed": 0}
+
+        # Prefetch doc cards (shared prefix) + build prompts — pure, no LLM.
+        prepared: list[tuple[_Claimed, list[dict[str, str]], str]] = []
         for claim in rows:
+            if claim.ref_id not in card_cache:
+                card_cache[claim.ref_id] = fetch_doc_card(conn, claim.ref_id)
+            messages = build_messages(claim, doc_card=card_cache[claim.ref_id])
+            prompt_hash = hashlib.sha256(
+                json.dumps(messages, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            prepared.append((claim, messages, prompt_hash))
+
+        def _complete(item: tuple[_Claimed, list[dict[str, str]], str]) -> _Outcome:
+            claim, messages, prompt_hash = item
             try:
-                if claim.ref_id not in card_cache:
-                    card_cache[claim.ref_id] = fetch_doc_card(conn, claim.ref_id)
-                messages = build_messages(claim, doc_card=card_cache[claim.ref_id])
-                prompt_hash = hashlib.sha256(
-                    json.dumps(messages, sort_keys=True).encode("utf-8")
-                ).hexdigest()
                 result = client.complete(messages)
                 summary = parse_summary(result.text)
-                write_chunk_summary(
-                    conn,
-                    claim.chunk_id,
-                    summarizer=summarizer,
-                    text=summary,
-                    prompt_hash=prompt_hash,
-                    token_count=result.total_tokens,
-                )
-                ok += 1
-            except Exception as exc:
+                return _Outcome(claim, prompt_hash, summary, result.total_tokens, None)
+            except Exception as exc:  # recorded per chunk, written below
                 log.exception("llm_summarize: chunk_id=%s failed", claim.chunk_id)
+                return _Outcome(claim, prompt_hash, None, None, exc)
+
+        # The slow phase. ex.map preserves order, so writes stay deterministic.
+        if concurrency <= 1:
+            outcomes = [_complete(it) for it in prepared]
+        else:
+            with ThreadPoolExecutor(max_workers=concurrency) as ex:
+                outcomes = list(ex.map(_complete, prepared))
+
+        # Write phase — single connection, sequential.
+        for o in outcomes:
+            if o.error is not None or o.summary is None:
                 _mark_failed(
-                    conn, claim.chunk_id, summarizer=summarizer, error=str(exc)
+                    conn, o.claim.chunk_id, summarizer=summarizer, error=str(o.error)
                 )
                 failed += 1
+            else:
+                write_chunk_summary(
+                    conn,
+                    o.claim.chunk_id,
+                    summarizer=summarizer,
+                    text=o.summary,
+                    prompt_hash=o.prompt_hash,
+                    token_count=o.token_count,
+                )
+                ok += 1
     return {"claimed": claimed, "ok": ok, "failed": failed}
 
 

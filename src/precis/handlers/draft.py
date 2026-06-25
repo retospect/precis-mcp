@@ -890,10 +890,10 @@ class DraftHandler(Handler):
             gloss = v.get("summary") or v.get("keywords") or ""
             if not gloss:
                 gloss = c.text.splitlines()[0] if c.text else ""
-            # collapse to a single line; cap so the outline stays scannable
+            # Flatten to one line: split() drops every whitespace run —
+            # spaces, tabs, \n, \r — so a multi-line gloss stays on a single
+            # outline row. No length cap: show the full gloss.
             gloss = " ".join(gloss.split())
-            if len(gloss) > 200:
-                gloss = gloss[:199] + "…"
             lines.append(f"{'  ' * c.depth}{c.dc}  [{c.chunk_kind}] {gloss}")
         lines.extend(self._work_lines(ref.id))
         return Response(body="\n".join(lines))
