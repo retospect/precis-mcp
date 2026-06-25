@@ -126,6 +126,30 @@ def test_stub_backlog_limit(store: Store) -> None:
     assert len(store.stub_backlog(limit=2)) == 2
 
 
+def test_stub_backlog_tolerates_duplicate_same_kind_identifiers(store: Store) -> None:
+    # The ref_identifiers PK is (id_kind, id_value), so a ref may carry >1
+    # identifier of the same kind. The backlog's per-kind scalar subqueries
+    # must not assume uniqueness — a bare scalar subquery over duplicates
+    # raises CardinalityViolation and 500s /papers-needed (regression).
+    rid = _stub(store, cite_key="dup2024", doi="10.1/dup")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+            "VALUES (%s, 'cite_key', 'dup2024-alt', 'manual')",
+            (rid,),
+        )
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+            "VALUES (%s, 'doi', '10.1/dup-alt', 'manual')",
+            (rid,),
+        )
+    rows = store.stub_backlog()  # must not raise
+    assert [r["ref_id"] for r in rows] == [rid]
+    # MIN() picks a deterministic single value per kind.
+    assert rows[0]["cite_key"] == "dup2024"
+    assert rows[0]["identifier"] == "10.1/dup"
+
+
 # ── dispatch: search(view='stubs') ──────────────────────────────────
 
 
