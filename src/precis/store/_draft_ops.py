@@ -479,7 +479,9 @@ class DraftMixin:
             h: {"edits": int(edits), "last_at": last_at} for h, edits, last_at in rows
         }
 
-    def block_views(self, ref_id: int) -> dict[str, dict[str, str]]:
+    def block_views(
+        self, ref_id: int, handles: list[str] | None = None
+    ) -> dict[str, dict[str, str]]:
         """Per-block ``{handle: {summary, keywords}}`` for a draft.
 
         ``summary`` is the ``llm-v1`` two-part summary (``chunk_summaries``);
@@ -487,19 +489,29 @@ class DraftMixin:
         first 12). Either is ``''`` for a chunk the ``llm_summarize`` /
         ``chunk_keywords`` workers haven't reached yet — callers fall back
         (summary → keywords → truncated text). Shared by the web reader's
-        view slider and the handler's outline render."""
+        view slider and the handler's outline render.
+
+        ``handles`` scopes the result to just those blocks — the on-demand
+        row path loads one block at a time and must not re-scan the whole
+        (possibly massive) draft per row. ``None`` means the whole draft."""
+        where = "c.ref_id = %s AND c.retired_at IS NULL AND c.pos IS NOT NULL AND c.ord >= 0"
+        params: tuple[Any, ...] = (ref_id,)
+        if handles is not None:
+            if not handles:
+                return {}
+            where += " AND c.handle = ANY(%s)"
+            params = (ref_id, handles)
         with self.pool.connection() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT c.handle, c.keywords,
                        (SELECT s.text FROM chunk_summaries s
                           WHERE s.chunk_id = c.chunk_id
                             AND s.summarizer = 'llm-v1' LIMIT 1) AS summary
                   FROM chunks c
-                 WHERE c.ref_id = %s AND c.retired_at IS NULL
-                   AND c.pos IS NOT NULL AND c.ord >= 0
+                 WHERE {where}
                 """,
-                (ref_id,),
+                params,
             ).fetchall()
         return {
             handle: {

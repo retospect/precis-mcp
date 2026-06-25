@@ -1,0 +1,34 @@
+{# An un-hydrated document block (on-demand loading). Mirrors the real
+   row's wrapper — same id, data-anc, data-heading, and `vis()` collapse
+   binding — so deep-links, find, and collapse all work before the body
+   loads. `data-ph`/`data-handle` mark it for the IntersectionObserver,
+   which swaps in the full row (GET /drafts/<ident>/row/<handle>) as it
+   nears the viewport and restores a placeholder when it drifts far away.
+   `min-height` reserves roughly the real row's space so the scrollbar
+   stays honest. Heading placeholders carry the collapse toggle + title;
+   bodies show a muted first-line preview. #}
+{% macro draft_placeholder(p) %}
+<div id="c-{{ p.handle }}"
+     {% if p.is_heading %}data-heading="{{ p.handle }}"{% endif %}
+     data-anc='{{ p.ancestors | tojson }}'
+     data-ph="1" data-handle="{{ p.handle }}"
+     x-show='vis({{ p.ancestors | tojson }})' x-cloak
+     style="min-height: {{ p.est_rem }}rem"
+     class="js-draft-ph grid grid-cols-1 lg:grid-cols-[1fr_20%_22%] gap-3 py-1.5 border-b border-slate-100 scroll-mt-4 group">
+  <div data-content style="padding-left: {{ p.depth }}rem">
+    {% if p.is_heading %}
+    <div class="flex items-start gap-1.5">
+      <button @click="toggle('{{ p.handle }}')"
+              class="mt-0.5 font-mono text-xs text-slate-400 hover:text-slate-700 select-none"
+              x-text="isC('{{ p.handle }}') ? '▸' : '▾'"></button>
+      <h3 class="font-semibold text-slate-900
+                 {% if p.depth == 0 %}text-lg{% elif p.depth == 1 %}text-base{% else %}text-sm{% endif %}">{{ p.title }}</h3>
+    </div>
+    {% else %}
+    <p class="text-sm italic text-slate-300 truncate select-none">{{ p.preview or '…' }}</p>
+    {% endif %}
+  </div>
+  <div></div>
+  <div></div>
+</div>
+{% endmacro %}

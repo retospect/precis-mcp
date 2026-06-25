@@ -9,6 +9,19 @@ three columns —
   ├ meta    (terse: the refs this block makes + in-flight change-requests)
   └ change  (a per-block "around here…" box → an anchored todo)
 
+**On-demand loading (windowed virtualization).** A massive draft is not
+rendered all at once: the reader hydrates only the first ``INITIAL_WINDOW``
+blocks server-side and emits the rest as lightweight placeholders. Client
+JS (``draftDoc`` in ``detail.html.j2``) runs one ``IntersectionObserver``
+that hydrates a placeholder via ``/row/{handle}`` as it nears the viewport
+and unloads a hydrated row back to a sized placeholder when it drifts far
+away — so DOM + memory stay bounded regardless of draft size, and the
+per-block enrichment (requests / connections / summaries / abbrevs) moves
+from page-load to scroll-time. A draft with ≤ ``INITIAL_WINDOW`` blocks is
+fully hydrated and behaves exactly as before. Find, collapse, deep-links,
+and the live poll are all window-aware (they ensure a target placeholder
+hydrates before scrolling to it).
+
 Routes:
 
 * ``GET /drafts`` — list drafts.
@@ -19,10 +32,13 @@ Routes:
 * ``GET /c/{handle}`` — resolve a ``¶`` handle → redirect into the reader
   at ``#c-<handle>`` (the click target of every ``¶`` anchor).
 * ``GET /preview/chunk/{handle}`` — hover-popover fragment for a ``¶``.
-* ``GET /drafts/{ident}/row/{handle}`` — one rendered row (the fragment
-  the future live-refresh poll/websocket swaps in place).
+* ``GET /drafts/{ident}/row/{handle}`` — one hydrated row; the fragment the
+  ``IntersectionObserver`` swaps in for a placeholder (and the live poll).
+* ``GET /drafts/{ident}/doc`` — the windowed document body (first window
+  hydrated + placeholders), no chrome; what the live poll swaps in.
+* ``GET /drafts/{ident}/rows`` — the whole document hydrated, no chrome.
 * ``GET /drafts/{ident}/version`` — a monotone version token (max
-  ``chunk_events.event_id``) the future poll compares against.
+  ``chunk_events.event_id``) the poll compares against.
 
 Rendering is **raw source** (Tier A); the resolution pass that computes
 §-numbers / resolves cross-refs is the export engine (Tier B), shared
@@ -36,6 +52,7 @@ import base64
 import logging
 import re
 import tempfile
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +80,38 @@ from precis_web.linkify import popover_chip
 router = APIRouter(tags=["drafts"])
 
 log = logging.getLogger(__name__)
+
+#: How many blocks the reader renders fully on first paint. The rest land
+#: as lightweight placeholders and hydrate on demand (loaded as they
+#: scroll near the viewport, unloaded when they drift far away) — so a
+#: massive draft no longer renders thousands of enriched rows up front nor
+#: holds them all in the DOM. A draft with ≤ this many blocks renders
+#: entirely server-side and behaves exactly as before; windowing only
+#: kicks in past it.
+INITIAL_WINDOW = 30
+
+#: Bounded ``(ref_id, version) → abbrevs`` cache. ``defined_abbrevs`` is a
+#: whole-draft ``string_agg`` + Schwartz-Hearst scan; on the on-demand row
+#: path it would otherwise re-run for every block hydrated. Keyed by the
+#: draft's version token, so any chunk edit invalidates it. Tiny LRU.
+_ABBREV_CACHE: OrderedDict[tuple[int, int], dict[str, str]] = OrderedDict()
+_ABBREV_CACHE_MAX = 64
+
+
+def _abbrevs_cached(store: Any, ref_id: int, version: int) -> dict[str, str]:
+    """Whole-draft abbreviation map, memoised per (draft, version) so the
+    per-row hydrate path doesn't re-scan the whole draft each time."""
+    key = (ref_id, version)
+    hit = _ABBREV_CACHE.get(key)
+    if hit is not None:
+        _ABBREV_CACHE.move_to_end(key)
+        return hit
+    val = store.defined_abbrevs(ref_id)
+    _ABBREV_CACHE[key] = val
+    _ABBREV_CACHE.move_to_end(key)
+    while len(_ABBREV_CACHE) > _ABBREV_CACHE_MAX:
+        _ABBREV_CACHE.popitem(last=False)
+    return val
 
 
 def _draft_ref(store: Any, ident: str) -> Any:
@@ -228,13 +277,16 @@ def _requests_by_handle(
     return out
 
 
-def _block_views(store: Any, ref_id: int) -> dict[str, dict[str, str]]:
+def _block_views(
+    store: Any, ref_id: int, handles: list[str] | None = None
+) -> dict[str, dict[str, str]]:
     """Per-block keyword + llm-summary text for the view slider (body /
     summary / keywords). Thin wrapper over ``store.block_views`` (shared
     with the handler's outline render); empty for a chunk the
     chunk_keywords / llm_summarize workers haven't reached yet (→
-    first-line fallback in the row)."""
-    return store.block_views(ref_id)
+    first-line fallback in the row). ``handles`` scopes it to a subset for
+    the on-demand single-row path."""
+    return store.block_views(ref_id, handles)
 
 
 def _connection_chips(conns: list[dict[str, Any]]) -> list[Any]:
@@ -252,30 +304,49 @@ def _connection_chips(conns: list[dict[str, Any]]) -> list[Any]:
     return chips
 
 
-def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
-    """Per-block row context for the whole draft (content + ancestors +
-    ref chips + requests + summary/keywords + graph connections + edit
-    churn for the view slider / Connections surface)."""
-    chunk_objs = store.reading_order(ref.id)
-    handles = [c.handle for c in chunk_objs]
+def _build_rows(
+    store: Any,
+    ref: Any,
+    chunk_objs: list[Any],
+    want_idx: Any,
+    *,
+    abbrevs: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Full per-block row context for the chunks at ``want_idx`` (an
+    iterable of indices into ``chunk_objs``). The expensive per-handle
+    lookups (requests / views / connections / edit churn) are scoped to the
+    wanted blocks plus their immediate neighbours — the neighbour-fold needs
+    prev/next connections — so a single-row hydrate doesn't re-scan the
+    whole draft. ``_rows_for`` builds the whole document; the on-demand row
+    route builds one index. ``abbrevs`` (whole-draft) is passed in so it is
+    computed/cached once, not per call."""
+    want = sorted(set(want_idx))
+    if not want:
+        return []
+    n = len(chunk_objs)
     anc = _ancestor_headings(chunk_objs)
-    requests = _requests_by_handle(store, handles)
-    views = _block_views(store, ref.id)
-    # Recall highlight: every occurrence of a defined abbreviation gets a
-    # hover-definition in the reader (one dict for the whole draft).
-    abbrevs = store.defined_abbrevs(ref.id)
-    # Connections surface: graph links (incl. dream-memories) + edit churn.
-    conns = store.chunk_connections(ref.id, handles)
-    edits = store.chunk_edit_stats(ref.id, handles)
+    want_handles = [chunk_objs[i].handle for i in want]
+    # Connections need the wanted blocks AND their prev/next neighbours
+    # (the "nearby" fold); the rest only need their own handle.
+    scope: set[str] = set(want_handles)
+    for i in want:
+        for j in (i - 1, i + 1):
+            if 0 <= j < n:
+                scope.add(chunk_objs[j].handle)
+    requests = _requests_by_handle(store, want_handles)
+    views = _block_views(store, ref.id, want_handles)
+    conns = store.chunk_connections(ref.id, list(scope))
+    edits = store.chunk_edit_stats(ref.id, want_handles)
     rows: list[dict[str, Any]] = []
-    for i, c in enumerate(chunk_objs):
+    for i in want:
+        c = chunk_objs[i]
         # Neighbour folding: prev/next paragraph connections, deduped
         # against this block's own (so "nearby" only shows what's *extra*).
         own = {(x["kind"], x["ident"]) for x in conns.get(c.handle, [])}
         nearby: list[dict[str, Any]] = []
         nseen = set(own)
         for j in (i - 1, i + 1):
-            if 0 <= j < len(chunk_objs):
+            if 0 <= j < n:
                 for x in conns.get(chunk_objs[j].handle, []):
                     k = (x["kind"], x["ident"])
                     if k not in nseen:
@@ -320,6 +391,84 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
+    """Per-block row context for the **whole** draft (the live-refresh
+    ``/rows`` fragment). The reader itself renders only an initial window
+    fully — see ``_doc_items`` — and hydrates the rest on demand."""
+    chunk_objs = store.reading_order(ref.id)
+    abbrevs = store.defined_abbrevs(ref.id)
+    return _build_rows(store, ref, chunk_objs, range(len(chunk_objs)), abbrevs=abbrevs)
+
+
+def _one_row(store: Any, ref: Any, handle: str) -> dict[str, Any] | None:
+    """Hydrate a single block by handle — the on-demand fragment the reader
+    swaps in as a placeholder scrolls into view. O(neighbours) enrichment,
+    not O(whole draft): only this block (plus its prev/next for the nearby
+    fold) hit the per-handle queries."""
+    chunk_objs = store.reading_order(ref.id)
+    idx = next((i for i, c in enumerate(chunk_objs) if c.handle == handle), None)
+    if idx is None:
+        return None
+    abbrevs = _abbrevs_cached(store, ref.id, _draft_version(store, ref.id))
+    rows = _build_rows(store, ref, chunk_objs, {idx}, abbrevs=abbrevs)
+    return rows[0] if rows else None
+
+
+def _est_height_rem(c: Any) -> float:
+    """A rough placeholder height (rem) so an un-hydrated block reserves
+    about the space its real row will take — keeps the scrollbar honest and
+    avoids large jumps when a block hydrates just below the fold."""
+    kind = c.chunk_kind
+    if kind == "heading":
+        return 2.5
+    if kind == "figure":
+        return 14.0
+    chars = len(c.text or "")
+    lines = max(1, (chars // 90) + 1)
+    return round(min(40.0, 1.6 + lines * 1.5), 1)
+
+
+def _placeholder(c: Any, anc: dict[str, list[str]]) -> dict[str, Any]:
+    """A lightweight, un-hydrated block: just enough to lay out, navigate,
+    and collapse (handle + ancestors + a height estimate + a title/preview
+    line) — no per-handle SQL. The JS hydrates it via ``/row/<handle>``."""
+    text = c.text or ""
+    first = (text.splitlines() or [""])[0]
+    is_heading = c.chunk_kind == "heading"
+    return {
+        "handle": c.handle,
+        "dc": handle_registry.try_format("draft", c.chunk_id, chunk=True) or c.handle,
+        "chunk_kind": c.chunk_kind,
+        "depth": c.depth,
+        "is_heading": is_heading,
+        "is_figure": c.chunk_kind == "figure",
+        "ancestors": anc.get(c.handle, []),
+        # Headings render their title in the placeholder (so the outline is
+        # navigable + collapsible before bodies hydrate); bodies show a
+        # muted first-line preview.
+        "title": first if is_heading else "",
+        "preview": "" if is_heading else first[:160],
+        "est_rem": _est_height_rem(c),
+    }
+
+
+def _doc_items(store: Any, ref: Any) -> list[dict[str, Any]]:
+    """The document body as a mix of hydrated rows (the first
+    ``INITIAL_WINDOW`` blocks) and placeholders (the rest). Each item is
+    ``{loaded: True, row: …}`` or ``{loaded: False, ph: …}``. Small drafts
+    are entirely loaded → identical to the old full render."""
+    chunk_objs = store.reading_order(ref.id)
+    n = len(chunk_objs)
+    abbrevs = _abbrevs_cached(store, ref.id, _draft_version(store, ref.id))
+    first = min(INITIAL_WINDOW, n)
+    anc = _ancestor_headings(chunk_objs)
+    full = _build_rows(store, ref, chunk_objs, range(first), abbrevs=abbrevs)
+    items: list[dict[str, Any]] = [{"loaded": True, "row": r} for r in full]
+    for i in range(first, n):
+        items.append({"loaded": False, "ph": _placeholder(chunk_objs[i], anc)})
+    return items
 
 
 def _figure_cleared(fig: dict[str, Any]) -> bool:
@@ -609,7 +758,7 @@ async def reader(request: Request, ident: str) -> Response:
         {
             "active_tab": "drafts",
             "ref": _ref_view(ref),
-            "rows": _rows_for(store, ref),
+            "items": _doc_items(store, ref),
             "work": _work_items(store, ref.id),
             "clearance": draft_figure_clearance(store, ref.id),
         },
@@ -624,7 +773,7 @@ async def reader_row(request: Request, ident: str, handle: str) -> HTMLResponse:
     ref = _draft_ref(store, ident)
     if ref is None:
         return HTMLResponse("", status_code=404)
-    row = next((r for r in _rows_for(store, ref) if r["handle"] == handle), None)
+    row = _one_row(store, ref, handle)
     if row is None:
         return HTMLResponse("", status_code=404)
     return templates.TemplateResponse(
@@ -636,8 +785,9 @@ async def reader_row(request: Request, ident: str, handle: str) -> HTMLResponse:
 
 @router.get("/drafts/{ident}/rows", response_class=HTMLResponse)
 async def reader_rows(request: Request, ident: str) -> HTMLResponse:
-    """Just the rows (no page chrome) — what the live-refresh poll swaps
-    into ``#doc`` when the version token bumps and nobody's mid-edit."""
+    """Every block hydrated, no page chrome — the whole-draft render. Kept
+    for callers that want the full document in one shot; the live reader
+    uses the windowed ``/doc`` fragment instead."""
     store = get_store(request)
     ref = _draft_ref(store, ident)
     if ref is None:
@@ -646,6 +796,23 @@ async def reader_rows(request: Request, ident: str) -> HTMLResponse:
         request,
         "drafts/_rows.html.j2",
         {"rows": _rows_for(store, ref), "ref": _ref_view(ref)},
+    )
+
+
+@router.get("/drafts/{ident}/doc", response_class=HTMLResponse)
+async def reader_doc(request: Request, ident: str) -> HTMLResponse:
+    """The windowed document body (no page chrome) — the first
+    ``INITIAL_WINDOW`` blocks hydrated, the rest as placeholders. This is
+    what the live-refresh poll swaps into ``#doc`` when the version token
+    bumps and nobody's mid-edit; the placeholders re-hydrate on demand."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return HTMLResponse("", status_code=404)
+    return templates.TemplateResponse(
+        request,
+        "drafts/_doc.html.j2",
+        {"items": _doc_items(store, ref), "ref": _ref_view(ref)},
     )
 
 

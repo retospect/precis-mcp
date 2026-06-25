@@ -165,7 +165,7 @@
   </div>
 
   <div id="doc" :class="compact ? 'draft-compact' : ''">
-    {% include "drafts/_rows.html.j2" %}
+    {% include "drafts/_doc.html.j2" %}
   </div>
 
   {# All-clear note at the very end — shown only when there are figures and
@@ -209,6 +209,12 @@ function draftDoc(ident) {
     version: 0,
     live: true,
     stale: false,
+    // ── on-demand block loading (windowed virtualization) ──────────
+    // `observer` watches every block; placeholders hydrate as they near
+    // the viewport, hydrated rows unload (back to a sized placeholder)
+    // when they drift far away. `_inflight` dedupes concurrent hydrates.
+    observer: null,
+    _inflight: {},
     view: localStorage.getItem('draft-view:' + ident) || 'body',
     setView(v) { this.view = v; localStorage.setItem('draft-view:' + ident, v); },
     // compact rows: text drives row height, meta column scrolls internally.
@@ -238,6 +244,86 @@ function draftDoc(ident) {
       this.save();
     },
     expandAll() { this.collapsed = []; this.save(); },
+    // ── on-demand block loading ──────────────────────────────────
+    // One IntersectionObserver with a generous margin: a placeholder
+    // within the margin hydrates; a hydrated row beyond it unloads. The
+    // margin is the hysteresis — you must cross it to flip a block, so a
+    // block hydrated just inside won't immediately unload.
+    setupVirtual() {
+      if (this.observer) this.observer.disconnect();
+      this.observer = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          const el = e.target;
+          if (el.dataset.ph) {           // a placeholder
+            if (e.isIntersecting) this.loadRow(el);
+          } else {                        // a hydrated row
+            if (!e.isIntersecting) this.unloadRow(el);
+          }
+        }
+      }, { root: null, rootMargin: '1500px 0px 1500px 0px', threshold: 0 });
+      document.querySelectorAll('#doc > [id^="c-"]')
+        .forEach((el) => this.observer.observe(el));
+    },
+    loadRow(el) {
+      const h = el.dataset.handle;
+      if (!h || !el.dataset.ph) return Promise.resolve();
+      if (this._inflight[h]) return this._inflight[h];
+      const p = (async () => {
+        const html = await (await fetch(
+          `/drafts/${this.ident}/row/${h}`, {cache: 'no-store'})).text();
+        const tpl = document.createElement('template');
+        tpl.innerHTML = html.trim();
+        const node = tpl.content.firstElementChild;
+        if (!node) return;
+        this.observer.unobserve(el);
+        el.replaceWith(node);            // Alpine binds the new node (MutationObserver)
+        if (window.htmx) window.htmx.process(node);
+        __renderMath(node);
+        this.observer.observe(node);
+        // The hydrated block may be a current find hit — re-apply marks.
+        if (this.findQuery.trim() && this.findHits.includes(h)) this._markHits();
+      })().catch(() => {}).finally(() => { delete this._inflight[h]; });
+      this._inflight[h] = p;
+      return p;
+    },
+    unloadRow(el) {
+      // Keep cheap/anchor blocks live: headings (nav + collapse), the
+      // block being edited, and the current find result.
+      if (el.dataset.heading !== undefined) return;
+      if (el.contains(document.activeElement)) return;
+      if (el.classList.contains('find-current')) return;
+      const ph = this._makePlaceholder(el);
+      this.observer.unobserve(el);
+      el.replaceWith(ph);
+      this.observer.observe(ph);
+    },
+    _makePlaceholder(el) {
+      // Rebuild a sized placeholder for a hydrated row: keep its id /
+      // ancestors / collapse binding, freeze its measured height so the
+      // scroll position doesn't jump as it unloads off-screen.
+      const anc = el.dataset.anc || '[]';
+      const ph = document.createElement('div');
+      ph.id = el.id;
+      ph.dataset.ph = '1';
+      ph.dataset.handle = el.id.slice(2);   // strip 'c-'
+      ph.dataset.anc = anc;
+      ph.setAttribute('x-show', `vis(${anc})`);
+      ph.setAttribute('x-cloak', '');
+      ph.style.minHeight = el.offsetHeight + 'px';
+      ph.className = 'js-draft-ph grid grid-cols-1 lg:grid-cols-[1fr_20%_22%] '
+        + 'gap-3 py-1.5 border-b border-slate-100 scroll-mt-4 group';
+      ph.innerHTML = '<div data-content>'
+        + '<p class="text-sm italic text-slate-300 truncate select-none">…</p>'
+        + '</div><div></div><div></div>';
+      return ph;
+    },
+    // Resolve once the block is a hydrated row — used by find + deep-link
+    // so a target placeholder loads before we scroll/mark it.
+    ensureLoaded(h) {
+      const el = document.getElementById('c-' + h);
+      if (!el || !el.dataset.ph) return Promise.resolve();
+      return this.loadRow(el);
+    },
     // ── in-draft find ────────────────────────────────────────────
     setFindMode(m) { this.findMode = m; if (this.findQuery.trim()) this.runFind(); },
     _clearMarks() {
@@ -320,11 +406,12 @@ function draftDoc(ident) {
       }
       return 0;
     },
-    gotoHit(i) {
+    async gotoHit(i) {
       const n = this.findHits.length;
       if (!n) return;
       this.findIdx = ((i % n) + n) % n;
-      const el = document.getElementById('c-' + this.findHits[this.findIdx]);
+      const h = this.findHits[this.findIdx];
+      let el = document.getElementById('c-' + h);
       if (!el) return;
       // a hit inside a collapsed section: expand its ancestors first.
       if (el.dataset.anc) {
@@ -332,6 +419,11 @@ function draftDoc(ident) {
         const next = this.collapsed.filter((x) => !anc.includes(x));
         if (next.length !== this.collapsed.length) { this.collapsed = next; this.save(); }
       }
+      // The target may be an un-hydrated placeholder — load it so the
+      // match content (and its word-marks) are actually visible.
+      await this.ensureLoaded(h);
+      el = document.getElementById('c-' + h);
+      if (!el) return;
       this._clearMarks();
       this._markHits();
       el.classList.add('find-current');
@@ -340,16 +432,20 @@ function draftDoc(ident) {
     findNext() { this.gotoHit(this.findIdx + 1); },
     findPrev() { this.gotoHit(this.findIdx - 1); },
     init() {
-      this.$nextTick(() => {
-        // A #c-<handle> deep link must land visible: expand its ancestors.
+      this.setupVirtual();
+      this.$nextTick(async () => {
+        // A #c-<handle> deep link must land visible: expand its ancestors,
+        // hydrate it if it's a placeholder, then scroll to it.
         const id = location.hash.slice(1);
-        if (id) {
-          const el = document.getElementById(id);
+        if (id && id.startsWith('c-')) {
+          let el = document.getElementById(id);
           if (el && el.dataset.anc) {
             const anc = JSON.parse(el.dataset.anc);
             this.collapsed = this.collapsed.filter((x) => !anc.includes(x));
             this.save();
           }
+          await this.ensureLoaded(id.slice(2));
+          el = document.getElementById(id);
           if (el) el.scrollIntoView();
         }
       });
@@ -383,7 +479,9 @@ function draftDoc(ident) {
     },
     async swapAll(v) {
       try {
-        const html = await (await fetch(`/drafts/${this.ident}/rows`,
+        // The windowed body — the first blocks hydrated, the rest as
+        // placeholders the observer re-hydrates on demand.
+        const html = await (await fetch(`/drafts/${this.ident}/doc`,
                                         {cache: 'no-store'})).text();
         const doc = document.getElementById('doc');
         doc.innerHTML = html;  // Alpine binds new rows via its MutationObserver
@@ -394,6 +492,7 @@ function draftDoc(ident) {
         // This is the "mouseovers stop working after the doc updates" bug.
         if (window.htmx) window.htmx.process(doc);
         __renderDocMath();
+        this.setupVirtual();  // re-observe the fresh block set
         this.version = v;
         this.stale = false;
         if (this.findQuery.trim()) this.runFind();  // the swap wiped the marks

@@ -8,6 +8,33 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-24 — draft reader loads blocks on demand (windowed virtualization))
+
+- **A massive draft no longer renders (or holds) all of its blocks at
+  once.** The reader (`/drafts/<ident>`) now hydrates only the first
+  `INITIAL_WINDOW` (30) blocks server-side and emits the rest as
+  lightweight placeholders; client JS (`draftDoc`) runs a single
+  `IntersectionObserver` that **hydrates** a placeholder via
+  `/drafts/<ident>/row/<handle>` as it nears the viewport and **unloads** a
+  hydrated row back to a sized placeholder when it scrolls far away. DOM +
+  memory stay bounded regardless of draft size, and the per-block
+  enrichment (anchored requests, graph connections, summaries/keywords,
+  abbreviations, ref chips) moves from page-load to scroll-time. A draft
+  with ≤ 30 blocks is fully hydrated and behaves exactly as before.
+- **The enrichment path is now single-block-scoped.** `_rows_for` is
+  refactored into a shared `_build_rows(chunk_objs, want_idx)` that scopes
+  the per-handle queries (requests / `block_views` / `chunk_connections` /
+  `chunk_edit_stats`) to the wanted blocks plus their neighbours (the
+  "nearby" fold), so `/row/<handle>` is O(neighbours), not O(whole draft).
+  `store.block_views` grows an optional `handles` filter; the whole-draft
+  `defined_abbrevs` is memoised per `(ref_id, version)` so the per-row path
+  doesn't re-scan the draft each time.
+- **New `GET /drafts/<ident>/doc`** — the windowed body (first window +
+  placeholders), no chrome; the live-refresh poll swaps this in (instead of
+  the whole-document `/rows`) and re-arms the observer. Find, collapse,
+  deep-links, and the poll are all window-aware — a target placeholder is
+  hydrated before the page scrolls to / marks it.
+
 ### Fixed (2026-06-24 — `/papers` 500 (CardinalityViolation) on papers with >1 cite_key)
 
 - The `slug` column is a correlated scalar subquery over

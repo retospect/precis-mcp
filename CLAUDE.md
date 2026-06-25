@@ -252,7 +252,18 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
   same-origin to jump pages + highlight chunk text via its find API; no
   per-chunk bbox yet, so highlight is text-layer best-effort). Also a
   per-todo compiled-PDF viewer; "ask a follow-up" on any thought spawns a `conv` thread
-  linked `derived-from` the source. Status page has a Background
+  linked `derived-from` the source. The **draft reader**
+  (`routes/drafts.py`, the per-block Tier-A grid) **loads blocks on
+  demand**: it hydrates only the first `INITIAL_WINDOW` (30) blocks
+  server-side and emits the rest as placeholders; a client
+  `IntersectionObserver` hydrates a placeholder via `/drafts/<id>/row/<h>`
+  as it nears the viewport and unloads a hydrated row when it scrolls far
+  away, so a massive draft stays bounded in DOM + memory (enrichment moves
+  to scroll-time). `_build_rows(want_idx)` scopes the per-handle queries to
+  the wanted blocks + neighbours; `block_views(handles=…)` + a
+  per-`(ref,version)` abbrev cache keep `/row` O(neighbours). Find /
+  collapse / deep-links / the live poll (`/drafts/<id>/doc`) are
+  window-aware. Status page has a Background
   Health panel (active spin loops + failed passes, 24h). `precis_web`
   is a sibling package over the handler layer (ADR 0026).
 - **SSRF guard** — `src/precis/utils/safe_fetch.py`, used by

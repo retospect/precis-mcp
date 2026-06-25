@@ -122,7 +122,7 @@ class DraftFakeStore(FakeStore):
             (SimpleNamespace(id=2), _DRAFT, 0.42),
         ]
 
-    def block_views(self, ref_id):
+    def block_views(self, ref_id, handles=None):
         # BBBBBB has a summary; the heading has neither (→ first-line).
         return {"BBBBBB": {"summary": "Intro gist.", "keywords": "pei, nano"}}
 
@@ -442,6 +442,66 @@ def test_rows_fragment_has_all_blocks_no_chrome(draft_client: TestClient) -> Non
     assert r.status_code == 200
     assert 'id="c-AAAAAA"' in r.text and 'id="c-BBBBBB"' in r.text
     assert "<h1" not in r.text and "draftDoc(" not in r.text
+
+
+def test_small_draft_renders_fully_no_placeholders(draft_client: TestClient) -> None:
+    # The fixture has fewer blocks than INITIAL_WINDOW, so the reader is
+    # entirely hydrated server-side — no on-demand placeholders, same as
+    # before the windowing change.
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert 'data-ph="1"' not in r.text
+    # full content present (linkified ref proves the row is hydrated)
+    assert "/r/paper/smith2024" in r.text
+
+
+def test_reader_windows_late_blocks_as_placeholders(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    # Shrink the initial window to 1: only the first block (the AAAAAA
+    # heading) hydrates; the rest land as placeholders that hydrate on
+    # scroll. The placeholder must keep the collapse contract (id, ancestors,
+    # the single-quoted vis() binding) so deep-links / find / collapse work
+    # before the body loads.
+    from precis_web.routes import drafts as drafts_mod
+
+    monkeypatch.setattr(drafts_mod, "INITIAL_WINDOW", 1)
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    # first block hydrated (its linkified ¶ self-anchor is present)
+    assert 'id="c-AAAAAA"' in r.text
+    # BBBBBB is now a placeholder, not a hydrated row
+    assert 'data-ph="1"' in r.text
+    assert 'data-handle="BBBBBB"' in r.text
+    # the placeholder still carries the collapse machinery
+    assert "data-anc='[\"AAAAAA\"]'" in r.text
+    assert "x-show='vis([\"AAAAAA\"])'" in r.text
+    # …but NOT BBBBBB's hydrated body (its change box / connections)
+    assert 'action="/drafts/nt/request"' not in r.text.split('data-ph="1"', 1)[1]
+
+
+def test_doc_fragment_windows_and_has_no_chrome(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    # The live-refresh poll swaps this in — windowed body, no <h1>/nav.
+    from precis_web.routes import drafts as drafts_mod
+
+    monkeypatch.setattr(drafts_mod, "INITIAL_WINDOW", 1)
+    r = draft_client.get("/drafts/nt/doc")
+    assert r.status_code == 200
+    assert 'id="c-AAAAAA"' in r.text and 'data-handle="BBBBBB"' in r.text
+    assert "<h1" not in r.text and "draftDoc(" not in r.text
+
+
+def test_row_route_hydrates_a_windowed_block(draft_client: TestClient) -> None:
+    # The fragment the observer fetches for a placeholder — the full,
+    # enriched row for one block (linkified refs + change box + connections).
+    r = draft_client.get("/drafts/nt/row/BBBBBB")
+    assert r.status_code == 200
+    assert 'id="c-BBBBBB"' in r.text
+    assert "/r/paper/smith2024" in r.text  # linkified
+    assert 'action="/drafts/nt/request"' in r.text  # change box
+    assert 'id="c-AAAAAA"' not in r.text  # only the one block
 
 
 def test_chunk_handle_redirects_into_reader(draft_client: TestClient) -> None:
