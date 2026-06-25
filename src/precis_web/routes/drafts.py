@@ -36,9 +36,12 @@ Routes:
   parented on the draft's project; flows into the todo tree → dispatch).
 * ``POST /drafts/{ident}/delete`` — soft-delete the whole draft, gated on
   typing its name (atomic: ref ``deleted_at`` + chunks retired; recoverable).
-* ``GET /c/{handle}`` — resolve a ``¶`` handle → redirect into the reader
-  at ``#c-<handle>`` (the click target of every ``¶`` anchor).
-* ``GET /preview/chunk/{handle}`` — hover-popover fragment for a ``¶``.
+* ``GET /c/{handle}`` — resolve a chunk handle → redirect to where it
+  lives: a draft chunk (``dc``/``¶``) into the reader at ``#c-<handle>``, a
+  paper/other chunk (``pc``/``mc``/…) through the ``/r`` resolver at that
+  chunk. The click target of every ``¶``/``§`` anchor.
+* ``GET /preview/chunk/{handle}`` — hover-popover quote for any chunk
+  handle (draft or paper/other), so a ``§`` paper-chunk citation hovers.
 * ``GET /drafts/{ident}/row/{handle}`` — one hydrated row.
 * ``GET /drafts/{ident}/rows`` — ``?handles=a,b,…`` batch-renders those
   blocks (the scroller's window fetch); no param → the whole document.
@@ -1292,42 +1295,65 @@ async def delete_change_request(request: Request, ident: str, todo_id: int) -> R
 
 @router.get("/c/{handle}")
 async def goto_chunk(request: Request, handle: str) -> Response:
-    """Resolve an opaque ``¶`` handle → redirect into its draft reader,
-    anchored at the chunk. The click target of every ``¶`` anchor."""
+    """Resolve a chunk handle → redirect to where it lives. A draft chunk
+    (``dc<id>`` / ``¶<base58>``) lands in the draft reader anchored at the
+    chunk; any **other** chunk handle (``pc<id>`` paper, ``mc``/``lc``/…)
+    redirects through the ``/r/<kind>/<id>`` resolver at that chunk (e.g. a
+    paper → its PDF page). The click target of every ``¶``/``§`` anchor."""
     store = get_store(request)
     chunk = store.get_draft_chunk(handle)
-    if chunk is None:
-        return templates.TemplateResponse(
-            request,
-            "error.html.j2",
-            {
-                "active_tab": "drafts",
-                "title": "Chunk not found",
-                "status": 404,
-                "detail": f"no chunk {handle}",
-            },
-            status_code=404,
+    if chunk is not None:
+        ref = store.get_ref(kind="draft", id=int(chunk.ref_id))
+        ident = ref.slug if ref and ref.slug else chunk.ref_id
+        return RedirectResponse(url=f"/drafts/{ident}#c-{handle}", status_code=303)
+    uc = store.universal_chunk(handle)
+    if uc is not None:
+        # paper chunks carry an ord the /r resolver maps to a PDF page;
+        # other kinds just land on the record.
+        suffix = (
+            f"?chunk={uc['ord']}"
+            if uc["kind"] == "paper" and uc["ord"] is not None
+            else ""
         )
-    ref = store.get_ref(kind="draft", id=int(chunk.ref_id))
-    ident = ref.slug if ref and ref.slug else chunk.ref_id
-    return RedirectResponse(url=f"/drafts/{ident}#c-{handle}", status_code=303)
+        return RedirectResponse(
+            url=f"/r/{uc['kind']}/{uc['ref_id']}{suffix}", status_code=303
+        )
+    return templates.TemplateResponse(
+        request,
+        "error.html.j2",
+        {
+            "active_tab": "drafts",
+            "title": "Chunk not found",
+            "status": 404,
+            "detail": f"no chunk {handle}",
+        },
+        status_code=404,
+    )
 
 
 @router.get("/preview/chunk/{handle}", response_class=HTMLResponse)
 async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
-    """Hover-popover fragment for a ``¶`` chunk anchor — peer of the
-    ``/preview/{kind}/{id}`` route, reusing the same popover template."""
+    """Hover-popover fragment for a chunk anchor (``¶``/``§``) — peer of the
+    ``/preview/{kind}/{id}`` route, reusing the same popover template.
+    Resolves a draft chunk first, then **any** universal chunk handle
+    (``pc<id>`` paper, ``mc``/``lc``/…) so a paper-chunk citation hovers to
+    its quote. A dangling handle degrades to a 'missing' card."""
     store = get_store(request)
     chunk = store.get_draft_chunk(handle)
+    chunk_kind = chunk.chunk_kind if chunk is not None else None
+    text = chunk.text if chunk is not None else None
     if chunk is None:
-        return templates.TemplateResponse(
-            request,
-            "preview/popover.html.j2",
-            {"kind": "chunk", "label": handle, "missing": True},
-        )
+        uc = store.universal_chunk(handle)
+        if uc is None:
+            return templates.TemplateResponse(
+                request,
+                "preview/popover.html.j2",
+                {"kind": "chunk", "label": handle, "missing": True},
+            )
+        chunk_kind, text = uc["chunk_kind"], uc["text"]
     # Show the chunk's verbatim text (≤ ~20 lines) as the quote — the
-    # "what does ¶handle actually say?" a hover should answer.
-    text = chunk.text or ""
+    # "what does <handle> actually say?" a hover should answer.
+    text = text or ""
     lines = text.splitlines()
     quote = "\n".join(lines[:20]) + ("\n…" if len(lines) > 20 else "")
     if len(quote) > 1600:
@@ -1336,7 +1362,7 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
         request,
         "preview/popover.html.j2",
         {
-            "kind": chunk.chunk_kind,
+            "kind": chunk_kind,
             "label": handle,
             "ref_id": handle,
             "title": handle,

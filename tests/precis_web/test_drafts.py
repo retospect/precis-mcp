@@ -163,6 +163,18 @@ class DraftFakeStore(FakeStore):
                 return c
         return None
 
+    def universal_chunk(self, handle):
+        # pc77 = a paper chunk (ref 10, ord 3); anything else unknown.
+        if handle == "pc77":
+            return {
+                "kind": "paper",
+                "ref_id": 10,
+                "ord": 3,
+                "chunk_kind": "paragraph",
+                "text": "A cited passage about nanoscale transport.",
+            }
+        return None
+
     def get_chunk_blob(self, handle):
         if handle == "FIGFIG":
             return (b"\x89PNG\r\n\x1a\n", "image/png")
@@ -591,6 +603,29 @@ def test_chunk_handle_redirects_into_reader(draft_client: TestClient) -> None:
 def test_unknown_chunk_handle_404s(draft_client: TestClient) -> None:
     r = draft_client.get("/c/ZZZZZZ", follow_redirects=False)
     assert r.status_code == 404
+
+
+def test_paper_chunk_handle_redirects_through_resolver(draft_client: TestClient) -> None:
+    # /c/<pc-handle> resolves a PAPER chunk (not a draft chunk) → the /r
+    # resolver at that chunk (paper → its PDF page via ?chunk=ord).
+    r = draft_client.get("/c/pc77", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/r/paper/10?chunk=3"
+
+
+def test_paper_chunk_preview_shows_quote(draft_client: TestClient) -> None:
+    # Hovering a paper-chunk handle resolves its quote "whatever it is",
+    # not a dead/missing card.
+    r = draft_client.get("/preview/chunk/pc77")
+    assert r.status_code == 200
+    assert "A cited passage about nanoscale transport." in r.text
+
+
+def test_unknown_universal_chunk_preview_is_missing(draft_client: TestClient) -> None:
+    # A dangling paper-chunk handle degrades to a graceful 'missing' card.
+    r = draft_client.get("/preview/chunk/pc999")
+    assert r.status_code == 200
+    assert "no such" in r.text
 
 
 def test_chunk_preview_fragment(draft_client: TestClient) -> None:

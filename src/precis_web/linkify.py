@@ -274,9 +274,10 @@ def _render_bare_bracket(bare: str, *, compact: bool = False) -> str:
     by a 1-char superscript sigil so it doesn't break the reading flow;
     the hover popover + sidebar carry the meaning.
     """
-    # The universal form: ``[me6184]`` / ``[dc41]`` — a handle is a ref to
-    # something, rendered as an anchor (the 2-char prefix says what it is).
-    universal = _render_universal_handle(bare, bare)
+    # The universal form: ``[me6184]`` / ``[dc41]`` / ``[pc10]`` — a handle
+    # is a ref to something, rendered as an anchor (the 2-char prefix says
+    # what it is). In compact mode a chunk handle collapses to a §/¶ sigil.
+    universal = _render_universal_handle(bare, bare, compact=compact)
     if universal is not None:
         return universal
     if bare.startswith("¶"):
@@ -352,19 +353,29 @@ def _md_inline(escaped: str) -> str:
     return re.sub(r"\x00(\d+)\x00", _restore, s)
 
 
-def _render_universal_handle(handle: str, label: str) -> str | None:
-    """An ADR 0036 universal handle (``dc41`` chunk, ``me5`` record, …) →
-    an anchor. The one rule: a handle is a ref to something. A chunk
-    navigates via ``/c/<handle>``; a record via ``/r/<kind>/<pk>``.
-    ``None`` if ``handle`` isn't a well-formed universal handle."""
+def _render_universal_handle(
+    handle: str, label: str, *, compact: bool = False
+) -> str | None:
+    """An ADR 0036 universal handle (``dc41`` chunk, ``pc10`` paper chunk,
+    ``me5`` record, …) → an anchor. The one rule: a handle is a ref to
+    something. A chunk navigates via ``/c/<handle>`` (which resolves draft
+    AND paper/other chunks) with its quote on hover from
+    ``/preview/chunk/<handle>``; a record via ``/r/<kind>/<pk>``. ``None`` if
+    ``handle`` isn't a well-formed universal handle.
+
+    In ``compact`` mode (the draft reader) a chunk handle collapses to a
+    1-char sigil so it doesn't break the reading flow — ``§`` for a paper
+    chunk (it's a citation), ``¶`` for any other chunk — the hover popover
+    carries the meaning."""
     parsed = handle_registry.parse(handle)
     if parsed is None:
         return None
     kind, is_chunk, pk = parsed
     if is_chunk:
         h = escape(handle_registry.normalize(handle))
+        marker = ("§" if kind == "paper" else "¶") if compact else escape(label)
         return _anchor_html(
-            href=f"/c/{h}", preview_url=f"/preview/chunk/{h}", label=escape(label)
+            href=f"/c/{h}", preview_url=f"/preview/chunk/{h}", label=marker
         )
     return _anchor_html(
         href=f"/r/{kind}/{pk}", preview_url=f"/preview/{kind}/{pk}", label=escape(label)

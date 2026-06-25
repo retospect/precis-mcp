@@ -270,6 +270,34 @@ class DraftMixin:
             ).rowcount
         return int(chunks)
 
+    def universal_chunk(self, handle: str) -> dict[str, Any] | None:
+        """Resolve ANY universal *chunk* handle (``pc123`` paper chunk,
+        ``lc..`` plaintext, ``mc..`` markdown, …) to its owning ref +
+        position + text — the cross-kind generalisation of
+        ``get_draft_chunk`` for the reader's hover-preview / click-through.
+        Returns ``{kind, ref_id, ord, chunk_kind, text}`` or ``None`` when
+        the handle isn't a chunk handle or the chunk doesn't exist (so a
+        dangling ``pc999`` degrades to a graceful 'missing' popover)."""
+        parsed = handle_registry.parse(handle.strip())
+        if parsed is None or not parsed[1]:  # not a chunk handle
+            return None
+        kind, _is_chunk, chunk_id = parsed
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT ref_id, ord, chunk_kind, text FROM chunks "
+                "WHERE chunk_id = %s",
+                (chunk_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "kind": kind,
+            "ref_id": int(row[0]),
+            "ord": row[1],
+            "chunk_kind": row[2],
+            "text": row[3] or "",
+        }
+
     def get_draft_chunk(self, handle: str) -> DraftChunk | None:
         """A single live-or-retired draft chunk by its address.
 

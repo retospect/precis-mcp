@@ -44,6 +44,23 @@ def test_one_draft_per_project(store: Store) -> None:
         store.create_draft(name="d2", title="Two", project_ref_id=proj)
 
 
+def test_universal_chunk_resolves_any_chunk_by_handle(store: Store) -> None:
+    from precis.utils import handle_registry
+
+    proj = _project(store)
+    ref, title = store.create_draft(name="uc", title="UC Title", project_ref_id=proj)
+    h = handle_registry.format_handle("draft", title.chunk_id, chunk=True)  # dc<id>
+    uc = store.universal_chunk(h)
+    assert uc is not None
+    assert uc["kind"] == "draft"
+    assert uc["ref_id"] == ref.id
+    assert uc["chunk_kind"] == "heading"
+    assert uc["text"] == "UC Title"
+    # a record (non-chunk) handle → None; a dangling chunk id → None
+    assert store.universal_chunk("me5") is None
+    assert store.universal_chunk("dc999999999") is None
+
+
 def test_soft_delete_draft_is_atomic_and_recoverable(store: Store) -> None:
     proj = _project(store)
     ref, _title = store.create_draft(name="doomed", title="Doomed", project_ref_id=proj)

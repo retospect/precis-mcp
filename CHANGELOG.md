@@ -8,6 +8,21 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-25 — paper-chunk handles (`pc<id>`) resolve + render as `§` citations)
+
+- A `pc<id>` (paper chunk) — and any non-draft chunk handle (`mc`/`lc`/…) —
+  used to route to the **draft-only** `/c/` + `/preview/chunk/` routes, so a
+  paper-chunk reference in a draft was a dead link (the hover resolved
+  nothing). Now any chunk handle resolves:
+  - `store.universal_chunk(handle)` resolves **any** chunk handle by
+    `chunk_id` → `{kind, ref_id, ord, chunk_kind, text}`.
+  - `/c/<handle>` and `/preview/chunk/<handle>` fall back to it: a paper
+    chunk **redirects through `/r/paper/<id>?chunk=<ord>`** (→ its PDF page)
+    and **hovers to its quote**; a dangling handle degrades to a graceful
+    'missing' card.
+  - linkify renders a paper-chunk handle as a **`§` citation sigil** in the
+    compact reader (`¶` for other chunks), pointing at the generalised routes.
+
 ### Fixed (2026-06-25 — draft reader: heading fold + scroll after the virtual-scroll switch)
 
 - **Folding a heading did nothing** (the caret flipped back, nothing
