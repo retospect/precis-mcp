@@ -389,49 +389,62 @@ class DraftMixin:
 
     def reading_order(self, ref_id: int) -> list[DraftChunk]:
         """All live chunks of a draft in DFS reading order (roots by pos,
-        recurse into children by pos), with depth."""
+        recurse into children by pos), with depth.
+
+        The order is built in Python from one **flat, indexed** fetch — not
+        a recursive SQL CTE. The CTE (``WITH RECURSIVE walk``) couldn't
+        index-seek its worktable join, so at each recursion level it
+        re-scanned every chunk of the ref: ≈O(N·depth), ~5.5s on a
+        9,700-chunk draft, and it dominated the reader's load time. A single
+        ``chunks_ref_id_idx`` scan + this DFS is milliseconds.
+
+        Ordering matches the old ``sort_path COLLATE "C"``: siblings sort by
+        ``pos`` (base-62 fractional keys; Python str compare is code-point =
+        byte order), and DFS pre-order puts a parent before its subtree and a
+        subtree before the next sibling. Chunks reachable only through a
+        retired/absent parent are excluded — same as the CTE, which could
+        only walk live chunks down from a NULL-parent root."""
         with self.pool.connection() as conn:
             rows = conn.execute(
-                """
-                -- sort_path = '/'-joined pos chain; COLLATE "C" so the
-                -- fractional keys sort by byte order (not DB locale).
-                -- '/' (0x2F) sorts below every base-62 char, so a parent
-                -- precedes its children and a subtree precedes the next
-                -- sibling — i.e. DFS reading order.
-                WITH RECURSIVE walk AS (
-                    SELECT chunk_id, handle, chunk_kind, text, pos,
-                           parent_chunk_id, meta, pos AS sort_path, 0 AS depth
-                      FROM chunks
-                     WHERE ref_id = %s AND parent_chunk_id IS NULL
-                       AND retired_at IS NULL AND pos IS NOT NULL
-                    UNION ALL
-                    SELECT c.chunk_id, c.handle, c.chunk_kind, c.text, c.pos,
-                           c.parent_chunk_id, c.meta,
-                           w.sort_path || '/' || c.pos, w.depth + 1
-                      FROM chunks c JOIN walk w ON c.parent_chunk_id = w.chunk_id
-                     WHERE c.ref_id = %s AND c.retired_at IS NULL
-                       AND c.pos IS NOT NULL
-                )
-                SELECT chunk_id, handle, chunk_kind, text, pos,
-                       parent_chunk_id, depth, meta
-                  FROM walk ORDER BY sort_path COLLATE "C" ASC
-                """,
-                (ref_id, ref_id),
+                "SELECT chunk_id, handle, chunk_kind, text, pos, "
+                "       parent_chunk_id, meta "
+                "  FROM chunks "
+                " WHERE ref_id = %s AND retired_at IS NULL AND pos IS NOT NULL",
+                (ref_id,),
             ).fetchall()
-        return [
-            DraftChunk(
-                chunk_id=r[0],
-                ref_id=ref_id,
-                handle=r[1],
-                chunk_kind=r[2],
-                text=r[3],
-                pos=r[4],
-                parent_chunk_id=r[5],
-                depth=r[6],
-                meta=dict(r[7] or {}),
-            )
-            for r in rows
+        by_id = {r[0]: r for r in rows}
+        # children keyed by parent_chunk_id (None = root). A child whose
+        # parent isn't a live chunk lands in a bucket no walk ever visits,
+        # so it (and its subtree) drop out — matching the old CTE.
+        children: dict[Any, list[Any]] = {}
+        for r in rows:
+            children.setdefault(r[5], []).append(r)
+        for lst in children.values():
+            lst.sort(key=lambda r: r[4])  # by pos, byte order
+        out: list[DraftChunk] = []
+        # iterative DFS pre-order; push siblings reversed so they pop ascending.
+        stack: list[tuple[Any, int]] = [
+            (r, 0) for r in reversed(children.get(None, []))
         ]
+        while stack:
+            r, depth = stack.pop()
+            out.append(
+                DraftChunk(
+                    chunk_id=r[0],
+                    ref_id=ref_id,
+                    handle=r[1],
+                    chunk_kind=r[2],
+                    text=r[3],
+                    pos=r[4],
+                    parent_chunk_id=r[5],
+                    depth=depth,
+                    meta=dict(r[6] or {}),
+                )
+            )
+            kids = children.get(r[0])
+            if kids:
+                stack.extend((k, depth + 1) for k in reversed(kids))
+        return out
 
     def chunk_connections(
         self, ref_id: int, handles: list[str]

@@ -8,6 +8,17 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Performance (2026-06-25 — draft `reading_order` via flat fetch + Python DFS)
+
+- **`reading_order` no longer uses a recursive SQL CTE.** The CTE couldn't
+  index-seek its worktable join, so it re-scanned every chunk of the ref at
+  each recursion level (≈O(N·depth)) — **5.5s** on the 9,706-chunk
+  nano-computer draft, which dominated reader load even after windowing cut
+  the payload 15×. It's now one flat `chunks_ref_id_idx` fetch + an iterative
+  Python DFS (siblings by `pos`, pre-order), preserving the exact reading
+  order, depth, and orphan-exclusion semantics. Milliseconds instead of
+  seconds; every reader / outline / export / search-scoping path benefits.
+
 ### Changed (2026-06-25 — llm_summarize prompt rewritten as a non-duplicating navigation gloss)
 
 - Reworked the `build_messages` prompt ahead of the 1M-chunk `llm-v1` backfill,
