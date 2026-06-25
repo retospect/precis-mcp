@@ -576,7 +576,10 @@ def _fetch_ref(conn: Connection, ref_id: int) -> dict[str, Any] | None:
     row = conn.execute(
         """
         SELECT r.ref_id,
-               (SELECT id_value FROM ref_identifiers
+               -- min(): a ref can carry >1 cite_key (PK is (id_kind,id_value),
+               -- not (ref_id,id_kind)), so a bare scalar subquery raises
+               -- CardinalityViolation on a dedup-merged ref.
+               (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS slug,
                r.deleted_at,
                COALESCE(

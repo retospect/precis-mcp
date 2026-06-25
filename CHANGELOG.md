@@ -8,6 +8,21 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-25 — swept the scalar-subquery CardinalityViolation class)
+
+- `ref_identifiers`' PK is `(id_kind, id_value)`, **not** `(ref_id, id_kind)`, so
+  a ref can carry more than one value of a kind (e.g. two cite_keys from a
+  dedup-merge). Any bare scalar subquery `(SELECT id_value FROM ref_identifiers
+  WHERE ref_id=… AND id_kind='…')` then returns >1 row → `CardinalityViolation`,
+  taking down the whole query/pass. This had already bitten `/papers` and
+  `fetch_oa`; a sweep found the rest. Fixed (each now `min(id_value)`, a stable
+  representative): `chase._fetch_ref` (was throwing every finding-chase tick in
+  prod), the `_refs_ops` stub-list CTE (cite_key/doi/arxiv/s2), `utils/bib_gen`,
+  `workers/fetch_google_patents`, `jobs/patent_fulltext_sweep`, and a `patent`
+  handler `ORDER BY`. The shared ref mappers (`_mappers`, `_cache_ops`, …) and
+  `.fetchone()`/`.fetchall()` top-level reads were already safe (`LIMIT 1` / not
+  scalar). Regression test seeds a ref with two cite_keys.
+
 ### Changed (2026-06-25 — the dreaming workflow prompt ships with precis)
 
 - **The dream-cycle prompt is now a packaged precis resource**

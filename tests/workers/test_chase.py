@@ -39,6 +39,7 @@ from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
 from precis.store.types import BlockInsert
 from precis.workers.chase import (
+    _fetch_ref,
     _waiting_run_stats,
     claim_tracing_findings,
     run_finding_chase_pass,
@@ -119,6 +120,20 @@ def _chain(store, ref_id: int) -> list[dict[str, Any]]:
 
 
 # ── terminal: no inline cites → snapshot ─────────────────────────────
+
+
+def test_fetch_ref_survives_multiple_cite_keys(store) -> None:
+    """A ref with >1 cite_key (a dedup-merge — the PK is (id_kind,id_value),
+    not (ref_id,id_kind)) must not raise CardinalityViolation in _fetch_ref's
+    scalar subquery. Regression for the prod fetch_oa/chase/papers bug class."""
+    ref_id = _seed_paper(
+        store, cite_key="dup2024", identifiers=[("cite_key", "dup2024b")]
+    )
+    with store.pool.connection() as conn:
+        row = _fetch_ref(conn, ref_id)  # must not raise
+    assert row is not None
+    assert row["ref_id"] == ref_id
+    assert row["slug"] == "dup2024"  # min() of the two cite_keys
 
 
 def test_terminal_no_inline_cites_establishes_chain(store) -> None:

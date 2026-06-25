@@ -410,14 +410,17 @@ class RefsMixin:
         sql = """
             WITH stubs AS (
                 SELECT r.ref_id,
-                       (SELECT id_value FROM ref_identifiers
+                       -- min(): a ref can carry >1 value of a kind (PK is
+                       -- (id_kind,id_value)); a bare scalar subquery would
+                       -- raise CardinalityViolation on a dedup-merged ref.
+                       (SELECT min(id_value) FROM ref_identifiers
                          WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
                        COALESCE(
-                         (SELECT id_value FROM ref_identifiers
+                         (SELECT min(id_value) FROM ref_identifiers
                            WHERE ref_id = r.ref_id AND id_kind = 'doi'),
-                         (SELECT 'arxiv:' || id_value FROM ref_identifiers
+                         (SELECT 'arxiv:' || min(id_value) FROM ref_identifiers
                            WHERE ref_id = r.ref_id AND id_kind = 'arxiv'),
-                         (SELECT 's2:' || id_value FROM ref_identifiers
+                         (SELECT 's2:' || min(id_value) FROM ref_identifiers
                            WHERE ref_id = r.ref_id AND id_kind = 's2')
                        ) AS identifier,
                        r.ref_id AS sort_key
