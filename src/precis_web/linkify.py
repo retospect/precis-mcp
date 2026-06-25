@@ -274,6 +274,11 @@ def _render_bare_bracket(bare: str, *, compact: bool = False) -> str:
     by a 1-char superscript sigil so it doesn't break the reading flow;
     the hover popover + sidebar carry the meaning.
     """
+    # The universal form: ``[me6184]`` / ``[dc41]`` — a handle is a ref to
+    # something, rendered as an anchor (the 2-char prefix says what it is).
+    universal = _render_universal_handle(bare, bare)
+    if universal is not None:
+        return universal
     if bare.startswith("¶"):
         handle = bare[1:]
         # An invalid token (e.g. a numeric ``¶45650``) never resolves —

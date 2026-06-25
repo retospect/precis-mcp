@@ -1008,17 +1008,20 @@ class DraftHandler(Handler):
             "(finding:<pub_id>), or remove the marker."
         )
 
-    #: A ``[[<handle>]]`` reference in prose (no colon — a universal handle,
-    #: not a legacy ``[[kind:id]]`` mention). Validity is checked against the
-    #: store, so a numeric ``[[45650]]`` an LLM invented gets flagged.
-    _CHUNK_REF = re.compile(r"\[\[(?P<h>[^\[\]:]+)\]\]")
+    #: A ``[<token>]`` prose reference that *looks* like a handle attempt —
+    #: a pure numeric id (the classic mistake, ``[45650]``) or a known
+    #: 2-char code + digits (``[me6184]``). A non-handle ``[see note]`` is
+    #: not matched, so prose stays untouched.
+    _CHUNK_REF = re.compile(r"\[(?P<h>[a-z]{2}\d+|\d+)\]")
 
     def _dangling_chunk_hint(self, text: str) -> str:
-        """Flag ``[[<handle>]]`` references that resolve to nothing. A handle
-        is a ref to *something* (a chunk ``dc<id>``, a memory ``me<id>``, a
-        paper chunk ``pc<id>``, …); an LLM that writes a numeric id
-        (``[[45650]]``) or a typo'd handle produces a dead link. Warn here so
-        the author fixes it to a handle the outline / search actually shows."""
+        """Flag ``[<handle>]`` references that resolve to nothing. A handle is
+        a ref to *something* (a chunk ``dc<id>``, a memory ``me<id>``, a paper
+        chunk ``pc<id>``, …); an LLM that writes a numeric id (``[45650]``) or
+        a typo'd handle produces a dead link. Warn here so the author fixes it
+        to a handle the outline / search actually shows."""
+        from precis.utils import handle_registry
+
         seen: list[str] = []
         dangling: list[str] = []
         for m in self._CHUNK_REF.finditer(text):
@@ -1026,6 +1029,14 @@ class DraftHandler(Handler):
             if h in seen:
                 continue
             seen.append(h)
+            # Only nag on a real handle attempt: a pure numeric, or a known
+            # type-code prefix. A bare ``[ab12]`` (unknown code) is left as
+            # literal prose, not flagged.
+            if not h.isdigit():
+                try:
+                    handle_registry.kind_for_code(h[:2])
+                except KeyError:
+                    continue
             try:
                 if self.store.resolve_handle(h) is not None:
                     continue
@@ -1034,9 +1045,9 @@ class DraftHandler(Handler):
             dangling.append(h)
         if not dangling:
             return ""
-        toks = ", ".join(f"[[{h}]]" for h in dangling)
+        toks = ", ".join(f"[{h}]" for h in dangling)
         return (
-            f"\n\n⚠ unresolved reference(s): {toks}. A `[[…]]` reference must be a "
+            f"\n\n⚠ unresolved reference(s): {toks}. A `[…]` reference must be a "
             "handle that resolves to something (a chunk `dc<id>`, a memory "
             "`me<id>`, a paper chunk `pc<id>`, …), not a numeric id — use the "
             "handle the outline / search shows, or remove the reference."

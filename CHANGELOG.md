@@ -172,13 +172,16 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   the planner anchor block stay `¶`-tolerant so legacy anchors still resolve.
 - `ensure_glossary_heading` returns the computed `dc<id>`. The dangling-ref
   hint validates against the store (the old base-58 `is_handle` check is gone).
-- **In-prose references unified onto handles.** `[[<handle>]]` (or
-  `[label](<handle>)`) is now the one cross-reference form — a handle is a ref
-  to *something*, resolved by the single `resolve_handle` decoder for any kind
-  (`[[dc41]]` chunk, `[[me5]]` memory, `[[pc10]]` paper chunk). `draft_markup`
-  (autolinker), `linkify` (reader), and the dangling-ref hint all speak it; the
-  one non-handle exception is the paper citation `[§<cite_key>~<n>]` (the
-  bibliography needs the key).
+- **In-prose references unified onto handles.** A bracketed handle
+  `[<handle>]` (or `[label](<handle>)` for display text) is now the one
+  cross-reference form — a handle is a ref to *something*, resolved by the
+  single `resolve_handle` decoder for any kind (`[dc41]` chunk, `[me5]`
+  memory, `[pc10]` paper chunk). Single brackets, no sigil — the 2-char
+  prefix self-identifies and resolution gates it (a non-handle `[see note]`
+  stays literal). `draft_markup` (autolinker), `linkify` (reader), and the
+  dangling-ref hint all speak it; the one non-handle exception is the paper
+  citation `[§<cite_key>~<n>]` (the bibliography needs the key). Export still
+  renders the legacy forms — teaching it `[<handle>]` is a known follow-up.
 - Intentional transition residue: the legacy `¶` address + `[¶<handle>]` prose
   form still **resolve** on input, and `_insert_draft_chunk` still writes a
   (now-vestigial) base-58 `chunks.handle`.

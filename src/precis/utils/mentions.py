@@ -135,8 +135,12 @@ LOW_SIGNAL_KINDS: frozenset[str] = frozenset({"tag", "link"})
 AUTHORING_PATTERN = re.compile(r"\[\[(?P<auth>[^\[\]]+)\]\]")
 #: ``[display](target)`` — markdown display link.
 DISPLAY_LINK_PATTERN = re.compile(r"\[(?P<disp>[^\[\]]*)\]\((?P<tgt>[^()]+)\)")
-#: ``[¶h]`` / ``[§p~n]`` — bare bracketed sigil ref (no display text).
-BARE_BRACKET_REF_PATTERN = re.compile(r"\[(?P<bare>[¶§][^\[\]]+)\]")
+#: A bare bracketed reference (no display text): ``[me6184]`` — the
+#: universal form (a handle is a ref to something), or the legacy sigil
+#: forms ``[¶h]`` / ``[§p~n]``. The handle alternative is ``<2-char
+#: code><digits>``; resolution gates it against the registry, so a
+#: non-handle like ``[ab12]`` simply doesn't resolve and stays literal.
+BARE_BRACKET_REF_PATTERN = re.compile(r"\[(?P<bare>[¶§][^\[\]]+|[a-z]{2}\d+)\]")
 
 #: ``§<slug>~<n>`` citation sugar — equivalent to ``paper:<slug>~<n>``.
 DRAFT_CITE_PATTERN = re.compile(

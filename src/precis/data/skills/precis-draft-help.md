@@ -1,7 +1,7 @@
 ---
 id: precis-draft-help
 title: precis — the editable document kind
-summary: author a living document as chunks — create, read (outline/verbatim), edit text, reorder/reparent, soft-delete; markdown-ish prose with [[dc…]] references (any handle) and [§paper~n] citations
+summary: author a living document as chunks — create, read (outline/verbatim), edit text, reorder/reparent, soft-delete; markdown-ish prose with [dc…] references (any handle) and [§paper~n] citations
 applies-to: get/search/put/edit/delete (kind='draft')
 status: active
 ---
@@ -291,17 +291,17 @@ the last live chunk** — a draft is never empty.
 
 ## References in prose — one link form
 
-Prose is **markdown**. To reference anything, write `[[<handle>]]` — a
+Prose is **markdown**. To reference anything, write `[<handle>]` — a
 handle is a ref to *something*, and the system resolves it. That single
-rule covers every cross-reference: a chunk in this draft (`[[dc41]]`), a
-memory or finding (`[[me5]]`), a paper chunk (`[[pc10]]`). Use
+rule covers every cross-reference: a chunk in this draft (`[dc41]`), a
+memory or finding (`[me5]`), a paper chunk (`[pc10]`). Use
 `[text](<handle>)` when you want display words. The only non-handle form
 is a **paper citation**, which is keyed on the cite_key so it can build a
 bibliography:
 
 | write | means | renders |
 |---|---|---|
-| `[[<handle>]]` | reference to whatever the handle names | a link (chunk → §/number; record → link) |
+| `[<handle>]` | reference to whatever the handle names | a link (chunk → §/number; record → link) |
 | `[the prior result](<handle>)` | reference with display text | hyperlinked text |
 | `[§<cite_key>~<n>]` | **paper citation** | `[n]` + bibliography |
 | `[DuckDuckGo](https://…)` | web link | hyperlink |
@@ -431,18 +431,18 @@ with copy-ready calls. For each, either:
 Once defined or silenced, a token stops being hinted. Reference a term with
 `[PEI](<dc-term-handle>)`; explicit
 terms win over auto-detected ones. **Thoughts** (memory / think / finding) are
-referenceable but **not citeable** — they get a `[[…]]` link only,
+referenceable but **not citeable** — they get a `[<handle>]` link only,
 never a bibliography entry. Math is `$…$` / `$$…$$` (LaTeX, rendered by
 KaTeX on the web).
 
 **Don't write `[finding #<name>]`.** A finding is addressed by its base32
-`pub_id` (`finding:<pub_id>` or `[[finding:<pub_id>]]`), **not** by a
+`pub_id` by its `fi<id>` handle (`[fi<id>]`), **not** by a
 made-up `#slug`. A `[finding #amine-uptake]` /
 `[citation pending — finding #…]` marker resolves to **nothing** — it
 never autolinks, never exports, and on a verbatim read is flagged as an
 **⚠ unresolved finding reference**. If you mean to cite a finding,
 reference its real handle; if it doesn't exist yet, `put(kind='finding',
-…)` it first (and remember: a finding is a `[[…]]` link, not a `[§…]`
+…)` it first (and remember: a finding is a `[<handle>]` link, not a `[§…]`
 citation). Don't leave dangling `#name` placeholders in the prose.
 
 **Formatting.** Prose is plain text with a small markup subset:
@@ -454,14 +454,14 @@ citation). Don't leave dangling `#name` placeholders in the prose.
 citations and cross-refs render as a compact marker in the reader,
 so handles do not clutter the sentence: write `[§miller89~4]` and it shows
 as a small superscript. A chunk cross-ref must use the target chunk's
-**`dc<id>` handle** (e.g. `[[dc41]]`), shown in the outline — never a
-numeric id like `[[45650]]`, which resolves to nothing.
+**`dc<id>` handle** (e.g. `[dc41]`), shown in the outline — never a
+numeric id like `[45650]`, which resolves to nothing.
 
-**Every** reference you write (a `[§paper~n]` citation or a `[[dc<id>]]`
+**Every** reference you write (a `[§paper~n]` citation or a `[dc<id>]`
 link to a chunk/thought) auto-materialises a
 `related-to` backlink, so the draft is
 discoverable from the cited paper/thought's side; remove a reference and
-its link drops on the next edit. Intra-draft `[[dc<id>]]` cross-refs are
+its link drops on the next edit. Intra-draft `[dc<id>]` cross-refs are
 document-internal (TOC / `\ref`), not graph edges.
 
 ## Writing well — structure + common mistakes
@@ -540,12 +540,12 @@ recompiles after an edit. Hosts without a TeX toolchain get a friendly
 The export is a one-way resolution pass; the output is **disposable**
 (re-export from the draft, never hand-edit the `.tex`). Everything
 resolves automatically: each block gets a `\label{chunk:<handle>}` and a
-`[[dc<id>]]` cross-ref becomes `\cref{chunk:h}`; `[§slug~n]` / `paper:slug~n`
+`[dc<id>]` cross-ref becomes `\cref{chunk:h}`; `[§slug~n]` / `paper:slug~n`
 citations become `\cite{slug}` with a `refs.bib` generated from the cited
 papers (DOI/arXiv included when known); every defined abbreviation
 becomes a `\newacronym` and each occurrence a `\gls{…}` (first use full,
 later uses short), with the page-number "where it occurs" list in the
-glossary. Authoring `[[…]]` links and bare thought mentions render to
+glossary. Authoring `[<handle>]` links and bare thought mentions render to
 nothing (provenance only). This is why **citing the exact chunk** and
 **defining your abbreviations** pays off — the exporter does the rest.
 

@@ -456,14 +456,18 @@ and the rule is **accept-old-on-input, emit-new-on-output**.
   Change-request / review / figure anchors are stored bare; readers
   (`_requests_by_handle`, the planner anchor block) stay `¶`-tolerant so
   legacy anchors keep resolving.
-- **In-prose references unified onto handles.** A `[[<handle>]]` (or
-  `[label](<handle>)`) is the one cross-reference form — *a handle is a ref to
-  something* — resolved through the single `store.resolve_handle` decoder for
-  any kind (`[[dc41]]` a chunk, `[[me5]]` a memory, `[[pc10]]` a paper chunk).
-  `draft_markup` (autolinker), `linkify` (reader render), and the dangling-ref
-  hint all speak it; the skill/planner teach it. The one non-handle exception
-  is the paper **citation** `[§<cite_key>~<n>]`, kept because the bibliography
-  is keyed on the cite_key.
+- **In-prose references unified onto handles.** A bracketed handle
+  `[<handle>]` (or `[label](<handle>)` for display text) is the one
+  cross-reference form — *a handle is a ref to something* — resolved through
+  the single `store.resolve_handle` decoder for any kind (`[dc41]` a chunk,
+  `[me5]` a memory, `[pc10]` a paper chunk). Single brackets, no sigil: the
+  2-char prefix says what it is, and resolution gates it (a non-handle
+  `[see note]` stays literal). `draft_markup` (autolinker), `linkify` (reader
+  render), and the dangling-ref hint all speak it; the skill/planner teach it.
+  The one non-handle exception is the paper **citation** `[§<cite_key>~<n>]`,
+  kept because the bibliography is keyed on the cite_key. **Export still
+  renders the legacy `[¶…]`/`[§…]` forms — teaching it the `[<handle>]` /
+  `[[pc<id>]]` forms is a known follow-up.**
 - **Residual (intentional transition):** `_insert_draft_chunk` still writes a
   base-58 `chunks.handle` (now vestigial — `DraftChunk.dc` computes the handle),
   and the legacy `¶` address + `[¶<handle>]` prose form still **resolve** on

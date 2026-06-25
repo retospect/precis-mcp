@@ -518,7 +518,7 @@ def test_draft_link_verb_redirects_to_prose(hub: Hub) -> None:
     )
     out = rt.dispatch("link", {"kind": "draft", "id": "¶ABC", "target": "¶DEF"})
     assert "does not support link" in out
-    assert "embed a markdown ref" in out or "[¶<target>]" in out
+    assert "embed a handle ref" in out or "[dc<target>]" in out
 
 
 # ── Fix A: the draft surfaces stuck / in-flight work on it ──────────
@@ -605,13 +605,13 @@ def test_numeric_chunk_ref_flagged(draft: DraftHandler, hub: Hub) -> None:
     draft.put(
         id="nt",
         chunk_kind="paragraph",
-        text="As shown in [[45650]], the effect holds.",
+        text="As shown in [45650], the effect holds.",
         at={"after": title_h},
     )
     para_h = _order(hub, "nt")[1].dc
     out = draft.get(id=para_h).body
     assert "unresolved reference" in out
-    assert "[[45650]]" in out
+    assert "[45650]" in out
 
 
 def test_valid_chunk_ref_not_flagged(draft: DraftHandler, hub: Hub) -> None:
@@ -622,7 +622,7 @@ def test_valid_chunk_ref_not_flagged(draft: DraftHandler, hub: Hub) -> None:
     draft.put(
         id="nt",
         chunk_kind="paragraph",
-        text=f"See the title at [[{title_h}]] for context.",
+        text=f"See the title at [{title_h}] for context.",
         at={"after": title_h},
     )
     para_h = _order(hub, "nt")[1].dc

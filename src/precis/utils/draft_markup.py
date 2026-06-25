@@ -93,9 +93,14 @@ def parse_references(text: str) -> list[Reference]:
             refs.append(Reference(AUTHORING, m.group("auth"), None, m.group(0)))
         elif m.group("tgt") is not None:
             refs.append(_classify_link(m.group("disp"), m.group("tgt")))
-        else:  # bare [¶…] / [§…]
+        else:  # bare [¶…] / [§…] / [<handle>]
             bare = m.group("bare")
-            cls = XREF if bare.startswith("¶") else CITE
+            if bare.startswith("¶"):
+                cls = XREF
+            elif bare.startswith("§"):
+                cls = CITE
+            else:
+                cls = AUTHORING  # a bare universal handle → resolve_handle
             refs.append(Reference(cls, bare, None, m.group(0)))
     return refs
 

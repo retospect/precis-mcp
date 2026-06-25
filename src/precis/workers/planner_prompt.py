@@ -585,7 +585,9 @@ def _render_draft_identity(store: Store, ref_id: int) -> str:
         f"`get(kind='draft', id='{ident}')` (outline) and `get(id='dc<id>')` "
         f"(one chunk); search within it via "
         f"`search(kind='draft', q='…', scope='{ident}')`. Address chunks by "
-        f"their `dc<id>` handle; cross-reference by embedding `[[dc<id>]]` in prose."
+        f"their `dc<id>` handle; cross-reference anything by embedding its "
+        f"handle in brackets — `[dc<id>]` (a chunk), `[me<id>]` (a memory) — in "
+        f"prose."
     )
 
 

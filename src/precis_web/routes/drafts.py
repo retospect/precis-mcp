@@ -130,7 +130,20 @@ def _ref_chips(text: str) -> list[Any]:
                 paper(m.group("slug"), m.group("chunk"), ref.surface or ref.target)
         elif ref.cls == draft_markup.WEB:
             add(ref.surface or ref.target, ref.target, None)
-        else:  # AUTHORING — a bracketed [[kind:id]]
+        else:  # AUTHORING — a bare universal handle [me6184] or [[kind:id]]
+            parsed = handle_registry.parse(ref.target)
+            if parsed is not None:  # a universal handle → chunk or record
+                kind, is_chunk, pk = parsed
+                if is_chunk:
+                    h = handle_registry.normalize(ref.target)
+                    add(ref.surface or ref.target, f"/c/{h}", f"/preview/chunk/{h}")
+                else:
+                    add(
+                        ref.surface or ref.target,
+                        f"/r/{kind}/{pk}",
+                        f"/preview/{kind}/{pk}",
+                    )
+                continue
             m = mentions.REF_PATTERN.fullmatch(ref.target)
             if m and m.group("kind") in mentions.LINKIFY_KINDS:
                 k, i = m.group("kind"), m.group("id").lstrip("#")

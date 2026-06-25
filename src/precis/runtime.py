@@ -101,8 +101,8 @@ _DRAFT_DC_RE = re.compile(r"^dc(\d+)(.*)$")
 _VERB_REDIRECTS: dict[tuple[str, str], str] = {
     ("draft", "link"): (
         "drafts link via prose, not the link verb: edit the source chunk "
-        "to embed a markdown ref — edit(kind='draft', id='¶<src>', "
-        "text='…existing… [¶<target>]') — and the autolinker materialises "
+        "to embed a handle ref — edit(kind='draft', id='dc<src>', "
+        "text='…existing… [dc<target>]') — and the autolinker materialises "
         "the related-to backlink for you."
     ),
     ("draft", "tag"): (
