@@ -638,8 +638,141 @@ def test_paper_edit_duplicate_identifier_renders_resolver(
     # Links to the owner's detail + PDF so it can be opened in a new tab.
     assert "/papers/11" in resp.text
     assert "/papers/11/pdf" in resp.text
-    # Offers to delete the copy being edited.
-    assert 'action="/papers/10/delete"' in resp.text
+    # Offers both merge directions (keep this / keep the owner), each
+    # posting to the resolve-duplicate route.
+    assert 'action="/papers/10/resolve-duplicate"' in resp.text
+    assert 'value="this"' in resp.text
+    assert 'value="other"' in resp.text
+    # The pending edit is carried so "keep this" can re-apply it post-merge.
+    assert 'name="doi" value="10.1234/example.2024"' in resp.text
+
+
+def test_resolve_duplicate_keep_this_absorbs_owner_and_reapplies_edit(
+    client, runtime
+) -> None:
+    """``keep=this`` merges the owner into this paper (link migration +
+    identifier free-up + soft-delete) and re-applies the pending edit, which
+    now succeeds since the clashing DOI is free."""
+    store = runtime.store
+    resp = client.post(
+        "/papers/10/resolve-duplicate",
+        data={
+            "owner_id": "11",
+            "keep": "this",
+            "doi": "10.1234/example.2024",
+            "title": "Recovered title",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers/10"
+    # Owner #11 absorbed into #10 and retired.
+    assert (11, 10) in store.merges
+    assert 11 in store.deleted_ref_ids
+    # The pending edit was re-applied to the survivor.
+    edit_calls = [a for v, a in runtime.calls if v == "edit"]
+    assert edit_calls and edit_calls[-1]["doi"] == "10.1234/example.2024"
+    assert edit_calls[-1]["title"] == "Recovered title"
+
+
+def test_resolve_duplicate_keep_other_absorbs_this(client, runtime) -> None:
+    """``keep=other`` keeps the existing paper and absorbs this copy into it
+    (this paper's links migrate onto the owner; this copy is retired)."""
+    store = runtime.store
+    resp = client.post(
+        "/papers/10/resolve-duplicate",
+        data={"owner_id": "11", "keep": "other"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers/11"
+    assert (10, 11) in store.merges
+    assert 10 in store.deleted_ref_ids
+    # No metadata edit re-applied on this direction.
+    assert not any(v == "edit" for v, _ in runtime.calls)
+
+
+def test_resolve_duplicate_missing_owner_errors(client, runtime) -> None:
+    """A merge against an unknown / already-deleted owner surfaces an error
+    rather than silently doing nothing."""
+    resp = client.post(
+        "/papers/10/resolve-duplicate",
+        data={"owner_id": "999", "keep": "this"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 404
+    assert "Merge error" in resp.text
+    assert (999, 10) not in runtime.store.merges
+
+
+def test_triage_queue_renders_numbered_pager(client) -> None:
+    """The triage queue carries the same windowed numbered pager as the
+    Papers Needed list — total count + 'Page N of M', not just Prev/Next."""
+    resp = client.get("/papers/triage")
+    assert resp.status_code == 200
+    assert "Page 1 of" in resp.text
+    assert "paper" in resp.text  # 'of N papers'
+    # The first/only page is the current page chip (bg-slate-800).
+    assert "bg-slate-800" in resp.text
+
+
+def test_triaged_detail_opens_meta_tab(client, runtime) -> None:
+    """A triaged paper opens straight on the Meta tab (where the triage
+    panel + edit form live) — the sidebar component is seeded with 'Meta'."""
+    runtime.store.triaged_ref_ids.add(10)
+    resp = client.get("/papers/smith2024")
+    assert resp.status_code == 200
+    assert ", 'Meta')" in resp.text  # paperDoc(…, initialTab='Meta')
+
+
+def test_detail_tab_query_param_selects_meta(client) -> None:
+    """``?tab=meta`` opens the Meta tab even on a non-triaged paper."""
+    resp = client.get("/papers/smith2024", params={"tab": "meta"})
+    assert resp.status_code == 200
+    assert ", 'Meta')" in resp.text
+
+
+def test_detail_defaults_to_navigate_tab(client) -> None:
+    """A plain paper opens on Navigate."""
+    resp = client.get("/papers/smith2024")
+    assert resp.status_code == 200
+    assert ", 'Navigate')" in resp.text
+
+
+def test_paper_tags_route_removes_tag_and_returns_to_meta(client, runtime) -> None:
+    """The Meta-tab × button removes a tag via the tag verb and lands back
+    on the Meta tab."""
+    resp = client.post(
+        "/papers/10/tags",
+        data={"remove": "needs-triage"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers/10?tab=Meta"
+    verb, args = runtime.calls[-1]
+    assert verb == "tag"
+    assert args == {"kind": "paper", "id": 10, "remove": ["needs-triage"]}
+
+
+def test_paper_tags_route_adds_tags(client, runtime) -> None:
+    """The add box mints OPEN tags through the tag verb."""
+    resp = client.post(
+        "/papers/10/tags",
+        data={"add": "foo, bar"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    verb, args = runtime.calls[-1]
+    assert verb == "tag"
+    assert args["add"] == ["foo", "bar"]
+
+
+def test_paper_tags_route_noop_redirects(client, runtime) -> None:
+    """An empty submit just returns to the Meta tab without a dispatch."""
+    resp = client.post("/papers/10/tags", data={}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers/10?tab=Meta"
+    assert not any(v == "tag" for v, _ in runtime.calls)
 
 
 def test_paper_detail_suggests_a_short_handle(client) -> None:

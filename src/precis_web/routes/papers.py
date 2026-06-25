@@ -294,18 +294,22 @@ async def triage_queue(request: Request, page: int = 1) -> HTMLResponse:
     detail with ``?triage=1`` so the detail page opens the triage panel.
     """
     store = get_store(request)
-    page = max(1, page)
+    total = store.count_refs(kind="paper", tags=[_TRIAGE_TAG])
+    total_pages = max(1, -(-total // _PAGE_SIZE))  # ceil-div
+    page = min(max(1, page), total_pages)
     offset = (page - 1) * _PAGE_SIZE
     refs = store.list_refs(
         kind="paper",
         tags=[_TRIAGE_TAG],
-        limit=_PAGE_SIZE + 1,
+        limit=_PAGE_SIZE,
         offset=offset,
     )
-    has_next = len(refs) > _PAGE_SIZE
-    refs = refs[:_PAGE_SIZE]
-    total = store.count_refs(kind="paper", tags=[_TRIAGE_TAG])
-    total_pages = max(1, -(-total // _PAGE_SIZE))  # ceil-div
+    has_next = page < total_pages
+    # Compact page window around the current page (…1 4 5 [6] 7 8 …last) —
+    # the same numbered pager the Papers Needed list uses.
+    lo = max(1, page - 3)
+    hi = min(total_pages, page + 3)
+    page_window = list(range(lo, hi + 1))
     rows = [_paper_row(r) for r in refs]
     ids_map = store.identifiers_for_refs([row["id"] for row in rows])
     for row in rows:
@@ -320,9 +324,30 @@ async def triage_queue(request: Request, page: int = 1) -> HTMLResponse:
             "has_next": has_next,
             "total": total,
             "total_pages": total_pages,
+            "page_window": page_window,
             "offset": offset,
         },
     )
+
+
+def _detail_tags(store: Any, ref_id: int) -> list[dict[str, Any]]:
+    """Tag chips for the Meta tab. OPEN (free) tags are ``deletable`` so
+    the template offers a × that removes them (the ``needs-triage`` review
+    flag included); closed-vocab tags render as inert pills, matching the
+    Refs detail strip."""
+    out: list[dict[str, Any]] = []
+    for t in store.tags_for(ref_id):
+        ns = getattr(t, "namespace", "OPEN")
+        val = getattr(t, "value", "")
+        out.append(
+            {
+                "namespace": ns,
+                "value": val,
+                "label": f"{ns}:{val}" if ns not in ("", "OPEN") else val,
+                "deletable": ns == "OPEN",
+            }
+        )
+    return out
 
 
 def _render_detail(
@@ -333,10 +358,16 @@ def _render_detail(
     prefill: dict[str, Any] | None = None,
     triage_msg: str = "",
     cited: dict[str, Any] | None = None,
+    initial_tab: str = "",
 ) -> HTMLResponse:
     """Render the paper detail page. Shared by ``detail`` and the triage
     lookup so an S2 result can re-render the page with the edit form
-    pre-filled (``prefill``) without duplicating the context build."""
+    pre-filled (``prefill``) without duplicating the context build.
+
+    ``initial_tab`` (``Navigate`` / ``Jump`` / ``Meta``) seeds the sidebar
+    tab; a triaged paper defaults to ``Meta`` (where the triage panel +
+    edit form live) so the queue opens straight onto the metadata it needs.
+    """
     store = get_store(request)
     cfg = get_web_config(request)
     ref_id = ref.id
@@ -349,7 +380,8 @@ def _render_detail(
     has_triage = triage or store.has_tag(ref_id, "OPEN", _TRIAGE_TAG)
     stamps = store.ingest_timestamps(ref_id)
     n_chunks = store.count_blocks(ref_id)
-    tags = [(t.namespace, t.value) for t in store.tags_for(ref_id)]
+    tags = _detail_tags(store, ref_id)
+    initial_tab = initial_tab or ("Meta" if has_triage else "Navigate")
     # Suggest a real cite_key from the (fixed) author + year. Pre-fill the
     # field with it only when the current handle is the anon placeholder —
     # otherwise default to the existing handle so a save is a no-op unless
@@ -396,6 +428,9 @@ def _render_detail(
             # as a highlighted card so the reader lands on "the relevant
             # thing", with a PDF-page link for the full context.
             "cited": cited,
+            # Sidebar tab to open on (Navigate / Jump / Meta); a ?chunk
+            # citation still wins in the client (forces Jump).
+            "initial_tab": initial_tab,
         },
     )
 
@@ -462,10 +497,15 @@ def _nav_snippet(text: str) -> str:
 
 @router.get("/{ident}", response_class=HTMLResponse, response_model=None)
 async def detail(
-    request: Request, ident: str, triage: int = 0, chunk: str | None = None
+    request: Request,
+    ident: str,
+    triage: int = 0,
+    chunk: str | None = None,
+    tab: str = "",
 ) -> HTMLResponse | RedirectResponse:
     """Paper detail: metadata sidebar + PDF.js reader. ``?chunk=N`` (a
     citation click) surfaces that chunk's text as a highlighted card.
+    ``?tab=Meta`` (or Navigate / Jump) opens that sidebar tab.
 
     Addressable by cite_key slug (canonical) or numeric id; a numeric id
     that owns a slug 301-redirects to the slug URL so links settle on the
@@ -481,7 +521,11 @@ async def detail(
             target = f"{target}?{request.url.query}"
         return RedirectResponse(url=target, status_code=301)
     return _render_detail(
-        request, ref, triage=bool(triage), cited=_cited_chunk(store, ref.id, chunk)
+        request,
+        ref,
+        triage=bool(triage),
+        cited=_cited_chunk(store, ref.id, chunk),
+        initial_tab=tab.strip().capitalize(),
     )
 
 
@@ -660,13 +704,59 @@ async def pdf(request: Request, ref_id: int) -> FileResponse:
 # ``supports_delete=False``).
 
 
+def _build_paper_payload(
+    ref_id: int,
+    *,
+    title: str,
+    year: str,
+    doi: str,
+    arxiv: str,
+    abstract: str,
+    authors: str,
+) -> dict[str, Any]:
+    """Build the ``edit`` verb payload from the metadata form fields.
+
+    Empty fields are dropped (an unset value must not overwrite a stored
+    one). Authors split on newline / ``;`` and forward as cleaned lines —
+    the paper edit handler canonicalises them to the stored shape. The
+    result always carries ``kind`` + ``id``; ``len(...) > 2`` means real
+    metadata is present. Shared by the ``edit`` route and the duplicate
+    resolver's re-apply step.
+    """
+    payload: dict[str, Any] = {"kind": "paper", "id": ref_id}
+    if title.strip():
+        payload["title"] = title.strip()
+    if year.strip():
+        try:
+            payload["year"] = int(year.strip())
+        except ValueError:
+            pass
+    if doi.strip():
+        payload["doi"] = doi.strip()
+    if arxiv.strip():
+        payload["arxiv"] = arxiv.strip()
+    if abstract.strip():
+        payload["abstract"] = abstract.strip()
+    if authors.strip():
+        lines = [a.strip() for a in authors.replace(";", "\n").splitlines()]
+        cleaned = [a for a in lines if a]
+        if cleaned:
+            payload["authors"] = cleaned
+    return payload
+
+
 def _render_edit_conflict(
-    request: Request, ref_id: int, conflict: dict[str, Any]
+    request: Request,
+    ref_id: int,
+    conflict: dict[str, Any],
+    form: dict[str, str] | None = None,
 ) -> HTMLResponse:
     """Render the duplicate-identifier resolver for a failed paper edit.
 
     Loads the conflicting owner so the template can link to its detail +
     PDF; degrades gracefully (``owner=None``) if it can't be fetched.
+    ``form`` carries the operator's pending metadata edit so the resolver
+    can re-apply it onto the survivor after the duplicate is absorbed.
     """
     store = get_store(request)
     owner_id = conflict["owner_id"]
@@ -691,6 +781,7 @@ def _render_edit_conflict(
             "owner_id": owner_id,
             "owner": owner,
             "owner_pdf": owner_pdf,
+            "form": form or {},
         },
         status_code=409,
     )
@@ -722,29 +813,15 @@ async def edit(
     it differs from the current slug the paper is re-slugged (and its PDF
     moved on disk) — see :func:`_rename_slug`.
     """
-    payload: dict[str, Any] = {"kind": "paper", "id": ref_id}
-    if title.strip():
-        payload["title"] = title.strip()
-    if year.strip():
-        try:
-            payload["year"] = int(year.strip())
-        except ValueError:
-            pass
-    if doi.strip():
-        payload["doi"] = doi.strip()
-    if arxiv.strip():
-        payload["arxiv"] = arxiv.strip()
-    if abstract.strip():
-        payload["abstract"] = abstract.strip()
-    if authors.strip():
-        # One author per line (or ';'-separated). Forward the cleaned
-        # lines as-is; the paper edit handler canonicalises them to the
-        # stored ``{"name": …}`` shape (see precis.utils.authors), so
-        # the web layer no longer hand-shapes family/given.
-        lines = [a.strip() for a in authors.replace(";", "\n").splitlines()]
-        cleaned = [a for a in lines if a]
-        if cleaned:
-            payload["authors"] = cleaned
+    payload = _build_paper_payload(
+        ref_id,
+        title=title,
+        year=year,
+        doi=doi,
+        arxiv=arxiv,
+        abstract=abstract,
+        authors=authors,
+    )
 
     store = get_store(request)
     current_slug = ""
@@ -776,8 +853,22 @@ async def edit(
                 # already belongs to another paper (the two are almost
                 # always the same paper held twice). Render the resolver —
                 # it links to the owner's detail + PDF (open in a new tab to
-                # inspect) and offers to delete this redundant copy.
-                return _render_edit_conflict(request, ref_id, conflict)
+                # inspect) and offers to merge either way (carrying the
+                # pending edit so "keep this" can re-apply it post-merge).
+                return _render_edit_conflict(
+                    request,
+                    ref_id,
+                    conflict,
+                    form={
+                        "title": title,
+                        "year": year,
+                        "doi": doi,
+                        "arxiv": arxiv,
+                        "abstract": abstract,
+                        "authors": authors,
+                        "cite_key": cite_key,
+                    },
+                )
             # Any other error: render inline rather than redirect — the
             # operator needs to see why the edit didn't take.
             return templates.TemplateResponse(
@@ -893,6 +984,106 @@ async def delete(
     return RedirectResponse(url=_safe_papers_redirect(return_to), status_code=303)
 
 
+def _paper_error(request: Request, title: str, detail: str, status: int) -> HTMLResponse:
+    """Render the shared error page for a paper mutation failure."""
+    return templates.TemplateResponse(
+        request,
+        "error.html.j2",
+        {"title": title, "detail": detail, "status": status},
+        status_code=status,
+    )
+
+
+@router.post("/{ref_id}/resolve-duplicate", response_model=None)
+async def resolve_duplicate(
+    request: Request,
+    ref_id: int,
+    owner_id: int = Form(...),
+    keep: str = Form("this"),
+    title: str = Form(""),
+    year: str = Form(""),
+    doi: str = Form(""),
+    arxiv: str = Form(""),
+    abstract: str = Form(""),
+    authors: str = Form(""),
+    cite_key: str = Form(""),
+) -> RedirectResponse | HTMLResponse:
+    """Resolve a same-identifier duplicate by merging one paper into the other.
+
+    The duplicate resolver offers two directions:
+
+    * ``keep='this'`` — keep #``ref_id``, absorb #``owner_id``. The owner's
+      links migrate onto this paper and its DOI / arXiv / cite_key free up
+      (``store.merge_refs``), then the operator's pending metadata edit is
+      re-applied here (the identifier it clashed on is now available) and
+      ``needs-triage`` is cleared. This is the "the other is an empty stub,
+      keep my PDF and redirect its links here" case.
+    * ``keep='other'`` — keep #``owner_id``, absorb this paper (#``ref_id``).
+      This paper's links migrate onto the owner and this copy is retired.
+
+    Both directions go through one atomic ``merge_refs`` (migrate links →
+    drop the victim's identifiers → soft-delete the victim), so no edge is
+    orphaned. ``delete`` (web-only, no MCP surface) underlies the retire.
+    """
+    store = get_store(request)
+    refs = store.fetch_refs_by_ids([ref_id, owner_id], include_deleted=False)
+    this_ref = refs.get(ref_id)
+    owner_ref = refs.get(owner_id)
+    if this_ref is None or this_ref.kind != "paper":
+        return _paper_error(request, "Merge error", f"paper id={ref_id} not found", 404)
+    if owner_ref is None or owner_ref.kind != "paper":
+        return _paper_error(
+            request,
+            "Merge error",
+            f"paper id={owner_id} not found (it may already be deleted)",
+            404,
+        )
+
+    if keep == "other":
+        # Keep the owner, absorb this paper into it.
+        try:
+            await asyncio.to_thread(store.merge_refs, ref_id, owner_id)
+        except (NotFound, BadInput) as exc:
+            return _paper_error(request, "Merge error", str(exc), 400)
+        return RedirectResponse(url=f"/papers/{owner_id}", status_code=303)
+
+    # keep == 'this': absorb the owner here, then re-apply the pending edit.
+    try:
+        await asyncio.to_thread(store.merge_refs, owner_id, ref_id)
+    except (NotFound, BadInput) as exc:
+        return _paper_error(request, "Merge error", str(exc), 400)
+
+    payload = _build_paper_payload(
+        ref_id,
+        title=title,
+        year=year,
+        doi=doi,
+        arxiv=arxiv,
+        abstract=abstract,
+        authors=authors,
+    )
+    if len(payload) > 2:  # real metadata beyond kind + id
+        body, is_error = await await_dispatch(request, "edit", payload)
+        if is_error:
+            return _paper_error(request, "Edit error", body, 400)
+
+    new_slug = cite_key.strip().lower()
+    current_slug = this_ref.slug or ""
+    if new_slug and new_slug != current_slug:
+        err = await asyncio.to_thread(
+            _rename_slug, request, ref_id, current_slug, new_slug
+        )
+        if err is not None:
+            return _paper_error(request, "Rename error", err, 400)
+
+    # The duplicate is gone and the metadata took — leave the triage queue.
+    if store.has_tag(ref_id, "OPEN", _TRIAGE_TAG):
+        await await_dispatch(
+            request, "tag", {"kind": "paper", "id": ref_id, "remove": [_TRIAGE_TAG]}
+        )
+    return RedirectResponse(url=f"/papers/{ref_id}", status_code=303)
+
+
 @router.post("/{ref_id}/untriage", response_model=None)
 async def untriage(
     request: Request,
@@ -920,4 +1111,42 @@ async def untriage(
         {"kind": "paper", "id": ref_id, "remove": [_TRIAGE_TAG]},
         redirect=_safe_papers_redirect(return_to),
         error_title="Untriage error",
+    )
+
+
+def _split_tags(raw: str) -> list[str]:
+    """Split a comma/space-separated tag input into a clean list."""
+    if not raw:
+        return []
+    parts = [p.strip() for chunk in raw.split(",") for p in chunk.split()]
+    return [p for p in parts if p]
+
+
+@router.post("/{ref_id}/tags", response_model=None)
+async def edit_tags(
+    request: Request,
+    ref_id: int,
+    add: str = Form(""),
+    remove: str = Form(""),
+) -> Response:
+    """Add / remove tags on a paper from the Meta tab.
+
+    ``add`` is a comma/space-separated string the operator typed; ``remove``
+    is a single OPEN tag value from a chip's × (the ``needs-triage`` review
+    flag included). Flows through the ``tag`` verb so vocabulary validation
+    stays single-sourced, then lands back on the Meta tab. A no-op submit
+    just returns to the page.
+    """
+    add_list = _split_tags(add)
+    remove_list = _split_tags(remove)
+    redirect_url = f"/papers/{ref_id}?tab=Meta"
+    if not add_list and not remove_list:
+        return RedirectResponse(url=redirect_url, status_code=303)
+    args: dict[str, Any] = {"kind": "paper", "id": ref_id}
+    if add_list:
+        args["add"] = add_list
+    if remove_list:
+        args["remove"] = remove_list
+    return await redirect_or_error(
+        request, "tag", args, redirect=redirect_url, error_title="Tag error"
     )

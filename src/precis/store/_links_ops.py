@@ -91,6 +91,7 @@ class LinksMixin:
     """v2 link insert / remove / read with inverse-relation rewrite."""
 
     pool: ConnectionPool
+    soft_delete_ref: Any  # provided by RefsMixin (used by merge_refs)
 
     def add_link(
         self,
@@ -386,6 +387,36 @@ class LinksMixin:
             {"old": old_ref_id},
         )
         return cur.rowcount or 0
+
+    def merge_refs(self, victim_ref_id: int, survivor_ref_id: int) -> int:
+        """Absorb ``victim_ref_id`` into ``survivor_ref_id`` and retire the victim.
+
+        The duplicate-paper resolver's primitive (same DOI / arXiv held
+        twice). In one transaction it:
+
+        1. re-points every link touching the victim onto the survivor
+           (:meth:`migrate_links`), so the survivor inherits the victim's
+           graph position rather than orphaning its edges;
+        2. drops the victim's ``ref_identifiers`` rows — the
+           uniqueness check (``set_ref_identifier``) ignores
+           ``deleted_at``, so a bare soft-delete would leave the
+           duplicate's DOI / arXiv / cite_key claimed and unassignable to
+           the survivor;
+        3. soft-deletes the victim.
+
+        Returns the number of migrated link rows. Raises ``BadInput`` on a
+        self-merge and ``NotFound`` (from :meth:`soft_delete_ref`) if the
+        victim is missing or already deleted.
+        """
+        if victim_ref_id == survivor_ref_id:
+            raise BadInput("cannot merge a ref into itself")
+        with self.pool.connection() as conn:
+            migrated = self.migrate_links(victim_ref_id, survivor_ref_id, conn=conn)
+            conn.execute(
+                "DELETE FROM ref_identifiers WHERE ref_id = %s", (victim_ref_id,)
+            )
+            self.soft_delete_ref(victim_ref_id, conn=conn)
+        return migrated
 
 
 __all__ = ["LinksMixin"]

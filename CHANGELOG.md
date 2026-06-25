@@ -8,6 +8,31 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-25 — paper triage UX: meta-tab landing, tag removal, duplicate merge)
+
+- **Triage queue + paper detail page fixes** (`precis_web/routes/papers.py`,
+  `templates/papers/*`):
+  - The `/papers/triage` queue now carries the **same windowed numbered
+    pager** as Papers Needed (`page_window` + `pagelink` macro, page clamped
+    to `total_pages`) instead of bare Prev/Next.
+  - Opening a triaged paper (and the **S2 lookup** re-render) lands on the
+    **Meta tab**, where the triage panel + edit form live, rather than the
+    Navigate tab. Plumbed via a new `initial_tab` (route → template →
+    `paperDoc(…, initialTab)`); a `?tab=Meta|Navigate|Jump` query param
+    selects it explicitly, and a `?chunk=N` citation still wins (forces Jump).
+  - The Meta tab now renders **tag chips with a × remove button** for OPEN
+    tags (the `needs-triage` review flag included) plus an add box, backed by
+    a new `POST /papers/{id}/tags` route that returns to the Meta tab.
+  - The duplicate-identifier resolver (same DOI / arXiv held twice) gains a
+    real **merge** instead of only "delete this copy". Both directions
+    (`POST /papers/{id}/resolve-duplicate`, `keep=this|other`) go through a
+    new atomic `Store.merge_refs(victim, survivor)` — migrate every link onto
+    the survivor (`migrate_links`), drop the victim's `ref_identifiers` rows
+    (so its DOI / arXiv / cite_key free up — the uniqueness check ignores
+    `deleted_at`, so a bare soft-delete would leave them claimed), then
+    soft-delete the victim. "Keep this" re-applies the pending metadata edit
+    onto the survivor (the clashing id is now free) and clears `needs-triage`.
+
 ### Fixed (2026-06-25 — swept the scalar-subquery CardinalityViolation class)
 
 - `ref_identifiers`' PK is `(id_kind, id_value)`, **not** `(ref_id, id_kind)`, so

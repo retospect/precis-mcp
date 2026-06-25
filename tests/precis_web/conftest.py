@@ -74,6 +74,8 @@ class FakeStore:
         #: ref_ids soft-deleted via the web delete route (the route calls
         #: the store directly — paper delete is web-only, not dispatched).
         self.deleted_ref_ids: set[int] = set()
+        #: (victim, survivor) pairs merged via the resolve-duplicate route.
+        self.merges: list[tuple[int, int]] = []
         #: ref_ids stamped via touch_viewed (the reader page-open access
         #: stamp that drives the drafts most-recently-opened order).
         self.viewed: list[int] = []
@@ -302,6 +304,19 @@ class FakeStore:
         if ref_id in self.deleted_ref_ids:
             raise NotFound(f"ref id={ref_id} not found (or already deleted)")
         self.deleted_ref_ids.add(ref_id)
+
+    def merge_refs(self, victim_ref_id, survivor_ref_id):
+        """Record a duplicate-merge: soft-delete the victim (mirrors the real
+        store's atomic migrate-links + free-identifiers + soft-delete) and
+        log the pair so the resolve-duplicate route's two directions can be
+        asserted. Returns a canned migrated-link count."""
+        from precis.errors import BadInput
+
+        if victim_ref_id == survivor_ref_id:
+            raise BadInput("cannot merge a ref into itself")
+        self.merges.append((victim_ref_id, survivor_ref_id))
+        self.soft_delete_ref(victim_ref_id)
+        return 0
 
     def set_ref_identifier(
         self, ref_id, scheme, value, *, source="web-edit", conn=None

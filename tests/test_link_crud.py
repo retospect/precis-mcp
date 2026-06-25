@@ -272,6 +272,55 @@ class TestStoreLinkCRUD:
         assert cites_only[0].relation == "cites"
 
 
+# ── merge_refs: the duplicate-paper resolver primitive ─────────────
+
+
+class TestStoreMergeRefs:
+    def test_merge_migrates_links_to_survivor(self, store: Store) -> None:
+        """Every link touching the victim re-points onto the survivor."""
+        survivor = _seed_paper(store, slug="keepme2020")
+        victim = _seed_paper(store, slug="dropme2020")
+        other = _seed_memory(store)
+        # An inbound edge to the victim that must survive the merge.
+        store.add_link(src_ref_id=other, dst_ref_id=victim, relation="related-to")
+
+        migrated = store.merge_refs(victim, survivor)
+        assert migrated == 1
+        # The edge now points at the survivor; the victim has none left.
+        in_survivor = store.links_for(survivor, direction="in")
+        assert len(in_survivor) == 1 and in_survivor[0].src_ref_id == other
+        assert store.links_for(victim, direction="both") == []
+
+    def test_merge_soft_deletes_the_victim(self, store: Store) -> None:
+        survivor = _seed_paper(store, slug="keepme2021")
+        victim = _seed_paper(store, slug="dropme2021")
+        store.merge_refs(victim, survivor)
+        live = store.fetch_refs_by_ids([survivor, victim], include_deleted=False)
+        assert survivor in live
+        assert victim not in live  # retired
+
+    def test_merge_frees_the_victims_identifier(self, store: Store) -> None:
+        """The victim's DOI must free up so it can be assigned to the
+        survivor — a bare soft-delete would leave it claimed (the
+        ``ref_identifiers`` uniqueness check ignores ``deleted_at``)."""
+        survivor = _seed_paper(store, slug="keepme2022")
+        victim = _seed_paper(store, slug="dropme2022")
+        store.set_ref_identifier(victim, "doi", "10.1234/dup.2022")
+        # Before the merge the DOI belongs to the victim.
+        with pytest.raises(BadInput, match="already belongs to ref"):
+            store.set_ref_identifier(survivor, "doi", "10.1234/dup.2022")
+
+        store.merge_refs(victim, survivor)
+        # After the merge it can be assigned to the survivor.
+        store.set_ref_identifier(survivor, "doi", "10.1234/dup.2022")
+        assert store.find_paper_ref_by_identifier("10.1234/dup.2022") == survivor
+
+    def test_merge_into_self_rejected(self, store: Store) -> None:
+        a = _seed_paper(store, slug="self2023")
+        with pytest.raises(BadInput, match="cannot merge a ref into itself"):
+            store.merge_refs(a, a)
+
+
 # ── relations vocabulary: literal vs schema parity ─────────────────
 
 

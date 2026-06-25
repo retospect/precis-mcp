@@ -35,6 +35,18 @@
   </p>
   {% endif %}
 
+  {# Hidden carry of the pending edit so "keep this" can re-apply the
+     metadata onto the survivor once the duplicate's identifiers free up.
+     Defined once, macro'd into each merge form below. #}
+  {% macro pending_fields() %}
+    {% for name in ['title','year','doi','arxiv','abstract','authors','cite_key'] %}
+    <input type="hidden" name="{{ name }}" value="{{ form.get(name, '') }}" />
+    {% endfor %}
+  {% endmacro %}
+
+  {% if not owner %}
+  {# The conflicting owner couldn't be loaded — fall back to a plain delete
+     of this copy (no link migration possible without a live survivor). #}
   <div class="mt-5 border-t border-amber-200 pt-4">
     <p class="text-sm text-amber-900">
       If this paper (#{{ ref_id }}) is the redundant copy, delete it:
@@ -43,14 +55,51 @@
           onsubmit="return confirm('Delete this paper #{{ ref_id }}? It soft-deletes the duplicate.');">
       <input type="hidden" name="return_to" value="/papers/triage" />
       <button type="submit"
-              class="px-3 py-1.5 rounded bg-rose-600 text-white hover:bg-rose-700">
+              class="rounded bg-rose-600 px-3 py-1.5 text-white hover:bg-rose-700">
         🗑 Delete this paper (#{{ ref_id }})
       </button>
     </form>
-    <p class="mt-3 text-xs text-amber-700">
-      To keep this one instead, open #{{ owner_id }} above, delete that copy,
-      then re-save the metadata here.
-    </p>
   </div>
+  {% else %}
+  <div class="mt-5 grid gap-4 border-t border-amber-200 pt-4 sm:grid-cols-2">
+    {# Keep this paper, absorb the other — the usual case when #{{ owner_id }}
+       is an empty stub and this copy holds the PDF. #}
+    <div class="rounded border border-emerald-200 bg-emerald-50 p-3">
+      <p class="text-sm font-medium text-emerald-900">Keep this one (#{{ ref_id }})</p>
+      <p class="mt-1 text-xs text-emerald-800">
+        Deletes #{{ owner_id }}, redirects every link pointing at it to this
+        paper, and re-applies your edit here.
+      </p>
+      <form method="post" action="/papers/{{ ref_id }}/resolve-duplicate" class="mt-2"
+            onsubmit="return confirm('Delete #{{ owner_id }} and absorb it into #{{ ref_id }}?');">
+        <input type="hidden" name="owner_id" value="{{ owner_id }}" />
+        <input type="hidden" name="keep" value="this" />
+        {{ pending_fields() }}
+        <button type="submit"
+                class="rounded bg-emerald-600 px-3 py-1.5 text-sm text-white hover:bg-emerald-700">
+          Keep #{{ ref_id }}, delete &amp; absorb #{{ owner_id }}
+        </button>
+      </form>
+    </div>
+
+    {# Keep the existing paper, absorb this copy into it. #}
+    <div class="rounded border border-rose-200 bg-rose-50 p-3">
+      <p class="text-sm font-medium text-rose-900">Keep the existing one (#{{ owner_id }})</p>
+      <p class="mt-1 text-xs text-rose-800">
+        Deletes this paper (#{{ ref_id }}) and redirects every link pointing
+        at it to #{{ owner_id }}. Your pending edit here is discarded.
+      </p>
+      <form method="post" action="/papers/{{ ref_id }}/resolve-duplicate" class="mt-2"
+            onsubmit="return confirm('Delete this paper #{{ ref_id }} and absorb it into #{{ owner_id }}?');">
+        <input type="hidden" name="owner_id" value="{{ owner_id }}" />
+        <input type="hidden" name="keep" value="other" />
+        <button type="submit"
+                class="rounded bg-rose-600 px-3 py-1.5 text-sm text-white hover:bg-rose-700">
+          Keep #{{ owner_id }}, delete &amp; absorb #{{ ref_id }}
+        </button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
 </div>
 {% endblock %}

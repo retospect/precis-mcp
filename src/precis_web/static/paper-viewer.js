@@ -13,12 +13,12 @@
  * call it (mirrors drafts/detail.html.j2's draftDoc). Loaded `defer`,
  * so it runs before Alpine starts on DOMContentLoaded.
  */
-function paperDoc(paperId, citedOrd, hasPdf) {
+function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
   return {
     paperId,
     hasPdf,
     sidebarOpen: true,
-    tab: 'Navigate',
+    tab: initialTab || 'Navigate',
     // search state
     mode: 'semantic',
     q: '',

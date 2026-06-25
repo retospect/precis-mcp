@@ -12,7 +12,7 @@
 {# The viewer fills the viewport below the nav header; the sidebar scrolls
    internally so the PDF keeps maximum height (the old layout pushed the
    PDF below a tall metadata block). #}
-<div x-data="paperDoc({{ paper.id }}, {{ cited.ord if cited else -1 }}, {{ pdf_on_disk | lower }})"
+<div x-data="paperDoc({{ paper.id }}, {{ cited.ord if cited else -1 }}, {{ pdf_on_disk | lower }}, '{{ initial_tab }}')"
      x-init="init()"
      class="flex flex-col" style="height: calc(100vh - 4.5rem)">
 
@@ -166,13 +166,32 @@
             <span><span class="text-slate-400">first chunk </span><span title="{{ ingested.first_chunk | abs_ts }}">{{ ingested.first_chunk | ago or '—' }}</span></span>
           </div>
 
-          {% if tags %}
-          <div class="flex flex-wrap gap-1 border-t border-slate-100 pt-2">
-            {% for ns, val in tags %}
-            <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">{% if ns and ns not in ('TAG','') %}<span class="text-slate-400">{{ ns }}:</span>{% endif %}{{ val }}</span>
+          {# Tag chips. OPEN (free) tags — the ``needs-triage`` review flag
+             included — carry a × that removes them via the tag verb; closed-
+             vocab tags (STATUS:*, project:*, …) render inert (remove those
+             through the agent tag() verb). An add box mints new OPEN tags. #}
+          <div class="flex flex-wrap items-center gap-1 border-t border-slate-100 pt-2">
+            {% for t in tags %}
+              {% if t.deletable %}
+              <form method="post" action="/papers/{{ paper.id }}/tags" class="inline">
+                <input type="hidden" name="remove" value="{{ t.value }}" />
+                <span class="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+                  {{ t.value }}
+                  <button type="submit" class="text-slate-400 hover:text-rose-600" title="remove tag">×</button>
+                </span>
+              </form>
+              {% else %}
+              <span class="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-700"
+                    title="closed-vocab tag — remove via tag(kind='paper', id={{ paper.id }}, remove=[…])">{{ t.label }}</span>
+              {% endif %}
+            {% else %}
+            <span class="text-[10px] italic text-slate-400">no tags yet</span>
             {% endfor %}
+            <form method="post" action="/papers/{{ paper.id }}/tags" class="inline-flex items-center gap-1">
+              <input name="add" placeholder="+ tag"
+                     class="w-20 rounded border border-slate-300 px-1.5 py-0.5 text-[10px]" />
+            </form>
           </div>
-          {% endif %}
 
           {% if abstract %}
           <div class="border-t border-slate-100 pt-2">
