@@ -8,6 +8,23 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-25 — fetch_oa CardinalityViolation + llm_summarize failed-retry)
+
+- **`fetch_oa.claim_stubs_to_fetch` no longer dies on a multi-identifier ref.**
+  It read each stub's `doi`/`arxiv`/`s2`/`cite_key` via bare scalar subqueries,
+  which raise `CardinalityViolation` when a ref carries >1 identifier of a kind
+  (two DOIs / cite_keys from a dedup-merge). With no per-row guard the *whole*
+  pass raised every tick, so OA paper-fetching was effectively down cluster-wide
+  (and spamming the log) whenever one such stub sat in range — same root cause
+  as the `/papers` >1-cite_key fix. Each subquery now uses `min(id_value)`:
+  exactly one row (or NULL), a stable representative, no error.
+- **`llm_summarize` now retries a `failed` summary** while its `attempts` is
+  below `MAX_SUMMARIZE_ATTEMPTS` (3). The claim previously excluded *any*
+  existing `chunk_summaries` row, so a chunk that failed transiently (e.g. the
+  80B returning empty during a cold-load) was never retried. Bounded so a
+  genuinely poison chunk still gives up rather than re-billing the backend
+  every pass.
+
 ### Added (2026-06-25 — `precis migrate-refs` rewrites legacy refs to handles)
 
 - **A one-off data migration that unifies the old inline-reference

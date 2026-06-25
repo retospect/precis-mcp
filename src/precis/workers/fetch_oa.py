@@ -223,14 +223,20 @@ def claim_stubs_to_fetch(
         raise ValueError("limit must be positive")
     rows = conn.execute(
         """
+        -- ``min(id_value)`` (not a bare scalar subquery): a ref can carry
+        -- more than one identifier of the same kind (two DOIs / cite_keys
+        -- from a dedup-merge or messy metadata), and a bare scalar subquery
+        -- returning >1 row raises CardinalityViolation, taking the whole
+        -- pass down every tick. An aggregate returns exactly one row (NULL
+        -- if none) and picks a stable representative — any valid id fetches.
         SELECT r.ref_id,
-               (SELECT id_value FROM ref_identifiers
+               (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'doi')      AS doi,
-               (SELECT id_value FROM ref_identifiers
+               (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'arxiv')    AS arxiv,
-               (SELECT id_value FROM ref_identifiers
+               (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 's2')       AS s2_id,
-               (SELECT id_value FROM ref_identifiers
+               (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key
           FROM refs r
           LEFT JOIN LATERAL (

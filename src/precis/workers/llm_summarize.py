@@ -90,6 +90,13 @@ MAX_CHUNK_CHARS = 16000
 #: claim time rather than spend a slot tagging each one.
 MAX_DIGIT_FRACTION = 0.5
 
+#: Re-claim a ``status='failed'`` summary while its ``attempts`` is below
+#: this — so transient failures (e.g. the 80B returning empty during a
+#: cold-load) get retried — but stop once it's clearly a poison chunk, so a
+#: permanently-failing one can't re-bill the backend every pass. ``attempts``
+#: starts at 1 and increments per write, so this allows ~2 retries.
+MAX_SUMMARIZE_ATTEMPTS = 3
+
 #: How many words/sentences the two parts should target. Enforced by
 #: the prompt, not the parser (the model occasionally overshoots; we
 #: keep what it returns rather than truncating mid-sentence).
@@ -265,7 +272,8 @@ def claim_chunks_without_summary(
           LEFT JOIN chunk_summaries cs
             ON cs.chunk_id = c.chunk_id
            AND cs.summarizer = %s
-         WHERE cs.chunk_id IS NULL
+         WHERE (cs.chunk_id IS NULL
+                OR (cs.status = 'failed' AND cs.attempts < %s))
            AND c.chunk_kind <> ALL(%s)
            AND length(c.text) >= %s
            AND length(c.text) <= %s
@@ -281,6 +289,7 @@ def claim_chunks_without_summary(
         sql,
         (
             summarizer,
+            MAX_SUMMARIZE_ATTEMPTS,
             list(SKIP_KINDS),
             MIN_CHUNK_CHARS,
             MAX_CHUNK_CHARS,

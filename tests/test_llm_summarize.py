@@ -16,6 +16,7 @@ import pytest
 
 from precis.workers.llm_summarize import (
     MAX_CHUNK_CHARS,
+    MAX_SUMMARIZE_ATTEMPTS,
     LlmClient,
     LlmConfig,
     _Claimed,
@@ -390,3 +391,36 @@ def test_claim_skips_oversized_and_numeric_chunks(store: Any) -> None:
     assert p_id in ids  # prose is summarized
     assert n_id not in ids  # numeric dump skipped (digit fraction > 0.5)
     assert o_id not in ids  # oversized skipped (> MAX_CHUNK_CHARS)
+
+
+def test_claim_retries_failed_below_cap_only(store: Any) -> None:
+    """A failed summary is re-claimed while attempts < MAX_SUMMARIZE_ATTEMPTS
+    (so transient cold-load failures retry) but not once exhausted (so a
+    poison chunk can't re-bill the backend forever)."""
+    from tests.workers._helpers import seed_chunks
+
+    prose = (
+        "We synthesized a molecular catalyst and measured its turnover frequency "
+        "across several electrolysis runs, comparing it against the benchmark. "
+    ) * 2  # >200 chars prose, claimable
+
+    ref_id, (retry_id, exhausted_id) = seed_chunks(store, [prose, prose])
+    with store.pool.connection() as conn:
+        # retry_id: one prior failure, below cap → should be re-claimed.
+        conn.execute(
+            "INSERT INTO chunk_summaries (chunk_id, summarizer, status, attempts) "
+            "VALUES (%s, 'llm-v1', 'failed', 1)",
+            (retry_id,),
+        )
+        # exhausted_id: failed at the cap → should NOT be re-claimed.
+        conn.execute(
+            "INSERT INTO chunk_summaries (chunk_id, summarizer, status, attempts) "
+            "VALUES (%s, 'llm-v1', 'failed', %s)",
+            (exhausted_id, MAX_SUMMARIZE_ATTEMPTS),
+        )
+        conn.commit()
+        claimed = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=10)
+
+    ids = {c.chunk_id for c in claimed}
+    assert retry_id in ids  # failed, attempts < cap → retried
+    assert exhausted_id not in ids  # failed, attempts >= cap → given up

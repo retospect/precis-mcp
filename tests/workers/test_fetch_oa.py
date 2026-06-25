@@ -146,6 +146,28 @@ class TestClaimStubs:
         assert stubs[0].doi == "10.1234/a"
         assert stubs[0].cite_key == "smith2024example"
 
+    def test_multi_identifier_does_not_raise_cardinality(self, store: Store) -> None:
+        """A ref carrying >1 identifier of the same kind (two DOIs / cite_keys
+        from a dedup-merge) must not blow up the per-id scalar subqueries.
+        Regression: a bare scalar subquery returning >1 row raised
+        CardinalityViolation and took the whole fetch_oa pass down every tick.
+        """
+        ref_id = _seed_paper_stub(store, doi="10.1234/a", cite_key="dup2024")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'doi', '10.5678/b', 'manual'), "
+                "       (%s, 'cite_key', 'dup2024b', 'manual')",
+                (ref_id, ref_id),
+            )
+            conn.commit()
+            stubs = claim_stubs_to_fetch(conn, limit=10)  # must not raise
+            conn.commit()
+        s = next(s for s in stubs if s.ref_id == ref_id)
+        # min() yields one stable representative per kind, never an error.
+        assert s.doi == "10.1234/a"
+        assert s.cite_key == "dup2024"
+
     def test_excludes_ref_without_identifier(self, store: Store) -> None:
         # paper with NO doi/arxiv/s2 — claim's EXISTS clause drops it.
         _seed_paper_stub(store, cite_key="naked2024", doi=None, arxiv=None, s2_id=None)
