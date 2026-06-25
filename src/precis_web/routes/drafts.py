@@ -9,28 +9,28 @@ three columns —
   ├ meta    (terse: the refs this block makes + in-flight change-requests)
   └ change  (a per-block "around here…" box → an anchored todo)
 
-**On-demand loading (windowed virtualization).** A massive draft (10k+
-blocks) is not rendered all at once: the reader hydrates only the first
-``INITIAL_WINDOW`` blocks server-side and emits the rest as **inert**
-placeholders — plain DOM, no Alpine, ``content-visibility:auto`` so the
-browser skips off-screen layout. (Carrying one Alpine-bound node per block
-was the "works but with a minute lag" bug — ~10k reactive nodes.) Client JS
-(``draftDoc`` in ``detail.html.j2``) runs one ``IntersectionObserver`` that
-**batch-hydrates** placeholders near the viewport in a single
-``/rows?handles=…`` request (not one HTTP per block) and unloads a hydrated
-row back to a sized placeholder when it drifts far away, so the count of
-live Alpine rows — and the DOM/enrichment cost — stays bounded. Collapse is
-vanilla and imperative (a class toggle, no per-node binding). The whole-
-draft inputs (reading order, version, abbrevs) are memoised per
-``(ref, version)`` so a hydrate doesn't re-scan the draft. A draft with ≤
-``INITIAL_WINDOW`` blocks is fully hydrated and behaves as a plain reader.
-Find, collapse, deep-links, and the live poll are all window-aware (they
-ensure a target placeholder hydrates before scrolling to it).
+**On-demand loading (true virtual scrolling).** A massive draft (10k+
+blocks) keeps only the on-screen *window* of rows in the DOM — not a node
+per block. The reader embeds a compact **skeleton** (one tiny record per
+block: handle, kind, depth, ancestors, heading title, height estimate) and
+renders the first ``INITIAL_WINDOW`` rows server-side; everything else is a
+pair of sized spacer ``<div>``s (``#dr-top`` / ``#dr-bot``) so the scrollbar
+is right. Client JS (``draftDoc`` in ``detail.html.j2``) reconciles
+``#dr-win`` to the blocks intersecting the viewport (± a margin) on scroll,
+fetching them in one ``/rows?handles=…`` batch and dropping rows that scroll
+away. So a 9,700-block draft costs ~a screenful of nodes, not 9,700 — which
+is what fixed the "works but with a minute lag" (the browser was
+styling/laying-out/Alpine-walking every block). Collapse recomputes the
+visible set + spacers (no per-node binding). The whole-draft inputs (reading
+order, version, abbrevs) are memoised per ``(ref, version)``. A draft with ≤
+``INITIAL_WINDOW`` blocks renders entirely server-side. Find, collapse, and
+deep-links scroll the target block into the window before acting.
 
 Routes:
 
 * ``GET /drafts`` — list drafts.
-* ``GET /drafts/{ident}`` — the reader (slug or numeric id).
+* ``GET /drafts/{ident}`` — the reader (slug or numeric id); embeds the
+  skeleton + the server-rendered first window.
 * ``GET /draft/{ident}`` — singular convenience alias → 303 to the reader.
 * ``POST /drafts/{ident}/request`` — file a change request (anchored todo
   parented on the draft's project; flows into the todo tree → dispatch).
@@ -40,10 +40,10 @@ Routes:
   at ``#c-<handle>`` (the click target of every ``¶`` anchor).
 * ``GET /preview/chunk/{handle}`` — hover-popover fragment for a ``¶``.
 * ``GET /drafts/{ident}/row/{handle}`` — one hydrated row.
-* ``GET /drafts/{ident}/rows`` — ``?handles=a,b,…`` batch-hydrates those
-  blocks (the reader's window fetch); no param → the whole document.
-* ``GET /drafts/{ident}/doc`` — the windowed document body (first window
-  hydrated + placeholders), no chrome; what the live poll swaps in.
+* ``GET /drafts/{ident}/rows`` — ``?handles=a,b,…`` batch-renders those
+  blocks (the scroller's window fetch); no param → the whole document.
+* ``GET /drafts/{ident}/skeleton`` — the skeleton + version token as JSON;
+  the live poll refetches it to re-window after an edit.
 * ``GET /drafts/{ident}/version`` — a monotone version token (max
   ``chunk_events.event_id``) the poll compares against.
 
@@ -435,9 +435,9 @@ def _build_rows(
 
 
 def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
-    """Per-block row context for the **whole** draft (the live-refresh
-    ``/rows`` fragment). The reader itself renders only an initial window
-    fully — see ``_doc_items`` — and hydrates the rest on demand."""
+    """Per-block row context for the **whole** draft (the no-arg ``/rows``
+    fragment). The reader itself renders only an initial window fully (see
+    ``reader``) and fetches the rest in windowed batches as you scroll."""
     chunk_objs, _version, abbrevs = _doc_state(store, ref)
     return _build_rows(store, ref, chunk_objs, range(len(chunk_objs)), abbrevs=abbrevs)
 
@@ -461,9 +461,9 @@ def _one_row(store: Any, ref: Any, handle: str) -> dict[str, Any] | None:
 
 
 def _est_height_rem(c: Any) -> float:
-    """A rough placeholder height (rem) so an un-hydrated block reserves
+    """A rough placeholder height (rem) so an un-rendered block reserves
     about the space its real row will take — keeps the scrollbar honest and
-    avoids large jumps when a block hydrates just below the fold."""
+    avoids large jumps when a block renders just below the fold."""
     kind = c.chunk_kind
     if kind == "heading":
         return 2.5
@@ -474,49 +474,39 @@ def _est_height_rem(c: Any) -> float:
     return round(min(40.0, 1.6 + lines * 1.5), 1)
 
 
-def _placeholder(c: Any, anc: dict[str, list[str]]) -> dict[str, Any]:
-    """A lightweight, un-hydrated block: just enough to lay out, navigate,
-    and collapse (handle + ancestors + a height estimate + a title/preview
-    line) — no per-handle SQL. The JS hydrates it via ``/row/<handle>``."""
-    text = c.text or ""
-    first = (text.splitlines() or [""])[0]
-    is_heading = c.chunk_kind == "heading"
-    return {
-        "handle": c.handle,
-        "dc": handle_registry.try_format("draft", c.chunk_id, chunk=True) or c.handle,
-        "chunk_kind": c.chunk_kind,
-        "depth": c.depth,
-        "is_heading": is_heading,
-        "is_figure": c.chunk_kind == "figure",
-        "ancestors": anc.get(c.handle, []),
-        # Headings render their title in the placeholder (so the outline is
-        # navigable + collapsible before bodies hydrate); bodies show a
-        # muted first-line preview.
-        "title": first if is_heading else "",
-        "preview": "" if is_heading else first[:160],
-        "est_rem": _est_height_rem(c),
-    }
+def _est_height_px(c: Any) -> int:
+    """Placeholder height in px (rem × 16) for the virtual-scroll spacers."""
+    return round(_est_height_rem(c) * 16)
 
 
-def _doc_items(store: Any, ref: Any) -> list[dict[str, Any]]:
-    """The document body as a mix of hydrated rows (the first
-    ``INITIAL_WINDOW`` blocks) and placeholders (the rest). Each item is
-    ``{loaded: True, row: …}`` or ``{loaded: False, ph: …}``. Small drafts
-    are entirely loaded → identical to the old full render.
-
-    Placeholders are deliberately **inert** (plain DOM, no Alpine, CSS
-    ``content-visibility`` for off-screen layout skipping) so a 10k-chunk
-    draft doesn't pay Alpine reactivity per block — only the hydrated
-    window carries the interactive row machinery."""
-    chunk_objs, _version, abbrevs = _doc_state(store, ref)
-    n = len(chunk_objs)
-    first = min(INITIAL_WINDOW, n)
+def _skeleton(store: Any, ref: Any) -> list[dict[str, Any]]:
+    """The whole-draft **skeleton** the reader's virtual scroller runs on:
+    one tiny record per block (handle, address, kind, depth, ancestors,
+    heading flag/title, height estimate) — NOT a DOM node. The client keeps
+    only the on-screen window of real rows in the DOM (fetched via
+    ``/rows?handles=``) and a sized spacer for everything else, so a
+    10k-block draft costs ~a screenful of nodes, not 10k. Cheap: derived
+    from the cached reading order, no per-block enrichment."""
+    chunk_objs, _version, _abbrevs = _doc_state(store, ref)
     anc = _ancestor_headings(chunk_objs)
-    full = _build_rows(store, ref, chunk_objs, range(first), abbrevs=abbrevs)
-    items: list[dict[str, Any]] = [{"loaded": True, "row": r} for r in full]
-    for i in range(first, n):
-        items.append({"loaded": False, "ph": _placeholder(chunk_objs[i], anc)})
-    return items
+    out: list[dict[str, Any]] = []
+    for c in chunk_objs:
+        is_h = c.chunk_kind == "heading"
+        first = ((c.text or "").splitlines() or [""])[0]
+        out.append(
+            {
+                "h": c.handle,
+                "dc": handle_registry.try_format("draft", c.chunk_id, chunk=True)
+                or c.handle,
+                "kind": c.chunk_kind,
+                "depth": c.depth,
+                "anc": anc.get(c.handle, []),
+                "heading": is_h,
+                "title": first[:200] if is_h else "",
+                "est": _est_height_px(c),
+            }
+        )
+    return out
 
 
 def _figure_cleared(fig: dict[str, Any]) -> bool:
@@ -846,13 +836,23 @@ async def reader(request: Request, ident: str) -> Response:
             },
             status_code=404,
         )
+    chunk_objs, _version, abbrevs = _doc_state(store, ref)
+    n = len(chunk_objs)
+    first = min(INITIAL_WINDOW, n)
+    # The first screen is rendered server-side (correct + visible even if the
+    # virtual-scroll JS never runs); the rest live only in the skeleton.
+    window_rows = _build_rows(store, ref, chunk_objs, range(first), abbrevs=abbrevs)
+    skeleton = _skeleton(store, ref)
+    botpad = sum(s["est"] for s in skeleton[first:])
     return templates.TemplateResponse(
         request,
         "drafts/detail.html.j2",
         {
             "active_tab": "drafts",
             "ref": _ref_view(ref),
-            "items": _doc_items(store, ref),
+            "window_rows": window_rows,
+            "skeleton": skeleton,
+            "botpad": botpad,
             "work": _work_items(store, ref.id),
             "clearance": draft_figure_clearance(store, ref.id),
         },
@@ -903,20 +903,17 @@ async def reader_rows(request: Request, ident: str, handles: str = "") -> HTMLRe
     )
 
 
-@router.get("/drafts/{ident}/doc", response_class=HTMLResponse)
-async def reader_doc(request: Request, ident: str) -> HTMLResponse:
-    """The windowed document body (no page chrome) — the first
-    ``INITIAL_WINDOW`` blocks hydrated, the rest as placeholders. This is
-    what the live-refresh poll swaps into ``#doc`` when the version token
-    bumps and nobody's mid-edit; the placeholders re-hydrate on demand."""
+@router.get("/drafts/{ident}/skeleton")
+async def reader_skeleton(request: Request, ident: str) -> JSONResponse:
+    """The virtual-scroll skeleton as JSON (+ version token) — the reader
+    fetches this when the version bumps to rebuild its block list without a
+    full page reload."""
     store = get_store(request)
     ref = _draft_ref(store, ident)
     if ref is None:
-        return HTMLResponse("", status_code=404)
-    return templates.TemplateResponse(
-        request,
-        "drafts/_doc.html.j2",
-        {"items": _doc_items(store, ref), "ref": _ref_view(ref)},
+        return JSONResponse({"skeleton": [], "version": 0})
+    return JSONResponse(
+        {"skeleton": _skeleton(store, ref), "version": _draft_version(store, ref.id)}
     )
 
 

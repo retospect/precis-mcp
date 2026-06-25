@@ -8,6 +8,27 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Performance (2026-06-25 — draft reader is now a true virtual scroller)
+
+- **Only the on-screen window of rows lives in the DOM** — the fix for the
+  9,700-block draft that "worked but with a minute lag." The earlier
+  windowing kept a node per block (inert + `content-visibility`), so the
+  browser still styled / laid-out / Alpine-walked all ~9,700, and the
+  `IntersectionObserver` load↔unload had a **feedback loop** that flickered
+  ~5×/s on small drafts (a row hydrates → its real height ≠ the estimate →
+  neighbours cross the observer margin → load/unload → repeat). Replaced
+  with a real virtual scroller: the reader embeds a compact **skeleton**
+  (one tiny record per block) and renders only the first window server-side;
+  sized `#dr-top`/`#dr-bot` spacers stand in for off-screen blocks. The
+  client reconciles `#dr-win` to the blocks intersecting the viewport on
+  scroll — **idempotent, no observer, no feedback** — fetching them in one
+  `/rows?handles=` batch and dropping rows that scroll away. ~a screenful of
+  nodes instead of 10k. Collapse recomputes the visible set + spacers; find
+  and deep-links scroll the target into the window first. New
+  `GET /drafts/<id>/skeleton` (JSON) feeds the live poll; the
+  placeholder-per-block templates are gone. Verified headless on a seeded
+  1,609-block draft: 32 DOM nodes, correct spacers, no JS errors.
+
 ### Fixed (2026-06-25 — fetch_oa CardinalityViolation + llm_summarize failed-retry)
 
 - **`fetch_oa.claim_stubs_to_fetch` no longer dies on a multi-identifier ref.**

@@ -452,59 +452,59 @@ def test_rows_fragment_has_all_blocks_no_chrome(draft_client: TestClient) -> Non
     assert "<h1" not in r.text and "draftDoc(" not in r.text
 
 
-def test_small_draft_renders_fully_no_placeholders(draft_client: TestClient) -> None:
-    # The fixture has fewer blocks than INITIAL_WINDOW, so the reader is
-    # entirely hydrated server-side — no on-demand placeholders, same as
-    # before the windowing change.
+def test_small_draft_renders_fully_in_the_window(draft_client: TestClient) -> None:
+    # The fixture has fewer blocks than INITIAL_WINDOW, so every block is in
+    # the server-rendered window — full content, and the spacer is zero.
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
-    assert 'data-ph="1"' not in r.text
-    # full content present (linkified ref proves the row is hydrated)
+    # the virtual-scroll shell is present
+    assert 'id="dr-win"' in r.text and 'id="dr-top"' in r.text and 'id="dr-bot"' in r.text
+    assert 'id="dr-skel"' in r.text  # embedded skeleton
+    # full content present (linkified ref proves the row is server-rendered)
     assert "/r/paper/smith2024" in r.text
+    # nothing off-window → bottom spacer is zero height
+    assert 'id="dr-bot" style="height:0px"' in r.text
 
 
-def test_reader_windows_late_blocks_as_placeholders(
+def test_reader_windows_only_first_blocks(
     draft_client: TestClient, monkeypatch
 ) -> None:
     # Shrink the initial window to 1: only the first block (the AAAAAA
-    # heading) hydrates; the rest land as INERT placeholders that hydrate on
-    # scroll. The placeholder keeps the collapse contract (id, ancestors)
-    # so deep-links / find / collapse work before the body loads — but
-    # carries NO Alpine (the 10k-block lag), only data-* hooks.
+    # heading) is server-rendered in #dr-win; the rest live ONLY in the
+    # skeleton (no DOM node — the whole point), with a non-zero bottom
+    # spacer reserving their space.
     from precis_web.routes import drafts as drafts_mod
 
     monkeypatch.setattr(drafts_mod, "INITIAL_WINDOW", 1)
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
-    # first block hydrated (its linkified ¶ self-anchor is present)
+    # first block is a real server-rendered row (its change box is present)
     assert 'id="c-AAAAAA"' in r.text
-    # BBBBBB is now a placeholder, not a hydrated row
-    assert 'data-ph="1"' in r.text
-    assert 'data-handle="BBBBBB"' in r.text
-    # the placeholder still carries the collapse ancestry + content-visibility
-    assert "data-anc='[\"AAAAAA\"]'" in r.text
-    assert "content-visibility:auto" in r.text
-    # …but NO Alpine binding, and NOT BBBBBB's hydrated body (change box)
-    assert "x-show='vis(" not in r.text
-    assert 'action="/drafts/nt/request"' not in r.text.split('data-ph="1"', 1)[1]
+    win = r.text.split('id="dr-win"', 1)[1].split('id="dr-bot"', 1)[0]
+    assert 'action="/drafts/nt/request"' in win  # the one window row is hydrated
+    # BBBBBB is NOT a DOM node — it lives in the skeleton JSON only
+    assert 'id="c-BBBBBB"' not in r.text
+    assert '"h": "BBBBBB"' in r.text or '"h":"BBBBBB"' in r.text
+    # bottom spacer reserves the off-window blocks (non-zero height)
+    assert 'id="dr-bot" style="height:0px"' not in r.text
 
 
-def test_doc_fragment_windows_and_has_no_chrome(
-    draft_client: TestClient, monkeypatch
-) -> None:
-    # The live-refresh poll swaps this in — windowed body, no <h1>/nav.
-    from precis_web.routes import drafts as drafts_mod
-
-    monkeypatch.setattr(drafts_mod, "INITIAL_WINDOW", 1)
-    r = draft_client.get("/drafts/nt/doc")
+def test_skeleton_endpoint_returns_blocks_and_version(draft_client: TestClient) -> None:
+    # The live poll refetches this to re-window after an edit.
+    r = draft_client.get("/drafts/nt/skeleton")
     assert r.status_code == 200
-    assert 'id="c-AAAAAA"' in r.text and 'data-handle="BBBBBB"' in r.text
-    assert "<h1" not in r.text and "draftDoc(" not in r.text
+    data = r.json()
+    assert "version" in data
+    handles = [b["h"] for b in data["skeleton"]]
+    assert handles == ["AAAAAA", "BBBBBB", "FIGFIG", "FIGTPF"]
+    # BBBBBB is nested under the AAAAAA heading (collapse ancestry preserved)
+    bbb = next(b for b in data["skeleton"] if b["h"] == "BBBBBB")
+    assert bbb["anc"] == ["AAAAAA"]
 
 
 def test_row_route_hydrates_a_windowed_block(draft_client: TestClient) -> None:
-    # The fragment the observer fetches for a placeholder — the full,
-    # enriched row for one block (linkified refs + change box + connections).
+    # The fragment the scroller fetches as a block enters the window — the
+    # full, enriched row for one block (linkified refs + change box).
     r = draft_client.get("/drafts/nt/row/BBBBBB")
     assert r.status_code == 200
     assert 'id="c-BBBBBB"' in r.text
@@ -743,13 +743,13 @@ def test_tasks_gist_summarises_long_bodies_only() -> None:
     assert g and " · " in g  # joined keyword phrases
 
 
-def test_live_swap_reprocesses_htmx(draft_client: TestClient) -> None:
-    """After the poll swaps in fresh rows, htmx must re-wire the injected
-    hover-preview chips — else citation/¶ mouseovers open an empty slot
-    (they work on first load, break after a doc update)."""
+def test_hydrated_rows_reprocess_htmx(draft_client: TestClient) -> None:
+    """Each row the scroller fetches into the window must have htmx re-wire
+    its injected hover-preview chips — else citation/¶ mouseovers open an
+    empty slot. The virtual scroller htmx.process()es each inserted node."""
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
-    assert "htmx.process(doc)" in r.text
+    assert "htmx.process(node)" in r.text
 
 
 def test_reader_has_view_slider(draft_client: TestClient) -> None:
