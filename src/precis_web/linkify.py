@@ -276,7 +276,8 @@ def _render_bare_bracket(bare: str, *, compact: bool = False) -> str:
     """
     # The universal form: ``[me6184]`` / ``[dc41]`` — a handle is a ref to
     # something, rendered as an anchor (the 2-char prefix says what it is).
-    universal = _render_universal_handle(bare, bare)
+    # In compact mode a chunk handle collapses to a ¶ sigil (see the helper).
+    universal = _render_universal_handle(bare, bare, compact=compact)
     if universal is not None:
         return universal
     if bare.startswith("¶"):
@@ -352,31 +353,60 @@ def _md_inline(escaped: str) -> str:
     return re.sub(r"\x00(\d+)\x00", _restore, s)
 
 
-def _render_universal_handle(handle: str, label: str) -> str | None:
+#: Per-kind 1-char sigil for a *compact* chunk-handle anchor (the draft
+#: reader). A chunk handle points into some kind's body; the sigil says
+#: which kind without spelling the verbose code, keeping the reading flow.
+#: ``¶`` (paragraph) is the generic "a block" default — draft cross-refs
+#: (``dc41``) fall into it, matching the legacy ``[¶h]`` form. Specific
+#: kinds override with a glyph that reads as *its* citation:
+#:   * paper  → ``§`` — a cited section (same glyph as the ``[§slug~n]`` form)
+#:   * patent → ``Ⓟ`` — a cited patent passage (full-size circled P, U+24C5,
+#:     not the small ``℗`` sound-recording mark)
+#: Notes / dreams etc. are never inline chunk refs (they surface in the
+#: sidebar Connections panel), so they need no entry here.
+_CHUNK_SIGIL: dict[str, str] = {"paper": "§", "patent": "Ⓟ"}
+_CHUNK_SIGIL_DEFAULT = "¶"
+
+
+def _render_universal_handle(
+    handle: str, label: str, *, compact: bool = False
+) -> str | None:
     """An ADR 0036 universal handle (``dc41`` chunk, ``me5`` record, …) →
     an anchor. The one rule: a handle is a ref to something. A chunk
     navigates via ``/c/<handle>``; a record via ``/r/<kind>/<pk>``.
-    ``None`` if ``handle`` isn't a well-formed universal handle."""
+    ``None`` if ``handle`` isn't a well-formed universal handle.
+
+    In ``compact`` mode (the draft reader) a *chunk* handle collapses to a
+    full-size, kind-specific sigil (:data:`_CHUNK_SIGIL`: ``§`` paper, ``℗``
+    patent, ``¶`` for any other block) — easy hover/click target, no verbose
+    code breaking the flow; the popover + click carry the meaning. Record
+    handles (``me5``) keep their label — they aren't paragraph pointers.
+    Compact only collapses the *bare* handle; a display link
+    (``[text](dc41)``) keeps its text."""
     parsed = handle_registry.parse(handle)
     if parsed is None:
         return None
     kind, is_chunk, pk = parsed
     if is_chunk:
         h = escape(handle_registry.normalize(handle))
+        # Full-size sigil (not a <sup>) so it stays an easy hover/click target.
+        shown = (
+            _CHUNK_SIGIL.get(kind, _CHUNK_SIGIL_DEFAULT) if compact else escape(label)
+        )
         return _anchor_html(
-            href=f"/c/{h}", preview_url=f"/preview/chunk/{h}", label=escape(label)
+            href=f"/c/{h}", preview_url=f"/preview/chunk/{h}", label=shown
         )
     return _anchor_html(
         href=f"/r/{kind}/{pk}", preview_url=f"/preview/{kind}/{pk}", label=escape(label)
     )
 
 
-def _render_authoring(addr: str) -> str:
+def _render_authoring(addr: str, *, compact: bool = False) -> str:
     """``[[<handle>]]`` — the universal reference form. A handle resolves
     to an anchor (chunk / record); a legacy ``[[kind:id]]`` authoring link
     surfaces its inner handle for discoverability when it is a known kind;
     anything else stays literal."""
-    universal = _render_universal_handle(addr, addr)
+    universal = _render_universal_handle(addr, addr, compact=compact)
     if universal is not None:
         return universal
     m = _REF_PATTERN.fullmatch(addr)
@@ -543,7 +573,7 @@ def _linkify_prose(
         # Draft bracket forms (ADR 0033 §8) — checked first; their groups
         # are consumed before the bare ``kind:ref`` alternatives.
         if m.group("auth") is not None:
-            return _render_authoring(m.group("auth"))
+            return _render_authoring(m.group("auth"), compact=compact)
         if m.group("disp") is not None:
             return _render_display_link(m.group("disp"), m.group("tgt"), m.group(0))
         if m.group("bare") is not None:

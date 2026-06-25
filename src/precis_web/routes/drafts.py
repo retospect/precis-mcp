@@ -602,7 +602,10 @@ _DOC_TYPE_BRIEF: dict[str, str] = {d["value"]: d["brief"] for d in _DOC_TYPES}
 @router.get("/drafts", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     store = get_store(request)
-    refs = store.list_refs(kind="draft", limit=200)
+    # Most recently *opened* (in the reader) first — see store.touch_viewed,
+    # stamped on the reader page-load below. Never-opened drafts fall to the
+    # bottom, then by last write.
+    refs = store.list_refs(kind="draft", order_by="viewed_desc", limit=200)
     drafts = [
         {
             "ident": r.slug or r.id,
@@ -846,6 +849,14 @@ async def reader(request: Request, ident: str) -> Response:
             },
             status_code=404,
         )
+    # Stamp the access (drives the drafts list's most-recently-opened order).
+    # Only here — the full page open — not the poll/rows/doc/version endpoints,
+    # so a tab left polling doesn't keep pinning this draft to the top. Never
+    # fail the page on a stamp error.
+    try:
+        store.touch_viewed(ref.id)
+    except Exception:  # pragma: no cover - defensive
+        log.warning("drafts: touch_viewed failed for %s", ref.id, exc_info=True)
     return templates.TemplateResponse(
         request,
         "drafts/detail.html.j2",

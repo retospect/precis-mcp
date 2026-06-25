@@ -447,6 +447,45 @@ def test_compact_xref_is_one_char_marker() -> None:
     assert ">¶</a>" in out and 'href="/c/aB3xQ9"' in out
 
 
+def test_compact_universal_chunk_handle_uses_kind_sigil() -> None:
+    # A universal *chunk* handle collapses to a kind-specific sigil in the
+    # compact reader (not the verbose code): a paper block (``pc123``) reads
+    # as a citation §, a draft block (``dc41``) as a paragraph ¶ — both still
+    # navigate via /c/ and carry the hover preview.
+    out = str(linkify_refs("see [pc123] and [dc41]", compact=True))
+    assert ">§</a>" in out and ">¶</a>" in out
+    assert 'href="/c/pc123"' in out and 'href="/c/dc41"' in out
+    # verbose code hidden from the visible label (still fine in href/preview).
+    assert ">pc123</a>" not in out and ">dc41</a>" not in out
+
+
+def test_compact_patent_chunk_handle_is_circle_p() -> None:
+    # A patent block (``pk7``) reads as Ⓟ (full-size circled P) in the
+    # compact reader — not the small ℗ sound-recording mark.
+    out = str(linkify_refs("see [pk7]", compact=True))
+    assert ">Ⓟ</a>" in out and 'href="/c/pk7"' in out
+    assert ">pk7</a>" not in out
+
+
+def test_compact_universal_record_handle_stays_verbose() -> None:
+    # A *record* handle (``me5``) isn't a paragraph pointer — it keeps its
+    # label even in compact mode (only chunk handles collapse to ¶).
+    out = str(linkify_refs("background [me5] here", compact=True))
+    assert ">me5</a>" in out and 'href="/r/memory/5"' in out
+
+
+def test_non_compact_universal_chunk_handle_stays_verbose() -> None:
+    # Outside the reader the handle keeps its readable code.
+    out = str(linkify_refs("see [pc123]"))
+    assert ">pc123</a>" in out and 'href="/c/pc123"' in out
+
+
+def test_compact_display_link_to_chunk_keeps_text() -> None:
+    # A display link chose its text — compact must NOT clobber it with ¶.
+    out = str(linkify_refs("recall [the block](dc41) above", compact=True))
+    assert ">the block</a>" in out and 'href="/c/dc41"' in out
+
+
 def test_non_compact_citation_stays_verbose() -> None:
     out = str(linkify_refs("see [§kong24~2]"))
     assert "§kong24~2" in out

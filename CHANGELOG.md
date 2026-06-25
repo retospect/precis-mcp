@@ -8,6 +8,40 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-25 — compact reader collapses chunk handles to a kind sigil)
+
+- **A universal *chunk* handle now renders as a kind-specific sigil in the
+  draft reader.** `[¶h]` and `[§p~n]` already collapsed to a clean full-size
+  1-char marker in compact mode, but a universal chunk handle — `[pc123]` (a
+  paper's block), `[dc41]` (this draft's block), `[pk7]` (a patent's block) —
+  still spelled out the verbose code inline, breaking the reading flow and
+  reading as plain text rather than a block pointer. `_render_universal_handle`
+  now takes `compact` and maps the host kind to a sigil (`_CHUNK_SIGIL`):
+  **`§`** for a paper block (same glyph as the `[§slug~n]` citation form),
+  **`Ⓟ`** (full-size circled P, U+24C5) for a patent block, **`¶`** as the
+  generic block default
+  (draft cross-refs fall into it). The anchor keeps `/c/<handle>` navigation +
+  hover preview. Record handles (`me5`) and display links (`[text](dc41)`) are
+  unchanged — only the *bare* chunk handle collapses. Notes/dreams are not
+  inline chunk refs (they surface in the sidebar Connections panel), so they
+  carry no sigil.
+
+### Added (2026-06-25 — drafts list ordered by most recently opened)
+
+- **`GET /drafts` now sorts most-recently-*opened* first.** The list was
+  ordered by `refs.updated_at` (the `list_refs` default), but draft block
+  writes hit `chunks`/`chunk_events` and never bump the ref row, so the order
+  reflected "last title/meta edit" — rarely what you want. We add a real access
+  stamp rather than deriving recency from `MAX(chunk_events.ts)` (a whole-events
+  scan). Migration `0038_ref_last_viewed.sql` adds nullable
+  `refs.last_viewed_at`; `Store.touch_viewed(ref_id)` stamps it (a single PK
+  UPDATE) and the reader page-load (`GET /drafts/{ident}`) calls it — but **not**
+  the live-poll endpoints (`/doc`, `/rows`, `/version`), so a tab left polling
+  doesn't pin a draft to the top. New `list_refs` order key `viewed_desc`
+  (`last_viewed_at DESC NULLS LAST, updated_at DESC` — never-opened drafts fall
+  to the bottom) backs the list. The column is general to all kinds; only the
+  draft reader stamps it today.
+
 ### Fixed (2026-06-25 — fetch_oa CardinalityViolation + llm_summarize failed-retry)
 
 - **`fetch_oa.claim_stubs_to_fetch` no longer dies on a multi-identifier ref.**

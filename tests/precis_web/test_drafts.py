@@ -262,6 +262,22 @@ def test_new_draft_blank_description_falls_back(
     assert "LLM:opus" in args["tags"]
 
 
+def test_reader_stamps_last_viewed(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    """Opening the reader stamps the draft's access (drives the drafts
+    list's most-recently-opened order). The full page-load does it; the
+    poll/rows/doc endpoints must not."""
+    store = draft_runtime.store
+    assert store.viewed == []
+    assert draft_client.get("/drafts/nt").status_code == 200
+    assert store.viewed == [500]
+    # the live-poll endpoints don't re-stamp (else an open tab pins it).
+    draft_client.get("/drafts/nt/doc")
+    draft_client.get("/drafts/nt/version")
+    assert store.viewed == [500]
+
+
 def test_reader_renders_per_block_grid(draft_client: TestClient) -> None:
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
