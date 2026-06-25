@@ -21,34 +21,39 @@
   </div>
 </form>
 
-{# Example deep-links. A GET /console?verb=&args_text= prefills the
-   form above and (for read-only get/search) runs it on load, so each
-   link is a one-click, already-run query. #}
-<div class="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-  <span class="font-medium text-slate-700">Examples</span> — click to prefill &amp; run:
-  <ul class="mt-1 space-y-0.5">
-    <li>
-      <a class="text-emerald-700 hover:underline font-mono"
-         href="/console?verb=search&amp;args_text={{ 'kind=paper q="attention is all you need" page_size=5' | urlencode }}">
-        search kind=paper q="attention is all you need"
-      </a>
-      <span class="text-slate-500">— find a paper by title/topic</span>
-    </li>
-    <li>
-      <a class="text-emerald-700 hover:underline font-mono"
-         href="/console?verb=get&amp;args_text={{ 'kind=paper id=pa2928 view=toc' | urlencode }}">
-        get kind=paper id=pa2928 view=toc
-      </a>
-      <span class="text-slate-500">— table of contents for one paper (here: <em>Attention Is All You Need</em>)</span>
-    </li>
-    <li>
-      <a class="text-emerald-700 hover:underline font-mono"
-         href="/console?verb=get&amp;args_text={{ 'kind=paper id=pa2928' | urlencode }}">
-        get kind=paper id=pa2928
-      </a>
-      <span class="text-slate-500">— that paper's top-level overview</span>
-    </li>
-  </ul>
+{# Example deep-links, grouped. A GET /console?verb=&args_text=
+   prefills the form above and (for read-only get/search) runs it on
+   load, so each link is a one-click, already-run query. The group
+   dropdown is a client-side filter (Alpine) over CONSOLE_EXAMPLES;
+   'all' shows everything. #}
+<div x-data="{ grp: 'all' }"
+     class="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+  <div class="flex items-center justify-between gap-2">
+    <span><span class="font-medium text-slate-700">Examples</span> — click to prefill &amp; run</span>
+    <select x-model="grp"
+            class="rounded-md border border-slate-300 bg-white text-xs px-2 py-1">
+      <option value="all">All groups</option>
+      {% for g in console_examples %}
+      <option value="{{ g.key }}">{{ g.group }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% for g in console_examples %}
+  <div x-show="grp === 'all' || grp === '{{ g.key }}'" class="mt-2">
+    <p class="font-medium text-slate-500 uppercase tracking-wide text-[10px]">{{ g.group }}</p>
+    <ul class="mt-1 space-y-0.5">
+      {% for ex in g.examples %}
+      <li>
+        <a class="text-emerald-700 hover:underline font-mono"
+           href="/console?verb={{ ex.verb }}&amp;args_text={{ ex.args | urlencode }}">
+          {{ ex.verb }} {{ ex.args }}
+        </a>
+        <span class="text-slate-500">— {{ ex.note }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endfor %}
 </div>
 
 {# Smart-resolve: paste any handle (cite_key, DOI, arXiv id, YouTube
@@ -112,6 +117,12 @@
   <h2 class="text-sm font-semibold mb-2 {% if is_error %}text-rose-700{% else %}text-slate-700{% endif %}">
     {% if is_error %}error{% else %}result{% endif %}
   </h2>
+  {# Echo the call that produced this output so the request and its
+     response are read together (and the call is easy to copy/tweak). #}
+  <div class="mb-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs">
+    <span class="font-medium text-slate-500 mr-2">request</span>
+    <span class="font-mono text-slate-700">{{ verb }}{% if args_text %} {{ args_text }}{% endif %}</span>
+  </div>
   <pre class="rounded-lg border {% if is_error %}border-rose-200 bg-rose-50 text-rose-800{% else %}border-slate-200 bg-white text-slate-700{% endif %} p-3 text-xs whitespace-pre-wrap overflow-x-auto">{{ result | linkify_refs }}</pre>
 </div>
 {% endif %}

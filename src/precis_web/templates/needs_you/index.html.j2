@@ -1,0 +1,113 @@
+{% extends "base.html.j2" %}
+{% block title %}Needs you{% endblock %}
+{% block content %}
+<div class="flex items-baseline justify-between mb-4">
+  <h1 class="text-lg font-semibold">Needs you</h1>
+  <span class="text-sm text-slate-500">
+    {{ asks|length }} ask{{ '' if asks|length == 1 else 's' }} ·
+    {{ stub_total }} paper{{ '' if stub_total == 1 else 's' }} needed
+  </span>
+</div>
+
+{% if not asks and not stubs %}
+<p class="text-sm text-slate-500">
+  Nothing's waiting on you — no open
+  <span class="font-mono">ask-user</span> todos and no paper stubs awaiting a source.
+</p>
+{% endif %}
+
+{# ── Asks ───────────────────────────────────────────────────────── #}
+{% if asks %}
+<section class="mb-8">
+  <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-3">
+    Asks <span class="text-slate-300">— answer to unlock the planner</span>
+  </h2>
+  <ul class="space-y-3">
+    {% for a in asks %}
+    {% set first_line = (a.title or '').split('\n', 1)[0] %}
+    <li class="rounded-lg border border-slate-200 bg-white px-4 py-3">
+      <div class="flex items-baseline gap-2">
+        <span class="text-xs text-slate-400 w-12 shrink-0 font-mono">#{{ a.id }}</span>
+        <a href="/tasks" class="min-w-0 flex-1 text-sm font-medium text-slate-800 hover:text-emerald-700 break-words">
+          {{ first_line | linkify_refs }}
+        </a>
+        {# X — dismiss the ask: close the todo (won't-do) without answering. #}
+        <form method="post" action="/asks/{{ a.id }}/terminate" class="shrink-0"
+              onsubmit="return confirm('Dismiss this ask and close the todo (won’t-do)?')">
+          {% for tag in a.tags %}
+          <input type="hidden" name="remove" value="{{ tag }}"/>
+          {% endfor %}
+          <button class="text-slate-300 hover:text-rose-600 leading-none text-lg"
+                  title="dismiss — close this todo without answering">&times;</button>
+        </form>
+      </div>
+      {% if a.questions %}
+      <div class="mt-2 ml-14 space-y-2">
+        {% for q in a.questions %}
+        <div class="text-sm text-slate-700 bg-amber-50 border-l-4 border-amber-300 px-3 py-2 rounded whitespace-pre-line break-words">
+          {{ q | linkify_refs }}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="mt-2 ml-14 text-xs text-slate-400">
+        tagged <span class="font-mono">ask-user</span> (no question text)
+      </div>
+      {% endif %}
+      <form method="post" action="/asks/{{ a.id }}/answer" class="mt-3 ml-14">
+        {% for tag in a.tags %}
+        <input type="hidden" name="remove" value="{{ tag }}"/>
+        {% endfor %}
+        <textarea name="response" required rows="3"
+                  placeholder="Type your answer to unlock this todo…"
+                  class="w-full rounded-md border border-slate-300 text-sm px-3 py-2 font-mono"></textarea>
+        <div class="mt-2 flex justify-end">
+          <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-1.5 hover:bg-emerald-700">
+            Answer &amp; unlock
+          </button>
+        </div>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{# ── Papers needed ──────────────────────────────────────────────── #}
+{% if stubs %}
+<section>
+  <div class="flex items-baseline justify-between mb-3">
+    <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400">
+      Papers needed <span class="text-slate-300">— stubs awaiting a source</span>
+    </h2>
+    <a href="/papers-needed" class="text-xs text-emerald-700 hover:underline">
+      View all {{ stub_total }} &rarr;
+    </a>
+  </div>
+  <ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+    {% for s in stubs %}
+    <li class="flex items-baseline gap-3 px-4 py-2">
+      <span class="text-xs text-slate-400 w-12 shrink-0 font-mono">#{{ s.id }}</span>
+      <div class="min-w-0 flex-1">
+        <a href="/papers/{{ s.id }}" class="text-sm text-slate-800 hover:text-emerald-700 break-words">
+          {{ s.title or s.cite_key or s.identifier }}
+        </a>
+        {% if s.identifier %}
+        <div class="text-xs text-slate-400 font-mono break-all">
+          {% if s.identifier_url %}<a href="{{ s.identifier_url }}" class="hover:underline" target="_blank" rel="noopener">{{ s.identifier }}</a>{% else %}{{ s.identifier }}{% endif %}
+        </div>
+        {% endif %}
+      </div>
+      <span class="text-xs text-slate-400 shrink-0">{{ s.state }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% if stub_more %}
+  <p class="mt-2 text-xs text-slate-400">
+    + {{ stub_more }} more on the
+    <a href="/papers-needed" class="text-emerald-700 hover:underline">Papers Needed</a> page.
+  </p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

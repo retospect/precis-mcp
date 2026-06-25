@@ -986,7 +986,9 @@ async def delete(
     return RedirectResponse(url=_safe_papers_redirect(return_to), status_code=303)
 
 
-def _paper_error(request: Request, title: str, detail: str, status: int) -> HTMLResponse:
+def _paper_error(
+    request: Request, title: str, detail: str, status: int
+) -> HTMLResponse:
     """Render the shared error page for a paper mutation failure."""
     return templates.TemplateResponse(
         request,

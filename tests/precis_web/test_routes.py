@@ -1857,6 +1857,38 @@ def test_console_quick_youtube_hint_rendered(client) -> None:
     assert "dQw4w9WgXcQ" in resp.text  # example video id in the hint
 
 
+def test_console_examples_grouped_box_rendered(client) -> None:
+    """The examples box renders every group's title + dropdown options,
+    spanning multiple kinds (not just paper)."""
+    from precis_web.routes.console import CONSOLE_EXAMPLES
+
+    resp = client.get("/console")
+    assert resp.status_code == 200
+    # The group dropdown (Alpine x-model) and every group title.
+    assert "All groups" in resp.text
+    assert 'x-model="grp"' in resp.text
+    for g in CONSOLE_EXAMPLES:
+        # Group titles carry ``&`` → HTML-escaped to ``&amp;`` on render.
+        assert g["group"].replace("&", "&amp;") in resp.text
+        assert f'value="{g["key"]}"' in resp.text
+    # Representative breadth: examples reach well beyond kind=paper.
+    for kind in ("kind=todo", "kind=skill", "kind=oracle", "kind=calc"):
+        assert kind in resp.text
+
+
+def test_console_result_echoes_request(client, runtime) -> None:
+    """The result panel prints the call that produced the output so the
+    request is read alongside the response."""
+    resp = client.get(
+        "/console",
+        params={"verb": "search", "args_text": "kind=paper q=foo"},
+    )
+    assert resp.status_code == 200
+    assert "request" in resp.text
+    # verb + args echoed in the panel.
+    assert "search kind=paper q=foo" in resp.text
+
+
 # ── alerts ─────────────────────────────────────────────────────────
 
 
@@ -2718,6 +2750,67 @@ def test_asks_page_renders_data(client, monkeypatch) -> None:
     # Hidden remove input carries the raw tag so the unlock dispatch
     # doesn't re-query.
     assert 'name="remove"' in resp.text
+
+
+# ── needs-you (unified asks + paper-stub queue) ────────────────────
+
+
+def test_needs_you_renders_stub_section(client) -> None:
+    """The merged page lists the paper-stub backlog with a 'view all' link.
+
+    Under the fake store there are no asks (empty cursor) but two
+    canned stubs, so the Papers-needed section renders and the Asks
+    section is absent.
+    """
+    resp = client.get("/needs-you")
+    assert resp.status_code == 200
+    assert "Needs you" in resp.text
+    assert "Papers needed" in resp.text
+    # Title lifted from the stub's ref (id 90).
+    assert "Ballistic carbon nanotube" in resp.text
+    # Deep-link out to the full backlog page, with the live total.
+    assert "/papers-needed" in resp.text
+    assert "View all 2" in resp.text
+
+
+def test_needs_you_renders_asks_inline(client, monkeypatch) -> None:
+    """A populated ask renders its inline answer form (POSTing to /asks)."""
+    from precis_web.routes import needs_you as needs_you_mod
+
+    monkeypatch.setattr(
+        needs_you_mod,
+        "_load_asks",
+        lambda store, **kw: [
+            {
+                "id": 14634,
+                "title": "Write the technical section",
+                "created_at": None,
+                "questions": ["which venue?"],
+                "tags": ["ask-user:which venue?"],
+            }
+        ],
+    )
+    resp = client.get("/needs-you")
+    assert resp.status_code == 200
+    assert "#14634" in resp.text
+    assert "which venue?" in resp.text
+    # The answer form still targets the canonical /asks write route.
+    assert 'action="/asks/14634/answer"' in resp.text
+
+
+def test_nav_badge_counts_on_every_page(client) -> None:
+    """The global nav injects the Needs-you badge on an unrelated page.
+
+    The badge processor sums asks (0 under the empty-cursor fake) and
+    the stub backlog (2), so the rose badge reads '2' even on /tasks.
+    """
+    resp = client.get("/tasks")
+    assert resp.status_code == 200
+    # New nav structure is present site-wide.
+    assert "Needs you" in resp.text
+    assert "Browse" in resp.text
+    # Rose attention badge carrying the combined count.
+    assert "bg-rose-600" in resp.text
 
 
 def test_ask_value_strips_prefix() -> None:

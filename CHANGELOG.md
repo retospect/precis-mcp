@@ -37,6 +37,21 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 - Dropped the superfluous `  # N chunks` comment trailing each drill-in
   `get(...)` hint line.
 
+### Changed (2026-06-25 — console: a grouped, multi-kind example set + request echo)
+
+- **Console examples are now a representative working set, grouped**
+  (`precis_web/routes/console.py`, `templates/console.html.j2`): the three
+  paper-only example links became `CONSOLE_EXAMPLES` — a data-driven set of
+  ~25 one-click `get`/`search` calls spanning paper / finding / citation /
+  todo / job / gripe / memory / alert / skill / tex / markdown / oracle /
+  random / calc / math / websearch / youtube and a cross-kind fan-out. They
+  render in a box with an Alpine group-filter dropdown (`All groups` +
+  one entry per group). All examples use the GET-runnable verbs so each link
+  still prefills the form *and* runs on load.
+- **The result panel now echoes the request** (`verb args_text`) above the
+  output, so a call and its response read together and the call is easy to
+  copy/tweak. New route tests cover the grouped box and the request echo.
+
 ### Fixed (2026-06-25 — llm_summarize claim was ~74s/batch; moved the digit filter to Python)
 
 - The `llm_summarize` claim query carried a `regexp_replace(text,'[^0-9]','')`
@@ -48,6 +63,32 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   rows. Numeric/coordinate dumps are now **tagged `(tabular data)` directly,
   with no LLM call** (cheaper than letting the model tag them). The cheap
   length/kind filters stay in SQL. Pass + claim regression tests updated.
+
+### Changed (2026-06-25 — web nav reorg by attention priority + "Needs you" queue)
+
+- **Top-bar nav reorganised by how often you reach for each tab**
+  (`precis_web/templates/base.html.j2`), replacing the flat 16-tab row
+  (which wrapped to two lines, every tab equal weight):
+  - **Zone 1 (always visible):** Drafts · Tags · Tasks · Papers — the
+    daily-driver kinds.
+  - **Needs you** — a new unified "waiting on you" tab folding the old
+    **Asks** + **Papers Needed** tabs into one landing
+    (`routes/needs_you.py`, `/needs-you`): asks rendered fully interactive
+    (inline answer form still POSTs to the canonical `/asks/...` routes),
+    paper stubs as a compact preview with a "view all → `/papers-needed`"
+    deep-link. The standalone `/asks` and `/papers-needed` pages are kept
+    for their pagers / drop-zone hints and existing deep links.
+  - **Browse ▾** — the corpus look-up long tail (Triage · Clusters · Refs ·
+    Oracle · Patents) collapsed behind an Alpine dropdown.
+  - **Right cluster:** Alerts · Status · **Ops ▾** (Agent Logs · Console ·
+    Env) · global search.
+- **Live attention badges** (`precis_web/nav.py`, registered as a Starlette
+  `context_processor` on the shared `templates`): a **red** `Needs you`
+  count (open `ask-user` todos + the chunkless paper-stub backlog) and an
+  **amber** `Alerts` count (open `kind='alert'`), injected on every page so
+  the badge is live wherever you are. Each count is fully defensive —
+  any error (no runtime, SQL drift) degrades that badge to zero rather than
+  500-ing the page, matching the env's `ChainableUndefined` posture.
 
 ### Changed (2026-06-25 — paper triage UX: meta-tab landing, tag removal, duplicate merge)
 

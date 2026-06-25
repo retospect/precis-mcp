@@ -1155,6 +1155,41 @@ class DraftMixin:
                 ).fetchone()
         return None
 
+    def scaffold_sections(
+        self, ref_id: int, sections: list[tuple[str, str | None]]
+    ) -> list[str]:
+        """Lay down a genre's standard sections on a draft (ADR 0037 step 4):
+        append one ``heading`` per ``(title, style)`` at the top level — after
+        any existing top-level chunks (e.g. the auto-minted title) — with
+        ``meta.style`` set. Returns the new ``dc`` handles. Used by the
+        new-draft flow to scaffold from the picked ``doc_type``."""
+        if not sections:
+            return []
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT pos FROM chunks WHERE ref_id = %s "
+                "AND parent_chunk_id IS NULL AND pos IS NOT NULL "
+                "AND retired_at IS NULL ORDER BY pos DESC LIMIT 1",
+                (ref_id,),
+            ).fetchone()
+            last = row[0] if row else None
+            keys = n_keys_between(last, None, len(sections))
+            out: list[str] = []
+            for (title, style), pos in zip(sections, keys):
+                meta = {"style": style} if style else None
+                c = self._insert_draft_chunk(
+                    conn,
+                    ref_id=ref_id,
+                    chunk_kind="heading",
+                    text=title,
+                    parent_chunk_id=None,
+                    pos=pos,
+                    meta=meta,
+                    source={"reason": "scaffold"},
+                )
+                out.append(c.dc)
+        return out
+
     # -- mutations -----------------------------------------------------------
 
     def _row(self, conn: psycopg.Connection, handle: str) -> tuple[Any, ...] | None:

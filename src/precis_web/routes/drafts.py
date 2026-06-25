@@ -635,6 +635,49 @@ _SECTION_STYLES: dict[str, list[tuple[str, str]]] = {
 }
 
 
+#: The standard section skeleton laid down when a draft of this ``doc_type``
+#: is created (ADR 0037 step 4): an ordered list of ``(heading, style)``.
+#: The new-draft flow appends these as styled headings after the title, so
+#: picking a genre yields a styled skeleton to fill (each section's style
+#: skill then fires when editing under it). Empty/absent → no scaffold.
+_SCAFFOLDS: dict[str, list[tuple[str, str]]] = {
+    "patent": [
+        ("Field of the Invention", "patent-description"),
+        ("Background", "patent-description"),
+        ("Summary", "patent-description"),
+        ("Brief Description of the Drawings", "patent-image-part"),
+        ("Detailed Description", "patent-description"),
+        ("Claims", "patent-claim"),
+        ("Abstract", "patent-abstract"),
+        ("Prior Art / IDS Disclosures", "patent-prior-art"),
+    ],
+    "paper": [
+        ("Abstract", "sci-abstract"),
+        ("Introduction", "sci-introduction"),
+        ("Related Work", "sci-related-work"),
+        ("Methods", "sci-methods"),
+        ("Results", "sci-results"),
+        ("Discussion", "sci-discussion"),
+        ("Conclusion", "sci-conclusion"),
+    ],
+    "report": [
+        ("Executive Summary", "sci-abstract"),
+        ("Introduction", "sci-introduction"),
+        ("Findings", "sci-results"),
+        ("Discussion", "sci-discussion"),
+        ("Conclusion", "sci-conclusion"),
+    ],
+    "review": [
+        ("Abstract", "sci-abstract"),
+        ("Introduction", "sci-introduction"),
+        ("Scope & Method", "sci-methods"),
+        ("Themes", "sci-survey-section"),
+        ("Open Problems", "sci-survey-section"),
+        ("Conclusion", "sci-conclusion"),
+    ],
+}
+
+
 def _doc_type(store: Any, ref: Any) -> str:
     """The draft's ``doc_type`` (genre), read from the owning project's
     ``meta.workspace`` (falling back to the draft's own meta). ``""`` when
@@ -769,7 +812,7 @@ async def new_draft(
         )
 
     # 2) the draft, bound 1:1 to that project.
-    return await redirect_or_error(
+    body2, is_error2 = await await_dispatch(
         request,
         "put",
         {
@@ -779,9 +822,29 @@ async def new_draft(
             "project": project_id,
             "meta": {"workspace": workspace},
         },
-        redirect=f"/drafts/{slug}",
-        error_title="New draft error",
     )
+    if is_error2:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"title": "New draft error", "detail": body2, "status": 400},
+            status_code=400,
+        )
+
+    # 2b) scaffold the genre's standard sections (ADR 0037 step 4): append
+    #     styled headings for the picked doc_type, so the author lands on a
+    #     skeleton to fill and each section's style skill fires as they
+    #     write. Best-effort — never fail draft creation on the scaffold.
+    sections = _SCAFFOLDS.get(doctype, [])
+    if sections:
+        store = get_store(request)
+        draft_ref = store.get_ref(kind="draft", id=slug)
+        if draft_ref is not None:
+            try:
+                store.scaffold_sections(draft_ref.id, sections)
+            except Exception:  # pragma: no cover - defensive
+                log.warning("drafts: scaffold failed for %s", slug, exc_info=True)
+    return RedirectResponse(url=f"/drafts/{slug}", status_code=303)
 
 
 _DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
