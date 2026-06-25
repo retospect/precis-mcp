@@ -8,7 +8,23 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
-### Added (2026-06-25 — paper-chunk handles (`pc<id>`) resolve + render as `§` citations)
+### Added (2026-06-25 — drafts list ordered by most recently opened)
+
+- **`GET /drafts` now sorts most-recently-*opened* first.** The list was
+  ordered by `refs.updated_at` (the `list_refs` default), but draft block
+  writes hit `chunks`/`chunk_events` and never bump the ref row, so the order
+  reflected "last title/meta edit" — rarely what you want. We add a real access
+  stamp rather than deriving recency from `MAX(chunk_events.ts)` (a whole-events
+  scan). Migration `0038_ref_last_viewed.sql` adds nullable
+  `refs.last_viewed_at`; `Store.touch_viewed(ref_id)` stamps it (a single PK
+  UPDATE) and the reader page-load (`GET /drafts/{ident}`) calls it — but **not**
+  the live-poll endpoints (`/doc`, `/rows`, `/version`), so a tab left polling
+  doesn't pin a draft to the top. New `list_refs` order key `viewed_desc`
+  (`last_viewed_at DESC NULLS LAST, updated_at DESC` — never-opened drafts fall
+  to the bottom) backs the list. The column is general to all kinds; only the
+  draft reader stamps it today.
+
+### Added (2026-06-25 — paper-chunk handles (`pc<id>`) resolve + render as kind sigils)
 
 - A `pc<id>` (paper chunk) — and any non-draft chunk handle (`mc`/`lc`/…) —
   used to route to the **draft-only** `/c/` + `/preview/chunk/` routes, so a
@@ -20,8 +36,13 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
     chunk **redirects through `/r/paper/<id>?chunk=<ord>`** (→ its PDF page)
     and **hovers to its quote**; a dangling handle degrades to a graceful
     'missing' card.
-  - linkify renders a paper-chunk handle as a **`§` citation sigil** in the
-    compact reader (`¶` for other chunks), pointing at the generalised routes.
+  - linkify renders a chunk handle as a **kind-specific 1-char sigil** in the
+    compact reader via `_CHUNK_SIGIL`: **`§`** for a paper chunk (a citation;
+    same glyph as the `[§slug~n]` form), **`Ⓟ`** (full-size circled P, U+24C5)
+    for a patent chunk, **`¶`** for any other block (draft cross-refs fall into
+    it) — pointing at the generalised routes. Record handles (`me5`) and display
+    links (`[text](dc41)`) keep their label; notes/dreams aren't inline chunk
+    refs (sidebar Connections panel), so they carry no sigil.
 
 ### Fixed (2026-06-25 — draft reader: heading fold + scroll after the virtual-scroll switch)
 

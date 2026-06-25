@@ -1317,6 +1317,9 @@ class RefsMixin:
     _LIST_ORDER_BY: ClassVar[dict[str, str]] = {
         "updated_desc": "r.updated_at DESC",
         "updated_asc": "r.updated_at ASC",
+        # Most recently *opened* in the reader first; never-opened refs fall
+        # to the bottom, then by last write. Backs the drafts list.
+        "viewed_desc": "r.last_viewed_at DESC NULLS LAST, r.updated_at DESC",
         "created_desc": "r.created_at DESC",
         "created_asc": "r.created_at ASC",
         "title_asc": "r.title ASC",
@@ -1324,6 +1327,18 @@ class RefsMixin:
         "id_desc": "r.ref_id DESC",
         "id_asc": "r.ref_id ASC",
     }
+
+    def touch_viewed(self, ref_id: int) -> None:
+        """Stamp ``refs.last_viewed_at = now()`` — a human *access* record (the
+        reader page-load), distinct from ``updated_at`` (writes). Drives the
+        drafts list's ``viewed_desc`` order. A single PK UPDATE; callers stamp
+        only on a full page open, not the live-poll endpoints, so an open tab
+        polling doesn't keep a draft pinned to the top."""
+        with self.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET last_viewed_at = now() WHERE ref_id = %s",
+                (ref_id,),
+            )
 
     def list_refs(
         self,

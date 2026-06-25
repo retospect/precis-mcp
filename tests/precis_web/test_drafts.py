@@ -274,6 +274,22 @@ def test_new_draft_blank_description_falls_back(
     assert "LLM:opus" in args["tags"]
 
 
+def test_reader_stamps_last_viewed(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    """Opening the reader stamps the draft's access (drives the drafts
+    list's most-recently-opened order). The full page-load does it; the
+    poll/skeleton/version endpoints must not."""
+    store = draft_runtime.store
+    assert store.viewed == []
+    assert draft_client.get("/drafts/nt").status_code == 200
+    assert store.viewed == [500]
+    # the live-poll endpoints don't re-stamp (else an open tab pins it).
+    draft_client.get("/drafts/nt/skeleton")
+    draft_client.get("/drafts/nt/version")
+    assert store.viewed == [500]
+
+
 def test_reader_renders_per_block_grid(draft_client: TestClient) -> None:
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
@@ -470,7 +486,9 @@ def test_small_draft_renders_fully_in_the_window(draft_client: TestClient) -> No
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
     # the virtual-scroll shell is present
-    assert 'id="dr-win"' in r.text and 'id="dr-top"' in r.text and 'id="dr-bot"' in r.text
+    assert (
+        'id="dr-win"' in r.text and 'id="dr-top"' in r.text and 'id="dr-bot"' in r.text
+    )
     assert 'id="dr-skel"' in r.text  # embedded skeleton
     # full content present (linkified ref proves the row is server-rendered)
     assert "/r/paper/smith2024" in r.text
@@ -605,7 +623,9 @@ def test_unknown_chunk_handle_404s(draft_client: TestClient) -> None:
     assert r.status_code == 404
 
 
-def test_paper_chunk_handle_redirects_through_resolver(draft_client: TestClient) -> None:
+def test_paper_chunk_handle_redirects_through_resolver(
+    draft_client: TestClient,
+) -> None:
     # /c/<pc-handle> resolves a PAPER chunk (not a draft chunk) → the /r
     # resolver at that chunk (paper → its PDF page via ?chunk=ord).
     r = draft_client.get("/c/pc77", follow_redirects=False)

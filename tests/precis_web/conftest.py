@@ -74,6 +74,9 @@ class FakeStore:
         #: ref_ids soft-deleted via the web delete route (the route calls
         #: the store directly — paper delete is web-only, not dispatched).
         self.deleted_ref_ids: set[int] = set()
+        #: ref_ids stamped via touch_viewed (the reader page-open access
+        #: stamp that drives the drafts most-recently-opened order).
+        self.viewed: list[int] = []
         #: (ref_id, scheme, value) tuples written via set_ref_identifier
         #: (the slug-rename path), plus cite_keys to report as taken so the
         #: collision branch can be exercised.
@@ -249,6 +252,11 @@ class FakeStore:
         **kw: Any,
     ):
         return list(self._for_kind(kind))[offset : offset + limit]
+
+    def touch_viewed(self, ref_id: int) -> None:
+        # The reader stamps last_viewed_at on page open; record the ids so a
+        # test can assert the access was registered.
+        self.viewed.append(ref_id)
 
     def count_refs(
         self,

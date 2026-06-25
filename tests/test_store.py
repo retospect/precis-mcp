@@ -163,6 +163,22 @@ def test_list_refs_order_by_whitelist(store: Store) -> None:
     assert [r.id for r in by_id] == sorted(r.id for r in by_id)
 
 
+def test_touch_viewed_orders_most_recent_first(store: Store) -> None:
+    # last_viewed_at drives the drafts list's most-recently-opened order:
+    # never-opened refs fall to the bottom, the most recent open floats up.
+    a = store.insert_ref(kind="memory", slug=None, title="a")
+    b = store.insert_ref(kind="memory", slug=None, title="b")
+    store.insert_ref(kind="memory", slug=None, title="c")  # never opened
+
+    store.touch_viewed(a.id)
+    store.touch_viewed(b.id)  # b opened last → first
+
+    viewed = store.list_refs(kind="memory", order_by="viewed_desc")
+    # b (last opened), a (opened), then c (never opened, NULLS LAST).
+    assert [r.title for r in viewed[:2]] == ["b", "a"]
+    assert viewed[-1].title == "c"
+
+
 def test_list_refs_unknown_order_by_falls_back(store: Store) -> None:
     # A stale/garbage order_by must not 500 — it falls back to the
     # default (updated_desc) rather than interpolating into the SQL.
