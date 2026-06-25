@@ -342,8 +342,12 @@ def _parse_op(op: str) -> RelOp | None:
         return ("ancestor", n) if n >= 1 else None
     m = re.fullmatch(r"([+-]\d+)", op)
     if m:
-        n = int(m.group(1))
-        return ("step", n) if n != 0 else None
+        # A ``±0`` step is a redundant no-op (``pc10-0`` == ``pc10``), but we
+        # accept it as identity rather than rejecting: it is unambiguous, it
+        # resolves (``ord + 0`` exists), and the span form ``pc10-0..0``
+        # already works — rejecting only the bare ``±0`` step was an
+        # inconsistency. Liberal in what we accept.
+        return ("step", int(m.group(1)))
     return None
 
 

@@ -14,17 +14,23 @@ renderer entirely. The new model:
 
 Output shape — TOON table, always ``(handle, keywords)``::
 
-    # slug TOC — N chunks, K clusters
+    # pa5 TOC — N chunks, K clusters
 
     Topics: shared keywords across ≥75% of clusters    (optional)
 
     {handle	keywords}
-    slug~0..14	keyword phrases for cluster 0
-    slug~15..29	keyword phrases for cluster 1
+    pa5~0..14	keyword phrases for cluster 0
+    pa5~15..29	keyword phrases for cluster 1
     …
 
     Next: drill into fat clusters                       (optional)
-      get(kind='paper', id='slug~15..29', view='toc')  # 30 chunks
+      get(kind='paper', id='pa5~15..29', view='toc')
+
+The ``handle`` is the record's ADR-0036 universal handle (``pa<id>``),
+so every row + drill-in hint is a copy-pasteable ``get`` id. The
+legacy ``slug~pos`` form is NOT emitted here — a cite-key slug
+(``vaswani17``) round-trips on input, but the kind-prefixed
+``paper:vaswani17`` did not.
 
 The ``Topics:`` line is a lossless summary — it lists keywords that
 appear in ≥75% of clusters; the per-row labels still include them,
@@ -93,14 +99,17 @@ def render_from_store(
     *,
     store: Any,
     ref_id: int,
-    slug: str,
+    handle: str,
     kind: str,
     scope: tuple[int, int] | None = None,
 ) -> str:
     """Render the TOC body for ``ref_id``, optionally scoped to a range.
 
-    ``scope`` restricts to body chunks inside the inclusive ``(lo, hi)``
-    position range. Without it, the full body is clustered.
+    ``handle`` is the record's universal handle (``pa<id>``, ADR 0036);
+    every rendered row + drill-in hint prefixes it so the output is a
+    copy-pasteable ``get`` id. ``scope`` restricts to body chunks inside
+    the inclusive ``(lo, hi)`` position range. Without it, the full body
+    is clustered.
 
     Returns Markdown. First line is the kind-aware headline; the rest
     is the TOON table, optionally preceded by a ``Topics:`` line and
@@ -109,39 +118,39 @@ def render_from_store(
     pos_range = scope
     blocks = store.list_blocks_for_ref(ref_id, pos_range=pos_range)
     if not blocks:
-        return _empty_body(slug=slug, kind=kind, scope=scope)
+        return _empty_body(handle=handle, kind=kind, scope=scope)
 
     n = len(blocks)
     if n < _BUCKETING_THRESHOLD:
-        return _render_per_chunk(slug=slug, blocks=blocks, scope=scope)
+        return _render_per_chunk(handle=handle, blocks=blocks, scope=scope)
 
     target_k = _bucket_count(n)
     distances = _adjacent_jaccard_distances(blocks)
     if not distances:
-        return _render_per_chunk(slug=slug, blocks=blocks, scope=scope)
+        return _render_per_chunk(handle=handle, blocks=blocks, scope=scope)
 
     raw_segments = segment_dp(distances, k=target_k)
     segments = _collapse_singletons(raw_segments, min_size=_MIN_CLUSTER_SIZE)
 
     rows: list[dict[str, str]] = []
     row_keyword_sets: list[list[str]] = []
-    fat_clusters: list[tuple[str, int]] = []
+    fat_clusters: list[str] = []
     for seg in segments:
         bucket = blocks[seg.start : seg.end + 1]
         if not bucket:
             continue
         lo_pos = bucket[0].pos
         hi_pos = bucket[-1].pos
-        handle = (
-            f"{slug}~{lo_pos}" if lo_pos == hi_pos else f"{slug}~{lo_pos}..{hi_pos}"
+        row_handle = (
+            f"{handle}~{lo_pos}" if lo_pos == hi_pos else f"{handle}~{lo_pos}..{hi_pos}"
         )
         label_kws = _top_keywords(bucket, top_k=_LABEL_TOP_K)
-        rows.append({"handle": handle, "keywords": ", ".join(label_kws)})
+        rows.append({"handle": row_handle, "keywords": ", ".join(label_kws)})
         row_keyword_sets.append(label_kws)
         if len(bucket) >= _BUCKETING_THRESHOLD and lo_pos != hi_pos:
-            fat_clusters.append((handle, len(bucket)))
+            fat_clusters.append(row_handle)
 
-    headline = _headline(slug=slug, n_chunks=n, n_clusters=len(rows), scope=scope)
+    headline = _headline(handle=handle, n_chunks=n, n_clusters=len(rows), scope=scope)
     table = render_agent_table(rows, schema=["handle", "keywords"])
 
     parts: list[str] = [headline, ""]
@@ -151,10 +160,8 @@ def render_from_store(
     parts.append(table)
     if fat_clusters:
         parts.extend(["", "Next: drill into fat clusters"])
-        for handle, size in fat_clusters:
-            parts.append(
-                f"  get(kind='paper', id='{handle}', view='toc')  # {size} chunks"
-            )
+        for row_handle in fat_clusters:
+            parts.append(f"  get(kind='paper', id='{row_handle}', view='toc')")
     return "\n".join(parts)
 
 
@@ -162,7 +169,7 @@ def build_toc_segments(
     *,
     store: Any,
     ref_id: int,
-    slug: str,
+    handle: str,
     scope: tuple[int, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Structured TOC for clickable web nav — the data behind the prose.
@@ -171,8 +178,12 @@ def build_toc_segments(
     same helpers), but returns a list of segment dicts instead of a
     Markdown TOON table::
 
-        [{"handle": "slug~0..14", "lo": 0, "hi": 14,
+        [{"handle": "pa5~0..14", "lo": 0, "hi": 14,
           "keywords": ["x", "y", ...], "n": 15}, ...]
+
+    ``handle`` is the record's universal handle (``pa<id>``); each
+    segment's ``handle`` field prefixes it so the web row mirrors the
+    copy-pasteable form the agent surface emits.
 
     Short ranges (< ``_BUCKETING_THRESHOLD``) yield one segment per
     chunk (``lo == hi``); larger ranges cluster. ``keywords`` is the
@@ -188,7 +199,7 @@ def build_toc_segments(
     if n < _BUCKETING_THRESHOLD:
         return [
             {
-                "handle": f"{slug}~{b.pos}",
+                "handle": f"{handle}~{b.pos}",
                 "lo": b.pos,
                 "hi": b.pos,
                 "keywords": _top_keywords([b], top_k=_LABEL_TOP_K),
@@ -201,7 +212,7 @@ def build_toc_segments(
     if not distances:
         return [
             {
-                "handle": f"{slug}~{b.pos}",
+                "handle": f"{handle}~{b.pos}",
                 "lo": b.pos,
                 "hi": b.pos,
                 "keywords": _top_keywords([b], top_k=_LABEL_TOP_K),
@@ -220,12 +231,12 @@ def build_toc_segments(
             continue
         lo_pos = bucket[0].pos
         hi_pos = bucket[-1].pos
-        handle = (
-            f"{slug}~{lo_pos}" if lo_pos == hi_pos else f"{slug}~{lo_pos}..{hi_pos}"
+        seg_handle = (
+            f"{handle}~{lo_pos}" if lo_pos == hi_pos else f"{handle}~{lo_pos}..{hi_pos}"
         )
         out.append(
             {
-                "handle": handle,
+                "handle": seg_handle,
                 "lo": lo_pos,
                 "hi": hi_pos,
                 "keywords": _top_keywords(bucket, top_k=_LABEL_TOP_K),
@@ -355,22 +366,22 @@ def _topics_line(row_keyword_sets: Sequence[Sequence[str]]) -> str:
 
 def _headline(
     *,
-    slug: str,
+    handle: str,
     n_chunks: int,
     n_clusters: int,
     scope: tuple[int, int] | None,
 ) -> str:
     if scope is not None:
         return (
-            f"# {slug} sub-TOC ~{scope[0]}..{scope[1]} — "
+            f"# {handle} sub-TOC ~{scope[0]}..{scope[1]} — "
             f"{n_chunks} chunks, {n_clusters} clusters"
         )
-    return f"# {slug} TOC — {n_chunks} chunks, {n_clusters} clusters"
+    return f"# {handle} TOC — {n_chunks} chunks, {n_clusters} clusters"
 
 
 def _render_per_chunk(
     *,
-    slug: str,
+    handle: str,
     blocks: Sequence[Any],
     scope: tuple[int, int] | None,
 ) -> str:
@@ -384,28 +395,28 @@ def _render_per_chunk(
     for block in blocks:
         rows.append(
             {
-                "handle": f"{slug}~{block.pos}",
+                "handle": f"{handle}~{block.pos}",
                 "keywords": ", ".join(_top_keywords([block], top_k=_LABEL_TOP_K)),
             }
         )
     n_total = len(blocks)
     if scope is not None:
-        head = f"# {slug} sub-TOC ~{scope[0]}..{scope[1]} — {n_total} chunks"
+        head = f"# {handle} sub-TOC ~{scope[0]}..{scope[1]} — {n_total} chunks"
     else:
-        head = f"# {slug} TOC — {n_total} chunks"
+        head = f"# {handle} TOC — {n_total} chunks"
     table = render_agent_table(rows, schema=["handle", "keywords"])
     return f"{head}\n\n{table}"
 
 
-def _empty_body(*, slug: str, kind: str, scope: tuple[int, int] | None) -> str:
+def _empty_body(*, handle: str, kind: str, scope: tuple[int, int] | None) -> str:
     """No chunks in scope. Friendly placeholder + recovery hint."""
     if scope is not None:
         return (
-            f"# {slug} — no chunks in scope ~{scope[0]}..{scope[1]}\n\n"
+            f"# {handle} — no chunks in scope ~{scope[0]}..{scope[1]}\n\n"
             f"Try widening the range or omit scope= for the full TOC."
         )
     return (
-        f"# {slug} — no chunks yet\n\n"
+        f"# {handle} — no chunks yet\n\n"
         f"The chunker hasn't produced any body chunks for this {kind}."
     )
 

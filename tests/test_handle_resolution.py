@@ -232,6 +232,15 @@ def test_resolve_relative_sibling_steps(store: Store) -> None:
     assert store.resolve_relative(f"{h1}++") == ("paper", "adr36-rel~2")
 
 
+def test_resolve_relative_zero_step_is_the_chunk_itself(store: Store) -> None:
+    """A redundant ``±0`` step resolves to the anchor chunk's own selector."""
+    ref = store.insert_ref(kind="paper", slug="adr36-rel-zero", title="p")
+    cids = [_insert_chunk(store, ref.id, ord_=i) for i in range(3)]
+    h1 = handle_registry.format_handle("paper", cids[1], chunk=True)  # ord 1
+    assert store.resolve_relative(f"{h1}-0") == ("paper", "adr36-rel-zero~1")
+    assert store.resolve_relative(f"{h1}+0") == ("paper", "adr36-rel-zero~1")
+
+
 def test_resolve_relative_out_of_range_is_none(store: Store) -> None:
     ref = store.insert_ref(kind="paper", slug="adr36-rel-edge", title="p")
     cids = [_insert_chunk(store, ref.id, ord_=i) for i in range(3)]
@@ -305,3 +314,19 @@ def test_surface_get_chunk_handle_routes_to_selector(
     via_handle = runtime_with_store.dispatch("get", {"id": h})
     via_selector = runtime_with_store.dispatch("get", {"id": "adr36-chunk-surface~0"})
     assert via_handle == via_selector
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_zero_step_routes_to_the_chunk(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``get(kind='paper', id='pc<id>-0')`` — the redundant no-op — resolves
+    to the chunk itself, identically to the absolute handle. With an explicit
+    matching kind= (the shape the user hit)."""
+    ref = store.insert_ref(kind="paper", slug="adr36-zero-surface", title="p")
+    chunk_id = _insert_chunk(store, ref.id, ord_=0)
+    h = handle_registry.format_handle("paper", chunk_id, chunk=True)
+    via_zero = runtime_with_store.dispatch("get", {"kind": "paper", "id": f"{h}-0"})
+    via_handle = runtime_with_store.dispatch("get", {"kind": "paper", "id": h})
+    via_selector = runtime_with_store.dispatch("get", {"id": "adr36-zero-surface~0"})
+    assert via_zero == via_handle == via_selector
