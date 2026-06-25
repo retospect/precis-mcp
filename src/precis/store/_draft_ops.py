@@ -284,8 +284,7 @@ class DraftMixin:
         kind, _is_chunk, chunk_id = parsed
         with self.pool.connection() as conn:
             row = conn.execute(
-                "SELECT ref_id, ord, chunk_kind, text FROM chunks "
-                "WHERE chunk_id = %s",
+                "SELECT ref_id, ord, chunk_kind, text FROM chunks WHERE chunk_id = %s",
                 (chunk_id,),
             ).fetchone()
         if row is None:

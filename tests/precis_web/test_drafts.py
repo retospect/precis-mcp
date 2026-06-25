@@ -486,7 +486,9 @@ def test_small_draft_renders_fully_in_the_window(draft_client: TestClient) -> No
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
     # the virtual-scroll shell is present
-    assert 'id="dr-win"' in r.text and 'id="dr-top"' in r.text and 'id="dr-bot"' in r.text
+    assert (
+        'id="dr-win"' in r.text and 'id="dr-top"' in r.text and 'id="dr-bot"' in r.text
+    )
     assert 'id="dr-skel"' in r.text  # embedded skeleton
     # full content present (linkified ref proves the row is server-rendered)
     assert "/r/paper/smith2024" in r.text
@@ -621,7 +623,9 @@ def test_unknown_chunk_handle_404s(draft_client: TestClient) -> None:
     assert r.status_code == 404
 
 
-def test_paper_chunk_handle_redirects_through_resolver(draft_client: TestClient) -> None:
+def test_paper_chunk_handle_redirects_through_resolver(
+    draft_client: TestClient,
+) -> None:
     # /c/<pc-handle> resolves a PAPER chunk (not a draft chunk) → the /r
     # resolver at that chunk (paper → its PDF page via ?chunk=ord).
     r = draft_client.get("/c/pc77", follow_redirects=False)
