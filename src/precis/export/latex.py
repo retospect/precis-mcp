@@ -211,14 +211,26 @@ def _glsify(escaped: str, keymap: dict[str, str]) -> str:
     """Replace whole-word occurrences of each known abbreviation short
     with ``\\gls{key}`` (longest-first, word-bounded). Runs on
     already-escaped prose; shorts are alphanumerics so escaping never
-    touched them."""
+    touched them.
+
+    A trailing plural ``s`` is absorbed and rendered with ``\\glspl`` —
+    so a defined ``MOF`` term links *both* ``MOF`` (``\\gls``) and ``MOFs``
+    (``\\glspl``) to the one glossary entry, rather than leaving the plural
+    un-linked. Longest-first ordering means a literal short ``As`` still
+    wins over treating ``A`` + plural ``s``. (Irregular plurals still need
+    the explicit form; ``s`` covers the overwhelming majority.)"""
     if not keymap:
         return escaped
     shorts = sorted((s for s in keymap if s), key=len, reverse=True)
     pat = re.compile(
-        r"(?<![\w-])(" + "|".join(re.escape(s) for s in shorts) + r")(?![\w-])"
+        r"(?<![\w-])(" + "|".join(re.escape(s) for s in shorts) + r")(s)?(?![\w-])"
     )
-    return pat.sub(lambda m: f"\\gls{{{keymap[m.group(1)]}}}", escaped)
+
+    def _sub(m: re.Match[str]) -> str:
+        key = keymap[m.group(1)]
+        return f"\\glspl{{{key}}}" if m.group(2) else f"\\gls{{{key}}}"
+
+    return pat.sub(_sub, escaped)
 
 
 @dataclass
@@ -348,6 +360,8 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
         if surface:
             return f"\\href{{{tgt}}}{{{_encode_unicode(_latex_escape(surface))}}}"
         return f"\\url{{{tgt}}}"
+    # ADR 0036 single-bracket handles (dc/pc/pa) are handled above via
+    # handle_registry.parse(); anything else is provenance-only.
     return ""  # other authoring targets — provenance only
 
 

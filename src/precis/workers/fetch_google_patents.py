@@ -318,7 +318,7 @@ def _claim_patents_for_gp(
     # picks a deterministic tag for the display label.
     sql = f"""
         SELECT r.ref_id,
-               (SELECT id_value FROM ref_identifiers
+               (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
                (SELECT t.value FROM ref_tags rt
                   JOIN tags t ON t.tag_id = rt.tag_id

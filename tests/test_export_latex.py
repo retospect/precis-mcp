@@ -149,6 +149,46 @@ def test_glsify_known_abbrev() -> None:
     assert "PEINE" in out  # not a whole-word PEI
 
 
+def test_glsify_plural_uses_glspl() -> None:
+    """A plural surface (MOFs) links to the same term via \\glspl — so MOF
+    and MOFs share one glossary entry rather than leaving the plural bare."""
+    out, _ = _inline("one MOF, several MOFs.", {"MOF": "metal-organic framework"})
+    assert r"\gls{mof}" in out
+    assert r"\glspl{mof}" in out
+    assert "MOFs" not in out  # the plural was absorbed, not left literal
+
+
+def test_glsify_plural_no_false_match() -> None:
+    """A trailing-s word that merely starts with a short is left alone."""
+    out, _ = _inline("DNase activity in DNA.", {"DNA": "deoxyribonucleic acid"})
+    assert r"\gls{dna}" in out
+    assert "DNase" in out  # not glspl{dna}
+
+
+def test_handle_xref_dc_renders_cref() -> None:
+    """ADR 0036 single-bracket [dc<id>] -> \\cref to the in-draft chunk."""
+    ctx = latex._Ctx(keymap={}, known_handles={"dc456"})
+    out = latex._render_inline("see [dc456] for detail.", ctx)
+    assert r"\cref{chunk:dc456}" in out
+
+
+def test_handle_paper_pc_pa_render_cite() -> None:
+    """[pc<id>]/[pa<id>] resolve via the store to the paper's cite_key -> \\cite."""
+    import types
+
+    store = types.SimpleNamespace(
+        resolve_handle=lambda h: (
+            types.SimpleNamespace(public_id="miller23")
+            if h in ("pc789", "pa123")
+            else None
+        )
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("per [pc789] and again [pa123].", ctx)
+    assert out.count(r"\cite{miller23}") == 2
+    assert ctx.cited == ["miller23"]  # collapsed to one bib entry
+
+
 def test_build_acronyms() -> None:
     tex = latex.build_acronyms({"PEI": "polyethyleneimine", "MOF": "metal-organic"})
     assert r"\newacronym{pei}{PEI}{polyethyleneimine}" in tex

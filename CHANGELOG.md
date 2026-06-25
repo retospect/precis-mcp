@@ -8,19 +8,20 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
-### Fixed (2026-06-25 — `/papers-needed` 500 on duplicate same-kind identifiers)
+### Fixed (2026-06-25 — swept the scalar-subquery CardinalityViolation class)
 
-- **`store.stub_backlog` no longer raises `CardinalityViolation`.** The
-  `ref_identifiers` PK is `(id_kind, id_value)`, so a paper ref may carry
-  more than one identifier of the same kind (in prod, ~hundreds of stubs
-  have two `cite_key` rows). The backlog query selected each identifier
-  via a bare per-kind scalar subquery, which Postgres rejects the moment
-  one returns >1 row — 500ing `/papers-needed` (and `search(view='stubs')`)
-  while the sibling `stub_backlog_count` (no scalar subqueries) still
-  rendered the page header. Each subquery now wraps the value in `MIN(…)`
-  (single deterministic row; `NULL` over an empty set so the `COALESCE`
-  cascade is preserved) — matching the `min(id_value)` already used in
-  `fetch_oa` and the `ORDER BY … LIMIT 1` guard in the card mappers.
+- `ref_identifiers`' PK is `(id_kind, id_value)`, **not** `(ref_id, id_kind)`, so
+  a ref can carry more than one value of a kind (e.g. two cite_keys from a
+  dedup-merge). Any bare scalar subquery `(SELECT id_value FROM ref_identifiers
+  WHERE ref_id=… AND id_kind='…')` then returns >1 row → `CardinalityViolation`,
+  taking down the whole query/pass. This had already bitten `/papers` and
+  `fetch_oa`; a sweep found the rest. Fixed (each now `min(id_value)`, a stable
+  representative): `chase._fetch_ref` (was throwing every finding-chase tick in
+  prod), the `_refs_ops` stub-list CTE (cite_key/doi/arxiv/s2), `utils/bib_gen`,
+  `workers/fetch_google_patents`, `jobs/patent_fulltext_sweep`, and a `patent`
+  handler `ORDER BY`. The shared ref mappers (`_mappers`, `_cache_ops`, …) and
+  `.fetchone()`/`.fetchall()` top-level reads were already safe (`LIMIT 1` / not
+  scalar). Regression test seeds a ref with two cite_keys.
 
 ### Changed (2026-06-25 — the dreaming workflow prompt ships with precis)
 

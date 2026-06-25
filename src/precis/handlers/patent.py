@@ -449,7 +449,7 @@ class PatentHandler(Handler):
             FROM   refs r
             WHERE  r.kind = 'patent' AND r.deleted_at IS NULL
             ORDER BY (r.meta->>'publication_date') DESC NULLS LAST,
-                     (SELECT id_value FROM ref_identifiers
+                     (SELECT min(id_value) FROM ref_identifiers
                        WHERE ref_id = r.ref_id AND id_kind = 'cite_key') ASC
             LIMIT  %s
         """
