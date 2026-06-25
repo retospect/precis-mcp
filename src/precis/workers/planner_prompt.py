@@ -478,6 +478,7 @@ def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
     project_block = _render_project_brief(store, ref_id)
     body = _load_ref_body(store, ref_id)
     anchor_block = _render_anchor_context(store, ref_id)
+    style_block = _render_section_style(store, ref_id)
     workspace_block = _render_workspace_status(store, ref_id)
     children_block = _render_children_status(store, ref_id)
     parts: list[str] = [
@@ -498,6 +499,9 @@ def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
     if anchor_block:
         parts.append("")
         parts.append(anchor_block)
+    if style_block:
+        parts.append("")
+        parts.append(style_block)
     if workspace_block:
         parts.append("")
         parts.append(workspace_block)
@@ -649,6 +653,44 @@ def _render_anchor_context(store: Store, ref_id: int) -> str:
         'their `dc<id>` handle (never "chunk 0").'
     )
     return "\n".join(parts)
+
+
+def _render_section_style(store: Store, ref_id: int) -> str:
+    """Inject the section-style skill for the chunk this tick is anchored to
+    (ADR 0037/0038).
+
+    When the change-request's ``meta.anchor`` points at a draft chunk, find
+    the nearest enclosing styled heading (``store.section_style_for``) and
+    surface that style's skill body, so the editor authors the section in
+    the right register (e.g. the ``patent-claim`` rules) without hunting for
+    it. No-op when there's no anchor or no enclosing styled section.
+    Degrades to a pointer when the style names a skill not yet installed
+    (the catalogue styles are not all shipped as skill files)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'anchor' FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    handle = ((row[0] if row else None) or "").lstrip("¶").strip()
+    if not handle:
+        return ""
+    style = store.section_style_for(handle)
+    if not style:
+        return ""
+    try:
+        from precis.handlers.skill import SkillHandler
+
+        body = SkillHandler(hub=None).get(id=style).body  # type: ignore[arg-type]
+    except Exception:
+        return (
+            f"## Section style — {style}\n\n"
+            f"This section uses the **{style}** style; load it with "
+            f"`get(kind='skill', id='{style}')` and follow it."
+        )
+    return (
+        f"## Section style — {style}\n\n"
+        f"You are working inside a **{style}**-styled section. Follow this "
+        f"style:\n\n{body}"
+    )
 
 
 def _render_workspace_status(store: Store, ref_id: int) -> str:

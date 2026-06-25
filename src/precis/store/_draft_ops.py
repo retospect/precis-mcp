@@ -1085,6 +1085,76 @@ class DraftMixin:
             )
         return self.get_draft_chunk(handle)
 
+    def set_chunk_style(self, handle: str, style: str | None) -> DraftChunk | None:
+        """Set (or clear) a heading chunk's section style (ADR 0037).
+
+        Writes ``meta.style`` (a skill slug) in place — metadata-only, so it
+        never touches ``text``/``content_sha`` and triggers no re-embed.
+        ``style`` falsy clears it. Logs an ``edited`` event. A style is a
+        *section* concern, so it is rejected on a non-heading chunk."""
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT chunk_id, chunk_kind, meta, retired_at "
+                "FROM chunks WHERE handle = %s",
+                (_bare(handle),),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"unknown chunk handle {handle!r}")
+            chunk_id, chunk_kind, meta, retired = row
+            if chunk_kind != "heading":
+                raise BadInput(
+                    f"style applies to a heading section; {_bare(handle)} "
+                    f"is a {chunk_kind}"
+                )
+            if retired is not None:
+                raise ValueError(f"chunk {handle!r} is retired")
+            meta = dict(meta or {})
+            if style:
+                meta["style"] = style
+            else:
+                meta.pop("style", None)
+            conn.execute(
+                "UPDATE chunks SET meta = %s WHERE chunk_id = %s",
+                (Jsonb(meta), chunk_id),
+            )
+            conn.execute(
+                "INSERT INTO chunk_events (chunk_id, event_kind, source) "
+                "VALUES (%s, 'edited', %s)",
+                (chunk_id, Jsonb({"reason": "set-style", "style": style})),
+            )
+        return self.get_draft_chunk(handle)
+
+    def section_style_for(self, handle: str) -> str | None:
+        """The nearest enclosing heading's section style (``meta.style``),
+        or ``None``.
+
+        Walks ``parent_chunk_id`` from the chunk upward; the chunk itself
+        counts when it is a styled heading. ADR 0037: a section style
+        governs the chunks within its heading's subtree, so the editor
+        injects the *nearest* enclosing one when working on a chunk.
+        Accepts any handle form (``dc<id>`` / ``¶base58`` / bare)."""
+        start = self.get_draft_chunk(handle)
+        if start is None:
+            return None
+        with self.pool.connection() as conn:
+            row: tuple[Any, ...] | None = conn.execute(
+                "SELECT parent_chunk_id, chunk_kind, meta->>'style' "
+                "FROM chunks WHERE chunk_id = %s AND retired_at IS NULL",
+                (start.chunk_id,),
+            ).fetchone()
+            while row is not None:
+                parent_id, kind, style = row
+                if kind == "heading" and style:
+                    return str(style)
+                if parent_id is None:
+                    return None
+                row = conn.execute(
+                    "SELECT parent_chunk_id, chunk_kind, meta->>'style' "
+                    "FROM chunks WHERE chunk_id = %s AND retired_at IS NULL",
+                    (parent_id,),
+                ).fetchone()
+        return None
+
     # -- mutations -----------------------------------------------------------
 
     def _row(self, conn: psycopg.Connection, handle: str) -> tuple[Any, ...] | None:

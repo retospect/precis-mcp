@@ -102,8 +102,9 @@ class DraftHandler(Handler):
             "(chunk_kind=, text=, at={first|last|into|before|after}); get "
             "lists / outlines / reads a chunk window dc<id>-B+A; search "
             "(q=, mode=lexical|semantic|hybrid, scope=slug|dc<id>, "
-            "headings_only=) over prose; edit changes text or moves "
-            "(move=); delete soft-retires (mode=cascade|promote). Chunks "
+            "headings_only=) over prose; edit changes text, moves "
+            "(move=), or sets a heading's section style (style=<skill>); "
+            "delete soft-retires (mode=cascade|promote). Chunks "
             "addressed by dc<chunk_id> (legacy ¶handle still resolves). "
             "See precis-draft-help."
         ),
@@ -491,6 +492,7 @@ class DraftHandler(Handler):
         id: str | int | None = None,
         text: str | None = None,
         move: dict[str, Any] | None = None,
+        style: str | None = None,
         base_sha: str | None = None,
         not_abbrev: list[str] | str | None = None,
         permission: dict[str, Any] | None = None,
@@ -525,6 +527,13 @@ class DraftHandler(Handler):
                 handle, permission=permission, origin=origin
             )
             return Response(body=f"updated figure provenance {c.dc}")
+        if style is not None:
+            # Set/clear the heading's section style (ADR 0037). Metadata-only
+            # (meta.style = a skill slug) — no re-embed.
+            c = self.store.set_chunk_style(handle, style or None)
+            if style:
+                return Response(body=f"styled {c.dc} → {style}")
+            return Response(body=f"cleared style on {c.dc}")
         if move is not None:
             c = self.store.move_chunk(handle, move)
             if c is not None:
@@ -558,7 +567,8 @@ class DraftHandler(Handler):
             return Response(body=body)
         raise BadInput(
             "edit(kind='draft') requires text= (rewrite), move= (reorder/reparent), "
-            "or not_abbrev= (silence the abbrev hint)",
+            "style= (set a heading's section style), or not_abbrev= (silence "
+            "the abbrev hint)",
             next="edit(kind='draft', id='dc<chunk_id>', text='…')",
         )
 
