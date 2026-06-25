@@ -86,9 +86,16 @@ MAX_CHUNK_CHARS = 16000
 
 #: Fraction of digit characters above which a chunk is a data table or
 #: coordinate dump, not prose. The model can only hallucinate meaning from
-#: these (it grabs a random cell and calls it a "time"), so skip them at
-#: claim time rather than spend a slot tagging each one.
+#: these (it grabs a random cell and calls it a "time"), so the pass tags them
+#: with ``NUMERIC_DUMP_TAG`` instead of calling the LLM. Checked in Python
+#: (``_is_numeric_dump``) after the claim — doing it as a ``regexp_replace`` in
+#: the claim SQL made the claim ~74s/batch (a regexp over ~1M un-summarized
+#: rows that can't be indexed).
 MAX_DIGIT_FRACTION = 0.5
+
+#: Gloss written for a numeric/coordinate dump (mirrors the prompt's non-prose
+#: tag rule, but skips the LLM call entirely).
+NUMERIC_DUMP_TAG = "(tabular data)"
 
 #: Re-claim a ``status='failed'`` summary while its ``attempts`` is below
 #: this — so transient failures (e.g. the 80B returning empty during a
@@ -278,13 +285,16 @@ def claim_chunks_without_summary(
            AND length(c.text) >= %s
            AND length(c.text) <= %s
            AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
-           AND length(regexp_replace(c.text, '[^0-9]', '', 'g'))::numeric
-               / length(c.text) <= %s
          ORDER BY (CASE WHEN r.kind IN ('conv', 'draft') THEN 0 ELSE 1 END),
                   c.ref_id, c.ord
          LIMIT %s
            FOR UPDATE OF c SKIP LOCKED
     """
+    # NB the digit-fraction (numeric/coordinate dump) filter is applied in
+    # Python after the claim — NOT here. A ``regexp_replace`` over the ~1M
+    # un-summarized rows made this claim take ~74s/batch (it can't index, so
+    # it runs per candidate row before the LIMIT). The cheap length/kind
+    # filters stay in SQL; ``is_numeric_dump`` handles the rest in the pass.
     rows = conn.execute(
         sql,
         (
@@ -293,7 +303,6 @@ def claim_chunks_without_summary(
             list(SKIP_KINDS),
             MIN_CHUNK_CHARS,
             MAX_CHUNK_CHARS,
-            MAX_DIGIT_FRACTION,
             limit,
         ),
     ).fetchall()
@@ -555,6 +564,19 @@ class _Outcome:
     error: Exception | None
 
 
+def _is_numeric_dump(text: str) -> bool:
+    """True if the chunk is mostly digits — a data table or coordinate dump.
+
+    The claim filters cheaply (length/kind) in SQL; this catches the
+    numeric/coordinate dumps that aren't worth an LLM call (they only invite
+    hallucinated meaning). Cheap pure-Python char count, run on the ≤batch_size
+    claimed rows — not on the whole table.
+    """
+    if not text:
+        return False
+    return sum(c.isdigit() for c in text) / len(text) > MAX_DIGIT_FRACTION
+
+
 def run_llm_summarize_pass(
     store: Any,
     *,
@@ -592,8 +614,20 @@ def run_llm_summarize_pass(
             return {"claimed": 0, "ok": 0, "failed": 0}
 
         # Prefetch doc cards (shared prefix) + build prompts — pure, no LLM.
+        # Numeric/coordinate dumps get the tag written directly (no LLM call).
         prepared: list[tuple[_Claimed, list[dict[str, str]], str]] = []
         for claim in rows:
+            if _is_numeric_dump(claim.text):
+                write_chunk_summary(
+                    conn,
+                    claim.chunk_id,
+                    summarizer=summarizer,
+                    text=NUMERIC_DUMP_TAG,
+                    prompt_hash=hashlib.sha256(NUMERIC_DUMP_TAG.encode()).hexdigest(),
+                    token_count=None,
+                )
+                ok += 1
+                continue
             if claim.ref_id not in card_cache:
                 card_cache[claim.ref_id] = fetch_doc_card(conn, claim.ref_id)
             messages = build_messages(claim, doc_card=card_cache[claim.ref_id])

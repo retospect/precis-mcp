@@ -8,6 +8,18 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-25 — llm_summarize claim was ~74s/batch; moved the digit filter to Python)
+
+- The `llm_summarize` claim query carried a `regexp_replace(text,'[^0-9]','')`
+  digit-fraction filter in its `WHERE` — a regexp over the ~1.1M un-summarized
+  rows that can't be indexed, so it ran per candidate before the `LIMIT`,
+  making each claim take **~74 s** (measured) and effectively stalling the
+  backfill. Removed it from the SQL (claim is now ~2 s); the digit-fraction
+  check moved to `_is_numeric_dump` in the pass, run on the ≤batch_size claimed
+  rows. Numeric/coordinate dumps are now **tagged `(tabular data)` directly,
+  with no LLM call** (cheaper than letting the model tag them). The cheap
+  length/kind filters stay in SQL. Pass + claim regression tests updated.
+
 ### Changed (2026-06-25 — paper triage UX: meta-tab landing, tag removal, duplicate merge)
 
 - **Triage queue + paper detail page fixes** (`precis_web/routes/papers.py`,

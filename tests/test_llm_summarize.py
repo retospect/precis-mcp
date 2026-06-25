@@ -370,10 +370,10 @@ def test_run_pass_concurrent_isolates_failure() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_claim_skips_oversized_and_numeric_chunks(store: Any) -> None:
-    """The claim query summarizes prose only — numeric/coordinate dumps (high
-    digit fraction) and over-long mis-chunks are filtered out, so the model
-    never wastes a slot hallucinating meaning from them."""
+def test_claim_skips_oversized_chunks(store: Any) -> None:
+    """The claim filters cheaply in SQL — over-long mis-chunks are excluded.
+    Numeric dumps are NOT filtered here (the digit-fraction regexp made the
+    claim ~74s/batch); they're claimed and tagged in the pass instead."""
     from tests.workers._helpers import seed_chunks
 
     prose = (
@@ -389,8 +389,36 @@ def test_claim_skips_oversized_and_numeric_chunks(store: Any) -> None:
 
     ids = {c.chunk_id for c in claimed}
     assert p_id in ids  # prose is summarized
-    assert n_id not in ids  # numeric dump skipped (digit fraction > 0.5)
+    assert n_id in ids  # numeric dump now claimed (tagged in the pass, not SQL)
     assert o_id not in ids  # oversized skipped (> MAX_CHUNK_CHARS)
+
+
+def test_numeric_dump_tagged_without_llm_call() -> None:
+    """A numeric/coordinate dump is tagged ``(tabular data)`` in the pass with
+    no LLM call (the transport is never hit)."""
+    numeric_text = " ".join(f"{i}.{i}{i}" for i in range(80))  # mostly digits
+    row = (
+        9,
+        7,
+        0,
+        "paragraph",
+        numeric_text,
+        [],
+        None,
+        [],
+        "paper",
+        "Coordinates",
+    )
+    conn = _FakeConn(claim_rows=[row], card_text="Title: x")
+    store = _FakeStore(conn)
+    t = _FakeTransport("BRIEF: should-not-be-used\nDETAIL: x.")
+    client = LlmClient(LlmConfig(), transport=t)
+
+    result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert len(t.calls) == 0  # no LLM call for a numeric dump
+    assert any("(tabular data)" in (params[2] or "") for _sql, params in conn.writes)
 
 
 def test_claim_retries_failed_below_cap_only(store: Any) -> None:
