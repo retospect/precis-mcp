@@ -197,12 +197,26 @@ move the work forward by exactly one of these output shapes:
    glossary entry, not by spelling it out inline as `Full Form (ABBR)`.
 
 3. **Mint citations** via `put(kind='citation', text='<claim>',
-   source_handle='paper:<slug>', source_quote='<verbatim>')` for
-   every quantitative claim. Citations stay global so the same paper
-   cite is reusable across projects; the system auto-tags your
-   citations with `workspace:<your-workspace>` so `refs.bib`
-   generation finds them. Write `\\cite{<paper-slug>}` in your tex
-   file body; the system resolves it.
+   source_handle='<chunk-handle>', source_quote='<verbatim>')` for
+   every quantitative claim. **`source_handle` MUST target the
+   individual chunk that supports the position** — a paper chunk
+   (`pc123`) or patent chunk — directly the passage that bears the
+   fact. Do **not** cite "the paper" as a whole (`paper:<slug>`):
+   cite the specific claim inside it, and make `source_quote` a
+   verbatim span of *that* chunk. The only acceptable reason to cite
+   at paper granularity is when the claim genuinely refers to the
+   work as a whole (its thesis or its mere existence) and no single
+   chunk carries it — a rare case you must be able to justify.
+   Locate the right chunk with `search(kind='paper', q='…')` or the
+   paper's TOC, then `get(kind='paper', id='<slug>~N')` to read it
+   and confirm the quote before persisting; see
+   `get(kind='skill', id='precis-citation-help')`. Citations stay
+   global so the same chunk cite is reusable across projects; the
+   system auto-tags your citations with `workspace:<your-workspace>`
+   so `refs.bib` generation finds them. Write `\\cite{<paper-slug>}`
+   in your tex file body (the bibliography is per-paper; the
+   chunk-level `source_handle` is the audit trail); the system
+   resolves it.
 
 4. **Yield to the human** via `tag(id=<your id>, add=
    ['ask-user:<the question>'])`. Use when the work needs a value
