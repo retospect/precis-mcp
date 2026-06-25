@@ -493,6 +493,10 @@ def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
     if draft_block:
         parts.append("")
         parts.append(draft_block)
+        glossary_block = _render_glossary(store, ref_id)
+        if glossary_block:
+            parts.append("")
+            parts.append(glossary_block)
     parts.append("")
     parts.append("## Body")
     parts.append(body or "(empty)")
@@ -593,6 +597,77 @@ def _render_draft_identity(store: Store, ref_id: int) -> str:
         f"handle in brackets — `[dc<id>]` (a chunk), `[me<id>]` (a memory) — in "
         f"prose."
     )
+
+
+#: Soft cap on glossary lines in the prompt — beyond this we list the
+#: count and the first N (a glossary this large is itself a smell).
+_GLOSSARY_PROMPT_CAP = 80
+
+
+def _render_glossary(store: Store, ref_id: int) -> str:
+    """List the draft's active abbreviations + definitions to the editor.
+
+    The abbreviation system is otherwise purely *reactive* — it nags about
+    undefined acronyms only *after* a write (``_write_abbrev_hints``).
+    Surfacing the whole live glossary up front lets the agent write *with*
+    the established vocabulary: use the canonical short, don't redefine an
+    existing term, and read what an acronym means in a chunk it's editing.
+
+    Belongs in the *variable* (user) layer, not the cached system prompt:
+    the glossary mutates as terms are added, so two drafts (and the same
+    draft over time) must not share a cache prefix carrying one's terms.
+
+    No-op when no draft is bound to this subtree, or it has no terms.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            WITH RECURSIVE anc AS (
+                SELECT ref_id, parent_id FROM refs WHERE ref_id = %s
+                UNION ALL
+                SELECT r.ref_id, r.parent_id
+                  FROM refs r JOIN anc a ON r.ref_id = a.parent_id
+            )
+            SELECT l.src_ref_id FROM links l
+             WHERE l.relation = 'draft-of'
+               AND l.dst_ref_id IN (SELECT ref_id FROM anc)
+             LIMIT 1
+            """,
+            (ref_id,),
+        ).fetchone()
+    if not row:
+        return ""
+    terms = store.draft_terms(int(row[0]))  # {handle: (short, long)}
+    rows = sorted(
+        ((short, long, h) for h, (short, long) in terms.items() if short),
+        key=lambda t: t[0].lower(),
+    )
+    if not rows:
+        return ""
+    shown = rows[:_GLOSSARY_PROMPT_CAP]
+    lines = [
+        "## Glossary (active abbreviations — use these, do not redefine)",
+        "",
+        "Just write the short form as plain text — write `MOF` (and the plural "
+        "`MOFs`) naturally; the exporter auto-links every occurrence to its "
+        "glossary entry (first use expands, later uses abbreviate). No handle "
+        "needed. **Define a new term** once with `put(kind='draft', "
+        "id='<slug>', chunk_kind='term', text='<long form>', "
+        "meta={'short':'<SHORT>'})`; it files under the Glossary heading. The "
+        "`handle` column below is only for editing/moving a term, not for "
+        "citing it in prose.",
+        "",
+        f"glossary: [{len(shown)}]{{short,long,handle}}",
+    ]
+    for short, long, h in shown:
+        lg = (long or "").replace("\n", " ").strip()
+        if len(lg) > 70:
+            lg = lg[:70].rstrip() + "…"
+        # commas would break the TOON row parser → swap for U+201A
+        lines.append(f"{short.replace(',', '‚')},{lg.replace(',', '‚')},{h}")
+    if len(rows) > _GLOSSARY_PROMPT_CAP:
+        lines.append(f"(… and {len(rows) - _GLOSSARY_PROMPT_CAP} more terms)")
+    return "\n".join(lines)
 
 
 def _render_anchor_context(store: Store, ref_id: int) -> str:

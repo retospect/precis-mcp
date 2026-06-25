@@ -419,3 +419,41 @@ def test_no_draft_identity_without_draft(handler: TodoHandler, store: Store) -> 
     t = handler.put(text="a plain todo with no draft")
     prompt = _build_user_prompt(store, ref_id=_id_of(t.body), model="opus")
     assert "## Draft" not in prompt
+
+
+def test_glossary_block_lists_active_abbrevs(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The editor prompt proactively lists the draft's active abbreviations
+    (short + long) so the agent writes with the established vocabulary."""
+    from precis.handlers.draft import DraftHandler
+
+    proj = handler.put(text="Write the CO2 paper.", tags=["level:strategic"])
+    pid = _id_of(proj.body)
+    dh = DraftHandler(hub=Hub(store=store))
+    dh.put(id="co2draft", title="CO2 in MOFs", project=pid)
+    dh.put(
+        id="co2draft",
+        chunk_kind="term",
+        text="metal-organic framework",
+        meta={"short": "MOF"},
+    )
+    child = handler.put(text="tighten the intro", parent_id=pid)
+
+    prompt = _build_user_prompt(store, ref_id=_id_of(child.body), model="opus")
+    assert "## Glossary" in prompt
+    assert "glossary: [1]{short,long,handle}" in prompt  # TOON header
+    assert "MOF,metal-organic framework," in prompt  # TOON row
+    assert "chunk_kind='term'" in prompt  # define-new hint
+
+
+def test_no_glossary_block_when_no_terms(handler: TodoHandler, store: Store) -> None:
+    """A draft with no glossary terms emits no Glossary block."""
+    from precis.handlers.draft import DraftHandler
+
+    proj = handler.put(text="Write the CO2 paper.", tags=["level:strategic"])
+    pid = _id_of(proj.body)
+    DraftHandler(hub=Hub(store=store)).put(id="co2draft2", title="CO2", project=pid)
+    child = handler.put(text="tighten the intro", parent_id=pid)
+    prompt = _build_user_prompt(store, ref_id=_id_of(child.body), model="opus")
+    assert "## Glossary" not in prompt
