@@ -8,6 +8,19 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-25 — draft reader: heading fold + scroll after the virtual-scroll switch)
+
+- **Folding a heading did nothing** (the caret flipped back, nothing
+  collapsed): Alpine auto-calls a data method named `init()` *and* the
+  template had `x-init="init()"`, so `init()` ran twice and attached two
+  delegated caret-click listeners — every fold click fired `toggle()`
+  twice and cancelled itself out. `init()` is now guarded to run once.
+  Also, the first `render()` is deferred to `$nextTick`: running it
+  synchronously in `init()` mutated `#dr-win` mid-Alpine-walk, which
+  orphaned the rows' scope (`view is not defined`) and broke scroll
+  windowing. Verified end-to-end with Playwright on a 907-block nested
+  draft (fold removes the subtree, scroll windows, no console errors).
+
 ### Performance (2026-06-25 — draft reader is now a true virtual scroller)
 
 - **Only the on-screen window of rows lives in the DOM** — the fix for the

@@ -537,6 +537,12 @@ function draftDoc(ident) {
     findNext() { this.gotoHit(this.findIdx + 1); },
     findPrev() { this.gotoHit(this.findIdx - 1); },
     init() {
+      // Run ONCE. Alpine auto-calls a data method named `init()` AND we have
+      // `x-init="init()"`, so without this guard init runs twice — attaching
+      // two delegated click listeners, so every caret click fires toggle()
+      // twice and the fold cancels itself out (the "folding doesn't work" bug).
+      if (this._inited) return;
+      this._inited = true;
       // 1) load the skeleton (one tiny record per block).
       try { this.skel = JSON.parse(document.getElementById('dr-skel').textContent || '[]'); }
       catch (e) { this.skel = []; }
@@ -560,9 +566,14 @@ function draftDoc(ident) {
       this._onScroll = () => this.onScroll();
       window.addEventListener('scroll', this._onScroll, {passive: true});
       window.addEventListener('resize', this._onScroll, {passive: true});
-      this.render();
-      // 5) deep link (#c-<handle>) → make it visible.
+      // 5) FIRST render + deep link AFTER Alpine finishes its init walk.
+      //    render() reconciles #dr-win (removes server rows outside the
+      //    viewport); doing that synchronously here mutates the DOM mid-walk,
+      //    which orphaned the rows' Alpine scope (`view is not defined`) and
+      //    left handlers bound to a stale component (collapse/scroll dead).
+      //    $nextTick defers it until the tree is fully wired.
       this.$nextTick(async () => {
+        this.render();
         const id = location.hash.slice(1);
         if (id && id.startsWith('c-')) await this.ensureVisible(id.slice(2));
       });
