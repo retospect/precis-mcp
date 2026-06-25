@@ -274,9 +274,15 @@ class IdentifiersMixin:
 
         Blank ``value`` is a no-op (blank field = keep existing).
         Returns True when a row was written. Raises :class:`BadInput`
-        if ``value`` is already claimed by a *different* ref (the
+        if ``value`` is already claimed by a *different* **live** ref (the
         cross-ref uniqueness conflict) rather than silently dropping
-        this ref's old alias.
+        this ref's old alias. A conflicting owner that is **soft-deleted**
+        is not a real conflict: it has no live claim on the value (and
+        nothing can load it to merge against — see ``merge_refs``), so we
+        reclaim its orphaned row for this ref. This covers the bare-delete
+        path (the ``🗑 Delete paper`` button soft-deletes the ref but, unlike
+        ``merge_refs``, leaves its ``ref_identifiers`` rows), which would
+        otherwise wedge the survivor's DOI / arXiv id permanently.
         """
         from precis.errors import BadInput
 
@@ -287,16 +293,28 @@ class IdentifiersMixin:
 
         def _do(c: Connection) -> bool:
             owner = c.execute(
-                "SELECT ref_id FROM ref_identifiers "
-                "WHERE id_kind = %s AND id_value = %s",
+                "SELECT ri.ref_id, r.deleted_at IS NOT NULL "
+                "FROM ref_identifiers ri "
+                "JOIN refs r ON r.ref_id = ri.ref_id "
+                "WHERE ri.id_kind = %s AND ri.id_value = %s",
                 (s, v),
             ).fetchone()
             if owner is not None:
-                if int(owner[0]) == ref_id:
+                owner_id, owner_deleted = int(owner[0]), bool(owner[1])
+                if owner_id == ref_id:
                     return False  # already ours — nothing to do
-                raise BadInput(
-                    f"{s}={v!r} already belongs to ref id={int(owner[0])}",
-                    next="resolve the duplicate before reassigning the identifier",
+                if not owner_deleted:
+                    raise BadInput(
+                        f"{s}={v!r} already belongs to ref id={owner_id}",
+                        next="resolve the duplicate before reassigning the identifier",
+                    )
+                # Orphan from a soft-deleted ref — reclaim it. The PK is
+                # (id_kind, id_value), so the stale row must go before the
+                # INSERT below can land.
+                c.execute(
+                    "DELETE FROM ref_identifiers "
+                    "WHERE id_kind = %s AND id_value = %s",
+                    (s, v),
                 )
             c.execute(
                 "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = %s",

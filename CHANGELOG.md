@@ -36,6 +36,24 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   end-to-end (real store → `PaperHandler.get` → feed the emitted handle back).
 - Dropped the superfluous `  # N chunks` comment trailing each drill-in
   `get(...)` hint line.
+### Fixed (2026-06-25 — bare-deleted paper's DOI no longer wedges its duplicate)
+
+- A paper deleted via the **🗑 Delete** button (`soft_delete_ref` — sets
+  `refs.deleted_at`) leaves its `ref_identifiers` rows behind; only
+  `merge_refs` frees them. The duplicate-identifier guard in
+  `Store.set_ref_identifier` (`store/_identifiers_ops.py`) checked ownership
+  against `ref_identifiers` **without joining `refs`**, so an orphan row from
+  a bare-deleted paper kept its DOI / arXiv id claimed — and the web edit
+  conflict resolver pointed the operator at an owner ref that no load path
+  can fetch (`include_deleted=False` everywhere), a dead end ("paper #34788
+  couldn't be loaded… it may itself be deleted"). The guard now joins `refs`
+  and treats a **soft-deleted owner as no conflict**: it reclaims the orphan
+  row (PK is `(id_kind, id_value)`, so the stale row is deleted before the
+  re-INSERT) and lets the live paper take the value. Live owners still raise
+  the cross-ref conflict; recoverability is preserved (a deleted paper keeps
+  its DOI through a restore *unless* a live paper actually reclaims it).
+  Consistent with `find_ref_by_identifier` / `identifier_owner`, which
+  already filter `deleted_at`. Two regression tests in `test_link_crud.py`.
 
 ### Changed (2026-06-25 — console: a grouped, multi-kind example set + request echo)
 

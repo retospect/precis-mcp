@@ -315,6 +315,39 @@ class TestStoreMergeRefs:
         store.set_ref_identifier(survivor, "doi", "10.1234/dup.2022")
         assert store.find_paper_ref_by_identifier("10.1234/dup.2022") == survivor
 
+    def test_bare_delete_owner_does_not_wedge_identifier(
+        self, store: Store
+    ) -> None:
+        """A DOI orphaned by a *bare* soft-delete (the 🗑 Delete button,
+        not ``merge_refs``) must not permanently block a live paper from
+        claiming it. The deleted owner can't be loaded to merge against,
+        so ``set_ref_identifier`` reclaims its orphaned row instead of
+        raising the unresolvable duplicate-identifier conflict."""
+        deleted = _seed_paper(store, slug="ghost1994")
+        survivor = _seed_paper(store, slug="keepme1994")
+        store.set_ref_identifier(deleted, "doi", "10.1126/science.7973651")
+        # Bare soft-delete leaves the DOI row behind (cf. merge_refs).
+        store.soft_delete_ref(deleted)
+
+        # Reassigning to the live paper now succeeds (no dead-end conflict).
+        assert store.set_ref_identifier(
+            survivor, "doi", "10.1126/science.7973651"
+        )
+        assert (
+            store.find_paper_ref_by_identifier("10.1126/science.7973651")
+            == survivor
+        )
+
+    def test_live_owner_still_blocks_identifier(self, store: Store) -> None:
+        """A *live* owner of the value is still a real conflict — the
+        soft-deleted-owner carve-out must not weaken the cross-ref
+        uniqueness guard for two coexisting papers."""
+        owner = _seed_paper(store, slug="alive2024a")
+        other = _seed_paper(store, slug="alive2024b")
+        store.set_ref_identifier(owner, "doi", "10.1234/live.2024")
+        with pytest.raises(BadInput, match="already belongs to ref"):
+            store.set_ref_identifier(other, "doi", "10.1234/live.2024")
+
     def test_merge_into_self_rejected(self, store: Store) -> None:
         a = _seed_paper(store, slug="self2023")
         with pytest.raises(BadInput, match="cannot merge a ref into itself"):
