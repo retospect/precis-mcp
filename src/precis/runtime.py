@@ -371,7 +371,7 @@ class PrecisRuntime:
         cross-kind targets.
         """
         if kind is not None:
-            return str(kind), False, None
+            return self._expand_kind_code(str(kind)), False, None
 
         if verb != "search":
             raise BadInput(
@@ -420,6 +420,29 @@ class PrecisRuntime:
                 "kind='*' / kind='all' / kind='paper,memory' for cross-kind merge"
             ),
         )
+
+    def _expand_kind_code(self, kind: str) -> str:
+        """Accept a 2-char handle code as ``kind=`` (ADR 0038 §7).
+
+        ``kind='dr'`` ≡ ``kind='draft'``, ``kind='pa'`` ≡ ``kind='paper'`` —
+        the same registry that legends a handle now also resolves the code
+        when it's passed as ``kind=``, so the ``kinds`` table is one legend
+        for *reading* handles and *choosing* the kind.
+
+        A literal that's already a registered kind always wins (never
+        shadowed by a code), and only **record** codes expand: chunk codes
+        (``dc``/``pc``) are address-only — you ``get``/``edit`` a chunk by
+        its handle, never ``put(kind='dc', …)`` — so a code the registry
+        flags ``is_chunk`` is left untouched (and falls through to the
+        normal unknown-kind error). Anything that isn't a known code is
+        returned verbatim."""
+        if kind in self.hub.kinds:
+            return kind
+        try:
+            resolved, is_chunk = handle_registry.kind_for_code(kind)
+        except KeyError:
+            return kind
+        return resolved if not is_chunk else kind
 
     def _missing_kind_hints(self, verb: str) -> list[str]:
         """Recovery hints for a non-``search`` verb called without ``kind=``.
