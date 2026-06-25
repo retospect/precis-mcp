@@ -8,6 +8,29 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-25 — `precis migrate-refs` rewrites legacy refs to handles)
+
+- **A one-off data migration that unifies the old inline-reference
+  grammars onto the single `[handle]` form** (`src/precis/cli/migrate_refs.py`).
+  It rewrites a bare `kind:ident` mention (`memory:6184` → `[me6184]`), an
+  `[[authoring]]` link, a `[label](kind:id)` display link, and a legacy
+  `[¶<base58>]` draft cross-ref (→ `[dc<chunk_id>]`) — across **draft
+  chunks** (via `edit_text`, so the embed/link cascade re-derives) and
+  **memory bodies** (via the memory `edit` verb, so the card chunk +
+  auto-mention links re-sync). `paper:` mentions and `[§…]` citations are
+  left as the bibliography-keyed citation form. Every rewrite is
+  **resolution-gated** — a token only changes if it resolves to a live
+  ref — so over-firing prose (`time:30`) and dangling refs stay literal,
+  and re-running is idempotent. Dry-run by default; `--apply` to commit;
+  `--scope drafts|thoughts|all` + `--limit`.
+- **The note/thought autolinker now understands the universal `[handle]`
+  form too.** `mentions.resolve_link_targets` gained
+  `resolve_handle_target` (decode via `store.resolve_handle`) so a
+  memory body's `related-to` edges survive the migration onto handles —
+  previously only the draft autolinker resolved them.
+  `draft_markup.resolve_universal_handle` now delegates to the shared
+  resolver (one lookup path).
+
 ### Performance (2026-06-25 — draft `reading_order` via flat fetch + Python DFS)
 
 - **`reading_order` no longer uses a recursive SQL CTE.** The CTE couldn't

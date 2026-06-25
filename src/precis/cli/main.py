@@ -34,6 +34,7 @@ from precis.cli import (
     logs,
     maintenance,
     migrate,
+    migrate_refs,
     patent,
     perplexity,
     provenance,
@@ -98,6 +99,10 @@ def main() -> None:
 
     if args.cmd == "fix-metadata":
         fix_metadata.run(args)
+        return
+
+    if args.cmd == "migrate-refs":
+        migrate_refs.run(args)
         return
 
     if args.cmd == "reconcile-duplicates":
@@ -201,6 +206,7 @@ def _build_parser() -> argparse.ArgumentParser:
     db.add_parser(sub)
     maintenance.add_parser(sub)
     fix_metadata.add_parser(sub)
+    migrate_refs.add_parser(sub)
     reconcile.add_parser(sub)
     gripe.add_parser(sub)
     add.add_parser(sub)

@@ -40,13 +40,13 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from precis.utils import handle_registry
 from precis.utils.mentions import (
     DRAFT_CITE_PATTERN,
     DRAFT_MARKUP_PATTERN,
     LinkTarget,
     chunk_to_pos,
     resolve_handle_ref,
+    resolve_handle_target,
     resolve_link_targets,
 )
 
@@ -156,21 +156,11 @@ def resolve_draft_handle(
 def resolve_universal_handle(store: Any, token: str) -> LinkTarget | None:
     """A bare ADR 0036 universal handle (``dc41`` a draft chunk, ``me5`` a
     memory, ``pc10`` a paper chunk, …) → a live ``LinkTarget`` via the one
-    decoder ``store.resolve_handle``. This is the simple, uniform rule the
-    LLM relies on: *a handle is a ref to something*. ``None`` if the token
-    is not a well-formed / resolvable handle (so the caller falls through
-    to the legacy ``kind:id`` / ``¶`` / ``§`` paths)."""
-    if not handle_registry.is_well_formed(handle_registry.normalize(token)):
-        return None
-    try:
-        r = store.resolve_handle(token)
-    except Exception:
-        log.debug("draft_markup: resolve_handle failed for %r", token, exc_info=True)
-        return None
-    if r is None:
-        return None
-    pos = r.chunk_ord if getattr(r, "chunk_id", None) is not None else None
-    return LinkTarget(int(r.ref_id), pos)
+    decoder ``store.resolve_handle``. The simple, uniform rule the LLM
+    relies on: *a handle is a ref to something*. Delegates to the shared
+    :func:`mentions.resolve_handle_target` so the note and draft
+    autolinkers share one resolution path."""
+    return resolve_handle_target(store, token)
 
 
 def _resolve_reference(store: Any, ref: Reference) -> LinkTarget | None:

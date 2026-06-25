@@ -267,15 +267,57 @@ class LinkTarget:
     dst_pos: int | None
 
 
+def resolve_handle_target(store: Any, token: str) -> LinkTarget | None:
+    """A bare ADR 0036 universal handle (``me5`` a memory, ``dc41`` a draft
+    chunk, ``pc10`` a paper chunk, …) → a live ``LinkTarget`` via the one
+    decoder ``store.resolve_handle``. ``None`` if ``token`` is not a
+    well-formed / resolvable handle, so the caller falls through to the
+    legacy ``kind:id`` / ``¶`` / ``§`` paths. The single rule the LLM
+    relies on: *a handle is a ref to something*."""
+    from precis.utils import handle_registry
+
+    if not handle_registry.is_well_formed(handle_registry.normalize(token)):
+        return None
+    try:
+        r = store.resolve_handle(token)
+    except Exception:
+        log.debug("mentions: resolve_handle failed for %r", token, exc_info=True)
+        return None
+    if r is None:
+        return None
+    pos = r.chunk_ord if getattr(r, "chunk_id", None) is not None else None
+    return LinkTarget(int(r.ref_id), pos)
+
+
+def _universal_handle_tokens(body: str) -> list[str]:
+    """Every bracketed handle token in ``body`` — the bare ``[me5]`` form,
+    a ``[label](me5)`` target, or an ``[[me5]]`` authoring address.
+    (Legacy ``¶``/``§`` and ``kind:id`` tokens fall out in
+    :func:`resolve_handle_target`, which only resolves well-formed
+    handles.)"""
+    out: list[str] = []
+    for m in DRAFT_MARKUP_PATTERN.finditer(body):
+        if m.group("auth") is not None:
+            out.append(m.group("auth").strip())
+        elif m.group("tgt") is not None:
+            out.append(m.group("tgt").strip())
+        elif m.group("bare") is not None:
+            out.append(m.group("bare"))
+    return out
+
+
 def resolve_link_targets(
     store: Any, body: str, *, exclude_ref_id: int | None = None
 ) -> list[LinkTarget]:
     """Resolve every handle in ``body`` to a live ``LinkTarget``.
 
-    Skips handles that don't resolve, point at a soft-deleted ref, or
-    point back at ``exclude_ref_id`` (the memory we're linking *from* —
-    no self-loops). Deduplicated by ``(dst_ref_id, dst_pos)`` so two
-    mentions of the same chunk produce one link.
+    Covers both the legacy ``kind:ident`` mentions and the universal
+    ``[handle]`` form (bare / display / authoring) so a note's edges
+    survive the migration onto handles. Skips handles that don't resolve,
+    point at a soft-deleted ref, or point back at ``exclude_ref_id`` (the
+    note we're linking *from* — no self-loops). Deduplicated by
+    ``(dst_ref_id, dst_pos)`` so two mentions of the same chunk produce
+    one link.
     """
     targets: dict[tuple[int, int | None], LinkTarget] = {}
     for _kind, ident, chunk in extract_handles(body):
@@ -286,4 +328,11 @@ def resolve_link_targets(
             continue
         pos = chunk_to_pos(chunk)
         targets.setdefault((ref.id, pos), LinkTarget(ref.id, pos))
+    for token in _universal_handle_tokens(body):
+        tgt = resolve_handle_target(store, token)
+        if tgt is None:
+            continue
+        if exclude_ref_id is not None and tgt.dst_ref_id == exclude_ref_id:
+            continue
+        targets.setdefault((tgt.dst_ref_id, tgt.dst_pos), tgt)
     return list(targets.values())
