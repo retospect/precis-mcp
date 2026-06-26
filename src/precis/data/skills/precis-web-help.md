@@ -84,8 +84,10 @@ search(kind='web', q='RAG', page=2)
 ```
 
 Hybrid lexical + semantic over the bodies of pages already in the
-cache. Results are `<slug>~N` handles; paste into `get` to drill in.
-Only fetched pages are searchable — `search` does not crawl.
+cache. Each hit row carries a chunk **handle** — paste it straight
+into `get` to drill in (the retired `<slug>~N` selector still
+resolves, but it is a legacy form, not the handle). Only fetched
+pages are searchable — `search` does not crawl.
 
 ## Search across web pages and other kinds
 ## Cross-kind search including web

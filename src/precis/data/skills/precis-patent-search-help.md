@@ -50,17 +50,21 @@ and persists it.
 ## What do local vs remote hits look like?
 
 ```text
-1. ep4123456a1  [local]  Z-scheme photocatalyst for NOx abatement
+1. pt812  ep4123456a1  [local]  Z-scheme photocatalyst for NOx abatement
    Siemens AG · 2024 · cpc=B01J27/24
    > "…visible-light driven Z-scheme heterojunction…"
 
-2. wo2023123456a1         Method for selective NOxRR over MOF surfaces
+2. wo2023123456a1                Method for selective NOxRR over MOF surfaces
    Univ. Limerick · 2023 · cpc=B01J27/24
    Abstract preview: …
 ```
 
-`[local]` rows return instantly from `get(id=...)`. Untagged rows
-are remote-only; `get(id=...)` fetches and persists them.
+`[local]` rows lead with their `pt<id>` **handle** and return
+instantly from `get(id='pt812')` — the DOCDB pub-number
+(`ep4123456a1`) stays alongside as the OPS fetch key (like a DOI).
+Untagged rows are remote-only, not yet ingested, so they have no
+handle; `get(id='wo2023123456a1')` fetches and persists them, minting
+one.
 
 ## Filter patents by CPC, applicant, country
 ## Narrow patent search by tag axis
@@ -81,10 +85,12 @@ narrow the local leg.
 ## Where does this patent mention X?
 
 ```python
-search(kind='patent', q='Z-scheme', scope='ep4123456a1')
+search(kind='patent', q='Z-scheme', scope='pt812')   # handle (pub-number ep4123456a1 also resolves)
 ```
 
-`scope=` restricts to one already-ingested patent's blocks.
+`scope=` restricts to one already-ingested patent's blocks. Lead with
+the `pt<id>` handle; the DOCDB pub-number still resolves as the OPS
+fetch key.
 
 ## Look up a specific patent that didn't match
 ## I have a publication number — how do I fetch it?

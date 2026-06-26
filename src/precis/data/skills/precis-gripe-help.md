@@ -13,8 +13,9 @@ existing ones, add context as comments, hand off to an agent to
 prepare a candidate fix, retire when resolved. Same surface for
 humans and LLMs.
 
-Address by numeric id — both `id=42` and `id='gripe:42'` are
-accepted.
+The canonical address is the **handle** `gr<id>` (e.g. `gr42`) — copy
+it from search/get output. The legacy forms `id=42` and `id='gripe:42'`
+still resolve on input.
 
 ## File a bug I just noticed
 ## File friction without breaking flow

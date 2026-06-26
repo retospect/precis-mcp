@@ -32,30 +32,36 @@ For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 ## Content kinds I can read and tag
 ## The ref kinds (id-addressable, support get/search/tag/link)
 
+The **Example id** column shows the canonical **handle** (`<2-char type
+code><decimal id>`) for store-backed kinds — what get/search output hands you to
+paste back. Legacy slugs / numeric ids still resolve on input. File-backed kinds
+(`skill`, `python`, and the `markdown`/`plaintext`/`tex` file mirror) address by
+name/path.
+
 | Kind | Example id | What | Needs |
 |---|---|---|---|
-| `paper` | `abazari2024design` | Ingested research paper | store |
-| `patent` | `ep1234567b1` | EPO OPS patent record | store |
+| `paper` | `pa5` (slug `abazari2024design` still resolves) | Ingested research paper | store |
+| `patent` | `pt40` (DOCDB `ep1234567b1` still resolves) | EPO OPS patent record | store |
 | `skill` | `precis-overview` | Agent how-to (you're reading one) | — |
-| `oracle` | `stoic` | Curated wisdom-tradition entry | store |
-| `conv` | `2026-04-26-spec` | Past conversation | store |
-| `pres` | `2026-06-talk-foo` | Slide deck or unpublished writeup | store |
+| `oracle` | `or7` (slug `stoic` still resolves) | Curated wisdom-tradition entry | store |
+| `conv` | `co12` (slug `2026-04-26-spec` still resolves) | Past conversation | store |
+| `pres` | `pr5` (slug `2026-06-talk-foo` still resolves) | Slide deck or unpublished writeup | store |
 | `markdown` | `notes--meeting` | A `.md` file under `PRECIS_ROOT` | `PRECIS_ROOT` |
 | `plaintext` | `notes--log` | A `.txt` / `.log` file under `PRECIS_ROOT` | `PRECIS_ROOT` |
 | `tex` | `chapters--intro` | A `.tex` file (section-aware blocks + `/toc`) | `PRECIS_ROOT` |
-| `draft` | `nanotrans` | Editable, chunk-native document — the living source of a project's write-up; chunks reorder/edit in place, exports to LaTeX/PDF/Word. Chunks addressed by `¶<handle>`. See `precis-draft-help`, ADR 0033. | store |
+| `draft` | `dr3` (slug `nanotrans` still resolves) | Editable, chunk-native document — the living source of a project's write-up; chunks reorder/edit in place, exports to LaTeX/PDF/Word. Chunks addressed by `¶<handle>`. See `precis-draft-help`, ADR 0033. | store |
 | `python` | `precis::precis.cli.main` | Symbol or file in a configured Python repo | `PRECIS_PYTHON_ROOTS` |
-| `todo` | `122` (int) | A task in the hierarchical tree (Slice 1–5). Branches read as outcomes; leaves as next actions. See `precis-tasks-help`. | store |
-| `memory` | `47` (int) | Agent note / scratchpad | store |
-| `gripe` | `9` (int) | Annoyance / niggle | store |
-| `alert` | `38260` (int) | Machine-detected ops / health condition (spin loop, orphan, stalled recurring). Raised by background passes, deduped + auto-resolved; surfaced by the `/alerts` web tab, **not** semantic search. See `precis-alert-help`. | store |
-| `agentlog` | `38312` (int) | Run-attribution record — one per agentic run (plan_tick / operator / chat) that touched the corpus. Carries the assembled prompt + `touched` links to every chunk it wrote; walk a suspicious chunk back to its run. GC'd past a retention window; **not** semantic search. See `precis-agentlog-help`. | store |
-| `flashcard` | `204` (int) | Flashcard (SM-2 spaced rep) | store |
-| `citation` | `18` (int) | Verified claim → source quote | store |
-| `finding` | `73` (int) | Chain-of-evidence head over a citation chase | store |
-| `job` | `55` (int) | Execution attempt of a todo intent. **New jobs require `parent_id` pointing at a `kind='todo'`** — see `precis-job-help` + `precis-dispatch-help`. | store |
-| `cron` | `42` (int) | Push-notification scheduler — fires a payload to an external conversation (asa-bot Discord) at the scheduled time. **Different use case** from `level:recurring` todos (which pull recurring work into the doable queue); both kinds kept on purpose. See `precis-cron-help`, `precis-recurring-help`, ADR 0030. | store |
-| `message` | `11` (int) | Proactive outbound (Discord post) | store |
+| `todo` | `td122` (int `122` still resolves) | A task in the hierarchical tree (Slice 1–5). Branches read as outcomes; leaves as next actions. See `precis-tasks-help`. | store |
+| `memory` | `me47` (int `47` still resolves) | Agent note / scratchpad | store |
+| `gripe` | `gr9` (int `9` still resolves) | Annoyance / niggle | store |
+| `alert` | `al38260` (int `38260` still resolves) | Machine-detected ops / health condition (spin loop, orphan, stalled recurring). Raised by background passes, deduped + auto-resolved; surfaced by the `/alerts` web tab, **not** semantic search. See `precis-alert-help`. | store |
+| `agentlog` | `ag38312` (int `38312` still resolves) | Run-attribution record — one per agentic run (plan_tick / operator / chat) that touched the corpus. Carries the assembled prompt + `touched` links to every chunk it wrote; walk a suspicious chunk back to its run. GC'd past a retention window; **not** semantic search. See `precis-agentlog-help`. | store |
+| `flashcard` | `fc204` (int `204` still resolves) | Flashcard (SM-2 spaced rep) | store |
+| `citation` | `ci18` (int `18` still resolves) | Verified claim → source quote | store |
+| `finding` | `fi73` (int `73` still resolves) | Chain-of-evidence head over a citation chase | store |
+| `job` | `jo55` (int `55` still resolves) | Execution attempt of a todo intent. **New jobs require `parent_id` pointing at a `kind='todo'`** — see `precis-job-help` + `precis-dispatch-help`. | store |
+| `cron` | `cr42` (int `42` still resolves) | Push-notification scheduler — fires a payload to an external conversation (asa-bot Discord) at the scheduled time. **Different use case** from `level:recurring` todos (which pull recurring work into the doable queue); both kinds kept on purpose. See `precis-cron-help`, `precis-recurring-help`, ADR 0030. | store |
+| `message` | `ms11` (int `11` still resolves) | Proactive outbound (Discord post) | store |
 | `provenance` | `92` (int) | Per-ref provenance audit (sources, transforms) | store |
 | `tag` | `topic:co2-capture` | Discoverable tag row (`get`/`search` only) | store |
 

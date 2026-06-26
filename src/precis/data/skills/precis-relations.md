@@ -44,15 +44,17 @@ without a second `link()`.
 
 ```python
 link(kind='memory', id=42,
-     target='paper:wang2020state', rel='cites')
+     target='pa<id>', rel='cites')                   # ref handle (paper:wang2020state still resolves)
 
 link(kind='memory', id=42,
-     target='paper:wang2020state~38', rel='cites')   # cite a specific block
+     target='pc38', rel='cites')                     # chunk handle — cite a specific block
 ```
 
 Use `cites` for any reference edge — bibliographic citation, in-body
 mention, or quoted passage. Block-level targets pin the citation to
-one paragraph.
+one paragraph. Lead targets with the ref/chunk **handle** (`pa<id>`,
+`pc38`); the legacy `kind:slug` / `kind:slug~pos` form
+(`paper:wang2020state`, `paper:wang2020state~38`) still resolves.
 
 ## Record evidential support or disagreement
 ## A backs / counters B — which rel?

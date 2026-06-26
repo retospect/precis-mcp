@@ -139,8 +139,12 @@ Gates on `domain ∈ {chemistry, physics, materials, eng}`.
 `topic:` is open — coin freely. Use lowercase, hyphen-separated, no
 spaces or unicode:
 
+Address the paper by its handle (`pa<id>`); the slug still resolves.
+The `topic:` *values* stay slugs — they are content tags, not an
+address:
+
 ```python
-tag(kind='paper', id='<slug>', add=[
+tag(kind='paper', id='pa812', add=[      # handle (id='<slug>' still resolves)
     'topic:co2-capture',           # good
     'topic:noxrr',                 # good (compact acronym)
     'topic:z-scheme-photocatalysis',

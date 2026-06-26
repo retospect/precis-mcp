@@ -1,47 +1,47 @@
 ---
 id: precis-paper-help
 title: precis — find, read, cite papers
-summary: scientific paper corpus — find, read, address by slug or DOI, views and chunk selectors
+summary: scientific paper corpus — find, read, address by handle (pa/pc), views and chunk selectors
 applies-to: get/search/tag/link (kind='paper')
 status: active
 ---
 
 # precis-paper-help — find, read, cite papers
 
-Papers are research articles in the store. Address by slug
-(`abazari2024design`) or by bare DOI.
+Papers are research articles in the store. The canonical address is
+the **record handle** `pa<id>` (e.g. `pa40`); individual blocks are
+chunk handles `pc<id>` (e.g. `pc512`). Copy the handle straight from
+search/get output back into `get`/`tag`/`link`. The legacy slug
+(`abazari2024design`) and a bare DOI still resolve on input.
 
-## Look up a paper when I have an identifier
-## Open a paper by slug or DOI
+## Look up a paper when I have a handle
+## Open a paper by handle (or legacy slug / DOI)
 ## I have a DOI — how do I read the paper?
 
 ```python
-get(kind='paper', id='abazari2024design')                       # full overview
-get(kind='paper', id='abazari2024design', view='toc')           # TOC — the reading entry point
+get(kind='paper', id='pa40')                                    # full overview, by handle
+get(kind='paper', id='pa40', view='toc')                        # TOC — the reading entry point
+get(kind='paper', id='abazari2024design')                       # legacy slug still resolves
 get(kind='paper', id='10.1038/nature10352')                     # bare DOI resolves via metadata
 get(kind='paper', id='10.1038/nature10352', view='abstract')    # DOI + view = kwarg only
 get(kind='paper', id='10.1038/nature10352', view='toc')
 ```
 
-DOI suffixes can contain `/`, so DOI + view needs the `view=` kwarg
-— the `slug/view` path form is ambiguous.
+The handle is the thing to keep. The DOI is a *fetch key* — once the
+paper is held, `pa<id>` is its canonical address. DOI suffixes can
+contain `/`, so DOI + view needs the `view=` kwarg — the `id/view`
+path form is ambiguous.
 
-## What does a paper slug look like?
-## Slug format and uniqueness
-## Can I guess a slug from a citation?
+## How do I get a paper's handle?
 
-A slug is `<surname><year><first-content-word>` — ASCII-folded,
-stopwords skipped: `abazari2024design`, `kim2024electrocatalytic`,
-`wang2020state`. Collisions append `-2`, `-3`.
-
-Don't guess. Stopword skipping (`a`, `the`, `of`, `on`, `in`, `and`,
-`for`, `with`, `to`, `by`, `is`, `are`, `from`, `into`, `as`, `at`,
-`new`) and ASCII folding make construction unreliable. Use search
-or DOI lookup instead:
+You don't construct it — you read it off `search`/`get` output (every
+row leads with `pa<id>` for the paper and `pc<id>` for a block) and
+paste it back into the next call. Don't reconstruct a slug from an
+author + year + title; search for the paper and copy the handle:
 
 ```python
-search(kind='paper', q='<author or topic>')        # find the slug
-get(kind='paper', id='<DOI>')                      # DOI → fetches the paper
+search(kind='paper', q='<author or topic>')        # → rows carry pa<id>/pc<id>
+get(kind='paper', id='<DOI>')                      # DOI → fetches the paper, then use its handle
 ```
 
 ## Find a paper by topic
@@ -111,25 +111,25 @@ sparse result isn't mistaken for "nothing exists" — fix missing years via
 
 ## Read a paper or one of its sections
 ## Open a paper's TOC to see what's in it
-## I have a slug — what's in this paper?
+## I have a handle — what's in this paper?
 
 Start with the TOC — it's the entry point for any non-trivial paper.
 
 ```python
-get(kind='paper', id='<slug>', view='toc')           # start here
-get(kind='paper', id='<slug>~63..89')                # drill into a TOC handle
-get(kind='paper', id='<slug>~63..89', view='toc')    # sub-TOC of a range
-get(kind='paper', id='<slug>', view='abstract')
-get(id='pc<chunk_id>')                               # single block by handle
+get(kind='paper', id='pa40', view='toc')             # start here
+get(id='pc512')                                      # single block by chunk handle
+get(kind='paper', id='pa40', view='abstract')
+get(kind='paper', id='pa40')                         # full overview
+get(kind='paper', id='pa40/toc')                     # path form = view='toc'
+get(kind='paper', id='<slug>~63..89')                # legacy: drill a slug range
+get(kind='paper', id='<slug>~63..89', view='toc')    # legacy: sub-TOC of a range
 get(kind='paper', id='<slug>~38')                    # legacy slug~pos still resolves
-get(kind='paper', id='<slug>~38..42')                # explicit block range
-get(kind='paper', id='<slug>')                       # full overview
-get(kind='paper', id='<slug>/toc')                   # path form = view='toc'
 ```
 
-TOC rows are drillable: paste a handle (`slug~A..B`) as `id=`. Each
-row shows the segment's most-distinctive keywords. Segments are
-clustered dynamically by content at request time.
+TOC rows are drillable: each row leads with the block handle (`pc<id>`,
+or a `pc<id>..pc<id>` range) — paste it back as `id=`. Each row shows
+the segment's most-distinctive keywords. Segments are clustered
+dynamically by content at request time.
 
 Views: `abstract`, `toc`, `bibtex` (`cite/bib`), `ris` (`cite/ris`),
 `endnote` (`cite/endnote`). The `view=` kwarg and `slug/<view>` path
@@ -140,8 +140,9 @@ are equivalent (except for DOIs — see above).
 ## Where does this paper discuss X?
 
 ```python
-search(kind='paper', q='Z-scheme', scope='<slug>')
-search(kind='paper', q='Z-scheme', scope='<slug>', page=2)
+search(kind='paper', q='Z-scheme', scope='pa40')             # scope by handle
+search(kind='paper', q='Z-scheme', scope='pa40', page=2)
+search(kind='paper', q='Z-scheme', scope='<slug>')           # legacy slug still resolves
 ```
 
 Same hybrid search as cross-corpus, scoped to one paper's blocks.
@@ -151,9 +152,9 @@ Same hybrid search as cross-corpus, scoped to one paper's blocks.
 ## I need to cite this in my manuscript
 
 ```python
-get(kind='paper', id='<slug>', view='bibtex')
-get(kind='paper', id='<slug>', view='ris')
-get(kind='paper', id='<slug>', view='endnote')
+get(kind='paper', id='pa40', view='bibtex')
+get(kind='paper', id='pa40', view='ris')
+get(kind='paper', id='pa40', view='endnote')
 ```
 
 ## Cite a figure (caption only — no image binaries)
@@ -164,14 +165,15 @@ Image files aren't served. The figure block holds a markdown image
 marker; the legend is on the next block.
 
 ```python
-get(kind='paper', id='<slug>~45')
+get(id='pc517')                                # the figure block, by handle
+get(kind='paper', id='<slug>~45')              # legacy slug~pos still resolves
 ```
 
 ```text
 Figure 3. Schematic representation of the structure of NU-1000…
 ```
 
-Cite as "Figure 3 of `<slug>`" and quote the legend. The
+Cite as "Figure 3 of `pa40`" and quote the legend. The
 `![](...)` marker in the body is a relative path nothing serves —
 don't invent URLs.
 
@@ -180,12 +182,12 @@ don't invent URLs.
 ## How do I mark this paper as topic:X?
 
 ```python
-tag(kind='paper', id='<slug>', add=['topic:photocatalysis'])
-tag(kind='paper', id='<slug>', add=['SRC:primary'])
-tag(kind='paper', id='<slug>', remove=['topic:photocatalysis'])
+tag(kind='paper', id='pa40', add=['topic:photocatalysis'])
+tag(kind='paper', id='pa40', add=['SRC:primary'])
+tag(kind='paper', id='pa40', remove=['topic:photocatalysis'])
 
-link(kind='paper', id='<slug>',
-     target='paper:<other-slug>', rel='cites')
+link(kind='paper', id='pa40',
+     target='pa57', rel='cites')             # target is also a handle (legacy paper:<slug> resolves)
 ```
 
 Closed-prefix axes for paper: `SRC:`, `CACHE:`. Open tags

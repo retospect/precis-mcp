@@ -19,17 +19,22 @@ If you want headings or code fences, use `kind='markdown'` instead.
 ## How do I point at a paragraph in a log?
 
 ```python
-get(kind='plaintext', id='logs/2026-05.txt')           # path form, with extension
-get(kind='plaintext', id='logs--2026-05')              # canonical slug form
-get(kind='plaintext', id='logs/2026-05.txt~3')         # paragraph by pos (output shows handle lc<id>; get(id='lc<id>') works too)
-get(kind='plaintext', id='logs/2026-05.txt~opened-laptop-at-0915')  # by content slug
+get(kind='plaintext', id='lc481')                      # one paragraph by handle — canonical (prefix infers kind)
+get(kind='plaintext', id='logs/2026-05.txt')           # whole file by path (file-backed address)
+get(kind='plaintext', id='logs--2026-05')              # whole file by slug (legacy input)
+get(kind='plaintext', id='logs/2026-05.txt~3')         # paragraph by pos (legacy input; output shows the lc<id> handle to paste)
+get(kind='plaintext', id='logs/2026-05.txt~opened-laptop-at-0915')  # by content slug (legacy input)
 get(kind='plaintext', id='logs/2026-05.txt~L42-58')    # by line range
 get(kind='plaintext', id='logs/2026-05.txt/raw')       # full source
 ```
 
-Both `.txt` and `.log` share one address space. The extension can
-appear in the path form; the canonical slug strips it and replaces
-`/` with `--` (`logs/2026-05.txt` ↔ `logs--2026-05`). Either resolves.
+A paragraph's canonical address is its **handle** `lc<chunk_id>` (e.g.
+`lc481`) — what search/get output shows; paste it straight back. The whole
+file is still addressable by path or slug (a legitimate file-backed address):
+both `.txt` and `.log` share one address space, the extension can appear in the
+path form, and the slug strips it and replaces `/` with `--`
+(`logs/2026-05.txt` ↔ `logs--2026-05`). The `~3` / `~<content-slug>` paragraph
+selectors are legacy input that still resolve.
 
 `~L<n>-<m>` is the line-range selector — useful when something
 external (grep, a stack trace, the tail of a log) gave you line
@@ -44,10 +49,11 @@ its neighbours by at least one blank line. That is the whole
 grammar. `# foo` is a paragraph that starts with a hash — not a
 heading. Fenced code, tables, list markers are all just text.
 
-Paragraph slugs are content-derived (first few words + short hash),
-so editing a paragraph changes its slug. Stale references resolve
-for one re-ingest cycle via the rename map; the response always
-carries the new slug.
+The legacy content-derived paragraph slug (first few words + short hash)
+*mutates* when you edit the paragraph — which is exactly why the stable
+`lc<id>` handle is canonical. A stale content-slug still resolves for one
+re-ingest cycle via the rename map, and the response always carries the
+current handle to paste next time.
 
 ## How do I read a plaintext file?
 ## Open a log and see its contents

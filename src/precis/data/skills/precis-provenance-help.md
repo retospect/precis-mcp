@@ -112,8 +112,8 @@ writes through:
 - `STATUS:retracted` / `STATUS:concern` / `STATUS:corrected` tag
   applied to the parent.
 
-After this, `get(kind='paper', id='<notice-slug>')` reads the
-notice text.
+After this, `get(kind='paper', id='pa<id>')` reads the notice text
+by its handle (the `<notice-slug>` still resolves).
 
 If the parent isn't in the store, the report is informational —
 nothing is written. Ingest first to capture the retraction graph.

@@ -37,8 +37,8 @@ Next:
 
 The handle is copy-pasteable into any `link=` target or `id=`. For a
 slug kind with a chunk code the pick is that chunk handle (paper →
-`pc<id>`); numeric kinds and oracle stay on the legacy `kind:slug~pos`
-form.
+`pc<id>`); numeric kinds return their record handle (`me<id>`,
+`td<id>`, …) and oracle returns its tradition handle (`or<id>`).
 
 ## Sanity-check a fresh corpus
 

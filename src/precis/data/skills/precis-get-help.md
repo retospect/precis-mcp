@@ -10,15 +10,19 @@ status: active
 
 `get` is the read verb. Two shapes under one call:
 
-- **Read** — fetch an existing ref by `id=` (slug or numeric). Used by
-  `paper`, `patent`, `memory`, `markdown`, …
+- **Read** — fetch an existing ref by its **handle** (`<2-char type
+  code><decimal id>`, e.g. `pa5` a paper, `me47` a memory) — the canonical
+  address shown in search/get output, copy it straight back. A legacy slug or
+  numeric id still resolves on input. Used by `paper`, `patent`, `memory`,
+  `markdown`, …
 - **Compute** — pass `q=` (or `id=` for some kinds) and the handler
   computes a fresh result. Used by `calc`, `math`, `web`, `youtube`,
   `perplexity-research`, `perplexity-reasoning`, `websearch`.
 
 ```python
-get(kind='paper', id='wang2020state')                    # read
-get(kind='paper', id='wang2020state', view='abstract')   # read + view
+get(id='pa5')                                            # read by handle (prefix infers kind)
+get(kind='paper', id='pa5', view='abstract')             # read + view
+get(kind='paper', id='wang2020state')                    # legacy slug, still resolves
 get(kind='math', q='population of Ireland')              # compute
 ```
 
@@ -29,7 +33,7 @@ get(kind='math', q='population of Ireland')              # compute
 | Arg | Type | Meaning |
 |---|---|---|
 | `kind` | str | Required. Which kind to read from. |
-| `id` | str / int | Identifier — slug for slug kinds, int for numeric. Some kinds accept `id` *or* `q`. |
+| `id` | str | Identifier — the **handle** (`<2-char code><id>`, e.g. `pa5`, `me47`) is canonical; a legacy slug or numeric id still resolves. Some kinds accept `id` *or* `q`. |
 | `view` | str | Display variant. Kind-specific (`'abstract'`, `'toc'`, `'bibtex'`, `'cite/bib'`, …). |
 | `q` | str | Free-text query for compute-style kinds. |
 | `args` | dict | Typed extras for views that need them. Reserved keys (`kind`, `id`, `view`, `q`) are rejected. |

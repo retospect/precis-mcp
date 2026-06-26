@@ -23,8 +23,8 @@ search(kind='paper', q='photocatalysis')            # one kind
 search(kind='paper,patent', q='photocatalysis')     # several kinds
 search(kind='paper', q='X', page=2, page_size=20)       # paginate
 search(kind='paper', q='X', tags=['topic:noxrr'])   # tag-filter
-search(kind='paper', q='X', scope='wang2020state')  # search inside one ref
-search(kind='paper', q='X', exclude=['wang2020state', 'kim2024electro'])
+search(kind='paper', q='X', scope='pa5')            # search inside one ref (handle; slug still resolves)
+search(kind='paper', q='X', exclude=['pa5', 'pa12'])    # skip refs by handle (slugs still resolve)
 search(kind='patent', q='X', source='remote')       # patent-only knob
 search(kind='paper', q='1.523 eV', mode='lexical')  # exact string, no embedding
 ```
@@ -120,7 +120,8 @@ open tags (`topic:`, `project:`, `pinned`, ...) are universal. See
 ## Scope a search to one ref's contents
 
 ```python
-search(kind='paper', q='Z-scheme', scope='wang2020state')
+search(kind='paper', q='Z-scheme', scope='pa5')              # handle from get/search output
+search(kind='paper', q='Z-scheme', scope='wang2020state')    # legacy slug, still resolves
 search(kind='patent', q='heterojunction', scope='ep4123456a1')
 ```
 
@@ -129,15 +130,17 @@ paper does X come up?"
 
 ## Drop specific refs from results
 ## Hand-skip known-irrelevant papers
-## Search but ignore these slugs
+## Search but ignore these refs
 
 ```python
 search(kind='paper', q='photocatalysis',
-       exclude=['wang2020state', 'kim2024electro'])
+       exclude=['pa5', 'pa12'])                       # handles from output
+search(kind='paper', q='photocatalysis',
+       exclude=['wang2020state', 'kim2024electro'])   # legacy slugs, still resolve
 ```
 
-Paper-level — chunk selectors and DOIs both resolve to the bare slug;
-unknown slugs are silently ignored. `exclude=` is the skip-list for
+Ref-level — a handle (`pa<id>`), slug, chunk selector, or DOI all resolve to
+the underlying ref; unknown entries are silently ignored. `exclude=` is the skip-list for
 known-irrelevant refs, not a paging mechanism — use `page=` for that.
 
 ## Find the right skill for a task

@@ -9,18 +9,20 @@ status: active
 # precis-conv-help — find, read, tag past conversations
 
 Conversations are captured chat transcripts. One ref per conversation,
-one block per message turn. Address by date-stamped slug
-(`2026-04-26-spec`); the `conv:` prefix and numeric ref ids
-(`conv:73`) are also accepted as link targets.
+one block per message turn. The canonical address is the **handle**
+`co<id>` (e.g. `co73`) shown in get/search output; the date-stamped slug
+(`2026-04-26-spec`), the `conv:` prefix, and numeric ref ids (`conv:73`)
+still resolve on input and as link targets.
 
 ## Read a past conversation
 ## Open a conversation by slug
 ## I have a date-stamped slug — show me the conversation
 
 ```python
-get(kind='conv', id='2026-04-26-spec')                   # overview + turn count
-get(kind='conv', id='2026-04-26-spec/transcript')        # full transcript
-get(kind='conv', id='2026-04-26-spec~14')                # single turn
+get(kind='conv', id='co73')                              # overview + turn count (handle; prefix infers kind)
+get(kind='conv', id='co73/transcript')                   # full transcript
+get(kind='conv', id='2026-04-26-spec')                   # legacy slug, still resolves
+get(kind='conv', id='2026-04-26-spec~14')                # single turn (output shows the cc<id> handle)
 get(kind='conv', id='conv:2026-04-26-spec')              # prefix form (link-target shape)
 ```
 
