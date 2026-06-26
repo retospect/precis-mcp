@@ -56,12 +56,42 @@ def has_styled_anchor(ctx: AssemblyContext) -> bool:
     return bool(ctx.store.section_style_for(handle))
 
 
+def _review_kind(ctx: AssemblyContext) -> str | None:
+    """The ``meta.review`` lens of this tick's todo, memoised in extras.
+
+    A review-todo (filed by the draft reader's "review ▾" menu) carries
+    ``meta.review = structural | deep_review | citation | all``. Cached
+    under ``extras['review']`` so both the predicate and the reviewer
+    persona / section modules share one query."""
+    if "review" in ctx.extras:
+        return ctx.extras["review"]  # type: ignore[no-any-return]
+    review: str | None = None
+    if ctx.store is not None:
+        with ctx.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta->>'review' FROM refs WHERE ref_id = %s", (ctx.ref_id,)
+            ).fetchone()
+        review = (row[0] if row else None) or None
+    ctx.extras["review"] = review
+    return review
+
+
+def has_review(ctx: AssemblyContext) -> bool:
+    """True when this tick is a draft-section review (``meta.review`` set).
+
+    Gates the reviewer-persona + section-under-review blocks (ADR 0038
+    step 3 / Shot 3): when set, the planner tick reviews the anchored
+    section and files anchored change requests instead of editing."""
+    return _review_kind(ctx) is not None
+
+
 #: The named-predicate registry. ``applies_when`` strings resolve here;
 #: an unknown name is a programming error (caught by the totality test),
 #: not a silent always-true.
 PREDICATES: dict[str, Callable[[AssemblyContext], bool]] = {
     "has_anchor": has_anchor,
     "has_styled_anchor": has_styled_anchor,
+    "has_review": has_review,
 }
 
 
@@ -77,4 +107,10 @@ def evaluate(name: str, ctx: AssemblyContext) -> bool:
     return pred(ctx)
 
 
-__all__ = ["PREDICATES", "evaluate", "has_anchor", "has_styled_anchor"]
+__all__ = [
+    "PREDICATES",
+    "evaluate",
+    "has_anchor",
+    "has_review",
+    "has_styled_anchor",
+]

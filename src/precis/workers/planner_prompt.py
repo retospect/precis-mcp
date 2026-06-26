@@ -49,6 +49,7 @@ from precis.utils.prompt import (
     assemble,
     doc_context_table,
     kinds_table,
+    section_review_block,
     tools_table,
 )
 
@@ -1090,6 +1091,62 @@ def _m_children(ctx: AssemblyContext) -> str:
     return _render_children_status(ctx.store, ctx.ref_id)
 
 
+#: Persona loaded when a tick is a draft-section review (ADR 0038 step 3).
+_REVIEW_PERSONA_SKILL: str = "precis-draft-reviewer"
+
+
+def _load_review_persona() -> str:
+    """Verbatim body of the draft-reviewer persona (``{{include}}``-expanded
+    by ``SkillHandler.get``). Degrades to a terse inline stance if the skill
+    can't load, so a review tick never runs persona-less."""
+    try:
+        from precis.handlers.skill import SkillHandler
+
+        return SkillHandler(hub=None).get(id=_REVIEW_PERSONA_SKILL).body  # type: ignore[arg-type]
+    except Exception:
+        log.exception("planner_prompt: failed to load draft-reviewer persona")
+        return (
+            "You are reviewing a draft section. File each finding as an "
+            "anchored change-request todo — `put(kind='todo', "
+            "meta={'anchor':'dc<id>'}, text='<fix>')` — and do not edit the "
+            "chunks directly."
+        )
+
+
+def _m_reviewer_persona(ctx: AssemblyContext) -> str:
+    """Inject the reviewer stance for a review tick (gated on ``has_review``).
+
+    Specialises the persona in the variable layer (ADR 0038 §5) so the
+    cached planner contract stays genre-agnostic: a review-todo overrides
+    the default plan-this-todo stance with review-this-section."""
+    lens = ctx.extras.get("review") or "structural"
+    return (
+        f"## Reviewer mode — {lens}\n\n"
+        f"This tick is a REVIEW (meta.review={lens}), not an edit. Adopt the "
+        f"persona below for this tick; apply the specific lens your task body "
+        f"names. Your output is anchored change requests, not prose edits.\n\n"
+        f"{_load_review_persona()}"
+    )
+
+
+def _m_review_section(ctx: AssemblyContext) -> str:
+    """The section subtree the reviewer must read (gated on ``has_review``).
+
+    Resolves ``meta.anchor`` directly (a review-todo always carries it),
+    independent of the doc_context module's predicate side-effects."""
+    assert ctx.store is not None
+    anchor = ctx.extras.get("anchor")
+    if not anchor:
+        with ctx.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta->>'anchor' FROM refs WHERE ref_id = %s", (ctx.ref_id,)
+            ).fetchone()
+        anchor = ((row[0] if row else None) or "").lstrip("¶").strip() or None
+    if not anchor:
+        return ""
+    return section_review_block(ctx.store, anchor)
+
+
 #: Cached layer — one stable cache prefix across every planner tick.
 _CACHED_MODULES: list[Module] = [
     Module(id="pinned-skill", layer=Layer.CACHED, build=_m_pinned),
@@ -1106,6 +1163,12 @@ _VARIABLE_MODULES: list[Module] = [
     Module(id="ancestry", layer=Layer.VARIABLE, build=_m_ancestry),
     Module(id="project", layer=Layer.VARIABLE, build=_m_project),
     Module(id="draft", layer=Layer.VARIABLE, build=_m_draft),
+    Module(
+        id="reviewer-persona",
+        layer=Layer.VARIABLE,
+        build=_m_reviewer_persona,
+        applies_when="has_review",
+    ),
     Module(id="glossary", layer=Layer.VARIABLE, build=_m_glossary),
     Module(id="body", layer=Layer.VARIABLE, build=_m_body),
     Module(id="anchor", layer=Layer.VARIABLE, build=_m_anchor),
@@ -1114,6 +1177,12 @@ _VARIABLE_MODULES: list[Module] = [
         layer=Layer.VARIABLE,
         build=_m_doc_context,
         applies_when="has_anchor",
+    ),
+    Module(
+        id="review-section",
+        layer=Layer.VARIABLE,
+        build=_m_review_section,
+        applies_when="has_review",
     ),
     Module(id="section-style", layer=Layer.VARIABLE, build=_m_section_style),
     Module(id="workspace", layer=Layer.VARIABLE, build=_m_workspace),
