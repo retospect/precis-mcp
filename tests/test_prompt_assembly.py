@@ -26,6 +26,7 @@ from precis.utils.prompt import (
     doc_context_table,
     glossary_table,
     kinds_table,
+    section_review_block,
     tools_table,
 )
 from precis.utils.prompt import predicates as P
@@ -266,3 +267,91 @@ def test_planner_user_no_doc_context_without_anchor(hub: Hub) -> None:
     todo = hub.store.insert_ref(kind="todo", slug=None, title="plain todo")
     prompts = build_planner_prompts(hub.store, ref_id=todo.id, model="opus")
     assert "## doc_context" not in prompts.user
+
+
+# ── draft-section reviewer (ADR 0038 step 3 / Shot 3) ───────────────
+
+
+def _draft_with_section(draft: DraftHandler, hub: Hub, slug: str) -> str:
+    """Title + a Methods heading + two paragraphs under it. Returns the
+    Methods heading handle (the section root a review-todo anchors to)."""
+    draft.put(id=slug, title="Doc", project=_proj(hub))
+    ref = hub.store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    title_h = hub.store.reading_order(ref.id)[0].handle
+    draft.put(id=slug, chunk_kind="heading", text="Methods", at={"after": title_h})
+    methods_h = next(
+        c.handle for c in hub.store.reading_order(ref.id) if c.text == "Methods"
+    )
+    # nest the paragraphs UNDER the heading (into, not after) so they form
+    # the section subtree the reviewer reads
+    draft.put(
+        id=slug,
+        chunk_kind="paragraph",
+        text="We synthesized the catalyst at 80C.",
+        at={"into": methods_h, "last": True},
+    )
+    draft.put(
+        id=slug,
+        chunk_kind="paragraph",
+        text="Yield was measured by GC-MS.",
+        at={"into": methods_h, "last": True},
+    )
+    return methods_h
+
+
+def test_has_review_predicate(draft: DraftHandler, hub: Hub) -> None:
+    methods_h = _draft_with_section(draft, hub, "rev1")
+    review = hub.store.insert_ref(kind="todo", slug=None, title="review the methods")
+    hub.store.stamp_ref_meta(review.id, {"anchor": methods_h, "review": "structural"})
+    plain = hub.store.insert_ref(kind="todo", slug=None, title="plain")
+
+    assert P.has_review(_ctx(hub.store, review.id)) is True
+    assert P.has_review(_ctx(hub.store, plain.id)) is False
+
+
+def test_section_review_block_lists_subtree_verbatim(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    methods_h = _draft_with_section(draft, hub, "rev2")
+    out = section_review_block(hub.store, methods_h)
+    assert "## Section under review" in out
+    # the section's prose is shown verbatim (a reviewer must read it)
+    assert "We synthesized the catalyst at 80C." in out
+    assert "Yield was measured by GC-MS." in out
+    # chunks are labelled by their canonical dc<id> handle to anchor findings
+    assert "[dc" in out
+
+
+def test_section_review_block_missing_anchor_blank(hub: Hub) -> None:
+    assert section_review_block(hub.store, "dc999999") == ""
+
+
+def test_planner_review_todo_gets_persona_and_section(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    methods_h = _draft_with_section(draft, hub, "rev3")
+    review = hub.store.insert_ref(kind="todo", slug=None, title="review methods")
+    hub.store.stamp_ref_meta(review.id, {"anchor": methods_h, "review": "structural"})
+
+    prompts = build_planner_prompts(hub.store, ref_id=review.id, model="opus")
+    # reviewer stance is specialised in the variable (user) layer
+    assert "Reviewer mode" in prompts.user
+    assert "structural" in prompts.user
+    assert "anchored change" in prompts.user.lower()  # persona body
+    # the section to review rides along, verbatim
+    assert "## Section under review" in prompts.user
+    assert "We synthesized the catalyst at 80C." in prompts.user
+    # the cached planner contract is untouched (still the shared prefix)
+    assert "Planner contract" in prompts.system
+
+
+def test_planner_plain_todo_has_no_reviewer_blocks(hub: Hub) -> None:
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    todo = hub.store.insert_ref(kind="todo", slug=None, title="just do it")
+    prompts = build_planner_prompts(hub.store, ref_id=todo.id, model="opus")
+    assert "Reviewer mode" not in prompts.user
+    assert "## Section under review" not in prompts.user

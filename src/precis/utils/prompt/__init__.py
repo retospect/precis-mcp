@@ -38,6 +38,7 @@ from precis.utils.prompt.tables import (
     doc_context_table,
     glossary_table,
     kinds_table,
+    section_review_block,
     tools_table,
 )
 
@@ -52,5 +53,6 @@ __all__ = [
     "doc_context_table",
     "glossary_table",
     "kinds_table",
+    "section_review_block",
     "tools_table",
 ]

@@ -246,6 +246,56 @@ def doc_context_table(store: Store, anchor: str) -> str:
 #    prose block, but reviewers/editor fold in via this) ───────────────
 
 
+#: Total / per-chunk character budgets for the section-under-review dump.
+#: A reviewer must read the actual prose, so this is verbatim (not gist) —
+#: but bounded so a huge section degrades to a head with a truncation note
+#: rather than blowing the context (ADR 0038 §6 "bounded; log truncation").
+_SECTION_TOTAL_CAP = 8000
+_SECTION_PER_CHUNK_CAP = 700
+
+
+def section_review_block(store: Store, anchor: str) -> str:
+    """The chunk subtree under ``anchor``, verbatim, for a draft reviewer.
+
+    Unlike :func:`doc_context_table` (an *editor*'s window around one
+    chunk), a *reviewer* needs to read the whole section it is judging.
+    Returns the subtree rooted at ``anchor`` in reading order, each chunk
+    labelled by its canonical ``dc<id>`` handle so the reviewer can anchor
+    every finding precisely. Bounded by character budget; returns ``""``
+    when the anchor chunk no longer exists."""
+    base = store.get_draft_chunk(anchor)
+    if base is None:
+        return ""
+    ref_id = int(base.ref_id)
+    ids = set(store.draft_subtree_chunk_ids(anchor))
+    if not ids:
+        return ""
+    # reading_order gives proper DFS order; keep only the subtree members.
+    ordered = [c for c in store.reading_order(ref_id) if c.chunk_id in ids]
+    head = (
+        "## Section under review (anchored at "
+        f"dc{base.chunk_id}; review THESE chunks, anchor each finding to "
+        "the chunk's dc<id>)"
+    )
+    lines: list[str] = [head, ""]
+    used = 0
+    truncated = 0
+    for c in ordered:
+        if used >= _SECTION_TOTAL_CAP:
+            truncated += 1
+            continue
+        text = _clip((c.text or "").strip(), _SECTION_PER_CHUNK_CAP)
+        entry = f"[dc{c.chunk_id}] ({c.chunk_kind}) {text}".rstrip()
+        lines.append(entry)
+        used += len(entry)
+    if truncated:
+        lines.append(
+            f"(… {truncated} more chunks omitted — budget reached; "
+            "get(id=dc<id>) to read them)"
+        )
+    return "\n".join(lines)
+
+
 def glossary_table(store: Store, draft_ref_id: int) -> str:
     """A draft's active abbreviations as a ``term/short/long`` table.
 
@@ -269,5 +319,6 @@ __all__ = [
     "doc_context_table",
     "glossary_table",
     "kinds_table",
+    "section_review_block",
     "tools_table",
 ]
