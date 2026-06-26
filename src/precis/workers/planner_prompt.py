@@ -219,27 +219,31 @@ move the work forward by exactly one of these output shapes:
    Introduce an abbreviation by writing the short form and relying on a
    glossary entry, not by spelling it out inline as `Full Form (ABBR)`.
 
-3. **Mint citations** via `put(kind='citation', text='<claim>',
-   source_handle='<chunk-handle>', source_quote='<verbatim>')` for
-   every quantitative claim. **`source_handle` MUST target the
-   individual chunk that supports the position** — a paper chunk
-   (`pc123`) or patent chunk — directly the passage that bears the
-   fact. Do **not** cite "the paper" as a whole (`paper:<slug>`):
-   cite the specific claim inside it, and make `source_quote` a
-   verbatim span of *that* chunk. The only acceptable reason to cite
-   at paper granularity is when the claim genuinely refers to the
-   work as a whole (its thesis or its mere existence) and no single
-   chunk carries it — a rare case you must be able to justify.
-   Locate the right chunk with `search(kind='paper', q='…')` or the
-   paper's TOC, then `get(kind='paper', id='<slug>~N')` to read it
-   and confirm the quote before persisting; see
-   `get(kind='skill', id='precis-citation-help')`. Citations stay
-   global so the same chunk cite is reusable across projects; the
-   system auto-tags your citations with `workspace:<your-workspace>`
-   so `refs.bib` generation finds them. Write `\\cite{<paper-slug>}`
-   in your tex file body (the bibliography is per-paper; the
-   chunk-level `source_handle` is the audit trail); the system
-   resolves it.
+3. **Cite by paper-chunk handle.** When a claim rests on a source,
+   write the supporting chunk's **bare handle** inline in your prose:
+   `[pc234]` (paper chunk 234). For several supporting chunks — in one
+   paper or across papers — list them: `[pc232][pc234][pc593]`. Cite
+   the **specific chunk** that bears the fact, not the paper as a whole.
+   The handle is a value you **copy from `search`/`get` output**, never
+   construct: locate the passage (`search(kind='paper', q='…')` or the
+   paper's TOC), read it to confirm it supports the claim, then paste
+   its `pc<id>`. See `get(kind='skill', id='precis-citation-help')`.
+
+   The export engine turns each `pc<id>` into the right `\\cite{}` and
+   **one bibliography entry per paper** at compile time. So **never**
+   write `\\cite{...}`, `\\citequote{...}{...}`, or a guessed bib key in
+   your prose — those are export-only output, not something you type. A
+   hand-written key (e.g. `\\cite{electrochemical22}`) matches nothing
+   in the generated bibliography and silently breaks it. You write
+   handles; precis writes the citations.
+
+   Patents cite the same way, by their chunk handle (`pk<id>`). A
+   **memory or thought is a link, not a citation**: write `[me<id>]` to
+   record provenance — it joins the graph but never enters the
+   bibliography (citations are to the literature, not to our own notes).
+   For a claim whose primary source you still need, register a
+   `kind='finding'` and cite its handle `[fi<id>]` until the chase
+   resolves it (`get(kind='skill', id='precis-finding-help')`).
 
 4. **Yield to the human** via `tag(id=<your id>, add=
    ['ask-user:<the question>'])`. Use when the work needs a value
@@ -323,7 +327,7 @@ cite. Work cheapest-first:
             rel='blocked-by')
 
    The `paper_ingested` leaf auto-resolves once the paper lands +
-   embeds; your re-tick then writes a real `\\cite{<slug>}`.
+   embeds; your re-tick then cites it by a chunk handle `[pc<id>]`.
 4. **Only a fuzzy claim, no id?** → `put(kind='finding',
    text='<claim>', ...)` so `finding_chase` resolves it via
    Unpaywall / arXiv / S2 / EPO, then cite on a re-tick.
@@ -332,8 +336,9 @@ Either way, write `[citation pending]` in your prose as the
 placeholder — but ALWAYS with a stub or finding actually chasing it
 behind the scenes (a placeholder nobody is fetching never becomes a
 citation, and a lingering "References needed" note is PROHIBITED —
-it trips nursery flags). NEVER write `\\cite{TODO}` or a guessed bib
-key — it breaks the compile.
+it trips nursery flags). Once it lands, cite it by its chunk handle
+`[pc<id>]`. NEVER hand-write `\\cite{...}` or a guessed bib key — you
+write handles, the export engine writes the citations.
 
 **Literature hunt**: if you identify primary sources that you need
 but the corpus doesn't have, **DO NOT** write them as a memory
@@ -363,9 +368,9 @@ finishes — no follow-up tick from you needed:
   ''')
 
 When the chase resolves a paper into the corpus, your parent's
-re-tick can `\\cite{<slug>}` it. Reference notes that linger in
-memory are PROHIBITED — they trigger nursery flags and the chase
-loop never starts.
+re-tick cites it by a chunk handle `[pc<id>]`. Reference notes that
+linger in memory are PROHIBITED — they trigger nursery flags and the
+chase loop never starts.
 
 ## STATUS:done has a guardrail
 

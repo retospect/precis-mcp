@@ -61,39 +61,28 @@ grouping. `\begin{equation}...\end{equation}` stays in one block only
 if it has no internal blank lines. `\cite{...}` keys are opaque text;
 for citation-graph navigation use `kind='paper'`.
 
-## Citations: always use `\citequote`, never bare `\cite`
+## Citations: don't hand-author `\cite` / `\citequote`
 
-The workspace's `main.tex` preamble defines a verbatim-quote citation
-macro:
+**`\cite{}` and `\citequote{}` are retired as authoring forms.** Do
+not write them by hand and do not add a `\citequote` macro to a
+preamble — `\cite{}` is now **export-only output**, produced by the
+draft export engine, not something you type.
 
-```latex
-\newif\ifshowquotes
-\showquotestrue
-\newcommand{\citequote}[2]{\cite{#1}\ifshowquotes\footnote{``#2''}\fi}
-```
+In a **draft** (`kind='draft'`, the editable chunk-native document a
+project actually writes into) a citation is the **bare paper-chunk
+handle written inline**: `[pc234]`, or several supporting chunks
+`[pc232][pc234][pc593]`; patents `[pk<id>]`, in-flight findings
+`[fi<id>]`. The handle is **copied** from search/get output, never
+guessed; on export it resolves to its paper and renders `\cite{}` plus
+one bibliography entry per paper. A `[me<id>]`/`[dc<id>]` reference is
+a **link, not a citation** (`related-to`, provenance only — never in
+the bibliography). See precis-draft-help.
 
-**Every citation in body text MUST be written as
-`\citequote{key}{verbatim text from the cited source}`.** Bare
-`\cite{key}` is a lint failure during review — it strips the audit
-trail. The first argument is the bib key (same as you'd pass to
-`\cite`); the second is the exact passage from the cited paper that
-supports the claim — no paraphrase, no cleanup.
-
-```latex
-% Wrong — strips the verbatim quote, can't be audited:
-We see ballistic transport in CNTs \cite{javey2003}.
-
-% Right — verbatim quote travels with the cite:
-We see ballistic transport in CNTs \citequote{javey2003}{mean free
-paths exceeding 1\,\textmu m at room temperature were observed in
-metallic single-walled CNTs}.
-```
-
-The verbatim string is the same `source_quote` you persisted on
-`kind='citation'` — see precis-citation-help. The macro hides the
-footnote when `\showquotesfalse` is set in the file you compile
-(publish mode), so the .tex source remains the durable trace while
-the rendered PDF stays clean.
+In a raw `.tex` file edited as `kind='tex'`, `\cite{...}` keys are
+opaque source text — preserved verbatim, not interpreted. For
+citation-graph navigation (who cites a paper, what supports a claim)
+work in the draft layer and `kind='paper'`, not by hand-editing
+`\cite` keys here.
 
 ## Inspect a project's structure
 ## See the section hierarchy across included files

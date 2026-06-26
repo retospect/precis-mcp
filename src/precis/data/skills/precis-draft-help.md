@@ -1,7 +1,7 @@
 ---
 id: precis-draft-help
 title: precis — the editable document kind
-summary: author a living document as chunks — create, read (outline/verbatim), edit text, reorder/reparent, soft-delete; markdown-ish prose with [dc…] references (any handle) and [§paper~n] citations
+summary: author a living document as chunks — create, read (outline/verbatim), edit text, reorder/reparent, soft-delete; markdown-ish prose with [dc…] links (any handle) and bare [pc…] paper-chunk citations
 applies-to: get/search/put/edit/delete (kind='draft')
 status: active
 ---
@@ -289,38 +289,45 @@ that destructive choice. Retired chunks drop out of the document but
 their history (and any anchor to them) survives. You **cannot delete
 the last live chunk** — a draft is never empty.
 
-## References in prose — one link form
+## References in prose — handles route by what they name
 
-Prose is **markdown**. To reference anything, write `[<handle>]` — a
-handle is a ref to *something*, and the system resolves it. That single
-rule covers every cross-reference: a chunk in this draft (`[dc41]`), a
-memory or finding (`[me5]`), a paper chunk (`[pc10]`). Use
-`[text](<handle>)` when you want display words. The only non-handle form
-is a **paper citation**, which is keyed on the cite_key so it can build a
-bibliography:
+Prose is **markdown**. To reference anything, write its `[<handle>]` —
+a handle is a ref to *something*, and the system resolves it. You
+**always copy the handle from search/get output** — never guess it, no
+slug anatomy. Use `[text](<handle>)` when you want display words. What
+a handle *does* depends on what it names, and there are exactly two
+routes:
 
-| write | means | renders |
-|---|---|---|
-| `[<handle>]` | reference to whatever the handle names | a link (chunk → §/number; record → link) |
-| `[the prior result](<handle>)` | reference with display text | hyperlinked text |
-| `[§<cite_key>~<n>]` | **paper citation** | `[n]` + bibliography |
-| `[DuckDuckGo](https://…)` | web link | hyperlink |
+| write | route | means | renders / exports |
+|---|---|---|---|
+| `[pc<id>]` paper chunk, `[pk<id>]` patent, `[fi<id>]` finding | **citation** | this passage supports the claim | `cites` edge + one bibliography entry per paper at export |
+| `[dc<id>]` draft chunk, `[me<id>]` memory, any other kind | **link** | provenance / cross-ref | `related-to` backlink; **never** in the bibliography |
+| `[the prior result](<handle>)` | (either) | reference with display text | hyperlinked text |
+| `[DuckDuckGo](https://…)` | — | web link | hyperlink |
 
-Cite the **exact** paper chunk that holds the detail (`[§miller89~4]`),
-not the whole paper.
+A **citation is to the literature**: the bare paper-chunk handle
+written inline. Cite the **exact** chunk that holds the detail —
+`[pc234]` — not the whole paper. Several chunks supporting one claim
+sit side by side: `[pc232][pc234][pc593]`. The export engine resolves
+each handle → its paper and renders `\cite{}` plus one bibliography
+entry per paper at compile time. **You never type `\cite{}` or
+`\citequote{}`** — those are retired, export-only output.
 
-**Always cite a paper by `[§<cite_key>~<n>]` — the cite_key, never a
-numeric id.** `[§singlemolecule13~2]` is right. The `§cite_key` form is
-the portable one: it exports to a real `\cite{singlemolecule13}` and
-reads as a citation, whereas a numeric id is opaque and produces no
-bibliography entry. If a tool result hands you a paper as a number,
-**translate it to its `cite_key`** before you write it (the cite_key is
-the bare slug in `get(kind='paper', id=…)` / search output).
+A **link is to our own notes**: a `[me<id>]` memory, a `[dc<id>]`
+chunk in this or another draft. It records provenance — "this para
+came from that thought" — as a `related-to` backlink, and is **never a
+citation**: it does not produce a `cites` edge and never reaches the
+bibliography. *Citations are to the literature, not to our notes.*
+
+**Copy the handle, never guess it.** `[pc234]` is right only because
+you pasted `pc234` from a `search(kind='paper', …)` / `get(…)` result.
+A made-up handle resolves to nothing — it never autolinks, never
+exports, and on a verbatim read is flagged unresolved.
 
 **Citation rigor (be strict).** A citation must **directly and
-substantively support the specific claim** — you must be able to quote
-the sentence(s) in the cited chunk that establish it (capture them as
-the `source_quote` / `\citequote`). If you can't find a passage that
+substantively support the specific claim** — you must be able to read
+the sentence(s) in the cited chunk that establish it (open it with
+`get(id='pc<id>')` and check). If you can't find a passage that
 supports the claim, the cite is **too weak** — either:
 
 - **soften the claim** to match the evidence ("suggests", "is
@@ -403,11 +410,14 @@ highest-precision first:
    actually supports the claim, *then* soften to match the evidence (or
    drop it).
 
-In the meantime **do not** invent a `\cite{}` key, write `paper:slug`
-for a paper that isn't held, or leave a bare `[citation pending]` with
-nothing chasing it — a placeholder nobody is fetching never becomes a
-citation. The stub/finding *is* the acquisition; the `[citation
-pending]` (if you mark the spot) then has something behind it. See
+In the meantime **do not** invent a paper-chunk handle, write
+`paper:slug` for a paper that isn't held, or leave a bare `[citation
+pending]` with nothing chasing it — a placeholder nobody is fetching
+never becomes a citation. The stub/finding *is* the acquisition; the
+`[citation pending]` (if you mark the spot) then has something behind
+it. (Until the real `[pc<id>]` lands you can cite the in-flight
+`[fi<id>]` finding — it is a citation form, resolved on a re-tick.)
+See
 `precis-stubs-help` (the acquisition backlog), `precis-auto-tasks-help`
 (the wait-on-ingest pattern in full), and `precis-paper-help` (S2 nav +
 held-paper citing).
@@ -430,10 +440,12 @@ with copy-ready calls. For each, either:
 
 Once defined or silenced, a token stops being hinted. Reference a term with
 `[PEI](<dc-term-handle>)`; explicit
-terms win over auto-detected ones. **Thoughts** (memory / think / finding) are
-referenceable but **not citeable** — they get a `[<handle>]` link only,
-never a bibliography entry. Math is `$…$` / `$$…$$` (LaTeX, rendered by
-KaTeX on the web).
+terms win over auto-detected ones. **Notes** (memory / think / other
+drafts) are referenceable but **not citeable** — they get a
+`[<handle>]` `related-to` link only, never a bibliography entry. (A
+`finding` is the one exception: an in-flight `[fi<id>]` is a citation
+form, a placeholder that resolves to a real `[pc<id>]` on a re-tick.)
+Math is `$…$` / `$$…$$` (LaTeX, rendered by KaTeX on the web).
 
 **Don't write `[finding #<name>]`.** A finding is addressed by its base32
 `pub_id` by its `fi<id>` handle (`[fi<id>]`), **not** by a
@@ -441,9 +453,10 @@ made-up `#slug`. A `[finding #amine-uptake]` /
 `[citation pending — finding #…]` marker resolves to **nothing** — it
 never autolinks, never exports, and on a verbatim read is flagged as an
 **⚠ unresolved finding reference**. If you mean to cite a finding,
-reference its real handle; if it doesn't exist yet, `put(kind='finding',
-…)` it first (and remember: a finding is a `[<handle>]` link, not a `[§…]`
-citation). Don't leave dangling `#name` placeholders in the prose.
+reference its real `[fi<id>]` handle; if it doesn't exist yet,
+`put(kind='finding', …)` it first (an in-flight `[fi<id>]` is a
+citation form — it resolves to a real `[pc<id>]` on a re-tick). Don't
+leave dangling `#name` placeholders in the prose.
 
 **Formatting.** Prose is plain text with a small markup subset:
 `` `code` `` renders inline code, `$…$` / `$$…$$` is math (KaTeX), and
@@ -452,16 +465,18 @@ citation). Don't leave dangling `#name` placeholders in the prose.
 `*word*` are not rendered at all and leave literal `_`/`*` in the text;
 `**bold**` does render but reads as shouting, so skip it. Inline
 citations and cross-refs render as a compact marker in the reader,
-so handles do not clutter the sentence: write `[§miller89~4]` and it shows
+so handles do not clutter the sentence: write `[pc234]` and it shows
 as a small superscript. A chunk cross-ref must use the target chunk's
 **`dc<id>` handle** (e.g. `[dc41]`), shown in the outline — never a
 numeric id like `[45650]`, which resolves to nothing.
 
-**Every** reference you write (a `[§paper~n]` citation or a `[dc<id>]`
-link to a chunk/thought) auto-materialises a
-`related-to` backlink, so the draft is
-discoverable from the cited paper/thought's side; remove a reference and
-its link drops on the next edit. Intra-draft `[dc<id>]` cross-refs are
+**Every** reference you write materialises a graph edge, by route: a
+`[pc<id>]`/`[pk<id>]`/`[fi<id>]` **citation** materialises a `cites`
+edge to the paper (so the draft surfaces in that paper's bibliography
+— see `precis-bibliography-help`), while a `[me<id>]` or cross-draft
+`[dc<id>]` **link** materialises a `related-to` backlink so the draft
+is discoverable from the note's side. Remove a reference and its edge
+drops on the next edit. Intra-draft `[dc<id>]` cross-refs are
 document-internal (TOC / `\ref`), not graph edges.
 
 ## Writing well — structure + common mistakes
@@ -475,7 +490,7 @@ or revise a block:
   claim; the rest of the paragraph develops it. Don't bury the point or
   fuse two ideas into one paragraph.
 - **Claim → evidence → citation, in that order.** Each claim earns its
-  evidence, then its `[§…]` cite. Don't stack unsupported assertions.
+  evidence, then its `[pc<id>]` cite. Don't stack unsupported assertions.
 - **Given → new flow.** Open a sentence with familiar information, end
   with the new. Open each section with a sentence that says what it
   covers (signpost).
@@ -540,13 +555,15 @@ recompiles after an edit. Hosts without a TeX toolchain get a friendly
 The export is a one-way resolution pass; the output is **disposable**
 (re-export from the draft, never hand-edit the `.tex`). Everything
 resolves automatically: each block gets a `\label{chunk:<handle>}` and a
-`[dc<id>]` cross-ref becomes `\cref{chunk:h}`; `[§slug~n]` / `paper:slug~n`
-citations become `\cite{slug}` with a `refs.bib` generated from the cited
-papers (DOI/arXiv included when known); every defined abbreviation
-becomes a `\newacronym` and each occurrence a `\gls{…}` (first use full,
-later uses short), with the page-number "where it occurs" list in the
-glossary. Authoring `[<handle>]` links and bare thought mentions render to
-nothing (provenance only). This is why **citing the exact chunk** and
+`[dc<id>]` cross-ref becomes `\cref{chunk:h}`; each `[pc<id>]` paper-chunk
+citation is resolved to its paper and becomes `\cite{}`, with a
+`refs.bib` carrying **one entry per cited paper** (DOI/arXiv included
+when known); every defined abbreviation becomes a `\newacronym` and each
+occurrence a `\gls{…}` (first use full, later uses short), with the
+page-number "where it occurs" list in the glossary. `[me<id>]` /
+cross-draft `[dc<id>]` **links** render to nothing (provenance only —
+never in the bibliography). You never write `\cite{}` yourself; it is
+the exporter's output. This is why **citing the exact chunk** and
 **defining your abbreviations** pays off — the exporter does the rest.
 
 ## Export — PDF (job) and Word/.docx
@@ -571,8 +588,8 @@ A draft renders to a real document. Two paths:
   with render-time acronym first-use expansion + an auto acronyms list.
 
 Both are **disposable** — re-export from the draft; never hand-edit the
-output. Citations must resolve (`[§slug~n]` → a paper in the corpus) or the
-export marks a stub + warns.
+output. Citations must resolve (`[pc<id>]` → a chunk of a paper in the
+corpus) or the export marks a stub + warns.
 
 ## Freeze / snapshot (release + backup)
 

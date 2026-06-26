@@ -118,6 +118,57 @@ def test_xref_to_another_draft_links_at_chunk_level(
     assert (other_ref.id, ord_) in _auto_links(hub, "nt")
 
 
+def _cite_links(hub: Hub, slug: str) -> set[tuple[int, int | None]]:
+    ref = hub.store.get_ref(kind="draft", id=slug)
+    return {
+        (link.dst_ref_id, link.dst_pos)
+        for link in hub.store.links_for(ref.id, direction="out", relation="cites")
+        if (link.meta or {}).get("auto") == "mention"
+    }
+
+
+def test_paper_chunk_ref_is_a_cites_edge_not_related_to(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A reference to a paper chunk by handle (``[pc<id>]``) is a
+    CITATION — it materialises a ``cites`` edge, not ``related-to``. A
+    memory reference in the same draft stays ``related-to`` (citations
+    are to the literature; links are to our own notes)."""
+    from precis.store.types import BlockInsert
+
+    paper = hub.store.insert_ref(kind="paper", slug="miller23", title="Paper")
+    hub.store.insert_blocks(
+        paper.id, [BlockInsert(pos=0, text="We measured 12% FE.", meta={})]
+    )
+    with hub.store.pool.connection() as conn:
+        chunk_id = int(
+            conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+                (paper.id,),
+            ).fetchone()[0]
+        )
+    pc = handle_registry.format_handle("paper", chunk_id, chunk=True)  # pc<id>
+    mem = hub.store.insert_ref(kind="memory", slug=None, title="note").id
+    me = handle_registry.format_handle("memory", mem)
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    ref = hub.store.get_ref(kind="draft", id="nt")
+    title_h = hub.store.reading_order(ref.id)[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"the effect holds [{pc}], as we noted [{me}]",
+        at={"after": "¶" + title_h},
+    )
+
+    cited = {dst for dst, _pos in _cite_links(hub, "nt")}
+    related = {dst for dst, _pos in _auto_links(hub, "nt")}
+    assert paper.id in cited  # paper chunk → cites
+    assert mem in related  # memory → related-to
+    assert paper.id not in related  # the paper is NOT a provenance link
+
+
 def test_intra_draft_xref_is_not_an_edge(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
