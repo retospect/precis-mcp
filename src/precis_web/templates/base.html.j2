@@ -25,7 +25,7 @@
           {% set _tab_off = 'text-slate-300 hover:bg-slate-800 hover:text-white' %}
 
           {# ── Zone 1: daily work ── #}
-          {% set tabs = [('drafts','Drafts','/drafts'), ('tags','Tags','/tags'), ('tasks','Tasks','/tasks'), ('papers','Papers','/papers')] %}
+          {% set tabs = [('drafts','Drafts','/drafts'), ('tags','Tags','/tags'), ('tasks','ToDo','/tasks'), ('papers','Papers','/papers')] %}
           {% for key, label, href in tabs %}
           <a href="{{ href }}"
              class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == key %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">

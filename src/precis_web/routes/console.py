@@ -167,8 +167,8 @@ CONSOLE_EXAMPLES: list[dict[str, Any]] = [
                 "note": "agent notes & scratchpad",
             },
             {
-                "verb": "search",
-                "args": "kind=alert view=open",
+                "verb": "get",
+                "args": "kind=alert id=/open",
                 "note": "open ops / health alerts",
             },
         ],
