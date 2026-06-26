@@ -413,6 +413,41 @@ def test_papers_search_query(client) -> None:
     assert "A paper" in resp.text
 
 
+def test_papers_search_default_mode_is_keyword(client) -> None:
+    """The literal title search stays the default — the mode toggle
+    renders ``keyword`` selected when nothing is passed."""
+    resp = client.get("/papers", params={"q": "anything"})
+    assert resp.status_code == 200
+    assert 'value="keyword" selected' in resp.text
+
+
+def test_papers_search_semantic_ranks_by_body_content(client, runtime) -> None:
+    """``mode=semantic`` embeds the query and ranks papers via a
+    cross-paper block search, collapsing chunk hits to distinct papers."""
+    from types import SimpleNamespace
+
+    runtime.hub = SimpleNamespace(
+        embedder=SimpleNamespace(embed_one=lambda _q: [0.1, 0.2, 0.3])
+    )
+    paper = runtime.store.papers[0]  # id=10, "A paper"
+    block = SimpleNamespace(pos=0)
+    # Two chunk hits on the same paper → collapse dedups to one row.
+    runtime.store.nav_hits[None] = [(block, paper, 0.1), (block, paper, 0.2)]
+    resp = client.get("/papers", params={"q": "mof embedding", "mode": "semantic"})
+    assert resp.status_code == 200
+    assert "A paper" in resp.text
+    assert 'value="semantic" selected' in resp.text
+
+
+def test_papers_search_semantic_degrades_without_embedder(client, runtime) -> None:
+    """No embedder wired → the semantic leg degrades to the lexical
+    title search, and the toggle reflects the mode that actually ran."""
+    resp = client.get("/papers", params={"q": "anything", "mode": "semantic"})
+    assert resp.status_code == 200
+    # runtime.hub is None by default → embed_query returns None → keyword.
+    assert 'value="keyword" selected' in resp.text
+
+
 def test_paper_detail_renders(client) -> None:
     resp = client.get("/papers/10")
     assert resp.status_code == 200
@@ -1874,6 +1909,37 @@ def test_console_examples_grouped_box_rendered(client) -> None:
     # Representative breadth: examples reach well beyond kind=paper.
     for kind in ("kind=todo", "kind=skill", "kind=oracle", "kind=calc"):
         assert kind in resp.text
+
+
+def test_console_resolve_record_handle(client, runtime) -> None:
+    """A universal record handle (``pa10``) routes through the ``/r/``
+    resolver — not the cite_key shape (which would 404 on ``/r/paper/pa10``)."""
+    resp = client.post(
+        "/console/resolve", data={"handle": "pa10"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/r/paper/10"
+
+
+def test_console_resolve_chunk_handle_carries_ord(client, runtime) -> None:
+    """A paper chunk handle (``pc500``) resolves the owning ref + the
+    chunk's ord, landing on the cited-passage surface (``?chunk=4``)."""
+    runtime.store.chunk_handles[500] = (10, 4, "paper")
+    resp = client.post(
+        "/console/resolve", data={"handle": "pc500"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/r/paper/10?chunk=4"
+
+
+def test_console_resolve_unknown_handle_falls_back_to_search(client, runtime) -> None:
+    """A handle-shaped string with no live row (``me999``) falls through
+    to the cross-kind search rather than 404ing."""
+    resp = client.post(
+        "/console/resolve", data={"handle": "me999"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"].startswith("/refs?q=me999")
 
 
 def test_console_result_echoes_request(client, runtime) -> None:

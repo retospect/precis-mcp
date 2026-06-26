@@ -51,6 +51,11 @@ _ABSTRACT_PREVIEW = 900
 #: Rows per page on the recent-papers list (matches the Refs tab).
 _PAGE_SIZE = 50
 
+#: Chunk hits to pull for the semantic listing search before collapsing
+#: to distinct papers — generous fan-out (multiple chunks per paper) so a
+#: full page of distinct papers survives the collapse.
+_SEM_FANOUT = _PAGE_SIZE * 6
+
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
@@ -205,6 +210,44 @@ def _paper_row(ref: Any) -> dict[str, Any]:
     }
 
 
+def _semantic_paper_search(
+    request: Request, store: Any, q: str
+) -> tuple[list[Any], str]:
+    """Find papers by body content, ranked semantically.
+
+    Embeds the query and runs a cross-paper semantic block search
+    (including the per-paper ``card_combined`` so title/abstract is
+    reachable), then collapses chunk hits to distinct papers best-rank
+    first. Returns ``(refs, effective_mode)`` — ``effective_mode`` is
+    ``"keyword"`` when the embedder is down (the search-embed guard
+    returns ``None``), so the caller degrades to the lexical title
+    search exactly like the per-paper sidebar nav does.
+    """
+    hub = getattr(get_runtime(request), "hub", None)
+    embedder = getattr(hub, "embedder", None)
+    vec = embed_query(embedder, q)
+    if vec is None:
+        hits = store.search_refs_lexical(q=q, kind="paper", limit=_PAGE_SIZE)
+        return [ref for ref, _score in hits], "keyword"
+    block_hits = store.search_blocks_semantic(
+        query_vec=vec,
+        kind="paper",
+        limit=_SEM_FANOUT,
+        card_kinds=("card_combined",),
+        max_distance=None,
+    )
+    seen: set[int] = set()
+    refs: list[Any] = []
+    for _block, ref, _dist in block_hits:
+        if ref.id in seen:
+            continue
+        seen.add(ref.id)
+        refs.append(ref)
+        if len(refs) >= _PAGE_SIZE:
+            break
+    return refs, "semantic"
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def index(
@@ -213,27 +256,41 @@ async def index(
     has_pdf: int = 0,
     has_chunks: int = 0,
     page: int = 1,
+    mode: str = "keyword",
 ) -> HTMLResponse:
     """Search box + result list (recent papers when ``q`` is empty).
 
+    ``mode`` toggles the search leg (``q`` only): ``keyword`` (default)
+    is the literal title full-text search; ``semantic`` embeds the
+    query and ranks papers by **body content** (cross-paper chunk
+    search, collapsed to distinct papers), degrading to ``keyword``
+    when the embedder is down. The default stays literal so the page's
+    behaviour is unchanged unless the operator opts in.
+
     ``has_pdf`` / ``has_chunks`` are 0/1 toggles. On the recent-list
     path they push down into ``store.list_refs`` (SQL-side, so the
-    page cap counts only matching papers). On the lexical-search
-    path they post-filter the ranked hits (the lexical query can't
-    take the extra predicates), so a query + toggle may show fewer
-    than a full page even when more match — acceptable for a triage
-    filter. The recent-list path pages via ``?page=N`` (offset-based,
-    one-extra-row probe for "has next"); the ranked-search path shows
-    the top window only (relevance ordering doesn't page cleanly).
+    page cap counts only matching papers). On the search path they
+    post-filter the ranked hits (the ranked query can't take the extra
+    predicates), so a query + toggle may show fewer than a full page
+    even when more match — acceptable for a triage filter. The
+    recent-list path pages via ``?page=N`` (offset-based, one-extra-row
+    probe for "has next"); the ranked-search path shows the top window
+    only (relevance ordering doesn't page cleanly).
     """
     store = get_store(request)
     want_pdf = bool(has_pdf)
     want_chunks = bool(has_chunks)
     page = max(1, page)
     offset = (page - 1) * _PAGE_SIZE
+    search_mode = (mode or "keyword").strip().lower()
+    if search_mode != "semantic":
+        search_mode = "keyword"
     if q and q.strip():
-        hits = store.search_refs_lexical(q=q, kind="paper", limit=_PAGE_SIZE)
-        refs = [ref for ref, _score in hits]
+        if search_mode == "semantic":
+            refs, search_mode = _semantic_paper_search(request, store, q)
+        else:
+            hits = store.search_refs_lexical(q=q, kind="paper", limit=_PAGE_SIZE)
+            refs = [ref for ref, _score in hits]
         if want_pdf:
             refs = [r for r in refs if r.pdf_sha256]
         if want_chunks:
@@ -275,6 +332,7 @@ async def index(
         {
             "active_tab": "papers",
             "q": q or "",
+            "mode": search_mode,
             "has_pdf": want_pdf,
             "has_chunks": want_chunks,
             "papers": rows,
