@@ -188,6 +188,61 @@ class TestPutHappy:
         assert pub_id == expected_pub_id
 
 
+# ── parent_id wiring (lit-hunt auto_check linchpin) ─────────────────
+
+
+def _finding_parent_id(store, ref_id: int) -> int | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT parent_id FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    return None if row is None else row[0]
+
+
+class TestParentWiring:
+    """A finding minted inside a literature-hunt tick MUST be parented on
+    the lit-hunt todo, or the ``all_child_findings_resolved`` auto_check
+    (which walks ``parent_id = <todo> AND kind='finding'``) never sees it
+    and the hunt re-ticks forever. Mirrors TodoHandler's env auto-inject."""
+
+    def _seed_todo(self, store) -> int:
+        ref = store.insert_ref(kind="todo", slug=None, title="Lit hunt", meta={})
+        return ref.id
+
+    def test_explicit_parent_id_is_honoured(self, store) -> None:
+        _seed_paper(store)
+        todo_id = self._seed_todo(store)
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", cited_in="miller23a", parent_id=todo_id)
+        fid = int(re.search(r"id=(\d+)", resp.body).group(1))
+        assert _finding_parent_id(store, fid) == todo_id
+
+    def test_parent_auto_injected_from_current_todo_env(
+        self, store, monkeypatch
+    ) -> None:
+        _seed_paper(store)
+        todo_id = self._seed_todo(store)
+        monkeypatch.setenv("PRECIS_CURRENT_TODO", str(todo_id))
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", cited_in="miller23a")
+        fid = int(re.search(r"id=(\d+)", resp.body).group(1))
+        assert _finding_parent_id(store, fid) == todo_id
+
+    def test_no_env_no_parent_lands_as_root(self, store, monkeypatch) -> None:
+        monkeypatch.delenv("PRECIS_CURRENT_TODO", raising=False)
+        _seed_paper(store)
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", cited_in="miller23a")
+        fid = int(re.search(r"id=(\d+)", resp.body).group(1))
+        assert _finding_parent_id(store, fid) is None
+
+    def test_non_integer_parent_id_rejected(self, store) -> None:
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as exc:
+            h.put(title="t", body="b", cited_in="miller23a", parent_id="nope")
+        assert "parent_id" in str(exc.value)
+
+
 # ── pub_id collision → idempotent put ───────────────────────────────
 
 

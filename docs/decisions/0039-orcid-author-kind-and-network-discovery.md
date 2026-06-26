@@ -40,21 +40,36 @@ one long-lived bearer). Same env-at-`__init__` pattern as the S2 key
 (`handlers/semanticscholar.py:171`); missing creds ⇒ kind degrades to
 disabled, never an `InitError` that blocks boot.
 
-### The discovery thesis
+### Two payoffs
 
-Author identity is not the point — **corpus growth** is. Two levers:
+**(A) Author identity is itself a first-class goal** — not merely a means to
+discovery. A queryable, disambiguated author node directly serves
+**proposal writing** (the `proposal-writing` workspace, `precis-proposal-*`
+skills): who are the subject-matter experts in a field, who should we cite,
+who are the candidate collaborators / competing PIs, what is this person's
+affiliation, body of work, and standing. An ORCID node is an **author
+dossier** — bio + keywords + full publication list + affiliations (with ROR
+ids) — that a proposal's *related work*, *team*, and *citation* sections
+draw on directly. Disambiguation (two "J. Smith"s) and "everything by this
+person" are first-class queries this enables.
 
-1. **Completion.** An ORCID record is the author's full DOI list. Diff it
-   against the corpus and the missing DOIs are high-quality fetch
-   candidates — the same person's *other* work, almost always on-topic.
-2. **Breadth-first traversal.** On a good paper, the **senior (last)
-   author** is usually the lab PI / subject-matter expert, and their back
-   catalogue is the densest vein of related key work. A BFS over
-   paper → author → paper (and out to co-authors) surfaces strong
-   candidates a citation-graph walk alone misses (it finds *unrelated-by-
-   citation* work by the same group, and pre-prints not yet cited).
+**(B) Corpus growth.** Author identity also *drives* discovery. **One growth
+lever is in scope here: completion** — an ORCID record is the author's full
+DOI list, so diffing it against the corpus yields high-quality fetch
+candidates (the same person's *other* work, almost always on-topic), which
+we auto-enqueue (§4).
 
-Both levers terminate in the **existing** stub→fetch pipeline:
+A second lever — **breadth-first traversal** of the author network
+(paper → author → paper → co-author) — is **explicitly out of scope**. This
+ADR only *enables* it by shipping the basic interfaces a future traversal
+would stand on (the `orcid` resolve, `authored` links with author-position
+meta, and the S2 author endpoint §5). The traversal strategy itself — frontier
+scoring, which authors to expand (senior/last-author, h-index, affinity, …),
+depth/budget control — is **not built here**; see *Non-goals* and the
+sketched discovery skill.
+
+Both completion and any later traversal terminate in the **existing**
+stub→fetch pipeline:
 `store.upsert_stub_paper(...)` mints a `paper` ref with a registered
 identifier and no body; `workers/fetch_oa.py:claim_stubs_to_fetch` already
 claims `kind='paper' AND pdf_sha256 IS NULL AND EXISTS(ref_identifiers …)`
@@ -71,8 +86,10 @@ scheme *is* the kind, matching house convention. (If a non-ORCID identity
 source is ever added, it becomes its own kind and links across, rather than
 overloading this one.)
 
-- **Slug / handle**: `orcid:0000-0002-1825-0097` (the iD verbatim; ADR 0036
-  handle form).
+- **Slug / handle**: `orcid:0000-0002-1825-0097` (the iD verbatim). The
+  kind's **2-char universal-handle code is `oi`** (ADR 0036 / 0038 §7), so a
+  resolved node also addresses as `oi<base62>` (e.g. `oi12312`) and `kind=`
+  accepts `oi` as an alias for `orcid`.
 - **Storage**: a durable `paper`-like ref — **not** a `CacheBackedHandler`,
   because the node is a *link hub* and cache eviction must never drop its
   edges. `meta` holds the structured record (names, `biography`, keywords,
@@ -81,13 +98,62 @@ overloading this one.)
   is **embedded**, so authors are semantically searchable ("the corpus's
   spintronics PIs"). Per the append-only rule, refresh DELETE+INSERTs the
   card; body rows are untouched (there are none).
-- **Refresh**: a system-worker pass (`refresh_orcid`, TTL ~30d) re-pulls
-  and re-enqueues any newly-missing DOIs. Reuses the `CacheBackedHandler`
-  TTL idea without the cache *storage* model.
-- **Verbs**: `get` (resolve + store + return), `search` (semantic over the
-  embedded card), `link` (authorship edges), `tag`. No `edit`/`delete` of
-  the canonical record by agents (it mirrors an external source of truth);
-  soft-delete only.
+- **Refresh**: **LLM-on-demand, not a background pass.** `meta.fetched_at`
+  drives a staleness check in `get`; once past a soft TTL the rendered node
+  carries a **hint** ("this record was resolved on <date> and may be stale —
+  refresh with `get(kind='orcid', id=<iD>, refresh=true)`"). The model
+  decides whether freshness matters for the task and triggers the re-pull
+  itself (which re-resolves the person + re-runs the missing-DOI diff). No
+  `refresh_orcid` worker, no automatic re-fetch — the cost is paid only when
+  an agent actually needs current data.
+- **Verbs**: `get` (resolve + store + return), `search` (two modes, below),
+  `link` (authorship edges), `tag`. No `edit`/`delete` of the canonical
+  record by agents (it mirrors an external source of truth); soft-delete
+  only.
+
+### 1a. Verb surface — the four questions
+
+The two flavours of `search` are split by **parameter namespace** so they
+never collide (and the LLM can't be ambiguous about which it wants):
+structured people-finder params (`name`/`given`/`family`/`org`) hit the
+**live ORCID registry**; `q=` runs **local semantic search** over the
+embedded dossiers already in the corpus.
+
+| Goal | Call | Returns |
+|---|---|---|
+| **Resolve a known iD** → materialize the dossier | `get(kind='orcid', id='0000-0002-1825-0097')` (or `get(id='oi…')` once stored) | the author node — names, **bio**, keywords, affiliations (ROR), and the works list (each marked *in-corpus* `pa…` vs *stub-pending*); plus the staleness hint |
+| **Find a person by name + org** (disambiguation) | `search(kind='orcid', name='Jane Smith', org='MIT')` → live ORCID **expanded-search** (Lucene `q`, e.g. `family-name:Smith AND affiliation-org-name:MIT`) | ranked **candidates**: iD + display name + institutions. *Not stored* — the agent picks the right iD, then `get`s it |
+| **Find authors already in the corpus** | `search(kind='orcid', q='spintronics PI')` (semantic over the embedded card) | stored author nodes ranked by relevance |
+| **Get the bio** | it's a section of the `get` render (and *is* the embedded card body); sub-address `oi<id>#bio` later if needed | — |
+| **Get to the stubs / papers** | the `get` render lists works with `pa…` handles + a *pending* marker; programmatically walk `link`s: `links_for(<orcid ref>, relation='authored')` | paper refs (real, ingested) + stub refs (auto-enqueued, fetching out-of-band) |
+
+The flow ties together: `search(name=…, org=…)` → pick iD → `get(id=…)`
+(resolves, embeds the bio, auto-enqueues missing-DOI stubs, draws `authored`
+links) → read the works list / link-walk to the papers, which fill in as the
+fetch pipeline lands them.
+
+### 1b. Org disambiguation via ROR
+
+`org='MIT'` is ambiguous two ways: it could mean several institutions, **and**
+a bare free-text `affiliation-org-name:MIT` match misses every record that
+spells the affiliation out ("Massachusetts Institute of Technology"). Names
+are not identities. So when `org=` is supplied we **resolve it to a canonical
+[ROR](https://ror.org) id first**:
+
+1. Query the ROR API (`https://api.ror.org/organizations?query=MIT` — free,
+   no auth) → ranked org candidates with canonical name + city + country.
+2. If ambiguous, **surface the org candidates** for the agent/user to pick
+   (the same disambiguation pattern as people — names in, identity out).
+3. Constrain the ORCID expanded-search by `ror-org-id:<id>` (ORCID indexes
+   ROR/GRID org ids on affiliations) — precise and spelling-independent,
+   instead of fuzzy name matching.
+
+Callers who already know the org pass `ror='05a0ya142'` directly and skip the
+disambiguation hop. This is consistent end-to-end: the author node's stored
+affiliations already carry the disambiguated-org **ROR id** (from ORCID
+employments), so the same id that *finds* a person also labels their
+affiliation and powers the later co-affiliation graph. ROR is a fixed host —
+`safe_fetch` is belt-and-suspenders, used anyway per convention.
 
 ### 2. Resolution paths (in order of trust)
 
@@ -123,70 +189,130 @@ paragraph.
   (`orcid → paper → orcid`). Materializing a `coauthor` relation is a later
   optimization if the walk proves hot.
 
-### 4. Auto-enqueue: the missing-DOI diff → stubs
+### 4. Auto-enqueue: walking the works list → links + stubs
 
-On resolve/refresh:
+On resolve/refresh, pull `/{id}/works` and for **each** work extract its
+identifiers (DOI preferred, then arXiv / PMID), its title/year, and any
+**ORCID-provided URL** (the work summary `url` and/or an external-id's
+`url` — often a publisher landing or PDF link). Then, per work, one of three
+branches:
 
-1. Pull `/{id}/works`; collect every work's DOI (prefer DOI; fall back to
-   arXiv; ignore works with no usable identifier). ORCID work summaries
-   also carry a `url` — recorded in stub `meta` for provenance, but the
-   **identifier** (DOI) is what the fetcher keys on, not the URL.
-2. For each, `store.find_paper_ref_by_identifier(doi)`:
-   - **hit** → ensure an `authored` link to the existing paper ref.
-   - **miss** → `store.upsert_stub_paper(identifiers=[("doi", …)],
-     title=…, year=…, set_by="orcid")` (idempotent), then `authored`-link.
-     The stub is now visible to `fetch_oa.claim_stubs_to_fetch` and fetches
-     **automatically** — this is the auto-enqueue (decision confirmed: do
-     not gate on human approval).
-3. A per-resolve cap (`PRECIS_ORCID_MAX_STUBS_PER_RESOLVE`, default ~50)
-   and the `set_by="orcid"` tag bound and attribute the blast radius — a
-   prolific PI can carry 800 works, and we don't want one resolve to flood
-   the fetch queue. Excess is logged, not silently dropped (nursery rule).
+1. **In corpus already** — `store.find_paper_ref_by_identifier(doi/arxiv)`
+   returns a ref → just **`authored`-link** the existing paper. Done.
+2. **Not in corpus, but has an identifier** — `store.upsert_stub_paper(
+   identifiers=[("doi", …)], title, year, set_by="orcid")` (idempotent),
+   `authored`-link the stub. It's now claimable by
+   `fetch_oa.claim_stubs_to_fetch` and fetches **automatically** (no human
+   gate — confirmed).
+3. **No usable identifier at all** — still mint a stub from the title/year
+   and **send it for searching**: a discovery step (S2 / Crossref title +
+   author + year lookup, reusing the `acquire` path's enrich) tries to find
+   the DOI; on success it becomes a normal case-2 stub, on failure it stays
+   a stub addressable only by the ORCID URL (below). `authored`-link either
+   way.
+
+**Download-link passthrough (must be *used*, not just recorded).** When
+ORCID hands us a work URL, we don't merely stash it for provenance — we
+attach it as a **fetch hint** on the stub (`meta.fetch_hints = [{"source":
+"orcid", "url": …}]`) and `fetch_oa` **tries it first** (SSRF-guarded via
+`safe_fetch`) before the generic OA-source cascade. The point of pulling the
+link from ORCID is wasted if the fetcher ignores it — so the contract is
+"hint present ⇒ hint attempted, and the attempt is logged in `ref_events`
+whether it hit or missed." Two concrete `fetch_oa` changes this requires
+(today the fetcher is DOI/arXiv/S2-only — `claim_stubs_to_fetch` qualifies a
+stub via `EXISTS ref_identifiers id_kind IN ('doi','arxiv','s2')` and the
+cascade keys on those):
+
+- **Claim**: widen the qualifying `EXISTS` so a stub **also** qualifies when
+  it carries `meta.fetch_hints` — otherwise a URL-only stub (case 3 with no
+  discovered identifier) is never picked up.
+- **Cascade**: add a first-priority fetch source that reads `meta.fetch_hints`
+  and `safe_get`s each URL before the OA providers run.
+
+**Exponential backoff, as usual.** The hint source must log its attempt as a
+`fetcher:orcid_url` (i.e. `fetcher:%`) `ref_event`, so it rides the
+*existing* exponential-backoff window in `claim_stubs_to_fetch`
+(`base * 2^(attempts-1)`, capped at `_RETRY_BACKOFF_MAX_HOURS`) — a dead
+ORCID URL settles to one retry per ~30d instead of re-hammering the
+publisher every pass, identical to the OA-source and chase backoffs. **No
+bespoke backoff** — reuse the convention, and the widened claim `EXISTS`
+(url-only stubs) inherits the same window for free since it keys on
+`fetcher:%` `last_ts`.
+
+**Blast-radius control.** A per-resolve cap
+(`PRECIS_ORCID_MAX_STUBS_PER_RESOLVE`, default ~50) and the `set_by="orcid"`
+tag bound and attribute the work — a prolific PI can carry 800 works, and
+one resolve must not flood the fetch queue. Excess is logged, not silently
+dropped (nursery rule).
 
 ### 5. Semantic Scholar author endpoint — network navigation
 
-So an LLM (and the BFS) can hop the graph, extend the `semanticscholar`
-handler (`handlers/semanticscholar.py`, currently `get`/`search` only) with
-two nav keys alongside the existing `refs:` / `cites:`:
+A basic navigation interface (so an LLM — or any future traversal — can hop
+the graph). Extend the `semanticscholar` handler (`handlers/semanticscholar.py`,
+currently `get`/`search` only) with two nav keys alongside the existing
+`refs:` / `cites:`:
 
 - `get(kind='semanticscholar', id='authors:<paper-id>')` — the paper's
   authors (S2 `/paper/{id}/authors`) with fields
   `name,externalIds,hIndex,affiliations` → surfaces each author's **ORCID**
-  (the bridge into `kind='orcid'`) and flags the senior author by position.
+  (the bridge into `kind='orcid'`) and the author order (position).
 - `get(kind='semanticscholar', id='author:<authorId>')` — that author's
-  top papers (S2 `/author/{id}/papers`) → the outbound frontier for BFS.
+  top papers (S2 `/author/{id}/papers`).
 
-This closes the **paper → author → paper** and **co-author** loops S2-side,
-and the ORCID iDs it returns are exactly the keys for §1.
+This exposes the **paper → author → paper** and **co-author** hops S2-side
+and returns the ORCID iDs that key §1 — the raw interface a traversal needs,
+without prescribing the traversal itself.
 
 ## Skills
 
 New `precis-orcid-help.md` (verb mechanics, slug form, auth note, the
-link/stub model) **plus** a discovery-oriented skill — author-network BFS
-is a *strategy*, not just an API, and belongs in the toolpath catalogue:
+link/stub model). A discovery-oriented skill is *sketched but out of scope*
+(see *Non-goals*):
 
 - **`precis-orcid-help`** — `get`/`search`/`link` on the kind; the
   `authored`/`authored-by` relations; how stubs auto-fetch; the refresh
-  cadence; resolution paths.
-- **`precis-author-discovery-help`** (or a section in
-  `precis-decomposition-help`) — the BFS recipe:
-  1. From a high-value paper, `get(semanticscholar, 'authors:<id>')`; take
-     the **senior (last) author** first, then co-authors.
+  cadence; resolution paths; reading a node as an **author dossier** (bio,
+  affiliations, publication list) for proposal *related-work* / *team* /
+  *citation* sections — cross-ref `precis-proposal-*`.
+- **`precis-author-discovery-help`** — *future, not part of this ADR's
+  deliverable.* Sketched here only to show the interfaces are sufficient;
+  the BFS recipe (a downstream effort) would read:
+  1. From a high-value paper, `get(semanticscholar, 'authors:<id>')`; pick
+     whom to expand first. The **senior (last) author** is often the lab
+     PI / SME and a strong default, but it is **one heuristic among
+     several** — also high h-index, shared affiliation, venue, recency.
   2. `get(kind='orcid', id=<their iD>)` → resolves + auto-enqueues their
      missing DOIs as fetching stubs.
-  3. Score the frontier (shared affiliation / shared venue / recency),
-     expand BFS to depth 1–2, stop on a budget.
+  3. Score the frontier, expand BFS to depth 1–2, stop on a budget.
   This is a natural `LLM:*` planner coroutine: each tick resolves one
   author, the stubs fetch out-of-band, the next tick reads what landed.
 - **Index updates**: add the `orcid` row to the master kinds table in
-  `precis-overview` and `precis-help`; add an author-discovery scenario to
-  `precis-toolpath-help`.
+  `precis-overview` and `precis-help`; add an orcid resolve/search scenario
+  to `precis-toolpath-help`.
+
+## Non-goals (this ADR)
+
+We ship **basic interfaces**, not strategies built on them:
+
+- **Author-network BFS / traversal** — *enabled* (§5 + `authored` links +
+  resolve), **not built**. No frontier scoring, no expansion policy, no
+  planner coroutine. The sketched `precis-author-discovery-help` is
+  illustrative only.
+- **Affiliation / co-author graphs** — co-authorship is a 2-hop walk, not a
+  materialized edge; affiliation clustering (the reframed "org chart") is
+  later.
+- **Crossref / S2-author bulk back-fill** of ORCIDs onto existing papers is a
+  separate pass; this ADR's resolve path uses them opportunistically, not as
+  a corpus-wide sweep.
+- **ORCID write** (depositing into a researcher's record) — explicitly never.
 
 ## Consequences
 
 - **Good**: authors become first-class, searchable, linkable nodes; "all
-  work by X" is one walk; the corpus self-extends along the strongest
-  real-world signal (a researcher's own output); no new fetch machinery.
+  work by X" is one walk; an author **dossier** feeds proposal writing
+  (experts to cite, collaborators/competing PIs, affiliations, standing);
+  the corpus self-extends along the strongest real-world signal (a
+  researcher's own output); no new fetch machinery.
 - **Cost / risk**: auto-enqueue can balloon the fetch queue (mitigated by
   the per-resolve cap + `set_by` attribution + nursery spin-loop guard);
   ORCID coverage is uneven (many older papers lack ORCIDs — Crossref
@@ -198,10 +324,8 @@ is a *strategy*, not just an API, and belongs in the toolpath catalogue:
 
 ## Open questions
 
-- Should `refresh_orcid` only re-enqueue, or also re-pull bio/affiliations
-  (drift is slow; lean re-enqueue-only with a longer full-refresh TTL)?
-- Where does the senior-author heuristic live — link `meta` at write time
+- Soft-TTL value for the staleness hint (start ~30d; tune by how often
+  agents actually hit "stale" and refresh).
+- Where does the author-position metadata live — link `meta` at write time
   (chosen above) vs recomputed at read? Write-time wins unless author order
   proves unreliable across sources.
-- BFS as a hand-run skill first, promoted to a planner coroutine once the
-  scoring heuristic is validated.

@@ -75,6 +75,12 @@ Relation = Literal[
     # inverse. Keep in sync with the `relations` seed in 0037.
     "plots",
     "plotted-by",
+    # ORCID author kind — migration 0039 (ADR 0039). `authored` binds an
+    # author node (kind='orcid') to a paper ref; ref-level only, with
+    # author-position info on the edge meta. Asymmetric, `authored-by`
+    # inverse. Keep in sync with the `relations` seed in 0039.
+    "authored",
+    "authored-by",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -122,6 +128,8 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "has-draft": "draft-of",
     "snapshot-of": "has-snapshot",
     "has-snapshot": "snapshot-of",
+    "authored": "authored-by",
+    "authored-by": "authored",
 }
 
 

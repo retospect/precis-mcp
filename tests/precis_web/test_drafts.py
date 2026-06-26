@@ -705,6 +705,34 @@ def test_change_request_dispatches_anchored_todo(
     assert args["meta"]["anchor"] == "BBBBBB"
 
 
+def test_change_request_omits_parent_when_project_soft_deleted(tmp_path) -> None:
+    """A draft whose ``draft-of`` project todo was soft-deleted must NOT
+    parent the change request on the dead todo (``put`` rejects a
+    soft-deleted ``parent_id`` with NotFound). ``_project_id`` skips it,
+    so the anchored todo files as a root instead of 400ing."""
+
+    class DeadProjectStore(DraftFakeStore):
+        def get_ref(self, *, kind, id):
+            # The project todo (id=1) was soft-deleted → no live row.
+            if kind == "todo" and id == 1:
+                return None
+            return super().get_ref(kind=kind, id=id)
+
+    runtime = FakeRuntime(DeadProjectStore())
+    app = create_app(runtime=runtime, web_config=WebConfig(corpus_dir=tmp_path))
+    client = TestClient(app)
+    r = client.post(
+        "/drafts/nt/request",
+        data={"handle": "BBBBBB", "text": "tighten this"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    verb, args = runtime.calls[-1]
+    assert verb == "put" and args["kind"] == "todo"
+    assert "parent_id" not in args  # filed as a root, not parented on the dead todo
+    assert args["meta"]["anchor"] == "BBBBBB"
+
+
 def test_ref_chips_dedup_sigil_and_kindref() -> None:
     """§kong24~2 and paper:kong24~2 are the same target → one chip."""
     from precis_web.routes.drafts import _ref_chips
