@@ -213,9 +213,7 @@ class TestParentWiring:
         _seed_paper(store)
         todo_id = self._seed_todo(store)
         h = _make_handler(store)
-        resp = h.put(
-            title="t", body="b", cited_in="miller23a", parent_id=todo_id
-        )
+        resp = h.put(title="t", body="b", cited_in="miller23a", parent_id=todo_id)
         fid = int(re.search(r"id=(\d+)", resp.body).group(1))
         assert _finding_parent_id(store, fid) == todo_id
 
