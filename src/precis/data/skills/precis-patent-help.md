@@ -9,24 +9,30 @@ status: active
 # precis-patent-help — find, read, cite patents
 
 Patents are public-record documents fetched from EPO OPS. Read-only
-from the agent side: address by DOCDB id (`ep1234567b1`).
+from the agent side. Once a patent is held, its canonical address is
+the **record handle** `pt<id>` (e.g. `pt40`); blocks are chunk handles
+`pk<id>`. The DOCDB publication number (`ep1234567b1`) is the *fetch
+key* — like a DOI, it's how you pull the patent the first time and a
+durable external identity, but `pt<id>` is what you copy back into
+`get`/`tag`/`link` afterwards. Both resolve on input.
 
-## Look up a patent when I have an id
-## Open a patent by DOCDB id
+## Look up a patent when I have a handle or a DOCDB id
+## Open a patent by handle (or DOCDB id)
 ## I have a publication number — how do I read the patent?
 
 ```python
-get(kind='patent', id='ep1234567b1')                    # overview
-get(kind='patent', id='ep1234567b1', view='abstract')
-get(kind='patent', id='ep1234567b1', view='claims')
-get(kind='patent', id='ep1234567b1', view='biblio')     # bibliographic table
-get(kind='patent', id='ep1234567b1', view='description')
-get(kind='patent', id='ep1234567b1', view='bibtex')
+get(kind='patent', id='ep1234567b1')                    # fetch by DOCDB id (first time)
+get(kind='patent', id='pt40')                           # held patent, by handle
+get(kind='patent', id='pt40', view='abstract')
+get(kind='patent', id='pt40', view='claims')
+get(kind='patent', id='pt40', view='biblio')            # bibliographic table
+get(kind='patent', id='pt40', view='description')
+get(kind='patent', id='pt40', view='bibtex')
 ```
 
-First `get` for an unknown id fetches from OPS, persists, embeds,
-and renders. From then on it's local — `search` lists it as
-`[local]` and `~chunk` selectors work.
+First `get` for an unknown DOCDB id fetches from OPS, persists, embeds,
+and renders. From then on it's local — `search` lists it (with its
+`pt<id>` handle), and `~chunk` selectors work.
 
 Patent ids only accept the `~` chunk separator. Pass `view=` as a
 kwarg; there is no `slug/view` path form.
@@ -37,11 +43,13 @@ get(kind='patent', id='ep1234567b1~5')         # legacy id~pos still resolves
 get(kind='patent', id='ep1234567b1~5..12')     # block range (ranges stay id~N..M)
 ```
 
-## What does a patent id look like?
+## What does a DOCDB fetch key look like?
 ## DOCDB id format
-## How do I write a patent slug?
 
-DOCDB shape: `<cc><digits><letter>[<digit>]`, lowercased.
+The DOCDB number is a *fetch key* (like a DOI), not an address you
+construct — you get the `pt<id>` handle back from `get`/`search`
+output. But to pull a patent the first time you supply its DOCDB
+number, shape `<cc><digits><letter>[<digit>]`, lowercased:
 
 ```python
 get(kind='patent', id='ep1234567b1')       # EP grant
@@ -93,7 +101,8 @@ max 100).
 ## Where does this patent discuss X?
 
 ```python
-search(kind='patent', q='heterojunction', scope='ep1234567b1')
+search(kind='patent', q='heterojunction', scope='pt40')          # scope by handle
+search(kind='patent', q='heterojunction', scope='ep1234567b1')   # DOCDB id also resolves
 ```
 
 Same hybrid search, scoped to one patent's blocks.
@@ -115,7 +124,7 @@ ingested last week is recent-new but published-old.
 ## Get a BibTeX entry for a patent
 
 ```python
-get(kind='patent', id='ep1234567b1', view='bibtex')
+get(kind='patent', id='pt40', view='bibtex')        # or the DOCDB id
 ```
 
 ## Annotate a patent or cross-link it
@@ -123,14 +132,14 @@ get(kind='patent', id='ep1234567b1', view='bibtex')
 ## Link a patent to a paper or memory
 
 ```python
-tag(kind='patent', id='ep1234567b1', add=['topic:photocatalysis'])
-tag(kind='patent', id='ep1234567b1', add=['cpc:B01J27/24'])
-tag(kind='patent', id='ep1234567b1', remove=['topic:photocatalysis'])
+tag(kind='patent', id='pt40', add=['topic:photocatalysis'])
+tag(kind='patent', id='pt40', add=['cpc:B01J27/24'])
+tag(kind='patent', id='pt40', remove=['topic:photocatalysis'])
 
-link(kind='patent', id='ep1234567b1',
-     target='paper:wang2020state', rel='cited-by')
-link(kind='patent', id='ep1234567b1',
-     target='memory:<slug>', rel='annotates')
+link(kind='patent', id='pt40',
+     target='pa57', rel='cited-by')              # target handle (legacy paper:<slug> resolves)
+link(kind='patent', id='pt40',
+     target='me88', rel='annotates')             # memory handle (legacy memory:<id> resolves)
 ```
 
 Closed-prefix axes for patent: `SRC:`, `CACHE:`, `cpc:`, `ipc:`,
@@ -147,7 +156,7 @@ Patents are read-only — `put(kind='patent', ...)` raises
 `Unsupported`. Park notes on a `memory` and link it to the patent:
 
 ```python
-put(kind='memory', text='<note>', link='patent:ep1234567b1', rel='annotates')
+put(kind='memory', text='<note>', link='pt40', rel='annotates')   # legacy patent:<docdb> resolves
 ```
 
 ## See also

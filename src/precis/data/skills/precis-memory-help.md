@@ -25,7 +25,7 @@ resolve on input.
 put(kind='memory',
     text='Wang2020 chunk 38 has the cleanest Z-scheme diagram.',
     tags=['topic:noxrr'],
-    link='paper:wang2020state~38')
+    link='pc38')                       # chunk handle (legacy paper:wang2020state~38 still resolves)
 # → returns integer id (e.g. 73)
 ```
 
@@ -92,22 +92,23 @@ another ref:
 put(kind='memory',
     text='Three-electron pathway — see §2.',
     tags=['topic:noxrr'],
-    link='paper:wang2020state~38', rel='cites')
+    link='pc38', rel='cites')          # chunk handle (legacy paper:wang2020state~38 still resolves)
 ```
 
 After the fact, use `link()`:
 
 ```python
 link(kind='memory', id=73,
-     target='paper:wang2020state', rel='related-to')
+     target='pa<id>', rel='related-to')    # ref handle (legacy paper:wang2020state still resolves)
 
 link(kind='memory', id=73,
-     target='paper:chen2021critique', rel='contradicts')
+     target='pa<id>', rel='contradicts')   # the chen2021critique handle
 ```
 
-Targets always carry the `kind:` prefix. Relation vocabulary
-(`cites`, `contradicts`, `supports`, `derived-from`, …) lives in
-`precis-relations`.
+Targets lead with the ref/chunk **handle** (`pa<id>`, `pc38`); the
+legacy `kind:slug` form (`paper:wang2020state`) still resolves.
+Relation vocabulary (`cites`, `contradicts`, `supports`,
+`derived-from`, …) lives in `precis-relations`.
 
 ## Name another ref in the text — it auto-links
 ## Cite a paper / patent / memory inline so the connection is traceable

@@ -23,9 +23,9 @@ get(kind='paper', id='10.1038/nature10352', view='toc')
 get(kind='paper', id='10.1038/nature10352', view='bibtex')
 ```
 
-The DOI resolves to the same paper a slug would. After the first
-call, take the slug from the response header and use it for any
-chunk-level work (`<slug>~38..42`).
+The DOI resolves to the same paper a slug would. The response shows the
+paper's **handle** (`pa<id>`) and per-chunk handles (`pc<id>`) — paste those
+for any chunk-level work (e.g. `get(id='pc38')`, or a range `pa<id>~38..42`).
 
 ## Pass a view with a DOI without breaking on the slash
 ## Why does view= have to be a kwarg for DOIs?

@@ -92,9 +92,11 @@ search(kind='wikipedia', q='dopamine receptor', page_size=20)
 ```
 
 Hybrid lexical + semantic over the bodies of articles already in the
-cache. Results are `<slug>~N` handles; paste into `get` to drill in.
-`search` does not crawl — only fetched articles are searchable. To pull
-a *new* article, use `get` (which runs the live search + extract).
+cache. Each hit row carries the universal chunk **handle** — paste it
+straight into `get` to drill in (the retired `<slug>~N` selector still
+resolves, but it is a legacy form, not the handle). `search` does not
+crawl — only fetched articles are searchable. To pull a *new* article,
+use `get` (which runs the live search + extract).
 
 ## Keep / annotate an article
 

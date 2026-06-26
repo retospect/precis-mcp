@@ -17,8 +17,8 @@ keywords that distinguish its range.
 ## How do I see what's inside a paper or skill?
 
 ```python
-get(kind='paper', id='<slug>', view='toc')       # kwarg form
-get(kind='paper', id='<slug>/toc')               # path form, equivalent
+get(kind='paper', id='pa5', view='toc')          # kwarg form (handle; legacy slug still resolves)
+get(kind='paper', id='pa5/toc')                  # path form, equivalent
 get(kind='skill', id='precis-overview/toc')      # same on skills
 ```
 
@@ -53,9 +53,9 @@ of clustered keywords — there's nothing to cluster.
 ## I picked a row — now what?
 
 ```python
-get(kind='paper', id='<slug>~15..29')              # read the range
-get(kind='paper', id='<slug>~15..29', view='toc')  # sub-TOC of the range
-get(kind='paper', id='<slug>~15..29/toc')          # path form
+get(kind='paper', id='pa5~15..29')              # read the range
+get(kind='paper', id='pa5~15..29', view='toc')  # sub-TOC of the range
+get(kind='paper', id='pa5~15..29/toc')          # path form
 ```
 
 Sub-TOC re-clusters the chosen range into its own table. Recurse
@@ -66,6 +66,6 @@ until rows are small enough to read directly.
 ```python
 get(kind='skill', id='precis-paper-help')      # paper-specific TOC + drill-in
 get(kind='skill', id='precis-overview')        # address grammar (slug~N, /toc)
-get(kind='skill', id='precis-search-help')     # search returns slug~chunk handles
+get(kind='skill', id='precis-search-help')     # search returns pc<id> chunk handles
 get(kind='skill', id='precis-toon')            # the table wire format
 ```

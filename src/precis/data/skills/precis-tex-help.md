@@ -104,8 +104,10 @@ indent. Cycles terminate with a `⇺` marker. Targets outside
 - \section{Conclusion}  (`main~conclusion-...`)
 ```
 
-Each backticked handle is a real address. Paste it as `id=` to read
-that block.
+Each backticked entry is a section **selector** in the legacy
+`slug~name` form — it still resolves as `id=`, but it is not the
+handle. The canonical address is the block's `xc<id>` **handle**, the
+form `get` and search print; paste that to read the block.
 
 Views: `toc` (sections + keywords, recursive across `\input`),
 `outline` (headings only), `raw` (full source).
@@ -127,8 +129,9 @@ search(kind='tex', q='kcat', scope='chapters--intro')   # one file
 search(q='activation energy')                           # cross-kind
 ```
 
-Hybrid lexical + semantic. Results are `<slug>~<block>` handles;
-order is the relevance signal.
+Hybrid lexical + semantic. Each hit row carries the block's `xc<id>`
+**handle** (the retired `<slug>~<block>` selector still resolves, but
+it is a legacy form, not the handle); order is the relevance signal.
 
 ## Edit literal LaTeX source
 

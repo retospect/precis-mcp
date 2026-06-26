@@ -54,8 +54,12 @@ wang2020state~39..62	cocatalyst, oxygen evolution
 …
 ```
 
-One row per cluster. `handle` is a range (`slug~A..B`) you can pass
-to `get` to read or to `get(..., view='toc')` to drill further.
+One row per cluster. The TOC `handle` column is a **cluster range**
+rendered in the legacy `slug~A..B` selector form — a TOC-specific
+shorthand for a span of chunks, not a universal chunk handle (those
+are the `pc<chunk_id>` handles search hits carry, above). Pass the
+range to `get` to read the span, or to `get(..., view='toc')` to drill
+further.
 
 ## Cell-escape rules — when quoting kicks in
 
