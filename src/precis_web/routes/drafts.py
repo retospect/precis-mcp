@@ -168,9 +168,17 @@ def _draft_ref(store: Any, ident: str) -> Any:
 
 
 def _project_id(store: Any, ref_id: int) -> int | None:
-    """The draft's owning project todo (the ``draft-of`` target)."""
+    """The draft's owning *live* project todo (the ``draft-of`` target).
+
+    Skips a soft-deleted target: ``links_for`` doesn't filter on the
+    destination's ``deleted_at``, so a draft whose project todo was
+    deleted would otherwise hand back a dead ``parent_id`` and ``put``
+    rejects it (NotFound). Returning ``None`` here makes the anchored
+    todo a root instead of erroring."""
     for link in store.links_for(ref_id, direction="out", relation="draft-of"):
-        return int(link.dst_ref_id)
+        dst = int(link.dst_ref_id)
+        if store.get_ref(kind="todo", id=dst) is not None:
+            return dst
     return None
 
 

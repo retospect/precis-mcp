@@ -107,6 +107,7 @@ class FindingHandler(NumericRefHandler):
         body: str | None = None,
         scope: dict[str, Any] | None = None,
         cited_in: str | None = None,
+        parent_id: int | None = None,
         tags: list[str] | None = None,
         link: str | None = None,
         rel: str | None = None,
@@ -180,6 +181,30 @@ class FindingHandler(NumericRefHandler):
             )
         assert body_text is not None  # narrowed by the `missing` guard above
 
+        # Auto-inject parent_id from the runtime context
+        # (PRECIS_CURRENT_TODO env), mirroring TodoHandler.put. A
+        # finding minted inside a literature-hunt tick MUST be parented
+        # on that lit-hunt todo: the ``all_child_findings_resolved``
+        # auto_check walks ``parent_id = <todo> AND kind='finding'`` to
+        # decide when the hunt is done. Without this the finding lands
+        # as an orphan root, the evaluator never sees it, the todo never
+        # closes, and dispatch re-ticks the hunt forever (no draft
+        # progress). The interactive/root case still works: no env set →
+        # parent_id stays None.
+        if parent_id is None:
+            from precis.utils.workspace import current_todo_from_env
+
+            parent_id = current_todo_from_env()
+        parent_int: int | None = None
+        if parent_id is not None:
+            try:
+                parent_int = parent_id if isinstance(parent_id, int) else int(parent_id)
+            except (TypeError, ValueError) as exc:
+                raise BadInput(
+                    f"parent_id must be an integer, got {parent_id!r}",
+                    next="parent_id=<int> (the parent todo's id)",
+                ) from exc
+
         # Resolve the cited target. parse_link_target handles
         # kind:identifier and kind:identifier~N forms; bare handles
         # (no kind prefix) default to 'paper:'.
@@ -242,6 +267,7 @@ class FindingHandler(NumericRefHandler):
                     slug=None,
                     title=title_clean,
                     meta=meta,
+                    parent_id=parent_int,
                     conn=conn,
                 )
                 # pub_id row for collision detection + agent-facing
