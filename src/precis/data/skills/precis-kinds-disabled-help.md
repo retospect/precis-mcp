@@ -26,10 +26,15 @@ Next: see get(kind='skill', id='precis-kinds-disabled-help')
       and precis-overview Needs column
 ```
 
-The parenthetical names the reason: either `prohibited` (operator
-listed it in `PRECIS_KINDS_DISABLED`) or `missing <ENV1>, <ENV2>`
-(required env vars not set). The agent cannot fix this — relay
-the missing var(s) to the operator.
+The parenthetical names the reason: `prohibited` (operator listed
+it in `PRECIS_KINDS_DISABLED`), `missing <ENV1>, <ENV2>` (required
+env vars not set), or a **contextual hint** when a background pass
+disabled the kind *on purpose for this run* and told you what to do
+instead. Example: a draft-editing tick gates off the `tex` file kind
+and the reason reads `this project's deliverable is draft 'X' — write
+prose with put(kind='draft' ...) …`. When the reason is an
+instruction, follow it — don't relay it to the operator. A bare
+`missing <ENV>` is the operator's to fix.
 
 ## Which env vars does each kind need?
 ## What credentials enable a kind?
