@@ -35,7 +35,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis.tools import TOOL_REGISTRY, get_tool_names
 from precis.tools.cli_adapter import _convert_value
-from precis_web.deps import await_dispatch, templates
+from precis_web.deps import await_dispatch, get_store, templates
 
 router = APIRouter(prefix="/console", tags=["console"])
 
@@ -487,13 +487,26 @@ async def resolve(
 ) -> HTMLResponse | RedirectResponse:
     """Smart-resolve a pasted handle.
 
-    Accepts: ``paper:slug``, ``kind:id``, bare cite_keys (``charlier07~374``),
+    Accepts: universal handles (``pa5``, ``pc579575`` — ADR 0036),
+    ``paper:slug``, ``kind:id``, bare cite_keys (``charlier07~374``),
     DOIs (``10.1234/foo``), arXiv ids (``2501.01234``), YouTube ids
     (``dQw4w9WgXcQ``), bare discord handles. Redirects to the canonical
     view via the ``/r/{kind}/{id}`` resolver; falls back to a cross-kind
     search when the handle shape isn't recognised so the operator
     always lands somewhere useful.
     """
+    # Universal handles (``pa5`` record / ``pc579575`` chunk) resolve
+    # against the DB first: they look like bare cite_keys to the shape
+    # patterns (``pa55`` matches the paper_cite regex), so they must win
+    # before ``_smart_resolve`` mis-routes them to ``/r/paper/pa55``. A
+    # chunk handle carries the chunk's ord, which the ``/r/`` resolver
+    # turns into the ``?chunk=`` surface (a cited-passage card for papers).
+    resolved = get_store(request).resolve_handle(handle.strip())
+    if resolved is not None:
+        url = f"/r/{resolved.kind}/{resolved.ref_id}"
+        if resolved.chunk_ord is not None:
+            url += f"?chunk={resolved.chunk_ord}"
+        return RedirectResponse(url=url, status_code=303)
     target = _smart_resolve(handle)
     if target is not None:
         return RedirectResponse(url=target, status_code=303)

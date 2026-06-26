@@ -87,6 +87,10 @@ class FakeStore:
         #: Canned sidebar-nav hits per scope_ref_id: lists of
         #: (block, ref, score) for the search_blocks_* fakes.
         self.nav_hits: dict[int, list[Any]] = {}
+        #: Canned chunk-handle table for resolve_handle: chunk_id ->
+        #: (ref_id, ord, kind). Tests populate it to exercise the
+        #: console resolver's chunk-handle branch (``pc…``).
+        self.chunk_handles: dict[int, tuple[int, int, str]] = {}
         self.todos = [
             make_ref(id=1, kind="todo", title="Build the thing", parent_id=None),
             make_ref(id=2, kind="todo", title="Draft the spec", parent_id=1),
@@ -244,6 +248,42 @@ class FakeStore:
         if kind == "conv" and isinstance(id, str) and id.startswith("followup/"):
             return make_ref(id=900000, kind="conv", slug=id, title="Follow-up")
         return None
+
+    def resolve_handle(self, handle: str, *, conn: Any = None):
+        """Decode a universal handle (ADR 0036) against the fixture pools.
+
+        Record handles (``pa10``) resolve via the per-kind pool; chunk
+        handles (``pc…``) via ``self.chunk_handles`` (``chunk_id ->
+        (ref_id, ord, kind)``, populated by tests). Mirrors the real
+        store's kind-match guard + ``None``-on-miss contract so the
+        console resolver's handle branch can be exercised.
+        """
+        from precis.store.types import ResolvedHandle
+        from precis.utils import handle_registry
+
+        parsed = handle_registry.parse(handle)
+        if parsed is None:
+            return None
+        kind, is_chunk, pk = parsed
+        if is_chunk:
+            info = self.chunk_handles.get(pk)
+            if info is None or info[2] != kind:
+                return None
+            ref_id, ord_, row_kind = info
+            ref = next((r for r in self._for_kind(kind) if r.id == ref_id), None)
+            slug = getattr(ref, "slug", None) if ref is not None else None
+            return ResolvedHandle(
+                ref_id=ref_id,
+                kind=kind,
+                public_id=slug or str(ref_id),
+                chunk_id=pk,
+                chunk_ord=ord_,
+            )
+        ref = next((r for r in self._for_kind(kind) if r.id == pk), None)
+        if ref is None:
+            return None
+        slug = getattr(ref, "slug", None)
+        return ResolvedHandle(ref_id=pk, kind=kind, public_id=slug or str(pk))
 
     def list_refs(
         self,

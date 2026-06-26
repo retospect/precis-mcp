@@ -6,6 +6,14 @@
   <input name="q" value="{{ q }}" placeholder="Search the corpus…"
          class="w-80 rounded-md border border-slate-300 px-3 py-2 text-sm" />
   <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-2">Search</button>
+  {# Search leg: ``keyword`` is the literal title full-text search (the
+     default); ``semantic`` embeds the query and ranks papers by body
+     content. Re-submits the form so it composes with q + the filters. #}
+  <select name="mode" onchange="this.form.submit()"
+          class="rounded-md border border-slate-300 px-2 py-2 text-sm text-slate-600">
+    <option value="keyword" {% if mode != 'semantic' %}selected{% endif %}>keyword (title)</option>
+    <option value="semantic" {% if mode == 'semantic' %}selected{% endif %}>semantic (content)</option>
+  </select>
   {# Presence filters — submit the same form so they compose with the
      query. ``value="1"`` + ``checked`` mirrors the route's 0/1 ints. #}
   <label class="inline-flex items-center gap-1.5 text-sm text-slate-600 ml-2">
