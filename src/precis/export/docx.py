@@ -9,13 +9,14 @@ through the **same** paper-ref lookup the ``.bib`` path uses
 the *identical* resolved references: that shared resolver is the
 citation-integrity guarantee.
 
-Citation model (v1): each ``[§slug~n]`` / ``paper:slug~n`` becomes a
-numbered marker ``[n]`` in the text, backed by a numbered **References**
-section at the document end carrying the resolved bibliographic entry
-(authors · year · title · DOI/arXiv). Real Word *endnote fields* and OMML
-math are the next increments (see ``_render_math`` / module TODO); the
-resolver and the numbering are already endnote-shaped, so swapping the
-rendering surface doesn't touch the integrity path.
+Citation model: each ``[§slug~n]`` / ``paper:slug~n`` (and a verbatim
+LaTeX ``\\cite{slug}``) becomes a superscript numbered marker ``[n]`` in
+the text, backed by a numbered **References** section at the document end
+carrying the resolved bibliographic entry (authors · year · title ·
+DOI/arXiv). The marker is a plain run, so a paper cited many times reuses
+its number at every site — deliberately *not* a native Word endnote field,
+which must be referenced exactly once (reusing one makes Word declare the
+file's content unreadable). Math is native OMML (see ``_render_math``).
 """
 
 from __future__ import annotations
@@ -121,8 +122,12 @@ def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
         p = doc.add_paragraph()
         _render_inline(c.text, ctx, p)
 
-    _append_acronyms(doc, ctx)
-    _attach_endnotes(doc, ctx)
+    # An authored glossary (``term`` chunks, rendered in place above) already
+    # lists the abbreviations, so the auto "Acronyms" section would duplicate
+    # it — only emit it when the draft defines no terms of its own.
+    if not terms:
+        _append_acronyms(doc, ctx)
+    _append_references(doc, ctx)
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(target_path))
@@ -134,10 +139,43 @@ def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
 # ── inline rendering ──────────────────────────────────────────────
 
 
+# ``\cite{a,b}`` / ``\citep[p.5]{a}`` / ``\citet*{a}`` — LaTeX citation
+# commands a draft may carry verbatim. Folded to the explicit ``[§key]``
+# bracket form (which resolves for any key length, unlike a bare key — the
+# bare-cite grammar needs ≥3 surname letters to stay off prose), so each key
+# renders as a numbered ``[n]`` mark and never leaks as literal ``\cite{…}``.
+_LATEX_CITE = re.compile(r"\\cite[a-z]*\*?(?:\[[^\]]*\])*\{([^}]*)\}")
+
+
+def _fold_cite(m: re.Match[str]) -> str:
+    keys = [k.strip() for k in m.group(1).split(",") if k.strip()]
+    return "".join(f"[§{k}]" for k in keys)
+
+
+# A ``$…$`` whose body starts with ``_`` or ``^`` has an EMPTY base — the
+# author put the base outside the math (chemistry style: ``Zr$_6$``,
+# ``UO$_2^{2+}$``). An empty base becomes an empty OMML ``<m:e/>`` that Word
+# renders as a dotted-box placeholder. Pull the adjacent preceding token
+# into the math so the base is non-empty (``Zr$_6$`` → ``$Zr_6$``). The
+# token may sit right after a closing ``$`` (``$W_{18}$O$_{49}$`` → the
+# ``O`` base), so the lookbehind only forbids a word char, not ``$``.
+_EMPTY_BASE_MATH = re.compile(r"(?<!\w)([A-Za-z0-9)\]]+)\$([_^][^$]+)\$")
+
+
+def _preprocess_inline(text: str) -> str:
+    """Normalise a chunk's raw text before the reference/prose walk: fold
+    LaTeX ``\\cite`` commands to ``[§key]`` citations, and repair
+    empty-base ``$…$`` math (see the two patterns above)."""
+    text = _LATEX_CITE.sub(_fold_cite, text)
+    text = _EMPTY_BASE_MATH.sub(r"$\1\2$", text)
+    return text
+
+
 def _render_inline(text: str, ctx: _Ctx, paragraph: Any) -> None:
     """Walk a chunk's text, adding runs to ``paragraph``. References go
     through :func:`_render_reference`; the prose gaps between them get
     markdown/sub-sup/math run formatting."""
+    text = _preprocess_inline(text)
     last = 0
     for m in _COMBINED.finditer(text):
         _render_gap(text[last : m.start()], ctx, paragraph)
@@ -277,39 +315,25 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> 
         return
 
 
-_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-_XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
-_CT_ENDNOTES = (
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml"
-)
-_RT_ENDNOTES = (
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes"
-)
-
-
 def _cite(slug: str, ctx: _Ctx, paragraph: Any) -> None:
-    """Emit a Word **endnote reference** at this point. The endnote body
-    (the resolved reference) is attached to ``endnotes.xml`` at the end —
-    see :func:`_attach_endnotes`. ``w:id`` matches the endnote's id.
+    """Emit a numbered citation marker — a superscript ``[n]`` keyed on the
+    **paper**. The numbered **References** section at the document end
+    (:func:`_append_references`) carries the resolved entry, so entry ``n``
+    backs every in-text ``[n]``.
 
-    Citations key on the **paper**, not the chunk: ``a~3``, ``a~9``,
-    ``a~23`` all reference paper ``a`` → one endnote. And **consecutive**
-    marks for the same paper collapse to a single superscript (no ``¹¹¹``)."""
-    from lxml import etree
-
+    Citations key on the paper, not the chunk: ``a~3``, ``a~9``, ``a~23``
+    all reference paper ``a`` → mark ``[n]`` with the same ``n`` each time.
+    A paper cited many times prints ``[n]`` at each site — a plain run, so
+    it *repeats* freely (a real Word endnote field can't: endnotes are
+    1:1 with their reference, and reusing one corrupts the document). And
+    **consecutive** marks for the same paper collapse to a single mark."""
     slug = slug.split("~", 1)[0]  # the paper, not the cited chunk
     n = ctx.cite_number(slug)  # registers the paper (idempotent)
     if ctx.last_cite == slug:
         return  # consecutive cite to the same paper — one mark for the run
     ctx.last_cite = slug
-    r = etree.SubElement(paragraph._p, f"{{{_W}}}r")
-    rpr = etree.SubElement(r, f"{{{_W}}}rPr")
-    style = etree.SubElement(rpr, f"{{{_W}}}rStyle")
-    style.set(f"{{{_W}}}val", "EndnoteReference")
-    va = etree.SubElement(rpr, f"{{{_W}}}vertAlign")
-    va.set(f"{{{_W}}}val", "superscript")
-    ref = etree.SubElement(r, f"{{{_W}}}endnoteReference")
-    ref.set(f"{{{_W}}}id", str(n))
+    run = paragraph.add_run(f"[{n}]")
+    run.font.superscript = True
 
 
 # ── references + glossary sections ────────────────────────────────
@@ -338,50 +362,23 @@ def _format_reference(store: Any, slug: str, warnings: list[str]) -> str:
     return line
 
 
-def _attach_endnotes(doc: Any, ctx: _Ctx) -> None:
-    """Build ``word/endnotes.xml`` and relate it to the document so each
-    citation's ``endnoteReference`` resolves to a real Word **endnote**
-    carrying the resolved reference (authors · year · title · DOI). The
-    endnote ids match the cite order. No-op when nothing was cited.
+def _append_references(doc: Any, ctx: _Ctx) -> None:
+    """A numbered **References** section: one entry per cited paper, in
+    cite order, so entry ``n`` matches every in-text ``[n]`` mark. Each
+    line is resolved through the SAME paper lookup as the ``.bib`` path
+    (citation-integrity parity with the PDF). No-op when nothing was cited.
 
-    Raw OPC surgery — python-docx has no endnote API: a separator pair
-    (ids -1/0, required by Word) plus one content endnote per citation,
-    registered via a part + relationship (the content-type override and
-    serialisation are handled by the package on save)."""
+    A plain Word section (heading + numbered paragraphs), deliberately
+    *not* native endnote fields: a paper cited many times must reuse one
+    number, and a Word endnote can be referenced only once."""
     if not ctx.cited:
         return
-    from docx.opc.packuri import PackURI
-    from docx.opc.part import Part
-    from lxml import etree
-
-    root = etree.Element(f"{{{_W}}}endnotes", nsmap={"w": _W})
-    for eid, etype, mark in (
-        ("-1", "separator", "separator"),
-        ("0", "continuationSeparator", "continuationSeparator"),
-    ):
-        en = etree.SubElement(root, f"{{{_W}}}endnote")
-        en.set(f"{{{_W}}}type", etype)
-        en.set(f"{{{_W}}}id", eid)
-        p = etree.SubElement(en, f"{{{_W}}}p")
-        r = etree.SubElement(p, f"{{{_W}}}r")
-        etree.SubElement(r, f"{{{_W}}}{mark}")
+    doc.add_heading("References", level=1)
     for i, slug in enumerate(ctx.cited, start=1):
         line = _format_reference(ctx.store, slug, ctx.warnings)
-        en = etree.SubElement(root, f"{{{_W}}}endnote")
-        en.set(f"{{{_W}}}id", str(i))
-        p = etree.SubElement(en, f"{{{_W}}}p")
-        r0 = etree.SubElement(p, f"{{{_W}}}r")
-        rpr = etree.SubElement(r0, f"{{{_W}}}rPr")
-        st = etree.SubElement(rpr, f"{{{_W}}}rStyle")
-        st.set(f"{{{_W}}}val", "EndnoteReference")
-        etree.SubElement(r0, f"{{{_W}}}endnoteRef")
-        r1 = etree.SubElement(p, f"{{{_W}}}r")
-        t = etree.SubElement(r1, f"{{{_W}}}t")
-        t.set(_XML_SPACE, "preserve")
-        t.text = f" {line}"
-    blob = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
-    part = Part(PackURI("/word/endnotes.xml"), _CT_ENDNOTES, blob, doc.part.package)
-    doc.part.relate_to(part, _RT_ENDNOTES)
+        p = doc.add_paragraph()
+        p.add_run(f"[{i}] ").bold = True
+        p.add_run(line)
 
 
 def _append_acronyms(doc: Any, ctx: _Ctx) -> None:

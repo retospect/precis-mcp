@@ -74,14 +74,21 @@ def test_export_produces_valid_docx(
     assert "CO2 Capture in MOFs" in text  # title
     assert "Methods" in text  # heading
     assert "functionalization" in text  # bold run content
-    # Citation is a real Word endnote reference in the body, not "[1]" text.
+    # Citation renders as a numbered superscript marker in the prose, backed
+    # by the References section (no native endnote field — those can't repeat).
+    assert "[1]" in text
     import zipfile
 
     with zipfile.ZipFile(out) as z:
-        assert "endnoteReference" in z.read("word/document.xml").decode("utf-8")
+        names = set(z.namelist())
+        body = z.read("word/document.xml").decode("utf-8")
+    assert "word/endnotes.xml" not in names  # no endnote part
+    assert "endnoteReference" not in body
+    # The [1] mark is a superscript run.
+    assert '<w:vertAlign w:val="superscript"/>' in body
 
 
-def test_citation_integrity_in_endnotes(
+def test_citation_integrity_in_references(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
     _seed_paper(hub.store, "miller2020", "A study of MOFs", 2020)
@@ -89,20 +96,50 @@ def test_citation_integrity_in_endnotes(
     out = tmp_path / "d1.docx"
     res = export_docx(hub.store, ref, target_path=out)
     assert res.cited_slugs == ["miller2020"]
-    docx.Document(str(out))  # round-trip validity check
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    # A numbered References section carries the entry resolved through the
+    # SAME paper lookup as the .bib path (integrity parity with the PDF).
+    assert "References" in text
+    assert "[1]" in text  # entry number == in-text mark
+    assert "A study of MOFs" in text  # resolved title
+    assert "2020" in text
+
+
+def test_repeated_citation_does_not_corrupt(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A paper cited at *non-adjacent* sites prints ``[1]`` each time and
+    yields ONE References entry — the case a native Word endnote can't model
+    (an endnote is 1:1 with its reference, and reusing one makes Word declare
+    the document's content unreadable)."""
+    _seed_paper(hub.store, "wu22", "Wu 2022 study", 2022)
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="dr", title="T", project=pid)
+    draft.put(
+        id="dr",
+        chunk_kind="paragraph",
+        text="First claim [§wu22~3]. Then unrelated prose. Second claim [§wu22~9].",
+        at={"last": True},
+    )
+    ref = hub.store.get_ref(kind="draft", id="dr")
+    out = tmp_path / "dr.docx"
+    res = export_docx(hub.store, ref, target_path=out)
+    assert res.cited_slugs == ["wu22"]
     import zipfile
 
     with zipfile.ZipFile(out) as z:
-        names = set(z.namelist())
-        assert "word/endnotes.xml" in names  # the endnotes part exists
-        endnotes = z.read("word/endnotes.xml").decode("utf-8")
-        ct = z.read("[Content_Types].xml").decode("utf-8")
-        rels = z.read("word/_rels/document.xml.rels").decode("utf-8")
-    assert "A study of MOFs" in endnotes  # resolved title (integrity)
-    assert "2020" in endnotes
-    assert 'w:id="1"' in endnotes  # content endnote id 1
-    assert "endnotes+xml" in ct  # content-type override
-    assert "relationships/endnotes" in rels  # wired to the document
+        body = z.read("word/document.xml").decode("utf-8")
+    # Two non-adjacent marks → the same number reused, no endnote machinery.
+    assert body.count("endnoteReference") == 0
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert text.count("[1]") >= 2  # the mark repeats (≥2 sites + References)
+    assert "Wu 2022 study" in text  # one resolved entry
 
 
 def test_glossary_section(draft: DraftHandler, hub: Hub, tmp_path: Path) -> None:
@@ -113,6 +150,9 @@ def test_glossary_section(draft: DraftHandler, hub: Hub, tmp_path: Path) -> None
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
     assert "Glossary" in text
     assert "MOF" in text and "metal-organic framework" in text
+    # The draft's own Glossary is the abbreviations list — the auto "Acronyms"
+    # section would duplicate it, so it is suppressed (one section, not two).
+    assert "Acronyms" not in text
 
 
 def test_missing_paper_warns_but_exports(
@@ -155,7 +195,10 @@ def test_acronym_first_use_expansion(
     # First prose occurrence expanded; later plural stays abbreviated.
     assert "metal-organic framework (MOF)" in text
     assert "MOFs appear" in text  # plural, not expanded
-    assert "Acronyms" in text  # auto-built acronym list
+    # The abbreviation is an explicit term, so it lives in the Glossary; the
+    # auto "Acronyms" section is suppressed to avoid a duplicate list.
+    assert "Glossary" in text
+    assert "Acronyms" not in text
 
 
 def test_math_renders_as_omml(draft: DraftHandler, hub: Hub, tmp_path: Path) -> None:
@@ -190,6 +233,70 @@ def test_math_renders_as_omml(draft: DraftHandler, hub: Hub, tmp_path: Path) -> 
     docx.Document(str(out))
 
 
+def test_empty_base_math_gets_a_base(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """``Zr$_6$`` / ``UO$_2^{2+}$`` put the base outside the math, leaving an
+    empty subscript base — an empty OMML ``<m:e/>`` Word draws as a dotted-box
+    placeholder. The exporter folds the adjacent token into the math instead."""
+    pytest.importorskip("latex2mathml")
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="dz", title="T", project=pid)
+    draft.put(
+        id="dz",
+        chunk_kind="paragraph",
+        text="The Zr$_6$ node and the UO$_2^{2+}$ ion.",
+        at={"last": True},
+    )
+    ref = hub.store.get_ref(kind="draft", id="dz")
+    out = tmp_path / "dz.docx"
+    export_docx(hub.store, ref, target_path=out)
+    import zipfile
+
+    with zipfile.ZipFile(out) as z:
+        doc_xml = z.read("word/document.xml").decode("utf-8")
+    assert "<m:e/>" not in doc_xml  # no empty base → no dotted box
+    assert "oMath" in doc_xml
+    docx.Document(str(out))
+
+
+def test_latex_cite_command_is_folded(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A draft carrying verbatim LaTeX ``\\cite{key}`` resolves to a numbered
+    mark + References entry — the ``\\cite{`` / ``}`` wrapper never leaks as
+    literal text."""
+    _seed_paper(hub.store, "wu22", "Wu 2022 study", 2022)
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="dc", title="T", project=pid)
+    draft.put(
+        id="dc",
+        chunk_kind="paragraph",
+        text="Adsorption is fast \\cite{wu22}.",
+        at={"last": True},
+    )
+    ref = hub.store.get_ref(kind="draft", id="dc")
+    out = tmp_path / "dc.docx"
+    res = export_docx(hub.store, ref, target_path=out)
+    assert res.cited_slugs == ["wu22"]
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert "\\cite" not in text and "cite{" not in text  # wrapper folded away
+    assert "[1]" in text  # resolved to a numbered mark
+    assert "Wu 2022 study" in text  # References entry
+
+
 def test_omml_converter_returns_none_on_empty() -> None:
     pytest.importorskip("latex2mathml")
     from precis.export.omml import latex_to_omml
@@ -200,11 +307,11 @@ def test_omml_converter_returns_none_on_empty() -> None:
     assert el is not None and el.tag.endswith("oMath")
 
 
-def test_same_paper_chunks_collapse_to_one_endnote(
+def test_same_paper_chunks_collapse_to_one_mark(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
-    """a~3, a~9, a~23 (different chunks, same paper) → ONE endnote, and
-    consecutive marks collapse to a single reference."""
+    """a~3, a~9, a~23 (different chunks, same paper) → ONE References entry,
+    and consecutive marks collapse to a single ``[1]``."""
     _seed_paper(hub.store, "wu22", "Wu 2022 study", 2022)
     pid = int(
         TodoHandler(hub=hub)
@@ -224,11 +331,7 @@ def test_same_paper_chunks_collapse_to_one_endnote(
     out = tmp_path / "dd.docx"
     res = export_docx(hub.store, ref, target_path=out)
     assert res.cited_slugs == ["wu22"]  # one paper, deduped
-    import zipfile
-
-    with zipfile.ZipFile(out) as z:
-        body = z.read("word/document.xml").decode("utf-8")
-        endnotes = z.read("word/endnotes.xml").decode("utf-8")
-    assert body.count("endnoteReference") == 1  # consecutive marks collapsed
-    assert endnotes.count('w:id="1"') == 1  # exactly one content endnote
-    assert "Wu 2022 study" in endnotes
+    paras = [p.text for p in docx.Document(str(out)).paragraphs]
+    body_para = next(p for p in paras if "Several findings" in p)
+    assert body_para.count("[1]") == 1  # consecutive marks collapsed to one
+    assert "Wu 2022 study" in "\n".join(paras)  # one References entry
