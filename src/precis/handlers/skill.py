@@ -185,6 +185,10 @@ _SKILL_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "Research & validation",
         (
+            "precis-cite-paper-help",
+            "precis-citation-help",
+            "precis-check-source-help",
+            "precis-finding-help",
             "precis-provenance-help",
             "precis-preflight",
             "precis-doi-resolution",

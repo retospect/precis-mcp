@@ -42,15 +42,23 @@ re-submissions so two agents writing the same claim collapse).
 ## Pointer formats for the source of the claim
 ## How do I reference the paper or patent I'm citing?
 
-Four equivalent forms — bare forms assume `paper:` kind:
+`cited_in=` is a **corpus handle** — the chunk where you read the
+claim. Bare forms assume `paper:` kind:
 
 ```python
 cited_in='miller23a'                   # bare cite_key (paper)
 cited_in='miller23a~42'                # bare cite_key + chunk
 cited_in='paper:miller23a~42'          # explicit-kind prefix
-cited_in='doi:10.1234/xyz'             # fully-qualified URI
 cited_in='patent:ep1234567b1'          # patent target
 ```
+
+**A bare `doi:`/`arxiv:` is NOT accepted** — `cited_in='doi:10.1234/xyz'`
+fails with `unknown kind 'doi' in link target`. `cited_in` resolves
+through the link parser, which only knows corpus kinds. If the source
+isn't in the corpus yet, stub it and wait for ingest first
+(`put(kind='paper', doi='10.1234/xyz')` + a `paper_ingested` waiting
+todo — see precis-cite-paper-help), then point `cited_in=` at the
+resulting paper's chunk.
 
 ## When to create a finding
 
