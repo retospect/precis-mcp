@@ -316,14 +316,19 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
 # =============================================================================
 FROM deps AS dev-venv
 
+# ruff/mypy/pytest are pinned to the versions in uv.lock so the
+# container's linter/formatter/test runner match `uv run` on the host
+# and CI's `ruff format --check`. Keep these in sync with uv.lock
+# (grep -A1 '^name = "ruff"' uv.lock); a mismatch silently reformats
+# differently in-container than the pre-commit hook (rev v0.15.16).
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     uv pip install --python /opt/venv \
-        pytest \
+        pytest==9.0.3 \
         pytest-cov \
         pytest-xdist \
         hypothesis \
-        ruff \
-        mypy \
+        ruff==0.15.16 \
+        mypy==2.1.0 \
         pylint \
         bandit \
         pip-audit \
