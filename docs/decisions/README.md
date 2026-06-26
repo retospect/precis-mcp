@@ -43,6 +43,7 @@ Per AGENTS.md: "sorted by number; never delete, only supersede".
 | Universal handles (one address system for every record + chunk) | [0036](./0036-universal-handles.md) | **draft/proposed**; flat type-prefixed Crockford handles; partially supersedes 0033 §1 (draft handle/sigil) |
 | Heading styles (self-contained sections) + numbering lock + issues | [0037](./0037-heading-styles-and-numbering-lock.md) | **proposed**; per-heading style=skill, genre=root style, entity-bound numbering with pinned/lock, anchored `issue` loop; extends 0033/0034/0035, uses 0036 handles. Drafting catalogue: `docs/design/draft-section-styles.md` |
 | Prompt assembly & prompt-engineering principles | [0038](./0038-prompt-assembly-and-principles.md) | **proposed**; one assembler + module library (markdown+frontmatter+`{{include}}`), cached/variable layers, agent/helper profiles, per-target adapters, the doc_context/tools/kinds/glossary tables, kind=code alias, conditional modules. Validation: `docs/design/prompt-assembly-shots.md` |
+| ORCID author kind & network discovery | [0039](./0039-orcid-author-kind-and-network-discovery.md) | **proposed**; `kind='orcid'` durable author node (slug=iD, embedded card), `authored`/`authored-by` ref→ref links w/ position meta, missing-DOI diff auto-enqueues stubs into the existing fetch_oa pipeline, S2 author endpoint (`authors:`/`author:`) for paper→author→paper BFS; uses 0036 handles, feeds 0030 stub→fetch. Skills: `precis-orcid-help`, author-discovery |
 
 ## Supersession graph
 
