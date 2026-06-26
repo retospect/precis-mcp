@@ -65,6 +65,8 @@ KIND_CODES: dict[str, str] = {
     "plaintext": "pl",
     "tex": "tx",
     "python": "py",
+    # entities (resolved external records, refs-backed + embedded)
+    "orcid": "oi",
     # thoughts / generated
     "memory": "me",
     "oracle": "or",

@@ -73,10 +73,21 @@ def _log_tool_call(
     None markers — useful for distinguishing operator-driven calls
     from cascade calls during diagnosis.
 
-    Payload fields are sampled (kind, id, name, mode, length of
-    text= for puts) rather than dumped wholesale — we want a
-    grep-friendly audit, not the full LLM payload that lives in
-    ``job_summary``.
+    Payload fields are sampled (kind, id, the ``q=`` query, the
+    citation/finding write fields, length of ``text=`` for puts)
+    rather than dumped wholesale — we want a grep-friendly audit, not
+    the full LLM payload that lives in ``job_summary``. The point of
+    the line is "what did the agent actually ask for?", so the search
+    query and the addressing/citation fields are sampled verbatim
+    (truncated), not just their presence.
+
+    A **failed** call logs at WARNING with a fuller payload: when a
+    call errors we want every field the agent passed so the exact
+    misuse is reconstructable (a wrong ``kind=``, a ``cited_in=`` the
+    resolver rejects, a ``q=`` that returned nothing). Emitting errors
+    at WARNING also means they survive a server deployed at
+    ``log_level=WARNING`` — the diagnostic surface stays alive even
+    when the INFO firehose is off.
     """
     import os
 
@@ -84,25 +95,49 @@ def _log_tool_call(
     workspace = os.environ.get("PRECIS_WORKSPACE", "-")
     model = os.environ.get("PRECIS_CURRENT_MODEL", "-")
 
+    # Verbatim-but-truncated scalar fields. ``q`` (the search query)
+    # and the citation/finding/link addressing fields are exactly the
+    # "what is the agent trying to do" signal that the old sample
+    # dropped — agents fumble these the most (missing kind=, a
+    # ``cited_in=`` the link parser rejects, a non-corpus ``doi=``).
+    _SCALAR_KEYS = (
+        "kind", "id", "name", "mode", "rel", "view", "q", "scope",
+        "target", "link", "cited_in", "source_handle", "doi", "arxiv",
+    )
+    # Longer free-text fields kept only on the error path; the success
+    # firehose keeps them as char-counts to stay grep-friendly.
+    _ERROR_TEXT_KEYS = ("source_quote", "title", "body", "text")
+
+    def _trunc(v: Any, limit: int) -> Any:
+        if isinstance(v, str) and len(v) > limit:
+            return v[:limit] + "…"
+        return v
+
     sample: dict[str, Any] = {}
-    for key in ("kind", "id", "name", "mode", "rel", "view"):
-        if key in payload:
-            v = payload[key]
-            if isinstance(v, str) and len(v) > 80:
-                v = v[:80] + "…"
-            sample[key] = v
-    if "text" in payload:
-        text = payload.get("text")
-        if isinstance(text, str):
-            sample["text_chars"] = len(text)
-    if "tags" in payload:
-        tags = payload.get("tags")
-        if isinstance(tags, list):
-            sample["tags"] = tags[:8]
+    for key in _SCALAR_KEYS:
+        if key in payload and payload[key] is not None:
+            sample[key] = _trunc(payload[key], 200 if key == "q" else 120)
+    if "text" in payload and isinstance(payload.get("text"), str):
+        sample["text_chars"] = len(payload["text"])
+    if "tags" in payload and isinstance(payload.get("tags"), list):
+        sample["tags"] = payload["tags"][:8]
     if "args" in payload and isinstance(payload["args"], dict):
         sample["args_keys"] = sorted(payload["args"].keys())[:8]
 
-    _TOOL_CALL_LOGGER.info(
+    if error:
+        # On failure, widen the capture: include the free-text write
+        # fields (bounded) so the failing call is fully reconstructable,
+        # plus any payload key we didn't already sample, so a novel
+        # misuse can't hide in an unlogged kwarg.
+        for key in _ERROR_TEXT_KEYS:
+            if key in payload and payload[key] is not None:
+                sample[key] = _trunc(payload[key], 200)
+        for key, v in payload.items():
+            if key not in sample and key not in ("text", "tags", "args"):
+                sample[key] = _trunc(v, 120)
+
+    log_at = _TOOL_CALL_LOGGER.warning if error else _TOOL_CALL_LOGGER.info
+    log_at(
         "mcp_call verb=%s parent_todo=%s workspace=%s model=%s "
         "duration_ms=%.1f error=%s payload=%s",
         verb,

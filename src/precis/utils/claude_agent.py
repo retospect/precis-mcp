@@ -48,6 +48,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from precis.utils._claude_subprocess import (
@@ -278,15 +279,50 @@ def call_claude_agent(
     # pipe behaviour can cause claude to read garbage / hang, ultimately
     # producing the "Not logged in" silent-success or zero-MCP-call
     # pattern observed 2026-06-17. Direct ``-p`` callers want no stdin.
-    res = run_claude(
-        args,
-        binary=binary,
-        label="claude -p (agent)",
-        timeout_s=timeout_s,
-        error_cls=ClaudeAgentError,
-        env=proc_env,
-        stdin_devnull=True,
-    )
+    res: Any
+    try:
+        res = run_claude(
+            args,
+            binary=binary,
+            label="claude -p (agent)",
+            timeout_s=timeout_s,
+            error_cls=ClaudeAgentError,
+            env=proc_env,
+            stdin_devnull=True,
+        )
+    except ClaudeAgentError as exc:
+        # A non-zero exit that is actually a *resumable exhaustion* — the
+        # ``--max-turns`` ceiling or the ``--max-budget-usd`` cap — is not
+        # a crash: the CLI ran, emitted full ``stream-json`` telemetry, and
+        # usually a partial answer in the trailing ``result`` event. The
+        # planner already treats this as resumable-not-failed
+        # (``workers/job_types/plan_tick.py`` runs with ``check=False`` and
+        # lifts ``stream_final_text`` regardless of exit code); the agentic
+        # wrapper must not throw that work away and surface a bare
+        # "exited 1: " (empty stderr) to the follow-up / dream / reviewer
+        # callers. Recover the stream and fall through to normal parsing.
+        reason = _recoverable_exhaustion(exc.stdout or "")
+        if reason is None:
+            # Genuine failure. The CLI's bare "exited N: " is undiagnosable
+            # when stderr is empty (stream-json errors land on stdout), so
+            # enrich the message with the terminal reason when one is
+            # present before re-raising.
+            term = stream_terminal_reason(exc.stdout or "")
+            if term is not None:
+                raise ClaudeAgentError(
+                    f"{exc} (terminal_reason={term})",
+                    stdout=exc.stdout,
+                    stderr=exc.stderr,
+                    returncode=exc.returncode,
+                ) from exc
+            raise
+        log.info(
+            "claude_agent: exit %s recovered as resumable exhaustion (%s); "
+            "returning partial result",
+            exc.returncode,
+            reason,
+        )
+        res = SimpleNamespace(stdout=exc.stdout or "", stderr=exc.stderr or "")
     duration_s = time.monotonic() - started
 
     # "Not logged in" guard. ``claude -p`` exits 0 with the message
@@ -322,8 +358,16 @@ def call_claude_agent(
         cost_usd = float(raw_cost) if isinstance(raw_cost, (int, float)) else None
         raw_turns = last_result.get("num_turns")
         turns_used = int(raw_turns) if isinstance(raw_turns, (int, float)) else None
+        # Prefer the result event's ``result`` field; but on an exhaustion
+        # cutoff (max_turns / budget) it is often null/empty, in which case
+        # falling back to ``res.stdout`` would dump the entire JSON stream
+        # as the "answer". Walk the stream for the last assistant text
+        # instead, only dropping to raw stdout when there is none.
         result_text = last_result.get("result")
-        final_text = str(result_text) if isinstance(result_text, str) else res.stdout
+        if isinstance(result_text, str) and result_text.strip():
+            final_text = result_text
+        else:
+            final_text = _last_assistant_text(res.stdout) or res.stdout
     else:
         # text-format path or stub-tests: regex over stderr for cost
         # (legacy Claude Code), final_text is the raw stdout.
@@ -419,6 +463,64 @@ def stream_terminal_reason(stdout: str) -> str | None:
         return subtype
     if isinstance(reason, str) and reason not in ("", "end_turn", "stop"):
         return reason
+    return None
+
+
+def _recoverable_exhaustion(stdout: str) -> str | None:
+    """Terminal reason for a non-zero exit that is a *resumable
+    exhaustion* rather than a crash.
+
+    An agent that hits the ``--max-turns`` ceiling or the
+    ``--max-budget-usd`` cap exits 1 with a ``stream-json`` result event
+    (``subtype='error_max_turns'`` / a budget subtype) — but it ran, did
+    work (MCP side effects), and usually produced a partial answer. That
+    is recoverable: return the reason string so the caller can surface
+    the partial :class:`AgentResult` instead of discarding everything.
+    Returns ``None`` for a genuine error (no result event, or an
+    ``error_during_execution``-class subtype) so the caller re-raises.
+    """
+    reason = stream_terminal_reason(stdout)
+    if reason is None:
+        return None
+    if reason == "max_turns" or "budget" in reason:
+        return reason
+    return None
+
+
+def _last_assistant_text(stdout: str) -> str | None:
+    """Last assistant message text in a ``stream-json`` stream.
+
+    Walks events from the end for the most recent ``assistant`` message
+    and concatenates its text blocks. Used as the final-text fallback
+    when the trailing ``result`` event carries no usable ``result``
+    string (e.g. a max-turns cutoff), so callers get the model's actual
+    last words instead of the raw JSON stream. Returns ``None`` when no
+    assistant text is present.
+    """
+    import json as _json
+
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        if not isinstance(ev, dict) or ev.get("type") != "assistant":
+            continue
+        msg = ev.get("message")
+        content = msg.get("content") if isinstance(msg, dict) else ev.get("content")
+        if isinstance(content, str):
+            return content.strip() or None
+        if isinstance(content, list):
+            joined = "".join(
+                b.get("text", "")
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            ).strip()
+            if joined:
+                return joined
     return None
 
 

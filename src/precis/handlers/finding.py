@@ -811,12 +811,17 @@ class FindingHandler(NumericRefHandler):
     def _resolve_cited_in(self, raw: str) -> LinkTarget:
         """Parse ``cited_in=`` into a :class:`LinkTarget`.
 
-        Accepts:
+        Accepts (a corpus handle — the chunk the claim was read in):
         - ``'miller23a'``               — bare cite_key, paper kind implied
         - ``'miller23a~42'``            — bare cite_key + chunk ord
         - ``'paper:miller23a'``         — explicit kind prefix
         - ``'paper:miller23a~42'``      — explicit + chunk
-        - ``'doi:10.1234/xyz'`` etc.    — fully-qualified handle
+
+        A bare ``'doi:…'`` / ``'arxiv:…'`` is **rejected** —
+        :func:`parse_link_target` only resolves corpus kinds, so a
+        not-yet-ingested DOI raises ``unknown kind 'doi' in link
+        target``. Stub + ingest the paper first, then point
+        ``cited_in`` at its chunk.
 
         Returns: :class:`LinkTarget` resolved by
         :func:`parse_link_target`. The ``raw`` field carries the

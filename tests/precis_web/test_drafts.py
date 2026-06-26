@@ -561,6 +561,24 @@ def test_skeleton_endpoint_returns_blocks_and_version(draft_client: TestClient) 
     assert bbb["anc"] == ["AAAAAA"]
 
 
+def test_skeleton_carries_view_aware_short_estimate(draft_client: TestClient) -> None:
+    # The summary / keywords views collapse each body block to one line, so
+    # the scroller needs a *short* per-view estimate (estS) — without it the
+    # body-length estimate over-reserves space and the bottom of the doc is
+    # stranded behind a giant spacer (the "doesn't scroll in summary mode"
+    # bug). Headings / figures render identically across views → estS == est.
+    data = draft_client.get("/drafts/nt/skeleton").json()
+    blocks = {b["h"]: b for b in data["skeleton"]}
+    for b in blocks.values():
+        assert "estS" in b
+    bbb = blocks["BBBBBB"]  # a body paragraph
+    assert bbb["estS"] < bbb["est"]  # collapses to one line in summary/keywords
+    aaa = blocks["AAAAAA"]  # a heading
+    assert aaa["estS"] == aaa["est"]
+    fig = blocks["FIGFIG"]  # a figure
+    assert fig["estS"] == fig["est"]
+
+
 def test_row_route_hydrates_a_windowed_block(draft_client: TestClient) -> None:
     # The fragment the scroller fetches as a block enters the window — the
     # full, enriched row for one block (linkified refs + change box).

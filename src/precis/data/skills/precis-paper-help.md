@@ -241,6 +241,8 @@ get(kind='skill', id='precis-tags')             # axis vocabulary
 get(kind='skill', id='precis-paper-tag-axes')   # paper-specific axes
 get(kind='skill', id='precis-finding-help')     # chasing un-ingested DOIs
 get(kind='skill', id='precis-stubs-help')       # papers we still need to get
+get(kind='skill', id='precis-cite-paper-help')  # how do I cite a paper? (the router)
+get(kind='skill', id='precis-check-source-help') # find a citation, read surrounds, judge support
 get(kind='skill', id='precis-citation-help')    # verifier workflow for writing
 get(kind='skill', id='precis-memory-help')      # capturing thoughts from a paper
 ```

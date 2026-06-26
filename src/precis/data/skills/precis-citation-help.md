@@ -109,6 +109,8 @@ elsewhere.
 ## See also
 
 ```python
+get(kind='skill', id='precis-cite-paper-help')  # the cite-a-paper router (in/out of corpus, which kind to use)
+get(kind='skill', id='precis-check-source-help') # reader side: find the passage, read surrounds, judge support
 get(kind='skill', id='precis-finding-help')    # chase side: claim → primary source via citation chain
 get(kind='skill', id='precis-search-help')     # find the chunk to verify against
 get(kind='skill', id='precis-paper-help')      # fetch chunks; ~N grammar
