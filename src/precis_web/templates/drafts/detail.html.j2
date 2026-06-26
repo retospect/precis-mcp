@@ -248,7 +248,38 @@ function draftDoc(ident) {
     live: true,
     stale: false,
     view: localStorage.getItem('draft-view:' + ident) || 'body',
-    setView(v) { this.view = v; localStorage.setItem('draft-view:' + ident, v); },
+    setView(v) {
+      if (v === this.view) return;
+      // Each view renders blocks at a different height (body paragraph vs a
+      // one-line summary / keyword list), so the *measured* heights are
+      // view-specific — keeping them would leave the scroller sized for the
+      // old view (the bug: summary/keywords stopped scrolling, bottom blank).
+      // Drop them, re-window on the view-aware estimates, then re-measure the
+      // on-screen rows once Alpine has toggled the columns. Anchor-preserve
+      // so the row under the reader stays put across the height change.
+      const a = this._anchor();
+      this.view = v;
+      localStorage.setItem('draft-view:' + this.ident, v);
+      this.heights = {};
+      this.recum();
+      this.$nextTick(() => {
+        this._remeasureWin();
+        this.recum();
+        this.render();
+        this._restore(a);
+      });
+    },
+    // Re-measure every *hydrated* row currently in #dr-win into `heights`
+    // (placeholders keep their estimate). Used after a view switch and on
+    // first paint when a non-body view is persisted.
+    _remeasureWin() {
+      const win = document.getElementById('dr-win');
+      for (const node of win.children) {
+        if (node.dataset && node.dataset.ph) continue;
+        const h = node.id.slice(2);
+        this.heights[h] = node.offsetHeight || this.heights[h] || 0;
+      }
+    },
     compact: localStorage.getItem('draft-compact:' + ident) !== '0',
     toggleCompact() {
       this.compact = !this.compact;
@@ -273,7 +304,12 @@ function draftDoc(ident) {
     MARGIN: 1000,    // px of off-screen overscan kept rendered
 
     esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; },
-    _h(i) { const b = this.vis[i]; return (b && (this.heights[b.h] || b.est)) || 0; },
+    // Per-view height estimate for an un-measured block. Body uses the
+    // length-derived estimate; summary / keywords collapse each block to a
+    // single line (estS), so reusing the body estimate over-reserves space
+    // and strands the bottom of the doc behind a giant spacer.
+    _est(b) { return (this.view !== 'body' && b.estS != null) ? b.estS : b.est; },
+    _h(i) { const b = this.vis[i]; return (b && (this.heights[b.h] || this._est(b))) || 0; },
     rebuildVis() {
       const set = new Set(this.collapsed);
       this.vis = this.skel.filter((b) => !b.anc.some((a) => set.has(a)));
@@ -323,7 +359,7 @@ function draftDoc(ident) {
       ph.dataset.handle = b.h;
       ph.dataset.anc = JSON.stringify(b.anc);
       if (b.heading) ph.dataset.heading = b.h;
-      ph.style.minHeight = (this.heights[b.h] || b.est) + 'px';
+      ph.style.minHeight = (this.heights[b.h] || this._est(b)) + 'px';
       ph.className = 'dr-block grid grid-cols-1 lg:grid-cols-[1fr_20%_22%] '
         + 'gap-3 py-1.5 border-b border-slate-100 scroll-mt-4';
       if (b.heading) {
@@ -573,6 +609,15 @@ function draftDoc(ident) {
       //    left handlers bound to a stale component (collapse/scroll dead).
       //    $nextTick defers it until the tree is fully wired.
       this.$nextTick(async () => {
+        // Server rows were measured (step 2) while the body column was the
+        // only visible one — summary/keywords are x-cloak'd until Alpine
+        // runs. If a non-body view is persisted, those heights are now wrong;
+        // re-measure against the view Alpine just applied before windowing.
+        if (this.view !== 'body') {
+          this.heights = {};
+          this._remeasureWin();
+          this.recum();
+        }
         this.render();
         const id = location.hash.slice(1);
         if (id && id.startsWith('c-')) await this.ensureVisible(id.slice(2));

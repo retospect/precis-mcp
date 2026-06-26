@@ -499,6 +499,26 @@ def _est_height_px(c: Any) -> int:
     return round(_est_height_rem(c) * 16)
 
 
+#: One-line height (px) for the summary / keywords views — the llm-summary
+#: line (``text-sm`` italic) or keyword list (``text-xs`` mono) plus the
+#: row's ``py-1.5`` padding + border. Headings / figures render identically
+#: in every view, so they keep their body estimate.
+_SHORT_ROW_PX = 34
+
+
+def _est_short_px(c: Any) -> int:
+    """Placeholder height for the summary / keywords views.
+
+    Unlike :func:`_est_height_px` (body length), a non-heading/figure block
+    collapses to a single line in those views regardless of its body, so a
+    body-length estimate over-reserves space — the virtual scroller's
+    spacers then dwarf the real (short) rows, leaving the bottom of the doc
+    an un-hydratable white gap. Reserve one line instead."""
+    if c.chunk_kind in ("heading", "figure"):
+        return _est_height_px(c)
+    return _SHORT_ROW_PX
+
+
 def _skeleton(store: Any, ref: Any) -> list[dict[str, Any]]:
     """The whole-draft **skeleton** the reader's virtual scroller runs on:
     one tiny record per block (handle, address, kind, depth, ancestors,
@@ -524,6 +544,10 @@ def _skeleton(store: Any, ref: Any) -> list[dict[str, Any]]:
                 "heading": is_h,
                 "title": first[:200] if is_h else "",
                 "est": _est_height_px(c),
+                # View-aware estimate: summary / keywords collapse each
+                # non-heading/figure block to one line. The client picks
+                # this for those views so the spacers stay honest.
+                "estS": _est_short_px(c),
             }
         )
     return out

@@ -32,6 +32,24 @@ def stub_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
+def _write_stream_stub(path: Path, *, stdout: str, exit_code: int = 0) -> None:
+    """Stub that emits a verbatim (possibly multi-line) stdout payload.
+
+    ``_write_stub`` inlines ``stdout`` into a ``textwrap.dedent``'d heredoc,
+    which mangles a multi-line ``stream-json`` body (continuation lines have
+    no indent, so dedent strips nothing and the shebang keeps its leading
+    spaces). Stash the payload in a sidecar file and ``cat`` it instead.
+    """
+    import shlex
+
+    payload = path.parent / (path.name + ".out")
+    payload.write_text(stdout)
+    path.write_text(
+        f"#!/usr/bin/env bash\ncat {shlex.quote(str(payload))}\nexit {exit_code}\n"
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+
+
 def _write_stub(
     path: Path, *, stdout: str = "", stderr: str = "", exit_code: int = 0
 ) -> None:
@@ -112,6 +130,112 @@ def test_nonzero_exit_raises_with_context(stub_bin: Path) -> None:
     assert err.returncode == 2
     assert "boom" in err.stderr
     assert err.stdout.strip() == "partial"
+
+
+def _stream(events: list[dict]) -> str:
+    """Render a list of stream-json events to a newline-delimited body."""
+    import json
+
+    return "\n".join(json.dumps(e) for e in events)
+
+
+def test_max_turns_exit1_recovers_partial(stub_bin: Path) -> None:
+    """A ``--max-turns`` cutoff exits 1 with a stream-json result event.
+
+    That is a *resumable exhaustion*, not a crash: the agent ran and
+    produced a partial answer + telemetry. ``call_claude_agent`` must
+    return it, not raise (which surfaced "⚠️ thinking failed: …exited 1:"
+    to the follow-up reader)."""
+    stdout = _stream(
+        [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "partial answer"}]},
+            },
+            {
+                "type": "result",
+                "subtype": "error_max_turns",
+                "is_error": True,
+                "total_cost_usd": 0.19,
+                "num_turns": 20,
+                "result": "partial answer",
+            },
+        ]
+    )
+    _write_stream_stub(stub_bin, stdout=stdout, exit_code=1)
+    res = call_claude_agent("do")  # must not raise
+    assert res.final_text == "partial answer"
+    assert res.cost_usd == 0.19
+    assert res.turns_used == 20
+
+
+def test_budget_cap_exit1_recovers(stub_bin: Path) -> None:
+    """The ``--max-budget-usd`` cap is likewise a resumable exhaustion."""
+    stdout = _stream(
+        [
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "capped reply"}]},
+            },
+            {
+                "type": "result",
+                "subtype": "error_max_budget",
+                "is_error": True,
+                "total_cost_usd": 2.0,
+                "num_turns": 7,
+                "result": "capped reply",
+            },
+        ]
+    )
+    _write_stream_stub(stub_bin, stdout=stdout, exit_code=1)
+    res = call_claude_agent("do")
+    assert res.final_text == "capped reply"
+    assert res.cost_usd == 2.0
+
+
+def test_max_turns_falls_back_to_assistant_text(stub_bin: Path) -> None:
+    """When the result event has no usable ``result`` string, the final
+    text comes from the last assistant message — not the raw JSON stream."""
+    stdout = _stream(
+        [
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "the real answer"}]},
+            },
+            {
+                "type": "result",
+                "subtype": "error_max_turns",
+                "is_error": True,
+                "total_cost_usd": 0.1,
+                "num_turns": 20,
+                "result": None,
+            },
+        ]
+    )
+    _write_stream_stub(stub_bin, stdout=stdout, exit_code=1)
+    res = call_claude_agent("do")
+    assert res.final_text == "the real answer"
+    assert "{" not in res.final_text  # not the raw JSON stream
+
+
+def test_error_during_execution_still_raises_with_reason(stub_bin: Path) -> None:
+    """A genuine runtime error is NOT recovered — it re-raises, and the
+    terminal reason is folded into the message (the CLI's bare "exited 1:"
+    has empty stderr for stream-json errors)."""
+    stdout = _stream(
+        [
+            {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "num_turns": 3,
+            },
+        ]
+    )
+    _write_stream_stub(stub_bin, stdout=stdout, exit_code=1)
+    with pytest.raises(ClaudeAgentError, match="error_during_execution"):
+        call_claude_agent("do")
 
 
 def test_missing_binary_raises(monkeypatch: pytest.MonkeyPatch) -> None:

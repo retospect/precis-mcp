@@ -161,7 +161,17 @@ agentic flag set (`--mcp-config` / `--strict-mcp-config`,
 optional `--bare`, `--disallowed-tools`) + cost cap + wall-clock
 timeout + structured `log_event` to `ref_events`. The reviewers,
 `dream_agent`, and the web "ask a follow-up" path all share this
-surface. Stub-binary tests via `PRECIS_CLAUDE_BIN`.
+surface. Stub-binary tests via `PRECIS_CLAUDE_BIN`. A non-zero exit
+that is a **resumable exhaustion** — the `--max-turns` ceiling or the
+`--max-budget-usd` cap, detected via the trailing `stream-json` result
+event (`_recoverable_exhaustion`) — is **recovered, not raised**: the
+wrapper returns the partial `AgentResult` (final text via the result
+event, falling back to the last assistant message rather than dumping
+the raw JSON stream), mirroring how `plan_tick` treats exhaustion as
+resumable. This stopped the follow-up "ask & think" path surfacing a
+bare `⚠️ thinking failed: …exited 1:` whenever the agent ran out of
+turns. Genuine errors still raise — now with the `terminal_reason`
+folded into the message, since stream-json errors leave stderr empty.
 
 ## Discovery layer (F20)
 
@@ -265,7 +275,14 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
   load↔unload thrash flickered ~5×/s) — fetching them in one
   `/drafts/<id>/rows?handles=…` batch and dropping rows that scroll away.
   Collapse recomputes the visible set + spacers; find / deep-links scroll
-  the target into the window first. `_doc_state` memoises reading-order +
+  the target into the window first. The **view slider** (body / summary /
+  keywords) toggles each row's column via Alpine `x-show`, so a switch
+  changes every block's height: the skeleton carries a body estimate
+  (`est`, length-derived) *and* a one-line estimate (`estS`) for the
+  summary/keywords views, and `setView` drops the per-view measured
+  `heights` + re-measures the on-screen rows once Alpine has re-toggled
+  (else the spacers stay sized for the old view — the bug where
+  summary/keywords stopped scrolling, bottom blank). `_doc_state` memoises reading-order +
   version + abbrevs per `(ref,version)`; `_build_rows(want_idx)` scopes
   per-handle queries to wanted blocks + neighbours; the inline abbrev scan
   is skipped above 300k chars. `GET /drafts/<id>/skeleton` (JSON) feeds the
