@@ -66,6 +66,59 @@ def test_parse_disabled_drops_empty_entries() -> None:
     assert parse_disabled("patent,,web,") == frozenset({"patent", "web"})
 
 
+def test_parse_disabled_strips_inline_reason() -> None:
+    """``kind:reason`` entries contribute only the kind to the keyset."""
+    assert parse_disabled("tex:write into the bound draft") == frozenset({"tex"})
+    assert parse_disabled("patent,tex:do X instead") == frozenset({"patent", "tex"})
+
+
+# ---------------------------------------------------------------------------
+# parse_disabled_reasons()
+# ---------------------------------------------------------------------------
+
+
+def test_parse_disabled_reasons_empty() -> None:
+    from precis.kind_gate import parse_disabled_reasons
+
+    assert parse_disabled_reasons(None) == {}
+    assert parse_disabled_reasons("") == {}
+    assert parse_disabled_reasons("patent,web") == {}  # no inline reasons
+
+
+def test_parse_disabled_reasons_extracts_hint() -> None:
+    from precis.kind_gate import parse_disabled_reasons
+
+    assert parse_disabled_reasons("tex:use put(kind='draft') here") == {
+        "tex": "use put(kind='draft') here"
+    }
+
+
+def test_parse_disabled_reasons_keeps_colons_in_reason() -> None:
+    """Only the first colon splits kind from reason; later colons stay."""
+    from precis.kind_gate import parse_disabled_reasons
+
+    assert parse_disabled_reasons("tex:see this: do that") == {
+        "tex": "see this: do that"
+    }
+
+
+def test_gate_uses_inline_reason_when_present() -> None:
+    """A supplied reason replaces the bare ``prohibited`` tag."""
+    v = gate(
+        _spec("tex"),
+        disabled=frozenset({"tex"}),
+        reasons={"tex": "write into the bound draft"},
+    )
+    assert v.loaded is False
+    assert v.reason == "write into the bound draft"
+
+
+def test_gate_falls_back_to_prohibited_without_reason() -> None:
+    v = gate(_spec("tex"), disabled=frozenset({"tex"}), reasons={"other": "x"})
+    assert v.loaded is False
+    assert v.reason == "prohibited"
+
+
 # ---------------------------------------------------------------------------
 # Loadability invariants
 # ---------------------------------------------------------------------------
