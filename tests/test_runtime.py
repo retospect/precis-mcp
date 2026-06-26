@@ -336,3 +336,46 @@ def test_cross_kind_tag_filter_requires_all_listed_tags(
     assert "[error:" not in out
     assert "with-both" in out
     assert "with-one-tag" not in out
+
+
+# ── kind= accepts a handle code (ADR 0038 §7) ──────────────────────
+
+
+def test_expand_kind_code_record(runtime: PrecisRuntime) -> None:
+    """A 2-char record code resolves to its kind name."""
+    assert runtime._expand_kind_code("dr") == "draft"
+    assert runtime._expand_kind_code("me") == "memory"
+    assert runtime._expand_kind_code("pa") == "paper"
+
+
+def test_expand_kind_code_known_kind_wins(runtime: PrecisRuntime) -> None:
+    """A literal that's already a registered kind is never shadowed."""
+    assert runtime._expand_kind_code("calc") == "calc"
+    assert runtime._expand_kind_code("draft") == "draft"
+
+
+def test_expand_kind_code_chunk_codes_untouched(runtime: PrecisRuntime) -> None:
+    """Chunk codes are address-only — left for the normal unknown-kind path."""
+    assert runtime._expand_kind_code("dc") == "dc"
+    assert runtime._expand_kind_code("pc") == "pc"
+
+
+def test_expand_kind_code_unknown_passthrough(runtime: PrecisRuntime) -> None:
+    assert runtime._expand_kind_code("zz") == "zz"
+    assert runtime._expand_kind_code("draftish") == "draftish"
+
+
+def test_dispatch_kind_code_equivalent_to_name(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``kind='dr'`` dispatches exactly like ``kind='draft'``."""
+    by_code = runtime_with_store.dispatch("get", {"kind": "dr"})
+    by_name = runtime_with_store.dispatch("get", {"kind": "draft"})
+    assert by_code == by_name
+    assert "unknown kind" not in by_code.lower()
+
+
+def test_dispatch_chunk_code_rejected_as_kind(runtime: PrecisRuntime) -> None:
+    """``kind='dc'`` is not a put/get kind — it stays unresolved and errors."""
+    out = runtime.dispatch("get", {"kind": "dc"})
+    assert "[error:NotFound]" in out

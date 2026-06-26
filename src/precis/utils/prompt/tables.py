@@ -108,9 +108,10 @@ def kinds_table() -> str:
     """The cached ``kinds`` legend — code/name/what/ops.
 
     The single legend for **reading handles** (``dc41`` → a draft chunk)
-    *and* **choosing ``kind=``** (pass the long ``name``). Chunk codes
-    (``dc``/``pc``) are address-only — you ``get``/``edit`` them but
-    can't ``put(kind=dc, …)``."""
+    *and* **choosing ``kind=``** — ``kind=`` accepts the record ``code``
+    *or* the long ``name`` (``kind='dr'`` ≡ ``kind='draft'``, ADR 0038
+    §7). Chunk codes (``dc``/``pc``) are address-only — you ``get``/
+    ``edit`` them but can't ``put(kind='dc', …)``."""
     rows: list[dict[str, str]] = []
     for kind, has_chunk, what, ops in _KIND_ROWS:
         code = code_for_kind(kind)
