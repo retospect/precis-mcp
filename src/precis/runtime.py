@@ -2085,7 +2085,7 @@ def build_runtime(
         )
 
     from precis import default_tags as _dt
-    from precis.kind_gate import parse_disabled
+    from precis.kind_gate import parse_disabled, parse_disabled_reasons
 
     hub = boot(
         store=store,
@@ -2093,6 +2093,7 @@ def build_runtime(
         precis_root=config.root,
         python_roots=config.python_roots,
         kinds_disabled=parse_disabled(config.kinds_disabled),
+        kinds_disabled_reasons=parse_disabled_reasons(config.kinds_disabled),
     )
     return PrecisRuntime(
         config=config,

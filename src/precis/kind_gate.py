@@ -64,33 +64,73 @@ class Loadability:
 
 
 def parse_disabled(value: str | None) -> frozenset[str]:
-    """Parse ``PRECIS_KINDS_DISABLED`` into a deduped frozen set.
+    """Parse ``PRECIS_KINDS_DISABLED`` into a deduped frozen set of kinds.
 
     Whitespace around commas is tolerated. Empty entries (``a,,b``)
     are dropped. Unknown kind names are accepted — they're a no-op
     against the live registry; treating typos as a hard error would
     create a deployment-time footgun every time a kind is renamed
     or removed.
+
+    An entry may carry an inline *reason* after a colon
+    (``tex:write into the bound draft instead``) — the reason is
+    **stripped here** (this returns only the kind names) and read
+    separately by :func:`parse_disabled_reasons`. A kind name never
+    contains a colon, so the split is unambiguous; the reason may
+    (it splits on the first colon only). Reasons must not contain a
+    comma (the entry delimiter).
     """
     if not value:
         return frozenset()
     kinds: set[str] = set()
     for raw in value.split(","):
-        kind = raw.strip()
+        kind = raw.split(":", 1)[0].strip()
         if kind:
             kinds.add(kind)
     return frozenset(kinds)
 
 
-def gate(spec: KindSpec, *, disabled: frozenset[str]) -> Loadability:
+def parse_disabled_reasons(value: str | None) -> dict[str, str]:
+    """Extract the inline ``kind:reason`` hints from ``PRECIS_KINDS_DISABLED``.
+
+    Returns ``{kind: reason}`` for every entry that carries a non-empty
+    reason after its first colon; entries with no colon are omitted.
+    The companion to :func:`parse_disabled` (which returns the kind
+    names). A producer that disables a kind *conditionally* — e.g.
+    ``plan_tick`` turning off the prose-file kind when a draft is bound
+    — uses the reason to tell the agent what to do instead; it surfaces
+    verbatim in the ``Unsupported`` error the kind's verbs then raise.
+    """
+    if not value:
+        return {}
+    reasons: dict[str, str] = {}
+    for raw in value.split(","):
+        if ":" not in raw:
+            continue
+        kind, reason = raw.split(":", 1)
+        kind = kind.strip()
+        reason = reason.strip()
+        if kind and reason:
+            reasons[kind] = reason
+    return reasons
+
+
+def gate(
+    spec: KindSpec,
+    *,
+    disabled: frozenset[str],
+    reasons: dict[str, str] | None = None,
+) -> Loadability:
     """Compute the pre-construction loadability verdict.
 
     Two checks, in order:
 
     1. ``spec.kind`` in ``disabled`` → ``Loadability(loaded=False,
-       reason='prohibited')``. Honours operator intent over resource
+       reason=…)``. Honours operator intent over resource
        availability — a prohibited kind that *could* load is still
-       skipped.
+       skipped. The reason is ``reasons[spec.kind]`` when a caller
+       supplied an inline hint (see :func:`parse_disabled_reasons`),
+       else the bare tag ``'prohibited'``.
     2. Every env var in ``spec.requires_env`` is set non-empty →
        proceed. Missing envs → ``Loadability(loaded=False,
        reason='missing <ENV1>, <ENV2>')``.
@@ -103,7 +143,8 @@ def gate(spec: KindSpec, *, disabled: frozenset[str]) -> Loadability:
     translates those via :func:`loadability_from_exception`.
     """
     if spec.kind in disabled:
-        return Loadability(kind=spec.kind, loaded=False, reason="prohibited")
+        reason = (reasons or {}).get(spec.kind) or "prohibited"
+        return Loadability(kind=spec.kind, loaded=False, reason=reason)
     missing = [env for env in spec.requires_env if not os.environ.get(env)]
     if missing:
         return Loadability(

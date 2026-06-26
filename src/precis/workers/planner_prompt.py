@@ -193,7 +193,14 @@ move the work forward by exactly one of these output shapes:
    be re-called once all children resolve. Children automatically
    inherit your workspace.
 
-2. **Write the artefact directly** via the workspace-routed
+2. **Write the artefact directly.** *If this project owns a draft*
+   (you will see a `## Draft` block below in this message), that draft
+   is the deliverable: write prose **into the draft** with
+   `put(kind='draft', …)` / `edit(id='dc<id>', …)` exactly as that
+   block describes — the `.tex` is regenerated from the draft, so the
+   file kinds below are gated off for you this tick. Otherwise (a plain
+   tex workspace with no draft), write the artefact via the
+   workspace-routed
    `put(kind='tex', name='<slug>', text='\\section{...}\\n...')`.
    The system places the file at the right path under your project's
    workspace; you don't compute paths. For figures use
@@ -547,17 +554,24 @@ def _render_project_brief(store: Store, ref_id: int) -> str:
     return f"## Project context ({slug})\n\n{brief}"
 
 
-def _render_draft_identity(store: Store, ref_id: int) -> str:
-    """Tell the agent *which draft it is editing*, when this todo's
-    project owns one (a ``draft-of`` link from the draft to any node in
-    this todo's ancestry — the link sits on the project root, so we walk
-    parents up from the current ref).
+def bound_draft(store: Store, ref_id: int) -> tuple[str, str, str] | None:
+    """Resolve the draft bound to this todo's subtree, if any.
 
-    Without this an editor agent has no told-to-it answer for "what draft
-    am I in?", and reaches for awkward workarounds — e.g. searching the
-    corpus for one of its own chunk handles. Naming the draft + its id up
-    front removes that whole class of confusion and points at the read /
-    search calls. No-op when no draft is bound to this subtree.
+    A project's draft is linked by a ``draft-of`` edge from the draft to
+    a node in this ref's ancestry (the link sits on the project root, so
+    we walk parents up from ``ref_id``). Returns ``(ident, title, fmt)``
+    where ``ident`` is the draft's ``cite_key`` slug or its bare ref_id
+    (whatever ``put(kind='draft', id=…)`` accepts), ``title`` is the
+    draft heading, and ``fmt`` is the workspace format (``'tex'`` /
+    ``'md'``, defaulting to ``'tex'``). ``None`` when no live draft is
+    bound to the subtree.
+
+    Single source of truth for "is this a draft-editing tick?" — used by
+    :func:`_render_draft_identity` (to name the draft in the prompt) and
+    by ``plan_tick`` (to gate the colliding prose-file kind off the tool
+    surface). The same predicate covers the planner's section-writing
+    children *and* the "around here…" anchored change-request ticks,
+    since both run under the project subtree.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -571,7 +585,8 @@ def _render_draft_identity(store: Store, ref_id: int) -> str:
             SELECT l.src_ref_id, dr.title,
                    (SELECT id_value FROM ref_identifiers ri
                      WHERE ri.ref_id = l.src_ref_id AND ri.id_kind = 'cite_key'
-                     LIMIT 1) AS slug
+                     LIMIT 1) AS slug,
+                   dr.meta->'workspace'->>'format' AS fmt
               FROM links l JOIN refs dr ON dr.ref_id = l.src_ref_id
              WHERE l.relation = 'draft-of'
                AND l.dst_ref_id IN (SELECT ref_id FROM anc)
@@ -581,18 +596,51 @@ def _render_draft_identity(store: Store, ref_id: int) -> str:
             (ref_id,),
         ).fetchone()
     if not row:
+        return None
+    src, title, slug, fmt = row
+    return (str(slug or src), title, (fmt or "tex"))
+
+
+def _render_draft_identity(store: Store, ref_id: int) -> str:
+    """Tell the agent *which draft it is editing* and how to write into
+    it, when this todo's project owns one (resolved via
+    :func:`bound_draft`).
+
+    Without this an editor agent has no told-to-it answer for "what draft
+    am I in?", and reaches for awkward workarounds — e.g. searching the
+    corpus for one of its own chunk handles, or (the failure this fixes)
+    writing the section to a freestanding ``kind='tex'`` file the draft
+    never renders. Naming the draft + the body-write verbs up front
+    removes that whole class of confusion. The colliding prose-file kind
+    is *also* gated off the tool surface for this tick (``plan_tick`` sets
+    ``PRECIS_KINDS_DISABLED``), so this block is the positive half: where
+    to write, not a prohibition. No-op when no draft is bound.
+    """
+    resolved = bound_draft(store, ref_id)
+    if resolved is None:
         return ""
-    _src, title, slug = row
-    ident = slug or _src
+    ident, title, _fmt = resolved
     return (
         f"## Draft\n\n"
-        f"You are editing draft **{title}** (`id={ident}`). Read it with "
-        f"`get(kind='draft', id='{ident}')` (outline) and `get(id='dc<id>')` "
-        f"(one chunk); search within it via "
+        f"You are editing draft **{title}** (`id={ident}`). **This draft is "
+        f"this project's deliverable** — its chunks are the canonical, "
+        f"editable source, and both the web reader and the PDF export render "
+        f"*the draft's chunks* (the `.tex` is export-only output, regenerated "
+        f"from the draft). Read it with `get(kind='draft', id='{ident}')` "
+        f"(outline) and `get(id='dc<id>')` (one chunk); search within it via "
         f"`search(kind='draft', q='…', scope='{ident}')`. Address chunks by "
         f"their `dc<id>` handle; cross-reference anything by embedding its "
         f"handle in brackets — `[dc<id>]` (a chunk), `[me<id>]` (a memory) — in "
-        f"prose."
+        f"prose.\n\n"
+        f"**Write prose INTO this draft.** Add a paragraph under a heading "
+        f"with `put(kind='draft', id='{ident}', chunk_kind='paragraph', "
+        f"text='…', at={{'into': 'dc<heading>', 'last': True}})`; add a "
+        f"section heading with `put(kind='draft', id='{ident}', "
+        f"chunk_kind='heading', text='…', at={{'after': 'dc<id>'}})`; revise "
+        f"an existing chunk in place with `edit(id='dc<id>', text='…')`. When "
+        f"you decompose into section subtasks, tell each child to write its "
+        f"section **into draft `{ident}`** under the relevant `dc<id>` "
+        f"heading."
     )
 
 

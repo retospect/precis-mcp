@@ -340,6 +340,7 @@ def _try(
     *,
     hub: Hub,
     disabled: frozenset[str] = frozenset(),
+    reasons: dict[str, str] | None = None,
     **kw: Any,
 ) -> Any | None:
     """Construct a handler, auto-register it, swallow missing-dep errors.
@@ -392,7 +393,7 @@ def _try(
 
     spec = getattr(cls, "spec", None)
     if spec is not None:
-        verdict = gate(spec, disabled=disabled)
+        verdict = gate(spec, disabled=disabled, reasons=reasons)
         if not verdict.loaded:
             hub.loadabilities[spec.kind] = verdict
             log.info(
@@ -526,6 +527,7 @@ def boot(
     precis_root: str | None = None,
     python_roots: str | None = None,
     kinds_disabled: frozenset[str] = frozenset(),
+    kinds_disabled_reasons: dict[str, str] | None = None,
 ) -> Hub:
     """Build and return a fully-populated :class:`Hub`.
 
@@ -567,7 +569,13 @@ def boot(
     def _gated(cls: Callable[..., Any], **kw: Any) -> Any | None:
         """Local _try alias capturing ``hub`` + the parsed prohibition
         set. Each call site keeps only its handler-specific kwargs."""
-        return _try(cls, hub=hub, disabled=kinds_disabled, **kw)
+        return _try(
+            cls,
+            hub=hub,
+            disabled=kinds_disabled,
+            reasons=kinds_disabled_reasons,
+            **kw,
+        )
 
     # --- Stateless handlers (no store) ---------------------------------
 

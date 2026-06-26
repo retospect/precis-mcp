@@ -144,6 +144,16 @@ def run(
     subprocess_env = dict(os.environ)
     if workspace is not None:
         subprocess_env["PRECIS_WORKSPACE"] = workspace.path
+    # Draft-bound tick: gate the colliding prose-file kind off the tool
+    # surface so the agent cannot write the section to a freestanding
+    # `kind='tex'`/`kind='markdown'` file the draft never renders (the
+    # canonical store is the draft's chunks; the file is export-only).
+    # The kind-gate reads PRECIS_KINDS_DISABLED at MCP-server boot — the
+    # server inherits this env — and the inline `kind:reason` hint
+    # surfaces verbatim in the Unsupported error if the agent still
+    # reaches for it, pointing it back at put(kind='draft', …). Covers
+    # both section-writing children and "around here…" anchored ticks.
+    _disable_prose_file_kind(store, parent_ref_id, subprocess_env)
     # PRECIS_CURRENT_TODO: the runtime parent todo for this tick. The
     # MCP server reads this via utils/workspace.current_todo_from_env;
     # TodoHandler.put auto-defaults parent_id= to it when the caller
@@ -276,6 +286,46 @@ def _load_parent_workspace(store: Any, parent_ref_id: int):
     if row is None:
         return None
     return Workspace.from_meta(row[0])
+
+
+def _disable_prose_file_kind(
+    store: Any, parent_ref_id: int, subprocess_env: dict[str, str]
+) -> None:
+    """When a draft is bound to this tick, add the colliding prose-file
+    kind to ``PRECIS_KINDS_DISABLED`` in ``subprocess_env`` with an
+    inline hint, so the spawned MCP server gates it off the tool surface.
+
+    The colliding kind is the one whose files duplicate the draft body:
+    ``tex`` for a tex-format draft, ``markdown`` for a md-format one.
+    Figures / data (``pic`` / ``data``) are left enabled — they are
+    draft-adjacent artefacts the draft references, not a second copy of
+    its prose. Merges with any operator-set value (the gate reads a
+    comma list); the hint carries no comma. Best-effort: any failure
+    leaves the env untouched — the ``## Draft`` prompt block still steers
+    the agent, the gate is just the belt to its suspenders.
+    """
+    from precis.workers.planner_prompt import bound_draft
+
+    try:
+        resolved = bound_draft(store, parent_ref_id)
+    except Exception:
+        log.warning("plan_tick: bound_draft lookup failed", exc_info=True)
+        return
+    if resolved is None:
+        return
+    ident, _title, fmt = resolved
+    kind = "markdown" if fmt.lower() in ("md", "markdown") else "tex"
+    hint = (
+        f"this project's deliverable is draft '{ident}' — write prose with "
+        f"put(kind='draft' ...) or edit(id='dc<id>') as the '## Draft' block "
+        f"in your prompt describes; the {kind} file kind is export-only output "
+        f"here"
+    )
+    existing = subprocess_env.get("PRECIS_KINDS_DISABLED", "").strip()
+    entry = f"{kind}:{hint}"
+    subprocess_env["PRECIS_KINDS_DISABLED"] = (
+        f"{existing},{entry}" if existing else entry
+    )
 
 
 def _model_alias(model: str) -> str:
