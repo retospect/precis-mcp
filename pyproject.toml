@@ -287,17 +287,17 @@ python_version = "3.11"
 warn_unused_configs = true
 check_untyped_defs = true
 ignore_missing_imports = true
+# Incrementally re-enabling these (code-review Phase 4.1). Already
+# burned down + removed: no-any-return, valid-type (were already clean),
+# dict-item, method-assign, var-annotated. Remaining (error counts at
+# last measure): operator (11), type-var (14), assignment (26),
+# index (35), union-attr (98) — re-enable one at a time as they're fixed.
 disable_error_code = [
     "assignment",
-    "dict-item",
     "index",
-    "method-assign",
-    "no-any-return",
     "operator",
     "type-var",
     "union-attr",
-    "valid-type",
-    "var-annotated",
 ]
 
 [tool.pytest.ini_options]

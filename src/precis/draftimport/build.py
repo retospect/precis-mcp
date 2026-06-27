@@ -349,7 +349,7 @@ def run_import(
         # specific paper chunk -> [pc<id>]; otherwise the paper -> [pa<id>]; an
         # unresolved key stays [§key] for the external-ref re-link in phase 2.
         quote_cache: dict[int, list] = {}
-        pc_pa = Counter()
+        pc_pa: Counter[str] = Counter()
 
         def _cite_resolver(c: Any) -> str:
             parts = []

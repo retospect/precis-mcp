@@ -86,7 +86,7 @@ def test_resolve_key_matches_cite_key_alias() -> None:
 
     from precis.draftimport.resolve import resolve_key
 
-    calls = {"ident": [], "cite_key": []}
+    calls: dict[str, list] = {"ident": [], "cite_key": []}
 
     def find_paper_ref_by_identifier(value):
         calls["ident"].append(value)

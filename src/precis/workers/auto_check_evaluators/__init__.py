@@ -42,7 +42,7 @@ class Evaluator(Protocol):
     """Evaluator surface — one callable per ``type``."""
 
     def __call__(
-        self, store: Store, spec: dict[str, Any], **kw: Any
+        self, store: Store, spec: dict[str, Any], *, ref_id: int
     ) -> bool | None: ...
 
 

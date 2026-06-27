@@ -341,7 +341,7 @@ def test_run_pass_concurrent_isolates_failure() -> None:
             }
 
     good = _claim_row(chunk_id=1, ref_id=7)
-    poison = (
+    poison: tuple = (
         2,
         7,
         1,
@@ -397,7 +397,7 @@ def test_numeric_dump_tagged_without_llm_call() -> None:
     """A numeric/coordinate dump is tagged ``(tabular data)`` in the pass with
     no LLM call (the transport is never hit)."""
     numeric_text = " ".join(f"{i}.{i}{i}" for i in range(80))  # mostly digits
-    row = (
+    row: tuple = (
         9,
         7,
         0,

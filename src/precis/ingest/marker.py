@@ -280,7 +280,8 @@ def _patch_text_config_ambiguity() -> None:
                 raise
 
         if PretrainedConfig.get_text_config is not _patched:
-            PretrainedConfig.get_text_config = _patched
+            # Deliberate monkeypatch of a third-party class method.
+            PretrainedConfig.get_text_config = _patched  # type: ignore[method-assign]
             log.debug("Patched PretrainedConfig.get_text_config (ambiguity fix)")
     except (ImportError, AttributeError):
         pass
