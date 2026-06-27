@@ -17,8 +17,10 @@ from __future__ import annotations
 from typing import Any
 
 from precis_web.routes.status import (
+    _LIVENESS_SIGNALS,
     _background_anomalies,
     _backlog_counts,
+    _liveness,
     _recent_passes,
 )
 
@@ -104,3 +106,35 @@ def test_failed_passes_groups_by_handler_and_drops_schedule(store: Any) -> None:
     assert "runner" not in by_handler  # logger name must never leak through
     assert "chunk_keywords" not in by_handler  # failed=0 → not a failure
     assert by_handler["embed:bge-m3"]["failed"] == 3
+
+
+def test_liveness_runs_every_signal_against_real_pg(store: Any) -> None:
+    """Each liveness query is valid SQL against real PG (the panel's
+    point): one row per signal, in registry order, none degraded to the
+    ``unknown`` sentinel (which only happens on a query exception). Only
+    the scheduled-cadence signals carry the ``scheduled`` flag.
+    """
+    rows = _liveness(store)
+
+    assert [r["label"] for r in rows] == [label for label, _, _ in _LIVENESS_SIGNALS]
+    assert not any(r["unknown"] for r in rows)  # every query executed cleanly
+
+    by_label = {r["label"]: r for r in rows}
+    assert by_label["News ingested"]["scheduled"] is True
+    assert by_label["Morning briefing"]["scheduled"] is True
+    # Pipeline stages are informational — never flagged on cadence.
+    assert by_label["Chunk extracted"]["scheduled"] is False
+
+
+def test_liveness_scheduled_signal_clears_when_fresh(store: Any) -> None:
+    """A recent ``briefing`` pass log clears the stale flag; the signal
+    reads ``worker_logs.pass``, so a fresh row means "alive"."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs (host, pass, level, message) "
+            "VALUES ('melchior', 'briefing', 'INFO', 'delivered')"
+        )
+        conn.commit()
+
+    by_label = {r["label"]: r for r in _liveness(store)}
+    assert by_label["Morning briefing"]["stale"] is False

@@ -514,6 +514,85 @@ def _heartbeats(store: Any) -> list[dict[str, Any]]:
     return out
 
 
+#: Liveness signals — the end-to-end "is it alive" heartbeat. Each is
+#: ``(label, sql returning one timestamp, staleness threshold seconds)``.
+#: Only the *scheduled-cadence* signals (news / briefing) carry a
+#: threshold and flag amber when overdue; the pipeline stages move only
+#: when there's work to ingest, so flagging them on a quiet corpus would
+#: cry wolf — they stay informational (threshold ``None``).
+_LIVENESS_SIGNALS: list[tuple[str, str, int | None]] = [
+    (
+        "Paper ingested",
+        "SELECT max(created_at) FROM refs WHERE kind = 'paper' AND deleted_at IS NULL",
+        None,
+    ),
+    ("Chunk extracted", "SELECT max(created_at) FROM chunks", None),
+    ("Chunk indexed (embed)", "SELECT max(created_at) FROM chunk_embeddings", None),
+    ("Chunk summarized", "SELECT max(created_at) FROM chunk_summaries", None),
+    (
+        "News ingested",
+        "SELECT max(created_at) FROM refs WHERE kind = 'news' AND deleted_at IS NULL",
+        2 * 3600,  # cron */30m — amber after ~4 missed polls
+    ),
+    (
+        # When the dream pass last *ran* (worker_logs), not a tag on its
+        # output: dream memories don't carry a stable ``tier:dream`` tag,
+        # so the pass log is the reliable liveness source.
+        "Dream",
+        "SELECT max(ts) FROM worker_logs WHERE pass = 'dream_agent'",
+        None,
+    ),
+    (
+        "Morning briefing",
+        "SELECT max(ts) FROM worker_logs WHERE pass = 'briefing'",
+        26 * 3600,  # daily 07:00 — amber after a missed day
+    ),
+]
+
+
+def _liveness(store: Any) -> list[dict[str, Any]]:
+    """End-to-end freshness: last activity per pipeline stage + watch.
+
+    Answers "is it alive?" at a glance — when did the corpus last take
+    in a paper, extract / index / summarise a chunk, ingest news, dream,
+    or deliver the briefing. Each signal is read independently so one
+    schema surprise degrades *that row* to "unknown" rather than
+    dropping the whole panel (mirrors :func:`_backlog_counts`). Only the
+    scheduled-cadence signals (news / briefing) flag stale; the pipeline
+    stages are informational since idle is normal on a quiet corpus.
+    """
+    out: list[dict[str, Any]] = []
+    for label, sql, stale_after_s in _LIVENESS_SIGNALS:
+        try:
+            with store.pool.connection() as conn:
+                row = conn.execute(sql).fetchone()
+            ts = row[0] if row else None
+        except Exception:
+            log.exception("status: liveness query for %s failed", label)
+            out.append(
+                {
+                    "label": label,
+                    "ago": "—",
+                    "stale": False,
+                    "scheduled": stale_after_s is not None,
+                    "unknown": True,
+                }
+            )
+            continue
+        age = _age_seconds(ts)
+        stale = stale_after_s is not None and (age is None or age > stale_after_s)
+        out.append(
+            {
+                "label": label,
+                "ago": _ago(ts) if ts is not None else "never",
+                "stale": stale,
+                "scheduled": stale_after_s is not None,
+                "unknown": False,
+            }
+        )
+    return out
+
+
 #: A single (ref_id, source) above this many ref_events in 24h is a
 #: worker spin loop. Mirrors ``precis.workers.nursery.SPIN_LOOP_EVENTS_24H``
 #: — kept as a local literal so the web package doesn't import the
@@ -684,6 +763,7 @@ async def index(request: Request) -> HTMLResponse:
             "recent_passes": _safe(lambda: _recent_passes(store)) or [],
             "recent_agents": _safe(lambda: _recent_agent_activity(store)) or [],
             "backlog": _safe(lambda: _backlog_counts(store)) or {},
+            "liveness": _safe(lambda: _liveness(store)) or [],
             "usage": _safe(lambda: _claude_usage(store)) or {},
             "quota": _safe(lambda: _claude_quota(store)) or {},
             "hosts": _safe(lambda: _hosts(store)) or [],

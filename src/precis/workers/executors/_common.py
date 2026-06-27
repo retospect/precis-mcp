@@ -161,6 +161,26 @@ def is_cancel_requested(conn: Connection, ref_id: int) -> bool:
     return row is not None
 
 
+def current_status(conn: Connection, ref_id: int) -> str | None:
+    """Return the ref's current ``STATUS:`` value, or ``None`` if unset.
+
+    There is one ``STATUS:`` tag per ref at a time (the handler writes
+    with ``replace_prefix=True``), so this is an unambiguous read. Used
+    to tell whether a job has already reached a terminal state before
+    the executor applies its own transition.
+    """
+    row = conn.execute(
+        """
+        SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+         WHERE rt.ref_id = %s
+           AND t.namespace = %s
+         LIMIT 1
+        """,
+        (ref_id, STATUS_NAMESPACE),
+    ).fetchone()
+    return str(row[0]) if row and row[0] is not None else None
+
+
 def append_chunk(
     store: Any,
     ref_id: int,
@@ -240,6 +260,7 @@ __all__ = [
     "WAITING_TIME",
     "append_chunk",
     "claim_executor_jobs",
+    "current_status",
     "is_cancel_requested",
     "record_failure",
     "set_meta",

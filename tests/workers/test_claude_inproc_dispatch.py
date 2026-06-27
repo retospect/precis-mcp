@@ -154,6 +154,76 @@ class TestPluginDispatchRouting:
 
         assert captured == [(43, spec)]
 
+    def test_plugin_dispatch_marks_succeeded_when_not_terminal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A plugin dispatcher that returns without driving a terminal
+        status leaves the job ``RUNNING``; the executor must finalize it
+        to ``SUCCEEDED`` (else it lingers until the stuck-job sweeper
+        reaps it as claim-orphaned → failed → wedges a recurring)."""
+        spec = JobTypeSpec(
+            name="plugin_demo",
+            params_schema={"type": "object", "properties": {}},
+            compatible_executors=frozenset({"claude_inproc"}),
+            requires=frozenset(),
+            description="d",
+            run=lambda **_: None,
+            dispatch=lambda ctx, spec: None,  # does its work, sets no status
+        )
+        monkeypatch.setattr(claude_inproc, "get_job_type", lambda name: spec)
+        monkeypatch.setattr(claude_inproc, "_is_cancel_requested", lambda *_: False)
+        # Job is still RUNNING after the dispatch returns.
+        monkeypatch.setattr(
+            claude_inproc,
+            "_current_status",
+            lambda conn, ref_id: claude_inproc._RUNNING,
+        )
+        calls: list[tuple[int, str]] = []
+        monkeypatch.setattr(
+            claude_inproc,
+            "_set_status",
+            lambda store, ref_id, value, *, conn: calls.append((ref_id, value)),
+        )
+
+        claude_inproc._run_one(
+            _FakeStore(), ref_id=50, title="t", meta={"job_type": "plugin_demo"}
+        )
+
+        assert calls == [(50, claude_inproc._SUCCEEDED)]
+
+    def test_plugin_dispatch_leaves_terminal_status_untouched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dispatcher that already recorded a failure
+        (``STATUS:failed``) must NOT be overwritten with ``succeeded``."""
+        spec = JobTypeSpec(
+            name="plugin_demo",
+            params_schema={"type": "object", "properties": {}},
+            compatible_executors=frozenset({"claude_inproc"}),
+            requires=frozenset(),
+            description="d",
+            run=lambda **_: None,
+            dispatch=lambda ctx, spec: None,  # imagine it called record_failure
+        )
+        monkeypatch.setattr(claude_inproc, "get_job_type", lambda name: spec)
+        monkeypatch.setattr(claude_inproc, "_is_cancel_requested", lambda *_: False)
+        # Dispatcher already drove the job terminal.
+        monkeypatch.setattr(
+            claude_inproc, "_current_status", lambda conn, ref_id: claude_inproc._FAILED
+        )
+        calls: list[tuple[int, str]] = []
+        monkeypatch.setattr(
+            claude_inproc,
+            "_set_status",
+            lambda store, ref_id, value, *, conn: calls.append((ref_id, value)),
+        )
+
+        claude_inproc._run_one(
+            _FakeStore(), ref_id=51, title="t", meta={"job_type": "plugin_demo"}
+        )
+
+        assert calls == []  # finalize must not override a terminal status
+
 
 class TestDispatchContextClosures:
     """The closures in DispatchContext call the executor helpers

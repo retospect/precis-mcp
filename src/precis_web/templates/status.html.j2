@@ -88,6 +88,36 @@
   {% endif %}
 </section>
 
+<!-- Liveness — the "is it alive" heartbeat: last activity per pipeline
+     stage (ingest → extract → index → summarise) plus the scheduled
+     watches (news / briefing) and dreams. Scheduled signals turn amber
+     when overdue; pipeline stages are informational (idle is normal on
+     a quiet corpus). -->
+{% if liveness %}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Liveness</h2>
+  <div class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+    <table class="w-full text-sm">
+      <tbody class="divide-y divide-slate-100">
+        {% for s in liveness %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-2 text-slate-700">
+            <span class="inline-block w-2 h-2 rounded-full mr-1 align-middle
+              {% if s.unknown %}bg-slate-300{% elif s.stale %}bg-amber-500{% else %}bg-emerald-500{% endif %}"></span>
+            {{ s.label }}
+            {% if s.scheduled %}<span class="text-xs text-slate-400">· scheduled</span>{% endif %}
+          </td>
+          <td class="px-4 py-2 text-right tabular-nums {% if s.stale %}text-amber-700 font-semibold{% else %}text-slate-500{% endif %}">
+            {{ s.ago }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
 <!-- Background health — spin loops (a worker re-claiming the same ref
      every pass) + failed worker passes, both over 24h. These are the
      derived-queue failure modes that are otherwise invisible until

@@ -48,10 +48,16 @@ from precis.workers.executors._common import (
     SUCCEEDED as _SUCCEEDED,
 )
 from precis.workers.executors._common import (
+    TERMINAL as _TERMINAL,
+)
+from precis.workers.executors._common import (
     append_chunk as _append_chunk,
 )
 from precis.workers.executors._common import (
     claim_executor_jobs,
+)
+from precis.workers.executors._common import (
+    current_status as _current_status,
 )
 from precis.workers.executors._common import (
     is_cancel_requested as _is_cancel_requested,
@@ -253,6 +259,16 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
     if spec.dispatch is not None:
         ctx = _build_dispatch_context(store, ref_id, title, meta)
         spec.dispatch(ctx, spec)
+        # Plugin dispatchers signal *failure* explicitly (``ctx.record_failure``
+        # → ``STATUS:failed``) and *cancellation* via ``ctx.set_status``, but
+        # they leave the happy-path transition to the executor: they do their
+        # work, append a summary, and return still ``RUNNING``. Mark the job
+        # SUCCEEDED here unless the dispatcher already drove it terminal.
+        # Without this the job lingers ``running`` until the 1h stuck-job
+        # sweeper reaps it as ``claim-orphaned`` → ``failed`` — which, for a
+        # recurring ``news_poll`` / ``briefing``, bubbles onto the spawned
+        # child and wedges the schedule spawner ("previous still open").
+        _finalize_plugin_dispatch(store, ref_id)
         return
 
     if spec.name == "fix_gripe":
@@ -318,6 +334,20 @@ def _build_dispatch_context(
         record_failure=_ctx_record_failure,
         is_cancel_requested=_ctx_is_cancel_requested,
     )
+
+
+def _finalize_plugin_dispatch(store: Any, ref_id: int) -> None:
+    """Drive a plugin-dispatched job to ``SUCCEEDED`` after a clean run.
+
+    Only transitions a job still in a non-terminal state — a dispatcher
+    that already recorded a failure (``STATUS:failed``) or cancellation
+    is left untouched. Idempotent and race-free: ``dispatch`` guarantees
+    one runner per job, so the read-then-write needs no extra locking.
+    """
+    with store.pool.connection() as conn:
+        if _current_status(conn, ref_id) not in _TERMINAL:
+            _set_status(store, ref_id, _SUCCEEDED, conn=conn)
+            conn.commit()
 
 
 def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
