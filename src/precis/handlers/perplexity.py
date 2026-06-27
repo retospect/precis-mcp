@@ -33,8 +33,8 @@ from precis.errors import BadInput, Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.response import Response
+from precis.utils.http import http_client, require_httpx
 from precis.utils.next_block import render_next_section
-from precis.utils.optional_deps import require_optional
 from precis.utils.slug import slug_from_text
 
 log = logging.getLogger(__name__)
@@ -134,7 +134,7 @@ class _PerplexityBase(CacheBackedHandler):
         return key
 
     def _fetch(self, key: str) -> FetchResult:
-        httpx = require_optional("httpx", extra="external")
+        httpx = require_httpx()
 
         # Strip the "<model>:" prefix to get the real prompt.
         _, _, query = key.partition(":")
@@ -147,7 +147,7 @@ class _PerplexityBase(CacheBackedHandler):
             "web_search_options": {"search_context_size": "high"},
         }
         try:
-            with httpx.Client(timeout=float(self.timeout)) as client:
+            with http_client(timeout=float(self.timeout)) as client:
                 resp = client.post(
                     _SONAR_URL,
                     headers={

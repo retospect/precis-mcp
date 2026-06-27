@@ -43,7 +43,7 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store._tag_filter import WIKI_TAG, is_wiki_tag
 from precis.store.types import BlockInsert
-from precis.utils.optional_deps import require_optional
+from precis.utils.http import http_client, require_httpx
 from precis.utils.slug import slug_from_text
 
 log = logging.getLogger(__name__)
@@ -147,21 +147,23 @@ class WikipediaHandler(CacheBackedHandler):
     # ── upstream fetch ────────────────────────────────────────────────
 
     def _fetch(self, key: str) -> FetchResult:
-        httpx = require_optional("httpx", extra="external")
+        httpx = require_httpx()
 
         from precis.utils.safe_fetch import SsrfBlocked
 
         lang = self._lang()
         api = f"https://{lang}.wikipedia.org/w/api.php"
-        headers = {"User-Agent": self._user_agent(), "Accept": "application/json"}
 
-        # follow_redirects=False — safe_get walks the chain itself,
-        # revalidating each hop against the SSRF blocklist. (Same guard
-        # the `web` kind uses; api.php is a public host so this is belt-
-        # and-suspenders, but no raw redirect-following on agent input.)
+        # follow_redirects=False (http_client's default) — safe_get walks
+        # the chain itself, revalidating each hop against the SSRF
+        # blocklist. (Same guard the `web` kind uses; api.php is a public
+        # host so this is belt-and-suspenders, but no raw redirect-
+        # following on agent input.)
         try:
-            with httpx.Client(
-                timeout=30.0, follow_redirects=False, headers=headers
+            with http_client(
+                timeout=30.0,
+                headers={"Accept": "application/json"},
+                user_agent=self._user_agent(),
             ) as client:
                 title = self._resolve_title(client, api, key)
                 if title is None:

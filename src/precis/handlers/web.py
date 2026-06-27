@@ -27,6 +27,7 @@ from precis.handlers._cache_base import (
 )
 from precis.protocol import KindSpec
 from precis.response import Response
+from precis.utils.http import http_client, require_httpx
 from precis.utils.optional_deps import require_optional
 from precis.utils.url import canonical_url, host_of, is_http_url, slug_from_url
 
@@ -117,7 +118,7 @@ class WebHandler(CacheBackedHandler):
     # ── upstream fetch + extract ──────────────────────────────────────
 
     def _fetch(self, key: str) -> FetchResult:
-        httpx = require_optional("httpx", extra="external")
+        httpx = require_httpx()
         trafilatura = require_optional("trafilatura", extra="external")
 
         import os
@@ -125,18 +126,17 @@ class WebHandler(CacheBackedHandler):
         from precis.utils.safe_fetch import SsrfBlocked, safe_get
 
         ua = os.environ.get("WEB_USER_AGENT", _DEFAULT_UA)
-        headers = {"User-Agent": ua, "Accept": "text/html,*/*;q=0.8"}
 
         try:
-            # follow_redirects=False — safe_get walks the redirect
-            # chain itself, revalidating each Location against the
-            # SSRF blocklist. Original code set this True with no
-            # host check, letting an agent-supplied URL chain into
-            # 169.254.169.254 / 127.0.0.1 / RFC1918.
-            with httpx.Client(
+            # follow_redirects=False (http_client's default) — safe_get
+            # walks the redirect chain itself, revalidating each Location
+            # against the SSRF blocklist. A True default here would let an
+            # agent-supplied URL chain into 169.254.169.254 / 127.0.0.1 /
+            # RFC1918.
+            with http_client(
                 timeout=30.0,
-                follow_redirects=False,
-                headers=headers,
+                headers={"Accept": "text/html,*/*;q=0.8"},
+                user_agent=ua,
             ) as client:
                 resp = safe_get(client, key)
         except SsrfBlocked as exc:

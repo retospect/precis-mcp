@@ -41,7 +41,7 @@ from precis.errors import BadInput, Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.store.types import BlockInsert
-from precis.utils.optional_deps import require_optional
+from precis.utils.http import http_client, require_httpx
 from precis.utils.slug import slug_from_text
 
 log = logging.getLogger(__name__)
@@ -333,13 +333,13 @@ class SemanticScholarHandler(CacheBackedHandler):
         Shared by the search and citation-graph paths so the
         rate-limit / auth / transport handling lives in one place.
         """
-        httpx = require_optional("httpx", extra="external")
+        httpx = require_httpx()
         api_key = (os.environ.get("SEMANTIC_SCHOLAR_API_KEY") or "").strip()
-        headers: dict[str, str] = {"User-Agent": "precis-mcp/1.0"}
+        headers: dict[str, str] = {}
         if api_key:
             headers["x-api-key"] = api_key
         try:
-            with httpx.Client(timeout=30.0, headers=headers) as client:
+            with http_client(timeout=30.0, headers=headers) as client:
                 resp = client.get(url, params=params)
         except httpx.HTTPError as exc:
             raise Upstream(f"Semantic Scholar transport error: {exc}") from exc

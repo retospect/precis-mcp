@@ -29,6 +29,7 @@ from precis.errors import Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.store.types import BlockInsert
+from precis.utils.http import http_client
 
 log = logging.getLogger(__name__)
 
@@ -187,7 +188,6 @@ def _run_query(app_id: str, expression: str) -> Any:
     library's XML postprocessor (``Document.make``) for output parity
     with v1's wolfravant-mcp formatter.
     """
-    import httpx
     import multidict
     import xmltodict
     from wolframalpha import Document
@@ -204,7 +204,7 @@ def _run_query(app_id: str, expression: str) -> Any:
         totaltimeout="55",
     )
     url = "https://api.wolframalpha.com/v2/query"
-    with httpx.Client(timeout=60.0) as http:
+    with http_client(timeout=60.0) as http:
         resp = http.get(url, params=params)
     if resp.status_code != 200:
         raise Upstream(

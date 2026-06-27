@@ -44,6 +44,7 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert
 from precis.utils.block_ingest import to_block_inserts
+from precis.utils.http import http_client, require_httpx
 from precis.utils.md_parse import block_meta, parse_markdown
 from precis.utils.optional_deps import require_optional
 from precis.utils.slug import slug_from_text
@@ -136,17 +137,18 @@ def fetch_article(url: str, *, embedder: Any = None) -> FetchResult:
     worker (scheduled). Uses trafilatura markdown extraction — same
     engine as the ``web`` kind — behind the SSRF-guarded fetcher.
     """
-    httpx = require_optional("httpx", extra="external")
+    httpx = require_httpx()
     trafilatura = require_optional("trafilatura", extra="external")
 
     from precis.utils.safe_fetch import SsrfBlocked, safe_get
 
     ua = os.environ.get("WEB_USER_AGENT", _DEFAULT_UA)
-    headers = {"User-Agent": ua, "Accept": "text/html,*/*;q=0.8"}
 
     try:
-        with httpx.Client(
-            timeout=30.0, follow_redirects=False, headers=headers
+        with http_client(
+            timeout=30.0,
+            headers={"Accept": "text/html,*/*;q=0.8"},
+            user_agent=ua,
         ) as client:
             resp = safe_get(client, url)
     except SsrfBlocked as exc:

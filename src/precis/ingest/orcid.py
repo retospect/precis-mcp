@@ -26,7 +26,7 @@ import time
 from typing import Any
 
 from precis.errors import BadInput, NotFound, Upstream
-from precis.utils.optional_deps import require_optional
+from precis.utils.http import http_client, require_httpx
 
 # Public API + OAuth token endpoints. The *public* token endpoint is on
 # the main orcid.org host; the data lives on pub.orcid.org/v3.0.
@@ -134,9 +134,9 @@ def _get_token() -> str:
         cached = _token_cache.get(cid)
         if cached is not None and cached[1] > now + 60:
             return cached[0]
-    httpx = require_optional("httpx", extra="external")
+    httpx = require_httpx()
     try:
-        with httpx.Client(timeout=_TIMEOUT_S) as client:
+        with http_client(timeout=_TIMEOUT_S, user_agent=None) as client:
             resp = client.post(
                 _TOKEN_URL,
                 data={
@@ -169,7 +169,7 @@ def _get_token() -> str:
 
 def _api_get(path: str) -> dict[str, Any]:
     """GET ``{_API_BASE}/{path}`` with a bearer token; return parsed JSON."""
-    httpx = require_optional("httpx", extra="external")
+    httpx = require_httpx()
     token = _get_token()
     url = f"{_API_BASE}/{path.lstrip('/')}"
     headers = {
@@ -178,7 +178,7 @@ def _api_get(path: str) -> dict[str, Any]:
         "User-Agent": _USER_AGENT,
     }
     try:
-        with httpx.Client(timeout=_TIMEOUT_S) as client:
+        with http_client(timeout=_TIMEOUT_S, user_agent=None) as client:
             resp = client.get(url, headers=headers)
     except httpx.HTTPError as exc:
         raise Upstream(f"ORCID transport error: {exc}") from exc
