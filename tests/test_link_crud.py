@@ -315,9 +315,7 @@ class TestStoreMergeRefs:
         store.set_ref_identifier(survivor, "doi", "10.1234/dup.2022")
         assert store.find_paper_ref_by_identifier("10.1234/dup.2022") == survivor
 
-    def test_bare_delete_owner_does_not_wedge_identifier(
-        self, store: Store
-    ) -> None:
+    def test_bare_delete_owner_does_not_wedge_identifier(self, store: Store) -> None:
         """A DOI orphaned by a *bare* soft-delete (the 🗑 Delete button,
         not ``merge_refs``) must not permanently block a live paper from
         claiming it. The deleted owner can't be loaded to merge against,
@@ -330,13 +328,8 @@ class TestStoreMergeRefs:
         store.soft_delete_ref(deleted)
 
         # Reassigning to the live paper now succeeds (no dead-end conflict).
-        assert store.set_ref_identifier(
-            survivor, "doi", "10.1126/science.7973651"
-        )
-        assert (
-            store.find_paper_ref_by_identifier("10.1126/science.7973651")
-            == survivor
-        )
+        assert store.set_ref_identifier(survivor, "doi", "10.1126/science.7973651")
+        assert store.find_paper_ref_by_identifier("10.1126/science.7973651") == survivor
 
     def test_live_owner_still_blocks_identifier(self, store: Store) -> None:
         """A *live* owner of the value is still a real conflict — the

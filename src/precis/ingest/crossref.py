@@ -58,7 +58,9 @@ def orcids_for_doi(doi: str, mailto: str = "") -> list[dict[str, Any]]:
             continue
         bare = orcid_url.rsplit("/", 1)[-1].strip()
         name = ", ".join(
-            p for p in ((a.get("family") or "").strip(), (a.get("given") or "").strip()) if p
+            p
+            for p in ((a.get("family") or "").strip(), (a.get("given") or "").strip())
+            if p
         )
         out.append(
             {

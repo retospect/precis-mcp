@@ -111,7 +111,10 @@ def test_normalize_works_merges_group_summaries() -> None:
                         "title": {"title": {"value": "Paper One (dup)"}},
                         "external-ids": {
                             "external-id": [
-                                {"external-id-type": "doi", "external-id-value": "10.2/Z"}
+                                {
+                                    "external-id-type": "doi",
+                                    "external-id-value": "10.2/Z",
+                                }
                             ]
                         },
                     },
@@ -283,9 +286,16 @@ def test_orcid_handler_resolve_then_gated_enqueue(
         "keywords": ["spintronics"],
         "researcher_urls": [],
         "country": "GB",
-        "employments": [{"organization": "Cambridge", "ror": "https://ror.org/013meh722"}],
+        "employments": [
+            {"organization": "Cambridge", "ror": "https://ror.org/013meh722"}
+        ],
         "works": [
-            {"doi": "10.1021/orcidtest.1", "title": "New Paper", "year": 2024, "url": ""}
+            {
+                "doi": "10.1021/orcidtest.1",
+                "title": "New Paper",
+                "year": 2024,
+                "url": "",
+            }
         ],
         "work_count": 1,
     }

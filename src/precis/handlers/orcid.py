@@ -219,9 +219,7 @@ class OrcidHandler(Handler):
         # Missing creds ⇒ disable the kind (InitError is caught by the
         # boot gate), never block the rest of the surface.
         if not orcid_api.has_credentials():
-            raise InitError(
-                "orcid: ORCID_CLIENT_ID / ORCID_CLIENT_SECRET not set"
-            )
+            raise InitError("orcid: ORCID_CLIENT_ID / ORCID_CLIENT_SECRET not set")
         self.store: Store = hub.store
         self.embedder = hub.embedder
 
@@ -403,9 +401,7 @@ class OrcidHandler(Handler):
                 next="tag(kind='orcid', id='0000-0002-1825-0097', add=['topic-...'])",
             )
         raw = str(id).strip()
-        reject_chunk_or_path_view(
-            kind="orcid", slug=raw, sel=None, path_view=None
-        )
+        reject_chunk_or_path_view(kind="orcid", slug=raw, sel=None, path_view=None)
         # Accept the universal handle (``oi12``) directly; else normalise an
         # iD to the slug form so ``orcid:`` / bare / URL all resolve.
         if handle_registry.parse(raw) is None:
@@ -480,9 +476,7 @@ class OrcidHandler(Handler):
                 ref_id = ref.id
             else:
                 ref_id = existing_ref_id
-                self.store.update_ref(
-                    ref_id, title=title, meta_patch=meta, conn=conn
-                )
+                self.store.update_ref(ref_id, title=title, meta_patch=meta, conn=conn)
             self.store.insert_blocks(ref_id, [card_block], replace=True, conn=conn)
         return ref_id
 

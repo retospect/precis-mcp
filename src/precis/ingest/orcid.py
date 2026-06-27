@@ -151,8 +151,7 @@ def _get_token() -> str:
         raise Upstream(f"ORCID token transport error: {exc}") from exc
     if resp.status_code != 200:
         raise Upstream(
-            f"ORCID token request failed (HTTP {resp.status_code}): "
-            f"{resp.text[:200]}",
+            f"ORCID token request failed (HTTP {resp.status_code}): {resp.text[:200]}",
             next="check ORCID_CLIENT_ID / ORCID_CLIENT_SECRET",
         )
     try:
@@ -194,9 +193,7 @@ def _api_get(path: str) -> dict[str, Any]:
         _token_cache.clear()
         raise Upstream("ORCID rejected the bearer token (HTTP 401)")
     if resp.status_code != 200:
-        raise Upstream(
-            f"ORCID HTTP {resp.status_code} for {path}: {resp.text[:200]}"
-        )
+        raise Upstream(f"ORCID HTTP {resp.status_code} for {path}: {resp.text[:200]}")
     try:
         return resp.json()
     except Exception as exc:
@@ -260,7 +257,11 @@ def _normalize_employments(record: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for grp in groups:
         for summary_wrap in grp.get("summaries", []) if isinstance(grp, dict) else []:
-            emp = summary_wrap.get("employment-summary") if isinstance(summary_wrap, dict) else None
+            emp = (
+                summary_wrap.get("employment-summary")
+                if isinstance(summary_wrap, dict)
+                else None
+            )
             if not isinstance(emp, dict):
                 continue
             org = emp.get("organization") or {}

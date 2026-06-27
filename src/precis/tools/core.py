@@ -101,8 +101,20 @@ def _log_tool_call(
     # dropped — agents fumble these the most (missing kind=, a
     # ``cited_in=`` the link parser rejects, a non-corpus ``doi=``).
     _SCALAR_KEYS = (
-        "kind", "id", "name", "mode", "rel", "view", "q", "scope",
-        "target", "link", "cited_in", "source_handle", "doi", "arxiv",
+        "kind",
+        "id",
+        "name",
+        "mode",
+        "rel",
+        "view",
+        "q",
+        "scope",
+        "target",
+        "link",
+        "cited_in",
+        "source_handle",
+        "doi",
+        "arxiv",
     )
     # Longer free-text fields kept only on the error path; the success
     # firehose keeps them as char-counts to stay grep-friendly.

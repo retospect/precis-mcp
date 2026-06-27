@@ -93,9 +93,7 @@ _S2_AUTHOR_BASE = "https://api.semanticscholar.org/graph/v1/author"
 _PAPER_AUTHORS_FIELDS = "name,externalIds,hIndex,affiliations"
 
 #: Fields for ``/author/{id}/papers`` — the outbound BFS frontier.
-_AUTHOR_PAPERS_FIELDS = (
-    "title,year,externalIds,venue,citationCount,authors.name"
-)
+_AUTHOR_PAPERS_FIELDS = "title,year,externalIds,venue,citationCount,authors.name"
 
 #: Page size for an author's paper list.
 _AUTHOR_PAPERS_LIMIT = 50
@@ -303,7 +301,12 @@ class SemanticScholarHandler(CacheBackedHandler):
                 title=f"S2 author papers: {author_id}",
                 body_blocks=[BlockInsert(pos=0, text=text)],
                 cost_usd=None,
-                meta={"key": key, "nav": "author", "author": author_id, "result_count": 0},
+                meta={
+                    "key": key,
+                    "nav": "author",
+                    "author": author_id,
+                    "result_count": 0,
+                },
             )
         blocks = [
             BlockInsert(pos=i, text=_format_paper(p)) for i, p in enumerate(papers)

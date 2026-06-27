@@ -312,8 +312,7 @@ class IdentifiersMixin:
                 # (id_kind, id_value), so the stale row must go before the
                 # INSERT below can land.
                 c.execute(
-                    "DELETE FROM ref_identifiers "
-                    "WHERE id_kind = %s AND id_value = %s",
+                    "DELETE FROM ref_identifiers WHERE id_kind = %s AND id_value = %s",
                     (s, v),
                 )
             c.execute(
