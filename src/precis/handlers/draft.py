@@ -331,6 +331,7 @@ class DraftHandler(Handler):
             if kind != "term":
                 body += self._write_abbrev_hints(slug, ref.id, str(text), "")
                 body += self._citation_form_hint(str(text))
+                body += self._literal_cite_hint(str(text))
             return Response(body=body)
 
         # else: create the draft
@@ -564,6 +565,7 @@ class DraftHandler(Handler):
                 slug = ref.slug if ref and ref.slug else str(c.ref_id)
                 body += self._write_abbrev_hints(slug, c.ref_id, str(text), old_text)
                 body += self._citation_form_hint(str(text))
+                body += self._literal_cite_hint(str(text))
             return Response(body=body)
         raise BadInput(
             "edit(kind='draft') requires text= (rewrite), move= (reorder/reparent), "
@@ -681,6 +683,25 @@ class DraftHandler(Handler):
             "(copy it from search/get output), not a bare paper: mention "
             f"(which exports to no \\cite): {offenders}."
         )
+
+    def _literal_cite_hint(self, text: str) -> str:
+        r"""Flag a literal ``\cite{...}`` / ``\citequote{...}`` typed into a
+        draft body. In a draft you cite by writing the supporting paper-
+        chunk handle inline (``[pc<id>]``); the export engine emits the
+        ``\cite`` + bibliography, so a hand-written cite key resolves to
+        nothing. Fires only on draft chunks — a real ``.tex`` *file* keeps
+        its literal ``\cite`` as source (see precis-tex-help)."""
+        import re
+
+        if re.search(r"\\cite(?:quote|p|t|alp|author|year)?\s*\{", text):
+            return (
+                "\n\n⚠ you typed a literal \\cite/\\citequote in the draft. "
+                "Cite by the supporting paper-chunk handle inline instead: "
+                "[pc<id>] (copy it from search/get output). The export engine "
+                "writes the \\cite and the bibliography; \\cite/\\citequote "
+                "are export-only output, never authored in a draft."
+            )
+        return ""
 
     def _resolve_draft_any(self, id: str | int | None) -> Any:
         """Resolve a draft ref from either its slug or a ¶handle (a chunk

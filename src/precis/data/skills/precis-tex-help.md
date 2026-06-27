@@ -61,28 +61,20 @@ grouping. `\begin{equation}...\end{equation}` stays in one block only
 if it has no internal blank lines. `\cite{...}` keys are opaque text;
 for citation-graph navigation use `kind='paper'`.
 
-## Citations: don't hand-author `\cite` / `\citequote`
+## Citations in a `.tex` file are literal source
 
-**`\cite{}` and `\citequote{}` are retired as authoring forms.** Do
-not write them by hand and do not add a `\citequote` macro to a
-preamble — `\cite{}` is now **export-only output**, produced by the
-draft export engine, not something you type.
+A `.tex` file's `\cite{key}` / `\citep{key}` / `\citequote{...}` are
+**ordinary LaTeX source** — you write, edit, and preserve them verbatim
+like any other markup. `kind='tex'` never interprets or rewrites a cite
+key. For citation-graph navigation (who cites a paper, what supports a
+claim) work with `kind='paper'`, not by reading keys here.
 
-In a **draft** (`kind='draft'`, the editable chunk-native document a
-project actually writes into) a citation is the **bare paper-chunk
-handle written inline**: `[pc234]`, or several supporting chunks
-`[pc232][pc234][pc593]`; patents `[pk<id>]`, in-flight findings
-`[fi<id>]`. The handle is **copied** from search/get output, never
-guessed; on export it resolves to its paper and renders `\cite{}` plus
-one bibliography entry per paper. A `[me<id>]`/`[dc<id>]` reference is
-a **link, not a citation** (`related-to`, provenance only — never in
-the bibliography). See precis-draft-help.
-
-In a raw `.tex` file edited as `kind='tex'`, `\cite{...}` keys are
-opaque source text — preserved verbatim, not interpreted. For
-citation-graph navigation (who cites a paper, what supports a claim)
-work in the draft layer and `kind='paper'`, not by hand-editing
-`\cite` keys here.
+This is a different layer from a **draft** (`kind='draft'`), the
+chunk-native document a project *authors* into. There you never
+hand-write `\cite{}`: you cite by the bare paper-chunk handle `[pc<id>]`
+and the export engine generates the `\cite` + bibliography. That model
+is `precis-draft-help` / `precis-citation-help` — not this skill. Don't
+import it here: editing a `.tex` file is editing literal LaTeX.
 
 ## Inspect a project's structure
 ## See the section hierarchy across included files

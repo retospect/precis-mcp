@@ -189,6 +189,39 @@ def test_handle_paper_pc_pa_render_cite() -> None:
     assert ctx.cited == ["miller23"]  # collapsed to one bib entry
 
 
+def test_handle_patent_pk_renders_cite() -> None:
+    """[pk<id>] (a patent chunk) resolves to the patent's cite_key -> \\cite."""
+    import types
+
+    store = types.SimpleNamespace(
+        resolve_handle=lambda h: (
+            types.SimpleNamespace(public_id="ep1234567b1") if h == "pk55" else None
+        )
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("see [pk55].", ctx)
+    assert r"\cite{ep1234567b1}" in out
+    assert ctx.cited == ["ep1234567b1"]
+
+
+def test_handle_finding_fi_renders_cite_via_meta() -> None:
+    """[fi<id>] cites its primary_cite_key once established (so it merges
+    with a direct cite of that paper), else its pub_id placeholder."""
+    import types
+
+    established = types.SimpleNamespace(meta={"primary_cite_key": "miller23"})
+    inflight = types.SimpleNamespace(meta={"pub_id": "ab12c3"})
+    store = types.SimpleNamespace(
+        fetch_refs_by_ids=lambda ids: (
+            {7: established} if 7 in ids else {9: inflight} if 9 in ids else {}
+        )
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("est [fi7], inflight [fi9].", ctx)
+    assert r"\cite{miller23}" in out  # established → primary cite_key
+    assert r"\cite{ab12c3}" in out  # in-flight → pub_id placeholder
+
+
 def test_build_acronyms() -> None:
     tex = latex.build_acronyms({"PEI": "polyethyleneimine", "MOF": "metal-organic"})
     assert r"\newacronym{pei}{PEI}{polyethyleneimine}" in tex

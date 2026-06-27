@@ -146,8 +146,7 @@ class CitationHandler(NumericRefHandler):
             )
         # ADR 0036: accept a universal chunk handle (``pc<id>``) — the form
         # search output now emits — and normalize it to the canonical
-        # ``slug~ord`` form so paper validation, storage, and the downstream
-        # bibtex / \citequote macros stay unchanged.
+        # ``slug~ord`` form so paper validation and storage stay unchanged.
         sh = str(source_handle).strip()
         if handle_registry.parse(sh) is not None:
             resolved = self.store.resolve_handle(sh)

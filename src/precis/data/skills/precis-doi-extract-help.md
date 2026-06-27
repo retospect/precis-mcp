@@ -100,5 +100,5 @@ collapse into the existing ref.
 ```python
 get(kind='skill', id='precis-paper-help')       # corpus read / search side
 get(kind='skill', id='precis-citation-help')    # using fetched papers as cite sources
-get(kind='skill', id='precis-tex-help')         # \citequote macro that bridges citations to tex
+get(kind='skill', id='precis-draft-help')       # cite a paper inline by its [pc<id>] chunk handle
 ```

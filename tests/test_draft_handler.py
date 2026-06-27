@@ -137,6 +137,31 @@ def test_numeric_paper_ref_hints_chunk_handle_form(
     assert "paper: mention" not in r2.body  # a bare [pc<id>] handle is fine
 
 
+def test_literal_cite_in_draft_is_flagged(draft: DraftHandler, hub: Hub) -> None:
+    r"""Typing a literal ``\cite{}``/``\citequote{}`` into a draft body is
+    flagged — in a draft you cite by the ``[pc<id>]`` handle and the
+    export engine writes the ``\cite``. A bare handle does not trip it."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=r"As reported \cite{smith2020}, the rate rises.",
+        at={"after": "¶" + th},
+    )
+    assert "literal \\cite" in r.body  # the lint fires
+
+    r2 = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="The rate rises further [pc999].",
+        at={"after": "¶" + th},
+    )
+    assert "literal \\cite" not in r2.body  # a bare [pc<id>] handle is clean
+
+
 def test_edit_and_delete_require_chunk_handle(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
