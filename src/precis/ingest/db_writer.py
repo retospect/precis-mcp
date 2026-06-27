@@ -30,6 +30,8 @@ from typing import Any
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
+from precis.identity import normalize_arxiv, normalize_doi
+
 # ---------------------------------------------------------------------------
 # Identifier kinds — pinned to the migration's ref_identifiers comment.
 # ---------------------------------------------------------------------------
@@ -165,11 +167,15 @@ def probe_existing(
     Looks up the ``ref_identifiers`` index — single round-trip.
     First match wins; ordering follows :data:`_IDENTIFIER_KINDS`.
     """
+    # Canonicalise the case-insensitive ids before probing so a lookup
+    # by a publisher-uppercased DOI still finds a row written lowercase
+    # (and vice versa). ``write_paper`` stores the same canonical forms,
+    # so probe and write agree by construction.
     candidates: list[tuple[str, str]] = []
     by_kind = {
         "paper_id": paper_id,
-        "doi": doi,
-        "arxiv": arxiv_id,
+        "doi": normalize_doi(doi) or doi,
+        "arxiv": normalize_arxiv(arxiv_id) or arxiv_id,
         "s2": s2_id,
         "pubmed": pubmed_id,
         "openalex": openalex_id,
@@ -375,9 +381,16 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
     if paper.pub_id:
         identifiers["pub_id"] = paper.pub_id
     if paper.doi:
-        identifiers["doi"] = paper.doi
+        # DOIs/arXiv ids are case-insensitive; store the canonical form
+        # so the (id_kind, id_value) alias index never forks on publisher
+        # case inconsistency (matches make_paper_id, which normalises the
+        # same value into the paper_id). Without this, a paper ingested
+        # via arXiv/S2 (raw DOI casing) and the same paper later ingested
+        # via DOI (normalised) would write two different doi rows and the
+        # idempotency probe would miss — spawning a duplicate ref.
+        identifiers["doi"] = normalize_doi(paper.doi) or paper.doi
     if paper.arxiv_id:
-        identifiers["arxiv"] = paper.arxiv_id
+        identifiers["arxiv"] = normalize_arxiv(paper.arxiv_id) or paper.arxiv_id
     if paper.s2_id:
         identifiers["s2"] = paper.s2_id
     if paper.pubmed_id:

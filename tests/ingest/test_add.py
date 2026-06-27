@@ -249,6 +249,92 @@ class TestPrecisAddIdempotent:
         assert result.chunks_written == 0
 
 
+class TestDoiCaseCanonicalization:
+    """Cross-route dedup must survive publisher DOI-case inconsistency.
+
+    DOIs are case-insensitive (DOI Handbook §2.4). ``make_paper_id``
+    already lowercases, but the ``ref_identifiers`` doi *alias* row used
+    by ``probe_existing`` must also be canonical — otherwise a paper
+    ingested via arXiv/S2 (which hand back the raw publisher casing) and
+    the same paper later ingested via its DOI write two differently-cased
+    rows and the idempotency probe misses, spawning a duplicate ref.
+    """
+
+    def test_alias_row_is_lowercased_on_write(self, store):
+        # S2 hands back the published DOI in uppercase on an arXiv ingest.
+        base = _fixture_paper(
+            paper_id="arxiv:2401.12345", cite_key_prefix="wei24", doi="10.1038/UPPER"
+        )
+        arxiv_paper = PaperToWrite(
+            **{
+                **base.__dict__,
+                "arxiv_id": "2401.12345",
+                "provider": "s2",
+                "pub_id": "doi:10.1038/upper",
+            }
+        )
+        with patch(
+            "precis.ingest.pipeline.fetch_paper_by_arxiv",
+            return_value=arxiv_paper,
+        ):
+            r1 = precis_add(ArxivInput(arxiv_id="2401.12345"), store=store)
+
+        assert r1.inserted is True
+        # The stored alias must be the canonical lowercase form.
+        assert r1.identifiers["doi"] == "10.1038/upper"
+        with store.pool.connection() as conn:
+            stored = conn.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE id_kind = 'doi' AND ref_id = %s",
+                (r1.ref_id,),
+            ).fetchone()
+        assert stored is not None and stored[0] == "10.1038/upper"
+
+    def test_doi_ingest_dedups_onto_arxiv_ingested_paper(self, store):
+        # 1) arXiv route writes the paper with an uppercase DOI from S2.
+        base = _fixture_paper(
+            paper_id="arxiv:2402.55555", cite_key_prefix="ng24", doi="10.1038/MixedCase"
+        )
+        arxiv_paper = PaperToWrite(
+            **{
+                **base.__dict__,
+                "arxiv_id": "2402.55555",
+                "provider": "s2",
+                "pub_id": "doi:10.1038/mixedcase",
+            }
+        )
+        with patch(
+            "precis.ingest.pipeline.fetch_paper_by_arxiv",
+            return_value=arxiv_paper,
+        ):
+            r1 = precis_add(ArxivInput(arxiv_id="2402.55555"), store=store)
+
+        # 2) Same paper arrives later via its DOI (lowercase). It must
+        # collapse onto the existing ref, not spawn a duplicate.
+        doi_paper = _fixture_paper(
+            paper_id="doi:10.1038/mixedcase",
+            cite_key_prefix="ng24",
+            doi="10.1038/mixedcase",
+        )
+        with patch(
+            "precis.ingest.pipeline.fetch_paper_by_doi",
+            return_value=doi_paper,
+        ):
+            r2 = precis_add(DoiInput(doi="10.1038/mixedcase"), store=store)
+
+        assert r1.inserted is True
+        assert r2.inserted is False
+        assert r2.ref_id == r1.ref_id
+
+        # Exactly one ref carries this DOI.
+        with store.pool.connection() as conn:
+            n = conn.execute(
+                "SELECT count(*) FROM ref_identifiers "
+                "WHERE id_kind = 'doi' AND id_value = '10.1038/mixedcase'"
+            ).fetchone()
+        assert n is not None and n[0] == 1
+
+
 # ---------------------------------------------------------------------------
 # Pipeline failure surfaces cleanly
 # ---------------------------------------------------------------------------
