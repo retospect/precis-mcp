@@ -61,6 +61,19 @@ class KindSpec:
     is_numeric: bool = False  # public id is int (else str slug)
     id_required: bool = True  # False if get may omit id
 
+    #: Corpus role for the document family (paper / patent / cfp / …).
+    #: ``"evidence"`` — a citable source that participates in literature
+    #: search (paper, patent). ``"spec"`` — a read-only requirements
+    #: document (a call-for-proposal, a standard) that must **never** be
+    #: cited as evidence and lives in its own reader namespace. The
+    #: citation handler already resolves sources only against
+    #: ``kind='paper'``, so a ``"spec"`` doc is non-citable by
+    #: construction; this flag formalises the distinction for the planner
+    #: prompt, the reader chrome, and any future cross-kind search.
+    #: ``"none"`` for kinds outside the document family (the default for
+    #: notes, jobs, todos — they are not ingested source documents).
+    corpus_role: Literal["evidence", "spec", "none"] = "none"
+
     #: User-authored note-like kinds opt-in to ``PRECIS_DEFAULT_TAGS``
     #: merging on ``put`` (and tag-suggestion hints on ``tag``).
     #: Default ``False`` so ingested kinds (paper, patent), fetched

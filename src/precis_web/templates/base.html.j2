@@ -53,7 +53,7 @@
              Refs is the consolidated browser (memory/conv/gripe/pres
              pre-checked + checkboxes for the rest); Oracle keeps its
              "roll the dice" UX and Patents its OPS remote-search. #}
-          {% set browse = [('papers-needed','Papers Needed','/papers-needed'), ('clusters','Clusters','/clusters'), ('refs','Refs','/refs'), ('refs:oracle','Oracle','/refs/oracle'), ('refs:patent','Patents','/refs/patent')] %}
+          {% set browse = [('papers-needed','Papers Needed','/papers-needed'), ('clusters','Clusters','/clusters'), ('refs','Refs','/refs'), ('refs:oracle','Oracle','/refs/oracle'), ('refs:patent','Patents','/refs/patent'), ('cfp','CFPs','/cfp')] %}
           {% set browse_keys = browse | map(attribute=0) | list %}
           <div x-data="{open:false}" @click.outside="open=false" @keydown.escape="open=false" class="relative">
             <button type="button" @click="open=!open"

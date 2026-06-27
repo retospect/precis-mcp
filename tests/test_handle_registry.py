@@ -28,6 +28,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
     {
         "paper",
         "patent",
+        "cfp",
         "news",
         "draft",
         "conv",

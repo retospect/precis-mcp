@@ -80,6 +80,14 @@ class PdfInput:
     #: under a new tagging dir merges tags additively instead of
     #: silently no-op'ing.
     extra_tags: tuple[str, ...] = ()
+    #: Stored kind for this ingest. Defaults to ``"paper"``. The CFP /
+    #: requirements flow passes ``as_kind="cfp"`` so the *identical*
+    #: Marker → chunks pipeline lands the document under the spec-role
+    #: ``cfp`` kind instead of the citable ``paper`` kind (DRY — no
+    #: separate extractor; only the ``refs.kind`` differs). Threaded
+    #: into :class:`~precis.ingest.db_writer.PaperToWrite.kind` via
+    #: :func:`_build_paper`.
+    as_kind: str = "paper"
 
 
 @dataclass(frozen=True)
@@ -215,7 +223,9 @@ def precis_add(
                 )
                 conn.commit()
             with store.pool.connection() as conn:
-                return _hit_result_from_db(existing_ref_id, conn=conn)
+                hit = _hit_result_from_db(existing_ref_id, conn=conn)
+                stored_kind = _lookup_kind(existing_ref_id, conn=conn)
+            return _with_kind(hit, kind=stored_kind)
 
         # Claim before the expensive work. Advisory lock auto-releases
         # if this host dies, so no stale-claim cleanup is needed.
@@ -312,12 +322,16 @@ def _ingest_pdf(
                 conn=conn,
             )
             conn.commit()
-            _apply_extra_tags(store, "paper", existing, input.extra_tags)
-            return _hit_result_from_db(
-                existing,
-                conn=conn,
-                fallback=paper,
-                chunks_written=chunks_written,
+            stored_kind = _lookup_kind(existing, conn=conn)
+            _apply_extra_tags(store, stored_kind, existing, input.extra_tags)
+            return _with_kind(
+                _hit_result_from_db(
+                    existing,
+                    conn=conn,
+                    fallback=paper,
+                    chunks_written=chunks_written,
+                ),
+                kind=stored_kind,
             )
 
         # Write-back: patch the on-disk file with the resolved canonical
@@ -329,7 +343,7 @@ def _ingest_pdf(
         result = write_paper(paper, conn=conn)
         conn.commit()
 
-    _apply_extra_tags(store, "paper", result.ref_id, input.extra_tags)
+    _apply_extra_tags(store, paper.kind, result.ref_id, input.extra_tags)
     return IngestResult(
         ref_id=result.ref_id,
         inserted=True,
@@ -340,6 +354,7 @@ def _ingest_pdf(
         content_hash=paper.content_hash,
         chunks_written=result.chunks_written,
         identifiers=result.identifiers_written,
+        kind=paper.kind,
     )
 
 
@@ -641,7 +656,13 @@ def _build_paper(
     )
 
     if isinstance(input, PdfInput):
-        return extract_paper(input.pdf_path, use_pdf2doi=use_pdf2doi)
+        paper = extract_paper(input.pdf_path, use_pdf2doi=use_pdf2doi)
+        # DRY: the identical pipeline lands the doc under whichever kind
+        # the caller asked for (``paper`` default, ``cfp`` for the
+        # requirements flow). Only ``refs.kind`` differs downstream.
+        if input.as_kind != paper.kind:
+            paper = replace(paper, kind=input.as_kind)
+        return paper
     if isinstance(input, DoiInput):
         return fetch_paper_by_doi(input.doi, crossref_mailto=crossref_mailto)
     if isinstance(input, ArxivInput):

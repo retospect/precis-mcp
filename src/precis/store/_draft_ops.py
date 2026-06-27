@@ -1124,6 +1124,51 @@ class DraftMixin:
             )
         return self.get_draft_chunk(handle)
 
+    def set_word_target(
+        self, handle: str, target: tuple[int, int] | None
+    ) -> DraftChunk | None:
+        """Set (or clear) a heading section's word target (proposal writing).
+
+        Writes ``meta.word_target = {"min": lo, "max": hi}`` in place —
+        metadata-only, so it never touches ``text``/``content_sha`` and
+        triggers no re-embed. ``target`` falsy clears it. Logs an
+        ``edited`` event. A word target is a *section* concern, so it is
+        rejected on a non-heading chunk. The wordcount view
+        (:func:`precis.utils.wordcount.aggregate_word_counts`) reads this
+        back to render the over/under verdict."""
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT chunk_id, chunk_kind, meta, retired_at "
+                "FROM chunks WHERE handle = %s",
+                (_bare(handle),),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"unknown chunk handle {handle!r}")
+            chunk_id, chunk_kind, meta, retired = row
+            if chunk_kind != "heading":
+                raise BadInput(
+                    f"word_target applies to a heading section; {_bare(handle)} "
+                    f"is a {chunk_kind}"
+                )
+            if retired is not None:
+                raise ValueError(f"chunk {handle!r} is retired")
+            meta = dict(meta or {})
+            if target:
+                lo, hi = target
+                meta["word_target"] = {"min": int(lo), "max": int(hi)}
+            else:
+                meta.pop("word_target", None)
+            conn.execute(
+                "UPDATE chunks SET meta = %s WHERE chunk_id = %s",
+                (Jsonb(meta), chunk_id),
+            )
+            conn.execute(
+                "INSERT INTO chunk_events (chunk_id, event_kind, source) "
+                "VALUES (%s, 'edited', %s)",
+                (chunk_id, Jsonb({"reason": "set-word-target", "target": target})),
+            )
+        return self.get_draft_chunk(handle)
+
     def section_style_for(self, handle: str) -> str | None:
         """The nearest enclosing heading's section style (``meta.style``),
         or ``None``.

@@ -702,6 +702,12 @@ def boot(
                 ).start()
         _gated(SkillHandler)
         _gated(PaperHandler)
+        # CFP — spec-role sibling of paper (same ingest + reader core,
+        # non-citable). Imported lazily after PaperHandler since it
+        # subclasses it.
+        from precis.handlers.cfp import CfpHandler
+
+        _gated(CfpHandler)
 
         # Tag — corpus-wide discovery surface over the tags table.
         # Always-on (store-only dep); the embedder is optional and

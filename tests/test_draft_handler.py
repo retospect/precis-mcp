@@ -628,3 +628,90 @@ def test_valid_chunk_ref_not_flagged(draft: DraftHandler, hub: Hub) -> None:
     para_h = _order(hub, "nt")[1].dc
     out = draft.get(id=para_h).body
     assert "unresolved reference" not in out
+
+
+# ── word count + word targets (proposal writing) ─────────────────────
+
+
+def _add_heading(draft: DraftHandler, hub: Hub, after_dc: str, text: str) -> str:
+    r = draft.put(id="nt", chunk_kind="heading", text=text, at={"after": after_dc})
+    return _dc(r.body)
+
+
+def _add_para(draft: DraftHandler, into_dc: str, text: str) -> None:
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=text,
+        at={"into": into_dc, "last": True},
+    )
+
+
+def test_wordcount_view_counts_and_verdicts(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="nt", title="Proposal", project=proj)
+    title_dc = _order(hub, "nt")[0].dc
+    intro = _add_heading(draft, hub, title_dc, "Introduction")
+    _add_para(draft, intro, "one two three four five")  # 5 words
+
+    # No target yet → verdict 'none', count shown.
+    out = draft.get(id="nt", view="wordcount").body
+    assert "Introduction" in out
+    assert "total: 5 words" in out
+    assert "none" in out
+
+    # Set a target the section is under, then re-check.
+    draft.edit(id=intro, word_target={"min": 50, "max": 100})
+    out = draft.get(id="nt", view="wordcount").body
+    assert "under" in out
+    assert "off target" in out  # the ⚠ trailer fires
+
+    # Widen the target so the section is within range → ok, no warning.
+    draft.edit(id=intro, word_target={"min": 1, "max": 10})
+    out = draft.get(id="nt", view="wordcount").body
+    assert "ok" in out
+    assert "off target" not in out
+
+
+def test_wordcount_scoped_to_heading_subtree(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="nt", title="Proposal", project=proj)
+    title_dc = _order(hub, "nt")[0].dc
+    a = _add_heading(draft, hub, title_dc, "Aims")
+    _add_para(draft, a, "alpha beta")  # 2
+    b = _add_heading(draft, hub, a, "Budget")
+    _add_para(draft, b, "one two three four")  # 4
+
+    whole = draft.get(id="nt", view="wordcount").body
+    assert "total: 6 words" in whole
+
+    scoped = draft.get(id=a, view="wordcount").body
+    assert "total: 2 words" in scoped
+    assert "Budget" not in scoped  # sibling excluded from the subtree
+
+
+def test_word_target_validation(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_dc = _order(hub, "nt")[0].dc
+    intro = _add_heading(draft, hub, title_dc, "Intro")
+
+    with pytest.raises(BadInput, match="exceeds max"):
+        draft.edit(id=intro, word_target={"min": 500, "max": 100})
+
+    # A word target on a non-heading (paragraph) is rejected.
+    _add_para(draft, intro, "some prose here")
+    para_dc = _order(hub, "nt")[-1].dc
+    with pytest.raises(BadInput, match="heading"):
+        draft.edit(id=para_dc, word_target={"min": 1, "max": 10})
+
+
+def test_word_target_clear(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_dc = _order(hub, "nt")[0].dc
+    intro = _add_heading(draft, hub, title_dc, "Intro")
+    draft.edit(id=intro, word_target={"min": 1, "max": 5})
+    assert "word_target" in (hub.store.get_draft_chunk(intro).meta or {})
+    draft.edit(id=intro, word_target={})  # clear
+    assert "word_target" not in (hub.store.get_draft_chunk(intro).meta or {})

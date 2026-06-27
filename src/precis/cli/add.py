@@ -65,6 +65,18 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="arXiv ID to fetch from Semantic Scholar (no PDF stored).",
     )
     p.add_argument(
+        "--as",
+        dest="as_kind",
+        choices=("paper", "cfp"),
+        default="paper",
+        help=(
+            "Stored kind for a PDF ingest (default: paper). Use "
+            "--as cfp to land a call-for-proposal / requirements "
+            "document as a non-citable spec (same extraction pipeline, "
+            "own reader namespace). Ignored for --doi / --arxiv."
+        ),
+    )
+    p.add_argument(
         "--use-pdf2doi",
         action="store_true",
         help="Enable the pdf2doi fallback in the DOI extraction cascade.",
@@ -142,7 +154,10 @@ def _resolve_input(args: argparse.Namespace) -> PrecisAddInput:
         if not args.input.is_file():
             print(f"add: PDF not found: {args.input}", file=sys.stderr)
             sys.exit(2)
-        return PdfInput(pdf_path=args.input.resolve())
+        return PdfInput(
+            pdf_path=args.input.resolve(),
+            as_kind=getattr(args, "as_kind", "paper"),
+        )
     if args.doi:
         return DoiInput(doi=args.doi)
     if args.arxiv:

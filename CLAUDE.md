@@ -247,6 +247,29 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
   verifier_confidence, link='paper:<slug>', rel='cites')`. The tex
   workspace skeleton's `\citequote{key}{verbatim}` macro persists the
   same `source_quote`. Skill: `precis-citation-help`.
+- **`cfp`** — call-for-proposal / requirements document (proposal
+  writing). A **spec-role** sibling of `paper`: ingested by the
+  *identical* Marker→chunks pipeline (`precis add --as cfp`, or
+  `inbox/cfp/` — one more inbox kind dir alongside papers/books/
+  presentations), so it gets embed / keywords / TOC / search for free,
+  and read in the *same* two-pane reader at `/cfp/<slug>`.
+  `CfpHandler(PaperHandler)` (`handlers/cfp.py`) differs only by
+  declaration — a new `KindSpec.corpus_role` field (`evidence` for
+  paper/patent, `spec` for cfp): a `spec` doc is **never cited as
+  evidence** (the citation handler already resolves `source_handle`
+  only against `kind='paper'`, so it's safe by construction), stays out
+  of `search(kind='paper')`, drops the bibtex/citation views, and has no
+  `put` (acquired by ingest only). The paper handler's ~dozen structural
+  `kind="paper"` literals were routed through `self.spec.kind` so the
+  subclass reuses get/search verbatim; the `ref_id`-scoped reader
+  endpoints (`/papers/<id>/search|toc|chunk|pdf`) accept the doc family
+  (`_DOC_FAMILY`). A proposal **project** (`LLM:*` todo) links to its
+  cfp via the `has-requirement`/`requirement-of` relation (migration
+  `0039`); the planner prompt's `_m_requirements` module injects the
+  call's required sections into the writing tick. Word limits live on
+  draft section headings as `meta.word_target={min,max}`, checked via
+  `get(kind='draft', view='wordcount')` (per-section over/under/ok +
+  a web badge). Skill: `precis-proposal-help`.
 - **`chunks.numerics TEXT[]`** — GIN-indexed lexical filter
   (`WHERE numerics @> ARRAY['1.523 eV']`); available via direct SQL,
   not yet wired into the search verbs.

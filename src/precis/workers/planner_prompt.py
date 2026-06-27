@@ -644,6 +644,96 @@ def _render_draft_identity(store: Store, ref_id: int) -> str:
     )
 
 
+#: Soft cap on call-for-proposal section headings surfaced in the
+#: requirements block. A CFP with more required sections than this is
+#: unusual; we list the first N and point at the full TOC.
+_CFP_HEADINGS_CAP = 40
+
+
+def _render_requirements(store: Store, ref_id: int) -> str:
+    """Inject the call-for-proposal a proposal project must satisfy.
+
+    A proposal-project root carries a ``has-requirement`` link to the
+    ingested ``kind='cfp'`` document (ADR: proposal-writing). We walk
+    parents up from ``ref_id`` (the link sits on the project root) and,
+    when one is found, render a ``## Proposal requirements`` block: the
+    CFP's slug (so the planner can read it in full) plus its section
+    headings (the required structure the draft must mirror, and where the
+    word limits live).
+
+    Belongs in the *variable* (user) layer, not the cached system prompt:
+    the requirements are per-project, so two proposals' planners must not
+    share a cache prefix carrying one's CFP.
+
+    No-op when no CFP is linked into the subtree.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            WITH RECURSIVE anc AS (
+                SELECT ref_id, parent_id FROM refs WHERE ref_id = %s
+                UNION ALL
+                SELECT r.ref_id, r.parent_id
+                  FROM refs r JOIN anc a ON r.ref_id = a.parent_id
+            )
+            SELECT cf.ref_id, cf.title,
+                   (SELECT id_value FROM ref_identifiers ri
+                     WHERE ri.ref_id = cf.ref_id AND ri.id_kind = 'cite_key'
+                     LIMIT 1) AS slug
+              FROM links l JOIN refs cf ON cf.ref_id = l.dst_ref_id
+             WHERE l.relation = 'has-requirement'
+               AND l.src_ref_id IN (SELECT ref_id FROM anc)
+               AND cf.kind = 'cfp'
+               AND cf.deleted_at IS NULL
+             LIMIT 1
+            """,
+            (ref_id,),
+        ).fetchone()
+        if not row:
+            return ""
+        cfp_ref_id, title, slug = row
+        ident = str(slug or cfp_ref_id)
+        headings = conn.execute(
+            """
+            SELECT text FROM chunks
+             WHERE ref_id = %s AND chunk_kind = 'heading'
+               AND COALESCE(text, '') <> ''
+             ORDER BY ord
+             LIMIT %s
+            """,
+            (cfp_ref_id, _CFP_HEADINGS_CAP + 1),
+        ).fetchall()
+
+    lines = [
+        "## Proposal requirements",
+        "",
+        f"This project answers the call-for-proposal **{title}** "
+        f"(`kind='cfp'`, `id={ident}`). It is the **spec** — the "
+        f"requirements your proposal draft must satisfy. **Do not cite "
+        f"it as evidence**; it defines what to write, not a source to "
+        f"quote. Read it in full with `get(kind='cfp', id='{ident}')` "
+        f"and `get(kind='cfp', id='{ident}', view='toc')`; search it with "
+        f"`search(kind='cfp', q='…', scope='{ident}')`.",
+    ]
+    if headings:
+        shown = headings[:_CFP_HEADINGS_CAP]
+        lines += [
+            "",
+            "Required sections (from the call's headings — create one "
+            "draft section per relevant requirement, and stamp each "
+            "section's word limit via "
+            "`edit(id='dc<heading>', word_target={'min':…,'max':…})`):",
+            "",
+        ]
+        lines += [f"- {str(h[0]).strip()}" for h in shown]
+        if len(headings) > _CFP_HEADINGS_CAP:
+            lines.append(
+                f"- … (+more — read the full TOC via "
+                f"`get(kind='cfp', id='{ident}', view='toc')`)"
+            )
+    return "\n".join(lines)
+
+
 #: Soft cap on glossary lines in the prompt — beyond this we list the
 #: count and the first N (a glossary this large is itself a smell).
 _GLOSSARY_PROMPT_CAP = 80
@@ -1099,6 +1189,11 @@ def _m_draft(ctx: AssemblyContext) -> str:
     return _render_draft_identity(ctx.store, ctx.ref_id)
 
 
+def _m_requirements(ctx: AssemblyContext) -> str:
+    assert ctx.store is not None
+    return _render_requirements(ctx.store, ctx.ref_id)
+
+
 def _m_glossary(ctx: AssemblyContext) -> str:
     assert ctx.store is not None
     return _render_glossary(ctx.store, ctx.ref_id)
@@ -1210,6 +1305,7 @@ _VARIABLE_MODULES: list[Module] = [
     Module(id="identity", layer=Layer.VARIABLE, build=_m_identity),
     Module(id="ancestry", layer=Layer.VARIABLE, build=_m_ancestry),
     Module(id="project", layer=Layer.VARIABLE, build=_m_project),
+    Module(id="requirements", layer=Layer.VARIABLE, build=_m_requirements),
     Module(id="draft", layer=Layer.VARIABLE, build=_m_draft),
     Module(
         id="reviewer-persona",

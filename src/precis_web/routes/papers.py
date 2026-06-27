@@ -397,9 +397,9 @@ def _render_detail(
         {
             "active_tab": "papers",
             "paper": paper,
-            # Universal handle (ADR 0036, ``pa<ref_id>``) — the address that
-            # works regardless of whether a cite_key slug is minted.
-            "pa_handle": format_handle("paper", ref_id),
+            # Universal handle (ADR 0036, ``pa<ref_id>`` / ``cf<ref_id>``) —
+            # the address that works regardless of whether a slug is minted.
+            "pa_handle": format_handle(ref.kind, ref_id),
             "handle": cite_key or str(ref_id),
             "n_chunks": n_chunks,
             "tags": tags,
@@ -455,26 +455,39 @@ def _cited_chunk(store: Any, ref_id: int, chunk: str | None) -> dict[str, Any] |
     return {"ord": ord_, "text": row[0], "page": row[1]}
 
 
-def _resolve_paper(store: Any, ident: str) -> Any | None:
-    """Resolve a path ``ident`` (numeric id *or* cite_key slug) to a paper ref.
+#: The document family that shares the two-pane reader (ADR: proposal
+#: writing). The ``ref_id``-scoped sidebar endpoints (search / toc /
+#: chunk / pdf) are kind-agnostic, so they accept any family member; the
+#: ``cfp`` reader reuses them. The slug-detail routes pass their own kind.
+_DOC_FAMILY: tuple[str, ...] = ("paper", "cfp")
+
+
+def _resolve_paper(
+    store: Any, ident: str, *, kinds: tuple[str, ...] = ("paper",)
+) -> Any | None:
+    """Resolve a path ``ident`` (numeric id *or* cite_key slug) to a ref
+    in the document family ``kinds``.
 
     All-digit idents are treated as the numeric ref id (back-compat with
     the old ``/papers/<id>`` URLs + ``?chunk=`` citation deep links); any
-    other ident is a slug, resolved through ``ref_identifiers``. Returns
-    ``None`` when nothing live + ``kind='paper'`` matches.
+    other ident is a slug, resolved through ``ref_identifiers`` under
+    ``kinds[0]``. Returns ``None`` when nothing live with a kind in
+    ``kinds`` matches. ``kinds`` defaults to paper-only; the ref_id
+    sidebar endpoints pass ``_DOC_FAMILY`` so a ``cfp`` reader reuses
+    them, and the ``/cfp`` detail route passes ``("cfp",)``.
     """
     if ident.isdigit():
         ref = store.fetch_refs_by_ids([int(ident)], include_deleted=False).get(
             int(ident)
         )
     else:
-        ids = store.fetch_ref_ids_by_slugs([ident], kind="paper")
+        ids = store.fetch_ref_ids_by_slugs([ident], kind=kinds[0])
         ref = (
             store.fetch_refs_by_ids(ids, include_deleted=False).get(ids[0])
             if ids
             else None
         )
-    if ref is None or ref.kind != "paper":
+    if ref is None or ref.kind not in kinds:
         return None
     return ref
 
@@ -544,7 +557,7 @@ async def search_in_paper(
     * ``mode='keyword'`` — lexical (``chunks.tsv`` / ``ts_rank_cd``).
     """
     store = get_store(request)
-    ref = _resolve_paper(store, str(ref_id))
+    ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
     q = q.strip()
     if ref is None or not q:
         return JSONResponse({"results": [], "mode": mode})
@@ -591,12 +604,12 @@ async def toc_in_paper(request: Request, ref_id: int) -> JSONResponse:
     and the PDF ``page`` of its first chunk (for the viewer jump).
     """
     store = get_store(request)
-    ref = _resolve_paper(store, str(ref_id))
+    ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
     if ref is None:
         return JSONResponse({"segments": []})
     # ADR 0036: prefix each segment with the universal record handle
-    # (``pa<id>``) so the web row mirrors the agent surface's get id.
-    handle = format_handle("paper", ref.id)
+    # (``pa<id>`` / ``cf<id>``) so the web row mirrors the agent get id.
+    handle = format_handle(ref.kind, ref.id)
     segments = build_toc_segments(store=store, ref_id=ref.id, handle=handle)
     pages = store.chunk_pages(ref.id, [seg["lo"] for seg in segments])
     for seg in segments:
@@ -609,7 +622,7 @@ async def chunk_in_paper(request: Request, ref_id: int, ord: int) -> JSONRespons
     """Resolve a single chunk ``ord`` → ``{ord, page, text}`` for the
     sidebar "jump to chunk" affordance. 404-as-empty when absent."""
     store = get_store(request)
-    ref = _resolve_paper(store, str(ref_id))
+    ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
     if ref is None:
         return JSONResponse({"chunk": None})
     cited = _cited_chunk(store, ref.id, str(ord))
@@ -676,8 +689,10 @@ async def pdf(request: Request, ref_id: int) -> FileResponse:
     store = get_store(request)
     refs = store.fetch_refs_by_ids([ref_id], include_deleted=False)
     ref = refs.get(ref_id)
-    if ref is None or ref.kind != "paper":
-        raise NotFound(f"paper id={ref_id} not found")
+    # Accept any document-family ref (paper or cfp) — both store their
+    # PDF in the corpus addressed by cite_key, so the reuse is direct.
+    if ref is None or ref.kind not in _DOC_FAMILY:
+        raise NotFound(f"document id={ref_id} not found")
     cite_key = ref.slug or ""
     cfg = get_web_config(request)
     path = _resolve_pdf(cfg.corpus_dirs, cite_key)

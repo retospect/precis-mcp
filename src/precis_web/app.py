@@ -74,6 +74,7 @@ def create_app(
         agentlogs,
         alerts,
         asks,
+        cfp,
         clusters,
         console,
         drafts,
@@ -92,6 +93,7 @@ def create_app(
     app.include_router(needs_you.router)
     app.include_router(asks.router)
     app.include_router(papers.router)
+    app.include_router(cfp.router)
     app.include_router(papers_needed.router)
     app.include_router(drafts.router)
     app.include_router(refs.router)

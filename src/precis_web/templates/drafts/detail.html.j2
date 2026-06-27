@@ -36,6 +36,24 @@
     <div>
       <h1 class="text-xl font-semibold">{{ ref.title }}</h1>
       {% if ref.slug %}<span class="font-mono text-xs text-slate-400">draft:{{ ref.slug }}</span>{% endif %}
+      {# Word count badge (proposal writing). Server-rendered initial
+         value; polls /wordcount so it tracks edits. Amber when any
+         section is over/under its meta.word_target. #}
+      {% if wordcount %}
+      <span class="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs"
+            x-data="{ wc: {{ wordcount | tojson }} }"
+            x-init="setInterval(async () => {
+                       try {
+                         const r = await fetch('/drafts/{{ ref.ident }}/wordcount');
+                         if (r.ok) wc = await r.json();
+                       } catch (e) {}
+                     }, 15000)"
+            :class="wc.flagged ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-slate-100 text-slate-600'"
+            :title="wc.flagged ? wc.flagged + ' section(s) over/under target' : 'all sections within target'">
+        <span x-text="wc.total + ' words'"></span>
+        <template x-if="wc.flagged"><span x-text="'· ⚠ ' + wc.flagged"></span></template>
+      </span>
+      {% endif %}
     </div>
     <div class="flex items-center gap-3 text-xs">
       {# live-refresh indicator + the "you were typing, here's a manual refresh" pill #}

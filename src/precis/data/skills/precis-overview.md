@@ -36,6 +36,7 @@ For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 |---|---|---|---|
 | `paper` | `abazari2024design` | Ingested research paper | store |
 | `patent` | `ep1234567b1` | EPO OPS patent record | store |
+| `cfp` | `nsf-25-501` | Call-for-proposal / requirements doc — a read-only ingested PDF a proposal must satisfy. Same reader as `paper` but **spec role**: NEVER cited as evidence. Link to a proposal project with `link(rel='has-requirement')`. See `precis-proposal-help`. | store |
 | `skill` | `precis-overview` | Agent how-to (you're reading one) | — |
 | `oracle` | `stoic` | Curated wisdom-tradition entry | store |
 | `conv` | `2026-04-26-spec` | Past conversation | store |
@@ -156,6 +157,7 @@ The todo tree is the unified surface for *intent*, *execution*,
 | `precis-dispatch-help` | When to set `meta.executor` on a todo so a `kind='job'` runs under it |
 | `precis-job-help` | The job substrate. New jobs require `parent_id` pointing at a todo |
 | `precis-fix-gripe-help` | First concrete job_type, end-to-end recipe |
+| `precis-proposal-help` | Write a proposal against a `kind='cfp'` call — intake, requirement link, section-by-section drafting, word-count checks |
 | `precis-nursery-help` | Hourly SQL-only review tier (`tier:nursery` memories) |
 | `precis-wikipedia-help` | On-demand Wikipedia lookup + the `ORIGIN:wikipedia` search fence |
 

@@ -158,6 +158,30 @@ def _doc_state(store: Any, ref: Any) -> tuple[list[Any], int, dict[str, str]]:
     return chunk_objs, version, abbrevs
 
 
+def _wordcount_summary(chunk_objs: list[Any]) -> dict[str, Any]:
+    """Per-section word counts vs targets for the reader (proposal writing).
+
+    Reuses the same pure aggregator the MCP ``view='wordcount'`` uses
+    (:func:`precis.utils.wordcount.aggregate_word_counts`) over the
+    already-loaded reading order, so the web badge and the agent's check
+    always agree. Returns ``{total, flagged, sections:[…]}``."""
+    from precis.utils.wordcount import aggregate_word_counts
+
+    report = aggregate_word_counts(chunk_objs)
+    sections = [
+        {
+            "handle": handle_registry.format_handle("draft", s.chunk_id, chunk=True),
+            "title": s.title,
+            "words": s.words,
+            "target": list(s.target) if s.target else None,
+            "verdict": s.verdict,
+        }
+        for s in report.sections
+    ]
+    flagged = sum(1 for s in report.sections if s.verdict in ("under", "over"))
+    return {"total": report.total, "flagged": flagged, "sections": sections}
+
+
 def _draft_ref(store: Any, ident: str) -> Any:
     """Resolve a draft by slug or numeric ref_id (``get_ref`` handles
     both). Returns the live ``Ref`` or ``None``."""
@@ -1031,6 +1055,7 @@ async def reader(request: Request, ident: str) -> Response:
             "botpad": botpad,
             "work": _work_items(store, ref.id),
             "clearance": draft_figure_clearance(store, ref.id),
+            "wordcount": _wordcount_summary(chunk_objs),
         },
     )
 
@@ -1115,6 +1140,19 @@ async def version(request: Request, ident: str) -> JSONResponse:
     if ref is None:
         return JSONResponse({"version": 0})
     return JSONResponse({"version": _draft_version(store, ref.id)})
+
+
+@router.get("/drafts/{ident}/wordcount")
+async def wordcount(request: Request, ident: str) -> JSONResponse:
+    """Per-section word counts vs targets + whole-draft total (proposal
+    writing). Same aggregator as the MCP ``view='wordcount'``; the reader
+    badge polls this so the count refreshes as the draft is written."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"total": 0, "flagged": 0, "sections": []})
+    chunk_objs, _version, _abbrevs = _doc_state(store, ref)
+    return JSONResponse(_wordcount_summary(chunk_objs))
 
 
 def _pdf_cache_dir(ref_id: int, version: int) -> Path:

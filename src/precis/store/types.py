@@ -81,6 +81,13 @@ Relation = Literal[
     # inverse. Keep in sync with the `relations` seed in 0039.
     "authored",
     "authored-by",
+    # Proposal writing (ADR: proposal-writing). A proposal-project todo
+    # `has-requirement` → the ingested call-for-proposal (`kind='cfp'`);
+    # the inverse `requirement-of` lives on the cfp node. The planner
+    # follows this edge to inject the requirements into the writing tick.
+    # Keep in sync with the `relations` seed in migration 0040.
+    "has-requirement",
+    "requirement-of",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -130,6 +137,8 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "has-snapshot": "snapshot-of",
     "authored": "authored-by",
     "authored-by": "authored",
+    "has-requirement": "requirement-of",
+    "requirement-of": "has-requirement",
 }
 
 

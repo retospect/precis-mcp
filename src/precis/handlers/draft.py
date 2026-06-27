@@ -92,6 +92,34 @@ def _sniff_mime(raw: bytes) -> str:
     return "application/octet-stream"
 
 
+def _coerce_word_target(raw: dict[str, Any]) -> tuple[int, int] | None:
+    """Validate an ``edit(word_target=…)`` payload → ``(min, max)`` or
+    ``None`` (clear). ``{}`` / both-bounds-absent clears; a present bound
+    must be a non-negative int and ``min <= max``."""
+    if not raw:
+        return None
+    lo_raw = raw.get("min")
+    hi_raw = raw.get("max")
+    if lo_raw is None and hi_raw is None:
+        return None
+    try:
+        lo = int(lo_raw) if lo_raw is not None else 0
+        hi = int(hi_raw) if hi_raw is not None else 10**9
+    except (TypeError, ValueError):
+        raise BadInput(
+            "word_target min/max must be integers",
+            next="edit(id='dc<heading>', word_target={'min':200,'max':400})",
+        ) from None
+    if lo < 0 or hi < 0:
+        raise BadInput("word_target min/max must be non-negative")
+    if lo > hi:
+        raise BadInput(
+            f"word_target min={lo} exceeds max={hi}",
+            next="edit(id='dc<heading>', word_target={'min':200,'max':400})",
+        )
+    return (lo, hi)
+
+
 class DraftHandler(Handler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="draft",
@@ -136,14 +164,21 @@ class DraftHandler(Handler):
         if _is_draft_chunk_addr(s):
             if view == "toc":  # TOC of the subtree under this heading
                 return self._render_toc(root_handle=s)
+            if view == "wordcount":  # word counts for this heading's subtree
+                return self._render_wordcount(root_handle=s)
             return self._render_chunk(s)
         ref = resolve_live_slug_ref(self.store, kind="draft", id=s)
         if view == "toc":
             return self._render_toc(ref=ref)
+        if view == "wordcount":
+            return self._render_wordcount(ref=ref)
         if view is not None:
             raise BadInput(
                 f"unknown draft view {view!r}",
-                next="view='toc' for the heading skeleton, or omit for the outline",
+                next=(
+                    "view='toc' for the heading skeleton, view='wordcount' for "
+                    "per-section word counts vs targets, or omit for the outline"
+                ),
             )
         return self._render_outline(s, ref)
 
@@ -493,6 +528,7 @@ class DraftHandler(Handler):
         text: str | None = None,
         move: dict[str, Any] | None = None,
         style: str | None = None,
+        word_target: dict[str, Any] | None = None,
         base_sha: str | None = None,
         not_abbrev: list[str] | str | None = None,
         permission: dict[str, Any] | None = None,
@@ -534,6 +570,20 @@ class DraftHandler(Handler):
             if style:
                 return Response(body=f"styled {c.dc} → {style}")
             return Response(body=f"cleared style on {c.dc}")
+        if word_target is not None:
+            # Set/clear a heading section's word limit (proposal writing).
+            # ``word_target={'min':200,'max':400}`` sets it; ``{}`` clears.
+            target = _coerce_word_target(word_target)
+            c = self.store.set_word_target(handle, target)
+            if target:
+                lo, hi = target
+                return Response(
+                    body=(
+                        f"set word target on {c.dc} → {lo}–{hi} words "
+                        f"(check with get(kind='draft', view='wordcount'))"
+                    )
+                )
+            return Response(body=f"cleared word target on {c.dc}")
         if move is not None:
             c = self.store.move_chunk(handle, move)
             if c is not None:
@@ -567,8 +617,8 @@ class DraftHandler(Handler):
             return Response(body=body)
         raise BadInput(
             "edit(kind='draft') requires text= (rewrite), move= (reorder/reparent), "
-            "style= (set a heading's section style), or not_abbrev= (silence "
-            "the abbrev hint)",
+            "style= (set a heading's section style), word_target= (set a heading's "
+            "word limit), or not_abbrev= (silence the abbrev hint)",
             next="edit(kind='draft', id='dc<chunk_id>', text='…')",
         )
 
@@ -1096,3 +1146,89 @@ class DraftHandler(Handler):
         ]
         table = toon.dump(rows, schema=["handle", "level", "title", "gist"])
         return Response(body=f"{header}\n\n{table}")
+
+    def _render_wordcount(
+        self, *, ref: Any = None, root_handle: str | None = None
+    ) -> Response:
+        """Per-section word counts vs targets (proposal writing).
+
+        Counts visible prose words (paragraphs / asides — not headings,
+        equations, figures, tables, code, or glossary terms; inline
+        reference markers stripped) per heading subtree, and renders an
+        over/under/ok verdict against each heading's
+        ``meta.word_target``. The planner self-checks length here mid-
+        write; the human sees the same numbers in the reader.
+
+        Whole-draft (``view='wordcount'`` on the slug) or a single
+        section subtree (on a ``dc<heading>`` handle)."""
+        from precis.utils.wordcount import aggregate_word_counts
+
+        if root_handle is not None:
+            root = self.store.get_draft_chunk(root_handle)
+            if root is None:
+                raise NotFound(f"draft heading {root_handle} not found")
+            if root.chunk_kind != "heading":
+                raise BadInput(
+                    f"wordcount scope must be a heading; {root.dc} is a "
+                    f"{root.chunk_kind}",
+                    next="get(kind='draft', id='<slug>', view='wordcount')",
+                )
+            ref_id = root.ref_id
+            header = f"# words under {root.dc}: {root.text}"
+        else:
+            ref_id = ref.id
+            header = f"# {ref.title} — word counts"
+
+        chunks = self.store.reading_order(ref_id)
+        # Scope to the heading's DFS subtree when a root is given: the
+        # contiguous run after the root whose depth exceeds the root's,
+        # plus the root itself (standard DFS subtree property).
+        if root_handle is not None:
+            scoped: list[Any] = []
+            collecting = False
+            root_depth = 0
+            for c in chunks:
+                if c.chunk_id == root.chunk_id:
+                    collecting = True
+                    root_depth = c.depth
+                    scoped.append(c)
+                    continue
+                if collecting:
+                    if c.depth <= root_depth:
+                        break
+                    scoped.append(c)
+            chunks = scoped
+
+        report = aggregate_word_counts(chunks)
+        if not report.sections:
+            body = f"{header}\n\ntotal: {report.total} words\n\n(no sections yet)"
+            return Response(body=body)
+
+        rows = []
+        for sc in report.sections:
+            if sc.target is None:
+                target_s = "—"
+            else:
+                target_s = f"{sc.target[0]}–{sc.target[1]}"
+            rows.append(
+                {
+                    "handle": handle_registry.format_handle(
+                        "draft", sc.chunk_id, chunk=True
+                    ),
+                    "title": sc.title,
+                    "words": sc.words,
+                    "target": target_s,
+                    "verdict": sc.verdict,
+                }
+            )
+        table = toon.dump(
+            rows, schema=["handle", "title", "words", "target", "verdict"]
+        )
+        flagged = [s for s in report.sections if s.verdict in ("under", "over")]
+        trailer = f"\n\ntotal: {report.total} words"
+        if flagged:
+            names = ", ".join(
+                f"{s.title or '(untitled)'} ({s.verdict})" for s in flagged[:6]
+            )
+            trailer += f"\n⚠ {len(flagged)} section(s) off target: {names}"
+        return Response(body=f"{header}\n\n{table}{trailer}")

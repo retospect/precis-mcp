@@ -70,8 +70,13 @@ from precis.utils.toc_db import render_from_store
 
 
 def _pa(ref: Ref) -> str:
-    """ADR 0036 paper record handle (e.g. ``pa123``)."""
-    return handle_registry.format_handle("paper", ref.id)
+    """ADR 0036 document record handle (e.g. ``pa123`` / ``cf123``).
+
+    Reads the code from ``ref.kind`` so the handle follows the ref's
+    actual kind — paper refs render ``pa<id>``, cfp refs render
+    ``cf<id>`` — letting :class:`CfpHandler` reuse the paper rendering
+    path verbatim without minting cross-kind handles."""
+    return handle_registry.format_handle(ref.kind, ref.id)
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +209,8 @@ def _dedup_card_hits(
     ]
 
 
-def _suggest_paper_slugs(slug: str, *, store: Any) -> list[str]:
-    """Return up to ``_SUGGEST_TOP_N`` paper slugs that look like ``slug``.
+def _suggest_paper_slugs(slug: str, *, store: Any, kind: str = "paper") -> list[str]:
+    """Return up to ``_SUGGEST_TOP_N`` ``kind`` slugs that look like ``slug``.
 
     Uses :func:`difflib.get_close_matches` with a ratio cutoff that
     rejects far-off matches — see ``_SUGGEST_CUTOFF`` for the rationale.
@@ -229,7 +234,7 @@ def _suggest_paper_slugs(slug: str, *, store: Any) -> list[str]:
     """
     if not slug:
         return []
-    refs = store.list_refs(kind="paper", limit=_SUGGEST_CORPUS_CAP)
+    refs = store.list_refs(kind=kind, limit=_SUGGEST_CORPUS_CAP)
     candidates = [r.slug for r in refs if r.slug]
     if not candidates:
         return []
@@ -336,6 +341,10 @@ class PaperHandler(Handler):
         supports_link=True,
         is_numeric=False,
         id_required=False,
+        # A paper is citable evidence — it participates in literature
+        # search and is a valid citation source (the citation handler
+        # resolves ``source_handle`` against ``kind='paper'``).
+        corpus_role="evidence",
         views=_SUPPORTED_VIEWS,
     )
 
@@ -640,12 +649,13 @@ class PaperHandler(Handler):
         raw_id = _maybe_resolve_doi(self.store, str(id))
         slug, chunk_spec, path_view = _parse_paper_id(raw_id)
 
+        kind = self.spec.kind
         ref = resolve_live_slug_ref(
             self.store,
-            kind="paper",
+            kind=kind,
             id=slug,
-            next_hint="search(kind='paper', q='your query') to find existing",
-            options=_suggest_paper_slugs(slug, store=self.store),
+            next_hint=f"search(kind='{kind}', q='your query') to find existing",
+            options=_suggest_paper_slugs(slug, store=self.store, kind=kind),
         )
 
         # Path view (`slug/cite/bib`) takes precedence over kwarg `view`,
@@ -684,11 +694,11 @@ class PaperHandler(Handler):
                 from precis.errors import Unsupported
 
                 raise Unsupported(
-                    f"unknown view {effective_view!r} for kind='paper'",
+                    f"unknown view {effective_view!r} for kind={kind!r}",
                     options=accepted,
                     next=(
-                        f"view= for kind='paper' accepts: {accepted}; "
-                        f"omit view= for the paper overview"
+                        f"view= for kind={kind!r} accepts: {accepted}; "
+                        f"omit view= for the {kind} overview"
                     ),
                 )
 
@@ -732,10 +742,11 @@ class PaperHandler(Handler):
         before: int | str | None = None,
         **_kw: Any,
     ) -> Response:
+        kind = self.spec.kind
         if q is None or not q.strip():
             raise BadInput(
                 "search requires q=",
-                next="search(kind='paper', q='your query')",
+                next=f"search(kind='{kind}', q='your query')",
             )
 
         # Publish-date filter: ``after`` / ``before`` are inclusive
@@ -747,7 +758,7 @@ class PaperHandler(Handler):
         if year_from is not None and year_to is not None and year_from > year_to:
             raise BadInput(
                 f"after={year_from} is later than before={year_to}",
-                next="search(kind='paper', q='…', after=2019, before=2023)",
+                next=f"search(kind='{kind}', q='…', after=2019, before=2023)",
             )
 
         # Validate the filter at the agent boundary. Same canonical-form
@@ -758,7 +769,7 @@ class PaperHandler(Handler):
         # filter like ``tags=['STATUS:open']`` raises BadInput at the
         # boundary instead of silently returning zero hits — papers
         # have no STATUS axis. (Critic per-kind-axis follow-up.)
-        normalized_tags = Tag.normalize_filter(tags, kind="paper")
+        normalized_tags = Tag.normalize_filter(tags, kind=kind)
 
         scope_ref_id: int | None = None
         if scope is not None:
@@ -776,10 +787,10 @@ class PaperHandler(Handler):
                 scope_slug = _maybe_resolve_doi(self.store, str(scope))
                 scope_ref = resolve_live_slug_ref(
                     self.store,
-                    kind="paper",
+                    kind=kind,
                     id=scope_slug,
-                    next_hint="search(kind='paper', q='...') to find one",
-                    options=_suggest_paper_slugs(scope, store=self.store),
+                    next_hint=f"search(kind='{kind}', q='...') to find one",
+                    options=_suggest_paper_slugs(scope, store=self.store, kind=kind),
                 )
                 scope_ref_id = scope_ref.id
 
@@ -808,7 +819,7 @@ class PaperHandler(Handler):
                     excluded_slugs_in.append(s)
             if excluded_slugs_in:
                 exclude_ref_ids = self.store.fetch_ref_ids_by_slugs(
-                    excluded_slugs_in, kind="paper"
+                    excluded_slugs_in, kind=kind
                 )
 
         # Compute the query embedding for the semantic leg. A missing OR
@@ -838,7 +849,7 @@ class PaperHandler(Handler):
             q=q,
             query_vec=query_vec,
             mode=mode,
-            kind="paper",
+            kind=kind,
             scope_ref_id=scope_ref_id,
             tags=normalized_tags,
             limit=page_size,
@@ -922,7 +933,7 @@ class PaperHandler(Handler):
                 body += render_next_section(
                     [
                         (
-                            f"search(kind='paper', q={q!r}, page_size=50)",
+                            f"search(kind='{kind}', q={q!r}, page_size=50)",
                             "widen the lexical net",
                         ),
                         (
@@ -952,7 +963,7 @@ class PaperHandler(Handler):
         # exist.
         total = self.store.count_blocks_lexical(
             q=q,
-            kind="paper",
+            kind=self.spec.kind,
             scope_ref_id=scope_ref_id,
             tags=normalized_tags,
             exclude_ref_ids=exclude_ref_ids or None,
@@ -1066,7 +1077,7 @@ class PaperHandler(Handler):
             if len(hits) == 1:
                 nav.append(
                     (
-                        f"search(kind='paper', q={q!r}, page_size=10)",
+                        f"search(kind='{kind}', q={q!r}, page_size=10)",
                         f"see more of the {total} matches",
                     )
                 )
@@ -1086,7 +1097,7 @@ class PaperHandler(Handler):
                 if total > page_size * page:
                     nav.append(
                         (
-                            f"search(kind='paper', q={q!r}, page={page + 1})",
+                            f"search(kind='{kind}', q={q!r}, page={page + 1})",
                             f"see the next {page_size} of {total} hits",
                         )
                     )
@@ -1094,7 +1105,7 @@ class PaperHandler(Handler):
                 if scope is None and top_handle is not None:
                     nav.append(
                         (
-                            f"search(kind='paper', q={q!r}, scope='{top_handle}')",
+                            f"search(kind='{kind}', q={q!r}, scope='{top_handle}')",
                             f"narrow to blocks inside {top_handle}",
                         )
                     )
@@ -1105,7 +1116,7 @@ class PaperHandler(Handler):
                 # Spell the placeholder in pure-string form instead.
                 nav.append(
                     (
-                        f"search(kind='paper', q='{q} <salient term>')",
+                        f"search(kind='{kind}', q='{q} <salient term>')",
                         "tighten the query with a hit-specific token "
                         "(replace <salient term> with one)",
                     )
@@ -1141,7 +1152,7 @@ class PaperHandler(Handler):
         """
         if not (q and q.strip()):
             return []
-        normalized_tags = Tag.normalize_filter(tags, kind="paper")
+        normalized_tags = Tag.normalize_filter(tags, kind=self.spec.kind)
         exclude_ref_ids: list[int] = []
         if exclude:
             normalised: list[str] = []
@@ -1151,7 +1162,7 @@ class PaperHandler(Handler):
                     normalised.append(slug)
             if normalised:
                 exclude_ref_ids = self.store.fetch_ref_ids_by_slugs(
-                    normalised, kind="paper"
+                    normalised, kind=self.spec.kind
                 )
         # query_vec= may be pre-supplied by the runtime cross-kind
         # dispatcher (computed once for all kinds), avoiding an
@@ -1167,7 +1178,7 @@ class PaperHandler(Handler):
             q=q,
             query_vec=query_vec,
             mode=mode,
-            kind="paper",
+            kind=self.spec.kind,
             tags=normalized_tags,
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
@@ -1177,7 +1188,7 @@ class PaperHandler(Handler):
         triples = _dedup_card_hits(triples)
         # Salience bump (block-level); no-op for dream-actor reads.
         self.store.bump_salience([block.id for block, _ref, _score in triples])
-        return block_hits_to_search_hits(triples, kind="paper")
+        return block_hits_to_search_hits(triples, kind=self.spec.kind)
 
     # -- seven-verb surface --------------------------------------------------
 
@@ -1203,26 +1214,28 @@ class PaperHandler(Handler):
             ref = self.store.fetch_refs_by_ids([ref_id], include_deleted=False).get(
                 ref_id
             )
-            if ref is None or ref.kind != "paper":
+            if ref is None or ref.kind != self.spec.kind:
                 raise NotFound(
-                    f"paper id={ref_id} not found",
-                    next="search(kind='paper', q='...') to find existing",
+                    f"{self.spec.kind} id={ref_id} not found",
+                    next=f"search(kind='{self.spec.kind}', q='...') to find existing",
                 )
             return ref.slug or str(ref_id), ref_id
         raw_id = _maybe_resolve_doi(self.store, str(id))
         slug, chunk_spec, path_view = _parse_paper_id(raw_id)
         reject_chunk_or_path_view(
-            kind="paper",
+            kind=self.spec.kind,
             slug=slug,
             sel=chunk_spec,
             path_view=path_view,
         )
         ref = resolve_live_slug_ref(
             self.store,
-            kind="paper",
+            kind=self.spec.kind,
             id=slug,
-            next_hint="search(kind='paper', q='...') to find existing slugs",
-            options=_suggest_paper_slugs(slug, store=self.store),
+            next_hint=(
+                f"search(kind='{self.spec.kind}', q='...') to find existing slugs"
+            ),
+            options=_suggest_paper_slugs(slug, store=self.store, kind=self.spec.kind),
         )
         return slug, ref.id
 
@@ -1359,7 +1372,7 @@ class PaperHandler(Handler):
         )
         return Response(
             body=format_link_tag_ack(
-                kind="paper",
+                kind=self.spec.kind,
                 ref_label=slug,
                 n_links_added=0,
                 n_links_removed=0,
@@ -1390,7 +1403,7 @@ class PaperHandler(Handler):
         )
         return Response(
             body=format_link_tag_ack(
-                kind="paper",
+                kind=self.spec.kind,
                 ref_label=slug,
                 n_links_added=n_added,
                 n_links_removed=n_removed,
@@ -1443,26 +1456,32 @@ class PaperHandler(Handler):
             lines.append(_excerpt(_strip_jats(str(abstract)), limit=500))
 
         body = "\n".join(lines)
-        body += render_next_section(
-            [
-                (
-                    f"get(id='{_pa(ref)}', view='toc')",
-                    "see the TOC",
-                ),
-                (
-                    f"get(id='{_pa(ref)}~0..5')",
-                    "read the first 6 chunks",
-                ),
+        next_steps = [
+            (
+                f"get(id='{_pa(ref)}', view='toc')",
+                "see the TOC",
+            ),
+            (
+                f"get(id='{_pa(ref)}~0..5')",
+                "read the first 6 chunks",
+            ),
+        ]
+        # BibTeX only makes sense for citable evidence; a spec-role doc
+        # (a call-for-proposal) is never cited, so skip the hint.
+        if self.spec.corpus_role == "evidence":
+            next_steps.append(
                 (
                     f"get(id='{_pa(ref)}', view='bibtex')",
                     "get the BibTeX entry",
-                ),
-                (
-                    f"search(kind='paper', q='...', scope='{_pa(ref)}')",
-                    "search blocks within this paper",
-                ),
-            ]
+                )
+            )
+        next_steps.append(
+            (
+                f"search(kind='{ref.kind}', q='...', scope='{_pa(ref)}')",
+                f"search blocks within this {ref.kind}",
+            )
         )
+        body += render_next_section(next_steps)
         return Response(body=body)
 
     def _render_view(self, ref: Ref, view: str) -> Response:
@@ -1496,7 +1515,7 @@ class PaperHandler(Handler):
                             "read the first 6 chunks (often include the abstract)",
                         ),
                         (
-                            f"search(kind='paper', q='abstract', scope='{_pa(ref)}')",
+                            f"search(kind='{ref.kind}', q='abstract', scope='{_pa(ref)}')",
                             "search blocks within this paper",
                         ),
                     ]
@@ -1836,7 +1855,7 @@ class PaperHandler(Handler):
         if single_block:
             nav.append(
                 (
-                    f"search(kind='paper', q='your query', scope='{_pa(ref)}')",
+                    f"search(kind='{ref.kind}', q='your query', scope='{_pa(ref)}')",
                     "search inside this paper "
                     "(fused lexical+embedding) - usually beats paging",
                 )
@@ -2006,7 +2025,7 @@ class PaperHandler(Handler):
             # every row + drill-in hint is a copy-pasteable get id. The
             # legacy ``kind:slug~pos`` form was unparseable on input.
             handle=_pa(ref),
-            kind="paper",
+            kind=self.spec.kind,
             scope=scope,
         )
         banner = _retraction_banner(ref)
@@ -2019,8 +2038,8 @@ class PaperHandler(Handler):
         # and a flat dump blows the agent's context. We expose the total
         # count and a search affordance so the agent has somewhere to go.
         limit = 50
-        refs = self.store.list_refs(kind="paper", limit=limit)
-        total = self.store.count_refs(kind="paper")
+        refs = self.store.list_refs(kind=self.spec.kind, limit=limit)
+        total = self.store.count_refs(kind=self.spec.kind)
         if not refs:
             return Response(
                 body=(
@@ -2050,7 +2069,7 @@ class PaperHandler(Handler):
         body += render_next_section(
             [
                 (
-                    "search(kind='paper', q='your topic')",
+                    f"search(kind='{self.spec.kind}', q='your topic')",
                     "find a specific paper by topic",
                 ),
                 (
