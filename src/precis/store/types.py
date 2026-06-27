@@ -75,10 +75,11 @@ Relation = Literal[
     # inverse. Keep in sync with the `relations` seed in 0037.
     "plots",
     "plotted-by",
-    # ORCID author kind — migration 0039 (ADR 0039). `authored` binds an
-    # author node (kind='orcid') to a paper ref; ref-level only, with
-    # author-position info on the edge meta. Asymmetric, `authored-by`
-    # inverse. Keep in sync with the `relations` seed in 0039.
+    # ORCID author node — migration 0039_authored_relation (ADR 0039 §3).
+    # `authored` binds an author (kind='orcid') ref to each paper ref they
+    # wrote; ref-level (both *_pos None), with best-effort author-position
+    # meta when known. Asymmetric, `authored-by` inverse. Keep in sync with
+    # the `relations` seed in 0039_authored_relation.sql.
     "authored",
     "authored-by",
     # Proposal writing (ADR: proposal-writing). A proposal-project todo

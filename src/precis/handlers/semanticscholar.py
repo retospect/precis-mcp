@@ -79,6 +79,27 @@ _NAV_LIMIT = 50
 #: ``refs`` → papers this one cites; ``cites`` → papers citing it.
 _NAV_PREFIXES = ("refs", "cites")
 
+#: Author-navigation prefixes (ADR 0039 §5) — the bridge into
+#: ``kind='orcid'`` and the outbound frontier for author-network BFS.
+#: ``authors:<paper-id>`` → that paper's authors (each carrying their
+#: ORCID + hIndex + affiliations, senior author flagged by position);
+#: ``author:<authorId>`` → that author's top papers.
+_AUTHOR_PREFIXES = ("authors", "author")
+
+_S2_AUTHOR_BASE = "https://api.semanticscholar.org/graph/v1/author"
+
+#: Fields for ``/paper/{id}/authors`` — name + the externalIds that
+#: surface ORCID (the key into kind='orcid') + hIndex + affiliations.
+_PAPER_AUTHORS_FIELDS = "name,externalIds,hIndex,affiliations"
+
+#: Fields for ``/author/{id}/papers`` — the outbound BFS frontier.
+_AUTHOR_PAPERS_FIELDS = (
+    "title,year,externalIds,venue,citationCount,authors.name"
+)
+
+#: Page size for an author's paper list.
+_AUTHOR_PAPERS_LIMIT = 50
+
 #: Bare-arXiv-id shape (new-style ``2401.00001`` with optional ``vN``).
 #: Used to auto-prefix a path id when the caller passes a naked id.
 _ARXIV_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
@@ -103,8 +124,12 @@ class SemanticScholarHandler(CacheBackedHandler):
             "paper's citation graph: id='refs:<paper-id>' lists the "
             "papers it cites, id='cites:<paper-id>' the papers citing "
             "it — each row carrying the DOI to feed a "
-            "put(kind='paper', doi=…) acquisition stub. One chunk per "
-            "paper after the base-class auto-chunker splits it."
+            "put(kind='paper', doi=…) acquisition stub. Or walk the "
+            "author graph: id='authors:<paper-id>' lists that paper's "
+            "authors (each with their ORCID — the key into kind='orcid' — "
+            "h-index, affiliations, senior author flagged), "
+            "id='author:<authorId>' that author's top papers. One chunk "
+            "per row after the base-class auto-chunker splits it."
         ),
         supports_get=True,
         supports_search=True,
@@ -142,17 +167,24 @@ class SemanticScholarHandler(CacheBackedHandler):
         # nav prefix lower-case safely too (DOIs are case-insensitive,
         # arXiv ids numeric, S2 hashes lower-hex).
         low = " ".join(q.lower().split())
-        for mode in _NAV_PREFIXES:
+        for mode in (*_NAV_PREFIXES, *_AUTHOR_PREFIXES):
             prefix = f"{mode}:"
             if low.startswith(prefix):
                 ident = low[len(prefix) :].strip()
                 if not ident:
+                    needs = (
+                        "an S2 authorId"
+                        if mode == "author"
+                        else "a paper id (DOI / arXiv / S2)"
+                    )
+                    example = (
+                        f"{prefix}1741101"
+                        if mode == "author"
+                        else f"{prefix}10.1038/nature12373"
+                    )
                     raise BadInput(
-                        f"semanticscholar {prefix} needs a paper id (DOI / arXiv / S2)",
-                        next=(
-                            f"get(kind='semanticscholar', "
-                            f"id='{prefix}10.1038/nature12373')"
-                        ),
+                        f"semanticscholar {prefix} needs {needs}",
+                        next=f"get(kind='semanticscholar', id='{example}')",
                     )
                 return f"{prefix}{ident}"
         return low
@@ -164,7 +196,7 @@ class SemanticScholarHandler(CacheBackedHandler):
         ``None`` is the plain-search path; ``('refs', '10.x/y')`` /
         ``('cites', '10.x/y')`` are the two graph-walk paths.
         """
-        for mode in _NAV_PREFIXES:
+        for mode in (*_NAV_PREFIXES, *_AUTHOR_PREFIXES):
             prefix = f"{mode}:"
             if key.startswith(prefix):
                 return mode, key[len(prefix) :]
@@ -210,8 +242,86 @@ class SemanticScholarHandler(CacheBackedHandler):
     def _fetch(self, key: str) -> FetchResult:
         nav = self._parse_nav_key(key)
         if nav is not None:
-            return self._fetch_graph(key, *nav)
+            mode, ident = nav
+            if mode == "authors":
+                return self._fetch_paper_authors(key, ident)
+            if mode == "author":
+                return self._fetch_author_papers(key, ident)
+            return self._fetch_graph(key, mode, ident)
         return self._fetch_search(key)
+
+    def _fetch_paper_authors(self, key: str, ident: str) -> FetchResult:
+        """List a paper's authors (ADR 0039 §5) — the bridge into ORCID.
+
+        Surfaces each author's ORCID (the key for kind='orcid'), hIndex,
+        and affiliations, and flags the **senior (last) author** by
+        position — the densest vein for an author-network BFS.
+        """
+        path_id = self._s2_path_id(ident)
+        url = f"{_S2_PAPER_BASE}/{path_id}/authors"
+        data = self._s2_get_json(url, {"fields": _PAPER_AUTHORS_FIELDS, "limit": 100})
+        authors = data.get("data") or []
+        if not authors:
+            text = f"No authors found for {ident} on Semantic Scholar."
+            return FetchResult(
+                title=f"S2 authors: {ident}",
+                body_blocks=[BlockInsert(pos=0, text=text)],
+                cost_usd=None,
+                meta={"key": key, "nav": "authors", "paper": ident, "result_count": 0},
+            )
+        n = len(authors)
+        blocks = [
+            BlockInsert(
+                pos=i,
+                text=_format_author(a, position=i, n_authors=n),
+            )
+            for i, a in enumerate(authors)
+        ]
+        return FetchResult(
+            title=f"S2 authors of {ident} ({n})",
+            body_blocks=blocks,
+            cost_usd=None,
+            meta={
+                "key": key,
+                "nav": "authors",
+                "paper": ident,
+                "result_count": n,
+            },
+        )
+
+    def _fetch_author_papers(self, key: str, ident: str) -> FetchResult:
+        """List an author's top papers (ADR 0039 §5) — the BFS frontier."""
+        author_id = ident.strip()
+        url = f"{_S2_AUTHOR_BASE}/{author_id}/papers"
+        data = self._s2_get_json(
+            url, {"fields": _AUTHOR_PAPERS_FIELDS, "limit": _AUTHOR_PAPERS_LIMIT}
+        )
+        papers = data.get("data") or []
+        if not papers:
+            text = f"No papers found for author {author_id} on Semantic Scholar."
+            return FetchResult(
+                title=f"S2 author papers: {author_id}",
+                body_blocks=[BlockInsert(pos=0, text=text)],
+                cost_usd=None,
+                meta={"key": key, "nav": "author", "author": author_id, "result_count": 0},
+            )
+        blocks = [
+            BlockInsert(pos=i, text=_format_paper(p)) for i, p in enumerate(papers)
+        ]
+        capped = len(papers) >= _AUTHOR_PAPERS_LIMIT
+        suffix = f" ({len(papers)} shown" + (", capped" if capped else "") + ")"
+        return FetchResult(
+            title=f"S2 papers by author {author_id}{suffix}",
+            body_blocks=blocks,
+            cost_usd=None,
+            meta={
+                "key": key,
+                "nav": "author",
+                "author": author_id,
+                "result_count": len(papers),
+                "capped": capped,
+            },
+        )
 
     @staticmethod
     def _s2_get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -344,6 +454,35 @@ class SemanticScholarHandler(CacheBackedHandler):
                 "capped": len(papers) >= _NAV_LIMIT,
             },
         )
+
+
+def _format_author(a: dict[str, Any], *, position: int, n_authors: int) -> str:
+    """Format one author row, flagging the senior (last) author.
+
+    Surfaces the ORCID (the bridge into ``kind='orcid'``) so an LLM can
+    hop ``get(kind='orcid', id=<iD>)`` straight from here.
+    """
+    name = (a.get("name") or "(unknown)").strip()
+    author_id = a.get("authorId") or ""
+    ext = a.get("externalIds") or {}
+    orcid = ext.get("ORCID") or ""
+    h_index = a.get("hIndex")
+    affils = a.get("affiliations") or []
+    is_senior = position == n_authors - 1 and n_authors > 1
+    role = " — senior (last) author" if is_senior else ""
+    lines: list[str] = [f"## {position + 1}. {name}{role}"]
+    if orcid:
+        lines.append(f"_ORCID:_ {orcid} → get(kind='orcid', id='{orcid}')")
+    if author_id:
+        lines.append(
+            f"_S2 author:_ {author_id} → "
+            f"get(kind='semanticscholar', id='author:{author_id}')"
+        )
+    if h_index is not None:
+        lines.append(f"_h-index:_ {h_index}")
+    if affils:
+        lines.append(f"_Affiliations:_ {', '.join(affils[:4])}")
+    return "\n".join(lines)
 
 
 def _format_paper(p: dict[str, Any]) -> str:

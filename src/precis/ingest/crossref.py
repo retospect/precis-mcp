@@ -30,6 +30,47 @@ def lookup_crossref(doi: str, mailto: str = "") -> dict[str, Any] | None:
     return _normalize(msg, doi)
 
 
+def orcids_for_doi(doi: str, mailto: str = "") -> list[dict[str, Any]]:
+    """Extract author ORCIDs inline in a DOI's Crossref record (ADR 0039 §2).
+
+    Returns a list of ``{"orcid": "0000-...", "name": "Given Family",
+    "position": i, "n_authors": N}`` for each author whose Crossref entry
+    carries an ``ORCID`` field. The cheapest corpus-wide enricher — needs
+    no extra auth — that back-fills ORCIDs onto papers we already hold.
+
+    Crossref stores the ORCID as a URL (``http://orcid.org/0000-...``);
+    we strip to the bare iD. Returns ``[]`` on any lookup failure or when
+    no author carries an ORCID (older papers frequently lack them).
+    """
+    cr = Crossref(mailto=mailto) if mailto else Crossref()
+    try:
+        result = cr.works(ids=doi)
+    except Exception:
+        return []
+    if not result or "message" not in result:
+        return []
+    raw_authors = result["message"].get("author") or []
+    n = len(raw_authors)
+    out: list[dict[str, Any]] = []
+    for i, a in enumerate(raw_authors):
+        orcid_url = (a.get("ORCID") or "").strip()
+        if not orcid_url:
+            continue
+        bare = orcid_url.rsplit("/", 1)[-1].strip()
+        name = ", ".join(
+            p for p in ((a.get("family") or "").strip(), (a.get("given") or "").strip()) if p
+        )
+        out.append(
+            {
+                "orcid": bare,
+                "name": name,
+                "position": i,
+                "n_authors": n,
+            }
+        )
+    return out
+
+
 def _normalize(msg: dict[str, Any], doi: str) -> dict[str, Any]:
     """Normalize CrossRef response to acatome header format.
 

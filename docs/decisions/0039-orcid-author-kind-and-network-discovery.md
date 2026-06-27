@@ -143,7 +143,11 @@ are not identities. So when `org=` is supplied we **resolve it to a canonical
 1. Query the ROR API (`https://api.ror.org/organizations?query=MIT` — free,
    no auth) → ranked org candidates with canonical name + city + country.
 2. If ambiguous, **surface the org candidates** for the agent/user to pick
-   (the same disambiguation pattern as people — names in, identity out).
+   (the same disambiguation pattern as people — names in, identity out). The
+   response is **explicitly typed** so the LLM knows which phase it got back:
+   a `disambiguate: "org"` marker + the ROR candidate list (vs. the normal
+   person-candidate payload). The agent picks a ROR id and re-calls with
+   `ror=<id>`.
 3. Constrain the ORCID expanded-search by `ror-org-id:<id>` (ORCID indexes
    ROR/GRID org ids on affiliations) — precise and spelling-independent,
    instead of fuzzy name matching.
@@ -175,10 +179,15 @@ paragraph.
   relations migration). `add_link(src_ref_id=<orcid ref>,
   dst_ref_id=<paper ref>, relation="authored", src_pos=None, dst_pos=None)`
   — ref-level (both `*_pos` None).
-- **Link `meta` carries authorship position**: `{"author_position": 7,
-  "n_authors": 7, "is_senior": true, "is_corresponding": false}`. This is
-  what makes the senior-author heuristic a cheap edge-filter rather than a
-  re-fetch.
+- **Link `meta` carries authorship position (best-effort)**:
+  `{"author_position": 7, "n_authors": 7}` **when known**. Note: ORCID is
+  *per-person* — a work record does **not** enumerate the paper's full author
+  list or this person's position, so position meta is only available on the
+  **S2-mediated path** (the `authors:<paper>` endpoint, §5), absent on an
+  ORCID-only link. We do **not** store a derived `is_senior` flag — "senior /
+  last author" is a judgement the **LLM makes** from `author_position` /
+  `n_authors`; storing the raw position is enough (and cheap to fill when S2
+  gives it).
 - **Stubs link the same way.** When the missing-DOI diff mints a stub paper
   ref, we immediately `authored`-link the ORCID node to that **ref** (which
   has no chunks yet). When the fetch pipeline later promotes the stub
@@ -189,27 +198,36 @@ paragraph.
   (`orcid → paper → orcid`). Materializing a `coauthor` relation is a later
   optimization if the walk proves hot.
 
-### 4. Auto-enqueue: walking the works list → links + stubs
+### 4. Walking the works list → links, then LLM-directed enqueue
 
 On resolve/refresh, pull `/{id}/works` and for **each** work extract its
 identifiers (DOI preferred, then arXiv / PMID), its title/year, and any
 **ORCID-provided URL** (the work summary `url` and/or an external-id's
-`url` — often a publisher landing or PDF link). Then, per work, one of three
-branches:
+`url` — often a publisher landing or PDF link). Resolve every work against
+the corpus locally (`store.find_paper_ref_by_identifier(doi/arxiv)` — one
+cheap indexed lookup each) and **classify**:
 
-1. **In corpus already** — `store.find_paper_ref_by_identifier(doi/arxiv)`
-   returns a ref → just **`authored`-link** the existing paper. Done.
-2. **Not in corpus, but has an identifier** — `store.upsert_stub_paper(
-   identifiers=[("doi", …)], title, year, set_by="orcid")` (idempotent),
-   `authored`-link the stub. It's now claimable by
-   `fetch_oa.claim_stubs_to_fetch` and fetches **automatically** (no human
-   gate — confirmed).
-3. **No usable identifier at all** — still mint a stub from the title/year
-   and **send it for searching**: a discovery step (S2 / Crossref title +
-   author + year lookup, reusing the `acquire` path's enrich) tries to find
-   the DOI; on success it becomes a normal case-2 stub, on failure it stays
-   a stub addressable only by the ORCID URL (below). `authored`-link either
-   way.
+- **In corpus** → **`authored`-link** the existing paper and render its
+  `pa…` handle in the works list. (Linking is free and always happens.)
+- **Missing, has an identifier** → a *candidate* — rendered with its DOI,
+  title, year, and (if present) the ORCID URL. **Not fetched yet.**
+- **Missing, no identifier** → just **shown** (title/year + ORCID URL if
+  any). We do **not** auto-run title-search discovery on resolve (it would
+  be ~N extra API calls and slow the resolve); the LLM can ask to discover a
+  specific one if it wants it.
+
+**Enqueueing is the LLM's call, not automatic.** The resolve render leads
+with the counts — *"42 works: 9 in corpus, 31 missing-with-DOI, 2
+no-identifier"* — and the affordance: *"enqueue up to 31 for fetch with
+`get(kind='orcid', id=…, enqueue=N)` (or `enqueue='all'`), or list them to
+look through with `…`."* The model decides **how many, if any** — this is
+how we resolve the prolific-PI tension: no arbitrary hard cap, no silent
+flood; the agent sees the size and chooses. A chosen enqueue mints stubs
+(`store.upsert_stub_paper(…, set_by="orcid")`, idempotent), `authored`-links
+them, attaches any ORCID URL as a fetch hint (below), and they fetch
+out-of-band. No-identifier picks first run title-search discovery (S2 /
+Crossref title+author+year, reusing the `acquire` enrich); discovered DOI →
+normal stub, otherwise URL-only stub (below).
 
 **Download-link passthrough (must be *used*, not just recorded).** When
 ORCID hands us a work URL, we don't merely stash it for provenance — we
@@ -232,18 +250,22 @@ cascade keys on those):
 **Exponential backoff, as usual.** The hint source must log its attempt as a
 `fetcher:orcid_url` (i.e. `fetcher:%`) `ref_event`, so it rides the
 *existing* exponential-backoff window in `claim_stubs_to_fetch`
-(`base * 2^(attempts-1)`, capped at `_RETRY_BACKOFF_MAX_HOURS`) — a dead
-ORCID URL settles to one retry per ~30d instead of re-hammering the
-publisher every pass, identical to the OA-source and chase backoffs. **No
-bespoke backoff** — reuse the convention, and the widened claim `EXISTS`
-(url-only stubs) inherits the same window for free since it keys on
-`fetcher:%` `last_ts`.
+(`base * 2^(attempts-1)`, capped at `_RETRY_BACKOFF_MAX_HOURS`), identical to
+the OA-source and chase backoffs. **No bespoke backoff** — reuse the
+convention; the widened claim `EXISTS` (url-only stubs) inherits the same
+window for free since it keys on `fetcher:%` `last_ts`.
 
-**Blast-radius control.** A per-resolve cap
-(`PRECIS_ORCID_MAX_STUBS_PER_RESOLVE`, default ~50) and the `set_by="orcid"`
-tag bound and attribute the work — a prolific PI can carry 800 works, and
-one resolve must not flood the fetch queue. Excess is logged, not silently
-dropped (nursery rule).
+**URL-only stubs give up after 3 days.** A normal identifier-bearing stub
+never gives up (a closed paper can become OA later — existing behaviour). But
+a **URL-only** stub (no DOI/arXiv/S2, only an ORCID fetch-hint) has nothing
+else to try: if the hint URL hasn't yielded a PDF within **3 days**, mark it
+terminal (`fetch:gave-up` tag, dropped from the claim set) instead of
+retrying at the backoff floor forever. The `authored` link and the shown
+metadata remain; only the fetch attempts stop.
+
+**Attribution.** Every orcid-minted stub carries the `set_by="orcid"` tag so
+the work is attributable and the nursery can see it. With enqueue now
+LLM-gated (above) there's no hard cap to flood past.
 
 ### 5. Semantic Scholar author endpoint — network navigation
 
@@ -262,6 +284,29 @@ currently `get`/`search` only) with two nav keys alongside the existing
 This exposes the **paper → author → paper** and **co-author** hops S2-side
 and returns the ORCID iDs that key §1 — the raw interface a traversal needs,
 without prescribing the traversal itself.
+
+### 6. ORCID API auth (client credentials)
+
+The Public API requires a **read-public bearer token**, obtained once via
+the OAuth **client-credentials** flow — not per-user, no user consent:
+
+1. **Env**: `ORCID_CLIENT_ID` + `ORCID_CLIENT_SECRET` (read at handler
+   `__init__`; missing ⇒ kind degrades to disabled with a WARN, never an
+   `InitError` that blocks boot — the S2-key pattern).
+2. **Exchange**: `POST https://orcid.org/oauth/token` with
+   `grant_type=client_credentials&scope=/read-public` → `{access_token,
+   expires_in}` (tokens are long-lived, ~20 years, but we don't assume it).
+3. **Cache**: hold the token in process memory with its expiry; reuse across
+   calls. No DB/secret-store row — it's re-derivable from the env secret.
+4. **Refresh-on-401**: if a call returns 401/expired, re-run the exchange
+   **once** and retry; a second 401 is a hard `Upstream` error.
+5. **Calls**: `Authorization: Bearer <tok>`, `Accept: application/json`,
+   against `https://pub.orcid.org/v3.0/…`, via `safe_get` (fixed host, but
+   convention). The token-exchange host (`orcid.org`) is likewise fixed.
+
+A small `_OrcidClient` (token cache + `_get(path)`) owns this; the handler
+and the missing-DOI walk call through it. ROR (`api.ror.org`) and Crossref
+need **no** auth — plain `safe_get`.
 
 ## Skills
 
@@ -313,11 +358,12 @@ We ship **basic interfaces**, not strategies built on them:
   (experts to cite, collaborators/competing PIs, affiliations, standing);
   the corpus self-extends along the strongest real-world signal (a
   researcher's own output); no new fetch machinery.
-- **Cost / risk**: auto-enqueue can balloon the fetch queue (mitigated by
-  the per-resolve cap + `set_by` attribution + nursery spin-loop guard);
-  ORCID coverage is uneven (many older papers lack ORCIDs — Crossref
-  back-fill is partial); name-based S2 resolution is fuzzy (treat as a
-  candidate, confirm via the iD before linking).
+- **Cost / risk**: enqueue is LLM-gated (`enqueue=N`) so a resolve can't
+  balloon the fetch queue on its own; `set_by='orcid'` attribution +
+  nursery spin-loop guard bound the rest. ORCID coverage is uneven (many
+  older papers lack ORCIDs — Crossref back-fill is partial); name-based S2
+  resolution is fuzzy (treat as a candidate, confirm via the iD before
+  linking).
 - **Deferred**: affiliation graph & org-chart-as-clustering;
   materialized `coauthor` edges; funding/peer-review sections; ORCID
   *write* (depositing into a researcher's record — explicitly never).
@@ -326,6 +372,50 @@ We ship **basic interfaces**, not strategies built on them:
 
 - Soft-TTL value for the staleness hint (start ~30d; tune by how often
   agents actually hit "stale" and refresh).
-- Where does the author-position metadata live — link `meta` at write time
-  (chosen above) vs recomputed at read? Write-time wins unless author order
-  proves unreliable across sources.
+- Backoff base + the 3-day give-up are the only new fetch tunables — confirm
+  3 days is right once we see real URL-only-stub hit rates.
+
+## Implementation status (v1 shipped)
+
+This ADR is the design of record; the first implementation is a deliberate
+subset.
+
+**Shipped**
+
+- `kind='orcid'` durable node — resolve / store / embed `card_combined` /
+  semantic `search(q=…)` (`handlers/orcid.py`, `ingest/orcid.py`,
+  `0039_orcid_kind.sql`); handle code **`oi`**.
+- `authored` / `authored-by` ref→ref relations (`0040_orcid_relations.sql`,
+  `store/types.py`); the `link` verb attaches them.
+- **LLM-gated** works diff (§4): resolve links held papers + reports the
+  missing counts; `get(..., args={'enqueue': N | 'all'})` mints stubs.
+- **On-demand refresh** (no background pass): soft-TTL staleness hint,
+  `args={'refresh': true}` re-pulls.
+- S2 author endpoints (§5): `authors:<paper>` / `author:<id>`.
+- Client-credentials auth, in-memory token cache + 401 re-mint (§6).
+- Crossref `orcids_for_doi` helper (§2 resolution path).
+
+**Deferred (designed here, not yet built)**
+
+- **Live people-finder + ROR org disambiguation** (§1a/§1b): `search` is
+  semantic-over-corpus only; the `name=/org=` expanded-search + `ror=` path
+  are not implemented.
+- **ORCID download-URL fetch passthrough** (§4): the work `url` is recorded
+  on the `authored` link meta, but `fetch_oa` does not yet honour a per-stub
+  `fetch_hints` URL, nor the widened claim / `fetcher:orcid_url` backoff /
+  **3-day give-up** for URL-only stubs. `fetch_oa.py` is unchanged.
+- **No-identifier title-search discovery** (§4): no-id works are counted /
+  shown, not auto-discovered.
+
+## Resolved (this round)
+
+- **Enqueue is LLM-gated, not a hard cap** (§4): resolve reports the diff
+  counts; the agent chooses how many, if any, to fetch.
+- **Search param split** (§1a): structured `name`/`org` → live registry;
+  `q` → corpus.
+- **No `is_senior` stored** (§3): position meta is best-effort/S2-sourced;
+  seniority is an LLM judgement.
+- **ORCID auth** (§6): client-credentials, in-memory token cache,
+  refresh-once-on-401.
+- **URL-only stub give-up after 3 days** (§4); identifier stubs unchanged.
+- **ROR two-phase response** is explicitly typed (`disambiguate: "org"`).

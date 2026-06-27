@@ -785,6 +785,17 @@ def boot(
 
         _gated(SemanticScholarHandler)
 
+        # ORCID — durable author-identity node (ADR 0039). Resolves an
+        # iD via the ORCID Public API, stores a refreshable link hub,
+        # links works already held, and reports the missing ones (fetching
+        # is LLM-gated via args={'enqueue': N}). The handler raises
+        # InitError when the client-credentials env vars (ORCID_CLIENT_ID /
+        # ORCID_CLIENT_SECRET) are missing, so the kind degrades to
+        # disabled rather than blocking boot.
+        from precis.handlers.orcid import OrcidHandler
+
+        _gated(OrcidHandler)
+
         # Wikipedia — on-demand article fetch via the MediaWiki API.
         # No API key; httpx is the only requirement (declared in the
         # handler), so this always registers when httpx is available.

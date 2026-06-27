@@ -54,6 +54,7 @@ For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 | `flashcard` | `204` (int) | Flashcard (SM-2 spaced rep) | store |
 | `citation` | `18` (int) | Verified claim → source quote | store |
 | `finding` | `73` (int) | Chain-of-evidence head over a citation chase | store |
+| `orcid` | `orcid:0000-0002-1825-0097` | Researcher identity (ORCID): resolves + stores an author node (dossier), links held works + reports missing ones (LLM-gated `enqueue=`), and is the `authored` link hub. See `precis-orcid-help`, ADR 0039. | `ORCID_CLIENT_ID` |
 | `job` | `55` (int) | Execution attempt of a todo intent. **New jobs require `parent_id` pointing at a `kind='todo'`** — see `precis-job-help` + `precis-dispatch-help`. | store |
 | `cron` | `42` (int) | Push-notification scheduler — fires a payload to an external conversation (asa-bot Discord) at the scheduled time. **Different use case** from `level:recurring` todos (which pull recurring work into the doable queue); both kinds kept on purpose. See `precis-cron-help`, `precis-recurring-help`, ADR 0030. | store |
 | `message` | `11` (int) | Proactive outbound (Discord post) | store |
