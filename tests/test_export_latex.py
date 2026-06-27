@@ -75,6 +75,37 @@ def test_cross_ref_and_citation() -> None:
     assert ctx.cited == ["kong24", "smith2024"]
 
 
+def test_latex_cite_command_folds_to_single_cite() -> None:
+    # A draft carrying verbatim LaTeX \cite{key} must render ONE clean
+    # \cite{key} — not the old escaped/doubled \textbackslash{}cite\{…\}.
+    out, ctx = _inline(r"acid on the Zr nodes \cite{thiolfunctionalized20}.")
+    assert r"\cite{thiolfunctionalized20}" in out
+    assert r"\textbackslash{}cite" not in out  # no escaped-literal leak
+    assert out.count(r"\cite{") == 1  # exactly one cite command
+    assert ctx.cited == ["thiolfunctionalized20"]
+
+
+def test_latex_multi_key_cite_groups() -> None:
+    # \cite{a,b} folds through the one-key-per-bracket grammar but is merged
+    # back into a single grouped \cite{a,b} (biblatex prints "[1, 2]").
+    out, ctx = _inline(r"both \cite{nassar26, amidoximegrafted24} agree.")
+    assert r"\cite{nassar26,amidoximegrafted24}" in out
+    assert ctx.cited == ["nassar26", "amidoximegrafted24"]
+    # Cites the author spaced apart are NOT merged.
+    out2, _ = _inline(r"see \cite{kong24} and \cite{smith25} apart.")
+    assert r"\cite{kong24}" in out2 and r"\cite{smith25}" in out2
+    assert r"\cite{kong24,smith25}" not in out2
+
+
+def test_latex_empty_base_math_gets_a_base() -> None:
+    # `Zr$_6$` puts the base outside the math; fold it in so it isn't a
+    # floating subscript. Multi-fragment `$W_{18}$O$_{49}$` too.
+    out, _ = _inline(r"the Zr$_6$ node and UO$_2^{2+}$ ion and $W_{18}$O$_{49}$.")
+    assert "$Zr_6$" in out
+    assert "$UO_2^{2+}$" in out
+    assert "$W_{18}$$O_{49}$" in out
+
+
 def test_paper_handle_renders_citation() -> None:
     # ADR 0036: a paper handle [pc10] / [pa99] → \cite via the cite_key.
     out, ctx = _inline("see [pc10] here", store=_PaperStore())

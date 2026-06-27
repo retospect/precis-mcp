@@ -91,6 +91,45 @@ _HTML_SUP = re.compile(r"<sup>(.+?)</sup>")
 _MATH = re.compile(r"\$\$.+?\$\$|\$[^$]+\$", re.DOTALL)
 
 
+# ── shared draft-text normalisation (both exporters) ──────────────────
+# Drafts may carry verbatim LaTeX a precis author wouldn't write — most
+# often when an LLM drafts in LaTeX rather than precis markup. These two
+# fixes run BEFORE the reference/prose walk so both exporters (this one and
+# ``export/docx``) treat the input identically and never drift.
+
+#: ``\cite{a,b}`` / ``\citep[p.5]{a}`` / ``\citet*{a}`` — LaTeX citation
+#: commands. Folded to the explicit ``[§key]`` bracket form, which the
+#: grammar already resolves (for any key length, unlike a bare key — the
+#: bare-cite pattern needs ≥3 surname letters to stay off prose). So each
+#: key becomes a single resolved ``\cite{key}`` / ``[n]`` mark instead of
+#: leaking its ``\cite{…}`` wrapper as literal escaped text.
+_LATEX_CITE = re.compile(r"\\cite[a-z]*\*?(?:\[[^\]]*\])*\{([^}]*)\}")
+
+#: A ``$…$`` whose body starts with ``_`` or ``^`` has an EMPTY base — the
+#: author put the base outside the math (chemistry style: ``Zr$_6$``,
+#: ``UO$_2^{2+}$``). That renders as a floating subscript in LaTeX and an
+#: empty-box placeholder (``<m:e/>``) in Word. Pull the adjacent preceding
+#: token into the math so the base is non-empty (``Zr$_6$`` → ``$Zr_6$``).
+#: The token may sit right after a closing ``$`` (``$W_{18}$O$_{49}$`` → the
+#: ``O`` base), so the lookbehind only forbids a word char, not ``$``.
+_EMPTY_BASE_MATH = re.compile(r"(?<!\w)([A-Za-z0-9)\]]+)\$([_^][^$]+)\$")
+
+
+def _fold_cite(m: re.Match[str]) -> str:
+    keys = [k.strip() for k in m.group(1).split(",") if k.strip()]
+    return "".join(f"[§{k}]" for k in keys)
+
+
+def preprocess_draft_inline(text: str) -> str:
+    """Normalise a chunk's raw text before the reference/prose walk: fold
+    LaTeX ``\\cite`` commands to ``[§key]`` citations, and repair empty-base
+    ``$…$`` math (see ``_LATEX_CITE`` / ``_EMPTY_BASE_MATH``). Shared by both
+    the LaTeX and docx exporters so they handle verbatim LaTeX identically."""
+    text = _LATEX_CITE.sub(_fold_cite, text)
+    text = _EMPTY_BASE_MATH.sub(r"$\1\2$", text)
+    return text
+
+
 @dataclass
 class RenderResult:
     """The assembled body plus what it referenced."""
@@ -375,10 +414,27 @@ def _cite(slug: str, ctx: _Ctx) -> str:
     return f"\\cite{{{slug}}}"
 
 
+#: A run of directly-adjacent ``\cite{…}`` (no separator) → one grouped
+#: ``\cite{a,b}`` so biblatex prints a single ``[1, 2]`` bracket rather than
+#: ``[1][2]``. The adjacency comes from folding a multi-key ``\cite{a,b}``
+#: through the one-key-per-bracket grammar; cites the author spaced apart
+#: keep their separator and are left alone.
+_ADJ_CITES = re.compile(r"(?:\\cite\{[^}]*\})+")
+
+
+def _merge_adjacent_cites(s: str) -> str:
+    def repl(m: re.Match[str]) -> str:
+        keys = re.findall(r"\\cite\{([^}]*)\}", m.group(0))
+        return "\\cite{" + ",".join(keys) + "}"
+
+    return _ADJ_CITES.sub(repl, s)
+
+
 def _render_inline(text: str, ctx: _Ctx) -> str:
     """Render a chunk's text: walk references (rendered as LaTeX markup),
     LaTeX-escape + markdownify the gaps between them. Single pass, mirrors
     the web linkifier so the two never diverge."""
+    text = preprocess_draft_inline(text)
     out: list[str] = []
     last = 0
     for m in _COMBINED.finditer(text):
@@ -386,7 +442,7 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
         out.append(_render_reference(m, ctx))
         last = m.end()
     out.append(_render_gap(text[last:], ctx))
-    return "".join(out)
+    return _merge_adjacent_cites("".join(out))
 
 
 #: chunk depth → sectioning command. Deeper than subsubsection collapses

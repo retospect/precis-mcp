@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from precis.export.latex import _COMBINED, _bibtex_authors
+from precis.export.latex import _COMBINED, _bibtex_authors, preprocess_draft_inline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 
 #: chunk depth → Word heading level (1..4); deeper collapses to 4.
@@ -139,43 +139,11 @@ def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
 # ── inline rendering ──────────────────────────────────────────────
 
 
-# ``\cite{a,b}`` / ``\citep[p.5]{a}`` / ``\citet*{a}`` — LaTeX citation
-# commands a draft may carry verbatim. Folded to the explicit ``[§key]``
-# bracket form (which resolves for any key length, unlike a bare key — the
-# bare-cite grammar needs ≥3 surname letters to stay off prose), so each key
-# renders as a numbered ``[n]`` mark and never leaks as literal ``\cite{…}``.
-_LATEX_CITE = re.compile(r"\\cite[a-z]*\*?(?:\[[^\]]*\])*\{([^}]*)\}")
-
-
-def _fold_cite(m: re.Match[str]) -> str:
-    keys = [k.strip() for k in m.group(1).split(",") if k.strip()]
-    return "".join(f"[§{k}]" for k in keys)
-
-
-# A ``$…$`` whose body starts with ``_`` or ``^`` has an EMPTY base — the
-# author put the base outside the math (chemistry style: ``Zr$_6$``,
-# ``UO$_2^{2+}$``). An empty base becomes an empty OMML ``<m:e/>`` that Word
-# renders as a dotted-box placeholder. Pull the adjacent preceding token
-# into the math so the base is non-empty (``Zr$_6$`` → ``$Zr_6$``). The
-# token may sit right after a closing ``$`` (``$W_{18}$O$_{49}$`` → the
-# ``O`` base), so the lookbehind only forbids a word char, not ``$``.
-_EMPTY_BASE_MATH = re.compile(r"(?<!\w)([A-Za-z0-9)\]]+)\$([_^][^$]+)\$")
-
-
-def _preprocess_inline(text: str) -> str:
-    """Normalise a chunk's raw text before the reference/prose walk: fold
-    LaTeX ``\\cite`` commands to ``[§key]`` citations, and repair
-    empty-base ``$…$`` math (see the two patterns above)."""
-    text = _LATEX_CITE.sub(_fold_cite, text)
-    text = _EMPTY_BASE_MATH.sub(r"$\1\2$", text)
-    return text
-
-
 def _render_inline(text: str, ctx: _Ctx, paragraph: Any) -> None:
     """Walk a chunk's text, adding runs to ``paragraph``. References go
     through :func:`_render_reference`; the prose gaps between them get
     markdown/sub-sup/math run formatting."""
-    text = _preprocess_inline(text)
+    text = preprocess_draft_inline(text)
     last = 0
     for m in _COMBINED.finditer(text):
         _render_gap(text[last : m.start()], ctx, paragraph)
