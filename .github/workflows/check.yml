@@ -20,7 +20,51 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy src tests
 
-  test:
+  # Linux legs run the FULL suite against a real PostgreSQL + pgvector,
+  # so the db-tagged tests (~41% of the suite) actually gate the release
+  # instead of auto-skipping. GHA service containers are Linux-only,
+  # hence the split from `test-other`.
+  test-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    services:
+      postgres:
+        # pgvector image so the `vector` extension is present; the
+        # migration bootstrap CREATE EXTENSIONs it (plus pg_trgm,
+        # btree_gist) on first apply.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: precis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      # Connect as the `postgres` superuser: the migration bootstrap
+      # issues CREATE EXTENSION on the untrusted `vector` / `btree_gist`
+      # extensions, which only a superuser may install. The conftest
+      # session fixture drops + re-applies the schema, so an empty
+      # `precis_test` database is all that's required here.
+      - run: uv run --extra all pytest
+        env:
+          PRECIS_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/precis_test
+
+  # macOS / Windows: no service-container support, so postgres is absent
+  # and the db-tagged tests auto-skip via the conftest probe. These legs
+  # cover the db-less suite + platform-specific paths.
+  test-other:
     runs-on: ${{ matrix.platform }}
     # Tolerate failures on platforms that have known platform-specific
     # test bugs we haven't fixed yet.  Tracked in OPEN-ITEMS.md:
@@ -36,7 +80,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [ubuntu-latest, macos-latest, windows-latest]
+        platform: [macos-latest, windows-latest]
         python-version: ['3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -46,7 +90,7 @@ jobs:
       - run: uv run --extra all pytest
 
   publish:
-    needs: [lint, test]
+    needs: [lint, test-linux, test-other]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     environment: pypi
