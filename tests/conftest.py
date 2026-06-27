@@ -48,12 +48,17 @@ use ``IF NOT EXISTS`` so they're no-ops once installed.
 
 from __future__ import annotations
 
+import logging
 import os
+import time
+import uuid
+import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import psycopg
 import pytest
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from precis.config import PrecisConfig
 from precis.dispatch import Hub, boot
@@ -68,6 +73,68 @@ PG_TEST_DSN = os.environ.get(
     "PRECIS_TEST_PG_URL",
     "postgresql://localhost/precis_test",
 )
+
+log = logging.getLogger(__name__)
+
+# ``PG_TEST_DSN`` names the *template*: the maintained ``precis_test`` DB
+# (server + schema + pre-installed pgvector/btree_gist extensions). Each
+# pytest session clones the template into a private ``precis_test_<uuid>``
+# (see ``_initialise_test_db``) so sessions never share a physical DB.
+# ``_ACTIVE_DSN`` — the clone — is what every per-test fixture connects to.
+_TEMPLATE_DB = str(conninfo_to_dict(PG_TEST_DSN).get("dbname") or "postgres")
+_ACTIVE_DSN = PG_TEST_DSN
+
+
+def _active_dsn() -> str:
+    """The DSN the current session's per-test fixtures use: the session's
+    private clone once ``_initialise_test_db`` has run, else the template."""
+    return _ACTIVE_DSN
+
+
+def _dsn_with_db(dsn: str, dbname: str) -> str:
+    """``dsn`` with its database swapped for ``dbname`` (server + creds kept)."""
+    return make_conninfo(dsn, dbname=dbname)
+
+
+def _drop_db(admin: psycopg.Connection, name: str) -> None:
+    """Force-drop database ``name``, terminating its backends first."""
+    admin.execute(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        "WHERE datname = %s AND pid <> pg_backend_pid()",
+        (name,),
+    )
+    admin.execute(f'DROP DATABASE IF EXISTS "{name}"')
+
+
+def _ensure_template_cloneable(admin: psycopg.Connection) -> None:
+    """Best-effort startup auto-config: mark the template ``IS_TEMPLATE`` so
+    a CREATEDB role can clone it. Succeeds when the connecting role owns the
+    template (the local ``precis`` owns ``precis_test``) or is superuser;
+    silently ignored otherwise (then cloning relies on plain ownership, or
+    falls back). The CREATEDB privilege itself can only be granted by a
+    superuser, so it is NOT auto-fixable here — see the fallback warning."""
+    try:
+        admin.execute(f'ALTER DATABASE "{_TEMPLATE_DB}" WITH IS_TEMPLATE true')
+    except psycopg.Error:
+        pass  # not owner/superuser — rely on ownership or pre-set template
+
+
+def _sweep_orphan_clones(admin: psycopg.Connection) -> None:
+    """Drop ephemeral ``precis_test_<uuid>`` clones left by crashed prior
+    sessions. A clone in use by a *live* concurrent session still has
+    connections, so its plain ``DROP`` raises ``ObjectInUse`` and we skip
+    it — only truly idle orphans are reclaimed. The name regex (12 hex
+    chars) won't match a hand-made ``precis_test_foo`` dev DB."""
+    rows = admin.execute(
+        "SELECT datname FROM pg_database WHERE datname ~ %s",
+        (rf"^{_TEMPLATE_DB}_[0-9a-f]{{12}}$",),
+    ).fetchall()
+    for (name,) in rows:
+        try:
+            admin.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        except psycopg.Error:
+            pass  # in use by a live concurrent session — leave it
+
 
 # Probed once per test session. Same gating as before: when the
 # test DSN doesn't answer, every DB-tagged fixture skips so a
@@ -193,47 +260,103 @@ _SESSION_DB_LOCK_KEY = 0x70726563
 
 @pytest.fixture(scope="session", autouse=True)
 def _initialise_test_db() -> Iterator[None]:
-    """Serialise + rebuild the shared test DB once per pytest session.
+    """Give each pytest session its OWN ephemeral database — an instant
+    clone of the maintained ``precis_test`` template — and drop it at
+    session end.
 
-    The whole suite runs against a single shared *physical* database
-    (``precis_test``); the ``precis`` test role lacks ``CREATEDB`` so
-    we can't give each session its own. Two pytest sessions hitting
-    that DB at once — a CI re-trigger, sibling agents on the shared
-    cluster, or back-to-back dev containers — used to race: one
-    session's destructive ``_drop_all_public_objects`` + ``apply_all``
-    (or a ``fresh_db`` / per-test ``TRUNCATE … CASCADE``) would land
-    mid-flight of another and surface as a *wandering*
-    ``DeadlockDetected`` / ``UndefinedTable`` / ``DuplicateTable`` on
-    whichever test the interleaving happened to hit.
+    The whole suite used to share one physical ``precis_test``, so per-test
+    ``TRUNCATE … CASCADE`` and ``fresh_db`` drop/rebuilds deadlocked across
+    concurrent sessions (CI re-trigger, sibling agents) AND even within one
+    run under ``pytest-randomly`` ordering. Now each session runs
+    ``CREATE DATABASE precis_test_<uuid> TEMPLATE precis_test`` — a fast
+    file-copy clone that inherits the schema + the pre-installed pgvector /
+    btree_gist extensions (so no superuser ``CREATE EXTENSION`` is needed),
+    works against its private copy, and ``DROP``s it on teardown. Sessions
+    no longer contend: the only shared step is keeping the template migrated
+    and taking the clone, serialised by a short advisory lock.
 
-    Fix: take a session-level Postgres advisory lock on a dedicated
-    connection and hold it for the entire session. The first session
-    in wins and rebuilds the schema; any concurrent session blocks
-    here until the holder's session ends, then rebuilds for itself —
-    serialising rather than isolating, since per-session databases
-    aren't available. Autouse so any DB-touching test inherits the
-    guard even without depending on ``store``.
+    Requires the connecting role to have CREATEDB AND to be able to copy
+    the template — i.e. it owns ``precis_test`` or that DB is marked
+    ``IS_TEMPLATE``. One-time server setup::
 
-    The drop is "everything in the public schema" — preserves the
-    extensions (vector, btree_gist) which need superuser to
-    re-install and are stable across runs. No-op when no postgres is
-    reachable (the per-test fixtures skip instead).
+        ALTER ROLE <role> CREATEDB;
+        ALTER DATABASE precis_test WITH IS_TEMPLATE true;
+
+    If cloning isn't permitted we fall back to the shared template DB (the
+    old serialise-by-advisory-lock behaviour) so a restricted environment
+    still runs — without per-session isolation, and a warning is logged.
+    No-op when no postgres is reachable (the per-test fixtures skip instead).
     """
+    global _ACTIVE_DSN
     if not _pg_available():
         yield
         return
-    # Dedicated connection holds the advisory lock for the whole
-    # session; releasing it (unlock + close) lets the next waiting
-    # session proceed.
-    lock_conn = psycopg.connect(PG_TEST_DSN, autocommit=True)
+
+    admin_dsn = _dsn_with_db(PG_TEST_DSN, "postgres")
+    clone_db = f"{_TEMPLATE_DB}_{uuid.uuid4().hex[:12]}"
+    clone_dsn = _dsn_with_db(PG_TEST_DSN, clone_db)
+
+    # Serialise template maintenance + the clone across sessions. Hold the
+    # (server-global) advisory lock on the `postgres` admin DB, NOT the
+    # template: `CREATE DATABASE … TEMPLATE` needs zero live connections to
+    # the template, and the pre-clone terminate below would otherwise kill
+    # the lock connection itself.
+    lock_conn = psycopg.connect(admin_dsn, autocommit=True)
     lock_conn.execute("SELECT pg_advisory_lock(%s)", (_SESSION_DB_LOCK_KEY,))
+    keepalive: psycopg.Connection | None = None
+    shared_fallback = False
     try:
-        _drop_all_public_objects(PG_TEST_DSN)
+        # Keep the template current + data-free, so every clone starts from
+        # "schema + vocab, no data". apply_all is an idempotent tail apply.
         Migrator(PG_TEST_DSN, MIGRATIONS_DIR).apply_all()
+        _truncate_data_tables(PG_TEST_DSN)
+        try:
+            with psycopg.connect(admin_dsn, autocommit=True) as adm:
+                _ensure_template_cloneable(adm)
+                _sweep_orphan_clones(adm)
+                # No connections to the template may exist during the clone.
+                adm.execute(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = %s AND pid <> pg_backend_pid()",
+                    (_TEMPLATE_DB,),
+                )
+                adm.execute(f'CREATE DATABASE "{clone_db}" TEMPLATE "{_TEMPLATE_DB}"')
+            # Hold a connection to the clone for the whole session so a
+            # concurrent session's orphan-sweep sees it as in-use. Autocommit
+            # so it never sits idle-in-transaction.
+            keepalive = psycopg.connect(clone_dsn, autocommit=True)
+            _ACTIVE_DSN = clone_dsn
+        except psycopg.errors.InsufficientPrivilege:
+            msg = (
+                "per-session test-DB isolation is DISABLED: the test role cannot "
+                f"CREATE DATABASE, so the suite shares one physical {_TEMPLATE_DB!r} "
+                "and can deadlock under concurrent / pytest-randomly runs. Fix once, "
+                "as a superuser: 'ALTER ROLE <test-role> CREATEDB;' (the template "
+                "IS_TEMPLATE bit is auto-set when the role owns it)."
+            )
+            log.warning("conftest: %s", msg)
+            warnings.warn(msg, stacklevel=2)
+            shared_fallback = True
+            _ACTIVE_DSN = PG_TEST_DSN
+    finally:
+        # Clone path: the lock was only needed for the clone, release now.
+        # Shared fallback: hold it for the whole session (old behaviour).
+        if not shared_fallback:
+            lock_conn.execute("SELECT pg_advisory_unlock(%s)", (_SESSION_DB_LOCK_KEY,))
+            lock_conn.close()
+
+    try:
         yield
     finally:
-        lock_conn.execute("SELECT pg_advisory_unlock(%s)", (_SESSION_DB_LOCK_KEY,))
-        lock_conn.close()
+        _ACTIVE_DSN = PG_TEST_DSN
+        if keepalive is not None:
+            keepalive.close()
+        if shared_fallback:
+            lock_conn.execute("SELECT pg_advisory_unlock(%s)", (_SESSION_DB_LOCK_KEY,))
+            lock_conn.close()
+        else:
+            with psycopg.connect(admin_dsn, autocommit=True) as adm:
+                _drop_db(adm, clone_db)
 
 
 @pytest.fixture
@@ -253,8 +376,8 @@ def store() -> Iterator[Store]:
             f"postgres unreachable at {PG_TEST_DSN}; set PRECIS_TEST_PG_URL "
             "or start a server to run db-tagged tests"
         )
-    _truncate_data_tables(PG_TEST_DSN)
-    s = Store.connect(PG_TEST_DSN)
+    _truncate_data_tables(_active_dsn())
+    s = Store.connect(_active_dsn())
     try:
         yield s
     finally:
@@ -280,12 +403,12 @@ def fresh_db() -> Iterator[str]:
             f"postgres unreachable at {PG_TEST_DSN}; set PRECIS_TEST_PG_URL "
             "or start a server to run db-tagged tests"
         )
-    _drop_all_public_objects(PG_TEST_DSN)
-    yield PG_TEST_DSN
+    _drop_all_public_objects(_active_dsn())
+    yield _active_dsn()
     # Restore the schema for downstream tests in the same session.
     # The next ``store`` fixture call would otherwise fail because
     # the tables it wants to TRUNCATE don't exist.
-    Migrator(PG_TEST_DSN, MIGRATIONS_DIR).apply_all()
+    Migrator(_active_dsn(), MIGRATIONS_DIR).apply_all()
 
 
 @pytest.fixture
@@ -432,6 +555,28 @@ _DATA_TABLES: tuple[str, ...] = (
 )
 
 
+def _run_with_lock_retry(conn: psycopg.Connection, stmt: str) -> None:
+    """Run a lock-taking statement (TRUNCATE / DROP), retrying on deadlock
+    or lock-timeout. A test that leaks a connection (a worker or pool not
+    closed) can briefly hold a RowExclusiveLock that collides with the next
+    fixture's AccessExclusiveLock under pytest-randomly ordering. The leak
+    is transient — the writer finishes and releases — so a short retry
+    succeeds. This is the privilege-free alternative to terminating the
+    other backend (a non-superuser test role can't ``pg_terminate_backend``);
+    ``lock_timeout`` keeps a single wait bounded so we retry rather than
+    block, and a true deadlock cycle aborts us (not the leaker) so we retry
+    too."""
+    conn.execute("SET lock_timeout = '5s'")
+    for attempt in range(10):
+        try:
+            conn.execute(stmt)
+            return
+        except (psycopg.errors.DeadlockDetected, psycopg.errors.LockNotAvailable):
+            if attempt == 9:
+                raise
+            time.sleep(0.1 * (attempt + 1))
+
+
 def _truncate_data_tables(dsn: str) -> None:
     """TRUNCATE every data table that exists. Idempotent."""
     with psycopg.connect(dsn, autocommit=True) as conn:
@@ -446,7 +591,9 @@ def _truncate_data_tables(dsn: str) -> None:
             return
         # Single TRUNCATE so CASCADE is one round-trip; RESTART IDENTITY
         # so per-test ref_ids start from 1 (predictable across runs).
-        conn.execute(f"TRUNCATE TABLE {', '.join(targets)} RESTART IDENTITY CASCADE")
+        _run_with_lock_retry(
+            conn, f"TRUNCATE TABLE {', '.join(targets)} RESTART IDENTITY CASCADE"
+        )
 
 
 def _drop_all_public_objects(dsn: str) -> None:
@@ -472,7 +619,7 @@ def _drop_all_public_objects(dsn: str) -> None:
                 ({"VIEW": "v", "TABLE": "r", "SEQUENCE": "S"}[kind],),
             ).fetchall()
             for (name,) in rows:
-                conn.execute(f'DROP {kind} IF EXISTS "{name}" {drop_kw}')
+                _run_with_lock_retry(conn, f'DROP {kind} IF EXISTS "{name}" {drop_kw}')
         # Drop leftover functions written by our migrations (e.g. the
         # future WORM trigger). EXCLUDE functions owned by extensions
         # — pgvector et al. install ``vector_in``, ``btree_gist_ops``,
@@ -488,4 +635,4 @@ def _drop_all_public_objects(dsn: str) -> None:
             "  )"
         ).fetchall()
         for (name,) in funcs:
-            conn.execute(f'DROP FUNCTION IF EXISTS "{name}" CASCADE')
+            _run_with_lock_retry(conn, f'DROP FUNCTION IF EXISTS "{name}" CASCADE')

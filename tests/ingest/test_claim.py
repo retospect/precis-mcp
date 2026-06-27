@@ -53,6 +53,18 @@ _DSN = os.environ.get("PRECIS_DATABASE_URL", "")
 _pg = pytest.mark.skipif(not _DSN, reason="PRECIS_DATABASE_URL not set")
 
 
+def _dsn() -> str:
+    """The session's active test DB (the per-session clone), resolved at
+    call time. A claim's connection must live on the clone, not the
+    template that ``PRECIS_DATABASE_URL`` points at — else a concurrent
+    session's clone-prep terminate kills it mid-test. Collection-time
+    probes (the ``_sessions_isolated`` marker) still use ``_DSN`` because
+    the clone doesn't exist yet when markers are evaluated."""
+    from tests.conftest import _active_dsn
+
+    return _active_dsn()
+
+
 def _sessions_are_isolated() -> bool:
     """Detect whether the test env gives distinct Postgres backend
     sessions per ``psycopg.connect()`` call.
@@ -119,11 +131,11 @@ def sha() -> str:
 @_pg
 class TestClaimIntegration:
     def test_acquire_then_release(self, sha: str) -> None:
-        with Claim(_DSN, sha) as claim:
+        with Claim(_dsn(), sha) as claim:
             assert claim.acquired is True
         # After exit, a second Claim on the same hash succeeds —
         # confirming the first one released the lock.
-        with Claim(_DSN, sha) as second:
+        with Claim(_dsn(), sha) as second:
             assert second.acquired is True
 
     @_sessions_isolated
@@ -147,7 +159,7 @@ class TestClaimIntegration:
         import subprocess
         import sys
 
-        with Claim(_DSN, sha) as first:
+        with Claim(_dsn(), sha) as first:
             assert first.acquired is True
             # Child: try to acquire the same hash; print the
             # ``acquired`` outcome. Caller asserts on it.
@@ -157,7 +169,7 @@ class TestClaimIntegration:
                     "-c",
                     (
                         "from precis.ingest.claim import Claim\n"
-                        f"with Claim({_DSN!r}, {sha!r}) as c:\n"
+                        f"with Claim({_dsn()!r}, {sha!r}) as c:\n"
                         "    print(c.acquired)\n"
                     ),
                 ],
@@ -174,11 +186,11 @@ class TestClaimIntegration:
     def test_release_on_exception(self, sha: str) -> None:
         """If the body raises, the claim is still released on exit."""
         with pytest.raises(RuntimeError):
-            with Claim(_DSN, sha) as claim:
+            with Claim(_dsn(), sha) as claim:
                 assert claim.acquired is True
                 raise RuntimeError("forced")
         # Lock is now free.
-        with Claim(_DSN, sha) as after:
+        with Claim(_dsn(), sha) as after:
             assert after.acquired is True
 
     def test_different_hashes_dont_collide(self, sha: str) -> None:
@@ -191,6 +203,6 @@ class TestClaimIntegration:
         # per run keeps the "two distinct hashes" property while staying
         # isolated, the same reason the ``sha`` fixture randomises.
         other_sha = _fresh_sha()
-        with Claim(_DSN, sha) as a, Claim(_DSN, other_sha) as b:
+        with Claim(_dsn(), sha) as a, Claim(_dsn(), other_sha) as b:
             assert a.acquired is True
             assert b.acquired is True

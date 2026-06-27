@@ -255,10 +255,12 @@ def test_handler_writes_to_real_db(store: Store) -> None:
     applied and 0015 / worker_logs exists. Logs one row via the
     standard handler chain, then SELECTs to verify.
     """
-    from tests.conftest import PG_TEST_DSN
+    # The handler must write to the same DB the ``store`` fixture reads —
+    # the session's private clone, not the template (``PG_TEST_DSN``).
+    from tests.conftest import _active_dsn
 
     h = BufferedDBLogHandler(
-        PG_TEST_DSN,
+        _active_dsn(),
         max_buffer=2,
         max_interval_seconds=0.5,
         host_name="integration-test",
