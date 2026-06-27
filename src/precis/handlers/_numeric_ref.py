@@ -584,7 +584,9 @@ class NumericRefHandler(Handler):
         """
         require_tag_ops(self.kind, add, remove)
         ref_id = self._coerce_id(id)
-        existing = self._resolve_live_ref(ref_id)
+        # Existence/liveness guard — raises Gone/NotFound for a missing or
+        # soft-deleted ref before we touch tag state.
+        self._resolve_live_ref(ref_id)
         # Pre-validate every tag *before* touching the DB so a
         # rejected tag mid-call doesn't leave partial state. Mirrors
         # the contract on ``_create`` / ``_update``.
@@ -626,7 +628,9 @@ class NumericRefHandler(Handler):
         target = require_link_target(self.kind, target)
         validate_link_mode(mode)
         ref_id = self._coerce_id(id)
-        existing = self._resolve_live_ref(ref_id)
+        # Existence/liveness guard — raises Gone/NotFound for a missing or
+        # soft-deleted ref before we touch link state.
+        self._resolve_live_ref(ref_id)
         # Collect both target-resolution and rel-vocabulary errors so a
         # caller with both wrong gets one round trip's worth of feedback,
         # not two. (MCP broad-pass usability finding #10.)

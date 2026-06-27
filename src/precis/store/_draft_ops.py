@@ -439,7 +439,6 @@ class DraftMixin:
                 " WHERE ref_id = %s AND retired_at IS NULL AND pos IS NOT NULL",
                 (ref_id,),
             ).fetchall()
-        by_id = {r[0]: r for r in rows}
         # children keyed by parent_chunk_id (None = root). A child whose
         # parent isn't a live chunk lands in a bucket no walk ever visits,
         # so it (and its subtree) drop out — matching the old CTE.

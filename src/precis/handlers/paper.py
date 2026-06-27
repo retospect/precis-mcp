@@ -614,7 +614,6 @@ class PaperHandler(Handler):
         if not created:
             existing = self.store.fetch_refs_by_ids([ref_id]).get(ref_id)
             if existing is not None:
-                slug = existing.slug or str(ref_id)
                 held = getattr(existing, "pdf_sha256", None) is not None
                 title = (existing.title or "").split("\n", 1)[0].strip()
                 where = "held" if held else "stub (awaiting fetch)"

@@ -324,7 +324,6 @@ def ensure_initialized(workspace: Workspace, precis_root: Path) -> Path:
             return root
     # Initial commit so per-put commits have a parent. Idempotent:
     # skip if HEAD already points somewhere (a prior init landed).
-    head = root / ".git" / "HEAD"
     has_commits = False
     try:
         rev = subprocess.run(

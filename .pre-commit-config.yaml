@@ -18,10 +18,21 @@ repos:
       - id: check-added-large-files
   - repo: local
     hooks:
+      # Full test suite runs at PRE-PUSH, not pre-commit. Rationale:
+      # the suite is slow, and when it sat at pre-commit the standard
+      # escape hatch was `git commit --no-verify` — which ALSO skips
+      # the cheap ruff hooks above, letting unformatted code reach
+      # main (exactly how the 2026-06 format drift happened). Keeping
+      # ruff at pre-commit and tests at pre-push means the per-commit
+      # path stays fast (so nobody reaches for --no-verify) while the
+      # suite still gates before anything leaves the machine.
+      #
+      # Install BOTH hook types once:
+      #   uv run pre-commit install --hook-type pre-commit --hook-type pre-push
       - id: pytest
-        name: pytest
+        name: pytest (full suite)
         entry: uv run pytest -x -q
         language: system
         pass_filenames: false
         always_run: true
-        stages: [pre-commit]
+        stages: [pre-push]
