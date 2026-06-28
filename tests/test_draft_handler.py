@@ -108,10 +108,12 @@ def test_outline_prefers_summary_then_keywords_then_text(
     assert "Bare paragraph text." in out  # raw-text fallback
 
 
-def test_numeric_paper_ref_hints_cite_key_form(draft: DraftHandler, hub: Hub) -> None:
-    """Writing a paper citation as `paper:<numeric>` (or `paper:slug`)
-    nudges toward the canonical `[§<cite_key>~n]`; a correct `[§…]` does
-    not trigger the hint."""
+def test_numeric_paper_ref_hints_chunk_handle_form(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Writing a paper citation as a bare `paper:<id>` mention nudges
+    toward the canonical inline chunk handle `[pc<id>]`; a bare handle
+    citation does not trigger the hint."""
     proj = _proj(hub)
     paper = hub.store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
     draft.put(id="nt", title="T", project=proj)
@@ -123,16 +125,41 @@ def test_numeric_paper_ref_hints_cite_key_form(draft: DraftHandler, hub: Hub) ->
         text=f"The rate rises sharply, as paper:{paper.id}~3 reports.",
         at={"after": "¶" + th},
     )
-    assert f"paper:{paper.id}~3" in r.body
-    assert "[§liu24~3]" in r.body  # suggests the cite_key sigil form
+    assert f"paper:{paper.id}~3" in r.body  # the offending mention is named
+    assert "[pc<id>]" in r.body  # suggests the chunk-handle citation form
 
     r2 = draft.put(
         id="nt",
         chunk_kind="paragraph",
-        text="A second mechanism is plausible [§liu24~5].",
+        text="A second mechanism is plausible [pc999].",
         at={"after": "¶" + th},
     )
-    assert "cite papers as" not in r2.body  # the canonical form is fine
+    assert "paper: mention" not in r2.body  # a bare [pc<id>] handle is fine
+
+
+def test_literal_cite_in_draft_is_flagged(draft: DraftHandler, hub: Hub) -> None:
+    r"""Typing a literal ``\cite{}``/``\citequote{}`` into a draft body is
+    flagged — in a draft you cite by the ``[pc<id>]`` handle and the
+    export engine writes the ``\cite``. A bare handle does not trip it."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=r"As reported \cite{smith2020}, the rate rises.",
+        at={"after": "¶" + th},
+    )
+    assert "literal \\cite" in r.body  # the lint fires
+
+    r2 = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="The rate rises further [pc999].",
+        at={"after": "¶" + th},
+    )
+    assert "literal \\cite" not in r2.body  # a bare [pc<id>] handle is clean
 
 
 def test_edit_and_delete_require_chunk_handle(draft: DraftHandler, hub: Hub) -> None:

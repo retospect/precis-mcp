@@ -1,8 +1,8 @@
 ---
 id: precis-check-source-help
-title: precis — find a citation, read its surrounds, check it supports the point
-summary: reader-side source-checking — locate the passage, fetch the chunks around it (~A..B range), judge whether it actually supports the claim, then persist
-applies-to: get/search (kind='paper'), put (kind='citation'|'finding')
+title: precis — find a passage, read its surrounds, check it supports the point
+summary: reader-side source-checking — locate the passage by chunk handle, fetch the chunks around it (~A..B range), judge whether it actually supports the claim, then cite it inline as [pc<id>]
+applies-to: get/search (kind='paper'), drafting prose, put (kind='finding')
 status: active
 ---
 
@@ -10,9 +10,10 @@ status: active
 
 Before you cite a passage — or when you're reviewing one someone else
 cited — you do three things: **find** the passage, **read its
-surrounds**, and **judge** whether it really supports the claim. This
-is the reader side; the write side (persisting the verified pair) is
-[[precis-citation-help]].
+surrounds**, and **judge** whether it really supports the claim. Then
+you cite it inline by its chunk handle `[pc<id>]`. This is the reader
+side; the write side (the inline cite + optional verification record)
+is [[precis-citation-help]].
 
 The failure this prevents: a quote that looks supportive in isolation
 but is hedged, negated, or about a different system once you read the
@@ -82,48 +83,48 @@ Hold the passage to the claim and ask:
    more than the claim asserts? Match the claim's strength to the
    source's.
 
-If it holds → persist the verified pair (next section). If it doesn't →
-keep looking (another chunk, another paper), or, for an empirical claim
-worth chasing to its origin, register a `kind='finding'`
-([[precis-finding-help]]). Don't cite a passage that only "looks
-similar" — pull it and read it.
+If it holds → cite it inline (next section). If it doesn't → keep
+looking (another chunk, another paper), or, for an empirical claim
+worth chasing to its origin, register a `kind='finding'` and cite it
+`[fi<id>]` meanwhile ([[precis-finding-help]]). Don't cite a passage
+that only "looks similar" — pull it and read it.
 
 ## I confirmed the passage supports the claim — now what?
-## Persist the verified citation
+## Cite the chunk inline
 
-Quote the source **verbatim** from the chunk you read (no paraphrase,
-no cleanup) and store the pair:
+Drop the chunk handle directly in the sentence it supports — the chunk
+*is* the evidence, so there is no quote to copy:
 
-```python
-put(kind='citation',
-    text='<the claim>',
-    source_handle='pc7',                 # the chunk you verified against
-    source_quote='<exact text from the chunk>',
-    verifier_confidence=0.95,
-    link='paper:<slug>', rel='cites')
+```text
+Aqueous synthesis yields higher quantum yields than hot-injection [pc7].
 ```
 
-Verbatim matters because the whole point is that a future reader can
-chase to the exact span. Cleanup destroys that. Full write protocol +
-the `\citequote` LaTeX bridge: [[precis-citation-help]].
+Several supporting chunks list together: `[pc232][pc234][pc593]`. The
+handle is the one you just read and verified — copy it from the search /
+get output, never construct it. At compile time the export engine
+resolves each `[pc<id>]` → its paper and emits `\cite{}` plus one
+bibliography entry per paper; you never type `\cite{}` or `\citequote{}`.
+Optionally also persist a `kind='citation'` verification record — see
+[[precis-citation-help]].
 
 ## Triage excerpts are not citation-grade
 
 Search results carry short `excerpt @ ~N:` sub-lines picked for triage
 — they help you decide whether to drill in, but they are clipped. Never
-verify against the excerpt: fetch the full chunk (`get(id='pc<id>')` or
-the `~A..B` range) and read it before judging support.
+judge support from the excerpt: fetch the full chunk (`get(id='pc<id>')`
+or the `~A..B` range) and read it before you cite.
 
 ## Reviewing someone else's citation (the faithfulness check)
 
-Checking that a manuscript's `\citequote{key}{quote}` actually appears
-verbatim in the cited paper is the same skill at scale — one finding
-per mismatch. That review pass is [[precis-review-citation-faithfulness]].
+Checking that each inline `[pc<id>]` in a manuscript actually resolves
+to a chunk that supports the claim it sits beside is the same skill at
+scale — one finding per unsupported or dangling handle. That review
+pass is [[precis-review-citation-faithfulness]].
 
 ## See also
 
 ```python
-get(kind='skill', id='precis-citation-help')             # write side: persist the verified pair
+get(kind='skill', id='precis-citation-help')             # write side: the inline [pc<id>] cite + optional record
 get(kind='skill', id='precis-cite-paper-help')           # the cite-a-paper router
 get(kind='skill', id='precis-paper-help')                # ~A..B grammar, TOC, scoped search
 get(kind='skill', id='precis-finding-help')              # chase a claim to its primary source

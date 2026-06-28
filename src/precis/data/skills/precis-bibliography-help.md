@@ -8,16 +8,30 @@ status: active
 
 # precis-bibliography-help — read citations that cite a paper
 
-The bibliography view lists every verified `citation` that points at
-a given paper. Read-side counterpart to the verifier workflow in
-`precis-citation-help`.
+The bibliography view lists everything that cites a given paper: the
+verified `citation` records pointing at it **and** the drafts that
+cite it inline. Read-side counterpart to authoring citations
+(`precis-draft-help`).
+
+When a draft cites a paper inline by writing a bare paper-chunk handle
+`[pc<id>]`, that handle resolves to its paper and materialises a
+`cites` graph edge from the draft to the paper. So drafts now surface
+here in "who cites this paper" alongside `citation` records —
+citations are to the literature, and a draft pointing at a paper chunk
+is exactly that. (A draft pointing at a memory or another draft via
+`[me<id>]`/`[dc<id>]` is a `related-to` **link**, not a citation, and
+never appears in a bibliography.)
 
 ## See which claims have been verified against a paper
 ## Read the citations that cite a paper
 ## Who has cited this paper, and for what claim?
 
+Address the paper by its `pa<id>` handle (the slug still resolves as a
+legacy form):
+
 ```python
-get(kind='paper', id='collins06', view='bibliography')
+get(kind='paper', id='pa312', view='bibliography')      # pa<id> handle
+get(kind='paper', id='collins06', view='bibliography')  # slug (legacy)
 ```
 
 ```text
@@ -64,12 +78,15 @@ across the corpus, query the `citation` kind directly.
 
 ## Bibliography vs short-form citation
 
-The bibliography lists *claims that cite this paper*. To cite the
-paper itself in a manuscript, fetch a short-form entry:
+The bibliography lists *what cites this paper*. To cite the paper
+itself in a draft you write a bare paper-chunk handle `[pc<id>]`
+inline (see `precis-draft-help`) — you never hand-author a BibTeX key;
+the export engine renders `\cite{}` + one bibliography entry per paper
+at compile time. To fetch a short-form entry for external use:
 
 ```python
-get(kind='paper', id='<slug>', view='bibtex')
-get(kind='paper', id='<slug>', view='ris')
+get(kind='paper', id='pa312', view='bibtex')
+get(kind='paper', id='pa312', view='ris')
 ```
 
 ## Re-verification appears as a new row
@@ -81,8 +98,8 @@ appear in the bibliography so the audit trail survives.
 ## See also
 
 ```python
-get(kind='skill', id='precis-citation-help')   # write-side: verifier loop
-get(kind='skill', id='precis-paper-help')      # paper views, slug grammar, short-form cite
-get(kind='skill', id='precis-search-help')     # excerpt vs citation distinction
+get(kind='skill', id='precis-draft-help')      # write-side: inline [pc<id>] citations in a draft
+get(kind='skill', id='precis-citation-help')   # the citation kind + verifier loop
+get(kind='skill', id='precis-paper-help')      # paper views, pa<id> handle, short-form cite
 get(kind='skill', id='precis-link-help')       # the cites relation in the graph
 ```

@@ -1,7 +1,7 @@
 ---
 id: precis-cite-paper-help
 title: precis — how do I cite a paper?
-summary: the cite-a-paper router — in corpus → bibtex + verified citation; not in corpus → stub, wait for ingest, then cite; empirical claim → finding
+summary: the cite-a-paper router — in corpus → write the paper-chunk handle inline `[pc234]`; not in corpus → stub, wait for ingest, then cite; empirical claim → finding `[fi<id>]`
 applies-to: get/put (kind='paper'|'citation'|'finding'|'todo')
 status: active
 ---
@@ -9,8 +9,10 @@ status: active
 # precis-cite-paper-help — how do I cite a paper?
 
 This is the **router** for "I'm writing and I need to cite something."
-Citing in precis is not one verb — it's a short decision. Pick the
-branch that matches what you have, then follow the skill it points at.
+A citation in a draft is the **bare supporting paper-chunk handle,
+written inline in your prose**: `[pc234]` (paper chunk 234). Citing is
+not a verb at all — it's a short decision about *which* handle to drop
+in. Pick the branch that matches what you have.
 
 ## How do I cite a paper?
 ## I want to add a citation to my manuscript
@@ -21,59 +23,75 @@ Three questions, in order:
 1. **Is the paper already in the corpus?** Find out with
    `search(kind='paper', q='<author or topic>')` or
    `get(kind='paper', id='<DOI>')`.
-   - **Yes** → cite it directly (below: *Cite a paper that's in the
-     corpus*).
+   - **Yes** → write its supporting chunk handle inline (below: *Cite a
+     paper that's in the corpus*).
    - **No** → request it, then wait (below: *Cite a paper we don't
      have yet*).
-2. **Do I need the exact passage that backs my claim?** (Almost always
-   yes for an empirical or quantitative claim.) → mint a verified
-   `kind='citation'` pairing the claim with the verbatim source quote.
-   See [[precis-citation-help]].
-3. **Is the claim empirical and worth chasing to its *primary*
+2. **Is the claim empirical and worth chasing to its *primary*
    source?** (e.g. "2.4 kV gate bias", "12% efficiency") → register a
-   `kind='finding'` and let the chase walk the citation chain back.
-   See [[precis-finding-help]].
+   `kind='finding'` and cite the in-flight finding `[fi<id>]` until the
+   chase walks the citation chain back. See [[precis-finding-help]].
 
-These compose: you usually `get` the bibliographic entry **and** mint a
-`citation` for the specific quote.
+You may *optionally* mint a `kind='citation'` verification record
+alongside (claim + `verifier_confidence`) — but that is not how you
+cite and not what builds the bibliography. See [[precis-citation-help]].
 
 ## Cite a paper that's in the corpus
-## Get a BibTeX / RIS / EndNote entry for a paper
-## I have the slug — give me the reference entry
+## Drop the supporting chunk handle inline
+## Several chunks back one sentence
 
-```python
-get(kind='paper', id='<slug>', view='bibtex')    # \bibitem / BibTeX
-get(kind='paper', id='<slug>', view='ris')        # RIS
-get(kind='paper', id='<slug>', view='endnote')    # EndNote
+Write the supporting paper-chunk handle directly in your prose:
+
+```text
+Aqueous synthesis yields higher quantum yields than hot-injection [pc234].
 ```
 
-Don't guess the slug — `search(kind='paper', q='…')` or
-`get(kind='paper', id='<DOI>')` to find it (slug grammar is lossy;
-see [[precis-paper-help]]).
+Several supporting chunks — in one paper or across papers — list
+together, no separators:
 
-## Cite a specific claim with the passage that supports it
-## I need the exact quote that backs this sentence
-## Pin a claim to a verbatim source span
-
-This is the high-value move — it's what makes the citation survive
-review. Find the passage, confirm it actually supports the claim, then
-persist the pair:
-
-```python
-put(kind='citation',
-    text='MOF X improves CO2 reduction by 12%',           # the claim
-    source_handle='pc7',                                   # the chunk
-    source_quote='we observed 12% Faradaic efficiency '    # verbatim
-                 'for CO2 reduction at -0.3 V vs RHE',
-    verifier_confidence=0.95,
-    link='paper:collins06', rel='cites')
+```text
+…higher quantum yields than hot-injection [pc232][pc234][pc593].
 ```
 
-The full write protocol (verbatim discipline, numeric matching, the
-`\citequote` bridge for LaTeX) is in [[precis-citation-help]]. The
-*reader* side — find the passage, read its surrounds, judge whether it
-supports the point — is [[precis-check-source-help]]. Run that before
-you persist.
+Patents cite the same way by their chunk handle `[pk<id>]`; an in-flight
+`finding` is cited `[fi<id>]` until the chase resolves it.
+
+The handle is a value you **copy from search / get output** — never
+construct or guess it. There is no slug to assemble. Find it with a
+scoped search and read the chunk to confirm support before you write it
+(the *reader* side — [[precis-check-source-help]]):
+
+```python
+search(kind='paper', q='<claim or key phrase>', scope='<slug>')  # → returns pc<id> handles
+get(id='pc234')                                                   # read it; the chunk IS the evidence
+```
+
+The author never types `\cite{}` or `\citequote{}` — both are retired
+(export-only). The Tier-B export engine resolves each `[pc<id>]` →
+its paper and renders `\cite{}` plus **one bibliography entry per
+paper** at compile time. A hand-written `\cite{electrochemical22}`
+matches nothing and is wrong.
+
+**A memory / thought / other draft is a link, not a citation.** Drop a
+`[me<id>]` or `[dc<id>]` handle to record a `related-to` provenance
+edge — it never reaches the bibliography. Citations are to the
+literature, not to our notes.
+
+## Get a formatted reference string for a paper
+## BibTeX / RIS / EndNote for a paper
+
+You rarely need this — the export engine builds the bibliography from
+the inline handles. When you do want a formatted reference string,
+address the paper by its `pa<id>` handle:
+
+```python
+get(id='pa<id>', view='bibtex')    # \bibitem / BibTeX
+get(id='pa<id>', view='ris')        # RIS
+get(id='pa<id>', view='endnote')    # EndNote
+```
+
+Copy the `pa<id>` handle from `search(kind='paper', q='…')` or
+`get(kind='paper', id='<DOI>')` — see [[precis-paper-help]].
 
 ## Cite a paper we don't have yet
 ## I only have a DOI / arXiv id — the paper isn't ingested
@@ -118,25 +136,28 @@ The waiting leaf flips to `STATUS:done` when the paper lands (or
 + the other evaluators: [[precis-auto-tasks-help]].
 
 **3. Cite it once it's in.** When the wait resolves, the paper is a
-normal corpus paper — go back to *Cite a paper that's in the corpus*.
+normal corpus paper — go back to *Cite a paper that's in the corpus*
+and drop its `[pc<id>]` handle inline.
 
 If you can't wait (the source may never be OA), register a
-`kind='finding'` against the chunk where you read the claim and let the
-chase try to source it — see [[precis-finding-help]].
+`kind='finding'` against the chunk where you read the claim, cite the
+finding `[fi<id>]` inline meanwhile, and let the chase try to source
+it — see [[precis-finding-help]].
 
 ## Cite an empirical claim and chase it to the primary source
 ## I read a number in a review — find who actually measured it
 ## Track a claim back to where it was first reported
 
 Reviews cite reviews; the value is the *primary* source. Register a
-finding and let the worker walk the chain:
+finding, cite it inline as `[fi<id>]`, and let the worker walk the
+chain:
 
 ```python
 put(kind='finding',
     title='gate-bias 2.4 kV / 30 s on Si/SiO2',
     body='2.4 kV across the 50 nm gate oxide for 30 s, Cu top contact, N2.',
     cited_in='miller23a~42')     # the chunk where YOU read it (corpus handle)
-# → placeholder [42]; precis resolve substitutes the primary cite_key later
+# → cite [fi<id>] inline; the chase swaps it for the primary [pc<id>] once resolved
 ```
 
 **`cited_in=` wants a corpus handle, not a DOI.** `cited_in='doi:…'` is
@@ -146,27 +167,29 @@ source isn't in the corpus either, stub + wait for it first (above),
 then register the finding against its chunk. Full chase contract:
 [[precis-finding-help]].
 
-## citation vs finding vs bibtex — which do I use?
+## inline handle vs finding vs citation vs bibtex — which do I use?
 
 | You have… | Use | Gives you |
 |---|---|---|
-| A claim + the verbatim quote that backs it | `kind='citation'` | a verified claim→quote record |
-| A claim whose *primary* source must be chased | `kind='finding'` | a placeholder + worker chase |
-| Just need the formatted reference entry | `get(view='bibtex'/'ris')` | a BibTeX/RIS string |
+| A corpus chunk that backs the claim | inline `[pc<id>]` (or `[pk<id>]` for a patent) | a citation the export engine resolves |
+| A claim whose *primary* source must be chased | `kind='finding'`, cite `[fi<id>]` | an in-flight cite + worker chase |
+| Our own note/thought/draft as provenance | inline `[me<id>]` / `[dc<id>]` | a `related-to` link, **not** a bibliography entry |
+| Optional verification audit of a claim | `kind='citation'` (claim + `verifier_confidence`) | a verification record (not required to cite) |
+| A formatted reference string for a paper | `get(id='pa<id>', view='bibtex'/'ris')` | a BibTeX/RIS string |
 | A paper to cite that we don't hold | `put(kind='paper', doi=…)` + waiting todo | a stub the fetcher chases |
 
-A literature-review sentence typically uses all three over its life:
-stub the missing source, wait, then mint a citation against its chunk.
+A literature-review sentence typically does all of this over its life:
+stub the missing source, wait, then drop its `[pc<id>]` handle inline.
 
 ## See also
 
 ```python
-get(kind='skill', id='precis-citation-help')     # write a verified citation (the quote pairing)
-get(kind='skill', id='precis-check-source-help') # find a citation, read its surrounds, judge support
+get(kind='skill', id='precis-citation-help')     # the inline [pc<id>] cite + optional verification record
+get(kind='skill', id='precis-check-source-help') # find the chunk, read its surrounds, judge support
 get(kind='skill', id='precis-finding-help')      # chase a claim to its primary source
 get(kind='skill', id='precis-stubs-help')        # request a paper we don't hold
 get(kind='skill', id='precis-auto-tasks-help')   # a todo that waits for the paper to appear
-get(kind='skill', id='precis-paper-help')        # find/read papers; bibtex/ris views; slug grammar
+get(kind='skill', id='precis-paper-help')        # find/read papers; pa<id>/pc<id> handles; bibtex/ris views
 get(kind='skill', id='precis-write-paper-help')  # claim-level citation density discipline
 get(kind='skill', id='precis-bibliography-help') # read side: who cites this paper
 ```

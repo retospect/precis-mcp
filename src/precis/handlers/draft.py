@@ -366,6 +366,7 @@ class DraftHandler(Handler):
             if kind != "term":
                 body += self._write_abbrev_hints(slug, ref.id, str(text), "")
                 body += self._citation_form_hint(str(text))
+                body += self._literal_cite_hint(str(text))
             return Response(body=body)
 
         # else: create the draft
@@ -614,6 +615,7 @@ class DraftHandler(Handler):
                 slug = ref.slug if ref and ref.slug else str(c.ref_id)
                 body += self._write_abbrev_hints(slug, c.ref_id, str(text), old_text)
                 body += self._citation_form_hint(str(text))
+                body += self._literal_cite_hint(str(text))
             return Response(body=body)
         raise BadInput(
             "edit(kind='draft') requires text= (rewrite), move= (reorder/reparent), "
@@ -704,32 +706,52 @@ class DraftHandler(Handler):
         )
 
     def _citation_form_hint(self, text: str) -> str:
-        """Nudge toward the canonical ``[§<cite_key>~<n>]`` citation when
-        the text cites a paper by the bare ``paper:<id>`` mention —
-        especially a numeric ref id, which resolves but is opaque,
-        unstable across re-ingest, and exports to no ``\\cite``. Only the
-        prefixed ``paper:`` form fires; the ``§`` bracket and bare
-        cite_key forms (the acceptable ones) are left alone."""
+        """Nudge toward the canonical ``[pc<id>]`` paper-chunk citation
+        when the text cites a paper by a bare ``paper:<id>`` mention —
+        which resolves but is opaque, points at no specific passage, and
+        exports to no ``\\cite``. The ``[pc<id>]`` handle (copied from
+        ``search``/``get`` output) cites the exact supporting chunk, and
+        the export engine renders the bibliography from it. Only the
+        prefixed ``paper:`` form fires; bare ``[pc<id>]`` handles (the
+        canonical form) are left alone."""
         from precis.utils import mentions
 
-        suggestions: dict[str, str] = {}
+        seen: list[str] = []
         for m in mentions.REF_PATTERN.finditer(text):
             if m.group("kind") != "paper":
                 continue
             ident = m.group("id").lstrip("#")
             suffix = m.group("chunk") or ""
-            ref = mentions.resolve_handle_ref(self.store, ident)
-            cite_key = getattr(ref, "slug", None) if ref is not None else None
-            if not cite_key:
-                continue
-            suggestions[f"paper:{ident}{suffix}"] = f"[§{cite_key}{suffix}]"
-        if not suggestions:
+            mention = f"paper:{ident}{suffix}"
+            if mention not in seen:
+                seen.append(mention)
+        if not seen:
             return ""
-        pairs = "; ".join(f"{o} → {s}" for o, s in list(suggestions.items())[:5])
+        offenders = ", ".join(seen[:5])
         return (
-            "\n\n⚠ cite papers as [§<cite_key>~<chunk>], not the bare paper: "
-            f"mention (a numeric ref id exports to no \\cite): {pairs}."
+            "\n\n⚠ cite the supporting paper *chunk* by its handle [pc<id>] "
+            "(copy it from search/get output), not a bare paper: mention "
+            f"(which exports to no \\cite): {offenders}."
         )
+
+    def _literal_cite_hint(self, text: str) -> str:
+        r"""Flag a literal ``\cite{...}`` / ``\citequote{...}`` typed into a
+        draft body. In a draft you cite by writing the supporting paper-
+        chunk handle inline (``[pc<id>]``); the export engine emits the
+        ``\cite`` + bibliography, so a hand-written cite key resolves to
+        nothing. Fires only on draft chunks — a real ``.tex`` *file* keeps
+        its literal ``\cite`` as source (see precis-tex-help)."""
+        import re
+
+        if re.search(r"\\cite(?:quote|p|t|alp|author|year)?\s*\{", text):
+            return (
+                "\n\n⚠ you typed a literal \\cite/\\citequote in the draft. "
+                "Cite by the supporting paper-chunk handle inline instead: "
+                "[pc<id>] (copy it from search/get output). The export engine "
+                "writes the \\cite and the bibliography; \\cite/\\citequote "
+                "are export-only output, never authored in a draft."
+            )
+        return ""
 
     def _resolve_draft_any(self, id: str | int | None) -> Any:
         """Resolve a draft ref from either its slug or a ¶handle (a chunk
@@ -753,14 +775,23 @@ class DraftHandler(Handler):
             )
         return str(id)
 
+    #: Kinds whose chunks are citable literature: a reference to one is a
+    #: ``cites`` edge (the bibliography / "who cites this?" graph), not a
+    #: ``related-to`` provenance edge. Citations are to the literature;
+    #: links (a memory, another draft) are to our own notes.
+    _CITABLE_KINDS: ClassVar[frozenset[str]] = frozenset({"paper", "patent", "finding"})
+
     def _sync_draft_links(self, ref_id: int) -> None:
-        """Materialise ``related-to`` links from this draft to every ref
-        its chunks reference — the superset grammar (``kind:ref`` mentions,
-        ``¶`` cross-refs, ``§`` citations). Recomputed over the *whole*
-        draft on each write (chunk edits add/remove references), replacing
-        the prior ``auto='mention'`` set so a removed reference loses its
-        link. Best-effort: a resolution failure never fails the write —
-        mirrors the note autolinker (`_numeric_ref._sync_mention_links`).
+        """Materialise graph edges from this draft to every ref its chunks
+        reference — the superset grammar (``kind:ref`` mentions, ``¶``
+        cross-refs, ``§``/``[pc<id>]`` citations). A reference to a
+        **citable source** (paper/patent/finding) becomes a ``cites``
+        edge; every other reference (a memory, another draft) is a
+        ``related-to`` provenance edge. Recomputed over the *whole* draft
+        on each write, replacing the prior ``auto='mention'`` set in BOTH
+        relations so a removed reference loses its edge. Best-effort: a
+        resolution failure never fails the write — mirrors the note
+        autolinker (`_numeric_ref._sync_mention_links`).
         """
         from precis.utils import draft_markup
 
@@ -770,26 +801,38 @@ class DraftHandler(Handler):
             targets = draft_markup.resolve_draft_link_targets(
                 self.store, text, exclude_ref_id=ref_id
             )
-            wanted = {(t.dst_ref_id, t.dst_pos) for t in targets}
-            for link in self.store.links_for(
-                ref_id, direction="out", relation="related-to"
-            ):
-                if (link.meta or {}).get("auto") == "mention" and (
-                    link.dst_ref_id,
-                    link.dst_pos,
-                ) not in wanted:
-                    self.store.remove_link(
-                        src_ref_id=ref_id,
-                        dst_ref_id=link.dst_ref_id,
-                        dst_pos=link.dst_pos,
-                        relation="related-to",
-                    )
+            refs_by_id = self.store.fetch_refs_by_ids([t.dst_ref_id for t in targets])
+            # (dst_ref_id, dst_pos) → desired relation, routed by kind.
+            wanted: dict[tuple[int, int | None], str] = {}
             for t in targets:
+                tref = refs_by_id.get(t.dst_ref_id)
+                rel = (
+                    "cites"
+                    if tref is not None and tref.kind in self._CITABLE_KINDS
+                    else "related-to"
+                )
+                wanted[(t.dst_ref_id, t.dst_pos)] = rel
+            # Drop stale auto-mention edges in BOTH relations (a removed
+            # reference, or one whose routed relation changed).
+            for relation in ("cites", "related-to"):
+                for link in self.store.links_for(
+                    ref_id, direction="out", relation=relation
+                ):
+                    if (link.meta or {}).get("auto") != "mention":
+                        continue
+                    if wanted.get((link.dst_ref_id, link.dst_pos)) != relation:
+                        self.store.remove_link(
+                            src_ref_id=ref_id,
+                            dst_ref_id=link.dst_ref_id,
+                            dst_pos=link.dst_pos,
+                            relation=relation,
+                        )
+            for (dst, pos), relation in wanted.items():
                 self.store.add_link(
                     src_ref_id=ref_id,
-                    dst_ref_id=t.dst_ref_id,
-                    dst_pos=t.dst_pos,
-                    relation="related-to",
+                    dst_ref_id=dst,
+                    dst_pos=pos,
+                    relation=relation,
                     set_by="agent",
                     meta={"auto": "mention"},
                 )

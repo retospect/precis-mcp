@@ -40,8 +40,8 @@ from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput
 from precis.store._blocks_ops import BlocksMixin
-from precis.store._cad_ops import CadMixin
 from precis.store._cache_ops import CacheMixin
+from precis.store._cad_ops import CadMixin
 from precis.store._claude_quota_ops import ClaudeQuotaMixin
 from precis.store._draft_ops import DraftMixin, _AbbrevMixin
 from precis.store._events_ops import EventsMixin

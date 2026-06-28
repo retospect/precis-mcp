@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.cad import CadHandler
 
@@ -28,15 +29,9 @@ bore  cut  cyl:r5.1h12 @0,0,-1
 """
 
 
-class _Hub:
-    def __init__(self, store):
-        self.store = store
-        self.embedder = None
-
-
 @pytest.fixture
 def cad(store):
-    return CadHandler(hub=_Hub(store))
+    return CadHandler(hub=Hub(store=store))
 
 
 def test_put_creates_and_lists(cad):

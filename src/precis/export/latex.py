@@ -364,6 +364,26 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> str | None:
     return resolved.public_id if resolved is not None else None
 
 
+def _finding_cite_key(tgt: str, ctx: _Ctx) -> str | None:
+    """A finding handle (``fi<id>``) → its bibliographic key: the primary
+    cite_key once the chase establishes it (so it merges with a direct
+    cite of that paper and ``build_bib`` renders a real entry), else the
+    ``pub_id`` placeholder (an in-flight finding gets a stub bib entry
+    until it resolves). ``None`` if it doesn't resolve to a live finding."""
+    if ctx.store is None:
+        return None
+    parsed = handle_registry.parse(tgt)
+    if parsed is None:
+        return None
+    _kind, _is_chunk, pk = parsed
+    ref = ctx.store.fetch_refs_by_ids([pk]).get(pk)
+    if ref is None:
+        return None
+    meta = ref.meta or {}
+    key = meta.get("primary_cite_key") or meta.get("pub_id")
+    return str(key) if key else None
+
+
 def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
     """Render a bracket reference target (``dc<id>`` / ``pc<id>`` / ``§slug~n``
     / legacy ``¶h`` / URL).
@@ -378,8 +398,11 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
     parsed = handle_registry.parse(tgt)
     if parsed is not None:
         kind, is_chunk, _pk = parsed
-        if kind == "paper":
+        if kind in ("paper", "patent"):
             slug = _handle_cite_key(tgt, ctx)
+            return _cite(slug, ctx) if slug else ""
+        if kind == "finding":
+            slug = _finding_cite_key(tgt, ctx)
             return _cite(slug, ctx) if slug else ""
         if kind == "draft" and is_chunk:
             return _draft_xref(tgt, surface, ctx)
@@ -538,7 +561,13 @@ def build_bib(store: Any, slugs: list[str], warnings: list[str]) -> str:
     ref_by_slug: dict[str, Any] = {}
     ids: list[int] = []
     for slug in slugs:
-        pref = store.get_ref(kind="paper", id=slug)
+        # A cited handle resolves to a paper or a patent (both citeable);
+        # a finding has already been mapped to its primary cite_key (a
+        # paper) or its pub_id placeholder upstream, so it lands here as a
+        # paper slug or a stub.
+        pref = store.get_ref(kind="paper", id=slug) or store.get_ref(
+            kind="patent", id=slug
+        )
         if pref is None:
             warnings.append(f"cite {slug!r}: no paper in corpus — stub bib entry")
             entries.append(
@@ -563,7 +592,8 @@ def build_bib(store: Any, slugs: list[str], warnings: list[str]) -> str:
             fields.append(
                 f"  eprint = {{{alias['arxiv']}}},\n  archiveprefix = {{arXiv}}"
             )
-        entries.append(f"@article{{{slug},\n" + ",\n".join(fields) + ",\n}")
+        entry_type = "patent" if getattr(pref, "kind", None) == "patent" else "article"
+        entries.append(f"@{entry_type}{{{slug},\n" + ",\n".join(fields) + ",\n}")
     return "\n\n".join(entries) + ("\n" if entries else "")
 
 
