@@ -97,12 +97,23 @@ class JobHandler(NumericRefHandler):
         params: dict[str, Any] | None = None,
         idem_key: str | None = None,
         parent_id: int | str | None = None,
+        model: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # Retry surface: ``put(kind='job', id=N, mode='retry')`` re-runs a
+        # failed job by clearing the parent todo's failure-bubble so the
+        # dispatch worker re-mints a fresh attempt. ``model='sonnet'``
+        # additionally swaps the parent's ``LLM:<model>`` tag first, which
+        # is what the next tick dispatches with. Handled before the
+        # generic ``id is not None`` / ``mode`` rejections below.
+        if mode == "retry":
+            return self._retry_job(id=id, model=model)
         if id is not None:
             raise BadInput(
                 f"put on existing job id={id!r} is not supported",
                 next=(
+                    f"to re-run a failed job: put(kind='job', id={id}, "
+                    "mode='retry'[, model='sonnet']). "
                     f"to mutate id={id}: tag(kind='job', id=N, add=[...]) / "
                     f"link(kind='job', id=N, target=..., mode='add'|'remove')"
                 ),
@@ -319,6 +330,93 @@ class JobHandler(NumericRefHandler):
                 f"created job id={ref.id} (STATUS:queued, "
                 f"job_type={spec.name!r}, executor={resolved_executor!r}). "
                 f"poll: get(kind='job', id={ref.id})."
+            )
+        )
+
+    # ── retry: re-run a failed job via the parent todo ─────────────
+
+    def _retry_job(self, *, id: str | int | None, model: str | None) -> Response:
+        """Re-run a failed job by unblocking its parent todo.
+
+        A job failure bubbles a ``child-failed:<job_id>`` open tag onto
+        the parent todo, which excludes it from the doable rotation (see
+        ``_job_bubble`` + the dispatch candidate guard). Retry clears that
+        bubble so the dispatch worker re-mints a fresh job on its next
+        sweep. The failed job itself is left in place for forensics — a
+        ``STATUS:failed`` child is terminal, so it doesn't block re-mint.
+
+        ``model`` (optional) swaps the parent's ``LLM:<model>`` tag before
+        clearing the bubble, so the re-minted tick runs on a different
+        tier. Closed-vocab (``opus``/``sonnet``/``haiku``) — validated by
+        :meth:`Tag.parse_strict`. Only valid on an LLM-planner todo (one
+        already carrying an ``LLM:*`` tag); a code-path executor job has
+        no model knob.
+        """
+        if id is None:
+            raise BadInput(
+                "put(kind='job', mode='retry') requires id= (the failed job)",
+                next="put(kind='job', id=<failed_job_id>, mode='retry', model='sonnet')",
+            )
+        job_id = self._coerce_id(id)
+        # Validates the job exists and is live (not soft-deleted).
+        self._resolve_live_ref(job_id)
+        status = _status_of(self.store.tags_for(job_id))
+        if status not in ("failed", "cancelled"):
+            raise BadInput(
+                f"job id={job_id} is STATUS:{status or 'unset'}; only a failed "
+                "or cancelled job can be retried",
+                next="wait for the job to reach a terminal state, or delete it",
+            )
+
+        from precis.handlers._job_bubble import _lookup_parent
+
+        parent_id, parent_kind = _lookup_parent(self.store, job_id, conn=None)
+        if parent_id is None or parent_kind != "todo":
+            raise BadInput(
+                f"job id={job_id} has no todo parent to re-dispatch from "
+                "(legacy orphan job)",
+                next=(
+                    "re-create the work as a todo (with LLM:* / meta.executor) "
+                    "and let the dispatch worker mint a fresh job under it"
+                ),
+            )
+
+        new_model_tag: Tag | None = None
+        if model is not None:
+            has_llm = any(
+                str(t).startswith("LLM:") for t in self.store.tags_for(parent_id)
+            )
+            if not has_llm:
+                raise BadInput(
+                    f"model= only applies to LLM-planner todos; parent todo "
+                    f"#{parent_id} carries no LLM:* tag",
+                    next="retry without model=, or set the executor's params by hand",
+                )
+            # Closed-vocab validation (opus|sonnet|haiku) lives in parse_strict.
+            new_model_tag = Tag.parse_strict(f"LLM:{str(model).strip()}", kind="todo")
+
+        bubble = Tag.open(f"child-failed:{job_id}")
+        with self.store.tx() as conn:
+            if new_model_tag is not None:
+                self.store.add_tag(
+                    parent_id,
+                    new_model_tag,
+                    set_by="agent",
+                    replace_prefix=True,
+                    conn=conn,
+                )
+            self.store.remove_tag(parent_id, bubble, conn=conn)
+
+        model_note = (
+            f", swapped model→{str(model).strip()}" if model is not None else ""
+        )
+        return Response(
+            body=(
+                f"retry queued: cleared child-failed:{job_id} on todo "
+                f"#{parent_id}{model_note}. The dispatch worker re-mints a "
+                f"fresh job on its next sweep (~1 min); the failed job "
+                f"#{job_id} stays for forensics. poll: get(kind='todo', "
+                f"id={parent_id})."
             )
         )
 

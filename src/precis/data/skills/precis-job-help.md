@@ -186,6 +186,8 @@ tag(kind='job', id=101, add=['STATUS:cancel_requested'])
 ```
 
 ## Re-submit a failed job
+## Retry a failed job
+## Re-run a job with a different model
 
 When a job fails, its parent todo gets `child-failed:<job_id>`
 tagged. The doable view excludes parents with that tag so they
@@ -193,19 +195,37 @@ don't keep getting re-picked. The retry decision belongs to the
 parent's owner:
 
 ```python
-# Option A: same executor, fresh attempt.
-# Clear the bubble flag + delete (or won't-do) the failed job so
-# the dispatch worker's "no existing child job" check passes again.
+# Option A (preferred): the retry verb. One call clears the bubble
+# so the dispatch worker re-mints a fresh attempt on its next sweep
+# (~1 min). The failed job stays for forensics.
+put(kind='job', id=<failed_job_id>, mode='retry')
+
+# Change the model at the same time (opus | sonnet | haiku). This
+# swaps the parent todo's LLM:<model> tag before clearing the bubble,
+# so the re-minted tick runs on the new tier. Only valid when the
+# parent is an LLM-planner todo (already carrying an LLM:* tag) —
+# handy when a tick hit an AUP refusal or needs a stronger/cheaper
+# model. The web Tasks tab exposes the same thing as a "Retry" button
+# (with a model dropdown) on failed job rows — turn on "+ show closed
+# jobs" to see them.
+put(kind='job', id=<failed_job_id>, mode='retry', model='sonnet')
+
+# Retry rejects a job that isn't terminal (STATUS:failed/cancelled),
+# an orphan job with no todo parent, and model= on a non-LLM parent.
+
+# Option B (manual equivalent): clear the bubble by hand. A failed
+# child is terminal, so it does NOT block re-mint — deleting it is
+# optional cleanup, not required.
 tag(kind='todo', id=<parent_id>, remove=[f'child-failed:{failed_job_id}'])
-delete(kind='job', id=<failed_job_id>)
+# (optionally) delete(kind='job', id=<failed_job_id>)
 # Dispatch worker mints a fresh job on the next tick.
 
-# Option B: different executor or job_type — edit the parent's meta
-# first, then clear + delete as above.
+# Option C: different executor or job_type — edit the parent's meta
+# first, then clear the bubble as above.
 # (No direct meta-patch verb today; edit it via the runtime, or
 # delete the parent todo and re-create with the new shape.)
 
-# Option C: ask the user (asa-bot pattern).
+# Option D: ask the user (asa-bot pattern).
 put(kind='todo',
     parent_id=<parent_id>,
     text='Job #N failed with X — should I retry, switch executor, or skip?',

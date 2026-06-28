@@ -346,6 +346,24 @@
                  class="absolute z-50 left-0 top-full mt-1"></div>
           </span>
           {% endif %}
+          {# Retry a failed/cancelled job: clears the parent's child-failed
+             bubble (optionally swapping its LLM:<model> tag) so dispatch
+             re-mints a fresh attempt. Posts to put(kind='job', mode='retry')
+             via the /retry route. Visible with "+ show closed jobs". #}
+          {% if r.kind == 'job' and r.status in ['failed', "cancelled"] %}
+          <form method="post" action="/tasks/{{ r.id }}/retry" class="ml-auto flex items-center gap-1">
+            {{ filter_inputs() }}
+            <select name="model" class="rounded border-slate-300 text-xs border px-1 py-0.5"
+                    title="model for the retry (blank = keep the parent's current LLM tier)">
+              <option value="">↻ same model</option>
+              <option value="opus">opus</option>
+              <option value="sonnet">sonnet</option>
+              <option value="haiku">haiku</option>
+            </select>
+            <button class="rounded bg-amber-600 text-white text-xs px-2 py-0.5"
+                    title="clear the failure bubble on the parent todo so dispatch re-mints a fresh job">Retry</button>
+          </form>
+          {% endif %}
           {% if r.kind == 'todo' %}
           {# Per-row navigation: 🔍 focus (drill into subtree),
              📊 tree (focus + mermaid 3 deep). 📊 collapses both into

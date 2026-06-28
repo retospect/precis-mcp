@@ -1019,6 +1019,38 @@ async def set_status(
     )
 
 
+@router.post("/{ref_id}/retry")
+async def retry_job(
+    request: Request,
+    ref_id: int,
+    model: str = Form(default=""),
+    require: list[str] = Form(default=[]),
+    exclude: list[str] = Form(default=[]),
+    focus: int | None = Form(default=None),
+    show_jobs: str = Form(default="active"),
+) -> Response:
+    """Re-run a failed job (``ref_id`` is the job id).
+
+    Thin wrapper over ``put(kind='job', mode='retry')``: clears the
+    parent todo's ``child-failed:`` bubble so the dispatch worker
+    re-mints a fresh attempt. A non-empty ``model`` (opus/sonnet/haiku)
+    swaps the parent's ``LLM:<model>`` tag first so the retry runs on a
+    different tier. The handler validates terminal-state + closed-vocab
+    model and surfaces its own error message on rejection.
+    """
+    args: dict[str, Any] = {"kind": "job", "id": ref_id, "mode": "retry"}
+    if model.strip():
+        args["model"] = model.strip()
+    return await redirect_or_error(
+        request,
+        "put",
+        args,
+        redirect=_tasks_url(
+            require, exclude, focus, show_jobs if show_jobs != "active" else None
+        ),
+    )
+
+
 @router.post("/{ref_id}/move")
 async def move_task(
     request: Request,

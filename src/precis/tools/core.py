@@ -529,6 +529,11 @@ def put(
     executor: str | None = None,
     params: dict[str, Any] | None = None,
     idem_key: str | None = None,
+    # job retry (see precis-job-help): re-run a failed job —
+    # put(kind='job', id=<failed>, mode='retry'[, model='sonnet']). model=
+    # swaps the parent todo's LLM:<model> tag so the re-minted tick runs on
+    # a different tier (opus|sonnet|haiku).
+    model: str | None = None,
     # presentation (see precis-pres-help):
     pos: int | None = None,
     meta: dict[str, Any] | None = None,
@@ -610,6 +615,7 @@ def put(
             "executor": executor,
             "params": params,
             "idem_key": idem_key,
+            "model": model,
             "pos": pos,
             "meta": meta,
             "ref_meta": ref_meta,
