@@ -375,7 +375,11 @@ def test_export_renders_table(draft: DraftHandler, hub: Hub, tmp_path: Path) -> 
     header row bold, one body row per data row, cells via the inline grammar.
     The derived pipe markdown is not dumped as a paragraph."""
     pid = int(
-        TodoHandler(hub=hub).put(text="proj").body.split("id=")[1].split()[0].rstrip(",.()")
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
     )
     draft.put(id="tb", title="T", project=pid)
     draft.put(

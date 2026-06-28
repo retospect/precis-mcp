@@ -483,10 +483,14 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
     header, rows, caption = payload["header"], payload["rows"], payload["caption"]
     n = max(1, len(header))
     width = f"\\dimexpr(\\linewidth-\\tabcolsep*{2 * n})/{n}\\relax"
-    colspec = "".join(f">{{\\raggedright\\arraybackslash}}p{{{width}}}" for _ in range(n))
+    colspec = "".join(
+        f">{{\\raggedright\\arraybackslash}}p{{{width}}}" for _ in range(n)
+    )
     out: list[str] = []
     if caption:
-        out.append(f"\\noindent\\textbf{{{_render_inline(caption, ctx)}}}\\par\\nopagebreak")
+        out.append(
+            f"\\noindent\\textbf{{{_render_inline(caption, ctx)}}}\\par\\nopagebreak"
+        )
     out.append(f"\\begin{{longtable}}{{{colspec}}}")
     out.append("\\toprule")
     out.append(" & ".join(_render_inline(h, ctx) for h in header) + r" \\")

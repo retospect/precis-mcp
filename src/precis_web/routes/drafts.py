@@ -518,9 +518,7 @@ def _build_rows(
         # <table>, not the derived pipe markdown. ``table_payload`` falls back
         # to parsing the GFM text for any table chunk lacking meta.table.
         is_table = c.chunk_kind == "table"
-        table = (
-            table_payload(getattr(c, "meta", None), c.text) if is_table else None
-        )
+        table = table_payload(getattr(c, "meta", None), c.text) if is_table else None
         rows.append(
             {
                 "handle": c.handle,
