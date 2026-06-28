@@ -466,7 +466,10 @@ function draftDoc(ident) {
       const needSet = new Set(need.map((b) => b.h));
       for (const child of [...win.children]) {
         const h = child.id.slice(2);
-        if (!needSet.has(h)) { win.removeChild(child); delete this.nodes[h]; }
+        // Never recycle a row the user is editing — scrolling its change box
+        // out of the overscan window must not drop the text. (It re-anchors
+        // to its correct slot the moment it scrolls back into view.)
+        if (!needSet.has(h) && !this._rowBusy(child)) { win.removeChild(child); delete this.nodes[h]; }
       }
       const toHydrate = [];
       for (let j = 0; j < need.length; j++) {
@@ -713,24 +716,38 @@ function draftDoc(ident) {
       return a && document.getElementById('doc').contains(a)
         && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA');
     },
+    // A row is "busy" — must not be recycled/refreshed under the user — when
+    // it holds focus or carries unsaved change-request text. We protect it
+    // even after blur: typing a note then scrolling/clicking away must not
+    // let the next poll (or windowing) eat what you wrote.
+    _rowBusy(node) {
+      if (!node || node.dataset.ph) return false;
+      const af = document.activeElement;
+      if (af && node.contains(af)) return true;
+      const ta = node.querySelector('textarea[name="text"]');
+      return !!(ta && ta.value.trim());
+    },
+    _dirty() {
+      const win = document.getElementById('dr-win');
+      return [...win.children].some((n) => this._rowBusy(n));
+    },
     async tick() {
       if (!this.live) return;
       let v;
       try { v = await this.fetchVersion(); } catch (e) { return; }
       if (v === this.version) return;
-      if (this._typing()) { this.stale = true; return; }  // defer; don't clobber
+      // Defer while a change box is focused OR holds unsaved text — a swap
+      // would clobber it. The amber "document changed — refresh" badge shows
+      // so the user can pull the update once they're done.
+      if (this._typing() || this._dirty()) { this.stale = true; return; }
       await this.swapAll(v);
     },
     async forceRefresh() {
+      // The explicit badge button: a full hard rebuild. (The live poll uses
+      // the steady in-place path below; this is the escape hatch.)
       let v;
       try { v = await this.fetchVersion(); } catch (e) { return; }
-      await this.swapAll(v);
-    },
-    async swapAll(v) {
       try {
-        // Refetch the skeleton (structure may have changed) and re-window.
-        // Drop the node cache so changed/added blocks re-hydrate fresh; the
-        // current scroll position is preserved by render() off scrollY.
         const data = await (await fetch(`/drafts/${this.ident}/skeleton`,
                                         {cache: 'no-store'})).json();
         this.skel = data.skeleton || [];
@@ -742,6 +759,53 @@ function draftDoc(ident) {
         this.version = v;
         this.stale = false;
         if (this.findQuery.trim()) this.runFind();  // the swap wiped the marks
+      } catch (e) { /* leave the page as-is on a failed fetch */ }
+    },
+    async swapAll(v) {
+      try {
+        // Non-destructive live refresh: reconcile the skeleton *in place* so
+        // the page stays steady. Every surviving row keeps its node and its
+        // measured height (no flash, no scroll jump from estimate-based
+        // re-layout); only blocks whose content actually changed re-hydrate,
+        // and a row the user is editing is left strictly untouched. Most
+        // version bumps are background metadata writes (embed / keywords /
+        // summaries) that don't alter visible body text — those now no-op
+        // visually instead of flashing the whole document.
+        const a = this._anchor();
+        const data = await (await fetch(`/drafts/${this.ident}/skeleton`,
+                                        {cache: 'no-store'})).json();
+        const prev = new Map(this.skel.map((b) => [b.h, b]));
+        this.skel = data.skeleton || [];
+        const live = new Set(this.skel.map((b) => b.h));
+        // forget blocks that vanished from the doc
+        for (const h of Object.keys(this.nodes)) {
+          if (!live.has(h)) { this.nodes[h].remove(); delete this.nodes[h]; }
+        }
+        for (const h of Object.keys(this.heights)) if (!live.has(h)) delete this.heights[h];
+        // re-hydrate only mounted rows whose content changed — skip busy ones.
+        const win = document.getElementById('dr-win');
+        const refresh = [];
+        for (const node of [...win.children]) {
+          if (node.dataset.ph) continue;
+          const h = node.id.slice(2);
+          if (this._rowBusy(node)) continue;
+          const o = prev.get(h), n = this.skel.find((b) => b.h === h);
+          if (!n) continue;
+          const changed = !o || o.est !== n.est || o.estS !== n.estS
+            || o.title !== n.title || o.heading !== n.heading || o.depth !== n.depth;
+          if (!changed) continue;
+          const ph = this.makePlaceholder(n);  // keeps the old measured height
+          this.nodes[h] = ph;
+          node.replaceWith(ph);
+          refresh.push(h);
+        }
+        this.rebuildVis();
+        this.render();
+        if (refresh.length) this.hydrate(refresh);
+        this._restore(a);
+        this.version = v;
+        this.stale = false;
+        if (this.findQuery.trim()) this.runFind();  // re-mark after content swaps
       } catch (e) { /* leave the page as-is on a failed fetch */ }
     },
   };
