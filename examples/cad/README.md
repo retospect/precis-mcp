@@ -73,17 +73,30 @@ Probing an assembled config (lid seated, boss in the opening):
   lateral travel is bounded by the boss hitting the rim (~0.5 mm in y) —
   so once seated the lid is registered and **cannot slide off**.
 
-### `wheel_assembly` — a 2-part assembly in one file
-A 5-spoke wheel (rim + hub + spokes, folded as one `wheel` component) and
-a bolt-on mounting `tab` (a second `bracket` component). It demonstrates
-**multi-solid export**:
+### `wheel_assembly` — a 4-part axle assembly in one file
+A wheel mounted on a bracket's hub and retained by a washer and screw —
+four components, four bodies:
+
+- **`bracket`** — a mounting plate (two bolt holes) with a Ø12 **hub post**
+  and a Ø5 **axial bore** down its centre for the screw.
+- **`wheel`** — the 5-spoke wheel (rim + hub + spokes via a `polar`
+  pattern), bored Ø12 to **slip onto the hub post**.
+- **`washer`** — a Ø18 ring that **overhangs the wheel bore** to trap it.
+- **`screw`** — a Ø5 shaft (head + shaft) that drops through the washer
+  and down the hub's axial bore, capping the stack.
+
+No threads: the fits are matching-diameter cylinders — **screw shaft Ø5 =
+axial bore Ø5**, and **wheel bore Ø12 = hub post Ø12** — so the screw fills
+its bore and the wheel seats on the post with coincident surfaces.
+
+It also demonstrates **multi-solid export**:
 
 | format  | assembly behaviour                                            |
 | ------- | ------------------------------------------------------------- |
-| `.step` | **two distinct named solids** (`wheel`, `bracket`) in one file — a true assembly (XCAF); CAD apps show both in the tree |
-| `.3mf`  | **two named `<object>`s** referenced by the build — stay separable in the slicer |
+| `.step` | **four distinct named solids** (`bracket`/`wheel`/`washer`/`screw`) in one file — a true assembly (XCAF); CAD apps show all four in the tree |
+| `.3mf`  | **four named `<object>`s** referenced by the build — stay separable in the slicer |
 | `.stl`  | **one welded body** — STL is a triangle soup with no part identity |
-| `.scad` | one `union()` of the two components (source renders to one mesh) |
+| `.scad` | one `union()` of the four components (source renders to one mesh) |
 
 ## Can an assembly be exported as one file?
 
