@@ -1,8 +1,9 @@
 desc: wheel on a bracket hub, retained by a washer and screw — a 4-part assembly
-use: bracket carries a hub post; the wheel bores onto it; a screw down the
+use: bracket carries a hub post; the wheel slips onto it; a screw down the
 use: hub's axial bore, capped by a washer, retains the wheel. No threads —
-use: the screw shaft and its bore share one diameter (r2.5), and the wheel
-use: bore matches the hub post (r6). Exports as four named solids (STEP/3MF).
+use: the screw shaft and its bore share one diameter (r2.5, per spec), while
+use: the wheel bore (Ø12.4) rides the hub post (Ø12) with a 0.2 mm radial
+use: running clearance. Exports as four named solids (STEP/3MF).
 component bracket
 plate    add  box:w30d50h4   @0,0,-4
 hub      add  cyl:r6h12
@@ -13,8 +14,8 @@ component wheel
 rim_out  add  cyl:r40h12
 rim_in   cut  cyl:r34h14     @0,0,-1
 whub     add  cyl:r10h12
-wbore    cut  cyl:r6h14      @0,0,-1
 spokes   add  box:w30d5h6    @0,0,3   polar:n5r21
+wbore    cut  cyl:r6.2h14    @0,0,-1
 component washer
 ring     add  cyl:r9h1.5     @0,0,12
 whole    cut  cyl:r2.5h3     @0,0,11

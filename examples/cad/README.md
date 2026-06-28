@@ -80,14 +80,16 @@ four components, four bodies:
 - **`bracket`** — a mounting plate (two bolt holes) with a Ø12 **hub post**
   and a Ø5 **axial bore** down its centre for the screw.
 - **`wheel`** — the 5-spoke wheel (rim + hub + spokes via a `polar`
-  pattern), bored Ø12 to **slip onto the hub post**.
+  pattern), bored Ø12.4 to **slip onto the Ø12 hub post** with a 0.2 mm
+  radial running clearance.
 - **`washer`** — a Ø18 ring that **overhangs the wheel bore** to trap it.
 - **`screw`** — a Ø5 shaft (head + shaft) that drops through the washer
   and down the hub's axial bore, capping the stack.
 
-No threads: the fits are matching-diameter cylinders — **screw shaft Ø5 =
-axial bore Ø5**, and **wheel bore Ø12 = hub post Ø12** — so the screw fills
-its bore and the wheel seats on the post with coincident surfaces.
+No threads, just cylinders: the **screw shaft Ø5 fills the axial bore Ø5**
+(a line-to-line fastener fit, per spec), while the **wheel bore Ø12.4 rides
+the Ø12 hub post with a 0.2 mm radial running clearance** so the wheel can
+turn freely.
 
 It also demonstrates **multi-solid export**:
 
@@ -101,18 +103,23 @@ It also demonstrates **multi-solid export**:
 #### Verified fit (analytic, no meshing)
 
 All six part-pairs were probed: **no pair penetrates another** — every
-solid-vs-solid intersection is `0 mm³`, so the stack only ever *touches*.
-The mating fits are coincident matching-diameter contacts (line-to-line):
+solid-vs-solid intersection is `0 mm³`. The fits are:
 
-- screw shaft Ø5 fills the hub's axial bore Ø5 (per spec);
-- wheel bore Ø12 seats on the hub post Ø12.
+- **screw shaft Ø5 in the axial bore Ø5** — line-to-line (coincident wall,
+  the intended fastener fit, per spec);
+- **wheel bore Ø12.4 on the Ø12 hub post** — the exact CSG signed-distance
+  field reads **0.2 mm from the post wall to the bore wall**, i.e. a 0.2 mm
+  radial running clearance all the way round, so the wheel turns freely.
 
 The wheel is **axially captured**: the washer (Ø18) overhangs the wheel
-bore (Ø12) by 3 mm, and the wheel sits sandwiched between the bracket
-plate (top face at z=0) and the washer (z=12) — so it cannot slide off the
-hub. (Because the diameters match exactly, a `clearance` probe reads
-`0.00 mm` on those faces — exact contact, not a gap; for a free-running
-fit you'd open the wheel bore ~0.2 mm.)
+bore (Ø12.4) by ~2.8 mm, and the wheel sits between the bracket plate (top
+face at z=0) and the washer (z=12) — so it spins on the post but cannot
+slide off.
+
+(The 0.2 mm figure is read straight from the exact per-component
+signed-distance field; the global `clearance` minimiser is seeded on a
+coarse grid and isn't reliable for thin contacts inside a part as large as
+the Ø80 wheel — a known limitation, not a fit problem.)
 
 ## Can an assembly be exported as one file?
 
