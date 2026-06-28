@@ -52,6 +52,25 @@ _CHUNK_ADDR = re.compile(r"^(?:dc(?P<cid>\d+)|¶(?P<h>[A-Za-z0-9]+))$")
 #: draft slug in ``get`` / ``search``.
 _DRAFT_CHUNK_ADDR_RE = re.compile(r"^(?:dc\d+|¶[A-Za-z0-9]+)(?:[+\-^].*|\.\..*)?$")
 
+#: Malformed temperature / unit notation the draft prose should not carry.
+#: The canonical form is the literal sign with no space — ``63°C`` (degree
+#: sign U+00B0 + ``C``), a range ``63–65°C``, a tolerance ``±1°C`` (U+00B1).
+#: Each pattern matches one *wrong* spelling so the canonical ``63°C`` (no
+#: space, real ° / ± signs) trips none of them. See ``_temperature_form_hint``.
+_BAD_TEMP_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"[℃℉]"),  # single-char degree-Celsius/Fahrenheit (U+2103/2109)
+    re.compile(r"\\(?:circ|degree|textdegree|celsius|textcelsius)\b"),  # LaTeX
+    re.compile(r"\^\s*\{?\s*\\?circ"),  # ^\circ / ^{\circ}
+    re.compile(r"[ºᵒ⁰∘]\s*[CFcf]\b"),  # ordinal/superscript/ring + C/F
+    re.compile(r"\d\s*[oO]\s*[CF]\b"),  # 'o' as degree: 63oC, 63 o C
+    re.compile(r"\d\s+°"),  # number SPACE degree: 63 °C
+    re.compile(r"°\s+[CF]"),  # degree SPACE C: 63° C
+    re.compile(r"\bdeg(?:rees?)?\.?\s*[CF]\b"),  # deg C / degrees C / degC
+    re.compile(r"\bdegrees?\s+(?:celsius|fahrenheit)\b", re.IGNORECASE),  # spelt out
+    re.compile(r"[+]\s*/\s*[-−]\s*\d"),  # +/- 1  (use ±)
+    re.compile(r"(?<![\d.])\+-\s*\d"),  # +-1     (use ±)
+)
+
 
 def _is_draft_chunk_addr(s: str) -> bool:
     """True iff ``s`` addresses a draft chunk (``dc<id>`` / ``¶<base58>``,
@@ -607,6 +626,7 @@ class DraftHandler(Handler):
                 body += self._write_abbrev_hints(slug, ref.id, str(text), "")
                 body += self._citation_form_hint(str(text))
                 body += self._literal_cite_hint(str(text))
+                body += self._temperature_form_hint(str(text))
             return Response(body=body)
 
         # else: create the draft
@@ -873,6 +893,7 @@ class DraftHandler(Handler):
                 body += self._write_abbrev_hints(slug, c.ref_id, str(text), old_text)
                 body += self._citation_form_hint(str(text))
                 body += self._literal_cite_hint(str(text))
+                body += self._temperature_form_hint(str(text))
             return Response(body=body)
         raise BadInput(
             "edit(kind='draft') requires text= (rewrite), move= (reorder/reparent), "
@@ -1010,6 +1031,33 @@ class DraftHandler(Handler):
                 "are export-only output, never authored in a draft."
             )
         return ""
+
+    def _temperature_form_hint(self, text: str) -> str:
+        r"""Nudge toward the canonical plain-text temperature/unit notation
+        when the prose carries a malformed spelling: a superscript or
+        single-character degree (``℃``, ``63ºC``), a spaced sign
+        (``63 °C`` / ``63° C``), an ``o``-as-degree (``63oC``), LaTeX
+        (``^\circ`` / ``\degree``), the spelt-out "degrees Celsius", or
+        ``+/-`` for a tolerance. The wanted form is the literal Unicode sign
+        with no space — ``63°C``, a range ``63–65°C``, a tolerance ``±1°C``
+        — so the canonical spelling trips none of the patterns and fires no
+        hint. A hint, never a refusal: the write still lands."""
+        offenders: list[str] = []
+        for pat in _BAD_TEMP_PATTERNS:
+            for m in pat.finditer(text):
+                snippet = m.group(0).strip()
+                if snippet and snippet not in offenders:
+                    offenders.append(snippet)
+        if not offenders:
+            return ""
+        shown = ", ".join(repr(o) for o in offenders[:5])
+        return (
+            "\n\n⚠ temperature/unit formatting: write the literal sign with "
+            "no space — `63°C` (degree sign `°`, then `C`), a range `63–65°C`, "
+            "a tolerance `±1°C` (the `±` sign). No superscript, no `℃`, no "
+            "LaTeX (`^\\circ`, `\\degree`), no spelt-out \"degrees Celsius\", "
+            f"no `+/-`. Found: {shown}."
+        )
 
     def _resolve_draft_any(self, id: str | int | None) -> Any:
         """Resolve a draft ref from either its slug or a ¶handle (a chunk

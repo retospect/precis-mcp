@@ -422,7 +422,8 @@ def test_edit_figure_permission_dispatches_edit(
     assert r.status_code == 303
     assert r.headers["location"] == "/drafts/nt#c-FIGTPF"
     verb, args = draft_runtime.calls[-1]
-    assert verb == "edit" and args["kind"] == "draft" and args["id"] == "FIGTPF"
+    # bare ``chunks.handle`` posted → resolved to the canonical ``dc<id>``.
+    assert verb == "edit" and args["kind"] == "draft" and args["id"] == "dc4"
     assert args["origin"] == "third_party"
     assert args["permission"]["publisher"] == "Elsevier"
     assert args["permission"]["permission_id"] == "EL-999"
@@ -441,7 +442,8 @@ def test_set_section_style_dispatches_edit(
     assert r.headers["location"] == "/drafts/nt#c-AAAAAA"
     verb, args = draft_runtime.calls[-1]
     assert verb == "edit"
-    assert args["kind"] == "draft" and args["id"] == "AAAAAA"
+    # bare ``chunks.handle`` posted → resolved to the canonical ``dc<id>``.
+    assert args["kind"] == "draft" and args["id"] == "dc1"
     assert args["style"] == "patent-claim"
 
 
@@ -587,40 +589,46 @@ class ListDraftStore(DraftFakeStore):
 
 
 @pytest.fixture
-def list_client(tmp_path) -> TestClient:
-    rt = FakeRuntime(ListDraftStore())
-    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
+def list_runtime() -> FakeRuntime:
+    return FakeRuntime(ListDraftStore())
+
+
+@pytest.fixture
+def list_client(list_runtime: FakeRuntime, tmp_path) -> TestClient:
+    app = create_app(runtime=list_runtime, web_config=WebConfig(corpus_dir=tmp_path))
     return TestClient(app)
 
 
 def test_set_list_kind_dispatches_edit(
-    draft_client: TestClient, draft_runtime: FakeRuntime
+    list_client: TestClient, list_runtime: FakeRuntime
 ) -> None:
-    r = draft_client.post(
-        "/drafts/nt/listkind",
+    r = list_client.post(
+        "/drafts/lst/listkind",
         data={"handle": "OL", "kind": "olist"},
         follow_redirects=False,
     )
     assert r.status_code == 303
-    assert r.headers["location"] == "/drafts/nt#c-OL"
-    verb, args = draft_runtime.calls[-1]
+    assert r.headers["location"] == "/drafts/lst#c-OL"
+    verb, args = list_runtime.calls[-1]
     assert verb == "edit"
-    assert args["kind"] == "draft" and args["id"] == "OL"
+    # The reader posts the bare ``chunks.handle``; the route resolves it to
+    # the canonical ``dc<chunk_id>`` address edit(kind='draft') requires.
+    assert args["kind"] == "draft" and args["id"] == "dc701010"
     assert args["list_kind"] == "olist"
 
 
 def test_dissolve_list_redirects_to_top(
-    draft_client: TestClient, draft_runtime: FakeRuntime
+    list_client: TestClient, list_runtime: FakeRuntime
 ) -> None:
     # A 'normal' dissolve retires the container, so we don't anchor at it.
-    r = draft_client.post(
-        "/drafts/nt/listkind",
+    r = list_client.post(
+        "/drafts/lst/listkind",
         data={"handle": "OL", "kind": "normal"},
         follow_redirects=False,
     )
-    assert r.headers["location"] == "/drafts/nt"
-    _verb, args = draft_runtime.calls[-1]
-    assert args["list_kind"] == "normal"
+    assert r.headers["location"] == "/drafts/lst"
+    _verb, args = list_runtime.calls[-1]
+    assert args["id"] == "dc701010" and args["list_kind"] == "normal"
 
 
 def test_reader_renders_list_markers_and_toggle(list_client: TestClient) -> None:

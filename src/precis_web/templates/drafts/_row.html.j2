@@ -12,15 +12,18 @@
      markdown + ¶/§ markers behind the rendered view, for debugging. #}
   <div data-content style="padding-left: {{ r.depth }}rem" x-data="{ raw: false }">
     {% if r.is_heading %}
-    <div class="flex items-start gap-1.5">
+    {# items-baseline so the toggle caret + the small style/review/prompt
+       controls sit on the heading's text baseline rather than floating at
+       the top of the taller heading line (the alignment that looked off). #}
+    <div class="flex items-baseline gap-1.5">
       <button data-toggle="{{ r.handle }}"
-              class="dr-toggle mt-0.5 font-mono text-xs text-slate-400 hover:text-slate-700 select-none">▾</button>
+              class="dr-toggle font-mono text-xs text-slate-400 hover:text-slate-700 select-none">▾</button>
       <h3 class="min-w-0 break-words font-semibold text-slate-900
                  {% if r.depth == 0 %}text-lg{% elif r.depth == 1 %}text-base{% else %}text-sm{% endif %}">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</h3>
       {# style / review / prompt stay one nowrap cluster pinned top-right;
          min-w-0 on the heading lets it shrink/wrap rather than push these
          onto a second line. #}
-      <div class="ml-auto flex shrink-0 flex-nowrap items-start gap-2 whitespace-nowrap">
+      <div class="ml-auto flex shrink-0 flex-nowrap items-baseline gap-2 whitespace-nowrap">
       {# Section style (ADR 0037): set this heading's meta.style. The genre's
          styles, scoped via the draft's doc_type; the scaffold normally sets
          these — this is the manual override. #}

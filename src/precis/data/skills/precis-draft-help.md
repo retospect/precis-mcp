@@ -179,6 +179,15 @@ in a research write-up. Let sentence structure carry the weight.
 sentences, or use a colon, comma, or parentheses instead. (Headings
 already stand out, so you do not need bold on top.)
 
+**Units & temperatures: literal sign, no space.** Write a temperature as
+`63°C` — the degree sign `°` (U+00B0) immediately after the digit, then
+`C`, with no space. A range is `63–65°C`; a tolerance is `±1°C` (the `±`
+sign U+00B1, not `+/-`). Do **not** use a superscript, the single
+character `℃`, an `o`/`º` stand-in (`63oC`), LaTeX (`^\circ`, `\degree`,
+`\textdegree`), a space (`63 °C`, `63° C`), or the spelt-out "degrees
+Celsius". A malformed temperature lands but trips a `⚠ temperature/unit
+formatting` hint on the write so you can fix it.
+
 ## Figures & images
 
 A **figure** is a chunk whose caption is the face (`text`) and whose
