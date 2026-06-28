@@ -363,11 +363,12 @@ def _initialise_test_db() -> Iterator[None]:
 def store() -> Iterator[Store]:
     """Yield a Store backed by the shared test DB; truncate first.
 
-    TRUNCATE every data table (CASCADE handles FKs) at fixture
-    entry so each test starts from "schema present, vocabulary
-    seeded, no data." Vocabulary tables (kinds / chunk_kinds /
-    relations / actors / providers / embedders / summarizers /
-    artifact_kinds) and the migrations ledger are preserved.
+    TRUNCATE every public data table (CASCADE handles FKs) at
+    fixture entry so each test starts from "schema present,
+    vocabulary seeded, no data." Only the seeded vocabulary and the
+    migrations ledger survive — see :data:`_PRESERVE_TABLES`. This is
+    a deny-list on purpose: any new data table is wiped automatically,
+    so a forgotten table can't pollute the shared DB across tests.
 
     Skips when no postgres reachable at ``PG_TEST_DSN``.
     """
@@ -519,39 +520,30 @@ def chunk_handle(store: Store, slug: str, *, kind: str = "paper", ord: int = 0) 
 # child-before-parent for readability. Vocabulary tables are
 # explicitly NOT in this list — the migration seeds them and
 # every test depends on the seed data.
-_DATA_TABLES: tuple[str, ...] = (
-    # Derived state — wiped first because their FKs cascade from
-    # the parents below.
-    "chunk_embeddings",
-    "chunk_summaries",
-    "ref_segment_sentences",
-    "ref_segments",
-    "ref_artifacts",
-    "ref_events",
-    "tag_embeddings",
-    # Dream telemetry (migration 0007). Transcript FK → log, so child
-    # first; both are analysis-only and carry no FK into refs/chunks.
-    "dream_transcripts",
-    "dream_log",
-    # Tags + links + identifiers — secondary to refs/chunks.
-    "chunk_tags",
-    "ref_tags",
-    "tags",
-    "links",
-    "ref_identifiers",
-    # Core content.
-    "chunks",
-    "refs",
-    "pdfs",
-    # Cache.
-    "cache_state",
-    # Provenance — only the data tables (relation rows are vocab).
-    "provenance_rw_cache",
-    "provenance_rw_sync",
-    # Patent watch DAO state (NOT in refs — own ``patent_watches`` table).
-    "patent_watches",
-    # App-state KV.
-    "app_state",
+# Truncation is a DENY-list, not an allow-list: every public base table is
+# wiped between tests EXCEPT the ones named here. This is deliberate — an
+# allow-list silently rots (every feature that adds a data table — worker_logs,
+# cad_nodes, cluster_*, host_heartbeat, … — has to remember to register it, and
+# the forgotten ones accumulate across the shared ``precis_test`` DB and poison
+# count-based assertions, e.g. test_status_sql's `assert 6 == 3`). The
+# preserve-set is small and stable: the migrations ledger plus the seeded
+# vocabulary every test relies on. CASCADE handles FK ordering in one shot.
+_PRESERVE_TABLES: frozenset[str] = frozenset(
+    {
+        # Migrations ledger — never data.
+        "_migrations",
+        # Seeded vocabulary (populated by migrations; tests depend on it).
+        "kinds",
+        "chunk_kinds",
+        "relations",
+        "actors",
+        "providers",
+        "embedders",
+        "summarizers",
+        "artifact_kinds",
+        "kind_provider",  # vocab mapping, seeded by 0022
+        "news_sources",  # seeded reference rows, 0033
+    }
 )
 
 
@@ -578,7 +570,8 @@ def _run_with_lock_retry(conn: psycopg.Connection, stmt: str) -> None:
 
 
 def _truncate_data_tables(dsn: str) -> None:
-    """TRUNCATE every data table that exists. Idempotent."""
+    """TRUNCATE every public data table — all of them except the seeded
+    vocabulary / ledger in :data:`_PRESERVE_TABLES`. Idempotent."""
     with psycopg.connect(dsn, autocommit=True) as conn:
         present = {
             row[0]
@@ -586,7 +579,7 @@ def _truncate_data_tables(dsn: str) -> None:
                 "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
             ).fetchall()
         }
-        targets = [t for t in _DATA_TABLES if t in present]
+        targets = sorted(present - _PRESERVE_TABLES)
         if not targets:
             return
         # Single TRUNCATE so CASCADE is one round-trip; RESTART IDENTITY
