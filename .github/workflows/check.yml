@@ -56,6 +56,16 @@ jobs:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           python-version: ${{ matrix.python-version }}
+      # The runner image ships pg_dump 16, but the service is pg17 and
+      # pg_dump refuses to dump a server newer than itself (aborting
+      # `test_schema_convergence`). Install the matching pg17 client from
+      # the PGDG repo (preconfigured on GitHub's Ubuntu images) and put it
+      # ahead on PATH so `pg_dump` resolves to v17.
+      - name: Install PostgreSQL 17 client to match the pg17 server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
       # Connect as the `postgres` superuser: the migration bootstrap
       # issues CREATE EXTENSION on the untrusted `vector` / `btree_gist`
       # extensions, which only a superuser may install. The conftest
