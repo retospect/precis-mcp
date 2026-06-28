@@ -1,12 +1,23 @@
-desc: 5-spoke wheel plus a bolt-on mounting tab — a two-part assembly
-use: demonstrates multi-solid export; STEP and 3MF carry the wheel and the
-use: bracket as two separate named bodies in one file, STL welds them
+desc: wheel on a bracket hub, retained by a washer and screw — a 4-part assembly
+use: bracket carries a hub post; the wheel bores onto it; a screw down the
+use: hub's axial bore, capped by a washer, retains the wheel. No threads —
+use: the screw shaft and its bore share one diameter (r2.5), and the wheel
+use: bore matches the hub post (r6). Exports as four named solids (STEP/3MF).
+component bracket
+plate    add  box:w30d50h4   @0,0,-4
+hub      add  cyl:r6h12
+axbore   cut  cyl:r2.5h10    @0,0,2
+mh1      cut  cyl:r2.5h6     @0,20,-5
+mh2      cut  cyl:r2.5h6     @0,-20,-5
 component wheel
 rim_out  add  cyl:r40h12
-rim_in   cut  cyl:r34h14   @0,0,-1
-hub      add  cyl:r10h12
-hubbore  cut  cyl:r4h14    @0,0,-1
-spokes   add  box:w30d5h6  @0,0,3   polar:n5r21
-component bracket
-tab      add  box:w22d14h6  @51,0,0
-hole     cut  cyl:r3.2h8    @56,0,-1
+rim_in   cut  cyl:r34h14     @0,0,-1
+whub     add  cyl:r10h12
+wbore    cut  cyl:r6h14      @0,0,-1
+spokes   add  box:w30d5h6    @0,0,3   polar:n5r21
+component washer
+ring     add  cyl:r9h1.5     @0,0,12
+whole    cut  cyl:r2.5h3     @0,0,11
+component screw
+shaft    add  cyl:r2.5h11.5  @0,0,2
+head     add  cyl:r7h4       @0,0,13.5
