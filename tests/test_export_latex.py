@@ -8,8 +8,21 @@ the ``hub`` fixture.
 from __future__ import annotations
 
 import re
+import sys
+
+import pytest
 
 from precis.export import latex
+
+# The compile tests drive a ``#!/bin/sh`` stub through ``shutil.which`` +
+# ``subprocess.run``. On Windows ``shutil.which`` won't treat an
+# extension-less file as executable (no ``PATHEXT`` match), and the POSIX
+# shebang can't be invoked as a native binary — so the stub-binary pattern
+# is POSIX-only. Same family of skip as ``tests/test_claude_agent.py``.
+_needs_posix_stub = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX execute-shebang support required for the latexmk stub-binary pattern",
+)
 
 # ── inline rendering (no DB) ──────────────────────────────────────────
 
@@ -329,6 +342,7 @@ def _stub_latexmk(tmp_path, *, succeed=True):
     return script
 
 
+@_needs_posix_stub
 def test_compile_pdf_success(tmp_path, monkeypatch) -> None:
     from precis.export import compile as cmpl
 
@@ -342,6 +356,7 @@ def test_compile_pdf_success(tmp_path, monkeypatch) -> None:
     assert res.ok and res.pdf == proj / "main.pdf" and res.pdf.exists()
 
 
+@_needs_posix_stub
 def test_compile_pdf_failure_returns_log(tmp_path, monkeypatch) -> None:
     from precis.export import compile as cmpl
 
