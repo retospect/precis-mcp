@@ -98,6 +98,22 @@ It also demonstrates **multi-solid export**:
 | `.stl`  | **one welded body** — STL is a triangle soup with no part identity |
 | `.scad` | one `union()` of the four components (source renders to one mesh) |
 
+#### Verified fit (analytic, no meshing)
+
+All six part-pairs were probed: **no pair penetrates another** — every
+solid-vs-solid intersection is `0 mm³`, so the stack only ever *touches*.
+The mating fits are coincident matching-diameter contacts (line-to-line):
+
+- screw shaft Ø5 fills the hub's axial bore Ø5 (per spec);
+- wheel bore Ø12 seats on the hub post Ø12.
+
+The wheel is **axially captured**: the washer (Ø18) overhangs the wheel
+bore (Ø12) by 3 mm, and the wheel sits sandwiched between the bracket
+plate (top face at z=0) and the washer (z=12) — so it cannot slide off the
+hub. (Because the diameters match exactly, a `clearance` probe reads
+`0.00 mm` on those faces — exact contact, not a gap; for a free-running
+fit you'd open the wheel bore ~0.2 mm.)
+
 ## Can an assembly be exported as one file?
 
 Yes — **STEP** and **3MF** both carry multiple distinct bodies in a single
