@@ -318,9 +318,9 @@ def _requests_by_handle(
         "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
         "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' "
         "      AND t.value LIKE 'ask-user:%%' LIMIT 1) AS asking, "
-        "  EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+        "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
         "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' "
-        "      AND t.value LIKE 'child-failed:%%') AS failed "
+        "      AND t.value LIKE 'child-failed:%%' LIMIT 1) AS failed_tag "
         "FROM refs r "
         "WHERE r.kind = 'todo' AND r.deleted_at IS NULL "
         "  AND r.meta->>'anchor' = ANY(%s)"
@@ -328,17 +328,35 @@ def _requests_by_handle(
     out: dict[str, list[dict[str, Any]]] = {}
     with store.pool.connection() as conn:
         rows = conn.execute(sql, (anchors,)).fetchall()
-    for ref_id, title, anchor, status, started, asking, failed in rows:
+    for ref_id, title, anchor, status, started, asking, failed_tag in rows:
         status = status or "open"
         handle = (anchor or "").lstrip("¶")
-        # ``OPEN:ask-user:<slug>`` → a human-ish question ("see-chunk-0" →
-        # "see chunk 0"). The slug is terse — the full reasoning is in the
-        # job transcript the chip links to.
-        ask = (asking or "").split("ask-user:", 1)[-1].replace("-", " ").strip()
+        # ``OPEN:ask-user:<value>`` → the human question. The value is
+        # either the literal question or a ``see-chunk-N`` redirect handle
+        # for prose that overflowed the 80-char tag cap into a chunk;
+        # resolve_ask_question reads the chunk back so we show the real
+        # question, not the opaque "see chunk 0" slug. ``ask_tag`` keeps the
+        # raw tag so the inline answer form can strip it on submit.
+        ask_tag = asking or ""
+        ask = (
+            store.resolve_ask_question(ref_id, ask_tag.split("ask-user:", 1)[-1])
+            if ask_tag
+            else ""
+        )
+        # A failed child job parks the parent behind a ``child-failed:<id>``
+        # bubble — surface *why* (its job_summary), not just "failed".
+        fail_reason = ""
+        if failed_tag:
+            job_id = failed_tag.split("child-failed:", 1)[-1].strip()
+            if job_id.isdigit():
+                fail_reason = store.job_fail_reason(int(job_id)) or ""
         out.setdefault(handle, []).append(
             {
                 "ref_id": ref_id,
                 "title": (title or "").split("\n", 1)[0][:60],
+                # Full first line of the original request, for the promoted
+                # "needs you" panel (the chip's title is truncated).
+                "request": (title or "").split("\n", 1)[0][:400],
                 "status": status,
                 "done": status in ("done", "won't-do"),
                 # "started" = a plan_tick (or other) job minted; the
@@ -346,7 +364,9 @@ def _requests_by_handle(
                 "started": bool(started),
                 # attention: waiting on the user, or a failed child job.
                 "asking": ask,
-                "failed": bool(failed),
+                "ask_tag": ask_tag,
+                "failed": bool(failed_tag),
+                "fail_reason": fail_reason,
             }
         )
     for reqs in out.values():
@@ -673,22 +693,36 @@ def _work_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
     for it in items:
         # Parse each ``ask-user[:question]`` tag into its question text (or
         # "" for the bare any-human marker), keeping the raw tag so the
-        # inline answer form can strip it on submit.
+        # inline answer form can strip it on submit. ``resolve_ask_question``
+        # de-references a ``see-chunk-N`` redirect to the real overflow prose
+        # so the operator sees the actual question, not the slug.
         asks = [
             {
                 "tag": t,
-                "question": t[len("ask-user:") :].strip()
+                "question": store.resolve_ask_question(
+                    it.todo_id, t[len("ask-user:") :]
+                )
                 if t.startswith("ask-user:")
                 else "",
             }
             for t in it.asks
+        ]
+        # Attach the failure reason (job_summary) to each failed child job so
+        # the operator sees *why* it died right here, not just "failed".
+        jobs = [
+            {
+                "id": jid,
+                "status": st,
+                "reason": store.job_fail_reason(jid) if st == "failed" else None,
+            }
+            for jid, st in it.jobs
         ]
         out.append(
             {
                 "todo_id": it.todo_id,
                 "title": it.title,
                 "blocked": it.blocked,
-                "jobs": [{"id": jid, "status": st} for jid, st in it.jobs],
+                "jobs": jobs,
                 "asks": asks,
                 "ask_tags": list(it.asks),
             }

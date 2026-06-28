@@ -317,15 +317,39 @@
       </a>
       {% elif t.failed %}
       <a href="/r/todo/{{ t.ref_id }}" target="_blank" rel="noopener"
-         class="block text-rose-700 hover:underline">⚠ failed — open to debug</a>
+         class="block text-rose-700 hover:underline">⚠ failed{% if t.fail_reason %} — {{ t.fail_reason }}{% else %} — open to debug{% endif %}</a>
       {% endif %}
     </div>
     {% endfor %}
     </div>{# /.draft-meta-inner #}
   </div>
 
-  {# ── Col C: change box — "around here…" + add-figure ──────────── #}
+  {# ── Col C: change box — needs-you panel + "around here…" + add-figure ── #}
   <div class="space-y-1" x-data="{ figopen: false, org: 'original' }">
+    {# Promoted "needs you" panel: when a request anchored here is waiting on
+       a human, surface the whole exchange right in the change column — the
+       original request, the LLM's question, and an answer box — so the
+       operator unblocks it in place instead of hunting the Asks tab. Submits
+       to the shared /asks answer route (strips the ask-user tag, appends the
+       answer) and returns to this draft. #}
+    {% for t in r.requests if t.asking %}
+    <div class="space-y-1 rounded border border-amber-300 bg-amber-50 p-2 text-xs">
+      <div class="flex items-center gap-1 font-medium text-amber-900">
+        <span class="rounded bg-amber-200 px-1.5 py-0.5">✋ needs you</span>
+        <a href="/r/todo/{{ t.ref_id }}" target="_blank" rel="noopener"
+           class="font-mono text-[10px] text-amber-700 hover:underline">todo:{{ t.ref_id }}</a>
+      </div>
+      <p class="text-slate-500"><span class="text-slate-400">your request:</span> {{ t.request }}</p>
+      <p class="text-amber-900"><span class="text-amber-700">asks:</span> {{ t.asking }}</p>
+      <form method="post" action="/asks/{{ t.ref_id }}/answer" class="space-y-1">
+        <input type="hidden" name="remove" value="{{ t.ask_tag }}" />
+        <input type="hidden" name="next" value="/drafts/{{ ref.ident }}" />
+        <textarea name="response" required rows="2" placeholder="your answer…"
+                  class="w-full resize-y rounded border border-amber-300 px-2 py-1 text-xs focus:border-amber-500 focus:outline-none"></textarea>
+        <button class="rounded bg-amber-600 px-2 py-1 text-xs text-white hover:bg-amber-700">answer</button>
+      </form>
+    </div>
+    {% endfor %}
     <form method="post" action="/drafts/{{ ref.ident }}/request" x-data="{ model: 'opus' }" class="space-y-1">
       <input type="hidden" name="handle" value="{{ r.handle }}" />
       <div class="flex items-start gap-1">

@@ -174,6 +174,17 @@
            class="font-mono hover:underline {% if j.status == 'failed' %}text-rose-600{% else %}text-slate-400 hover:text-slate-700{% endif %}">job:{{ j.id }} {{ j.status }}</a>
         {% endfor %}
       </li>
+      {# Why a job failed — surfaced from its job_summary chunk so the
+         operator sees the reason (API error, timeout, …) without opening
+         the job. #}
+      {% for j in w.jobs %}
+      {% if j.reason %}
+      <li class="ml-7 mb-1 text-rose-700">
+        <a href="/refs/job/{{ j.id }}" class="font-mono text-rose-500 hover:underline">job:{{ j.id }}</a>
+        — {{ j.reason }}
+      </li>
+      {% endif %}
+      {% endfor %}
       {# Stuck-on-a-question: show the ask + an inline answer box, so the
          operator unblocks the work right here instead of hunting the Asks
          tab. Submits to the shared /asks answer route (strips the ask-user
