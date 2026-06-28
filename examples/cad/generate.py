@@ -37,11 +37,15 @@ def main() -> None:
     have_mesh = manifold_available()
     have_step = step_available()
     if not have_mesh:
-        print("note: manifold3d absent — skipping .stl/.3mf (pip install "
-              "'precis-mcp[cad-export]')")
+        print(
+            "note: manifold3d absent — skipping .stl/.3mf (pip install "
+            "'precis-mcp[cad-export]')"
+        )
     if not have_step:
-        print("note: OpenCASCADE absent — skipping .step (pip install "
-              "'precis-mcp[cad-step]')")
+        print(
+            "note: OpenCASCADE absent — skipping .step (pip install "
+            "'precis-mcp[cad-step]')"
+        )
 
     for src in sorted(HERE.glob("*.cad")):
         name = src.stem

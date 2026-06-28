@@ -298,6 +298,11 @@ _REFS_BROWSABLE_KINDS: tuple[str, ...] = (
     "websearch",
     "cron",
     "message",
+    # Machine-detected ops/health rows (non-embedded). The /alerts list
+    # links each row to /refs/alert/<id>; without this the detail page
+    # 400s ("no browse tab for kind='alert'"). AlertHandler.get(id=N)
+    # renders fine through the generic detail template.
+    "alert",
     # Cached generators / utility kinds — they still store refs in the
     # DB so detail pages work; list pages render whatever the kind's
     # ``list_refs`` returns (empty for the on-demand kinds when the

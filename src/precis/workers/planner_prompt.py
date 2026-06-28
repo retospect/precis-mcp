@@ -229,13 +229,12 @@ move the work forward by exactly one of these output shapes:
    paper's TOC), read it to confirm it supports the claim, then paste
    its `pc<id>`. See `get(kind='skill', id='precis-citation-help')`.
 
-   The export engine turns each `pc<id>` into the right `\\cite{}` and
+   The export engine turns each `pc<id>` into the right citation and
    **one bibliography entry per paper** at compile time. So **never**
-   write `\\cite{...}`, `\\citequote{...}{...}`, or a guessed bib key in
-   your prose — those are export-only output, not something you type. A
-   hand-written key (e.g. `\\cite{electrochemical22}`) matches nothing
-   in the generated bibliography and silently breaks it. You write
-   handles; precis writes the citations.
+   hand-write LaTeX citation commands or a bibliography key in your
+   prose — those are export-only output, not something you type. A
+   made-up key matches nothing in the generated bibliography and
+   silently breaks it. You write handles; precis writes the citations.
 
    Patents cite the same way, by their chunk handle (`pk<id>`). A
    **memory or thought is a link, not a citation**: write `[me<id>]` to
@@ -337,8 +336,8 @@ placeholder — but ALWAYS with a stub or finding actually chasing it
 behind the scenes (a placeholder nobody is fetching never becomes a
 citation, and a lingering "References needed" note is PROHIBITED —
 it trips nursery flags). Once it lands, cite it by its chunk handle
-`[pc<id>]`. NEVER hand-write `\\cite{...}` or a guessed bib key — you
-write handles, the export engine writes the citations.
+`[pc<id>]`. NEVER hand-write LaTeX citation commands or a bibliography
+key — you write handles, the export engine writes the citations.
 
 **Literature hunt**: if you identify primary sources that you need
 but the corpus doesn't have, **DO NOT** write them as a memory
@@ -557,6 +556,72 @@ def _render_project_brief(store: Store, ref_id: int) -> str:
         return ""
     slug = workspace.project_tag or "project"
     return f"## Project context ({slug})\n\n{brief}"
+
+
+def _render_seeds(store: Store, ref_id: int) -> str:
+    """Surface the human's seed reading-list for this project.
+
+    A draft can be created (web new-draft form) with free-text seed
+    notes + topic tags — people, ORCIDs, lab capabilities, relevant
+    papers, key topics — the author flagged as starting material. Stored
+    at ``meta.workspace.extra['seeds']`` on the project root and cascaded
+    to descendants via the workspace inheritance, so the planner sees it
+    on every tick. Variable layer (per-project), like the project brief.
+
+    Tells the planner to work outside-in: read the linked call (if any)
+    first, then the flagged seeds, then the rest of the corpus — and to
+    chase a named-but-unheld paper rather than invent it.
+
+    No-op when no seeds are set.
+    """
+    from precis.utils.workspace import Workspace
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    if not row:
+        return ""
+    workspace = Workspace.from_meta(row[0])
+    if workspace is None:
+        return ""
+    seeds = workspace.extra.get("seeds")
+    if not isinstance(seeds, dict):
+        return ""
+    text = str(seeds.get("text") or "").strip()
+    raw_tags = seeds.get("tags") or []
+    tags = [str(t).strip() for t in raw_tags if str(t).strip()]
+    if not text and not tags:
+        return ""
+
+    lines = [
+        "## Seed material to read first",
+        "",
+        "Before you draft, work outside-in: read the linked "
+        "call-for-proposal in full first (if any — see the requirements "
+        "block above), then pull in the source material the human "
+        "flagged below, then search the rest of the corpus for whatever "
+        "else the claims need.",
+    ]
+    if text:
+        lines += [
+            "",
+            "Author's seed notes (people, ORCIDs, lab capabilities, "
+            "relevant papers, key topics):",
+            "",
+            text,
+        ]
+    if tags:
+        lines += ["", "Seed topics/tags: " + ", ".join(tags)]
+    lines += [
+        "",
+        "For each seed: `search(kind='paper', q='…')` (and a plain "
+        "`search(q='…')`) the corpus. For a named paper not yet held, "
+        "stub it (`put(kind='paper', doi='…')`) or mint a "
+        "`kind='finding'` so the fetcher ingests it, then cite the "
+        "landed chunk with `[pc<id>]`. Never invent a source.",
+    ]
+    return "\n".join(lines)
 
 
 def bound_draft(store: Store, ref_id: int) -> tuple[str, str, str] | None:
@@ -1199,6 +1264,11 @@ def _m_requirements(ctx: AssemblyContext) -> str:
     return _render_requirements(ctx.store, ctx.ref_id)
 
 
+def _m_seeds(ctx: AssemblyContext) -> str:
+    assert ctx.store is not None
+    return _render_seeds(ctx.store, ctx.ref_id)
+
+
 def _m_glossary(ctx: AssemblyContext) -> str:
     assert ctx.store is not None
     return _render_glossary(ctx.store, ctx.ref_id)
@@ -1311,6 +1381,7 @@ _VARIABLE_MODULES: list[Module] = [
     Module(id="ancestry", layer=Layer.VARIABLE, build=_m_ancestry),
     Module(id="project", layer=Layer.VARIABLE, build=_m_project),
     Module(id="requirements", layer=Layer.VARIABLE, build=_m_requirements),
+    Module(id="seeds", layer=Layer.VARIABLE, build=_m_seeds),
     Module(id="draft", layer=Layer.VARIABLE, build=_m_draft),
     Module(
         id="reviewer-persona",

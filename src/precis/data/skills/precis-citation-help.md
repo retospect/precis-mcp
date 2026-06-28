@@ -10,8 +10,8 @@ status: active
 
 A citation in a draft is the **bare supporting paper-chunk handle,
 written inline in your prose**: `[pc234]` (paper chunk 234). The chunk
-*is* the evidence — there is no verbatim quote to copy, no `\cite{}` to
-type. This is the **write side** of cite-a-passage: find the chunk that
+*is* the evidence — there is no verbatim quote to copy and no citation
+command to type. This is the **write side** of cite-a-passage: find the chunk that
 backs your claim, read it to confirm it supports the point
 ([[precis-check-source-help]]), then drop its handle inline.
 
@@ -44,11 +44,11 @@ search(kind='paper', q='<claim or key phrase>', scope='<slug>')  # → returns p
 get(id='pc234')                                                   # read it; the chunk IS the evidence
 ```
 
-**The author never types `\cite{}` or `\citequote{}`** — both are
+**The author never hand-writes LaTeX citation commands** — they are
 retired (export-only). The Tier-B export engine resolves each `[pc<id>]`
-→ its paper and renders `\cite{}` plus **one bibliography entry per
-paper** at compile time. A hand-written `\cite{electrochemical22}`
-matches nothing and is wrong.
+→ its paper and renders the citation plus **one bibliography entry per
+paper** at compile time. A made-up bibliography key matches nothing and
+is wrong.
 
 **A memory / thought / other draft is a link, not a citation.** Drop a
 `[me<id>]` or `[dc<id>]` handle to record a `related-to` provenance
@@ -116,14 +116,14 @@ search(kind='citation', q='MOF CO2 reduction')
 get(kind='citation', id='/recent')
 ```
 
-## How does this become LaTeX? (you don't write `\cite`)
+## How does this become LaTeX? (you don't write the citation commands)
 
 You write only the inline `[pc<id>]` handles. At compile time the
-Tier-B export engine resolves each handle → its paper and emits
-`\cite{}` plus **one bibliography entry per paper** — you never type
-`\cite{}` or `\citequote{}`, and both are retired. A hand-written
-`\cite{collins06}` matches nothing in the export resolver and is wrong:
-it is the inline handle, not a key you author, that carries the cite.
+Tier-B export engine resolves each handle → its paper and emits the
+LaTeX citation plus **one bibliography entry per paper** — you never
+hand-write citation commands or bibliography keys; they are retired. A
+made-up key matches nothing in the export resolver and is wrong: it is
+the inline handle, not a key you author, that carries the cite.
 
 The review-pass citation-faithfulness verifier reads each `[pc<id>]`,
 resolves it, and confirms the chunk supports the claim it sits beside —

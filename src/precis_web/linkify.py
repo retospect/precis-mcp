@@ -199,9 +199,16 @@ def _anchor_html(
         f'hx-trigger="mouseenter delay:200ms once" '
         f'hx-target="next .ref-popover" hx-swap="innerHTML">'
         f"{label}</a>"
-        f'<span class="ref-popover absolute z-50 top-full left-0 mt-1 w-96 '
-        f"rounded-lg border border-slate-200 bg-white shadow-xl p-2 text-sm "
-        f'whitespace-normal max-h-96 overflow-y-auto" '
+        # No top margin: the popover sits flush under the label so the
+        # cursor can travel from the link onto the card without crossing a
+        # dead gap (an absolute popover is out of flow, so a ``mt-1`` gap
+        # falls outside the hover span and fires mouseleave → the card
+        # vanished before you could click its "open →"). ``pt-2`` keeps the
+        # content visually off the label. ``z-[100]`` beats the sidebar's
+        # column dividers / change-box so the card isn't painted under them.
+        f'<span class="ref-popover absolute z-[100] top-full left-0 w-96 '
+        f"rounded-lg border border-slate-200 bg-white shadow-xl px-2 pb-2 pt-2 "
+        f'text-sm whitespace-normal max-h-96 overflow-y-auto" '
         f'x-show="hovered" x-cloak></span>'
         f"</span>"
     )
@@ -453,9 +460,13 @@ def _highlight_abbrevs(html: str, abbrevs: dict[str, str]) -> str:
     # inflection (``FET`` → ``FETs`` / ``FET's``) so an inflected mention
     # inherits the same hover-definition. We only store the base form; the
     # suffix is matched here, not in ``defined_abbrevs``.
+    # Trailing guard is ``(?!\w)`` (not ``(?![\w-])``) so a defined acronym
+    # used as a hyphenated-compound prefix still highlights its base —
+    # ``GNR`` in ``GNR-FETs`` / ``GNR-based``. The leading ``(?<![\w-])``
+    # still prevents matching inside a longer token (e.g. ``AGNR``).
     pat = re.compile(
         r"(?<![\w-])(" + "|".join(re.escape(s) for s in shorts) + r")"
-        r"(?:s|es|'s|’s)?(?![\w-])"
+        r"(?:s|es|'s|’s)?(?!\w)"
     )
 
     def _wrap(m: re.Match[str]) -> str:

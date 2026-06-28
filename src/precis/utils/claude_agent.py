@@ -476,13 +476,22 @@ def _recoverable_exhaustion(stdout: str) -> str | None:
     work (MCP side effects), and usually produced a partial answer. That
     is recoverable: return the reason string so the caller can surface
     the partial :class:`AgentResult` instead of discarding everything.
+
+    Also recoverable: a non-zero exit whose result event reports the run
+    **completed** its turn (``terminal_reason='completed'``). The model
+    finished and produced an answer; the exit code is a process/teardown
+    artifact (seen on the web "ask & think" path — the CLI exits 1 after a
+    completed turn, which previously surfaced a bare "⚠️ thinking failed:
+    …exited 1: (terminal_reason=completed)" instead of the answer). Treat
+    it like an exhaustion and surface the final text.
+
     Returns ``None`` for a genuine error (no result event, or an
     ``error_during_execution``-class subtype) so the caller re-raises.
     """
     reason = stream_terminal_reason(stdout)
     if reason is None:
         return None
-    if reason == "max_turns" or "budget" in reason:
+    if reason == "max_turns" or "budget" in reason or reason == "completed":
         return reason
     return None
 

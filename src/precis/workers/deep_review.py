@@ -186,6 +186,11 @@ the tree telling you about how the week went? Use this for
 continuity; asa-bot's preamble surfaces recent memories so a good
 narrative gets quoted back in chat.
 
+**Define your abbreviations.** A memory has no glossary, so spell out
+each abbreviation on first use — write `AGNR (armchair graphene
+nanoribbon)`, not a bare `AGNR`. This covers all-caps acronyms and
+hyphenated compounds (`GNR-FET`).
+
 Do not address anyone. Do not use the precis MCP `put` tool to
 write a memory directly — the worker will write your output as a
 memory tagged `tier:deep` after you finish. Your final stdout IS

@@ -1,7 +1,7 @@
 {% extends "base.html.j2" %}
 {% block title %}Drafts{% endblock %}
 {% block content %}
-<div x-data="{ open: false }">
+<div x-data="{ open: false, doctype: 'paper' }">
 <div class="flex items-center justify-between mb-4">
   <h1 class="text-lg font-semibold">Drafts</h1>
   <div class="flex items-center gap-3">
@@ -22,12 +22,29 @@
   </div>
   <div>
     <label class="block text-xs font-medium text-slate-600 mb-1">Document type</label>
-    <select name="doctype"
+    <select name="doctype" x-model="doctype"
             class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm bg-white">
       {% for dt in doctypes %}
       <option value="{{ dt.value }}"{% if dt.default %} selected{% endif %}>{{ dt.label }}</option>
       {% endfor %}
     </select>
+  </div>
+  <div x-show="doctype === 'proposal'" x-cloak>
+    <label class="block text-xs font-medium text-slate-600 mb-1">Call for proposal <span class="text-slate-400">(the writer mirrors its required sections + word limits)</span></label>
+    {% if cfps %}
+    <select name="cfp"
+            class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm bg-white">
+      <option value="">— none (write a freeform proposal) —</option>
+      {% for c in cfps %}
+      <option value="{{ c.value }}">{{ c.label }}</option>
+      {% endfor %}
+    </select>
+    {% else %}
+    <p class="text-xs text-slate-500">
+      No calls ingested yet. Add one with <code class="text-xs">precis add --as cfp &lt;pdf&gt;</code>
+      (or drop it in <code class="text-xs">inbox/cfp/</code>), then it appears here.
+    </p>
+    {% endif %}
   </div>
   <div>
     <label class="block text-xs font-medium text-slate-600 mb-1">Slug <span class="text-slate-400">(optional — derived from title)</span></label>
@@ -38,6 +55,17 @@
     <label class="block text-xs font-medium text-slate-600 mb-1">Description <span class="text-slate-400">(what to write — becomes the planner's initial prompt)</span></label>
     <textarea name="summary" rows="3" placeholder="Describe the invention / subject in full — this is the prompt the writer works from."
               class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"></textarea>
+  </div>
+  <div>
+    <label class="block text-xs font-medium text-slate-600 mb-1">Things to read <span class="text-slate-400">(seed material — the writer reads these first, then searches the corpus)</span></label>
+    <textarea name="seeds" rows="3"
+              placeholder="Anything the writer should start from, one per line — e.g.&#10;• Lab capabilities: cryo-EM, 200kV; in-house DFT cluster&#10;• Personnel: Jane Roe (PI, ORCID 0000-0002-1825-0097); …&#10;• Relevant papers / DOIs: 10.1038/s41586-020-XXXX (we can also find these)&#10;• Key topics: single-atom catalysis, CO2 reduction"
+              class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"></textarea>
+  </div>
+  <div>
+    <label class="block text-xs font-medium text-slate-600 mb-1">Tags <span class="text-slate-400">(optional — comma-separated topics; also become <code class="text-xs">topic:</code> tags)</span></label>
+    <input name="tags" placeholder="CO2 reduction, single-atom catalysis, MOFs"
+           class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" />
   </div>
   <div class="flex justify-end">
     <button type="submit" class="rounded bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700">Create draft</button>

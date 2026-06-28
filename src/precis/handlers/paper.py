@@ -22,6 +22,7 @@ v2:
 from __future__ import annotations
 
 import difflib
+import logging
 import re
 from typing import Any, ClassVar
 
@@ -67,6 +68,8 @@ from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.text import excerpt as _excerpt
 from precis.utils.toc import ChunksForToc
 from precis.utils.toc_db import render_from_store
+
+log = logging.getLogger(__name__)
 
 
 def _pa(ref: Ref) -> str:
@@ -727,6 +730,58 @@ class PaperHandler(Handler):
 
     # -- search --------------------------------------------------------------
 
+    def _inject_title_matches(
+        self,
+        hits: list[Any],
+        *,
+        q: str,
+        kind: str,
+        page_size: int,
+    ) -> list[Any]:
+        """Promote near-exact title matches to the front of ``hits``.
+
+        See the call site: FTS stop-word stripping buries an exact-title
+        query's paper. We trigram-match the raw title (store method),
+        fetch a representative block per match (first body chunk, else
+        the title/abstract card), and prepend — deduping by ref_id so a
+        paper already in ``hits`` is reordered rather than duplicated.
+        Best-effort: any lookup hiccup returns ``hits`` unchanged.
+        """
+        try:
+            matches = self.store.find_refs_by_title_similarity(kind=kind, q=q, limit=3)
+            if not matches:
+                return hits
+            match_ids = [rid for rid, _sim in matches]
+            existing = {h[1].id: h for h in hits}
+            refs_map = self.store.fetch_refs_by_ids(match_ids)
+            front: list[Any] = []
+            for rid in match_ids:
+                if rid in existing:
+                    front.append(existing[rid])  # reorder, don't refetch
+                    continue
+                ref = refs_map.get(rid)
+                if ref is None:
+                    continue
+                block = self.store.get_block(rid, pos=0) or self.store.get_block(
+                    rid, pos=-1
+                )
+                if block is None:
+                    body = self.store.list_blocks_for_ref(rid)
+                    block = body[0] if body else None
+                if block is None:
+                    continue
+                front.append((block, ref, float("inf")))
+            if not front:
+                return hits
+            front_ids = {h[1].id for h in front}
+            rest = [h for h in hits if h[1].id not in front_ids]
+            return (front + rest)[:page_size]
+        except Exception:  # pragma: no cover — relevance aid, never fatal
+            log.warning(
+                "paper search: title introducer failed for %r", q, exc_info=True
+            )
+            return hits
+
     def search(  # type: ignore[override]
         self,
         *,
@@ -860,6 +915,22 @@ class PaperHandler(Handler):
             card_kinds=("card_combined",),
         )
         hits = _dedup_card_hits(hits)
+
+        # Title introducer: a query that *is* a paper's title
+        # ("attention is all you need") gets stripped by FTS to its
+        # content words ('attent' & 'need'), so the exact paper's short
+        # card loses on ts_rank and never reaches the first page. On an
+        # unfiltered first-page search, surface near-exact title matches
+        # at the top. Gated tightly (plain query only, high similarity
+        # bar) so an ordinary keyword search is untouched.
+        if (
+            page == 1
+            and scope_ref_id is None
+            and year_from is None
+            and year_to is None
+            and not normalized_tags
+        ):
+            hits = self._inject_title_matches(hits, q=q, kind=kind, page_size=page_size)
 
         # When a publish-date filter is active, count papers that match
         # the query but have NO year — they're silently dropped by the

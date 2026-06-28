@@ -696,9 +696,15 @@ def test_unknown_universal_chunk_preview_is_missing(draft_client: TestClient) ->
 
 
 def test_chunk_preview_fragment(draft_client: TestClient) -> None:
+    # A chunk hover leads with the content + a friendly *source-kind*
+    # label ("draft"), not the raw handle or the machine chunk_kind
+    # ("paragraph #BBBBBB") it used to show.
     r = draft_client.get("/preview/chunk/BBBBBB")
     assert r.status_code == 200
-    assert "BBBBBB" in r.text and "paragraph" in r.text
+    assert "Uses PEI." in r.text  # the chunk's own text (the quote)
+    assert "draft" in r.text  # friendly source-kind chip
+    assert "paragraph" not in r.text  # machine chunk_kind dropped
+    assert "BBBBBB" not in r.text  # raw handle no longer surfaced as id/title
 
 
 def test_chunk_preview_missing_is_graceful(draft_client: TestClient) -> None:

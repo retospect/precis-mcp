@@ -1414,6 +1414,51 @@ class RefsMixin:
             rows = conn.execute(sql, params).fetchall()
         return [_row_to_ref(r) for r in rows]
 
+    def find_refs_by_title_similarity(
+        self,
+        *,
+        kind: str,
+        q: str,
+        limit: int = 3,
+        min_similarity: float = 0.6,
+        exclude_ref_ids: list[int] | None = None,
+    ) -> list[tuple[int, float]]:
+        """Refs of ``kind`` whose *title* is trigram-similar to ``q``.
+
+        Backs the search title-introducer: Postgres FTS strips a query
+        like ``attention is all you need`` down to ``'attent' & 'need'``
+        (stop-words gone), so the exact-title paper's short card loses on
+        ``ts_rank`` to every content-dense body that mentions those words
+        and never reaches the first page. A trigram match on the raw
+        title catches the case the lexical leg drops. Returns
+        ``(ref_id, similarity)`` pairs above ``min_similarity``, best
+        first; the high default bar means only a near-title query fires
+        it (no false promotion on an ordinary keyword search).
+
+        ``pg_trgm`` is enabled in the baseline schema (GIN trigram
+        indexes already back the slug/title lookups).
+        """
+        clauses = [
+            "r.deleted_at IS NULL",
+            "r.kind = %s",
+            "r.title IS NOT NULL",
+        ]
+        params: list[Any] = [q, kind]  # q first: it feeds the SELECT sim
+        if exclude_ref_ids:
+            clauses.append("r.ref_id <> ALL(%s)")
+            params.append(list(exclude_ref_ids))
+        sql = (
+            "SELECT t.ref_id, t.sim FROM ("
+            "  SELECT r.ref_id AS ref_id, similarity(r.title, %s) AS sim"
+            "    FROM refs r"
+            "   WHERE " + " AND ".join(clauses) + ""
+            ") t WHERE t.sim >= %s ORDER BY t.sim DESC, t.ref_id ASC LIMIT %s"
+        )
+        params.extend([min_similarity, limit])
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [(int(r[0]), float(r[1])) for r in rows]
+
     def count_refs_lexical(
         self,
         *,

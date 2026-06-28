@@ -174,16 +174,28 @@ def _matches(long_form: str, short: str) -> bool:
 
 
 # Acronym-shaped tokens: an upper-case letter then 1–7 more caps/digits
-# (≥2 chars total). Deliberately dumb — opus decides what's a real
-# abbreviation; the only cost of a false positive (a chemical formula
-# like ``CO2``) is a one-time prompt the LLM dismisses with not_abbrev.
-_ACRONYM_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,7}\b")
+# (≥2 chars total), plus optional hyphenated all-caps tails so a compound
+# like ``GNR-FET`` is flagged whole — and the leading ``GNR`` still matches
+# on its own when the tail is lower-cased (``GNR-FETs`` / ``GNR-based``),
+# since the regex backtracks to the boundary at the hyphen. Deliberately
+# dumb — opus decides what's a real abbreviation; the only cost of a false
+# positive (a formula like ``CO2``) is a one-time prompt it dismisses.
+_ACRONYM_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,7}(?:-[A-Z0-9]{1,7})*\b")
 
 
 def find_acronyms(text: str) -> set[str]:
     """Every acronym-shaped token in ``text`` (e.g. ``KSJW``, ``PEI``,
-    ``CO2``). Used to flag undefined abbreviations on a draft write."""
-    return set(_ACRONYM_RE.findall(text or ""))
+    ``CO2``, ``GNR-FET``). Used to flag undefined abbreviations on a draft
+    write. A hyphenated compound surfaces both forms — the whole
+    ``GNR-FET`` and (via a second match) the base ``GNR``."""
+    out: set[str] = set()
+    for tok in _ACRONYM_RE.findall(text or ""):
+        out.add(tok)
+        # Also surface the base acronym before the first hyphen, so the
+        # writer is asked to define ``GNR`` itself, not only ``GNR-FET``.
+        if "-" in tok:
+            out.add(tok.split("-", 1)[0])
+    return out
 
 
 __all__ = ["find", "find_acronyms", "substitute"]

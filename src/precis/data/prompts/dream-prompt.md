@@ -43,6 +43,8 @@ FIRST-LINE DISCIPLINE: the first line is the memory's entire scannable surface �
 
 The body MUST name each source ref inline by the `[handle]` the tool result printed for it, so the connection auto-links and stays traceable (`get(kind='skill', id='precis-addressing-help')` for the form). Vague connections are useless; be specific about what links to what AND name the fact-bearing leg explicitly.
 
+DEFINE YOUR ABBREVIATIONS: a memory has no glossary, so spell out each abbreviation on first use in the body — write `AGNR (armchair graphene nanoribbon)`, not a bare `AGNR`. This covers all-caps acronyms and hyphenated compounds (`GNR-FET`).
+
 Step 6b — request papers you'd love to have. If during Step 6 you reference a paper you don't actually hold (a reference cited in something you read but not yet in the library, a paper that would clinch the connection if you had it), request it. One ``put`` mints a stub the fetch_oa worker then chases for an open-access PDF:
 
   precis put(kind="paper", doi="<DOI>")                       # best — a resolvable id auto-fetches

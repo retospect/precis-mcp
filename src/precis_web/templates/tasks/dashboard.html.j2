@@ -81,6 +81,18 @@
       showing {{ filtered_rows }} of {{ total_rows }} rows
     </span>
     {% endif %}
+    {# Root-level pagination: keeps the rendered tree small so the page
+       loads fast. Only shown when there's more than one page of roots. #}
+    {% if total_roots > roots_per_page %}
+    {% set base = state_qs(focus_id) %}
+    {% set sep = '&' if '?' in base else '?' %}
+    {% set npages = (total_roots + roots_per_page - 1) // roots_per_page %}
+    <span class="text-xs text-slate-500 flex items-center gap-2">
+      {% if page > 1 %}<a href="/tasks{{ base }}{{ sep }}page={{ page - 1 }}" class="text-sky-600 hover:underline">← prev</a>{% endif %}
+      <span>page {{ page }} of {{ npages }} · {{ total_roots }} roots</span>
+      {% if has_next %}<a href="/tasks{{ base }}{{ sep }}page={{ page + 1 }}" class="text-sky-600 hover:underline">next →</a>{% endif %}
+    </span>
+    {% endif %}
   </div>
 </form>
 <script>

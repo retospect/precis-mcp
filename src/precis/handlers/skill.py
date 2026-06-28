@@ -269,6 +269,12 @@ def _categorise_skills(
     return groups, uncategorised
 
 
+#: Score pinned on a skill whose title / H1 contains the full query
+#: phrase — above any cosine similarity so the obvious intent match
+#: ("how do I cite a paper" → precis-cite-paper-help) leads the results.
+_TITLE_MATCH_SCORE = 1.5
+
+
 class _SkillSearchRow:
     """Per-slug merged hit for the search response.
 
@@ -589,6 +595,34 @@ class SkillHandler(Handler):
             if slug in merged:
                 continue
             merged[slug] = _lexical_row(slug, count, preview)
+
+        # Exact title / H1 phrase boost. A query that *is* a substring of
+        # a skill's title or H1 ("how do I cite a paper" →
+        # precis-cite-paper-help) is an almost-certain intent match — but
+        # the lexical leg caps such a hit below 0.5 and the merge above
+        # drops it whenever any (possibly weak) semantic hit shares the
+        # slug, so the obvious doc sinks below the page_size cut. Pin a
+        # title/H1 phrase match to the top regardless of stream. Guarded
+        # on a 4+ char needle so a degenerate 1-3 char query can't promote
+        # half the catalogue.
+        needle = _norm_for_substr(q)
+        if len(needle) >= 4:
+            for slug in _list_skills():
+                title = _skill_title_text(slug)
+                if not title or needle not in _norm_for_substr(title):
+                    continue
+                row = merged.get(slug)
+                if row is None:
+                    merged[slug] = _SkillSearchRow(
+                        slug=slug,
+                        score=_TITLE_MATCH_SCORE,
+                        source="title",
+                        section="title match",
+                        snippet=title.strip(),
+                    )
+                elif row.score < _TITLE_MATCH_SCORE:
+                    row.score = _TITLE_MATCH_SCORE
+                    row.source = "title"
 
         if not merged:
             # Distinguish "genuinely no match" from "lexical drew blank
@@ -1582,6 +1616,32 @@ def _norm_for_substr(s: str) -> str:
     hyphens or runs of whitespace — the regex is a no-op then.
     """
     return _NORM_HYPHEN_WS_RE.sub(" ", s.lower()).strip()
+
+
+_FM_TITLE_RE = re.compile(r"^title:\s*(.+?)\s*$", re.MULTILINE)
+_H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+
+
+def _skill_title_text(slug: str) -> str:
+    """The skill's front-matter ``title:`` + its first ``# H1`` line.
+
+    These carry the skill's stated purpose in near-natural phrasing
+    (``precis — how do I cite a paper?``). A query that *is* a substring
+    of this text is an almost-certain intent match, so the search boosts
+    it (see :meth:`SkillHandler.search`). Returns ``""`` for an unknown
+    slug or a skill with neither field.
+    """
+    text = _load_skill(slug)
+    if text is None:
+        return ""
+    parts: list[str] = []
+    fm = _FM_TITLE_RE.search(text)
+    if fm:
+        parts.append(fm.group(1))
+    h1 = _H1_RE.search(text)
+    if h1:
+        parts.append(h1.group(1))
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------

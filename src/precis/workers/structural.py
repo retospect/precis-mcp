@@ -167,6 +167,11 @@ suggest the next move. If the tree looks clean, say so explicitly
 ("No structural issues this pass"); we still write the digest so
 the audit log shows the review ran.
 
+**Define your abbreviations.** A memory has no glossary, so spell out
+each abbreviation on first use — write `AGNR (armchair graphene
+nanoribbon)`, not a bare `AGNR`. This covers all-caps acronyms and
+hyphenated compounds (`GNR-FET`).
+
 Do not address anyone. Do not use the precis MCP `put` tool to
 write a memory directly — the worker will write your output as a
 memory tagged `tier:structural` after you finish. Your final stdout

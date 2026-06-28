@@ -752,6 +752,37 @@ def _build_rows(store: Any, *, precis_root: Path | None = None) -> list[dict[str
     return rows
 
 
+#: Strategic roots rendered per dashboard page. The flattened tree can run
+#: to thousands of rows; rendering them all is what makes the page crawl in
+#: the browser. We paginate by *root* (a whole subtree stays together).
+_TASKS_ROOTS_PER_PAGE = 25
+
+
+def _paginate_roots(
+    rows: list[dict[str, Any]], *, page: int, per_page: int
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """Slice a DFS-ordered row list to ``per_page`` top-level subtrees.
+
+    Rows arrive root-first then descendants (``depth==0`` opens a new
+    root), so we group on depth-0 boundaries and keep whole subtrees
+    together — never cutting a tree mid-branch. Returns
+    ``(page_rows, total_roots, has_next)``.
+    """
+    # Partition into subtree groups, each led by a depth-0 row.
+    groups: list[list[dict[str, Any]]] = []
+    for r in rows:
+        if r.get("depth", 0) == 0 or not groups:
+            groups.append([r])
+        else:
+            groups[-1].append(r)
+    total_roots = len(groups)
+    start = max(0, (page - 1) * per_page)
+    page_groups = groups[start : start + per_page]
+    page_rows = [r for g in page_groups for r in g]
+    has_next = start + per_page < total_roots
+    return page_rows, total_roots, has_next
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(
@@ -761,6 +792,7 @@ async def dashboard(
     focus: int | None = Query(default=None),
     show_jobs: str = Query(default="active"),
     tree: int | None = Query(default=None),
+    page: int = Query(default=1),
 ) -> HTMLResponse:
     """Strategic tree + doable queue.
 
@@ -784,6 +816,14 @@ async def dashboard(
     rows = _hide_inactive_jobs(rows, show_all=(show_jobs == "all"))
     focused_rows, breadcrumb = _focus_rows(rows, focus)
     filtered = _filter_rows(focused_rows, require=require, exclude=exclude)
+    filtered_count = len(filtered)  # full count before paginating, for the header
+    # Paginate by strategic root so the rendered DOM stays small (the
+    # whole-tree render is what made this page crawl). Pagination rides
+    # *after* focus/filter so it bounds whatever set those produced.
+    page = max(1, page)
+    filtered, total_roots, has_next = _paginate_roots(
+        filtered, page=page, per_page=_TASKS_ROOTS_PER_PAGE
+    )
     doable_body, _ = await await_dispatch(
         request, "search", {"kind": "todo", "view": "doable", "page_size": 20}
     )
@@ -817,7 +857,11 @@ async def dashboard(
             "active_tab": "tasks",
             "rows": filtered,
             "total_rows": len(rows),
-            "filtered_rows": len(filtered),
+            "filtered_rows": filtered_count,
+            "page": page,
+            "total_roots": total_roots,
+            "has_next": has_next,
+            "roots_per_page": _TASKS_ROOTS_PER_PAGE,
             "filter_active": bool(require or exclude),
             "require_tags": require,
             "exclude_tags": exclude,

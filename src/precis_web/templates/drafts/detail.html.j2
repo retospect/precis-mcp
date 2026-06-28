@@ -125,17 +125,40 @@
     <ul class="space-y-0.5">
       {% for w in work %}
       <li class="flex flex-wrap items-center gap-2">
-        {% if w.blocked %}
+        {% if w.asks %}
+        <span class="rounded bg-amber-200 px-1.5 py-0.5 font-medium text-amber-900">✋ needs you</span>
+        {% elif w.blocked %}
         <span class="rounded bg-red-100 px-1.5 py-0.5 font-medium text-red-700">⚠ blocked</span>
         {% else %}
         <span class="rounded bg-sky-100 px-1.5 py-0.5 font-medium text-sky-700">⚙ in flight</span>
         {% endif %}
-        <a href="/tasks/{{ w.todo_id }}" class="font-mono text-slate-500 hover:text-slate-800">todo:{{ w.todo_id }}</a>
+        <a href="/refs/todo/{{ w.todo_id }}" class="font-mono text-slate-500 hover:text-slate-800 hover:underline">todo:{{ w.todo_id }}</a>
         <span class="text-slate-700">{{ w.title }}</span>
         {% for j in w.jobs %}
-        <span class="font-mono text-slate-400">job:{{ j.id }} {{ j.status }}</span>
+        <a href="/refs/job/{{ j.id }}"
+           class="font-mono hover:underline {% if j.status == 'failed' %}text-rose-600{% else %}text-slate-400 hover:text-slate-700{% endif %}">job:{{ j.id }} {{ j.status }}</a>
         {% endfor %}
       </li>
+      {# Stuck-on-a-question: show the ask + an inline answer box, so the
+         operator unblocks the work right here instead of hunting the Asks
+         tab. Submits to the shared /asks answer route (strips the ask-user
+         tag, appends the answer) and returns to this draft. #}
+      {% if w.asks %}
+      <li class="ml-7 mb-1">
+        <form method="post" action="/asks/{{ w.todo_id }}/answer" class="space-y-1">
+          {% for a in w.asks %}
+          <p class="text-amber-900">{% if a.question %}{{ a.question }}{% else %}<span class="italic text-slate-500">(any answer unblocks this)</span>{% endif %}</p>
+          <input type="hidden" name="remove" value="{{ a.tag }}" />
+          {% endfor %}
+          <input type="hidden" name="next" value="/drafts/{{ ref.ident }}" />
+          <div class="flex items-start gap-1">
+            <input name="response" required placeholder="your answer…"
+                   class="min-w-0 flex-1 rounded border border-amber-300 px-2 py-1 text-xs focus:border-amber-500 focus:outline-none" />
+            <button class="shrink-0 rounded bg-amber-600 px-2 py-1 text-xs text-white hover:bg-amber-700">answer</button>
+          </div>
+        </form>
+      </li>
+      {% endif %}
       {% endfor %}
     </ul>
   </div>

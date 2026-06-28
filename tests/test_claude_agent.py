@@ -219,6 +219,27 @@ def test_max_turns_falls_back_to_assistant_text(stub_bin: Path) -> None:
     assert "{" not in res.final_text  # not the raw JSON stream
 
 
+def test_completed_turn_with_nonzero_exit_recovers(stub_bin: Path) -> None:
+    """A run whose result event says it ``completed`` its turn but the CLI
+    still exits 1 (a process/teardown artifact seen on the web "ask &
+    think" path) is recovered — surface the answer, not a bare
+    "⚠️ thinking failed: …exited 1: (terminal_reason=completed)"."""
+    stdout = _stream(
+        [
+            {
+                "type": "result",
+                "terminal_reason": "completed",
+                "total_cost_usd": 0.3,
+                "num_turns": 4,
+                "result": "the completed answer",
+            },
+        ]
+    )
+    _write_stream_stub(stub_bin, stdout=stdout, exit_code=1)
+    res = call_claude_agent("do")
+    assert res.final_text == "the completed answer"
+
+
 def test_error_during_execution_still_raises_with_reason(stub_bin: Path) -> None:
     """A genuine runtime error is NOT recovered — it re-raises, and the
     terminal reason is folded into the message (the CLI's bare "exited 1:"

@@ -129,6 +129,7 @@ async def answer(
     ref_id: int,
     response: str = Form(...),
     remove: list[str] = Form(default=[]),
+    next: str = Form(default=""),
 ) -> Response:
     """Append response to the todo body and clear its ask-user tags.
 
@@ -137,10 +138,17 @@ async def answer(
     remains blocked). The ``remove`` list comes from hidden form
     inputs the index template emits per ask tag, so the submit path
     doesn't have to re-query.
+
+    ``next`` (optional, same-origin path only) lets a caller other than
+    the Asks tab — e.g. the draft reader's inline ask form — return the
+    operator to where they answered instead of the global queue.
     """
+    # Same-origin guard: only honour a relative path, never an absolute
+    # URL (open-redirect) — fall back to the Asks queue otherwise.
+    dest = next if next.startswith("/") and not next.startswith("//") else "/asks"
     answer_text = response.strip()
     if not answer_text:
-        return RedirectResponse(url="/asks", status_code=303)
+        return RedirectResponse(url=dest, status_code=303)
     store = get_store(request)
     refs = store.fetch_refs_by_ids([ref_id])
     if ref_id not in refs:
@@ -166,10 +174,10 @@ async def answer(
             request,
             "tag",
             {"kind": "todo", "id": ref_id, "remove": list(remove)},
-            redirect="/asks",
+            redirect=dest,
         )
 
-    return RedirectResponse(url="/asks", status_code=303)
+    return RedirectResponse(url=dest, status_code=303)
 
 
 @router.post("/{ref_id}/terminate")

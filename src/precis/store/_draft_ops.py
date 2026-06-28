@@ -91,6 +91,10 @@ class DraftWorkItem:
     title: str
     blocked: bool  # carries an OPEN:child-failed:* bubble
     jobs: tuple[tuple[int, str], ...]  # (job_ref_id, status) for child jobs
+    # Raw ``ask-user[:question]`` tag values on this todo — work that is
+    # waiting on a human answer. Surfaced inline in the draft so the
+    # operator answers in place instead of hunting the Asks/alerts tab.
+    asks: tuple[str, ...] = ()
 
 
 def _split_blocks(text: str) -> list[str]:
@@ -739,6 +743,15 @@ class DraftMixin:
                       LEFT JOIN tags t
                         ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS'
                      WHERE j.kind = 'job' AND j.deleted_at IS NULL
+                ),
+                asks AS (
+                    -- ``ask-user[:question]`` tags: work waiting on a human.
+                    SELECT rt.ref_id,
+                           array_agg(t.value ORDER BY t.value) AS ask_tags
+                      FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE t.namespace = 'OPEN'
+                       AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')
+                     GROUP BY rt.ref_id
                 )
                 SELECT o.ref_id, o.title,
                        (b.n IS NOT NULL) AS blocked,
@@ -748,20 +761,24 @@ class DraftMixin:
                                ORDER BY jb.job_id
                            ) FILTER (WHERE jb.job_id IS NOT NULL),
                            '[]'::jsonb
-                       ) AS jobs
+                       ) AS jobs,
+                       a.ask_tags
                   FROM open_todos o
                   LEFT JOIN bubbles b ON b.ref_id = o.ref_id
                   LEFT JOIN jobs jb ON jb.todo_id = o.ref_id
-                 GROUP BY o.ref_id, o.title, b.n
+                  LEFT JOIN asks a ON a.ref_id = o.ref_id
+                 GROUP BY o.ref_id, o.title, b.n, a.ask_tags
                 HAVING b.n IS NOT NULL
+                    OR a.ask_tags IS NOT NULL
                     OR bool_or(jb.status IN ('running', 'queued', 'failed'))
-                 ORDER BY (b.n IS NOT NULL) DESC, o.ref_id
+                 ORDER BY (b.n IS NOT NULL OR a.ask_tags IS NOT NULL) DESC,
+                          o.ref_id
                  LIMIT %(limit)s
                 """,
                 {"draft": draft_ref_id, "limit": int(limit)},
             ).fetchall()
         items: list[DraftWorkItem] = []
-        for ref_id, title, blocked, jobs in rows:
+        for ref_id, title, blocked, jobs, ask_tags in rows:
             first = (title or "").strip().splitlines()[0] if title else ""
             items.append(
                 DraftWorkItem(
@@ -769,6 +786,7 @@ class DraftMixin:
                     title=first,
                     blocked=bool(blocked),
                     jobs=tuple((int(j[0]), str(j[1])) for j in (jobs or [])),
+                    asks=tuple(str(t) for t in (ask_tags or [])),
                 )
             )
         return items

@@ -76,6 +76,7 @@ from fastapi.responses import (
 )
 
 from precis.utils import draft_markup, handle_registry, mentions
+from precis.utils.authors import author_names
 from precis.utils.embed_query import embed_query
 from precis.utils.figure_clearance import draft_figure_clearance, figure_status
 from precis_web.deps import (
@@ -602,15 +603,31 @@ def _work_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
     except Exception:  # pragma: no cover - defensive, never fail the page
         log.warning("drafts: attached-work walk failed for %s", ref_id, exc_info=True)
         return []
-    return [
-        {
-            "todo_id": it.todo_id,
-            "title": it.title,
-            "blocked": it.blocked,
-            "jobs": [{"id": jid, "status": st} for jid, st in it.jobs],
-        }
-        for it in items
-    ]
+    out: list[dict[str, Any]] = []
+    for it in items:
+        # Parse each ``ask-user[:question]`` tag into its question text (or
+        # "" for the bare any-human marker), keeping the raw tag so the
+        # inline answer form can strip it on submit.
+        asks = [
+            {
+                "tag": t,
+                "question": t[len("ask-user:") :].strip()
+                if t.startswith("ask-user:")
+                else "",
+            }
+            for t in it.asks
+        ]
+        out.append(
+            {
+                "todo_id": it.todo_id,
+                "title": it.title,
+                "blocked": it.blocked,
+                "jobs": [{"id": jid, "status": st} for jid, st in it.jobs],
+                "asks": asks,
+                "ask_tags": list(it.asks),
+            }
+        )
+    return out
 
 
 #: Document types offered by the "+ New draft" form. Each maps to a
@@ -634,6 +651,16 @@ _DOC_TYPES: list[dict[str, str]] = [
         "a technical field and background, a summary, a detailed description "
         "of embodiments, and numbered claims. Be precise and broad in claim "
         "scope; avoid marketing language.",
+    },
+    {
+        "value": "proposal",
+        "label": "Proposal (answers a call)",
+        "brief": "This is a funding/grant proposal answering a specific "
+        "call. There is no fixed template: mirror the linked call's "
+        "required sections exactly (one draft section each) and respect "
+        "every section's word limit. Lead with the idea and its impact, "
+        "show the team's capability to deliver, and tie each claim to the "
+        "call's stated evaluation criteria.",
     },
     {
         "value": "report",
@@ -777,10 +804,22 @@ async def index(request: Request) -> HTMLResponse:
         {"value": d["value"], "label": d["label"], "default": d["value"] == "paper"}
         for d in _DOC_TYPES
     ]
+    # Calls-for-proposal the user can attach to a proposal draft (drives
+    # the planner's required-sections + word-limit structure via the
+    # has-requirement link). Address by slug, falling back to ref id.
+    cfps = [
+        {"value": (c.slug or str(c.id)), "label": (c.title or c.slug or "untitled")}
+        for c in store.list_refs(kind="cfp", order_by="created_desc", limit=200)
+    ]
     return templates.TemplateResponse(
         request,
         "drafts/index.html.j2",
-        {"active_tab": "drafts", "drafts": drafts, "doctypes": doctypes},
+        {
+            "active_tab": "drafts",
+            "drafts": drafts,
+            "doctypes": doctypes,
+            "cfps": cfps,
+        },
     )
 
 
@@ -795,6 +834,52 @@ def _parse_id(body: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+#: Chunk-handle source kinds whose hover preview leads with the source
+#: title + byline (a [pc…]/patent/cfp chunk points at a real document).
+_PAPER_PREVIEW_KINDS = frozenset({"paper", "cfp", "patent"})
+
+
+def _short_byline(authors: Any) -> str:
+    """A compact one-line byline for a chunk-hover preview: first author
+    for a single/pair, else ``First … Last``. Truncated so it stays one
+    line. Empty when there are no authors."""
+    names = author_names(authors)
+    if not names:
+        return ""
+    byline = names[0] if len(names) == 1 else f"{names[0]} … {names[-1]}"
+    if len(byline) > 80:
+        byline = byline[:79].rstrip() + "…"
+    return byline
+
+
+def _parse_tags(raw: str) -> list[str]:
+    """Split a free-text tag field (comma / newline separated) into a
+    clean, de-duplicated, order-preserving list of display tags. The
+    user types loose labels ("CO2 reduction, ORCID 0000-…"); we keep the
+    surface text for the planner's seed block and derive ``topic:`` axis
+    tags separately (:func:`_topic_tags`)."""
+    parts = re.split(r"[,\n]+", raw or "")
+    out: list[str] = []
+    for p in parts:
+        t = p.strip()
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def _topic_tags(labels: list[str]) -> list[str]:
+    """Map free-text seed labels to ``topic:<slug>`` axis tags so the
+    project is queryable (``search(tags=['topic:…'])``). Slugged like a
+    draft slug; blanks dropped."""
+    out: list[str] = []
+    for label in labels:
+        slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")[:40]
+        tag = f"topic:{slug}" if slug else ""
+        if tag and tag not in out:
+            out.append(tag)
+    return out
+
+
 @router.post("/drafts/new")
 async def new_draft(
     request: Request,
@@ -802,6 +887,9 @@ async def new_draft(
     slug: str = Form(""),
     summary: str = Form(""),
     doctype: str = Form("paper"),
+    cfp: str = Form(""),
+    seeds: str = Form(""),
+    tags: str = Form(""),
 ) -> Response:
     """Create a draft from the /drafts page. A draft is 1:1 with a
     project, so this mints the owning strategic ``todo`` (carrying the
@@ -817,7 +905,16 @@ async def new_draft(
     the project todo's body (the ``## Body`` of every planner tick), i.e.
     the planner's **initial prompt**, not just standing context. The
     ``LLM:opus`` tag is the dispatcher's auto-run signal, so the planner
-    starts on the description as soon as the next ``dispatch`` pass runs."""
+    starts on the description as soon as the next ``dispatch`` pass runs.
+
+    ``cfp`` (proposal doctype only) is the slug/id of a call-for-proposal
+    to attach via the ``has-requirement`` link — the planner then mirrors
+    the call's required sections + word limits (no fixed proposal
+    template). ``seeds`` (free text) + ``tags`` are the author's "things
+    to read" starting material: stored at
+    ``meta.workspace.extra['seeds']`` (cascades to the planner's
+    ``## Seed material`` block) and the tags also become ``topic:`` axis
+    tags on the project for later querying."""
     title = title.strip()
     if not title:
         return RedirectResponse(url="/drafts", status_code=303)
@@ -834,6 +931,16 @@ async def new_draft(
     if guidance:
         workspace["brief"] = guidance
 
+    # Seed "things to read": free text + loose tag labels. Stored under
+    # the workspace's forward-compat ``extra`` so it cascades to every
+    # planner tick (rendered as the ``## Seed material`` block). The tag
+    # labels also map to ``topic:`` axis tags on the project root so the
+    # whole project surfaces under ``search(tags=['topic:…'])``.
+    seed_text = seeds.strip()
+    tag_labels = _parse_tags(tags)
+    if seed_text or tag_labels:
+        workspace["seeds"] = {"text": seed_text, "tags": tag_labels}
+
     # The description IS the planner's initial prompt: it becomes the
     # project todo's body (``refs.title`` → the ``## Body`` block read by
     # ``plan_tick``). Fall back to a bare instruction when the user left it
@@ -842,13 +949,14 @@ async def new_draft(
     task_text = summary.strip() or f'Write a {doctype} titled "{title}".'
 
     # 1) project root that owns the workspace + drives the planner.
+    project_tags = ["level:strategic", "LLM:opus", *_topic_tags(tag_labels)]
     body, is_error = await await_dispatch(
         request,
         "put",
         {
             "kind": "todo",
             "text": task_text,
-            "tags": ["level:strategic", "LLM:opus"],
+            "tags": project_tags,
             "meta": {"workspace": workspace},
         },
     )
@@ -886,6 +994,31 @@ async def new_draft(
             {"title": "New draft error", "detail": body2, "status": 400},
             status_code=400,
         )
+
+    # 2a) proposal: attach the call-for-proposal via ``has-requirement`` so
+    #     the planner mirrors its required sections + word limits (there is
+    #     no fixed proposal scaffold; the call dictates the structure — see
+    #     precis-proposal-help). Best-effort: a bad/stale cfp slug must not
+    #     lose the already-created draft, so we log and carry on (the user
+    #     can re-link from the proposal reader / MCP).
+    cfp_ident = cfp.strip()
+    if doctype == "proposal" and cfp_ident:
+        _, link_err = await await_dispatch(
+            request,
+            "link",
+            {
+                "kind": "todo",
+                "id": project_id,
+                "target": f"cfp:{cfp_ident}",
+                "rel": "has-requirement",
+            },
+        )
+        if link_err:
+            log.warning(
+                "drafts: has-requirement link project=%s → cfp:%s failed",
+                project_id,
+                cfp_ident,
+            )
 
     # 2b) scaffold the genre's standard sections (ADR 0037 step 4): append
     #     styled headings for the picked doc_type, so the author lands on a
@@ -1301,26 +1434,40 @@ async def chunk_blob(request: Request, handle: str) -> Response:
     )
 
 
+#: Planner tiers a change-request / review can run on, via the
+#: ``LLM:<model>`` tag (closed set — the same enum ``plan_tick`` accepts).
+#: There is no local-model executor and ``claude -p`` exposes no
+#: temperature flag, so the change box offers model selection only.
+_PLANNER_MODELS: tuple[str, ...] = ("opus", "sonnet", "haiku")
+
+
 @router.post("/drafts/{ident}/request")
 async def request_change(
     request: Request,
     ident: str,
     handle: str = Form(...),
     text: str = Form(...),
+    model: str = Form("opus"),
 ) -> Response:
     """File a change request anchored at a chunk: a ``todo`` parented on
     the draft's project, carrying ``meta.anchor='¶<handle>'``. Flows
-    through the normal todo tree → dispatch → jobs."""
+    through the normal todo tree → dispatch → jobs.
+
+    ``model`` (opus / sonnet / haiku) sets the planner tier via the
+    ``LLM:<model>`` tag instead of the default opus auto-tag. Anything
+    outside the closed set falls back to opus."""
     store = get_store(request)
     ref = _draft_ref(store, ident)
     back = f"/drafts/{ident}#c-{handle}"
     if ref is None or not text.strip():
         return RedirectResponse(url=back, status_code=303)
     project = _project_id(store, ref.id)
+    tier = model if model in _PLANNER_MODELS else "opus"
     args: dict[str, Any] = {
         "kind": "todo",
         "text": text.strip(),
         "meta": {"anchor": handle},
+        "tags": [f"LLM:{tier}"],
     }
     if project is not None:
         args["parent_id"] = project
@@ -1405,6 +1552,76 @@ async def set_section_style(
         {"kind": "draft", "id": handle, "style": style},
         redirect=back,
         error_title="Section style error",
+    )
+
+
+@router.get("/drafts/{ident}/prompt", response_class=HTMLResponse)
+async def section_prompt_preview(
+    request: Request, ident: str, handle: str
+) -> HTMLResponse:
+    """Debug view of the building blocks the writer assembles for one
+    section: the project context (workspace brief + seed material), the
+    section's content (heading + word target), the section-style skill
+    (the concrete "how to write this" guidance), and the available review
+    lenses. Opened from the per-heading "prompt ↗" button so the operator
+    can see *why* a section reads the way it does and tune it."""
+    from precis.utils.workspace import Workspace
+
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"title": "Prompt preview", "status": 404, "detail": f"no draft {ident}"},
+            status_code=404,
+        )
+    chunk = store.get_draft_chunk(handle)
+    if chunk is None:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"title": "Prompt preview", "status": 404, "detail": f"no chunk {handle}"},
+            status_code=404,
+        )
+    cmeta = chunk.meta or {}
+    style_slug = str(cmeta.get("style") or "")
+    style_skill = ""
+    if style_slug:
+        body, err = await await_dispatch(
+            request, "get", {"kind": "skill", "id": style_slug}
+        )
+        style_skill = "" if err else body
+    ws = Workspace.from_meta(ref.meta)
+    brief = (ws.brief if ws else "") or ""
+    seeds = (ws.extra.get("seeds") if ws else None) or {}
+    return templates.TemplateResponse(
+        request,
+        "drafts/prompt_preview.html.j2",
+        {
+            "active_tab": "drafts",
+            "ident": ident,
+            "handle": handle,
+            "heading": chunk.text or "",
+            "style_slug": style_slug,
+            "style_skill": style_skill,
+            "brief": brief,
+            "seeds": seeds,
+            "word_target": cmeta.get("word_target"),
+            # The review lenses the per-heading "review ▾" button can run.
+            "review_lenses": [
+                (
+                    "structural",
+                    "Drift, sibling contradictions, depth/fanout — opus, "
+                    "checks the section against its outcome.",
+                ),
+                (
+                    "deep_review",
+                    "Allen-style archive/prune/rebalance + long-wait review "
+                    "— opus, weekly cadence.",
+                ),
+            ],
+        },
     )
 
 
@@ -1575,9 +1792,9 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
     its quote. A dangling handle degrades to a 'missing' card."""
     store = get_store(request)
     chunk = store.get_draft_chunk(handle)
-    chunk_kind = chunk.chunk_kind if chunk is not None else None
-    text = chunk.text if chunk is not None else None
-    if chunk is None:
+    if chunk is not None:
+        src_kind, text, ref_id = "draft", chunk.text, chunk.ref_id
+    else:
         uc = store.universal_chunk(handle)
         if uc is None:
             return templates.TemplateResponse(
@@ -1585,7 +1802,19 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
                 "preview/popover.html.j2",
                 {"kind": "chunk", "label": handle, "missing": True},
             )
-        chunk_kind, text = uc["chunk_kind"], uc["text"]
+        src_kind, text, ref_id = uc["kind"], uc["text"], uc["ref_id"]
+
+    # For a paper-family chunk ([pc…]), lead with the source it points
+    # at: the paper title (one truncated line) + a first…last byline,
+    # instead of the machine handle. The chunk text follows as the quote.
+    title = ""
+    byline = ""
+    if src_kind in _PAPER_PREVIEW_KINDS:
+        ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+        if ref is not None:
+            title = (ref.title or "").strip()
+            byline = _short_byline(getattr(ref, "authors", None))
+
     # Show the chunk's verbatim text (≤ ~20 lines) as the quote — the
     # "what does <handle> actually say?" a hover should answer.
     text = text or ""
@@ -1597,10 +1826,13 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
         request,
         "preview/popover.html.j2",
         {
-            "kind": chunk_kind,
+            # Friendly source-kind label ("paper"/"draft"), not the raw
+            # chunk_kind ("paragraph") the maintainer flagged as noise.
+            "kind": src_kind,
             "label": handle,
-            "ref_id": handle,
-            "title": handle,
+            "ref_id": "",  # drop the "#pc…" machine line for chunk hovers
+            "title": title,
+            "byline": byline,
             "quote": quote.strip() or "(empty)",
             "chunk_label": "",
             "body_preview": "",

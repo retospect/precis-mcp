@@ -33,9 +33,7 @@ class CadMixin:
     get_ref: Any
 
     # -- write -----------------------------------------------------------
-    def _write_card(
-        self, conn: Connection, *, ref_id: int, card_text: str
-    ) -> None:
+    def _write_card(self, conn: Connection, *, ref_id: int, card_text: str) -> None:
         """Replace the design's single ``card_combined`` search chunk."""
         conn.execute(
             "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_combined'",
@@ -63,8 +61,11 @@ class CadMixin:
         with self.tx() as conn:
             if created:
                 ref = self.insert_ref(
-                    kind="cad", slug=slug, title=title,
-                    meta=dict(spec.meta), conn=conn,
+                    kind="cad",
+                    slug=slug,
+                    title=title,
+                    meta=dict(spec.meta),
+                    conn=conn,
                 )
             else:
                 ref = existing
@@ -87,8 +88,14 @@ class CadMixin:
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
-                        ref.id, ordi, node.name, node.component, node.op,
-                        node.config, list(node.loc), list(node.rot),
+                        ref.id,
+                        ordi,
+                        node.name,
+                        node.component,
+                        node.op,
+                        node.config,
+                        list(node.loc),
+                        list(node.rot),
                         Jsonb(node.pattern) if node.pattern is not None else None,
                     ),
                 )

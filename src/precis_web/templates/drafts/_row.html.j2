@@ -60,6 +60,12 @@
           {% endfor %}
         </div>
       </div>
+      {# Debug: preview the prompt building blocks for this section
+         (project context + content + style skill + review lenses) so the
+         operator can see what shapes the writing. Opens in a new tab. #}
+      <a href="/drafts/{{ ref.ident }}/prompt?handle={{ r.handle }}" target="_blank"
+         class="text-[10px] text-slate-300 group-hover:text-slate-500 hover:text-sky-600"
+         title="preview the prompt for this section (content + style + review)">prompt ↗</a>
       </div>
     </div>
     {% elif r.is_figure %}
@@ -282,12 +288,35 @@
 
   {# ── Col C: change box — "around here…" + add-figure ──────────── #}
   <div class="space-y-1" x-data="{ figopen: false, org: 'original' }">
-    <form method="post" action="/drafts/{{ ref.ident }}/request" class="flex items-start gap-1">
+    <form method="post" action="/drafts/{{ ref.ident }}/request" x-data="{ model: 'opus' }" class="space-y-1">
       <input type="hidden" name="handle" value="{{ r.handle }}" />
-      <input name="text" required placeholder="around here…"
-             class="min-w-0 flex-1 rounded border border-slate-200 px-2 py-1 text-xs focus:border-sky-400 focus:outline-none" />
+      <div class="flex items-start gap-1">
+      {# Auto-grow: a one-row textarea that expands to fit the request as
+         you type (and snaps back on reset), so longer change notes stay
+         visible. Enter submits; Shift+Enter inserts a newline. #}
+      <textarea name="text" required placeholder="around here…" rows="1"
+                x-init="$nextTick(() => { $el.style.height='auto'; $el.style.height=$el.scrollHeight+'px' })"
+                @input="$el.style.height='auto'; $el.style.height=$el.scrollHeight+'px'"
+                @keydown.enter.prevent="if (!$event.shiftKey) { $el.form.requestSubmit() } else { $el.value += '\n'; $el.dispatchEvent(new Event('input')) }"
+                class="min-w-0 flex-1 resize-none overflow-hidden rounded border border-slate-200 px-2 py-1 text-xs leading-snug focus:border-sky-400 focus:outline-none"></textarea>
       <button class="shrink-0 rounded bg-sky-600 px-2 py-1 text-xs text-white hover:bg-sky-700"
               title="file a change request anchored here">⤳</button>
+      </div>
+      {# Model tier for the planner tick this files (sets the LLM:<model>
+         tag). Reset returns model→opus and clears the box. #}
+      <div class="flex items-center gap-2 text-[10px] text-slate-400">
+        <label class="flex items-center gap-1">model
+          <select name="model" x-model="model"
+                  class="rounded border border-slate-200 bg-white px-1 py-0.5 text-[10px]">
+            <option value="opus">opus</option>
+            <option value="sonnet">sonnet</option>
+            <option value="haiku">haiku</option>
+          </select>
+        </label>
+        <button type="button"
+                @click="model='opus'; const ta=$el.closest('form').querySelector('textarea'); ta.value=''; ta.dispatchEvent(new Event('input'))"
+                class="hover:text-sky-600">reset</button>
+      </div>
     </form>
 
     {# Add a figure after this block (ADR 0034). Bytes upload multipart →
