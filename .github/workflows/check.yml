@@ -59,10 +59,18 @@ jobs:
       # The runner image ships pg_dump 16, but the service is pg17 and
       # pg_dump refuses to dump a server newer than itself (aborting
       # `test_schema_convergence`). Install the matching pg17 client from
-      # the PGDG repo (preconfigured on GitHub's Ubuntu images) and put it
-      # ahead on PATH so `pg_dump` resolves to v17.
+      # the PGDG repo and put it ahead on PATH so `pg_dump` resolves to
+      # v17. The repo used to come preconfigured on GitHub's Ubuntu
+      # images, but the noble runners no longer ship it (apt then can't
+      # locate postgresql-client-17), so add it explicitly via the
+      # official signed-by keyring method.
       - name: Install PostgreSQL 17 client to match the pg17 server
         run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
           sudo apt-get install -y postgresql-client-17
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"

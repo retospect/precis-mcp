@@ -1055,7 +1055,7 @@ class DraftHandler(Handler):
             "\n\n⚠ temperature/unit formatting: write the literal sign with "
             "no space — `63°C` (degree sign `°`, then `C`), a range `63–65°C`, "
             "a tolerance `±1°C` (the `±` sign). No superscript, no `℃`, no "
-            "LaTeX (`^\\circ`, `\\degree`), no spelt-out \"degrees Celsius\", "
+            'LaTeX (`^\\circ`, `\\degree`), no spelt-out "degrees Celsius", '
             f"no `+/-`. Found: {shown}."
         )
 
