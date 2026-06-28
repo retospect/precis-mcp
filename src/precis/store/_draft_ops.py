@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +27,11 @@ from precis.utils.fractional import key_between, n_keys_between
 from precis.utils.handles import new_handle
 
 _HANDLE_RETRIES = 6
+
+#: An ``ask-user`` / ``halt`` tag value of the form ``see-chunk-N`` is a
+#: redirect handle: the real (>80-char) prose lives in a ``tag_overflow``
+#: chunk at ``ord = N`` on the todo (handlers.todo._redirect_long_tag_values).
+_SEE_CHUNK_RE = re.compile(r"^see-chunk-(\d+)$")
 
 #: Above this many characters of concatenated prose, skip the inline
 #: Schwartz-Hearst abbreviation scan in ``defined_abbrevs`` (regex over the
@@ -790,6 +796,53 @@ class DraftMixin:
                 )
             )
         return items
+
+    def resolve_ask_question(self, ref_id: int, tag_value: str) -> str:
+        """Turn an ``ask-user`` tag *value* into the human question text.
+
+        ``tag_value`` is the part after ``ask-user:`` — either the literal
+        inline question (short asks), the empty string (the bare
+        "any human will do" marker), or a ``see-chunk-N`` redirect handle
+        for a question that overflowed the 80-char tag cap into a
+        ``tag_overflow`` chunk. For the redirect form we read chunk
+        ``ord = N`` on the todo and peel back the ``ask-user:`` prefix the
+        writer stored, so the draft view shows the real question instead of
+        the opaque "see chunk 0" slug. Returns "" for the bare marker or an
+        unresolvable handle."""
+        value = (tag_value or "").strip()
+        m = _SEE_CHUNK_RE.match(value)
+        if m is None:
+            return value
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord = %s",
+                (ref_id, int(m.group(1))),
+            ).fetchone()
+        if not row or not row[0]:
+            return ""
+        text = str(row[0]).strip()
+        # The writer stores ``"<ns>: <question>"`` — peel the namespace off.
+        for ns in ("ask-user", "halt"):
+            if text.startswith(f"{ns}:"):
+                return text[len(ns) + 1 :].strip()
+        return text
+
+    def job_fail_reason(self, job_ref_id: int, *, limit: int = 240) -> str | None:
+        """First line of a failed job's ``job_summary`` chunk — *why* it
+        died (API error, timeout, …), so the draft view can say so instead
+        of a bare "failed". Whitespace-collapsed and capped. Returns ``None``
+        when the job has no summary chunk yet."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT text FROM chunks "
+                "WHERE ref_id = %s AND chunk_kind = 'job_summary' "
+                "ORDER BY ord LIMIT 1",
+                (int(job_ref_id),),
+            ).fetchone()
+        if not row or not row[0]:
+            return None
+        text = " ".join(str(row[0]).split())
+        return text[:limit].rstrip() + ("…" if len(text) > limit else "")
 
     def create_draft(
         self,

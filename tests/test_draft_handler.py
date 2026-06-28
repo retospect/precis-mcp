@@ -425,7 +425,102 @@ def test_requests_by_handle_runs_against_real_pg(draft: DraftHandler, hub: Hub) 
 
     out = _requests_by_handle(hub.store, [para_h])  # must not raise
     reqs = out.get(para_h, [])
-    assert any(r["asking"] == "which para" for r in reqs)
+    assert any(r["asking"] == "which-para" for r in reqs)
+
+
+def test_resolve_ask_question_resolves_see_chunk_overflow(hub: Hub) -> None:
+    """A >80-char ask-user question overflows into a ``tag_overflow`` chunk
+    and the tag becomes ``ask-user:see-chunk-N``. resolve_ask_question must
+    read the chunk back so the UI shows the real question, not the opaque
+    "see chunk 0" slug. Short inline questions and the bare marker pass
+    through unchanged."""
+    from precis.store.types import BlockInsert
+
+    store = hub.store
+    todo = store.insert_ref(kind="todo", slug=None, title="fix bolding")
+    q = (
+        "Which did you mean? (A) fold the ~100 label-headings back inline "
+        "(B) point me at a specific chunk (C) a renderer/export setting."
+    )
+    store.insert_blocks(
+        todo.id,
+        [
+            BlockInsert(
+                pos=0,
+                text=f"ask-user: {q}",
+                meta={"chunk_kind": "tag_overflow", "tag_namespace": "ask-user"},
+            )
+        ],
+    )
+    assert store.resolve_ask_question(todo.id, "see-chunk-0") == q
+    assert store.resolve_ask_question(todo.id, "which para?") == "which para?"
+    assert store.resolve_ask_question(todo.id, "") == ""
+    assert store.resolve_ask_question(todo.id, "see-chunk-9") == ""
+
+
+def test_requests_by_handle_surfaces_question_and_fail_reason(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The reader's per-block panel must show the real ask-user question
+    (resolving a see-chunk redirect) and *why* a child job failed (its
+    job_summary), so the operator never sees a bare "see chunk 0" / "failed".
+    """
+    from precis.store.types import BlockInsert, Tag
+    from precis_web.routes.drafts import _requests_by_handle
+
+    store = hub.store
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    para_h = _order(hub, "nt")[0].handle
+
+    # (1) a request waiting on the user, with an overflowed question.
+    asking = store.insert_ref(kind="todo", slug=None, title="fix the bolding")
+    store.stamp_ref_meta(asking.id, {"anchor": f"¶{para_h}"})
+    q = (
+        "Which did you mean? (A) fold the label-headings back inline "
+        "(B) point me at a specific chunk (C) a renderer/export setting."
+    )
+    store.insert_blocks(
+        asking.id,
+        [
+            BlockInsert(
+                pos=0,
+                text=f"ask-user: {q}",
+                meta={"chunk_kind": "tag_overflow", "tag_namespace": "ask-user"},
+            )
+        ],
+    )
+    store.add_tag(asking.id, Tag.open("ask-user:see-chunk-0"))
+
+    # (2) a request blocked by a failed child job carrying the reason.
+    failing = store.insert_ref(kind="todo", slug=None, title="add citations")
+    store.stamp_ref_meta(failing.id, {"anchor": f"¶{para_h}"})
+    job = store.insert_ref(
+        kind="job", slug=None, title="plan_tick", parent_id=failing.id, meta={}
+    )
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "failed"), set_by="system", replace_prefix=True
+    )
+    store.insert_blocks(
+        job.id,
+        [
+            BlockInsert(
+                pos=0,
+                text="API Error: violates our Usage Policy. Try rephrasing.",
+                meta={"chunk_kind": "job_summary"},
+            )
+        ],
+    )
+    store.add_tag(failing.id, Tag.open(f"child-failed:{job.id}"))
+
+    reqs = _requests_by_handle(store, [para_h]).get(para_h, [])
+    ask_req = next(r for r in reqs if r["ref_id"] == asking.id)
+    assert ask_req["asking"] == q  # full question, not "see chunk 0"
+    assert ask_req["ask_tag"] == "ask-user:see-chunk-0"
+    assert ask_req["request"] == "fix the bolding"
+    fail_req = next(r for r in reqs if r["ref_id"] == failing.id)
+    assert fail_req["failed"] is True
+    assert "Usage Policy" in fail_req["fail_reason"]
 
 
 def test_chunk_connections_and_edit_stats(draft: DraftHandler, hub: Hub) -> None:
