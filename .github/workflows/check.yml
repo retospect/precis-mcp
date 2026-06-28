@@ -34,8 +34,12 @@ jobs:
       postgres:
         # pgvector image so the `vector` extension is present; the
         # migration bootstrap CREATE EXTENSIONs it (plus pg_trgm,
-        # btree_gist) on first apply.
-        image: pgvector/pgvector:pg16
+        # btree_gist) on first apply. Pinned to pg17 to match the dev /
+        # prod server major: the baseline snapshot is dumped by a pg17
+        # pg_dump and emits `SET transaction_timeout = 0` (a pg17-only
+        # GUC), which pg16 rejects with "unrecognized configuration
+        # parameter".
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
