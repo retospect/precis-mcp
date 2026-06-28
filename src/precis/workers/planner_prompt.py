@@ -218,6 +218,12 @@ move the work forward by exactly one of these output shapes:
    italics for emphasis; let sentence structure carry the weight.
    Introduce an abbreviation by writing the short form and relying on a
    glossary entry, not by spelling it out inline as `Full Form (ABBR)`.
+   **Units and temperatures** are plain text with the literal Unicode
+   sign and no space: write `63°C` (digit, then `°C`), a range as
+   `63–65°C`, and a tolerance as `±1°C` (the `±` sign, not `+/-`). Never
+   use a superscript, the single-character `℃`, or LaTeX (`^\\circ`,
+   `\\degree`, `\\textdegree`) — and don't spell it out as
+   "63 degrees Celsius".
 
 3. **Cite by paper-chunk handle.** When a claim rests on a source,
    write the supporting chunk's **bare handle** inline in your prose:
