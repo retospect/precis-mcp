@@ -390,6 +390,30 @@ def test_paper_chunk_handle_is_section_sigil_in_compact() -> None:
     assert "/preview/chunk/dc41" in draft and ">¶<" in draft
 
 
+def test_paper_record_handle_is_section_sigil_in_compact() -> None:
+    # In the draft reader (compact) an inline paper *record* citation
+    # [pa42624] collapses to a § sigil too (not just paper *chunk* handles)
+    # so a run of cites [pa1][pa2][pa3] reads as §§§ markers rather than the
+    # verbose "pa1pa2pa3" run-on. The anchor points at the paper record.
+    out = str(linkify_refs("pathogens [pa42624][pa3655]", compact=True))
+    assert out.count(">§<") == 2
+    assert "/r/paper/42624" in out and "/r/paper/3655" in out
+    assert "pa42624" not in out  # the verbose label is gone
+
+
+def test_record_handle_keeps_label_when_not_compact() -> None:
+    # Outside the compact reader a paper record handle keeps its full label.
+    out = str(linkify_refs("see [pa42624] here"))
+    assert "/r/paper/42624" in out and ">pa42624<" in out
+
+
+def test_non_evidence_record_keeps_label_in_compact() -> None:
+    # A non-citation record kind (memory) keeps its label even in compact —
+    # it's a Connections pointer, not an inline cite.
+    out = str(linkify_refs("see [me5] here", compact=True))
+    assert "/r/memory/5" in out and ">me5<" in out
+
+
 def test_non_handle_bracket_stays_literal() -> None:
     # A bracketed non-handle isn't a ref — left as prose.
     out = str(linkify_refs("see [the note] below"))

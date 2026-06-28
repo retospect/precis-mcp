@@ -15,9 +15,12 @@
     <div class="flex items-start gap-1.5">
       <button data-toggle="{{ r.handle }}"
               class="dr-toggle mt-0.5 font-mono text-xs text-slate-400 hover:text-slate-700 select-none">▾</button>
-      <h3 class="font-semibold text-slate-900
+      <h3 class="min-w-0 break-words font-semibold text-slate-900
                  {% if r.depth == 0 %}text-lg{% elif r.depth == 1 %}text-base{% else %}text-sm{% endif %}">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</h3>
-      <div class="ml-auto flex shrink-0 items-start gap-2">
+      {# style / review / prompt stay one nowrap cluster pinned top-right;
+         min-w-0 on the heading lets it shrink/wrap rather than push these
+         onto a second line. #}
+      <div class="ml-auto flex shrink-0 flex-nowrap items-start gap-2 whitespace-nowrap">
       {# Section style (ADR 0037): set this heading's meta.style. The genre's
          styles, scoped via the draft's doc_type; the scaffold normally sets
          these — this is the manual override. #}
@@ -171,6 +174,41 @@
         </div>
       </div>
     </figure>
+    {% elif r.is_list_container %}
+    {# A ulist/olist container (migration 0037) — structural; its `item`
+       children carry the content. A faint label names the list type and is
+       the natural home for the ul/ol/normal toggle. #}
+    <div class="flex items-center gap-2">
+      <span class="text-[10px] uppercase tracking-wide text-slate-300 select-none">{{ 'numbered list' if r.chunk_kind == 'olist' else 'bullet list' }}</span>
+      {% if r.list_kinds %}
+      {# ul / ol / normal switch — posts to /drafts/<id>/listkind. #}
+      <div class="relative shrink-0" x-data="{ lk: false }" @click.outside="lk = false">
+        <button @click="lk = !lk"
+                class="text-[10px] text-slate-300 group-hover:text-slate-500 hover:text-sky-600">list ▾</button>
+        <div x-show="lk" x-cloak
+             class="absolute left-0 z-30 mt-1 w-40 rounded border border-slate-200 bg-white shadow-lg text-xs">
+          {% for slug, label in r.list_kinds %}
+          <form method="post" action="/drafts/{{ ref.ident }}/listkind">
+            <input type="hidden" name="handle" value="{{ r.handle }}" />
+            <input type="hidden" name="kind" value="{{ slug }}" />
+            <button class="block w-full px-2 py-1 text-left hover:bg-slate-100 {% if r.chunk_kind == slug %}font-semibold text-sky-700{% endif %}">{{ label }}{% if r.chunk_kind == slug %} ✓{% endif %}</button>
+          </form>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+    {% elif r.is_item %}
+    {# A list item: bullet (•) or number marker + the item body. The
+       depth-based padding (above) indents nested items. #}
+    <div class="flex gap-2">
+      <span class="mt-0.5 shrink-0 select-none {% if r.list_ordered %}font-mono text-[13px] text-slate-500{% else %}text-slate-400{% endif %}">{{ r.marker }}</span>
+      <div class="min-w-0 flex-1">
+        <div x-show="view === 'body'"><p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</p></div>
+        <p x-show="view === 'summary'" x-cloak class="text-sm italic text-slate-600 break-words">{{ r.summary }}</p>
+        <p x-show="view === 'keywords'" x-cloak class="text-xs font-mono text-slate-500 break-words">{{ r.keywords }}</p>
+      </div>
+    </div>
     {% else %}
     {# View slider: full body (default) vs the block's summary vs its
        keywords. Headings (above) always show their title. #}

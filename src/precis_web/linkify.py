@@ -406,6 +406,19 @@ def _render_universal_handle(
         return _anchor_html(
             href=f"/c/{h}", preview_url=f"/preview/chunk/{h}", label=shown
         )
+    # A record handle. In the compact draft reader an inline *evidence
+    # citation* — a paper/patent referenced in the prose, e.g. ``[pa42624]``
+    # — collapses to its 1-char sigil (``§`` / ``Ⓟ``), the same treatment a
+    # ``paper:slug`` cite or a paper *chunk* handle already gets. Without
+    # this a run of cites (``[pa1][pa2][pa3]``) rendered as the verbose
+    # ``pa1pa2pa3`` run-on. Other record kinds (memory, conv, …) keep their
+    # label — they surface as Connections chips, not inline citations.
+    if compact and kind in _CHUNK_SIGIL:
+        return _anchor_html(
+            href=f"/r/{kind}/{pk}",
+            preview_url=f"/preview/{kind}/{pk}",
+            label=_CHUNK_SIGIL[kind],
+        )
     return _anchor_html(
         href=f"/r/{kind}/{pk}", preview_url=f"/preview/{kind}/{pk}", label=escape(label)
     )

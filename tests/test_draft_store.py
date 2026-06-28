@@ -119,6 +119,55 @@ def test_add_chunks_positions_and_hierarchy(store: Store) -> None:
     ]
 
 
+def _list_fixture(store: Store) -> tuple[int, str]:
+    """A draft with a ulist container + two items under the title. Returns
+    ``(ref_id, container_handle)``."""
+    proj = _project(store)
+    ref, title = store.create_draft(name="lst", title="Title", project_ref_id=proj)
+    ul = store.add_chunks(
+        ref_id=ref.id, chunk_kind="ulist", text="", at={"after": title.handle}
+    )[0]
+    store.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="item",
+        text="alpha\n\nbeta",
+        at={"into": ul.handle, "last": True},
+    )
+    return ref.id, ul.handle
+
+
+def test_set_list_kind_flips_container_in_place(store: Store) -> None:
+    ref_id, ul = _list_fixture(store)
+    store.set_list_kind(ul, "olist")
+    kinds = [k for k, _, _ in _order(store, ref_id)]
+    assert "olist" in kinds and "ulist" not in kinds
+    # items untouched (still two items under the container)
+    assert kinds.count("item") == 2
+
+
+def test_set_list_kind_normal_dissolves_to_paragraphs(store: Store) -> None:
+    ref_id, ul = _list_fixture(store)
+    store.set_list_kind(ul, "normal")
+    order = _order(store, ref_id)
+    # the container is gone; its items are now top-level paragraphs
+    assert [(k, t) for k, t, _ in order] == [
+        ("heading", "Title"),
+        ("paragraph", "alpha"),
+        ("paragraph", "beta"),
+    ]
+    # promoted to the title's depth (the container's old parent = root)
+    assert all(d == 0 for _, _, d in order)
+
+
+def test_set_list_kind_rejects_non_list(store: Store) -> None:
+    from precis.errors import BadInput
+
+    proj = _project(store)
+    ref, title = store.create_draft(name="x", title="T", project_ref_id=proj)
+    with pytest.raises(BadInput):
+        store.set_list_kind(title.handle, "olist")
+
+
 def test_insert_before_reorders(store: Store) -> None:
     proj = _project(store)
     ref, title = store.create_draft(name="nt", title="Title", project_ref_id=proj)

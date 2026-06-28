@@ -194,6 +194,11 @@ class DraftFakeStore(FakeStore):
         base.update({i: extra[i] for i in ids if i in extra})
         return base
 
+    def stamp_ref_meta(self, ref_id, updates, *, conn=None):
+        # Records the genre/brief workspace writes (the /workspace route).
+        # `meta_writes` is declared on the base FakeStore.
+        self.meta_writes.append((ref_id, updates))
+
 
 @pytest.fixture
 def draft_runtime() -> FakeRuntime:
@@ -421,6 +426,183 @@ def test_clear_section_style_dispatches_empty(
     )
     verb, args = draft_runtime.calls[-1]
     assert verb == "edit" and args["style"] == ""
+
+
+def test_reader_has_genre_editor(draft_client: TestClient) -> None:
+    # The header carries the post-creation genre + project-context editor.
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert 'action="/drafts/nt/workspace"' in r.text
+    assert 'name="doctype"' in r.text and 'name="brief"' in r.text
+
+
+def test_set_workspace_writes_genre_and_brief(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    # Setting genre + brief stamps meta.workspace on BOTH the draft (500)
+    # and its owning project todo (1), so _doc_type (project) + the prompt
+    # preview (draft) agree.
+    r = draft_client.post(
+        "/drafts/nt/workspace",
+        data={"doctype": "report", "brief": "Be concise and concrete."},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/drafts/nt"
+    writes = draft_runtime.store.meta_writes
+    targets = {rid for rid, _ in writes}
+    assert targets == {500, 1}
+    for _rid, updates in writes:
+        ws = updates["workspace"]
+        assert ws["doc_type"] == "report"
+        assert ws["brief"] == "Be concise and concrete."
+
+
+def test_set_workspace_rejects_unknown_genre(draft_client: TestClient) -> None:
+    r = draft_client.post(
+        "/drafts/nt/workspace",
+        data={"doctype": "bogus", "brief": ""},
+        follow_redirects=False,
+    )
+    assert r.status_code == 400
+
+
+def test_clear_workspace_removes_keys(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    # Empty doctype + brief clears both keys from the workspace.
+    draft_client.post(
+        "/drafts/nt/workspace",
+        data={"doctype": "", "brief": ""},
+        follow_redirects=False,
+    )
+    _rid, updates = draft_runtime.store.meta_writes[-1]
+    assert "doc_type" not in updates["workspace"]
+    assert "brief" not in updates["workspace"]
+
+
+def test_list_markers_numbers_olist_and_bullets_ulist() -> None:
+    from precis_web.routes.drafts import _list_markers
+
+    chunks = [
+        _chunk("OL", "olist", "", 0, chunk_id=10),
+        _chunk("OL1", "item", "first", 1, chunk_id=11, parent_chunk_id=10),
+        _chunk("OL2", "item", "second", 1, chunk_id=12, parent_chunk_id=10),
+        _chunk("UL", "ulist", "", 0, chunk_id=20),
+        _chunk("UL1", "item", "alpha", 1, chunk_id=21, parent_chunk_id=20),
+        _chunk("UL2", "item", "beta", 1, chunk_id=22, parent_chunk_id=20),
+    ]
+    marker, ordered = _list_markers(chunks)
+    assert marker["OL1"] == "1." and marker["OL2"] == "2."
+    assert ordered["OL1"] and ordered["OL2"]
+    assert marker["UL1"] == "•" and marker["UL2"] == "•"
+    assert not ordered["UL1"]
+
+
+def test_list_markers_honours_olist_start_and_nesting() -> None:
+    from precis_web.routes.drafts import _list_markers
+
+    chunks = [
+        _chunk("OL", "olist", "", 0, chunk_id=10, meta={"start": 5}),
+        _chunk("OL1", "item", "x", 1, chunk_id=11, parent_chunk_id=10),
+        # a nested olist under the first item restarts its own counter
+        _chunk("NEST", "olist", "", 1, chunk_id=30, parent_chunk_id=11),
+        _chunk("N1", "item", "n", 2, chunk_id=31, parent_chunk_id=30),
+        _chunk("OL2", "item", "y", 1, chunk_id=12, parent_chunk_id=10),
+    ]
+    marker, _ = _list_markers(chunks)
+    assert marker["OL1"] == "5." and marker["OL2"] == "6."
+    assert marker["N1"] == "1."  # nested list restarts
+
+
+# A DISTINCT draft ref (id 701, slug "lst") so its chunks never collide
+# with the base "nt"/500 draft in the per-(ref_id, version) reading-order
+# cache the reader shares process-wide across tests.
+_LIST_DRAFT = make_ref(id=701, kind="draft", slug="lst", title="Lists")
+
+
+class ListDraftStore(DraftFakeStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self._chunks = [
+            _chunk("HEAD", "heading", "Lists", 0, chunk_id=701001, ref_id=701),
+            _chunk(
+                "OL", "olist", "list", 0, 701010, parent_chunk_id=701001, ref_id=701
+            ),
+            _chunk(
+                "OL1", "item", "first", 1, 701011, parent_chunk_id=701010, ref_id=701
+            ),
+            _chunk(
+                "OL2", "item", "second", 1, 701012, parent_chunk_id=701010, ref_id=701
+            ),
+            _chunk(
+                "UL", "ulist", "list", 0, 701020, parent_chunk_id=701001, ref_id=701
+            ),
+            _chunk(
+                "UL1", "item", "a point", 1, 701021, parent_chunk_id=701020, ref_id=701
+            ),
+        ]
+
+    def get_ref(self, *, kind, id):
+        if kind == "draft" and id in ("lst", 701):
+            return _LIST_DRAFT
+        return super().get_ref(kind=kind, id=id)
+
+    def list_refs(self, *, kind=None, limit=50, offset=0, **kw):
+        if kind == "draft":
+            return [_LIST_DRAFT]
+        return super().list_refs(kind=kind, limit=limit, offset=offset, **kw)
+
+    def reading_order(self, ref_id):
+        return list(self._chunks)
+
+
+@pytest.fixture
+def list_client(tmp_path) -> TestClient:
+    rt = FakeRuntime(ListDraftStore())
+    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
+    return TestClient(app)
+
+
+def test_set_list_kind_dispatches_edit(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    r = draft_client.post(
+        "/drafts/nt/listkind",
+        data={"handle": "OL", "kind": "olist"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/drafts/nt#c-OL"
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "edit"
+    assert args["kind"] == "draft" and args["id"] == "OL"
+    assert args["list_kind"] == "olist"
+
+
+def test_dissolve_list_redirects_to_top(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    # A 'normal' dissolve retires the container, so we don't anchor at it.
+    r = draft_client.post(
+        "/drafts/nt/listkind",
+        data={"handle": "OL", "kind": "normal"},
+        follow_redirects=False,
+    )
+    assert r.headers["location"] == "/drafts/nt"
+    _verb, args = draft_runtime.calls[-1]
+    assert args["list_kind"] == "normal"
+
+
+def test_reader_renders_list_markers_and_toggle(list_client: TestClient) -> None:
+    r = list_client.get("/drafts/lst")
+    assert r.status_code == 200
+    # ordered items numbered, unordered bulleted
+    assert ">1.<" in r.text and ">2.<" in r.text
+    assert ">•<" in r.text
+    # container rows name the list type and host the ul/ol/normal toggle
+    assert "numbered list" in r.text and "bullet list" in r.text
+    assert 'action="/drafts/lst/listkind"' in r.text
 
 
 def test_reader_has_add_figure_control(draft_client: TestClient) -> None:

@@ -374,3 +374,30 @@ def test_export_writes_latexmkrc(hub, tmp_path) -> None:
     result = latex.export_draft(store, ref, target_dir=tmp_path / "o")
     assert result.latexmkrc.exists()
     assert "makeglossaries" in result.latexmkrc.read_text()
+
+
+def test_export_renders_itemize_and_enumerate(hub, tmp_path) -> None:
+    """ulist→itemize, olist→enumerate, item→\\item (migration 0037)."""
+    import re
+
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    d = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    d.put(id="lst", title="T", project=proj)
+    ul = d.put(id="lst", chunk_kind="ulist", text="list", at={"last": True})
+    ul_h = re.search(r"dc\d+", ul.body).group(0)  # type: ignore[union-attr]
+    d.put(id="lst", chunk_kind="item", text="alpha", at={"into": ul_h, "last": True})
+    d.put(id="lst", chunk_kind="item", text="beta", at={"into": ul_h, "last": True})
+    ol = d.put(id="lst", chunk_kind="olist", text="list", at={"last": True})
+    ol_h = re.search(r"dc\d+", ol.body).group(0)  # type: ignore[union-attr]
+    d.put(id="lst", chunk_kind="item", text="one", at={"into": ol_h, "last": True})
+
+    ref = store.get_ref(kind="draft", id="lst")
+    body = latex.render_body(store, ref).body
+    assert "\\begin{itemize}" in body and "\\end{itemize}" in body
+    assert "\\begin{enumerate}" in body and "\\end{enumerate}" in body
+    assert "\\item alpha" in body and "\\item beta" in body and "\\item one" in body
+    # the bullet list closes before the numbered list opens
+    assert body.index("\\end{itemize}") < body.index("\\begin{enumerate}")

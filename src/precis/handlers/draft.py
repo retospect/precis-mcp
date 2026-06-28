@@ -769,6 +769,7 @@ class DraftHandler(Handler):
         text: str | None = None,
         move: dict[str, Any] | None = None,
         style: str | None = None,
+        list_kind: str | None = None,
         word_target: dict[str, Any] | None = None,
         base_sha: str | None = None,
         not_abbrev: list[str] | str | None = None,
@@ -819,6 +820,14 @@ class DraftHandler(Handler):
             if style:
                 return Response(body=f"styled {c.dc} → {style}")
             return Response(body=f"cleared style on {c.dc}")
+        if list_kind is not None:
+            # Switch a ulist/olist container's kind, or dissolve it to normal
+            # text (migration 0037). Structural — no text touched.
+            dc = _base.dc
+            self.store.set_list_kind(handle, list_kind)
+            if list_kind == "normal":
+                return Response(body=f"dissolved list {dc} → normal text")
+            return Response(body=f"set list {dc} → {list_kind}")
         if word_target is not None:
             # Set/clear a heading section's word limit (proposal writing).
             # ``word_target={'min':200,'max':400}`` sets it; ``{}`` clears.

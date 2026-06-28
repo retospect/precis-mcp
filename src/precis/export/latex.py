@@ -484,7 +484,14 @@ def render_body(store: Any, ref: Any) -> RenderResult:
         legacy_to_dc={c.handle: c.dc for c in chunks},
     )
     lines: list[str] = []
+    # Open list environments (migration 0037): ulist→itemize, olist→
+    # enumerate. A container opens an env; its `item` children emit \item;
+    # the env closes once we reach a chunk at or above the container's own
+    # depth (i.e. we've left its subtree). The stack handles nested lists.
+    list_stack: list[tuple[str, int]] = []
     for c in chunks:
+        while list_stack and c.depth <= list_stack[-1][1]:
+            lines.append(f"\\end{{{list_stack.pop()[0]}}}")
         label = f"\\label{{chunk:{c.dc}}}"
         # term + Glossary heading don't render as body — but keep an
         # invisible label so any [¶handle] cross-ref to them still
@@ -494,6 +501,16 @@ def render_body(store: Any, ref: Any) -> RenderResult:
         )
         if c.chunk_kind == "term" or is_glossary_heading:
             lines.append(f"\\phantomsection{label}%")
+            continue
+        if c.chunk_kind in ("ulist", "olist"):
+            env = "itemize" if c.chunk_kind == "ulist" else "enumerate"
+            lines.append(f"\\begin{{{env}}}")
+            list_stack.append((env, c.depth))
+            continue  # the container carries no prose; its items do
+        if c.chunk_kind == "item":
+            body = _render_inline(c.text or "", ctx)
+            lines.append(f"\\item {body}{label}")
+            lines.append("")
             continue
         if c.chunk_kind == "heading":
             cmd = _SECTION_CMD[min(c.depth, len(_SECTION_CMD) - 1)]
@@ -512,6 +529,8 @@ def render_body(store: Any, ref: Any) -> RenderResult:
             body = _render_inline(c.text or "", ctx)
             lines.append(f"{body}{label}")
         lines.append("")  # blank line → paragraph break
+    while list_stack:  # close any lists still open at the document end
+        lines.append(f"\\end{{{list_stack.pop()[0]}}}")
     return RenderResult(
         body="\n".join(lines).strip() + "\n",
         cited_slugs=ctx.cited,

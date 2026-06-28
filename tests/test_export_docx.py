@@ -335,3 +335,36 @@ def test_same_paper_chunks_collapse_to_one_mark(
     body_para = next(p for p in paras if "Several findings" in p)
     assert body_para.count("[1]") == 1  # consecutive marks collapsed to one
     assert "Wu 2022 study" in "\n".join(paras)  # one References entry
+
+
+def test_export_renders_list_styles(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """ulist/olist items get Word's built-in List Bullet / List Number
+    styles; the container itself emits no paragraph (migration 0037)."""
+    import re
+
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="ld", title="Lists", project=pid)
+    ul = draft.put(id="ld", chunk_kind="ulist", text="list", at={"last": True})
+    ul_h = re.search(r"dc\d+", ul.body).group(0)  # type: ignore[union-attr]
+    draft.put(id="ld", chunk_kind="item", text="alpha", at={"into": ul_h, "last": True})
+    ol = draft.put(id="ld", chunk_kind="olist", text="list", at={"last": True})
+    ol_h = re.search(r"dc\d+", ol.body).group(0)  # type: ignore[union-attr]
+    draft.put(id="ld", chunk_kind="item", text="one", at={"into": ol_h, "last": True})
+
+    ref = hub.store.get_ref(kind="draft", id="ld")
+    out = tmp_path / "ld.docx"
+    export_docx(hub.store, ref, target_path=out)
+    doc = docx.Document(str(out))
+    styled = {
+        p.text: p.style.name for p in doc.paragraphs if p.text in ("alpha", "one")
+    }
+    assert styled.get("alpha") == "List Bullet"
+    assert styled.get("one") == "List Number"

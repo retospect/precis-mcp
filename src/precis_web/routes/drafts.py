@@ -381,6 +381,54 @@ def _connection_chips(conns: list[dict[str, Any]]) -> list[Any]:
     return chips
 
 
+#: The ul/ol/normal choices offered on a list-container row's "list ▾"
+#: toggle (migration 0037). ``normal`` dissolves the list (its items become
+#: paragraphs and the container is removed).
+_LIST_KIND_CHOICES: list[tuple[str, str]] = [
+    ("ulist", "Bullet list"),
+    ("olist", "Numbered list"),
+    ("normal", "Normal text"),
+]
+
+
+def _list_markers(
+    chunk_objs: list[Any],
+) -> tuple[dict[str, str], dict[str, bool]]:
+    """Bullet/number marker per ``item`` handle (migration 0037).
+
+    A ``ulist``/``olist`` container owns ``item`` children. Returns
+    ``(marker, ordered)`` maps keyed by item handle: an ``olist`` child is
+    numbered ``1.``, ``2.``, … (1-based among its siblings, honouring the
+    container's optional ``meta.start``); a ``ulist`` child — or an orphan
+    ``item`` whose container isn't live — gets a ``•`` bullet. Counters key
+    on ``parent_chunk_id`` so a nested list restarts independently."""
+    kind_by_id = {c.chunk_id: c.chunk_kind for c in chunk_objs}
+    counters: dict[Any, int] = {}
+    marker: dict[str, str] = {}
+    ordered: dict[str, bool] = {}
+    for c in chunk_objs:
+        if c.chunk_kind != "item":
+            continue
+        if kind_by_id.get(c.parent_chunk_id) == "olist":
+            if c.parent_chunk_id in counters:
+                counters[c.parent_chunk_id] += 1
+            else:
+                parent = next(
+                    (p for p in chunk_objs if p.chunk_id == c.parent_chunk_id),
+                    None,
+                )
+                start = int(
+                    ((parent.meta if parent else {}) or {}).get("start", 1) or 1
+                )
+                counters[c.parent_chunk_id] = start
+            marker[c.handle] = f"{counters[c.parent_chunk_id]}."
+            ordered[c.handle] = True
+        else:
+            marker[c.handle] = "•"
+            ordered[c.handle] = False
+    return marker, ordered
+
+
 def _build_rows(
     store: Any,
     ref: Any,
@@ -417,6 +465,14 @@ def _build_rows(
     # The per-heading "style ▾" picker — same list for every heading in this
     # draft, so compute once (ADR 0037; scoped to the genre).
     section_styles = _section_styles_for(store, ref)
+    # List markers (migration 0037): a ``ulist``/``olist`` container owns
+    # ``item`` children. The flat virtual-scroll rows have no wrapping
+    # ``<ul>``/``<ol>``, so precompute each item's bullet (•) or 1-based
+    # number from its position among siblings under the same container —
+    # one pass over the whole reading order (numbering needs every sibling,
+    # not just the visible window). Counters key on ``parent_chunk_id`` so
+    # nested lists each restart cleanly.
+    item_marker, item_ordered = _list_markers(chunk_objs)
     rows: list[dict[str, Any]] = []
     for i in want:
         c = chunk_objs[i]
@@ -449,6 +505,16 @@ def _build_rows(
                 "text": c.text,
                 "depth": c.depth,
                 "is_heading": c.chunk_kind == "heading",
+                # List rendering (migration 0037): items carry a bullet/number
+                # marker; the container row is structural (hosts the ul/ol
+                # toggle).
+                "is_item": c.chunk_kind == "item",
+                "is_list_container": c.chunk_kind in ("ulist", "olist"),
+                "marker": item_marker.get(c.handle, "•"),
+                "list_ordered": item_ordered.get(c.handle, False),
+                "list_kinds": _LIST_KIND_CHOICES
+                if c.chunk_kind in ("ulist", "olist")
+                else None,
                 # section style (ADR 0037): the current meta.style + the
                 # genre's pickable styles, for the per-heading "style ▾" menu.
                 "style": (getattr(c, "meta", None) or {}).get("style")
@@ -761,22 +827,41 @@ _SCAFFOLDS: dict[str, list[tuple[str, str]]] = {
 }
 
 
-def _doc_type(store: Any, ref: Any) -> str:
-    """The draft's ``doc_type`` (genre), read from the owning project's
-    ``meta.workspace`` (falling back to the draft's own meta). ``""`` when
-    unset or unreadable (defensive, so a stub store just yields no
-    section-style options rather than erroring)."""
+def _owner_workspace(store: Any, ref: Any) -> tuple[int, dict[str, Any]]:
+    """The ``(ref_id, meta.workspace)`` that owns this draft's genre/brief:
+    the owning project todo if linked, else the draft itself. Returns an
+    empty workspace dict when unset or unreadable (defensive — a stub store
+    just yields no genre rather than erroring)."""
+    pid = _project_id(store, ref.id)
+    rid = pid if pid is not None else ref.id
     try:
-        pid = _project_id(store, ref.id)
-        rid = pid if pid is not None else ref.id
         with store.pool.connection() as conn:
             row = conn.execute(
                 "SELECT meta FROM refs WHERE ref_id = %s", (rid,)
             ).fetchone()
         meta = (row[0] if row else None) or {}
-        return ((meta.get("workspace") or {}).get("doc_type") or "") or ""
+        return rid, dict(meta.get("workspace") or {})
     except Exception:  # pragma: no cover - defensive (stub store / no pool)
-        return ""
+        return rid, {}
+
+
+def _doc_type(store: Any, ref: Any) -> str:
+    """The draft's ``doc_type`` (genre), read from the owning project's
+    ``meta.workspace`` (falling back to the draft's own meta). ``""`` when
+    unset."""
+    return str(_owner_workspace(store, ref)[1].get("doc_type") or "")
+
+
+def _workspace_targets(store: Any, ref: Any) -> list[int]:
+    """Refs whose ``meta.workspace`` should carry the genre/brief: the draft
+    AND its owning project todo (if any). Writing both keeps ``_doc_type``
+    (reads the project), the planner-prompt brief cascade (the project), and
+    the section-prompt preview (reads the draft's own meta) in agreement."""
+    targets = [ref.id]
+    pid = _project_id(store, ref.id)
+    if pid is not None and pid != ref.id:
+        targets.append(pid)
+    return targets
 
 
 def _section_styles_for(store: Any, ref: Any) -> list[tuple[str, str]]:
@@ -1177,6 +1262,7 @@ async def reader(request: Request, ident: str) -> Response:
     window_rows = _build_rows(store, ref, chunk_objs, range(first), abbrevs=abbrevs)
     skeleton = _skeleton(store, ref)
     botpad = sum(s["est"] for s in skeleton[first:])
+    _, owner_ws = _owner_workspace(store, ref)
     return templates.TemplateResponse(
         request,
         "drafts/detail.html.j2",
@@ -1189,6 +1275,10 @@ async def reader(request: Request, ident: str) -> Response:
             "work": _work_items(store, ref.id),
             "clearance": draft_figure_clearance(store, ref.id),
             "wordcount": _wordcount_summary(chunk_objs),
+            # Genre + project-context editor (post-creation; ADR 0037).
+            "doctypes": _DOC_TYPES,
+            "cur_doctype": str(owner_ws.get("doc_type") or ""),
+            "cur_brief": str(owner_ws.get("brief") or ""),
         },
     )
 
@@ -1528,6 +1618,82 @@ async def review_block(
         args["parent_id"] = project
     return await redirect_or_error(
         request, "put", args, redirect=back, error_title="Review error"
+    )
+
+
+@router.post("/drafts/{ident}/workspace")
+async def set_workspace(
+    request: Request,
+    ident: str,
+    doctype: str = Form(""),
+    brief: str = Form(""),
+) -> Response:
+    """Set the draft's genre (``doc_type``) + project context (``brief``)
+    after creation — the gap for *imported* drafts, which never went through
+    the ``/drafts/new`` genre picker (so the per-heading ``style ▾`` picker
+    stays empty and the planner has no ``## Project context``). Writes
+    ``meta.workspace.{doc_type,brief}`` on both the draft and its owning
+    project (see :func:`_workspace_targets`). ``doctype=""`` clears the
+    genre; ``brief=""`` clears the context. Unknown genres are rejected."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    back = f"/drafts/{ident}"
+    if ref is None:
+        return RedirectResponse(url=back, status_code=303)
+    doctype = doctype.strip()
+    brief = brief.strip()
+    if doctype and doctype not in _DOC_TYPE_BRIEF:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "title": "Genre error",
+                "status": 400,
+                "detail": f"unknown genre {doctype!r}",
+            },
+            status_code=400,
+        )
+    for rid in _workspace_targets(store, ref):
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s", (rid,)
+            ).fetchone()
+        meta = (row[0] if row else None) or {}
+        ws = dict(meta.get("workspace") or {})
+        if doctype:
+            ws["doc_type"] = doctype
+        else:
+            ws.pop("doc_type", None)
+        if brief:
+            ws["brief"] = brief
+        else:
+            ws.pop("brief", None)
+        store.stamp_ref_meta(rid, {"workspace": ws})
+    return RedirectResponse(url=back, status_code=303)
+
+
+@router.post("/drafts/{ident}/listkind")
+async def set_list_kind_route(
+    request: Request,
+    ident: str,
+    handle: str = Form(...),
+    kind: str = Form(...),
+) -> Response:
+    """Switch a list container between bullet / numbered / normal text from
+    the per-list ``list ▾`` toggle (migration 0037). Routes through
+    ``edit(kind='draft', list_kind=…)``. A ``normal`` dissolve retires the
+    container, so anchor back to the draft top rather than the dead handle."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    back = f"/drafts/{ident}" if kind == "normal" else f"/drafts/{ident}#c-{handle}"
+    if ref is None:
+        return RedirectResponse(url=back, status_code=303)
+    return await redirect_or_error(
+        request,
+        "edit",
+        {"kind": "draft", "id": handle, "list_kind": kind},
+        redirect=back,
+        error_title="List kind error",
     )
 
 

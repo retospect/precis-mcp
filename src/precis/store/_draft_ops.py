@@ -1145,6 +1145,95 @@ class DraftMixin:
             )
         return self.get_draft_chunk(handle)
 
+    def set_list_kind(
+        self,
+        handle: str,
+        kind: str,
+        *,
+        source: dict[str, Any] | None = None,
+    ) -> DraftChunk | None:
+        """Switch a ``ulist``/``olist`` container's kind, or dissolve it to
+        normal text (migration 0037).
+
+        ``kind`` in ``{'ulist','olist'}`` flips the container's kind in place
+        — metadata-only, so it never touches any ``text``/``content_sha`` and
+        triggers no re-embed (the container carries no prose; its ``item``
+        children do). ``kind='normal'`` **dissolves** the list: each direct
+        ``item`` child becomes a ``paragraph`` (its text is unchanged, so its
+        embedding/summary stay valid) and is spliced into the container's slot
+        (subtree follows), then the container is retired. Rejects a non-list
+        handle. Returns the container chunk for an in-place flip, ``None``
+        after a dissolve (the container no longer exists)."""
+        if kind not in ("ulist", "olist", "normal"):
+            raise BadInput(
+                f"list kind must be 'ulist', 'olist' or 'normal'; got {kind!r}"
+            )
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT chunk_id, ref_id, chunk_kind, parent_chunk_id, retired_at "
+                "FROM chunks WHERE handle = %s",
+                (_bare(handle),),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"unknown chunk handle {handle!r}")
+            chunk_id, ref_id, chunk_kind, parent, retired = row
+            if retired is not None:
+                raise ValueError(f"chunk {handle!r} is retired")
+            if chunk_kind not in ("ulist", "olist"):
+                raise BadInput(
+                    f"list kind applies to a list container; {_bare(handle)} "
+                    f"is a {chunk_kind}"
+                )
+            if kind in ("ulist", "olist"):
+                if kind != chunk_kind:
+                    conn.execute(
+                        "UPDATE chunks SET chunk_kind = %s WHERE chunk_id = %s",
+                        (kind, chunk_id),
+                    )
+                    self._log(
+                        conn,
+                        chunk_id,
+                        "edited",
+                        source,
+                        {"reason": "list-kind", "from": chunk_kind, "to": kind},
+                    )
+                return self.get_draft_chunk(handle)
+            # kind == 'normal' → dissolve the list.
+            kids = self._children(conn, ref_id, chunk_id)
+            item_ids = [k.chunk_id for k in kids if k.chunk_kind == "item"]
+            if item_ids:
+                conn.execute(
+                    "UPDATE chunks SET chunk_kind = 'paragraph' "
+                    "WHERE chunk_id = ANY(%s)",
+                    (item_ids,),
+                )
+            # Splice every child into the container's slot, then retire it —
+            # the same shape as ``retire_chunk(mode='promote')``.
+            sibs = self._children(conn, ref_id, parent)
+            idx = next(i for i, s in enumerate(sibs) if s.chunk_id == chunk_id)
+            lo = sibs[idx - 1].pos if idx > 0 else None
+            hi = sibs[idx + 1].pos if idx + 1 < len(sibs) else None
+            keys = n_keys_between(lo, hi, len(kids))
+            for kid, key in zip(kids, keys, strict=True):
+                conn.execute(
+                    "UPDATE chunks SET parent_chunk_id = %s, pos = %s "
+                    "WHERE chunk_id = %s",
+                    (parent, key, kid.chunk_id),
+                )
+                self._log(
+                    conn,
+                    kid.chunk_id,
+                    "reparented",
+                    source,
+                    {"dissolved_from": chunk_id},
+                )
+            conn.execute(
+                "UPDATE chunks SET retired_at = now() WHERE chunk_id = %s",
+                (chunk_id,),
+            )
+            self._log(conn, chunk_id, "retired", source, {"mode": "dissolve"})
+        return None
+
     def set_word_target(
         self, handle: str, target: tuple[int, int] | None
     ) -> DraftChunk | None:

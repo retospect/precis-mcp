@@ -90,10 +90,33 @@ def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
     doc = Document()
     terms = store.draft_terms(ref.id)  # handle → (short, long)
 
+    # List context (migration 0037): a ulist/olist container owns `item`
+    # children, which render with Word's built-in List Bullet / List Number
+    # styles. The immediate container decides bullet vs number; the count of
+    # list-container ancestors picks the nesting level (1–3).
+    _kind_by_id = {c.chunk_id: c.chunk_kind for c in chunks}
+    _parent_by_id = {c.chunk_id: c.parent_chunk_id for c in chunks}
+
     # The first heading at depth 0 is the title — render it as the doc title.
     title_done = False
     for c in chunks:
         kind = c.chunk_kind
+        if kind in ("ulist", "olist"):
+            continue  # structural container — its items carry the prose
+        if kind == "item":
+            base, level = "List Bullet", 0
+            pid = c.parent_chunk_id
+            while pid is not None:
+                pk = _kind_by_id.get(pid)
+                if pk in ("ulist", "olist"):
+                    if level == 0:
+                        base = "List Number" if pk == "olist" else "List Bullet"
+                    level += 1
+                pid = _parent_by_id.get(pid)
+            style = base if level <= 1 else f"{base} {min(level, 3)}"
+            p = doc.add_paragraph(style=style)
+            _render_inline(c.text, ctx, p)
+            continue
         if kind == "term":
             # Render in place (terms live under the draft's own Glossary
             # heading) as "SHORT — long", pulling the short from meta.

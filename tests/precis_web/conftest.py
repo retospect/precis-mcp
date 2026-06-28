@@ -79,6 +79,9 @@ class FakeStore:
         #: ref_ids stamped via touch_viewed (the reader page-open access
         #: stamp that drives the drafts most-recently-opened order).
         self.viewed: list[int] = []
+        #: (ref_id, meta-updates) tuples written via stamp_ref_meta — the
+        #: genre/brief workspace writes from the /drafts/<id>/workspace route.
+        self.meta_writes: list[tuple[int, dict[str, Any]]] = []
         #: (ref_id, scheme, value) tuples written via set_ref_identifier
         #: (the slug-rename path), plus cite_keys to report as taken so the
         #: collision branch can be exercised.

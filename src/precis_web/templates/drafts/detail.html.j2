@@ -92,6 +92,41 @@
         <button type="submit" class="text-slate-500 underline hover:text-slate-800">export →project</button>
       </form>
       <a href="/drafts" class="text-slate-500 underline hover:text-slate-800">all drafts</a>
+      {# Genre + project context (ADR 0037). Imported drafts never went
+         through the /drafts/new picker, so doc_type/brief are unset — the
+         per-heading "style ▾" picker stays empty and the planner has no
+         "## Project context". This sets them after the fact (writes the
+         draft + its project workspace). #}
+      <div class="relative" x-data="{ gen: false }" @click.outside="gen = false">
+        <button @click="gen = !gen"
+                class="text-slate-500 underline hover:text-slate-800"
+                title="set the document genre + project context">genre{% if cur_doctype %}: {{ cur_doctype }}{% endif %}</button>
+        <form x-show="gen" x-cloak method="post"
+              action="/drafts/{{ ref.ident }}/workspace"
+              class="absolute right-0 z-40 mt-1 w-80 space-y-2 rounded border border-slate-200 bg-white p-3 text-left shadow-lg">
+          <div>
+            <label class="block text-[11px] font-semibold text-slate-600">Genre (document type)</label>
+            <select name="doctype"
+                    class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs focus:border-sky-400 focus:outline-none">
+              <option value="" {% if not cur_doctype %}selected{% endif %}>— none —</option>
+              {% for d in doctypes %}
+              <option value="{{ d.value }}" {% if cur_doctype == d.value %}selected{% endif %}>{{ d.label }}</option>
+              {% endfor %}
+            </select>
+            <p class="mt-0.5 text-[10px] text-slate-400">paper / patent / report / review unlock the per-heading style picker.</p>
+          </div>
+          <div>
+            <label class="block text-[11px] font-semibold text-slate-600">Project context (planner brief)</label>
+            <textarea name="brief" rows="4"
+                      placeholder="Standing guidance injected into every planner tick's ## Project context…"
+                      class="mt-0.5 w-full resize-y rounded border border-slate-200 px-2 py-1 text-xs leading-snug focus:border-sky-400 focus:outline-none">{{ cur_brief }}</textarea>
+          </div>
+          <div class="flex items-center gap-2">
+            <button class="rounded bg-sky-600 px-2 py-0.5 text-[11px] text-white hover:bg-sky-700">save</button>
+            <button type="button" @click="gen = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+          </div>
+        </form>
+      </div>
       {# Delete the whole draft. Two-step: a button reveals a type-the-name
          confirm (the server re-checks the name and soft-deletes the ref +
          retires its chunks in one transaction). The owning project stays. #}
