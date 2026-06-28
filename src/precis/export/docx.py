@@ -141,6 +141,9 @@ def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
             run = p.add_run(c.text)
             run.font.name = "Consolas"
             continue
+        if kind == "table":
+            _render_table(doc, c, ctx)
+            continue
         # paragraph (default)
         p = doc.add_paragraph()
         _render_inline(c.text, ctx, p)
@@ -157,6 +160,43 @@ def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
     return DocxResult(
         path=target_path, cited_slugs=list(ctx.cited), warnings=ctx.warnings
     )
+
+
+# ── table rendering ───────────────────────────────────────────────
+
+
+def _render_table(doc: Any, chunk: Any, ctx: _Ctx) -> None:
+    """Render a ``chunk_kind='table'`` chunk as a native Word table (ADR
+    0035 §1). The canonical ``meta.table`` is recovered via the shared
+    :func:`precis.utils.table_data.table_payload`; cells go through the same
+    inline grammar as prose so citations / math / abbreviations inside a
+    cell resolve identically. Falls back to a plain paragraph when the table
+    can't be recovered."""
+    from precis.utils.table_data import table_payload
+
+    payload = table_payload(getattr(chunk, "meta", None), chunk.text)
+    if payload is None:
+        _render_inline(chunk.text, ctx, doc.add_paragraph())
+        return
+    header, rows, caption = payload["header"], payload["rows"], payload["caption"]
+    if caption:
+        cap = doc.add_paragraph()
+        _render_inline(caption, ctx, cap)
+        for run in cap.runs:
+            run.bold = True
+    ncols = len(header)
+    table = doc.add_table(rows=1, cols=ncols)
+    try:  # built-in style; absent in some templates → fall back to no style
+        table.style = "Table Grid"
+    except KeyError:  # pragma: no cover - depends on the docx template
+        pass
+    for cell, text in zip(table.rows[0].cells, header):
+        para = cell.paragraphs[0]
+        para.add_run(text).bold = True
+    for row in rows:
+        cells = table.add_row().cells
+        for j in range(ncols):
+            _render_inline(row[j] if j < len(row) else "", ctx, cells[j].paragraphs[0])
 
 
 # ── inline rendering ──────────────────────────────────────────────
