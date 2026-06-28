@@ -904,6 +904,22 @@ def _section_styles_for(store: Any, ref: Any) -> list[tuple[str, str]]:
     return _SECTION_STYLES.get(_doc_type(store, ref), [])
 
 
+def _chunk_addr(store: Any, handle: str) -> str | None:
+    """Canonical ``dc<chunk_id>`` address for a posted draft-chunk handle.
+
+    The reader posts the bare ``chunks.handle`` (the ADR-0033 base-58
+    anchor, e.g. ``u9QG86``) — which ``get_draft_chunk`` resolves but
+    ``edit(kind='draft')`` rejects (its guard only accepts the ADR-0036
+    ``dc<chunk_id>`` / legacy ``¶<base58>`` form). Resolve the chunk and
+    hand back the ``dc`` address so the per-heading style / list-kind
+    forms reach the handler. ``None`` when the handle resolves to no
+    chunk."""
+    chunk = store.get_draft_chunk(handle)
+    if chunk is None:
+        return None
+    return handle_registry.format_handle("draft", chunk.chunk_id, chunk=True)
+
+
 @router.get("/drafts", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     store = get_store(request)
@@ -1722,10 +1738,13 @@ async def set_list_kind_route(
     back = f"/drafts/{ident}" if kind == "normal" else f"/drafts/{ident}#c-{handle}"
     if ref is None:
         return RedirectResponse(url=back, status_code=303)
+    addr = _chunk_addr(store, handle)
+    if addr is None:
+        return RedirectResponse(url=back, status_code=303)
     return await redirect_or_error(
         request,
         "edit",
-        {"kind": "draft", "id": handle, "list_kind": kind},
+        {"kind": "draft", "id": addr, "list_kind": kind},
         redirect=back,
         error_title="List kind error",
     )
@@ -1746,10 +1765,13 @@ async def set_section_style(
     back = f"/drafts/{ident}#c-{handle}"
     if ref is None:
         return RedirectResponse(url=back, status_code=303)
+    addr = _chunk_addr(store, handle)
+    if addr is None:
+        return RedirectResponse(url=back, status_code=303)
     return await redirect_or_error(
         request,
         "edit",
-        {"kind": "draft", "id": handle, "style": style},
+        {"kind": "draft", "id": addr, "style": style},
         redirect=back,
         error_title="Section style error",
     )
@@ -1792,9 +1814,16 @@ async def section_prompt_preview(
             request, "get", {"kind": "skill", "id": style_slug}
         )
         style_skill = "" if err else body
-    ws = Workspace.from_meta(ref.meta)
+    # Read the genre/brief/seeds from the *owner* workspace (the project
+    # todo if this draft is linked to one, else the draft itself) — the
+    # same place ``_doc_type`` reads and the planner's ``## Project
+    # context`` cascades from, so the preview matches what the writer
+    # actually sees rather than a possibly-stale copy on the draft's meta.
+    _owner_id, owner_ws = _owner_workspace(store, ref)
+    ws = Workspace.from_meta({"workspace": owner_ws}) if owner_ws else None
     brief = (ws.brief if ws else "") or ""
     seeds = (ws.extra.get("seeds") if ws else None) or {}
+    doc_type = str(owner_ws.get("doc_type") or "")
     return templates.TemplateResponse(
         request,
         "drafts/prompt_preview.html.j2",
@@ -1803,6 +1832,7 @@ async def section_prompt_preview(
             "ident": ident,
             "handle": handle,
             "heading": chunk.text or "",
+            "doc_type": doc_type,
             "style_slug": style_slug,
             "style_skill": style_skill,
             "brief": brief,
@@ -1907,7 +1937,11 @@ async def edit_figure_permission(
     validation stays single-sourced; only ``meta.figure`` changes (caption
     and image bytes are untouched)."""
     back = f"/drafts/{ident}#c-{handle}"
-    args: dict[str, Any] = {"kind": "draft", "id": handle, "origin": origin}
+    store = get_store(request)
+    addr = _chunk_addr(store, handle)
+    if addr is None:
+        return RedirectResponse(url=back, status_code=303)
+    args: dict[str, Any] = {"kind": "draft", "id": addr, "origin": origin}
     if origin == "third_party":
         args["permission"] = {
             k: v.strip()
