@@ -1,8 +1,10 @@
 """Local sympy-backed calculator. Stateless. No DB.
 
-Pass an expression as `id=` (or `q=`); the result is the value. Sympy
-handles arithmetic, exact fractions, roots, calculus, linear algebra,
-symbolic manipulation.
+Pass an expression as `id=` (or `q=`); the result is the value. Full
+SymPy CAS — calculus, solve, algebra, linear algebra, number theory.
+Trig is **degrees by default** (``sin(30)`` → ``1/2``); ``view='rad'``
+switches to radians. Capability catalogue + examples live in the
+``precis-calc-help`` skill, not here (handler stays token-light).
 """
 
 from __future__ import annotations
@@ -20,8 +22,11 @@ class CalcHandler(Handler):
         kind="calc",
         title="Calculator",
         description=(
-            "Local symbolic and numeric computation via sympy. "
-            "Pass an expression as `id` (or `q`); the result is the value."
+            "Local symbolic and numeric computation via sympy: arithmetic, "
+            "roots, trigonometry (sin/cos/tan/atan2, pi), calculus, linear "
+            "algebra. Pass an expression as `id` (or `q`); the result is the "
+            "value. Angles are degrees by default (sin(30)=1/2); pass "
+            "view='rad' for radians (symbolic calculus)."
         ),
         supports_get=True,
         is_numeric=False,
@@ -54,8 +59,21 @@ class CalcHandler(Handler):
     ) -> Response:
         sympy = self._sympy
         expr_str = self._coerce_expr(id, q)
+        # Degrees is the **default** — this is an engineering-leaning
+        # calculator (bolt circles, draft angles, cad poses are all in
+        # degrees). ``view='rad'`` opts back into sympy's native radians
+        # for symbolic calculus etc. In degrees mode we shadow the trig
+        # builtins inside ``sympify`` so ``sin(30)`` reads its argument
+        # as degrees (``sin(rad(30))`` → ``1/2``) and ``atan2(1,1)``
+        # returns degrees (``deg(...)`` → 45). The shared ``used`` flag
+        # flips the first time any wrapped trig fn is actually applied,
+        # so we only stamp the "interpreted in degrees" note when trig
+        # really ran.
+        degrees = not _wants_radians(view)
+        used = {"trig": False}
+        local_dict = _degrees_locals(sympy, used) if degrees else None
         try:
-            expr = sympy.sympify(expr_str)
+            expr = sympy.sympify(expr_str, locals=local_dict)
         except (sympy.SympifyError, SyntaxError, TypeError) as e:
             # Hint uses ``q=`` to match the canonical example in
             # precis-overview / precis-help. The handler accepts
@@ -111,7 +129,9 @@ class CalcHandler(Handler):
         # subclasses and keep the fast path. (MCP critic round 2 —
         # calc solve unwired.)
         if isinstance(expr, (list, tuple, dict, set, frozenset)):
-            return Response(body=f"{expr_str} = {_humanise(expr)}")
+            return Response(
+                body=f"{expr_str} = {_humanise(expr)}" + _degrees_note(degrees, used)
+            )
 
         try:
             result = expr if expr.is_number else expr.doit()
@@ -178,7 +198,9 @@ class CalcHandler(Handler):
                 next="get(kind='calc', q='solve(Eq(x+1, 3), x)')",
             )
 
-        return Response(body=f"{expr_str} = {_humanise(result)}")
+        return Response(
+            body=f"{expr_str} = {_humanise(result)}" + _degrees_note(degrees, used)
+        )
 
     @staticmethod
     def _coerce_expr(id: str | int | None, q: str | None) -> str:
@@ -210,3 +232,61 @@ def _humanise(result: Any) -> str:
     """Render a sympy result, replacing opaque constants with English."""
     rendered = str(result)
     return _SYMPY_HUMAN_NAMES.get(rendered, rendered)
+
+
+def _wants_radians(view: str | None) -> bool:
+    """``view='rad'`` / ``'radian'`` / ``'radians'`` opts out of the
+    degrees default and back into sympy's native radians."""
+    return isinstance(view, str) and view.strip().lower() in (
+        "rad",
+        "radian",
+        "radians",
+    )
+
+
+def _degrees_note(degrees: bool, used: dict[str, bool]) -> str:
+    """One-line footer stamped when trig actually ran in degrees mode,
+    so the reader knows the convention and how to switch."""
+    if degrees and used["trig"]:
+        return "\n(trig evaluated in degrees — pass view='rad' for radians)"
+    return ""
+
+
+def _degrees_locals(sympy: Any, used: dict[str, bool]) -> dict[str, Any]:
+    """Trig builtins that read/return **degrees** instead of radians.
+
+    Forward functions interpret their argument as degrees (wrap in
+    ``rad``); inverse functions return degrees (wrap in ``deg``). Sympy
+    keeps these exact — ``sin(30)`` → ``1/2``, ``tan(45)`` → ``1`` — and
+    ``N(...)`` still works for a decimal. Applying any of them flips
+    ``used['trig']`` so the caller can stamp the degrees note; ``pi``,
+    ``sqrt``, calculus etc. fall through to sympy untouched.
+    """
+    rad, deg = sympy.rad, sympy.deg
+
+    def fwd(fn: Any) -> Any:  # arg-in-degrees
+        def f(a: Any) -> Any:
+            used["trig"] = True
+            return fn(rad(a))
+
+        return f
+
+    def inv(fn: Any) -> Any:  # result-in-degrees
+        def f(a: Any) -> Any:
+            used["trig"] = True
+            return deg(fn(a))
+
+        return f
+
+    out: dict[str, Any] = {}
+    for name in ("sin", "cos", "tan", "sec", "csc", "cot"):
+        out[name] = fwd(getattr(sympy, name))
+    for name in ("asin", "acos", "atan", "acot", "asec", "acsc"):
+        out[name] = inv(getattr(sympy, name))
+
+    def _atan2(y: Any, x: Any) -> Any:
+        used["trig"] = True
+        return deg(sympy.atan2(y, x))
+
+    out["atan2"] = _atan2
+    return out

@@ -368,9 +368,11 @@ class TestCalcRejectsGibberish:
         produces a different output shape than the input and must
         not be rejected."""
         h = CalcHandler(hub=Hub())
-        out = h.get(id="integrate(sin(x), x)")
-        # Result is "-cos(x)" — different from the input.
-        assert "cos(x)" in out.body
+        # Default (degrees) evaluates the integral to a cosine
+        # expression; view='rad' gives the canonical ``-cos(x)``. Either
+        # way it must evaluate, not trip the gibberish guard.
+        assert "cos" in h.get(id="integrate(sin(x), x)").body
+        assert "-cos(x)" in h.get(id="integrate(sin(x), x)", view="rad").body
 
 
 # ── MAJOR #10: page_size cap (validated at MCP boundary) ─────────────

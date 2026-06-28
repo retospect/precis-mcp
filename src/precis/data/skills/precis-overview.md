@@ -79,7 +79,7 @@ Pass `q=` (or `id=`), get text back. No agent-side slugs.
 
 | Kind | What | Example `q=` | Cost |
 |---|---|---|---|
-| `calc` | Local SymPy: arithmetic, algebra | `2+3*4` | free |
+| `calc` | Local SymPy: exact arithmetic, calculus (integrals/derivatives/ODEs), solve, linear algebra; trig in degrees by default. See `precis-calc-help`. | `2+3*4` | free |
 | `math` | Wolfram Alpha: facts, world data | `population of Ireland` | paid |
 | `youtube` | Transcript fetch | `dQw4w9WgXcQ` | free |
 | `web` | Fetch + extract a URL | `https://example.com/page` | free |

@@ -39,6 +39,11 @@ The `text` is a small line language, **one node per line**:
   `component` line. Default part name is `part`.
 - `#` starts a comment.
 
+**All angles in `cad` are degrees** — `rot:rx,ry,rz`, the `polar:` even
+spacing (360°/N), and the `arc` probe's θ output. Lengths/coordinates are
+millimetres. (The `calc` kind defaults to degrees too — see the tip
+below.)
+
 ```python
 put(kind='cad', id='flange', text='''
 component flange
@@ -143,6 +148,19 @@ get(kind='cad', id='asm', view='dof', args={'moving': 'shaft', 'fixed': 'hub'})
 Clearance is measured against the *material* — a shaft sitting in a bored
 hub reads the **radial wall gap**, not a false collision against the
 un-bored plate.
+
+> **Tip — need a number, exactly?** Don't eyeball arithmetic. The
+> `calc` kind is a local sympy engine: `get(kind='calc', q='2+3*4')`
+> evaluates arbitrarily complex expressions *exactly* — fractions,
+> roots (`sqrt(2)`, `2**10`), **trig** (`sin cos tan atan2`, `pi`), even
+> calculus and linear algebra. Handy here for bolt-circle coordinates,
+> slant/draft angles, and tolerance stacks before you `put` them into
+> the source.
+> **`calc` trig is in degrees by default** — matching cad's convention —
+> so `get(kind='calc', q='sin(30)')` → `1/2` and `get(kind='calc',
+> q='N(atan2(1,1))')` → `45` directly, and the result carries a
+> "degrees" note. Pass `view='rad'` for radians (symbolic calculus);
+> wrap in `N(...)` for a decimal instead of the exact form.
 
 ## Find a design — `search`
 

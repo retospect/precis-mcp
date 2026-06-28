@@ -78,6 +78,68 @@ def test_kindspec_declares_only_get() -> None:
     assert spec.supports_link is False
 
 
+# ── trigonometry: radians default + degrees switch ─────────────────
+
+
+class TestTrig:
+    """calc is sympy-backed, so trig is exact. **Degrees is the default**
+    (engineering-leaning: ``sin(30)`` → ``1/2``); ``view='rad'`` opts
+    into sympy's native radians for symbolic calculus."""
+
+    def test_degrees_is_default(self, handler: CalcHandler) -> None:
+        # sin(30°) = 1/2 with no view= needed.
+        r = handler.get(q="sin(30)")
+        assert "1/2" in r.body
+
+    def test_degrees_tan_45(self, handler: CalcHandler) -> None:
+        r = handler.get(q="tan(45)")
+        assert "= 1" in r.body
+
+    def test_degrees_inverse_returns_degrees(self, handler: CalcHandler) -> None:
+        # atan2(1, 1) = 45° in the default degrees mode.
+        r = handler.get(q="N(atan2(1, 1))")
+        assert "45" in r.body
+
+    def test_explicit_view_deg_is_degrees(self, handler: CalcHandler) -> None:
+        # view='deg' is an explicit synonym for the default.
+        r = handler.get(q="cos(60)", view="deg")
+        assert "1/2" in r.body
+
+    def test_radian_switch(self, handler: CalcHandler) -> None:
+        # view='rad' → sympy native: sin(pi/6) = 1/2.
+        r = handler.get(q="sin(pi/6)", view="rad")
+        assert "1/2" in r.body
+
+    def test_radian_switch_bare_number_stays_symbolic(
+        self, handler: CalcHandler
+    ) -> None:
+        # In radians, sin(30) is 30 radians — does NOT collapse to 1/2.
+        r = handler.get(q="sin(30)", view="rad")
+        assert "1/2" not in r.body
+
+    def test_degrees_note_present_when_trig_used(self, handler: CalcHandler) -> None:
+        r = handler.get(q="sin(30)")
+        assert "degrees" in r.body
+        assert "view='rad'" in r.body
+
+    def test_no_degrees_note_without_trig(self, handler: CalcHandler) -> None:
+        r = handler.get(q="2+3*4")
+        assert "degrees" not in r.body
+
+    def test_no_degrees_note_in_radian_mode(self, handler: CalcHandler) -> None:
+        r = handler.get(q="sin(pi/6)", view="rad")
+        assert "degrees" not in r.body
+
+    def test_radian_calculus_is_clean(self, handler: CalcHandler) -> None:
+        # The canonical calculus example only stays clean in radians.
+        r = handler.get(q="integrate(sin(x), x)", view="rad")
+        assert "cos" in r.body and "180" not in r.body
+
+    def test_sqrt_and_power(self, handler: CalcHandler) -> None:
+        assert "2" in handler.get(q="sqrt(4)").body
+        assert "1024" in handler.get(q="2**10").body
+
+
 # ── solve / factor_list (sympy containers) ─────────────────────────
 
 

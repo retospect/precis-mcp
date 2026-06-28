@@ -96,6 +96,14 @@ dependencies = [
     # "missing character" on pdflatex. Pure-Python, tiny; also backs the
     # planned LaTeX→draft ingest parser.
     "pylatexenc>=2.10",
+    # Abbreviation-aware sentence splitter for scientific prose; underpins
+    # central-sentence extraction + replaces the naive ". " fallback in
+    # text_chunker. Pure-Python rules engine (~50 KB, no model download),
+    # but imported at module top by ``utils/sentences``, which the
+    # verifier and chunker pull in on always-on (non-``[paper]``) paths —
+    # so it's a direct dep, like numpy/ftfy/watchdog above. (Was in the
+    # heavy ``[paper]`` extra, which broke host test collection.)
+    "pysbd>=0.3.4",
 ]
 
 [project.urls]
@@ -136,10 +144,10 @@ paper = [
     "habanero>=2.0",        # CrossRef REST client
     "semanticscholar>=0.8", # Semantic Scholar REST client
     "tenacity>=8.0",        # retry decorator on the S2 + CrossRef paths
-    "pysbd>=0.3.4",         # abbreviation-aware sentence splitter for
-                            # scientific prose; underpins central-sentence
-                            # extraction + replaces the naive ". "
-                            # fallback in text_chunker.
+    # NOTE: ``pysbd`` moved to the core ``dependencies`` block — it is a
+    # pure-Python ~50 KB rules engine imported at module top by
+    # ``utils/sentences`` (verifier + chunker fallback), so gating it
+    # behind ``[paper]`` made non-paper test collection ImportError.
     # NOTE: ``sentence-transformers`` is NOT here — it moved to the
     # ``embed`` extra (ADR 0021). Marker still pulls ``torch`` for surya,
     # so the ingest image is heavy regardless; serve / worker, which omit
