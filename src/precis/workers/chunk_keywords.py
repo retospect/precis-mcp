@@ -51,7 +51,7 @@ from typing import Any
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
-from precis.embedder import Embedder
+from precis.embedder import Embedder, EmbedderUnavailable
 from precis.utils.abbreviations import find as find_abbreviations
 from precis.utils.rake import extract_keywords as _rake_phrases
 
@@ -388,6 +388,21 @@ def run_chunk_keywords_pass(
                     embedder_name=embedder.model,
                 )
                 ok += 1
+            except EmbedderUnavailable as exc:
+                # The embedder is transiently down/busy — and it embeds a
+                # candidate set per chunk, so the *next* chunk would just
+                # hit the same wall. Stop the pass and defer the rest: the
+                # unwritten chunks stay unclaimed (keywords still NULL) and
+                # re-claim next pass. Don't count them ``failed`` (the
+                # chunks are fine) and report ``claimed=0`` so the run-loop
+                # backs off the down embedder instead of hot-looping it.
+                log.warning(
+                    "chunk_keywords: embedder unavailable (%s); "
+                    "deferring %d remaining chunks this pass",
+                    exc,
+                    claimed - ok,
+                )
+                return {"claimed": 0, "ok": 0, "failed": 0}
             except Exception:
                 log.exception("chunk_keywords: chunk_id=%s failed", chunk_id)
                 failed += 1

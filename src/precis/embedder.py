@@ -313,6 +313,28 @@ class BgeM3Embedder:
 # ---------------------------------------------------------------------------
 
 
+class EmbedderUnavailable(RuntimeError):
+    """The embedding service is *transiently* unreachable.
+
+    Raised by :meth:`RemoteEmbedder.embed` when every endpoint exhausts
+    its retry budget on a *retryable* condition — ``429`` (admission
+    control: the service is at capacity), ``5xx`` (the service is
+    restarting / its model is still warming and ``/embed`` returns a
+    500), or a connection-level failure (refused / timeout while the
+    process is down). It is **not** raised for a genuine per-text or
+    config error (dim mismatch, wire skew, non-retryable 4xx) — those
+    stay plain ``RuntimeError`` / ``ValueError``.
+
+    The distinction lets a worker tell "the embedder is briefly busy /
+    bouncing" apart from "this row is bad". On the former a pass should
+    *defer* the batch (leave the rows unclaimed, write no failure
+    marker, back off) rather than mark every chunk ``failed`` — which
+    both lit up the status "FAILED PASSES" panel with noise and, in the
+    embed handler's per-row fallback, fired N more single-text requests
+    that *deepened* the very overload that caused the 429.
+    """
+
+
 def _urllib_transport(
     method: str, url: str, body: dict | None, timeout: float
 ) -> tuple[int, dict]:
@@ -369,9 +391,9 @@ class RemoteEmbedder:
         *,
         expected_dim: int | None = None,
         timeout: float = 30.0,
-        max_retries: int = 3,
-        backoff_base: float = 0.25,
-        backoff_max: float = 8.0,
+        max_retries: int = 5,
+        backoff_base: float = 0.5,
+        backoff_max: float = 15.0,
         transport: Transport | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -473,7 +495,12 @@ class RemoteEmbedder:
                     self._backoff(attempt)
                     continue
                 return status, parsed
-        raise RuntimeError(
+        # Every endpoint exhausted its retry budget on a *retryable*
+        # condition (429 / 5xx / transport error — non-retryable statuses
+        # ``return`` above and never reach here). Surface a typed
+        # ``EmbedderUnavailable`` so callers can defer the batch instead
+        # of marking rows failed.
+        raise EmbedderUnavailable(
             f"all embedder endpoints failed ({self._endpoints})"
         ) from last_err
 
@@ -527,6 +554,7 @@ def make_embedder(
 __all__ = [
     "BgeM3Embedder",
     "Embedder",
+    "EmbedderUnavailable",
     "MockEmbedder",
     "RemoteEmbedder",
     "make_embedder",

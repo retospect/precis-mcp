@@ -12,7 +12,12 @@ import urllib.error
 
 import pytest
 
-from precis.embedder import Embedder, RemoteEmbedder, make_embedder
+from precis.embedder import (
+    Embedder,
+    EmbedderUnavailable,
+    RemoteEmbedder,
+    make_embedder,
+)
 from precis.embedder_wire import (
     WIRE_VERSION,
     EmbedResponse,
@@ -157,7 +162,7 @@ def test_falls_back_to_second_endpoint() -> None:
     assert len(emb.embed(["a"])) == 1
 
 
-def test_all_endpoints_down_raises() -> None:
+def test_all_endpoints_down_raises_unavailable() -> None:
     def transport(method, url, body, timeout):
         raise urllib.error.URLError("down")
 
@@ -167,7 +172,30 @@ def test_all_endpoints_down_raises() -> None:
         max_retries=1,
         sleep=_noop_sleep,
     )
-    with pytest.raises(RuntimeError, match="all embedder endpoints failed"):
+    # Connection-level exhaustion is a *transient* condition — the typed
+    # EmbedderUnavailable lets workers defer the batch rather than mark
+    # every row failed.
+    with pytest.raises(EmbedderUnavailable, match="all embedder endpoints failed"):
+        emb.embed(["a"])
+
+
+def test_429_exhaustion_raises_unavailable() -> None:
+    """A persistently-busy embedder (429 on every attempt) raises the
+    typed EmbedderUnavailable, not a bare RuntimeError."""
+
+    def transport(method, url, body, timeout):
+        if url.endswith("/model"):
+            return 200, _model_body()
+        return 429, {}
+
+    emb = RemoteEmbedder(
+        "http://x:1",
+        expected_dim=_DIM,
+        transport=transport,
+        max_retries=2,
+        sleep=_noop_sleep,
+    )
+    with pytest.raises(EmbedderUnavailable):
         emb.embed(["a"])
 
 

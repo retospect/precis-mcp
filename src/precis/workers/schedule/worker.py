@@ -302,12 +302,27 @@ def _child_with_stamp_exists_conn(conn: Any, parent_id: int, stamp: str) -> bool
 
 
 def _has_open_previous_tick_conn(conn: Any, parent_id: int) -> bool:
-    """True when any spawned child is still open (non-done STATUS).
+    """True when a prior spawned tick is still genuinely *in flight*.
 
     Plan's collision policy: skip the new tick if the previous one
-    is still on the queue. We check *all* spawned children for open
-    status — if any prior spawn is still open, the queue is already
-    stalled and minting more would compound the problem.
+    is still on the queue. We check *all* spawned children — if any
+    prior spawn is still in flight, the queue is already stalled and
+    minting more would compound the problem.
+
+    "In flight" excludes both the done-class terminals (``done`` /
+    ``won't-do`` / ``auto-timeout``) **and** a tick that has terminally
+    *failed*. A recurring tick whose job fails bubbles a
+    ``child-failed:<job_id>`` open tag onto the spawned child but leaves
+    its ``STATUS:open`` (awaiting an owner retry/give-up decision — the
+    failure-bubble convention). That child is terminal-for-scheduling,
+    not in-flight: counting it as "still open" wedged the recurring
+    *forever* (one failed ``news_poll`` / ``briefing`` tick silently
+    stopped the whole cadence — every subsequent pass logged "skipping
+    tick … (previous still open)" with no way out short of a manual
+    close). A recurring must be resilient to a single bad tick: skip the
+    failed one, fire the next. The failure still surfaces (the
+    ``child-failed`` bubble + the nursery ``stalled-recurring`` alert),
+    so it isn't lost — it just no longer halts the schedule.
     """
     row = conn.execute(
         """
@@ -319,7 +334,16 @@ def _has_open_previous_tick_conn(conn: Any, parent_id: int) -> bool:
                  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                    WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                  'open'
-               ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+               ) NOT IN ('done', 'won''t-do', 'auto-timeout', 'failed')
+           -- A tick whose child job failed bubbles a ``child-failed:*``
+           -- open tag and stays STATUS:open; that is terminal-for-
+           -- scheduling, not in-flight. Don't let it block the cadence.
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                  WHERE rt.ref_id = c.ref_id
+                    AND t.namespace = 'OPEN'
+                    AND t.value LIKE 'child-failed:%%'
+               )
          LIMIT 1
         """,
         (parent_id,),

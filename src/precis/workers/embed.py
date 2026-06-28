@@ -16,7 +16,7 @@ from typing import ClassVar
 
 from psycopg import Connection
 
-from precis.embedder import Embedder
+from precis.embedder import Embedder, EmbedderUnavailable
 from precis.workers.base import ChunkRow, WorkerHandler
 
 
@@ -122,10 +122,20 @@ class EmbedHandler(WorkerHandler):
             return []
         try:
             vectors = self._embedder.embed([row.text for row in rows])
+        except EmbedderUnavailable:
+            # The service is transiently down/busy — NOT a per-row fault.
+            # Propagate so the runner defers the whole batch (rows stay
+            # unclaimed, no failure markers). Falling through to the
+            # per-row path here would fire one single-text request per
+            # chunk against an already-overloaded embedder — amplifying
+            # the very 429 storm that triggered this, and stamping every
+            # chunk ``failed`` for a blip that clears on its own.
+            raise
         except Exception:
-            # Don't lose the whole batch on a single bad row. Per-row
-            # path runs each chunk through embed_one and routes each
-            # failure to write_failed via the runner.
+            # A genuine whole-batch fault (OOM, dim mismatch, one poison
+            # row). Don't lose the whole batch: the per-row path runs each
+            # chunk through embed_one and routes each failure to
+            # write_failed via the runner.
             return super().process_batch(rows)
         return list(vectors)
 

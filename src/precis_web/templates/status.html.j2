@@ -422,6 +422,11 @@
   <div class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
     {% for pass_name, row in backlog.items() %}
     {% set total = row.pending + row.done %}
+    {# ``pct`` is percent *complete* (done / total) — it drives the
+       progress bar (full + green = caught up) and reads as "how far
+       along is this pass". Label it "done" so it isn't misread as the
+       *pending* fraction sitting next to it (e.g. 96,826 / 1,477,096
+       pending is 93.4% done, not 93.4% pending). #}
     {% set pct = ((row.done / total) * 100) if total > 0 else 100 %}
     <div class="px-4 py-2 text-xs flex items-center gap-2">
       <span class="font-mono text-slate-700 w-36 shrink-0">{{ pass_name }}</span>
@@ -436,7 +441,7 @@
         <div class="h-2 {% if row.pending == 0 %}bg-emerald-500{% else %}bg-sky-500{% endif %}"
              style="width: {{ '%.1f'|format(pct) }}%"></div>
       </div>
-      <span class="w-16 text-right text-slate-500 tabular-nums">{{ '%.1f'|format(pct) }}%</span>
+      <span class="w-20 text-right text-slate-500 tabular-nums">{{ '%.1f'|format(pct) }}% done</span>
       <span class="w-24 text-right text-slate-400 shrink-0 tabular-nums"
             title="last productive batch{% if row.last_ts %} — {{ row.last_ts | abs_ts }}{% endif %}">
         {% if row.last_ts %}{{ row.last_ts | ago }}{% else %}—{% endif %}

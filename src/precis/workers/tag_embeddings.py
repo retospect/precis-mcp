@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from precis.embedder import Embedder
+from precis.embedder import Embedder, EmbedderUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +81,14 @@ def run_tag_embeddings_pass(
     slugs = [_slug_for(ns, v) for (ns, v) in pairs]
     try:
         vecs = embedder.embed(slugs)
+    except EmbedderUnavailable as exc:
+        # Transient embedder outage — defer, don't fail. The tags stay
+        # unembedded and re-claim next pass; reporting them ``failed``
+        # would be a lie (nothing is wrong with the tags) and would
+        # light the status "FAILED PASSES" panel for a passing blip.
+        # ``claimed=0`` lets the run-loop back off the down embedder.
+        log.warning("tag_embeddings: embedder unavailable (%s); deferring", exc)
+        return {"claimed": 0, "ok": 0, "failed": 0}
     except Exception:
         log.exception("tag_embeddings: batched embed call failed")
         return {"claimed": claimed, "ok": 0, "failed": claimed}

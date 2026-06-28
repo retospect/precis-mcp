@@ -79,10 +79,16 @@ class PrecisConfig(BaseSettings):
     Set via ``PRECIS_EMBEDDER_TIMEOUT`` in the env.
     """
 
-    embedder_max_retries: int = 3
+    embedder_max_retries: int = 5
     """Max retries per endpoint for ``embedder="remote"`` before falling
-    back to the next endpoint. Retries use exponential backoff with
-    jitter; ``429`` / ``5xx`` / connection failures are retryable.
+    back to the next endpoint (and then raising ``EmbedderUnavailable``).
+    Retries use exponential backoff with full jitter; ``429`` / ``5xx`` /
+    connection failures are retryable. The default is deliberately
+    patient: a busy embedder returns ``429`` + ``Retry-After: 1`` and a
+    restarting one returns ``5xx`` / refuses the connection for the few
+    seconds its model takes to warm — the jittered backoff window
+    (≈ tens of seconds) rides those out so a transient blip never
+    surfaces as a failed pass.
 
     Set via ``PRECIS_EMBEDDER_MAX_RETRIES`` in the env.
     """

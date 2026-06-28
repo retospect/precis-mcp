@@ -363,6 +363,56 @@ def test_schedule_pass_skips_when_previous_still_open(
     assert result.failed >= 1  # the second tick was skipped
 
 
+def test_schedule_pass_failed_previous_tick_does_not_wedge(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A previous tick whose job *failed* must not block the next tick.
+
+    Regression for the news/briefing wedge: a ``news_poll`` / ``briefing``
+    tick that fails bubbles a ``child-failed:<job_id>`` open tag onto the
+    spawned child but leaves it ``STATUS:open``. The collision-skip used to
+    treat that as "previous still open" and refuse to ever mint another
+    tick — silently freezing the whole recurring. A failed tick is
+    terminal-for-scheduling, so the next tick must still fire.
+    """
+    resp = handler.put(
+        text="Hourly",
+        tags=["level:recurring"],
+        meta={"schedule": {"cron": "0 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+
+    # Hand-build a *previous* spawned tick that failed: STATUS:open +
+    # a ``child-failed:*`` bubble, with an old ``spawned_for_tick`` stamp
+    # so it can't collide with the tick this pass will mint.
+    old_stamp = (datetime.now(UTC) - timedelta(hours=3)).isoformat(timespec="minutes")
+    child = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="Hourly (failed prior tick)",
+        meta={"spawned_for_tick": old_stamp},
+        parent_id=rid,
+        prio=2,
+    )
+    store.add_tag(child.id, Tag.closed("STATUS", "open"), set_by="system")
+    store.add_tag(child.id, Tag.open("child-failed:999"), set_by="system")
+
+    # Make one tick due and run: it must mint despite the failed-but-open
+    # previous child (which used to wedge the recurring forever).
+    _set_last_tick(store, rid, datetime.now(UTC) - timedelta(hours=1, minutes=5))
+    result = run_schedule_pass(store, limit=50)
+    assert result.ok == 1, "failed previous tick should not block the next one"
+    with store.pool.connection() as conn:
+        n = int(
+            conn.execute(
+                "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL "
+                "AND meta->>'spawned_for_tick' <> %s",
+                (rid, old_stamp),
+            ).fetchone()[0]
+        )
+    assert n == 1, "a fresh tick should have been minted"
+
+
 def test_schedule_pass_skips_folder_umbrella(store: Store) -> None:
     # Watches root has schedule=None; sweep should walk past it.
     umbrella = ensure_watches_root(store)

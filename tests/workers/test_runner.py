@@ -124,6 +124,38 @@ class TestRunHandlerOnce:
             (chunk_ids[2], "ok"),
         ]
 
+    def test_embedder_unavailable_defers_whole_batch(self, store):
+        """A transient embedder outage defers — no failure markers.
+
+        When ``process_batch`` raises ``EmbedderUnavailable`` (the
+        service is busy / restarting), the runner must roll back: write
+        *no* ``chunk_embeddings`` rows, report a clean no-progress batch
+        (``claimed=0`` so the loop backs off), and leave every chunk
+        re-claimable next pass. The old behaviour stamped each chunk
+        ``failed`` and (via the per-row fallback) amplified the load.
+        """
+        from precis.embedder import EmbedderUnavailable
+
+        _ref_id, chunk_ids = seed_chunks(store, ["a", "b", "c"])
+
+        class _DownHandler(EmbedHandler):
+            def __init__(self) -> None:
+                super().__init__(make_mock_bge_m3())
+
+            def process_batch(self, rows: list[ChunkRow]) -> list[object]:
+                raise EmbedderUnavailable("all embedder endpoints failed")
+
+        h = _DownHandler()
+        result = run_handler_once(h, store, batch_size=10)
+        assert result == BatchResult(handler="embed:bge-m3", claimed=0, ok=0, failed=0)
+
+        # No rows written — not even failure markers — so the chunks
+        # stay pending and re-claim cleanly once the embedder is back.
+        with store.pool.connection() as conn:
+            n = conn.execute("SELECT count(*) FROM chunk_embeddings").fetchone()
+        assert n == (0,)
+        assert len(chunk_ids) == 3
+
     def test_failed_chunk_not_re_claimed(self, store):
         _ref_id, [chunk_id] = seed_chunks(store, ["a"])
         h = _CountingEmbedHandler(fail_on={chunk_id})

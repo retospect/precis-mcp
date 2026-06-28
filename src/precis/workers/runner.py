@@ -26,6 +26,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from precis.embedder import EmbedderUnavailable
 from precis.store import Store
 from precis.workers.base import WorkerHandler
 
@@ -79,7 +80,27 @@ def run_handler_once(
         # batched transformer forward pass per call) override it.
         # Per-row failures still route to write_failed below so the
         # poison-pill chunk gets a failure marker.
-        results = handler.process_batch(rows)
+        try:
+            results = handler.process_batch(rows)
+        except EmbedderUnavailable as exc:
+            # The embedder is transiently down/busy. Roll the tx back
+            # (release the row locks, write *no* failure markers) and
+            # report a clean no-progress batch so the run-loop sleeps
+            # and re-claims these rows next cycle. This is a deferral,
+            # not a failure: a restart / 429 burst must not stamp every
+            # claimed chunk ``failed`` (that lit the status panel with
+            # noise and forced needless re-embeds). ``claimed=0`` keeps
+            # it out of the "any work this cycle?" tally so the node
+            # backs off instead of hot-looping the down embedder.
+            conn.rollback()
+            log.warning(
+                "worker: %s deferred batch of %d — embedder unavailable (%s); "
+                "will retry next cycle",
+                handler.name,
+                len(rows),
+                exc,
+            )
+            return BatchResult(handler=handler.name, claimed=0, ok=0, failed=0)
         for row, payload in zip(rows, results, strict=True):
             if isinstance(payload, Exception):
                 log.warning(
