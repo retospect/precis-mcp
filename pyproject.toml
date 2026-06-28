@@ -210,6 +210,13 @@ precis = "precis.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8",
+    # Parallel test execution. The suite is CPU-bound and single-threaded
+    # without this; ``addopts = -n auto`` (below) fans it across cores. Safe
+    # because each xdist worker is its own process and so runs the
+    # session-scoped ``_initialise_test_db`` fixture independently — every
+    # worker gets its OWN ``precis_test_<uuid>`` clone, so the per-test
+    # TRUNCATE isolation never races across workers (see tests/conftest.py).
+    "pytest-xdist>=3.6",
     "ruff>=0.11",
     "mypy>=1.15",
     "pre-commit>=4",
@@ -324,3 +331,10 @@ disable_error_code = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Fan the suite across cores. It is CPU-bound and was single-threaded
+# (~36s host / minutes in the container gate); -n auto roughly halves
+# wall-clock on a multi-core box. Each worker is a separate process and
+# gets its own per-session DB clone (see tests/conftest.py), so DB
+# isolation holds. For a clean single-test debug session
+# (pdb / -s output), override with ``-n0``.
+addopts = "-n auto"
