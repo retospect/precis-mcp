@@ -45,6 +45,7 @@ For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 | `plaintext` | `notes--log` | A `.txt` / `.log` file under `PRECIS_ROOT` | `PRECIS_ROOT` |
 | `tex` | `chapters--intro` | A `.tex` file (section-aware blocks + `/toc`) | `PRECIS_ROOT` |
 | `draft` | `nanotrans` | Editable, chunk-native document — the living source of a project's write-up; chunks reorder/edit in place, exports to LaTeX/PDF/Word. Chunks addressed by `¶<handle>`. See `precis-draft-help`, ADR 0033. | store |
+| `cad` | `flange` | Parametric solid-model design — a boolean DAG of placed analytic primitives authored as a text node-list (`cyl:r3h12`, `box:w40d20h10`). Probed analytically (point/ray/arc/section) and related (clearance/interference/translational DOF); no meshing in the design loop. Nodes addressed by `ca<handle>`. See `precis-cad-help`, ADR 0041. | store |
 | `python` | `precis::precis.cli.main` | Symbol or file in a configured Python repo | `PRECIS_PYTHON_ROOTS` |
 | `todo` | `122` (int) | A task in the hierarchical tree (Slice 1–5). Branches read as outcomes; leaves as next actions. See `precis-tasks-help`. | store |
 | `memory` | `47` (int) | Agent note / scratchpad | store |

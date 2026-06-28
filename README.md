@@ -53,7 +53,9 @@ argument — over three categories of content:
   `citation` (verified claim → source quote), `finding`
   (reviewer-persona claim + chase chain), `job` (offline LLM run,
   child of a `todo`), `provenance` (derivation audit trail),
-  `pres` (slide decks). This is a sample — `precis-overview` and
+  `pres` (slide decks), `cad` (parametric solid-model design probed
+  analytically — point/ray/section/clearance — not meshed; ADR 0041).
+  This is a sample — `precis-overview` and
   the synthesised `precis-help` skill enumerate the live set.
 - **Tool kinds** (stateless or cache-backed; pass `q=` or `id=`, get
   text back): `calc`, `math` (Wolfram), `youtube`, `web` (fetch +

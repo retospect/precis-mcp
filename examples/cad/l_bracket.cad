@@ -1,0 +1,9 @@
+desc: L-bracket, 40mm base + 26mm upstand at 90 degrees, 4 M4 holes
+use: joins two panels at a right angle
+component bracket
+base   add  box:w40d30h4
+bh1    cut  cyl:r2.2h6    @-13,-7,-1
+bh2    cut  cyl:r2.2h6    @13,-7,-1
+wall   add  box:w40d4h26  @0,-13,4
+wh1    cut  cyl:r2.2h6    @-13,-10,16  rot:90,0,0
+wh2    cut  cyl:r2.2h6    @13,-10,16   rot:90,0,0

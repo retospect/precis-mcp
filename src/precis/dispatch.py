@@ -629,6 +629,7 @@ def boot(
     if store is not None:
         from precis.handlers.agentlog import AgentLogHandler
         from precis.handlers.alert import AlertHandler
+        from precis.handlers.cad import CadHandler
         from precis.handlers.citation import CitationHandler
         from precis.handlers.conversation import ConversationHandler
         from precis.handlers.cron import CronHandler
@@ -664,6 +665,7 @@ def boot(
         _gated(MessageHandler)
         _gated(PresentationHandler)
         _gated(DraftHandler)
+        _gated(CadHandler)
         _gated(OracleHandler)
         # Oracle YAML lives in the wheel; reconcile it against the
         # DB-recorded version on every boot so a wheel upgrade or

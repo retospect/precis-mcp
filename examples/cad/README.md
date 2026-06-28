@@ -1,0 +1,96 @@
+# CAD examples (ADR 0041)
+
+Hand-authored `cad` designs in the text node-list language, with every
+export artifact regenerated into [`out/`](./out). Each design exports to:
+
+| ext     | what                          | backend (optional extra)        |
+| ------- | ----------------------------- | ------------------------------- |
+| `.scad` | OpenSCAD source               | none — always available         |
+| `.stl`  | printable mesh                | `manifold3d` (`[cad-export]`)   |
+| `.3mf`  | printable mesh (slicer fmt)   | `manifold3d` (`[cad-export]`)   |
+| `.step` | exact ISO-10303 B-rep         | OpenCASCADE (`[cad-step]`)      |
+
+Regenerate them all:
+
+```bash
+uv run python examples/cad/generate.py
+```
+
+## The designs
+
+### `flange`
+Round 50 mm mounting flange, 8 mm thick, with a Ø16 hub bore and a 6-bolt
+circle (Ø5 holes on a Ø36 PCD via a `polar` pattern).
+
+### `hex_standoff`
+M3 hex standoff — 8 mm across-flats body, 20 mm long, through clearance
+bore (`hex` prism + a `cyl` cut). Shows a non-circular base solid.
+
+### `l_bracket`
+Right-angle bracket: a 40×30×4 base with two M4 holes plus a 26 mm
+upstand with two **horizontal** bores (`cyl` rotated `rot:90,0,0`, so the
+hole axis runs through the wall thickness). Two components folded into the
+one part.
+
+### `drain_box`  +  `drain_lid`  — a mating pair
+A box and its lid, dimensioned to fit.
+
+`drain_box` — 60×40×30 mm open-top box: a solid `shell` with the `cavity`
+cut out (3 mm walls, 6 mm floor) and a Ø4 **drainage hole** cut through
+the floor in a corner so water/debris drains out.
+
+`drain_lid` — a 60×40×3 mm top plate with a **locating boss**: a
+53×33×6 mm rim that protrudes *down* from the underside and nests inside
+the box opening. The boss is 1 mm under the cavity in each axis (0.5 mm
+clearance per side), so the lid drops in by hand but is **registered by
+the boss and cannot slide off**. A small vent hole keeps it from sealing
+airtight.
+
+```
+            lid top plate (60×40×3)
+        ┌───────────────────────────┐
+        │   ┌───────────────────┐   │   ← boss (53×33×6), drops into…
+        └───┤                   ├───┘
+            │   box opening     │       …the box cavity (54×34), 0.5mm/side gap
+  ┌─────────┤   (inner rim)     ├─────────┐
+  │  wall   └───────────────────┘   wall  │  60×40×30 outside, 3mm walls
+  │                                       │
+  │     floor (6mm)         ● drain Ø4 ───┼──→ corner drainage hole
+  └───────────────────────────────────────┘
+```
+
+All five designs verified watertight (manifold) and probe-checked (the
+drain corner reads empty, the boss reads solid at the expected extents)
+before export.
+
+### Verified fit (analytic, no meshing)
+
+Probing an assembled config (lid seated, boss in the opening):
+
+- `clearance(box, lid)` → **gap = 0.52 mm**, no interference — the boss
+  slips into the rim with a hand-fit gap.
+- `translational_dof(lid, box)` → **+z = ∞** (lifts straight off) but
+  lateral travel is bounded by the boss hitting the rim (~0.5 mm in y) —
+  so once seated the lid is registered and **cannot slide off**.
+
+### `wheel_assembly` — a 2-part assembly in one file
+A 5-spoke wheel (rim + hub + spokes, folded as one `wheel` component) and
+a bolt-on mounting `tab` (a second `bracket` component). It demonstrates
+**multi-solid export**:
+
+| format  | assembly behaviour                                            |
+| ------- | ------------------------------------------------------------- |
+| `.step` | **two distinct named solids** (`wheel`, `bracket`) in one file — a true assembly (XCAF); CAD apps show both in the tree |
+| `.3mf`  | **two named `<object>`s** referenced by the build — stay separable in the slicer |
+| `.stl`  | **one welded body** — STL is a triangle soup with no part identity |
+| `.scad` | one `union()` of the two components (source renders to one mesh) |
+
+## Can an assembly be exported as one file?
+
+Yes — **STEP** and **3MF** both carry multiple distinct bodies in a single
+file, and precis keeps each `component` separate for them (STEP as named
+`MANIFOLD_SOLID_BREP` solids via the XCAF document model; 3MF as named
+`<object>`s). **STL** and **`.scad`** cannot represent part boundaries, so
+there the components are welded into one solid. Use a separate `component`
+per part; everything else (probes, clearance/DOF) already treats
+components as distinct bodies.

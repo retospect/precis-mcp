@@ -282,6 +282,10 @@ class DraftMixin:
         if parsed is None or not parsed[1]:  # not a chunk handle
             return None
         kind, _is_chunk, chunk_id = parsed
+        if kind == "cad":
+            # cad node handles (ca<id>) live in cad_nodes, not chunks
+            # (ADR 0041 Amendment 1) — read via get(view=…), not this hover.
+            return None
         with self.pool.connection() as conn:
             row = conn.execute(
                 "SELECT ref_id, ord, chunk_kind, text FROM chunks WHERE chunk_id = %s",

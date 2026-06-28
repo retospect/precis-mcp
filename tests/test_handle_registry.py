@@ -52,6 +52,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "gripe",
         "skill",
         "tag",
+        "cad",
     }
 )
 

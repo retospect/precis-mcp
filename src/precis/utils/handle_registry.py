@@ -85,6 +85,8 @@ KIND_CODES: dict[str, str] = {
     # system / meta
     "skill": "sk",
     "tag": "tg",
+    # CAD designs (ADR 0041)
+    "cad": "cd",
 }
 
 # --- chunk codes (kinds that expose addressable body chunks) --------------
@@ -108,6 +110,7 @@ CHUNK_CODES: dict[str, str] = {
     "cron": "cp",
     "finding": "fb",
     "job": "jc",
+    "cad": "ca",
 }
 
 # Reverse map (code -> (kind, is_chunk)).

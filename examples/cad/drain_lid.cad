@@ -1,0 +1,7 @@
+desc: lid for drain_box; a downward locating boss nests in the box opening
+use: covers the box and stays put — the boss registers in the rim so it
+use: cannot slide off; 0.5mm clearance per side for an easy hand fit
+component lid
+top   add  box:w60d40h3
+boss  add  box:w53d33h6  @0,0,-6
+vent  cut  cyl:r1.5h6    @24,14,-7

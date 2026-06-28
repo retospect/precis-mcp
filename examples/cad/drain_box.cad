@@ -1,0 +1,6 @@
+desc: open-top box, 60x40x30mm outside, 3mm walls, 6mm floor, corner drain
+use: holds small parts; water and debris drain out the bottom corner hole
+component box
+shell   add  box:w60d40h30
+cavity  cut  box:w54d34h24  @0,0,6
+drain   cut  cyl:r2h10      @-24,-14,-1

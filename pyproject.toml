@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "8.19.0"
+version = "8.20.0"
 description = "MCP server giving LLM agents a seven-verb API over papers, documents, code, personal state, patents, and cached web/Wolfram/YouTube tool calls — backed by PostgreSQL + pgvector"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -176,7 +176,21 @@ web = [
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
 ]
-all = ["precis-mcp[embed,paper,docx,tex,calc,plot,external,patent,web]"]
+# CAD export (ADR 0041 §10). Two tiers, both downstream of the design
+# loop (the kernel + probes need neither). ``cad-export`` is the
+# lightweight printable path: ``manifold3d`` (the same robust CSG kernel
+# OpenSCAD uses) does in-process booleans on tessellated primitives, then
+# precis hand-writes STL (binary) + 3MF (zip/XML) — no external app, no
+# trimesh. ``cad-step`` adds the OpenCASCADE B-rep kernel for *exact* STEP
+# interchange (which a mesh kernel fundamentally cannot emit). We import
+# the **raw** ``OCP`` binding, not ``build123d``, so the dependency is the
+# bare OCCT wheel (``cadquery-ocp-novtk`` — pip-installable, bundles the
+# OCCT libs, no system OpenCASCADE / conda / VTK) rather than build123d's
+# whole jupyter/ezdxf/svg tree. Heavy (~200 MB of bundled libs), so kept
+# out of ``[all]`` like the torch-gated paths.
+cad-export = ["manifold3d>=2.5"]
+cad-step = ["cadquery-ocp-novtk>=7.8"]
+all = ["precis-mcp[embed,paper,docx,tex,calc,plot,external,patent,web,cad-export]"]
 
 [project.scripts]
 precis = "precis.cli:main"

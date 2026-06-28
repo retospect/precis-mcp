@@ -1,0 +1,6 @@
+desc: round mounting flange, 50mm dia, 8mm thick, 6-bolt circle
+use: bolts a shaft housing to a backplate
+component flange
+plate     add  cyl:r25h8
+hub_bore  cut  cyl:r8h10    @0,0,-1
+bolts     cut  cyl:r2.5h10  @18,0,-1  polar:n6r18

@@ -1,0 +1,12 @@
+desc: 5-spoke wheel plus a bolt-on mounting tab — a two-part assembly
+use: demonstrates multi-solid export; STEP and 3MF carry the wheel and the
+use: bracket as two separate named bodies in one file, STL welds them
+component wheel
+rim_out  add  cyl:r40h12
+rim_in   cut  cyl:r34h14   @0,0,-1
+hub      add  cyl:r10h12
+hubbore  cut  cyl:r4h14    @0,0,-1
+spokes   add  box:w30d5h6  @0,0,3   polar:n5r21
+component bracket
+tab      add  box:w22d14h6  @51,0,0
+hole     cut  cyl:r3.2h8    @56,0,-1

@@ -1,0 +1,5 @@
+desc: M3 hex standoff, 20mm long, 8mm across-flats body, clearance bore
+use: spaces two PCBs apart on an M3 screw
+component standoff
+body  add  hex:r4h20
+bore  cut  cyl:r1.7h22  @0,0,-1
