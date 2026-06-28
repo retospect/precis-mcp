@@ -468,6 +468,38 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     return _merge_adjacent_cites("".join(out))
 
 
+def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
+    """Render a ``chunk_kind='table'`` chunk as a ``longtable`` (ADR 0035
+    §1) — page-breaking, booktabs-ruled, equal-width ``p{}`` columns so long
+    cells wrap and the table never overflows the text width. Cells go through
+    the same inline grammar as prose (citations / math / abbreviations
+    resolve in-cell). Falls back to a plain paragraph if no table is
+    recoverable. The optional legend renders as a bold lead-in line."""
+    from precis.utils.table_data import table_payload
+
+    payload = table_payload(getattr(chunk, "meta", None), chunk.text)
+    if payload is None:
+        return [f"{_render_inline(chunk.text or '', ctx)}{label}"]
+    header, rows, caption = payload["header"], payload["rows"], payload["caption"]
+    n = max(1, len(header))
+    width = f"\\dimexpr(\\linewidth-\\tabcolsep*{2 * n})/{n}\\relax"
+    colspec = "".join(f">{{\\raggedright\\arraybackslash}}p{{{width}}}" for _ in range(n))
+    out: list[str] = []
+    if caption:
+        out.append(f"\\noindent\\textbf{{{_render_inline(caption, ctx)}}}\\par\\nopagebreak")
+    out.append(f"\\begin{{longtable}}{{{colspec}}}")
+    out.append("\\toprule")
+    out.append(" & ".join(_render_inline(h, ctx) for h in header) + r" \\")
+    out.append("\\midrule\\endhead")
+    out.append("\\bottomrule\\endlastfoot")
+    for row in rows:
+        cells = [_render_inline(row[j], ctx) if j < len(row) else "" for j in range(n)]
+        out.append(" & ".join(cells) + r" \\")
+    out.append("\\end{longtable}")
+    out.append(label)
+    return out
+
+
 #: chunk depth → sectioning command. Deeper than subsubsection collapses
 #: to a run-in paragraph heading.
 _SECTION_CMD = ["section", "subsection", "subsubsection", "paragraph"]
@@ -510,6 +542,10 @@ def render_body(store: Any, ref: Any) -> RenderResult:
         if c.chunk_kind == "item":
             body = _render_inline(c.text or "", ctx)
             lines.append(f"\\item {body}{label}")
+            lines.append("")
+            continue
+        if c.chunk_kind == "table":
+            lines.extend(_render_table(c, ctx, label))
             lines.append("")
             continue
         if c.chunk_kind == "heading":

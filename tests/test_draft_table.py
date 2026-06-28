@@ -10,7 +10,12 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.draft import DraftHandler
-from precis.utils.table_data import normalize_table, table_to_markdown
+from precis.utils.table_data import (
+    normalize_table,
+    parse_markdown_table,
+    table_payload,
+    table_to_markdown,
+)
 
 
 @pytest.fixture
@@ -56,6 +61,43 @@ def test_markdown_is_single_block_and_escapes() -> None:
     assert r"a\|b" in md and "x<br>y" in md
     assert "| --- | --- |" in md
     assert md.strip().endswith("|  | true |")  # None→"", True→"true"
+
+
+# ── render-side recovery (table_payload) ──────────────────────────────
+
+
+def test_payload_prefers_canonical_meta() -> None:
+    # cells stringified (None→"", numbers→str, bools→true/false); caption kept
+    payload = table_payload(
+        {
+            "table": {"header": ["el", "gap"], "rows": [["Si", 1.12], [None, True]]},
+            "caption": "Band gaps",
+        },
+        "ignored derived text",
+    )
+    assert payload == {
+        "header": ["el", "gap"],
+        "rows": [["Si", "1.12"], ["", "true"]],
+        "caption": "Band gaps",
+    }
+
+
+def test_payload_falls_back_to_markdown_roundtrip() -> None:
+    # No meta.table → parse the derived GFM text back to structure.
+    md = table_to_markdown(
+        {"header": ["a|b", "n"], "rows": [["x\ny", 2]]}, caption="Cap"
+    )
+    payload = table_payload({}, md)
+    assert payload == {
+        "header": ["a|b", "n"],  # \| unescaped
+        "rows": [["x\ny", "2"]],  # <br> → newline
+        "caption": "Cap",
+    }
+
+
+def test_payload_none_when_not_a_table() -> None:
+    assert table_payload({}, "just prose, no pipes") is None
+    assert parse_markdown_table("| a | b |") is None  # header but no separator
 
 
 # ── put ───────────────────────────────────────────────────────────────

@@ -368,3 +368,35 @@ def test_export_renders_list_styles(
     }
     assert styled.get("alpha") == "List Bullet"
     assert styled.get("one") == "List Number"
+
+
+def test_export_renders_table(draft: DraftHandler, hub: Hub, tmp_path: Path) -> None:
+    """A chunk_kind='table' becomes a native Word table (ADR 0035 §1):
+    header row bold, one body row per data row, cells via the inline grammar.
+    The derived pipe markdown is not dumped as a paragraph."""
+    pid = int(
+        TodoHandler(hub=hub).put(text="proj").body.split("id=")[1].split()[0].rstrip(",.()")
+    )
+    draft.put(id="tb", title="T", project=pid)
+    draft.put(
+        id="tb",
+        chunk_kind="table",
+        table={"header": ["ID", "Title"], "rows": [["I1", "alpha"], ["I2", "beta"]]},
+        caption="Issue register",
+        at={"last": True},
+    )
+    ref = hub.store.get_ref(kind="draft", id="tb")
+    out = tmp_path / "tb.docx"
+    export_docx(hub.store, ref, target_path=out)
+
+    doc = docx.Document(str(out))
+    assert len(doc.tables) == 1
+    t = doc.tables[0]
+    assert len(t.rows) == 3 and len(t.columns) == 2  # header + 2 body rows
+    assert [c.text for c in t.rows[0].cells] == ["ID", "Title"]
+    assert [c.text for c in t.rows[1].cells] == ["I1", "alpha"]
+    assert t.rows[0].cells[0].paragraphs[0].runs[0].bold  # header bold
+    # caption rendered as a bold lead-in paragraph; pipe markdown not dumped
+    paras = [p.text for p in doc.paragraphs]
+    assert "Issue register" in paras
+    assert not any("| ID | Title |" in p for p in paras)

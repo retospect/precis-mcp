@@ -79,6 +79,7 @@ from precis.utils import draft_markup, handle_registry, mentions
 from precis.utils.authors import author_names
 from precis.utils.embed_query import embed_query
 from precis.utils.figure_clearance import draft_figure_clearance, figure_status
+from precis.utils.table_data import table_payload
 from precis_web.deps import (
     await_dispatch,
     get_runtime,
@@ -493,6 +494,13 @@ def _build_rows(
         first_line = ((c.text or "").splitlines() or [""])[0][:140]
         is_figure = c.chunk_kind == "figure"
         fig = (getattr(c, "meta", None) or {}).get("figure", {}) if is_figure else {}
+        # Data table (ADR 0035 §1): render the canonical meta.table as a real
+        # <table>, not the derived pipe markdown. ``table_payload`` falls back
+        # to parsing the GFM text for any table chunk lacking meta.table.
+        is_table = c.chunk_kind == "table"
+        table = (
+            table_payload(getattr(c, "meta", None), c.text) if is_table else None
+        )
         rows.append(
             {
                 "handle": c.handle,
@@ -521,6 +529,8 @@ def _build_rows(
                 if c.chunk_kind == "heading"
                 else None,
                 "section_styles": section_styles if c.chunk_kind == "heading" else None,
+                "is_table": is_table,
+                "table": table,
                 "is_figure": is_figure,
                 # figure provenance for the origin chip + clearance badge
                 "figure_origin": fig.get("origin") if is_figure else None,
@@ -580,6 +590,12 @@ def _est_height_rem(c: Any) -> float:
         return 2.5
     if kind == "figure":
         return 14.0
+    if kind == "table":
+        # Header + body rows at ~1.9rem each (cells wrap, so this is a floor),
+        # plus the caption + padding. Reserve generously so a tall table below
+        # the fold doesn't snap the scrollbar when it hydrates.
+        nrows = len((getattr(c, "meta", None) or {}).get("table", {}).get("rows", []))
+        return round(min(80.0, 3.5 + (nrows + 1) * 1.9), 1)
     chars = len(c.text or "")
     lines = max(1, (chars // 90) + 1)
     return round(min(40.0, 1.6 + lines * 1.5), 1)

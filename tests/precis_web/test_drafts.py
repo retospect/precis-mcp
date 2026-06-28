@@ -84,6 +84,19 @@ class DraftFakeStore(FakeStore):
                     }
                 },
             ),
+            # a data table (ADR 0035 §1) — canonical meta.table + caption,
+            # rendered as a real <table> (not the derived pipe markdown).
+            _chunk(
+                "TBLTBL",
+                "table",
+                "**Issue register**\n| ID | Title |\n| --- | --- |\n| I1 | alpha |",
+                0,
+                chunk_id=5,
+                meta={
+                    "table": {"header": ["ID", "Title"], "rows": [["I1", "alpha"]]},
+                    "caption": "Issue register",
+                },
+            ),
         ]
         # draft-of → project todo 1; related-to → memory 20
         self._links = [
@@ -334,6 +347,22 @@ def test_figure_renders_img_and_origin_chip(draft_client: TestClient) -> None:
     assert r.status_code == 200
     assert 'src="/drafts/blob/FIGFIG"' in r.text
     assert "original" in r.text and "cleared" in r.text
+
+
+def test_table_renders_as_html_table(draft_client: TestClient) -> None:
+    # ADR 0035 §1 — a chunk_kind='table' renders as a real <table> with a
+    # header row + the caption, not the raw pipe markdown.
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert 'id="c-TBLTBL"' in r.text
+    # isolate the table block's content column (up to its raw "cookie")
+    block = r.text.split('id="c-TBLTBL"', 1)[1].split('x-show="raw"', 1)[0]
+    assert "<table" in block and "<thead>" in block
+    assert "<th" in block and ">ID<" in block and ">Title<" in block
+    assert ">I1<" in block and ">alpha<" in block
+    assert "Issue register" in block
+    # the rendered body is a real table, not the dumped pipe markdown
+    assert "| ID | Title |" not in block
 
 
 def test_reader_shows_all_clear_note(draft_client: TestClient) -> None:
@@ -737,7 +766,7 @@ def test_skeleton_endpoint_returns_blocks_and_version(draft_client: TestClient) 
     data = r.json()
     assert "version" in data
     handles = [b["h"] for b in data["skeleton"]]
-    assert handles == ["AAAAAA", "BBBBBB", "FIGFIG", "FIGTPF"]
+    assert handles == ["AAAAAA", "BBBBBB", "FIGFIG", "FIGTPF", "TBLTBL"]
     # BBBBBB is nested under the AAAAAA heading (collapse ancestry preserved)
     bbb = next(b for b in data["skeleton"] if b["h"] == "BBBBBB")
     assert bbb["anc"] == ["AAAAAA"]

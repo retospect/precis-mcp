@@ -18,6 +18,7 @@ recipe (§2) and its sandbox (§3) are a later build step.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from precis.errors import BadInput
@@ -102,3 +103,83 @@ def table_to_markdown(table: dict[str, Any], *, caption: str | None = None) -> s
     for row in rows:
         lines.append("| " + " | ".join(_cell_md(c) for c in row) + " |")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Render-side recovery — the inverse of the build above. Every display surface
+# (web reader, .docx, LaTeX) wants the *structured* table, not the derived
+# pipe text, so they share one recovery path here (DRY, mirroring how the
+# build side is single-sourced).
+# ---------------------------------------------------------------------------
+
+
+def cell_text(value: Scalar) -> str:
+    """Plain (unescaped) display string for one cell — the surface applies
+    its own escaping (HTML / OOXML / LaTeX). Mirrors :func:`_cell_md` minus
+    the markdown pipe/newline escaping, so booleans and ``None`` read the
+    same everywhere."""
+    if value is None:
+        return ""
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return str(value)
+
+
+def _uncell_md(text: str) -> str:
+    """Reverse :func:`_cell_md`: ``<br>`` → newline and unescape ``\\|`` /
+    ``\\\\`` (used only on the markdown-parse fallback path)."""
+    return text.replace("<br>", "\n").replace(r"\|", "|").replace("\\\\", "\\").strip()
+
+
+def parse_markdown_table(text: str) -> dict[str, Any] | None:
+    """Recover ``{header, rows, caption}`` from a GFM table block — the
+    fallback for a ``chunk_kind='table'`` chunk that predates the canonical
+    ``meta.table`` (e.g. a Marker-ingested table). Returns ``None`` if the
+    text is not a well-formed table (header + ``---`` separator + body)."""
+    caption: str | None = None
+    pipe_lines: list[str] = []
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith("|"):
+            pipe_lines.append(s)
+        elif not pipe_lines and s.startswith("**") and s.endswith("**"):
+            caption = s[2:-2].strip() or None
+    if len(pipe_lines) < 2:
+        return None
+
+    def split_row(s: str) -> list[str]:
+        s = s.strip().strip("|")
+        return [_uncell_md(c) for c in re.split(r"(?<!\\)\|", s)]
+
+    sep = pipe_lines[1]
+    is_sep = bool(sep) and set(sep) <= set("|-: ")
+    if not is_sep:
+        return None
+    header = split_row(pipe_lines[0])
+    rows = [split_row(r) for r in pipe_lines[2:]]
+    return {"header": header, "rows": rows, "caption": caption}
+
+
+def table_payload(
+    meta: dict[str, Any] | None, text: str | None
+) -> dict[str, Any] | None:
+    """Recover a renderable table from a ``chunk_kind='table'`` chunk.
+
+    Prefers the canonical ``meta.table`` (+ ``meta.caption`` legend); falls
+    back to parsing the derived GFM ``text`` for chunks that predate the
+    canonical store. Returns ``{header: [str], rows: [[str]], caption:
+    str|None}`` with every cell already stringified via :func:`cell_text`,
+    or ``None`` when no table can be recovered (the surface then renders the
+    raw text as prose)."""
+    meta = meta or {}
+    tbl = meta.get("table")
+    if isinstance(tbl, dict) and isinstance(tbl.get("header"), list) and tbl["header"]:
+        header = [cell_text(h) for h in tbl["header"]]
+        rows = [[cell_text(c) for c in row] for row in (tbl.get("rows") or [])]
+        cap = meta.get("caption")
+        return {"header": header, "rows": rows, "caption": cap or None}
+    return parse_markdown_table(text or "")

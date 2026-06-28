@@ -198,6 +198,41 @@
       </div>
       {% endif %}
     </div>
+    {% elif r.is_table %}
+    {# ADR 0035 §1 — data table: render meta.table as a real <table> in body
+       view; summary / keywords keep their one-line projections. Falls back
+       to the raw markdown if the table can't be recovered. #}
+    <div x-show="view === 'body'">
+      {% if r.table %}
+      <div class="overflow-x-auto">
+        <table class="w-full border-collapse text-sm">
+          {% if r.table.caption %}
+          <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ r.table.caption | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</caption>
+          {% endif %}
+          <thead>
+            <tr>
+              {% for h in r.table.header %}
+              <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in r.table.rows %}
+            <tr class="even:bg-slate-50">
+              {% for cell in row %}
+              <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</p>
+      {% endif %}
+    </div>
+    <p x-show="view === 'summary'" x-cloak class="text-sm italic text-slate-600 break-words">{{ r.summary }}</p>
+    <p x-show="view === 'keywords'" x-cloak class="text-xs font-mono text-slate-500 break-words">{{ r.keywords }}</p>
     {% elif r.is_item %}
     {# A list item: bullet (•) or number marker + the item body. The
        depth-based padding (above) indents nested items. #}

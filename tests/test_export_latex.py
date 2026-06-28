@@ -401,3 +401,32 @@ def test_export_renders_itemize_and_enumerate(hub, tmp_path) -> None:
     assert "\\item alpha" in body and "\\item beta" in body and "\\item one" in body
     # the bullet list closes before the numbered list opens
     assert body.index("\\end{itemize}") < body.index("\\begin{enumerate}")
+
+
+def test_export_renders_table_as_longtable(hub, tmp_path) -> None:
+    """A chunk_kind='table' renders as a booktabs longtable (ADR 0035 §1)
+    — header in \\toprule…\\midrule, every row a `&`-joined `\\\\` line, the
+    caption a bold lead-in. Replaces the old "dump the pipe markdown" path."""
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    d = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    d.put(id="tb", title="T", project=proj)
+    d.put(
+        id="tb",
+        chunk_kind="table",
+        table={"header": ["ID", "Title"], "rows": [["I1", "loss & gain"], ["I2", "x"]]},
+        caption="Issue register",
+        at={"last": True},
+    )
+    ref = store.get_ref(kind="draft", id="tb")
+    body = latex.render_body(store, ref).body
+    assert "\\begin{longtable}" in body and "\\end{longtable}" in body
+    assert "\\toprule" in body and "\\midrule" in body and "\\bottomrule" in body
+    assert "ID & Title \\\\" in body
+    # cells go through the inline escaper (& → \&); caption is a bold lead-in
+    assert "I1 & loss \\& gain \\\\" in body
+    assert "\\textbf{Issue register}" in body
+    # the derived pipe markdown is NOT dumped as prose
+    assert "| ID | Title |" not in body
