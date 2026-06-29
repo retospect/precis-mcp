@@ -253,50 +253,62 @@ class _Claimed:
     title: str
 
 
-def claim_chunks_without_summary(
-    conn: Any, *, summarizer: str, limit: int
-) -> list[_Claimed]:
-    """Return up to ``limit`` chunks missing the ``summarizer`` summary.
+# The claim is split into two single-bucket passes (priority first) rather
+# than one query with ``ORDER BY (CASE WHEN r.kind ...)``. The CASE term spans
+# the refs join, so the planner cannot satisfy the ORDER BY from an index and
+# falls back to a Seq Scan + Sort over all ~1.5M chunks on *every* batch — and
+# re-scans on each ``SKIP LOCKED`` retry under multi-node contention (startup
+# cost ~487k). A per-bucket ``ORDER BY c.ref_id, c.ord`` instead walks
+# ``chunks_ref_id_idx`` and stops at ``LIMIT`` (startup cost ~70), so locked
+# rows are skipped by continuing the index walk. The anti-join is also written
+# as ``NOT EXISTS`` (not ``LEFT JOIN ... cs.chunk_id IS NULL``): the latter
+# mis-estimates at 1 row and is what tricks the planner into the seq scan.
+_CLAIM_BUCKET_SQL = """
+    SELECT c.chunk_id, c.ref_id, c.ord, c.chunk_kind, c.text,
+           c.section_path, c.keywords, c.numerics,
+           r.kind, r.title
+      FROM chunks c
+      JOIN refs r ON r.ref_id = c.ref_id
+     WHERE NOT EXISTS (
+               SELECT 1 FROM chunk_summaries cs
+                WHERE cs.chunk_id = c.chunk_id
+                  AND cs.summarizer = %s
+                  AND (cs.status <> 'failed' OR cs.attempts >= %s)
+           )
+       AND {kind_pred}
+       AND c.chunk_kind <> ALL(%s)
+       AND length(c.text) >= %s
+       AND length(c.text) <= %s
+       AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+     ORDER BY c.ref_id, c.ord
+     LIMIT %s
+       FOR UPDATE OF c SKIP LOCKED
+"""
 
-    ``conv`` + ``draft`` refs jump the queue: draft refs have the highest
-    ref_ids (most recent), so a plain ``ref_id, ord`` order buries the
-    actively-edited write-up behind the entire ~1M-chunk paper backlog and
-    it never gets summarised (the draft reader's view-slider then only
-    shows the text fallback). The priority bucket sorts them first;
-    ``ref_id, ord`` *within* a bucket still delivers a document's chunks
-    contiguously so the prompt's shared doc-header prefix hits the
-    llama.cpp prefix cache turn after turn. ``FOR UPDATE OF c SKIP
-    LOCKED`` lets workers on multiple nodes fan out without double-work.
+#: Refs whose chunks jump the queue (see ``claim_chunks_without_summary``).
+_PRIORITY_KINDS = ("conv", "draft")
+
+
+def _claim_summary_bucket(
+    conn: Any, *, summarizer: str, limit: int, priority: bool
+) -> list[_Claimed]:
+    """Run one claim pass: the priority (conv/draft) bucket or everything else.
+
+    ``priority=False`` covers all *other* kinds including a NULL ``r.kind`` so
+    the two passes together are an exact partition of the old single query.
     """
-    if limit <= 0:
-        raise ValueError("limit must be positive")
-    sql = """
-        SELECT c.chunk_id, c.ref_id, c.ord, c.chunk_kind, c.text,
-               c.section_path, c.keywords, c.numerics,
-               r.kind, r.title
-          FROM chunks c
-          JOIN refs r ON r.ref_id = c.ref_id
-          LEFT JOIN chunk_summaries cs
-            ON cs.chunk_id = c.chunk_id
-           AND cs.summarizer = %s
-         WHERE (cs.chunk_id IS NULL
-                OR (cs.status = 'failed' AND cs.attempts < %s))
-           AND c.chunk_kind <> ALL(%s)
-           AND length(c.text) >= %s
-           AND length(c.text) <= %s
-           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
-         ORDER BY (CASE WHEN r.kind IN ('conv', 'draft') THEN 0 ELSE 1 END),
-                  c.ref_id, c.ord
-         LIMIT %s
-           FOR UPDATE OF c SKIP LOCKED
-    """
+    kind_pred = (
+        "r.kind IN ('conv', 'draft')"
+        if priority
+        else "(r.kind <> ALL(ARRAY['conv', 'draft']) OR r.kind IS NULL)"
+    )
     # NB the digit-fraction (numeric/coordinate dump) filter is applied in
     # Python after the claim — NOT here. A ``regexp_replace`` over the ~1M
     # un-summarized rows made this claim take ~74s/batch (it can't index, so
     # it runs per candidate row before the LIMIT). The cheap length/kind
     # filters stay in SQL; ``is_numeric_dump`` handles the rest in the pass.
     rows = conn.execute(
-        sql,
+        _CLAIM_BUCKET_SQL.format(kind_pred=kind_pred),
         (
             summarizer,
             MAX_SUMMARIZE_ATTEMPTS,
@@ -306,23 +318,49 @@ def claim_chunks_without_summary(
             limit,
         ),
     ).fetchall()
-    out: list[_Claimed] = []
-    for r in rows:
-        out.append(
-            _Claimed(
-                chunk_id=int(r[0]),
-                ref_id=int(r[1]),
-                ord=int(r[2]),
-                chunk_kind=str(r[3]),
-                text=str(r[4]),
-                section_path=list(r[5] or []),
-                keywords=list(r[6]) if r[6] is not None else None,
-                numerics=list(r[7] or []),
-                ref_kind=str(r[8]),
-                title=str(r[9]),
-            )
+    return [
+        _Claimed(
+            chunk_id=int(r[0]),
+            ref_id=int(r[1]),
+            ord=int(r[2]),
+            chunk_kind=str(r[3]),
+            text=str(r[4]),
+            section_path=list(r[5] or []),
+            keywords=list(r[6]) if r[6] is not None else None,
+            numerics=list(r[7] or []),
+            ref_kind=str(r[8]),
+            title=str(r[9]),
         )
-    return out
+        for r in rows
+    ]
+
+
+def claim_chunks_without_summary(
+    conn: Any, *, summarizer: str, limit: int
+) -> list[_Claimed]:
+    """Return up to ``limit`` chunks missing the ``summarizer`` summary.
+
+    ``conv`` + ``draft`` refs jump the queue: draft refs have the highest
+    ref_ids (most recent), so a plain ``ref_id, ord`` order buries the
+    actively-edited write-up behind the entire ~1M-chunk paper backlog and
+    it never gets summarised (the draft reader's view-slider then only
+    shows the text fallback). So we claim the priority bucket first and only
+    fill the remainder from the rest. ``ref_id, ord`` *within* a bucket still
+    delivers a document's chunks contiguously so the prompt's shared
+    doc-header prefix hits the llama.cpp prefix cache turn after turn.
+    ``FOR UPDATE OF c SKIP LOCKED`` lets workers on multiple nodes fan out
+    without double-work.
+    """
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    claimed = _claim_summary_bucket(
+        conn, summarizer=summarizer, limit=limit, priority=True
+    )
+    if len(claimed) < limit:
+        claimed += _claim_summary_bucket(
+            conn, summarizer=summarizer, limit=limit - len(claimed), priority=False
+        )
+    return claimed
 
 
 def fetch_doc_card(conn: Any, ref_id: int) -> str:

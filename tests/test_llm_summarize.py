@@ -71,11 +71,15 @@ class _FakeConn:
         self.claim_rows = claim_rows
         self.card_text = card_text
         self.writes: list[tuple[str, tuple[Any, ...]]] = []
+        self._claim_calls = 0
 
     def execute(self, sql: str, params: tuple[Any, ...] | None = None) -> _Result:
         flat = " ".join(sql.split())
-        if "LEFT JOIN chunk_summaries cs" in flat:
-            return _Result(self.claim_rows)
+        if "FOR UPDATE OF c SKIP LOCKED" in flat:
+            # claim_chunks_without_summary runs two passes (priority, then the
+            # rest); serve the seeded rows once so totals match production.
+            self._claim_calls += 1
+            return _Result(self.claim_rows if self._claim_calls == 1 else [])
         if "card_combined" in flat:
             return _Result([(self.card_text,)] if self.card_text else [])
         if "INSERT INTO chunk_summaries" in flat:
