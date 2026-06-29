@@ -27,6 +27,9 @@ search(kind='paper', q='X', scope='pa5')            # search inside one ref (han
 search(kind='paper', q='X', exclude=['pa5', 'pa12'])    # skip refs by handle (slugs still resolve)
 search(kind='patent', q='X', source='remote')       # patent-only knob
 search(kind='paper', q='1.523 eV', mode='lexical')  # exact string, no embedding
+search(kind='paper', q='X', queries=['rephrase 1','rephrase 2'],
+       answers=['a passage an ideal source would contain'],
+       per_paper=2, page_size=30)                   # broad / high-recall (see below)
 ```
 
 ## Ranking mode — hybrid (default), lexical, or semantic
@@ -67,6 +70,64 @@ always first.
 | `angle` | float | Salience-rotation search; pairs with `like=` (or `q=` for a seed). See `precis-dreaming-help`. |
 | `like` | str | Seed ref handle for `angle=` search; e.g. `like='pc40'` (a handle also works) or the legacy `like='paper:wang2020state~5'`. |
 | `status` | str | Finding-only shorthand for `tags=['STATUS:<value>']`. Default is `'established'` (the "what evidence do we have?" cohort); pass `'tracing'`/`'multi_candidate'`/`'dead_chain'` for a specific cohort, or `'*'` for all findings regardless. Ignored on every other kind. |
+| `queries` | list[str] | **Broad retrieval** (paper): extra question rephrasings, each fused as its own ranked leg. Up to 8. See below. |
+| `answers` | list[str] | **Broad retrieval** (paper): hypothetical answer passages (HyDE) — short paragraphs you'd *expect* a relevant chunk to read like; embedded and fused. Up to 8. See below. |
+| `per_paper` | int | **Broad retrieval** (paper): cap hits per paper to spread results across more sources (breadth triage). |
+
+## Broad retrieval — when the gold hides behind the wording
+## Find more, better, more-diverse chunks for one question
+## High-recall paper search (multi-query + HyDE)
+
+A single phrasing is fragile: the best chunk often loses just because it
+words the idea differently than you did. Instead of firing 5 separate
+searches and eyeballing each, hand `search` **several angles at once** and
+let it fuse them. A chunk that surfaces across phrasings rises to the top.
+
+Two knobs, both paper-side, both fused with `q` by reciprocal-rank fusion:
+
+- `queries=[…]` — **rephrasings of the question** (synonyms, broader /
+  narrower framings, the sub-questions hiding inside it). Up to 8.
+- `answers=[…]` — **hypothetical answer passages** (HyDE): write 1–3
+  short paragraphs the way you'd expect an *ideal source chunk* to read,
+  and let their embeddings pull in real chunks that look like them. This
+  is often the single biggest lever for technical queries — the fake
+  answer lives in "chunk space", not "question space". Up to 8.
+
+```python
+search(
+    kind='paper',
+    q='does single-atom Cu help nitrate-to-ammonia selectivity?',
+    queries=[
+        'single-atom copper catalyst NO3RR selectivity',
+        'Cu coordination environment ammonia faradaic efficiency',
+        'isolated Cu sites suppress hydrogen evolution nitrate',
+    ],
+    answers=[
+        'Isolating Cu as single atoms on an N-doped carbon support '
+        'raises NH3 faradaic efficiency to ~90% by weakening *NO '
+        'binding and suppressing the competing hydrogen-evolution '
+        'reaction, shifting selectivity toward ammonia.',
+    ],
+    per_paper=2,        # at most 2 chunks per paper → broader spread
+    page_size=30,       # widen the net so the fused set surfaces
+)
+```
+
+Then **poke around** before you trust a hit: paste any returned handle
+into `get(id='pc…')` to read it in full, and `search(kind='paper',
+scope='pa…', q='…')` to read more of that paper around the chunk. Cite
+or write a memory once you've confirmed the context — don't cite off the
+keyword row alone.
+
+Rules of thumb:
+- Reach for this on **research / triage** questions ("what does the
+  corpus say about X?"), not exact-string lookups — for an identifier or
+  acronym use `mode='lexical'`.
+- 3–5 `queries` + 1–2 `answers` is plenty; more legs ≠ better.
+- `per_paper=2` is a good default when you want *breadth* (many papers);
+  drop it when you want to mine one paper deeply.
+- Honors `mode=` (a `'lexical'` broad search fuses only the text legs),
+  `tags=`, `scope=`, `exclude=`, and the year filters like any search.
 
 ## Search the whole corpus
 ## Find something but I don't know which kind

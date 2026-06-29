@@ -71,7 +71,7 @@ def _tools_list_wire_shape() -> list[dict[str, object]]:
 
 
 def test_tools_list_under_byte_budget() -> None:
-    """``tools/list`` JSON serialisation stays under 15 KB.
+    """``tools/list`` JSON serialisation stays under 16 KB.
 
     The seven-verb surface (get, search, put, edit, delete, tag,
     link) plus the ``more`` pagination verb, plus FastMCP's
@@ -95,11 +95,18 @@ def test_tools_list_under_byte_budget() -> None:
     the eighth tool — auxiliary to the seven-verb surface, registered
     so oversized responses can page instead of truncate. On-purpose
     growth, same as the 06-11 bump.
+
+    2026-06-28: cap raised from 15 KB → 16 KB to absorb the
+    broad-retrieval kwargs on ``search`` (``queries`` / ``answers`` /
+    ``per_paper``): ~330 B of irreducible input-schema for three new
+    optional params. The verb description was trimmed (HyDE detail
+    pushed to ``precis-search-help``) so this is schema-side growth
+    only — same as the 06-11 / 06-19 bumps.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 15 * 1024, (
-        f"tools/list wire-shape JSON is {size} bytes (cap: 15 KB). "
+    assert size < 16 * 1024, (
+        f"tools/list wire-shape JSON is {size} bytes (cap: 16 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "
         "spot; bump that test's verbosity if needed."

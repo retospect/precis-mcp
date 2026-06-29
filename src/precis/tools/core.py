@@ -393,6 +393,16 @@ def search(
     # specific lifecycle cohort, or '*' to see all. Declared at the
     # verb level so the schema advertises it to strict-schema clients.
     status: str | None = None,
+    # Broad / high-recall retrieval (paper kind). ``queries=`` are extra
+    # question reformulations and ``answers=`` are hypothetical-answer
+    # passages (HyDE); each becomes a ranked leg reciprocal-rank-fused
+    # with ``q`` so a chunk that surfaces across phrasings wins —
+    # robustness to the exact wording. ``per_paper=`` caps hits per paper
+    # to spread coverage across more sources. Declared at the verb level
+    # so the schema advertises them to strict-schema clients.
+    queries: list[str] | None = None,
+    answers: list[str] | None = None,
+    per_paper: int | None = None,
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
@@ -405,6 +415,9 @@ def search(
     embedder is down), `'semantic'` (cosine). `angle=` + `like='kind:id'`
     sprays `n` diverse items at that cosine; `view='dreamable'` /
     `view='stubs'` are special browses.
+
+    Broad retrieval (paper): `queries=` rephrasings + `answers=` HyDE
+    passages fuse extra ranked legs; `per_paper=` spreads across papers.
 
     Full reference: get(kind='skill', id='precis-search-help').
     """
@@ -460,6 +473,39 @@ def search(
             )
         )
 
+    # Broad-retrieval leg cap: bound the fan-out so a runaway call can't
+    # fire dozens of embeds + SQL legs. queries + answers each cap at 8.
+    if queries is not None and len(queries) > 8:
+        runtime = _get_runtime()
+        return _validation_error(
+            runtime.render_error(
+                BadInput(
+                    f"queries= has {len(queries)} entries, max 8",
+                    next="pass up to 8 distinct rephrasings; merge the rest",
+                )
+            )
+        )
+    if answers is not None and len(answers) > 8:
+        runtime = _get_runtime()
+        return _validation_error(
+            runtime.render_error(
+                BadInput(
+                    f"answers= has {len(answers)} entries, max 8",
+                    next="pass up to 8 hypothetical-answer passages (HyDE)",
+                )
+            )
+        )
+    if per_paper is not None and (not isinstance(per_paper, int) or per_paper < 1):
+        runtime = _get_runtime()
+        return _validation_error(
+            runtime.render_error(
+                BadInput(
+                    f"per_paper must be a positive integer, got {per_paper!r}",
+                    next="per_paper=2 keeps at most 2 hits per paper",
+                )
+            )
+        )
+
     payload: dict[str, Any] = {
         "kind": kind,
         "q": q,
@@ -491,6 +537,14 @@ def search(
         payload["status"] = status
     if mode is not None:
         payload["mode"] = mode
+    # Broad-retrieval knobs — forwarded only when set so a plain search
+    # is byte-identical to its prior payload (single lex+sem path).
+    if queries is not None:
+        payload["queries"] = queries
+    if answers is not None:
+        payload["answers"] = answers
+    if per_paper is not None:
+        payload["per_paper"] = per_paper
 
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("search", payload)

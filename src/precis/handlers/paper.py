@@ -794,6 +794,9 @@ class PaperHandler(Handler):
         mode: str | None = None,
         after: int | str | None = None,
         before: int | str | None = None,
+        queries: list[str] | None = None,
+        answers: list[str] | None = None,
+        per_paper: int | None = None,
         **_kw: Any,
     ) -> Response:
         kind = self.spec.kind
@@ -899,21 +902,64 @@ class PaperHandler(Handler):
         # card is reachable in both the lexical and semantic legs. Body
         # chunks still win per paper (see the dedup below); the card is
         # only a fallback introducer, not a quotable hit.
-        hits = self.store.search_blocks(
-            q=q,
-            query_vec=query_vec,
-            mode=mode,
-            kind=kind,
-            scope_ref_id=scope_ref_id,
-            tags=normalized_tags,
-            limit=page_size,
-            offset=search_offset,
-            max_distance=SEMANTIC_DISTANCE_FLOOR,
-            exclude_ref_ids=exclude_ref_ids or None,
-            year_from=year_from,
-            year_to=year_to,
-            card_kinds=("card_combined",),
+        # Broad / high-recall retrieval (Tier-1 fusion): when the caller
+        # supplies extra query reformulations (``queries=``) and/or
+        # hypothetical-answer passages (``answers=``, HyDE), or asks for a
+        # per-paper diversity cap, fuse every leg via reciprocal-rank
+        # fusion instead of the single lex+sem pass — a chunk that
+        # surfaces across phrasings wins, killing the single-query
+        # formulation sensitivity. Plain calls (no extras, no cap) take
+        # the unchanged single path. (precis-search-help → "Broad
+        # retrieval".)
+        extra_queries = [s for s in (queries or []) if s and s.strip()]
+        hyde_answers = [s for s in (answers or []) if s and s.strip()]
+        per_paper_cap = (
+            per_paper if isinstance(per_paper, int) and per_paper > 0 else None
         )
+        if extra_queries or hyde_answers or per_paper_cap is not None:
+            # Semantic legs embed q + each reformulation + each HyDE
+            # answer (skipping any the embedder can't produce); lexical
+            # legs run over q + each reformulation. ``mode='lexical'``
+            # drops the vectors entirely.
+            q_texts = [q, *extra_queries]
+            query_vecs: list[list[float]] = []
+            if (mode or "hybrid").strip().lower() != "lexical":
+                for text in [q, *extra_queries, *hyde_answers]:
+                    vec = embed_query(self.embedder, text)
+                    if vec is not None:
+                        query_vecs.append(vec)
+            hits = self.store.search_blocks_multi(
+                q_texts=q_texts,
+                query_vecs=query_vecs,
+                mode=mode,
+                kind=kind,
+                scope_ref_id=scope_ref_id,
+                tags=normalized_tags,
+                limit=page_size,
+                offset=search_offset,
+                max_distance=SEMANTIC_DISTANCE_FLOOR,
+                exclude_ref_ids=exclude_ref_ids or None,
+                year_from=year_from,
+                year_to=year_to,
+                card_kinds=("card_combined",),
+                per_paper=per_paper_cap,
+            )
+        else:
+            hits = self.store.search_blocks(
+                q=q,
+                query_vec=query_vec,
+                mode=mode,
+                kind=kind,
+                scope_ref_id=scope_ref_id,
+                tags=normalized_tags,
+                limit=page_size,
+                offset=search_offset,
+                max_distance=SEMANTIC_DISTANCE_FLOOR,
+                exclude_ref_ids=exclude_ref_ids or None,
+                year_from=year_from,
+                year_to=year_to,
+                card_kinds=("card_combined",),
+            )
         hits = _dedup_card_hits(hits)
 
         # Title introducer: a query that *is* a paper's title
@@ -1007,8 +1053,9 @@ class PaperHandler(Handler):
                             "widen the lexical net",
                         ),
                         (
-                            "get(kind='skill', id='precis-help')",
-                            "see search tips for other kinds",
+                            "get(kind='skill', id='precis-search-help')",
+                            "broad retrieval: add queries=/answers= "
+                            "rephrasings so a missed phrasing still hits",
                         ),
                     ]
                 )
@@ -1191,6 +1238,19 @@ class PaperHandler(Handler):
                         "(replace <salient term> with one)",
                     )
                 )
+                # Discoverability: teach the broad / high-recall path
+                # from a plain search. Only when this *was* a simple
+                # call (no queries=/answers=/per_paper=), so broad-mode
+                # callers aren't nagged. Full mechanics in the skill.
+                if not extra_queries and not hyde_answers and per_paper_cap is None:
+                    nav.append(
+                        (
+                            "get(kind='skill', id='precis-search-help')",
+                            "broaden recall: fuse rephrasings + "
+                            "hypothetical answers (queries=/answers=) "
+                            "and spread across papers (per_paper=)",
+                        )
+                    )
                 body += render_next_section(nav)
 
         return Response(body=body)

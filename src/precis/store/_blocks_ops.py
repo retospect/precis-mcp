@@ -795,6 +795,137 @@ class BlocksMixin:
             rows = conn.execute(sql, full_params).fetchall()
         return [_unpack_search_row(r) for r in rows]
 
+    def search_blocks_multi(
+        self,
+        *,
+        q_texts: list[str],
+        query_vecs: list[list[float]],
+        mode: str | None = None,
+        kind: str | None = None,
+        scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        k: int = 60,
+        max_distance: float | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_speculative: bool = False,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        chunk_kinds: list[str] | None = None,
+        chunk_ids: list[int] | None = None,
+        card_kinds: tuple[str, ...] | None = None,
+        per_paper: int | None = None,
+        pool_per_leg: int = 80,
+    ) -> list[tuple[Block, Ref, float]]:
+        """Multi-leg reciprocal-rank fusion for broad / high-recall retrieval.
+
+        Generalises :meth:`search_blocks_fused` (one lexical + one semantic
+        leg) to *N* legs: each entry of ``q_texts`` runs a lexical leg and
+        each entry of ``query_vecs`` runs a semantic leg, then the per-leg
+        ranked lists are reciprocal-rank-fused into one ordering. A chunk
+        that surfaces across several query phrasings / HyDE answer
+        embeddings accumulates contributions and wins — exactly the
+        robustness-to-formulation the single-query path lacks.
+
+        Fusion is application-level: every leg reuses the tested single-leg
+        SQL (:meth:`search_blocks_lexical` / :meth:`search_blocks_semantic`)
+        rather than a hand-rolled N-CTE query, so per-leg ranking semantics
+        stay identical to the proven path. Each leg over-fetches a pool of
+        candidates so the fusion has material to re-rank before the outer
+        ``offset`` / ``limit`` slice.
+
+        ``mode`` mirrors the single-path dispatcher: ``'lexical'`` runs only
+        the ``q_texts`` legs, ``'semantic'`` only the ``query_vecs`` legs,
+        ``'hybrid'`` / ``None`` runs both. With no usable semantic vectors
+        (embedder down, or ``mode='lexical'``) it degrades to the lexical
+        legs alone — the same contract as the single path.
+
+        ``per_paper`` optionally caps how many hits one ref may contribute
+        to the fused result, spreading coverage across more papers (the
+        breadth-triage / diversity knob). ``None`` disables the cap.
+
+        Returns ``(Block, Ref, fused_score)`` tuples, best first.
+        """
+        m = (mode or "hybrid").strip().lower()
+        run_lexical = m != "semantic"
+        run_semantic = m != "lexical" and bool(query_vecs)
+        # A semantic-only request with no usable vectors still answers via
+        # the lexical legs (mirrors the single-path embedder-down fallback).
+        if not run_semantic and not run_lexical:
+            run_lexical = True
+
+        # Over-fetch enough per leg that the fused slice at this depth is
+        # populated; deep pagination over a broad search widens the pool.
+        pool = max(pool_per_leg, (offset + limit) * 2)
+        clean_q = [qt for qt in q_texts if qt and qt.strip()]
+
+        legs: list[list[tuple[Block, Ref, float]]] = []
+        if run_lexical:
+            for qt in clean_q:
+                legs.append(
+                    self.search_blocks_lexical(
+                        q=qt,
+                        kind=kind,
+                        scope_ref_id=scope_ref_id,
+                        tags=tags,
+                        limit=pool,
+                        exclude_ref_ids=exclude_ref_ids,
+                        include_speculative=include_speculative,
+                        year_from=year_from,
+                        year_to=year_to,
+                        chunk_kinds=chunk_kinds,
+                        chunk_ids=chunk_ids,
+                        card_kinds=card_kinds,
+                    )
+                )
+        if run_semantic:
+            for qv in query_vecs:
+                legs.append(
+                    self.search_blocks_semantic(
+                        query_vec=qv,
+                        kind=kind,
+                        scope_ref_id=scope_ref_id,
+                        tags=tags,
+                        limit=pool,
+                        max_distance=max_distance,
+                        exclude_ref_ids=exclude_ref_ids,
+                        include_speculative=include_speculative,
+                        year_from=year_from,
+                        year_to=year_to,
+                        chunk_kinds=chunk_kinds,
+                        chunk_ids=chunk_ids,
+                        card_kinds=card_kinds,
+                    )
+                )
+
+        # Reciprocal-rank fusion: score[cid] = Σ_leg 1/(k + rank_in_leg).
+        # Keep the first-seen (Block, Ref) per chunk for rendering.
+        fused: dict[int, float] = {}
+        seen: dict[int, tuple[Block, Ref]] = {}
+        for leg in legs:
+            for rank, (block, ref, _score) in enumerate(leg):
+                cid = block.id
+                fused[cid] = fused.get(cid, 0.0) + 1.0 / (k + rank + 1)
+                if cid not in seen:
+                    seen[cid] = (block, ref)
+
+        # Sort by fused score desc; deterministic tiebreak on chunk id.
+        ordered = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
+
+        results: list[tuple[Block, Ref, float]] = []
+        per_paper_count: dict[int, int] = {}
+        for cid, score in ordered:
+            block, ref = seen[cid]
+            if per_paper is not None:
+                taken = per_paper_count.get(ref.id, 0)
+                if taken >= per_paper:
+                    continue
+                per_paper_count[ref.id] = taken + 1
+            results.append((block, ref, score))
+
+        return results[offset : offset + limit]
+
     def search_blocks(
         self,
         *,
