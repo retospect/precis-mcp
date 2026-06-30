@@ -132,6 +132,14 @@ def _load_briefing() -> JobTypeSpec:
     return briefing.SPEC
 
 
+def _load_struct_relax() -> JobTypeSpec:
+    # Energy-rung relax on the GPU node via ssh_node; sinks to the §23.16
+    # run-cube (ADR 0043 §23.12). Runs via plugin dispatch.
+    from precis.workers.job_types import struct_relax
+
+    return struct_relax.SPEC
+
+
 #: Name → spec. Populated lazily on first access so the import
 #: graph stays cheap for the MCP server.
 _REGISTRY: dict[str, JobTypeSpec] = {}
@@ -268,6 +276,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "briefing":
         _REGISTRY["briefing"] = _load_briefing()
         return _REGISTRY["briefing"]
+    if name == "struct_relax":
+        _REGISTRY["struct_relax"] = _load_struct_relax()
+        return _REGISTRY["struct_relax"]
     # Fall through to plugin-discovered specs. Cached on first
     # lookup so subsequent calls are cheap.
     plugins = _get_plugin_specs()
@@ -280,7 +291,14 @@ def get_job_type(name: str) -> JobTypeSpec | None:
 
 def known_job_types() -> list[str]:
     """List of registered job_type names (for error messages)."""
-    builtins = ["fix_gripe", "plan_tick", "draft_export", "news_poll", "briefing"]
+    builtins = [
+        "fix_gripe",
+        "plan_tick",
+        "draft_export",
+        "news_poll",
+        "briefing",
+        "struct_relax",
+    ]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for
     # callers that have only ever seen the in-tree set.

@@ -53,6 +53,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "skill",
         "tag",
         "cad",
+        "structure",
     }
 )
 

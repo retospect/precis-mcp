@@ -31,6 +31,7 @@ worker thread for the whole run, so the default ``limit`` is 1.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from precis.workers.executors._common import (
@@ -93,7 +94,17 @@ def run_ssh_node_pass(store: Any, *, limit: int = 1) -> dict[str, int]:
     multi-hour remote run.
     """
     with store.pool.connection() as conn:
-        rows = claim_executor_jobs(conn, executor=_EXECUTOR_NAME, limit=limit)
+        # Node gate: only the node a job pins itself to (meta.params.
+        # target_node) claims it, so the worker that stages to NFS is the
+        # same box the container runs on (§23 #3). Parent gate: skip jobs
+        # whose parent project is paused / halted / asking-user.
+        rows = claim_executor_jobs(
+            conn,
+            executor=_EXECUTOR_NAME,
+            limit=limit,
+            node=os.environ.get("PRECIS_NODE"),
+            parent_not_paused=True,
+        )
         if not rows:
             conn.commit()
             return {"claimed": 0, "ok": 0, "failed": 0}

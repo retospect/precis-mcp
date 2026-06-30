@@ -159,6 +159,14 @@ docx = ["python-docx>=1.1", "lxml>=5.0", "latex2mathml>=3.77"]
 tex = ["lxml>=5.0"]
 # Local calculator (sympy).
 calc = ["sympy>=1.12"]
+# DFT / atomistic structures (ADR 0043). ASE for CIF I/O + symmetry (spglib).
+# POSCAR/extXYZ export and the whole probe loop need NONE of this (pure, core).
+dft = ["ase>=3.22", "spglib>=2.1"]
+# The rented MLIP relax rung (ADR 0043 §9, `fidelity='ml'`): ASE + a machine-
+# learned potential (MACE-MP-0). torch is heavy — gated out of the default
+# install; rung-0 `clean` geometry repair needs none of this. GPAW/DFT
+# (`dft-gpaw`) runs as a cluster job, not inline.
+dft-ml = ["ase>=3.22", "mace-torch>=0.3"]
 # Declarative matplotlib plot renderer.
 plot = ["matplotlib>=3.7", "pydantic>=2.0"]
 # Paid web tools (perplexity / wolfram / youtube transcripts).

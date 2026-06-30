@@ -87,6 +87,8 @@ KIND_CODES: dict[str, str] = {
     "tag": "tg",
     # CAD designs (ADR 0041)
     "cad": "cd",
+    # Atomistic structures (ADR 0043)
+    "structure": "st",
 }
 
 # --- chunk codes (kinds that expose addressable body chunks) --------------

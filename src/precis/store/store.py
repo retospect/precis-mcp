@@ -64,6 +64,7 @@ from precis.store._mappers import (
     _row_to_ref,
 )
 from precis.store._refs_ops import RefsMixin
+from precis.store._structure_ops import StructureMixin
 from precis.store._tags_ops import TagsMixin
 from precis.store.pool import create_pool
 
@@ -77,6 +78,7 @@ class Store(
     RefsMixin,
     BlocksMixin,
     CadMixin,
+    StructureMixin,
     DraftMixin,
     _AbbrevMixin,
     TagsMixin,

@@ -28,15 +28,26 @@ def _mk_job(
     executor: str = "ssh_node",
     job_type: str = "fake_relax",
     params: dict[str, Any] | None = None,
+    parent_id: int | None = None,
 ) -> int:
     ref = store.insert_ref(
         kind="job",
         slug=None,
         title="fake relax job",
         meta={"executor": executor, "job_type": job_type, "params": params or {}},
+        parent_id=parent_id,
     )
     store.add_tag(ref.id, Tag.parse_strict("STATUS:queued"), set_by="agent")
     return int(ref.id)
+
+
+def _succeeds(ssh_node_mod: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wire a job_type whose dispatch just marks the job succeeded."""
+    monkeypatch.setattr(
+        ssh_node_mod,
+        "get_job_type",
+        lambda name: _spec(dispatch=lambda c, s: c.set_status("succeeded")),
+    )
 
 
 def _status(store: Store, ref_id: int) -> str | None:
@@ -152,3 +163,64 @@ def test_empty_queue_is_noop(store: Store) -> None:
         "ok": 0,
         "failed": 0,
     }
+
+
+# ── node gate (§23 #3) ────────────────────────────────────────────
+
+
+def test_node_gate_pins_job_to_its_node(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job pinned via params.target_node is claimed only by that node's
+    worker (PRECIS_NODE) — the box that stages to NFS == the box the container
+    runs on, so the bind paths line up."""
+    _succeeds(ssh_node, monkeypatch)
+    rid = _mk_job(store, params={"target_node": "spark"})
+
+    # A node-less worker (PRECIS_NODE unset) must not grab a pinned job.
+    monkeypatch.delenv("PRECIS_NODE", raising=False)
+    assert ssh_node.run_ssh_node_pass(store, limit=2)["claimed"] == 0
+    assert _status(store, rid) == "queued"
+
+    # The wrong node skips it too.
+    monkeypatch.setenv("PRECIS_NODE", "melchior")
+    assert ssh_node.run_ssh_node_pass(store, limit=2)["claimed"] == 0
+    assert _status(store, rid) == "queued"
+
+    # spark's worker claims it.
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    assert ssh_node.run_ssh_node_pass(store, limit=2)["claimed"] == 1
+    assert _status(store, rid) == "succeeded"
+
+
+def test_node_gate_unpinned_job_claimed_by_any_node(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An un-pinned job (no target_node) is claimable regardless of node — the
+    gate is opt-in, so existing ssh_node job_types are unaffected."""
+    _succeeds(ssh_node, monkeypatch)
+    rid = _mk_job(store)
+    monkeypatch.delenv("PRECIS_NODE", raising=False)
+    assert ssh_node.run_ssh_node_pass(store, limit=2)["claimed"] == 1
+    assert _status(store, rid) == "succeeded"
+
+
+# ── parent gate (§23 #3) ──────────────────────────────────────────
+
+
+def test_parent_gate_skips_paused_project(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job whose parent todo is halted / asking-user is not claimed — a paused
+    project must not burn heavy compute until the owner unblocks it."""
+    _succeeds(ssh_node, monkeypatch)
+    paused = store.insert_ref(kind="todo", slug=None, title="paused", meta={})
+    store.add_tag(paused.id, Tag.parse_strict("halt:manual"), set_by="agent")
+    blocked = _mk_job(store, parent_id=paused.id)
+
+    live = store.insert_ref(kind="todo", slug=None, title="live", meta={})
+    ok = _mk_job(store, parent_id=live.id)
+
+    ssh_node.run_ssh_node_pass(store, limit=5)
+    assert _status(store, blocked) == "queued"  # parent halted → skipped
+    assert _status(store, ok) == "succeeded"  # live parent → claimed

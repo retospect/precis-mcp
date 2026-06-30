@@ -64,6 +64,8 @@ def claim_executor_jobs(
     executor: str,
     limit: int,
     exclude_paused: bool = False,
+    node: str | None = None,
+    parent_not_paused: bool = False,
 ) -> list[tuple[int, str, dict[str, Any]]]:
     """Lock up to ``limit`` claimable jobs for ``executor``.
 
@@ -75,6 +77,20 @@ def claim_executor_jobs(
     ``child-failed:*``) via the shared
     :func:`_doable_exclusion_clause` so the vocabulary stays in sync
     with the dispatcher's candidate query.
+
+    **Node gate (ADR 0043 §23 #3).** A job may pin itself to a node via
+    ``meta.params.target_node`` (``struct_relax`` sets it so the GPU
+    relax is claimed by the node that ssh+stages it, keeping the NFS
+    bind paths consistent). A worker passes its own ``node`` (from
+    ``PRECIS_NODE``; ``None`` when unset): an un-pinned job is claimable
+    by anyone, a pinned job only by the matching node. A node-less
+    worker therefore claims only un-pinned jobs — the ``= NULL`` compare
+    is never true, so it can't grab a job meant for a specific box.
+
+    **Parent gate (§23 #3).** When ``parent_not_paused`` is True, skip a
+    job whose *parent* todo carries an open-namespace pause tag — a
+    halted / asking-user / child-failed project must not burn heavy
+    compute until the owner unblocks it.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -89,6 +105,16 @@ def claim_executor_jobs(
                     AND {_doable_exclusion_clause()}
                )"""
 
+    parent_sql = ""
+    if parent_not_paused:
+        parent_sql = f"""
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                  WHERE rt.ref_id = r.parent_id
+                    AND t.namespace = 'OPEN'
+                    AND {_doable_exclusion_clause()}
+               )"""
+
     rows = conn.execute(
         f"""
         SELECT r.ref_id, r.title, r.meta
@@ -96,6 +122,10 @@ def claim_executor_jobs(
          WHERE r.kind = 'job'
            AND r.deleted_at IS NULL
            AND r.meta->>'executor' = %s
+           AND (
+                (r.meta->'params'->>'target_node') IS NULL
+             OR (r.meta->'params'->>'target_node') = %s
+           )
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
@@ -107,7 +137,7 @@ def claim_executor_jobs(
                   WHERE rt.ref_id = r.ref_id
                     AND t.namespace = %s
                     AND t.value = ANY(%s)
-               ){exclusion_sql}
+               ){exclusion_sql}{parent_sql}
            AND (
                 (r.meta->>'lease_until') IS NULL
              OR (r.meta->>'lease_until')::timestamptz < now()
@@ -118,6 +148,7 @@ def claim_executor_jobs(
         """,
         (
             executor,
+            node,
             STATUS_NAMESPACE,
             QUEUED,
             STATUS_NAMESPACE,

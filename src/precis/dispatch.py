@@ -645,6 +645,7 @@ def boot(
         from precis.handlers.presentation import PresentationHandler
         from precis.handlers.random import RandomHandler
         from precis.handlers.skill import SkillHandler
+        from precis.handlers.structure import StructureHandler
         from precis.handlers.tag import TagHandler
         from precis.handlers.todo import TodoHandler
 
@@ -666,6 +667,7 @@ def boot(
         _gated(PresentationHandler)
         _gated(DraftHandler)
         _gated(CadHandler)
+        _gated(StructureHandler)
         _gated(OracleHandler)
         # Oracle YAML lives in the wheel; reconcile it against the
         # DB-recorded version on every boot so a wheel upgrade or
