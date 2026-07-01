@@ -29,7 +29,8 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.structure.cell import Cell
-from precis.structure.scene import Atom, Bond, Scene
+from precis.structure.measures import evaluate as _evaluate_measure
+from precis.structure.scene import Atom, Bond, Measure, Scene
 
 _LABEL_RE = re.compile(r"^a([A-Z][a-z]?)(\d+)$")
 
@@ -106,6 +107,14 @@ class StructureMixin:
                     "WHERE ref_id = %s AND retired_version IS NULL",
                     (version, ref.id),
                 )
+                # Markers persist across edits (no added_version — they are
+                # re-evaluated, §6.8), so retire-and-reinsert the whole set to
+                # refresh value_derived / verdict against the new geometry.
+                conn.execute(
+                    "UPDATE struct_measures SET retired_version = %s "
+                    "WHERE ref_id = %s AND retired_version IS NULL",
+                    (version, ref.id),
+                )
                 conn.execute(
                     "UPDATE refs SET title = %s, meta = %s WHERE ref_id = %s",
                     (title, Jsonb(meta), ref.id),
@@ -148,8 +157,35 @@ class StructureMixin:
                         version,
                     ),
                 )
+            self._write_measures(conn, ref_id=ref.id, scene=scene)
             self._write_struct_card(conn, ref_id=ref.id, card_text=card_text)
         return ref, created
+
+    def _write_measures(self, conn: Connection, *, ref_id: int, scene: Scene) -> None:
+        """Insert the live cursor/measure set, snapshotting each marker's derived
+        value + verdict against the final geometry. Anchors are atom **labels**
+        in the jsonb (stable identity), never row ids that an edit would orphan.
+        """
+        for m in scene.measures:
+            value, verdict = _evaluate_measure(scene, m)
+            conn.execute(
+                "INSERT INTO struct_measures "
+                "(ref_id, kind, direction, goal, strength, operands, embodiment, "
+                ' "for", value_derived, verdict) '
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    ref_id,
+                    m.kind,
+                    m.direction,
+                    Jsonb(m.goal) if m.goal is not None else None,
+                    m.strength,
+                    Jsonb({"atoms": m.operands}),
+                    Jsonb({"name": m.name, "reach": m.reach}),
+                    m.for_,
+                    Jsonb(value),
+                    verdict,
+                ),
+            )
 
     # -- read ------------------------------------------------------------
     def structure_load(self, ref_id: int) -> tuple[Scene, dict[str, int]]:
@@ -168,6 +204,12 @@ class StructureMixin:
             ).fetchall()
             brows = conn.execute(
                 "SELECT kind, bond_order, provenance, i, j, image FROM struct_bonds "
+                "WHERE ref_id = %s AND retired_version IS NULL ORDER BY id ASC",
+                (ref_id,),
+            ).fetchall()
+            mrows = conn.execute(
+                'SELECT kind, direction, goal, strength, operands, embodiment, "for" '
+                "FROM struct_measures "
                 "WHERE ref_id = %s AND retired_version IS NULL ORDER BY id ASC",
                 (ref_id,),
             ).fetchall()
@@ -197,6 +239,21 @@ class StructureMixin:
                     kind=str(kind),
                     provenance=str(prov),
                     image=tuple(int(x) for x in (image or [0, 0, 0])),  # type: ignore[arg-type]
+                )
+            )
+        for mkind, direction, goal, strength, operands, embodiment, for_ in mrows:
+            emb = embodiment or {}
+            reach = emb.get("reach")
+            scene.measures.append(
+                Measure(
+                    kind=str(mkind),
+                    operands=list((operands or {}).get("atoms", [])),
+                    name=emb.get("name"),
+                    reach=float(reach) if reach is not None else None,
+                    direction=direction,
+                    goal=goal,
+                    strength=str(strength or "gauge"),
+                    for_=for_,
                 )
             )
         return scene, handles

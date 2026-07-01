@@ -73,6 +73,10 @@ put(kind='structure', id='pd111', text='''{
 | `add_bond` | `i`, `j`, `order?`, `image?:[i,j,k]` | declare a bond (intent) |
 | `remove_bond` | `i`, `j` | drop a declared bond |
 | `constrain` | `atoms:[…]`, `kind` | `fixed-x|y|z|all` — freeze axes (use sparingly) |
+| `cursor` | `name`, `atoms:[…]`, `reach?`, `for?` | drop/replace a named cursor (§6.8) — see Cursors & measures |
+| `measure` | `kind`, `atoms:[…]`, `direction?`, `goal?`, `strength?`, `for?` | pin a measurement with an optional graded goal (§7) |
+| `unmark` | `name` | retire a cursor by name |
+| `remove_measure` | `kind`, `atoms:[…]` | retire a measure |
 | `relax` | `fidelity?`, `steps?`, `model?` | terminal op — see the ladder below |
 
 **Bonds are intent, not a DFT input.** Declare the bonds you mean; the
@@ -159,9 +163,49 @@ get(..., view='pov', args={'support': ['aC1','aC2','aC3','aC4','aC5','aC6'], 're
 ```
 
 Returns **`i_am`** (atom/fragment) · **`i_include`** (the support) ·
-**`i_touch`** (everything within reach, nearest-first). The persisted,
-named cursor with a bookmark stack is a later refinement; v1 is stateless —
-you pass the support each call.
+**`i_touch`** (everything within reach, nearest-first). `pov` is the
+*stateless* readout; a **cursor** is the persisted, named form — see below.
+
+## Cursors & measures — persisted, re-evaluated markers (§6.8/§7)
+
+Unlike a `pov` (recomputed each call), a **cursor** or **measure** is *saved*
+on the design and **re-evaluated after every edit/relax**, so its value +
+verdict stay live. Anchors are atom **labels** (stable identity), so a marker
+survives an edit.
+
+```python
+# a named navigation handle over a support set
+edit(kind='structure', id='pd111',
+     ops=[{"op": "cursor", "name": "active_site", "atoms": ["aPd12"],
+           "reach": 3.0, "for": "the reactive Pd"}])
+
+# a pinned measurement with a graded goal
+edit(kind='structure', id='pd111',
+     ops=[{"op": "measure", "kind": "distance", "atoms": ["aH1", "aPd12"],
+           "direction": "target", "goal": {"target": 2.4, "tol": 0.1},
+           "strength": "soft", "for": "keep the H bound"}])
+
+get(kind='structure', id='pd111', view='markers')   # all cursors + measures, live value + verdict
+```
+
+- **measure `kind`**: `distance` / `bond_length` (2 atoms) · `angle` (3) ·
+  `coordination` (1). **`direction`**: `min|max|target`. **`goal`**:
+  `{target, tol}` or `{min}` / `{max}`. **`strength`**: `hard|soft|gauge` — a
+  `soft` failure is downgraded to a warning; `gauge` is a readout with no
+  verdict. Retire with `unmark`/`remove_measure`.
+- A marker whose atoms are later removed reads **`dangling`** (legible, not an
+  error).
+
+## Lineage — `link` (relate designs)
+
+```python
+# a derived design points back to its parent
+link(kind='structure', id='pd111_h', target='structure:pd111', rel='derived-from')
+```
+
+`derived-from` (⇄ `derived-into`) records that one design came from another —
+e.g. an LLM-proposed edit branched to a new slug. Read both directions with
+the store's link queries; the web viewer renders the lineage.
 
 ## Relax — the fidelity ladder (`{"op":"relax", …}`)
 

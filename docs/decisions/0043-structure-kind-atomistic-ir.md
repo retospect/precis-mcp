@@ -666,6 +666,17 @@ DFT single-point and are blank until one runs (§8.1's intent-vs-derived line).
 
 ### 6.8 Many cursors — a named watchlist + a live dashboard
 
+> **Built (2026-07-01).** Cursors + §7 measures are now wired on the
+> dormant `struct_measures` table (they were schema-only): the
+> `cursor`/`measure`/`unmark`/`remove_measure` ops (`structure/ops.py`),
+> a `measures.py` evaluator, versioned persistence in `structure_save`,
+> and `get(view='markers')`. Anchors are the stable atom **label** (not a
+> `struct_atoms.id`, which the retire-and-reinsert of an edit orphans), so
+> a marker survives edits and re-evaluates its value + verdict against the
+> current geometry. Surfaced in the web viewer (`/structure/<slug>` — a
+> panel + a 3D overlay of measure lines and cursor flags). A named-cursor
+> *bookmark stack* + the cross-experiment tier stay vision.
+
 Yes — **not one focus, a *set* of named cursors** (your question): `@active_site`,
 `@defect`, `@left_edge`, `@big_ring` (its aromaticity lens on). Each is a
 **persisted embodiment (§6.6)** carrying a **`for` / reason** — *why I'm watching
@@ -1185,6 +1196,17 @@ binary dependency** — only the DFT/LAMMPS *export* gates on its backend.
   in `precis-overview` / `precis-help` / `precis-toolpath-help`.
 
 ### 15. Workflow — fork, sequence, resume (lineage + the todo tree)
+
+> **Built (2026-07-01) — the human fork/modify loop, from the web.** A
+> `structure_propose` job_type (claude_inproc) turns a natural-language
+> instruction into proposed ops **without applying them** — the `claude -p`
+> call is given no MCP tools, so it can only return dry-run-validated ops
+> JSON, never mutate. `StructureHandler.derive(id, to, ops)` then **forks a
+> new slug** with the ops applied, linked `derived-from` the parent (the
+> parent is untouched, so `view='diff'` compares them). The web
+> "Further instructions" box drives this end to end (`/instruct` →
+> `/proposal` poll → `/apply`), with each proposed op hover-highlighting
+> its target atom in the 3D cell.
 
 The request names the real loop: **build a base model → fork it → modify →
 run a simulation → continue the thread of thought once the result has actually

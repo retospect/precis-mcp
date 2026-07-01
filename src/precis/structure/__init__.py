@@ -11,9 +11,10 @@ store + handler (the DB layer) wrap this core.
 from __future__ import annotations
 
 from .cell import Cell, ImageOffset
+from .measures import evaluate as evaluate_measure
 from .ops import OpError, apply_ops
 from .relax import RelaxResult, RelaxUnsupported, relax
-from .scene import Atom, Bond, Scene
+from .scene import Atom, Bond, Measure, Scene
 from .validate import Finding, validate
 
 __all__ = [
@@ -22,11 +23,13 @@ __all__ = [
     "Cell",
     "Finding",
     "ImageOffset",
+    "Measure",
     "OpError",
     "RelaxResult",
     "RelaxUnsupported",
     "Scene",
     "apply_ops",
+    "evaluate_measure",
     "relax",
     "validate",
 ]

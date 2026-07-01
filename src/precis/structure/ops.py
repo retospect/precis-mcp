@@ -15,7 +15,8 @@ from typing import Any
 import numpy as np
 
 from .cell import Cell
-from .scene import FIX_ALL, FIX_X, FIX_Y, FIX_Z, Atom, Bond, Scene
+from .measures import _MEASURE_ARITY, _MEASURE_KINDS
+from .scene import FIX_ALL, FIX_X, FIX_Y, FIX_Z, Atom, Bond, Measure, Scene
 
 _FIX_KINDS = {
     "none": 0,
@@ -144,6 +145,88 @@ def _op_constrain(scene: Scene, op: dict[str, Any]) -> None:
         _require_atom(scene, label).fixed = mask
 
 
+def _op_cursor(scene: Scene, op: dict[str, Any]) -> None:
+    """Drop / replace a named cursor — a §6.8 embodiment over a support set."""
+    name = op.get("name")
+    if not name:
+        raise OpError("cursor needs a 'name' (e.g. 'active_site')")
+    atoms = op.get("atoms") or op.get("support") or []
+    if not atoms:
+        raise OpError("cursor needs 'atoms' (its support set)")
+    for label in atoms:
+        _require_atom(scene, label)
+    reach = op.get("reach")
+    m = Measure(
+        kind="cursor",
+        name=str(name),
+        operands=[str(a) for a in atoms],
+        reach=float(reach) if reach is not None else None,
+        for_=op.get("for"),
+    )
+    # a cursor name is unique within the design — replace any prior one
+    scene.measures = [
+        x for x in scene.measures if not (x.kind == "cursor" and x.name == m.name)
+    ]
+    scene.measures.append(m)
+
+
+def _op_measure(scene: Scene, op: dict[str, Any]) -> None:
+    """Pin a measure (distance / angle / coordination / bond_length) with an
+    optional graded goal. Replaces an existing measure over the same operands."""
+    kind = op.get("kind")
+    if kind not in _MEASURE_KINDS:
+        raise OpError(
+            f"measure kind must be one of {sorted(_MEASURE_KINDS)}, got {kind!r}"
+        )
+    atoms = [str(a) for a in (op.get("atoms") or [])]
+    if len(atoms) != _MEASURE_ARITY[kind]:
+        raise OpError(
+            f"measure {kind!r} needs {_MEASURE_ARITY[kind]} atom(s), got {len(atoms)}"
+        )
+    for label in atoms:
+        _require_atom(scene, label)
+    direction = op.get("direction")
+    if direction is not None and direction not in ("min", "max", "target"):
+        raise OpError(f"measure direction must be min|max|target, got {direction!r}")
+    m = Measure(
+        kind=str(kind),
+        operands=atoms,
+        direction=direction,
+        goal=op.get("goal"),
+        strength=str(op.get("strength", "gauge")),
+        for_=op.get("for"),
+    )
+    scene.measures = [
+        x for x in scene.measures if not (x.kind == m.kind and x.operands == m.operands)
+    ]
+    scene.measures.append(m)
+
+
+def _op_unmark(scene: Scene, op: dict[str, Any]) -> None:
+    """Retire a cursor by name."""
+    name = op.get("name")
+    if not name:
+        raise OpError("unmark needs a cursor 'name'")
+    before = len(scene.measures)
+    scene.measures = [
+        x for x in scene.measures if not (x.kind == "cursor" and x.name == str(name))
+    ]
+    if len(scene.measures) == before:
+        raise OpError(f"no cursor named {name!r}")
+
+
+def _op_remove_measure(scene: Scene, op: dict[str, Any]) -> None:
+    """Retire a measure by (kind, operands)."""
+    kind = op.get("kind")
+    atoms = [str(a) for a in (op.get("atoms") or [])]
+    before = len(scene.measures)
+    scene.measures = [
+        x for x in scene.measures if not (x.kind == kind and x.operands == atoms)
+    ]
+    if len(scene.measures) == before:
+        raise OpError(f"no {kind!r} measure over {atoms!r}")
+
+
 _OPS = {
     "set_cell": _op_set_cell,
     "add_atom": _op_add_atom,
@@ -153,4 +236,8 @@ _OPS = {
     "add_bond": _op_add_bond,
     "remove_bond": _op_remove_bond,
     "constrain": _op_constrain,
+    "cursor": _op_cursor,
+    "measure": _op_measure,
+    "unmark": _op_unmark,
+    "remove_measure": _op_remove_measure,
 }

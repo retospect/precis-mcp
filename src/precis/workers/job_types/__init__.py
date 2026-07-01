@@ -140,6 +140,14 @@ def _load_struct_relax() -> JobTypeSpec:
     return struct_relax.SPEC
 
 
+def _load_structure_propose() -> JobTypeSpec:
+    # LLM turns an instruction into proposed structure ops (tool-less claude,
+    # propose-only) under claude_inproc. Runs via plugin dispatch.
+    from precis.workers.job_types import structure_propose
+
+    return structure_propose.SPEC
+
+
 #: Name → spec. Populated lazily on first access so the import
 #: graph stays cheap for the MCP server.
 _REGISTRY: dict[str, JobTypeSpec] = {}
@@ -279,6 +287,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "struct_relax":
         _REGISTRY["struct_relax"] = _load_struct_relax()
         return _REGISTRY["struct_relax"]
+    if name == "structure_propose":
+        _REGISTRY["structure_propose"] = _load_structure_propose()
+        return _REGISTRY["structure_propose"]
     # Fall through to plugin-discovered specs. Cached on first
     # lookup so subsequent calls are cheap.
     plugins = _get_plugin_specs()
@@ -298,6 +309,7 @@ def known_job_types() -> list[str]:
         "news_poll",
         "briefing",
         "struct_relax",
+        "structure_propose",
     ]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for

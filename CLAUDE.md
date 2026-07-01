@@ -242,6 +242,24 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
   audit). Executors include `claude_inproc`; `fix_gripe` is the
   reference job_type (clones the repo, runs `claude -p`, pushes a
   review branch).
+- **`structure`** — atomistic cell + bond-graph IR (ADR 0043): a
+  slug-addressed design (cell on `refs.meta`; atoms/bonds/measures in
+  `struct_*`), edited by typed **ops** and read by in-memory **probes**,
+  never pixels. Energy rungs relax via the run-cube cache (§23.16) +
+  `struct_relax` on the GPU node. **Cursors + measures** (§6.8/§7) live on
+  `struct_measures` — `cursor`/`measure`/`unmark`/`remove_measure` ops
+  anchored by stable atom **label** (not row id, which an edit orphans),
+  persisting across edits and re-evaluated (`view='markers'`). `link`
+  relates designs (`derived-from`); `StructureHandler.derive(id,to,ops)`
+  branches a new slug (the web Apply). **Web** (`precis_web/routes/
+  structure.py`, `/structure`): a 3D viewer (element-coloured clickable
+  atoms + authoritative clickable bonds + initial/relaxed overlay + a
+  `data-atoms` text→cell cross-highlight), a run-cube panel, a cursors &
+  measures panel + 3D overlay, a lineage row, and a **"Further instructions"
+  box** — `POST /instruct` mints a `structure_propose` job (tool-less
+  `claude -p`, so it *cannot* mutate: it returns dry-run-validated ops
+  JSON), the box polls `/proposal`, and `POST /apply` derives a new design.
+  Skill: `precis-structure-help`.
 - **`citation`** — verifier-workflow kind:
   `put(kind='citation', text=<claim>, source_handle, source_quote,
   verifier_confidence, link='paper:<slug>', rel='cites')`. The tex

@@ -16,7 +16,7 @@
   <div>
     <div class="flex items-center gap-2 mb-2">
       <h2 class="text-sm font-semibold text-slate-700">Cell</h2>
-      {% if viewer.relaxed_xyz %}
+      {% if viewer.relaxed %}
       <div class="inline-flex rounded-md border border-slate-300 overflow-hidden text-xs ml-auto">
         <button type="button" data-mode="initial" class="sv-mode px-2 py-1 hover:bg-slate-100">Input</button>
         <button type="button" data-mode="relaxed" class="sv-mode px-2 py-1 hover:bg-slate-100 border-l border-slate-300">Relaxed</button>
@@ -28,10 +28,52 @@
     </div>
     <div id="mol" class="relative w-full rounded-lg border border-slate-200 bg-white"
          style="height: 460px;"></div>
+
+    {# element legend — hover a chip to glow every atom of that element #}
+    {% if viewer.legend %}
+    <div class="flex flex-wrap gap-2 mt-2">
+      {% for e in viewer.legend %}
+      <span class="sv-hl inline-flex items-center gap-1 text-[11px] text-slate-500 cursor-pointer rounded px-1 hover:bg-amber-50"
+            data-atoms="{{ e.labels | join(',') }}">
+        <span class="inline-block w-3 h-3 rounded-full border border-slate-300" style="background: {{ e.color }};"></span>
+        {{ e.element }}<span class="text-slate-400">×{{ e.count }}</span>
+      </span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
     <p class="text-[11px] text-slate-400 mt-1">
-      Drag to rotate · scroll to zoom. Bonds auto-detected by distance; the dashed box is the unit cell.
+      Drag to rotate · scroll to zoom · <b>click an atom or bond</b> for details. The dashed box is the unit cell.
       {% if viewer.relaxed_run_id %}Relaxed geometry from run r{{ viewer.relaxed_run_id }}.{% endif %}
     </p>
+
+    {# click-detail panel #}
+    <div id="sv-detail" class="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm min-h-[64px]">
+      <span class="text-slate-400 text-xs">Click an atom or bond in the cell to inspect it.</span>
+    </div>
+
+    {# "what moved" — hover a row to glow the atom that shifted (input→relaxed).
+       Same text→viewer highlight the proposed-ops list will reuse. #}
+    {% if viewer.moved %}
+    <details class="mt-2 rounded-lg border border-slate-200 bg-white" open>
+      <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-600">
+        What moved <span class="font-normal text-slate-400">— {{ viewer.moved | length }} atom{{ '' if viewer.moved | length == 1 else 's' }} shifted, input → relaxed</span>
+      </summary>
+      <div class="px-3 pb-2 max-h-40 overflow-y-auto space-y-0.5">
+        {% set maxd = viewer.moved[0].delta %}
+        {% for m in viewer.moved %}
+        <div class="sv-hl flex items-center gap-2 text-xs rounded px-1 py-0.5 cursor-pointer hover:bg-amber-50"
+             data-atoms="{{ m.label }}">
+          <code class="text-slate-500 w-16 shrink-0">{{ m.label }}</code>
+          <div class="flex-1 h-1.5 rounded bg-slate-100 overflow-hidden">
+            <div class="h-full bg-amber-400" style="width: {{ (100 * m.delta / maxd) if maxd else 0 }}%;"></div>
+          </div>
+          <span class="tabular-nums text-slate-500 w-16 text-right">{{ '%.3f'|format(m.delta) }} Å</span>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
   </div>
 
   {# ── right: run-cube panel ── #}
@@ -96,6 +138,70 @@
   </div>
 </div>
 
+{# ── lineage ── #}
+{% if lineage.parents or lineage.children %}
+<div class="mt-4 text-xs text-slate-500 flex flex-wrap items-center gap-4">
+  {% if lineage.parents %}<span>Derived from:
+    {% for p in lineage.parents %}<a class="text-emerald-700 hover:underline" href="/structure/{{ p.slug }}">{{ p.slug }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+  </span>{% endif %}
+  {% if lineage.children %}<span>Derived designs:
+    {% for c in lineage.children %}<a class="text-emerald-700 hover:underline" href="/structure/{{ c.slug }}">{{ c.slug }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+  </span>{% endif %}
+</div>
+{% endif %}
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+
+  {# ── further instructions → LLM proposal ── #}
+  <div id="instruct">
+    <h2 class="text-sm font-semibold text-slate-700 mb-2">Further instructions
+      <span class="text-xs font-normal text-slate-400">— an LLM proposes edits; you review &amp; apply to a new design</span>
+    </h2>
+    <form method="post" action="/structure/{{ slug }}/instruct" class="flex gap-2">
+      <input name="instruction" required autocomplete="off"
+             placeholder="e.g. add an H to cap the undercoordinated Si, then mark the active site"
+             class="flex-1 rounded border border-slate-300 px-2 py-1 text-sm">
+      <button class="rounded bg-slate-700 text-white text-sm px-3 py-1 hover:bg-slate-800 whitespace-nowrap">Propose ▸</button>
+    </form>
+    <div id="sv-proposal" class="mt-3" data-slug="{{ slug }}">
+      <span class="text-xs text-slate-400">No proposal yet — type an instruction above.</span>
+    </div>
+  </div>
+
+  {# ── cursors & measures ── #}
+  <div>
+    <h2 class="text-sm font-semibold text-slate-700 mb-2">Cursors &amp; measures
+      <span class="text-xs font-normal text-slate-400">— hover a row to glow its atoms (§6.8/§7)</span>
+    </h2>
+    {% if not markers %}
+      <p class="text-sm text-slate-500">None yet. Add one via an instruction ("mark the active site") or a cursor/measure op.</p>
+    {% else %}
+    <div class="space-y-1">
+      {% for m in markers %}
+      <div class="sv-hl flex items-center gap-2 text-xs rounded px-2 py-1 border border-slate-200 bg-white cursor-pointer hover:bg-amber-50"
+           data-atoms="{{ m.operands | join(',') }}"
+           data-desc="{{ m.label }} [{{ m.kind }}] over {{ m.operands | join(', ') }}{% if m.for %} — {{ m.for }}{% endif %}">
+        <span class="font-semibold text-slate-700">{{ m.label }}</span>
+        <span class="text-[10px] px-1 rounded bg-slate-100 text-slate-500">{{ m.kind }}</span>
+        <span class="text-slate-400">{{ m.operands | join(' ') }}</span>
+        <span class="ml-auto tabular-nums text-slate-600">{{ m.value }}</span>
+        {% if m.verdict %}
+          <span class="text-[10px] px-1 rounded-full
+            {%- if m.verdict == 'ok' %} bg-emerald-100 text-emerald-800
+            {%- elif m.verdict == 'warn' %} bg-amber-100 text-amber-800
+            {%- elif m.verdict == 'dangling' %} bg-slate-200 text-slate-600
+            {%- else %} bg-red-100 text-red-800{% endif %}"> {{ m.verdict }}</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# floating popover — rendered UNDER the pointer #}
+<div id="sv-pop" class="fixed z-50 hidden max-w-xs rounded-md bg-slate-800 text-white text-xs px-2 py-1 shadow-lg pointer-events-none"></div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -103,18 +209,68 @@
 <script>
 (function () {
   const V = {
-    initial: {{ viewer.initial_xyz | tojson }},
-    relaxed: {{ viewer.relaxed_xyz | tojson }},
-    lattice: {{ viewer.lattice | tojson }},
+    initial: {{ viewer.initial | tojson }},
+    relaxed: {{ viewer.relaxed | tojson }},
+    markers: {{ markers | tojson }},
   };
 
-  const SOLID   = { stick: { radius: 0.14 }, sphere: { scale: 0.28 } };
-  const GHOST   = { stick: { radius: 0.07, color: '0xbbbbbb', opacity: 0.5 },
-                    sphere: { scale: 0.24, color: '0xbbbbbb', opacity: 0.5 } };
-  const HIDDEN  = {};
+  const detail = document.getElementById('sv-detail');
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const num = (x, d = 3) => (x == null ? '—' : Number(x).toFixed(d));
 
-  function drawCell(viewer, L) {
-    // 8 corners = {0,1}^3 combinations of the three lattice vectors.
+  function row(k, v) {
+    return `<div class="flex gap-2"><span class="text-slate-400 w-28 shrink-0">${k}</span>
+            <span class="font-medium text-slate-700">${v}</span></div>`;
+  }
+
+  function showAtom(a) {
+    if (!a) { return; }
+    let extra = '';
+    if (a.magmom != null) extra += row('magmom', esc(a.magmom));
+    if (a.oxidation != null) extra += row('oxidation', esc(a.oxidation));
+    if (a.hybridization) extra += row('hybridization', esc(a.hybridization));
+    detail.innerHTML = `
+      <div class="flex items-center gap-2 mb-1.5">
+        <span class="inline-block w-3.5 h-3.5 rounded-full border border-slate-300" style="background:${esc(a.color)};"></span>
+        <span class="font-semibold text-slate-800">${esc(a.element)}</span>
+        <code class="text-xs text-slate-500">${esc(a.label)}</code>
+        <span class="ml-auto text-[10px] uppercase tracking-wide text-slate-400">atom</span>
+      </div>
+      <div class="grid grid-cols-1 gap-0.5 text-xs">
+        ${row('fractional', a.frac.map((x) => x.toFixed(4)).join(', '))}
+        ${row('cartesian Å', a.cart.map((x) => x.toFixed(3)).join(', '))}
+        ${row('coordination', esc(a.coordination))}
+        ${row('constraint', esc(a.fixed))}
+        ${extra}
+      </div>`;
+  }
+
+  function showBond(b) {
+    detail.innerHTML = `
+      <div class="flex items-center gap-2 mb-1.5">
+        <span class="font-semibold text-slate-800">${esc(b.i)} — ${esc(b.j)}</span>
+        <span class="ml-auto text-[10px] uppercase tracking-wide text-slate-400">bond</span>
+      </div>
+      <div class="grid grid-cols-1 gap-0.5 text-xs">
+        ${row('length Å', num(b.length))}
+        ${row('order', esc(b.order))}
+        ${row('kind', esc(b.kind))}
+        ${row('provenance', esc(b.provenance))}
+        ${row('image', '(' + b.image.join(', ') + ')')}
+      </div>`;
+  }
+
+  const SPHERE = (map) => ({ sphere: { scale: 0.30, colorscheme: { prop: 'elem', map } } });
+  const GHOST  = { sphere: { scale: 0.25, color: '0xbbbbbb', opacity: 0.45 } };
+
+  function colorMap(geom) {
+    const m = {};
+    geom.atoms.forEach((a) => { m[a.element] = a.color.replace('#', '0x'); });
+    return m;
+  }
+
+  function drawCell(viewer, L, faint) {
     const corner = (i, j, k) => ({
       x: i*L[0][0] + j*L[1][0] + k*L[2][0],
       y: i*L[0][1] + j*L[1][1] + k*L[2][1],
@@ -123,16 +279,38 @@
     const bits = [[0,0,0],[1,0,0],[0,1,0],[0,0,1],[1,1,0],[1,0,1],[0,1,1],[1,1,1]];
     for (let a = 0; a < bits.length; a++) {
       for (let b = a + 1; b < bits.length; b++) {
-        // edge iff the two corners differ in exactly one coordinate bit
         const diff = bits[a].reduce((n, v, idx) => n + (v !== bits[b][idx] ? 1 : 0), 0);
         if (diff === 1) {
-          viewer.addLine({
-            start: corner(...bits[a]), end: corner(...bits[b]),
-            color: '0x9aa4b2', dashed: true,
-          });
+          viewer.addLine({ start: corner(...bits[a]), end: corner(...bits[b]),
+                           color: faint ? '0xd7dbe0' : '0x9aa4b2', dashed: true });
         }
       }
     }
+  }
+
+  function renderGeom(viewer, geom, opts) {
+    const ghost = opts && opts.ghost;
+    const model = viewer.addModel(geom.xyz, 'xyz');
+    model.setStyle({}, ghost ? GHOST : SPHERE(colorMap(geom)));
+    if (!ghost) {
+      // clickable atoms — map the model index straight back to our detail dict
+      model.setClickable({}, true, (atom) => {
+        const k = atom.index != null ? atom.index : atom.serial;
+        showAtom(geom.atoms[k]);
+      });
+      // authoritative bonds as clickable cylinders (declared = slate, inferred = light)
+      geom.bonds.forEach((b) => {
+        viewer.addCylinder({
+          start: { x: b.start[0], y: b.start[1], z: b.start[2] },
+          end:   { x: b.end[0],   y: b.end[1],   z: b.end[2] },
+          radius: 0.12, fromCap: 1, toCap: 1,
+          color: b.provenance === 'declared' ? '0x64748b' : '0xc2cad6',
+          clickable: true, callback: () => showBond(b),
+        });
+      });
+    }
+    drawCell(viewer, geom.lattice, ghost);
+    return model;
   }
 
   function boot() {
@@ -140,40 +318,202 @@
     const el = document.getElementById('mol');
     if (!el) { return; }
     const viewer = $3Dmol.createViewer(el, { backgroundColor: 'white' });
+    let zoomed = false;
 
-    const m0 = viewer.addModel(V.initial, 'xyz');
-    const m1 = V.relaxed ? viewer.addModel(V.relaxed, 'xyz') : null;
-    drawCell(viewer, V.lattice);
-
-    function setMode(mode) {
-      if (mode === 'relaxed' && m1) {
-        m0.setStyle({}, HIDDEN); m1.setStyle({}, SOLID);
-      } else if (mode === 'overlay' && m1) {
-        m0.setStyle({}, GHOST); m1.setStyle({}, SOLID);
-      } else {
-        m0.setStyle({}, SOLID); if (m1) m1.setStyle({}, HIDDEN);
-      }
+    // ── text → viewer highlight primitive ──
+    let currentPos = {};   // label -> [x,y,z] for the solid geometry on screen
+    let hlShapes = [];
+    function clearHL() {
+      hlShapes.forEach((s) => viewer.removeShape(s));
+      hlShapes = [];
       viewer.render();
-      document.querySelectorAll('.sv-mode').forEach((b) => {
-        const on = b.getAttribute('data-mode') === mode;
-        b.classList.toggle('bg-slate-700', on);
-        b.classList.toggle('text-white', on);
+    }
+    function applyHL(labels) {
+      clearHL();
+      labels.forEach((lab) => {
+        const p = currentPos[lab];
+        if (!p) { return; }
+        hlShapes.push(viewer.addSphere({
+          center: { x: p[0], y: p[1], z: p[2] },
+          radius: 0.55, color: '0xf59e0b', opacity: 0.55,
+        }));
+      });
+      viewer.render();
+    }
+
+    // ── cursors & measures overlay ──
+    function drawMarkers() {
+      (V.markers || []).forEach((mk) => {
+        const pts = mk.operands.map((l) => currentPos[l]).filter(Boolean);
+        if (!pts.length) { return; }
+        if (mk.is_cursor) {
+          const c = pts.reduce((a, p) => [a[0]+p[0], a[1]+p[1], a[2]+p[2]], [0,0,0])
+                       .map((x) => x / pts.length);
+          viewer.addLabel('⚑ ' + mk.label, {
+            position: { x: c[0], y: c[1], z: c[2] }, fontSize: 11, fontColor: 'white',
+            backgroundColor: '0xf59e0b', backgroundOpacity: 0.8,
+          });
+        } else if (pts.length >= 2) {
+          viewer.addLine({ start: { x: pts[0][0], y: pts[0][1], z: pts[0][2] },
+                           end: { x: pts[1][0], y: pts[1][1], z: pts[1][2] },
+                           color: '0xf59e0b', dashed: true });
+          const mid = [(pts[0][0]+pts[1][0])/2, (pts[0][1]+pts[1][1])/2, (pts[0][2]+pts[1][2])/2];
+          viewer.addLabel(mk.value, {
+            position: { x: mid[0], y: mid[1], z: mid[2] }, fontSize: 10, fontColor: 'white',
+            backgroundColor: '0x1f2937', backgroundOpacity: 0.7,
+          });
+        }
       });
     }
 
-    document.querySelectorAll('.sv-mode').forEach((b) => {
-      b.addEventListener('click', () => setMode(b.getAttribute('data-mode')));
+    function setMode(mode) {
+      viewer.removeAllModels();
+      viewer.removeAllShapes();
+      viewer.removeAllLabels();
+      if (mode === 'relaxed' && V.relaxed) {
+        renderGeom(viewer, V.relaxed, {});
+      } else if (mode === 'overlay' && V.relaxed) {
+        renderGeom(viewer, V.initial, { ghost: true });
+        renderGeom(viewer, V.relaxed, {});
+      } else {
+        renderGeom(viewer, V.initial, {});
+      }
+      // solid geometry drives highlight positions; removeAllShapes already
+      // dropped the old halos, so just repoint + reset.
+      const solid = (mode === 'relaxed' || mode === 'overlay') && V.relaxed ? V.relaxed : V.initial;
+      currentPos = {};
+      solid.atoms.forEach((a) => { currentPos[a.label] = a.cart; });
+      hlShapes = [];
+      drawMarkers();
+      if (!zoomed) { viewer.zoomTo(); zoomed = true; }
+      viewer.render();
+      document.querySelectorAll('.sv-mode').forEach((btn) => {
+        const on = btn.getAttribute('data-mode') === mode;
+        btn.classList.toggle('bg-slate-700', on);
+        btn.classList.toggle('text-white', on);
+      });
+    }
+
+    document.querySelectorAll('.sv-mode').forEach((btn) => {
+      btn.addEventListener('click', () => setMode(btn.getAttribute('data-mode')));
+    });
+
+    // Any element carrying data-atoms glows its atoms while hovered — legend
+    // chips, the "what moved" list, and (later) the proposed-ops list all reuse
+    // this one hook. Delegated so future-inserted nodes work without rebinding.
+    document.addEventListener('mouseover', (ev) => {
+      const t = ev.target.closest('[data-atoms]');
+      if (!t) { return; }
+      const labels = (t.getAttribute('data-atoms') || '').split(',').filter(Boolean);
+      if (labels.length) { applyHL(labels); }
+    });
+    document.addEventListener('mouseout', (ev) => {
+      if (ev.target.closest('[data-atoms]')) { clearHL(); }
     });
 
     // Default: relaxed if we have it (that is the interesting result), else input.
-    setMode(m1 ? 'relaxed' : 'initial');
-    viewer.zoomTo();
-    viewer.render();
+    setMode(V.relaxed ? 'relaxed' : 'initial');
   }
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', boot);
   } else { boot(); }
+})();
+
+// ── proposal polling + review, and the under-pointer popover ──
+(function () {
+  const box = document.getElementById('sv-proposal');
+  const pop = document.getElementById('sv-pop');
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  // Popover follows the pointer and sits BELOW it (flips up only near the
+  // bottom edge). Any [data-desc] element opts in — proposed ops + markers.
+  if (pop) {
+    document.addEventListener('mousemove', (ev) => {
+      const t = ev.target.closest('[data-desc]');
+      if (!t) { pop.classList.add('hidden'); return; }
+      pop.textContent = t.getAttribute('data-desc');
+      pop.classList.remove('hidden');
+      const pad = 14, h = pop.offsetHeight, w = pop.offsetWidth;
+      let top = ev.clientY + 16;                       // prefer below the pointer
+      if (top + h > window.innerHeight - 6) { top = ev.clientY - h - 8; }  // flip up if clipping
+      let left = ev.clientX + pad;
+      if (left + w > window.innerWidth - 6) { left = window.innerWidth - w - 6; }
+      pop.style.top = top + 'px';
+      pop.style.left = left + 'px';
+    });
+  }
+
+  if (!box) { return; }
+  const slug = box.getAttribute('data-slug');
+
+  // Atom labels an op references (existing atoms only — new atoms have no
+  // position to glow yet). Mirrors the op vocabulary.
+  function opAtoms(op) {
+    const out = [];
+    if (op.atom) { out.push(op.atom); }
+    if (Array.isArray(op.atoms)) { op.atoms.forEach((a) => out.push(a)); }
+    if (op.i) { out.push(op.i); }
+    if (op.j) { out.push(op.j); }
+    return out;
+  }
+  function describe(op) {
+    const a = opAtoms(op);
+    const tail = a.length ? ' [' + a.join(', ') + ']' : (op.element ? ' ' + op.element : '');
+    return op.op + tail;
+  }
+
+  function render(d) {
+    if (!d || !d.status) {
+      box.innerHTML = '<span class="text-xs text-slate-400">No proposal yet — type an instruction above.</span>';
+      return;
+    }
+    if (d.status === 'queued' || d.status === 'running') {
+      box.innerHTML = '<span class="text-xs text-slate-500">⟳ proposing… (' + esc(d.status) + ')</span>';
+      return;
+    }
+    const p = d.proposal;
+    if (!p) {
+      box.innerHTML = '<span class="text-xs text-red-600">proposal ' + esc(d.status) + ' — see the job log</span>';
+      return;
+    }
+    const ops = (p.ops || []).map((op) =>
+      '<div class="sv-hl text-xs font-mono rounded px-2 py-1 border border-slate-200 bg-white cursor-default hover:bg-amber-50" '
+      + 'data-atoms="' + esc(opAtoms(op).join(',')) + '" data-desc="' + esc(JSON.stringify(op)) + '">'
+      + esc(describe(op)) + '</div>').join('');
+    const badge = p.valid
+      ? '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">valid</span>'
+      : '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800">invalid: ' + esc(p.error || '') + '</span>';
+    const apply = p.valid
+      ? '<form method="post" action="/structure/' + encodeURIComponent(slug) + '/apply" class="flex gap-2 mt-2">'
+        + '<input type="hidden" name="job_id" value="' + esc(d.job_id) + '">'
+        + '<input name="to" required autocomplete="off" value="' + esc(slug) + '-v2" '
+        + 'class="flex-1 rounded border border-slate-300 px-2 py-1 text-xs" placeholder="new design slug">'
+        + '<button class="rounded bg-emerald-600 text-white text-xs px-3 py-1 hover:bg-emerald-700 whitespace-nowrap">Apply → new design</button>'
+        + '</form>'
+      : '';
+    box.innerHTML =
+      '<div class="rounded-lg border border-slate-200 bg-slate-50 p-3">'
+      + '<div class="flex items-center gap-2 mb-1"><span class="text-xs font-semibold text-slate-700">Proposed ' + (p.ops || []).length + ' op(s)</span>' + badge
+      + '<span class="ml-auto text-[10px] text-slate-400">job r' + esc(d.job_id) + ' · ' + esc(d.created) + '</span></div>'
+      + (p.rationale ? '<p class="text-xs text-slate-500 mb-2">' + esc(p.rationale) + '</p>' : '')
+      + '<div class="space-y-1">' + ops + '</div>'
+      + apply
+      + '<p class="text-[10px] text-slate-400 mt-1">Hover an op to glow its atoms in the cell.</p>'
+      + '</div>';
+  }
+
+  function poll() {
+    fetch('/structure/' + encodeURIComponent(slug) + '/proposal')
+      .then((r) => r.json())
+      .then((d) => {
+        render(d);
+        if (d && (d.status === 'queued' || d.status === 'running')) { setTimeout(poll, 2500); }
+      })
+      .catch(() => {});
+  }
+  poll();
 })();
 </script>
 {% endblock %}

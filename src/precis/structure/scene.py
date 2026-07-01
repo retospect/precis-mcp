@@ -53,12 +53,41 @@ class Bond:
 
 
 @dataclass
+class Measure:
+    """A persisted cursor or measure (ADR 0043 §6.8 / §7), re-evaluated on read.
+
+    Two shapes over one row (``struct_measures``), discriminated by ``kind``:
+
+    * ``kind='cursor'`` — a **named embodiment** (``@active_site``): ``name`` +
+      an ``operands`` support set of atom labels + an optional ``reach`` Å, with
+      a ``for_`` purpose. The "you are here / this is the reactive site" handle.
+    * ``kind`` in ``{distance, angle, coordination, bond_length}`` — a **measure**
+      over ``operands`` (atom labels) with an optional graded ``goal`` +
+      ``direction`` (min|max|target) + ``strength`` (hard|soft|gauge).
+
+    Anchors are held as **atom labels** (stable, never-recycled — §12), never
+    row ids, so a marker survives the retire-and-reinsert of an edit.
+    """
+
+    kind: str
+    operands: list[str] = field(default_factory=list)  # atom labels
+    name: str | None = None  # cursor name (@active_site)
+    reach: float | None = None  # cursor embodiment reach (Å)
+    direction: str | None = None  # min | max | target
+    goal: dict[str, float] | None = None  # e.g. {'target': 2.4, 'tol': 0.1}
+    strength: str = "gauge"  # hard | soft | gauge
+    for_: str | None = None  # purpose / reason ("for")
+
+
+@dataclass
 class Scene:
     """A cell + atoms (by label) + bonds. The hydrated, in-memory design."""
 
     cell: Cell
     atoms: dict[str, Atom] = field(default_factory=dict)
     bonds: list[Bond] = field(default_factory=list)
+    #: Persisted cursors + measures (ADR 0043 §6.8/§7), re-evaluated on read.
+    measures: list[Measure] = field(default_factory=list)
     #: Per-element never-recycled high-water mark, seeded from the store on load
     #: so a label survives a vacancy (ADR 0043 §12 no-recycle). The store
     #: persists it on ``refs.meta`` (the dedicated counter table is a forward

@@ -29,6 +29,12 @@ import numpy as np
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import render_agent_table
+from precis.handlers._link_tag_ops import (
+    apply_link_ops,
+    format_link_tag_ack,
+    require_link_target,
+    validate_link_mode,
+)
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -38,6 +44,7 @@ from precis.structure import (
     RelaxUnsupported,
     Scene,
     apply_ops,
+    evaluate_measure,
     export,
     probe,
     validate,
@@ -63,7 +70,7 @@ _NAV_VIEWS = (
     "pov",
 )
 _EXPORT_VIEWS = ("poscar", "extxyz", "cif")
-_VIEWS = (*_PROBE_VIEWS, *_NAV_VIEWS, "runs", *_EXPORT_VIEWS)
+_VIEWS = (*_PROBE_VIEWS, *_NAV_VIEWS, "runs", "markers", *_EXPORT_VIEWS)
 
 
 @dataclass
@@ -162,9 +169,11 @@ class StructureHandler(Handler):
             "Atomistic cell + bond-graph design (ADR 0043). put creates/replaces "
             "from JSON {cell:{a,b,c,pbc}|{lattice,pbc}, ops:[...]}; edit applies "
             "more ops (set_cell/add_atom/set_element/vacancy/displace/add_bond/"
-            "remove_bond/constrain); get lists designs, shows a TOC (id=slug), or "
-            "probes (view='atom|neighborhood|bonds|find|validate', args={...}); "
-            "delete soft-retires. Atoms are a<El><n>, addressed st<id>#a<El><n>. "
+            "remove_bond/constrain, plus cursor/measure/unmark/remove_measure "
+            "markers); get lists designs, shows a TOC (id=slug), or probes "
+            "(view='atom|neighborhood|bonds|find|validate|markers', args={...}); "
+            "link relates designs (rel='derived-from'); delete soft-retires. "
+            "Atoms are a<El><n>, addressed st<id>#a<El><n>. "
             "Postgres-canonical, in-memory probes, no pixels. "
             "See precis-structure-help."
         ),
@@ -172,6 +181,7 @@ class StructureHandler(Handler):
         supports_put=True,
         supports_edit=True,
         supports_delete=True,
+        supports_link=True,
         supports_search=True,
         supports_search_hits=True,
         is_numeric=False,
@@ -290,6 +300,53 @@ class StructureHandler(Handler):
             _scene, ref, handles, head_verb="edited", relax_summary=relax_summary
         )
 
+    # ── derive ───────────────────────────────────────────────────────
+    def derive(
+        self,
+        *,
+        id: str | int,
+        to: str,
+        ops: list[dict[str, Any]] | None = None,
+        title: str | None = None,
+    ) -> Response:
+        """Branch a **new** design ``to`` from ``id`` with ``ops`` applied, linked
+        ``derived-from`` the parent (ADR 0043 bundle — the instruction-box Apply).
+
+        The parent is untouched, so a before/after ``view='diff'`` works. Applies
+        graph/marker ops only — a relax is a separate compute step, never part of
+        a proposal. The parent's markers carry over (they live on the scene)."""
+        parent = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
+        to_slug = str(to).strip()
+        if not to_slug:
+            raise BadInput("derive requires to= (the new design slug)")
+        if self.store.get_ref(kind="structure", id=to_slug) is not None:
+            raise BadInput(
+                f"design {to_slug!r} already exists",
+                next="pick a fresh slug for the derived design",
+            )
+        scene, _ = self.store.structure_load(parent.id)
+        op_list = ops or []
+        if any(o.get("op") == "relax" for o in op_list):
+            raise BadInput("derive applies graph/marker ops only (no relax)")
+        try:
+            apply_ops(scene, op_list)
+        except OpError as exc:
+            raise BadInput(f"op error: {exc}") from exc
+        ttl = (title or to_slug).strip() or to_slug
+        ref, _created = self.store.structure_save(
+            slug=to_slug,
+            title=ttl,
+            scene=scene,
+            version=1,
+            card_text=self._card_text(ttl, scene, ""),
+        )
+        # lineage: the derived design points back to its parent
+        self.store.add_link(
+            src_ref_id=ref.id, dst_ref_id=parent.id, relation="derived-from"
+        )
+        _scene, handles = self.store.structure_load(ref.id)
+        return self._toc_response(_scene, ref, handles, head_verb="derived")
+
     # ── get ──────────────────────────────────────────────────────────
     def get(  # type: ignore[override]
         self,
@@ -307,6 +364,8 @@ class StructureHandler(Handler):
             return self._toc_response(scene, ref, handles)
         if view == "runs":
             return self._render_runs(ref)
+        if view == "markers":
+            return self._render_markers(scene)
         if view in _EXPORT_VIEWS:
             return self._render_export(view, scene, str(ref.slug or id))
         if view in _NAV_VIEWS:
@@ -371,6 +430,80 @@ class StructureHandler(Handler):
                     "max_force",
                     "v",
                 ],
+            )
+        )
+
+    def _render_markers(self, scene: Scene) -> Response:
+        """The design's cursors + measures (§6.8/§7), each re-evaluated against
+        the current geometry so value + verdict are live, never stale."""
+        if not scene.measures:
+            return Response(
+                body="# no cursors or measures yet\n\nNext: edit(kind='structure', "
+                "id=…, ops=[{'op':'cursor','name':'active_site',"
+                "'atoms':['aPd12'],'reach':3.0,'for':'the reactive site'}])"
+            )
+        rows: list[dict[str, str]] = []
+        for m in scene.measures:
+            value, verdict = evaluate_measure(scene, m)
+            if m.kind == "cursor":
+                shown = (
+                    value["error"]
+                    if "error" in value
+                    else f"touches {len(value.get('touch', []))}"
+                )
+            elif "error" in value:
+                shown = value["error"]
+            else:
+                unit = value.get("unit") or ""
+                shown = f"{value.get('value')}{(' ' + unit) if unit else ''}"
+            rows.append(
+                {
+                    "marker": m.name or m.kind,
+                    "kind": m.kind,
+                    "atoms": " ".join(m.operands),
+                    "for": (m.for_ or "")[:40],
+                    "value": str(shown),
+                    "verdict": verdict or "—",
+                }
+            )
+        return Response(
+            body=f"# {len(rows)} cursor(s) + measure(s)\n"
+            + render_agent_table(
+                rows,
+                schema=["marker", "kind", "atoms", "for", "value", "verdict"],
+            )
+        )
+
+    # ── link ─────────────────────────────────────────────────────────
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add/remove a link from this design to another ref — e.g. a derived
+        design → its parent (``rel='derived-from'``, target ``structure:<slug>``)."""
+        target = require_link_target("structure", target)
+        validate_link_mode(mode)
+        ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
+        n_added, n_removed = apply_link_ops(
+            self.store,
+            ref.id,
+            link=target if mode == "add" else None,
+            unlink=target if mode == "remove" else None,
+            rel=rel,
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind=self.spec.kind,
+                ref_label=str(ref.slug),
+                n_links_added=n_added,
+                n_links_removed=n_removed,
+                n_tags_added=0,
+                n_tags_removed=0,
             )
         )
 
