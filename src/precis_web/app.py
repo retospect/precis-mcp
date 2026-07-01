@@ -85,6 +85,7 @@ def create_app(
         preview,
         refs,
         status,
+        structure,
         tags,
         tasks,
     )
@@ -99,6 +100,7 @@ def create_app(
     app.include_router(refs.router)
     app.include_router(tags.router)
     app.include_router(clusters.router)
+    app.include_router(structure.router)
     app.include_router(alerts.router)
     app.include_router(agentlogs.router)
     app.include_router(preview.router)

@@ -1,0 +1,55 @@
+{% extends "base.html.j2" %}
+{% block title %}Structures{% endblock %}
+{% block content %}
+
+<div class="flex items-center gap-3 mb-4">
+  <h1 class="text-lg font-semibold">Structures</h1>
+  <span class="text-xs text-slate-500">{{ total }} design{{ '' if total == 1 else 's' }} · atomistic cell + bond graph (ADR 0043)</span>
+</div>
+
+{% if not designs %}
+  <p class="text-sm text-slate-500">
+    No structure designs yet. Author one via MCP:
+    <code class="px-1 bg-slate-100 rounded">put(kind='structure', id='my-cell', text='{"cell":{...},"ops":[...]}')</code>.
+  </p>
+{% else %}
+<div class="overflow-hidden rounded-lg border border-slate-200 bg-white">
+  <table class="min-w-full text-sm">
+    <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+      <tr>
+        <th class="text-left font-medium px-3 py-2">Design</th>
+        <th class="text-right font-medium px-3 py-2">Atoms</th>
+        <th class="text-right font-medium px-3 py-2">Runs</th>
+        <th class="text-right font-medium px-3 py-2">Latest energy</th>
+        <th class="text-right font-medium px-3 py-2">v</th>
+        <th class="text-right font-medium px-3 py-2">Updated</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for d in designs %}
+      <tr class="hover:bg-slate-50">
+        <td class="px-3 py-2">
+          <a href="/structure/{{ d.slug }}" class="text-emerald-700 hover:underline font-medium">{{ d.title }}</a>
+          <div class="text-xs text-slate-400">{{ d.slug }}</div>
+        </td>
+        <td class="px-3 py-2 text-right tabular-nums">{{ d.n_atoms }}</td>
+        <td class="px-3 py-2 text-right tabular-nums">{{ d.n_runs }}</td>
+        <td class="px-3 py-2 text-right tabular-nums">
+          {% if d.last_energy is not none %}
+            <span class="font-medium">{{ '%.4f'|format(d.last_energy) }}</span>
+            <span class="text-slate-400 text-xs">eV</span>
+            <span class="text-[10px] text-slate-400">{{ d.last_fidelity }}</span>
+          {% else %}
+            <span class="text-slate-300">—</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2 text-right tabular-nums text-slate-500">{{ d.version }}</td>
+        <td class="px-3 py-2 text-right text-slate-400 text-xs">{{ d.updated }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% endblock %}
