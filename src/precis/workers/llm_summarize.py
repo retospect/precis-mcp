@@ -104,6 +104,14 @@ NUMERIC_DUMP_TAG = "(tabular data)"
 #: starts at 1 and increments per write, so this allows ~2 retries.
 MAX_SUMMARIZE_ATTEMPTS = 3
 
+#: A ``chunk_claims`` row older than this many minutes is treated as abandoned
+#: (the worker crashed or stalled) and re-claimed oldest-first; it is also the
+#: retry backoff for failures (which keep their claim). Must comfortably exceed
+#: the worst-case batch wall-time (the LLM calls), so set it generously — the
+#: occasional double-process is a no-op (idempotent upsert on
+#: (chunk_id, summarizer)) and this reproducible background work tolerates rework.
+SUMMARY_LEASE_COOLDOWN_MIN = 20
+
 #: How many words/sentences the two parts should target. Enforced by
 #: the prompt, not the parser (the model occasionally overshoots; we
 #: keep what it returns rather than truncating mid-sentence).
@@ -253,71 +261,97 @@ class _Claimed:
     title: str
 
 
-# The claim is split into two single-bucket passes (priority first) rather
-# than one query with ``ORDER BY (CASE WHEN r.kind ...)``. The CASE term spans
-# the refs join, so the planner cannot satisfy the ORDER BY from an index and
-# falls back to a Seq Scan + Sort over all ~1.5M chunks on *every* batch — and
-# re-scans on each ``SKIP LOCKED`` retry under multi-node contention (startup
-# cost ~487k). A per-bucket ``ORDER BY c.ref_id, c.ord`` instead walks
-# ``chunks_ref_id_idx`` and stops at ``LIMIT`` (startup cost ~70), so locked
-# rows are skipped by continuing the index walk. The anti-join is also written
-# as ``NOT EXISTS`` (not ``LEFT JOIN ... cs.chunk_id IS NULL``): the latter
-# mis-estimates at 1 row and is what tricks the planner into the seq scan.
-_CLAIM_BUCKET_SQL = """
-    SELECT c.chunk_id, c.ref_id, c.ord, c.chunk_kind, c.text,
-           c.section_path, c.keywords, c.numerics,
-           r.kind, r.title
-      FROM chunks c
-      JOIN refs r ON r.ref_id = c.ref_id
-     WHERE NOT EXISTS (
-               SELECT 1 FROM chunk_summaries cs
-                WHERE cs.chunk_id = c.chunk_id
-                  AND cs.summarizer = %s
-                  AND (cs.status <> 'failed' OR cs.attempts >= %s)
-           )
-       AND {kind_pred}
-       AND c.chunk_kind <> ALL(%s)
-       AND length(c.text) >= %s
-       AND length(c.text) <= %s
-       AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
-     ORDER BY c.ref_id, c.ord
-     LIMIT %s
-       FOR UPDATE OF c SKIP LOCKED
+# Lease claim via the shared ``chunk_claims`` table. Each pass selects eligible
+# chunks with ``FOR UPDATE SKIP LOCKED`` *and* writes/refreshes the claim row in
+# the same statement (data-modifying CTE). The caller commits immediately
+# (releasing the lock) and does the LLM work with no open transaction — so the
+# xmin horizon is never pinned across an LLM call (the old long-batch
+# transaction is what starved autovacuum). A crashed worker leaves its claim
+# row; once ``claimed_at`` ages past the cooldown it is re-claimed. The cooldown
+# is the reaper.
+#
+# Two sources, claimed in order until the batch is full:
+#   1. FRESH    — chunks with no summary AND no claim (NOT EXISTS x2). Written
+#                 as NOT EXISTS so the planner index-walks chunks and stops at
+#                 LIMIT instead of seq-scanning + sorting ~1.5M rows. Split
+#                 priority (conv/draft) vs rest so the queue order needs no
+#                 cross-join ``CASE`` (which would force the sort).
+#   2. RECLAIM  — claim rows past the cooldown (crashed in-flight + retrying
+#                 failures, which keep their claim), oldest-first via
+#                 ``chunk_claims_reap_idx``. Tops up only when fresh runs dry.
+#
+# ``artifact`` is the chunk_claims discriminator and equals the summarizer name.
+_FRESH_CLAIM_SQL = """
+    WITH cand AS (
+        SELECT c.chunk_id, c.ref_id, c.ord, c.chunk_kind, c.text,
+               c.section_path, c.keywords, c.numerics,
+               r.kind AS ref_kind, r.title
+          FROM chunks c
+          JOIN refs r ON r.ref_id = c.ref_id
+         WHERE NOT EXISTS (
+                   SELECT 1 FROM chunk_summaries cs
+                    WHERE cs.chunk_id = c.chunk_id AND cs.summarizer = %(artifact)s
+               )
+           AND NOT EXISTS (
+                   SELECT 1 FROM chunk_claims cl
+                    WHERE cl.chunk_id = c.chunk_id AND cl.artifact = %(artifact)s
+               )
+           AND {kind_pred}
+           AND c.chunk_kind <> ALL(%(skip_kinds)s)
+           AND length(c.text) >= %(min_chars)s
+           AND length(c.text) <= %(max_chars)s
+           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+         ORDER BY c.ref_id, c.ord
+         LIMIT %(limit)s
+           FOR UPDATE OF c SKIP LOCKED
+    ),
+    claimed AS (
+        INSERT INTO chunk_claims (chunk_id, artifact)
+        SELECT chunk_id, %(artifact)s FROM cand
+        ON CONFLICT (chunk_id, artifact) DO NOTHING
+        RETURNING chunk_id
+    )
+    SELECT cand.chunk_id, cand.ref_id, cand.ord, cand.chunk_kind, cand.text,
+           cand.section_path, cand.keywords, cand.numerics,
+           cand.ref_kind, cand.title
+      FROM cand JOIN claimed USING (chunk_id)
+"""
+
+_RECLAIM_SQL = """
+    WITH cand AS (
+        SELECT cl.chunk_id, c.ref_id, c.ord, c.chunk_kind, c.text,
+               c.section_path, c.keywords, c.numerics,
+               r.kind AS ref_kind, r.title
+          FROM chunk_claims cl
+          JOIN chunks c ON c.chunk_id = cl.chunk_id
+          JOIN refs r ON r.ref_id = c.ref_id
+         WHERE cl.artifact = %(artifact)s
+           AND cl.claimed_at < now() - (%(cooldown_min)s * interval '1 minute')
+           AND c.chunk_kind <> ALL(%(skip_kinds)s)
+           AND length(c.text) >= %(min_chars)s
+           AND length(c.text) <= %(max_chars)s
+           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+         ORDER BY cl.claimed_at
+         LIMIT %(limit)s
+           FOR UPDATE OF cl SKIP LOCKED
+    ),
+    reclaimed AS (
+        UPDATE chunk_claims cl SET claimed_at = now()
+          FROM cand
+         WHERE cl.chunk_id = cand.chunk_id AND cl.artifact = %(artifact)s
+        RETURNING cl.chunk_id
+    )
+    SELECT cand.chunk_id, cand.ref_id, cand.ord, cand.chunk_kind, cand.text,
+           cand.section_path, cand.keywords, cand.numerics,
+           cand.ref_kind, cand.title
+      FROM cand JOIN reclaimed USING (chunk_id)
 """
 
 #: Refs whose chunks jump the queue (see ``claim_chunks_without_summary``).
 _PRIORITY_KINDS = ("conv", "draft")
 
 
-def _claim_summary_bucket(
-    conn: Any, *, summarizer: str, limit: int, priority: bool
-) -> list[_Claimed]:
-    """Run one claim pass: the priority (conv/draft) bucket or everything else.
-
-    ``priority=False`` covers all *other* kinds including a NULL ``r.kind`` so
-    the two passes together are an exact partition of the old single query.
-    """
-    kind_pred = (
-        "r.kind IN ('conv', 'draft')"
-        if priority
-        else "(r.kind <> ALL(ARRAY['conv', 'draft']) OR r.kind IS NULL)"
-    )
-    # NB the digit-fraction (numeric/coordinate dump) filter is applied in
-    # Python after the claim — NOT here. A ``regexp_replace`` over the ~1M
-    # un-summarized rows made this claim take ~74s/batch (it can't index, so
-    # it runs per candidate row before the LIMIT). The cheap length/kind
-    # filters stay in SQL; ``is_numeric_dump`` handles the rest in the pass.
-    rows = conn.execute(
-        _CLAIM_BUCKET_SQL.format(kind_pred=kind_pred),
-        (
-            summarizer,
-            MAX_SUMMARIZE_ATTEMPTS,
-            list(SKIP_KINDS),
-            MIN_CHUNK_CHARS,
-            MAX_CHUNK_CHARS,
-            limit,
-        ),
-    ).fetchall()
+def _rows_to_claims(rows: list[tuple[Any, ...]]) -> list[_Claimed]:
     return [
         _Claimed(
             chunk_id=int(r[0]),
@@ -335,30 +369,80 @@ def _claim_summary_bucket(
     ]
 
 
+def _claim_fresh(
+    conn: Any, *, summarizer: str, limit: int, priority: bool
+) -> list[_Claimed]:
+    """Claim never-seen chunks (no summary, no claim) for one queue bucket.
+
+    ``priority=False`` covers all other kinds including a NULL ``r.kind`` so the
+    two buckets are an exact partition. Writes the ``chunk_claims`` row in the
+    same statement (the data-modifying CTE) — the digit-fraction numeric-dump
+    filter is applied in Python after the claim, not here (a ``regexp_replace``
+    over ~1M rows made the claim ~74s/batch; cheap length/kind filters stay SQL).
+    """
+    kind_pred = (
+        "r.kind IN ('conv', 'draft')"
+        if priority
+        else "(r.kind <> ALL(ARRAY['conv', 'draft']) OR r.kind IS NULL)"
+    )
+    rows = conn.execute(
+        _FRESH_CLAIM_SQL.format(kind_pred=kind_pred),
+        {
+            "artifact": summarizer,
+            "skip_kinds": list(SKIP_KINDS),
+            "min_chars": MIN_CHUNK_CHARS,
+            "max_chars": MAX_CHUNK_CHARS,
+            "limit": limit,
+        },
+    ).fetchall()
+    return _rows_to_claims(rows)
+
+
+def _claim_reclaim(conn: Any, *, summarizer: str, limit: int) -> list[_Claimed]:
+    """Re-claim stale claim rows (crashed in-flight + backing-off failures)."""
+    rows = conn.execute(
+        _RECLAIM_SQL,
+        {
+            "artifact": summarizer,
+            "cooldown_min": SUMMARY_LEASE_COOLDOWN_MIN,
+            "skip_kinds": list(SKIP_KINDS),
+            "min_chars": MIN_CHUNK_CHARS,
+            "max_chars": MAX_CHUNK_CHARS,
+            "limit": limit,
+        },
+    ).fetchall()
+    return _rows_to_claims(rows)
+
+
 def claim_chunks_without_summary(
     conn: Any, *, summarizer: str, limit: int
 ) -> list[_Claimed]:
-    """Return up to ``limit`` chunks missing the ``summarizer`` summary.
+    """Lease up to ``limit`` chunks needing the ``summarizer`` summary.
 
-    ``conv`` + ``draft`` refs jump the queue: draft refs have the highest
-    ref_ids (most recent), so a plain ``ref_id, ord`` order buries the
-    actively-edited write-up behind the entire ~1M-chunk paper backlog and
-    it never gets summarised (the draft reader's view-slider then only
-    shows the text fallback). So we claim the priority bucket first and only
-    fill the remainder from the rest. ``ref_id, ord`` *within* a bucket still
-    delivers a document's chunks contiguously so the prompt's shared
-    doc-header prefix hits the llama.cpp prefix cache turn after turn.
-    ``FOR UPDATE OF c SKIP LOCKED`` lets workers on multiple nodes fan out
-    without double-work.
+    Writes a ``chunk_claims`` row for each claimed chunk and returns its data;
+    the caller must commit promptly (releasing the lock) and do the LLM work
+    with no open transaction. Sources, in order:
+
+    1. **Fresh, priority** — ``conv``/``draft`` chunks with no summary and no
+       claim. These jump the queue: draft refs have the highest ref_ids (most
+       recent), so a plain ``ref_id, ord`` order would bury an actively-edited
+       write-up behind the ~1M-chunk paper backlog and it would never summarise.
+    2. **Fresh, rest** — every other never-seen chunk, ``ref_id, ord`` order
+       (a document's chunks stay contiguous so the prompt's shared doc-header
+       prefix keeps hitting the llama.cpp prefix cache).
+    3. **Reclaim** — claim rows past the cooldown (crashed in-flight + retrying
+       failures), oldest-first. Tops up only when fresh work runs dry.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
-    claimed = _claim_summary_bucket(
-        conn, summarizer=summarizer, limit=limit, priority=True
-    )
+    claimed = _claim_fresh(conn, summarizer=summarizer, limit=limit, priority=True)
     if len(claimed) < limit:
-        claimed += _claim_summary_bucket(
+        claimed += _claim_fresh(
             conn, summarizer=summarizer, limit=limit - len(claimed), priority=False
+        )
+    if len(claimed) < limit:
+        claimed += _claim_reclaim(
+            conn, summarizer=summarizer, limit=limit - len(claimed)
         )
     return claimed
 
@@ -551,7 +635,7 @@ def write_chunk_summary(
     prompt_hash: str,
     token_count: int | None,
 ) -> None:
-    """Upsert the summary row (same shape as ``RakeLemmaHandler``)."""
+    """Write the terminal ``ok`` summary and release the chunk's claim."""
     conn.execute(
         """
         INSERT INTO chunk_summaries
@@ -567,22 +651,46 @@ def write_chunk_summary(
         """,
         (chunk_id, summarizer, text, prompt_hash, token_count),
     )
+    conn.execute(
+        "DELETE FROM chunk_claims WHERE chunk_id = %s AND artifact = %s",
+        (chunk_id, summarizer),
+    )
 
 
 def _mark_failed(conn: Any, chunk_id: int, *, summarizer: str, error: str) -> None:
-    """Failure marker (ADR 0007) — de-claims the chunk for this summarizer."""
+    """Record one failure (ADR 0007). Bumps the claim's ``attempts`` and keeps
+    the claim row (``claimed_at = now()`` = backoff via the cooldown reaper) so
+    a transient failure retries. Once ``attempts`` reaches the cap the failure
+    is terminal: write a ``failed`` marker to chunk_summaries and DELETE the
+    claim, so the poison chunk leaves the claims table and is never re-claimed."""
     err = (error or "").strip()[:1000]
+    row = conn.execute(
+        """
+        UPDATE chunk_claims SET attempts = attempts + 1, claimed_at = now()
+         WHERE chunk_id = %s AND artifact = %s
+        RETURNING attempts
+        """,
+        (chunk_id, summarizer),
+    ).fetchone()
+    # No claim row (already reaped/deleted concurrently) → treat as terminal.
+    attempts = int(row[0]) if row else MAX_SUMMARIZE_ATTEMPTS
+    if attempts < MAX_SUMMARIZE_ATTEMPTS:
+        return
     conn.execute(
         """
         INSERT INTO chunk_summaries
-            (chunk_id, summarizer, status, last_error)
-        VALUES (%s, %s, 'failed', %s)
+            (chunk_id, summarizer, status, last_error, attempts)
+        VALUES (%s, %s, 'failed', %s, %s)
         ON CONFLICT (chunk_id, summarizer) DO UPDATE
            SET status = 'failed',
                last_error = EXCLUDED.last_error,
-               attempts = chunk_summaries.attempts + 1
+               attempts = EXCLUDED.attempts
         """,
-        (chunk_id, summarizer, err),
+        (chunk_id, summarizer, err, attempts),
+    )
+    conn.execute(
+        "DELETE FROM chunk_claims WHERE chunk_id = %s AND artifact = %s",
+        (chunk_id, summarizer),
     )
 
 
@@ -625,73 +733,82 @@ def run_llm_summarize_pass(
 ) -> dict[str, int]:
     """One pass over the LLM-summary queue.
 
-    Returns ``{"claimed": N, "ok": K, "failed": F}``. Each chunk is its
-    own transaction-of-record via the per-row write; a poison-pill chunk
-    is marked failed and the batch continues (ADR 0007).
+    Returns ``{"claimed": N, "ok": K, "failed": F}``. A poison-pill chunk is
+    marked failed and the batch continues (ADR 0007).
 
-    Phases, so ``concurrency > 1`` is safe on a single DB connection:
+    Three phases, each with its own short transaction so **no DB lock or xmin
+    snapshot is held across an LLM call** — the long batch-spanning transaction
+    was what starved autovacuum on the hot tables:
 
-    1. **Claim** the batch (one connection).
-    2. **Prefetch** each distinct ref's doc card — the shared, cache-hot
-       prompt prefix — and build every prompt up front (pure CPU).
-    3. **Complete** via a thread pool of width ``concurrency``. Only the
-       outbound HTTP call runs in the workers; nothing touches the DB
-       connection (psycopg connections are *not* thread-safe). Width
-       should match the backend's ``--parallel`` slot count.
-    4. **Write** the outcomes back sequentially on the one connection,
-       in claim order, so ``ok``/``failed`` accounting is deterministic.
+    1. **Claim** (short txn): lease the batch (stamp ``running``) and prefetch
+       each distinct ref's doc card — the shared, cache-hot prompt prefix —
+       then COMMIT, releasing the locks.
+    2. **Complete** (no txn): build prompts and run the LLM calls via a thread
+       pool of width ``concurrency``. Nothing touches a DB connection (psycopg
+       connections are not thread-safe). Width should match the backend's
+       ``--parallel`` slot count.
+    3. **Write** (short txn): write outcomes in claim order; on success the
+       ``running`` lease flips to ``ok``, on failure to ``failed`` (its
+       ``claimed_at`` is the retry-backoff clock). A crashed worker between
+       phases simply leaves a ``running`` lease that the cooldown re-claims.
     """
-    claimed = ok = failed = 0
+    # Phase 1 — claim + prefetch cards in one short transaction, then commit.
     card_cache: dict[int, str] = {}
     with store.pool.connection() as conn:
         rows = claim_chunks_without_summary(
             conn, summarizer=summarizer, limit=batch_size
         )
-        claimed = len(rows)
-        if not rows:
-            return {"claimed": 0, "ok": 0, "failed": 0}
-
-        # Prefetch doc cards (shared prefix) + build prompts — pure, no LLM.
-        # Numeric/coordinate dumps get the tag written directly (no LLM call).
-        prepared: list[tuple[_Claimed, list[dict[str, str]], str]] = []
         for claim in rows:
-            if _is_numeric_dump(claim.text):
-                write_chunk_summary(
-                    conn,
-                    claim.chunk_id,
-                    summarizer=summarizer,
-                    text=NUMERIC_DUMP_TAG,
-                    prompt_hash=hashlib.sha256(NUMERIC_DUMP_TAG.encode()).hexdigest(),
-                    token_count=None,
-                )
-                ok += 1
-                continue
-            if claim.ref_id not in card_cache:
+            if not _is_numeric_dump(claim.text) and claim.ref_id not in card_cache:
                 card_cache[claim.ref_id] = fetch_doc_card(conn, claim.ref_id)
-            messages = build_messages(claim, doc_card=card_cache[claim.ref_id])
-            prompt_hash = hashlib.sha256(
-                json.dumps(messages, sort_keys=True).encode("utf-8")
-            ).hexdigest()
-            prepared.append((claim, messages, prompt_hash))
+    if not rows:
+        return {"claimed": 0, "ok": 0, "failed": 0}
+    claimed = len(rows)
+    ok = failed = 0
 
-        def _complete(item: tuple[_Claimed, list[dict[str, str]], str]) -> _Outcome:
-            claim, messages, prompt_hash = item
-            try:
-                result = client.complete(messages)
-                summary = parse_summary(result.text)
-                return _Outcome(claim, prompt_hash, summary, result.total_tokens, None)
-            except Exception as exc:  # recorded per chunk, written below
-                log.exception("llm_summarize: chunk_id=%s failed", claim.chunk_id)
-                return _Outcome(claim, prompt_hash, None, None, exc)
+    # Phase 2 — build prompts + LLM completion. No DB transaction is held.
+    # Numeric/coordinate dumps skip the LLM entirely (tagged in the write phase).
+    numeric_dumps: list[_Claimed] = []
+    prepared: list[tuple[_Claimed, list[dict[str, str]], str]] = []
+    for claim in rows:
+        if _is_numeric_dump(claim.text):
+            numeric_dumps.append(claim)
+            continue
+        messages = build_messages(claim, doc_card=card_cache.get(claim.ref_id, ""))
+        prompt_hash = hashlib.sha256(
+            json.dumps(messages, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        prepared.append((claim, messages, prompt_hash))
 
-        # The slow phase. ex.map preserves order, so writes stay deterministic.
-        if concurrency <= 1:
-            outcomes = [_complete(it) for it in prepared]
-        else:
-            with ThreadPoolExecutor(max_workers=concurrency) as ex:
-                outcomes = list(ex.map(_complete, prepared))
+    def _complete(item: tuple[_Claimed, list[dict[str, str]], str]) -> _Outcome:
+        claim, messages, prompt_hash = item
+        try:
+            result = client.complete(messages)
+            summary = parse_summary(result.text)
+            return _Outcome(claim, prompt_hash, summary, result.total_tokens, None)
+        except Exception as exc:  # recorded per chunk, written below
+            log.exception("llm_summarize: chunk_id=%s failed", claim.chunk_id)
+            return _Outcome(claim, prompt_hash, None, None, exc)
 
-        # Write phase — single connection, sequential.
+    # The slow phase. ex.map preserves order, so writes stay deterministic.
+    if concurrency <= 1:
+        outcomes = [_complete(it) for it in prepared]
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency) as ex:
+            outcomes = list(ex.map(_complete, prepared))
+
+    # Phase 3 — write outcomes back in a fresh short transaction.
+    with store.pool.connection() as conn:
+        for claim in numeric_dumps:
+            write_chunk_summary(
+                conn,
+                claim.chunk_id,
+                summarizer=summarizer,
+                text=NUMERIC_DUMP_TAG,
+                prompt_hash=hashlib.sha256(NUMERIC_DUMP_TAG.encode()).hexdigest(),
+                token_count=None,
+            )
+            ok += 1
         for o in outcomes:
             if o.error is not None or o.summary is None:
                 _mark_failed(

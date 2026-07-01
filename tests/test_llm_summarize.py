@@ -17,6 +17,7 @@ import pytest
 from precis.workers.llm_summarize import (
     MAX_CHUNK_CHARS,
     MAX_SUMMARIZE_ATTEMPTS,
+    SUMMARY_LEASE_COOLDOWN_MIN,
     LlmClient,
     LlmConfig,
     _Claimed,
@@ -425,10 +426,16 @@ def test_numeric_dump_tagged_without_llm_call() -> None:
     assert any("(tabular data)" in (params[2] or "") for _sql, params in conn.writes)
 
 
-def test_claim_retries_failed_below_cap_only(store: Any) -> None:
-    """A failed summary is re-claimed while attempts < MAX_SUMMARIZE_ATTEMPTS
-    (so transient cold-load failures retry) but not once exhausted (so a
-    poison chunk can't re-bill the backend forever)."""
+def test_claim_reclaims_stale_lease_not_terminal_failed(store: Any) -> None:
+    """Retry is driven by the lease, not a chunk_summaries attempts check.
+
+    Under the lease model a sub-cap failure keeps its ``chunk_claims`` row
+    (attempts on the lease; ``claimed_at`` is the backoff clock) and gets
+    re-claimed once that row ages past the cooldown. A cap-exhausted failure
+    has NO lease and a terminal ``chunk_summaries`` 'failed' row, so it is
+    never re-claimed (the fresh claim excludes any summarized chunk). A lease
+    still inside the cooldown is left alone — that is the retry backoff.
+    """
     from tests.workers._helpers import seed_chunks
 
     prose = (
@@ -436,15 +443,24 @@ def test_claim_retries_failed_below_cap_only(store: Any) -> None:
         "across several electrolysis runs, comparing it against the benchmark. "
     ) * 2  # >200 chars prose, claimable
 
-    ref_id, (retry_id, exhausted_id) = seed_chunks(store, [prose, prose])
+    ref_id, (stale_id, fresh_id, exhausted_id) = seed_chunks(
+        store, [prose, prose, prose]
+    )
+    aged = f"now() - interval '{SUMMARY_LEASE_COOLDOWN_MIN + 5} minutes'"
     with store.pool.connection() as conn:
-        # retry_id: one prior failure, below cap → should be re-claimed.
+        # stale_id: sub-cap failure, lease aged past the cooldown → re-claimed.
         conn.execute(
-            "INSERT INTO chunk_summaries (chunk_id, summarizer, status, attempts) "
-            "VALUES (%s, 'llm-v1', 'failed', 1)",
-            (retry_id,),
+            "INSERT INTO chunk_claims (chunk_id, artifact, attempts, claimed_at) "
+            f"VALUES (%s, 'llm-v1', 1, {aged})",
+            (stale_id,),
         )
-        # exhausted_id: failed at the cap → should NOT be re-claimed.
+        # fresh_id: sub-cap failure, lease still inside the cooldown → backing off.
+        conn.execute(
+            "INSERT INTO chunk_claims (chunk_id, artifact, attempts, claimed_at) "
+            "VALUES (%s, 'llm-v1', 1, now())",
+            (fresh_id,),
+        )
+        # exhausted_id: failed at the cap → terminal chunk_summaries row, no lease.
         conn.execute(
             "INSERT INTO chunk_summaries (chunk_id, summarizer, status, attempts) "
             "VALUES (%s, 'llm-v1', 'failed', %s)",
@@ -454,5 +470,6 @@ def test_claim_retries_failed_below_cap_only(store: Any) -> None:
         claimed = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=10)
 
     ids = {c.chunk_id for c in claimed}
-    assert retry_id in ids  # failed, attempts < cap → retried
-    assert exhausted_id not in ids  # failed, attempts >= cap → given up
+    assert stale_id in ids  # lease past cooldown → reclaimed
+    assert fresh_id not in ids  # lease inside cooldown → still backing off
+    assert exhausted_id not in ids  # terminal failed, no lease → given up
