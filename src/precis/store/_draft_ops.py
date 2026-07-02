@@ -21,7 +21,7 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
-from precis.errors import BadInput
+from precis.errors import BadInput, Gone, NotFound
 from precis.utils import handle_registry
 from precis.utils.fractional import key_between, n_keys_between
 from precis.utils.handles import new_handle
@@ -29,8 +29,9 @@ from precis.utils.handles import new_handle
 _HANDLE_RETRIES = 6
 
 #: An ``ask-user`` / ``halt`` tag value of the form ``see-chunk-N`` is a
-#: redirect handle: the real (>80-char) prose lives in a ``tag_overflow``
-#: chunk at ``ord = N`` on the todo (handlers.todo._redirect_long_tag_values).
+#: redirect handle: the real (long / whitespaced) prose lives in a
+#: ``tag_overflow`` chunk at ``ord = N`` on the ref
+#: (handlers._tag_redirect.redirect_long_tag_values).
 _SEE_CHUNK_RE = re.compile(r"^see-chunk-(\d+)$")
 
 #: Above this many characters of concatenated prose, skip the inline
@@ -670,7 +671,7 @@ class DraftMixin:
         if anchor is not None:
             tgt = self.get_draft_chunk(_bare(anchor))
             if tgt is None:
-                raise ValueError(f"at: unknown chunk handle {anchor!r}")
+                raise NotFound(f"at: unknown chunk handle {anchor!r}")
             sibs = self._children(conn, ref_id, tgt.parent_chunk_id)
             idx = next(i for i, s in enumerate(sibs) if s.chunk_id == tgt.chunk_id)
             if "before" in at:
@@ -685,7 +686,7 @@ class DraftMixin:
         if into is not None:
             parent = self.get_draft_chunk(_bare(into))
             if parent is None:
-                raise ValueError(f"at: unknown parent handle {into!r}")
+                raise NotFound(f"at: unknown parent handle {into!r}")
             kids = self._children(conn, ref_id, parent.chunk_id)
             if at.get("first"):
                 return parent.chunk_id, None, (kids[0].pos if kids else None)
@@ -1135,12 +1136,15 @@ class DraftMixin:
                 (_bare(handle),),
             ).fetchone()
             if row is None:
-                raise ValueError(f"unknown chunk handle {handle!r}")
+                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
             chunk_id, chunk_kind, meta, retired = row
             if chunk_kind != "figure":
                 raise BadInput(f"¶{_bare(handle)} is a {chunk_kind}, not a figure")
             if retired is not None:
-                raise ValueError(f"chunk {handle!r} is retired")
+                raise Gone(
+                    f"¶{_bare(handle)} is retired — it was removed or replaced; "
+                    "edit the current live chunk instead"
+                )
             meta = dict(meta or {})
             fig = dict(meta.get("figure") or {})
             if origin is not None:
@@ -1173,7 +1177,7 @@ class DraftMixin:
                 (_bare(handle),),
             ).fetchone()
             if row is None:
-                raise ValueError(f"unknown chunk handle {handle!r}")
+                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
             chunk_id, chunk_kind, meta, retired = row
             if chunk_kind != "heading":
                 raise BadInput(
@@ -1181,7 +1185,10 @@ class DraftMixin:
                     f"is a {chunk_kind}"
                 )
             if retired is not None:
-                raise ValueError(f"chunk {handle!r} is retired")
+                raise Gone(
+                    f"¶{_bare(handle)} is retired — it was removed or replaced; "
+                    "edit the current live chunk instead"
+                )
             meta = dict(meta or {})
             if style:
                 meta["style"] = style
@@ -1228,10 +1235,13 @@ class DraftMixin:
                 (_bare(handle),),
             ).fetchone()
             if row is None:
-                raise ValueError(f"unknown chunk handle {handle!r}")
+                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
             chunk_id, ref_id, chunk_kind, parent, retired = row
             if retired is not None:
-                raise ValueError(f"chunk {handle!r} is retired")
+                raise Gone(
+                    f"¶{_bare(handle)} is retired — it was removed or replaced; "
+                    "edit the current live chunk instead"
+                )
             if chunk_kind not in ("ulist", "olist"):
                 raise BadInput(
                     f"list kind applies to a list container; {_bare(handle)} "
@@ -1306,7 +1316,7 @@ class DraftMixin:
                 (_bare(handle),),
             ).fetchone()
             if row is None:
-                raise ValueError(f"unknown chunk handle {handle!r}")
+                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
             chunk_id, chunk_kind, meta, retired = row
             if chunk_kind != "heading":
                 raise BadInput(
@@ -1314,7 +1324,10 @@ class DraftMixin:
                     f"is a {chunk_kind}"
                 )
             if retired is not None:
-                raise ValueError(f"chunk {handle!r} is retired")
+                raise Gone(
+                    f"¶{_bare(handle)} is retired — it was removed or replaced; "
+                    "edit the current live chunk instead"
+                )
             meta = dict(meta or {})
             if target:
                 lo, hi = target
@@ -1472,9 +1485,12 @@ class DraftMixin:
         with self.tx() as conn:
             row = self._row(conn, handle)
             if row is None:
-                raise ValueError(f"unknown chunk handle {handle!r}")
+                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
             if row[6] is not None:
-                raise ValueError(f"chunk {handle!r} is retired")
+                raise Gone(
+                    f"¶{_bare(handle)} is retired — it was removed or replaced; "
+                    "edit the current live chunk instead"
+                )
             if base_sha is not None:
                 current = content_sha(row[5])
                 # Prefix match: the read path now shows a 12-char sha
@@ -1530,9 +1546,12 @@ class DraftMixin:
         with self.tx() as conn:
             row = self._row(conn, handle)
             if row is None:
-                raise ValueError(f"unknown chunk handle {handle!r}")
+                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
             if row[6] is not None:
-                raise ValueError(f"chunk {handle!r} is retired")
+                raise Gone(
+                    f"¶{_bare(handle)} is retired — it was removed or replaced; "
+                    "edit the current live chunk instead"
+                )
             chunk_id, ref_id, old_parent, old_pos = row[0], row[1], row[3], row[4]
             new_parent, lo, hi = self._resolve_move(
                 conn, ref_id, move, moving_id=chunk_id
@@ -1540,7 +1559,7 @@ class DraftMixin:
             if new_parent is not None:
                 forbidden = {chunk_id, *self._descendant_ids(conn, chunk_id)}
                 if new_parent in forbidden:
-                    raise ValueError(
+                    raise BadInput(
                         "cannot move a chunk under itself or its own subtree"
                     )
             new_pos = key_between(lo, hi)
@@ -1574,7 +1593,7 @@ class DraftMixin:
         with self.tx() as conn:
             row = self._row(conn, handle)
             if row is None:
-                raise ValueError(f"unknown chunk handle {handle!r}")
+                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
             if row[6] is not None:
                 return  # already retired — idempotent
             chunk_id, ref_id, parent = row[0], row[1], row[3]
@@ -1582,7 +1601,7 @@ class DraftMixin:
             live = self._live_count(conn, ref_id)
             if kids:
                 if mode not in ("cascade", "promote"):
-                    raise ValueError(
+                    raise BadInput(
                         "retiring a chunk with children requires "
                         "mode='cascade' (delete contents) or "
                         "mode='promote' (keep contents)"
@@ -1590,7 +1609,7 @@ class DraftMixin:
                 if mode == "cascade":
                     subtree = [chunk_id, *self._descendant_ids(conn, chunk_id)]
                     if len(subtree) >= live:
-                        raise ValueError(
+                        raise BadInput(
                             "cannot retire the whole draft (last live chunks)"
                         )
                     conn.execute(
@@ -1624,7 +1643,7 @@ class DraftMixin:
                     self._log(conn, chunk_id, "retired", source, {"mode": "promote"})
             else:
                 if live <= 1:
-                    raise ValueError("cannot retire the last live chunk of a draft")
+                    raise BadInput("cannot retire the last live chunk of a draft")
                 conn.execute(
                     "UPDATE chunks SET retired_at = now() WHERE chunk_id = %s",
                     (chunk_id,),
@@ -1646,7 +1665,7 @@ class DraftMixin:
         if anchor is not None:
             tgt = self.get_draft_chunk(_bare(anchor))
             if tgt is None:
-                raise ValueError(f"move: unknown chunk handle {anchor!r}")
+                raise NotFound(f"move: no draft chunk ¶{_bare(anchor)}")
             sibs = [
                 s
                 for s in self._children(conn, ref_id, tgt.parent_chunk_id)
@@ -1664,7 +1683,7 @@ class DraftMixin:
         if into is not None:
             parent = self.get_draft_chunk(_bare(into))
             if parent is None:
-                raise ValueError(f"move: unknown parent handle {into!r}")
+                raise NotFound(f"move: no parent chunk ¶{_bare(into)}")
             kids = [
                 k
                 for k in self._children(conn, ref_id, parent.chunk_id)

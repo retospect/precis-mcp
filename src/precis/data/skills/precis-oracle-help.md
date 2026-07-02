@@ -77,12 +77,15 @@ search(kind='oracle', q='impermanence')                       # all traditions
 search(kind='oracle', q='timely change', scope='iching')      # within one
 ```
 
-Title-lexical only — oracle entries carry no embeddings, so semantic
-search does not apply and a query may return nothing. For a reliable
-pick, address an entry directly with `get(id='or<id>~N')` (legacy
-`get(kind='oracle', id='<tradition>~N')` still resolves). Each result
-leads with the tradition's `or<id>` handle; order is the relevance
-signal.
+Searches entry **bodies**, not just tradition titles — a query for
+`impermanence` matches the hexagram / passage text itself. It runs
+hybrid lexical + semantic when an embedder is wired, and degrades to
+lexical-only (keyword match over the entry text) when the embedder is
+absent or down, so a content query reliably surfaces matching entries.
+Each result leads with the entry handle `or<id>~N` (the deterministic
+address); order is the relevance signal. To fetch the entry, call
+`get(id='or<id>~N')` (legacy `get(kind='oracle', id='<tradition>~N')`
+still resolves).
 
 ## Cite an oracle entry in writing
 ## Quote a passage with provenance

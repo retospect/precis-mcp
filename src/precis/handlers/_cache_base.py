@@ -30,13 +30,15 @@ cache-flow plumbing.
 from __future__ import annotations
 
 import hashlib
+import logging
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput
+from precis.embedder import EmbedderUnavailable
+from precis.errors import BadInput, Upstream
 from precis.handlers._link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
@@ -61,6 +63,8 @@ from precis.utils.text import excerpt as _excerpt
 
 if TYPE_CHECKING:
     from precis.store.types import CacheEntry, Ref
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -871,7 +875,31 @@ class CacheBackedHandler(Handler):
             # Better than dropping content entirely.
             return [BlockInsert(pos=0, text=body)]
 
-        return to_block_inserts(md_blocks, embedder=self.embedder, meta_for=block_meta)
+        try:
+            return to_block_inserts(
+                md_blocks, embedder=self.embedder, meta_for=block_meta
+            )
+        except (EmbedderUnavailable, Upstream):
+            # The provider call (Perplexity / trafilatura fetch) already
+            # SUCCEEDED — its result is in hand and, for a paid tier, has
+            # already cost money. A *down* embedder must not throw that
+            # work away: store the blocks un-embedded (``embedding=None``)
+            # and let the ``embed:bge-m3`` worker backfill the vectors on
+            # its next pass (ADR 0007 — embeddings are a worker job, not an
+            # ingest-time requirement). Lexical search works immediately;
+            # semantic hits light up once the worker catches up. This is
+            # the same degrade-to-lexical contract search verbs already
+            # honour via ``embed_query`` (gripe #47286). Both embedder
+            # failure classes degrade: ``RemoteEmbedder`` raises
+            # ``EmbedderUnavailable``; the in-process ``bge-m3`` embedder
+            # raises ``Upstream`` while warming.
+            log.warning(
+                "embedder unavailable while embedding %s report blocks; "
+                "storing un-embedded (worker will backfill)",
+                self.spec.kind,
+                exc_info=True,
+            )
+            return to_block_inserts(md_blocks, embedder=None, meta_for=block_meta)
 
 
 def _format_cache_footer(cache: CacheEntry) -> str:

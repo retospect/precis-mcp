@@ -1130,8 +1130,9 @@ def _render_ancestry_toon(chain: list[dict[str, object]], *, leaf_id: int) -> st
 #: Chunk kinds that are NOT part of a ref's brief. Forensic job logs,
 #: per-tick conclusions, the card-search mirror, and ``tag_overflow``
 #: spillover — the last is the planner's OWN long ``ask-user:`` /
-#: ``halt:`` value redirected onto the ref when it was too long to
-#: store as a tag (``TodoHandler`` ``_TAG_VALUE_REDIRECT_THRESHOLD``).
+#: ``halt:`` value redirected onto the ref when it was too long /
+#: whitespaced to store as a tag (see
+#: ``handlers._tag_redirect.redirect_long_tag_values``).
 #: Excluded so a re-tick never reads its own prior output back as the
 #: brief.
 _NON_BODY_CHUNK_KINDS: tuple[str, ...] = (

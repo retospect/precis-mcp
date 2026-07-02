@@ -38,15 +38,19 @@ from precis.handlers._link_tag_ops import (
 from precis.handlers._slug_ref_shared import (
     render_slug_ref_list,
     resolve_live_slug_ref,
-    search_hits_slug_refs,
-    search_slug_refs,
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import Block, Ref
+from precis.store import SEMANTIC_DISTANCE_FLOOR, Block, Ref
 from precis.utils import handle_registry
+from precis.utils.embed_query import embed_query, query_vec_for
 from precis.utils.next_block import render_next_section
-from precis.utils.search_merge import SearchHit
+from precis.utils.search_header import format_search_headline
+from precis.utils.search_merge import (
+    SearchHit,
+    block_hits_to_search_hits,
+)
+from precis.utils.text import excerpt as _excerpt
 
 # Block-selector views accepted on ``id=<slug>/<view>`` or
 # ``view=<view>``. ``index`` is the escape hatch for callers who want
@@ -82,6 +86,9 @@ class OracleHandler(Handler):
         if hub.store is None:
             raise InitError("oracle: store required")
         self.store = hub.store
+        # Optional — search degrades to lexical-only when the embedder
+        # is absent or failing (see ``embed_query`` / ``query_vec_for``).
+        self.embedder = hub.embedder
 
     def get(  # type: ignore[override]
         self,
@@ -153,16 +160,88 @@ class OracleHandler(Handler):
         self,
         *,
         q: str | None = None,
+        scope: str | None = None,
         page_size: int = 10,
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
-        return search_slug_refs(
-            self.store,
-            kind="oracle",
+        """Content search over oracle **entry bodies**, not just titles.
+
+        Oracle wisdom (hexagrams, Stoic quotes, proverbs) lives in the
+        per-entry blocks, so this routes through the shared block search
+        (``store.search_blocks``): hybrid lexical+semantic by default,
+        degrading to lexical-only when the embedder is absent or failing
+        (``query_vec_for`` → ``None``). Each hit is rendered as a
+        deterministic ``oracle <slug>~<pos>`` entry the caller can fetch
+        with ``get(kind='oracle', id='<slug>~<pos>')``.
+
+        ``scope=<tradition-slug>`` narrows the search to a single
+        tradition's entries.
+        """
+        if q is None or not q.strip():
+            raise BadInput(
+                "search requires q=",
+                next="search(kind='oracle', q='your query')",
+            )
+
+        scope_ref_id: int | None = None
+        if scope is not None:
+            scope_ref = resolve_live_slug_ref(
+                self.store,
+                kind="oracle",
+                id=scope,
+                next_hint="get(kind='oracle') to list traditions",
+            )
+            scope_ref_id = scope_ref.id
+
+        query_vec = query_vec_for(self.embedder, q, mode)
+        hits = self.store.search_blocks(
             q=q,
-            page_size=page_size,
-            noun="oracle match",
+            query_vec=query_vec,
+            mode=mode,
+            kind="oracle",
+            scope_ref_id=scope_ref_id,
+            limit=page_size,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
+        if not hits:
+            body = f"no oracle entries match {q!r}"
+            body += render_next_section(
+                [
+                    (
+                        f"search(kind='oracle', q={q!r}, page_size=50)",
+                        "widen the net",
+                    ),
+                    (
+                        "get(kind='oracle')",
+                        "list traditions to browse instead",
+                    ),
+                ]
+            )
+            return Response(body=body)
+
+        total = self.store.count_blocks_lexical(
+            q=q, kind="oracle", scope_ref_id=scope_ref_id
+        )
+        lines = [
+            format_search_headline(
+                n_returned=len(hits),
+                total=total,
+                noun="oracle entry",
+                query=q,
+            )
+        ]
+        for block, ref, score in hits:
+            slug = ref.slug or "???"
+            handle = (
+                handle_registry.try_format(ref.kind, block.id, chunk=True)
+                or f"{slug}~{block.pos}"
+            )
+            title = _entry_title(block) or f"entry {block.pos}"
+            lines.append(f"\n## oracle {handle}  (score={score:.4f})")
+            lines.append(f"_{ref.title} - {title}_")
+            lines.append(_excerpt(block.text))
+        return Response(body="\n".join(lines))
 
     # ── search_hits: structured form for cross-kind merge ───────────
 
@@ -171,18 +250,34 @@ class OracleHandler(Handler):
         *,
         q: str,
         page_size: int = 10,
+        query_vec: list[float] | None = None,
+        mode: str | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
-        """Title-level lexical search returned as ``SearchHit``s.
+        """Block-level content search returned as ``SearchHit``s.
 
-        Oracle bodies live in blocks but the canonical search
-        surface today indexes the title only — cross-kind merge
-        therefore stays consistent with single-kind ``search()``.
-        Block-level search is a follow-up.
+        Oracle bodies live in per-entry blocks; this searches that body
+        text (hybrid lexical+semantic, degrading to lexical when the
+        embedder is down) so cross-kind merge matches entry *content*,
+        not just the tradition title. ``query_vec=`` may be pre-supplied
+        by the runtime cross-kind dispatcher (embedded once for all
+        kinds).
         """
-        return search_hits_slug_refs(
-            self.store, kind="oracle", q=q, page_size=page_size
+        if not (q and q.strip()):
+            return []
+        if (mode or "").strip().lower() == "lexical":
+            query_vec = None
+        elif query_vec is None:
+            query_vec = embed_query(self.embedder, q)
+        triples = self.store.search_blocks(
+            q=q,
+            query_vec=query_vec,
+            mode=mode,
+            kind="oracle",
+            limit=page_size,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
+        return block_hits_to_search_hits(triples, kind="oracle")
 
     # ── seven-verb surface ─────────────────────────────────────────
 

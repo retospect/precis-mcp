@@ -20,11 +20,16 @@ from __future__ import annotations
 import importlib
 from types import ModuleType
 
-from precis.errors import Upstream
+from precis.errors import PrecisError, Upstream
 
 
-def require_optional(module: str, *, extra: str) -> ModuleType:
-    """Import ``module`` or raise :class:`Upstream` with an install hint.
+def require_optional(
+    module: str,
+    *,
+    extra: str,
+    error_cls: type[PrecisError] = Upstream,
+) -> ModuleType:
+    """Import ``module`` or raise a typed error with an install hint.
 
     Centralises the exact wording — the previous ad-hoc copies in
     ``web.py`` (twice), ``perplexity.py``, and ``youtube.py`` had
@@ -44,18 +49,27 @@ def require_optional(module: str, *, extra: str) -> ModuleType:
         The pyproject ``[project.optional-dependencies]`` group that
         ships the missing dep. Surfaces in the recovery hint as
         ``pip install 'precis-mcp[<extra>]'``.
+    error_cls:
+        The :class:`~precis.errors.PrecisError` subclass to raise when
+        the module is missing. Defaults to :class:`Upstream` for
+        backwards compatibility, but a *missing local optional
+        dependency* is really a "feature unavailable on this
+        deployment" condition, not a downstream/network failure — the
+        ``web`` kind passes :class:`~precis.errors.Unsupported` so the
+        rendered error isn't mislabelled ``[error:Upstream]`` (gripe
+        #39241).
 
     Raises
     ------
-    Upstream
+    error_cls
         When the module isn't importable. The exception's ``next``
         field carries the canonical pip-install command so an MCP
         client renders an actionable recovery suggestion.
     """
     try:
         return importlib.import_module(module)
-    except ImportError as exc:  # pragma: no cover — guarded at registry
-        raise Upstream(
+    except ImportError as exc:
+        raise error_cls(
             f"{module} is not installed",
             next=f"pip install 'precis-mcp[{extra}]'",
         ) from exc

@@ -289,6 +289,42 @@ class TestIngestPaper:
         assert "oracle minitest~" in default.body
         assert "Mini Test" in default.body
 
+    def test_search_matches_entry_body_not_just_title(
+        self, store: Store, yaml_dir: Path
+    ) -> None:
+        """gripe #39243 — ``search(kind='oracle', q=…)`` must match the
+        entry BODY, not only the tradition title.
+
+        The word ``lesson`` appears in both minitest entry bodies but
+        NOT in the ref title (``Mini Test``) or any entry title
+        (``First entry`` / ``Second entry``). Pre-fix, oracle search
+        indexed the ref title only, so this returned zero hits.
+
+        No embedder is wired here, so this also exercises the
+        lexical-only degrade path (``query_vec_for`` → ``None``).
+        """
+        ingest_paper(yaml_dir / "minitest.yaml", store=store, embedder=None)
+        h = OracleHandler(hub=Hub(store=store))
+        assert h.embedder is None  # lexical-only degrade path
+
+        resp = h.search(q="lesson")
+        assert "no oracle entries match" not in resp.body
+        assert "oracle entry" in resp.body  # headline noun
+        # Both entries carry "lesson"; the deterministic entry handle
+        # must be present so the agent can fetch the entry.
+        assert "minitest~1" in resp.body or "minitest~2" in resp.body
+
+        # A word that is only in the title still resolves via the
+        # title tsvector on the body row's ref, but the point is that
+        # body-only words now work — the pre-fix bug.
+        hits = h.search_hits(q="lesson")
+        assert len(hits) >= 1
+        assert all(hit.kind == "oracle" for hit in hits)
+
+        # Sanity: a word in neither body nor title returns nothing.
+        empty = h.search(q="quantum chromodynamics")
+        assert "no oracle entries match" in empty.body
+
 
 class TestIngestDirectory:
     def test_aggregates_per_file(self, store: Store, tmp_path: Path) -> None:

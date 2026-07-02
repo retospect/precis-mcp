@@ -42,6 +42,7 @@ from precis.handlers._link_tag_ops import (
     validate_relation,
 )
 from precis.handlers._link_target import parse_link_target
+from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Link, Ref, Tag
@@ -587,6 +588,17 @@ class NumericRefHandler(Handler):
         # Existence/liveness guard — raises Gone/NotFound for a missing or
         # soft-deleted ref before we touch tag state.
         self._resolve_live_ref(ref_id)
+        # Redirect long/whitespace ask-user:/halt: yields into a
+        # tag_overflow chunk on the ref *before* parse_strict's whitespace
+        # guard fires, so a legitimate prose yield on any kind's generic
+        # tag path becomes a space-free see-chunk-N handle rather than
+        # being rejected (gripe #39254). No-op (no DB hit) for tags that
+        # aren't over-long/whitespaced yields, incl. an already-redirected
+        # ``see-chunk-N`` handle (idempotent).
+        if add:
+            add, _redirected_chunks = redirect_long_tag_values(
+                self.store, ref_id=ref_id, tags=add
+            )
         # Pre-validate every tag *before* touching the DB so a
         # rejected tag mid-call doesn't leave partial state. Mirrors
         # the contract on ``_create`` / ``_update``.
@@ -722,13 +734,15 @@ class NumericRefHandler(Handler):
         all_tag_strs: list[str] = list(self.default_tags_on_create)
         if tags:
             all_tag_strs.extend(tags)
-        parsed_tags = [Tag.parse_strict(t, kind=self.kind) for t in all_tag_strs]
 
         # All validation done — now do every DB write inside a single
         # transaction so the ref + tags + link land atomically. If
         # any of the tag inserts trips a constraint we haven't
         # captured at validation time, the surrounding ``tx()`` will
-        # roll back the ref insert too.
+        # roll back the ref insert too. Tag ``parse_strict`` runs inside
+        # the tx (after the ref insert) because the yield redirect below
+        # needs the ref id to write its overflow chunk; a rejected tag
+        # still writes nothing since the raise rolls the whole tx back.
         with self.store.tx() as conn:
             ref = self.store.insert_ref(
                 kind=self.kind,
@@ -738,6 +752,14 @@ class NumericRefHandler(Handler):
                 auto_refresh_days=auto_refresh_days,
                 conn=conn,
             )
+            # Redirect long/whitespace ask-user:/halt: yields to a
+            # space-free see-chunk-N handle *before* parse_strict's
+            # whitespace guard (gripe #39254). On the create connection so
+            # the overflow chunk lands atomically with the ref + tags.
+            redirected, _redirected_chunks = redirect_long_tag_values(
+                self.store, ref_id=ref.id, tags=all_tag_strs, conn=conn
+            )
+            parsed_tags = [Tag.parse_strict(t, kind=self.kind) for t in redirected]
             for tag in parsed_tags:
                 self.store.add_tag(
                     ref.id,

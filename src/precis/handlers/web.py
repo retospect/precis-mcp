@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from typing import ClassVar
 
-from precis.errors import BadInput, Upstream
+from precis.errors import BadInput, Unsupported, Upstream
 from precis.handlers._cache_base import (
     CacheBackedHandler,
     FetchResult,
@@ -119,7 +119,14 @@ class WebHandler(CacheBackedHandler):
 
     def _fetch(self, key: str) -> FetchResult:
         httpx = require_httpx()
-        trafilatura = require_optional("trafilatura", extra="external")
+        # A missing ``trafilatura`` is a "feature unavailable on this
+        # deployment" condition, not a network/upstream failure — raise
+        # ``Unsupported`` (not ``Upstream``) so the rendered error is
+        # correctly typed while still carrying the actionable
+        # ``pip install 'precis-mcp[external]'`` hint. (gripe #39241.)
+        trafilatura = require_optional(
+            "trafilatura", extra="external", error_cls=Unsupported
+        )
 
         import os
 

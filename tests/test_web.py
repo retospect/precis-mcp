@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, Upstream
+from precis.errors import BadInput, Unsupported, Upstream
 from precis.handlers.web import WebHandler, _extract_title
 
 # ── stub httpx.Client ────────────────────────────────────────────────
@@ -212,6 +212,42 @@ def test_network_error_raises_upstream(handler: WebHandler) -> None:
     _StubClient.raise_on_get = httpx.ConnectError("DNS fail")
     with pytest.raises(Upstream, match="fetch failed"):
         handler.get(id="https://example.com/network-error-probe")
+
+
+def test_missing_trafilatura_is_actionable_and_not_upstream(
+    handler: WebHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing ``trafilatura`` extra must surface an ACTIONABLE,
+    correctly-typed error — not the opaque ``[error:Upstream]
+    trafilatura not installed`` the gripe reported (#39241).
+
+    Simulate the import failing (deterministic even on hosts where
+    trafilatura *is* installed) and assert the raised error:
+      * is ``Unsupported`` — a "feature unavailable on this
+        deployment" condition, NOT a downstream/network ``Upstream``;
+      * carries the install command in its ``next`` breaking hint.
+    """
+    import importlib as _il
+
+    real_import = _il.import_module
+
+    def _fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "trafilatura" or name.startswith("trafilatura."):
+            raise ImportError("simulated: trafilatura not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "precis.utils.optional_deps.importlib.import_module", _fake_import
+    )
+
+    with pytest.raises(Unsupported) as exc_info:
+        handler.get(id="https://example.com/needs-trafilatura")
+
+    err = exc_info.value
+    # Missing local optional dep is NOT an upstream/network failure.
+    assert not isinstance(err, Upstream)
+    assert "trafilatura" in err.cause
+    assert err.next == "pip install 'precis-mcp[external]'"
 
 
 # ── extraction edge cases ────────────────────────────────────────────

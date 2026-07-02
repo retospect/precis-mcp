@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.embedder import MockEmbedder
+from precis.embedder import EmbedderUnavailable, MockEmbedder
 from precis.errors import BadInput, Upstream
 from precis.handlers.perplexity import (
     ResearchHandler,
@@ -834,6 +834,101 @@ def test_fetch_path_embeds_blocks(think_with_embedder: ThinkHandler) -> None:
     assert embedded, "expected fetch-path blocks to be embedded"
     # Mock embedder yields 1024-dim unit-norm vectors.
     assert all(len(b.embedding) == 1024 for b in embedded)
+
+
+# ── embedder-outage resilience (gripe #47286) ───────────────────────
+
+
+class _DownEmbedder:
+    """Embedder whose every call fails as if the bge-m3 service is down.
+
+    Mirrors :class:`precis.embedder.RemoteEmbedder` after it has
+    exhausted every endpoint — the exact condition prod hit in
+    gripe #47286.
+    """
+
+    def embed_one(self, text: str) -> list[float]:
+        raise EmbedderUnavailable("all embedder endpoints failed (down)")
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        raise EmbedderUnavailable("all embedder endpoints failed (down)")
+
+
+class _WarmingEmbedder:
+    """Embedder whose every call fails as if bge-m3 is still warming.
+
+    The in-process :class:`precis.embedder.BgeM3Embedder` raises
+    :class:`precis.errors.Upstream` (not ``EmbedderUnavailable``) from
+    ``_raise_if_warming`` until the model finishes loading. Prod runs
+    this embedder, so the degrade guard must catch this arm too or
+    gripe #47286 stays open on the default deployment.
+    """
+
+    def embed_one(self, text: str) -> list[float]:
+        raise Upstream("bge-m3 embedder still warming")
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        raise Upstream("bge-m3 embedder still warming")
+
+
+@pytest.mark.parametrize("embedder_cls", [_DownEmbedder, _WarmingEmbedder])
+def test_fetch_survives_embedder_outage(store: Store, embedder_cls: type) -> None:
+    """A failing embedder must not sink a provider-backed fetch.
+
+    The Perplexity Sonar call is an external HTTP request that never
+    touches the local bge-m3 embedder — the embedder is only used
+    afterwards to vectorise the returned blocks for semantic search.
+    Before the fix, an embedder error raised while embedding those
+    blocks aborted the whole ``get`` with an opaque internal error,
+    even though the (paid) provider answer was already in hand. Now the
+    fetch degrades to un-embedded blocks (the ``embed:bge-m3`` worker
+    backfills the vectors later) and the agent still gets its answer,
+    for BOTH embedder failure classes — a down ``RemoteEmbedder``
+    (``EmbedderUnavailable``) and a warming in-process bge-m3
+    (``Upstream``). (gripe #47286.)
+    """
+    _StubClient.response = _StubResp(
+        json_data={
+            "choices": [{"message": {"content": _MULTI_PARA_BODY}}],
+            "citations": ["https://example.com/1"],
+        }
+    )
+    h = WebsearchHandler(hub=Hub(store=store, embedder=embedder_cls()))
+
+    # The provider answer must come through, not an EmbedderUnavailable.
+    resp = h.get(id="who runs anthropic under embedder outage")
+    assert "catalyst landscape" in resp.body
+    assert "Sources:" in resp.body
+
+    # Blocks are stored un-embedded (vector column NULL) so the embed
+    # worker can backfill them; lexical search works immediately.
+    refs = h.store.list_refs(kind="websearch", provider="perplexity", limit=10)
+    assert len(refs) == 1
+    blocks = h.store.list_blocks_for_ref(refs[0].id, with_embedding=True)
+    assert blocks, "expected the fetched report to be stored as blocks"
+    assert all(b.embedding is None for b in blocks)
+
+
+def test_search_survives_embedder_outage(store: Store) -> None:
+    """The ``search`` verb on a provider-backed kind degrades to lexical
+    rather than raising when the embedder is down (already guarded via
+    ``embed_query`` — pinned here so it can't regress alongside the
+    fetch-path fix). (gripe #47286.)"""
+    down = WebsearchHandler(hub=Hub(store=store, embedder=_DownEmbedder()))
+    # Seed one cached row via a healthy embedder so there is content to
+    # search, then search it back through the down-embedder handler.
+    seed = WebsearchHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
+    _StubClient.response = _StubResp(
+        json_data={
+            "choices": [{"message": {"content": _MULTI_PARA_BODY}}],
+            "citations": [],
+        }
+    )
+    seed.get(id="catalyst landscape seed")
+
+    resp = down.search(q="catalyst landscape")
+    # No EmbedderUnavailable — a real (or empty-state) response comes back.
+    assert isinstance(resp.body, str)
 
 
 # ── search verb on perplexity kinds ─────────────────────────────────

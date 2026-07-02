@@ -496,6 +496,61 @@ def test_tag_strict_accepts_lowercase_and_open_tags() -> None:
     Tag.parse_strict("draft")
 
 
+# ── gripe #39254: agent prose (any whitespace) must not become a tag ──
+
+
+def test_tag_strict_rejects_multiline_prose() -> None:
+    """An agent's multi-line ``claude -p`` error narrative mis-yielded as
+    an ``ask-user:`` value (gripe #39254) must be rejected as prose, not
+    persisted verbatim as a tag. Reto's rule: a tag value carries no
+    whitespace at all — the whitespace shape-guard in ``parse_strict`` is
+    the shared chokepoint that catches newlines and spaces alike (the
+    ``ask-user:``/``halt:`` yield redirect shortens *legitimate* yields to
+    a space-free handle upstream, before this guard)."""
+    err = (
+        "ask-user:file writes disabled in sandbox\n"
+        "I cannot write the file.\n"
+        "Please enable writes or tell me where to put it."
+    )
+    assert len(err) < 200  # would slip past the 200-char length cap
+    with pytest.raises(BadInput, match="whitespace"):
+        Tag.parse_strict(err)
+    # A carriage return is prose too.
+    with pytest.raises(BadInput, match="whitespace"):
+        Tag.parse_strict("halt:step 1 failed\r\nstep 2 skipped")
+
+
+def test_tag_strict_rejects_single_line_prose() -> None:
+    """The real prod #39254 shape is *single-line* prose (120–200 chars,
+    no newline) — the first-pass newline-only guard missed it. Under the
+    broader whitespace rule a space-carrying non-yield value is rejected
+    at ``parse_strict`` directly (legitimate ``ask-user:``/``halt:``
+    yields are redirected to a space-free handle on the write paths
+    *before* reaching here — see the write-path tests)."""
+    q = "ask-user:" + "should I merge the two duplicate sections or keep both? " * 2
+    assert 80 < len(q) <= 200  # long, single-line — but has spaces
+    assert "\n" not in q
+    with pytest.raises(BadInput, match="whitespace"):
+        Tag.parse_strict(q)
+    # A short space-carrying value is caught too (below the length cap).
+    with pytest.raises(BadInput, match="whitespace"):
+        Tag.parse_strict("ask-user:which file?")
+
+
+def test_tag_strict_still_accepts_space_free_tags() -> None:
+    """Space-free structured labels — the whole legitimate tag surface —
+    still parse: closed axes, open ``prefix:value`` tags, long ``project:``
+    owner paths, and the ``see-chunk-N`` redirect handle the yield paths
+    produce."""
+    Tag.parse_strict("STATUS:open")
+    Tag.parse_strict("bug")  # bare open flag
+    Tag.parse_strict("project:nanotrans_auto_2026_carbon_capture_sweep")
+    Tag.parse_strict("LLM:opus")
+    Tag.parse_strict("topic:co2-capture")
+    Tag.parse_strict("ask-user:see-chunk-7")  # the redirected handle
+    Tag.parse_strict("halt:missing-credentials")
+
+
 # ── MAJOR: the documented STATUS values match the runtime ───────────
 
 

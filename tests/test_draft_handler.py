@@ -7,8 +7,9 @@ import re
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, Gone, NotFound
 from precis.handlers.draft import DraftHandler
+from precis.store.store import Store
 
 
 def _dc(body: str) -> str:
@@ -872,3 +873,35 @@ def test_word_target_clear(draft: DraftHandler, hub: Hub) -> None:
     assert "word_target" in (hub.store.get_draft_chunk(intro).meta or {})
     draft.edit(id=intro, word_target={})  # clear
     assert "word_target" not in (hub.store.get_draft_chunk(intro).meta or {})
+
+
+def test_edit_retired_or_unknown_chunk_is_typed(draft: DraftHandler, hub: Hub) -> None:
+    """gripe #45083: editing a stale/retired handle used to surface the
+    opaque ``[error:Internal] internal error in edit`` fallback (a raw
+    ValueError from the store). It must now be a typed, actionable error."""
+    proj = _proj(hub)
+    draft.put(id="rt", title="T", project=proj)
+    # A second live chunk so retiring the target doesn't hit "last live chunk".
+    r = draft.put(id="rt", chunk_kind="paragraph", text="doomed body")
+    para_h = _order(hub, "rt")[-1].handle
+    # Retire it out from under the caller, then edit the now-stale handle.
+    hub.store.retire_chunk(para_h)
+    with pytest.raises(Gone, match="retired"):
+        draft.edit(id="¶" + para_h, text="new text")
+    # An unknown / garbage handle → typed NotFound (not the opaque fallback).
+    with pytest.raises(NotFound):
+        draft.edit(id="¶zzzznotarealhandle", text="x")
+
+
+def test_edit_text_store_op_typed_errors(store: Store) -> None:
+    """Store-level guard: ``edit_text`` on a retired chunk raises ``Gone``,
+    on an unknown handle raises ``NotFound`` — never a bare ValueError."""
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    ref, _title = store.create_draft(name="es", title="T", project_ref_id=proj)
+    para = store.add_chunks(ref_id=ref.id, chunk_kind="paragraph", text="doomed")
+    handle = para[-1].handle
+    store.retire_chunk(handle)
+    with pytest.raises(Gone, match="retired"):
+        store.edit_text(handle, "new text")
+    with pytest.raises(NotFound):
+        store.edit_text("zzzznotarealhandle", "x")

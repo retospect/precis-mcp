@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from precis.errors import BadInput
 from precis.store.store import Store
 
 
@@ -117,6 +118,34 @@ def test_add_chunks_positions_and_hierarchy(store: Store) -> None:
         ("paragraph", "Para A.", 1),
         ("paragraph", "Para B.", 1),
     ]
+
+
+def test_add_chunks_unknown_anchor_raises_notfound(store: Store) -> None:
+    """A typo'd / stale `at=` anchor surfaces as a typed NotFound.
+
+    Before the fix these two paths raised a raw ``ValueError`` that the
+    handler rendered as the opaque "internal error in put: ValueError"
+    fallback — the same gripe #45083 class as the edit/move/retire ops.
+    """
+    from precis.errors import NotFound
+
+    proj = _project(store)
+    ref, _title = store.create_draft(name="nf", title="Title", project_ref_id=proj)
+
+    with pytest.raises(NotFound, match="unknown chunk handle"):
+        store.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="paragraph",
+            text="orphan",
+            at={"after": "¶missing"},
+        )
+    with pytest.raises(NotFound, match="unknown parent handle"):
+        store.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="paragraph",
+            text="orphan",
+            at={"into": "¶missing", "last": True},
+        )
 
 
 def _list_fixture(store: Store) -> tuple[int, str]:
@@ -248,7 +277,7 @@ def test_move_cycle_guard(store: Store) -> None:
     child = store.add_chunks(
         ref_id=ref.id, chunk_kind="paragraph", text="c", at={"into": h.handle}
     )[0]
-    with pytest.raises(ValueError, match="under itself or its own subtree"):
+    with pytest.raises(BadInput, match="under itself or its own subtree"):
         store.move_chunk(h.handle, {"into": child.handle})
 
 
@@ -261,7 +290,7 @@ def test_retire_leaf_and_last_chunk_guard(store: Store) -> None:
     store.retire_chunk(p.handle)
     assert [t for _, t, _ in _order(store, ref.id)] == ["T"]
     # title is now the last live chunk — cannot retire it
-    with pytest.raises(ValueError, match="last live chunk"):
+    with pytest.raises(BadInput, match="last live chunk"):
         store.retire_chunk(title.handle)
 
 
@@ -274,7 +303,7 @@ def test_retire_heading_requires_mode(store: Store) -> None:
     store.add_chunks(
         ref_id=ref.id, chunk_kind="paragraph", text="c", at={"into": h.handle}
     )
-    with pytest.raises(ValueError, match="requires"):
+    with pytest.raises(BadInput, match="requires"):
         store.retire_chunk(h.handle)
 
 

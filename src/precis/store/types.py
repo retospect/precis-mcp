@@ -365,6 +365,34 @@ class Tag:
                     "rel='note-for') then tag(id=N, add=['ask-user:<short>'])"
                 ),
             )
+        # Shape guard: a tag is a single space-free structured label. Any
+        # whitespace — space, tab, newline, or carriage return — means the
+        # value is prose, not a tag. The failure mode (gripe #39254, July
+        # 2026) was an agent's ``claude -p`` yield narrative
+        # ("ask-user:file writes disabled in sandbox …", single-line,
+        # 120–200 chars) mis-yielded as an ``ask-user:`` value and
+        # persisted verbatim as a tag. The 200-char cap above doesn't catch
+        # a sub-200-char paragraph, and the first-pass newline-only guard
+        # missed the single-line prose that is the real prod shape. Reto's
+        # rule: tags carry no whitespace at all. The ``ask-user:`` /
+        # ``halt:`` yield redirect (``handlers._tag_redirect``) runs on
+        # *every* tag write path *before* this guard, rewriting a
+        # legitimate whitespace/long yield to a short space-free
+        # ``ask-user:see-chunk-N`` handle — so only a genuinely-malformed
+        # (non-yield) whitespace tag reaches here, and legitimate labels
+        # (``STATUS:open``, ``project:<slug>``) are untouched.
+        if any(ch.isspace() for ch in s):
+            raise BadInput(
+                "tag value must not contain whitespace (no spaces, tabs, or "
+                "newlines); whitespace means the value is prose, not a tag "
+                "label",
+                next=(
+                    "for prose: put(kind='memory', text='<long context>', "
+                    "link='todo:N', rel='note-for') then tag(id=N, "
+                    "add=['ask-user:<short-handle>']) - or hyphenate a "
+                    "space-free tag (e.g. 'topic:co2-capture')"
+                ),
+            )
 
         if ":" in s:
             prefix, _, value = s.partition(":")
