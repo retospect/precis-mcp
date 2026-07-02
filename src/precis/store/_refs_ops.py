@@ -334,9 +334,18 @@ class RefsMixin:
         identifier pairs so the gated dream ``acquire`` tool can reuse
         it (docs/design/dreaming.md, §Acquire).
         """
-        from precis.identity import make_cite_key
+        from precis.identity import make_cite_key, normalize_doi
 
-        norm = [(k, v.strip()) for k, v in identifiers if v and v.strip()]
+        # Canonicalise DOIs (lowercase, strip doi:/URL prefixes) so both the
+        # collapse *probe* and the stored row match the trigger-lowercased form
+        # — a raw `D19-1371` probe would otherwise miss its lowercased row.
+        norm: list[tuple[str, str]] = []
+        for _k, _v in identifiers:
+            if not (_v and _v.strip()):
+                continue
+            _val = normalize_doi(_v) if _k == "doi" else _v.strip()
+            if _val:
+                norm.append((_k, _val))
 
         def _do(c: Connection) -> tuple[int, bool]:
             for id_kind, id_value in norm:

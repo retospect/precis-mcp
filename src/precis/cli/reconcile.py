@@ -48,7 +48,7 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
 def run(args: argparse.Namespace) -> None:
     """Execute ``precis reconcile-duplicates``."""
     from precis.config import load_config
-    from precis.ingest.dedup import reconcile_by_pdf_sha256
+    from precis.ingest.dedup import reconcile_by_doi_case, reconcile_by_pdf_sha256
     from precis.runtime import build_runtime
 
     cfg = load_config()
@@ -67,18 +67,28 @@ def run(args: argparse.Namespace) -> None:
     mode = "DRY-RUN" if dry_run else "APPLY"
     print(f"reconcile-duplicates [{mode}]: limit={args.limit}", file=sys.stderr)
 
+    # Phase 1b — DOI-case duplicates (stub ↔ ingested paper sharing a DOI
+    # modulo case). Runs first: it keeps the chunked copy and normalises stored
+    # DOIs to lowercase, which also collapses would-be pdf_sha256 groups.
+    doi_outcomes = reconcile_by_doi_case(store, dry_run=dry_run, limit=args.limit)
+    for o in doi_outcomes:
+        print(o.line())
+
+    # Phase 2 — same-file duplicates (shared pdf_sha256).
     outcomes = reconcile_by_pdf_sha256(store, dry_run=dry_run, limit=args.limit)
     for o in outcomes:
         print(o.line())
 
-    merged = sum(len(o.duplicate_ref_ids) for o in outcomes)
+    all_outcomes = doi_outcomes + outcomes
+    merged = sum(len(o.duplicate_ref_ids) for o in all_outcomes)
     verb = "would merge" if dry_run else "merged"
     print(
         f"\nreconcile-duplicates [{mode}] done: {verb} {merged} duplicate ref(s) "
-        f"across {len(outcomes)} group(s).",
+        f"across {len(all_outcomes)} group(s) "
+        f"({len(doi_outcomes)} doi-case, {len(outcomes)} pdf_sha256).",
         file=sys.stderr,
     )
-    if dry_run and outcomes:
+    if dry_run and all_outcomes:
         print("Re-run with --apply to commit.", file=sys.stderr)
 
 

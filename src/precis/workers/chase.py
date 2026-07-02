@@ -830,9 +830,15 @@ def _resolve_or_create_stub(
     the existing or freshly-minted ref.
     """
     # Probe existing refs by every identifier we have.
+    from precis.identity import normalize_doi
+
     probes: list[tuple[str, str]] = []
     if target.doi:
-        probes.append(("doi", target.doi.lower()))
+        # Canonicalise (lowercase + strip doi:/URL prefixes) so the probe and
+        # the minted stub row match the trigger-lowercased storage form.
+        norm_doi = normalize_doi(target.doi)
+        if norm_doi:
+            probes.append(("doi", norm_doi))
     if target.arxiv:
         probes.append(("arxiv", target.arxiv))
     if target.s2_id:

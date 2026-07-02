@@ -9,11 +9,29 @@ of the junk duplicate.
 
 from __future__ import annotations
 
-from precis.ingest.dedup import ReconcileOutcome, _Cand, pick_survivor
+from precis.ingest.dedup import (
+    ReconcileOutcome,
+    _Cand,
+    pick_survivor,
+    pick_survivor_keep_chunks,
+)
 
 
-def _c(ref_id, *, title="A real title about graphene", n_authors=3, has_ext_id=True):
-    return _Cand(ref_id=ref_id, title=title, n_authors=n_authors, has_ext_id=has_ext_id)
+def _c(
+    ref_id,
+    *,
+    title="A real title about graphene",
+    n_authors=3,
+    has_ext_id=True,
+    has_pdf=False,
+):
+    return _Cand(
+        ref_id=ref_id,
+        title=title,
+        n_authors=n_authors,
+        has_ext_id=has_ext_id,
+        has_pdf=has_pdf,
+    )
 
 
 class TestPickSurvivor:
@@ -45,6 +63,29 @@ class TestPickSurvivor:
         with_id = _c(50, n_authors=1, has_ext_id=True)
         no_id = _c(8, n_authors=20, has_ext_id=False)
         assert pick_survivor([with_id, no_id]) == 50
+
+
+class TestPickSurvivorKeepChunks:
+    def test_keeps_the_chunked_copy_over_the_stub(self):
+        # The stub (#7) is lower-id and also carries the DOI, so the plain
+        # survivor rule could keep it; the ingested paper (#5891) has the PDF
+        # and must win — that's the whole point of the DOI-case reconcile.
+        stub = _c(7, has_ext_id=True, has_pdf=False, n_authors=0, title="SciBERT")
+        ingested = _c(5891, has_ext_id=True, has_pdf=True, n_authors=3, title="SciBERT")
+        assert pick_survivor_keep_chunks([stub, ingested]) == 5891
+
+    def test_falls_back_to_plain_rule_when_none_has_pdf(self):
+        # Two stubs, neither ingested yet — defer to the ordinary rule.
+        a = _c(10, has_ext_id=True, has_pdf=False, n_authors=5)
+        b = _c(20, has_ext_id=False, has_pdf=False, n_authors=0, title="")
+        assert pick_survivor_keep_chunks([a, b]) == 10
+
+    def test_picks_best_among_multiple_chunked(self):
+        # Two ingested copies (both have PDFs) — the pdf filter leaves both, so
+        # the plain rule breaks the tie (more authors).
+        a = _c(3, has_pdf=True, n_authors=1)
+        b = _c(4, has_pdf=True, n_authors=9)
+        assert pick_survivor_keep_chunks([a, b]) == 4
 
 
 class TestReconcileOutcomeLine:

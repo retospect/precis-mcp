@@ -116,6 +116,7 @@ class _Cand:
     title: str
     n_authors: int
     has_ext_id: bool
+    has_pdf: bool = False
 
 
 def _title_is_junk(title: str | None) -> bool:
@@ -151,13 +152,14 @@ def pick_survivor(cands: list[_Cand]) -> int:
 class ReconcileOutcome:
     survivor_ref_id: int
     duplicate_ref_ids: list[int]
-    key: str  # the shared pdf_sha256 (truncated) the group collapsed on
+    key: str  # the shared value (pdf_sha256 / lowercase DOI) the group collapsed on
+    key_label: str = "pdf_sha256"  # what `key` names, for display
 
     def line(self) -> str:
         dups = ", ".join(f"#{d}" for d in self.duplicate_ref_ids)
         return (
             f"MERGE  survivor #{self.survivor_ref_id} <- {dups} "
-            f"(pdf_sha256 {self.key[:12]}…)"
+            f"({self.key_label} {self.key[:24]}…)"
         )
 
 
@@ -178,12 +180,19 @@ def _candidates(store: Store, conn: Any, ref_ids: list[int]) -> list[_Cand]:
         "       jsonb_array_length(COALESCE(r.authors, '[]'::jsonb)) AS n_auth, "
         "       EXISTS (SELECT 1 FROM ref_identifiers ri "
         "               WHERE ri.ref_id = r.ref_id "
-        "                 AND ri.id_kind = ANY(%s)) AS has_id "
+        "                 AND ri.id_kind = ANY(%s)) AS has_id, "
+        "       r.pdf_sha256 IS NOT NULL AS has_pdf "
         "FROM refs r WHERE r.ref_id = ANY(%s)",
         (list(_MIGRATABLE_ID_KINDS), ref_ids),
     ).fetchall()
     return [
-        _Cand(ref_id=int(r[0]), title=r[1] or "", n_authors=int(r[2]), has_ext_id=r[3])
+        _Cand(
+            ref_id=int(r[0]),
+            title=r[1] or "",
+            n_authors=int(r[2]),
+            has_ext_id=r[3],
+            has_pdf=r[4],
+        )
         for r in rows
     ]
 
@@ -235,9 +244,142 @@ def reconcile_by_pdf_sha256(
     return outcomes
 
 
+# ---------------------------------------------------------------------------
+# DOI-case reconciliation — collapse refs that share a DOI modulo case
+# ---------------------------------------------------------------------------
+
+#: Live paper refs whose DOI is the *same* modulo case as another live paper's.
+#: These are the stub↔ingested-paper duplicates that the exact-match stub
+#: upgrade missed because one side stored a publisher-cased DOI. Grouped on the
+#: lowercase form so `.../d19-1371` and `.../D19-1371` land together.
+_DOI_CASE_GROUPS_SQL = """
+    SELECT lower(ri.id_value) AS ldoi,
+           array_agg(DISTINCT ri.ref_id ORDER BY ri.ref_id) AS ids
+      FROM ref_identifiers ri
+      JOIN refs r ON r.ref_id = ri.ref_id
+     WHERE ri.id_kind = 'doi'
+       AND r.kind = 'paper'
+       AND r.deleted_at IS NULL
+     GROUP BY lower(ri.id_value)
+    HAVING count(DISTINCT ri.ref_id) > 1
+     ORDER BY lower(ri.id_value)
+"""
+
+
+def pick_survivor_keep_chunks(cands: list[_Cand]) -> int:
+    """Survivor selection that keeps the ingested (chunked) copy.
+
+    A DOI-case duplicate group is almost always one PDF-less stub plus one
+    fully-ingested paper. The stub carries the DOI too, so :func:`pick_survivor`
+    (which weighs external-id presence first) can't tell them apart — and its
+    author/id tiebreaks could keep the empty stub. Here the copy that actually
+    holds the bytes wins: restrict to the refs with a PDF when any has one, then
+    fall back to the ordinary survivor rule within that set (or the whole group
+    if none has a PDF yet — both are stubs, either is fine).
+    """
+    pdf_bearing = [c for c in cands if c.has_pdf]
+    return pick_survivor(pdf_bearing or cands)
+
+
+def _normalize_doi_rows(conn: Any) -> int:
+    """Lowercase every stored DOI in ``ref_identifiers``; return rows changed.
+
+    Two steps, both collision-safe:
+
+    1. Within a single ref, drop a mixed-case DOI row when its lowercase twin
+       already sits on the same ref — this is the leftover after a merge moved
+       the stub's lowercase DOI onto a survivor that kept its own upper-case
+       one.
+    2. Lowercase the remaining lone mixed-case rows, but skip any whose
+       lowercase target is already owned by a *different* live ref (an
+       un-merged group, e.g. under a ``--limit`` run) — those wait for a full
+       reconcile pass rather than raising a PK violation.
+    """
+    conn.execute(
+        "DELETE FROM ref_identifiers a "
+        " USING ref_identifiers b "
+        " WHERE a.id_kind = 'doi' AND b.id_kind = 'doi' "
+        "   AND a.ref_id = b.ref_id "
+        "   AND a.id_value <> lower(a.id_value) "
+        "   AND b.id_value = lower(a.id_value)"
+    )
+    cur = conn.execute(
+        "UPDATE ref_identifiers r "
+        "   SET id_value = lower(r.id_value) "
+        " WHERE r.id_kind = 'doi' AND r.id_value <> lower(r.id_value) "
+        "   AND NOT EXISTS ("
+        "       SELECT 1 FROM ref_identifiers t "
+        "        WHERE t.id_kind = 'doi' "
+        "          AND t.id_value = lower(r.id_value) "
+        "          AND t.ref_id <> r.ref_id)"
+    )
+    return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+
+def reconcile_by_doi_case(
+    store: Store,
+    *,
+    dry_run: bool = True,
+    limit: int | None = None,
+    source: str = "reconcile",
+) -> list[ReconcileOutcome]:
+    """Collapse live paper refs that share a DOI modulo case.
+
+    Keeps the ingested (chunked) copy per :func:`pick_survivor_keep_chunks` and
+    merges the PDF-less stub(s) into it, then canonicalises every stored DOI to
+    lowercase (:func:`_normalize_doi_rows`) so the surviving rows satisfy the
+    ``ref_identifiers_doi_lc`` invariant. Dry-run (default) reports the planned
+    merges without writing. Returns one :class:`ReconcileOutcome` per group.
+    """
+    with store.pool.connection() as conn:
+        groups = conn.execute(_DOI_CASE_GROUPS_SQL).fetchall()
+    if limit:
+        groups = groups[:limit]
+
+    outcomes: list[ReconcileOutcome] = []
+    for ldoi, ids in groups:
+        ref_ids = [int(i) for i in ids]
+        with store.pool.connection() as conn:
+            cands = _candidates(store, conn, ref_ids)
+        if len(cands) < 2:
+            continue
+        survivor = pick_survivor_keep_chunks(cands)
+        dups = [c.ref_id for c in cands if c.ref_id != survivor]
+        if dry_run:
+            outcomes.append(ReconcileOutcome(survivor, dups, ldoi, key_label="doi"))
+            continue
+        try:
+            with store.tx() as conn:
+                for dup in dups:
+                    merge_duplicate(
+                        store,
+                        survivor_ref_id=survivor,
+                        duplicate_ref_id=dup,
+                        source=source,
+                        reason="reconcile-doi-case",
+                        conn=conn,
+                    )
+                _normalize_doi_rows(conn)
+            outcomes.append(ReconcileOutcome(survivor, dups, ldoi, key_label="doi"))
+        except Exception:
+            log.exception("reconcile: doi group %s failed", ldoi[:24])
+
+    # Lone mixed-case DOIs (no duplicate twin) still need lowercasing so the
+    # constraint can be validated. Safe and idempotent; runs once per pass.
+    if not dry_run:
+        try:
+            with store.tx() as conn:
+                _normalize_doi_rows(conn)
+        except Exception:
+            log.exception("reconcile: doi-case normalize sweep failed")
+    return outcomes
+
+
 __all__ = [
     "ReconcileOutcome",
     "merge_duplicate",
     "pick_survivor",
+    "pick_survivor_keep_chunks",
+    "reconcile_by_doi_case",
     "reconcile_by_pdf_sha256",
 ]
