@@ -23,9 +23,15 @@ on this dataclass interface, not on ``claude_inproc`` internals.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+
+#: Parses the job id out of ``JobHandler.put``'s ack body. Both ack
+#: shapes carry it: ``created job id=N (STATUS:queued, …)`` and the
+#: idem-dedupe ``existing job id=N for idem_key=…``.
+_JOB_ID_IN_ACK = re.compile(r"\bjob id=(\d+)\b")
 
 
 @dataclass(frozen=True)
@@ -68,3 +74,56 @@ class DispatchContext:
     #: job was claimed. Plugins running multi-phase work should
     #: poll this between phases.
     is_cancel_requested: Callable[[], bool]
+
+    def spawn_child(
+        self,
+        job_type: str,
+        params: dict[str, Any],
+        *,
+        model: str | None = None,
+        executor: str = "claude_inproc",
+        idem_key: str | None = None,
+    ) -> int:
+        """Mint a child ``kind='job'`` parented on this job.
+
+        The coordinator fan-out primitive (good-search design §Gaps 1):
+        a campaign slice spawns triage / verify children under itself
+        (``parent_id = self.ref_id``, riding the ADR 0044 job-parent
+        extension — the parent must therefore be a *coordinator* job or
+        ``JobHandler.put`` rejects) and later observes their terminal
+        status on resume. Routed through :meth:`JobHandler.put` so
+        submit-time validation (job_type registry, executor
+        compatibility, params schema) and ``idem_key`` dedupe stay in
+        one place. Deliberately injects **no** ``auto_check`` onto
+        anything and requires no link — the coordinator reads child
+        status itself; children must not auto-close or bubble onto
+        anybody's todo.
+
+        ``model`` folds into ``params['model']`` (per-child model rides
+        in params; ``put(model=…)`` is the retry-only surface). Returns
+        the child job's ref id — the in-flight job's id when
+        ``idem_key`` deduped onto an existing non-terminal submit.
+        """
+        # Local imports: the handler layer imports the executors
+        # package for the registry constants, so a module-level
+        # import here would be a cycle.
+        from precis.dispatch import Hub
+        from precis.handlers.job import JobHandler
+
+        merged = dict(params)
+        if model is not None:
+            merged["model"] = model
+        handler = JobHandler(hub=Hub(store=self.store))
+        resp = handler.put(
+            job_type=job_type,
+            executor=executor,
+            params=merged,
+            parent_id=self.ref_id,
+            idem_key=idem_key,
+        )
+        m = _JOB_ID_IN_ACK.search(resp.body)
+        if m is None:  # pragma: no cover — put()'s ack shape changed
+            raise RuntimeError(
+                f"spawn_child: could not parse job id from put ack: {resp.body!r}"
+            )
+        return int(m.group(1))

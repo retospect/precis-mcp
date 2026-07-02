@@ -353,3 +353,24 @@ class TestCoordinatorPersistsReturn:
         assert len(calls["failures"]) == 1
         assert "expected Done|Yield" in calls["failures"][0]
         assert calls["status"] == []  # not left at running
+
+
+class TestWaitingStatusVocab:
+    """The ``STATUS:waiting_*`` values a Yield parks at must be in the
+    closed STATUS vocabulary — ``_common.set_status`` validates via
+    ``Tag.parse_strict``, so a missing value fails the first *real*
+    (unstubbed) Yield at persist time. Regression for the gap where
+    all four were absent from ``_CLOSED_VOCAB``."""
+
+    def test_all_waiting_statuses_parse_strict(self) -> None:
+        from precis.store.types import Tag
+        from precis.workers.executors import _common
+
+        for value in (
+            _common.WAITING_CHILDREN,
+            _common.WAITING_TIME,
+            _common.WAITING_ASK_USER,
+            _common.WAITING_MANUAL_KICK,
+        ):
+            tag = Tag.parse_strict(f"STATUS:{value}")
+            assert tag.value == value

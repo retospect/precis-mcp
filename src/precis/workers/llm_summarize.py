@@ -97,20 +97,41 @@ MAX_DIGIT_FRACTION = 0.5
 #: tag rule, but skips the LLM call entirely).
 NUMERIC_DUMP_TAG = "(tabular data)"
 
-#: Re-claim a ``status='failed'`` summary while its ``attempts`` is below
-#: this — so transient failures (e.g. the 80B returning empty during a
-#: cold-load) get retried — but stop once it's clearly a poison chunk, so a
-#: permanently-failing one can't re-bill the backend every pass. ``attempts``
-#: starts at 1 and increments per write, so this allows ~2 retries.
+#: Retry budget for a failing chunk, tracked on its ``chunk_claims`` lease.
+#: Each failure bumps ``chunk_claims.attempts`` and keeps the lease (its
+#: refreshed ``claimed_at`` is the retry backoff via the cooldown reaper) — so
+#: transient failures (e.g. the 80B returning empty during a cold-load) get
+#: retried. Once ``attempts`` reaches this cap the failure is terminal: a
+#: ``status='failed'`` marker row is written to ``chunk_summaries`` and the
+#: lease is deleted, so a poison chunk can't re-bill the backend every pass.
+#: ``attempts`` starts at 0 on claim and increments per failure, so this
+#: allows 3 attempts total.
 MAX_SUMMARIZE_ATTEMPTS = 3
 
 #: A ``chunk_claims`` row older than this many minutes is treated as abandoned
 #: (the worker crashed or stalled) and re-claimed oldest-first; it is also the
-#: retry backoff for failures (which keep their claim). Must comfortably exceed
-#: the worst-case batch wall-time (the LLM calls), so set it generously — the
-#: occasional double-process is a no-op (idempotent upsert on
-#: (chunk_id, summarizer)) and this reproducible background work tolerates rework.
+#: retry backoff for failures (which keep their claim). A *live* worker
+#: re-stamps ``claimed_at`` on its whole batch after every per-chunk LLM
+#: completion (``_heartbeat_leases``), so this only needs to comfortably
+#: exceed ONE per-chunk LLM call (the 120 s client timeout) — not the whole
+#: batch, whose worst case (batch_size × timeout = 16 × 120 s = 32 min) would
+#: otherwise outrun it. The occasional double-process is a no-op (idempotent
+#: upsert on (chunk_id, summarizer)) and this reproducible background work
+#: tolerates rework.
 SUMMARY_LEASE_COOLDOWN_MIN = 20
+
+#: GC horizon for orphaned leases: a claim row this many minutes old whose
+#: chunk no longer *qualifies* (deleted / retired / filtered out by the
+#: kind/length/no_index predicates) can never be selected by ``_RECLAIM_SQL``
+#: (it inner-joins ``chunks`` re-applying those filters) and would otherwise
+#: sit in ``chunk_claims`` forever. A generous multiple of the cooldown so a
+#: merely-slow lease is never confused with an orphan; still-qualifying rows
+#: are protected by the GC's ``NOT EXISTS`` regardless of age.
+SUMMARY_LEASE_GC_MIN = SUMMARY_LEASE_COOLDOWN_MIN * 24  # 8 h
+
+#: Per-pass cap on GC candidates — keeps the sweep a bounded index range scan
+#: (``chunk_claims_reap_idx``) even after a mass chunk retirement.
+_LEASE_GC_LIMIT = 100
 
 #: How many words/sentences the two parts should target. Enforced by
 #: the prompt, not the parser (the model occasionally overshoots; we
@@ -347,6 +368,38 @@ _RECLAIM_SQL = """
       FROM cand JOIN reclaimed USING (chunk_id)
 """
 
+# Orphaned-lease GC. ``_RECLAIM_SQL`` inner-joins ``chunks`` re-applying the
+# kind/length/no_index filters, so a lease whose chunk was deleted / retired /
+# filtered out is never selected again — and, being terminal-less, never
+# removed. Sweep such rows once they are far past the cooldown
+# (``SUMMARY_LEASE_GC_MIN``). Bounded: the candidate subselect is an index
+# range scan on ``chunk_claims_reap_idx`` capped at ``_LEASE_GC_LIMIT``;
+# ``SKIP LOCKED`` keeps it from colliding with sibling nodes' reclaims. The
+# ``NOT EXISTS`` mirrors ``_RECLAIM_SQL``'s chunk predicates exactly, so any
+# lease reclaim could still pick survives regardless of age.
+_LEASE_GC_SQL = """
+    DELETE FROM chunk_claims cl
+     USING (
+         SELECT chunk_id
+           FROM chunk_claims
+          WHERE artifact = %(artifact)s
+            AND claimed_at < now() - (%(gc_min)s * interval '1 minute')
+          ORDER BY claimed_at
+          LIMIT %(gc_limit)s
+            FOR UPDATE SKIP LOCKED
+     ) old
+     WHERE cl.artifact = %(artifact)s
+       AND cl.chunk_id = old.chunk_id
+       AND NOT EXISTS (
+               SELECT 1 FROM chunks c
+                WHERE c.chunk_id = cl.chunk_id
+                  AND c.chunk_kind <> ALL(%(skip_kinds)s)
+                  AND length(c.text) >= %(min_chars)s
+                  AND length(c.text) <= %(max_chars)s
+                  AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+           )
+"""
+
 #: Refs whose chunks jump the queue (see ``claim_chunks_without_summary``).
 _PRIORITY_KINDS = ("conv", "draft")
 
@@ -398,6 +451,25 @@ def _claim_fresh(
     return _rows_to_claims(rows)
 
 
+def _gc_orphaned_leases(conn: Any, *, summarizer: str) -> None:
+    """Drop leases whose chunk can no longer qualify (see ``_LEASE_GC_SQL``).
+
+    Runs once per claim inside the same short transaction; with no orphans the
+    candidate scan is empty and the statement is ~free.
+    """
+    conn.execute(
+        _LEASE_GC_SQL,
+        {
+            "artifact": summarizer,
+            "gc_min": SUMMARY_LEASE_GC_MIN,
+            "gc_limit": _LEASE_GC_LIMIT,
+            "skip_kinds": list(SKIP_KINDS),
+            "min_chars": MIN_CHUNK_CHARS,
+            "max_chars": MAX_CHUNK_CHARS,
+        },
+    )
+
+
 def _claim_reclaim(conn: Any, *, summarizer: str, limit: int) -> list[_Claimed]:
     """Re-claim stale claim rows (crashed in-flight + backing-off failures)."""
     rows = conn.execute(
@@ -421,21 +493,37 @@ def claim_chunks_without_summary(
 
     Writes a ``chunk_claims`` row for each claimed chunk and returns its data;
     the caller must commit promptly (releasing the lock) and do the LLM work
-    with no open transaction. Sources, in order:
+    with no open transaction. Also GCs orphaned leases (``_LEASE_GC_SQL``)
+    first, in the same short transaction. Sources, in order:
 
-    1. **Fresh, priority** — ``conv``/``draft`` chunks with no summary and no
+    1. **Reclaim (reserved slice)** — a small slice (``min(2, limit // 8)``)
+       goes to claim rows past the cooldown (crashed in-flight + retrying
+       failures + migration-seeded backfill), oldest-first. Reserving it keeps
+       a deep fresh backlog (~1M chunks) from starving reclaims for months —
+       previously reclaim ran only when fresh work ran dry.
+    2. **Fresh, priority** — ``conv``/``draft`` chunks with no summary and no
        claim. These jump the queue: draft refs have the highest ref_ids (most
        recent), so a plain ``ref_id, ord`` order would bury an actively-edited
        write-up behind the ~1M-chunk paper backlog and it would never summarise.
-    2. **Fresh, rest** — every other never-seen chunk, ``ref_id, ord`` order
+    3. **Fresh, rest** — every other never-seen chunk, ``ref_id, ord`` order
        (a document's chunks stay contiguous so the prompt's shared doc-header
        prefix keeps hitting the llama.cpp prefix cache).
-    3. **Reclaim** — claim rows past the cooldown (crashed in-flight + retrying
-       failures), oldest-first. Tops up only when fresh work runs dry.
+    4. **Reclaim (top-up)** — remaining stale claim rows when fresh runs dry.
+       (A row reclaimed in step 1 got ``claimed_at = now()`` so it cannot be
+       double-claimed here; a fresh chunk with a claim row is excluded by the
+       fresh ``NOT EXISTS``.)
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
-    claimed = _claim_fresh(conn, summarizer=summarizer, limit=limit, priority=True)
+    _gc_orphaned_leases(conn, summarizer=summarizer)
+    reserve = min(2, limit // 8)
+    claimed: list[_Claimed] = []
+    if reserve:
+        claimed += _claim_reclaim(conn, summarizer=summarizer, limit=reserve)
+    if len(claimed) < limit:
+        claimed += _claim_fresh(
+            conn, summarizer=summarizer, limit=limit - len(claimed), priority=True
+        )
     if len(claimed) < limit:
         claimed += _claim_fresh(
             conn, summarizer=summarizer, limit=limit - len(claimed), priority=False
@@ -592,15 +680,34 @@ def build_messages(claim: _Claimed, *, doc_card: str) -> list[dict[str, str]]:
     ]
 
 
+def _sanitize_model_text(text: str) -> str:
+    """Strip characters Postgres rejects from model output.
+
+    psycopg refuses NUL (``\\x00``) in text parameters, and a lone UTF-16
+    surrogate (a backend truncating mid-astral-char can emit one) fails UTF-8
+    encoding at send time. Either used to abort the write — and, pre
+    per-chunk transactions, roll back the whole batch. Cheap fast-path: a
+    clean string costs one substring scan + one encode.
+    """
+    if "\x00" in text:
+        text = text.replace("\x00", "")
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        text = text.encode("utf-8", "replace").decode("utf-8")
+    return text
+
+
 def parse_summary(text: str) -> str:
     """Normalize the model output to ``"<brief>\\n\\n<detail>"``.
 
     Tolerant of casing and of the model omitting one label. If neither
     label is present we keep the whole thing as the brief (better than
     dropping a faithful-but-unlabelled summary). Raises on empty output
-    so the pass marks it failed rather than storing a blank.
+    so the pass marks it failed rather than storing a blank. Output is
+    sanitized (``_sanitize_model_text``) so it is always safely writable.
     """
-    raw = (text or "").strip()
+    raw = _sanitize_model_text(text or "").strip()
     if not raw:
         raise ValueError("empty summary")
     brief = ""
@@ -658,12 +765,20 @@ def write_chunk_summary(
 
 
 def _mark_failed(conn: Any, chunk_id: int, *, summarizer: str, error: str) -> None:
-    """Record one failure (ADR 0007). Bumps the claim's ``attempts`` and keeps
+    """Record one failure (ADR 0007). Bumps the lease's ``attempts`` and keeps
     the claim row (``claimed_at = now()`` = backoff via the cooldown reaper) so
     a transient failure retries. Once ``attempts`` reaches the cap the failure
     is terminal: write a ``failed`` marker to chunk_summaries and DELETE the
-    claim, so the poison chunk leaves the claims table and is never re-claimed."""
-    err = (error or "").strip()[:1000]
+    claim, so the poison chunk leaves the claims table and is never re-claimed.
+
+    A GONE lease means another worker reaped it (this worker outlived the
+    cooldown) and already drove the chunk to a terminal state — usually a
+    fresh ``status='ok'`` summary. Write **nothing** then: this used to upsert
+    a terminal ``failed`` marker, clobbering that fresh ``ok`` row, and
+    nothing ever repaired it (the fresh claim's ``NOT EXISTS`` excludes any
+    existing chunk_summaries row regardless of status). Belt-and-braces, the
+    terminal upsert below also refuses to overwrite an ``ok`` row."""
+    err = _sanitize_model_text((error or "").strip()[:1000])
     row = conn.execute(
         """
         UPDATE chunk_claims SET attempts = attempts + 1, claimed_at = now()
@@ -672,8 +787,11 @@ def _mark_failed(conn: Any, chunk_id: int, *, summarizer: str, error: str) -> No
         """,
         (chunk_id, summarizer),
     ).fetchone()
-    # No claim row (already reaped/deleted concurrently) → treat as terminal.
-    attempts = int(row[0]) if row else MAX_SUMMARIZE_ATTEMPTS
+    if row is None:
+        # Lease reaped by a sibling → the chunk reached a terminal state
+        # elsewhere; a stale failure report must not clobber it.
+        return
+    attempts = int(row[0])
     if attempts < MAX_SUMMARIZE_ATTEMPTS:
         return
     conn.execute(
@@ -685,6 +803,7 @@ def _mark_failed(conn: Any, chunk_id: int, *, summarizer: str, error: str) -> No
            SET status = 'failed',
                last_error = EXCLUDED.last_error,
                attempts = EXCLUDED.attempts
+         WHERE chunk_summaries.status <> 'ok'
         """,
         (chunk_id, summarizer, err, attempts),
     )
@@ -708,6 +827,32 @@ class _Outcome:
     summary: str | None
     token_count: int | None
     error: Exception | None
+
+
+def _heartbeat_leases(store: Any, chunk_ids: list[int], *, summarizer: str) -> None:
+    """Re-stamp ``claimed_at`` on the batch's still-held leases.
+
+    Called from the *main* thread after each per-chunk LLM completion, in its
+    own tiny autocommit-style transaction (no lock is ever held across an LLM
+    call). This keeps ``SUMMARY_LEASE_COOLDOWN_MIN`` honest regardless of
+    batch size: without it the LLM phase's worst case (batch_size × per-call
+    timeout) outruns the cooldown and a sibling node reaps — and re-pays —
+    chunks a live worker is still processing (and, pre fix, could then have
+    its late failure report clobber the sibling's fresh summary). Best-effort:
+    a missed heartbeat only risks a benign double-process, so failures are
+    logged, never raised.
+    """
+    if not chunk_ids:
+        return
+    try:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunk_claims SET claimed_at = now() "
+                "WHERE artifact = %s AND chunk_id = ANY(%s)",
+                (summarizer, chunk_ids),
+            )
+    except Exception:  # pragma: no cover - defensive
+        log.warning("llm_summarize: lease heartbeat failed", exc_info=True)
 
 
 def _is_numeric_dump(text: str) -> bool:
@@ -736,21 +881,31 @@ def run_llm_summarize_pass(
     Returns ``{"claimed": N, "ok": K, "failed": F}``. A poison-pill chunk is
     marked failed and the batch continues (ADR 0007).
 
-    Three phases, each with its own short transaction so **no DB lock or xmin
-    snapshot is held across an LLM call** — the long batch-spanning transaction
-    was what starved autovacuum on the hot tables:
+    Three phases, each with its own short transaction(s) so **no DB lock or
+    xmin snapshot is held across an LLM call** — the long batch-spanning
+    transaction was what starved autovacuum on the hot tables:
 
-    1. **Claim** (short txn): lease the batch (stamp ``running``) and prefetch
-       each distinct ref's doc card — the shared, cache-hot prompt prefix —
-       then COMMIT, releasing the locks.
-    2. **Complete** (no txn): build prompts and run the LLM calls via a thread
-       pool of width ``concurrency``. Nothing touches a DB connection (psycopg
-       connections are not thread-safe). Width should match the backend's
-       ``--parallel`` slot count.
-    3. **Write** (short txn): write outcomes in claim order; on success the
-       ``running`` lease flips to ``ok``, on failure to ``failed`` (its
-       ``claimed_at`` is the retry-backoff clock). A crashed worker between
-       phases simply leaves a ``running`` lease that the cooldown re-claims.
+    1. **Claim** (short txn): lease the batch (``chunk_claims`` rows) and
+       prefetch each distinct ref's doc card — the shared, cache-hot prompt
+       prefix — then COMMIT, releasing the locks.
+    2. **Complete** (no long txn): build prompts and run the LLM calls via a
+       thread pool of width ``concurrency``. The worker threads never touch a
+       DB connection (psycopg connections are not thread-safe); the main
+       thread heartbeats the batch's leases after each completion
+       (``_heartbeat_leases``, a tiny txn of its own) so the cooldown reaper
+       measures worker *liveness*, not batch length. Width should match the
+       backend's ``--parallel`` slot count.
+    3. **Write** (one tiny txn *per chunk*): write outcomes in claim order; a
+       success writes the summary and DELETEs the lease, a failure bumps the
+       lease's attempts (``claimed_at`` is the retry-backoff clock) or goes
+       terminal at the cap. Per-chunk transactions on purpose: one poison row
+       (e.g. a NUL byte psycopg rejects) used to roll back the whole batch —
+       siblings' summaries, failure markers, attempt bumps and lease deletes —
+       so the poison chunk retried forever (its attempts never committed, the
+       cap never engaged) and the good summaries were re-paid every cycle. A
+       write that still fails goes through the normal ``_mark_failed`` path.
+       A crashed worker between phases simply leaves leases that the cooldown
+       re-claims.
     """
     # Phase 1 — claim + prefetch cards in one short transaction, then commit.
     card_cache: dict[int, str] = {}
@@ -791,40 +946,74 @@ def run_llm_summarize_pass(
             return _Outcome(claim, prompt_hash, None, None, exc)
 
     # The slow phase. ex.map preserves order, so writes stay deterministic.
+    # After each completion the MAIN thread heartbeats the batch's leases so
+    # the cooldown can stay far below batch_size × timeout. (ex.map yields in
+    # submission order, so the gap between heartbeats is bounded by one
+    # per-call timeout — well inside the cooldown.)
+    batch_ids = [c.chunk_id for c in rows]
+    outcomes: list[_Outcome] = []
     if concurrency <= 1:
-        outcomes = [_complete(it) for it in prepared]
+        for item in prepared:
+            outcomes.append(_complete(item))
+            _heartbeat_leases(store, batch_ids, summarizer=summarizer)
     else:
         with ThreadPoolExecutor(max_workers=concurrency) as ex:
-            outcomes = list(ex.map(_complete, prepared))
+            for outcome in ex.map(_complete, prepared):
+                outcomes.append(outcome)
+                _heartbeat_leases(store, batch_ids, summarizer=summarizer)
 
-    # Phase 3 — write outcomes back in a fresh short transaction.
-    with store.pool.connection() as conn:
-        for claim in numeric_dumps:
-            write_chunk_summary(
-                conn,
-                claim.chunk_id,
-                summarizer=summarizer,
-                text=NUMERIC_DUMP_TAG,
-                prompt_hash=hashlib.sha256(NUMERIC_DUMP_TAG.encode()).hexdigest(),
-                token_count=None,
+    # Phase 3 — write outcomes back, one tiny transaction per chunk so a
+    # poison row cannot discard its siblings' writes (see the docstring).
+    def _record_failure(chunk_id: int, error: str) -> None:
+        try:
+            with store.pool.connection() as fconn:
+                _mark_failed(fconn, chunk_id, summarizer=summarizer, error=error)
+        except Exception:  # keep the batch going; the lease reaper retries it
+            log.exception(
+                "llm_summarize: failure-marker write failed chunk_id=%s", chunk_id
             )
-            ok += 1
-        for o in outcomes:
-            if o.error is not None or o.summary is None:
-                _mark_failed(
-                    conn, o.claim.chunk_id, summarizer=summarizer, error=str(o.error)
-                )
-                failed += 1
-            else:
+
+    def _record_summary(
+        chunk_id: int, *, text: str, prompt_hash: str, token_count: int | None
+    ) -> bool:
+        try:
+            with store.pool.connection() as wconn:
                 write_chunk_summary(
-                    conn,
-                    o.claim.chunk_id,
+                    wconn,
+                    chunk_id,
                     summarizer=summarizer,
-                    text=o.summary,
-                    prompt_hash=o.prompt_hash,
-                    token_count=o.token_count,
+                    text=text,
+                    prompt_hash=prompt_hash,
+                    token_count=token_count,
                 )
-                ok += 1
+            return True
+        except Exception as exc:
+            log.exception("llm_summarize: summary write failed chunk_id=%s", chunk_id)
+            _record_failure(chunk_id, str(exc))
+            return False
+
+    for claim in numeric_dumps:
+        wrote = _record_summary(
+            claim.chunk_id,
+            text=NUMERIC_DUMP_TAG,
+            prompt_hash=hashlib.sha256(NUMERIC_DUMP_TAG.encode()).hexdigest(),
+            token_count=None,
+        )
+        ok += 1 if wrote else 0
+        failed += 0 if wrote else 1
+    for o in outcomes:
+        if o.error is not None or o.summary is None:
+            _record_failure(o.claim.chunk_id, str(o.error))
+            failed += 1
+        elif _record_summary(
+            o.claim.chunk_id,
+            text=o.summary,
+            prompt_hash=o.prompt_hash,
+            token_count=o.token_count,
+        ):
+            ok += 1
+        else:
+            failed += 1
     return {"claimed": claimed, "ok": ok, "failed": failed}
 
 

@@ -74,7 +74,12 @@ def _wake_children_done(conn: Connection, *, limit: int) -> list[int]:
 
     ``meta.wake_when.payload.child_job_ids`` is a JSON array of
     int IDs. The NOT EXISTS subquery rejects any row that still
-    has a non-terminal child.
+    has a *live*, non-terminal child. A soft-deleted child
+    (``deleted_at`` set; its tags persist) counts as terminal /
+    absent — matching the hard-delete behaviour documented in
+    ``docs/design/dft-phase-0-pr-3-coordinator-executor.md`` — so
+    an operator soft-deleting a stuck child unblocks the wake
+    instead of parking the coordinator forever.
     """
     rows = conn.execute(
         """
@@ -97,6 +102,7 @@ def _wake_children_done(conn: Connection, *, limit: int) -> list[int]:
                         ) AS child_id_text(child_id) ON true
                   WHERE c.ref_id = child_id_text.child_id::bigint
                     AND c.kind = 'job'
+                    AND c.deleted_at IS NULL
                     AND COALESCE(
                           (SELECT t.value FROM ref_tags rt
                              JOIN tags t ON t.tag_id = rt.tag_id

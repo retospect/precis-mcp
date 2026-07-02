@@ -129,13 +129,18 @@ driver; adding one is a `Reviewer(...)` instance):
 
 * `precis worker --profile=system` runs on every cluster node and
   drives every chunk-level + SQL ref-level pass: `embed`, `summarize`,
-  `llm_summarize`, `chunk_keywords`, `chase`, `fetch`, `gp_fetch`,
-  `tag_embeddings`, `auto_check`, `schedule`, `nursery`, `dispatch`,
-  `sweeper`, `watch_poll`, `job_claude_inproc`, `job_coordinator`,
-  `quota_check`, `wake_runner`, `clusterize`.
-* `precis worker --profile=agent` runs the LLM-heavy reviewers
-  (`structural`, `deep_review`) on melchior as hermes (OAuth for
-  `claude -p`); it skips the embedder load it doesn't need.
+  `chunk_keywords`, `chase`, `fetch`, `gp_fetch`, `tag_embeddings`,
+  `auto_check`, `schedule`, `nursery`, `dispatch`, `sweeper`,
+  `job_coordinator`, `job_ssh_node`, `wake_runner`, `clusterize`.
+  (`llm_summarize` is opt-in on top — env `PRECIS_SUMMARIZE_LLM=1` or
+  `--only llm_summarize`; enabled on melchior as a deliberate trickle.)
+* `precis worker --profile=agent` runs the passes that need the
+  hermes OAuth / `~/.claude` state on melchior: the LLM-heavy
+  reviewers (`structural`, `deep_review`) plus `job_claude_inproc`
+  (planner-coroutine slice — moved off system 2026-06-15 so data-host
+  workers stop claiming plan_tick/fix_gripe jobs they can't run and
+  false-bubbling `child-failed`) and `quota_check`. It skips the
+  embedder load it doesn't need.
 * `dream_agent` keeps its own 15-min cadence via `dream-pass.sh`,
   and `cron-tick` is the fourth daemon. Each heavy pass dedups on its
   tier-tagged memory and load-gates on `PRECIS_LOAD_CEILING` (default
@@ -334,6 +339,18 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
   Skills: `precis-pcb-help` (+ part-select / net-class / measures and the
   i2c/spi/decoupling/datasheet playbooks, skill-search-only). Cluster
   deploy is Tier-1 (JRE + jar on the gateway; kicad-cli gerbers deferred).
+- **Broad + deep paper search.** Tier 1: `search(kind='paper', q=,
+  queries=[…rephrasings], answers=[…HyDE passages], per_paper=N)` —
+  app-level RRF fusion over N lexical/semantic legs
+  (`store.search_blocks_multi`; caps ≤8/≤8 enforced at the handler, one
+  batched embed call, degrade-to-lexical). Tier 2 (thin slice):
+  `search(kind='paper', q=…, good=True)` mints a **`good_search`
+  coordinator campaign** (async handle; poll `get(kind='job', id=…)`) —
+  Tier-1 fuse → cheap `claude_inproc` triage children parented on the
+  coordinator (ADR 0044 extension) → heartbeat gather → curated result
+  in `meta.result`. Design + phase-2 roadmap:
+  `docs/design/good-search-coordinator.md`; skill:
+  `precis-search-help`.
 - **`chunks.numerics TEXT[]`** — GIN-indexed lexical filter
   (`WHERE numerics @> ARRAY['1.523 eV']`); available via direct SQL,
   not yet wired into the search verbs.

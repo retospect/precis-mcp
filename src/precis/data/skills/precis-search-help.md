@@ -128,6 +128,48 @@ Rules of thumb:
   drop it when you want to mine one paper deeply.
 - Honors `mode=` (a `'lexical'` broad search fuses only the text legs),
   `tags=`, `scope=`, `exclude=`, and the year filters like any search.
+- **Paginate by repeating the broad knobs**: `page=2` must carry the
+  *same* `queries=`/`answers=`/`per_paper=` — the fused ordering only
+  exists when every page fuses the same legs. A bare
+  `search(q=…, page=2)` runs the single-query path: a different
+  ordering, so you'd see duplicates of page 1 and miss fused hits. The
+  `Next:` trailer echoes the full call for you — paste it verbatim.
+- A broad headline shows the returned count without an "of K" total —
+  there is no meaningful lexical total for a fused set. The trailer
+  offers `page=N+1` whenever more fused candidates remain.
+
+### good=True — deep search (async campaign)
+
+When even the fused list is too much to read yourself, hand the
+judging off: `search(kind='paper', q='…', good=True)` does **not**
+return hits. It queues a background *campaign* that runs the broad
+fusion, fans the candidate pool out to cheap LLM triage children, and
+merges their keep/relevance verdicts into one ranked list. You get an
+async handle back immediately:
+
+```python
+search(kind='paper', q='oxygen evolution overpotential on NiFe',
+       queries=['NiFe oxyhydroxide OER overpotential'],  # optional seeds
+       good=True)
+# → deep search queued: job=8123 status=queued
+#   poll: get(kind='job', id=8123)
+```
+
+Poll `get(kind='job', id=8123)` until `STATUS:succeeded` — the merged
+verdict lands in the job summary (human-readable curated list) and
+`meta.result` (`{want, chunks: [{handle, paper, relevance, why,
+best_quote}], considered, kept, children, partial, …}`). Then read the
+winners via their handles as usual.
+
+- **Reuse:** an identical `q`/`queries`/`answers` re-submit attaches to
+  the in-flight campaign instead of starting a duplicate (the ack says
+  so).
+- **Bounds:** a few campaigns may run concurrently (default cap 3);
+  over the cap you get a BadInput — retry later or poll a running one.
+- **When to use it:** slow-but-clever triage of a big question where
+  you'd otherwise read 50+ raw hits. For interactive lookups, plain
+  broad search (`queries=`/`answers=`, no `good=`) is faster; for an
+  identifier, `mode='lexical'`.
 
 ## Search the whole corpus
 ## Find something but I don't know which kind
@@ -156,6 +198,11 @@ search(kind='paper', q='photocatalysis', page=3, page_size=20)
 `page=1` is the default. Bump `page=` to walk results. `page_size=` sets
 the page size (default 10, max 100) — *not* a quality cutoff despite
 the name.
+
+Broad-retrieval searches paginate the same way, but the `page=N+1` call
+must repeat the same `queries=`/`answers=`/`per_paper=` arguments (see
+"Broad / high-recall retrieval" above) — dropping them switches to the
+single-query ordering mid-walk.
 
 ## Filter search results by tag
 ## Find refs tagged with topic:X

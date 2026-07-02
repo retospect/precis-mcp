@@ -212,6 +212,63 @@ def _dedup_card_hits(
     ]
 
 
+#: Broad-retrieval fan-out cap: ``queries=`` and ``answers=`` each accept
+#: at most this many entries. Mirrored at the MCP boundary
+#: (``tools/core.py``) — the handler re-checks because the agentic tier
+#: calls it directly, bypassing the MCP surface.
+_BROAD_LEG_CAP = 8
+
+
+def _embed_query_batch(embedder: Any | None, texts: list[str]) -> list[list[float]]:
+    """Embed several search texts in ONE batch call, degrading to ``[]``.
+
+    Broad retrieval embeds ``q`` + up to 8 rephrasings + up to 8 HyDE
+    answers; one ``embed(texts)`` round trip replaces up to 17 serial
+    ``embed_one`` calls (each of which would pay its own failure /
+    timeout). The degrade contract mirrors
+    :func:`precis.utils.embed_query.embed_query`: a missing OR failing
+    embedder returns ``[]`` — the caller runs lexical-only — and never
+    propagates. The failure is logged at WARNING with the traceback.
+    """
+    if embedder is None or not texts:
+        return []
+    try:
+        vecs = embedder.embed(texts)
+    except Exception:
+        log.warning(
+            "broad search: batch embed failed for %d texts; "
+            "falling back to lexical-only",
+            len(texts),
+            exc_info=True,
+        )
+        return []
+    return [v for v in vecs if v is not None]
+
+
+def _broad_args_suffix(
+    queries: list[str],
+    answers: list[str],
+    per_paper: int | None,
+) -> str:
+    """Render the broad-retrieval knobs as a call-argument suffix.
+
+    Used by the pagination continuation in the ``Next:`` trailer: a
+    ``page=N+1`` follow-up that drops ``queries=``/``answers=``/
+    ``per_paper=`` would run the *single-leg* path — a different
+    ordering, so page 2 would carry duplicates of page 1 and gaps.
+    The lists are ≤8 short strings each (leg cap), so rendering them
+    verbatim stays compact.
+    """
+    parts: list[str] = []
+    if queries:
+        parts.append(f"queries={queries!r}")
+    if answers:
+        parts.append(f"answers={answers!r}")
+    if per_paper is not None:
+        parts.append(f"per_paper={per_paper}")
+    return (", " + ", ".join(parts)) if parts else ""
+
+
 def _suggest_paper_slugs(slug: str, *, store: Any, kind: str = "paper") -> list[str]:
     """Return up to ``_SUGGEST_TOP_N`` ``kind`` slugs that look like ``slug``.
 
@@ -797,6 +854,7 @@ class PaperHandler(Handler):
         queries: list[str] | None = None,
         answers: list[str] | None = None,
         per_paper: int | None = None,
+        good: bool = False,
         **_kw: Any,
     ) -> Response:
         kind = self.spec.kind
@@ -804,6 +862,52 @@ class PaperHandler(Handler):
             raise BadInput(
                 "search requires q=",
                 next=f"search(kind='{kind}', q='your query')",
+            )
+
+        # Broad-retrieval boundary checks — same caps + messages as the
+        # MCP tool surface (``tools/core.py``). Re-checked here because
+        # the agentic tier calls the handler directly, bypassing MCP
+        # validation; without this the fan-out is unbounded.
+        if queries is not None and len(queries) > _BROAD_LEG_CAP:
+            raise BadInput(
+                f"queries= has {len(queries)} entries, max {_BROAD_LEG_CAP}",
+                next="pass up to 8 distinct rephrasings; merge the rest",
+            )
+        if answers is not None and len(answers) > _BROAD_LEG_CAP:
+            raise BadInput(
+                f"answers= has {len(answers)} entries, max {_BROAD_LEG_CAP}",
+                next="pass up to 8 hypothetical-answer passages (HyDE)",
+            )
+        # NB ``isinstance(True, int)`` is True in Python — reject bools
+        # explicitly so ``per_paper=True`` doesn't silently become cap 1.
+        if per_paper is not None and (
+            isinstance(per_paper, bool)
+            or not isinstance(per_paper, int)
+            or per_paper < 1
+        ):
+            raise BadInput(
+                f"per_paper must be a positive integer, got {per_paper!r}",
+                next="per_paper=2 keeps at most 2 hits per paper",
+            )
+
+        # ``good=True`` — the deep-search campaign surface. Does NOT
+        # search inline: mints a ``good_search`` coordinator job (under
+        # an auto-minted ephemeral todo) and returns an async handle
+        # the caller polls. Paper-only — the cfp subclass shares this
+        # method but a spec-role doc is never deep-searched.
+        if good:
+            if kind != "paper":
+                raise BadInput(
+                    f"good=True is a paper-only deep search (kind={kind!r})",
+                    next="search(kind='paper', q='…', good=True)",
+                )
+            from precis.handlers._good_search import submit_good_search
+
+            return submit_good_search(
+                self.store,
+                q=q.strip(),
+                queries=queries,
+                answers=answers,
             )
 
         # Publish-date filter: ``after`` / ``before`` are inclusive
@@ -879,13 +983,6 @@ class PaperHandler(Handler):
                     excluded_slugs_in, kind=kind
                 )
 
-        # Compute the query embedding for the semantic leg. A missing OR
-        # failing embedder degrades to lexical-only (query_vec=None)
-        # rather than 500 the whole search — the lexical leg still
-        # answers (gripe #38684: search q='*' returned a 500). See
-        # :func:`embed_query`.
-        query_vec = query_vec_for(self.embedder, q, mode)
-
         # ``max_distance`` enforces a semantic relevance floor so a
         # nonsense query (``'xyzzy frobnicate quux'``) returns an
         # empty response instead of the top-K closest random blocks.
@@ -913,29 +1010,38 @@ class PaperHandler(Handler):
         # retrieval".)
         extra_queries = [s for s in (queries or []) if s and s.strip()]
         hyde_answers = [s for s in (answers or []) if s and s.strip()]
-        per_paper_cap = (
-            per_paper if isinstance(per_paper, int) and per_paper > 0 else None
-        )
-        if extra_queries or hyde_answers or per_paper_cap is not None:
+        per_paper_cap = per_paper  # validated above (positive int, no bool)
+        broad = bool(extra_queries or hyde_answers) or per_paper_cap is not None
+        # ``broad_has_more``: the fused candidate list extended past this
+        # page's slice (probed via limit+1 below). Broad mode's pagination
+        # signal — the lexical count of the primary q is the wrong
+        # universe for fused results (it can be < len(hits), or 0 when
+        # only a rephrasing/HyDE leg matched).
+        broad_has_more = False
+        query_vec: list[float] | None = None
+        if broad:
             # Semantic legs embed q + each reformulation + each HyDE
-            # answer (skipping any the embedder can't produce); lexical
-            # legs run over q + each reformulation. ``mode='lexical'``
-            # drops the vectors entirely.
+            # answer — in ONE batch call (q is NOT embedded separately;
+            # up to 17 serial embed_one round trips collapsed). A missing
+            # OR failing embedder degrades the whole broad search to its
+            # lexical legs (empty vecs) — mirroring :func:`embed_query` —
+            # and ``mode='lexical'`` skips embedding entirely.
             q_texts = [q, *extra_queries]
             query_vecs: list[list[float]] = []
             if (mode or "hybrid").strip().lower() != "lexical":
-                for text in [q, *extra_queries, *hyde_answers]:
-                    vec = embed_query(self.embedder, text)
-                    if vec is not None:
-                        query_vecs.append(vec)
-            hits = self.store.search_blocks_multi(
+                query_vecs = _embed_query_batch(
+                    self.embedder, [q, *extra_queries, *hyde_answers]
+                )
+            # Probe one row past the page so ``broad_has_more`` is exact
+            # for the next-page trailer, then slice back to page_size.
+            probe = self.store.search_blocks_multi(
                 q_texts=q_texts,
                 query_vecs=query_vecs,
                 mode=mode,
                 kind=kind,
                 scope_ref_id=scope_ref_id,
                 tags=normalized_tags,
-                limit=page_size,
+                limit=page_size + 1,
                 offset=search_offset,
                 max_distance=SEMANTIC_DISTANCE_FLOOR,
                 exclude_ref_ids=exclude_ref_ids or None,
@@ -944,7 +1050,15 @@ class PaperHandler(Handler):
                 card_kinds=("card_combined",),
                 per_paper=per_paper_cap,
             )
+            broad_has_more = len(probe) > page_size
+            hits = probe[:page_size]
         else:
+            # Compute the query embedding for the semantic leg. A missing
+            # OR failing embedder degrades to lexical-only (query_vec=None)
+            # rather than 500 the whole search — the lexical leg still
+            # answers (gripe #38684: search q='*' returned a 500). See
+            # :func:`embed_query`.
+            query_vec = query_vec_for(self.embedder, q, mode)
             hits = self.store.search_blocks(
                 q=q,
                 query_vec=query_vec,
@@ -1078,14 +1192,26 @@ class PaperHandler(Handler):
         # the header would lie ("10 of 47") and a 7B model would
         # think they had more to paginate through than actually
         # exist.
-        total = self.store.count_blocks_lexical(
-            q=q,
-            kind=self.spec.kind,
-            scope_ref_id=scope_ref_id,
-            tags=normalized_tags,
-            exclude_ref_ids=exclude_ref_ids or None,
-            card_kinds=("card_combined",),
-        )
+        #
+        # Broad mode has no honest K: the lexical count of the primary
+        # ``q`` is the wrong universe for a *fused* result set — the
+        # rephrasing / HyDE legs surface rows q's tsquery never matches,
+        # so K can be < len(hits) or 0 (which used to silently drop the
+        # "of K" headline AND mis-gate the pagination trailer). Pass
+        # total=None (headline renders the plain count, no "of K") and
+        # gate the nav on ``broad_has_more`` instead.
+        total: int | None
+        if broad:
+            total = None
+        else:
+            total = self.store.count_blocks_lexical(
+                q=q,
+                kind=self.spec.kind,
+                scope_ref_id=scope_ref_id,
+                tags=normalized_tags,
+                exclude_ref_ids=exclude_ref_ids or None,
+                card_kinds=("card_combined",),
+            )
 
         # Hits arrive sorted by RRF fused rank — best first. The
         # raw fused number is, in absolute terms, a 1/(k+rank)
@@ -1190,12 +1316,27 @@ class PaperHandler(Handler):
         # only hit's own paper (a no-op), and the salient-term
         # suggestion is moot when the caller already has a tight
         # match. Just bump ``page_size`` in that branch.
-        if total > len(hits):
+        # Broad mode: gate on the fused-aware signal (the candidate list
+        # extended past this page's slice), not the lexical count — and
+        # echo queries=/answers=/per_paper= into every continuation, or
+        # a caller following the trailer would land on the *single-leg*
+        # path's page 2: a different ordering with duplicates + gaps.
+        broad_suffix = (
+            _broad_args_suffix(extra_queries, hyde_answers, per_paper_cap)
+            if broad
+            else ""
+        )
+        more_available = (
+            broad_has_more if broad else total is not None and total > len(hits)
+        )
+        if more_available:
             if len(hits) == 1:
                 nav.append(
                     (
-                        f"search(kind='{kind}', q={q!r}, page_size=10)",
-                        f"see more of the {total} matches",
+                        f"search(kind='{kind}', q={q!r}{broad_suffix}, page_size=10)",
+                        "see more of the fused matches"
+                        if broad
+                        else f"see more of the {total} matches",
                     )
                 )
             else:
@@ -1211,11 +1352,20 @@ class PaperHandler(Handler):
                 # filter for known-irrelevant refs (kept available via
                 # the arg but no longer the recommended next-step
                 # because it bloats the call with a slug list).
-                if total > page_size * page:
+                show_next_page = (
+                    broad_has_more
+                    if broad
+                    else total is not None and total > page_size * page
+                )
+                if show_next_page:
                     nav.append(
                         (
-                            f"search(kind='{kind}', q={q!r}, page={page + 1})",
-                            f"see the next {page_size} of {total} hits",
+                            f"search(kind='{kind}', q={q!r}{broad_suffix}, "
+                            f"page={page + 1})",
+                            "see the next fused page (keep the same "
+                            "queries=/answers= or the ordering shifts)"
+                            if broad
+                            else f"see the next {page_size} of {total} hits",
                         )
                     )
 

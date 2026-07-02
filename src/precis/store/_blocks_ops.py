@@ -69,6 +69,12 @@ _ATTENTION_COLUMNS: dict[str, str] = {
     "watch": "last_watched",
 }
 
+#: Hard ceiling on the total leg count (lexical + semantic) accepted by
+#: :meth:`BlocksOpsMixin.search_blocks_multi`. The MCP surface and the
+#: paper handler cap ``queries=`` / ``answers=`` at 8 each; this is the
+#: last-resort bound for direct (agentic-tier) callers.
+_MULTI_LEG_HARD_CAP = 32
+
 #: Default draft over-weight for the dream seed — a draft sorts as if it
 #: were this many days more overdue (see :meth:`select_dream_seed`).
 #: "kinda" over-weight: large enough that drafts win when even mildly
@@ -533,7 +539,12 @@ class BlocksMixin:
             "JOIN refs r ON r.ref_id = c.ref_id, "
             "websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY rank DESC LIMIT %s OFFSET %s"
+            # chunk_id is a deterministic tiebreak: ts_rank_cd ties are
+            # common (short queries over boilerplate-ish chunks) and an
+            # unqualified ORDER BY lets ties shuffle between executions —
+            # under multi-leg RRF fusion that flipped fused scores and
+            # per_paper winners between page 1 and page 2.
+            "ORDER BY rank DESC, c.chunk_id ASC LIMIT %s OFFSET %s"
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
@@ -733,7 +744,9 @@ class BlocksMixin:
             WITH lex AS (
                 SELECT c.chunk_id AS cid,
                        row_number() OVER (
-                           ORDER BY ts_rank_cd(c.tsv, qq.qq) DESC
+                           -- chunk_id tiebreak: same determinism fix as
+                           -- search_blocks_lexical (rank ties shuffle).
+                           ORDER BY ts_rank_cd(c.tsv, qq.qq) DESC, c.chunk_id
                        ) AS rnk
                 FROM chunks c JOIN refs r ON r.ref_id = c.ref_id,
                      websearch_to_tsquery('english', %s) qq(qq)
@@ -863,6 +876,18 @@ class BlocksMixin:
 
         Returns ``(Block, Ref, fused_score)`` tuples, best first.
         """
+        # Defensive hard ceiling on the fan-out. The MCP surface and the
+        # paper handler both cap queries=/answers= at 8 each, but this
+        # method is also a direct target for the agentic tier — an
+        # unbounded caller would fire one SQL leg per entry. 32 legs is
+        # comfortably above any legitimate broad call (1 + 8 lexical
+        # + 1 + 8 + 8 semantic = 26 worst case).
+        n_legs = len(q_texts) + len(query_vecs)
+        if n_legs > _MULTI_LEG_HARD_CAP:
+            raise ValueError(
+                f"search_blocks_multi: {n_legs} legs exceeds the hard cap "
+                f"{_MULTI_LEG_HARD_CAP} (callers must bound queries=/answers=)"
+            )
         m = (mode or "hybrid").strip().lower()
         run_lexical = m != "semantic"
         run_semantic = m != "lexical" and bool(query_vecs)

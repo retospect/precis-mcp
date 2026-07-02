@@ -571,6 +571,18 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             # resolving; the nursery sweep surfaces these for triage.
             "paused",
             "auto-timeout",
+            # coordinator yield/resume (executors/_common.py). A
+            # coordinator Yield parks the job at one of these until
+            # the wake_runner re-queues it. They were used by the
+            # executor but missing here, so ``_common.set_status``
+            # (which validates via ``parse_strict``) raised BadInput
+            # on the first real Yield — coordinator tests stubbed
+            # ``_set_status`` and never hit it. Keep in sync with the
+            # WAITING_* constants there.
+            "waiting_children",
+            "waiting_time",
+            "waiting_ask_user",
+            "waiting_manual_kick",
         }
     ),
     "PRIO": frozenset({"low", "normal", "high", "urgent"}),

@@ -59,6 +59,19 @@ _JOB_EVENT_KIND = "job_event"
 # emergent from the parent pointer the caller sets anyway.
 JOB_PARENT_KINDS: frozenset[str] = frozenset({"todo", "structure", "cad", "draft"})
 
+#: ADR 0044 extension (good-search-coordinator §Substrate fixes #3): a
+#: ``kind='job'`` parent is additionally allowed, but ONLY when that
+#: parent job is itself a coordinator (``meta.executor ==
+#: 'coordinator'``) — a campaign's fan-out children hang under the
+#: coordinator that minted them, not under a todo, so their success /
+#: failure never auto-closes or bubbles onto anybody's todo (the
+#: coordinator reads child terminal status itself on resume). The
+#: executor check lives in :meth:`JobHandler.put` after the kind
+#: resolves; ordinary jobs don't own child trees.
+_JOB_PARENT_KINDS_WITH_COORDINATOR: frozenset[str] = JOB_PARENT_KINDS | frozenset(
+    {"job"}
+)
+
 
 class JobHandler(NumericRefHandler):
     spec: ClassVar[KindSpec] = KindSpec(
@@ -252,13 +265,34 @@ class JobHandler(NumericRefHandler):
                 f"parent_id must be an integer, got {parent_id!r}",
                 next="parent_id=<int> (the parent todo or subject artifact id)",
             ) from exc
-        # Resolve + kind-check the parent. Accepts a todo or a build
-        # subject (:data:`JOB_PARENT_KINDS`); the returned kind is what
-        # the failure-bubble later branches on. Same NotFound/BadInput
-        # shape as the todo-tree guard for missing / soft-deleted parents.
-        todo_guards.check_job_parent_exists(
-            self.store, parent_int, allowed_kinds=JOB_PARENT_KINDS
+        # Resolve + kind-check the parent. Accepts a todo, a build
+        # subject (:data:`JOB_PARENT_KINDS`), or a coordinator job
+        # (the ADR 0044 extension — see
+        # :data:`_JOB_PARENT_KINDS_WITH_COORDINATOR`); the returned kind
+        # is what the failure-bubble later branches on. Same
+        # NotFound/BadInput shape as the todo-tree guard for missing /
+        # soft-deleted parents.
+        _, parent_kind = todo_guards.check_job_parent_exists(
+            self.store, parent_int, allowed_kinds=_JOB_PARENT_KINDS_WITH_COORDINATOR
         )
+        if parent_kind == "job":
+            with self.store.pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT meta->>'executor' FROM refs WHERE ref_id = %s",
+                    (parent_int,),
+                ).fetchone()
+            parent_executor = row[0] if row else None
+            if parent_executor != "coordinator":
+                raise BadInput(
+                    f"parent_id={parent_int} is a job with executor="
+                    f"{parent_executor!r}; a job may only parent on a "
+                    "coordinator job (ADR 0044 extension); ordinary jobs "
+                    "don't own child trees",
+                    next=(
+                        "parent the child on the coordinator job that owns "
+                        "the fan-out, or on a todo / build subject"
+                    ),
+                )
 
         # Compose title + meta + queued tag.
         title = f"{spec.name} ({link or 'unlinked'})"

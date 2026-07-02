@@ -153,9 +153,15 @@ def run_coordinator_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
             conn.commit()
             return {"claimed": 0, "ok": 0, "failed": 0}
         for ref_id, _title, _meta in rows:
-            # Short lease. The slice is meant to finish quickly; if
-            # it doesn't, another worker can take over once the
-            # lease expires.
+            # Short lease. The slice is meant to finish quickly. NB
+            # lease expiry alone does NOT enable takeover: the claim
+            # SQL requires STATUS:queued (see _common.claim_executor_
+            # jobs), so a slice that crashes mid-run sits unreachable
+            # at STATUS:running until the sweeper terminally fails
+            # the whole job at PRECIS_STUCK_JOB_HOURS — despite the
+            # valid checkpoint in meta.coordinator_state. Requeue-
+            # from-checkpoint (sweeper re-queues a stale coordinator
+            # instead of failing it) is future work.
             conn.execute(
                 "UPDATE refs SET meta = meta || "
                 "jsonb_build_object("

@@ -1,10 +1,13 @@
 """`Store.search_blocks_multi` — multi-leg reciprocal-rank fusion behind
 the broad-retrieval `search(queries=, answers=, per_paper=)` path. Checks
 that several lexical + semantic legs fuse into one ordered list, that the
-per-paper cap spreads results, and that it degrades like the single path
-when the embedder is unavailable."""
+per-paper cap spreads results, that it degrades like the single path
+when the embedder is unavailable, that the leg fan-out has a hard
+ceiling, and that lexical rank ties break deterministically."""
 
 from __future__ import annotations
+
+import pytest
 
 from precis.embedder import MockEmbedder
 from precis.store import BlockInsert, Store
@@ -84,6 +87,42 @@ def test_multi_lexical_mode_ignores_vectors(store: Store) -> None:
         limit=10,
     )
     assert hits and any("nitrate" in b.text.lower() for b, _r, _s in hits)
+
+
+def test_multi_leg_hard_cap_raises(store: Store) -> None:
+    # The MCP surface + paper handler cap queries=/answers= at 8 each;
+    # the store enforces a defensive hard ceiling (32 total legs) so a
+    # direct (agentic-tier) caller can't fire unbounded SQL fan-out.
+    with pytest.raises(ValueError, match="hard cap"):
+        store.search_blocks_multi(
+            q_texts=[f"query variant {i}" for i in range(33)],
+            query_vecs=[],
+            kind="paper",
+        )
+    with pytest.raises(ValueError, match="hard cap"):
+        store.search_blocks_multi(
+            q_texts=["ok"],
+            query_vecs=[_vec(f"t{i}") for i in range(32)],
+            kind="paper",
+        )
+
+
+def test_lexical_tie_determinism_chunk_id_order(store: Store) -> None:
+    # Equal-rank lexical rows (identical text → identical ts_rank_cd)
+    # must return in stable chunk_id order, not whatever the executor
+    # felt like — under fusion, unstable ties flipped fused scores and
+    # per_paper winners between page 1 and page 2.
+    same = "Deterministic tiebreak sentinel phrase for lexical ranking."
+    _seed(store, slug="tieA", blocks=[same, same], embed=False)
+    _seed(store, slug="tieB", blocks=[same, same], embed=False)
+    hits = store.search_blocks_lexical(
+        q="deterministic tiebreak sentinel", kind="paper", limit=10
+    )
+    assert len(hits) == 4
+    ranks = [s for _b, _r, s in hits]
+    assert len(set(ranks)) == 1  # genuinely tied on ts_rank_cd
+    cids = [b.id for b, _r, _s in hits]
+    assert cids == sorted(cids)  # tiebreak: ascending chunk_id
 
 
 def test_multi_semantic_only_degrades_without_vecs(store: Store) -> None:

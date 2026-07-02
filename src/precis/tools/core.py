@@ -403,6 +403,11 @@ def search(
     queries: list[str] | None = None,
     answers: list[str] | None = None,
     per_paper: int | None = None,
+    # Deep search (paper kind): ``good=True`` queues an async
+    # coordinator campaign (fuse → LLM triage children → merged
+    # verdict) and returns a job handle instead of hits — poll
+    # ``get(kind='job', id=…)``.
+    good: bool | None = None,
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
@@ -418,6 +423,8 @@ def search(
 
     Broad retrieval (paper): `queries=` rephrasings + `answers=` HyDE
     passages fuse extra ranked legs; `per_paper=` spreads across papers.
+    `good=True` (paper) queues an async deep-search campaign and
+    returns a job handle to poll instead of hits.
 
     Full reference: get(kind='skill', id='precis-search-help').
     """
@@ -495,13 +502,32 @@ def search(
                 )
             )
         )
-    if per_paper is not None and (not isinstance(per_paper, int) or per_paper < 1):
+    # NB ``isinstance(True, int)`` is True in Python — reject bools
+    # explicitly so ``per_paper=True`` doesn't silently become cap 1.
+    if per_paper is not None and (
+        isinstance(per_paper, bool) or not isinstance(per_paper, int) or per_paper < 1
+    ):
         runtime = _get_runtime()
         return _validation_error(
             runtime.render_error(
                 BadInput(
                     f"per_paper must be a positive integer, got {per_paper!r}",
                     next="per_paper=2 keeps at most 2 hits per paper",
+                )
+            )
+        )
+
+    # Deep-search gate: ``good=True`` is a paper-only surface (it mints
+    # a coordinator campaign, not a ranked page). Reject other kinds at
+    # the boundary so the error is immediate rather than a silent
+    # pass-through into a handler that ignores the flag.
+    if good and kind != "paper":
+        runtime = _get_runtime()
+        return _validation_error(
+            runtime.render_error(
+                BadInput(
+                    f"good=True is a paper-only deep search (kind={kind!r})",
+                    next="search(kind='paper', q='…', good=True)",
                 )
             )
         )
@@ -545,6 +571,8 @@ def search(
         payload["answers"] = answers
     if per_paper is not None:
         payload["per_paper"] = per_paper
+    if good is not None:
+        payload["good"] = bool(good)
 
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("search", payload)

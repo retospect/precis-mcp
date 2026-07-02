@@ -148,6 +148,22 @@ def _load_structure_propose() -> JobTypeSpec:
     return structure_propose.SPEC
 
 
+def _load_good_search() -> JobTypeSpec:
+    # Deep-search coordinator campaign (fuse → triage children → merged
+    # verdict). Runs via plugin dispatch under the coordinator executor.
+    from precis.workers.job_types import good_search
+
+    return good_search.SPEC
+
+
+def _load_good_search_triage() -> JobTypeSpec:
+    # good_search's fan-out child: batched one-shot relevance triage
+    # under claude_inproc. Runs via plugin dispatch.
+    from precis.workers.job_types import good_search
+
+    return good_search.TRIAGE_SPEC
+
+
 #: Name → spec. Populated lazily on first access so the import
 #: graph stays cheap for the MCP server.
 _REGISTRY: dict[str, JobTypeSpec] = {}
@@ -290,6 +306,12 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "structure_propose":
         _REGISTRY["structure_propose"] = _load_structure_propose()
         return _REGISTRY["structure_propose"]
+    if name == "good_search":
+        _REGISTRY["good_search"] = _load_good_search()
+        return _REGISTRY["good_search"]
+    if name == "good_search_triage":
+        _REGISTRY["good_search_triage"] = _load_good_search_triage()
+        return _REGISTRY["good_search_triage"]
     # Fall through to plugin-discovered specs. Cached on first
     # lookup so subsequent calls are cheap.
     plugins = _get_plugin_specs()
@@ -310,6 +332,8 @@ def known_job_types() -> list[str]:
         "briefing",
         "struct_relax",
         "structure_propose",
+        "good_search",
+        "good_search_triage",
     ]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for
