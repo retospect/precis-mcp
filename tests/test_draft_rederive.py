@@ -24,12 +24,17 @@ def test_edit_reclaims_chunk_for_rederive(store: Store) -> None:
     )[0]
     h = RakeLemmaHandler()
 
-    # 1) a fresh chunk has no summary → claimed; derive + persist it
+    # 1) a fresh chunk has no summary → claimed; derive + persist it.
+    # Mirror the runner's phase 3: write_ok THEN release_claims in the same
+    # txn, so no lingering chunk_claims row blocks the later re-claim (the
+    # lease model — an unreleased claim keeps a chunk out of _claim_fresh
+    # until the 20-min reclaim cooldown).
     with store.pool.connection() as conn:
         rows = h.claim_batch(conn, limit=50)
         assert p.chunk_id in [r.chunk_id for r in rows]
         row = next(r for r in rows if r.chunk_id == p.chunk_id)
         h.write_ok(conn, p.chunk_id, h.process(row))  # stamps content_sha
+        h.release_claims(conn, [r.chunk_id for r in rows])
         conn.commit()
 
     # 2) already-derived, unchanged → NOT re-claimed (sha matches)

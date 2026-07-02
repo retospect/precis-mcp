@@ -45,6 +45,8 @@ def test_worker_handler_claim_filters_no_index() -> None:
     Shared base class for ``EmbedHandler`` and the other chunk-
     derived workers; one filter covers them all.
     """
-    source = inspect.getsource(WorkerHandler.claim_batch)
+    # The filter lives in the claim helpers (_claim_fresh / _claim_reclaim)
+    # that claim_batch delegates to, so introspect the whole class.
+    source = inspect.getsource(WorkerHandler)
     assert "'no_index'" in source
     assert "IS DISTINCT FROM" in source

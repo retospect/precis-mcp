@@ -48,18 +48,20 @@ def run_handler_once(
 ) -> BatchResult:
     """Claim and process up to ``batch_size`` chunks for ``handler``.
 
-    All work for the batch happens inside a single connection /
-    transaction:
+    Three phases, each its own short transaction, so the lock/xmin is never
+    held across the (slow) ``process`` step — the old single-transaction
+    version pinned the xmin horizon for the whole batch and starved autovacuum:
 
-    1. ``claim_batch`` selects + locks chunks ``FOR UPDATE OF c
-       SKIP LOCKED``.
-    2. For each row, ``process`` runs (pure compute).
-    3. On success → ``write_ok``; on exception → ``write_failed``.
-    4. Commit releases the row locks.
+    1. **Claim** (short txn): ``claim_batch`` leases chunks into
+       ``chunk_claims`` and commits, releasing the ``FOR UPDATE`` lock.
+    2. **Process** (no txn): ``process_batch`` runs pure compute.
+    3. **Write** (short txn): ``write_ok`` / ``write_failed`` per row, then
+       ``release_claims`` drops every claim (ok and terminal-failed alike),
+       and commit.
 
-    Returns a :class:`BatchResult` with row counts. ``claimed=0``
-    is the "no work" signal :func:`run_loop` uses to schedule a
-    sleep.
+    A worker that dies between phases leaves its claims behind; the cooldown
+    reaper re-claims them. Returns a :class:`BatchResult`; ``claimed=0`` is the
+    "no work" signal :func:`run_loop` uses to schedule a sleep.
     """
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
@@ -67,40 +69,40 @@ def run_handler_once(
     n_ok = 0
     n_failed = 0
 
+    # Phase 1 — claim + commit (releases the row lock immediately).
     with store.pool.connection() as conn:
         rows = handler.claim_batch(conn, limit=batch_size)
-        if not rows:
-            conn.commit()
-            return BatchResult(handler=handler.name, claimed=0, ok=0, failed=0)
+        conn.commit()
+    if not rows:
+        return BatchResult(handler=handler.name, claimed=0, ok=0, failed=0)
 
-        # ``process_batch`` returns a list parallel to ``rows`` where
-        # each element is either the payload or an Exception. The
-        # default implementation calls ``process`` per row; handlers
-        # that benefit from bulk compute (EmbedHandler runs one
-        # batched transformer forward pass per call) override it.
-        # Per-row failures still route to write_failed below so the
-        # poison-pill chunk gets a failure marker.
-        try:
-            results = handler.process_batch(rows)
-        except EmbedderUnavailable as exc:
-            # The embedder is transiently down/busy. Roll the tx back
-            # (release the row locks, write *no* failure markers) and
-            # report a clean no-progress batch so the run-loop sleeps
-            # and re-claims these rows next cycle. This is a deferral,
-            # not a failure: a restart / 429 burst must not stamp every
-            # claimed chunk ``failed`` (that lit the status panel with
-            # noise and forced needless re-embeds). ``claimed=0`` keeps
-            # it out of the "any work this cycle?" tally so the node
-            # backs off instead of hot-looping the down embedder.
-            conn.rollback()
-            log.warning(
-                "worker: %s deferred batch of %d — embedder unavailable (%s); "
-                "will retry next cycle",
-                handler.name,
-                len(rows),
-                exc,
-            )
-            return BatchResult(handler=handler.name, claimed=0, ok=0, failed=0)
+    # Phase 2 — process (pure compute, no DB transaction held).
+    # ``process_batch`` returns a list parallel to ``rows`` where each element
+    # is either the payload or an Exception; per-row failures route to
+    # write_failed below. Handlers that benefit from bulk compute (EmbedHandler
+    # runs one batched transformer forward pass) override process_batch.
+    try:
+        results = handler.process_batch(rows)
+    except EmbedderUnavailable as exc:
+        # The embedder is transiently down/busy. Release the claims (so these
+        # chunks are re-claimable *now*, not after the cooldown) and write NO
+        # failure markers — a restart / 429 burst must not stamp every claimed
+        # chunk ``failed``. ``claimed=0`` keeps it out of the "any work this
+        # cycle?" tally so the node backs off instead of hot-looping.
+        with store.pool.connection() as conn:
+            handler.release_claims(conn, [r.chunk_id for r in rows])
+            conn.commit()
+        log.warning(
+            "worker: %s deferred batch of %d — embedder unavailable (%s); "
+            "will retry next cycle",
+            handler.name,
+            len(rows),
+            exc,
+        )
+        return BatchResult(handler=handler.name, claimed=0, ok=0, failed=0)
+
+    # Phase 3 — write results + release claims, in a fresh short transaction.
+    with store.pool.connection() as conn:
         for row, payload in zip(rows, results, strict=True):
             if isinstance(payload, Exception):
                 log.warning(
@@ -114,6 +116,7 @@ def run_handler_once(
             else:
                 handler.write_ok(conn, row.chunk_id, payload)
                 n_ok += 1
+        handler.release_claims(conn, [r.chunk_id for r in rows])
         conn.commit()
 
     return BatchResult(

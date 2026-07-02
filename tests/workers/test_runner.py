@@ -274,3 +274,84 @@ class TestRunLoop:
                 "SELECT count(*) FROM chunk_embeddings WHERE status = 'ok'"
             ).fetchone()
         assert n == (4,)
+
+
+# ---------------------------------------------------------------------------
+# Claim lease — release, live-claim exclusion, crash-orphan reclaim.
+# The core of the chunk_claims conversion; exercised directly against the
+# handler's claim/release surface so a crash (claim committed, write never
+# runs) can be simulated deterministically.
+# ---------------------------------------------------------------------------
+
+
+class TestClaimLease:
+    def _claim_ids(self, store, h, *, limit: int = 50) -> list[int]:
+        """Claim + commit a batch; return the claimed chunk_ids."""
+        with store.pool.connection() as conn:
+            ids = [r.chunk_id for r in h.claim_batch(conn, limit=limit)]
+            conn.commit()
+        return ids
+
+    def _claims_in_table(self, store, h) -> int:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM chunk_claims WHERE artifact = %s",
+                (h.model_name,),
+            ).fetchone()
+        return int(row[0])
+
+    def test_release_empties_claims_and_reenables_reclaim(self, store):
+        """release_claims drops the rows; a released chunk without a write
+        is immediately re-claimable (no cooldown wait)."""
+        _ref, [cid] = seed_chunks(store, ["alpha"])
+        h = EmbedHandler(make_mock_bge_m3())
+
+        with store.pool.connection() as conn:
+            rows = h.claim_batch(conn, limit=10)
+            assert [r.chunk_id for r in rows] == [cid]
+            conn.commit()
+        assert self._claims_in_table(store, h) == 1
+
+        # Release without ever writing an artifact (the deferral path).
+        with store.pool.connection() as conn:
+            h.release_claims(conn, [cid])
+            conn.commit()
+        assert self._claims_in_table(store, h) == 0
+
+        # No artifact row was written, so the chunk is fresh again at once.
+        assert self._claim_ids(store, h) == [cid]
+
+    def test_live_claim_excluded_from_fresh(self, store):
+        """A committed, unreleased claim keeps its chunk out of the next
+        fresh claim (no double-claim across nodes) before the cooldown."""
+        _ref, [cid] = seed_chunks(store, ["alpha"])
+        h = EmbedHandler(make_mock_bge_m3())
+
+        assert self._claim_ids(store, h) == [cid]  # claim #1, left unreleased
+        # A second pass must NOT re-claim it: fresh excludes it (live claim),
+        # reclaim skips it (claimed_at younger than the cooldown).
+        assert self._claim_ids(store, h) == []
+        assert self._claims_in_table(store, h) == 1
+
+    def test_crash_orphaned_claim_reclaimed_after_cooldown(self, store):
+        """A worker that dies after claiming but before writing leaves a
+        claim; it is re-leased once claimed_at ages past the cooldown —
+        the crash-recovery path with no separate reaper."""
+        _ref, [cid] = seed_chunks(store, ["alpha"])
+        h = EmbedHandler(make_mock_bge_m3())
+
+        assert self._claim_ids(store, h) == [cid]  # claim, then "crash"
+        assert self._claim_ids(store, h) == []  # still inside cooldown
+
+        # Age the claim past the 20-min cooldown to simulate a stale lease.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunk_claims SET claimed_at = now() - interval '21 minutes' "
+                "WHERE artifact = %s AND chunk_id = %s",
+                (h.model_name, cid),
+            )
+            conn.commit()
+
+        # Now the reclaim path picks it back up (same chunk, refreshed lease).
+        assert self._claim_ids(store, h) == [cid]
+        assert self._claims_in_table(store, h) == 1

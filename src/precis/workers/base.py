@@ -56,6 +56,13 @@ class ArtifactStatus:
 # vector.
 _LAST_ERROR_MAX_CHARS = 1000
 
+#: A ``chunk_claims`` row older than this many minutes is treated as abandoned
+#: (worker crashed/stalled mid-batch) and re-claimed. Only crash recovery
+#: matters here — base-handler failures are terminal (ADR 0007), so they leave
+#: no retrying claim. Must exceed the worst-case batch wall-time (the embedder
+#: forward pass); generous is fine since a completed batch deletes its claims.
+_CLAIM_COOLDOWN_MIN = 20
+
 
 class WorkerHandler(ABC):
     """Base class for derived-artifact workers.
@@ -89,63 +96,132 @@ class WorkerHandler(ABC):
     name: str
 
     # ------------------------------------------------------------------
-    # Claim — derived queue: chunks LEFT JOIN <output_table>
+    # Claim — lease via the shared ``chunk_claims`` table
     # ------------------------------------------------------------------
 
     def claim_batch(self, conn: Connection, *, limit: int) -> list[ChunkRow]:
-        """Lock and return up to ``limit`` chunks missing this artifact.
+        """Lease up to ``limit`` chunks needing this artifact.
 
-        ``FOR UPDATE OF c SKIP LOCKED`` lets concurrent workers
-        coexist without double-processing. The lock is released when
-        the caller commits (typically right after :meth:`write_ok`
-        / :meth:`write_failed` for every claimed row).
+        Writes a ``chunk_claims`` row (``artifact = model_name``) for each
+        claimed chunk in the same statement and returns its data. The caller
+        commits promptly (releasing the ``FOR UPDATE`` lock) and does the slow
+        work with NO open transaction — so the batch's processing time is never
+        held as an open transaction pinning the xmin horizon (the old
+        lock-across-``process`` behaviour starved autovacuum).
 
-        Empty list means "no work right now"; the caller should
-        sleep and re-poll.
+        Two sources: FRESH chunks (no current artifact, no claim) then, if the
+        batch isn't full, RECLAIM of stale claims (a worker that crashed
+        mid-batch — base-handler failures are terminal, so there are no
+        retrying claims). Empty list means "no work right now".
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
+        claimed = self._claim_fresh(conn, limit=limit)
+        if len(claimed) < limit:
+            claimed += self._claim_reclaim(conn, limit=limit - len(claimed))
+        return claimed
+
+    def _skip_clause(self, alias: str) -> tuple[str, list[str]]:
+        """`(sql_fragment, skip_kinds_list)` for the chunk-kind filter, empty
+        when the handler processes every kind. ``= ANY`` keeps the param shape
+        uniform regardless of list length."""
         skip = self.skip_chunk_kinds
-        skip_clause = ""
-        params: tuple[object, ...] = (self.model_name, limit)
-        if skip:
-            # Use ``= ANY(%s)`` rather than ``IN (%s, …)`` to keep the
-            # parameter shape uniform across handlers with different
-            # skip-list lengths — psycopg adapts a Python tuple/list
-            # to a SQL array transparently.
-            skip_clause = "AND c.chunk_kind <> ALL(%s)"
-            params = (self.model_name, list(skip), limit)
-        # ``meta->>'no_index' IS DISTINCT FROM 'true'`` excludes
-        # ephemeral chunks (e.g. ``structure_draft`` annotation
-        # views written by precis-dft's view_worker) from indexer
-        # passes. NULL-safe: chunks without ``meta.no_index`` —
-        # the vast majority — still match. See PR 2 of the
-        # plugin-substrate work:
-        # ``docs/design/dft-phase-0-pr-2-substrate-hardening.md`` §2.3.
-        # Claim a chunk when (a) it has no derived row yet, or (b) its
-        # derived row was built against a stale ``content_sha`` — the
-        # latter re-derives edited `draft` chunks (ADR 0033). Papers
-        # leave ``content_sha`` NULL, so ``NULL IS DISTINCT FROM NULL``
-        # never fires and they are unaffected. ``failed`` rows are NOT
-        # re-claimed on a sha change (a poison chunk would loop) — they
-        # stay declared until a manual DELETE, per ADR 0007.
+        if not skip:
+            return "", []
+        return f"AND {alias}.chunk_kind <> ALL(%(skip_kinds)s)", list(skip)
+
+    def _claim_fresh(self, conn: Connection, *, limit: int) -> list[ChunkRow]:
+        # A chunk needs work when it has no *current, non-failed* artifact row:
+        # no row at all, or a row built against a stale content_sha (re-derive
+        # edited `draft` chunks, ADR 0033 — papers leave content_sha NULL so
+        # NULL IS DISTINCT FROM NULL never fires). `failed` rows are terminal
+        # (a poison chunk must not loop) — they count as "done" until a manual
+        # DELETE, per ADR 0007. The second NOT EXISTS skips chunks already
+        # leased by a live claim. `meta->>'no_index'` excludes ephemeral chunks.
+        skip_clause, skip_kinds = self._skip_clause("c")
         sql = f"""
-            SELECT c.chunk_id, c.text
-              FROM chunks c
-              LEFT JOIN {self.output_table} o
-                ON o.chunk_id = c.chunk_id
-               AND o.{self.model_column} = %s
-             WHERE (o.chunk_id IS NULL
-                    OR (o.status IS DISTINCT FROM 'failed'
-                        AND o.content_sha IS DISTINCT FROM c.content_sha))
-               AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
-               {skip_clause}
-             ORDER BY c.chunk_id
-             LIMIT %s
-               FOR UPDATE OF c SKIP LOCKED
+            WITH cand AS (
+                SELECT c.chunk_id, c.text
+                  FROM chunks c
+                 WHERE NOT EXISTS (
+                           SELECT 1 FROM {self.output_table} o
+                            WHERE o.chunk_id = c.chunk_id
+                              AND o.{self.model_column} = %(artifact)s
+                              AND (o.status = 'failed'
+                                   OR o.content_sha IS NOT DISTINCT FROM c.content_sha)
+                       )
+                   AND NOT EXISTS (
+                           SELECT 1 FROM chunk_claims cl
+                            WHERE cl.chunk_id = c.chunk_id AND cl.artifact = %(artifact)s
+                       )
+                   AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+                   {skip_clause}
+                 ORDER BY c.chunk_id
+                 LIMIT %(limit)s
+                   FOR UPDATE OF c SKIP LOCKED
+            ),
+            claimed AS (
+                INSERT INTO chunk_claims (chunk_id, artifact)
+                SELECT chunk_id, %(artifact)s FROM cand
+                ON CONFLICT (chunk_id, artifact) DO NOTHING
+                RETURNING chunk_id
+            )
+            SELECT cand.chunk_id, cand.text
+              FROM cand JOIN claimed USING (chunk_id)
         """
+        params: dict[str, object] = {"artifact": self.model_name, "limit": limit}
+        if skip_kinds:
+            params["skip_kinds"] = skip_kinds
         rows = conn.execute(sql, params).fetchall()
         return [ChunkRow(chunk_id=int(r[0]), text=str(r[1])) for r in rows]
+
+    def _claim_reclaim(self, conn: Connection, *, limit: int) -> list[ChunkRow]:
+        skip_clause, skip_kinds = self._skip_clause("c")
+        sql = f"""
+            WITH cand AS (
+                SELECT cl.chunk_id, c.text
+                  FROM chunk_claims cl
+                  JOIN chunks c ON c.chunk_id = cl.chunk_id
+                 WHERE cl.artifact = %(artifact)s
+                   AND cl.claimed_at < now() - (%(cooldown_min)s * interval '1 minute')
+                   AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+                   {skip_clause}
+                 ORDER BY cl.claimed_at
+                 LIMIT %(limit)s
+                   FOR UPDATE OF cl SKIP LOCKED
+            ),
+            reclaimed AS (
+                UPDATE chunk_claims cl SET claimed_at = now()
+                  FROM cand
+                 WHERE cl.chunk_id = cand.chunk_id AND cl.artifact = %(artifact)s
+                RETURNING cl.chunk_id
+            )
+            SELECT cand.chunk_id, cand.text
+              FROM cand JOIN reclaimed USING (chunk_id)
+        """
+        params: dict[str, object] = {
+            "artifact": self.model_name,
+            "cooldown_min": _CLAIM_COOLDOWN_MIN,
+            "limit": limit,
+        }
+        if skip_kinds:
+            params["skip_kinds"] = skip_kinds
+        rows = conn.execute(sql, params).fetchall()
+        return [ChunkRow(chunk_id=int(r[0]), text=str(r[1])) for r in rows]
+
+    def release_claims(self, conn: Connection, chunk_ids: list[int]) -> None:
+        """Drop the ``chunk_claims`` rows for ``chunk_ids`` (this artifact).
+
+        Called by the runner once a batch is written (ok or terminal-failed —
+        base-handler failures don't retry) and on an :class:`EmbedderUnavailable`
+        deferral, where releasing makes the chunks immediately re-claimable
+        rather than waiting out the cooldown."""
+        if not chunk_ids:
+            return
+        conn.execute(
+            "DELETE FROM chunk_claims WHERE artifact = %s AND chunk_id = ANY(%s)",
+            (self.model_name, list(chunk_ids)),
+        )
 
     # ------------------------------------------------------------------
     # Per-row computation + write — subclass surface
@@ -174,6 +250,15 @@ class WorkerHandler(ABC):
         but is declared ``list[object]`` to keep the abstract surface
         consistent with :meth:`process`; the runner pattern-matches
         on ``isinstance(payload, BaseException)`` to route.
+
+        WARNING: this default turns *every* per-row exception into a
+        terminal ``failed`` marker. A handler that can raise a
+        **transient, defer-worthy** error — e.g. ``EmbedderUnavailable``
+        (embedder down: retry later, don't burn the chunk) — MUST
+        override this method to let that error propagate out of
+        ``process_batch`` so the runner's phase-2 deferral releases the
+        claims instead of marking the batch failed. ``EmbedHandler`` does
+        exactly this; a future embedder-backed handler must too.
         """
         out: list[object] = []
         for row in rows:
