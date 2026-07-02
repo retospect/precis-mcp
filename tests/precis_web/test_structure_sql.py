@@ -22,6 +22,8 @@ from precis_web.routes.structure import (
     _lineage,
     _list_rows,
     _markers,
+    _pending_jobs,
+    _run_count,
     _run_rows,
     _viewer,
 )
@@ -33,6 +35,19 @@ _SI2 = json.dumps(
             {"op": "add_atom", "element": "Si", "frac": [0.0, 0.0, 0.0]},
             {"op": "add_atom", "element": "Si", "frac": [0.25, 0.25, 0.25]},
             {"op": "relax", "fidelity": "clean"},  # rung-0 local, no dispatch
+        ],
+    }
+)
+
+# Same cell with no relax op, so a design starts with zero recorded runs — used
+# to prove a *dispatched* relax is visible (as a pending job) before any run
+# lands in the cube.
+_SI2_RAW = json.dumps(
+    {
+        "cell": {"a": 5.43, "b": 5.43, "c": 5.43, "pbc": [True, True, True]},
+        "ops": [
+            {"op": "add_atom", "element": "Si", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "Si", "frac": [0.25, 0.25, 0.25]},
         ],
     }
 )
@@ -63,6 +78,62 @@ def seeded(store):
         },
     )
     return store, ref
+
+
+def test_run_count_counts_recorded_runs(seeded):
+    store, ref = seeded
+    # the put's clean run + the injected dft-fast run
+    assert _run_count(store, ref.id) == 2
+
+
+def test_pending_jobs_surfaces_dispatched_relax_and_transitions(store):
+    """A dispatched relax (no local backend) is visible as a pending job with
+    *no* run-cube row yet — the fix for "the button ran, but the page shows
+    nothing". queued→running is reflected; a succeeded job drops out (it now
+    lives as a struct_runs row)."""
+    h = StructureHandler(hub=Hub(store=store))
+    h.put(id="pend_si2", text=_SI2_RAW)
+    ref = resolve_live_slug_ref(store, kind="structure", id="pend_si2")
+    h.edit(id="pend_si2", ops=[{"op": "relax", "fidelity": "dft"}])
+
+    pending = _pending_jobs(store, ref.id)
+    assert len(pending) == 1
+    job_id = pending[0]["job_id"]
+    assert pending[0]["fidelity"] == "dft"
+    assert pending[0]["status"] == "queued"
+    assert _run_count(store, ref.id) == 0  # nothing landed yet
+
+    store.add_tag(
+        job_id,
+        Tag.parse_strict("STATUS:running", kind="job"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    assert _pending_jobs(store, ref.id)[0]["status"] == "running"
+
+    store.add_tag(
+        job_id,
+        Tag.parse_strict("STATUS:succeeded", kind="job"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    assert _pending_jobs(store, ref.id) == []
+
+
+def test_pending_jobs_shows_a_failed_relax(store):
+    h = StructureHandler(hub=Hub(store=store))
+    h.put(id="fail_si2", text=_SI2_RAW)
+    ref = resolve_live_slug_ref(store, kind="structure", id="fail_si2")
+    h.edit(id="fail_si2", ops=[{"op": "relax", "fidelity": "dft"}])
+    job_id = _pending_jobs(store, ref.id)[0]["job_id"]
+    store.add_tag(
+        job_id,
+        Tag.parse_strict("STATUS:failed", kind="job"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    pending = _pending_jobs(store, ref.id)
+    assert len(pending) == 1 and pending[0]["status"] == "failed"
 
 
 def test_list_rows_slug_atoms_runs_energy(seeded):

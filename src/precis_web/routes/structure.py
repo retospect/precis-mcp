@@ -11,6 +11,10 @@ compute history.
   (initial vs DFT-relaxed geometry) beside the **run-cube** panel — every
   fidelity-ladder pass with its energy, forces, and the content-addressed
   ``cache_key`` that makes an identical relax a zero-compute hit (§23.16).
+* ``POST /structure/{slug}/relax`` — the run-cube "Relax" button: run a
+  chosen rung (clean/ml/dft) with default params. An energy rung with no
+  local backend dispatches a ``struct_relax`` job to the GPU node, parented
+  on the structure — no todo required (ADR 0044).
 
 The 3D view is interactive: atoms are coloured by element and clickable (label /
 element / position / coordination / constraint), and the **authoritative** bond
@@ -33,7 +37,7 @@ import numpy as np
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.structure import evaluate_measure
 from precis.structure.cache import apply_geometry
@@ -125,6 +129,50 @@ def _list_rows(store: Any) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _pending_jobs(store: Any, ref_id: int) -> list[dict[str, Any]]:
+    """In-flight ``struct_relax`` jobs for this design — the compute-lane jobs
+    (ADR 0044) parented on the structure whose ``STATUS`` is not yet
+    ``succeeded`` (a succeeded relax has sunk a ``struct_runs`` row, so it shows
+    in :func:`_run_rows` instead). This is what makes a just-dispatched relax
+    *visible* before the GPU node finishes — the run-cube has no row yet."""
+    sql = """
+        SELECT r.ref_id, r.meta, t.value, r.created_at
+          FROM refs r
+          JOIN ref_tags rt ON rt.ref_id = r.ref_id
+          JOIN tags t ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS'
+         WHERE r.parent_id = %s
+           AND r.kind = 'job'
+           AND r.deleted_at IS NULL
+           AND r.meta->>'job_type' = 'struct_relax'
+           AND t.value IN ('queued', 'running', 'failed')
+         ORDER BY r.ref_id DESC
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (ref_id,)).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        params = (r[1] or {}).get("params", {})
+        out.append(
+            {
+                "job_id": int(r[0]),
+                "fidelity": params.get("fidelity", "?"),
+                "status": r[2],
+                "created": _ago(r[3]),
+            }
+        )
+    return out
+
+
+def _run_count(store: Any, ref_id: int) -> int:
+    """Total recorded runs for this design — the poll's reload trigger (a
+    dispatched relax has *landed* once this grows)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM struct_runs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    return int(row[0]) if row else 0
 
 
 def _run_rows(store: Any, ref_id: int) -> list[dict[str, Any]]:
@@ -422,6 +470,8 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
             "version": int(meta.get("version", 0)),
             "pbc": list(meta.get("pbc", (True, True, True))),
             "runs": runs,
+            "pending": _pending_jobs(store, ref.id),
+            "run_count": _run_count(store, ref.id),
             "viewer": viewer,
             "markers": _markers(scene),
             "lineage": _lineage(store, ref.id),
@@ -477,6 +527,24 @@ async def structure_instruct(
     return RedirectResponse(url=f"/structure/{slug}#instruct", status_code=303)
 
 
+@router.get("/structure/{slug}/runs_status")
+async def structure_runs_status(request: Request, slug: str) -> JSONResponse:
+    """Live run-cube state (the panel polls this): the in-flight ``struct_relax``
+    jobs + the total recorded-run count. The client keeps polling while a job is
+    ``queued``/``running`` and reloads once ``run_count`` grows (a relax landed)."""
+    store = get_store(request)
+    try:
+        ref = resolve_live_slug_ref(store, kind="structure", id=slug)
+    except NotFound:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(
+        {
+            "pending": _pending_jobs(store, ref.id),
+            "run_count": _run_count(store, ref.id),
+        }
+    )
+
+
 @router.get("/structure/{slug}/proposal")
 async def structure_proposal(request: Request, slug: str) -> JSONResponse:
     """Poll the latest proposal job for this design (the box polls this)."""
@@ -520,6 +588,46 @@ async def structure_apply(
     if not ok:
         return _apply_error(request, slug, msg)
     return RedirectResponse(url=f"/structure/{to_slug}", status_code=303)
+
+
+#: Fidelity rungs offered by the run-cube "Relax" button, cheap → correct.
+#: ``clean`` repairs geometry locally (instant); ``ml``/``dft`` with no local
+#: backend dispatch a ``struct_relax`` job to the GPU node (ADR 0044 — no todo
+#: needed). Default params otherwise (steps/model at the op defaults).
+_RELAX_RUNGS: tuple[str, ...] = ("clean", "ml", "dft")
+
+
+@router.post("/structure/{slug}/relax")
+async def structure_relax(
+    request: Request, slug: str, fidelity: str = Form("dft")
+) -> Any:
+    """Run a relax at the chosen rung with default params. A local rung runs
+    inline; an energy rung with no local backend dispatches a ``struct_relax``
+    job to the GPU node (parented on the structure — no todo, ADR 0044) and
+    returns immediately. The run-cube panel polls the result."""
+    fidelity = fidelity.strip() or "dft"
+    if fidelity not in _RELAX_RUNGS:
+        return _apply_error(
+            request, slug, f"unknown fidelity {fidelity!r}; pick one of {_RELAX_RUNGS}"
+        )
+    try:
+        _require_ref(get_store(request), slug)
+    except NotFound:
+        return RedirectResponse(url="/structure", status_code=303)
+
+    handler = get_runtime(request).hub.handler_for("structure")
+
+    def _do() -> tuple[bool, str]:
+        try:
+            handler.edit(id=slug, ops=[{"op": "relax", "fidelity": fidelity}])
+            return True, ""
+        except (BadInput, NotFound, Unsupported) as exc:
+            return False, str(exc)
+
+    ok, msg = await asyncio.to_thread(_do)
+    if not ok:
+        return _apply_error(request, slug, msg)
+    return RedirectResponse(url=f"/structure/{slug}#runs", status_code=303)
 
 
 def _require_ref(store: Any, slug: str) -> int:

@@ -89,6 +89,14 @@ Relation = Literal[
     # Keep in sync with the `relations` seed in migration 0040.
     "has-requirement",
     "requirement-of",
+    # Derived-job lane — migration 0046 (ADR 0044). A requesting todo
+    # `requested` → the derived job (DFT relax / route / compile) it waits
+    # on; the job parents on its subject artifact, not the todo, so this
+    # link is the only edge back to the intentful requester. The
+    # `derived_job_succeeded` evaluator + the failure-bubble both follow
+    # it. Keep in sync with the `relations` seed in 0046.
+    "requested",
+    "requested-by",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -140,6 +148,8 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "authored-by": "authored",
     "has-requirement": "requirement-of",
     "requirement-of": "has-requirement",
+    "requested": "requested-by",
+    "requested-by": "requested",
 }
 
 

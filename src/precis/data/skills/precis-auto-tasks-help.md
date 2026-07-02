@@ -41,6 +41,7 @@ leaf.
 | `time_past` | `now() >= at` (ISO 8601 timestamp) | `at` |
 | `tag_present` | At least one live ref carries the given tag | `tag` (optional `kind` to narrow) |
 | `child_job_succeeded` | A non-deleted child `kind='job'` of *this leaf* hits `STATUS:succeeded`. Auto-injected by the dispatch worker when a writer sets `meta.executor` but no `auto_check` (Slice 5) | none — scoped to the calling leaf's children |
+| `derived_job_succeeded` | A `kind='job'` this leaf `requested` (link, ADR 0044) hits `STATUS:succeeded`. The compute-lane twin of `child_job_succeeded` for a *derived* build (DFT relax / route / compile) that parents on its subject artifact, not the leaf — so it's reached by the `requested` link, not by walking children. Auto-injected by the dispatch when the requester is named (e.g. relax `requested_by=<todo>`) | none — follows the leaf's `requested` links |
 
 All shapes accept the optional `timeout_at` field. When the
 timeout passes before the evaluator resolves, the leaf flips to

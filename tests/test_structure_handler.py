@@ -142,12 +142,14 @@ def test_relax_clean_via_edit(structure):
     assert "relax[clean]" in structure.get(id="pd_pair").body
 
 
-def test_relax_ml_rung_is_gated(structure):
-    from precis.errors import Unsupported
-
+def test_relax_ml_rung_dispatches_without_a_todo(structure):
+    """An energy rung with no local backend is *derived compute* (ADR 0044):
+    it dispatches a struct_relax job parented on the structure itself — no
+    todo required — instead of raising. (Pre-0044 this rung raised Unsupported
+    demanding a parent todo.)"""
     structure.put(id="pd_pair", text=_PD)
-    with pytest.raises(Unsupported):
-        structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "ml"}])
+    resp = structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "ml"}])
+    assert "dispatched" in resp.body and "view='runs'" in resp.body
 
 
 def test_nav_views_line_fragments_pov(structure):
@@ -283,26 +285,21 @@ def _child_jobs(store, parent_id: int) -> list[dict]:
     return [r[0] for r in rows]
 
 
-def test_energy_rung_with_parent_mints_a_struct_relax_job(structure, store):
+def test_energy_rung_mints_a_struct_relax_job_parented_on_the_structure(
+    structure, store
+):
     """An energy rung that misses the cache and has no local backend dispatches
-    a struct_relax job to the GPU node (ADR 0043 §23.12) instead of raising —
-    carrying the content address + staged geometry the run-cube write-back needs."""
-    from precis.dispatch import Hub
-    from precis.handlers.todo import TodoHandler
-    from tests.conftest import id_of
-
+    a struct_relax job to the GPU node (ADR 0043 §23.12) — parented on the
+    *structure*, not a todo (ADR 0044 compute lane) — carrying the content
+    address + staged geometry the run-cube write-back needs."""
     structure.put(id="pd_pair", text=_PD)
     ref = structure.store.get_ref(kind="structure", id="pd_pair")
-    todo = TodoHandler(hub=Hub(store=store)).put(text="relax pd_pair on spark")
-    todo_id = id_of(todo.body)
 
-    resp = structure.edit(
-        id="pd_pair",
-        ops=[{"op": "relax", "fidelity": "ml", "parent_id": todo_id}],
-    )
+    resp = structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "ml"}])
     assert "dispatched" in resp.body and "view='runs'" in resp.body
 
-    jobs = _child_jobs(store, todo_id)
+    # The job hangs off the structure ref, not any todo.
+    jobs = _child_jobs(store, ref.id)
     assert len(jobs) == 1
     meta = jobs[0]
     assert meta["job_type"] == "struct_relax" and meta["executor"] == "ssh_node"
@@ -314,14 +311,33 @@ def test_energy_rung_with_parent_mints_a_struct_relax_job(structure, store):
     assert set(params["poscar_labels"]) == {"aPd1", "aPd2"}
 
 
-def test_energy_rung_without_parent_is_atomic_unsupported(structure):
-    """No parent todo → atomic rejection: Unsupported, and *nothing persisted*
-    (no spurious version bump)."""
-    from precis.errors import Unsupported
+def test_energy_rung_with_requester_wires_the_wait(structure, store):
+    """``requested_by=<todo>`` on the relax op links the todo ``requested`` →
+    the job and arms a ``derived_job_succeeded`` auto_check so the intentful
+    caller (a planner tick, a human) blocks on the build (ADR 0044)."""
+    from precis.dispatch import Hub
+    from precis.handlers.todo import TodoHandler
+    from tests.conftest import id_of
 
     structure.put(id="pd_pair", text=_PD)
     ref = structure.store.get_ref(kind="structure", id="pd_pair")
-    v0 = structure.store.structure_version(ref.id)
-    with pytest.raises(Unsupported):
-        structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "ml"}])
-    assert structure.store.structure_version(ref.id) == v0
+    todo = TodoHandler(hub=Hub(store=store)).put(text="relax pd_pair on spark")
+    todo_id = id_of(todo.body)
+
+    resp = structure.edit(
+        id="pd_pair",
+        ops=[{"op": "relax", "fidelity": "ml", "requested_by": todo_id}],
+    )
+    assert "dispatched" in resp.body and f"todo #{todo_id}" in resp.body
+
+    # Job parents on the structure; the todo reaches it via ``requested``.
+    jobs = _child_jobs(store, ref.id)
+    assert len(jobs) == 1
+    links = store.links_for(todo_id, direction="out", relation="requested")
+    assert len(links) == 1
+    job_row = store.get_ref(kind="job", id=links[0].dst_ref_id)
+    assert job_row.meta["job_type"] == "struct_relax"
+
+    # The wait is armed on the requester.
+    todo_ref = store.get_ref(kind="todo", id=todo_id)
+    assert todo_ref.meta["auto_check"] == {"type": "derived_job_succeeded"}

@@ -77,12 +77,48 @@
   </div>
 
   {# ── right: run-cube panel ── #}
-  <div>
-    <h2 class="text-sm font-semibold text-slate-700 mb-2">Compute runs
-      <span class="text-xs font-normal text-slate-400">— the fidelity ladder (§9) · cache keys (§23.16)</span>
-    </h2>
+  <div id="runs">
+    <div class="flex items-center gap-2 mb-2 flex-wrap">
+      <h2 class="text-sm font-semibold text-slate-700">Compute runs
+        <span class="text-xs font-normal text-slate-400">— the fidelity ladder (§9) · cache keys (§23.16)</span>
+      </h2>
+      {# Relax button — default params; an energy rung with no local backend
+         dispatches to the GPU node (ADR 0044, no todo needed). #}
+      <form method="post" action="/structure/{{ slug }}/relax" class="ml-auto flex items-center gap-1">
+        <select name="fidelity"
+                class="rounded border border-slate-300 px-1.5 py-0.5 text-xs bg-white"
+                title="clean = local geometry repair · ml/dft = relax on the GPU node">
+          <option value="clean">clean</option>
+          <option value="ml">ml</option>
+          <option value="dft" selected>dft</option>
+        </select>
+        <button class="rounded bg-emerald-600 text-white text-xs px-2.5 py-0.5 hover:bg-emerald-700 whitespace-nowrap">
+          Relax ▸
+        </button>
+      </form>
+    </div>
+
+    {# ── live in-flight jobs (ADR 0044 compute lane) — a dispatched relax has
+       no struct_runs row until the GPU node finishes, so surface the job here
+       and poll until it lands. #}
+    <div id="sv-runs-live" data-slug="{{ slug }}" data-run-count="{{ run_count }}"
+         class="space-y-2 mb-2">
+      {% for j in pending %}
+      <div class="rounded-lg border border-sky-200 bg-sky-50/50 p-2 flex items-center gap-2 text-xs">
+        <span class="font-mono text-slate-400">job {{ j.job_id }}</span>
+        <span class="font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">{{ j.fidelity }}</span>
+        {% if j.status == 'failed' %}
+          <span class="px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200">failed</span>
+        {% else %}
+          <span class="px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-200">⟳ {{ j.status }}</span>
+        {% endif %}
+        <span class="ml-auto text-[10px] text-slate-400">{{ j.created }}</span>
+      </div>
+      {% endfor %}
+    </div>
+
     {% if not runs %}
-      <p class="text-sm text-slate-500">No compute runs yet.</p>
+      <p class="text-sm text-slate-500" {% if pending %}style="display:none"{% endif %}>No compute runs yet.</p>
     {% else %}
     <div class="space-y-2">
       {% for r in runs %}
@@ -514,6 +550,51 @@
       .catch(() => {});
   }
   poll();
+})();
+</script>
+
+<script>
+// Run-cube live status — a dispatched relax (ADR 0044 compute lane) has no
+// struct_runs row until the GPU node finishes, so poll the in-flight jobs and
+// reload once a run lands. Only runs when the page rendered a pending job.
+(function () {
+  const box = document.getElementById('sv-runs-live');
+  if (!box) { return; }
+  const slug = box.getAttribute('data-slug');
+  const initialRuns = parseInt(box.getAttribute('data-run-count') || '0', 10);
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  function rowHtml(j) {
+    const pill = j.status === 'failed'
+      ? '<span class="px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200">failed</span>'
+      : '<span class="px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-200">⟳ ' + esc(j.status) + '</span>';
+    return '<div class="rounded-lg border border-sky-200 bg-sky-50/50 p-2 flex items-center gap-2 text-xs">'
+      + '<span class="font-mono text-slate-400">job ' + esc(j.job_id) + '</span>'
+      + '<span class="font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">' + esc(j.fidelity) + '</span>'
+      + pill
+      + '<span class="ml-auto text-[10px] text-slate-400">' + esc(j.created) + '</span></div>';
+  }
+
+  function poll() {
+    fetch('/structure/' + encodeURIComponent(slug) + '/runs_status')
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d || d.error) { return; }
+        // A run landed (success sinks a struct_runs row) → reload to show the
+        // completed row + the relaxed 3D overlay (computed server-side).
+        if (d.run_count > initialRuns) { window.location.reload(); return; }
+        const jobs = d.pending || [];
+        box.innerHTML = jobs.map(rowHtml).join('');
+        if (jobs.some((j) => j.status === 'queued' || j.status === 'running')) {
+          setTimeout(poll, 3000);
+        }
+      })
+      .catch(() => setTimeout(poll, 5000));
+  }
+  // Only poll if there's something in flight at load (a just-dispatched relax
+  // redirects here with its queued job already rendered).
+  if (box.children.length > 0) { setTimeout(poll, 3000); }
 })();
 </script>
 {% endblock %}

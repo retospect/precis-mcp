@@ -22,6 +22,7 @@ from precis.store import Store
 from precis.workers.auto_check import run_auto_check_pass
 from precis.workers.auto_check_evaluators import (
     REGISTRY,
+    derived_job_succeeded,
     discord_reply_received,
     paper_ingested,
     tag_present,
@@ -74,6 +75,7 @@ def test_validate_known_registry_keys() -> None:
         "time_past",
         "tag_present",
         "child_job_succeeded",
+        "derived_job_succeeded",
         "all_child_findings_resolved",
     }
 
@@ -103,6 +105,79 @@ def test_put_with_valid_auto_check_stores_meta(handler: TodoHandler) -> None:
     ref = handler.store.get_ref(kind="todo", id=rid)
     assert ref is not None
     assert ref.meta.get("auto_check", {}).get("type") == "time_past"
+
+
+# ── derived_job_succeeded + compute-lane failure bubble (ADR 0044) ──
+
+
+def _requested_job(store: Store, *, status: str) -> tuple[int, int]:
+    """A structure artifact owning a ``struct_relax`` job at ``status``, plus a
+    todo that ``requested`` it. Returns ``(todo_id, job_id)``. Built with raw
+    store inserts so the test doesn't drag in the ssh_node executor."""
+    from precis.store.types import Tag
+
+    art = store.insert_ref(kind="structure", slug="pd-req", title="pd", meta={})
+    todo = store.insert_ref(kind="todo", slug=None, title="wants relax", meta={})
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="struct_relax",
+        meta={"job_type": "struct_relax"},
+        parent_id=art.id,
+    )
+    store.add_tag(
+        job.id, Tag.parse_strict(f"STATUS:{status}", kind="job"), set_by="agent"
+    )
+    store.add_link(src_ref_id=todo.id, dst_ref_id=job.id, relation="requested")
+    return todo.id, job.id
+
+
+def test_derived_job_succeeded_waits_then_resolves(store: Store) -> None:
+    from precis.store.types import Tag
+
+    todo_id, job_id = _requested_job(store, status="running")
+    spec = {"type": "derived_job_succeeded"}
+    # Not yet — the requested job is still running.
+    assert derived_job_succeeded.evaluate(store, spec, ref_id=todo_id) is False
+    # It converges: flip the job to succeeded.
+    store.add_tag(
+        job_id,
+        Tag.parse_strict("STATUS:succeeded", kind="job"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    assert derived_job_succeeded.evaluate(store, spec, ref_id=todo_id) is True
+
+
+def test_derived_job_succeeded_ignores_unrelated_jobs(store: Store) -> None:
+    # A todo with no ``requested`` link never resolves off someone else's job.
+    todo = store.insert_ref(kind="todo", slug=None, title="idle", meta={})
+    spec = {"type": "derived_job_succeeded"}
+    assert derived_job_succeeded.evaluate(store, spec, ref_id=todo.id) is False
+
+
+def test_compute_lane_failure_bubbles_to_requester(store: Store) -> None:
+    """A derived job parents on its artifact, so its failure has no todo to
+    tag directly — the bubble follows the ``requested`` link to the requester."""
+    from precis.handlers._job_bubble import bubble_job_failure
+
+    todo_id, job_id = _requested_job(store, status="failed")
+    bubble_job_failure(store, job_id)
+    tags = {str(t) for t in store.tags_for(todo_id)}
+    assert f"child-failed:{job_id}" in tags
+
+
+def test_compute_lane_failure_without_requester_is_noop(store: Store) -> None:
+    """A pure direct-manipulation build (no requester todo) has nowhere to
+    bubble — the failure just sits on the artifact's runs. No crash, no tag."""
+    from precis.handlers._job_bubble import bubble_job_failure
+
+    art = store.insert_ref(kind="structure", slug="pd-noreq", title="pd", meta={})
+    job = store.insert_ref(
+        kind="job", slug=None, title="struct_relax", meta={}, parent_id=art.id
+    )
+    bubble_job_failure(store, job.id)  # must not raise
+    assert not store.tags_for(art.id)
 
 
 # ── time_past evaluator ────────────────────────────────────────────

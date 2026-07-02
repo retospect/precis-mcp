@@ -48,8 +48,19 @@ scheduling, execution, and review:
   or `every:` shorthand) drives a per-minute spawner. `PRIO` is an
   int column on refs (1..10); `PRIO:*` tag stays as a back-compat
   alias.
-* **Jobs are children of todos.** `JobHandler.put` requires a
-  `parent_id` pointing at a `kind='todo'`. The `dispatch` worker
+* **Jobs hang off an owner ref (parent-kind polymorphic, ADR 0044).**
+  `JobHandler.put` requires a `parent_id`, but that parent is one of two
+  lanes, distinguished by its **kind** (`JOB_PARENT_KINDS`), not a
+  declared flag. **Intent lane** — parent is a `kind='todo'`: the classic
+  case (rotation + the `child-failed` bubble + `child_job_succeeded`).
+  **Compute lane** — parent is a build subject (`structure`/`cad`/
+  `draft`): a *derived* job (DFT relax / route / compile) — idempotent,
+  content-addressed, cache-fillable — owned by the artifact, which has no
+  rotation to enter. An intentful task that wants to *block* on a derived
+  build links `requested`→job (migration 0046); `derived_job_succeeded`
+  closes the requester on success and the failure-bubble follows the link
+  on failure. This dropped ADR 0043's "relax needs a parent todo". The
+  `dispatch` worker
   walks open todos carrying `meta.executor`, mints `kind='job'` under
   each with `FOR UPDATE SKIP LOCKED`, and auto-injects
   `meta.auto_check={'type':'child_job_succeeded'}`. On job failure
@@ -246,7 +257,10 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
   slug-addressed design (cell on `refs.meta`; atoms/bonds/measures in
   `struct_*`), edited by typed **ops** and read by in-memory **probes**,
   never pixels. Energy rungs relax via the run-cube cache (§23.16) +
-  `struct_relax` on the GPU node. **Cursors + measures** (§6.8/§7) live on
+  `struct_relax` on the GPU node — a **derived-lane** job parented on the
+  structure, *not* a todo (ADR 0044): a relax dispatches with no todo
+  required; pass `requested_by=<todo>` on the relax op to make an
+  intentful task block on it. **Cursors + measures** (§6.8/§7) live on
   `struct_measures` — `cursor`/`measure`/`unmark`/`remove_measure` ops
   anchored by stable atom **label** (not row id, which an edit orphans),
   persisting across edits and re-evaluated (`view='markers'`). `link`
@@ -254,7 +268,13 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
   branches a new slug (the web Apply). **Web** (`precis_web/routes/
   structure.py`, `/structure`): a 3D viewer (element-coloured clickable
   atoms + authoritative clickable bonds + initial/relaxed overlay + a
-  `data-atoms` text→cell cross-highlight), a run-cube panel, a cursors &
+  `data-atoms` text→cell cross-highlight), a run-cube panel with a **"Relax"
+  button** (`POST /relax`, rung clean/ml/dft + default params → a derived
+  `struct_relax` job on the GPU node, no todo — ADR 0044) whose **in-flight
+  job is shown as a live pending row** (`_pending_jobs` — the job exists at
+  redirect but has no `struct_runs` row until the GPU node finishes) and
+  polled via `GET /runs_status` until a run lands (queued→running→reload; a
+  failed job shows a red pill), a cursors &
   measures panel + 3D overlay, a lineage row, and a **"Further instructions"
   box** — `POST /instruct` mints a `structure_propose` job (tool-less
   `claude -p`, so it *cannot* mutate: it returns dry-run-validated ops

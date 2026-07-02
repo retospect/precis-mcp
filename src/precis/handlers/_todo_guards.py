@@ -247,6 +247,48 @@ def check_parent_exists(store: Store, parent_id: int) -> int:
     return parent_id
 
 
+def check_job_parent_exists(
+    store: Store, parent_id: int, *, allowed_kinds: frozenset[str]
+) -> tuple[int, str]:
+    """Resolve a job's ``parent_id`` to a live ref of an allowed kind.
+
+    A job's parent is polymorphic (ADR 0044): a ``todo`` (the *intent*
+    lane — rotation + the ``child-failed`` bubble) or an artifact such
+    as ``structure`` / ``cad`` / ``draft`` (the *compute* lane — an
+    idempotent, cache-fillable build step whose owner is the artifact,
+    not a task). Both are enforced here; behaviour downstream branches
+    on the returned ``kind`` (the bubble targets the requesting todo for
+    a compute-lane job, the artifact has no rotation to enter).
+
+    Returns ``(parent_id, kind)`` on success. Raises :class:`NotFound`
+    for a missing / soft-deleted parent, :class:`BadInput` for a live
+    ref whose kind is outside ``allowed_kinds``.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT kind, deleted_at FROM refs WHERE ref_id = %s",
+            (parent_id,),
+        ).fetchone()
+    if row is None:
+        raise NotFound(
+            f"job parent id={parent_id} not found",
+            next="get(kind='todo', id='/recent') to find the parent's actual id",
+        )
+    kind, deleted_at = row[0], row[1]
+    if deleted_at is not None:
+        raise NotFound(
+            f"job parent id={parent_id} was soft-deleted",
+            next="pick a live parent todo (or the subject artifact for a derived job)",
+        )
+    if kind not in allowed_kinds:
+        raise BadInput(
+            f"parent_id={parent_id} is a {kind!r} ref; a job parents on a "
+            f"todo (intent) or a build subject ({', '.join(sorted(k for k in allowed_kinds if k != 'todo'))})",
+            next="parent_id must address a todo or the artifact the job builds",
+        )
+    return parent_id, kind
+
+
 def check_no_cycle(store: Store, *, child_id: int, parent_id: int) -> None:
     """Reject a parent assignment that would create a loop.
 

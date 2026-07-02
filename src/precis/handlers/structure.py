@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -78,7 +79,13 @@ class _NeedsDispatch:
     """An energy-rung relax that missed the §23.16 cache and has no local
     backend — it must run on the GPU node as a ``struct_relax`` job (§23.12).
     Carries everything the dispatch needs: the content address + the staged
-    input geometry + the canonical / POSCAR-row orderings for the write-back."""
+    input geometry + the canonical / POSCAR-row orderings for the write-back.
+
+    ``requester_id`` is the optional todo that *asked for* this relax and
+    wants to block on it (ADR 0044 compute lane). The job parents on the
+    structure regardless; when a requester is named, the dispatch also
+    writes a ``requested`` link + a ``derived_job_succeeded`` auto_check so
+    the todo closes on completion / bubbles on failure."""
 
     fidelity: str
     model: str
@@ -88,7 +95,7 @@ class _NeedsDispatch:
     order: list[str]
     poscar: str
     poscar_labels: list[str]
-    parent_id: int | None
+    requester_id: int | None
 
 
 def _poscar_row_labels(scene: Scene) -> list[str]:
@@ -99,7 +106,7 @@ def _poscar_row_labels(scene: Scene) -> list[str]:
 
 
 def _as_int_or_none(v: Any) -> int | None:
-    """Coerce a relax-op ``parent_id`` to int, tolerating a string id."""
+    """Coerce a relax-op requester id to int, tolerating a string id."""
     if v is None:
         return None
     try:
@@ -217,8 +224,6 @@ class StructureHandler(Handler):
             raise BadInput("put(kind='structure') payload needs a 'cell'")
         scene = Scene(cell=_build_cell(payload["cell"]))
         res = self._run_ops(scene, payload.get("ops", []))
-        if isinstance(res, _NeedsDispatch) and res.parent_id is None:
-            raise self._relax_needs_parent(res.fidelity, slug)
         if isinstance(res, _NeedsDispatch):
             relax_result: RelaxResult | None = None
             dispatch: _NeedsDispatch | None = res
@@ -272,8 +277,6 @@ class StructureHandler(Handler):
             )
         scene, _ = self.store.structure_load(ref.id)
         res = self._run_ops(scene, op_list)
-        if isinstance(res, _NeedsDispatch) and res.parent_id is None:
-            raise self._relax_needs_parent(res.fidelity, str(ref.slug))
         if isinstance(res, _NeedsDispatch):
             relax_result: RelaxResult | None = None
             dispatch: _NeedsDispatch | None = res
@@ -595,7 +598,12 @@ class StructureHandler(Handler):
                 order=order,
                 poscar=export.to_poscar(scene),
                 poscar_labels=_poscar_row_labels(scene),
-                parent_id=_as_int_or_none(ro.get("parent_id")),
+                # Optional requesting todo (compute lane, ADR 0044). Accept
+                # the clear ``requested_by`` key; tolerate the legacy
+                # ``parent_id`` spelling from before the lane split.
+                requester_id=_as_int_or_none(
+                    ro.get("requested_by", ro.get("parent_id"))
+                ),
             )
 
         # Cache miss: stamp the content address + relaxed geometry so the next
@@ -651,32 +659,25 @@ class StructureHandler(Handler):
             params={"cached": True} if res.from_cache else None,
         )
 
-    @staticmethod
-    def _relax_needs_parent(fidelity: str, slug: str) -> Unsupported:
-        """The energy-rung-with-no-local-backend rejection — names the exact
-        dispatching call. Raised *before* any save so the edit is atomic."""
-        return Unsupported(
-            f"relax rung {fidelity!r} has no compute backend on this host; it "
-            "runs on the GPU node as a job, which needs a parent todo to track it",
-            next=(
-                f"edit(kind='structure', id='{slug}', ops=[{{'op':'relax',"
-                f"'fidelity':'{fidelity}','parent_id':<todo_id>}}]) — mints a "
-                f"struct_relax job; then poll get(kind='structure', id='{slug}', "
-                "view='runs')"
-            ),
-        )
-
     def _dispatch_relax(self, ref: Any, version: int, nd: _NeedsDispatch) -> Response:
         """Mint a ``struct_relax`` job for an energy rung with no local backend
-        (ADR 0043 §23.12). The relaxed geometry lands in the §23.16 run-cube on
-        completion, so the next identical relax — on this design or any other
-        sharing the input — is a zero-compute cache hit. Requires a parent todo
-        (the 'jobs are children of todos' invariant); without one we point the
-        caller at the exact dispatching call."""
+        (ADR 0043 §23.12, ADR 0044). The relaxed geometry lands in the §23.16
+        run-cube on completion, so the next identical relax — on this design or
+        any other sharing the input — is a zero-compute cache hit.
+
+        The job is a *derived* compute step: it parents on the **structure**,
+        not a todo — the artifact is its owner (cache-fillable, idempotent, no
+        human-steering loop). When a caller names ``requested_by=<todo_id>`` it
+        also wants to block on the result; we then write a ``requested`` link
+        and inject a ``derived_job_succeeded`` auto_check so that todo closes on
+        success and gets a ``child-failed`` bubble on failure."""
         slug = str(ref.slug)
-        if nd.parent_id is None:  # defensive — callers reject before save
-            raise self._relax_needs_parent(nd.fidelity, slug)
+        from precis.handlers import _todo_guards as todo_guards
         from precis.handlers.job import JobHandler
+
+        # A named requester must be a live todo (fail fast, before the mint).
+        if nd.requester_id is not None:
+            todo_guards.check_parent_exists(self.store, nd.requester_id)
 
         # self.hub is set at registration; a hand-constructed handler (tests)
         # leaves it None, so fall back to a minimal hub over the same store —
@@ -700,19 +701,58 @@ class StructureHandler(Handler):
         job_resp = JobHandler(hub=hub).put(
             job_type="struct_relax",
             executor="ssh_node",
-            parent_id=nd.parent_id,
+            # The build subject owns the job (compute lane, ADR 0044).
+            parent_id=ref.id,
             params=params,
             # Collapse re-submits of the *same* relax onto one in-flight job.
             idem_key=f"struct_relax:{nd.cache_key}",
         )
+        note = ""
+        if nd.requester_id is not None:
+            self._wire_requester(nd.requester_id, job_resp.body)
+            note = f" (todo #{nd.requester_id} will block on it)"
         return Response(
             body=(
-                f"# relax[{nd.fidelity}] dispatched to the GPU node\n\n"
+                f"# relax[{nd.fidelity}] dispatched to the GPU node{note}\n\n"
                 f"{job_resp.body}\n\n"
                 f"The run lands in the cache on completion. "
                 f"Poll: get(kind='structure', id='{slug}', view='runs')."
             )
         )
+
+    def _wire_requester(self, requester_id: int, job_resp_body: str) -> None:
+        """Link the requesting todo to the just-minted job and arm its wait.
+
+        Writes ``requester --requested--> job`` (the edge the
+        ``derived_job_succeeded`` evaluator + the failure-bubble follow), then
+        injects that evaluator as the todo's ``auto_check`` when it has none —
+        mirroring how ``dispatch`` arms ``child_job_succeeded`` for the intent
+        lane. A todo that already carries a deliberate auto_check is left
+        alone. Idempotent on both writes."""
+        m = re.search(r"id=(\d+)", job_resp_body)
+        if m is None:  # defensive — put always reports the id
+            return
+        job_id = int(m.group(1))
+        with self.store.tx() as conn:
+            self.store.add_link(
+                src_ref_id=requester_id,
+                dst_ref_id=job_id,
+                relation="requested",
+                set_by="system",
+                conn=conn,
+            )
+            conn.execute(
+                """
+                UPDATE refs
+                   SET meta = meta || jsonb_build_object(
+                                'auto_check',
+                                jsonb_build_object('type', 'derived_job_succeeded')
+                              )
+                 WHERE ref_id = %s
+                   AND NOT (meta ? 'auto_check')
+                """,
+                (requester_id,),
+            )
 
     def _render_list(self) -> Response:
         designs = self.store.structure_list()

@@ -226,12 +226,38 @@ edit(kind='structure', id='pd111', ops=[{"op": "relax", "fidelity": "ml", "steps
 
 `clean` is always available and **has no energy** — asking for its energy
 gives a defined "undefined" (shown as `—`), not a fake `0`. `ml` and up
-return real energy + forces. A rung whose backend isn't installed returns an
-`Unsupported` error with the install hint, never a crash. `relax` honours
-`fixed` constraints — a frozen atom never moves.
+return real energy + forces. A rung whose backend isn't installed **on this
+host** doesn't crash — it dispatches to the GPU node as a `struct_relax` job
+(see "Energy rungs run on the GPU node" below), never a bare error. `relax`
+honours `fixed` constraints — a frozen atom never moves.
 
 ```python
 get(kind='structure', id='pd111', view='runs')   # the compute history: fidelity · converged · steps · energy · max_force
+```
+
+### Energy rungs run on the GPU node — no todo needed (ADR 0044)
+
+A rung with no local backend (a real `dft`/`ml` relax on a worker without
+the kernel) is **derived compute**: `edit`/`put` dispatches a `struct_relax`
+job to the GPU node and returns immediately. The job parents on the
+**structure itself** — you do *not* need to create a todo first (that
+requirement is gone). The relaxed geometry lands in the run-cube on
+completion; poll `view='runs'`. An identical relax — same geometry, same
+rung — is a **zero-compute cache hit** (returns synchronously, mints no job).
+
+```python
+edit(kind='structure', id='pd111', ops=[{"op": "relax", "fidelity": "dft"}])  # dispatches, then poll view='runs'
+```
+
+**Want an intentful task to block on the build?** Pass `requested_by=<todo_id>`
+on the relax op. That links the todo `requested`→the job and arms a
+`derived_job_succeeded` auto_check, so the todo closes when the relax
+converges and gets a `child-failed` bubble if it fails. Two tasks that
+request the *same* relax share one job (idempotent on the cache key).
+
+```python
+edit(kind='structure', id='pd111',
+     ops=[{"op": "relax", "fidelity": "dft", "requested_by": 4821}])
 ```
 
 ## Find a design — `search`

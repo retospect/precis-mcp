@@ -51,6 +51,14 @@ def _idem_lock_key(idem: str) -> int:
 _JOB_SUMMARY_KIND = "job_summary"
 _JOB_EVENT_KIND = "job_event"
 
+# A job's parent is polymorphic (ADR 0044). ``todo`` is the intent lane
+# (rotation + ``child-failed`` bubble); the artifact kinds are the compute
+# lane — a derived, cache-fillable build step (DFT relax / route / mesh /
+# compile) owned by its subject ref, not a task. Behaviour branches on the
+# resolved parent kind, not on a declared job-class flag: the distinction is
+# emergent from the parent pointer the caller sets anyway.
+JOB_PARENT_KINDS: frozenset[str] = frozenset({"todo", "structure", "cad", "draft"})
+
 
 class JobHandler(NumericRefHandler):
     spec: ClassVar[KindSpec] = KindSpec(
@@ -215,25 +223,26 @@ class JobHandler(NumericRefHandler):
         # with the same idem key could both see "no row" and both
         # insert. The locked re-check at write time fixes that race.
 
-        # ── tree-position guard (Slice 5: jobs are children of todos) ──
-        # Every new job must declare its parent todo. Orphan jobs are a
-        # leftover from the pre-tree v1 substrate; new callers go via
-        # the dispatch worker, which mints jobs under the claimed todo.
-        # The handler is the boundary that enforces it. The check fires
-        # AFTER the existing job_type / executor / link validations so
-        # rejection messages from earlier paths stay unchanged for the
-        # tests that exercise them — only happy-path puts need the
-        # parent_id kwarg.
+        # ── tree-position guard (Slice 5: jobs hang off an owner ref) ──
+        # Every new job must declare a parent: a ``todo`` (intent lane —
+        # rotation + the ``child-failed`` bubble) or, per ADR 0044, the
+        # subject artifact it builds (compute lane — DFT relax / route /
+        # compile, owned by the structure/cad/draft, not a task). Orphan
+        # jobs are a leftover from the pre-tree v1 substrate. The check
+        # fires AFTER the existing job_type / executor / link validations
+        # so rejection messages from earlier paths stay unchanged for the
+        # tests that exercise them — only happy-path puts need parent_id.
         if parent_id is None:
             raise BadInput(
-                "put(kind='job') requires parent_id pointing at the "
-                "todo this job executes",
+                "put(kind='job') requires parent_id — the todo this job "
+                "executes, or the artifact a derived job builds",
                 next=(
                     "canonical pattern: put(kind='todo', "
                     "meta={'executor': ..., 'job_type': ...}) then let "
                     "the dispatch worker mint the job under it. For an "
                     "ad-hoc submit: put(kind='job', parent_id=<todo_id>, "
-                    "job_type=..., link='gripe:N', rel='fixes')."
+                    "job_type=..., link='gripe:N', rel='fixes'). A derived "
+                    "build parents on its subject ref (e.g. a structure)."
                 ),
             )
         try:
@@ -241,13 +250,15 @@ class JobHandler(NumericRefHandler):
         except (TypeError, ValueError) as exc:
             raise BadInput(
                 f"parent_id must be an integer, got {parent_id!r}",
-                next="parent_id=<int> (the parent todo's id)",
+                next="parent_id=<int> (the parent todo or subject artifact id)",
             ) from exc
-        # Re-uses the todo-tree parent check — same SQL, same
-        # rejection for non-todo / soft-deleted / missing parents.
-        # The guard already enforces parent kind='todo' so jobs
-        # can never have a non-todo parent. No code change needed there.
-        todo_guards.check_parent_exists(self.store, parent_int)
+        # Resolve + kind-check the parent. Accepts a todo or a build
+        # subject (:data:`JOB_PARENT_KINDS`); the returned kind is what
+        # the failure-bubble later branches on. Same NotFound/BadInput
+        # shape as the todo-tree guard for missing / soft-deleted parents.
+        todo_guards.check_job_parent_exists(
+            self.store, parent_int, allowed_kinds=JOB_PARENT_KINDS
+        )
 
         # Compose title + meta + queued tag.
         title = f"{spec.name} ({link or 'unlinked'})"

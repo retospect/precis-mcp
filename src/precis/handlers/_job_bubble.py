@@ -56,27 +56,40 @@ def bubble_job_failure(
             job_id,
         )
         return
-    if parent_kind != "todo":
-        # The guard enforces parent=todo at write time. If we see
-        # something else here it's pre-existing data or a hand-edit;
-        # log and bail rather than tagging an unrelated kind.
-        log.warning(
-            "bubble: job #%d parent #%d has kind=%r (expected 'todo'); skipping",
-            job_id,
-            parent_id,
-            parent_kind,
-        )
-        return
+
+    # Two lanes (ADR 0044). Intent lane: the parent IS a todo — tag it,
+    # exactly as before. Compute lane: the parent is a build subject
+    # (structure / cad / draft), which has no rotation to enter, so the
+    # bubble targets the requesting todo(s) reached via the ``requested``
+    # link instead. A pure direct-manipulation build with no requester
+    # (a human clicking "relax") has nowhere to bubble — the failure is
+    # visible on the artifact's own ``view='runs'``.
+    if parent_kind == "todo":
+        targets = [parent_id]
+    else:
+        targets = _requester_todos(store, job_id, conn=conn)
+        if not targets:
+            log.info(
+                "bubble: job #%d parents on %s #%d with no requester todo — "
+                "no bubble (failure surfaces on the artifact)",
+                job_id,
+                parent_kind,
+                parent_id,
+            )
+            return
+
     tag = Tag.open(f"child-failed:{job_id}")
     if conn is not None:
-        store.add_tag(parent_id, tag, set_by="system", conn=conn)
+        for target in targets:
+            store.add_tag(target, tag, set_by="system", conn=conn)
     else:
         with store.tx() as tx_conn:
-            store.add_tag(parent_id, tag, set_by="system", conn=tx_conn)
+            for target in targets:
+                store.add_tag(target, tag, set_by="system", conn=tx_conn)
     log.info(
-        "bubble: job #%d failed → tagged parent todo #%d with %s",
+        "bubble: job #%d failed → tagged todo(s) %s with %s",
         job_id,
-        parent_id,
+        targets,
         tag,
     )
 
@@ -100,6 +113,31 @@ def _lookup_parent(
     if row is None or row[0] is None:
         return (None, None)
     return (int(row[0]), row[1])
+
+
+def _requester_todos(
+    store: Store, job_id: int, *, conn: Connection | None
+) -> list[int]:
+    """Live todo ids that ``requested`` this job (ADR 0044 compute lane).
+
+    The edge is stored ``requester todo --requested--> job``, so the
+    requesters are the ``src`` of ``requested`` rows landing on this job.
+    Soft-deleted requesters are skipped."""
+    sql = (
+        "SELECT r.ref_id "
+        "  FROM links l "
+        "  JOIN refs r ON r.ref_id = l.src_ref_id "
+        " WHERE l.dst_ref_id = %s "
+        "   AND l.relation = 'requested' "
+        "   AND r.kind = 'todo' "
+        "   AND r.deleted_at IS NULL"
+    )
+    if conn is not None:
+        rows = conn.execute(sql, (job_id,)).fetchall()
+    else:
+        with store.pool.connection() as c:
+            rows = c.execute(sql, (job_id,)).fetchall()
+    return [int(r[0]) for r in rows]
 
 
 __all__ = ["bubble_job_failure"]
