@@ -59,5 +59,9 @@ Don't bump for prompt typos or comment-only edits.
 4. Run `eval-classifier --axis <name>` to confirm ≥ 85%.
 5. Run `classify-papers --axis <name>` for the bulk pass.
 
-No code changes required. No migrations. No tag-prefix registration
-(open lowercase tags are accepted as-is).
+No code changes required. No migrations. Tags land in a per-axis
+uppercase namespace derived from the axis id (`SCALE:10nm`,
+`ROLE:result`) with the closed-vocabulary validation table loaded
+from these YAML files at boot — NOT in the free-form OPEN namespace
+(ADR 0047: OPEN is the human/agent folksonomy and is slated for
+culling; curated tags must not stand in the blast radius).

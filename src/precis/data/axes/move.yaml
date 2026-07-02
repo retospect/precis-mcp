@@ -1,0 +1,64 @@
+# Dream-move axis (ADR 0047 round 1.5): what cognitive move does a
+# dream (DREAM-tagged kind='memory') make? Vocabulary derived from
+# reading the live dream corpus 2026-07-02 — the dreams follow a
+# consistent template: an isomorphism claim across anchored sources,
+# the variable mapping, and a testable implication.
+#
+# Ref-level: dream bodies live in refs.title (their only chunk is the
+# card_combined card), so the classifier reads the ref, and the
+# envelope goes to refs.meta->'tagging'.
+#
+# applies_when.tags_any is a NEW gate predicate (tag-presence) the
+# runner grows alongside this axis; existing predicates are
+# paper-metadata-shaped and don't fit memories.
+
+id: move
+level: ref
+applies_to_kinds: [memory]
+version: 1
+question: "What cognitive move does this dream make?"
+select: one
+values:
+  [analogy, transfer, contradiction, extension, critique, other,
+   unknown, n-a]
+default_unknown: unknown
+applies_when:
+  tags_any: ["DREAM:speculative", "DREAM:grounded"]
+cost_tier: small
+prompt: |
+  Classify the *primary cognitive move* of this dream — a machine-
+  generated musing over a scientific corpus.
+
+  Pick exactly ONE:
+
+  - analogy      : claims two systems or papers share the same formal
+                   structure or law — "X and Y are the same
+                   per-channel barrier law", "A = B in disguise",
+                   often noting the shared variable wears different
+                   names in the two fields
+  - transfer     : applies one field's framework or mechanism to
+                   another to predict a NEW design, test, device, or
+                   diagnostic ("a reliability test should probe the
+                   hidden filter independently")
+  - contradiction: flags opposite signs or incompatible claims
+                   between sources ("same variable name, opposite
+                   sign")
+  - extension    : adds a new domain or instance to a previously
+                   established principle ("4th domain of [me...]'s
+                   encoding principle")
+  - critique     : disqualifies or bounds a claim, architecture, or
+                   approach ("X's floppiness disqualifies it from
+                   prerequisite Y")
+  - other        : a clear, identifiable move not listed above
+  - unknown      : cannot tell what move is being made
+  - n-a          : not a musing at all (housekeeping note, plain
+                   recall of a source without a move)
+
+  A dream that makes an analogy AND derives a prediction from it is
+  classified by where the weight is: if the novel content is the
+  mapping itself → analogy; if the mapping is established and the
+  novel content is the predicted design/test → transfer.
+
+  Return JSON:
+  {"value": "<one>", "confidence": <0..1>,
+   "rationale": "<one sentence; required if confidence < 0.7>"}

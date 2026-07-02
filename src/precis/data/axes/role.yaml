@@ -1,0 +1,112 @@
+# The first chunk-level axis (ADR 0047). `level`, `applies_to_kinds`,
+# `select`, and `context` are new fields the chunk_tag pass reads;
+# the ref-level runner ignores this file (level != ref).
+#
+# The retrieval intent this axis serves: write papers rapidly from
+# primary sources. The load-bearing boundary is result vs
+# related-work — "what THEY did" vs "what they say OTHERS did" — a
+# \citequote must land on a paper's own contribution, never on its
+# recap of someone else's.
+
+id: role
+level: chunk
+applies_to_kinds: [paper, cfp]
+version: 1
+question: "What rhetorical role does this chunk play in the document?"
+select: one
+values:
+  [motivation, related-work, method, result, interpretation,
+   limitation, future-work, data, boilerplate, unknown, n-a]
+default_unknown: unknown
+applies_when:
+  always: true
+cost_tier: small
+# Context packet supplied with the chunk text (part of the axis
+# contract — changing it is a version bump, per ADR 0047 §2):
+#   section_path      the chunk's heading trail, when the PDF parse has it
+#   position          relative position in the document (ord / total)
+#   title             the paper's title
+#   ref_tags          the paper's ref-level axis tags, if any
+#   neighbor_gists_1  one-sentence llm-v1 gists of chunks ord-1 and ord+1
+context: [section_path, position, title, ref_tags, neighbor_gists_1]
+prompt: |
+  Classify the *rhetorical role* of this chunk of a scientific paper:
+  what job does it do in the document?
+
+  You are given the chunk text plus context: the paper title, the
+  section heading trail (may be missing or wrong — a strong hint,
+  not an oracle), the chunk's relative position in the document, and
+  one-sentence summaries of the neighboring chunks.
+
+  Pick exactly ONE:
+
+  - motivation   : why THIS work was done — problem framing, the gap,
+                   why it matters, aims, hypotheses. ("However, no
+                   study has addressed...", "Here we aim to...")
+  - related-work : establishes context from OUTSIDE this paper —
+                   attributed findings of other papers ("Zhang et al.
+                   showed...") AND unattributed general field
+                   background ("MOFs are porous materials with...").
+                   Anything recapping work that is not this paper's
+                   own contribution.
+  - method       : what THIS paper did, procedurally — synthesis
+                   routes, computational setup and parameters,
+                   instruments, protocols, sample preparation,
+                   analysis procedures.
+  - result       : THIS paper's own findings — measurements, computed
+                   values, observations, trends the authors
+                   themselves produced. ("We find...", "The measured
+                   capacity was...")
+  - interpretation : what the results MEAN — mechanisms, explanations,
+                   comparisons of own results against literature,
+                   implications. Meaning-making, not new numbers.
+  - limitation   : explicit caveats about this work — failure modes,
+                   scope bounds, known error sources, "our model does
+                   not capture...".
+  - future-work  : what the authors say should happen next — outlook,
+                   open questions they name, planned extensions.
+  - data         : a table, table fragment, numeric listing, or
+                   figure caption whose content is the numbers
+                   themselves. Garbled/badly-parsed tables are still
+                   `data`.
+  - boilerplate  : publisher furniture — copyright and licence
+                   notices, journal headers/footers, author
+                   contributions, acknowledgements, funding, ethics/
+                   conflict-of-interest statements, reference-list
+                   fragments.
+  - unknown      : the question applies but text + context don't
+                   reveal the role, or you are genuinely unsure.
+  - n-a          : not classifiable prose at all and not publisher
+                   furniture — e.g. a standalone equation block or
+                   OCR wreckage with no discernible content.
+
+  Boundary rules (apply in order):
+
+  1. Attribution test (result vs related-work): whose finding is it?
+     "We show/find/measured" → result. "X et al. reported" or textbook
+     background → related-work. For mixed chunks, classify by the
+     chunk's PRIMARY function — a results paragraph that cites one
+     comparison value stays `result`; a survey paragraph that mentions
+     the present work in passing stays `related-work`.
+  2. Result vs interpretation: does the chunk introduce NEW numbers or
+     observations from this work? Yes → result, even with explanatory
+     framing. Purely explaining/contextualizing already-stated
+     findings → interpretation.
+  3. Abstracts: classify by dominant content — usually `result` (they
+     state findings); an abstract that only frames the problem is
+     `motivation`.
+  4. Methods recap of ANOTHER paper's procedure ("following the
+     approach of Xu et al.") inside this paper's methods section is
+     still `method` — the test is whether THIS paper executed it, not
+     who invented it.
+  5. Section headings help but do not decide: discussion sections
+     contain `result` chunks and vice versa. Trust the text over the
+     heading when they disagree.
+  6. Limitation vs future-work: `limitation` = what THIS work could
+     not or did not do; `future-work` = what the authors prescribe
+     next. A chunk doing both ("our model omits solvent effects;
+     future studies should include explicit water") is `future-work`.
+
+  Return JSON:
+  {"value": "<one>", "confidence": <0..1>,
+   "rationale": "<one sentence; required if confidence < 0.7>"}

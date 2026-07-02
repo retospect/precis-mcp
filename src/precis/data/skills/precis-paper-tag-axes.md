@@ -45,18 +45,27 @@ Seven axes. `domain:` runs first; the rest gate on its value.
 | `other` | clearly outside the four above |
 | `unknown` | can't tell from title + abstract |
 
-### `scale:` — spatial scale of the thing studied
+### `scale:` — characteristic length of the thing studied
 
-Gates on `domain ∈ {chemistry, physics, materials, eng}`.
+Gates on `domain ∈ {chemistry, physics, bio, materials, eng}`. Decade
+buckets — a value names the decade floor (half-open range). The
+length is the *phenomenon's* scale: MOF adsorption → the pore, not
+the crystal; thin-film transport → the film thickness.
 
 | value | criterion |
 |---|---|
-| `atomic` | individual atoms, single bonds, single defects |
-| `nano` | < 100 nm; nanotubes, dots, 2D mono- to few-layer |
-| `meso` | 0.1–10 µm |
-| `micro` | 10 µm – 1 mm |
-| `bulk` | > 1 mm; macroscopic samples, thin films as continuum |
-| `multi` | deliberately spans more than one scale |
+| `atomic` | < 1 nm — atoms, bonds, defects, small molecules |
+| `1nm` | 1–10 nm — pores, macromolecules, dots, few-layer 2D |
+| `10nm` | 10–100 nm — nanoparticles, thin films, nanowires |
+| `100nm` | 100 nm – 1 µm |
+| `1um` | 1–10 µm — crystallites, cells, MEMS features |
+| `10um` | 10–100 µm |
+| `100um` | 100 µm – 1 mm |
+| `mm` | 1 mm – 1 m — flow cells, reactors, macroscopic samples |
+| `m` | 1 m – 1 km — pilot plants, field scale |
+| `km` | ≥ 1 km terrestrial — atmospheric, oceanic, geological |
+| `astro` | beyond Earth — planetary, stellar, galactic |
+| `multi` | contrasting scales IS the finding |
 | `unknown` | can't tell |
 | `n-a` | no spatial scale (pure theory, method, review) |
 
@@ -87,18 +96,18 @@ Optional otherwise.
 | `interfacial` | conduction at an interface or grain boundary |
 | `n-a` | no electrical transport measured |
 
-### `studytype:` — what kind of study  *(all papers)*
+### `studytype:` — epistemic mode: how the paper knows  *(all papers)*
 
 | value | criterion |
 |---|---|
-| `experimental` | wet-lab measurements on real samples |
-| `synthesis` | contribution is making the material |
-| `characterization` | contribution is measuring known materials |
-| `theory-dft` | DFT or ab-initio calculations |
-| `theory-md` | molecular dynamics |
-| `simulation-other` | continuum, FEA, Monte Carlo, kinetics |
+| `conceptual` | theory / analytical derivation; no simulation, no experiment |
+| `computational` | simulation dominates (DFT/MD/MC/FEA/ML — flavor is chunk-level `method:`) |
+| `experimental-ensemble` | measurement averaged over many entities (bulk, films, solutions) |
+| `experimental-single-entity` | one entity resolved at a time (break junction, single-molecule, single-particle) |
+| `synthesis` | making the thing IS the contribution |
 | `review` | review, perspective, opinion |
-| `mixed` | substantial contributions in two or more above |
+| `mixed` | genuinely co-equal modes |
+| `unknown` | can't tell from title + abstract |
 
 ### `material:` — primary material class
 
@@ -155,6 +164,44 @@ Reuse existing slugs when one fits — `search(kind='paper', tags=['topic:<guess
 to check before coining. Auto-tag axes (`scale:`, `dim:`, …) are
 closed vocabularies above; don't mint new values inside those
 prefixes.
+
+## Chunk-level axes (ADR 0047)
+
+A second family of axes tags individual **chunks**, not papers, for
+facets that vary within a document. First axis: `role:` — the
+rhetorical role of a chunk (`axes/role.yaml`). Single-select:
+
+`motivation` (why this work) · `related-work` (recaps other papers /
+general background — excludable) · `method` (what this paper did,
+procedurally) · `result` (this paper's OWN findings — the only
+legitimate citation-quote target) · `interpretation` (what results
+mean) · `limitation` · `future-work` · `data` (tables/numeric
+listings) · `boilerplate` (publisher furniture — excludable) ·
+`unknown` / `n-a` (envelope-only, never written as tags).
+
+Filter chunks the same way (`tags=` matches chunk-level tags too):
+
+```python
+search(kind='paper', q='co2 adsorption capacity', tags=['role:result'])
+search(kind='paper', q='gcmc setup', tags=['role:method'])
+```
+
+Second chunk axis: `open-question:` (`axes/open-question.yaml`) — a
+recall-biased binary flag for experiment planning: does the chunk
+name something *specific* not yet done (future direction, open
+question, untried condition, acknowledged failure, negative result)?
+Cross-cutting by design — leads live in `future-work`, `limitation`,
+`result`, and even `motivation` chunks:
+
+```python
+search(kind='paper', q='mof water stability', tags=['open-question:yes'])
+```
+
+The load-bearing boundary is `result` vs `related-work`: a
+`\citequote` must land on a paper's own contribution, never on its
+summary of someone else's. Applied by the background `chunk_tag`
+pass; values are closed vocabularies — don't mint inside `role:` or
+`open-question:`.
 
 ## See also
 

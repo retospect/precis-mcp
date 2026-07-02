@@ -1,0 +1,65 @@
+# Cross-cutting experiment-planning axis (ADR 0047): "continue where
+# the previous work left off". Deliberately orthogonal to role: —
+# leads live in future-work AND limitation AND negative results AND
+# "no study has yet addressed X" motivation chunks; a single-select
+# rhetorical axis cannot retrieve that set. Rides the same combined
+# call / cached prefix as role:.
+#
+# This axis is tuned for RECALL: a false-positive lead costs seconds
+# of reading; a false negative is an invisible lost thread. The
+# per-value eval recall floor is ~80% for `yes` (vs the default 60%),
+# and tag rows for `yes` are written at a lower confidence threshold.
+
+id: open-question
+level: chunk
+# For memory (dreams), classification is ref-level: dream bodies live
+# in refs.title (only chunk is the card_combined card), so the runner
+# reads the ref and the envelope goes to refs.meta->'tagging'. The
+# dream corpus is dense in leads — nearly every dream ends in an
+# untested implication ("a device class that does not currently
+# exist"), making OPEN-QUESTION:yes + the speculative opt-in a
+# queryable idea backlog.
+applies_to_kinds: [paper, cfp, memory]
+version: 1
+question: "Does this chunk name something specific that has not yet been done?"
+select: one
+values: ["yes", "no", unknown, n-a]   # yes/no quoted — YAML 1.1 bools
+default_unknown: unknown
+applies_when:
+  always: true
+cost_tier: small
+context: [section_path, position, title, ref_tags, neighbor_gists_1]
+prompt: |
+  Does this chunk name something *specific* that has not yet been
+  done — material for planning a new experiment or continuing this
+  line of work?
+
+  Answer "yes" when the chunk contains any of:
+
+  - a prescribed next step or future direction ("future studies
+    should include explicit solvent")
+  - a stated open question ("it remains unclear whether...")
+  - an untried condition, system, or parameter range ("has not been
+    tested above 400 K", "no study has yet addressed X")
+  - an acknowledged failure, shortfall, or unmodeled effect ("our
+    model does not capture...", "synthesis of the 2D analogue was
+    unsuccessful")
+  - a negative or null result that leaves the question open
+  - an explicitly excluded scope ("beyond the scope of this study")
+
+  Answer "no" when the chunk contains none of these — including
+  chunks that only say variants of "further research is needed"
+  with NO named question, condition, or direction. A platitude is
+  not a lead: the test is whether a reader could start planning an
+  experiment from what the chunk names.
+
+  - unknown : the text is prose but you cannot tell.
+  - n-a     : not classifiable prose (tables/data fragments,
+              publisher boilerplate, equation blocks).
+
+  If the chunk names a specific gap but you are unsure it qualifies,
+  prefer "yes" — this axis is deliberately recall-biased.
+
+  Return JSON:
+  {"value": "<yes|no|unknown|n-a>", "confidence": <0..1>,
+   "rationale": "<one sentence; required if confidence < 0.7>"}

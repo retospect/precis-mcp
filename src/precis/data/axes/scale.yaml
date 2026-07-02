@@ -1,30 +1,64 @@
+# v2 vocabulary (still version: 1 — the axis has never been applied,
+# so pre-Round-0 edits are free; see ADR 0047 §7). Replaces the fuzzy
+# named regimes (nano/meso/micro/bulk — "meso" invited drift) with
+# explicit decade buckets: a value names the decade floor of the
+# characteristic length, so every definition is a half-open range
+# nobody can argue about. Resolution follows corpus density: decade-
+# fine where the corpus lives (atomic..mm), 3-decade coarse above
+# (mm/m/km/astro — flow cells, atmospheric modelling, astronomy);
+# split an upper bucket later if its population grows (version bump).
+# Values with leading digits are quoted.
+
 id: scale
 version: 1
-question: "What spatial scale does this paper investigate?"
-values: [atomic, nano, meso, micro, bulk, multi, unknown, n-a]
+question: "What is the characteristic length scale of the thing this paper studies?"
+values:
+  [atomic, "1nm", "10nm", "100nm", "1um", "10um", "100um", mm, m, km,
+   astro, multi, unknown, n-a]
 default_unknown: unknown
 applies_when:
-  domain_in: [chemistry, physics, materials, eng]
+  domain_in: [chemistry, physics, bio, materials, eng]
 prereq: [domain]
 cost_tier: small
 prompt: |
-  You classify the spatial scale of the *thing the paper actually
-  studies*. Not the LLM's training corpus, not the broader field.
+  Classify the characteristic length scale of the *thing the paper's
+  claims are about* — the structure or phenomenon under
+  investigation, not the sample holder it sits in.
 
-  Pick exactly ONE:
+  Which length? The scale of the phenomenon studied:
+  - adsorption in a MOF        → the pore (nm), not the crystal
+  - single-molecule junction   → the molecule (~1 nm)
+  - thin-film transport        → the film thickness
+  - catalysis on nanoparticles → the particle
+  - grain-boundary effects     → the grain
 
-  - atomic   : individual atoms, single bonds, single defects
-  - nano     : < 100 nm typical dimension; nanotubes, dots, mono- to few-layer 2D
-  - meso     : 0.1–10 µm typical dimension
-  - micro    : 10 µm – 1 mm
-  - bulk     : > 1 mm; macroscopic samples; thin films treated as continuum
-  - multi    : the paper deliberately spans more than one scale
-  - unknown  : title + abstract don't pin down the scale
-  - n-a      : the paper has no spatial scale (pure theory, methodology, review)
+  Pick exactly ONE (each value = a half-open decade):
+
+  - atomic  : < 1 nm — single atoms, bonds, defects, small molecules
+  - 1nm     : 1–10 nm — pores, single macromolecules, quantum dots,
+              mono/few-layer 2D thickness
+  - 10nm    : 10–100 nm — nanoparticles, thin films, nanowires
+  - 100nm   : 100 nm – 1 µm
+  - 1um     : 1–10 µm — crystallites, cells, MEMS features
+  - 10um    : 10–100 µm
+  - 100um   : 100 µm – 1 mm
+  - mm      : 1 mm – 1 m — lab apparatus scale: flow cells, reactors,
+              electrodes, macroscopic samples as continuum
+  - m       : 1 m – 1 km — human/field scale: pilot plants, buildings,
+              ecosystems plots
+  - km      : ≥ 1 km, terrestrial — atmospheric, oceanic, geological
+              modelling
+  - astro   : beyond Earth — planetary, stellar, galactic
+  - multi   : the paper deliberately contrasts scales as a finding
+              (hierarchical materials, coarse-graining studies)
+  - unknown : title + abstract don't pin down the scale
+  - n-a     : no spatial scale (pure theory, methodology, review)
 
   Return JSON:
   {"value": "<one>", "confidence": <0..1>,
    "rationale": "<one sentence; required if confidence < 0.7>"}
 
-  Reviews and methods papers should usually be "n-a", not "unknown".
-  "Multi" is for papers that genuinely contrast scales as a finding.
+  Reviews and methods papers are usually "n-a", not "unknown". A
+  system with features at two adjacent decades takes the decade of
+  the feature the claims hinge on; "multi" only when spanning scales
+  IS the point.

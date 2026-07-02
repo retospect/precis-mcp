@@ -1,32 +1,59 @@
+# v2 vocabulary (still version: 1 — never applied, pre-Round-0 edits
+# are free; ADR 0047 §7). Refactored to a pure *epistemic mode* axis:
+# how does the paper know what it claims? The old theory-dft/theory-md
+# split was method flavor, which now lives in the chunk-level method:
+# axis; the old `characterization` value is absorbed by the two
+# experimental values (what you measure is not a separate mode from
+# measuring). The new ensemble vs single-entity split is a distinction
+# the old vocabulary could not express (a SAM-film conductivity study
+# and a break-junction experiment both study molecular systems but are
+# epistemically different papers).
+
 id: studytype
 version: 1
-question: "What kind of study is this paper?"
-values: [experimental, synthesis, characterization, theory-dft, theory-md, simulation-other, review, mixed]
-default_unknown: mixed
+question: "How does this paper know what it claims — its primary epistemic mode?"
+values:
+  [conceptual, computational, experimental-ensemble,
+   experimental-single-entity, synthesis, review, mixed, unknown]
+default_unknown: unknown
 applies_when:
   always: true
 prereq: []
 cost_tier: small
 prompt: |
-  Classify the *primary contribution* of this paper.
+  Classify the *primary epistemic mode* of this paper: how was the
+  headline claim established?
 
   Pick exactly ONE:
 
-  - experimental      : wet-lab measurements; physical samples; instruments
-  - synthesis         : the contribution is making the material/molecule/device
-  - characterization  : measuring already-known materials; instrument-heavy
-  - theory-dft        : DFT or ab-initio calculations dominate
-  - theory-md         : molecular dynamics dominate
-  - simulation-other  : continuum, FEA, Monte Carlo, kinetics, ML on data
-  - review            : review article, perspective, opinion, tutorial
-  - mixed             : two or more of the above contribute substantially
+  - conceptual   : theory, analytical derivation, framework or model
+                   building — no substantial simulation, no experiment
+  - computational: simulation or numerical computation dominates —
+                   DFT, MD, Monte Carlo, FEA, ML on data (which
+                   flavor is a chunk-level `method:` question)
+  - experimental-ensemble : physical measurement averaged over many
+                   entities — bulk samples, films, powders, solutions,
+                   device batches
+  - experimental-single-entity : physical measurement resolving ONE
+                   entity at a time — single molecule/junction/
+                   particle/cell/device (break junctions, single-
+                   molecule spectroscopy, single-particle tracking)
+  - synthesis    : making the material/molecule/device IS the
+                   contribution, even if characterization follows
+  - review       : review article, perspective, opinion, tutorial
+  - mixed        : two or more modes contribute substantially to the
+                   headline claim
+  - unknown      : title + abstract don't reveal the mode
 
   Return JSON:
   {"value": "<one>", "confidence": <0..1>,
    "rationale": "<one sentence; required if confidence < 0.7>"}
 
-  "experimental" is the bucket when measurement is the headline; use
-  "synthesis" when making something is the headline even if measurement
-  also happens. A paper that synthesizes AND does DFT is "mixed".
-  Don't use "mixed" for a single dominant contribution with minor
-  extras.
+  Measurement as the headline → one of the experimental values; use
+  "synthesis" when making something is the headline even if
+  measurement also happens. Experiment with supporting DFT is the
+  experimental value, not "mixed" — reserve "mixed" for genuinely
+  co-equal modes (synthesis AND theory as twin contributions).
+  Statistics OVER many single-entity measurements (e.g. thousands of
+  break-junction traces) is still "experimental-single-entity" — the
+  test is what one measurement resolves, not how many are taken.
