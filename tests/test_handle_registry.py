@@ -54,6 +54,9 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "tag",
         "cad",
         "structure",
+        "pcb",
+        "part",
+        "datasheet",
     }
 )
 
@@ -203,15 +206,15 @@ def test_plugin_codes_merge_into_lookups(monkeypatch: pytest.MonkeyPatch) -> Non
     _fake_eps(
         monkeypatch,
         records={"service": "sv", "payment": "pm"},
-        chunks={"payment": "pb"},
+        chunks={"payment": "zp"},
     )
     assert hr.code_for_kind("service") == "sv"
-    assert hr.code_for_kind("payment", chunk=True) == "pb"
+    assert hr.code_for_kind("payment", chunk=True) == "zp"
     assert hr.format_handle("payment", 5) == "pm5"
     assert hr.kind_for_code("sv") == ("service", False)
     # plugin codes resolve as refs-backed decimal handles
     assert hr.parse("pm5") == ("payment", False, 5)
-    assert hr.parse("pb7") == ("payment", True, 7)
+    assert hr.parse("zp7") == ("payment", True, 7)
     assert hr.is_well_formed("sv12")
     # built-ins still work alongside
     assert hr.parse("pa5") == ("paper", False, 5)

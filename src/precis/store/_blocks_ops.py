@@ -279,6 +279,22 @@ class BlocksMixin:
 
     # -- helpers ------------------------------------------------------------
 
+    def _replace_card_combined(
+        self, conn: Connection, *, ref_id: int, card_text: str
+    ) -> None:
+        """Replace a ref's single ``card_combined`` search chunk (delete +
+        insert, so the embed/summary cascade re-runs). The shared write for
+        the keystone kinds' summary cards (cad / structure / pcb)."""
+        conn.execute(
+            "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_combined'",
+            (ref_id,),
+        )
+        conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta) "
+            "VALUES (%s, 'agent', -1, 'card_combined', %s, %s)",
+            (ref_id, card_text, Jsonb({})),
+        )
+
     def _default_embedder_name(self, conn: Connection) -> str:
         """Resolve the registered default embedder name (FK target).
 

@@ -51,20 +51,7 @@ class StructureMixin:
     tx: Any
     insert_ref: Any
     get_ref: Any
-
-    # -- write -----------------------------------------------------------
-    def _write_struct_card(
-        self, conn: Connection, *, ref_id: int, card_text: str
-    ) -> None:
-        conn.execute(
-            "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_combined'",
-            (ref_id,),
-        )
-        conn.execute(
-            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta) "
-            "VALUES (%s, 'agent', -1, 'card_combined', %s, %s)",
-            (ref_id, card_text, Jsonb({})),
-        )
+    _replace_card_combined: Any  # BlocksMixin — the shared card_combined write
 
     def structure_save(
         self,
@@ -158,7 +145,7 @@ class StructureMixin:
                     ),
                 )
             self._write_measures(conn, ref_id=ref.id, scene=scene)
-            self._write_struct_card(conn, ref_id=ref.id, card_text=card_text)
+            self._replace_card_combined(conn, ref_id=ref.id, card_text=card_text)
         return ref, created
 
     def _write_measures(self, conn: Connection, *, ref_id: int, scene: Scene) -> None:
@@ -264,21 +251,6 @@ class StructureMixin:
         if ref is None or not ref.meta:
             return 0
         return int(ref.meta.get("version", 0))
-
-    def structure_list(self, *, limit: int = 50) -> list[Any]:
-        """Live structure design refs, most-recent first."""
-        with self.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT ref_id FROM refs WHERE kind = 'structure' "
-                "AND deleted_at IS NULL ORDER BY ref_id DESC LIMIT %s",
-                (limit,),
-            ).fetchall()
-        out = []
-        for (rid,) in rows:
-            ref = self.get_ref(kind="structure", id=int(rid))
-            if ref is not None:
-                out.append(ref)
-        return out
 
     # -- compute runs (ADR 0043 §9/§12) ----------------------------------
     def structure_record_run(

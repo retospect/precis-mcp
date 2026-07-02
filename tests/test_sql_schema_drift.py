@@ -60,6 +60,17 @@ _DRIFT_CODES = {
 
 _EXPLAINABLE = ("SELECT", "INSERT", "UPDATE", "DELETE", "WITH", "VALUES", "TABLE")
 
+# Static SQL that legitimately targets a *non-Postgres* backend and so must
+# not be EXPLAINed against the PG schema. Keyed by (file suffix, exact SQL).
+# Keep this tiny and specific — it is an escape hatch for the rare sqlite
+# reader, not a way to silence real PG drift.
+_NON_PG_QUERIES: frozenset[tuple[str, str]] = frozenset(
+    {
+        # jlcparts catalog import reads a downloaded sqlite `cache.sqlite3`.
+        ("pcb/catalog.py", "SELECT * FROM components"),
+    }
+)
+
 # %%  -> literal percent (no placeholder);  %s/%b -> positional;  %(name)s -> named.
 _NAMED_RE = re.compile(r"%\((\w+)\)[sb]")
 
@@ -226,7 +237,14 @@ def test_static_sql_resolves_against_schema(
 ) -> None:
     """Every reconstructable SQL string must name only live tables/columns."""
     ext = _extraction
-    explainable = [q for q in ext.queries if _leading_keyword(q.sql) in _EXPLAINABLE]
+    explainable = [
+        q
+        for q in ext.queries
+        if _leading_keyword(q.sql) in _EXPLAINABLE
+        and not any(
+            q.file.endswith(f) and q.sql.strip() == s for f, s in _NON_PG_QUERIES
+        )
+    ]
 
     # Sanity: the extractor must actually find a meaningful corpus, otherwise
     # a refactor could make the guard silently pass by extracting nothing.

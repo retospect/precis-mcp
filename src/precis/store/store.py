@@ -63,6 +63,7 @@ from precis.store._mappers import (
     _row_to_link,
     _row_to_ref,
 )
+from precis.store._pcb_ops import PcbMixin
 from precis.store._refs_ops import RefsMixin
 from precis.store._structure_ops import StructureMixin
 from precis.store._tags_ops import TagsMixin
@@ -79,6 +80,7 @@ class Store(
     BlocksMixin,
     CadMixin,
     StructureMixin,
+    PcbMixin,
     DraftMixin,
     _AbbrevMixin,
     TagsMixin,

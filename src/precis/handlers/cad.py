@@ -342,7 +342,7 @@ class CadHandler(Handler):
 
     # ── rendering helpers ────────────────────────────────────────────
     def _render_list(self) -> Response:
-        designs = self.store.cad_list()
+        designs = self.store.list_refs(kind="cad", order_by="id_desc", limit=50)
         if not designs:
             return Response(
                 body="no cad designs yet\n\nNext: put(kind='cad', id='flange', "

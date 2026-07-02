@@ -308,6 +308,32 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
   draft section headings as `meta.word_target={min,max}`, checked via
   `get(kind='draft', view='wordcount')` (per-section over/under/ok +
   a web badge). Skill: `precis-proposal-help`.
+- **Keystone kinds (`cad` / `pcb` / `structure`)** — the "own a legible
+  IR, rent the heavy kernel only at export" family (ADR 0041 / 0042 /
+  0043). Each hands the LLM a *graph* to traverse, never pixels: `cad`
+  probes a parametric solid analytically (point/ray/section/clearance);
+  `structure` is an atomistic cell+bond graph relaxed on a fidelity
+  ladder; `pcb` is a netlist + placement graph — author components /
+  nets / connections in one batch `put`, then read it as a graph
+  (`slug#U1` → pins → nets → neighbours) via probe views. The heavy
+  tools are gated to the **export** step only: `handlers/pcb.py`
+  dispatches `_EXPORT_VIEWS` (`bom`/`cpl`/`netlist`/`dsn`/`mechanical`)
+  to the **pure** exporters in `src/precis/pcb/export.py` (IR → text,
+  no binaries — BOM/CPL are JLCPCB-native, mechanical is the 0041
+  outline+holes bridge) and the `route` view to `src/precis/pcb/route.py`,
+  a headless-Freerouting `.dsn`→`.ses` round-trip (`place_route_round_trip`,
+  escalating passes) gated on `PRECIS_FREEROUTING_JAR` (+ java) — it
+  **skips, never raises** when the backend is absent. Coordinate frame:
+  mm, origin at the outline corner, +X right / +Y up, rotation CW —
+  **footgun:** JLCPCB CPL wants CCW, so `jlc_rotation(r) = (360-r) % 360`.
+  Parts come from `kind='part'` (JLCPCB-assemblable), datasheets from
+  `kind='datasheet'`. Artifacts land under `PRECIS_CORPUS_DIR/pcb/<slug>/`.
+  The `[pcb]` extra (`easyeda2kicad`) is staged for Flow-B footprint
+  conversion — the fetch itself is still a `FeatureUnavailable` stub
+  (Slice 2 deferred item), so exports fall back to placeholder pin spreads.
+  Skills: `precis-pcb-help` (+ part-select / net-class / measures and the
+  i2c/spi/decoupling/datasheet playbooks, skill-search-only). Cluster
+  deploy is Tier-1 (JRE + jar on the gateway; kicad-cli gerbers deferred).
 - **`chunks.numerics TEXT[]`** — GIN-indexed lexical filter
   (`WHERE numerics @> ARRAY['1.523 eV']`); available via direct SQL,
   not yet wired into the search verbs.

@@ -755,7 +755,7 @@ class StructureHandler(Handler):
             )
 
     def _render_list(self) -> Response:
-        designs = self.store.structure_list()
+        designs = self.store.list_refs(kind="structure", order_by="id_desc", limit=50)
         if not designs:
             return Response(
                 body="no structures yet\n\nNext: put(kind='structure', id='pd111', "

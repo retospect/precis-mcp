@@ -20,7 +20,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.cad.scene import NodeSpec, SceneSpec
@@ -31,21 +30,7 @@ class CadMixin:
     tx: Any
     insert_ref: Any
     get_ref: Any
-
-    # -- write -----------------------------------------------------------
-    def _write_card(self, conn: Connection, *, ref_id: int, card_text: str) -> None:
-        """Replace the design's single ``card_combined`` search chunk."""
-        conn.execute(
-            "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_combined'",
-            (ref_id,),
-        )
-        conn.execute(
-            """
-            INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta)
-            VALUES (%s, 'agent', -1, 'card_combined', %s, %s)
-            """,
-            (ref_id, card_text, Jsonb({})),
-        )
+    _replace_card_combined: Any  # BlocksMixin — the shared card_combined write
 
     def cad_save(
         self,
@@ -100,7 +85,7 @@ class CadMixin:
                     ),
                 )
                 n += 1
-            self._write_card(conn, ref_id=ref.id, card_text=card_text)
+            self._replace_card_combined(conn, ref_id=ref.id, card_text=card_text)
         return ref, created, n
 
     # -- read ------------------------------------------------------------
@@ -162,21 +147,6 @@ class CadMixin:
         if pattern:
             meta["pattern"] = dict(pattern)
         return int(ref_id), str(name), meta
-
-    def cad_list(self, *, limit: int = 50) -> list[Any]:
-        """Live cad design refs, most-recent first."""
-        with self.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT ref_id FROM refs WHERE kind = 'cad' AND deleted_at IS NULL "
-                "ORDER BY ref_id DESC LIMIT %s",
-                (limit,),
-            ).fetchall()
-        out = []
-        for (rid,) in rows:
-            ref = self.get_ref(kind="cad", id=int(rid))
-            if ref is not None:
-                out.append(ref)
-        return out
 
     # -- delete ----------------------------------------------------------
     def cad_delete(self, ref_id: int) -> int:

@@ -725,6 +725,15 @@ wheels = [
 ]
 
 [[package]]
+name = "easyeda2kicad"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ab/8b/9a7abcdbb2a3a86d55e40f59f7c28b24e7e8fe9fcc08949509fff386a9a5/easyeda2kicad-1.0.1.tar.gz", hash = "sha256:122a48fafa3b918e730185c973dd342183928b8a0dbe24436d13d58b90290e84", size = 65774, upload-time = "2026-04-06T09:09:06.988Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/47/be/9be36eb493d6a8eef8b8e73957e83d75f064b97d6abb1dcdfb3537b4f056/easyeda2kicad-1.0.1-py3-none-any.whl", hash = "sha256:b5a460650c5dd0af35a70658f433f63355fdbdf2c2b9e3bc411bc11ea98d06ed", size = 68704, upload-time = "2026-04-06T09:09:05.595Z" },
+]
+
+[[package]]
 name = "einops"
 version = "0.8.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2856,6 +2865,9 @@ patent = [
     { name = "lxml" },
     { name = "python-epo-ops-client" },
 ]
+pcb = [
+    { name = "easyeda2kicad" },
+]
 plot = [
     { name = "matplotlib" },
     { name = "pydantic" },
@@ -2885,6 +2897,7 @@ requires-dist = [
     { name = "ase", marker = "extra == 'dft'", specifier = ">=3.22" },
     { name = "ase", marker = "extra == 'dft-ml'", specifier = ">=3.22" },
     { name = "cadquery-ocp-novtk", marker = "extra == 'cad-step'", specifier = ">=7.8" },
+    { name = "easyeda2kicad", marker = "extra == 'pcb'", specifier = ">=0.8" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.110" },
     { name = "feedparser", marker = "extra == 'external'", specifier = ">=6.0" },
     { name = "ftfy", specifier = ">=6.3" },
@@ -2927,7 +2940,7 @@ requires-dist = [
     { name = "wolframalpha", marker = "extra == 'external'", specifier = ">=5.0" },
     { name = "youtube-transcript-api", marker = "extra == 'external'", specifier = ">=1.0" },
 ]
-provides-extras = ["embed", "paper", "docx", "tex", "calc", "dft", "dft-ml", "plot", "external", "patent", "web", "cad-export", "cad-step", "all"]
+provides-extras = ["embed", "paper", "docx", "tex", "calc", "dft", "dft-ml", "plot", "external", "patent", "web", "cad-export", "cad-step", "pcb", "all"]
 
 [package.metadata.requires-dev]
 dev = [

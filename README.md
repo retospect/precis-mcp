@@ -54,7 +54,9 @@ argument — over three categories of content:
   (reviewer-persona claim + chase chain), `job` (offline LLM run,
   child of a `todo`), `provenance` (derivation audit trail),
   `pres` (slide decks), `cad` (parametric solid-model design probed
-  analytically — point/ray/section/clearance — not meshed; ADR 0041).
+  analytically — point/ray/section/clearance — not meshed; ADR 0041),
+  `pcb` (netlist + placement graph read as a traversable graph,
+  exported to BOM/CPL/DSN + Freerouting; ADR 0042).
   This is a sample — `precis-overview` and
   the synthesised `precis-help` skill enumerate the live set.
 - **Tool kinds** (stateless or cache-backed; pass `q=` or `id=`, get

@@ -89,6 +89,10 @@ KIND_CODES: dict[str, str] = {
     "cad": "cd",
     # Atomistic structures (ADR 0043)
     "structure": "st",
+    # electronics / PCB (ADR 0042)
+    "pcb": "pb",
+    "part": "pn",
+    "datasheet": "da",
 }
 
 # --- chunk codes (kinds that expose addressable body chunks) --------------
@@ -113,6 +117,8 @@ CHUNK_CODES: dict[str, str] = {
     "finding": "fb",
     "job": "jc",
     "cad": "ca",
+    # datasheet body chunks (ADR 0042; paper-family)
+    "datasheet": "dk",
 }
 
 # Reverse map (code -> (kind, is_chunk)).
@@ -127,7 +133,10 @@ _CODE_TO_KIND: dict[str, tuple[str, bool]] = {
 # (yet). The codes still exist for registry completeness + the totality
 # test.
 _FILE_BACKED_KINDS = frozenset({"skill", "python"})
-_OTHER_TABLE_KINDS = frozenset({"tag"})
+# ``part`` (ADR 0042) lives in the ``parts`` catalog table, addressed by its
+# LCSC C-number — not a refs-backed decimal handle. ``pcb`` / ``datasheet``
+# are refs-backed and resolve normally.
+_OTHER_TABLE_KINDS = frozenset({"tag", "part"})
 
 #: Codes whose body is the row's decimal primary key and which
 #: :func:`parse` can decode to a ``(kind, is_chunk, pk)`` triple —

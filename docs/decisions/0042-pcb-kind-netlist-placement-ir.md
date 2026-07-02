@@ -1,9 +1,14 @@
 # 0042 — The `pcb` kind: a netlist + placement IR the LLM can *read*, JLCPCB-native
 
-- **Status**: proposed (2026-06-27) · **v1 draft** (the electronics sibling
-  of [ADR 0041](./0041-cad-kind-analytic-ir.md); same philosophy — own a
+- **Status**: accepted (2026-06-27) · **v1 partially implemented**
+  (2026-07-01: slices 2, 6, 7 landed — parts catalog, exporters +
+  Freerouting round-trip, skills; slices 3/8/9 remain — see the
+  [implementation tracker](../design/pcb-0042-implementation.md) for
+  live slice status). The electronics sibling of
+  [ADR 0041](./0041-cad-kind-analytic-ir.md); same philosophy — own a
   legible IR, rent the heavy kernel only at export — applied to circuits +
-  boards instead of solids).
+  boards instead of solids.
+- **Implementation tracker**: [`docs/design/pcb-0042-implementation.md`](../design/pcb-0042-implementation.md) (epic + v1 slices).
 - **Deciders**: Reto + agent
 - **Builds on**:
   - [ADR 0041 — The `cad` kind: analytic-IR solids](./0041-cad-kind-analytic-ir.md)
@@ -18,7 +23,7 @@
     + FK integrity, not a folded DAG). (0041 not yet on `main`; lands
     alongside.)
   - [ADR 0033 — Drafts as editable chunk-native documents](./0033-draft-chunks-editable-document.md)
-    (only the **soft-delete *semantics*** are borrowed — a `deleted_at` column
+    (only the **soft-delete *semantics*** are borrowed — a `retired_at` column
     on the `pcb_*` tables; the design ref keeps one embedded card chunk, but
     the graph is **not** chunk-native, §4).
   - [ADR 0035 — Computed chunks & the recompute boundary](./0035-computed-chunks-recipes-and-the-recompute-boundary.md)
@@ -31,7 +36,7 @@
   - [ADR 0026 — precis-web as a sibling package](./0026-precis-web-surface.md).
   - [ADR 0036 — Universal handles](./0036-universal-handles.md) (the `pcb`
     2-char code is **`pb`**, the parts-catalog `part` is **`pn`**, the
-    `datasheet` kind is **`ds`**).
+    `datasheet` kind is **`da`**).
   - **Paper ingest + the `cfp` precedent** (`ingest/{marker,pipeline,
     text_chunker}.py`, `handlers/cfp.py`) — datasheets are a **third thin
     `PaperHandler` sibling** (`kind='datasheet'`, §7.1) over the *identical*
@@ -128,6 +133,14 @@ edit can never silently corrupt connectivity.
   routing convenience we don't need to *place* or to *count crossings*;
   the autorouter imposes its own at export.
 - **The logical netlist is the invariant; the placement is the variable.**
+- **Coordinate frame (decided 2026-06-28).** One mm frame per design; **origin
+  (0,0) at the board-outline reference corner**, **+X right, +Y up (north)**.
+  An instance's `(x,y)` is its **footprint centroid** (the pick-&-place pickup
+  point); **rotation pivots about that centroid**. **Rotation = degrees
+  clockwise from north (+Y), positive** — our *internal* convention;
+  **exporters convert** (KiCad/gerber are CCW-from-+X; the **JLCPCB CPL
+  rotation** needs a per-package fix map). **Bottom-layer instances mirror in
+  X.**
 
 ### 4. The node model — a relational graph, *not* a chunk set (converging with 0041 Amendment 1)
 
@@ -152,14 +165,14 @@ on the *same* shape — **dedicated table(s) + one card chunk** — so this is
 
 The **one way 0042 goes further than 0041's amendment**: 0041 needs a single
 flat `cad_nodes` table (its DAG is one node list); a netlist is genuinely
-*multi-table relational* (components / nets / a `pcb_conn` membership join /
+*multi-table relational* (components+pins / instances / nets / a `pcb_netconns` join /
 measures), so 0042 normalizes into several FK-linked tables (§12) rather than
 one node table. Either way, **only one thing is in the corpus: the design
 itself** — a `refs` row (`kind='pcb'`) carrying **exactly one embedded
 `card_combined` chunk** ("I²C sensor node, ESP32-C3, 42 parts") — so the
 *board* is findable by intent and gets a `pb` handle, soft-delete, and links
 (`datasheet-of`, `produced-by`, `has-requirement`). Everything below is rows,
-soft-deletable via a `deleted_at` column (the 0033 *semantics* without the
+soft-deletable via a `retired_at` column (the 0033 *semantics* + the `cad_nodes` precedent, without the
 chunk *mechanism*). Same keystone as 0041 (own the legible IR, rent the
 kernel at export). The node *concepts* are unchanged:
 
@@ -177,16 +190,26 @@ kernel at export). The node *concepts* are unchanged:
   but has no pins and joins no net. (A user-facing **status LED** is an
   ordinary `component` that happens to be `fixed` — it *is* on a net; a screw
   hole is a `feature` — it is not.)
-- **`net`** — **an N-ary hyperedge over pins, stored as a membership
-  table.** This is the answer to *"is the netlist links or chunks?"* →
-  **neither**: a `pcb_nets` row (name, class, target current) plus a
-  `pcb_conn` join table with **one row per pin-on-net** (`net_id`,
-  `component_id`, `pin_name`). A net is N-ary (a power net touches 40 pins),
-  so binary links would explode into N² edges; a join table is the textbook
-  shape and lets `pcb_nets` carry per-net facts (class, current, layer hint)
-  with FK integrity. **There is no `pcb_pins` table** — a pin is a
-  `(component, pin_name)` tuple resolved against the footprint, so `pcb_conn`
-  *is* the netlist with zero duplication of footprint pin data.
+- **`net`** — **an N-ary hyperedge over pins** (name, class, current). This is
+  the answer to *"is the netlist links or chunks?"* → **neither**: a
+  `pcb_nets` row plus a `pcb_netconns` table with **one row per
+  (net, instance, pin)** (the netlist triple, §12 + the proposal). A net is
+  N-ary (a power net touches 40 pins), so binary links would explode into N²;
+  the triple is the textbook shape and lets `pcb_nets` carry per-net facts
+  (class, current, width, layer hint) with FK integrity.
+  *(Earlier drafts folded the pin into the edge as a `pin_name` string and had
+  no `pcb_pins`; the design discussion corrected this — see the type/instance
+  split below: pins are first-class rows on the component **type**, and
+  `pcb_netconns` references `(net, instance, pin)`.)*
+- **`component` (type) / `instance` / `pin` — the normalized split.** A
+  **component** is a part *type* used in this design and **owns its pins**
+  (`pcb_pins`: pad + function `name` + electrical `tags[]`); a **component
+  instance** (`pcb_instances`) is a *placement* (`U3`) with coordinates /
+  layer / `fixed` / `roles`. So a `pcb_netconns` row ties a **net** to a
+  **(instance, pin)** — and a *physical* pin is on **at most one net**.
+  Repeated parts (every passive) define the type once + many instances; the
+  BOM is "count instances per component." Composite FKs force a netconn's pin
+  and instance to share a component. (Full DDL: the proposal.)
 - **`measure` (the "soft relationships," on a hard↔soft spectrum)** —
   **the single row family that carries every design *intent*** the user
   named, from "this cap is near that chip because it's a bypass" and "this
@@ -276,7 +299,30 @@ footprints; default to the most-in-stock).
   in the assemblable flag) — the LLM picks from a clean, typed catalog, never
   from raw vendor JSON. A `parts_refresh` worker (system profile) pulls
   deltas on a cadence; `stock` is the volatile field, re-checked at selection
-  time.
+  time. **Concrete v1 pipeline (decided 2026-06-28):** the **footprint
+  geometry + pin-name→pad map + 3D** come from **`easyeda2kicad`** (pulls LCSC
+  component data, converts to KiCad), and the `jlcpcb_assemblable` /
+  Basic-or-Extended / stock fields from the **downloadable JLCPCB assembly
+  parts CSV** — no paid LCSC API assumed. Footprint+pin resolution is the
+  catalog's hardest part, so it is its own ingest step, not a field.
+- **Two data flows, kept separate (decided 2026-06-28).**
+  - **Flow A — the bulk catalog (cheap full-list slurp).** Source = the
+    community **`jlcparts`** dump (the whole JLCPCB catalog with stock + price
+    as a daily SQLite/JSON), *not* self-scraping. The `parts_refresh` worker
+    ingests it via **staging-table + atomic swap** (`COPY` the dump into
+    `parts_staging`, build indexes there, then `DROP parts; ALTER … RENAME` in
+    one txn) — or truncate+`COPY`-in-txn for the simple version. The
+    drop-index → `COPY` → recreate-index trick is a ~2× lever, optional at our
+    row count (~100–300k assemblable parts), add it only if load time bites.
+  - **Flow B — footprints/pins (lazy, expensive, never bulk).** The
+    `easyeda2kicad` conversion is per-part and slow, so it is **lazy**: run on
+    first *selection* of a part and **cached in a separate `part_footprints`
+    table keyed by C-number**. The catalog swap/reload never touches it —
+    which is *the* reason it is its own table. (Don't convert all ~100k+
+    parts; only the few a design uses.)
+  - **Cadence.** Because stock is **live at selection** (above), the daily-
+    stale dump only ranks/filters candidates → the bulk refresh can run daily
+    (matching `jlcparts`) or weekly; freshness doesn't depend on it.
 - **The selector verb** — `search(kind='part', q='0.1µF 0402 X7R ≥16V')`
   (or a structured spec). **Hard filter:** `jlcpcb_assemblable = true AND
   footprint IS NOT NULL`. **Default rank:** `basic DESC, stock DESC, price
@@ -328,7 +374,7 @@ the whole ingest / storage / reader / search engine is shared. A datasheet
 is the same move, so the worry is fair: are we breeding `paper` clones? Two
 rulings keep it bounded:
 
-- **`datasheet` is its own kind** (`ds`), *not* `kind='paper'` + a tag — for
+- **`datasheet` is its own kind** (`da`), *not* `kind='paper'` + a tag — for
   three concrete reasons, and only these:
   1. **Search scoping** — 10k component datasheets must not pollute academic
      `search(kind='paper')`, nor vice versa. Kind is the clean scope; a
@@ -396,7 +442,16 @@ net) *is* the LLM's "tracer lines":
   **trace-width-for-current**, **broken/split-plane return-path** (§10),
   power/ground sanity, courtyard overlap.
 
-#### 8.2 Logical signal trace — "follow the signal"
+#### 8.2 Logical signal trace — "follow the signal" (the primary read surface)
+
+**This is how the LLM authors and reasons (decided 2026-06-28): the netlist
+is records traversed as a graph, not a blob it writes.** The flow is `get`
+IC4 → its pins → the net on each pin → the components on that net → reason →
+hop onward — and edits are `put`/`edit` on individual rows. So graph
+navigation is the *load-bearing* surface, not one probe among many; the
+handler must expose a cheap **`get(neighbors)`-style hop** from any
+pin / net / component (one row → its adjacent rows), and the trace below is
+that hop, iterated.
 
 The user's *"I²C comes out here, to the mux, to the other bus, then to that
 component"* is a **graph walk, not a placement query.** A **trace probe**
@@ -407,7 +462,8 @@ internal topology, the LLM supplies the hop. It returns the **ordered
 logical path** (net → pin → component → net …), with branch points flagged.
 This is how the LLM reasons about a bus end-to-end ("the SCL line fans out
 to 3 sensors after the mux") without ever placing anything — pure
-connectivity, exact.
+connectivity, exact. (No netlist-import / DSL in v1; either could be added
+later as sugar over these same rows.)
 
 #### 8.3 Measures — the measuring tapes (graded design intent)
 
@@ -513,12 +569,18 @@ is an **optimization**, not a declaration:
 
 ### 10. Layers / stackup / planes
 
-- **Default 4-layer: `Sig-top / GND / PWR / Sig-bottom`** (the user's H/V/
-  PWR/GND, in the conventional SI-friendly order — signals on the outer
-  layers referenced to adjacent planes). 2-layer is allowed for trivial
-  boards.
-- The **H/V Manhattan model** (§9) is a *routing estimate* over the two
-  signal layers, **not** the stackup — keep the two ideas distinct.
+- **Default 4-layer: `Sig-top / GND / PWR / Sig-bottom`** (decided
+  2026-06-28) — components + their escape routing on the **outer** layers,
+  the two solid planes **inner**. This is the SI-conventional order *and* the
+  component-friendly one: SMD parts mount on the top surface, so the top
+  layer needs pads + routing and **cannot** be a solid power plane (you'd
+  shred it around every pad). A power-outer / ground-outer "stripline" stack
+  (signals inner, shielded) is a real technique but only works when
+  components don't live on a plane layer — out of scope for v1.
+- **The H/V routing model is the simplification we keep.** The two signal
+  layers are biased **horizontal** and **vertical** (vias to switch) — the
+  §9 Manhattan estimate. Note this is a *routing discipline over the two
+  signal layers*, distinct from the stackup order itself.
 - **Planes are conductors.** GND/PWR pours on the inner layers make
   decoupling return paths and power distribution "free" (a pin drops to its
   plane through a via). The pour itself is generated at export / by the
@@ -527,6 +589,13 @@ is an **optimization**, not a declaration:
   current to detour) is a **DRC-lite warning** (§8, return-path
   discontinuity). So "broken fill planes" are modeled as a *rule the LLM
   sees*, not as drawn copper.
+- **2-layer** supported (e.g. GND-bottom / signal+VCC-top) for trivial/cheap
+  boards. **1-layer (aluminum / MCPCB) is a future goal** — single-layer
+  forces a **jumper (0 Ω / resistor) for every crossing**, so you must
+  *minimize crossings and untangle the netlist first*. That is exactly what
+  the §9 crossing-minimizing placer does, so it **does double duty**:
+  pre-routing optimization now, jumper-minimization for 1-layer later. (The
+  placer's crossing count becomes the jumper count.)
 
 ### 11. Exact vs estimated
 
@@ -541,31 +610,41 @@ entirely.
 
 ### 12. Storage & evaluation — dedicated tables
 
+> Full reviewable DDL: [`docs/design/pcb-schema-proposal.md`](../design/pcb-schema-proposal.md)
+> (the proposed `0042_pcb_kind.sql`). Sketch below.
+
 The design is a `refs` row (`kind='pcb'`, one embedded card chunk, §4); the
-graph is **normalized tables keyed on `ref_id`**, each with a `deleted_at`
+graph is **normalized tables keyed on `ref_id`**, each with a `retired_at`
 for recoverable soft-delete:
 
+> **Full DDL: [`docs/design/pcb-schema-proposal.md`](../design/pcb-schema-proposal.md) (v2).** Sketch:
+
 ```
-refs (kind='pcb')            -- the design; meta = stackup, board outline, size; one embedded card chunk → search + pb handle
-pcb_components(id, ref_id→refs, refdes, part_id→parts, footprint,
-               x, y, rot, layer, fixed, roles text[], deleted_at)
-pcb_features  (id, ref_id→refs, type, x, y, rot, fixed, geom, deleted_at)   -- screw holes, outline, fiducials, keepouts
-pcb_nets      (id, ref_id→refs, name, net_class, est_current, deleted_at)
-pcb_conn      (net_id→pcb_nets, component_id→pcb_components, pin_name)       -- the netlist: one row per pin-on-net (the hyperedge)
-pcb_measures  (id, ref_id→refs, kind, direction, goal, strength,
-               operands jsonb, reason, deleted_at)
-parts         (lcsc PK, mfr_part, desc, jlcpcb_assemblable, basic, stock,
-               price jsonb, package, footprint, height_mm, params jsonb,
-               datasheet_url, embedding vector NULL)                        -- catalog (§5); refresh-worker-owned; optional pgvector for fuzzy desc match
+refs (kind='pcb')             -- the design; meta = stackup+copper, width-table, board size, rev, best-placement; one card chunk → search + pb handle
+pcb_components(id, ref_id→refs, label, part_lcsc, footprint, courtyard, centroid, height_mm, note, retired_at)   -- the component TYPE (owns pins)
+pcb_pins      (id, component_id→pcb_components, pad, name, tags text[], description, note, retired_at)            -- pins of the type
+pcb_instances (id, ref_id→refs, component_id→pcb_components, refdes, x, y, rot, layer, fixed, roles text[], note, retired_at)   -- a placement (U3)
+pcb_nets      (id, ref_id→refs, name, net_class, est_current_a, width_mm, note, retired_at)                      -- name REQUIRED + meaningful
+pcb_netconns  (id, net_id→pcb_nets, instance_id, pin_id, component_id, note)   -- netlist triple (net,instance,pin); composite FKs; UNIQUE(instance,pin)
+pcb_measures  (id, ref_id→refs, metric, direction, goal, strength, weight, operands jsonb, reason, retired_at)
+pcb_features  (id, ref_id→refs, ftype, x, y, rot, layer, fixed, geom, note, retired_at)   -- screw holes, outline, fiducials, keepouts
+parts         (lcsc PK, mfr_part, desc, jlcpcb_assemblable, basic, stock, price, package, height_mm, params, datasheet_url, description_tsv)   -- Flow A bulk; staging-swap; NO inbound FK
+part_footprints(lcsc PK, pads, pin_map, courtyard, centroid, kicad_mod, …)     -- Flow B lazy easyeda2kicad cache (survives swap)
+part_availability(lcsc PK, stock_now, ewma_stock, restock_count, trend, discontinued, …)   -- turnover signal; selection ranks on this, not live stock
 ```
 
-- **The derived layer is *not* stored** — ratsnest, crossings, observer
-  results, the placement objective are **computed-on-read with a per-`(ref,
-  version)` memo**, not a table. (Cheap at board sizes; no 0035 chunk
-  cascade to maintain.)
-- **Indexes** that matter: `pcb_conn(net_id)` + `pcb_conn(component_id)` (the
-  two netlist traversals), `pcb_nets(ref_id, name)`, `pcb_components(ref_id,
-  refdes)`. FKs give integrity; partial indexes exclude `deleted_at`.
+- **The derived layer is *not* stored** — ratsnest, crossings, measure
+  verdicts, the placement objective are **computed-on-read, memoized per
+  `(ref_id, rev)`** (rev in `refs.meta`, bumped on any graph write), not a
+  table; **plane (gnd/power) nets are excluded from the ratsnest/crossing
+  metric** (they drop to the plane). No 0035 chunk cascade.
+- **Indexes** that matter: `pcb_netconns(net_id)` + `pcb_netconns(instance_id)`
+  (the graph hop), `pcb_pins(component_id)`, `pcb_nets(ref_id,name)`,
+  `pcb_instances(ref_id,refdes)`, GIN on `roles`/`tags`. **Composite FKs**
+  `(instance_id,component_id)`/`(pin_id,component_id)` force a netconn's pin +
+  instance to share a component. Partial indexes exclude `retired_at`.
+- **`note` on every authored row** stores the LLM's reasoning (the *why* of a
+  wire/placement); inline, not embedded.
 - **Crossing count** is O(segments²) with an **AABB pre-filter** over airwire
   bboxes (most pairs are far apart); net fold is O(pins). At hobby/prototype
   sizes (tens–low-hundreds of parts) this is instant; **`log()` any cap** so
@@ -696,7 +775,7 @@ parts that are mature, format-heavy, and unforgiving (DRC + gerbers + fab).**
   addressed by its natural identity (the **LCSC C-number**, e.g.
   `get(kind='part', id='C25804')`), not chunks; a `pn` handle can be
   registered to resolve to the table if wanted. `corpus_role='none'` for
-  both. `kind='datasheet'` (`ds`) is a **thin `PaperHandler` subclass**
+  both. `kind='datasheet'` (`da`) is a **thin `PaperHandler` subclass**
   (`corpus_role='evidence'`, `supports_put=False`, §7.1) — the electronics
   member of the paper family, sharing the ingest/reader/search engine
   wholesale. **In-tree, not a plugin** (handler + export workers + web viewer +
@@ -738,10 +817,62 @@ parts that are mature, format-heavy, and unforgiving (DRC + gerbers + fab).**
   typical-app-circuit, decoupling). Index rows in `precis-overview` /
   `precis-help` / `precis-toolpath-help`.
 
+### 15. A design is a sequenced project — orchestration (decided 2026-06-28)
+
+**The convergence cycle (decided 2026-06-28):** finish the **netlist** →
+**place** → **try routing** → if routing fails/congests, **fix the placement**
+and **try routing again** → repeat until the board routes (or a bounded
+attempt cap trips and the LLM is asked to intervene — split a net, change a
+part, bump to more layers). The netlist is fixed during this loop; only the
+placement moves. This *is* the §9 place↔route round-trip, and phases 5↔6 of
+the machine below.
+
+A board is built as **ordered phases**, each gated, on the **existing
+`plan_tick` / job substrate** — *not* a free-running skill that self-drives
+the whole flow. A `pcb` design is an `LLM:*` **project** (a `todo` carrying
+`meta.workspace`, ADR 0027/CLAUDE.md); each phase is a child; the framework
+owns the **state machine + gates**, the LLM (guided by a **per-phase skill**)
+owns the **decisions within** a phase.
+
+- **Why framework-driven, not a free-running skill.** Determinism, gating,
+  resumability, and **short focused per-phase contexts** (the active-board
+  context above keeps prompts terse). A free skill can skip a gate, lose
+  state over a long session, and is hard to resume; the `plan_tick`
+  coroutine + `auto_check` evaluators already give all of this.
+- **Phases (with gates):**
+  1. **Intent / requirements** (prompt or a `cfp` via `has-requirement`).
+  2. **Architecture + datasheets** — pick main ICs, ingest/read datasheets.
+  3. **Netlist + net-classes** — instantiate components, wire nets, add
+     bypass/pull-up/terminator per datasheet, assign classes. *Gate:
+     netlist DRC-lite clean (no unconnected pins, bypass present, …).*
+  4. **Part selection** — concrete LCSC parts via the selector. *Gate: every
+     component has an assemblable, in-stock `part`.*
+  5. **Placement** — auto-place + measures + `fixed`. *Gate: courtyard-legal,
+     hard measures satisfied.*
+  6. **Route round-trip** — Freerouting headless; on failure, **back-edge to
+     5** (§9). *Gate: route complete / DRC clean.*
+  7. **Export / order** — BOM + CPL + gerbers, JLCPCB-orderable.
+- **Not a one-way pipeline — explicit back-edges.** 6→5 is the §9 shove
+  round-trip; "need a different part" is 5/4→4; "netlist was wrong" is
+  any→3. The framework encodes the allowed transitions; a phase outcome can
+  request a jump back.
+- **Concurrency falls out for free.** Because phases are sequential, a
+  netlist edit (phase 3) and a placement re-run (phase 5) are never
+  concurrent — this is how open-Q "logical↔physical concurrency" is resolved,
+  with no locking machinery beyond the row-level `FOR UPDATE` of §12.
+- **Gates are `auto_check` evaluators** — new ones like `netlist_drc_clean`,
+  `all_parts_selected`, `placement_legal`, `route_complete` join the existing
+  `paper_ingested` / `child_job_succeeded` family.
+
 ## Phasing
 
+> **v1 done-bar (decided 2026-06-28): an end-to-end *orderable* board.** v1
+> ships when one known board (e.g. an ESP32-C3 sensor node) goes design →
+> place → export → **JLCPCB-orderable** for real — so export + Freerouting
+> (headless) are v1, not fast-follow.
+
 - **v1**: the **relational graph** (`pcb_components` / `pcb_features` /
-  `pcb_nets` / `pcb_conn` / `pcb_measures` tables, §12 + role/class tags + the
+  `pcb_pins` / `pcb_instances` / `pcb_nets` / `pcb_netconns` / `pcb_measures` tables, §12 + role/class tags + the
   **`fixed` mark**, §4.1; design as a `refs` row with one card chunk), the
   **`part` catalog** table + JLCPCB-native selector (assemblable filter, Basic/stock/price
   ranking, pre-processed official feed), the **thin `datasheet` kind** (§7.1)
@@ -752,8 +883,9 @@ parts that are mature, format-heavy, and unforgiving (DRC + gerbers + fab).**
   *rented* router, **BOM + CPL views**, the **mechanical exporters** (board
   outline + mounting/screw holes → the 0041 bridge; component-blocks),
   **export** to KiCad netlist / Specctra `.dsn` / JLCPCB BOM+CPL CSV,
-  **renting Freerouting/EasyEDA** for copper. 4-layer default,
-  mm/float64/rigid-2.5D, the domain + net-class + measures skills.
+  **renting Freerouting (headless)** for copper (EasyEDA = manual escape
+  hatch only). 4-layer default, mm/float64/rigid-2.5D, the domain + net-class
+  + measures skills.
 - **Phase 2 — the shove router (§13a).** A precis-owned **coarse maze /
   rubber-band router** with the LLM-piloted **place↔route shove loop**
   (route easy 90% → congestion report → re-place the hot region, never moving
@@ -770,8 +902,9 @@ parts that are mature, format-heavy, and unforgiving (DRC + gerbers + fab).**
   design loop (export / simulate elsewhere — 0041's "render elsewhere").
 - A drawn **schematic with symbol graphics** — we keep the *netlist*, not a
   picture of it (pixels out).
-- **Owning the autorouter** in v1 — *rent* Freerouting/EasyEDA. (Owning a
-  coarse one is a committed **phase-2** deliverable, §13a, not a "maybe.")
+- **Owning the autorouter** in v1 — *rent* **Freerouting headless** (the only
+  one that automates; EasyEDA is GUI-only, a manual escape hatch). Owning a
+  coarse one is a committed **phase-2** deliverable, §13a, not a "maybe."
 - **Owning gerber generation / DRC**, ever — even when we own routing we
   rent these (§13b): mature, format-heavy, unforgiving, no design intent.
 - Mechanical/3D — that's **0041**; 0042 emits a board outline that 0041 can
@@ -826,26 +959,137 @@ parts that are mature, format-heavy, and unforgiving (DRC + gerbers + fab).**
   + FK integrity. The design stays a `refs` row with one embedded card so the
   *board* is still findable by intent.
 
-## Open questions
+### Decisions — 2026-06-28 (the four v1-gating questions)
 
-1. **Router cost-function tuning** (when we own one, §13a) — how to weight
-   the measures (§8.3) against shortest-path + via count so the LLM's intent
-   actually steers the route without making it un-routable.
-2. **Soft-measure weights.** How aggressive should `soft` measures be as
-   placement-objective terms before they fight the crossing/length core —
-   per-measure default weights, or LLM-set per board?
-3. **Logical↔physical concurrency.** Inherit the `draft` (0033) edit model;
-   confirm a netlist edit and a placement re-run don't race (the netlist is
-   the invariant, so placement re-derives — likely fine).
-4. **Measure expressiveness.** Is the §8.3 library + `min`/`max`/`target`
-   strength model enough, or do measures need a small mini-DSL (the way 0041
-   grew a `config` DSL) for compound selectors ("any `noisy` net within 2 mm
-   of any `sensitive` net for >5 mm parallel run")?
-5. **Stock liveness at selection.** Cache vs query-through for the volatile
-   `stock` field at the moment the LLM picks (within the pre-processed-feed
-   decision).
-6. **Sub-row handles.** Address components/nets only by design-scoped path
-   (`pb12#U3`, `pb12@SCL`) as proposed, or also mint per-row 0036 handles
-   resolving to the `pcb_*` tables? Path-scoping is simpler and matches EDA
-   identity; global handles would let a component be linked from elsewhere
-   (e.g. a `gripe` about U3) — decide if that cross-linking is wanted.
+- **v1 done-bar = an *end-to-end orderable board*.** v1 is not "done" until
+  one known board (e.g. an ESP32-C3 sensor node) goes **design → place →
+  export → JLCPCB-orderable** for real. This forces the whole pipeline early;
+  it makes export + the rented router v1 work, not fast-follow.
+- **Parts / footprint / pin data → `easyeda2kicad` + the JLCPCB parts CSV.**
+  No paid LCSC API assumed. The open **`easyeda2kicad`** tool supplies the
+  per-part **footprint geometry + pin-name→pad map + 3D** (pulled from LCSC);
+  the downloadable **JLCPCB assembly parts list** supplies the
+  `jlcpcb_assemblable` flag + Basic/Extended + stock. LCSC parametrics/stock
+  layer on top. (This resolves the previously-vague "from the footprint /
+  datasheet pinout" — footprints/pins are a *data pipeline*, the catalog's
+  hardest part. Octopart/Nexar stays an optional parametrics backfill.)
+- **v1 router = Freerouting *headless*.** Only Freerouting has a batch /
+  headless mode (`.dsn`→`.ses`), so it is the one router the §9 place↔route
+  round-trip can drive automatically. **EasyEDA is GUI-only** → it stays a
+  *manual* human escape hatch, never in the automated loop.
+- **Authoring = records traversed as a graph, *not* a netlist blob/DSL.** The
+  netlist lives as `pcb_*` rows; the LLM **navigates it as a graph** — `get`
+  IC4 → its pins → the net on each pin → reason → walk to the connected
+  components — and edits by `put`/`edit` on individual records. So the
+  first-class surface is **graph traversal** (§4 addressing, §8.2 signal
+  trace), not an import format. (No DSL or KiCad/SPICE import in v1; either
+  could be added later as sugar over the same rows.) This makes §8.2's
+  walk — *and a `get(neighbors)`-style hop from any pin/net/component* — the
+  load-bearing read path, elevated from "one probe among many."
+
+### Decisions — 2026-06-28 (round 2)
+
+- **Stock liveness** *(amended in round 3 — see below; was "live at selection",
+  which contradicts the no-API daily dump).* **Price** folds into the rank
+  alongside `basic`/`stock`.
+- **Measure expressiveness = the fixed library, no mini-DSL.** The datasheet
+  gives the LLM enough to make an "acceptable" call; its judgment fills any
+  gap. (Resolves open-Q 4.)
+- **Soft-measure weights = per-measure-type defaults + LLM override.** Ship
+  sensible default weights (a sensitive↔noisy `separation` outweighs a
+  cosmetic gap); the LLM may override per measure when it has a reason, but
+  never *must* think about weights. The §9 round-trip *is* the place↔route
+  hand-off, so there is no separate threshold to tune. (Resolves open-Q 2.)
+- **Active-board context ("`use pcb12`").** Addressing is `pb12#U3` = handle
+  code `pb` · ref 12 · component `U3`. To keep phase prompts short, a session
+  may **select an active design** (`get(kind='pcb', id='pb12',
+  view='use')` / a session param), after which **bare** `U3` / `SCL` /
+  `U3.SCL` resolve against it; the fully-qualified `pb12#U3` always works for
+  disambiguation or cross-references (a `gripe` pointing at one component).
+  So **`pb12#U3` *is* the global handle** (path form) — no separate per-row
+  integer handle. (Resolves open-Q 6 on sub-row handles.)
+- **A design is a *sequenced project*; phases solve concurrency.** The build
+  runs as ordered **phases** (§15), so a netlist edit and a placement re-run
+  are never concurrent — concurrency is handled *by phasing*, no extra
+  machinery. (Resolves open-Q 3.) Orchestration is the existing
+  `plan_tick`/job substrate (§15), **not** a free-running skill.
+
+### Decisions — 2026-06-28 (round 3; full detail in the schema proposal)
+
+- **Schema** locked — full DDL in
+  [`docs/design/pcb-schema-proposal.md`](../design/pcb-schema-proposal.md).
+  Key calls: **nothing FKs the catalog** (the atomic-swap `DROP parts` forbids
+  it; designs loose-point `parts.lcsc` and **snapshot** footprint/courtyard/
+  height/value so a board survives catalog churn); `pcb_netconns UNIQUE(instance,
+  pin)` = *a pin is on at most one net*; **child soft-delete = `retired_at`**
+  (house convention), `pcb_netconns` hard-delete; class/metric/ftype = free text +
+  handler-validated enum.
+- **Stock → turnover, not live count (amends round 2).** The goal is to avoid
+  the *last-reel-ever* part and prefer **high-turnover** parts — a velocity
+  question no live count answers. Keep the daily dump, **derive a per-part
+  turnover/availability score** by diffing successive dumps (restock events,
+  trend, EWMA) into a separate **`part_availability`** table (survives the
+  swap), and **rank on that** (Basic + turnover + healthy trend). No live
+  scrape; the JLCPCB order is the final buyable-now gate. v1 may start with a
+  proxy (Basic + stock-threshold + age).
+- **Write path: batch `put`** (one call takes *lists* of components/nets/conns
+  — same verb, array args, *not* a netlist DSL/format). Graph-traversal is the
+  *read* model; batch put the *write* model. Never one `put` per row.
+- **Handle codes:** `pcb`→`pb`, `part`→`pn` (other-table, C-number-addressed),
+  `datasheet`→`da` (chunk `dk`). LCSC C-number is the stable rejoin key
+  (`mfr_part` the deeper identity).
+- **Discoverability: EDA kinds are context-gated** — usable but **not** in the
+  always-loaded kind catalog (would tax every non-EDA session). A conditional
+  module (ADR 0038) + an EDA skill group (ADR 0032), discovered via
+  `search(kind='skill', …)`. Generalizes to niche kinds.
+- **Footprint pipeline = tiered (internalize progressively).** v1 **rents
+  `easyeda2kicad`** (pad geometry + pinout in one fetch). Phase 2 internalizes
+  the standard case: an **IPC-7351 land-pattern generator** for standard
+  packages (rules from package+dims — offline, ~80–90%, kills the SPOF) +
+  **datasheet pinout extraction** for the name→pad map; fetch-fallback for the
+  proprietary tail. (Routing-internalization is already the phase-2 shove
+  router, §13a.)
+- *Confirmed:* v1 = **walking skeleton** (trivial board end-to-end first);
+  layer default **4** (no threshold).
+
+### Decisions — 2026-06-28 (round 4; finalize schema — full DDL in the proposal)
+
+- **Type/instance split** — `pcb_components` is the *type* (owns `pcb_pins`);
+  `pcb_instances` are placements (refdes/x/y/rot/layer/fixed/roles); the
+  netlist is `pcb_netconns(net, instance, pin)`; **a physical pin is on ≤1
+  net**; **composite FKs** force a netconn's pin+instance to share a
+  component. Repeated parts (passives) define the type once. A **put
+  convenience** creates component+instance together for the unique-part case.
+- **Notes everywhere** — `note text` on components/pins/instances/nets/
+  netconns/features (measures use `reason`): store the LLM's reasoning (the
+  *why* of a wire/placement). Inline, not embedded.
+- **Pins carry `tags text[]`** (electrical type + domain: input/output/bidir/
+  passive/power/gnd/5v/data/analog…), not a flat enum; GIN-indexed; decoupling
+  DRC keys on `power ∈ tags` and degrades gracefully if sparse.
+- **Net name required + meaningful** (the net's documented purpose; no `N$1`).
+- **Coordinate/rotation** — see §3 (centroid pivot, CW-from-north, board-corner
+  origin, exporters convert, JLCPCB CPL fix map).
+- **Trace width** — `pcb_nets.width_mm` derived from class default ∨ IPC-2221
+  current calc, **snapped to standard steps**; copper weight + width-table on
+  `refs.meta`. Wires/vias are the router's output (not stored in v1).
+- **Plane nets** modeled fully in `pcb_netconns`; excluded only from the
+  derived ratsnest/crossing metric (a Slice-4 rule, not a schema flag).
+- **Best-so-far placement** snapshot in `refs.meta` for the convergence loop.
+
+## Open questions (remaining)
+
+1. **Router cost-function tuning** (phase 2, when we own a router, §13a) — how
+   to weight the measures (§8.3) against shortest-path + via count so the
+   LLM's intent steers the route without making it un-routable.
+
+*(All v1-shaping questions resolved 2026-06-28 — see the Decisions blocks
+above. Only the phase-2 router-tuning question remains.)*
+
+### Lower-stakes defaults (chosen unless you object)
+
+- **Catalog scope** → mirror **only JLCPCB-assemblable** parts (~tens of
+  thousands), not all of LCSC.
+- **DRC-lite rules** → **hardcode JLCPCB's published capability matrix**
+  (min trace/space/via per layer count), versioned in one table.
+- **Placer / router execution** → a **`job`** (async), like exports, since
+  annealing + the external router round-trip take seconds-to-minutes.
