@@ -28,6 +28,8 @@ import os
 import subprocess
 from dataclasses import dataclass
 
+from precis.utils.llm.router import Tier, resolve_model
+
 log = logging.getLogger(__name__)
 
 
@@ -73,7 +75,10 @@ def attempt_llm_fix(
     # Layer 1 already ran upstream; the remaining errors are by
     # definition not mechanically fixable. Ask sonnet.
     claude_bin = os.environ.get("PRECIS_CLAUDE_BIN", "claude")
-    sonnet_model = os.environ.get("PRECIS_MODEL_SONNET", "claude-sonnet-4-6")
+    # Model selection via the ADR 0046 resolver's CLOUD_MID tier
+    # (``PRECIS_MODEL_SONNET`` / ``claude-sonnet-4-6``) — byte-identical to
+    # the previous inline read.
+    sonnet_model = resolve_model(Tier.CLOUD_MID)
     prompt = _build_fixer_prompt(text=text, errors=chktex_errors)
     try:
         proc = subprocess.run(

@@ -168,6 +168,44 @@ class TestLoadConfig:
         assert cfg.default_repo_dir == Path("/tmp/repo").resolve()
         assert cfg.repos == {}
 
+    def test_claude_model_resolves_via_tier_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unit 4b: with no bespoke override, claude_model resolves through
+        the ADR 0046 CLOUD_SUPER tier — byte-identical to the legacy
+        hard-coded ``claude-opus-4-7`` default."""
+        monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.delenv("PRECIS_FIX_CLAUDE_MODEL", raising=False)
+        monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
+        cfg = load_config_from_env()
+        assert cfg.claude_model == "claude-opus-4-7"
+
+    def test_claude_model_bespoke_override_wins(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The bespoke ``PRECIS_FIX_CLAUDE_MODEL`` knob still takes precedence
+        over the shared tier default."""
+        monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.setenv("PRECIS_FIX_CLAUDE_MODEL", "claude-pinned-fix")
+        monkeypatch.setenv("PRECIS_MODEL_OPUS", "claude-tier-opus")
+        cfg = load_config_from_env()
+        assert cfg.claude_model == "claude-pinned-fix"
+
+    def test_claude_model_follows_opus_pin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the bespoke override, fix_gripe follows the shared opus
+        pin (``PRECIS_MODEL_OPUS``) — the point of routing through the
+        resolver."""
+        monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.delenv("PRECIS_FIX_CLAUDE_MODEL", raising=False)
+        monkeypatch.setenv("PRECIS_MODEL_OPUS", "claude-opus-pinned")
+        cfg = load_config_from_env()
+        assert cfg.claude_model == "claude-opus-pinned"
+
     def test_repos_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
         monkeypatch.setenv(

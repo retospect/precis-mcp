@@ -15,7 +15,9 @@ from __future__ import annotations
 
 from precis.handlers._todo_guards import todo_root_sql
 from precis.store import Store
+from precis.utils.prompt import AssemblyContext, Layer, Module
 from precis.workers.review import (
+    _SHARED_TRAILING_MODULES,
     Reviewer,
     _mcp_config_path,
     run_review_pass,
@@ -119,7 +121,17 @@ def _structural_context(store: Store) -> dict[str, str]:
     }
 
 
-_STRUCTURAL_TEMPLATE = """STRUCTURAL REVIEW — {today}
+def _structural_body(ctx: AssemblyContext) -> str:
+    """The structural-reviewer-specific body (ADR 0038 step 3).
+
+    Everything up to the shared abbreviations + footer blocks: the header,
+    the drill-in note, both live-data sections (read from ``ctx.extras``),
+    the "what to look for" checklist, and the output-format spec.
+    """
+    today = ctx.extras["today"]
+    strategic_layer = ctx.extras["strategic_layer"]
+    nursery_excerpt = ctx.extras["nursery_excerpt"]
+    return f"""STRUCTURAL REVIEW — {today}
 
 You are reviewing the asa todo tree for *structural* problems that
 SQL can't detect. Below is a snapshot of the strategic + tactical
@@ -166,18 +178,22 @@ section per problem type (only those with findings). Each finding
 references the ref by id. Be specific — name what's wrong and
 suggest the next move. If the tree looks clean, say so explicitly
 ("No structural issues this pass"); we still write the digest so
-the audit log shows the review ran.
+the audit log shows the review ran."""
 
-**Define your abbreviations.** A memory has no glossary, so spell out
-each abbreviation on first use — write `AGNR (armchair graphene
-nanoribbon)`, not a bare `AGNR`. This covers all-caps acronyms and
-hyphenated compounds (`GNR-FET`).
 
-Do not address anyone. Do not use the precis MCP `put` tool to
-write a memory directly — the worker will write your output as a
-memory tagged `tier:structural` after you finish. Your final stdout
-IS the digest body.
-"""
+#: The structural prompt as an ordered module list (ADR 0038 step 3):
+#: the reviewer-specific body, then the two SHARED trailing blocks
+#: (abbreviations + only-put-is-a-gripe footer) authored once in
+#: :mod:`precis.workers.review`.
+_STRUCTURAL_MODULES: list[Module] = [
+    Module(
+        id="structural.body",
+        layer=Layer.VARIABLE,
+        build=_structural_body,
+        required=True,
+    ),
+    *_SHARED_TRAILING_MODULES,
+]
 
 
 STRUCTURAL = Reviewer(
@@ -190,7 +206,7 @@ STRUCTURAL = Reviewer(
     timeout_s=900,
     min_interval_hours=MIN_INTERVAL_HOURS,
     context_builder=_structural_context,
-    prompt_template=_STRUCTURAL_TEMPLATE,
+    modules=_STRUCTURAL_MODULES,
 )
 
 

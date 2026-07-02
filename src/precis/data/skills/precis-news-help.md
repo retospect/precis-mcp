@@ -108,14 +108,18 @@ put(kind='todo', text='news poll', tags=['level:recurring'],
     meta={'schedule': {'every': '30m'},
           'executor': 'claude_inproc', 'job_type': 'news_poll', 'params': {}})
 
-# brief every morning at 07:00 UTC, delivered to a Discord channel
+# brief every morning at 07:00 UTC, delivered into a Discord conv thread
 put(kind='todo', text='morning briefing', tags=['level:recurring'],
     meta={'schedule': {'cron': '0 7 * * *'},
           'executor': 'claude_inproc', 'job_type': 'briefing',
-          'params': {'deliver_to': 'discord/<guild>/<channel>/<channel>'}})
+          'params': {'deliver_to': 'conv:discord/<guild>/<channel>/<thread>'}})
 ```
 
-Omit `params.deliver_to` to only persist the brief without delivering it.
+Prefer a thread/conv target (`conv:discord/<g>/<c>/<t>`): a
+proactive delivery to a conv thread is mirrored into that thread's
+history, so follow-up questions see the brief as context instead of
+denying it. Omit `params.deliver_to` to only persist the brief without
+delivering it.
 
 ## Lineage
 

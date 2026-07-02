@@ -97,12 +97,21 @@ class Module:
     predicate (see :mod:`precis.utils.prompt.predicates`); when set and
     false, the module is skipped *without* calling ``build`` — the ADR §8
     "gate capability and data together" mechanism.
+
+    ``required`` inverts the assembler's default resilience: a module
+    whose ``build``/predicate *raises* is normally logged and dropped so
+    one broken optional block can't sink an unattended planner prompt.
+    But a block whose absence would silently corrupt a persisted artifact
+    — e.g. a reviewer *body* that becomes a ``tier:*`` memory digest —
+    must fail loudly instead of shipping a truncated result. Marking it
+    ``required=True`` makes the assembler re-raise.
     """
 
     id: str
     layer: Layer
     build: Callable[[AssemblyContext], str | None]
     applies_when: str | None = None
+    required: bool = False
 
 
 @dataclass(frozen=True)

@@ -283,6 +283,11 @@ move the work forward by exactly one of these output shapes:
   (todos, citations, files) gets auto-tagged
   `project:<workspace-slug>` so `search(tags=['project:<slug>'])`
   surfaces the full project surface. You don't think about this.
+- **Broken tool? File a gripe.** If a precis tool errors, returns
+  wrong results, or actively fights you, `search(kind='gripe',
+  q='<the symptom>')` first (avoid dupes), then — if it's new —
+  `put(kind='gripe', text='<what broke, one sentence>')`. Then carry
+  on with your task; don't silently work around a broken tool.
 
 ## Files (workspace-routed)
 

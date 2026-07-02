@@ -4,8 +4,10 @@ Numeric-id ref kind (migration 0010). Each message ref is one
 outbound proactive send. asa_bot calls
 ``put(kind='message', target='discord/G/C/T', text='...')`` to ping
 the user unprompted; the handler stores the ref AND fires
-``pg_notify('precis.messages', {ref_id: N})``. asa_bot LISTENs on
-that channel, fetches the ref, and posts to the target transport.
+``pg_notify('precis.messages', {ref_id, target, author})``. asa_bot
+LISTENs on that channel, fetches the ref, and posts to the target
+transport (``author`` lets it attribute a mirrored conv turn without
+a re-fetch).
 
 Every send becomes a stored, searchable ref — "what have I been
 nagging the user about this week?" via
@@ -106,6 +108,7 @@ class MessageHandler(NumericRefHandler):
         rel: str | None = None,
         target: str | None = None,
         reason: str | None = None,
+        author: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
         **_kw: Any,
     ) -> Response:
@@ -116,14 +119,17 @@ class MessageHandler(NumericRefHandler):
         Optional:
           - ``reason``: short trace string ("cron:42 fired",
             "asa noticed PR was stale") for audit / debugging.
+          - ``author``: who is speaking (default ``'asa'``); echoed
+            in the notify payload so asa_bot can attribute a mirrored
+            conv turn without a re-fetch.
           - ``attachments``: list of attachment specs the delivery
             layer fetches and posts inline. Shape:
             ``[{filename, content_type, archive_path}]`` —
             asa_bot reads each path from NFS and uploads.
 
         The handler stores the ref then fires
-        ``pg_notify('precis.messages', '{"ref_id": N}')`` so the
-        delivery layer wakes immediately. asa_bot reads the
+        ``pg_notify('precis.messages', '{ref_id, target, author}')`` so
+        the delivery layer wakes immediately. asa_bot reads the
         notification, fetches the ref + chunks + meta, and posts.
 
         State transitions: every new send starts
@@ -183,9 +189,14 @@ class MessageHandler(NumericRefHandler):
                 ),
             )
 
+        # Every message ref is a proactive outbound send; stamp author +
+        # proactive so asa_bot can attribute the mirrored conv turn (the
+        # notify payload carries author too, sparing it a fetch).
         meta: dict[str, Any] = {
             "status": "queued",
             "target": str(target).strip(),
+            "author": str(author).strip() if author is not None else "asa",
+            "proactive": True,
         }
         if reason is not None:
             meta["reason"] = str(reason).strip()
@@ -254,7 +265,15 @@ class MessageHandler(NumericRefHandler):
 
             conn.execute(
                 "SELECT pg_notify('precis.messages', %s)",
-                (json.dumps({"ref_id": ref.id, "target": meta["target"]}),),
+                (
+                    json.dumps(
+                        {
+                            "ref_id": ref.id,
+                            "target": meta["target"],
+                            "author": meta["author"],
+                        }
+                    ),
+                ),
             )
 
         return self._render_create_ack(ref.id, target=meta["target"])

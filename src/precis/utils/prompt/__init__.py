@@ -19,13 +19,14 @@ Public surface:
   :class:`AssemblyContext` — the value types.
 * :func:`assemble` — select + order modules into blocks.
 * :class:`ClaudeAgentAdapter` — render blocks to ``(system, user)``.
+* :class:`LiteLLMAdapter` — render blocks to an OpenAI ``messages`` list.
 * the computed table builders (``tools_table``, ``kinds_table``,
   ``doc_context_table``, ``glossary_table``).
 """
 
 from __future__ import annotations
 
-from precis.utils.prompt.adapters import ClaudeAgentAdapter
+from precis.utils.prompt.adapters import ClaudeAgentAdapter, LiteLLMAdapter
 from precis.utils.prompt.assembler import assemble
 from precis.utils.prompt.model import (
     AssemblyContext,
@@ -47,6 +48,7 @@ __all__ = [
     "Block",
     "ClaudeAgentAdapter",
     "Layer",
+    "LiteLLMAdapter",
     "Module",
     "Profile",
     "assemble",

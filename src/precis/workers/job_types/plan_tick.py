@@ -26,7 +26,22 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from precis.utils.llm.router import Tier, resolve_model
+
 log = logging.getLogger(__name__)
+
+
+#: Per-tick cost ceiling for the planner subprocess (``--max-budget-usd``).
+#: Set higher than the ``claude_agent`` default ($2) because a plan_tick is
+#: a 30-turn opus agentic run that legitimately spends more than a one-shot
+#: agent call, so a lower cap would truncate normal ticks. It is a
+#: runaway-spend backstop, not a normal-tick limit. A tick cut off by the
+#: cap is treated as a *resumable exhaustion* — the same handling as the
+#: ``--max-turns`` ceiling / wall-clock timeout (see
+#: ``executors/claude_inproc._resume_reason``) — so a legitimately long task
+#: continues on a fresh tick rather than hard-failing. Override via
+#: ``PRECIS_PLAN_TICK_MAX_USD``.
+_DEFAULT_MAX_USD: float = 5.00
 
 
 DESCRIPTION: str = (
@@ -210,6 +225,12 @@ def run(
         prompts.system,
         "--max-turns",
         "30",
+        # Runaway-spend backstop. A tick that hits this cap is a *resumable*
+        # exhaustion (like --max-turns / timeout), not a hard failure — the
+        # executor's _resume_reason detects the budget result event and a
+        # fresh tick continues. Set high so it never truncates a normal tick.
+        "--max-budget-usd",
+        str(_max_budget_usd()),
         "--permission-mode",
         "acceptEdits",
         # Emit the full message stream (every turn + tool call/result) so
@@ -328,14 +349,52 @@ def _disable_prose_file_kind(
     )
 
 
+#: The ``LLM:<value>`` short-name → capability-tier map (ADR 0046). Each
+#: tier resolves (via :func:`~precis.utils.llm.router.resolve_model`) to the
+#: exact env-var + default the legacy inline table read, so a given
+#: ``LLM:opus`` tag still binds to the same pinned generation — byte-for-byte:
+#:   opus   → CLOUD_SUPER (``PRECIS_MODEL_OPUS``,  ``claude-opus-4-7``)
+#:   sonnet → CLOUD_MID   (``PRECIS_MODEL_SONNET``, ``claude-sonnet-4-6``)
+#:   haiku  → CLOUD_SMALL (``PRECIS_MODEL_HAIKU``,  ``claude-haiku-4-5-20251001``)
+_TIER_BY_ALIAS: dict[str, Tier] = {
+    "opus": Tier.CLOUD_SUPER,
+    "sonnet": Tier.CLOUD_MID,
+    "haiku": Tier.CLOUD_SMALL,
+}
+
+
 def _model_alias(model: str) -> str:
-    """Translate the short LLM:<value> name to the real Claude model ID."""
-    # Pinned model IDs so a ``LLM:opus`` tag binds to a specific
-    # generation even as the CLI's default shifts. Override via env
-    # (``PRECIS_MODEL_OPUS=…``) for testing or model migration.
-    defaults = {
-        "opus": os.environ.get("PRECIS_MODEL_OPUS", "claude-opus-4-7"),
-        "sonnet": os.environ.get("PRECIS_MODEL_SONNET", "claude-sonnet-4-6"),
-        "haiku": os.environ.get("PRECIS_MODEL_HAIKU", "claude-haiku-4-5-20251001"),
-    }
-    return defaults.get(model, model)
+    """Translate the short LLM:<value> name to the real Claude model ID.
+
+    Routes through the ADR 0046 resolver so model selection lives in one
+    table. The tier map reproduces the exact env var + default the legacy
+    inline table read, so a ``LLM:opus`` tag still binds to the same pinned
+    generation (override via ``PRECIS_MODEL_OPUS=…`` etc.). An unrecognized
+    name passes through unchanged — mirrors the old ``.get(model, model)``
+    fallback (``validate_submit`` already constrains it to opus/sonnet/haiku).
+    """
+    tier = _TIER_BY_ALIAS.get(model)
+    if tier is None:
+        return model
+    return resolve_model(tier)
+
+
+def _max_budget_usd() -> float:
+    """The planner subprocess's ``--max-budget-usd`` cap.
+
+    Reads ``PRECIS_PLAN_TICK_MAX_USD`` (a float) or falls back to
+    :data:`_DEFAULT_MAX_USD`. A malformed value logs and falls back rather
+    than crashing the tick.
+    """
+    raw = os.environ.get("PRECIS_PLAN_TICK_MAX_USD")
+    if not raw:
+        return _DEFAULT_MAX_USD
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning(
+            "plan_tick: PRECIS_PLAN_TICK_MAX_USD=%r is not a float; using $%.2f",
+            raw,
+            _DEFAULT_MAX_USD,
+        )
+        return _DEFAULT_MAX_USD

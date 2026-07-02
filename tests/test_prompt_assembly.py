@@ -72,6 +72,26 @@ def test_assemble_skips_failing_builder_not_fatal() -> None:
     assert [b.id for b in blocks] == ["ok1", "ok2"]
 
 
+def test_assemble_required_builder_failure_re_raises() -> None:
+    """A ``required`` module's build failure must NOT be swallowed.
+
+    Optional blocks are dropped so an unattended planner tick survives,
+    but a reviewer *body* becomes a persisted ``tier:*`` memory digest —
+    silently omitting it would ship a truncated digest. ``required=True``
+    makes the assembler fail loudly instead.
+    """
+
+    def boom(c: AssemblyContext) -> str:
+        raise RuntimeError("kaboom")
+
+    mods = [
+        Module(id="ok", layer=Layer.CACHED, build=lambda c: "one"),
+        Module(id="body", layer=Layer.VARIABLE, build=boom, required=True),
+    ]
+    with pytest.raises(RuntimeError, match="kaboom"):
+        assemble(mods, _ctx())
+
+
 def test_applies_when_gates_capability_and_data() -> None:
     """A false predicate drops the module without calling build."""
     called = {"n": 0}

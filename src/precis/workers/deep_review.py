@@ -13,7 +13,9 @@ from __future__ import annotations
 
 from precis.handlers._todo_guards import todo_root_sql
 from precis.store import Store
+from precis.utils.prompt import AssemblyContext, Layer, Module
 from precis.workers.review import (
+    _SHARED_TRAILING_MODULES,
     Reviewer,
     _mcp_config_path,
     run_review_pass,
@@ -138,7 +140,17 @@ def _deep_context(store: Store) -> dict[str, str]:
     }
 
 
-_DEEP_TEMPLATE = """DEEP REVIEW — {today}
+def _deep_body(ctx: AssemblyContext) -> str:
+    """The deep-reviewer-specific body (ADR 0038 step 3).
+
+    Everything up to the shared abbreviations + footer blocks: the header,
+    the drill-in note, both live-data sections (read from ``ctx.extras``),
+    and the five-section "what to do" spec + qualitative-narrative ask.
+    """
+    today = ctx.extras["today"]
+    strategic_dashboard = ctx.extras["strategic_dashboard"]
+    recent_review_summary = ctx.extras["recent_review_summary"]
+    return f"""DEEP REVIEW — {today}
 
 You are reviewing the asa todo tree at the weekly cadence (Allen's
 "deep review" tier). Below is the strategic dashboard with 7d
@@ -185,18 +197,22 @@ section with no recommendations):
 End with one or two paragraphs of qualitative narrative — what's
 the tree telling you about how the week went? Use this for
 continuity; asa-bot's preamble surfaces recent memories so a good
-narrative gets quoted back in chat.
+narrative gets quoted back in chat."""
 
-**Define your abbreviations.** A memory has no glossary, so spell out
-each abbreviation on first use — write `AGNR (armchair graphene
-nanoribbon)`, not a bare `AGNR`. This covers all-caps acronyms and
-hyphenated compounds (`GNR-FET`).
 
-Do not address anyone. Do not use the precis MCP `put` tool to
-write a memory directly — the worker will write your output as a
-memory tagged `tier:deep` after you finish. Your final stdout IS
-the digest body.
-"""
+#: The deep-review prompt as an ordered module list (ADR 0038 step 3):
+#: the reviewer-specific body, then the two SHARED trailing blocks
+#: (abbreviations + only-put-is-a-gripe footer) authored once in
+#: :mod:`precis.workers.review`.
+_DEEP_MODULES: list[Module] = [
+    Module(
+        id="deep_review.body",
+        layer=Layer.VARIABLE,
+        build=_deep_body,
+        required=True,
+    ),
+    *_SHARED_TRAILING_MODULES,
+]
 
 
 DEEP_REVIEW = Reviewer(
@@ -209,7 +225,7 @@ DEEP_REVIEW = Reviewer(
     timeout_s=1800,
     min_interval_hours=MIN_INTERVAL_HOURS,
     context_builder=_deep_context,
-    prompt_template=_DEEP_TEMPLATE,
+    modules=_DEEP_MODULES,
 )
 
 

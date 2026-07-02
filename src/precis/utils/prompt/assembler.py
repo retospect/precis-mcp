@@ -36,7 +36,10 @@ def assemble(modules: Sequence[Module], ctx: AssemblyContext) -> list[Block]:
 
     A builder that raises is logged and dropped, never fatal: one broken
     optional block must not sink the whole prompt (the planner runs
-    unattended across the fleet)."""
+    unattended across the fleet). The exception is a ``required=True``
+    module — one whose silent omission would corrupt a persisted artifact
+    (a reviewer body digest); its failure re-raises so the caller aborts
+    rather than shipping a truncated result."""
     blocks: list[Block] = []
     for mod in modules:
         if mod.applies_when is not None:
@@ -44,6 +47,8 @@ def assemble(modules: Sequence[Module], ctx: AssemblyContext) -> list[Block]:
                 if not predicates.evaluate(mod.applies_when, ctx):
                     continue
             except Exception:
+                if mod.required:
+                    raise
                 log.exception(
                     "prompt.assemble: predicate %r failed for module %r",
                     mod.applies_when,
@@ -53,6 +58,8 @@ def assemble(modules: Sequence[Module], ctx: AssemblyContext) -> list[Block]:
         try:
             text = mod.build(ctx)
         except Exception:
+            if mod.required:
+                raise
             log.exception("prompt.assemble: module %r build failed", mod.id)
             continue
         if not text:

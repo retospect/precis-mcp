@@ -99,6 +99,9 @@ _KIND_ROWS: list[tuple[str, bool, str, str]] = [
     ("citation", False, "a claim bound to a source chunk", "get put"),
     ("finding", False, "a claim being chased into the corpus", "get put"),
     ("memory", False, "a durable note / thought", "get put"),
+    # has_chunk=True: gripe bodies/comments are chunks (code 'gc' in the
+    # registry), so the legend shows gr/gc.
+    ("gripe", True, "a bug / tooling-friction report", "get put search tag"),
     ("skill", False, "a how-to / style guide", "get search"),
     ("tex", True, "a workspace LaTeX section", "get put edit"),
 ]

@@ -31,6 +31,14 @@ from typing import Any
 from precis.handlers.news import article_blocks
 from precis.store import Store
 from precis.store.types import BlockInsert
+from precis.utils.prompt import (
+    AssemblyContext,
+    Layer,
+    LiteLLMAdapter,
+    Module,
+    Profile,
+    assemble,
+)
 from precis.workers.llm_summarize import LlmClient, LlmConfig
 
 log = logging.getLogger(__name__)
@@ -47,6 +55,48 @@ _SYSTEM_PROMPT = (
     "Be factual and neutral; do not invent details beyond the headlines. "
     "End with a one-line 'Worth watching' note. Use markdown headings."
 )
+
+
+def _briefing_user_block(ctx: AssemblyContext) -> str:
+    """The VARIABLE (per-run) user turn — date + the overnight headlines."""
+    e = ctx.extras
+    return f"Date: {e['date']}. {e['count']} headlines overnight:\n\n{e['context']}"
+
+
+#: The briefing prompt as an ordered module list (ADR 0038 step 2, helper
+#: profile). CACHED (→ ``system``): the editor persona/instruction, stable
+#: across runs. VARIABLE (→ ``user``): the dated headline context. Packaged
+#: by the shared :class:`LiteLLMAdapter`, reusing the summarizer machinery.
+_BRIEFING_MODULES: list[Module] = [
+    Module(
+        id="briefing.system",
+        layer=Layer.CACHED,
+        build=lambda _ctx: _SYSTEM_PROMPT,
+    ),
+    Module(
+        id="briefing.user",
+        layer=Layer.VARIABLE,
+        build=_briefing_user_block,
+    ),
+]
+
+
+def _build_briefing_messages(
+    *, date: str, count: int, context: str
+) -> list[dict[str, str]]:
+    """Assemble the briefing chat messages via the shared assembler + adapter.
+
+    Reproduces the hand-rolled ``[system, user]`` pair byte-for-byte: the
+    ``_SYSTEM_PROMPT`` persona (CACHED → system) + the dated headline
+    context (VARIABLE → user)."""
+    ctx = AssemblyContext(
+        store=None,
+        ref_id=0,
+        model="summarizer",
+        profile=Profile.HELPER,
+        extras={"date": date, "count": count, "context": context},
+    )
+    return LiteLLMAdapter.render(assemble(_BRIEFING_MODULES, ctx))
 
 
 def _format_context(refs: list[Any], max_chars: int = 120_000) -> str:
@@ -80,7 +130,8 @@ def run_briefing(
     Returns ``{articles, brief_chars, ref_id}``; ``articles == 0`` means
     no news in the window and no brief was written.
 
-    ``deliver_to`` is a delivery target (e.g. ``discord/<g>/<c>/<t>``); when
+    ``deliver_to`` is a delivery target (e.g. ``conv:discord/<g>/<c>/<t>``,
+    preferred so the brief mirrors into the conv thread's history); when
     set, the brief is queued as a ``message`` ref (which fires
     ``pg_notify('precis.messages')``) so asa_bot posts it verbatim — the
     worker needs no transport socket of its own. Delivery is idempotent
@@ -109,16 +160,9 @@ def run_briefing(
     )
     context = _format_context(refs)
     result = llm.complete(
-        [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"Date: {now.date().isoformat()}. "
-                    f"{len(refs)} headlines overnight:\n\n{context}"
-                ),
-            },
-        ]
+        _build_briefing_messages(
+            date=now.date().isoformat(), count=len(refs), context=context
+        )
     )
     brief = result.text.strip()
 
@@ -162,8 +206,10 @@ def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
     """Queue the brief as a ``message`` ref for verbatim delivery.
 
     Mirrors ``MessageHandler.put``: insert a ``message`` ref + body chunk
-    and fire ``pg_notify('precis.messages', {ref_id, target})`` in the
-    same tx, so asa_bot (the one process holding a Discord socket) posts
+    and fire ``pg_notify('precis.messages', {ref_id, target, author})``
+    in the same tx (``author='asa'`` + ``meta.proactive=True`` so asa_bot
+    can attribute the mirrored conv turn without an extra fetch), so
+    asa_bot (the one process holding a Discord socket) posts
     it. The worker itself needs no socket — delivery is just a DB write.
 
     Idempotent per brief-date: if a delivery message for ``date_tag``
@@ -187,6 +233,8 @@ def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
                 "status": "queued",
                 "reason": f"briefing {date_tag}",
                 "briefing_date": date_tag,
+                "author": "asa",
+                "proactive": True,
             }
             ref = store.insert_ref(
                 kind="message",
@@ -202,7 +250,7 @@ def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
             )
             conn.execute(
                 "SELECT pg_notify('precis.messages', %s)",
-                (json.dumps({"ref_id": ref.id, "target": target}),),
+                (json.dumps({"ref_id": ref.id, "target": target, "author": "asa"}),),
             )
     except Exception as exc:
         log.warning("briefing: delivery to %s failed: %s", target, exc)

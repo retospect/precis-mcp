@@ -53,6 +53,15 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from precis.utils.prompt import (
+    AssemblyContext,
+    Layer,
+    LiteLLMAdapter,
+    Module,
+    Profile,
+    assemble,
+)
+
 log = logging.getLogger(__name__)
 
 #: Summarizer name written to ``chunk_summaries.summarizer``. Bump to
@@ -568,102 +577,116 @@ def _kind_noun(ref_kind: str) -> str:
     }.get(ref_kind, "document")
 
 
-def build_messages(claim: _Claimed, *, doc_card: str) -> list[dict[str, str]]:
-    """Assemble the chat messages for one chunk.
+#: Layer 1 — the fixed instruction block. Byte-identical for *every* chunk
+#: in the corpus (no per-doc/per-chunk interpolation beyond the compile-time
+#: ``_BRIEF_MAX_WORDS``), so it stays KV-cache-hot on a llama.cpp slot even
+#: across document switches. The document *kind* is deliberately NOT here (it
+#: lives in the doc-header, layer 2) so this prefix never changes between a
+#: paper, a patent and a conversation. A CACHED module (ADR 0038 §4 helper).
+_INSTRUCTION_BLOCK = (
+    "You summarize a single passage from a larger document, "
+    "as a navigation gloss.\n"
+    "Output EXACTLY two lines and nothing else:\n"
+    f"BRIEF: <a self-contained gist in one clause, at most {_BRIEF_MAX_WORDS} words>\n"
+    "DETAIL: <1-3 terse fragments adding specifics NOT already in BRIEF — "
+    "quantities, named entities, method, caveats>\n"
+    "DETAIL is always shown appended to BRIEF, never on its own, so it "
+    "must read as a continuation and never repeat anything in BRIEF.\n"
+    "Be faithful — never invent facts. Write both lines telegraphically: "
+    "plain, no preamble, no markdown, and drop leading articles and "
+    "pronouns. Spell out abbreviations when standard and unambiguous (keep "
+    "unit/element symbols, DNA, pH); never reuse source-only labels. Put a "
+    "space between a number and its unit and reproduce quantities verbatim.\n"
+    "If the passage is not prose — a data table, coordinate dump, reference "
+    "list, or copyright/masthead boilerplate — set BRIEF to a short "
+    "parenthetical tag naming it (e.g. (tabular data), (atomic coordinates), "
+    "(copyright notice), (publication metadata), (reference list)) and leave "
+    "DETAIL empty."
+)
 
-    Three cache layers, ordered most-stable first so llama.cpp's
-    longest-matching-prefix reuse pays off:
+#: Layer 1 — the seven few-shot BRIEF/DETAIL pairs (style only). A CACHED
+#: module (ADR 0038 §4, "examples as a cached module"); kept verbatim.
+_EXAMPLES_BLOCK = (
+    "Seven examples (style only — do NOT summarize these):\n"
+    "PASSAGE: We synthesized a cobalt complex bearing pendant amine groups "
+    "and tested it for proton reduction in acidic acetonitrile. Cyclic "
+    "voltammetry and controlled-potential electrolysis gave a turnover "
+    "frequency of 12,000 h⁻¹ at 80 °C, roughly threefold the Pd benchmark "
+    "under identical conditions, with full activity retained over 200 cycles.\n"
+    "BRIEF: cobalt catalyst triples proton-reduction turnover over palladium, "
+    "stable to 200 cycles\n"
+    "DETAIL: 12,000 h⁻¹ at 80 °C in acidic acetonitrile; rate credited to "
+    "pendant-amine proton relays.\n\n"
+    "PASSAGE: Reviewing the quarter, we argue the budget shortfall stems "
+    "from the Q3 hiring freeze rather than weaker sales. Revenue held flat "
+    "against forecast — the top line in Table 2 is essentially unchanged — "
+    "so the gap must originate on the cost side.\n"
+    "BRIEF: attributes the budget shortfall to the Q3 hiring freeze, not "
+    "weaker sales\n"
+    "DETAIL: flat revenue vs forecast (unchanged top line, Table 2); gap is "
+    "cost-side.\n\n"
+    "PASSAGE: Contrary to our hypothesis, daily supplementation produced no "
+    "significant change in composite cognitive scores relative to placebo "
+    "(p = 0.42). We caution that the trial was underpowered, enrolling only "
+    "38 participants, and ran for just eight weeks.\n"
+    "BRIEF: supplementation gave no cognitive benefit over placebo, against "
+    "the hypothesis\n"
+    "DETAIL: non-significant (p = 0.42); underpowered at 38 participants, "
+    "eight-week trial.\n\n"
+    "PASSAGE: Immediately after collection, samples were flash-frozen in "
+    "liquid nitrogen within 30 s to halt metabolic activity, then moved to "
+    "long-term storage at −80 °C. Aliquots were thawed on ice only once, "
+    "just before analysis, to avoid freeze–thaw degradation.\n"
+    "BRIEF: samples flash-frozen then cold-stored to preserve them until "
+    "analysis\n"
+    "DETAIL: liquid nitrogen within 30 s of collection; stored at −80 °C; "
+    "thawed on ice once.\n\n"
+    "PASSAGE: Throughout this paper we define resilience as the capacity of "
+    "a system to absorb disturbance and reorganize while undergoing change, "
+    "so as to still retain essentially the same function, structure, "
+    "identity, and feedbacks — departing from engineering notions of return "
+    "time to a single equilibrium.\n"
+    "BRIEF: defines resilience as absorbing disturbance while keeping core "
+    "function\n"
+    "DETAIL: also reorganizes yet retains structure, identity, feedbacks; "
+    "rejects single-equilibrium view.\n\n"
+    "PASSAGE: 4822.296 273.86 10489.05 295511.5 [8,8] 54514 241665 491010 "
+    "41.07 354.3621 4309522 6228.624 352.84 13601.7 384269.5 [9,9] 68598 "
+    "304587 618714 51.14 443.5323 5437062\n"
+    "BRIEF: (tabular data)\n"
+    "DETAIL:\n\n"
+    "PASSAGE: Nature Energy February 2022 Copyright 2022 The Author(s), "
+    "under exclusive licence to Springer Nature Limited. All Rights "
+    "Reserved. Section: Pg. 130-143; Vol. 7; No. 2; ISSN: 2058-7546\n"
+    "BRIEF: (publication metadata)\n"
+    "DETAIL:"
+)
 
-    1. The **instruction block** — byte-identical for *every* chunk in
-       the corpus (no per-doc/per-chunk interpolation), so it stays
-       cache-hot on a slot even across document switches.
-    2. The **document header** (kind + card) — constant within a ref,
-       varies between refs; placed after the instructions.
-    3. The **per-chunk** material (section path, keywords, numerics,
-       passage) — the volatile ``user`` turn.
 
-    The document *kind* lives in layer 2 (the header line), not in the
-    instruction's first line, precisely so layer 1 never changes between a
-    paper, a patent and a conversation.
-    """
+def _doc_header_block(ctx: AssemblyContext) -> str:
+    """Layer 2 — the per-document header (kind noun + card).
+
+    Constant within a ref, varies between refs. It rides the CACHED
+    (``system``) group with the instruction/examples because it is stable
+    across a document's chunk-ticks and forms the KV-cache prefix llama.cpp
+    reuses; the kind lives *here* (not in layer 1) so layer 1 never
+    changes between paper/patent/conv (ADR 0038 §5, Shot 2)."""
+    claim: _Claimed = ctx.extras["claim"]
+    doc_card: str = ctx.extras["doc_card"]
     noun = _kind_noun(claim.ref_kind)
     header = doc_card.strip() or f"Title: {claim.title}".strip()
-    system = (
-        "You summarize a single passage from a larger document, "
-        "as a navigation gloss.\n"
-        "Output EXACTLY two lines and nothing else:\n"
-        f"BRIEF: <a self-contained gist in one clause, at most {_BRIEF_MAX_WORDS} words>\n"
-        "DETAIL: <1-3 terse fragments adding specifics NOT already in BRIEF — "
-        "quantities, named entities, method, caveats>\n"
-        "DETAIL is always shown appended to BRIEF, never on its own, so it "
-        "must read as a continuation and never repeat anything in BRIEF.\n"
-        "Be faithful — never invent facts. Write both lines telegraphically: "
-        "plain, no preamble, no markdown, and drop leading articles and "
-        "pronouns. Spell out abbreviations when standard and unambiguous (keep "
-        "unit/element symbols, DNA, pH); never reuse source-only labels. Put a "
-        "space between a number and its unit and reproduce quantities verbatim.\n"
-        "If the passage is not prose — a data table, coordinate dump, reference "
-        "list, or copyright/masthead boilerplate — set BRIEF to a short "
-        "parenthetical tag naming it (e.g. (tabular data), (atomic coordinates), "
-        "(copyright notice), (publication metadata), (reference list)) and leave "
-        "DETAIL empty.\n\n"
-        "Seven examples (style only — do NOT summarize these):\n"
-        "PASSAGE: We synthesized a cobalt complex bearing pendant amine groups "
-        "and tested it for proton reduction in acidic acetonitrile. Cyclic "
-        "voltammetry and controlled-potential electrolysis gave a turnover "
-        "frequency of 12,000 h⁻¹ at 80 °C, roughly threefold the Pd benchmark "
-        "under identical conditions, with full activity retained over 200 cycles.\n"
-        "BRIEF: cobalt catalyst triples proton-reduction turnover over palladium, "
-        "stable to 200 cycles\n"
-        "DETAIL: 12,000 h⁻¹ at 80 °C in acidic acetonitrile; rate credited to "
-        "pendant-amine proton relays.\n\n"
-        "PASSAGE: Reviewing the quarter, we argue the budget shortfall stems "
-        "from the Q3 hiring freeze rather than weaker sales. Revenue held flat "
-        "against forecast — the top line in Table 2 is essentially unchanged — "
-        "so the gap must originate on the cost side.\n"
-        "BRIEF: attributes the budget shortfall to the Q3 hiring freeze, not "
-        "weaker sales\n"
-        "DETAIL: flat revenue vs forecast (unchanged top line, Table 2); gap is "
-        "cost-side.\n\n"
-        "PASSAGE: Contrary to our hypothesis, daily supplementation produced no "
-        "significant change in composite cognitive scores relative to placebo "
-        "(p = 0.42). We caution that the trial was underpowered, enrolling only "
-        "38 participants, and ran for just eight weeks.\n"
-        "BRIEF: supplementation gave no cognitive benefit over placebo, against "
-        "the hypothesis\n"
-        "DETAIL: non-significant (p = 0.42); underpowered at 38 participants, "
-        "eight-week trial.\n\n"
-        "PASSAGE: Immediately after collection, samples were flash-frozen in "
-        "liquid nitrogen within 30 s to halt metabolic activity, then moved to "
-        "long-term storage at −80 °C. Aliquots were thawed on ice only once, "
-        "just before analysis, to avoid freeze–thaw degradation.\n"
-        "BRIEF: samples flash-frozen then cold-stored to preserve them until "
-        "analysis\n"
-        "DETAIL: liquid nitrogen within 30 s of collection; stored at −80 °C; "
-        "thawed on ice once.\n\n"
-        "PASSAGE: Throughout this paper we define resilience as the capacity of "
-        "a system to absorb disturbance and reorganize while undergoing change, "
-        "so as to still retain essentially the same function, structure, "
-        "identity, and feedbacks — departing from engineering notions of return "
-        "time to a single equilibrium.\n"
-        "BRIEF: defines resilience as absorbing disturbance while keeping core "
-        "function\n"
-        "DETAIL: also reorganizes yet retains structure, identity, feedbacks; "
-        "rejects single-equilibrium view.\n\n"
-        "PASSAGE: 4822.296 273.86 10489.05 295511.5 [8,8] 54514 241665 491010 "
-        "41.07 354.3621 4309522 6228.624 352.84 13601.7 384269.5 [9,9] 68598 "
-        "304587 618714 51.14 443.5323 5437062\n"
-        "BRIEF: (tabular data)\n"
-        "DETAIL:\n\n"
-        "PASSAGE: Nature Energy February 2022 Copyright 2022 The Author(s), "
-        "under exclusive licence to Springer Nature Limited. All Rights "
-        "Reserved. Section: Pg. 130-143; Vol. 7; No. 2; ISSN: 2058-7546\n"
-        "BRIEF: (publication metadata)\n"
-        "DETAIL:\n\n"
+    return (
         f"--- Document for context (a {noun}; do not summarize this header) ---\n"
         f"{header}"
     )
 
+
+def _passage_block(ctx: AssemblyContext) -> str:
+    """Layer 3 — the volatile per-chunk material (the ``user`` turn).
+
+    Section path + keywords + quantities + the passage itself. A VARIABLE
+    module — the only part that changes chunk-to-chunk within a document."""
+    claim: _Claimed = ctx.extras["claim"]
     parts: list[str] = []
     if claim.section_path:
         parts.append("Section: " + " › ".join(claim.section_path))
@@ -672,12 +695,65 @@ def build_messages(claim: _Claimed, *, doc_card: str) -> list[dict[str, str]]:
     if claim.numerics:
         parts.append("Quantities: " + ", ".join(claim.numerics[:20]))
     prefix = ("\n".join(parts) + "\n\n") if parts else ""
-    user = f"{prefix}Passage to summarize:\n{claim.text}"
+    return f"{prefix}Passage to summarize:\n{claim.text}"
 
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
+
+#: The summarizer prompt as an ordered module list (ADR 0038 §2/§4, Shot 2).
+#: CACHED (→ ``system``): instruction + examples + doc-header, most-stable
+#: first for llama.cpp longest-prefix reuse. VARIABLE (→ ``user``): the
+#: per-chunk passage block. The :class:`LiteLLMAdapter` packages them.
+_SUMMARIZER_MODULES: list[Module] = [
+    Module(
+        id="summarizer.instruction",
+        layer=Layer.CACHED,
+        build=lambda _ctx: _INSTRUCTION_BLOCK,
+    ),
+    Module(
+        id="summarizer.examples",
+        layer=Layer.CACHED,
+        build=lambda _ctx: _EXAMPLES_BLOCK,
+    ),
+    Module(
+        id="summarizer.doc_header",
+        layer=Layer.CACHED,
+        build=_doc_header_block,
+    ),
+    Module(
+        id="summarizer.passage",
+        layer=Layer.VARIABLE,
+        build=_passage_block,
+    ),
+]
+
+
+def build_messages(claim: _Claimed, *, doc_card: str) -> list[dict[str, str]]:
+    """Assemble the chat messages for one chunk (ADR 0038 step 2).
+
+    Delegates to the shared prompt assembler + :class:`LiteLLMAdapter`:
+    :data:`_SUMMARIZER_MODULES` is resolved into layer-tagged blocks and
+    the adapter packages them into the ``[system, user]`` OpenAI shape the
+    :class:`LlmClient` posts. This reproduces — byte-for-byte — the
+    hand-rolled prompt it replaces:
+
+    1. **instruction** (CACHED) — byte-identical for *every* chunk;
+    2. **examples** (CACHED) — the seven few-shot pairs;
+    3. **doc-header** (CACHED) — kind + card, constant within a ref;
+    4. **passage** (VARIABLE) — the per-chunk ``user`` tail.
+
+    The three CACHED blocks form the stable ``system`` prefix (llama.cpp
+    KV-cache reuse across a document's chunks); only the VARIABLE passage
+    changes between chunks. The document *kind* lives in the doc-header,
+    not the instruction, so the layer-1 prefix never changes between a
+    paper, a patent and a conversation.
+    """
+    ctx = AssemblyContext(
+        store=None,
+        ref_id=claim.ref_id,
+        model="summarizer",
+        profile=Profile.HELPER,
+        extras={"claim": claim, "doc_card": doc_card},
+    )
+    return LiteLLMAdapter.render(assemble(_SUMMARIZER_MODULES, ctx))
 
 
 def _sanitize_model_text(text: str) -> str:

@@ -28,6 +28,13 @@ _OTHER_ERR = (
     '{"type":"result","subtype":"error_during_execution","is_error":true,'
     '"result":"boom"}'
 )
+# The --max-budget-usd cap plan_tick now sets (ADR 0046): a trailing result
+# event whose subtype names the budget exhaustion. Like max_turns, it is a
+# *resumable* exhaustion — the tick did work and a fresh one continues.
+_BUDGET = (
+    '{"type":"result","subtype":"error_max_budget_usd","is_error":true,'
+    '"terminal_reason":"max_budget_usd","result":"partial (budget)"}'
+)
 
 
 # ── stream detector ────────────────────────────────────────────────
@@ -45,6 +52,30 @@ def test_stream_terminal_reason_clean_is_none() -> None:
 
 def test_stream_terminal_reason_other_error_passthrough() -> None:
     assert stream_terminal_reason(_OTHER_ERR) == "error_during_execution"
+
+
+# ── _resume_reason: budget exhaustion is resumable (ADR 0046) ──────────
+
+
+def test_resume_reason_max_turns() -> None:
+    outcome = PlanTickOutcome(exit_code=1, stdout=_MAX_TURNS, stderr="", duration_s=1.0)
+    assert ci._resume_reason(outcome, _MAX_TURNS) == "max_turns"
+
+
+def test_resume_reason_budget() -> None:
+    """A --max-budget-usd cutoff maps to a 'budget' resumable exhaustion."""
+    outcome = PlanTickOutcome(exit_code=1, stdout=_BUDGET, stderr="", duration_s=1.0)
+    assert ci._resume_reason(outcome, _BUDGET) == "budget"
+
+
+def test_resume_reason_timeout() -> None:
+    outcome = PlanTickOutcome(exit_code=124, stdout="", stderr="", duration_s=1.0)
+    assert ci._resume_reason(outcome, "") == "timeout"
+
+
+def test_resume_reason_real_error_is_none() -> None:
+    outcome = PlanTickOutcome(exit_code=1, stdout=_OTHER_ERR, stderr="", duration_s=1.0)
+    assert ci._resume_reason(outcome, _OTHER_ERR) is None
 
 
 # ── streak helpers ─────────────────────────────────────────────────
@@ -162,6 +193,34 @@ def test_wall_clock_timeout_resumes_without_bubbling(store: Store) -> None:
             (job_id,),
         ).fetchall()
     assert any("resumed (hit timeout" in r[0] for r in results)
+
+
+def test_budget_exhaustion_resumes_without_bubbling(store: Store) -> None:
+    """A --max-budget-usd cutoff (ADR 0046) is a resumable exhaustion, handled
+    exactly like max-turns: STATUS:succeeded, no bubble, streak ticks up, and
+    the audit reads 'resumed (hit budget…)'."""
+    parent_id = _mk_parent(store)
+    job_id = _mk_job(store, parent_id)
+
+    _run(store, job_id, _BUDGET, exit_code=1)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:succeeded" in job_tags
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert not any(t.startswith("child-failed:") for t in parent_tags)
+    with store.pool.connection() as conn:
+        streak = conn.execute(
+            "SELECT (meta->>'plan_tick_resume_streak')::int FROM refs "
+            "WHERE ref_id = %s",
+            (parent_id,),
+        ).fetchone()[0]
+    assert streak == 1
+    with store.pool.connection() as conn:
+        results = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'job_result'",
+            (job_id,),
+        ).fetchall()
+    assert any("resumed (hit budget" in r[0] for r in results)
 
 
 def test_repeated_max_turns_past_cap_bubbles(store: Store, monkeypatch) -> None:

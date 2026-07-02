@@ -179,12 +179,16 @@ def test_deliver_queues_message_and_notifies() -> None:
     assert store.inserted and store.inserted[0]["kind"] == "message"
     assert store.inserted[0]["meta"]["target"] == "discord/1/2/2"
     assert store.inserted[0]["meta"]["briefing_date"] == "2026-06-23"
+    # the brief carries attribution so asa_bot can mirror it into the conv
+    # thread as an attributed proactive turn (gripe #47321)
+    assert store.inserted[0]["meta"]["author"] == "asa"
+    assert store.inserted[0]["meta"]["proactive"] is True
     assert store.blocks, "expected a message_body block"
-    # and the precis.messages notify fired with the new ref id
+    # and the precis.messages notify fired with the new ref id + author
     notifies = [c for c in store.conn.calls if "precis.messages" in c[0]]
     assert notifies, "expected a precis.messages pg_notify"
     payload = json.loads(notifies[0][1][0])
-    assert payload == {"ref_id": 99, "target": "discord/1/2/2"}
+    assert payload == {"ref_id": 99, "target": "discord/1/2/2", "author": "asa"}
 
 
 def test_deliver_idempotent_skips_when_already_sent() -> None:

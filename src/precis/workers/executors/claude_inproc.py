@@ -672,17 +672,23 @@ def _resume_reason(outcome: Any, raw_stream: str) -> str | None:
     """Classify a non-zero tick outcome as a *resumable exhaustion* — or
     ``None`` for a clean tick / real error.
 
-    Two exhaustions are resumable (the coroutine was cut off mid-flight,
+    Three exhaustions are resumable (the coroutine was cut off mid-flight,
     a fresh tick continues): the ``--max-turns`` ceiling (a trailing
-    ``error_max_turns`` result event) and the wall-clock timeout (the
-    process was killed, so there's no result event — detected by the
-    ``PlanTickOutcome`` timeout sentinel exit code)."""
+    ``error_max_turns`` result event), the ``--max-budget-usd`` cap (a
+    trailing budget result event — plan_tick sets this cap, ADR 0046), and
+    the wall-clock timeout (the process was killed, so there's no result
+    event — detected by the ``PlanTickOutcome`` timeout sentinel exit code).
+    Each is bounded by the same per-parent streak cap so a tick that *always*
+    runs out escalates (and splits) instead of looping forever."""
     from precis.utils.claude_agent import stream_terminal_reason
 
     if outcome.exit_code == 0:
         return None
-    if stream_terminal_reason(raw_stream) == "max_turns":
+    reason = stream_terminal_reason(raw_stream)
+    if reason == "max_turns":
         return "max_turns"
+    if reason is not None and "budget" in reason:
+        return "budget"
     if outcome.exit_code == _TIMEOUT_EXIT_CODE:
         return "timeout"
     return None

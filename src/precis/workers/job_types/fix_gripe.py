@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from precis.utils.llm.router import Tier, resolve_model
+
 log = logging.getLogger(__name__)
 
 # Tag namespace gripes carry to declare which repo they're about.
@@ -106,7 +108,14 @@ def load_config_from_env() -> FixGripeConfig:
         default_repo_dir=default_repo,
         work_dir=Path(work_dir_raw).resolve(),
         claude_bin=os.environ.get("PRECIS_FIX_CLAUDE_BIN", "claude"),
-        claude_model=os.environ.get("PRECIS_FIX_CLAUDE_MODEL", "claude-opus-4-7"),
+        # Model selection via the ADR 0046 resolver's CLOUD_SUPER tier
+        # (``PRECIS_MODEL_OPUS`` / ``claude-opus-4-7`` — the same opus pin the
+        # planner uses). The bespoke ``PRECIS_FIX_CLAUDE_MODEL`` override still
+        # wins so a deployment can pin fix-gripe to a different model; unset,
+        # it falls through to the shared tier default (byte-identical to the
+        # old hard-coded ``claude-opus-4-7`` when no opus pin is set).
+        claude_model=os.environ.get("PRECIS_FIX_CLAUDE_MODEL")
+        or resolve_model(Tier.CLOUD_SUPER),
         timeout_seconds=int(os.environ.get("PRECIS_FIX_TIMEOUT_SECONDS", "1800")),
         repos=repos,
     )
