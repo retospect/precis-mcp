@@ -58,9 +58,15 @@ Don't use a job for work that fits inside the current conversation.
 ## What job types are available?
 ## List the registered job_types
 
-| `job_type`   | What it does                                        |
-|--------------|-----------------------------------------------------|
-| `fix_gripe`  | Prepare a candidate fix branch for a gripe          |
+| `job_type`          | Executor        | What it does                                  |
+|---------------------|-----------------|-----------------------------------------------|
+| `fix_gripe`         | `claude_inproc` | Prepare a candidate fix branch for a gripe    |
+| `plan_tick`         | `claude_inproc` | One planner-coroutine tick of an `LLM:*` todo |
+| `news_poll` / `briefing` | `claude_inproc` | News ingestion / daily briefing          |
+| `draft_export`      | `claude_inproc` | Compile a draft to PDF/DOCX                   |
+| `struct_relax`      | `ssh_node`      | DFT/ML relax of a `structure` on a GPU node   |
+| `good_search`       | `coordinator`   | Deep paper-search campaign — normally minted for you by `search(kind='paper', q=…, good=True)`, not submitted by hand (see `precis-search-help`) |
+| `good_search_triage`| `claude_inproc` | A `good_search` triage batch (internal — the campaign spawns these itself) |
 
 (More land as new modules under `precis/workers/job_types/`. See
 the per-type recipe skills for invocation details.)
@@ -107,8 +113,17 @@ The handler validates `job_type`, `executor`, `params`, AND the
 parent todo's existence at submit time. If something's wrong, the
 `put` call fails immediately rather than queueing an unrunnable job.
 
-For v1 there is only one executor (`claude_inproc`); it's the
-default — you don't need to set `executor=`.
+Executors: `claude_inproc` (offline `claude -p` on the agent host —
+the default, you usually don't set `executor=`), `ssh_node` (remote
+GPU-node compute, e.g. `struct_relax`), and `coordinator`
+(yield/resume phase machines that fan out child jobs, e.g.
+`good_search`).
+
+Parenting is polymorphic (ADR 0044): a job parents on a **todo**
+(intent lane — rotation, `child-failed` bubble, `child_job_succeeded`),
+on a **build subject** (`structure`/`cad`/`draft` — derived compute,
+no todo needed), or on a **coordinator job** (campaign children,
+spawned by the coordinator itself — never submit these by hand).
 
 ## Submit a job tied to a specific parent
 
@@ -281,7 +296,11 @@ shapes for the LLM-facing call.
 | `STATUS:cancelled`        | Runner stopped on cancel request       |
 
 (`STATUS:submitted` is used only by future cluster executors;
-v1's `claude_inproc` goes straight queued → running.)
+`claude_inproc` goes straight queued → running. A `coordinator` job
+additionally parks at `STATUS:waiting_children` / `waiting_time` /
+`waiting_ask_user` / `waiting_manual_kick` between slices — that's a
+legitimate pause, not a stall; the `wake_runner` re-queues it when
+the wake condition fires.)
 
 ## See also
 

@@ -57,6 +57,16 @@ Hybrid lexical + semantic. Each result is a chunk handle `pc<chunk_id>`
 (paste back into `get`/`link`); order is the relevance signal. The legacy
 `slug~chunk` form still resolves on input.
 
+When one phrasing isn't finding it, escalate (details in
+`precis-search-help` → Broad retrieval):
+
+```python
+# Broad: fuse rephrasings + hypothetical-answer passages in one call (RRF)
+search(kind='paper', q='…', queries=['…', '…'], answers=['…'], per_paper=1)
+# Deep: async triage campaign — returns a job handle, poll for the curated result
+search(kind='paper', q='…', good=True)   # → poll get(kind='job', id=…)
+```
+
 Search also matches a paper's **title / authors / abstract** (via its
 embedded metadata card), so a title query surfaces the paper even when
 the body never repeats the title. When a real body block of the same

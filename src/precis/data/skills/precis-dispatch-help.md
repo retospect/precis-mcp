@@ -153,10 +153,13 @@ Executors live in `src/precis/workers/executors/__init__.py`
 `src/precis/workers/job_types/__init__.py` (the `_REGISTRY` +
 lazy loaders).
 
-For v1 there is one executor (`claude_inproc`) providing
-`{claude_bin, git, clones_dir, claude_config_mount}` and one
-job_type (`fix_gripe`) requiring the same set. A future
-`run_python` job_type would slot in here.
+Executors today: `claude_inproc` (offline `claude -p`, provides
+`{claude_bin, git, clones_dir, claude_config_mount}`), `ssh_node`
+(remote GPU-node compute), and `coordinator` (yield/resume phase
+machines — empty PROVIDES by design; the job_type's `dispatch` does
+the work in slices and parks at `STATUS:waiting_*` between them).
+Job_types pair with a compatible executor at submit; see the table
+in `precis-job-help`.
 
 ## Running the dispatcher
 

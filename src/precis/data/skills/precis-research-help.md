@@ -72,6 +72,34 @@ wasted.
    source quote (not a paraphrase). Multi-source findings carry one
    citation per source.
 
+## Retrieval: cast a wide net before you read
+
+One phrasing of one query is how findings get missed. For any
+survey-shaped question, open with **broad retrieval** — several
+rephrasings + hypothetical-answer passages fused in one call — and
+use `per_paper=1` to triage across many papers before drilling:
+
+```python
+search(kind='paper', q='<question>',
+       queries=['<rephrasing 1>', '<rephrasing 2>', …],
+       answers=['<a sentence the answering passage would contain>'],
+       per_paper=1)
+```
+
+When the survey matters enough to spend agent time, fire the **deep
+campaign** instead and keep working while it runs:
+
+```python
+search(kind='paper', q='<question>', good=True)
+# → {job: <id>, poll: "get(kind='job', id=…)"} — triage agents fan
+#   out over the fused pool; the finished job carries a curated,
+#   relevance-ranked shortlist in meta.result.
+```
+
+Inside a planner tick, don't busy-poll: mint your other subtasks,
+let the tick end, and read the campaign result on a later tick (the
+job is durable). Details: `precis-search-help` → Broad retrieval.
+
 ## Mint citations as you go
 
 ```python
