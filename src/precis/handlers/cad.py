@@ -93,8 +93,10 @@ class CadHandler(Handler):
         supports_search=True,
         supports_search_hits=True,
         supports_delete=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
+        role="artifact",
         views=_VIEWS,
     )
 
@@ -103,6 +105,36 @@ class CadHandler(Handler):
             raise InitError("cad: store required")
         self.store = hub.store
         self.embedder = hub.embedder
+
+    # ── link: placement only (ADR 0045) ─────────────────────────────
+
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Folder placement via the reserved virtual ``rel='parent'``.
+
+        CAD designs have no stored-link surface (yet) — the only
+        accepted relation is ``parent``, a ``refs.parent_id`` write
+        into a ``kind='folder'`` container (ADR 0045).
+        """
+        from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
+
+        if rel == RESERVED_PARENT_REL:
+            ref = resolve_live_slug_ref(self.store, kind="cad", id=str(id).strip())
+            return place_ref(self.store, kind="cad", ref=ref, target=target, mode=mode)
+        raise BadInput(
+            "cad link supports only rel='parent' (folder placement)",
+            next=(
+                "link(kind='cad', id='<slug>', target='folder:N', "
+                "rel='parent') places; mode='remove' unfiles"
+            ),
+        )
 
     # ── put ──────────────────────────────────────────────────────────
     def put(  # type: ignore[override]

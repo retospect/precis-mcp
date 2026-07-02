@@ -75,6 +75,7 @@ class OracleHandler(Handler):
         supports_link=True,
         is_numeric=False,
         id_required=False,
+        role="system",
     )
 
     def __init__(self, *, hub: Hub) -> None:

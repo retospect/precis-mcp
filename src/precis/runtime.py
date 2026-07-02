@@ -99,12 +99,9 @@ _DRAFT_DC_RE = re.compile(r"^dc(\d+)(.*)$")
 #: cross-references live in prose (the autolinker backlinks them), and it
 #: has no whole-ref tag axis. Teach the real move inline.
 _VERB_REDIRECTS: dict[tuple[str, str], str] = {
-    ("draft", "link"): (
-        "drafts link via prose, not the link verb: edit the source chunk "
-        "to embed a handle ref — edit(kind='draft', id='dc<src>', "
-        "text='…existing… [dc<target>]') — and the autolinker materialises "
-        "the related-to backlink for you."
-    ),
+    # ("draft", "link") moved into DraftHandler.link itself — the verb
+    # now exists for folder placement (ADR 0045), so the prose-ref
+    # teaching rides on its BadInput for every other relation.
     ("draft", "tag"): (
         "drafts have no whole-ref tag axis; tag the owning project todo "
         "instead, or use a glossary term / inline markup inside the prose."
@@ -326,6 +323,21 @@ class PrecisRuntime:
         if verb == "search" and str(args.get("view") or "").strip() == "keywords":
             return self._dispatch_cross_kind(
                 kind if kind is not None else _CROSS_KIND_WILDCARD,
+                dict(args),
+            )
+
+        # ``folder=`` scope (ADR 0045): any folder-scoped search runs
+        # through the cross-kind fan-out — the structured SearchHit
+        # stream is what makes subtree post-filtering possible — even
+        # when a single ``kind=`` was named (it becomes a one-kind
+        # "comma list").
+        if verb == "search" and args.get("folder") is not None:
+            return self._dispatch_cross_kind(
+                (
+                    self._expand_kind_code(str(kind))
+                    if kind is not None
+                    else _CROSS_KIND_WILDCARD
+                ),
                 dict(args),
             )
 
@@ -1355,6 +1367,15 @@ class PrecisRuntime:
         mode = args.get("mode")
         mode_lexical = isinstance(mode, str) and mode.strip().lower() == "lexical"
 
+        # ``folder=`` scope (ADR 0045): resolve the folder's live
+        # placement subtree once; hits outside it are dropped after
+        # each kind's stream returns (handlers stay scope-blind — the
+        # SearchHit.ref_id is enough to filter at the dispatch layer).
+        folder_scope: set[int] | None = None
+        folder_label: str | None = None
+        if args.get("folder") is not None:
+            folder_scope, folder_label = self._resolve_folder_scope(args["folder"])
+
         kinds = self._resolve_cross_kind_request(kind)
         if not kinds:
             raise BadInput(
@@ -1464,6 +1485,12 @@ class PrecisRuntime:
             # from kinds that can't carry that tag.
             if normalized_tags:
                 hits = self._filter_hits_by_tags(list(hits), normalized_tags)
+            # ``folder=`` subtree filter: a hit without a ref_id can't
+            # prove membership, so it drops when a scope is set.
+            if folder_scope is not None:
+                hits = [
+                    h for h in hits if h.ref_id is not None and h.ref_id in folder_scope
+                ]
             hits_list = list(hits)
             per_kind_counts.append((k, len(hits_list)))
             streams.append(hits_list)
@@ -1472,14 +1499,16 @@ class PrecisRuntime:
         # empty-result wording from "no matches" to a partial-result
         # headline — semantic side genuinely couldn't run, so claiming
         # zero matches is overconfident. Broad-pass finding #13.
+        scope_suffix = f" in folder {folder_label}" if folder_label else ""
         if semantic_degraded:
             empty_body = (
-                f"no lexical matches across {', '.join(kinds)} for {q!r}; "
-                "semantic search degraded to lexical-only this turn — "
-                "retry in ~30s for ranked semantic fan-out"
+                f"no lexical matches across {', '.join(kinds)} for "
+                f"{q!r}{scope_suffix}; semantic search degraded to "
+                "lexical-only this turn — retry in ~30s for ranked "
+                "semantic fan-out"
             )
         else:
-            empty_body = f"no matches across {', '.join(kinds)} for {q!r}"
+            empty_body = f"no matches across {', '.join(kinds)} for {q!r}{scope_suffix}"
         # ``view='keywords'`` swaps the renderer for a compact
         # id|kind|keywords TOON table — no preview text. Same fan-out
         # / dedup / RRF; only the projection differs.
@@ -1564,6 +1593,12 @@ class PrecisRuntime:
         normalized = Tag.normalize_filter(tags, kind=None)
         page_size = max(1, int(args.get("page_size") or 10))
 
+        # ``folder=`` scope applies to the tags-only sweep too.
+        folder_scope: set[int] | None = None
+        folder_label: str | None = None
+        if args.get("folder") is not None:
+            folder_scope, folder_label = self._resolve_folder_scope(args["folder"])
+
         allowed_kinds = set(self._resolve_cross_kind_request(kind))
         # Pull enough to cover the requested page after the kind filter.
         # 5x oversample is generous — the store's tag filter is fast and
@@ -1573,10 +1608,17 @@ class PrecisRuntime:
             tags=normalized,
             limit=page_size * 5,
         )
-        refs = [r for r in raw if r.kind in allowed_kinds][:page_size]
+        refs = [r for r in raw if r.kind in allowed_kinds]
+        if folder_scope is not None:
+            refs = [r for r in refs if r.id in folder_scope]
+        refs = refs[:page_size]
 
         if not refs:
-            body = f"no refs match tags={normalized!r} across {sorted(allowed_kinds)}"
+            scope_suffix = f" in folder {folder_label}" if folder_label else ""
+            body = (
+                f"no refs match tags={normalized!r} across "
+                f"{sorted(allowed_kinds)}{scope_suffix}"
+            )
         else:
             head = (
                 f"# {len(refs)} ref{'s' if len(refs) != 1 else ''} "
@@ -1588,6 +1630,60 @@ class PrecisRuntime:
                 lines.append(f"{r.kind}:{r.id}  {title}")
             body = "\n".join(lines)
         return Response(body=body)
+
+    def _resolve_folder_scope(self, value: Any) -> tuple[set[int], str]:
+        """Resolve a ``folder=`` argument to ``(subtree_ref_ids, label)``.
+
+        Accepts the folder's numeric id, a ``folder:N`` target string,
+        the ``fo<N>`` universal handle, or the folder's *name*
+        (case-insensitive; must be unique). Raises ``BadInput`` /
+        ``NotFound`` with recovery hints — an empty subtree is never
+        silently searched as unscoped.
+        """
+        store = self.hub.store
+        if store is None:
+            raise Unsupported("folder= scoping needs a store-backed deployment")
+
+        ref_id: int | None = None
+        raw = value
+        if isinstance(raw, int):
+            ref_id = raw
+        else:
+            s = str(raw).strip()
+            if s.startswith("folder:"):
+                s = s[len("folder:") :]
+            try:
+                ref_id = int(s)
+            except ValueError:
+                parsed = handle_registry.parse(s)
+                if parsed is not None and parsed[0] == "folder":
+                    ref_id = parsed[2]
+        if ref_id is None:
+            # Fall back to name resolution.
+            matches = store.folder_ref_ids_by_title(str(raw).strip())
+            if len(matches) == 1:
+                ref_id = matches[0]
+            elif len(matches) > 1:
+                raise BadInput(
+                    f"folder name {raw!r} is ambiguous ({len(matches)} folders match)",
+                    next=(
+                        "pass the id instead: "
+                        + " or ".join(f"folder={m}" for m in matches[:5])
+                    ),
+                )
+            else:
+                raise NotFound(
+                    f"no folder named {raw!r}",
+                    next="get(kind='folder') lists folders with their ids",
+                )
+        ref = store.get_ref(kind="folder", id=ref_id)
+        if ref is None:
+            raise NotFound(
+                f"folder id={ref_id} not found",
+                next="get(kind='folder') lists folders with their ids",
+            )
+        label = f"{ref.title!r} (folder:{ref.id})"
+        return store.folder_subtree_ids(ref.id), label
 
     def _cross_kind_invoke_search_hits(
         self,

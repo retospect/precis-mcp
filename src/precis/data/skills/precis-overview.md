@@ -55,6 +55,7 @@ name/path.
 | `structure` | `st7` (slug `pd111` still resolves) | Atomistic cell + bond-graph design for DFT / molecular modelling — a periodic cell filled with atoms (`a<El><n>` labels) + an explicit bond graph, authored as typed ops (`add_atom`, `add_bond`, `constrain`, `relax`). Probed as a graph + numbers (neighbours / coordination / line / plane / sphere / path / rings / fragments / diff / pov), relaxed on a fidelity ladder (`clean`→`ml`→DFT), exported POSCAR/extXYZ/CIF; no pixels. Atoms addressed `st<id>#a<El><n>`. See `precis-structure-help`, ADR 0043. | store |
 | `pcb` | `pb7` (slug `sensor-node` still resolves) | Electronics/PCB design — a netlist + placement graph authored in batch and read as a traversable graph, never pixels. Pick JLCPCB-assemblable parts (`kind='part'`), place to minimise crossed wires, export BOM/CPL/DSN + route with Freerouting; datasheets via `kind='datasheet'`. Instances addressed `pb<id>#U1` (→ pins → nets → neighbours). See `precis-pcb-help`, ADR 0042. | store |
 | `python` | `precis::precis.cli.main` | Symbol or file in a configured Python repo | `PRECIS_PYTHON_ROOTS` |
+| `folder` | `fo12` (int `12` still resolves) | Organizational container for authored artifacts (draft / structure / cad / todo roots / folders) — single-parent placement via `link(rel='parent')`; `search(folder=...)` scopes to the subtree. Folders organize what you MAKE; papers / memories / alerts stay out. See `precis-folder-help`, ADR 0045. | store |
 | `todo` | `td122` (int `122` still resolves) | A task in the hierarchical tree (Slice 1–5). Branches read as outcomes; leaves as next actions. See `precis-tasks-help`. | store |
 | `memory` | `me47` (int `47` still resolves) | Agent note / scratchpad | store |
 | `gripe` | `gr9` (int `9` still resolves) | Annoyance / niggle | store |
@@ -210,4 +211,5 @@ get(kind='skill', id='precis-paper-help')    # paper views, citation export
 get(kind='skill', id='precis-files-help')    # shared file-backed address grammar
 get(kind='skill', id='precis-toc-help')      # TOC navigation, sub-range zoom
 get(kind='skill', id='precis-random-help')   # random corpus pick
+get(kind='skill', id='precis-folder-help')   # folders, placement, folder= search scope
 ```

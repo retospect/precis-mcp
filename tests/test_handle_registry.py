@@ -54,6 +54,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "tag",
         "cad",
         "structure",
+        "folder",
         "pcb",
         "part",
         "datasheet",

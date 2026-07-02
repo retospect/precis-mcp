@@ -187,6 +187,7 @@ class CronHandler(NumericRefHandler):
         is_numeric=True,
         id_required=False,
         note_like=True,
+        role="system",
     )
 
     kind: ClassVar[str] = "cron"

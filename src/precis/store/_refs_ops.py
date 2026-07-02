@@ -741,6 +741,46 @@ class RefsMixin:
             with self.pool.connection() as c:
                 c.execute(sql, (new_parent_id, ref_id))
 
+    def folder_subtree_ids(self, root_ref_id: int) -> set[int]:
+        """All live ref_ids in the placement subtree under ``root_ref_id``.
+
+        Inclusive of the root. The ADR 0045 ``folder=`` search scope:
+        a recursive CTE over the indexed ``parent_id`` column, so
+        "everything under folder X" is one cheap walk (the corpus is
+        ~14k refs; folder trees are shallow by policy).
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                WITH RECURSIVE sub(ref_id) AS (
+                    SELECT ref_id FROM refs
+                     WHERE ref_id = %s AND deleted_at IS NULL
+                    UNION ALL
+                    SELECT r.ref_id FROM refs r
+                      JOIN sub s ON r.parent_id = s.ref_id
+                     WHERE r.deleted_at IS NULL
+                )
+                SELECT ref_id FROM sub
+                """,
+                (root_ref_id,),
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
+    def folder_ref_ids_by_title(self, title: str) -> list[int]:
+        """Live ``kind='folder'`` ref_ids whose title matches (case-insensitive).
+
+        Lets ``search(folder='Hardware')`` resolve by name; the caller
+        disambiguates when more than one matches.
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id FROM refs "
+                "WHERE kind = 'folder' AND deleted_at IS NULL "
+                "AND lower(title) = lower(%s) ORDER BY ref_id",
+                (title,),
+            ).fetchall()
+        return [int(r[0]) for r in rows]
+
     def locked_ref_ids(self, ref_ids: list[int]) -> set[int]:
         """Return the subset of ``ref_ids`` currently row-locked.
 

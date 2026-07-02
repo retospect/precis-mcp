@@ -405,6 +405,7 @@ class PaperHandler(Handler):
         # search and is a valid citation source (the citation handler
         # resolves ``source_handle`` against ``kind='paper'``).
         corpus_role="evidence",
+        role="corpus",
         views=_SUPPORTED_VIEWS,
     )
 

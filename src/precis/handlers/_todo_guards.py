@@ -214,6 +214,26 @@ def is_owner(source: str | None = None) -> bool:
 # ── parent / cycle / depth ─────────────────────────────────────────
 
 
+def todo_root_sql(alias: str) -> str:
+    """SQL predicate: the ``alias`` row is a todo-tree *root* (ADR 0045).
+
+    A root's parent is not a todo: either ``parent_id IS NULL`` (the
+    classic shape) or the parent is a ``kind='folder'`` container —
+    placement is *where*, never part of the scheduling tree, so a
+    strategic sitting in a folder stays a root for rotation / doable /
+    picks / review purposes. One shared fragment so the predicate
+    cannot drift across the many root-detection queries.
+
+    ``alias`` is a trusted table alias supplied by the caller — never
+    user input.
+    """
+    return (
+        f"({alias}.parent_id IS NULL OR EXISTS ("
+        f"SELECT 1 FROM refs _pf WHERE _pf.ref_id = {alias}.parent_id "
+        f"AND _pf.kind = 'folder'))"
+    )
+
+
 def check_parent_exists(store: Store, parent_id: int) -> int:
     """Resolve ``parent_id`` to a live ``todo`` ref or raise.
 
@@ -412,7 +432,10 @@ def _depth_of(store: Store, ref_id: int) -> int:
     """Return ``ref_id``'s depth from the strategic root (root → 0).
 
     Implemented as a recursive CTE walking up ``parent_id``. Cheap
-    even at the depth cap (10 rows, one index lookup per).
+    even at the depth cap (10 rows, one index lookup per). The walk
+    counts **todo ancestors only** (ADR 0045): a folder above the
+    strategic root is placement, not tree depth, so folder levels
+    never consume the MAX_DEPTH budget.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -424,6 +447,7 @@ def _depth_of(store: Store, ref_id: int) -> int:
                 SELECT r.ref_id, r.parent_id, w.lvl + 1
                   FROM refs r
                   JOIN walk w ON r.ref_id = w.parent_id
+                 WHERE r.kind = 'todo'
             )
             SELECT max(lvl) FROM walk
             """,
@@ -774,4 +798,5 @@ __all__ = [
     "has_auto_run_signal",
     "is_owner",
     "strategic_lacks_auto_run",
+    "todo_root_sql",
 ]

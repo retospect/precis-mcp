@@ -654,8 +654,13 @@ def test_no_promote_hint_when_already_a_term(draft: DraftHandler, hub: Hub) -> N
 
 
 def test_draft_link_verb_redirects_to_prose(hub: Hub) -> None:
-    """The 'draft does not support link' error teaches the markdown-ref
-    model instead of a generic 'try get'."""
+    """A non-placement draft link still teaches the markdown-ref model.
+
+    The link verb exists on drafts now (folder placement, ADR 0045);
+    any other relation raises with both the placement recipe and the
+    embed-a-handle-in-prose teaching (formerly a runtime verb
+    redirect on the unsupported-verb path).
+    """
     from precis.config import PrecisConfig
     from precis.dispatch import boot
     from precis.embedder import make_embedder
@@ -669,8 +674,8 @@ def test_draft_link_verb_redirects_to_prose(hub: Hub) -> None:
         ),
     )
     out = rt.dispatch("link", {"kind": "draft", "id": "¶ABC", "target": "¶DEF"})
-    assert "does not support link" in out
-    assert "embed a handle ref" in out or "[dc<target>]" in out
+    assert "only rel='parent'" in out
+    assert "[dc<target>]" in out
 
 
 # ── Fix A: the draft surfaces stuck / in-flight work on it ──────────

@@ -93,6 +93,8 @@ KIND_CODES: dict[str, str] = {
     "pcb": "pb",
     "part": "pn",
     "datasheet": "da",
+    # Organizational containers (ADR 0045)
+    "folder": "fo",
 }
 
 # --- chunk codes (kinds that expose addressable body chunks) --------------

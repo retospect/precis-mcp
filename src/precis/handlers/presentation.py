@@ -69,6 +69,7 @@ class PresentationHandler(Handler):
         is_numeric=False,
         id_required=False,
         note_like=True,
+        role="corpus",
     )
 
     def __init__(self, *, hub: Hub) -> None:

@@ -76,6 +76,7 @@ class MathHandler(CacheBackedHandler):
         supports_search_hits=True,
         is_numeric=False,
         id_required=True,
+        role="system",
         requires_env=("WOLFRAM_APP_ID",),
     )
 

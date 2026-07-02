@@ -78,6 +78,7 @@ def create_app(
         clusters,
         console,
         drafts,
+        drive,
         env,
         needs_you,
         papers,
@@ -97,6 +98,7 @@ def create_app(
     app.include_router(cfp.router)
     app.include_router(papers_needed.router)
     app.include_router(drafts.router)
+    app.include_router(drive.router)
     app.include_router(refs.router)
     app.include_router(tags.router)
     app.include_router(clusters.router)

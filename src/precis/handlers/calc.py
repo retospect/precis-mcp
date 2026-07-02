@@ -31,6 +31,7 @@ class CalcHandler(Handler):
         supports_get=True,
         is_numeric=False,
         id_required=True,
+        role="system",
     )
 
     def __init__(self, *, hub: Hub) -> None:

@@ -13,6 +13,7 @@ prompt template live here.
 
 from __future__ import annotations
 
+from precis.handlers._todo_guards import todo_root_sql
 from precis.store import Store
 from precis.workers.review import (
     Reviewer,
@@ -46,7 +47,7 @@ def _strategic_layer_snapshot(store: Store) -> str:
     """Render strategic roots + their tactical children with leaf counts."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT s.ref_id AS strategic_id,
                    s.title AS strategic_title,
                    t.ref_id AS tactical_id,
@@ -59,7 +60,7 @@ def _strategic_layer_snapshot(store: Store) -> str:
                               AND t.kind = 'todo'
                               AND t.deleted_at IS NULL
              WHERE s.kind = 'todo' AND s.deleted_at IS NULL
-               AND s.parent_id IS NULL
+               AND {todo_root_sql("s")}
                AND EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags tg ON tg.tag_id = rt.tag_id
                     WHERE rt.ref_id = s.ref_id

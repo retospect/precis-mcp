@@ -264,6 +264,7 @@ class TodoHandler(NumericRefHandler):
         is_numeric=True,
         id_required=False,
         note_like=True,
+        role="artifact",
     )
 
     kind: ClassVar[str] = "todo"
@@ -881,6 +882,27 @@ class TodoHandler(NumericRefHandler):
             )
         new_parent = parse_link_target(target, store=self.store)
         new_parent_id = new_parent.ref_id
+        # ADR 0045: a *folder* target is placement, not tree surgery —
+        # legal only for strategic roots (folder = where; the
+        # scheduling tree stays todo-rooted below it). The kind-aware
+        # root predicate (``todo_root_sql``) keeps a folder-parented
+        # strategic in every rotation / doable / review query, and the
+        # depth walk stops at the folder, so nothing else changes.
+        parent_ref = self.store.fetch_refs_by_ids({new_parent_id}).get(new_parent_id)
+        if parent_ref is not None and parent_ref.kind == "folder":
+            child_tags = self.store.tags_for(child_id)
+            if not any(t.value == "level:strategic" for t in child_tags):
+                raise BadInput(
+                    f"only strategic roots can be placed in folders "
+                    f"(todo id={child_id} lacks level:strategic)",
+                    next=(
+                        "move it under a todo instead, or tag the root "
+                        "level:strategic first"
+                    ),
+                )
+            self.store.set_parent(child_id, new_parent_id)
+            child_h = handle_registry.format_handle(self.kind, child_id)
+            return Response(body=f"placed {child_h} in folder:{new_parent_id}")
         guards.check_parent_exists(self.store, new_parent_id)
         guards.check_no_cycle(self.store, child_id=child_id, parent_id=new_parent_id)
         guards.check_reparent_depth(
@@ -928,7 +950,16 @@ class TodoHandler(NumericRefHandler):
         # dropped in favour of the synthesized section.
         if rest.startswith("(no links)"):
             rest = ""
-        parts = [header, "", "## parent", f"→ todo:{ref.parent_id}  (parent)"]
+        # The parent may be a todo (tree) or a folder (placement, ADR
+        # 0044) — render the actual kind so the handle round-trips.
+        parent_ref = self.store.fetch_refs_by_ids({ref.parent_id}).get(ref.parent_id)
+        parent_kind = parent_ref.kind if parent_ref is not None else "todo"
+        parts = [
+            header,
+            "",
+            "## parent",
+            f"→ {parent_kind}:{ref.parent_id}  (parent)",
+        ]
         if rest:
             parts.extend(["", rest])
         return Response(body="\n".join(parts))

@@ -408,12 +408,18 @@ def search(
     # verdict) and returns a job handle instead of hits — poll
     # ``get(kind='job', id=…)``.
     good: bool | None = None,
+    # ADR 0045: scope results to a folder's placement subtree.
+    # Accepts the folder id, 'folder:N', the fo<N> handle, or the
+    # folder's (unique) name. Forces the cross-kind fan-out even with
+    # a single kind= so hits can be membership-filtered.
+    folder: str | int | None = None,
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
     `page_size` ≤ 100; `page=N` paginates (server-side OFFSET). Omit
     `kind` (or pass `'*'`) for cross-kind fan-out; `exclude=` skips
-    slugs; `source=` is patent-only.
+    slugs; `source=` is patent-only. `folder=` (id or name) scopes
+    hits to that folder's subtree (ADR 0045).
 
     `mode=`: `'hybrid'` (default — RRF of lexical+semantic),
     `'lexical'` (FTS only — exact string / identifier, or when the
@@ -573,6 +579,8 @@ def search(
         payload["per_paper"] = per_paper
     if good is not None:
         payload["good"] = bool(good)
+    if folder is not None:
+        payload["folder"] = folder
 
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("search", payload)

@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from precis.alerts import raise_alert, resolve_stale_alerts
+from precis.handlers._todo_guards import todo_root_sql
 from precis.store import Store
 from precis.workers.runner import BatchResult
 
@@ -168,7 +169,7 @@ def _detect_orphans(store: Store) -> list[Finding]:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH RECURSIVE walk(ref_id, parent_id, root_id) AS (
                 SELECT ref_id, parent_id, ref_id
                   FROM refs
@@ -180,11 +181,13 @@ def _detect_orphans(store: Store) -> list[Finding]:
                  WHERE r.kind = 'todo' AND r.deleted_at IS NULL
             ),
             roots AS (
+                -- ADR 0045: the root is the topmost *todo* — a folder
+                -- parent above it is placement, not tree membership.
                 SELECT DISTINCT ON (w.ref_id) w.ref_id AS leaf_id,
                        w.root_id
                   FROM walk w
                   JOIN refs r ON r.ref_id = w.root_id
-                 WHERE r.parent_id IS NULL
+                 WHERE {todo_root_sql("r")}
                  ORDER BY w.ref_id, w.root_id
             )
             SELECT r.ref_id, r.title

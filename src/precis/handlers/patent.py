@@ -105,6 +105,7 @@ class PatentHandler(Handler):
         id_required=False,
         # A patent is citable evidence in the document family.
         corpus_role="evidence",
+        role="corpus",
         views=_SUPPORTED_VIEWS,
         requires_env=_REQUIRED_ENV,
     )

@@ -36,6 +36,7 @@ from precis.handlers._link_tag_ops import (
     require_link_target,
     validate_link_mode,
 )
+from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -193,6 +194,7 @@ class StructureHandler(Handler):
         supports_search_hits=True,
         is_numeric=False,
         id_required=False,
+        role="artifact",
         views=_VIEWS,
     )
 
@@ -488,7 +490,19 @@ class StructureHandler(Handler):
         **_kw: Any,
     ) -> Response:
         """Add/remove a link from this design to another ref — e.g. a derived
-        design → its parent (``rel='derived-from'``, target ``structure:<slug>``)."""
+        design → its parent (``rel='derived-from'``, target ``structure:<slug>``).
+
+        The reserved virtual ``rel='parent'`` is folder placement
+        (ADR 0045) — a ``refs.parent_id`` write, never a stored link.
+        Derivation (``derived-from``) and placement are orthogonal axes.
+        """
+        if rel == RESERVED_PARENT_REL:
+            ref = resolve_live_slug_ref(
+                self.store, kind="structure", id=str(id).strip()
+            )
+            return place_ref(
+                self.store, kind="structure", ref=ref, target=target, mode=mode
+            )
         target = require_link_target("structure", target)
         validate_link_mode(mode)
         ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())

@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, NotFound
+from precis.handlers._todo_guards import todo_root_sql
 from precis.response import Response
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
@@ -192,14 +193,14 @@ def _picks_7d_by_strategic(store: Store) -> dict[int, int]:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH RECURSIVE
               strat AS (
                 SELECT r.ref_id
                   FROM refs r
                  WHERE r.kind = 'todo'
                    AND r.deleted_at IS NULL
-                   AND r.parent_id IS NULL
+                   AND {todo_root_sql("r")}
                    AND EXISTS (
                        SELECT 1 FROM ref_tags rt
                          JOIN tags t ON t.tag_id = rt.tag_id
@@ -246,7 +247,7 @@ def render_roots(store: Store) -> Response:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.title,
                    (SELECT t.value FROM ref_tags rt
                       JOIN tags t ON t.tag_id = rt.tag_id
@@ -256,7 +257,7 @@ def render_roots(store: Store) -> Response:
               FROM refs r
              WHERE r.kind = 'todo'
                AND r.deleted_at IS NULL
-               AND r.parent_id IS NULL
+               AND {todo_root_sql("r")}
                AND EXISTS (
                    SELECT 1 FROM ref_tags rt
                      JOIN tags t ON t.tag_id = rt.tag_id
@@ -542,13 +543,13 @@ def _active_strategic_ids(store: Store) -> list[int]:
     """Strategic roots that have at least one open leaf (= eligible for picks)."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH RECURSIVE
               strat AS (
                 SELECT r.ref_id
                   FROM refs r
                  WHERE r.kind = 'todo' AND r.deleted_at IS NULL
-                   AND r.parent_id IS NULL
+                   AND {todo_root_sql("r")}
                    AND EXISTS (
                        SELECT 1 FROM ref_tags rt
                          JOIN tags t ON t.tag_id = rt.tag_id
@@ -604,7 +605,7 @@ def render_strategic(store: Store) -> Response:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH RECURSIVE
               tac AS (
                 SELECT t.ref_id AS tactical_id, t.title AS tactical_title,
@@ -615,7 +616,7 @@ def render_strategic(store: Store) -> Response:
                        SELECT 1 FROM refs s
                         WHERE s.ref_id = t.parent_id
                           AND s.kind = 'todo' AND s.deleted_at IS NULL
-                          AND s.parent_id IS NULL
+                          AND {todo_root_sql("s")}
                           AND EXISTS (
                               SELECT 1 FROM ref_tags rt
                                 JOIN tags tg ON tg.tag_id = rt.tag_id
@@ -661,7 +662,7 @@ def render_strategic(store: Store) -> Response:
               LEFT JOIN tac ON tac.strategic_id = s.ref_id
               LEFT JOIN leaves l ON l.tactical_id = tac.tactical_id
              WHERE s.kind = 'todo' AND s.deleted_at IS NULL
-               AND s.parent_id IS NULL
+               AND {todo_root_sql("s")}
                AND EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = s.ref_id AND t.namespace = 'OPEN'
@@ -991,7 +992,7 @@ def _fetch_doable(
             SELECT r.ref_id
               FROM refs r
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
-               AND r.parent_id IS NULL
+               AND {todo_root_sql("r")}
                AND EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id

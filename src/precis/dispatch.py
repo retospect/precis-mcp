@@ -637,6 +637,7 @@ def boot(
         from precis.handlers.draft import DraftHandler
         from precis.handlers.finding import FindingHandler
         from precis.handlers.flashcard import FlashcardHandler
+        from precis.handlers.folder import FolderHandler
         from precis.handlers.gripe import GripeHandler
         from precis.handlers.job import JobHandler
         from precis.handlers.memory import MemoryHandler
@@ -657,6 +658,7 @@ def boot(
         # ``hub.embedder`` directly — boot only threads the hub.
         _gated(MemoryHandler)
         _gated(TodoHandler)
+        _gated(FolderHandler)
         _gated(GripeHandler)
         _gated(AlertHandler)
         _gated(AgentLogHandler)

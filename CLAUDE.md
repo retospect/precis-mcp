@@ -223,6 +223,25 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
   shallow grid). Storage: `0027_clusterize.sql` (`cluster_runs` /
   `cluster_cells` / `cluster_assignments`). Web:
   `precis_web/routes/clusters.py` + the Clusters nav tab.
+- **`folder`** — organizational container (ADR 0045): single-parent
+  placement for **authored artifacts** (draft / structure / cad /
+  strategic todo roots / folders) on `refs.parent_id` — the ADR 0027
+  virtual `parent` façade generalized via `handlers/_placement.py`
+  (each placeable handler intercepts `rel='parent'`; the todo handler
+  keeps its own guards and requires `level:strategic` for folder
+  targets). `KindSpec.role` (`artifact|corpus|stream|system`, default
+  `stream`) declares placeability — corpus (paper/cfp) keeps its
+  discovery layer, stream (memory/alert/job) reaches folders only by
+  promotion into an authored note. Todo root detection is kind-aware
+  (`_todo_guards.todo_root_sql`, one shared fragment across picks /
+  roots / strategic / doable + nursery / structural / deep_review) so
+  a folder-parented strategic stays in the rotation; `_depth_of`
+  counts todo ancestors only. `search(folder=<id|name>)` scopes any
+  search to the folder's subtree (`Store.folder_subtree_ids` CTE; the
+  runtime routes folder-scoped searches through the cross-kind
+  fan-out and membership-filters hits). Delete refuses non-empty;
+  unfiled is a virtual state, no seeded inbox. Migration `0048` seeds
+  the kinds row; handle code `fo`. Skill: `precis-folder-help`.
 - **`gripe`** — first-class bug tracker (`get`/`search`/`tag`/`link`/
   `delete`); body + append-only comment timeline live as chunks
   (`gripe_body`, `gripe_comment`), so embed + `chunk_keywords` index

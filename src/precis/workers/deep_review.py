@@ -11,6 +11,7 @@ shim for the same pattern.
 
 from __future__ import annotations
 
+from precis.handlers._todo_guards import todo_root_sql
 from precis.store import Store
 from precis.workers.review import (
     Reviewer,
@@ -44,13 +45,13 @@ def _strategic_dashboard(store: Store) -> str:
     """Compact strategic dashboard: one line per strategic with 7d picks."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH RECURSIVE
               strat AS (
                 SELECT r.ref_id, r.title
                   FROM refs r
                  WHERE r.kind = 'todo' AND r.deleted_at IS NULL
-                   AND r.parent_id IS NULL
+                   AND {todo_root_sql("r")}
                    AND EXISTS (
                        SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                         WHERE rt.ref_id = r.ref_id

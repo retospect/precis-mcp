@@ -80,6 +80,7 @@ class CfpHandler(PaperHandler):
         is_numeric=False,
         id_required=False,
         corpus_role="spec",
+        role="corpus",
         views=_CFP_VIEWS,
     )
 
