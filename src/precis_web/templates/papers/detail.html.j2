@@ -6,6 +6,9 @@
   /* sidebar nav: each result is a button; the active one rings amber */
   .nav-result.active{box-shadow:inset 0 0 0 2px #f59e0b;background:#fffbeb}
   .nav-kw{font-size:10px;background:#f1f5f9;border-radius:3px;padding:0 4px;color:#475569}
+  /* gloss line: clamp to 3 lines, expand fully while hovering the row */
+  .nav-clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+  .nav-result:hover .nav-clamp{-webkit-line-clamp:unset;overflow:visible}
   #pdf-frame{border:0}
 </style>
 
@@ -54,7 +57,7 @@
           </div>
 
           <form x-show="mode !== 'toc'" @submit.prevent="runSearch()" class="mt-2 flex gap-1">
-            <input x-model="q" x-ref="qbox"
+            <input x-model="q" x-ref="qbox" @input="onQueryInput()"
                    :placeholder="mode === 'semantic' ? 'search meaning…' : 'search words…'"
                    class="w-full rounded border border-slate-300 px-2 py-1 text-xs" />
             <button type="submit"
@@ -64,41 +67,64 @@
           <p x-show="loading" x-cloak class="mt-3 text-xs text-slate-400">searching…</p>
           <p x-show="!loading && searched && !results.length && mode !== 'toc'" x-cloak
              class="mt-3 text-xs text-slate-400">no matches in this paper.</p>
+          <p x-show="mode !== 'toc' && !searched && chunksLoaded && !chunks.length" x-cloak
+             class="mt-3 text-xs text-slate-400">no chunks ingested yet.</p>
+          <p x-show="mode !== 'toc' && !searched && chunks.length" x-cloak
+             class="mt-2 text-[10px] text-slate-400"
+             x-text="(mode === 'semantic' ? 'summaries' : 'keywords') + ' — click a row to jump; hover to expand'"></p>
 
-          {# search results — plain-text snippets, click to highlight in PDF #}
+          {# semantic / keyword: ranked hits after a search, else the whole-
+             paper gloss list (summary / keywords) for rapid nav. Click a row
+             to jump + highlight in the PDF; the gloss line expands on hover. #}
           <ul x-show="mode !== 'toc'" class="mt-2 space-y-1.5">
-            <template x-for="(r, i) in results" :key="i">
+            <template x-for="(r, i) in navRows()" :key="i">
               <li>
-                <button type="button" @click="gotoResult(r, i)"
+                <button type="button" @click="gotoNav(r, i)"
                         class="nav-result w-full rounded border border-slate-200 p-2 text-left hover:border-amber-300"
-                        :class="{'active': activeIdx === i}">
+                        :class="{'active': activeIdx === i}"
+                        :title="'chunk ord ' + r.ord">
                   <div class="flex items-center justify-between text-[10px] text-slate-400">
-                    <span class="font-mono">chunk <span x-text="r.ord"></span><template x-if="r.page"> · p<span x-text="r.page"></span></template></span>
-                    <span x-show="mode === 'semantic'" :title="'cosine similarity ' + r.score" x-text="'sim ' + r.score"></span>
+                    <span class="font-mono">#<span x-text="r.ord"></span><template x-if="r.page"> · p<span x-text="r.page"></span></template></span>
+                    <span x-show="searched && mode === 'semantic' && r.score !== undefined"
+                          :title="'cosine similarity ' + r.score" x-text="'sim ' + r.score"></span>
                   </div>
-                  <p class="mt-0.5 text-xs leading-snug text-slate-700" x-text="r.text"></p>
-                  <div class="mt-1 flex flex-wrap gap-1" x-show="r.keywords.length">
-                    <template x-for="kw in r.keywords.slice(0,6)" :key="kw">
-                      <span class="nav-kw" x-text="kw"></span>
-                    </template>
-                  </div>
+                  <p class="nav-clamp mt-0.5 text-xs leading-snug text-slate-700" x-text="glossText(r)"></p>
                 </button>
               </li>
             </template>
           </ul>
 
-          {# TOC — keyword-clustered segments, click to jump to the cluster #}
+          {# TOC — keyword-clustered segments. Single-click jumps + highlights
+             the cluster's first chunk; double-click drills into it (re-cluster
+             its ord range). A breadcrumb climbs back out. #}
           <div x-show="mode === 'toc'">
+            <div x-show="tocStack.length" x-cloak
+                 class="mt-2 flex flex-wrap items-center gap-1 text-[10px] text-slate-500">
+              <button type="button" @click="tocReset()" class="hover:underline">full</button>
+              <template x-for="(sc, k) in tocStack" :key="k">
+                <span>›
+                  <button type="button" @click="tocPopTo(k)" class="font-mono hover:underline"
+                          x-text="'¶' + sc.lo + '–' + sc.hi"></button>
+                </span>
+              </template>
+              <button type="button" @click="tocUp()"
+                      class="ml-auto rounded border border-slate-300 px-1.5 py-0.5 hover:bg-slate-50">↑ up</button>
+            </div>
             <p x-show="!toc.length" x-cloak class="mt-3 text-xs text-slate-400">no chunks to outline.</p>
-            <ul class="mt-2 space-y-1.5">
+            <p x-show="toc.length" x-cloak class="mt-2 text-[10px] text-slate-400">click to jump · double-click to drill in</p>
+            <ul class="mt-1 space-y-1.5">
               <template x-for="(s, i) in toc" :key="i">
                 <li>
-                  <button type="button" @click="gotoSeg(s, i)"
+                  <button type="button" @click="onSegClick(s, i)" @dblclick="onSegDblClick(s)"
                           class="nav-result w-full rounded border border-slate-200 p-2 text-left hover:border-amber-300"
-                          :class="{'active': activeSeg === i}">
+                          :class="{'active': activeSeg === i}"
+                          :title="'chunks ' + s.lo + (s.hi !== s.lo ? '–' + s.hi : '')">
                     <div class="flex items-center justify-between text-[10px] text-slate-400">
                       <span class="font-mono" x-text="s.handle"></span>
-                      <template x-if="s.page"><span>p<span x-text="s.page"></span></span></template>
+                      <span class="flex items-center gap-1">
+                        <template x-if="s.hi !== s.lo"><span x-text="s.n + '⧉'" title="double-click to drill in"></span></template>
+                        <template x-if="s.page"><span>p<span x-text="s.page"></span></span></template>
+                      </span>
                     </div>
                     <div class="mt-1 flex flex-wrap gap-1">
                       <template x-for="kw in s.keywords" :key="kw">

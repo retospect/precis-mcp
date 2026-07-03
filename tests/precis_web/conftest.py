@@ -210,6 +210,16 @@ class FakeStore:
         works, the PDF jump just has no page hint."""
         return {}
 
+    def chunk_summaries_for(self, ref_id: int, ords) -> dict[int, str]:
+        """No llm-v1 glosses in the fake corpus — search rows carry an
+        empty summary and the client falls back to keyword chips."""
+        return {}
+
+    def chunk_glosses_for_ref(self, ref_id: int, **kw: Any) -> list[dict[str, Any]]:
+        """Per-chunk gloss list for the rapid-nav /chunks endpoint. Empty
+        in the fake corpus (no body chunks); the contract is a list."""
+        return []
+
     def search_blocks_semantic(self, *, query_vec, scope_ref_id=None, limit=20, **kw):
         """Return canned (block, ref, distance) hits for the paper-nav
         search route. Tests populate ``self.nav_hits`` per ref."""

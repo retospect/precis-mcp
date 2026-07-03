@@ -1851,6 +1851,80 @@ class BlocksMixin:
             ).fetchall()
         return {int(r[0]): int(r[1]) for r in rows}
 
+    def chunk_glosses_for_ref(
+        self, ref_id: int, *, pos_range: tuple[int, int] | None = None
+    ) -> list[dict[str, Any]]:
+        """Per-chunk gloss list for the paper reader's rapid-nav sidebar.
+
+        Returns body chunks (``ord >= 0``) in reading order as
+        ``[{ord, page, summary, keywords}]``:
+
+        * ``summary`` — the ``llm-v1`` two-part gloss from
+          ``chunk_summaries`` (``''`` for a chunk the ``llm_summarize``
+          worker hasn't reached — its coverage is a deliberate trickle,
+          so most chunks are empty and the caller falls back to
+          ``keywords``).
+        * ``keywords`` — comma-joined KeyBERT terms (``chunks.keywords``,
+          first 12; ``''`` when the ``chunk_keywords`` worker hasn't run).
+        * ``page`` — ``page_first`` (``None`` when no page provenance),
+          for the PDF jump.
+
+        Mirrors the draft reader's :meth:`block_views`, but keyed by
+        ``ord`` (papers address chunks by ord, not handle) and carrying
+        the page. ``pos_range=(lo, hi)`` filters inclusively on ord.
+        """
+        clauses = ["c.ref_id = %s", "c.ord >= 0"]
+        params: list[Any] = [ref_id]
+        if pos_range is not None:
+            params.extend([pos_range[0], pos_range[1]])
+            clauses.append("c.ord BETWEEN %s AND %s")
+        where = " AND ".join(clauses)
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT c.ord, c.page_first, c.keywords,
+                       (SELECT s.text FROM chunk_summaries s
+                          WHERE s.chunk_id = c.chunk_id
+                            AND s.summarizer = 'llm-v1' LIMIT 1) AS summary
+                  FROM chunks c
+                 WHERE {where}
+                 ORDER BY c.ord ASC
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                "ord": int(ord_),
+                "page": int(page) if page is not None else None,
+                "summary": (summary or "").strip(),
+                "keywords": ", ".join((kws or [])[:12]),
+            }
+            for ord_, page, kws, summary in rows
+        ]
+
+    def chunk_summaries_for(self, ref_id: int, ords: list[int]) -> dict[int, str]:
+        """Map body-chunk ``ord`` → ``llm-v1`` summary text for the given ords.
+
+        Batch companion to :meth:`chunk_glosses_for_ref` for the search
+        path, which already has the hit ords and only needs the gloss to
+        display. Ords with no ``llm-v1`` row are omitted (the caller falls
+        back to the keyword string). One query.
+        """
+        if not ords:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.ord, s.text
+                  FROM chunks c
+                  JOIN chunk_summaries s
+                    ON s.chunk_id = c.chunk_id AND s.summarizer = 'llm-v1'
+                 WHERE c.ref_id = %s AND c.ord = ANY(%s)
+                """,
+                (ref_id, list(ords)),
+            ).fetchall()
+        return {int(ord_): (text or "").strip() for ord_, text in rows if text}
+
     def ref_ids_with_chunks(self, ref_ids: list[int]) -> set[int]:
         """Subset of ``ref_ids`` that have at least one body chunk (ord>=0).
 

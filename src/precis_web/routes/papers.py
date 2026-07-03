@@ -623,13 +623,18 @@ async def search_in_paper(
         m = "keyword"
         hits = store.search_blocks_lexical(q=q, scope_ref_id=ref.id, limit=_NAV_LIMIT)
 
-    pages = store.chunk_pages(ref.id, [b.pos for b, _r, _s in hits])
+    ords = [b.pos for b, _r, _s in hits]
+    pages = store.chunk_pages(ref.id, ords)
+    # llm-v1 gloss per hit for the Semantic-mode row (falls back to the
+    # keyword chips client-side when a chunk hasn't been summarised yet).
+    summaries = store.chunk_summaries_for(ref.id, ords)
     is_sem = m == "semantic"
     results = [
         {
             "ord": b.pos,
             "page": pages.get(b.pos),
             "text": _nav_snippet(b.text),
+            "summary": summaries.get(b.pos, ""),
             "keywords": b.keywords or [],
             # Semantic: report cosine *similarity* (1 - distance, higher =
             # better) so the best-first ordering reads naturally; keyword:
@@ -641,12 +646,31 @@ async def search_in_paper(
     return JSONResponse({"results": results, "mode": m})
 
 
+def _parse_scope(lo: int | None, hi: int | None) -> tuple[int, int] | None:
+    """Coerce optional ``?lo=&hi=`` drill-down bounds into a scope tuple.
+
+    Both must be present and ordered for a scope; anything else (one
+    side missing, inverted) means "no scope — cluster the whole body".
+    """
+    if lo is None or hi is None or lo > hi:
+        return None
+    return (lo, hi)
+
+
 @router.get("/{ref_id}/toc")
-async def toc_in_paper(request: Request, ref_id: int) -> JSONResponse:
+async def toc_in_paper(
+    request: Request, ref_id: int, lo: int | None = None, hi: int | None = None
+) -> JSONResponse:
     """Clickable TOC: keyword-clustered segments of this paper's body.
 
     Each segment carries its ``handle``, chunk range, label keywords,
     and the PDF ``page`` of its first chunk (for the viewer jump).
+
+    ``?lo=&hi=`` restricts the clustering to an ord sub-range — the
+    drill-down path: double-clicking a fat cluster re-clusters just that
+    range (papers have no heading tree, so hierarchy comes from recursive
+    keyword clustering, ADR-0018/F20). Without both bounds the full body
+    is clustered.
     """
     store = get_store(request)
     ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
@@ -655,11 +679,31 @@ async def toc_in_paper(request: Request, ref_id: int) -> JSONResponse:
     # ADR 0036: prefix each segment with the universal record handle
     # (``pa<id>`` / ``cf<id>``) so the web row mirrors the agent get id.
     handle = format_handle(ref.kind, ref.id)
-    segments = build_toc_segments(store=store, ref_id=ref.id, handle=handle)
+    scope = _parse_scope(lo, hi)
+    segments = build_toc_segments(
+        store=store, ref_id=ref.id, handle=handle, scope=scope
+    )
     pages = store.chunk_pages(ref.id, [seg["lo"] for seg in segments])
     for seg in segments:
         seg["page"] = pages.get(seg["lo"])
     return JSONResponse({"segments": segments})
+
+
+@router.get("/{ref_id}/chunks")
+async def chunks_in_paper(request: Request, ref_id: int) -> JSONResponse:
+    """Per-chunk gloss list for the sidebar's rapid-nav (Semantic/Keyword).
+
+    Returns every body chunk in reading order as
+    ``{ord, page, summary, keywords}`` — the empty-query state of the
+    Semantic and Keyword modes, a scannable outline the operator clicks
+    to jump the viewer. ``summary`` is the ``llm-v1`` gloss (often empty —
+    the summariser is a trickle), ``keywords`` the KeyBERT terms.
+    """
+    store = get_store(request)
+    ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
+    if ref is None:
+        return JSONResponse({"chunks": []})
+    return JSONResponse({"chunks": store.chunk_glosses_for_ref(ref.id)})
 
 
 @router.get("/{ref_id}/chunk/{ord}")

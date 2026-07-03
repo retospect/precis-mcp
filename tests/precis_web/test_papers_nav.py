@@ -96,6 +96,8 @@ def test_search_keyword_shapes_results(client, runtime) -> None:
     assert "Ballistic transport" in data["results"][0]["text"]
     # No page provenance in the fake corpus -> page hint is null, not fatal.
     assert data["results"][0]["page"] is None
+    # The Semantic-mode gloss column is present (empty in the fake corpus).
+    assert data["results"][0]["summary"] == ""
 
 
 def test_search_semantic_degrades_to_keyword_without_embedder(client, runtime) -> None:
@@ -140,6 +142,21 @@ def test_toc_endpoint_returns_segments_key(client) -> None:
     resp = client.get("/papers/10/toc")
     assert resp.status_code == 200
     assert resp.json()["segments"] == []
+
+
+def test_toc_endpoint_accepts_drill_scope(client) -> None:
+    """The drill-down path passes ?lo=&hi= — the endpoint accepts them and
+    keeps the `segments` contract (empty in the fake corpus)."""
+    resp = client.get("/papers/10/toc", params={"lo": 30, "hi": 74})
+    assert resp.status_code == 200
+    assert resp.json()["segments"] == []
+
+
+def test_chunks_endpoint_returns_chunks_key(client) -> None:
+    """The rapid-nav gloss list endpoint — a `chunks` list (empty here)."""
+    resp = client.get("/papers/10/chunks")
+    assert resp.status_code == 200
+    assert resp.json()["chunks"] == []
 
 
 def test_chunk_endpoint_returns_chunk_key(client) -> None:

@@ -127,6 +127,7 @@ Start with the TOC — it's the entry point for any non-trivial paper.
 
 ```python
 get(kind='paper', id='pa40', view='toc')             # start here
+get(kind='paper', id='pa40', view='summaries')       # per-chunk gloss + keywords
 get(id='pc512')                                      # single block by chunk handle
 get(kind='paper', id='pa40', view='abstract')
 get(kind='paper', id='pa40')                         # full overview
@@ -141,9 +142,16 @@ or a `pc<id>..pc<id>` range) — paste it back as `id=`. Each row shows
 the segment's most-distinctive keywords. Segments are clustered
 dynamically by content at request time.
 
-Views: `abstract`, `toc`, `bibtex` (`cite/bib`), `ris` (`cite/ris`),
-`endnote` (`cite/endnote`). The `view=` kwarg and `slug/<view>` path
-are equivalent (except for DOIs — see above).
+`view='summaries'` is the flat, per-chunk companion to the clustered
+`view='toc'`: one row per body chunk — its `~ord` handle, its `llm-v1`
+gloss (often empty — the summariser is a deliberate trickle), and its
+KeyBERT keyword string. Use it to scan every chunk's gist at once (the
+web reader's Semantic/Keyword sidebar reads the same data); fall back to
+the keyword column where a gloss hasn't been written yet.
+
+Views: `abstract`, `toc`, `summaries`, `bibtex` (`cite/bib`), `ris`
+(`cite/ris`), `endnote` (`cite/endnote`). The `view=` kwarg and
+`slug/<view>` path are equivalent (except for DOIs — see above).
 
 ## Find a passage in a paper I have
 ## Locate where a topic comes up in a specific paper

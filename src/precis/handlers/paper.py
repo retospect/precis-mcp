@@ -92,6 +92,7 @@ _SUPPORTED_VIEWS = (
     "endnote",
     "abstract",
     "toc",
+    "summaries",
     "health",
     "bibliography",
     "log",
@@ -1831,6 +1832,9 @@ class PaperHandler(Handler):
         if view == "toc":
             return self._render_toc(ref, scope=None)
 
+        if view == "summaries":
+            return self._render_summaries(ref)
+
         if view in ("bibtex", "ris", "endnote"):
             # F15: pre-fetch the DOI from ref_identifiers. The v2
             # schema moved DOI off ref.meta into its own table, but
@@ -2280,6 +2284,46 @@ class PaperHandler(Handler):
             embedder=self.embedder,
         )
 
+    def _render_summaries(self, ref: Ref) -> Response:
+        """``view='summaries'`` — per-chunk gloss list for the whole body.
+
+        One row per body chunk: its ``ord`` handle, the ``llm-v1`` gloss
+        (``chunk_summaries``), and the KeyBERT keyword string. This is the
+        agent-surface twin of the web reader's Semantic/Keyword rapid-nav
+        list (both read :meth:`Store.chunk_glosses_for_ref`).
+
+        The ``summary`` column is often empty — ``llm_summarize`` coverage
+        is a deliberate trickle — so ``keywords`` is the always-present
+        fallback the reader falls back to. For a clustered overview use
+        ``view='toc'``; for a chunk's full text use ``get(id='pa<id>~N')``.
+        """
+        glosses = self.store.chunk_glosses_for_ref(ref.id)
+        if not glosses:
+            return Response(
+                body=(
+                    f"# {_pa(ref)} — no body chunks to summarise\n\n"
+                    "The chunker hasn't produced any body chunks for this paper."
+                )
+            )
+        rows = [
+            {
+                "handle": f"{_pa(ref)}~{g['ord']}",
+                "summary": g["summary"] or "—",
+                "keywords": g["keywords"] or "—",
+            }
+            for g in glosses
+        ]
+        n_summ = sum(1 for g in glosses if g["summary"])
+        head = (
+            f"# {_pa(ref)} summaries — {len(rows)} chunks, {n_summ} with an llm gloss"
+        )
+        table = render_agent_table(rows, schema=["handle", "summary", "keywords"])
+        body = f"{head}\n\n{table}"
+        banner = _retraction_banner(ref)
+        if banner:
+            body = f"{banner}\n\n{body}"
+        return Response(body=body)
+
     def _render_toc(
         self,
         ref: Ref,
@@ -2390,6 +2434,7 @@ _VIEW_PATH_ALIASES: dict[tuple[str, ...], str] = {
     ("cite", "endnote"): "endnote",
     ("abstract",): "abstract",
     ("toc",): "toc",
+    ("summaries",): "summaries",
     ("bibtex",): "bibtex",
     ("ris",): "ris",
     ("endnote",): "endnote",
@@ -2730,6 +2775,7 @@ _VIEW_KWARG_ALIASES: dict[str, str] = {
     "endnote": "endnote",
     "abstract": "abstract",
     "toc": "toc",
+    "summaries": "summaries",
     "cite/bib": "bibtex",
     "cite/bibtex": "bibtex",
     "cite/ris": "ris",

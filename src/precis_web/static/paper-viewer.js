@@ -9,9 +9,21 @@
  * scroll. A page jump is the always-correct fallback when the phrase
  * doesn't match (hyphenation / ligatures / math).
  *
+ * The Navigate tab has three modes:
+ *   - semantic / keyword: a search box over the empty-query "rapid nav"
+ *     gloss list (every chunk's llm-v1 summary / keyword string, from
+ *     /chunks). A query swaps the list for ranked hits (/search). Either
+ *     row: click = jump + highlight; the gloss line clamps and expands on
+ *     hover (see .nav-clamp in detail.html.j2).
+ *   - toc: keyword-clustered segments (/toc). Single-click = jump +
+ *     highlight the cluster's first chunk; double-click = drill into that
+ *     cluster (re-cluster its ord range, /toc?lo=&hi=). A breadcrumb +
+ *     ↑ climb back out — papers have no heading tree, so hierarchy is
+ *     recursive keyword clustering.
+ *
  * Defined as a plain global so Alpine's `x-data="paperDoc(...)"` can
- * call it (mirrors drafts/detail.html.j2's draftDoc). Loaded `defer`,
- * so it runs before Alpine starts on DOMContentLoaded.
+ * call it (mirrors drafts/detail.html.j2's draftDoc). Loaded before
+ * Alpine starts on DOMContentLoaded.
  */
 function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
   return {
@@ -26,10 +38,15 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
     loading: false,
     searched: false,
     activeIdx: -1,
+    // rapid-nav gloss list (empty-query state of semantic / keyword)
+    chunks: [],
+    chunksLoaded: false,
     // toc state
     toc: [],
     tocLoaded: false,
     activeSeg: -1,
+    tocStack: [], // drill-down scopes: [{lo, hi}, ...]; [] = whole paper
+    _segTimer: null, // click/dblclick discriminator
     // jump state
     jtext: '',
     jpage: '',
@@ -44,6 +61,8 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
         this.jord = String(citedOrd);
         this.$nextTick(() => this.jumpOrd());
       }
+      // Warm the rapid-nav gloss list if we open straight onto Navigate.
+      if (this.tab === 'Navigate' && this.mode !== 'toc') this.loadChunks();
     },
 
     // ── pdf.js viewer control ───────────────────────────────────────
@@ -110,11 +129,24 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
       return run.length >= 3 ? run.join(' ') : toks.slice(0, 6).join(' ');
     },
 
-    // ── navigate: search + toc ──────────────────────────────────────
+    // ── navigate: search + rapid-nav list + toc ─────────────────────
     setMode(m) {
       this.mode = m;
-      if (m === 'toc') { if (!this.tocLoaded) this.loadToc(); }
-      else { this.$nextTick(() => this.$refs.qbox && this.$refs.qbox.focus()); if (this.q.trim()) this.runSearch(); }
+      if (m === 'toc') { if (!this.tocLoaded) this.loadToc(); return; }
+      if (!this.chunksLoaded) this.loadChunks();
+      this.$nextTick(() => this.$refs.qbox && this.$refs.qbox.focus());
+      if (this.q.trim()) this.runSearch();
+    },
+    // Clearing the box drops back to the rapid-nav gloss list.
+    onQueryInput() {
+      if (!this.q.trim()) { this.searched = false; this.results = []; this.activeIdx = -1; }
+    },
+    async loadChunks() {
+      try {
+        const data = await (await fetch(`/papers/${this.paperId}/chunks`, { cache: 'no-store' })).json();
+        this.chunks = data.chunks || [];
+      } catch (e) { this.chunks = []; }
+      this.chunksLoaded = true;
     },
     async runSearch() {
       const q = this.q.trim();
@@ -131,24 +163,92 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
       this.searched = true;
       // Surface the best match immediately: jump the PDF to the top hit
       // (cosine-closest for semantic, top ts_rank for keyword) and ring it.
-      if (this.results.length) this.gotoResult(this.results[0], 0);
+      if (this.results.length) this.gotoNav(this.results[0], 0);
     },
-    async loadToc() {
+    // The rows the semantic / keyword list shows: ranked hits after a
+    // search, else the whole-paper gloss list for rapid nav.
+    navRows() {
+      return this.searched ? this.results : this.chunks;
+    },
+    // The one line each row shows: the summary in semantic mode, the
+    // keyword string in keyword mode, each falling back to the other
+    // (then to a text snippet) so a not-yet-summarised chunk still reads.
+    glossText(r) {
+      const kw = Array.isArray(r.keywords) ? r.keywords.join(', ') : (r.keywords || '');
+      const sum = (r.summary || '').trim();
+      const snip = (r.text || '').trim();
+      if (this.mode === 'keyword') return kw || sum || snip || '(no keywords yet)';
+      return sum || kw || snip || '(no summary yet)';
+    },
+    async gotoNav(r, i) {
+      this.activeIdx = i;
+      let text = r.text, page = r.page;
+      if (!text) {
+        // A gloss-list row carries no chunk text — fetch it to highlight.
+        try {
+          const d = await (await fetch(`/papers/${this.paperId}/chunk/${r.ord}`, { cache: 'no-store' })).json();
+          if (d.chunk) { text = d.chunk.text; page = d.chunk.page || page; }
+        } catch (e) { /* page jump is the fallback below */ }
+      }
+      this.findInPdf(this._phrase(text || ''), page);
+    },
+
+    async loadToc(lo, hi) {
+      let url = `/papers/${this.paperId}/toc`;
+      if (lo !== undefined && hi !== undefined) url += `?lo=${lo}&hi=${hi}`;
       try {
-        const data = await (await fetch(`/papers/${this.paperId}/toc`, { cache: 'no-store' })).json();
+        const data = await (await fetch(url, { cache: 'no-store' })).json();
         this.toc = data.segments || [];
       } catch (e) { this.toc = []; }
       this.tocLoaded = true;
     },
-    gotoResult(r, i) {
-      this.activeIdx = i;
-      this.findInPdf(this._phrase(r.text), r.page);
+    // Single click vs double click on a TOC row: a click highlights, a
+    // double-click drills in. Defer the single-click action briefly so a
+    // double-click can cancel it.
+    onSegClick(s, i) {
+      if (this._segTimer) clearTimeout(this._segTimer);
+      this._segTimer = setTimeout(() => { this._segTimer = null; this.gotoSeg(s, i); }, 220);
     },
-    gotoSeg(s, i) {
+    onSegDblClick(s) {
+      if (this._segTimer) { clearTimeout(this._segTimer); this._segTimer = null; }
+      this.drillSeg(s);
+    },
+    async gotoSeg(s, i) {
       this.activeSeg = i;
-      // A cluster spans many chunks with no single quotable phrase — jump
-      // to its first page (highlight the lead keyword as a soft anchor).
+      // Highlight the cluster's first chunk (its opening phrase) — the
+      // same green find as a Jump. Fall back to the lead keyword if the
+      // chunk text can't be fetched.
+      try {
+        const d = await (await fetch(`/papers/${this.paperId}/chunk/${s.lo}`, { cache: 'no-store' })).json();
+        if (d.chunk) { this.findInPdf(this._phrase(d.chunk.text), d.chunk.page || s.page); return; }
+      } catch (e) { /* fall through */ }
       this.findInPdf(s.keywords && s.keywords[0] ? s.keywords[0] : '', s.page);
+    },
+    // Drill into a multi-chunk cluster: push its ord range and re-cluster.
+    // A single-chunk row (lo === hi) has nothing finer to show.
+    drillSeg(s) {
+      if (s.lo === s.hi) return;
+      this.tocStack.push({ lo: s.lo, hi: s.hi });
+      this.activeSeg = -1;
+      this.loadToc(s.lo, s.hi);
+    },
+    tocUp() {
+      if (!this.tocStack.length) return;
+      this.tocStack.pop();
+      this.activeSeg = -1;
+      const sc = this.tocStack[this.tocStack.length - 1];
+      if (sc) this.loadToc(sc.lo, sc.hi); else this.loadToc();
+    },
+    tocReset() {
+      this.tocStack = [];
+      this.activeSeg = -1;
+      this.loadToc();
+    },
+    tocPopTo(k) {
+      this.tocStack = this.tocStack.slice(0, k + 1);
+      this.activeSeg = -1;
+      const sc = this.tocStack[k];
+      this.loadToc(sc.lo, sc.hi);
     },
 
     // ── jump: text / page / ord ─────────────────────────────────────
