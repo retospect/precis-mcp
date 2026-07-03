@@ -90,6 +90,9 @@ class FakeStore:
         #: Canned sidebar-nav hits per scope_ref_id: lists of
         #: (block, ref, score) for the search_blocks_* fakes.
         self.nav_hits: dict[int, list[Any]] = {}
+        #: ref_ids passed to bump_salience_for_ref — the reader heats a
+        #: document on open (summarize hot tier + dreamer signal).
+        self.salience_bumps: list[int] = []
         #: Canned chunk-handle table for resolve_handle: chunk_id ->
         #: (ref_id, ord, kind). Tests populate it to exercise the
         #: console resolver's chunk-handle branch (``pc…``).
@@ -209,6 +212,12 @@ class FakeStore:
         """No page provenance in the fake corpus — sidebar nav still
         works, the PDF jump just has no page hint."""
         return {}
+
+    def bump_salience_for_ref(self, ref_id: int) -> int:
+        """Record the reader's on-open heat bump so a test can assert the
+        just-viewed document was surfaced to the summarize hot tier."""
+        self.salience_bumps.append(ref_id)
+        return 0
 
     def chunk_summaries_for(self, ref_id: int, ords) -> dict[int, str]:
         """No llm-v1 glosses in the fake corpus — search rows carry an

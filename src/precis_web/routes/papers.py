@@ -578,6 +578,14 @@ async def detail(
         if request.url.query:
             target = f"{target}?{request.url.query}"
         return RedirectResponse(url=target, status_code=301)
+    # A human opened this document — heat its body chunks so it rises for the
+    # summarize hot tier (summarise it first) and the dreamer. Best-effort:
+    # a bump failure must never 500 the reader. Skipped on the id→slug
+    # redirect above (the follow-up slug request does the bump).
+    try:
+        store.bump_salience_for_ref(ref.id)
+    except Exception:
+        pass
     return _render_detail(
         request,
         ref,

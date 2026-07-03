@@ -1428,6 +1428,32 @@ class BlocksMixin:
             conn.execute("SELECT bump_salience(%s)", (list(chunk_ids),))
         return len(chunk_ids)
 
+    def bump_salience_for_ref(self, ref_id: int) -> int:
+        """Heat every body chunk of a ref — "a human is reading this document".
+
+        Ref-scoped :meth:`bump_salience`: advances ``last_seen=now()`` +
+        ``accesses`` on all of ``ref_id``'s body chunks (``ord >= 0``) in one
+        round-trip. The paper reader calls this on open so the just-viewed
+        document rises for both the ``llm_summarize`` hot tier (summarise it
+        first) and the dreamer (``argmax(last_seen - last_dreamt)``) — the
+        same heat signal, one bump.
+
+        No-op inside a background actor (the echo-chamber guard
+        :func:`background_actor_active`, shared with :meth:`bump_salience`) and
+        when the ref has no body chunks. Returns the number bumped.
+        """
+        if background_actor_active():
+            return 0
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord >= 0",
+                (ref_id,),
+            ).fetchall()
+            ids = [int(r[0]) for r in rows]
+            if ids:
+                conn.execute("SELECT bump_salience(%s)", (ids,))
+        return len(ids)
+
     def touch_attended(
         self,
         actor: str,

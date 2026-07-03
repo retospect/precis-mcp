@@ -41,6 +41,22 @@ def test_detail_by_slug_renders(client) -> None:
     assert "/static/paper-viewer.js" in resp.text
 
 
+def test_detail_open_bumps_salience_for_hot_summaries(client, runtime) -> None:
+    """Opening the reader heats the document (summarize hot tier + dreamer):
+    the slug render path bumps the ref's salience exactly once."""
+    runtime.store.salience_bumps.clear()
+    client.get("/papers/smith2024", follow_redirects=False)
+    assert runtime.store.salience_bumps == [10]
+
+
+def test_detail_numeric_redirect_does_not_bump(client, runtime) -> None:
+    """The id→slug 301 must not bump — the follow-up slug request does, so
+    a redirect-then-render pair heats the document once, not twice."""
+    runtime.store.salience_bumps.clear()
+    client.get("/papers/10", follow_redirects=False)
+    assert runtime.store.salience_bumps == []
+
+
 def test_detail_wires_pdfjs_viewer_when_pdf_on_disk(client, tmp_path) -> None:
     """With the PDF present on disk the main pane is the vendored pdf.js
     viewer iframe, pointed at the numeric-id pdf route."""

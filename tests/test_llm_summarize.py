@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from precis.workers.llm_summarize import (
+    HOT_WINDOW_MIN,
     MAX_CHUNK_CHARS,
     MAX_SUMMARIZE_ATTEMPTS,
     SUMMARY_LEASE_COOLDOWN_MIN,
@@ -88,8 +89,8 @@ class _FakeConn:
         flat = " ".join(sql.split())
         p: tuple[Any, ...] = tuple(params) if params else ()
         if "FOR UPDATE OF c SKIP LOCKED" in flat:
-            # claim_chunks_without_summary runs two fresh passes (priority,
-            # then the rest); serve the seeded rows once so totals match
+            # claim_chunks_without_summary runs four fresh tiers (draft, conv,
+            # hot, rest); serve the seeded rows on the first so totals match
             # production. Claiming inserts the lease (attempts = 0).
             self._claim_calls += 1
             rows = self.claim_rows if self._claim_calls == 1 else []
@@ -783,6 +784,76 @@ def test_reclaim_reserved_slice_beats_fresh_backlog(store: Any) -> None:
     ids = {c.chunk_id for c in claimed}
     assert len(claimed) == 16
     assert stale_id in ids  # reclaimed despite 16 fresh chunks being available
+
+
+def test_hot_tier_claims_recently_viewed_paper_first(store: Any) -> None:
+    """Reader-salience priority: a paper a human just opened (its chunks
+    freshly heated via ``last_seen``) is claimed ahead of an older paper
+    with a lower ref_id, even though the plain ``ref_id, ord`` rest order
+    would take the older one first. Reuses the dreamer's heat signal."""
+    from tests.workers._helpers import seed_chunks
+
+    # Cold paper first (lower ref_id) — would win a pure ref_id order.
+    cold_ref, cold_ids = seed_chunks(store, [_PROSE] * 4)
+    # Hot paper second (higher ref_id) — opened by a human just now.
+    hot_ref, hot_ids = seed_chunks(store, [_PROSE] * 3)
+    aged = f"now() - interval '{HOT_WINDOW_MIN + 60} minutes'"
+    with store.pool.connection() as conn:
+        # Age the cold paper out of the hot window; the hot paper keeps its
+        # default last_seen = now().
+        conn.execute(
+            f"UPDATE chunks SET last_seen = {aged} WHERE ref_id = %s", (cold_ref,)
+        )
+        conn.commit()
+        # A batch that can hold only the hot paper's chunks.
+        claimed = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=3)
+
+    assert {c.chunk_id for c in claimed} == set(hot_ids)
+    assert not (set(cold_ids) & {c.chunk_id for c in claimed})
+
+
+def test_hot_tier_orders_before_rest_but_keeps_both(store: Any) -> None:
+    """With room for everything the cold backlog still gets claimed — the hot
+    tier reorders, it doesn't drop. Hot chunks come first in claim order."""
+    from tests.workers._helpers import seed_chunks
+
+    cold_ref, cold_ids = seed_chunks(store, [_PROSE] * 3)
+    hot_ref, hot_ids = seed_chunks(store, [_PROSE] * 2)
+    aged = f"now() - interval '{HOT_WINDOW_MIN + 60} minutes'"
+    with store.pool.connection() as conn:
+        conn.execute(
+            f"UPDATE chunks SET last_seen = {aged} WHERE ref_id = %s", (cold_ref,)
+        )
+        conn.commit()
+        claimed = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=10)
+
+    ids = [c.chunk_id for c in claimed]
+    assert set(ids) == set(hot_ids) | set(cold_ids)  # nothing dropped
+    # The two hot chunks are claimed before any cold one.
+    assert set(ids[: len(hot_ids)]) == set(hot_ids)
+
+
+def test_bump_salience_for_ref_heats_body_chunks(store: Any) -> None:
+    """The reader's on-open hook advances ``last_seen`` on a ref's body
+    chunks — the signal the hot tier + dreamer read."""
+    from tests.workers._helpers import seed_chunks
+
+    ref_id, chunk_ids = seed_chunks(store, [_PROSE, _PROSE])
+    aged = "now() - interval '10 days'"
+    with store.pool.connection() as conn:
+        conn.execute(
+            f"UPDATE chunks SET last_seen = {aged} WHERE ref_id = %s", (ref_id,)
+        )
+        conn.commit()
+    n = store.bump_salience_for_ref(ref_id)
+    assert n == len(chunk_ids)
+    with store.pool.connection() as conn:
+        fresh = conn.execute(
+            "SELECT count(*) FROM chunks "
+            "WHERE ref_id = %s AND last_seen > now() - interval '1 minute'",
+            (ref_id,),
+        ).fetchone()[0]
+    assert fresh == len(chunk_ids)
 
 
 def test_gc_drops_orphaned_leases(store: Any) -> None:

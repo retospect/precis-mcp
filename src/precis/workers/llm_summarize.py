@@ -327,11 +327,12 @@ _FRESH_CLAIM_SQL = """
                     WHERE cl.chunk_id = c.chunk_id AND cl.artifact = %(artifact)s
                )
            AND {kind_pred}
+           AND {extra_pred}
            AND c.chunk_kind <> ALL(%(skip_kinds)s)
            AND length(c.text) >= %(min_chars)s
            AND length(c.text) <= %(max_chars)s
            AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
-         ORDER BY c.ref_id, c.ord
+         ORDER BY {order_by}
          LIMIT %(limit)s
            FOR UPDATE OF c SKIP LOCKED
     ),
@@ -412,6 +413,34 @@ _LEASE_GC_SQL = """
 #: Refs whose chunks jump the queue (see ``claim_chunks_without_summary``).
 _PRIORITY_KINDS = ("conv", "draft")
 
+#: Recency window for the "hot" fresh tier: an un-summarised chunk whose
+#: ``last_seen`` is newer than this is a document a human recently opened
+#: in the reader (``bump_salience_for_ref``), so it jumps ahead of the
+#: cold backlog. Wide enough that a paper opened at the start of a reading
+#: session is still hot when the trickle reaches it; env-overridable.
+HOT_WINDOW_MIN = int(os.environ.get("PRECIS_SUMMARIZE_HOT_WINDOW_MIN", "1440"))
+
+#: The non-priority kind predicate (everything that isn't conv/draft,
+#: NULL kind included) — shared by the hot + rest tiers so they partition
+#: the same population the two priority tiers leave behind.
+_REST_KIND_PRED = "(r.kind <> ALL(ARRAY['conv', 'draft']) OR r.kind IS NULL)"
+
+#: Fresh-claim tiers, in queue order: draft > conv > hot > rest (ADR: the
+#: reader-salience priority). Each is ``(kind_pred, extra_pred, order_by)``
+#: spliced into ``_FRESH_CLAIM_SQL``. The hot tier reorders the rest by
+#: ``last_seen DESC`` inside a recency window; the others keep the
+#: ``ref_id, ord`` contiguity that hits the llama.cpp prefix cache.
+_FRESH_TIERS: dict[str, tuple[str, str, str]] = {
+    "draft": ("r.kind = 'draft'", "TRUE", "c.ref_id, c.ord"),
+    "conv": ("r.kind = 'conv'", "TRUE", "c.ref_id, c.ord"),
+    "hot": (
+        _REST_KIND_PRED,
+        "c.last_seen > now() - (%(hot_window_min)s * interval '1 minute')",
+        "c.last_seen DESC",
+    ),
+    "rest": (_REST_KIND_PRED, "TRUE", "c.ref_id, c.ord"),
+}
+
 
 def _rows_to_claims(rows: list[tuple[Any, ...]]) -> list[_Claimed]:
     return [
@@ -432,28 +461,31 @@ def _rows_to_claims(rows: list[tuple[Any, ...]]) -> list[_Claimed]:
 
 
 def _claim_fresh(
-    conn: Any, *, summarizer: str, limit: int, priority: bool
+    conn: Any, *, summarizer: str, limit: int, tier: str
 ) -> list[_Claimed]:
-    """Claim never-seen chunks (no summary, no claim) for one queue bucket.
+    """Claim never-seen chunks (no summary, no claim) for one queue tier.
 
-    ``priority=False`` covers all other kinds including a NULL ``r.kind`` so the
-    two buckets are an exact partition. Writes the ``chunk_claims`` row in the
-    same statement (the data-modifying CTE) — the digit-fraction numeric-dump
-    filter is applied in Python after the claim, not here (a ``regexp_replace``
-    over ~1M rows made the claim ~74s/batch; cheap length/kind filters stay SQL).
+    ``tier`` is one of :data:`_FRESH_TIERS` (draft / conv / hot / rest) — its
+    ``(kind_pred, extra_pred, order_by)`` is spliced into the claim. The four
+    tiers partition (draft, conv) then re-order the remainder (hot before
+    rest); a chunk claimed by an earlier tier is excluded from a later one by
+    the fresh ``NOT EXISTS chunk_claims``. Writes the ``chunk_claims`` row in
+    the same statement (the data-modifying CTE) — the digit-fraction
+    numeric-dump filter is applied in Python after the claim, not here (a
+    ``regexp_replace`` over ~1M rows made the claim ~74s/batch; cheap
+    length/kind filters stay SQL).
     """
-    kind_pred = (
-        "r.kind IN ('conv', 'draft')"
-        if priority
-        else "(r.kind <> ALL(ARRAY['conv', 'draft']) OR r.kind IS NULL)"
-    )
+    kind_pred, extra_pred, order_by = _FRESH_TIERS[tier]
     rows = conn.execute(
-        _FRESH_CLAIM_SQL.format(kind_pred=kind_pred),
+        _FRESH_CLAIM_SQL.format(
+            kind_pred=kind_pred, extra_pred=extra_pred, order_by=order_by
+        ),
         {
             "artifact": summarizer,
             "skip_kinds": list(SKIP_KINDS),
             "min_chars": MIN_CHUNK_CHARS,
             "max_chars": MAX_CHUNK_CHARS,
+            "hot_window_min": HOT_WINDOW_MIN,
             "limit": limit,
         },
     ).fetchall()
@@ -510,14 +542,21 @@ def claim_chunks_without_summary(
        failures + migration-seeded backfill), oldest-first. Reserving it keeps
        a deep fresh backlog (~1M chunks) from starving reclaims for months —
        previously reclaim ran only when fresh work ran dry.
-    2. **Fresh, priority** — ``conv``/``draft`` chunks with no summary and no
-       claim. These jump the queue: draft refs have the highest ref_ids (most
-       recent), so a plain ``ref_id, ord`` order would bury an actively-edited
-       write-up behind the ~1M-chunk paper backlog and it would never summarise.
-    3. **Fresh, rest** — every other never-seen chunk, ``ref_id, ord`` order
-       (a document's chunks stay contiguous so the prompt's shared doc-header
-       prefix keeps hitting the llama.cpp prefix cache).
-    4. **Reclaim (top-up)** — remaining stale claim rows when fresh runs dry.
+    2. **Fresh, draft** then **3. Fresh, conv** — actively-edited writes with
+       no summary and no claim. These jump the queue: draft/conv refs have the
+       highest ref_ids (most recent), so a plain ``ref_id, ord`` order would
+       bury an open write-up behind the ~1M-chunk paper backlog and it would
+       never summarise. Split draft-before-conv per the queue order.
+    4. **Fresh, hot** — every other never-seen chunk whose ``last_seen`` is
+       inside :data:`HOT_WINDOW_MIN` (a document a human just opened in the
+       reader, salience-heated via ``bump_salience_for_ref``), ``last_seen
+       DESC``. Reuses the dreamer's heat signal so a just-viewed paper is
+       summarised first — bounded naturally: a fully-summarised paper has no
+       un-summarised chunks to claim, so it can't starve the rest.
+    5. **Fresh, rest** — every remaining never-seen chunk, ``ref_id, ord``
+       order (a document's chunks stay contiguous so the prompt's shared
+       doc-header prefix keeps hitting the llama.cpp prefix cache).
+    6. **Reclaim (top-up)** — remaining stale claim rows when fresh runs dry.
        (A row reclaimed in step 1 got ``claimed_at = now()`` so it cannot be
        double-claimed here; a fresh chunk with a claim row is excluded by the
        fresh ``NOT EXISTS``.)
@@ -529,13 +568,14 @@ def claim_chunks_without_summary(
     claimed: list[_Claimed] = []
     if reserve:
         claimed += _claim_reclaim(conn, summarizer=summarizer, limit=reserve)
-    if len(claimed) < limit:
+    # Fresh tiers in queue order: draft > conv > hot > rest. The hot tier
+    # (a paper a human just opened, salience-heated) jumps ahead of the
+    # cold backlog but sits behind the actively-edited draft/conv writes.
+    for tier in ("draft", "conv", "hot", "rest"):
+        if len(claimed) >= limit:
+            break
         claimed += _claim_fresh(
-            conn, summarizer=summarizer, limit=limit - len(claimed), priority=True
-        )
-    if len(claimed) < limit:
-        claimed += _claim_fresh(
-            conn, summarizer=summarizer, limit=limit - len(claimed), priority=False
+            conn, summarizer=summarizer, limit=limit - len(claimed), tier=tier
         )
     if len(claimed) < limit:
         claimed += _claim_reclaim(
