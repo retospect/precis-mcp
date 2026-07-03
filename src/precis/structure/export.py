@@ -98,10 +98,6 @@ def to_cif(scene: Scene) -> str:
     """CIF via ASE (caller checks :func:`ase_available` first)."""
     from ase.io import write
 
-    # ASE's CIF writer wraps the file object in ``TextIOWrapper(fd,
-    # encoding='latin-1')`` and then ``detach()``es it, so ``fd`` must be a
-    # *binary* buffer — a text ``StringIO`` raises "string argument expected,
-    # got 'bytes'". Write bytes, then decode with the same latin-1 codec.
-    buf = io.BytesIO()
+    buf = io.StringIO()
     write(buf, _to_ase(scene), format="cif")
-    return buf.getvalue().decode("latin-1")
+    return buf.getvalue()

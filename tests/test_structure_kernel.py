@@ -264,21 +264,7 @@ def test_relax_clean_respects_fixed() -> None:
     assert np.allclose(scene.atoms["aPd1"].frac, [0.0, 0.0, 0.0])  # never moved
 
 
-def test_relax_rented_rungs_are_gated(monkeypatch) -> None:
-    # The gate container installs the [dft-ml] extra (Dockerfile `uv sync
-    # --all-extras`), so the 'ml' rung has a real MACE backend and would relax
-    # inline. Force the MLIP absent so 'ml' is gated like the other rented
-    # rungs — the data-host condition these rungs are designed around.
-    import importlib
-
-    # NB: the ``precis.structure`` package re-exports the ``relax`` *function*,
-    # shadowing the submodule name — reach the module via importlib.
-    relax_mod = importlib.import_module("precis.structure.relax")
-
-    def _no_mlip(model):  # type: ignore[no-untyped-def]
-        raise RelaxUnsupported("no MLIP backend (test)")
-
-    monkeypatch.setattr(relax_mod, "_ml_calculator", _no_mlip)
+def test_relax_rented_rungs_are_gated() -> None:
     scene = Scene(cell=_cubic(20.0))
     apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0, 0, 0]}])
     for rung in ("ml", "dft-fast", "xtb"):
