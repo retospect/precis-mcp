@@ -10,10 +10,10 @@ pytest.importorskip("fastapi")
 # ── app skeleton ───────────────────────────────────────────────────
 
 
-def test_root_redirects_to_tasks(client) -> None:
+def test_root_redirects_to_drive(client) -> None:
     resp = client.get("/", follow_redirects=False)
     assert resp.status_code in (302, 307)
-    assert resp.headers["location"] == "/tasks"
+    assert resp.headers["location"] == "/drive"
 
 
 def test_healthz(client) -> None:

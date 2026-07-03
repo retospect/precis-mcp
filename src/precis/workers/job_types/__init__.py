@@ -148,6 +148,14 @@ def _load_structure_propose() -> JobTypeSpec:
     return structure_propose.SPEC
 
 
+def _load_cad_propose() -> JobTypeSpec:
+    # LLM turns an instruction into a proposed CAD design source (tool-less
+    # claude, propose-only) under claude_inproc. Runs via plugin dispatch.
+    from precis.workers.job_types import cad_propose
+
+    return cad_propose.SPEC
+
+
 def _load_good_search() -> JobTypeSpec:
     # Deep-search coordinator campaign (fuse → triage children → merged
     # verdict). Runs via plugin dispatch under the coordinator executor.
@@ -306,6 +314,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "structure_propose":
         _REGISTRY["structure_propose"] = _load_structure_propose()
         return _REGISTRY["structure_propose"]
+    if name == "cad_propose":
+        _REGISTRY["cad_propose"] = _load_cad_propose()
+        return _REGISTRY["cad_propose"]
     if name == "good_search":
         _REGISTRY["good_search"] = _load_good_search()
         return _REGISTRY["good_search"]
@@ -332,6 +343,7 @@ def known_job_types() -> list[str]:
         "briefing",
         "struct_relax",
         "structure_propose",
+        "cad_propose",
         "good_search",
         "good_search_triage",
     ]

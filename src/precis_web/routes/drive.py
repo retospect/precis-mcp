@@ -37,6 +37,7 @@ log = logging.getLogger(__name__)
 _READER_URL = {
     "draft": "/drafts/{ident}",
     "structure": "/structure/{ident}",
+    "cad": "/cad/{ident}",
     "todo": "/tasks?focus={ref_id}",
 }
 
@@ -248,6 +249,59 @@ async def drive_folder(request: Request, ref_id: int) -> HTMLResponse:
         "unfiled": [],
     }
     return templates.TemplateResponse(request, "drive/index.html.j2", ctx)
+
+
+#: Starter sources for the "+ New" dropdown (kind → put args builder). Draft
+#: has its own richer flow (``/drafts/new``); this covers cad + structure so a
+#: fresh artifact lands the operator straight in its editor.
+_NEW_STARTERS = {
+    "cad": lambda slug: (
+        "cad",
+        {"id": slug, "text": "part add box:w40d40h10"},
+        f"/cad/{slug}",
+    ),
+    "structure": lambda slug: (
+        "structure",
+        {
+            "id": slug,
+            "text": '{"cell":{"a":10,"b":10,"c":10,"pbc":[true,true,true]},"ops":[]}',
+        },
+        f"/structure/{slug}",
+    ),
+}
+
+
+@router.post("/new")
+async def create_artifact(
+    request: Request,
+    kind: str = Form(...),
+    title: str = Form(""),
+) -> Response:
+    """Create a new cad / structure artifact from the Drive "+ New" dropdown.
+
+    Slugifies ``title`` → slug, dispatches the kind's ``put`` with a valid
+    *starter* source, and redirects into its editor (where the operator edits
+    by prompt). Draft creation is handled by ``/drafts/new``, not here."""
+    from precis.utils.slug import slug_from_text
+
+    builder = _NEW_STARTERS.get(kind)
+    if builder is None:
+        return await redirect_or_error(
+            request,
+            "put",
+            {"kind": kind},  # let the handler raise the canonical BadInput
+            redirect="/drive",
+            error_title="New artifact",
+        )
+    slug = slug_from_text(title) or f"{kind}-design"
+    put_kind, args, redirect = builder(slug)
+    return await redirect_or_error(
+        request,
+        "put",
+        {"kind": put_kind, **args},
+        redirect=redirect,
+        error_title="New artifact",
+    )
 
 
 @router.post("/create")

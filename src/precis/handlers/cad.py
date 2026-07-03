@@ -187,6 +187,63 @@ class CadHandler(Handler):
         )
         return Response(body=head + "\n" + self._tree_table(spec, handles))
 
+    # ── derive ───────────────────────────────────────────────────────
+    def derive(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        to: str,
+        text: str,
+        title: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Branch a **new** design ``to`` from ``id`` with ``text`` as its source,
+        linked ``derived-from`` the parent (the web editor's "Apply" step).
+
+        CAD is authored as whole text (not incremental ops, unlike structure), so
+        a derivative is just a fresh design under a new slug plus the lineage
+        link. The parent is untouched (delete it separately if you want)."""
+        parent = resolve_live_slug_ref(self.store, kind="cad", id=str(id).strip())
+        to_slug = str(to).strip()
+        if not to_slug:
+            raise BadInput("derive requires to= (the new design slug)")
+        if self.store.get_ref(kind="cad", id=to_slug) is not None:
+            raise BadInput(
+                f"design {to_slug!r} already exists",
+                next="pick a fresh slug for the derived design",
+            )
+        if text is None or not str(text).strip():
+            raise BadInput("derive requires text= (the new design source)")
+        try:
+            spec = parse_source(str(text))
+        except SceneError as exc:
+            raise BadInput(f"cad source error: {exc}") from exc
+        if not spec.nodes:
+            raise BadInput("derived cad design has no nodes")
+        try:
+            design = build_design(spec)
+        except Exception as exc:  # kernel build error
+            raise BadInput(f"cad build error: {exc}") from exc
+
+        ttl = (title or to_slug).strip() or to_slug
+        ref, _created, n = self.store.cad_save(
+            slug=to_slug,
+            title=ttl,
+            spec=spec,
+            card_text=self._card_text(ttl, spec, design),
+        )
+        # lineage: the derived design points back to its parent
+        self.store.add_link(
+            src_ref_id=ref.id, dst_ref_id=parent.id, relation="derived-from"
+        )
+        _spec2, handles = self.store.cad_load(ref.id)
+        head = (
+            f"# {to_slug} — derived from {parent.slug}: "
+            f"{len(spec.components)} part(s), {n} node(s)"
+            f"{self._interference_note(design, spec)}"
+        )
+        return Response(body=head + "\n" + self._tree_table(spec, handles))
+
     # ── get ──────────────────────────────────────────────────────────
     def get(  # type: ignore[override]
         self,

@@ -207,6 +207,28 @@ separate body where the format supports it — STEP as named
 formats). So a wheel + bracket modelled as two components round-trips as
 a real two-part assembly in a single `.step`/`.3mf`.
 
+## Web editor (`/cad`)
+
+A design is also a *human* affordance: `precis web` serves an interactive
+viewer at `/cad/<slug>` (linked from **Drive**, which is now the default
+landing page). It mirrors the DFT editor (`/structure`):
+
+- **3D viewer** — the analytic IR is tessellated (numpy only, no heavy
+  kernel) and shipped as a binary **glTF** that three.js renders *and* the
+  user downloads (same bytes). Parts are coloured per component; `cut` /
+  `intersect` features are translucent "tool volumes". A **Solid** toggle
+  shows the true CSG-folded solid when the `[cad-export]` extra is present.
+  Click a feature for its name / part / op / config / pose; hover the
+  feature list or a part chip to glow it.
+- **Edit by prompt** — the "Further instructions" box mints a **`cad_propose`**
+  job (tool-less `claude -p`): the LLM returns a full rewritten design
+  *source*, dry-run-validated (`parse_source` + `build_design`) before you
+  see it. Review it, then **Apply** derives a new slug (`CadHandler.derive`,
+  linked `derived-from`), optionally soft-deleting the original.
+- **Downloads** — glTF + OpenSCAD always; STL / 3MF with `[cad-export]`;
+  STEP with `[cad-step]`.
+- Create a new design straight from Drive's **+ New** dropdown.
+
 ## Delete
 
 ```python

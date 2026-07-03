@@ -1,0 +1,44 @@
+{% extends "base.html.j2" %}
+{% block title %}CAD{% endblock %}
+{% block content %}
+
+<div class="flex items-center gap-3 mb-4">
+  <h1 class="text-lg font-semibold">CAD</h1>
+  <span class="text-xs text-slate-500">{{ total }} design{{ '' if total == 1 else 's' }} · parametric solid model (ADR 0041)</span>
+</div>
+
+{% if not designs %}
+  <p class="text-sm text-slate-500">
+    No cad designs yet. Create one from <a href="/drive" class="text-emerald-700 hover:underline">Drive</a>,
+    or via MCP:
+    <code class="px-1 bg-slate-100 rounded">put(kind='cad', id='flange', text='plate add cyl:r25h8')</code>.
+  </p>
+{% else %}
+<div class="overflow-hidden rounded-lg border border-slate-200 bg-white">
+  <table class="min-w-full text-sm">
+    <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+      <tr>
+        <th class="text-left font-medium px-3 py-2">Design</th>
+        <th class="text-right font-medium px-3 py-2">Parts</th>
+        <th class="text-right font-medium px-3 py-2">Features</th>
+        <th class="text-right font-medium px-3 py-2">Updated</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for d in designs %}
+      <tr class="hover:bg-slate-50">
+        <td class="px-3 py-2">
+          <a href="/cad/{{ d.slug }}" class="text-emerald-700 hover:underline font-medium">{{ d.title }}</a>
+          <div class="text-xs text-slate-400">{{ d.slug }}</div>
+        </td>
+        <td class="px-3 py-2 text-right tabular-nums">{{ d.n_parts }}</td>
+        <td class="px-3 py-2 text-right tabular-nums">{{ d.n_nodes }}</td>
+        <td class="px-3 py-2 text-right text-slate-400 text-xs">{{ d.updated }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% endblock %}

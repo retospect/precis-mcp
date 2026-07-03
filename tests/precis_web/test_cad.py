@@ -1,0 +1,167 @@
+"""CAD web editor routes (ADR 0041 web bundle).
+
+Two layers: fast FakeStore-backed degradation checks (empty list, 404, bad
+export format), and a real-store integration that seeds a design and exercises
+the detail render + glTF model endpoint + apply-derives-new-design flow.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+pytest.importorskip("fastapi")
+
+from fastapi.testclient import TestClient
+
+from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.handlers.cad import CadHandler
+from precis_web.app import create_app
+from precis_web.config import WebConfig
+
+_FLANGE = """
+component flange
+plate     add  cyl:r25h8
+hub_bore  cut  cyl:r8h10    @0,0,-1
+component ring
+rim       add  cyl:r30h4    @0,0,8
+"""
+
+
+# ── FakeStore degradation paths ──────────────────────────────────────────
+
+
+def test_cad_list_empty(client: TestClient) -> None:
+    r = client.get("/cad")
+    assert r.status_code == 200
+    assert "No cad designs yet" in r.text
+
+
+def test_cad_detail_404(client: TestClient) -> None:
+    r = client.get("/cad/nope")
+    assert r.status_code == 404
+    assert "not found" in r.text.lower()
+
+
+def test_cad_export_unknown_format(client: TestClient) -> None:
+    r = client.get("/cad/whatever/export.gcode", follow_redirects=False)
+    assert r.status_code == 400
+    assert "unknown export format" in r.text
+
+
+def test_drive_default_root_redirects_to_drive(client: TestClient) -> None:
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert r.headers["location"] == "/drive"
+
+
+# ── real-store integration ───────────────────────────────────────────────
+
+
+@pytest.fixture
+def cad_client(runtime_with_store, tmp_path) -> TestClient:
+    return TestClient(
+        create_app(
+            runtime=runtime_with_store, web_config=WebConfig(corpus_dir=tmp_path)
+        )
+    )
+
+
+def _seed(runtime_with_store, slug: str = "web_flange") -> None:
+    CadHandler(hub=runtime_with_store.hub).put(id=slug, text=_FLANGE)
+
+
+def test_cad_detail_renders_viewer_and_parts(cad_client, runtime_with_store) -> None:
+    _seed(runtime_with_store)
+    r = cad_client.get("/cad/web_flange")
+    assert r.status_code == 200
+    # the glTF model endpoint the viewer loads
+    assert "/cad/web_flange/model.gltf" in r.text
+    # per-feature node list + per-part legend (two parts → two colours)
+    assert "plate" in r.text and "hub_bore" in r.text and "rim" in r.text
+    assert "flange" in r.text and "ring" in r.text
+    # download affordances
+    assert "export.scad" in r.text
+
+
+def test_cad_model_gltf_returns_glb(cad_client, runtime_with_store) -> None:
+    _seed(runtime_with_store, slug="web_glb")
+    r = cad_client.get("/cad/web_glb/model.gltf")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "model/gltf-binary"
+    assert r.content[:4] == b"glTF"  # binary glTF magic
+
+
+def test_cad_export_scad_downloads(cad_client, runtime_with_store) -> None:
+    _seed(runtime_with_store, slug="web_scad")
+    r = cad_client.get("/cad/web_scad/export.scad")
+    assert r.status_code == 200
+    assert "cylinder(" in r.text
+    assert "attachment" in r.headers.get("content-disposition", "")
+
+
+def test_cad_apply_derives_new_design(
+    cad_client, runtime_with_store, monkeypatch
+) -> None:
+    _seed(runtime_with_store, slug="web_apply")
+    store = runtime_with_store.store
+    ref = resolve_live_slug_ref(store, kind="cad", id="web_apply")
+    # Stand in a finished cad_propose job with a valid rewrite as its job_result.
+    import precis_web.routes.cad as cad_routes
+
+    monkeypatch.setattr(
+        cad_routes,
+        "_latest_proposal",
+        lambda _store, _ref_id: {
+            "job_id": 1,
+            "status": "succeeded",
+            "created": "now",
+            "proposal": {
+                "source": "component flange\nplate add cyl:r40h8",
+                "valid": True,
+                "rationale": "widen",
+            },
+        },
+    )
+    r = cad_client.post(
+        "/cad/web_apply/apply",
+        data={"to": "web_apply_v2", "job_id": "1"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cad/web_apply_v2"
+    # the derived design exists and is linked derived-from the parent
+    child = store.get_ref(kind="cad", id="web_apply_v2")
+    assert child is not None
+    links = store.links_for(child.id, direction="out", relation="derived-from")
+    assert any(lnk.dst_ref_id == ref.id for lnk in links)
+
+
+def test_cad_apply_soft_deletes_parent_when_checked(
+    cad_client, runtime_with_store, monkeypatch
+) -> None:
+    _seed(runtime_with_store, slug="web_drop")
+    store = runtime_with_store.store
+    import precis_web.routes.cad as cad_routes
+
+    monkeypatch.setattr(
+        cad_routes,
+        "_latest_proposal",
+        lambda _s, _r: {
+            "job_id": 1,
+            "status": "succeeded",
+            "created": "now",
+            "proposal": {"source": "p add cyl:r5h5", "valid": True, "rationale": "x"},
+        },
+    )
+    r = cad_client.post(
+        "/cad/web_drop/apply",
+        data={"to": "web_drop_v2", "job_id": "1", "delete_original": "1"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    # parent is soft-deleted (no longer resolvable), child lives
+    from precis.errors import NotFound
+
+    with pytest.raises(NotFound):
+        resolve_live_slug_ref(store, kind="cad", id="web_drop")
+    assert store.get_ref(kind="cad", id="web_drop_v2") is not None

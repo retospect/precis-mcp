@@ -74,6 +74,7 @@ def create_app(
         agentlogs,
         alerts,
         asks,
+        cad,
         cfp,
         clusters,
         console,
@@ -103,6 +104,7 @@ def create_app(
     app.include_router(tags.router)
     app.include_router(clusters.router)
     app.include_router(structure.router)
+    app.include_router(cad.router)
     app.include_router(alerts.router)
     app.include_router(agentlogs.router)
     app.include_router(preview.router)
@@ -112,7 +114,7 @@ def create_app(
 
     @app.get("/", include_in_schema=False)
     async def _root() -> RedirectResponse:
-        return RedirectResponse(url="/tasks")
+        return RedirectResponse(url="/drive")
 
     @app.get("/healthz", include_in_schema=False)
     async def _healthz() -> dict[str, str]:

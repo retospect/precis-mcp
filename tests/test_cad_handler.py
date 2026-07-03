@@ -217,3 +217,26 @@ def test_get_step_view(cad, tmp_path):
     assert out.exists()
     assert "ISO-10303" in out.read_text(errors="replace")[:200]
     assert "STEP" in resp.body
+
+
+def test_derive_creates_new_design_with_lineage(cad, store):
+    cad.put(id="flange", text=_FLANGE)
+    resp = cad.derive(id="flange", to="flange-v2", text="plate add cyl:r30h10")
+    assert "derived from flange" in resp.body
+    # the derived design exists and is independent
+    tree = cad.get(id="flange-v2")
+    assert "plate" in tree.body
+    # parent untouched
+    assert cad.get(id="flange").body  # still resolves
+    # lineage link points child -> parent
+    child = store.get_ref(kind="cad", id="flange-v2")
+    parent = store.get_ref(kind="cad", id="flange")
+    links = store.links_for(child.id, direction="out", relation="derived-from")
+    assert any(lnk.dst_ref_id == parent.id for lnk in links)
+
+
+def test_derive_refuses_existing_slug(cad):
+    cad.put(id="flange", text=_FLANGE)
+    cad.put(id="taken", text="p add box:w4d4h4")
+    with pytest.raises(BadInput):
+        cad.derive(id="flange", to="taken", text="p add cyl:r1h1")

@@ -185,6 +185,72 @@ def parse_source(text: str) -> SceneSpec:
     return spec
 
 
+def _fmt_num(x: float) -> str:
+    """Round-trip-safe number formatting for the source language.
+
+    Integers render without a decimal point (``18``); everything else uses
+    ``repr`` (which Python guarantees round-trips a float). Both forms match
+    ``_LOC_RE`` / ``_ROT_RE`` / the pattern regexes, so
+    ``parse_source(spec_to_source(x)) == x`` for any spec that came from
+    ``parse_source`` (i.e. authored decimals)."""
+    return str(int(x)) if x == int(x) else repr(x)
+
+
+def _pattern_token(pat: dict[str, float]) -> str:
+    """The ``polar:``/``linear:`` source token for a node pattern."""
+    kind = pat["kind"]
+    if kind == "polar":  # type: ignore[comparison-overlap]
+        return f"polar:n{int(pat['n'])}r{_fmt_num(float(pat['r']))}"
+    if kind == "linear":  # type: ignore[comparison-overlap]
+        tok = f"linear:n{int(pat['n'])}"
+        for axis in ("dx", "dy", "dz"):
+            v = float(pat.get(axis, 0.0))
+            if v != 0.0:
+                tok += f"{axis}{_fmt_num(v)}"
+        return tok
+    raise SceneError(f"unknown pattern kind {kind!r}")  # pragma: no cover
+
+
+def _node_line(node: NodeSpec) -> str:
+    """Serialise one node back to a source line (inverse of the parser)."""
+    parts = [node.name, node.op, node.config]
+    if node.loc != (0.0, 0.0, 0.0):
+        parts.append("@" + ",".join(_fmt_num(v) for v in node.loc))
+    if node.rot != (0.0, 0.0, 0.0):
+        parts.append("rot:" + ",".join(_fmt_num(v) for v in node.rot))
+    if node.pattern is not None:
+        parts.append(_pattern_token(node.pattern))
+    return " ".join(parts)
+
+
+def spec_to_source(spec: SceneSpec) -> str:
+    """Render a :class:`SceneSpec` back to the line-based design language.
+
+    The inverse of :func:`parse_source`: ``desc:``/``use:`` meta first, then
+    each component's nodes under a ``component <name>`` header (in node order).
+    Round-trips — ``parse_source(spec_to_source(s)) == s`` — so the web editor
+    can show an editable source and re-parse an LLM's proposed rewrite."""
+    lines: list[str] = []
+    desc = str(spec.meta.get("description") or "").strip()
+    use = str(spec.meta.get("use") or "").strip()
+    if desc:
+        lines.append(f"desc: {desc}")
+    if use:
+        lines.append(f"use: {use}")
+    if lines:
+        lines.append("")
+
+    current: str | None = None
+    for node in spec.nodes:
+        if node.component != current:
+            if lines and lines[-1] != "":
+                lines.append("")
+            lines.append(f"component {node.component}")
+            current = node.component
+        lines.append(_node_line(node))
+    return "\n".join(lines) + "\n"
+
+
 def _node_xform(
     loc: tuple[float, float, float], rot: tuple[float, float, float]
 ) -> Transform:

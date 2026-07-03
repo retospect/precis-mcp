@@ -358,6 +358,26 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
   Skills: `precis-pcb-help` (+ part-select / net-class / measures and the
   i2c/spi/decoupling/datasheet playbooks, skill-search-only). Cluster
   deploy is Tier-1 (JRE + jar on the gateway; kicad-cli gerbers deferred).
+- **`cad` web editor (`/cad`)** — the human twin of the MCP surface, mirroring
+  `/structure` (`precis_web/routes/cad.py` + `templates/cad/`). A `/cad/<slug>`
+  reader with an interactive **three.js** viewer + an "edit by prompt" box.
+  Unified render/export: the analytic IR is tessellated (`cad/tessellate.py`,
+  numpy-only, **no manifold3d**) and emitted as a binary **glTF**
+  (`cad/gltf.py::to_glb`) that the viewer loads *and* the user downloads (same
+  bytes, `GET /cad/<slug>/model.gltf?mode=features|solid`) — parts coloured per
+  component, `cut`/`intersect` features translucent, crease-angle normals for
+  smooth curves; `mode=solid` folds via manifold3d when `[cad-export]` is
+  present. Downloads (`GET /cad/<slug>/export.{scad,stl,3mf,step}`) stream off
+  the same IR; STEP is the only exact B-rep (a mesh engine — three.js included —
+  can't emit it, so export stays server-side). Edit-by-prompt mints a
+  **`cad_propose`** job (tool-less `claude -p` returns a full rewritten *source*,
+  dry-run-validated); **Apply** calls `CadHandler.derive(id,to,text)` (new slug,
+  linked `derived-from`, optional parent soft-delete). `spec_to_source`
+  (`cad/scene.py`) is the round-trippable inverse of `parse_source` the propose
+  loop needs. **Drive is now the default landing page** (`/` → `/drive`); its
+  **+ New** dropdown creates cad/structure (via `POST /drive/new`) or draft
+  (reusing `/drafts/new`), and cad rows deep-link into the reader
+  (`_READER_URL['cad']`). Skill: `precis-cad-help` (Web editor).
 - **Broad + deep paper search.** Tier 1: `search(kind='paper', q=,
   queries=[…rephrasings], answers=[…HyDE passages], per_paper=N)` —
   app-level RRF fusion over N lexical/semantic legs

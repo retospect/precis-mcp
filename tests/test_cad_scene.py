@@ -6,7 +6,13 @@ import math
 
 import pytest
 
-from precis.cad.scene import NodeSpec, SceneError, build_design, parse_source
+from precis.cad.scene import (
+    NodeSpec,
+    SceneError,
+    build_design,
+    parse_source,
+    spec_to_source,
+)
 from precis.cad.vec import vec3
 
 _FLANGE = """
@@ -79,3 +85,35 @@ def test_build_polar_pattern_places_six() -> None:
     # second bolt at 60°: (18cos60, 18sin60) = (9, 15.588)
     x, y = 18 * math.cos(math.radians(60)), 18 * math.sin(math.radians(60))
     assert not d2.classify_point(vec3(x, y, 4), component="part").inside  # carved
+
+
+_ASSEMBLY = """
+desc: a two part assembly
+use: bench testing
+component shaft
+rod   add  cyl:r5h40   @0,0,-20
+component hub
+plate add  cyl:r20h10
+bore  cut  cyl:r5.1h12 @0,0,-1
+lin   add  box:w2d2h2  @1,0,0  linear:n3dx5
+rimr  add  box:w4d4h4  @20,0,0 rot:0,0,45
+"""
+
+
+@pytest.mark.parametrize("src", [_FLANGE, _ASSEMBLY])
+def test_spec_to_source_round_trips(src: str) -> None:
+    """parse_source ∘ spec_to_source is identity on authored designs — so the
+    web editor can show an editable source and re-parse an LLM's rewrite."""
+    spec = parse_source(src)
+    assert parse_source(spec_to_source(spec)) == spec
+
+
+def test_spec_to_source_carries_meta_and_components() -> None:
+    out = spec_to_source(parse_source(_ASSEMBLY))
+    assert "desc: a two part assembly" in out
+    assert "use: bench testing" in out
+    assert "component shaft" in out and "component hub" in out
+    # loc/rot/pattern tokens survive
+    assert "@0,0,-20" in out
+    assert "linear:n3dx5" in out
+    assert "rot:0,0,45" in out
