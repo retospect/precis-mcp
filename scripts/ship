@@ -83,11 +83,59 @@ else
     echo "WARNING: precis-test-db didn't start — gate falls back to the host DB"
 fi
 
-# `./scripts/dev` bind-mounts the MAIN repo at /app (compose default), so the
-# gate must override the mount with -v "$WORKTREE":/app to test these edits.
-# The --no-deps run still joins the project network, so it resolves
-# precis-test-db by name. NB: `env UID=…` — a bare `UID=…` fails (UID readonly).
-gate() {
+# Warm, native-FS gate. Prefer a long-lived precis-gate container (see the
+# compose service header): it stays UP across ships (no per-run container
+# create) and has NO /app bind mount, so we tar-sync the worktree into its
+# native overlay FS and imports/collection run at native speed instead of over
+# the virtiofs bind mount (the ~73s ceiling — 6+ xdist workers each re-reading
+# the whole app over that mount self-serialise to ~2x parallelism). Its
+# mypy/ruff caches live on a persistent volume, so mypy is incremental across
+# ships too. If it can't start we fall back to the classic per-run
+# `compose run -v $WORKTREE:/app precis-dev` bind gate, so this optimisation
+# can never block a ship.
+GATE_MODE=bind
+say "starting warm gate container (precis-gate)"
+if compose up -d --wait precis-gate >/dev/null 2>&1; then
+    GATE_MODE=warm
+    echo "gate → precis-gate (warm, native FS)"
+else
+    echo "WARNING: precis-gate didn't start — gate falls back to the per-run bind-mount container"
+fi
+
+# Mirror the worktree into the warm container's native /app. `git archive
+# HEAD` streams exactly the committed tree (no .git, no caches, portable across
+# BSD/GNU tar) — safe because scripts/ship has already committed WIP and synced
+# by this point, so HEAD == worktree. Wipe /app first so a file deleted on the
+# branch is deleted in the container too. Any failure returns non-zero so the
+# caller aborts rather than gating stale source.
+sync_to_container() {
+    compose exec -T precis-gate sh -c 'find /app -mindepth 1 -maxdepth 1 -exec rm -rf {} +' || return 1
+    git -C "$WORKTREE" archive --format=tar HEAD \
+        | compose exec -T precis-gate tar -C /app --no-same-owner -xf - || return 1
+}
+
+# Bring ruff --fix/format results back out to the host worktree so the amend
+# below can commit them (in bind mode ruff edits the mount directly; in warm
+# mode it edits the container's native copy). Only src/ + tests/ — the trees
+# ruff rewrites — and never __pycache__/.pyc noise.
+sync_from_container() {
+    compose exec -T precis-gate \
+        tar -C /app --exclude='*/__pycache__' --exclude='*.pyc' -cf - src tests \
+        | tar -C "$WORKTREE" --no-same-owner -xf -
+}
+
+# Run one gate command in the chosen gate. Warm: sync worktree in → exec → sync
+# ruff fixes back (always, even on a red gate, so the fixes stay staged for the
+# human). Bind fallback: the classic per-run container with the worktree
+# mounted at /app. NB `env UID=…` — a bare `UID=…` fails (UID readonly).
+run_gate() {
+    if [[ "$GATE_MODE" == warm ]]; then
+        sync_to_container || { echo "✖ could not sync source into precis-gate" >&2; return 90; }
+        local rc=0
+        compose exec -T precis-gate bash -lc "$1" || rc=$?
+        sync_from_container || true
+        return "$rc"
+    fi
     compose run --rm --no-deps "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" \
         -v "${WORKTREE}":/app precis-dev bash -lc "$1"
 }
@@ -145,23 +193,25 @@ for attempt in 1 2 3; do
         esac
     done <<< "$CHANGED"
 
-    # One container for the whole gate. `ruff --fix`/`format` normalise the
-    # mounted worktree in-place; we amend the result on the host after.
+    # One gate invocation for the whole check. `ruff --fix`/`format` normalise
+    # the source in-place (the mount in bind mode, the container's native copy
+    # in warm mode); run_gate syncs the result back and we amend it below.
     #
-    # `-n 6`, not the repo default `-n auto` (=15): the gate's wall-clock is
-    # gated not by CPU (the VM has 15) but by the bind-mounted /app filesystem
-    # (Docker Desktop virtiofs) — 15 workers each re-collecting/importing the
-    # whole app over the slow mount saturate it and self-serialise. Measured on
-    # the co-located tmpfs DB: -n15 ≈124s, -n6 ≈73s, -n4 ≈73s — flat at ~73s
-    # for 4–6 workers. The host (native FS) keeps `-n auto`; this override is
-    # container-gate-only.
+    # -n6 is the measured sweet spot regardless of FS: the suite is CPU-bound
+    # on this 15-vCPU VM (each test proc + its own pg backend ≈ 2 procs), so
+    # past ~6 workers oversubscription makes it SLOWER, not faster (measured on
+    # the RAM test DB: -n6 ≈73-85s, -n8 ≈98s, -n10 ≈100s, -n15 ≈124-131s — and
+    # a native /app did NOT change this; the FS was never the ceiling). The
+    # warm gate's real win is elsewhere: an incremental mypy cache on a
+    # persistent volume (cold ~30s → ~1s) + no per-ship container create.
+    PYTEST_N=6
     if [[ "$DOCS_ONLY" == 1 ]]; then
         say "docs/config-only change → light gate (ruff · doc-pointer test), skipping mypy+pytest"
-        gate 'uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run pytest -q -n0 tests/test_doc_pointers.py' \
+        run_gate 'uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run pytest -q -n0 tests/test_doc_pointers.py' \
             || die "light gate is RED — not shipping. Fix the failure above and re-run scripts/ship."
     else
-        say "integration gate (ruff autofix · mypy · pytest) — single container"
-        gate 'uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run pytest -q -n 6' \
+        say "integration gate (ruff autofix · mypy · pytest) — ${GATE_MODE} gate, -n ${PYTEST_N}"
+        run_gate "uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run pytest -q -n ${PYTEST_N}" \
             || die "gate is RED — not shipping. Fix the failure above and re-run scripts/ship."
     fi
 
