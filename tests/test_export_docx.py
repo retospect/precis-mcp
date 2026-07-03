@@ -404,3 +404,42 @@ def test_export_renders_table(draft: DraftHandler, hub: Hub, tmp_path: Path) -> 
     paras = [p.text for p in doc.paragraphs]
     assert "Issue register" in paras
     assert not any("| ID | Title |" in p for p in paras)
+
+
+def test_render_byline_names_marks_and_ror_link() -> None:
+    """The byline block: names with superscript marks (when >1 affiliation)
+    + one affiliation paragraph each, ROR org rendered as a real hyperlink.
+    Pure over a python-docx Document (no store)."""
+    from precis.export.docx import _render_byline
+    from precis.utils.authors import build_byline
+
+    doc = docx.Document()
+    doc.add_heading("Title", level=0)
+    byline = build_byline(
+        [
+            {"name": "Doe, Jane", "affiliation": "MIT", "ror": "https://ror.org/x"},
+            {"name": "Roe, John", "affiliation": "Caltech"},
+        ]
+    )
+    _render_byline(doc, byline)
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Doe, Jane" in text and "Roe, John" in text
+    # superscript marks present as run text on the names paragraph
+    names_p = doc.paragraphs[1]
+    assert any(r.font.superscript and r.text in ("1", "2") for r in names_p.runs)
+    # the ROR affiliation is a real external hyperlink relationship
+    xml = doc.paragraphs[2]._p.xml
+    assert "hyperlink" in xml
+    rels = doc.part.rels
+    assert any(r.reltype.endswith("hyperlink") for r in rels.values())
+
+
+def test_render_byline_empty_authors_is_noop() -> None:
+    from precis.export.docx import _render_byline
+    from precis.utils.authors import build_byline
+
+    doc = docx.Document()
+    doc.add_heading("Title", level=0)
+    before = len(doc.paragraphs)
+    _render_byline(doc, build_byline(None))
+    assert len(doc.paragraphs) == before

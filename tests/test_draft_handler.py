@@ -905,3 +905,25 @@ def test_edit_text_store_op_typed_errors(store: Store) -> None:
         store.edit_text(handle, "new text")
     with pytest.raises(NotFound):
         store.edit_text("zzzznotarealhandle", "x")
+
+
+def test_authors_edit_sets_byline_with_affiliation(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    proj = _proj(hub)
+    draft.put(id="byl", title="A Study", project=proj)
+    r = draft.edit(
+        id="byl",
+        authors=[
+            {"name": "Doe, Jane", "affiliation": "MIT", "ror": "https://ror.org/x"},
+            {"family": "Roe", "given": "John"},
+        ],
+    )
+    assert "set 2 authors" in r.body and "1 with affiliation" in r.body
+    ref = hub.store.get_ref(kind="draft", id="byl")
+    # persisted to the first-class authors column, affiliation/ror preserved,
+    # names canonicalised to the sortable {"name"} shape.
+    assert ref.authors == [
+        {"name": "Doe, Jane", "affiliation": "MIT", "ror": "https://ror.org/x"},
+        {"name": "Roe, John"},
+    ]

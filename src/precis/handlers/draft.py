@@ -37,6 +37,7 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store._draft_ops import content_sha
 from precis.utils import draft_regex, handle_registry
+from precis.utils.authors import to_author_dicts
 from precis.utils.embed_query import query_vec_for
 from precis.utils.table_data import normalize_table, table_to_markdown
 
@@ -830,6 +831,7 @@ class DraftHandler(Handler):
         list_kind: str | None = None,
         word_target: dict[str, Any] | None = None,
         base_sha: str | None = None,
+        authors: list[dict[str, Any]] | str | None = None,
         not_abbrev: list[str] | str | None = None,
         sub: dict[str, Any] | str | None = None,
         apply: bool = False,
@@ -840,6 +842,21 @@ class DraftHandler(Handler):
         regen: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``authors`` is a draft-level op (set the byline + affiliations) —
+        # id is the slug (or any handle in the draft), not a single chunk.
+        # Stored on the draft ref's first-class ``authors`` column, so the
+        # exporters + web reader render a byline; ROR ids on each entry
+        # join to the canonical institution (https://ror.org).
+        if authors is not None:
+            ref = self._resolve_draft_any(id)
+            entries = to_author_dicts(authors)
+            self.store.update_paper_fields(ref.id, authors=entries, source="draft-edit")
+            n = len(entries)
+            affil = sum(1 for e in entries if e.get("affiliation"))
+            note = f" ({affil} with affiliation)" if affil else ""
+            return Response(
+                body=f"set {n} author{'s' if n != 1 else ''} on {ref.slug or ref.id}{note}"
+            )
         # ``not_abbrev`` is a draft-level op (silence the undefined-abbrev
         # hint) — id may be the slug or any ¶handle in the draft.
         if not_abbrev:
@@ -936,8 +953,9 @@ class DraftHandler(Handler):
         raise BadInput(
             "edit(kind='draft') requires text= (rewrite), move= (reorder/reparent), "
             "style= (set a heading's section style), word_target= (set a heading's "
-            "word limit), sub= (regex substitute across a draft/section), or "
-            "not_abbrev= (silence the abbrev hint)",
+            "word limit), authors= (set the byline + affiliations), sub= (regex "
+            "substitute across a draft/section), or not_abbrev= (silence the "
+            "abbrev hint)",
             next="edit(kind='draft', id='dc<chunk_id>', text='…')",
         )
 

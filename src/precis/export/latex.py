@@ -34,6 +34,7 @@ from typing import Any
 from pylatexenc.latexencode import UnicodeToLatexEncoder
 
 from precis.utils import handle_registry, mentions
+from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 
 #: Translate non-ASCII glyphs to LaTeX commands. ``non_ascii_only`` leaves
@@ -665,8 +666,55 @@ def _template_text(name: str) -> str:
     )
 
 
-def assemble_document(*, title: str, author: str, body: str, acronyms: str) -> str:
-    """Assemble the full ``main.tex`` around the checked-in preamble."""
+def _tex(text: str) -> str:
+    """Escape + unicode-encode a run of plain prose for LaTeX."""
+    return _encode_unicode(_latex_escape(text))
+
+
+def _affil_tex(org: str, ror: str) -> str:
+    """One affiliation's rendered LaTeX — the org name, hyperlinked to its
+    ROR id when known (hyperref is loaded in the preamble; ``\\url``-safe
+    id, org text escaped)."""
+    body = _tex(org) if org else _tex(ror)
+    if ror:
+        # ROR ids are simple https URLs; keep the target raw (no escape).
+        return f"\\href{{{ror}}}{{{body}}}"
+    return body
+
+
+def build_author_block(authors_raw: Any, *, fallback: str) -> str:
+    """The ``\\author{}`` (+ ``authblk`` ``\\affil{}``) block for the title.
+
+    From a draft ref's ``authors`` column: one ``\\author[marks]{Name}``
+    per author + one ``\\affil[i]{Org}`` per distinct affiliation (ROR
+    hyperlinked), deduped + numbered by :func:`build_byline`. A single
+    shared affiliation drops the numbers. When the draft has no authors
+    the block degrades to a single ``\\author{<fallback>}`` (the legacy
+    ``meta.author`` string), so old drafts export unchanged.
+    """
+    byline = build_byline(authors_raw)
+    people = byline["authors"]
+    if not people:
+        return f"\\author{{{_tex(fallback)}}}"
+    lines: list[str] = []
+    multi = byline["multi"]
+    for a in people:
+        opt = f"[{a['sup']}]" if (multi and a["sup"]) else ""
+        lines.append(f"\\author{opt}{{{_tex(a['name'])}}}")
+    for aff in byline["affiliations"]:
+        opt = f"[{aff['index']}]" if multi else ""
+        lines.append(f"\\affil{opt}{{{_affil_tex(aff['org'], aff['ror'])}}}")
+    return "\n".join(lines)
+
+
+def assemble_document(
+    *, title: str, author_block: str, body: str, acronyms: str
+) -> str:
+    """Assemble the full ``main.tex`` around the checked-in preamble.
+
+    ``author_block`` is the pre-rendered ``\\author{}`` / ``\\affil{}``
+    lines from :func:`build_author_block` (already escaped).
+    """
     parts = [
         _template_text("preamble.tex").rstrip(),
         "",
@@ -678,7 +726,7 @@ def assemble_document(*, title: str, author: str, body: str, acronyms: str) -> s
     parts += [
         "",
         f"\\title{{{_encode_unicode(_latex_escape(title))}}}",
-        f"\\author{{{_encode_unicode(_latex_escape(author))}}}",
+        author_block,
         "\\date{\\today}",
         "",
         "\\begin{document}",
@@ -705,9 +753,13 @@ def export_draft(store: Any, ref: Any, *, target_dir: Path) -> ExportResult:
     acronyms_tex = build_acronyms(rendered.acronyms, rendered.acronym_keys)
     bib_text = build_bib(store, rendered.cited_slugs, rendered.warnings)
     title = (ref.title or ref.slug or "Untitled").split("\n", 1)[0]
-    author = str((ref.meta or {}).get("author") or "precis")
+    fallback = str((ref.meta or {}).get("author") or "precis")
+    author_block = build_author_block(getattr(ref, "authors", None), fallback=fallback)
     main_tex = assemble_document(
-        title=title, author=author, body=rendered.body, acronyms=acronyms_tex
+        title=title,
+        author_block=author_block,
+        body=rendered.body,
+        acronyms=acronyms_tex,
     )
 
     main_path = target_dir / "main.tex"
@@ -737,6 +789,7 @@ __all__ = [
     "RenderResult",
     "assemble_document",
     "build_acronyms",
+    "build_author_block",
     "build_bib",
     "export_draft",
     "render_body",

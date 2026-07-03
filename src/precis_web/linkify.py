@@ -721,38 +721,24 @@ _CHIP_CLS = (
 )
 
 
-def popover_chip(
-    label: str, href: str, preview_url: str | None, *, warn: str | None = None
-) -> Markup:
+def popover_chip(label: str, href: str, preview_url: str | None) -> Markup:
     """A sidebar reference chip — chip-styled, carrying the same lazy
     hover-preview popover as an inline ref when ``preview_url`` is given
     (so the cited quote shows on hover). External links (no preview) get
-    a plain new-tab chip. ``label`` / ``href`` are escaped here.
-
-    When ``warn`` is given, a red ▲ is appended (with ``warn`` as its
-    tooltip) — used by the draft reader to flag a cited paper whose PDF is
-    held but missing on disk. Chip + marker are wrapped in one inline-flex
-    span so they stay glued together when the chip row wraps."""
+    a plain new-tab chip. ``label`` / ``href`` are escaped here."""
     safe_label = escape(label)
     if preview_url is None:
-        anchor = (
+        return Markup(
             f'<a class="{_CHIP_CLS}" href="{escape(href)}" '
             f'target="_blank" rel="noopener nofollow">{safe_label}</a>'
         )
-    else:
-        anchor = _anchor_html(
+    return Markup(
+        _anchor_html(
             href=escape(href),
             preview_url=escape(preview_url),
             label=safe_label,
             anchor_cls=_CHIP_CLS,
         )
-    if not warn:
-        return Markup(anchor)
-    safe_warn = escape(warn)
-    return Markup(
-        f'<span class="inline-flex items-center gap-0.5">{anchor}'
-        f'<span class="text-rose-600" role="img" title="{safe_warn}" '
-        f'aria-label="{safe_warn}">&#9650;</span></span>'
     )
 
 

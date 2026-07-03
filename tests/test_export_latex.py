@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -445,3 +446,63 @@ def test_export_renders_table_as_longtable(hub, tmp_path) -> None:
     assert "\\textbf{Issue register}" in body
     # the derived pipe markdown is NOT dumped as prose
     assert "| ID | Title |" not in body
+
+
+# ── author byline + affiliations (authblk; no DB) ─────────────────────
+
+
+class TestBuildAuthorBlock:
+    def test_no_authors_falls_back_to_string(self) -> None:
+        assert latex.build_author_block(None, fallback="precis") == "\\author{precis}"
+
+    def test_distinct_affiliations_numbered_with_ror_href(self) -> None:
+        raw = [
+            {
+                "name": "Doe, Jane",
+                "affiliation": "MIT & Co",
+                "ror": "https://ror.org/x",
+            },
+            {"name": "Roe, John", "affiliation": "Caltech"},
+        ]
+        out = latex.build_author_block(raw, fallback="precis")
+        assert "\\author[1]{Doe, Jane}" in out
+        assert "\\author[2]{Roe, John}" in out
+        # org name is escaped (& → \&) and hyperlinked to its ROR id
+        assert "\\affil[1]{\\href{https://ror.org/x}{MIT \\& Co}}" in out
+        assert "\\affil[2]{Caltech}" in out
+
+    def test_single_shared_affiliation_is_unnumbered(self) -> None:
+        raw = [
+            {"name": "A B", "affiliation": "MIT", "ror": "r1"},
+            {"name": "C D", "affiliation": "MIT", "ror": "r1"},
+        ]
+        out = latex.build_author_block(raw, fallback="precis")
+        assert "\\author{A B}" in out and "\\author{C D}" in out
+        assert "[1]" not in out  # no superscript numbers for a single affiliation
+        assert out.count("\\affil{") == 1
+
+
+def test_export_draft_emits_byline_from_ref_authors(hub) -> None:
+    """End-to-end: authors set on the draft ref flow into main.tex."""
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    d = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    d.put(id="byl", title="A Study", project=proj)
+    d.edit(
+        id="byl",
+        authors=[
+            {"name": "Doe, Jane", "affiliation": "MIT", "ror": "https://ror.org/x"},
+            {"name": "Roe, John", "affiliation": "Caltech"},
+        ],
+    )
+    ref = store.get_ref(kind="draft", id="byl")
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        latex.export_draft(store, ref, target_dir=Path(td))
+        main_tex = (Path(td) / "main.tex").read_text(encoding="utf-8")
+    assert "\\author[1]{Doe, Jane}" in main_tex
+    assert "\\affil[1]{\\href{https://ror.org/x}{MIT}}" in main_tex
+    assert "\\affil[2]{Caltech}" in main_tex

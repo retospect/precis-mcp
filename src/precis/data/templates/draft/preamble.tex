@@ -33,6 +33,13 @@
 \usepackage[hidelinks]{hyperref}
 \usepackage{cleveref}
 
+% Author byline + affiliations (export/latex.py build_author_block).
+% authblk turns multiple \author + \affil lines into a numbered
+% author↔affiliation block under \maketitle; a single shared
+% affiliation renders unnumbered.
+\usepackage{authblk}
+\renewcommand\Affilfont{\small\itshape}
+
 % Glossary / acronyms. `acronym` makes the acronym list; the long-short
 % style means first use expands to the full term and every later use is
 % the abbreviation. The page-number "where it occurs" list is on by

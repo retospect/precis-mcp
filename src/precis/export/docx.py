@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.export.latex import _COMBINED, _bibtex_authors, preprocess_draft_inline
+from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 
 #: chunk depth → Word heading level (1..4); deeper collapses to 4.
@@ -73,6 +74,64 @@ class _Ctx:
         return self._short_re
 
 
+def _add_hyperlink(paragraph: Any, url: str, text: str) -> None:
+    """Append a real external hyperlink run to ``paragraph`` (python-docx
+    has no native helper). Styled blue + underlined so it reads as a link.
+    Used for a ROR affiliation id."""
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.oxml.ns import qn
+    from docx.oxml.shared import OxmlElement
+
+    r_id = paragraph.part.relate_to(url, RT.HYPERLINK, is_external=True)
+    link = OxmlElement("w:hyperlink")
+    link.set(qn("r:id"), r_id)
+    run = OxmlElement("w:r")
+    rpr = OxmlElement("w:rPr")
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")
+    rpr.append(color)
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    rpr.append(underline)
+    run.append(rpr)
+    t = OxmlElement("w:t")
+    t.text = text
+    run.append(t)
+    link.append(run)
+    paragraph._p.append(link)
+
+
+def _render_byline(doc: Any, byline: dict[str, Any]) -> None:
+    """Emit the author byline + affiliation block under the title heading.
+
+    Names on one line (superscript marks when >1 affiliation), then one
+    affiliation per line (``¹ Org``, org hyperlinked to its ROR id). A no-
+    author draft renders nothing, matching the legacy title-only output."""
+    authors = byline.get("authors") or []
+    if not authors:
+        return
+    multi = byline.get("multi")
+    names_p = doc.add_paragraph()
+    for i, a in enumerate(authors):
+        if i:
+            names_p.add_run(", ")
+        names_p.add_run(a["name"])
+        if multi and a.get("sup"):
+            sup = names_p.add_run(a["sup"])
+            sup.font.superscript = True
+    for aff in byline.get("affiliations") or []:
+        p = doc.add_paragraph()
+        if multi:
+            mark = p.add_run(str(aff["index"]) + " ")
+            mark.font.superscript = True
+        org = aff.get("org") or aff.get("ror") or ""
+        if aff.get("ror"):
+            _add_hyperlink(p, aff["ror"], org)
+        else:
+            run = p.add_run(org)
+            run.italic = True
+
+
 def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
     """Render a draft into ``target_path`` as a ``.docx``. Returns the
     path plus the cited slugs and any resolution warnings."""
@@ -89,6 +148,7 @@ def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
 
     doc = Document()
     terms = store.draft_terms(ref.id)  # handle → (short, long)
+    byline = build_byline(getattr(ref, "authors", None))
 
     # List context (migration 0037): a ulist/olist container owns `item`
     # children, which render with Word's built-in List Bullet / List Number
@@ -131,6 +191,7 @@ def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
         if kind == "heading":
             if not title_done and c.depth == 0:
                 doc.add_heading(c.text, level=0)
+                _render_byline(doc, byline)
                 title_done = True
                 continue
             level = min(max(c.depth, 1), _MAX_HEADING_LEVEL)

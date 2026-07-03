@@ -6,7 +6,13 @@ citation generation, provenance report and bib generation all now share.
 
 from __future__ import annotations
 
-from precis.utils.authors import author_display, author_names, to_name_dicts
+from precis.utils.authors import (
+    author_display,
+    author_names,
+    build_byline,
+    to_author_dicts,
+    to_name_dicts,
+)
 
 
 class TestAuthorDisplay:
@@ -65,3 +71,73 @@ class TestToNameDicts:
     def test_empty(self) -> None:
         assert to_name_dicts(None) == []
         assert to_name_dicts([]) == []
+
+
+class TestToAuthorDicts:
+    def test_preserves_affiliation_and_ror(self) -> None:
+        raw = [
+            {"family": "Doe", "given": "Alice", "affiliation": "MIT", "ror": "r1"},
+            {"name": "Smith, Jane"},  # no affiliation
+        ]
+        assert to_author_dicts(raw) == [
+            {"name": "Doe, Alice", "affiliation": "MIT", "ror": "r1"},
+            {"name": "Smith, Jane"},
+        ]
+
+    def test_drops_blank_affiliation_keys(self) -> None:
+        raw = [{"name": "X", "affiliation": "  ", "ror": ""}]
+        assert to_author_dicts(raw) == [{"name": "X"}]
+
+    def test_string_and_empty(self) -> None:
+        assert to_author_dicts("Smith, J.; Doe, A.") == [
+            {"name": "Smith, J."},
+            {"name": "Doe, A."},
+        ]
+        assert to_author_dicts(None) == []
+
+
+class TestBuildByline:
+    def test_distinct_affiliations_get_marks(self) -> None:
+        raw = [
+            {"name": "Jane Doe", "affiliation": "MIT", "ror": "r1"},
+            {"family": "Roe", "given": "John", "affiliation": "Caltech"},
+        ]
+        b = build_byline(raw)
+        assert b["multi"] is True
+        assert [a["sup"] for a in b["authors"]] == ["1", "2"]
+        assert [a["name"] for a in b["authors"]] == ["Jane Doe", "John Roe"]
+        assert b["affiliations"] == [
+            {"index": 1, "org": "MIT", "ror": "r1"},
+            {"index": 2, "org": "Caltech", "ror": ""},
+        ]
+
+    def test_shared_affiliation_deduped_and_unnumbered(self) -> None:
+        # Same ROR → one affiliation, no superscripts (reads better).
+        raw = [
+            {"name": "A B", "affiliation": "MIT", "ror": "r1"},
+            {"name": "C D", "affiliation": "Massachusetts Inst. Tech.", "ror": "r1"},
+        ]
+        b = build_byline(raw)
+        assert b["multi"] is False
+        assert len(b["affiliations"]) == 1
+        assert [a["sup"] for a in b["authors"]] == ["", ""]
+
+    def test_dedup_falls_back_to_org_when_no_ror(self) -> None:
+        raw = [
+            {"name": "A B", "affiliation": "MIT"},
+            {"name": "C D", "affiliation": "mit"},  # case-insensitive match
+        ]
+        b = build_byline(raw)
+        assert len(b["affiliations"]) == 1
+        assert b["multi"] is False
+
+    def test_no_affiliations_is_plain_name_list(self) -> None:
+        b = build_byline(["X Y", "Z W"])
+        assert b["multi"] is False
+        assert b["affiliations"] == []
+        assert [a["name"] for a in b["authors"]] == ["X Y", "Z W"]
+        assert all(a["sup"] == "" for a in b["authors"])
+
+    def test_empty(self) -> None:
+        assert build_byline(None)["authors"] == []
+        assert build_byline([])["affiliations"] == []

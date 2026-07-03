@@ -45,6 +45,19 @@
   <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
     <div>
       <h1 class="text-xl font-semibold">{{ ref.title }}</h1>
+      {# Author byline + affiliations (utils.authors.build_byline). Names
+         carry superscript marks only when >1 distinct affiliation; each
+         affiliation links to its ROR id when known. #}
+      {% if ref.byline and ref.byline.authors %}
+      <div class="mt-0.5 text-sm text-slate-700">
+        {% for a in ref.byline.authors %}{% if not loop.first %}, {% endif %}{{ a.name }}{% if a.sup %}<sup>{{ a.sup }}</sup>{% endif %}{% endfor %}
+      </div>
+      {% if ref.byline.affiliations %}
+      <div class="mt-0.5 text-xs italic text-slate-500">
+        {% for aff in ref.byline.affiliations %}{% if not loop.first %} · {% endif %}{% if ref.byline.multi %}<sup>{{ aff.index }}</sup> {% endif %}{% if aff.ror %}<a href="{{ aff.ror }}" class="hover:underline" target="_blank" rel="noopener">{{ aff.org or aff.ror }}</a>{% else %}{{ aff.org }}{% endif %}{% endfor %}
+      </div>
+      {% endif %}
+      {% endif %}
       {% if ref.slug %}<span class="font-mono text-xs text-slate-400">draft:{{ ref.slug }}</span>{% endif %}
       {# Word count badge (proposal writing). Server-rendered initial
          value; polls /wordcount so it tracks edits. Amber when any
@@ -102,6 +115,31 @@
         <button type="submit" class="text-slate-500 underline hover:text-slate-800">export →project</button>
       </form>
       <a href="/drafts" class="text-slate-500 underline hover:text-slate-800">all drafts</a>
+      {# Author byline editor — the web twin of edit(kind='draft',
+         authors=…). One author per line, "Name | Affiliation | ROR"
+         (affiliation + ROR optional). Replaces the whole byline; empty
+         clears it. Prefilled from the current authors via
+         _draft_author_lines. #}
+      <div class="relative" x-data="{ au: false }" @click.outside="au = false">
+        <button @click="au = !au"
+                class="text-slate-500 underline hover:text-slate-800"
+                title="edit the author byline + affiliations">authors ▾</button>
+        <form x-show="au" x-cloak method="post"
+              action="/drafts/{{ ref.ident }}/authors"
+              class="absolute right-0 z-40 mt-1 w-96 space-y-2 rounded border border-slate-200 bg-white p-3 text-left shadow-lg">
+          <div>
+            <label class="block text-[11px] font-semibold text-slate-600">Authors — one per line</label>
+            <textarea name="authors" rows="4"
+                      placeholder="Doe, Jane | Massachusetts Institute of Technology | https://ror.org/042nb2s44&#10;Roe, John | Caltech&#10;Solo Author"
+                      class="mt-0.5 w-full resize-y rounded border border-slate-200 px-2 py-1 font-mono text-xs leading-snug focus:border-sky-400 focus:outline-none">{{ author_lines }}</textarea>
+            <p class="mt-0.5 text-[10px] text-slate-400"><span class="font-mono">Name | Affiliation | ROR</span> — affiliation + ROR optional; a shared ROR collapses to one numbered affiliation. Replaces the whole byline.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button class="rounded bg-sky-600 px-2 py-0.5 text-[11px] text-white hover:bg-sky-700">save authors</button>
+            <button type="button" @click="au = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+          </div>
+        </form>
+      </div>
       {# Genre + project context (ADR 0037). Imported drafts never went
          through the /drafts/new picker, so doc_type/brief are unset — the
          per-heading "style ▾" picker stays empty and the planner has no

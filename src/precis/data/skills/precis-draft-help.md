@@ -149,6 +149,34 @@ put(kind='draft', id='nanotrans', chunk_kind='paragraph',
 `at` places the new chunk (all parts optional): `{'first'|'last': True}`,
 `{'into': 'dc<id>'}`, `{'before'|'after': 'dc<id>'}`.
 
+## Byline — authors & affiliations
+
+A draft carries a **document-level byline** (authors are a property of the
+whole document, never of a paragraph). Set it with `edit(authors=…)`;
+`id` is the draft slug, not a chunk handle:
+
+```python
+edit(kind='draft', id='nanotrans', authors=[
+    {'name': 'Doe, Jane', 'affiliation': 'Massachusetts Institute of Technology',
+     'ror': 'https://ror.org/042nb2s44'},
+    {'name': 'Roe, John', 'affiliation': 'Caltech'},   # affiliation/ror optional
+    'Solo Author',                                      # a bare string is fine too
+])
+```
+
+Each entry is `{'name', 'affiliation'?, 'ror'?}` (or `{'family','given', …}`,
+or a bare name string). `ror` is the institution's
+[ROR](https://ror.org) id — the canonical, de-duplicated organisation
+identifier; two authors sharing a ROR collapse to **one** numbered
+affiliation in the byline. Setting `authors=` **replaces** the whole
+byline (it is not additive). The byline renders in the web reader and in
+**both** exports (PDF via `authblk`, .docx), with the org name hyperlinked
+to its ROR. No affiliations → a plain name list.
+
+The web reader has the same editor — an **authors ▾** dropdown on the
+draft page, one author per line as `Name | Affiliation | ROR` (affiliation
++ ROR optional), posting to `/drafts/<slug>/authors`.
+
 ## Add prose — one paragraph per put
 
 Write **one paragraph per `put`**. A longer `put` is split at block
@@ -631,8 +659,10 @@ when known); every defined abbreviation becomes a `\newacronym` and each
 occurrence a `\gls{…}` (first use full, later uses short), with the
 page-number "where it occurs" list in the glossary. `[me<id>]` /
 cross-draft `[dc<id>]` **links** render to nothing (provenance only —
-never in the bibliography). You never write `\cite{}` yourself; it is
-the exporter's output. This is why **citing the exact chunk** and
+never in the bibliography). The **byline** you set with `edit(authors=…)`
+becomes an `authblk` `\author`/`\affil` block under `\maketitle` (ROR
+hyperlinked); no authors → the legacy single-name default. You never
+write `\cite{}` (or the byline) yourself; it is the exporter's output. This is why **citing the exact chunk** and
 **defining your abbreviations** pays off — the exporter does the rest.
 
 ## Export — PDF (job) and Word/.docx
