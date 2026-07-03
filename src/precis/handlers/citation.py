@@ -218,7 +218,7 @@ class CitationHandler(NumericRefHandler):
         if link is not None:
             from precis.handlers._link_target import parse_link_target
 
-            target = parse_link_target(link, store=self.store)
+            target = parse_link_target(link, store=self.store, hub=self.hub)
 
         with self.store.tx() as conn:
             ref = self.store.insert_ref(

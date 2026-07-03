@@ -171,7 +171,12 @@ def test_raw_view(handler: PlaintextHandler, pt_root: Path) -> None:
 
 def test_unsupported_view_rejected(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "doc.txt", "hi.\n")
+    # ``toc`` isn't a plaintext view; via the explicit view= kwarg it's rejected.
     with pytest.raises(Unsupported, match="unknown plaintext view"):
+        handler.get(id="doc", view="toc")
+    # As an extensionless slash-path, ``doc/toc`` is now a file path
+    # (slug ``doc--toc``) → NotFound, not a bogus-view error.
+    with pytest.raises(NotFound):
         handler.get(id="doc/toc")
 
 

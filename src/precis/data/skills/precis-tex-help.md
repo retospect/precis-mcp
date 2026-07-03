@@ -28,6 +28,12 @@ get(kind='tex', id='chapters/intro.tex/raw')    # full source
 get(kind='tex')                                 # index of all .tex files
 ```
 
+**The `.tex` extension is load-bearing in path form.** `id='chapters/intro.tex'`
+works; `id='chapters/intro'` (no extension) does **not** — the parser splits it
+on the first `/` and treats the tail as a *view*, so you get
+`unknown tex view 'intro'`. If you drop the extension, use the slug form
+instead: `id='chapters--intro'` (every `/` becomes `--`).
+
 Path form and slug form are interchangeable. Block selectors come in
 two tracks: durable names (`~kinetics`) survive edits above; line
 coordinates (`~L42-58`) follow IDE/grep output.
@@ -158,12 +164,36 @@ edit(kind='tex', id='chapters/intro.tex',
 
 ## Create a new .tex file
 
+**Inside a project workspace (the usual case) — use the `name=` form.**
+Pass a **bare slug** (no directory, no extension, no `/`). The workspace
+layout routes it to the right path for you (a `tex` section lands under
+`tex/`), so you never compute paths. `mode=` defaults to `create` for the
+`name=` form:
+
 ```python
-put(kind='tex', id='chapters/discussion.tex',
+put(kind='tex', name='discussion',
     text=r'''\section{Discussion}
 
 Our results corroborate \citet{Smith2020}, but extend the operating
-window from 5 to 25 bar.''',
+window from 5 to 25 bar.''')
+# read it back by slug (the layout prefix is part of the slug):
+get(kind='tex', id='tex--discussion')
+```
+
+Common mistakes (all observed in prod):
+- `name='tex/discussion'` → rejected. The layout **adds** the `tex/`
+  prefix; pass just `name='discussion'`.
+- `id='projects/<proj>/tex/discussion'` (extensionless path) → collapses to
+  a bogus view/slug. Use `name=` inside a workspace; don't hand-build paths.
+- `put(..., mode='find-replace', ...)` → `put` is **create-only**. To modify
+  an existing file use `edit(kind='tex', id=..., mode='find-replace', ...)`.
+
+**Outside a workspace — explicit path form** (keep the `.tex` extension and
+pass `mode='create'`):
+
+```python
+put(kind='tex', id='chapters/discussion.tex',
+    text=r'\section{Discussion} ...',
     mode='create')
 ```
 

@@ -428,6 +428,28 @@ def test_toc_unknown_view_still_rejected(handler: TexHandler, tex_root: Path) ->
         handler.get(id="x", view="bogus")
 
 
+def test_extensionless_path_resolves_as_file(
+    handler: TexHandler, tex_root: Path
+) -> None:
+    """``tex/graphene`` (extensionless slash-path) addresses the file, not a
+    bogus ``graphene`` view — the top plan-tick workspace-authoring confusion
+    (prod 2026-07-03). It must read the same file as the ``--`` slug form."""
+    _write(tex_root, "tex/graphene.tex", r"\section{Graphene}" + "\n")
+    by_path = handler.get(id="tex/graphene").body
+    by_slug = handler.get(id="tex--graphene").body
+    assert r"\section{Graphene}" in by_path
+    assert by_path == by_slug
+
+
+def test_nested_extensionless_path_resolves(
+    handler: TexHandler, tex_root: Path
+) -> None:
+    """A multi-segment extensionless path is unambiguously a file path."""
+    _write(tex_root, "projects/proj/tex/graphene.tex", r"\section{G}" + "\n")
+    out = handler.get(id="projects/proj/tex/graphene").body
+    assert r"\section{G}" in out
+
+
 # ── \input{} write-access safety (Phase D) ───────────────────────────
 
 

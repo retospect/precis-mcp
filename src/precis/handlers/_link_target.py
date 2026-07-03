@@ -37,6 +37,7 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
+    from precis.dispatch import Hub
     from precis.store import Store
 
 
@@ -55,16 +56,49 @@ class LinkTarget:
     pos: int | None
     kind: str  # echoed back for hint construction in error paths
     raw: str  # original input string, for diagnostics
+    #: Original handle/target when the requested ref was merged/superseded
+    #: and we transparently redirected to the live survivor (see B redirect).
+    redirected_from: str | None = None
 
 
-def parse_link_target(target: str, *, store: Store) -> LinkTarget:
+def _emit_merge_redirect_hint(
+    hub: Hub | None, old: str, kind: str, new_ref_id: int
+) -> None:
+    """Nudge the agent to adopt the survivor handle after a merged-link
+    redirect. Non-breaking; no-op when no hub is threaded in."""
+    if hub is None:
+        return
+    from precis.hints import Hint
+
+    new_handle = handle_registry.try_format(kind, new_ref_id) or f"{kind}:{new_ref_id}"
+    hub.emit_hint(
+        Hint(
+            text=(
+                f"link target {old!r} was merged into {new_handle} — it still "
+                f"linked, but please update your reference to {new_handle} going "
+                "forward. Sorry for the trouble."
+            ),
+            topic=f"handle.redirect.{old}",
+            level="info",
+        )
+    )
+
+
+def parse_link_target(
+    target: str, *, store: Store, hub: Hub | None = None
+) -> LinkTarget:
     """Resolve ``'kind:identifier[~selector]'`` to a :class:`LinkTarget`.
+
+    A handle/slug that points at a merged/superseded ref transparently
+    redirects to the live survivor (``meta.superseded_by``); pass ``hub=`` to
+    have the redirect emit a "please use the new handle" hint.
 
     Raises:
         BadInput: malformed string (no colon, empty kind/identifier,
                   unknown kind, non-numeric id for a numeric kind).
-        NotFound: the kind/identifier resolves to no live ref, or
-                  the block selector resolves to no block.
+        NotFound: the kind/identifier resolves to no live ref (and no
+                  superseded survivor), or the block selector resolves to
+                  no block.
     """
     if not isinstance(target, str) or not target.strip():
         raise BadInput(
@@ -87,11 +121,16 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
                 f"link target {handle!r} resolves to no live ref",
                 next=f"check it exists: get(id={handle!r})",
             )
+        if resolved.redirected_from is not None:
+            _emit_merge_redirect_hint(
+                hub, resolved.redirected_from, resolved.kind, resolved.ref_id
+            )
         return LinkTarget(
             ref_id=resolved.ref_id,
             pos=resolved.chunk_ord,
             kind=resolved.kind,
             raw=target,
+            redirected_from=resolved.redirected_from,
         )
 
     if ":" not in target:
@@ -181,15 +220,41 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
         ref_id_or_slug = identifier
 
     ref = store.get_ref(kind=kind, id=ref_id_or_slug)
+    redirected_from: str | None = None
     if ref is None:
-        raise NotFound(
-            f"link target {target!r} resolves to no live {kind} ref",
-            next=(
-                f"check it exists: get(kind={kind!r}, id={identifier!r})"
-                if not is_numeric
-                else f"check it exists: get(kind={kind!r}, id={identifier})"
-            ),
+        # The live lookup missed. Two recoverable cases before we give up:
+        # (1) the identifier is itself a universal handle (e.g. ``paper:pa5``),
+        #     which resolve_handle understands (and redirects if merged);
+        # (2) the identifier names a ref that was merged/superseded — follow
+        #     ``meta.superseded_by`` to the live survivor. Either way we
+        #     redirect transparently and nudge the agent to adopt the survivor.
+        survivor_id: int | None = None
+        if isinstance(ref_id_or_slug, str) and handle_registry.parse(ref_id_or_slug):
+            resolved = store.resolve_handle(ref_id_or_slug)
+            if resolved is not None and resolved.kind == kind:
+                survivor_id = resolved.ref_id
+                redirected_from = f"{kind}:{ref_id_or_slug}"
+        if survivor_id is None:
+            dead = store.get_ref(kind=kind, id=ref_id_or_slug, include_deleted=True)
+            if dead is not None:
+                survivor_id = store.follow_supersede(dead.id)
+                if survivor_id is not None:
+                    redirected_from = target
+        ref = (
+            store.get_ref(kind=kind, id=survivor_id)
+            if survivor_id is not None
+            else None
         )
+        if ref is None:
+            raise NotFound(
+                f"link target {target!r} resolves to no live {kind} ref",
+                next=(
+                    f"check it exists: get(kind={kind!r}, id={identifier!r})"
+                    if not is_numeric
+                    else f"check it exists: get(kind={kind!r}, id={identifier})"
+                ),
+            )
+        _emit_merge_redirect_hint(hub, redirected_from or target, kind, ref.id)
 
     # Resolve the block selector, if any. Two forms: numeric pos
     # ('38') or block slug ('agenda'). We try numeric first since
@@ -197,7 +262,13 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
     # but in practice block slugs are content-derived hashes and
     # numeric pos is the dominant case.
     if not selector:
-        return LinkTarget(ref_id=ref.id, pos=None, kind=kind, raw=target)
+        return LinkTarget(
+            ref_id=ref.id,
+            pos=None,
+            kind=kind,
+            raw=target,
+            redirected_from=redirected_from,
+        )
 
     pos: int | None = None
     if selector.isdigit() or (selector.startswith("-") and selector[1:].isdigit()):
@@ -230,7 +301,9 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
             )
         pos = block.pos
 
-    return LinkTarget(ref_id=ref.id, pos=pos, kind=kind, raw=target)
+    return LinkTarget(
+        ref_id=ref.id, pos=pos, kind=kind, raw=target, redirected_from=redirected_from
+    )
 
 
 def _kind_is_numeric(kind: str, *, store: Store) -> bool:

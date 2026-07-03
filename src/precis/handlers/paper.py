@@ -415,6 +415,8 @@ class PaperHandler(Handler):
             raise InitError("paper: store required")
         self.store = hub.store
         self.embedder = hub.embedder
+        #: Kept for non-breaking hints (the bare-numeric-id admonish nudge).
+        self.hub = hub
 
     # -- acquire: the gated dream stub-mint tool -----------------------------
 
@@ -717,6 +719,7 @@ class PaperHandler(Handler):
             id=slug,
             next_hint=f"search(kind='{kind}', q='your query') to find existing",
             options=_suggest_paper_slugs(slug, store=self.store, kind=kind),
+            hub=self.hub,
         )
 
         # Path view (`slug/cite/bib`) takes precedence over kwarg `view`,

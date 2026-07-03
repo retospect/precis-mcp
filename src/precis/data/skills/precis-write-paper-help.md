@@ -21,9 +21,11 @@ doesn't survive a serious reader.
 
 1. **Claim-level citation density.** Not paragraph-level. Each
    factual assertion that isn't the author's own contribution
-   carries an inline citation marker pointing at the `kind='citation'`
-   ref you minted. Density target: ~1 citation per 2–3 sentences in
-   an evidence-dense section, every sentence in a literature review.
+   carries an inline paper-chunk handle `[pc<id>]` — the exact chunk
+   you read the claim in, copied verbatim from search/get output (the
+   chunk *is* the evidence; the export engine builds the bibliography
+   from these handles). Density target: ~1 citation per 2–3 sentences
+   in an evidence-dense section, every sentence in a literature review.
 
 2. **Distinguish own contribution from prior work.** Every claim
    falls in exactly one of three buckets: (a) cited from prior work,
@@ -72,35 +74,27 @@ doesn't survive a serious reader.
 
 ## Output format
 
-Markdown, with inline citation markers using `[cite:<id>]` where the
-ids point at `kind='citation'` refs you've minted via `put(kind=
-'citation', …)`. Multiple cites per claim are bracketed together:
-`[cite:142, cite:143]`.
-
-Section ends with a `## Citations` footer that lists every cite id
-used in the section with its paper handle + chunk + verbatim source
-quote (this is for the verifier loop; without it the cite is
-unverified).
+Markdown, with inline **paper-chunk handles `[pc<id>]`** — each copied
+verbatim from search/get output, pointing at the exact chunk that
+supports the claim. Never construct or guess a handle. Multiple cites
+per claim sit together: `[pc142][pc143]`. The chunk is the evidence, so
+there is no separate footer to maintain and no `kind='citation'` ref to
+mint (that ref is an optional audit record, not how you cite); the
+export engine resolves each `[pc<id>]` to its paper and renders one
+bibliography entry per paper at compile time.
 
 Example:
 
 ```markdown
 Recent work shows substantial QY enhancement when CdSe cores are
-shelled with ZnS. [cite:142] reported peak quantum yields of 68 ± 4 %
+shelled with ZnS. [pc142] reported peak quantum yields of 68 ± 4 %
 in CdSe/ZnS prepared by aqueous synthesis, a four-fold improvement
-over comparable core-only systems. [cite:143] However, this gain
+over comparable core-only systems. [pc143] However, this gain
 depends on shell thickness; samples with shells thinner than 1.5
-monolayers showed no improvement over bare cores. [cite:144]
+monolayers showed no improvement over bare cores. [pc144]
 
 We extend this work by measuring QY under continuous illumination at
 elevated temperature (60°C, 100 mW cm⁻²). Our data show…
-
-## Citations
-- cite:142 — paper:liu2024 chunk 12 ("We measured a peak quantum yield
-  of 68 ± 4 % across n=12 batches…")
-- cite:143 — paper:smith2019 chunk 7 ("…raised the QY to 23%…")
-- cite:144 — paper:zhang2023 chunk 4 ("Below 1.5 ML the shell did not
-  passivate surface trap states…")
 ```
 
 ## When to split into siblings
@@ -120,11 +114,12 @@ that list and produces prose.
 - "Studies have shown" / "Research suggests" / "It is widely believed"
   — hedges that hide the source. Either cite the paper that
   showed it, or say "We do not have evidence in the corpus."
-- Paragraph-level cites only (one `[cite:N]` at the end of a
+- Paragraph-level cites only (one `[pc<id>]` at the end of a
   paragraph that made five claims). Each claim gets its own cite.
 - Citing the abstract. Cite the result section's specific claim.
-- Inserting a citation that wasn't minted via `put(kind='citation')`
-  — the verifier loop can't check it.
+- Writing a bare number or a made-up handle where a `[pc<id>]` belongs
+  — copy the handle from search/get output; a number in the text is
+  not a citation and resolves to nothing.
 - "We will discuss …" / "This paper presents …" meta-prose. The
   reader is reading; tell them what's true, not what they're about
   to read.

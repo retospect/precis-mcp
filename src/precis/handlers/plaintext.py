@@ -334,7 +334,9 @@ class PlaintextHandler(Handler):
         ):
             return self._render_index()
 
-        slug, sel, path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
+        slug, sel, path_view = _parse_file_id(
+            str(id), extensions=self._EXTENSIONS, views=self._SUPPORTED_VIEWS
+        )
         effective_view = path_view or view
 
         ref = self._require_existing_file(slug)
@@ -363,10 +365,25 @@ class PlaintextHandler(Handler):
         """
         if view == "raw":
             return self._render_raw(ref)
+        nexts = [f"get(kind='{self._KIND}', id='{slug}/raw')"]
+        # A very common cause of "unknown view": the caller passed an
+        # extensionless *path* (e.g. id='tex/graphene'), which the id
+        # parser split into slug='tex' + view='graphene'. When the
+        # "view" doesn't name a real view, it is almost always a file
+        # path. Point at the two addressing forms that actually work:
+        # the '--'-encoded slug form, or the path form *with* extension.
+        if view not in self._SUPPORTED_VIEWS:
+            file_slug = f"{slug}--{view.replace('/', '--').replace('_', '-')}"
+            nexts.append(
+                f"if you meant a file, address it by slug "
+                f"(slashes -> '--'): id='{file_slug}', or keep the "
+                f"'{self._DEFAULT_EXT}' extension on a path: "
+                f"id='{slug}/{view}{self._DEFAULT_EXT}'"
+            )
         raise Unsupported(
             f"unknown {self._KIND} view {view!r}",
             options=list(self._SUPPORTED_VIEWS),
-            next=f"get(kind='{self._KIND}', id='{slug}/raw')",
+            next=nexts,
         )
 
     # ── search ─────────────────────────────────────────────────────
@@ -491,6 +508,12 @@ class PlaintextHandler(Handler):
         "insert",
         "replace",
         "edit",
+        # ``find-replace`` is the *current* canonical edit mode (not a
+        # legacy alias) but callers routinely reach for it on ``put``
+        # too — redirect it to ``edit`` with a pointer instead of the
+        # generic "mode= must be 'create'" dead-end (observed as a top
+        # planner-confusion pattern in prod transcripts, 2026-07-03).
+        "find-replace",
     )
 
     def put(  # type: ignore[override]
@@ -575,7 +598,9 @@ class PlaintextHandler(Handler):
             if raw_id.lower().endswith(ext):
                 preferred_ext = ext
                 break
-        slug, _sel, _path_view = _parse_file_id(raw_id, extensions=self._EXTENSIONS)
+        slug, _sel, _path_view = _parse_file_id(
+            raw_id, extensions=self._EXTENSIONS, views=self._SUPPORTED_VIEWS
+        )
         return self._put_create(slug, text, preferred_ext=preferred_ext, tags=tags)
 
     # ── put helpers ────────────────────────────────────────────────
@@ -1121,7 +1146,9 @@ class PlaintextHandler(Handler):
                     "find='old', text='new')"
                 ),
             )
-        slug, sel, _path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
+        slug, sel, _path_view = _parse_file_id(
+            str(id), extensions=self._EXTENSIONS, views=self._SUPPORTED_VIEWS
+        )
         # Gate on file existence *before* dispatching so downstream
         # hints (e.g. "_put_replace: next=get(id='slug/toc') …") never
         # echo a bogus slug produced by syntactic path-form canonicalisation
@@ -1168,7 +1195,9 @@ class PlaintextHandler(Handler):
           ``put`` and ``delete`` are symmetric (MCP critic MINOR-C
           2026-05-02).
         """
-        slug, sel, _path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
+        slug, sel, _path_view = _parse_file_id(
+            str(id), extensions=self._EXTENSIONS, views=self._SUPPORTED_VIEWS
+        )
         if sel is None:
             expected_confirm = f"delete-file-{slug}"
             if confirm != expected_confirm:
@@ -1190,7 +1219,9 @@ class PlaintextHandler(Handler):
 
     def _resolve_pt_ref(self, id: str | int) -> tuple[str, int]:
         """Coerce an id to (slug, ref_id), ingesting the file if needed."""
-        slug, sel, path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
+        slug, sel, path_view = _parse_file_id(
+            str(id), extensions=self._EXTENSIONS, views=self._SUPPORTED_VIEWS
+        )
         reject_chunk_or_path_view(
             kind=self._KIND,
             slug=slug,
@@ -1686,11 +1717,17 @@ class PlaintextHandler(Handler):
         try:
             workspace_relpath = resolve(format=format, kind=self._KIND, name=name)
         except ValueError as exc:
+            bare = name.rsplit("/", 1)[-1] or name
             raise BadInput(
                 f"workspace layout rejected name={name!r}: {exc}",
                 next=(
-                    "names are lowercase a-z 0-9 hyphens with optional .ext; "
-                    "the layout dict routes by (workspace.format, kind, name)"
+                    # The LLM predictably passes the sub-directory it can
+                    # see the file lands in (e.g. name='tex/graphene');
+                    # the layout adds that prefix itself, so the name must
+                    # be the bare slug. (top prod-confusion pattern.)
+                    f"pass the bare slug name={bare!r} (no '/'); the "
+                    "workspace routes it under the right directory for you",
+                    "names are lowercase a-z 0-9 hyphens with optional .ext",
                 ),
             ) from exc
         if is_generated(workspace_relpath):
@@ -1789,7 +1826,7 @@ _INT_RE = re.compile(r"^\d+$")
 
 
 def _parse_file_id(
-    raw: str, *, extensions: tuple[str, ...]
+    raw: str, *, extensions: tuple[str, ...], views: tuple[str, ...] = ()
 ) -> tuple[str, _BlockSel | None, str | None]:
     """Parse a prose-file id into ``(file_slug, block_sel, view)``.
 
@@ -1810,15 +1847,40 @@ def _parse_file_id(
     ``extensions`` is the handler's ``_EXTENSIONS`` tuple; only those
     extensions trigger path-form canonicalisation so a plaintext
     handler can't mis-parse a ``.md`` id as a plaintext file path
-    (and vice versa).
+    (and vice versa). ``views`` is the handler's ``_SUPPORTED_VIEWS`` so an
+    *extensionless* slash-path (``tex/graphene``) whose tail is not a real
+    view is encoded to its ``--`` slug (``tex--graphene``) rather than
+    silently split into ``slug='tex', view='graphene'`` — the top plan-tick
+    confusion pattern for workspace tex/markdown authoring (prod 2026-07-03).
     """
     s = canonicalize_path_id(raw.strip(), extensions=extensions)
     sel: _BlockSel | None = None
     view: str | None = None
 
     if "/" in s:
-        s, _, view = s.partition("/")
-        view = view.strip() or None
+        head, _, tail = s.partition("/")
+        tail = tail.strip()
+        if tail and "/" not in tail and tail in views:
+            # Genuine ``slug/view`` (e.g. ``intro/toc``).
+            s, view = head, tail
+        else:
+            # Extensionless file path (``tex/graphene``, ``a/b/c``): the tail
+            # isn't a real view, so encode the whole path to its ``--`` slug
+            # so it addresses the file — instead of silently mis-parsing it as
+            # ``slug='tex', view='graphene'`` (the top plan-tick confusion
+            # pattern for workspace tex/markdown authoring, prod 2026-07-03).
+            # A trailing ``~selector`` stays out of the path encoding.
+            path_part, tilde, after = s.partition("~")
+            try:
+                encoded: str | None = file_slug_from_path(path_part)
+            except ValueError:
+                encoded = None
+            if encoded is not None and is_valid_file_slug(encoded):
+                s = encoded + (f"~{after}" if tilde else "")
+            else:
+                # Unencodable — keep the legacy split so the downstream
+                # resolver still raises its (now enriched) error.
+                s, view = head, (tail or None)
 
     if "~" in s:
         slug, _, after = s.partition("~")

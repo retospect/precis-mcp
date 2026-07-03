@@ -156,7 +156,13 @@ def test_raw_view(handler: MarkdownHandler, md_root: Path) -> None:
 
 def test_unknown_view_raises(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "doc.md", "# H\n")
+    # An unsupported view via the explicit ``view=`` kwarg is rejected.
     with pytest.raises(Unsupported):
+        handler.get(id="doc", view="unknownview")
+    # An extensionless slash-path whose tail isn't a real view is now treated
+    # as a file path (``doc/unknownview`` -> slug ``doc--unknownview``), so it
+    # raises NotFound (the file), not Unsupported (a bogus view).
+    with pytest.raises(NotFound):
         handler.get(id="doc/unknownview")
 
 

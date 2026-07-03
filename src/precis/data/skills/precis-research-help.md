@@ -105,7 +105,7 @@ job is durable). Details: `precis-search-help` → Broad retrieval.
 ```python
 put(kind='citation',
     text='Peak QY 68 ± 4 % for CdSe/ZnS aqueous synthesis at 290 K',
-    source_handle='liu2024~12',   # a chunk handle pc<id> also works here
+    source_handle='pc456',        # the paper-chunk handle, copied from search/get (a legacy slug~pos also resolves)
     source_quote='We measured a peak quantum yield of 68 ± 4 % '
                  'across n=12 batches…',
     verifier_confidence=0.95,
@@ -135,21 +135,17 @@ The honest gap is more valuable than the dressed-up surface.
 Markdown numbered list. Each row:
 
 ```
-1. <claim — ≤2 sentences, with quantification>. [cite:142, cite:143]
-2. <next claim>. [cite:144]
+1. <claim — ≤2 sentences, with quantification>. [pc142][pc143]
+2. <next claim>. [pc144]
 …
-N. **Contradiction:** <description>. Group A: <quote>. [cite:145]
-   Group B: <conflicting quote>. [cite:146] Possible resolutions: …
+N. **Contradiction:** <description>. Group A: <quote>. [pc145]
+   Group B: <conflicting quote>. [pc146] Possible resolutions: …
 ```
 
-Footer:
-
-```
-## Citations
-- cite:142 — paper:liu2024 chunk 12 ("We measured a peak quantum yield…")
-- cite:143 — paper:smith2019 chunk 7 ("…raised the QY to 23%…")
-…
-```
+Each `[pc<id>]` is a paper-chunk handle copied verbatim from search/get
+output — the chunk *is* the evidence, so the handle is self-verifying
+and there is no separate citation footer to maintain. Never write a bare
+number or a constructed handle where a `[pc<id>]` belongs.
 
 Target 15–30 findings for a topic survey, 5–10 for a focused
 question, 30+ for a broad lit review. Less than 5 findings = the

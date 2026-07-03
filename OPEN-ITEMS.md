@@ -95,6 +95,60 @@ and no `title` field. One-line fix once `FastMCP` accepts
 - https://github.com/modelcontextprotocol/python-sdk/issues — file
   the request when the next mcp-critic pass surfaces it again.
 
+## 🟠 LLM-confusion bugs mined from prod plan_tick transcripts (2026-07-03)
+
+Mined 48h of `kind='job'` `meta.transcript` on `precis_prod`: **702**
+`[error:*]` tool-call errors, 544 `BadInput`. Two clusters. The **tex
+workspace-authoring** cluster (the top ~450 errors) is **fixed on this
+branch** (`worktree-serverconfusion`): `put(mode='find-replace')` now
+redirects to `edit`; the "unknown view" error suggests the `--` slug form
+when an extensionless path collapsed into a view; the slash-in-`name=`
+error tells the LLM to pass the bare slug; `precis-tex-help` now documents
+the workspace `name=` form + the load-bearing extension. Remaining:
+
+- **DONE — extensionless slash-path collapse (root fix).** `_parse_file_id`
+  now takes the handler's `_SUPPORTED_VIEWS`: when a slash-path's tail isn't a
+  real view it's encoded to its `--` slug (`tex/graphene` → `tex--graphene`,
+  `projects/x/tex/graphene` → `projects--x--tex--graphene`) via
+  `file_slug_from_path`, so it addresses the file instead of splitting into a
+  bogus view. `slug/raw`,`slug/toc` still resolve as views; an unsupported
+  view via the explicit `view=` kwarg still raises `Unsupported`. Regression
+  tests added (tex/plaintext/markdown).
+
+- **DONE (A1) — bare-numeric paper id ref_id fallback.** `resolve_live_slug_ref`
+  now resolves a bare all-digits id as the kind's `ref_id` for slug-addressed
+  kinds (paper/draft/tex/…) and emits a `warn` admonishing the agent to use the
+  `pa<id>` handle and never write bare numbers into cited text. (The intended
+  addressing already existed: `pa1876` is the ADR 0036 handle; `get(id='pa1876')`
+  works with no `kind=`; `kind='pa'` is an alias.)
+
+- **DONE (B) — merged-duplicate handles now redirect.** `reconcile` already
+  stamps `meta.superseded_by` on the loser; `Store.follow_supersede` +
+  `resolve_handle` + `parse_link_target` now transparently follow it to the live
+  survivor (chains capped/cycle-guarded) and emit a "please use the new handle,
+  sorry for the trouble" hint. Wired through finding/citation link paths + the
+  GET handle path. **Residuals**: (a) the hint only fires on link paths that
+  thread `hub` (finding/citation + get); extend to `apply_link_ops` (paper /
+  plaintext / etc. self-links) if those hit merged targets; (b) citation
+  `source_handle`'s separate paper-existence check (`citation.py:182`) still
+  hard-fails on a merged paper slug — follow supersede there too.
+
+- **P0 operational: `nanotrans_auto` planner spin — root cause found.** One
+  plain-tex-workspace project re-minted **47 `plan_tick` ticks in 48h** since
+  2026-07-01, creating orphaned duplicate `\section{…}` refs (`workspace=∅`)
+  every tick while `latexmk` stayed broken. **Root cause:** every tick exits
+  `STATUS:succeeded` with **no** `resume_reason` / `resume_streak` — the
+  coroutine "succeeds" (verdict: continue) each tick but never converges
+  because tex authoring kept failing. The resume-streak cap
+  (`meta.plan_tick_resume_streak`, default 3) only guards *exhaustion*
+  (max-turns/timeout) loops, **not** clean-but-unproductive ticks, so nothing
+  bubbled. **Immediate fix:** the tex authoring fixes on this branch let the
+  LLM actually write the sections → the task progresses; verify after deploy.
+  **Defense-in-depth (next):** a nursery detector on plan_tick re-mint rate
+  per `parent_id` (e.g. > N ticks/24h with no workspace/draft change → raise a
+  `kind='alert'` and pause the parent), mirroring the existing `ref_events`
+  spin-loop detector. Not built here.
+
 ## Recently retired (kept here briefly for grep-ability)
 
 The mcp-critic 2026-05-02 deep pass logged 14 findings; 13 are now

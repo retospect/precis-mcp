@@ -9,11 +9,13 @@ status: stable
 # precis-addressing-help — one handle for every ref and chunk
 
 > **ADR 0036.** A handle is the single address form for every record and
-> addressable chunk. Legacy forms still resolve on **input** (paper slugs
-> `miller23`, numeric ids `158`, `kind:slug~pos`, draft `¶<h>`), so nothing you
-> already know breaks — but **output now shows handles**, and a handle is the
-> thing to copy back into `get` / `link` / `like` / `source_handle`.
-> Authoritative source of the codes: `src/precis/utils/handle_registry.py`.
+> addressable chunk. Legacy forms still resolve on **input** — paper slugs
+> `miller23` (slug-keyed kinds), bare numeric ids `158` **only for int-keyed
+> kinds** (memory/todo/job/…, *not* papers), `kind:slug~pos`, draft `¶<h>` — so
+> nothing you already know breaks, but **output now shows handles**, and a
+> handle is the thing to copy back into `get` / `link` / `like` /
+> `source_handle`. Authoritative source of the codes:
+> `src/precis/utils/handle_registry.py`.
 
 ## What a handle is
 
@@ -26,6 +28,25 @@ pa5     a paper (ref_id 5)        pc10    a paper chunk (chunk_id 10)
 me42    a memory                  td158   a todo
 gr7     a gripe                   jo101   a job
 ```
+
+**`pa5` is the address; `5` alone is not.** Never strip the 2-char prefix, and
+never type a bare number where a handle belongs — a bare `5` for a paper is read
+as a cite_key and fails (and a bare number pasted into cited text is not a
+citation at all). Copy the handle verbatim from output; don't reconstruct it.
+`pa<id>` addresses the paper *record*; `pc<id>` addresses one *chunk* of it — to
+cite evidence or link to a paper, use `pa<id>` (or a `pc<id>` for the exact
+chunk), never a bare id.
+
+## Merged / superseded refs redirect (you don't need to chase them)
+
+When two refs are found to be duplicates (paper dedup) or a memory is
+consolidated, the loser is soft-deleted and stamped `meta.superseded_by =
+<survivor>`. Its handle still works: `get(id='pa36264')` or `link=` on a merged
+handle **transparently resolves to the survivor** and returns a note like
+*"pa36264 was merged into pa44457 — please use that handle going forward."*
+Nothing breaks, but take the hint: update your stored reference to the survivor
+handle so you stop carrying the stale one. This is one universal behavior across
+every kind — there is no per-kind variant to learn.
 
 - **The type code tells you what it is** — `pa…` → a paper. So
   `get(id='pa5')` needs no `kind=`; the prefix infers it. (`kind=` stays

@@ -237,6 +237,11 @@ class ResolvedHandle:
     public_id: str
     chunk_id: int | None = None
     chunk_ord: int | None = None
+    #: Set when the requested handle pointed at a ref that was merged /
+    #: superseded (``meta.superseded_by``) and we transparently followed
+    #: the tombstone to this live survivor. Carries the *original* handle
+    #: string so the caller can emit a "please use the new handle" hint.
+    redirected_from: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

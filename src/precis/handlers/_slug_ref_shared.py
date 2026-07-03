@@ -38,7 +38,31 @@ from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
 
 if TYPE_CHECKING:
+    from precis.dispatch import Hub
     from precis.store import Ref, Store
+
+
+def _emit_bare_numeric_hint(hub: Hub, kind: str, ref_id: int, bare: str) -> None:
+    """Admonish the agent after the bare-numeric ref_id fallback fired (A1).
+
+    Deliberately a ``warn``: the id resolved, but a bare number is *not* the
+    address and — crucially — must never be pasted into cited text, where a
+    number is not a citation at all. Steer back to the ``<code><id>`` handle."""
+    from precis.hints import Hint
+
+    handle = handle_registry.try_format(kind, ref_id) or f"{kind}:{ref_id}"
+    hub.emit_hint(
+        Hint(
+            text=(
+                f"resolved id={bare!r} by assuming it was a {kind} ref_id — but "
+                f"the address is the handle {handle!r} (keep the 2-char prefix), "
+                f"not a bare number. Use {handle!r} next time, and never write a "
+                "bare number into cited text: a number is not a citation."
+            ),
+            topic=f"handle.bare_numeric.{kind}",
+            level="warn",
+        )
+    )
 
 
 def search_slug_refs(
@@ -205,6 +229,7 @@ def resolve_live_slug_ref(
     id: str | int,
     next_hint: str | None = None,
     options: Sequence[str] | None = None,
+    hub: Hub | None = None,
 ) -> Ref:
     """Coerce a ``(kind, slug)`` pair to a live :class:`Ref` or raise.
 
@@ -253,6 +278,15 @@ def resolve_live_slug_ref(
         ref = store.get_ref(kind=kind, id=parsed[2])
     else:
         ref = store.get_ref(kind=kind, id=slug)
+    if ref is None and slug.isdigit():
+        # A1: the agent passed a bare number (the prefix stripped off a
+        # ``<code><id>`` handle). Slug-addressed kinds are never addressed by a
+        # bare number, so it is almost certainly the ref_id — resolve it as
+        # such, then admonish so the habit (and bare numbers in cited text)
+        # doesn't take hold.
+        ref = store.get_ref(kind=kind, id=int(slug))
+        if ref is not None and hub is not None:
+            _emit_bare_numeric_hint(hub, kind, ref.id, slug)
     if ref is None:
         raise NotFound(
             f"{kind} slug {slug!r} not found",

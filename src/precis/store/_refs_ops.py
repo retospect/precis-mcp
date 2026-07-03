@@ -247,12 +247,75 @@ class RefsMixin:
         def _do(c: Connection) -> ResolvedHandle | None:
             row = c.execute(sql, (pk,)).fetchone()
             if row is None:
-                return None
+                # Merged / superseded? Follow ``meta.superseded_by`` to the
+                # live survivor and redirect there transparently (ADR 0036
+                # handles outlive a dedup merge). ``redirected_from`` carries
+                # the original handle so the caller can nudge the agent.
+                survivor = self.follow_supersede(pk, conn=c)
+                if survivor is None:
+                    return None
+                row = c.execute(sql, (survivor,)).fetchone()
+                if row is None:
+                    return None
+                row_kind, slug = str(row[0]), row[1]
+                if row_kind != kind:
+                    return None
+                public_id = slug if slug is not None else str(survivor)
+                return ResolvedHandle(
+                    ref_id=survivor,
+                    kind=row_kind,
+                    public_id=public_id,
+                    redirected_from=handle_registry.normalize(handle),
+                )
             row_kind, slug = str(row[0]), row[1]
             if row_kind != kind:  # prefix/kind mismatch — not this handle
                 return None
             public_id = slug if slug is not None else str(pk)
             return ResolvedHandle(ref_id=pk, kind=row_kind, public_id=public_id)
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def follow_supersede(
+        self, ref_id: int, *, conn: Connection | None = None, _cap: int = 8
+    ) -> int | None:
+        """Follow ``meta.superseded_by`` from a soft-deleted ref to its live
+        survivor, or ``None`` if the ref isn't a superseded tombstone (or the
+        chain dead-ends / cycles).
+
+        The tombstone→replacement pointer is written on merge by
+        ``ingest/dedup.py`` (paper dedup), ``ingest/add.py`` (orphan stubs) and
+        memory consolidation, so this one follow works across every kind.
+        Chains (A→B→C) are walked up to ``_cap`` hops with a seen-set guard.
+        """
+
+        def _do(c: Connection) -> int | None:
+            seen: set[int] = set()
+            cur = ref_id
+            for _ in range(_cap):
+                if cur in seen:
+                    return None
+                seen.add(cur)
+                row = c.execute(
+                    "SELECT deleted_at, meta->>'superseded_by' "
+                    "FROM refs WHERE ref_id = %s",
+                    (cur,),
+                ).fetchone()
+                if row is None:
+                    return None
+                deleted_at, sup = row[0], row[1]
+                if deleted_at is None:
+                    # Reached a live ref — it's the survivor iff we moved.
+                    return cur if cur != ref_id else None
+                if sup is None:
+                    return None
+                try:
+                    cur = int(sup)
+                except (TypeError, ValueError):
+                    return None
+            return None
 
         if conn is not None:
             return _do(conn)

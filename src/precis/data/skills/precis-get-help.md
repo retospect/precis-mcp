@@ -12,9 +12,13 @@ status: active
 
 - **Read** — fetch an existing ref by its **handle** (`<2-char type
   code><decimal id>`, e.g. `pa5` a paper, `me47` a memory) — the canonical
-  address shown in search/get output, copy it straight back. A legacy slug or
-  numeric id still resolves on input. Used by `paper`, `patent`, `memory`,
-  `markdown`, …
+  address shown in search/get output, copy it straight back **including the
+  2-char prefix** (never strip it: `pa5`, not `5`). Legacy forms still resolve
+  *for the kinds that have them*: a slug for slug-keyed kinds (`paper`,
+  `patent`, `draft` — e.g. `wang2020state`), a bare number **only** for
+  int-keyed kinds (`memory`, `todo`, `job`, …). A bare number is **not** a
+  paper address — `get(kind='paper', id=5)` is read as a cite_key and fails;
+  use its `pa5` handle.
 - **Compute** — pass `q=` (or `id=` for some kinds) and the handler
   computes a fresh result. Used by `calc`, `math`, `web`, `youtube`,
   `perplexity-research`, `perplexity-reasoning`, `websearch`.
@@ -33,7 +37,7 @@ get(kind='math', q='population of Ireland')              # compute
 | Arg | Type | Meaning |
 |---|---|---|
 | `kind` | str | Required. Which kind to read from. |
-| `id` | str | Identifier — the **handle** (`<2-char code><id>`, e.g. `pa5`, `me47`) is canonical; a legacy slug or numeric id still resolves. Some kinds accept `id` *or* `q`. |
+| `id` | str | Identifier — the **handle** (`<2-char code><id>`, e.g. `pa5`, `me47`) is canonical; copy it with its prefix. A legacy slug resolves for slug-keyed kinds (paper/patent/draft); a bare number resolves **only** for int-keyed kinds (memory/todo/…), never for a paper. Some kinds accept `id` *or* `q`. |
 | `view` | str | Display variant. Kind-specific (`'abstract'`, `'toc'`, `'bibtex'`, `'cite/bib'`, …). |
 | `q` | str | Free-text query for compute-style kinds. |
 | `args` | dict | Typed extras for views that need them. Reserved keys (`kind`, `id`, `view`, `q`) are rejected. |

@@ -366,9 +366,11 @@ finishes — no follow-up tick from you needed:
   Literature hunt — find and ingest these N papers. For each:
   1. search(kind='paper', q='<title or DOI>') to check the corpus.
   2. If not in corpus, mint
-       put(kind='finding', text='<claim>',
-           source_handle='<paper:slug-guess>',
+       put(kind='finding',
+           text='<claim — include the paper title/DOI so chase can find it>',
            verifier_confidence=0.5)
+     (No source_handle: the paper isn't in the corpus yet, so there is
+     no pc<id> handle to copy — never guess one.)
      The finding_chase worker auto-resolves via Unpaywall / arXiv /
      S2 / EPO OPS. No need to tag STATUS:done — your
      `all_child_findings_resolved` auto_check fires when every
@@ -465,9 +467,10 @@ Information flow:
 ## Depth discipline (the value proposition)
 
 The bar to beat is Perplexity. Every output should be quantified
-where possible, cite primary sources via `kind='citation'` refs,
-distinguish along the field's natural axes, and flag contradictions
-explicitly. Shallow summaries waste the slice.
+where possible, cite primary sources by their paper-chunk handle
+`[pc<id>]` (copied from search/get — never a bare number or a guessed
+handle), distinguish along the field's natural axes, and flag
+contradictions explicitly. Shallow summaries waste the slice.
 
 When you write a child's body, be specific: name the deliverable,
 list the considerations, set the depth target. A child body that

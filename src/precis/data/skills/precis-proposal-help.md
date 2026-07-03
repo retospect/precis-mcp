@@ -74,7 +74,8 @@ Project context`** block (your idea + personnel brief), and proceeds.
 3. **Write the prose.** Add paragraphs under each heading:
    `put(kind='draft', id='<draft>', chunk_kind='paragraph', text='…',
    at={'into':'dc<heading>', 'last': True})`. Cite *evidence* (papers)
-   with `[§<paper>~<n>]` and the citation verb — never the cfp.
+   with the bare paper-chunk handle `[pc<id>]` inline (copied from
+   search/get output) — never the cfp, and never a bare number.
 4. **Check length.** `get(kind='draft', id='<draft>', view='wordcount')`
    returns each section's word count, its target, and an over/under/ok
    verdict, plus the whole-draft total. Revise sections flagged `over`
@@ -87,7 +88,7 @@ Project context`** block (your idea + personnel brief), and proceeds.
 
 `view='wordcount'` counts **visible prose** — paragraphs and asides —
 and excludes headings, equations, figures, tables, code, and glossary
-terms. Inline reference markers (`[dc…]`, `[§…]`, `[surface](¶term)`)
+terms. Inline reference markers (`[dc…]`, `[pc…]`, `[surface](¶term)`)
 are stripped before counting, so a citation-dense paragraph is not
 inflated by its handles. A section's count includes its subsections.
 Set a target with `edit(id='dc<heading>', word_target={'min':200,'max':400})`;
