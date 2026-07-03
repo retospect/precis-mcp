@@ -1482,6 +1482,69 @@ def _live_git_info() -> dict[str, str]:
 _SOURCE_GIT_INFO: dict[str, str] = _live_git_info()
 
 
+def _dist_git_info() -> dict[str, str]:
+    """Git identity recovered from installed distribution metadata (PEP 610).
+
+    A ``pip``/``uv`` install straight from a git URL — the cluster's
+    ``… @ git+https://…@main`` install, or a Docker image whose install
+    step pulls from git — records the *resolved* commit in the wheel's
+    ``direct_url.json``. That file survives into ``site-packages`` with
+    **no ``.git`` and no build-args**, so it is the only self-identifying
+    signal such an install has: without it both the from-git venv on the
+    cluster and a git-sourced image report a bare ``unknown``. Returns the
+    subset of ``git_sha`` / ``git_sha_short`` / ``git_branch`` it can fill;
+    ``{}`` when the package was not installed from a VCS URL (a local
+    ``pip install .`` records a ``dir_info`` instead, with no commit).
+
+    Wrapped end-to-end: metadata access must never raise at import time.
+    """
+    try:
+        import json
+        from importlib.metadata import distribution
+
+        raw = distribution("precis-mcp").read_text("direct_url.json")
+        if not raw:
+            return {}
+        vcs = json.loads(raw).get("vcs_info") or {}
+    except Exception:  # pragma: no cover — defensive around the metadata surface
+        return {}
+    commit = vcs.get("commit_id")
+    if not commit:
+        return {}
+    info: dict[str, str] = {"git_sha": commit, "git_sha_short": commit[:12]}
+    # ``requested_revision`` is the ref the user asked for (branch/tag) — the
+    # closest thing an installed-from-git wheel has to a branch name.
+    if req := vcs.get("requested_revision"):
+        info["git_branch"] = req
+    return info
+
+
+#: Git identity from the installed distribution's ``direct_url.json``, frozen
+#: at process start for the same reason as :data:`_SOURCE_GIT_INFO`. The
+#: fallback that lets a wheel-in-``site-packages`` install (cluster venv,
+#: git-sourced image) still name its commit.
+_DIST_GIT_INFO: dict[str, str] = _dist_git_info()
+
+
+def _real_baked(env_name: str) -> str | None:
+    """The value of a build-arg env var, but only if it is a *real* one.
+
+    ``docker/Dockerfile`` defaults every ``PRECIS_GIT_*`` / ``PRECIS_BUILD_*``
+    ARG to the literal string ``"unknown"`` and bakes it as an ``ENV`` — so a
+    bare ``docker build`` (no ``--build-arg``, i.e. not run through
+    ``scripts/build-image``) still yields a well-formed image, but with every
+    field set to ``"unknown"``. That truthy-but-empty value must **not** be
+    mistaken for a genuine image identity, or the status call reports
+    ``git_source: image-build`` with an all-``unknown`` body and the fallback
+    chain never runs. Treat ``unknown``/blank as absent.
+    """
+    val = os.environ.get(env_name)
+    if val is None:
+        return None
+    val = val.strip()
+    return val if val and val.lower() != "unknown" else None
+
+
 #: Build-metadata env vars baked into the image by ``scripts/build-image``.
 #: Each entry is ``(env name, display label)``. Order is the render order.
 #: Unset vars fall through to the literal string ``"unknown"`` — the
@@ -1506,33 +1569,45 @@ def _collect_build_info() -> list[tuple[str, str]]:
 
     1. The build-time env vars in :data:`_BUILD_ENV_KEYS` (baked into a
        Docker image by ``scripts/build-image``) — the identity of a
-       *built image*.
+       *built image*. Only *real* values count: the Dockerfile's literal
+       ``"unknown"`` default is treated as absent (see :func:`_real_baked`).
     2. Otherwise :data:`_SOURCE_GIT_INFO` — the git state of the *live
        checkout* the code loaded from, frozen at process start. Covers
        local dev, editable installs, and the cluster's from-git checkouts,
        none of which run ``scripts/build-image``.
-    3. Otherwise the literal ``"unknown"`` — a bare source tree with no
-       git and no build-args still produces a well-formed response.
+    3. Otherwise :data:`_DIST_GIT_INFO` — the commit recorded in the
+       installed wheel's ``direct_url.json`` (a ``pip``/``uv`` install from
+       a git URL). The only signal a ``site-packages`` wheel has: the
+       cluster's ``… @main`` venv and a git-sourced image both land here.
+    4. Otherwise the literal ``"unknown"`` — a bare source tree with no
+       git, no build-args, and no VCS metadata still produces a well-formed
+       response.
 
     Also emits ``source_path`` (the on-disk checkout the process is
     running, when known) and ``git_source`` — ``image-build`` /
-    ``working-tree`` / ``unknown`` — so the reader knows which lane the
-    git facts came from and can tell a live checkout from a frozen image.
+    ``working-tree`` / ``vcs-install`` / ``unknown`` — so the reader knows
+    which lane the git facts came from and can tell a live checkout from a
+    frozen image from an installed-from-git wheel.
     """
     from precis import __version__
 
     rows: list[tuple[str, str]] = [("version", __version__)]
     for env_name, label in _BUILD_ENV_KEYS:
-        baked = os.environ.get(env_name)
-        if baked:
+        baked = _real_baked(env_name)
+        if baked is not None:
             rows.append((label, baked))
         else:
-            rows.append((label, _SOURCE_GIT_INFO.get(label, "unknown")))
+            value = (
+                _SOURCE_GIT_INFO.get(label) or _DIST_GIT_INFO.get(label) or "unknown"
+            )
+            rows.append((label, value))
 
-    if os.environ.get("PRECIS_GIT_SHA"):
+    if _real_baked("PRECIS_GIT_SHA"):
         git_source = "image-build"
     elif _SOURCE_GIT_INFO:
         git_source = "working-tree"
+    elif _DIST_GIT_INFO:
+        git_source = "vcs-install"
     else:
         git_source = "unknown"
     rows.append(("git_source", git_source))

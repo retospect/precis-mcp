@@ -18,13 +18,23 @@ or database they're talking to. One call returns four sections:
 version, last applied migration + count), and the existing
 **Optional dependencies** import probe.
 
-The git facts come from one of two lanes, shown by the `git_source`
+The git facts come from one of three lanes, shown by the `git_source`
 field: `image-build` (baked into a Docker image by
-`scripts/build-image`) or `working-tree` (read from the live checkout
-the code loaded from — local dev, an editable install, or the
-cluster's from-git checkout). Either way the values are **frozen at
-process start**, so they tell you what *this running process* loaded,
-not what the checkout says right now.
+`scripts/build-image`), `working-tree` (read from the live checkout
+the code loaded from — local dev or an editable install), or
+`vcs-install` (recovered from the installed wheel's `direct_url.json`
+when the package was `pip`/`uv`-installed straight from a git URL —
+the cluster's `… @main` venv, or a git-sourced image). Whichever lane
+answers, the values are **frozen at process start**, so they tell you
+what *this running process* loaded, not what the checkout says right
+now.
+
+A bare `docker build` that skips `scripts/build-image` (so no
+`--build-arg` git values are passed) does **not** count as
+`image-build`: the Dockerfile defaults those args to the literal
+`unknown`, and the status builder treats an `unknown`/blank baked
+value as absent — falling through to the `vcs-install` or `unknown`
+lane rather than falsely claiming a baked identity it doesn't have.
 
 To see it:
 
@@ -70,14 +80,22 @@ section reports `git_sha`, `git_sha_short`, `git_dirty`,
 The `git_source` field tells you the lane:
 
 - `image-build` — baked into the image by `scripts/build-image` at
-  `docker build` time (`git_dirty` reads `0`/`1`).
+  `docker build` time (`git_dirty` reads `0`/`1`). Requires *real*
+  build-args: an image built without them (the Dockerfile's `unknown`
+  default) is treated as absent and falls through below.
 - `working-tree` — read from the live checkout at
   `source_path`, frozen when the process started (`git_dirty` reads
-  `true`/`false`). This is what you get on a local run, an editable
-  install, or a cluster node running from a `uv`/`pip`-from-git
-  checkout.
-- `unknown` — no git and no baked env vars (an installed wheel with
-  no `.git`); all git fields render `unknown`.
+  `true`/`false`). This is what you get on a local run or an editable
+  install.
+- `vcs-install` — recovered from the installed wheel's
+  `direct_url.json` (`vcs_info.commit_id` + `requested_revision`), for
+  a `pip`/`uv` install straight from a git URL: a cluster node running
+  the `… @main` venv, or a git-sourced image. No `.git` and no
+  build-args, but the resolved commit is still known. `git_dirty` and
+  `git_describe` stay `unknown` (metadata records neither).
+- `unknown` — no git, no real baked env vars, and no VCS metadata (an
+  installed wheel from a local `pip install .`); all git fields render
+  `unknown`.
 
 ## What database am I connected to?
 ## Which DB is this pointing at?

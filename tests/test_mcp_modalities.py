@@ -418,6 +418,7 @@ def test_precis_status_build_unknown_without_env_or_git(monkeypatch) -> None:
     for env_name, _ in skill_mod._BUILD_ENV_KEYS:
         monkeypatch.delenv(env_name, raising=False)
     monkeypatch.setattr(skill_mod, "_SOURCE_GIT_INFO", {})
+    monkeypatch.setattr(skill_mod, "_DIST_GIT_INFO", {})
     rows = dict(skill_mod._collect_build_info())
 
     assert rows["git_sha"] == "unknown"
@@ -425,6 +426,56 @@ def test_precis_status_build_unknown_without_env_or_git(monkeypatch) -> None:
     assert rows["source_path"] == "unknown"
     # ``version`` always populates regardless of git state.
     assert rows["version"] and rows["version"] != "unknown"
+
+
+def test_precis_status_build_ignores_unknown_literal_env(monkeypatch) -> None:
+    """The Dockerfile bakes ``ENV PRECIS_GIT_SHA=unknown`` as its default,
+    so a bare ``docker build`` (not run through ``scripts/build-image``)
+    yields a truthy-but-empty env var. That must NOT be read as a genuine
+    image identity — it falls through to the next source instead of
+    reporting ``image-build`` with an all-``unknown`` body.
+    """
+    from precis.handlers import skill as skill_mod
+
+    monkeypatch.setenv("PRECIS_GIT_SHA", "unknown")
+    monkeypatch.setenv("PRECIS_GIT_BRANCH", "  ")  # blank counts as absent too
+    monkeypatch.setattr(
+        skill_mod,
+        "_SOURCE_GIT_INFO",
+        {"git_sha": "livesha2222", "source_path": "/live/checkout"},
+    )
+    rows = dict(skill_mod._collect_build_info())
+
+    assert rows["git_sha"] == "livesha2222"
+    assert rows["git_source"] == "working-tree"
+
+
+def test_precis_status_build_falls_back_to_dist_metadata(monkeypatch) -> None:
+    """An installed-from-git wheel (no ``.git``, no real build-args) reports
+    the commit recorded in ``direct_url.json`` and ``git_source`` ==
+    ``vcs-install`` — the signal the cluster's ``… @main`` venv relies on.
+    """
+    from precis.handlers import skill as skill_mod
+
+    for env_name, _ in skill_mod._BUILD_ENV_KEYS:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setattr(skill_mod, "_SOURCE_GIT_INFO", {})
+    monkeypatch.setattr(
+        skill_mod,
+        "_DIST_GIT_INFO",
+        {
+            "git_sha": "distsha3333cafebabe",
+            "git_sha_short": "distsha3333c",
+            "git_branch": "main",
+        },
+    )
+    rows = dict(skill_mod._collect_build_info())
+
+    assert rows["git_sha"] == "distsha3333cafebabe"
+    assert rows["git_branch"] == "main"
+    assert rows["git_source"] == "vcs-install"
+    # No live checkout, so ``source_path`` stays honest.
+    assert rows["source_path"] == "unknown"
 
 
 def test_live_git_info_reads_the_running_checkout() -> None:
