@@ -6,7 +6,8 @@ allowed-tools: Bash(git:*), Bash(docker:*), Bash(./scripts/dev:*), Bash(scripts/
 
 You are wrapping up a worktree session. The goal of a feature branch is
 to land on `main` — this command takes it there: **commit → sync (merge
-main in) → integration gate → squash-merge to main**.
+main in) → integration gate → squash-merge to main → fast-forward the
+local `main` so it isn't left behind the remote**.
 
 > **Why this command exists instead of `git town ship`.** `git town ship`
 > does `git checkout main`, which **always fails from a linked worktree**
@@ -131,7 +132,34 @@ post-ship.
    git push origin --delete "$(git branch --show-current)" || true
    ```
 
-7. **Report.** Print the new `main` commit
+7. **Sync the local `main`.** The ship above updated `refs/heads/main` on
+   the **remote** only — the local `main` pointer (checked out in the
+   *primary* worktree) is now behind, which is why "GitHub is ahead of
+   local main" after every session. Fast-forward it so local stays in
+   lockstep. `refs/heads/main` is shared across all worktrees but checked
+   out in the primary, so do the fast-forward *there* — a real
+   `merge --ff-only` moves the ref and that working tree together and
+   safely **refuses** (leaving things untouched) if the primary is dirty
+   or diverged, whereas a raw `update-ref` would strand the primary's
+   working tree at the old commit.
+   ```
+   PRIMARY=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
+   git -C "$PRIMARY" fetch -q origin main
+   if [ "$(git -C "$PRIMARY" symbolic-ref --quiet --short HEAD)" = "main" ]; then
+     git -C "$PRIMARY" merge --ff-only origin/main \
+       && echo "local main → $(git -C "$PRIMARY" rev-parse --short main)" \
+       || echo "WARNING: primary main not fast-forwarded (dirty or diverged) — sync it by hand"
+   else
+     # main not checked out in the primary — move the shared ref directly.
+     git update-ref refs/heads/main origin/main \
+       && echo "local main ref → $(git rev-parse --short main)"
+   fi
+   ```
+   This is best-effort: a failure here does **not** unship anything (the
+   remote is already updated) — just report it so the human can `git merge
+   --ff-only origin/main` themselves.
+
+8. **Report.** Print the new `main` commit
    (`git fetch -q origin main && git log --oneline -1 origin/main`) and a
    one-line summary of what shipped. Optionally verify a key symbol from
    the change is present (`git show origin/main:<file> | grep <symbol>`).
