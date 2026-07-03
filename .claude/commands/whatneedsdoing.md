@@ -1,7 +1,7 @@
 ---
-description: One honest "what needs doing" across the two work substrates — repo dev work (OPEN-ITEMS backlog + open gripes) and the prod factory queue (open/doable todos) — plus the latent LLM-confusion signal mined from prod agent transcripts.
+description: One honest "what needs doing" across the two work substrates — repo dev work (OPEN-ITEMS backlog + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus the latent LLM-confusion signal mined from prod agent transcripts.
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
-allowed-tools: Read, Bash(grep:*), Bash(ssh:*), mcp__precis__get, mcp__precis__search
+allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), mcp__precis__get, mcp__precis__search
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
@@ -22,12 +22,18 @@ list, that is the trap this view exists to avoid. Optional focus: `$ARGUMENTS`.
 
 The backlog + gripes are *declared* repo dev work. Beyond them is *latent*
 repo dev work — bugs the LLM is hitting on prod right now that nobody has
-filed yet (step 4, the bug-hunt). Every recurring tool-call error is a fix
+filed yet (step 5, the bug-hunt). Every recurring tool-call error is a fix
 waiting in a skill or the MCP surface; mining it feeds new items into
 substrate 1 (as gripes).
 
 Live backlog headings (repo `OPEN-ITEMS.md`):
 !`grep -nE '^(## |- \*\*|- \[ \])' OPEN-ITEMS.md 2>/dev/null | head -60`
+
+Live GitHub — open PRs:
+!`gh pr list --state open 2>/dev/null || echo '(gh unavailable or no open PRs)'`
+
+Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summary):
+!`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
 
 ## Procedure
 
@@ -35,11 +41,24 @@ Live backlog headings (repo `OPEN-ITEMS.md`):
    shipped / done / deferred / retired). The dark-factory workstream is active.
 2. **Repo dev — gripes.** `get(kind='gripe', id='/open')` (the bug tracker).
    Tracked but **not auto-worked** — flag stale or high-impact ones.
-3. **Prod factory queue — todos.** `search(kind='todo', view='attention')`
+3. **Repo dev — GitHub (PRs + Dependabot).** Declared repo dev work that
+   lives on GitHub, not in `OPEN-ITEMS.md` — the inline previews above are the
+   fresh read; expand them here.
+   - **Open PRs:** `gh pr list --state open` (add `--json
+     number,title,author,isDraft,reviewDecision,statusCheckRollup` for CI +
+     review state). Flag each as: green + approved (a one-action **ship/merge**
+     item), stalled awaiting review, red CI, or a long-lived draft.
+   - **Dependabot alerts:** `gh api
+     "repos/{owner}/{repo}/dependabot/alerts?state=open"` — rank by
+     `security_advisory.severity`. A `high`/`critical` on the default branch is
+     **P0** repo dev work (a dependency bump / patch), fixed here → `/go`. If
+     the API 403s it needs a token with security-read scope — say so rather
+     than silently reporting "none".
+4. **Prod factory queue — todos.** `search(kind='todo', view='attention')`
    (asking-user + failed children) and `search(kind='todo', view='doable')`
    (what the loop picks up next). NB: these are `search(...)` calls, not
    `get(...)`. This is the only substrate that acts on itself.
-4. **Latent repo dev — LLM-confusion mining (the bug hunt).** The server-side
+5. **Latent repo dev — LLM-confusion mining (the bug hunt).** The server-side
    agent runs (`plan_tick`, dream, cad/structure propose) store their full
    `claude -p` tool-call transcript in `refs.meta.transcript` on the
    `kind='job'` ref. Every `[error:...]` in a transcript is the LLM getting a
@@ -67,12 +86,12 @@ Live backlog headings (repo `OPEN-ITEMS.md`):
    days (dozens of transcripts, same error) is both expensive and a loud bug
    signal — treat it as P0. File each distinct root cause as a `gripe`
    (`put(kind='gripe', ...)`) so it enters substrate 1, or fix it directly.
-5. **Group by substrate, then rank.** Keep the two substrates visually
+6. **Group by substrate, then rank.** Keep the two substrates visually
    separate; within each, highest-impact first with a one-line next action.
-   Latent bugs from step 4 fold into substrate 1 as new/unfiled repo dev work.
+   Latent bugs from step 5 fold into substrate 1 as new/unfiled repo dev work.
    Dedup the bridge (a gripe whose real cause is a failing todo, or vice
    versa). If `$ARGUMENTS` is set, scope to it.
-6. **Call out the gap honestly.** Per substrate: which repo items are
+7. **Call out the gap honestly.** Per substrate: which repo items are
    **actionable here** (fix → `/go`) vs blocked; which todos are **autonomous**
    (the loop will run) vs **stalled** (bubbled/halted, needing a prod unblock
    or a repo bugfix). End with the single highest-leverage next action — and
