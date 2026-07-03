@@ -27,11 +27,13 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.nursery import (
     LONG_WAIT_DAYS,
+    PLAN_TICK_REMINT_24H,
     SPIN_LOOP_EVENTS_24H,
     STALE_CLAIM_HOURS,
     STUCK_DOABLE_HOURS,
     _detect_long_waits,
     _detect_orphans,
+    _detect_plan_tick_spins,
     _detect_spin_loops,
     _detect_stale_claims,
     _detect_stalled_recurrings,
@@ -346,6 +348,40 @@ def test_spin_loop_detector_flags_hammered_ref(store: Store) -> None:
     assert hits[0].category == "spin-loop"
     assert "fetcher:s2" in hits[0].detail
     assert "no_oa_version" in hits[0].detail
+
+
+def _mint_plan_ticks(store: Store, parent_id: int, n: int) -> None:
+    for i in range(n):
+        store.insert_ref(
+            kind="job",
+            slug=None,
+            title=f"plan_tick {i}",
+            meta={"job_type": "plan_tick"},
+            parent_id=parent_id,
+        )
+
+
+def test_plan_tick_spin_detector_flags_reminting_parent(store: Store) -> None:
+    """A planner parent minting > PLAN_TICK_REMINT_24H plan_tick jobs in 24h
+    surfaces as a ``plan-tick-spin`` finding."""
+    parent = store.insert_ref(kind="todo", slug=None, title="Spinning planner\nx")
+    _mint_plan_ticks(store, parent.id, PLAN_TICK_REMINT_24H + 2)
+
+    findings = _detect_plan_tick_spins(store)
+    hits = [f for f in findings if f.ref_id == parent.id]
+    assert len(hits) == 1
+    assert hits[0].category == "plan-tick-spin"
+    assert "plan_tick" in hits[0].detail
+    assert hits[0].title == "Spinning planner"  # one line
+
+
+def test_plan_tick_spin_detector_ignores_healthy_parent(store: Store) -> None:
+    """A planner ticking a normal number of times is not a spin."""
+    parent = store.insert_ref(kind="todo", slug=None, title="Healthy planner")
+    _mint_plan_ticks(store, parent.id, 3)
+
+    findings = _detect_plan_tick_spins(store)
+    assert parent.id not in {f.ref_id for f in findings}
 
 
 def test_spin_loop_detector_ignores_quiet_ref(store: Store) -> None:

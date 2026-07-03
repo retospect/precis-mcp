@@ -74,6 +74,14 @@ STUCK_DOABLE_HOURS = 24
 #: of events a day, so 200 is comfortably above the noise floor.
 SPIN_LOOP_EVENTS_24H = 200
 
+#: A planner parent minting more than this many ``plan_tick`` jobs in 24h is
+#: re-ticking without converging — the coroutine "succeeds" each pass but the
+#: task never resolves (its deliverable keeps failing), so dispatch re-mints
+#: forever with no resume-streak / ``child-failed`` bubble to stop it. A
+#: healthy planner resolves and stops well under this; ~1 tick / 90-min lease
+#: sustained across a day (≈16) is already pathological.
+PLAN_TICK_REMINT_24H = 16
+
 #: Per-category alert severity (drives sort + colour on the /alerts
 #: tab). Spin loops and stuck claims/recurrings burn resources or block
 #: progress → ``warn``; orphans / long-waits / stuck-doable are hygiene
@@ -81,6 +89,7 @@ SPIN_LOOP_EVENTS_24H = 200
 #: outages.
 _SEVERITY: dict[str, str] = {
     "spin-loop": "warn",
+    "plan-tick-spin": "warn",
     "orphan": "info",
     "stale-claim": "warn",
     "long-wait": "info",
@@ -104,6 +113,7 @@ class Finding:
 #: the dedup-fingerprint prefix. Each detector self-limits to 50 hits.
 _DETECTORS: tuple[tuple[str, Callable[[Store], list[Finding]]], ...] = (
     ("spin-loop", lambda s: _detect_spin_loops(s)),
+    ("plan-tick-spin", lambda s: _detect_plan_tick_spins(s)),
     ("orphan", lambda s: _detect_orphans(s)),
     ("stale-claim", lambda s: _detect_stale_claims(s)),
     ("long-wait", lambda s: _detect_long_waits(s)),
@@ -520,6 +530,57 @@ def _detect_spin_loops(store: Store) -> list[Finding]:
             )
         )
     return out
+
+
+# ── plan-tick spin (planner re-minting without converging) ──────────
+
+
+def _detect_plan_tick_spins(store: Store) -> list[Finding]:
+    """Planner parents re-minting many ``plan_tick`` jobs in 24h.
+
+    The resume-streak cap (``meta.plan_tick_resume_streak``) only bubbles an
+    *exhaustion* loop (max-turns / timeout). A tick that runs to a clean
+    ``STATUS:succeeded`` every pass (verdict: continue) but never resolves the
+    task — because its deliverable keeps failing — re-mints forever with no
+    streak and no ``child-failed`` bubble (observed: ``nanotrans_auto``
+    authoring tex it couldn't address, ~47 ticks/48h). This count-based net
+    catches that, mirroring the ``ref_events`` spin detector: a parent minting
+    more than :data:`PLAN_TICK_REMINT_24H` plan_tick jobs in 24h is almost
+    certainly stuck — usually a repo bug blocking the deliverable, or a task
+    that needs splitting.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT j.parent_id, p.title, count(*)::int AS n
+              FROM refs j
+              JOIN refs p ON p.ref_id = j.parent_id
+             WHERE j.kind = 'job'
+               AND j.meta->>'job_type' = 'plan_tick'
+               AND j.created_at > now() - interval '24 hours'
+               AND j.parent_id IS NOT NULL
+               AND p.deleted_at IS NULL
+             GROUP BY j.parent_id, p.title
+            HAVING count(*) > %s
+             ORDER BY count(*) DESC
+             LIMIT 50
+            """,
+            (PLAN_TICK_REMINT_24H,),
+        ).fetchall()
+    return [
+        Finding(
+            category="plan-tick-spin",
+            ref_id=int(r[0]),
+            title=_first_line(r[1]),
+            detail=(
+                f"planner minted {int(r[2])} plan_tick jobs in 24h without "
+                f"converging (> {PLAN_TICK_REMINT_24H}); each tick 'succeeds' "
+                "but the task never resolves — likely a repo bug blocking the "
+                "deliverable, or the task needs splitting"
+            ),
+        )
+        for r in rows
+    ]
 
 
 # ── small helpers ─────────────────────────────────────────────────

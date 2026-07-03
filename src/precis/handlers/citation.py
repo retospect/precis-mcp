@@ -181,6 +181,17 @@ class CitationHandler(NumericRefHandler):
         if paper_slug is not None:
             paper_ref = self.store.get_ref(kind="paper", id=paper_slug)
             if paper_ref is None:
+                # The paper may have been merged away by dedup — follow the
+                # ``meta.superseded_by`` tombstone to the live survivor before
+                # declaring it missing (mirrors the link-target redirect).
+                dead = self.store.get_ref(
+                    kind="paper", id=paper_slug, include_deleted=True
+                )
+                if dead is not None:
+                    surv = self.store.follow_supersede(dead.id)
+                    if surv is not None:
+                        paper_ref = self.store.get_ref(kind="paper", id=surv)
+            if paper_ref is None:
                 raise BadInput(
                     f"source_handle={source_handle!r} references "
                     f"paper {paper_slug!r}, but no such paper exists in the "
@@ -218,7 +229,7 @@ class CitationHandler(NumericRefHandler):
         if link is not None:
             from precis.handlers._link_target import parse_link_target
 
-            target = parse_link_target(link, store=self.store, hub=self.hub)
+            target = parse_link_target(link, store=self.store)
 
         with self.store.tx() as conn:
             ref = self.store.insert_ref(

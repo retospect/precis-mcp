@@ -76,7 +76,7 @@ def test_link_target_redirects_merged_prefixed(store: Store, hub: Hub) -> None:
     loser = _seed_paper(store, "loser2023")
     _merge(store, loser, survivor)
     with hub.request_scope():
-        tgt = parse_link_target(f"paper:pa{loser}", store=store, hub=hub)
+        tgt = parse_link_target(f"paper:pa{loser}", store=store)
         assert tgt.ref_id == survivor
         assert tgt.redirected_from is not None
         hints = hub.hints.collect()
@@ -112,7 +112,7 @@ def test_bare_numeric_resolves_paper(store: Store) -> None:
 def test_bare_numeric_emits_admonish_hint(store: Store, hub: Hub) -> None:
     ref_id = _seed_paper(store, "miller2023window")
     with hub.request_scope():
-        resolve_live_slug_ref(store, kind="paper", id=str(ref_id), hub=hub)
+        resolve_live_slug_ref(store, kind="paper", id=str(ref_id))
         hints = hub.hints.collect()
     assert any(h.level == "warn" and "not a citation" in h.text for h in hints)
 

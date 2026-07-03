@@ -1,7 +1,7 @@
 ---
 id: precis-nursery-help
 title: precis — nursery detector of todo-tree incoherence
-summary: per-minute tree-incoherence detectors — orphans, stale claims, long waits, stuck doable, spin loops — raised as alerts
+summary: per-minute tree-incoherence detectors — orphans, stale claims, long waits, stuck doable, spin loops, plan-tick spins — raised as alerts
 applies-to: precis worker --only nursery; kind='alert' (alert-source:nursery:*)
 status: active
 ---
@@ -29,6 +29,7 @@ Alerts dedup per *condition* instead.
 | `stuck-doable` | open leaf, no claim, no wait, no blocker, >threshold old | 24 h |
 | `stalled-recurring` | recurring's most recent spawned child has been open >1 h | 1 h floor |
 | `spin-loop` | one `(ref_id, source)` emits >threshold `ref_events` in 24 h | 200 / 24 h |
+| `plan-tick-spin` | a planner parent mints >threshold `plan_tick` jobs in 24 h without converging | 16 / 24 h |
 
 `orphan` enforces the strategic invariant (knob #6 in the plan).
 `stale-claim` catches workers that died mid-task — the claim's age

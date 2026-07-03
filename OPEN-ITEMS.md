@@ -128,16 +128,17 @@ the workspace `name=` form + the load-bearing extension. Remaining:
   addressing already existed: `pa1876` is the ADR 0036 handle; `get(id='pa1876')`
   works with no `kind=`; `kind='pa'` is an alias.)
 
-- **DONE (B) — merged-duplicate handles now redirect.** `reconcile` already
-  stamps `meta.superseded_by` on the loser; `Store.follow_supersede` +
-  `resolve_handle` + `parse_link_target` now transparently follow it to the live
-  survivor (chains capped/cycle-guarded) and emit a "please use the new handle,
-  sorry for the trouble" hint. Wired through finding/citation link paths + the
-  GET handle path. **Residuals**: (a) the hint only fires on link paths that
-  thread `hub` (finding/citation + get); extend to `apply_link_ops` (paper /
-  plaintext / etc. self-links) if those hit merged targets; (b) citation
-  `source_handle`'s separate paper-existence check (`citation.py:182`) still
-  hard-fails on a merged paper slug — follow supersede there too.
+- **DONE (B) — merged-duplicate handles now redirect (universally).**
+  `reconcile` already stamps `meta.superseded_by` on the loser;
+  `Store.follow_supersede` + `resolve_handle` + `parse_link_target` transparently
+  follow it to the live survivor (chains capped/cycle-guarded). The redirect
+  hint now fires from the **store layer**: `Hub.__post_init__` wires
+  `store.hint_bus = hub.hints`, so `resolve_handle` emits the "please use the new
+  handle" nudge on **every** path (get, all `link=` incl. `apply_link_ops`,
+  `exclude=`, citation `source_handle`) with no per-callsite `hub` threading. The
+  A1 admonish moved to the same bus. Residuals cleared: `apply_link_ops` covered
+  (via the store bus); citation `source_handle`'s paper-existence check now
+  follows supersede too.
 
 - **P0 operational: `nanotrans_auto` planner spin — root cause found.** One
   plain-tex-workspace project re-minted **47 `plan_tick` ticks in 48h** since
@@ -150,10 +151,19 @@ the workspace `name=` form + the load-bearing extension. Remaining:
   (max-turns/timeout) loops, **not** clean-but-unproductive ticks, so nothing
   bubbled. **Immediate fix:** the tex authoring fixes on this branch let the
   LLM actually write the sections → the task progresses; verify after deploy.
-  **Defense-in-depth (next):** a nursery detector on plan_tick re-mint rate
-  per `parent_id` (e.g. > N ticks/24h with no workspace/draft change → raise a
-  `kind='alert'` and pause the parent), mirroring the existing `ref_events`
-  spin-loop detector. Not built here.
+  **Defense-in-depth — DONE:** nursery now has a `plan-tick-spin` detector — a
+  parent minting > `PLAN_TICK_REMINT_24H` (16) `plan_tick` jobs in 24h raises a
+  `warn` `kind='alert'` (`nursery:plan-tick-spin`), mirroring the `ref_events`
+  spin-loop detector, so a stuck planner surfaces even though the resume-streak
+  cap can't catch a clean-but-unproductive loop.
+
+- **DONE (ops) — redeploy embedder-warmup race.** `scripts/deploy` failed once
+  per run on whichever host's bge-m3 was mid-warm when the `/healthz` gate
+  checked. Fixed in `~/work/cluster`: the `Install precis-mcp[embed]` git-pip
+  task now retries (3× / 10s) so a transient git/wheel hiccup on one host doesn't
+  fail the whole redeploy; the `/healthz` gate windows widened 40→80 (≈4 min) on
+  both macOS + Linux, and the embedder-role probe 10→20 (≈1 min), covering a cold
+  warm on a slower Mac.
 
 ## Recently retired (kept here briefly for grep-ability)
 

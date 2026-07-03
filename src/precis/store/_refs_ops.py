@@ -43,6 +43,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from precis.errors import NotFound
+from precis.hints import Hint, merged_redirect_hint
 from precis.store._mappers import (
     _REFS_COLS,
     _REFS_COLS_ALIASED,
@@ -94,6 +95,10 @@ class RefsMixin:
             expires_at: datetime | None = None,
             conn: Connection | None = None,
         ) -> None: ...
+
+        # Provided by the concrete Store (store.py); declared here so the
+        # merged-handle redirect in ``resolve_handle`` type-checks its emit.
+        def emit_hint(self, hint: Hint) -> None: ...
 
     def insert_ref(
         self,
@@ -261,11 +266,21 @@ class RefsMixin:
                 if row_kind != kind:
                     return None
                 public_id = slug if slug is not None else str(survivor)
+                old_handle = handle_registry.normalize(handle)
+                # Nudge the agent to adopt the survivor handle. Fires for every
+                # resolve of a merged record handle in a request scope (get,
+                # link=, citation source_handle, exclude=, …) — one wiring, all
+                # paths — and no-ops on worker paths.
+                self.emit_hint(
+                    merged_redirect_hint(
+                        old_handle, handle_registry.format_handle(row_kind, survivor)
+                    )
+                )
                 return ResolvedHandle(
                     ref_id=survivor,
                     kind=row_kind,
                     public_id=public_id,
-                    redirected_from=handle_registry.normalize(handle),
+                    redirected_from=old_handle,
                 )
             row_kind, slug = str(row[0]), row[1]
             if row_kind != kind:  # prefix/kind mismatch — not this handle

@@ -116,8 +116,12 @@ driver; adding one is a `Reviewer(...)` instance):
 
 * `nursery` — SQL-only, every minute on the system worker. Flags
   orphans, stale claims, long waits, stuck doable, stalled recurrings,
-  and **spin loops** (any `(ref_id, source)` emitting >
-  `SPIN_LOOP_EVENTS_24H` (200) `ref_events` in 24h). Each finding is
+  **spin loops** (any `(ref_id, source)` emitting >
+  `SPIN_LOOP_EVENTS_24H` (200) `ref_events` in 24h), and **plan-tick
+  spins** (a planner parent minting > `PLAN_TICK_REMINT_24H` (16)
+  `plan_tick` jobs in 24h — the coroutine "succeeds" each tick but never
+  converges, which the resume-streak cap doesn't catch since it only
+  guards exhaustion loops). Each finding is
   raised as a `kind='alert'` (one per condition, `alert_source =
   nursery:<category>`, deduped on `meta.fingerprint`; cleared
   conditions auto-resolve) — **not** a `kind='memory'` digest any

@@ -39,6 +39,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput
+from precis.hints import Hint, HintBus
 from precis.store._blocks_ops import BlocksMixin
 from precis.store._cache_ops import CacheMixin
 from precis.store._cad_ops import CadMixin
@@ -111,6 +112,20 @@ class Store(
         # using a pre-built pool); claim acquisition falls back to a
         # no-op in that case.
         self.dsn = dsn
+        # Optional back-reference to the per-request hint bus, wired by
+        # ``Hub.__post_init__``. Lets low-level store ops (e.g. the
+        # merged-handle redirect in ``resolve_handle``) emit a non-breaking
+        # agent hint from deep in the call tree without every caller
+        # threading a ``hub``. ``None`` on a store built outside a Hub (most
+        # worker paths) — :meth:`emit_hint` is then a no-op, as it is outside
+        # any request scope.
+        self.hint_bus: HintBus | None = None
+
+    def emit_hint(self, hint: Hint) -> None:
+        """Emit a non-breaking agent hint if a bus is wired and we're inside a
+        request scope; a no-op otherwise (worker paths, no bus)."""
+        if self.hint_bus is not None:
+            self.hint_bus.emit(hint)
 
     # -- lifecycle -----------------------------------------------------------
 

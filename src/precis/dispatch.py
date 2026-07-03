@@ -159,6 +159,16 @@ class Hub:
     #: into ``dispatch``.
     loadabilities: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # Wire the store's back-reference to this hub's hint bus so low-level
+        # store ops (the merged-handle redirect in ``resolve_handle``, the
+        # bare-numeric admonish in ``resolve_live_slug_ref``) can emit a
+        # non-breaking agent hint without every caller threading a ``hub``.
+        # Single wiring point for prod (via ``boot``) and tests (the ``hub``
+        # fixture builds ``Hub(store=...)`` directly).
+        if self.store is not None:
+            self.store.hint_bus = self.hints
+
     # ----- registration primitives (called from handler __init__) -----
 
     def register_ability(

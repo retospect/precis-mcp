@@ -32,7 +32,7 @@ from precis.errors import (
 )
 from precis.protocol import _ALL_VERBS, Handler, Verb
 from precis.response import Response
-from precis.store.types import ResolvedHandle, Tag
+from precis.store.types import Tag
 from precis.utils import handle_registry
 from precis.utils.search_merge import SearchHit, merge_and_render
 
@@ -1951,31 +1951,11 @@ class PrecisRuntime:
             args["kind"] = resolved.kind
             args["id"] = f"{resolved.public_id}~{resolved.chunk_ord}"
             return True
-        if resolved.redirected_from is not None:
-            self._emit_merge_redirect_hint(resolved)
+        # resolve_handle already emitted the merge-redirect hint (via the
+        # store's wired hint bus) if it followed a supersede; nothing to do here.
         args["kind"] = resolved.kind
         args["id"] = resolved.public_id + suffix
         return True
-
-    def _emit_merge_redirect_hint(self, resolved: ResolvedHandle) -> None:
-        """Nudge the agent to adopt the survivor handle after a transparent
-        merge/supersede redirect (ADR 0036). Non-breaking: the call already
-        succeeded against the survivor."""
-        from precis.hints import Hint
-
-        new_handle = handle_registry.try_format(resolved.kind, resolved.ref_id)
-        self.hub.emit_hint(
-            Hint(
-                text=(
-                    f"{resolved.redirected_from} was merged into "
-                    f"{new_handle} — it still resolved, but please update your "
-                    f"reference to {new_handle} going forward. Sorry for the "
-                    "trouble."
-                ),
-                topic=f"handle.redirect.{resolved.redirected_from}",
-                level="info",
-            )
-        )
 
     def _maybe_split_prefixed_id(self, args: dict[str, Any]) -> None:
         """D1: extract a self-identifying kind from ``id=`` into ``args['kind']``.

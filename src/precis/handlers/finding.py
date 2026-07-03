@@ -238,7 +238,7 @@ class FindingHandler(NumericRefHandler):
         extra_target: LinkTarget | None = None
         extra_relation: str = rel or "cites"
         if link is not None:
-            extra_target = parse_link_target(link, store=self.store, hub=self.hub)
+            extra_target = parse_link_target(link, store=self.store)
 
         body_clean = body_text.strip()
         title_clean = title.strip()[:200]
@@ -834,7 +834,7 @@ class FindingHandler(NumericRefHandler):
         else:
             qualified = raw
         try:
-            return parse_link_target(qualified, store=self.store, hub=self.hub)
+            return parse_link_target(qualified, store=self.store)
         except BadInput as exc:
             raise BadInput(
                 f"cited_in={raw!r} could not be resolved: {exc}",

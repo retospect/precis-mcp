@@ -34,10 +34,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.hints import merged_redirect_hint
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
-    from precis.dispatch import Hub
     from precis.store import Store
 
 
@@ -61,37 +61,12 @@ class LinkTarget:
     redirected_from: str | None = None
 
 
-def _emit_merge_redirect_hint(
-    hub: Hub | None, old: str, kind: str, new_ref_id: int
-) -> None:
-    """Nudge the agent to adopt the survivor handle after a merged-link
-    redirect. Non-breaking; no-op when no hub is threaded in."""
-    if hub is None:
-        return
-    from precis.hints import Hint
-
-    new_handle = handle_registry.try_format(kind, new_ref_id) or f"{kind}:{new_ref_id}"
-    hub.emit_hint(
-        Hint(
-            text=(
-                f"link target {old!r} was merged into {new_handle} — it still "
-                f"linked, but please update your reference to {new_handle} going "
-                "forward. Sorry for the trouble."
-            ),
-            topic=f"handle.redirect.{old}",
-            level="info",
-        )
-    )
-
-
-def parse_link_target(
-    target: str, *, store: Store, hub: Hub | None = None
-) -> LinkTarget:
+def parse_link_target(target: str, *, store: Store) -> LinkTarget:
     """Resolve ``'kind:identifier[~selector]'`` to a :class:`LinkTarget`.
 
     A handle/slug that points at a merged/superseded ref transparently
-    redirects to the live survivor (``meta.superseded_by``); pass ``hub=`` to
-    have the redirect emit a "please use the new handle" hint.
+    redirects to the live survivor (``meta.superseded_by``), emitting a
+    "please use the new handle" hint via the store's wired hint bus.
 
     Raises:
         BadInput: malformed string (no colon, empty kind/identifier,
@@ -121,10 +96,8 @@ def parse_link_target(
                 f"link target {handle!r} resolves to no live ref",
                 next=f"check it exists: get(id={handle!r})",
             )
-        if resolved.redirected_from is not None:
-            _emit_merge_redirect_hint(
-                hub, resolved.redirected_from, resolved.kind, resolved.ref_id
-            )
+        # resolve_handle already emitted the redirect hint if it followed a
+        # merge; just carry the marker through.
         return LinkTarget(
             ref_id=resolved.ref_id,
             pos=resolved.chunk_ord,
@@ -230,16 +203,27 @@ def parse_link_target(
         #     redirect transparently and nudge the agent to adopt the survivor.
         survivor_id: int | None = None
         if isinstance(ref_id_or_slug, str) and handle_registry.parse(ref_id_or_slug):
+            # A universal handle identifier (``paper:pa5``): resolve_handle
+            # resolves it and — if merged — redirects + emits the hint itself.
             resolved = store.resolve_handle(ref_id_or_slug)
             if resolved is not None and resolved.kind == kind:
                 survivor_id = resolved.ref_id
-                redirected_from = f"{kind}:{ref_id_or_slug}"
+                redirected_from = resolved.redirected_from
         if survivor_id is None:
             dead = store.get_ref(kind=kind, id=ref_id_or_slug, include_deleted=True)
             if dead is not None:
                 survivor_id = store.follow_supersede(dead.id)
                 if survivor_id is not None:
                     redirected_from = target
+                    # Slug identifier (no handle) — resolve_handle wasn't the
+                    # follow path, so emit the redirect hint here.
+                    store.emit_hint(
+                        merged_redirect_hint(
+                            target,
+                            handle_registry.try_format(kind, survivor_id)
+                            or f"{kind}:{survivor_id}",
+                        )
+                    )
         ref = (
             store.get_ref(kind=kind, id=survivor_id)
             if survivor_id is not None
@@ -254,7 +238,6 @@ def parse_link_target(
                     else f"check it exists: get(kind={kind!r}, id={identifier})"
                 ),
             )
-        _emit_merge_redirect_hint(hub, redirected_from or target, kind, ref.id)
 
     # Resolve the block selector, if any. Two forms: numeric pos
     # ('38') or block slug ('agenda'). We try numeric first since

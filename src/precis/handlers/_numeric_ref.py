@@ -151,9 +151,6 @@ class NumericRefHandler(Handler):
         if hub.store is None:
             raise InitError(f"{self.kind}: store required")
         self.store = hub.store
-        #: Kept so handlers can emit non-breaking hints (e.g. the merged-ref
-        #: link redirect nudge) via ``self.hub.emit_hint``.
-        self.hub = hub
 
     # Convenience: callers / tests sometimes use `handler.sense` to
     # build messages — keep it cheap.

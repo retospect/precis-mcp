@@ -33,6 +33,35 @@ class Hint:
     cooldown: int = 10  # suppress if topic shown within N requests
 
 
+def merged_redirect_hint(old: str, new: str) -> Hint:
+    """Non-breaking nudge after a merged/superseded ref transparently
+    redirected to its live survivor (ADR 0036 handle outliving a dedup)."""
+    return Hint(
+        text=(
+            f"{old} was merged into {new} — it still resolved, but please "
+            f"update your reference to {new} going forward. Sorry for the "
+            "trouble."
+        ),
+        topic=f"handle.redirect.{old}",
+        level="info",
+    )
+
+
+def bare_numeric_hint(kind: str, bare: str, handle: str) -> Hint:
+    """Admonish after the bare-numeric ref_id fallback (A1) fired: the address
+    is the handle, and a bare number must never land in cited text."""
+    return Hint(
+        text=(
+            f"resolved id={bare!r} by assuming it was a {kind} ref_id — but the "
+            f"address is the handle {handle!r} (keep the 2-char prefix), not a "
+            f"bare number. Use {handle!r} next time, and never write a bare "
+            "number into cited text: a number is not a citation."
+        ),
+        topic=f"handle.bare_numeric.{kind}",
+        level="warn",
+    )
+
+
 class HintBus:
     """Per-server hint collector. One instance per `PrecisRuntime`.
 
