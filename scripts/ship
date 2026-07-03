@@ -10,15 +10,23 @@
 # Steps, in order:
 #   1. sanity      — refuse to run on main; set the git-town parent if unset
 #   2. commit WIP  — stage + commit any dirty tree
-#   3. sync        — `git town sync` (merges origin/main in; the squash-ship
-#                    in step 5 collapses the merge commit so main stays linear)
-#   4. gate        — in the precis-dev container, bind-mounting THIS worktree
-#                    over /app: auto-fix ruff (`--fix` + `format`, amended),
-#                    then the authoritative ruff/format/mypy/pytest gate. Any
-#                    failure aborts the ship (never ship red).
-#   5. ship        — squash `commit-tree` onto origin/main + `--force-with-lease`
-#                    CAS push (race-safe against sibling worktree ships), then
-#                    delete the remote feature branch
+#   3. lock        — mkdir-mutex on the shared .git dir: serialise ships across
+#                    sibling worktrees on this host so a second ship WAITS
+#                    instead of squashing a stale base over the first (the
+#                    shared-index clobber). Released on exit; steals >30-min lock.
+#   4. loop        — sync → gate → ship, re-running if main moves under us:
+#                    · sync   `git town sync` (merges origin/main in; the squash
+#                             below collapses the merge so main stays linear)
+#                    · gate   in the precis-dev container over THIS worktree:
+#                             auto-fix ruff (amended) then ruff/format/mypy/pytest
+#                             (a docs/config-only diff runs a light ruff + doc-
+#                             pointer gate instead). Red gate aborts (never red).
+#                    · ship   squash `commit-tree` onto origin/main + a
+#                             `--force-with-lease` CAS push. If main advanced
+#                             during the gate (ancestor check) or the lease is
+#                             rejected, re-sync + re-gate + re-push (≤3×) — never
+#                             force a stale tree over a moved main.
+#   5. local main  — fast-forward the primary's main to the shipped sha
 #   6. report      — print the new main sha
 #
 # Usage:  scripts/ship "fix(x): one-line summary of the branch"
@@ -54,51 +62,113 @@ if [[ -n "$(git status --porcelain)" ]]; then
 ${CO_AUTHOR}"
 fi
 
-# ── 3. sync onto main ───────────────────────────────────────────────────
-say "git town sync"
-git town sync || die "sync failed (merge conflict?) — resolve, git town continue, then re-run scripts/ship."
-
-# ── 4. integration gate against THIS worktree ───────────────────────────
-# `./scripts/dev` bind-mounts the MAIN repo at /app (compose default), so the
-# gate must override the mount with -v "$WORKTREE":/app to test these edits.
-# NB: `env UID=…` — a bare `UID=…` prefix fails in bash (UID is readonly).
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
 [[ -f "$INFRA_COMPOSE" ]] || die "compose file not found at ${INFRA_COMPOSE} (set PRECIS_COMPOSE)."
 
+# `./scripts/dev` bind-mounts the MAIN repo at /app (compose default), so the
+# gate must override the mount with -v "$WORKTREE":/app to test these edits.
+# NB: `env UID=…` — a bare `UID=…` prefix fails in bash (UID is readonly).
 gate() {
     env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" \
         --profile dev run --rm --no-deps -v "${WORKTREE}":/app precis-dev \
         bash -lc "$1"
 }
 
-say "auto-fixing ruff (lint --fix + format)"
-gate 'uv run ruff check --fix . && uv run ruff format .' || die "ruff auto-fix failed to run."
-if [[ -n "$(git status --porcelain)" ]]; then
-    git add -A
-    git commit -q --amend --no-edit
-    say "amended ruff auto-fixes into the branch"
-fi
+# ── 3. acquire the ship lock (serialise ships across sibling worktrees) ──
+# All worktrees on this host share one .git, so a mkdir-mutex on the common
+# git dir serialises ships: a second ship WAITS instead of squashing a stale
+# base straight over the first (the [[shared-index-ship-race]] clobber that
+# silently reverted shipped work). macOS has no flock(1), so use an atomic
+# mkdir; steal a lock older than 30 min (a crashed ship). Released on exit.
+LOCKDIR="$(git rev-parse --git-common-dir)/precis-ship.lock.d"
+_release_ship_lock() { rm -rf "$LOCKDIR" 2>/dev/null || true; }
+trap _release_ship_lock EXIT
+_waited=0
+while ! mkdir "$LOCKDIR" 2>/dev/null; do
+    if find "$LOCKDIR" -maxdepth 0 -mmin +30 2>/dev/null | grep -q .; then
+        say "stealing a stale ship lock (>30 min old)"
+        rm -rf "$LOCKDIR"
+        continue
+    fi
+    [[ "$_waited" == 0 ]] && say "another ship is in progress on this host — waiting for the lock…"
+    _waited=1
+    sleep 3
+done
+printf '%s pid=%s\n' "$WORKTREE" "$$" > "$LOCKDIR/holder" 2>/dev/null || true
 
-say "integration gate (ruff · format · mypy · pytest)"
-gate 'uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run pytest -q' \
-    || die "gate is RED — not shipping. Fix the failure above and re-run scripts/ship."
+# ── 4. sync → gate → ship, re-running if main moves under us ────────────
+# Hold the lock across the whole critical section so no sibling worktree can
+# move main between our sync and our push. The retry loop additionally
+# self-heals against a main that moved from ELSEWHERE (another host, or a
+# stolen stale lock): re-sync (merge the new main) → re-gate → re-push, up to
+# a few times, so we never squash a stale base. Merge conflicts and red gates
+# are NOT retryable — they abort immediately for a human to resolve.
+shipped=0
+for attempt in 1 2 3; do
+    [[ "$attempt" -gt 1 ]] && say "main moved under us — re-syncing + re-gating (attempt ${attempt}/3)"
 
-# ── 5. ship: squash-merge to main via plumbing ──────────────────────────
-say "shipping to main"
-git fetch -q origin main
-git merge-base --is-ancestor origin/main HEAD \
-    || die "branch is not on top of origin/main — re-run scripts/ship (main moved under us)."
+    say "git town sync"
+    git town sync || die "sync failed (merge conflict?) — resolve, git town continue, then re-run scripts/ship."
 
-OLD_MAIN="$(git rev-parse origin/main)"
-TREE="$(git rev-parse 'HEAD^{tree}')"
-NEW="$(git commit-tree "$TREE" -p "$OLD_MAIN" -F - <<EOF
+    # Classify the change: a docs/config-only ship can't break the test
+    # suite, so it skips the ~3-min mypy+pytest gate and runs only ruff + the
+    # doc-pointer test (seconds). Heuristic: `merge-base..HEAD` shows only
+    # HEAD's own changes, so a misclassification can only under-scope toward
+    # "not docs-only" (safe → full gate).
+    git fetch -q origin main
+    CHANGED="$(git diff --name-only "$(git merge-base origin/main HEAD)" HEAD)"
+    DOCS_ONLY=1
+    [[ -z "$CHANGED" ]] && DOCS_ONLY=0   # empty diff → play safe, full gate
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        case "$f" in
+            *.md | docs/* | .claude/* | .gitignore | LICENSE | CITATION.cff | SECURITY.md) ;;
+            *) DOCS_ONLY=0; break ;;
+        esac
+    done <<< "$CHANGED"
+
+    # One container for the whole gate. `ruff --fix`/`format` normalise the
+    # mounted worktree in-place; we amend the result on the host after.
+    if [[ "$DOCS_ONLY" == 1 ]]; then
+        say "docs/config-only change → light gate (ruff · doc-pointer test), skipping mypy+pytest"
+        gate 'uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run pytest -q tests/test_doc_pointers.py' \
+            || die "light gate is RED — not shipping. Fix the failure above and re-run scripts/ship."
+    else
+        say "integration gate (ruff autofix · mypy · pytest) — single container"
+        gate 'uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run pytest -q' \
+            || die "gate is RED — not shipping. Fix the failure above and re-run scripts/ship."
+    fi
+
+    if [[ -n "$(git status --porcelain)" ]]; then
+        git add -A
+        git commit -q --amend --no-edit
+        say "amended ruff auto-fixes into the branch"
+    fi
+
+    # Squash-merge to main via plumbing. If main moved during the gate (the
+    # ancestor check fails) or the CAS lease is rejected, loop: re-sync picks
+    # up the new main, re-gate, re-push — never force a stale tree over it.
+    say "shipping to main"
+    git fetch -q origin main
+    if ! git merge-base --is-ancestor origin/main HEAD; then
+        say "origin/main advanced during the gate — re-syncing"
+        continue
+    fi
+    OLD_MAIN="$(git rev-parse origin/main)"
+    TREE="$(git rev-parse 'HEAD^{tree}')"
+    NEW="$(git commit-tree "$TREE" -p "$OLD_MAIN" -F - <<EOF
 ${MSG:-ship(${BRANCH}): squash-merge to main}
 
 ${CO_AUTHOR}
 EOF
 )"
-git push --force-with-lease=main:"$OLD_MAIN" origin "${NEW}:refs/heads/main" \
-    || die "CAS push rejected — origin/main moved (a sibling shipped first). Re-run scripts/ship."
+    if git push --force-with-lease=main:"$OLD_MAIN" origin "${NEW}:refs/heads/main"; then
+        shipped=1
+        break
+    fi
+    say "CAS push rejected — origin/main moved from elsewhere; re-syncing and retrying"
+done
+[[ "$shipped" == 1 ]] || die "could not ship after 3 attempts — main kept moving under us. Re-run scripts/ship."
 git push origin --delete "$BRANCH" 2>/dev/null || true
 
 # ── 6. fast-forward the local main ──────────────────────────────────────

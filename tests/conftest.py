@@ -258,6 +258,45 @@ def _force_mock_embedder_for_tests() -> None:
 _SESSION_DB_LOCK_KEY = 0x70726563
 
 
+def _claim_template_maintenance(admin_dsn: str) -> bool:
+    """True if THIS session should (re)prepare the shared template.
+
+    Migrating + stripping the ``precis_test`` template to schema-only only
+    needs to happen ONCE per test run — but under ``-n auto`` every xdist
+    worker is its own session and was doing it under the advisory lock, so
+    ~15 redundant maintenance passes serialised into the dominant gate cost.
+    Claim the work via a marker keyed by the xdist run id
+    (``PYTEST_XDIST_TESTRUNUID``, shared across a run's workers): the first
+    worker to INSERT it does the maintenance, the rest skip straight to
+    cloning the already-prepared template. The clone itself stays per-worker.
+
+    Called under the advisory lock, so the claim is race-free. Falls back to
+    ``True`` (do the maintenance) when there's no run id (``-n0`` / no xdist)
+    or the marker table can't be maintained (restricted role) — correct,
+    just back to the old per-worker behaviour.
+    """
+    runuid = os.environ.get("PYTEST_XDIST_TESTRUNUID")
+    if not runuid:
+        return True  # single-process run — nothing to coordinate
+    try:
+        with psycopg.connect(admin_dsn, autocommit=True) as adm:
+            adm.execute(
+                "CREATE TABLE IF NOT EXISTS _precis_test_runs "
+                "(runuid text PRIMARY KEY, at timestamptz NOT NULL DEFAULT now())"
+            )
+            adm.execute(
+                "DELETE FROM _precis_test_runs WHERE at < now() - interval '1 hour'"
+            )
+            cur = adm.execute(
+                "INSERT INTO _precis_test_runs(runuid) VALUES (%s) "
+                "ON CONFLICT DO NOTHING RETURNING runuid",
+                (runuid,),
+            )
+            return cur.fetchone() is not None
+    except psycopg.Error:
+        return True  # can't coordinate → prepare it ourselves
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _initialise_test_db() -> Iterator[None]:
     """Give each pytest session its OWN ephemeral database — an instant
@@ -308,8 +347,11 @@ def _initialise_test_db() -> Iterator[None]:
     try:
         # Keep the template current + data-free, so every clone starts from
         # "schema + vocab, no data". apply_all is an idempotent tail apply.
-        Migrator(PG_TEST_DSN, MIGRATIONS_DIR).apply_all()
-        _truncate_data_tables(PG_TEST_DSN)
+        # Do it once per run (first worker claims it), not once per worker —
+        # see _claim_template_maintenance.
+        if _claim_template_maintenance(admin_dsn):
+            Migrator(PG_TEST_DSN, MIGRATIONS_DIR).apply_all()
+            _truncate_data_tables(PG_TEST_DSN)
         try:
             with psycopg.connect(admin_dsn, autocommit=True) as adm:
                 _ensure_template_cloneable(adm)
@@ -320,7 +362,20 @@ def _initialise_test_db() -> Iterator[None]:
                     "WHERE datname = %s AND pid <> pg_backend_pid()",
                     (_TEMPLATE_DB,),
                 )
-                adm.execute(f'CREATE DATABASE "{clone_db}" TEMPLATE "{_TEMPLATE_DB}"')
+                # STRATEGY=FILE_COPY (PG15+): checkpoint + filesystem copy
+                # instead of the default WAL_LOG, which WAL-logs every copied
+                # block — much slower for template cloning, especially over the
+                # container→host DB hop that dominates the gate. Falls back to
+                # the default for a server too old to know the keyword.
+                try:
+                    adm.execute(
+                        f'CREATE DATABASE "{clone_db}" TEMPLATE "{_TEMPLATE_DB}" '
+                        "STRATEGY = FILE_COPY"
+                    )
+                except psycopg.errors.SyntaxError:
+                    adm.execute(
+                        f'CREATE DATABASE "{clone_db}" TEMPLATE "{_TEMPLATE_DB}"'
+                    )
             # Hold a connection to the clone for the whole session so a
             # concurrent session's orphan-sweep sees it as in-use. Autocommit
             # so it never sits idle-in-transaction.
