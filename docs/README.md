@@ -13,7 +13,7 @@ dive into the subdirectory that matches your task.
 | The user-facing intro + install | [`../README.md`](../README.md) |
 | The DB schema (generated, current) | [`design/schema.md`](./design/schema.md) |
 | Why a decision was made | [`decisions/README.md`](./decisions/README.md) — the ADR index |
-| What changed, when | [`../CHANGELOG.md`](../CHANGELOG.md) |
+| What changed, when | git history (`git log`) — no CHANGELOG file |
 | The active backlog | [`../OPEN-ITEMS.md`](../OPEN-ITEMS.md) |
 
 ## The subdirectories

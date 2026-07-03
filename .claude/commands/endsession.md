@@ -56,8 +56,17 @@ Optional ship message from the user: `$ARGUMENTS`
      just relay it so the human can `git merge --ff-only origin/main` in the
      primary worktree.
 
-4. **Report.** On success, print the new `main` commit the script emitted and
-   a one-line summary of what shipped.
+4. **Confirm — always end with this exact three-line block** (verify each
+   line against `git rev-parse origin/main`, don't assume):
+   ```
+   Merged to main:  ✓ <sha> on origin/main   (or ✗ — ship failed above)
+   Pushed:          ✓ origin/main             (the squash-merge IS the push)
+   Deployed:        — not deployed (/endsession is ship-only; run /go to deploy)
+   ```
+   Use ✗ on the first two lines if the ship failed (red gate / conflict). The
+   deploy line is always "not deployed" here. If the local primary `main`
+   didn't fast-forward, add the `WARNING:` line as a fourth line. Then one
+   line summarizing what shipped.
 
 > **Why a script instead of `git town ship`.** `git town ship` runs
 > `git checkout main`, which always fails from a linked worktree (`main` is

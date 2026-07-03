@@ -31,7 +31,14 @@ scripts/exercise-mcp/out/
 # devin/windsurf
 **/.devin
 **/.windsurf
-.claude
+
+# Claude Code: ignore session state (worktrees, transcripts, todos,
+# settings.local.json), but TRACK the shareable config so slash commands +
+# project settings ship with the repo and reach every worktree. New files
+# under .claude/commands/ are now tracked by default — no more `git add -f`.
+.claude/*
+!.claude/commands/
+!.claude/settings.json
 
 # Personal ops notes — anything matching *.local.md / *.local/.
 # Convention for ops crib sheets, scratch SQL, host-specific quirks.

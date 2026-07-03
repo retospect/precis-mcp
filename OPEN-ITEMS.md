@@ -17,6 +17,58 @@ what's still open.
 
 ---
 
+## 🟢 Dark-factory build/deploy workstream
+
+**Status**: in progress · **Severity**: feature · **Owner**: `scripts/`,
+`.claude/commands/`, `CLAUDE.md`
+
+North star: `claude -w <feature>` → describe the spec → `/go` → the change
+is implemented → gated → merged → deployed, with the LLM asked only "OK?" or
+handed a genuinely broken test. Every mechanical step is a script (token-cheap,
+reproducible); the model spends tokens on judgment, not CI/CD plumbing.
+
+- **`scripts/deploy` + `/go`** → **shipped this workstream.** `scripts/deploy`
+  is the non-interactive ansible-redeploy backbone (twin of `scripts/ship`,
+  no LLM in the loop); `/go` = `scripts/ship` then `scripts/deploy` on green
+  (the one-keystroke ship+deploy). `/endsession` stays deploy-free.
+- **Token-lean session boot** → **partly done.** `## Other live affordances`
+  in CLAUDE.md compressed to a one-line-per-kind index (detail already in the
+  `precis-*-help` skills) — ~33% fewer boot bytes. Ties into the existing
+  cold-start work (`docs/design/mcp-cold-start-token-budget.md`,
+  `PRECIS_STARTUP_SKILLS`). Next: apply the same discipline to the
+  `~/work/cluster` CLAUDE.md; measure boot token delta.
+- **`/whatneedsdoing`** → **shipped this workstream.** One triage view that
+  merges the three work stores — `OPEN-ITEMS.md` + open gripes
+  (`get(kind='gripe', id='/open')`) + open/doable todos — and flags which are
+  autonomous (todos the loop runs) vs inert (backlog/gripes not yet todos).
+- **Backlog groomer (close the loop)** → open. Today nothing *works* the
+  backlog or gripes automatically — `/whatneedsdoing` only *reads* them. The
+  dark-factory move: a `level:recurring` watch that reads `OPEN-ITEMS.md` +
+  open gripes and mints `kind='todo'` rows with `meta.executor` (a `fix_gripe`
+  job for bugs; a build tick for features), so `dispatch` actually builds them.
+  Pairs with `/checklogs` + cheap-model tiering. Until this lands, the backlog
+  is a level-3 artifact the factory can't act on.
+- **`/testfeature <prompt>`** → open. Agent loop that exercises the precis MCP
+  surface (`scripts/exercise-mcp` is a seed), finds bugs, applies fixes, then
+  `/go`. Bounded by a turn/cost cap.
+- **`/checklogs`** → open. Read the recent LLM-error surface (prod `agentlog` +
+  `alert` + failed `kind='job'` + error `ref_events`; local `.claude` logs +
+  `/var/log/precis-worker-agent.log`), cluster the top-N recurring failures,
+  fix root cause, `/go`.
+- **Cheap-model tiering** → open. Route mechanical LLM work (`llm_summarize`,
+  triage children, CI-fix escalation) to a small 4B–14B model; reserve Opus for
+  build/planner/reviewer judgment.
+- **Widen `scripts/ship` auto-fix surface** → open (polish). Auto-fix + amend
+  anything the gate can resolve without judgment (import sort, trivial mypy
+  stubs); only real logic failures reach the model.
+
+Deferred (revisit later): **holdout scenarios** (StrongDM-style anti-overfit
+eval outside the repo — not needed while Opus shows no test-gaming; ADR 0047
+gold sets are the seed); **digital-twin fidelity** (richer stubs so
+green-in-twin/red-in-prod gaps close — the current `FakeStore`/`MockEmbedder`/
+`PRECIS_CLAUDE_BIN` twins are good enough for now); **auto-deploy as a daemon**
+(vs `/go`-chained — only if chaining proves insufficient).
+
 ## 🔵 `serverInfo.title` not set
 
 **Status**: blocked on upstream `FastMCP`
@@ -130,7 +182,7 @@ dated review document:
   `refs.retraction_status` is set; carries date, reason, and a
   pointer at `get(kind='provenance', id='<doi>')`.)
 
-See [`CHANGELOG.md`](CHANGELOG.md) entry for 6.0.0 for the per-fix
+See the git history (`git log`, around the 6.0.0 tag) for the per-fix
 landing record.
 
 ## ✅ CI: wire up a real PostgreSQL service on Linux

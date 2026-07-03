@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(scripts/ship:*)",
+      "Bash(scripts/deploy:*)",
+      "Bash(scripts/dev:*)",
+      "Bash(git:*)",
+      "Bash(docker:*)",
+      "Bash(uv:*)",
+      "Bash(ansible-playbook:*)",
+      "Bash(ansible:*)"
+    ],
+    "additionalDirectories": ["/Users/reto/work/cluster"]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/map-staleness-reminder.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

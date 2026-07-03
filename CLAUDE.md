@@ -5,8 +5,8 @@
 > ingest guarantees — all there. This file is a current-state map of
 > the discovery / task / worker / review subsystems a Claude Code
 > session needs before touching them. It is **present-tense** — for
-> the dated story of how each piece landed, read `## Unreleased` (and
-> the release sections) in `CHANGELOG.md`. Keep this file true:
+> the dated story of how each piece landed, read the **git history**
+> (`git log`); there is no CHANGELOG file. Keep this file true:
 > update it in the same commit that changes what it describes.
 
 ## Session workflow (worktree → ship)
@@ -18,13 +18,16 @@ Best practice for a unit of work:
    `.claude/worktrees/<name>/` on a new `worktree-<name>` branch, so
    the work is isolated from `main` and from sibling sessions.
 2. **Do the work** in that worktree — implement, test, iterate.
-3. **End with `/endsession`.** The `/endsession` command
-   (`.claude/commands/endsession.md`) wraps up: commits any WIP,
-   `git town sync` (rebase onto the latest `main`), runs the
-   container integration gate (`ruff` + `mypy` + `pytest`), and — only
-   if green — `git town ship` (squash-merges the branch back to `main`
-   and removes it). It **aborts and reports** on any gate failure; fix
-   and re-run. Landing on `main` is the end goal of a feature branch.
+3. **End with `/endsession`** (ship) **or `/go`** (ship **+ deploy**).
+   Both run the deterministic `scripts/ship`: commit WIP → `git town
+   sync` → the container integration gate (auto-fix ruff, then
+   authoritative `ruff` + `mypy` + `pytest`) → squash-merge to `main`
+   (only if green) → local-main fast-forward. `/go` additionally runs
+   `scripts/deploy` on a green ship to push `main` to the cluster
+   (`ansible-playbook redeploy-precis.yml` — the dark-factory
+   one-keystroke). Both **abort and report** on any gate failure; fix
+   and re-run (the scripts are idempotent). Landing on `main` — and, via
+   `/go`, on the cluster — is the end goal of a feature branch.
 
 This relies on the repo's git-town config (`ship-strategy =
 squash-merge`, feature branches parented on `main`). git-town must be
@@ -213,234 +216,62 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
 
 ## Other live affordances
 
-- **Cluster maps (`/clusters`)** — a spatial browse over the corpus.
-  The `clusterize` worker (system profile, `utils/cluster_map.py`,
-  numpy-only) trains a hierarchical Self-Organizing-Map over chunk
-  embeddings — a *grid* where adjacent tiles are similar — and labels
-  each tile with a sibling-scoped c-TF-IDF word cloud. Daily rebuilds
-  **warm-start** from the prior run so a tile's address (`4.7.1`) stays
-  put as the corpus drifts. Two scopes (`paper` deep tree / `memory`
-  shallow grid). Storage: `0027_clusterize.sql` (`cluster_runs` /
-  `cluster_cells` / `cluster_assignments`). Web:
-  `precis_web/routes/clusters.py` + the Clusters nav tab.
-- **`folder`** — organizational container (ADR 0045): single-parent
-  placement for **authored artifacts** (draft / structure / cad /
-  strategic todo roots / folders) on `refs.parent_id` — the ADR 0027
-  virtual `parent` façade generalized via `handlers/_placement.py`
-  (each placeable handler intercepts `rel='parent'`; the todo handler
-  keeps its own guards and requires `level:strategic` for folder
-  targets). `KindSpec.role` (`artifact|corpus|stream|system`, default
-  `stream`) declares placeability — corpus (paper/cfp) keeps its
-  discovery layer, stream (memory/alert/job) reaches folders only by
-  promotion into an authored note. Todo root detection is kind-aware
-  (`_todo_guards.todo_root_sql`, one shared fragment across picks /
-  roots / strategic / doable + nursery / structural / deep_review) so
-  a folder-parented strategic stays in the rotation; `_depth_of`
-  counts todo ancestors only. `search(folder=<id|name>)` scopes any
-  search to the folder's subtree (`Store.folder_subtree_ids` CTE; the
-  runtime routes folder-scoped searches through the cross-kind
-  fan-out and membership-filters hits). Delete refuses non-empty;
-  unfiled is a virtual state, no seeded inbox. Migration `0048` seeds
-  the kinds row; handle code `fo`. Skill: `precis-folder-help`.
-- **`gripe`** — first-class bug tracker (`get`/`search`/`tag`/`link`/
-  `delete`); body + append-only comment timeline live as chunks
-  (`gripe_body`, `gripe_comment`), so embed + `chunk_keywords` index
-  them automatically.
-- **`alert`** (migration `0029`) — machine-detected ops / health
-  conditions (spin loops, orphaned todos, stalled recurrings). Raised
-  by background passes via `precis.alerts.raise_alert` (upsert on
-  `meta.fingerprint`; `resolve_stale_alerts` auto-closes cleared ones),
-  read via `AlertHandler` (`get(id='/open')`) + the `/alerts` web tab.
-  **Not embedded** — body in `title`/`meta`, no `card_combined` chunk,
-  so it never reaches semantic search. Deliberately separate from
-  `memory` (ops telemetry ≠ thought); the LLM reviewers stay on
-  `memory`. Skill: `precis-alert-help`. Producer is generic — sweeper /
-  quota / failed-pass detectors can adopt it next.
-- **`agentlog`** (migration `0034`) — run-attribution record, the
-  structural twin of `alert` (numeric, machine-produced, **not
-  embedded**). One per agentic run that touches the corpus, carrying the
-  full assembled prompt (`meta.prompt`) + model/source + a **`touched`
-  link to every chunk the run wrote/moved** (a new symmetric, no-inverse
-  link relation). Write side `precis.agentlog`
-  (`open_log`/`attach_touch`/`touch_from_env`/`finalize_log`/
-  `gc_stale_logs`); `plan_tick` opens the log and threads its id to the
-  `claude -p` subprocess via `PRECIS_CURRENT_AGENTLOG`, the
-  `DraftHandler` reads it and attributes each write. The **sweeper**
-  GCs logs past `PRECIS_AGENTLOG_RETENTION_DAYS` (default 30), dropping
-  the `touched` links but never the chunks. Read via `AgentLogHandler`
-  + the `/agentlogs` web tab (prompt + touched chunks + transcript
-  link); touched chunks also surface as a Connections chip on the draft
-  reader. Skill: `precis-agentlog-help`.
-- **`job` substrate** — `meta.job_type` + `meta.executor`,
-  `STATUS:` tag, forensics as `chunk_kind='job_event'` (hidden) /
-  `job_summary` (searchable) / `job_result` (structured per-tick
-  audit). Executors include `claude_inproc`; `fix_gripe` is the
-  reference job_type (clones the repo, runs `claude -p`, pushes a
-  review branch).
-- **`structure`** — atomistic cell + bond-graph IR (ADR 0043): a
-  slug-addressed design (cell on `refs.meta`; atoms/bonds/measures in
-  `struct_*`), edited by typed **ops** and read by in-memory **probes**,
-  never pixels. Energy rungs relax via the run-cube cache (§23.16) +
-  `struct_relax` on the GPU node — a **derived-lane** job parented on the
-  structure, *not* a todo (ADR 0044): a relax dispatches with no todo
-  required; pass `requested_by=<todo>` on the relax op to make an
-  intentful task block on it. **Cursors + measures** (§6.8/§7) live on
-  `struct_measures` — `cursor`/`measure`/`unmark`/`remove_measure` ops
-  anchored by stable atom **label** (not row id, which an edit orphans),
-  persisting across edits and re-evaluated (`view='markers'`). `link`
-  relates designs (`derived-from`); `StructureHandler.derive(id,to,ops)`
-  branches a new slug (the web Apply). **Web** (`precis_web/routes/
-  structure.py`, `/structure`): a 3D viewer (element-coloured clickable
-  atoms + authoritative clickable bonds + initial/relaxed overlay + a
-  `data-atoms` text→cell cross-highlight), a run-cube panel with a **"Relax"
-  button** (`POST /relax`, rung clean/ml/dft + default params → a derived
-  `struct_relax` job on the GPU node, no todo — ADR 0044) whose **in-flight
-  job is shown as a live pending row** (`_pending_jobs` — the job exists at
-  redirect but has no `struct_runs` row until the GPU node finishes) and
-  polled via `GET /runs_status` until a run lands (queued→running→reload; a
-  failed job shows a red pill), a cursors &
-  measures panel + 3D overlay, a lineage row, and a **"Further instructions"
-  box** — `POST /instruct` mints a `structure_propose` job (tool-less
-  `claude -p`, so it *cannot* mutate: it returns dry-run-validated ops
-  JSON), the box polls `/proposal`, and `POST /apply` derives a new design.
-  Skill: `precis-structure-help`.
-- **`citation`** — verifier-workflow kind:
-  `put(kind='citation', text=<claim>, source_handle, source_quote,
-  verifier_confidence, link='paper:<slug>', rel='cites')`. The tex
-  workspace skeleton's `\citequote{key}{verbatim}` macro persists the
-  same `source_quote`. Skill: `precis-citation-help`.
-- **`cfp`** — call-for-proposal / requirements document (proposal
-  writing). A **spec-role** sibling of `paper`: ingested by the
-  *identical* Marker→chunks pipeline (`precis add --as cfp`, or
-  `inbox/cfp/` — one more inbox kind dir alongside papers/books/
-  presentations), so it gets embed / keywords / TOC / search for free,
-  and read in the *same* two-pane reader at `/cfp/<slug>`.
-  `CfpHandler(PaperHandler)` (`handlers/cfp.py`) differs only by
-  declaration — a new `KindSpec.corpus_role` field (`evidence` for
-  paper/patent, `spec` for cfp): a `spec` doc is **never cited as
-  evidence** (the citation handler already resolves `source_handle`
-  only against `kind='paper'`, so it's safe by construction), stays out
-  of `search(kind='paper')`, drops the bibtex/citation views, and has no
-  `put` (acquired by ingest only). The paper handler's ~dozen structural
-  `kind="paper"` literals were routed through `self.spec.kind` so the
-  subclass reuses get/search verbatim; the `ref_id`-scoped reader
-  endpoints (`/papers/<id>/search|toc|chunk|pdf`) accept the doc family
-  (`_DOC_FAMILY`). A proposal **project** (`LLM:*` todo) links to its
-  cfp via the `has-requirement`/`requirement-of` relation (migration
-  `0039`); the planner prompt's `_m_requirements` module injects the
-  call's required sections into the writing tick. Word limits live on
-  draft section headings as `meta.word_target={min,max}`, checked via
-  `get(kind='draft', view='wordcount')` (per-section over/under/ok +
-  a web badge). Skill: `precis-proposal-help`.
-- **Keystone kinds (`cad` / `pcb` / `structure`)** — the "own a legible
-  IR, rent the heavy kernel only at export" family (ADR 0041 / 0042 /
-  0043). Each hands the LLM a *graph* to traverse, never pixels: `cad`
-  probes a parametric solid analytically (point/ray/section/clearance);
-  `structure` is an atomistic cell+bond graph relaxed on a fidelity
-  ladder; `pcb` is a netlist + placement graph — author components /
-  nets / connections in one batch `put`, then read it as a graph
-  (`slug#U1` → pins → nets → neighbours) via probe views. The heavy
-  tools are gated to the **export** step only: `handlers/pcb.py`
-  dispatches `_EXPORT_VIEWS` (`bom`/`cpl`/`netlist`/`dsn`/`mechanical`)
-  to the **pure** exporters in `src/precis/pcb/export.py` (IR → text,
-  no binaries — BOM/CPL are JLCPCB-native, mechanical is the 0041
-  outline+holes bridge) and the `route` view to `src/precis/pcb/route.py`,
-  a headless-Freerouting `.dsn`→`.ses` round-trip (`place_route_round_trip`,
-  escalating passes) gated on `PRECIS_FREEROUTING_JAR` (+ java) — it
-  **skips, never raises** when the backend is absent. Coordinate frame:
-  mm, origin at the outline corner, +X right / +Y up, rotation CW —
-  **footgun:** JLCPCB CPL wants CCW, so `jlc_rotation(r) = (360-r) % 360`.
-  Parts come from `kind='part'` (JLCPCB-assemblable), datasheets from
-  `kind='datasheet'`. Artifacts land under `PRECIS_CORPUS_DIR/pcb/<slug>/`.
-  The `[pcb]` extra (`easyeda2kicad`) is staged for Flow-B footprint
-  conversion — the fetch itself is still a `FeatureUnavailable` stub
-  (Slice 2 deferred item), so exports fall back to placeholder pin spreads.
-  Skills: `precis-pcb-help` (+ part-select / net-class / measures and the
-  i2c/spi/decoupling/datasheet playbooks, skill-search-only). Cluster
-  deploy is Tier-1 (JRE + jar on the gateway; kicad-cli gerbers deferred).
-- **`cad` web editor (`/cad`)** — the human twin of the MCP surface, mirroring
-  `/structure` (`precis_web/routes/cad.py` + `templates/cad/`). A `/cad/<slug>`
-  reader with an interactive **three.js** viewer + an "edit by prompt" box.
-  Unified render/export: the analytic IR is tessellated (`cad/tessellate.py`,
-  numpy-only, **no manifold3d**) and emitted as a binary **glTF**
-  (`cad/gltf.py::to_glb`) that the viewer loads *and* the user downloads (same
-  bytes, `GET /cad/<slug>/model.gltf?mode=features|solid`) — parts coloured per
-  component, `cut`/`intersect` features translucent, crease-angle normals for
-  smooth curves; `mode=solid` folds via manifold3d when `[cad-export]` is
-  present. Downloads (`GET /cad/<slug>/export.{scad,stl,3mf,step}`) stream off
-  the same IR; STEP is the only exact B-rep (a mesh engine — three.js included —
-  can't emit it, so export stays server-side). Edit-by-prompt mints a
-  **`cad_propose`** job (tool-less `claude -p` returns a full rewritten *source*,
-  dry-run-validated); **Apply** calls `CadHandler.derive(id,to,text)` (new slug,
-  linked `derived-from`, optional parent soft-delete). `spec_to_source`
-  (`cad/scene.py`) is the round-trippable inverse of `parse_source` the propose
-  loop needs. **Drive is now the default landing page** (`/` → `/drive`); its
-  **+ New** dropdown creates cad/structure (via `POST /drive/new`) or draft
-  (reusing `/drafts/new`), and cad rows deep-link into the reader
-  (`_READER_URL['cad']`). Skill: `precis-cad-help` (Web editor).
-- **Broad + deep paper search.** Tier 1: `search(kind='paper', q=,
-  queries=[…rephrasings], answers=[…HyDE passages], per_paper=N)` —
-  app-level RRF fusion over N lexical/semantic legs
-  (`store.search_blocks_multi`; caps ≤8/≤8 enforced at the handler, one
-  batched embed call, degrade-to-lexical). Tier 2 (thin slice):
-  `search(kind='paper', q=…, good=True)` mints a **`good_search`
-  coordinator campaign** (async handle; poll `get(kind='job', id=…)`) —
-  Tier-1 fuse → cheap `claude_inproc` triage children parented on the
-  coordinator (ADR 0044 extension) → heartbeat gather → curated result
-  in `meta.result`. Design + phase-2 roadmap:
-  `docs/design/good-search-coordinator.md`; skill:
-  `precis-search-help`.
+One line per affordance — code path + skill for the detail. The
+`precis-*-help` skills are the authoritative, on-demand reference (the MCP
+serves them via `get(kind='skill', id=…)`); this list is just the index.
+The master kinds table lives in the `precis-overview` skill.
+
+- **Cluster maps (`/clusters`)** — spatial SOM browse over chunk embeddings;
+  `clusterize` worker (`utils/cluster_map.py`, numpy-only, warm-started daily),
+  `0027_clusterize.sql`, `precis_web/routes/clusters.py`.
+- **`folder`** — single-parent placement container for authored artifacts on
+  `refs.parent_id` (ADR 0045); `handlers/_placement.py`, `KindSpec.role`,
+  `search(folder=)` scopes a subtree. Skill: `precis-folder-help`.
+- **`gripe`** — first-class bug tracker; body + comment timeline as chunks
+  (`gripe_body`/`gripe_comment`), so they embed + keyword-index automatically.
+- **`alert`** — machine-detected ops/health conditions (spin loops, orphans),
+  raised via `precis.alerts.raise_alert` (fingerprint upsert + auto-resolve),
+  read via `AlertHandler`/`/alerts`. **Not embedded.** Skill: `precis-alert-help`.
+- **`agentlog`** — per-run attribution record (prompt + model + `touched` links
+  to every chunk a run wrote), **not embedded**; `precis.agentlog` write side,
+  sweeper GCs past `PRECIS_AGENTLOG_RETENTION_DAYS`. Skill: `precis-agentlog-help`.
+- **`job` substrate** — `meta.job_type`+`meta.executor`, `STATUS:` tag,
+  forensics as `job_event`/`job_summary`/`job_result` chunks; `claude_inproc`
+  executor; `fix_gripe` is the reference job_type. Skill: `precis-job-help`.
+- **`structure`** — atomistic cell+bond IR (ADR 0043); typed ops + in-memory
+  probes, relax on the GPU node (derived-lane job, ADR 0044), cursors/measures
+  on `struct_measures`, web `/structure`. Skill: `precis-structure-help`.
+- **`citation`** — verifier-workflow kind (`text`+`source_handle`+`source_quote`
+  +`verifier_confidence`, `link='paper:<slug>'`); tex `\citequote` persists the
+  same quote. Skill: `precis-citation-help`.
+- **`cfp`** — spec-role sibling of `paper` (proposal requirements doc); same
+  Marker→chunks ingest + reader, `KindSpec.corpus_role='spec'` (never cited as
+  evidence), links to its project via `has-requirement`. Skill: `precis-proposal-help`.
+- **Keystone kinds (`cad`/`pcb`/`structure`)** — "own a legible IR, rent the
+  heavy kernel only at export" (ADR 0041/0042/0043); the LLM traverses a graph,
+  never pixels. `pcb` exporters in `src/precis/pcb/export.py` (JLCPCB BOM/CPL —
+  **footgun:** CPL wants CCW, `jlc_rotation(r)=(360-r)%360`), route via
+  `pcb/route.py` (headless Freerouting, skips if absent). Skills: `precis-pcb-help`.
+- **`cad` web editor (`/cad`)** — three.js viewer + edit-by-prompt; analytic IR
+  → glTF (`cad/tessellate.py`+`cad/gltf.py`, numpy-only) for view & download,
+  server-side STEP/STL/3MF/scad export; `cad_propose` job → `CadHandler.derive`.
+  Drive (`/drive`) is the default landing page. Skill: `precis-cad-help`.
+- **Broad + deep paper search** — Tier 1 `search(kind='paper', queries=[…],
+  answers=[…HyDE], per_paper=N)` RRF fusion; Tier 2 `good=True` mints an async
+  `good_search` coordinator campaign. `docs/design/good-search-coordinator.md`;
+  skill: `precis-search-help`.
 - **`chunks.numerics TEXT[]`** — GIN-indexed lexical filter
-  (`WHERE numerics @> ARRAY['1.523 eV']`); available via direct SQL,
-  not yet wired into the search verbs.
-- **`precis web`** — browser UI (Tasks / Papers / Console /
-  Conversations / Status). Papers carry DOI/arXiv verify links and
-  presence filters (`has_pdf` / `has_chunks`); PDFs serve from a
-  multi-root `PRECIS_CORPUS_DIR` (ADR 0029). The **paper detail page**
-  (`routes/papers.py`, slug- or id-addressed; numeric→slug 301) is a
-  two-pane reader: a collapsible sidebar (Navigate = semantic/keyword/TOC
-  over the paper's chunks via `/papers/<id>/search` + `/toc`; Jump by
-  text/page/ord via `/chunk/<ord>`; Meta = all metadata + edit/triage)
-  beside the vendored Mozilla **pdf.js** viewer (`static/pdfjs/`, driven
-  same-origin to jump pages + highlight chunk text via its find API; no
-  per-chunk bbox yet, so highlight is text-layer best-effort). Also a
-  per-todo compiled-PDF viewer; "ask a follow-up" on any thought spawns a `conv` thread
-  linked `derived-from` the source. The **draft reader**
-  (`routes/drafts.py`, the per-block Tier-A grid) is a **true virtual
-  scroller** — built for 10k-block drafts: only the on-screen window of
-  rows lives in the DOM. The page embeds a compact **skeleton** (one tiny
-  record per block — `_skeleton`) + the server-rendered first
-  `INITIAL_WINDOW` (30) rows; sized `#dr-top`/`#dr-bot` spacers stand in
-  for off-screen blocks. Client JS (`draftDoc`) reconciles `#dr-win` to the
-  blocks intersecting the viewport on scroll — **idempotent, no
-  IntersectionObserver, no feedback loop** (the earlier node-per-block +
-  observer approach styled/Alpine-walked all ~9,700 → the minute-lag, and
-  load↔unload thrash flickered ~5×/s) — fetching them in one
-  `/drafts/<id>/rows?handles=…` batch and dropping rows that scroll away.
-  Collapse recomputes the visible set + spacers; find / deep-links scroll
-  the target into the window first. The **view slider** (body / summary /
-  keywords) toggles each row's column via Alpine `x-show`, so a switch
-  changes every block's height: the skeleton carries a body estimate
-  (`est`, length-derived) *and* a one-line estimate (`estS`) for the
-  summary/keywords views, and `setView` drops the per-view measured
-  `heights` + re-measures the on-screen rows once Alpine has re-toggled
-  (else the spacers stay sized for the old view — the bug where
-  summary/keywords stopped scrolling, bottom blank). `_doc_state` memoises reading-order +
-  version + abbrevs per `(ref,version)`; `_build_rows(want_idx)` scopes
-  per-handle queries to wanted blocks + neighbours; the inline abbrev scan
-  is skipped above 300k chars. `GET /drafts/<id>/skeleton` (JSON) feeds the
-  live poll. **Delete**: a name-confirmed button → `POST /drafts/<id>/delete`
-  → `store.soft_delete_draft` (ref `deleted_at` + chunks retired in one txn;
-  recoverable). Status page has a Background
-  Health panel (active spin loops + failed passes, 24h). `precis_web`
-  is a sibling package over the handler layer (ADR 0026).
-- **SSRF guard** — `src/precis/utils/safe_fetch.py`, used by
-  `handlers/web.py` and `workers/fetch_oa.py`; DNS-resolves before
-  fetch and revalidates every redirect against the private /
-  loopback / link-local / cloud-metadata blocklist.
-- **Ingest hygiene** — pysbd sentence splitter in the chunker
-  fallback chain; dehyphenation in `marker._clean_text`; HNSW index
-  on `chunk_embeddings.vector`.
+  (`WHERE numerics @> ARRAY['1.523 eV']`); direct-SQL only, not yet in search verbs.
+- **`precis web`** — browser UI (Tasks/Papers/Console/Conversations/Status).
+  Two-pane paper reader (`routes/papers.py` + vendored pdf.js); the **draft
+  reader** (`routes/drafts.py`) is a true virtual scroller for 10k-block drafts
+  (skeleton + windowed DOM, no IntersectionObserver — see git log for the
+  feedback-loop lesson). `precis_web` is a sibling package over the handlers (ADR 0026).
+- **SSRF guard** — `src/precis/utils/safe_fetch.py` (used by `handlers/web.py`
+  + `workers/fetch_oa.py`); DNS-resolves + revalidates every redirect against the
+  private/loopback/link-local/cloud-metadata blocklist.
+- **Ingest hygiene** — pysbd sentence splitter in the chunker fallback chain;
+  dehyphenation in `marker._clean_text`; HNSW index on `chunk_embeddings.vector`.
 
 ## LLM-facing skill index
 
@@ -457,8 +288,10 @@ the README lists only a sample). Cross-refs: `precis-tasks-help`,
 
 | Task                             | Read |
 |----------------------------------|------|
+| To-do list / what's planned next | `OPEN-ITEMS.md` |
+| Master kinds table + call recipes| skills: `precis-overview`, `precis-toolpath-help` |
 | Workflow + lint/test commands    | `AGENTS.md` |
-| Dated history of every change    | `CHANGELOG.md` (`## Unreleased`) |
+| Dated history of every change    | `git log` (no CHANGELOG file) |
 | Full schema (prose)              | `docs/design/storage-v2.md` (F20-amended) |
 | Full schema (visual)             | `docs/design/schema-v2.svg` (PUML in same dir — carries a drift note; redraw pending) |
 | Worker queue pattern             | `docs/decisions/0007-derived-queue-no-block-jobs.md`, `0017` |

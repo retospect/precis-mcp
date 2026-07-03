@@ -11,7 +11,7 @@ and searching across papers, documents, personal state, code, and
 cached tool calls. Small-model-friendly (7B-class agents are the design
 target); stores content in PostgreSQL with `pgvector`.
 
-> **Status.** v8.13.0 — see [`CHANGELOG.md`](CHANGELOG.md) for the
+> **Status.** v8.13.0 — see the git history (`git log`) for the
 > live story. v5.2.6 on PyPI is the last v1-line release.
 >
 > **README is stale beyond this banner.** Things the architecture
@@ -319,7 +319,7 @@ high-traffic ones:
 - [`docs/decisions/0029-multi-root-corpus-pdf.md`](docs/decisions/0029-multi-root-corpus-pdf.md) — why `PRECIS_CORPUS_DIR` accepts a list of roots.
 - [`src/precis/data/skills/precis-citation-help.md`](src/precis/data/skills/precis-citation-help.md) — `citation` kind + verifier-workflow agent surface.
 - [`src/precis/data/skills/precis-toc-help.md`](src/precis/data/skills/precis-toc-help.md) — TOC machinery (segments, sentences, matryoshka keywords).
-- [`CHANGELOG.md`](CHANGELOG.md) — what shipped in each phase.
+- Git history (`git log`) — what shipped in each phase (no CHANGELOG file).
 
 ## Contributing
 

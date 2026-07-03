@@ -118,9 +118,36 @@ Substantive trade-offs are recorded as ADRs, never deleted (obsolete
 ones are superseded). Start at the index:
 [`docs/decisions/README.md`](./decisions/README.md). Design plans (one
 per non-trivial change, kept for history) live in
-[`docs/design/`](./design/). The dated change story is
-[`CHANGELOG.md`](../CHANGELOG.md); the active backlog is
-[`OPEN-ITEMS.md`](../OPEN-ITEMS.md).
+[`docs/design/`](./design/). The dated change story is the **git
+history** (`git log` — there is no CHANGELOG file); the active backlog
+is [`OPEN-ITEMS.md`](../OPEN-ITEMS.md).
+
+## Map of the source
+
+Where things live under `src/precis/` — the spine is the **seven-verb /
+one-`kind=`** surface (see above), so most work is "find the handler for
+a kind, or the worker for a pass."
+
+| Path | What lives there |
+|------|------------------|
+| `server.py` | MCP stdio entry — a thin FastMCP wrapper around the runtime |
+| `runtime.py` | server runtime; renders handler `Response`s to text |
+| `dispatch.py` | handler registration + the flat verb dispatch table + service hub |
+| `protocol.py` | `Handler` ABC + `KindSpec` — the contract every kind implements |
+| `handlers/` | one adapter per kind (~70): get/search/put/edit/delete/tag/link |
+| `store/` | DB pool, query mixins, the migrations runner |
+| `migrations/*.sql` | schema source of truth — **forward-only, sealed once applied** |
+| `ingest/` | Marker → chunks pipeline (papers/cfp/books/…) |
+| `workers/` | background passes — `embed`, `dispatch`, `nursery`, `review`, `sweeper`, … |
+| `jobs/` | job executors (`fix_gripe`, `plan_tick`, propose jobs) |
+| `embedder*.py` | BGE-M3 wrapper + its HTTP service (ADR 0020) |
+| `cad/` `pcb/` `structure/` | keystone-kind IR + export (ADR 0041/0042/0043) |
+| `cli/` | `precis` subcommand modules |
+| `utils/` | leaf helpers — `safe_fetch`, `toc`, `cluster_map`, … |
+| `data/skills/` | the on-demand agent docs (`precis-*-help`) the MCP serves |
+| `config.py` · `kind_gate.py` · `errors.py` · `alerts.py` · `agentlog.py` | frozen config · kind-enablement gate · exception hierarchy · alert/agentlog write sides |
+
+`tests/` mirrors this layout.
 
 ## Map of the docs
 

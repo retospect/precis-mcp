@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# scripts/deploy — non-interactive prod deploy: reinstall precis-mcp@<ref>
+# into every cluster venv and bounce every daemon.
+#
+# The deterministic deploy backbone (the twin of scripts/ship). No LLM in the
+# loop: it wraps `ansible-playbook redeploy-precis.yml` from ~/work/cluster,
+# which already wires the inventory, the `deploy` SSH user, and `.vault-pass`
+# via ansible.cfg. Chained after a green ship by the /go command.
+#
+# Steps:
+#   1. reachability — `ansible all -m ping`; abort (non-zero) if any host is
+#      down (a partial redeploy leaves nodes on mixed code — never do that).
+#   2. deploy       — run the redeploy playbook for the ref.
+#   3. report       — the play's final debug task prints installed sha +
+#                     bounced daemons; a `failed=` on any host exits non-zero.
+#
+# Usage:  scripts/deploy            # deploy main (default)
+#         scripts/deploy some-branch
+set -euo pipefail
+
+REF="${1:-main}"
+CLUSTER_DIR="${PRECIS_CLUSTER_DIR:-${HOME}/work/cluster}"
+
+say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
+die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
+
+[[ -d "$CLUSTER_DIR" ]] || die "cluster dir not found at ${CLUSTER_DIR} (set PRECIS_CLUSTER_DIR)."
+[[ -f "${CLUSTER_DIR}/redeploy-precis.yml" ]] || die "redeploy-precis.yml not in ${CLUSTER_DIR}."
+
+cd "$CLUSTER_DIR"
+
+# ── 1. reachability ─────────────────────────────────────────────────────
+say "checking cluster reachability (ansible ping)"
+ansible all -m ping >/tmp/precis-deploy-ping.$$ 2>&1 || {
+    cat /tmp/precis-deploy-ping.$$ >&2
+    rm -f /tmp/precis-deploy-ping.$$
+    die "a host is unreachable — aborting (a partial redeploy mixes code versions)."
+}
+rm -f /tmp/precis-deploy-ping.$$
+
+# ── 2. deploy ───────────────────────────────────────────────────────────
+if [[ "$REF" == "main" ]]; then
+    say "deploying main to the cluster"
+    ansible-playbook redeploy-precis.yml \
+        || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
+else
+    say "deploying ref '${REF}' to the cluster"
+    ansible-playbook redeploy-precis.yml \
+        -e precis_worker_git_ref="$REF" -e precis_web_git_ref="$REF" \
+        || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
+fi
+
+say "deployed — cluster is running '${REF}'."

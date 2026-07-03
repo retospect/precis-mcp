@@ -3,6 +3,15 @@
 Source of truth for anyone (human or agent) evolving this package.
 Read this before substantive changes.
 
+> **Getting acquainted — read in this order:** (1) **this file** — the
+> contract: conventions, workflow, definition-of-done. (2)
+> [`docs/architecture.md`](docs/architecture.md) — a thin, link-heavy
+> system map + source-tree map; orient once, follow links for depth.
+> (3) [`CLAUDE.md`](CLAUDE.md) — the present-tense map of the live
+> subsystems you're about to touch. Deep per-kind reference is on demand
+> via skills (`get(kind='skill', id='precis-overview')` for the master
+> kinds table + index). Backlog: [`OPEN-ITEMS.md`](OPEN-ITEMS.md).
+
 ## Identity
 
 - **Project**: `precis-mcp`
@@ -38,19 +47,28 @@ Read this before substantive changes.
 ```
 precis-mcp/
   AGENTS.md                  # this file (read first)
+  CLAUDE.md                  # present-tense map of the live subsystems
   README.md                  # user-facing intro
-  CHANGELOG.md               # release log
-  OPEN-ITEMS.md              # active backlog (gripes that survived triage)
+  OPEN-ITEMS.md              # active backlog + planned workstreams
+  BACKLOG/history            # git log — there is no CHANGELOG file
   pyproject.toml             # build, deps, ruff, mypy
   uv.lock                    # pinned dependency graph
-  src/precis/
-    cli/                     # subcommand modules
+  src/precis/                # (fuller module map: docs/architecture.md)
+    server.py                # MCP stdio entry — thin FastMCP wrapper
+    runtime.py               # server runtime (verb dispatch)
+    dispatch.py              # handler registration + flat dispatch table + hub
+    protocol.py              # Handler ABC + KindSpec (what a kind implements)
+    handlers/                # one per-kind adapter (~70 kinds)
     store/                   # DB pool, mixins, migrations runner
-    migrations/*.sql         # schema source of truth
-    handlers/                # per-kind ingest/search adapters
-    ingest.py                # bundle parsing & dispatch
-    embedder.py              # BGE-M3 wrapper + dim probe
-    server.py                # MCP entry-point
+    migrations/*.sql         # schema source of truth (forward-only)
+    ingest/                  # Marker → chunks pipeline
+    workers/                 # background passes (embed, dispatch, nursery, …)
+    jobs/                    # job executors (fix_gripe, plan_tick, …)
+    embedder*.py             # BGE-M3 wrapper + HTTP service (ADR 0020)
+    cad/ pcb/ structure/     # keystone-kind IR + export
+    cli/                     # subcommand modules
+    utils/                   # safe_fetch, toc, cluster_map, …
+    data/skills/             # on-demand agent docs (precis-*-help)
   tests/                     # pytest suite (mirrors src/ layout)
   docs/
     conventions/             # how-to rules (thresholds, naming, …)
@@ -75,8 +93,9 @@ precis-mcp/
 6. If you altered the schema, run `precis migrate --dry-run` against a
    throwaway DB; confirm only the new file is pending and apply
    succeeds.
-7. Bump version (`uv version X.Y.Z`) and add a `CHANGELOG.md` entry for
-   any user-visible change.
+7. Bump version (`uv version X.Y.Z`) for any user-visible change. The
+   dated change story is the git history — there is no CHANGELOG file;
+   write a clear conventional-commit message instead.
 8. Update `docs/decisions/` with a new ADR if you made a substantive
    trade-off (one new file per decision; never edit a sealed ADR).
 
@@ -85,7 +104,8 @@ precis-mcp/
 - [ ] Plan in `docs/design/<slug>.md` exists and was reviewed.
 - [ ] Decision log entry in `docs/decisions/` if a non-obvious trade-off
       was made.
-- [ ] Version bumped (`uv version`) and `CHANGELOG.md` entry written.
+- [ ] Version bumped (`uv version`) and a clear commit message written
+      (no CHANGELOG file — git history is the record).
 - [ ] `uv run ruff check .` passes.
 - [ ] `uv run ruff format --check .` passes.
 - [ ] `uv run mypy src tests` passes.
