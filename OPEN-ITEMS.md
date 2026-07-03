@@ -165,6 +165,28 @@ the workspace `name=` form + the load-bearing extension. Remaining:
   both macOS + Linux, and the embedder-role probe 10→20 (≈1 min), covering a cold
   warm on a slower Mac.
 
+### Residuals parked from the 2026-07-04 session (persisted; not in-reach fixes)
+
+The confusion-mining root causes are all fixed + deployed. These remain — none
+is a bounded correctness fix, so they're filed, not chained:
+
+- **Chunk-handle (`pc<id>`) of a merged paper doesn't redirect** (design
+  limitation, not a bounded fix). `resolve_handle` follows `superseded_by` for
+  *record* handles (`pa<id>`) only; a merged paper's chunks are soft-deleted and
+  the survivor has *different* `chunk_id`s, so there's no clean chunk→chunk
+  remap. Low frequency (link/handle to a merged paper's specific chunk). A real
+  fix would need a chunk-level supersede mapping at merge time — investigate
+  before building.
+- **`plan-tick-spin` detects but doesn't auto-pause** (behavior extension). The
+  new nursery detector *surfaces* a spinning planner as an alert; it doesn't halt
+  the parent, so it keeps burning ticks until acted on. Auto-pausing (e.g. an
+  `open` tag the doable view excludes, like `child-failed`) would stop the burn —
+  but risks halting legitimate long-running planners and needs a
+  progress-signal, not just a count. Backlog, not this session.
+- **Ops: cull orphaned tex refs from the nanotrans_auto spin.** The spin created
+  dozens of duplicate `\section{…}` refs with `workspace=∅` (never attached to
+  the project). Prod data hygiene — a one-off cleanup query, not a repo bug.
+
 ## Recently retired (kept here briefly for grep-ability)
 
 The mcp-critic 2026-05-02 deep pass logged 14 findings; 13 are now
