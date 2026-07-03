@@ -37,17 +37,23 @@ reproducible); the model spends tokens on judgment, not CI/CD plumbing.
   cold-start work (`docs/design/mcp-cold-start-token-budget.md`,
   `PRECIS_STARTUP_SKILLS`). Next: apply the same discipline to the
   `~/work/cluster` CLAUDE.md; measure boot token delta.
-- **`/whatneedsdoing`** → **shipped this workstream.** One triage view that
-  merges the three work stores — `OPEN-ITEMS.md` + open gripes
-  (`get(kind='gripe', id='/open')`) + open/doable todos — and flags which are
-  autonomous (todos the loop runs) vs inert (backlog/gripes not yet todos).
-- **Backlog groomer (close the loop)** → open. Today nothing *works* the
-  backlog or gripes automatically — `/whatneedsdoing` only *reads* them. The
-  dark-factory move: a `level:recurring` watch that reads `OPEN-ITEMS.md` +
-  open gripes and mints `kind='todo'` rows with `meta.executor` (a `fix_gripe`
-  job for bugs; a build tick for features), so `dispatch` actually builds them.
-  Pairs with `/checklogs` + cheap-model tiering. Until this lands, the backlog
-  is a level-3 artifact the factory can't act on.
+- **`/whatneedsdoing`** → **shipped this workstream.** One triage view over the
+  **two work substrates** — *repo dev work* (`OPEN-ITEMS.md` + open gripes,
+  `get(kind='gripe', id='/open')`; fixed by editing this repo → `/go`) and the
+  *prod factory queue* (open/doable todos, `search(kind='todo', view=…)`; the
+  loop runs these on the cluster) — plus a latent-bug source: LLM-confusion
+  mined from prod `plan_tick` transcripts (feeds new gripes into substrate 1).
+  It keeps the substrates separate rather than flattening them, flags which
+  todos are autonomous vs stalled, and names the *bridge* — a prod todo failing
+  because of a repo bug.
+- **Backlog groomer (close the loop)** → open. Today nothing promotes repo dev
+  work into the acting queue automatically — `/whatneedsdoing` only *reads* both
+  substrates. The dark-factory move: a `level:recurring` watch that reads
+  `OPEN-ITEMS.md` + open gripes and mints `kind='todo'` rows with `meta.executor`
+  (a `fix_gripe` job for bugs; a build tick for features), so `dispatch` builds
+  them — i.e. it bridges repo dev work *into* the prod factory queue. Pairs with
+  `/checklogs` + cheap-model tiering. Until this lands, the backlog is a level-3
+  artifact the factory can't act on.
 - **Post-ship residual follow-through** → **shipped this workstream.** `/go`
   and `/endsession` now end with a tiered follow-through step: after a green
   ship, harvest the latent bugs the session parked — gated to **Opus-4.7+
