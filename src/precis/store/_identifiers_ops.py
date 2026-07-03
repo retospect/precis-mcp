@@ -377,6 +377,37 @@ class IdentifiersMixin:
         with self.pool.connection() as c:
             return _do(c)
 
+    def ref_cite_keys(
+        self,
+        ref_id: int,
+        *,
+        conn: Connection | None = None,
+    ) -> list[str]:
+        """All ``cite_key`` aliases for ``ref_id`` (oldest first).
+
+        A paper commonly carries more than one ``cite_key`` — e.g. its
+        author-year key plus a book's own bib key registered additively
+        by ``tex-import`` (:mod:`precis.draftimport.resolve`). The on-disk
+        PDF is filed under *whichever* key the fetcher chose as its
+        filename stem, which need not be the one the display slug resolves
+        to. Callers that address the file by cite_key (the web PDF
+        resolver) must therefore try every alias, not just ``ref.slug``.
+        """
+
+        def _do(c: Connection) -> list[str]:
+            rows = c.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'cite_key' "
+                "ORDER BY created_at, id_value",
+                (ref_id,),
+            ).fetchall()
+            return [str(r[0]) for r in rows]
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
     def identifier_owner(
         self,
         scheme: str,

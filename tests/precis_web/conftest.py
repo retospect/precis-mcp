@@ -392,6 +392,16 @@ class FakeStore:
         canned = {11: "Body-derived abstract text for the second paper."}
         return {i: canned[i] for i in ref_ids if i in canned}
 
+    def ref_cite_keys(self, ref_id, *, conn=None):
+        """All cite_key aliases for a ref: its current slug plus any canned
+        extra aliases. Paper 11 carries a second alias (``jonesalt25``) filed
+        under a different shard than its display slug — the multi-alias PDF
+        resolver regression case."""
+        extra = {11: ["jonesalt25"]}
+        r = next((p for p in self.papers if p.id == ref_id), None)
+        keys = [r.slug] if r is not None and r.slug else []
+        return keys + extra.get(ref_id, [])
+
     def identifiers_for_refs(self, ref_ids):
         # Paper 10 carries a DOI; paper 11 an arXiv id — exercises both
         # hover-card link branches.

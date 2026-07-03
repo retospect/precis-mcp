@@ -52,6 +52,25 @@ def test_detail_wires_pdfjs_viewer_when_pdf_on_disk(client, tmp_path) -> None:
     assert "/static/pdfjs/web/viewer.html?file=/papers/10/pdf" in resp.text
 
 
+def test_detail_finds_pdf_filed_under_nondisplay_alias(client, tmp_path) -> None:
+    """A paper whose PDF is filed under a *non-display* cite_key alias still
+    resolves. Paper 11's display slug is ``jones2025`` but the fake gives it a
+    second alias ``jonesalt25``; the file lives at ``j/jonesalt25.pdf`` (the
+    tex-import / fetcher-picked-a-different-key case). The resolver must try
+    every alias, not just ``ref.slug``."""
+    pdf = tmp_path / "j" / "jonesalt25.pdf"
+    pdf.parent.mkdir(parents=True)
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    # Detail page reports the PDF as present (viewer wired to the id route).
+    resp = client.get("/papers/jones2025")
+    assert resp.status_code == 200
+    assert "/papers/11/pdf" in resp.text
+    # And the pdf endpoint streams those bytes rather than 404ing.
+    pdf_resp = client.get("/papers/11/pdf")
+    assert pdf_resp.status_code == 200
+    assert pdf_resp.content == b"%PDF-1.4 fake"
+
+
 def test_detail_unknown_slug_404s(client) -> None:
     resp = client.get("/papers/nope9999", follow_redirects=False)
     assert resp.status_code == 400  # NotFound -> PrecisError handler

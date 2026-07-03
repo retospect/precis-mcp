@@ -338,6 +338,11 @@ def test_reader_renders_per_block_grid(draft_client: TestClient) -> None:
     # the base-58 handle (id="c-…"), so only the visible label changes.
     assert ">dc1<" in r.text and ">dc2<" in r.text
     assert ">¶AAAAAA<" not in r.text
+    # Compact-mode fix: a ref hover-popover must escape the scrolled meta
+    # column (overflow-y:auto clips X too) so it pops over the change column
+    # rather than hiding under it. The :has() rule lifts the clipping while a
+    # popover is open.
+    assert '.ref-popover:not([style*="display: none"])' in r.text
 
 
 def test_figure_renders_img_and_origin_chip(draft_client: TestClient) -> None:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -116,26 +117,62 @@ def _suggest_slug(store: Any, ref: Any, prefill: dict[str, Any] | None) -> str:
         return ""
 
 
-def _pdf_candidates(corpus_dirs: tuple[Path, ...], cite_key: str) -> list[Path]:
-    """All on-disk PDF paths to try for a cite_key, one per corpus root.
+def _pdf_candidates(
+    corpus_dirs: tuple[Path, ...], cite_keys: str | Sequence[str]
+) -> list[Path]:
+    """All on-disk PDF paths to try, one per (cite_key × corpus root).
 
     Mirrors ``precis.cli.watch._move_to_corpus``: the shard letter is
     the lower-cased first alnum char of the cite_key, else ``_``. One
     candidate per configured root so a per-host NFS mount difference
     is searched rather than fatal.
+
+    ``cite_keys`` accepts a single key or a sequence — a paper can carry
+    more than one ``cite_key`` alias (e.g. an author-year key plus a
+    book's bib key added by ``tex-import``) and the fetcher files the PDF
+    under whichever it chose as the filename stem, which need not be the
+    one the display slug resolves to. Order is preserved and duplicates
+    dropped so the returned list is a stable, de-duped probe order.
     """
-    if not cite_key:
-        return []
-    letter = cite_key[0].lower() if cite_key[0].isalnum() else "_"
-    return [root / letter / f"{cite_key}.pdf" for root in corpus_dirs]
+    keys = [cite_keys] if isinstance(cite_keys, str) else list(cite_keys)
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for cite_key in keys:
+        if not cite_key:
+            continue
+        letter = cite_key[0].lower() if cite_key[0].isalnum() else "_"
+        for root in corpus_dirs:
+            cand = root / letter / f"{cite_key}.pdf"
+            if cand not in seen:
+                seen.add(cand)
+                out.append(cand)
+    return out
 
 
-def _resolve_pdf(corpus_dirs: tuple[Path, ...], cite_key: str) -> Path | None:
-    """First existing PDF path across the corpus roots, or ``None``."""
-    for path in _pdf_candidates(corpus_dirs, cite_key):
+def _resolve_pdf(
+    corpus_dirs: tuple[Path, ...], cite_keys: str | Sequence[str]
+) -> Path | None:
+    """First existing PDF path across the corpus roots, or ``None``.
+
+    Tries every cite_key alias (see :func:`_pdf_candidates`) so a paper
+    whose file is filed under a non-display alias still resolves.
+    """
+    for path in _pdf_candidates(corpus_dirs, cite_keys):
         if path.is_file():
             return path
     return None
+
+
+def _ref_pdf_keys(store: Any, ref: Any) -> list[str]:
+    """De-duped cite_key probe order for ``ref``: display slug first, then
+    every other ``cite_key`` alias the ref carries."""
+    keys: list[str] = []
+    seen: set[str] = set()
+    for k in [ref.slug or "", *store.ref_cite_keys(ref.id)]:
+        if k and k not in seen:
+            seen.add(k)
+            keys.append(k)
+    return keys
 
 
 def _authors_str(ref: Any) -> str:
@@ -430,7 +467,8 @@ def _render_detail(
     cfg = get_web_config(request)
     ref_id = ref.id
     cite_key = ref.slug or ""
-    found = _resolve_pdf(cfg.corpus_dirs, cite_key)
+    pdf_keys = _ref_pdf_keys(store, ref)
+    found = _resolve_pdf(cfg.corpus_dirs, pdf_keys)
     paper = _paper_row(ref)
     paper["links"] = _links_from_ids(
         store.identifiers_for_refs([ref_id]).get(ref_id, {})
@@ -472,7 +510,7 @@ def _render_detail(
             # every path we tried so it's self-diagnosing.
             "cite_key": cite_key,
             "pdf_lookup_paths": [
-                str(p) for p in _pdf_candidates(cfg.corpus_dirs, cite_key)
+                str(p) for p in _pdf_candidates(cfg.corpus_dirs, pdf_keys)
             ],
             "corpus_dirs": [str(p) for p in cfg.corpus_dirs],
             # Triage panel state (paste-title -> S2 lookup -> pre-filled edit).
@@ -752,12 +790,14 @@ async def pdf(request: Request, ref_id: int) -> FileResponse:
     if ref is None or ref.kind not in _DOC_FAMILY:
         raise NotFound(f"document id={ref_id} not found")
     cite_key = ref.slug or ""
+    pdf_keys = _ref_pdf_keys(store, ref)
     cfg = get_web_config(request)
-    path = _resolve_pdf(cfg.corpus_dirs, cite_key)
+    path = _resolve_pdf(cfg.corpus_dirs, pdf_keys)
     if path is None:
-        tried = [str(p) for p in _pdf_candidates(cfg.corpus_dirs, cite_key)]
+        tried = [str(p) for p in _pdf_candidates(cfg.corpus_dirs, pdf_keys)]
         raise NotFound(
-            f"no PDF on disk for paper id={ref_id} (cite_key={cite_key!r}); "
+            f"no PDF on disk for paper id={ref_id} (cite_key={cite_key!r}, "
+            f"aliases={pdf_keys!r}); "
             f"looked at {tried or '(no cite_key to address a file)'}. "
             "If the file exists elsewhere, add its root to PRECIS_CORPUS_DIR "
             "(os.pathsep-separated) for the web process and restart."
@@ -844,7 +884,9 @@ def _render_edit_conflict(
             store.identifiers_for_refs([owner_id]).get(owner_id, {})
         )
         cfg = get_web_config(request)
-        owner_pdf = _resolve_pdf(cfg.corpus_dirs, owner_ref.slug or "") is not None
+        owner_pdf = (
+            _resolve_pdf(cfg.corpus_dirs, _ref_pdf_keys(store, owner_ref)) is not None
+        )
     return templates.TemplateResponse(
         request,
         "papers/edit_conflict.html.j2",

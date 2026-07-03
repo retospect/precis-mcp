@@ -28,6 +28,16 @@
   .draft-compact .draft-meta>.draft-meta-inner::-webkit-scrollbar{width:6px}
   .draft-compact .draft-meta>.draft-meta-inner::-webkit-scrollbar-thumb{
       background:#cbd5e1;border-radius:3px}
+  /* A pa/pc ref hover-popover (`.ref-popover`, w-96) is far wider than this
+     ~20% column. The compact scroll box above is `overflow-y:auto`, which
+     (per CSS: one axis auto forces the other off `visible`) also CLIPS the X
+     axis — so the card was cut off and painted under the "Request a change"
+     column instead of popping over it. While a popover is actually open
+     (Alpine `x-show` has NOT set inline `display:none`), drop the scroll box's
+     clipping so the card escapes the column and can be read. Closed rows keep
+     scrolling. */
+  .draft-compact .draft-meta:has(.ref-popover:not([style*="display: none"]))
+      >.draft-meta-inner{overflow:visible}
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
 
