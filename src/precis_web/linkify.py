@@ -135,6 +135,25 @@ _LINK_CLASS = "text-sky-700 underline decoration-dotted hover:decoration-solid"
 #: Default anchor styling for inline refs (chips override via anchor_cls).
 _ANCHOR_CLS = "text-sky-700 underline decoration-dotted hover:decoration-solid"
 
+#: Compact-reader styling for a paper citation, split local vs external. A
+#: *local* cite — a paper chunk we hold in the corpus — keeps the familiar
+#: sky ``§``; an *external* cite — a paper we don't have ingested — pops amber
+#: with a ``↗`` glyph, so a reader scanning the prose sees at a glance which
+#: citations are grounded in a source they can open. ``local=None`` (every
+#: non-draft call site) means "don't distinguish": local styling, unchanged.
+_CITE_LOCAL_CLS = _ANCHOR_CLS
+_CITE_EXTERNAL_CLS = "text-amber-600 underline decoration-dotted hover:decoration-solid"
+
+
+def _cite_style(key: str, local: frozenset[str] | None) -> tuple[str, str]:
+    """``(anchor_cls, glyph)`` for a compact paper citation keyed by ``key``
+    (a normalised ``pc``/``pa`` handle or a ``§`` slug). External — amber
+    ``↗`` — when a ``local`` set is supplied and ``key`` isn't in it; local —
+    sky ``§`` — otherwise (including the ``local is None`` legacy default)."""
+    if local is not None and key not in local:
+        return _CITE_EXTERNAL_CLS, "↗"
+    return _CITE_LOCAL_CLS, "§"
+
 
 def _anchor_html(
     *, href: str, preview_url: str, label: str, anchor_cls: str = _ANCHOR_CLS
@@ -274,7 +293,9 @@ def _render_display_link(disp: str, tgt: str, raw: str) -> str:
     return escape(raw)  # not a reference target — keep the literal
 
 
-def _render_bare_bracket(bare: str, *, compact: bool = False) -> str:
+def _render_bare_bracket(
+    bare: str, *, compact: bool = False, local: frozenset[str] | None = None
+) -> str:
     """``[¶h]`` / ``[§p~n]`` — a sigil ref with no display text.
 
     In ``compact`` mode (the draft reader) the verbose handle is replaced
@@ -285,7 +306,7 @@ def _render_bare_bracket(bare: str, *, compact: bool = False) -> str:
     # is a ref to something, rendered as an anchor (the 2-char prefix says
     # what it is). In compact mode a chunk handle collapses to a kind sigil
     # (§ paper / Ⓟ patent / ¶ other — see the helper).
-    universal = _render_universal_handle(bare, bare, compact=compact)
+    universal = _render_universal_handle(bare, bare, compact=compact, local=local)
     if universal is not None:
         return universal
     if bare.startswith("¶"):
@@ -304,19 +325,25 @@ def _render_bare_bracket(bare: str, *, compact: bool = False) -> str:
     m = _DRAFT_CITE_PATTERN.fullmatch(bare)
     if m is not None:
         if compact:
-            return _render_compact_cite(m.group("slug"), m.group("chunk"))
+            return _render_compact_cite(m.group("slug"), m.group("chunk"), local=local)
         return _render_anchor("paper", m.group("slug"), m.group("chunk"), label=bare)
     return escape(f"[{bare}]")
 
 
-def _render_compact_cite(slug: str, chunk: str | None) -> str:
-    """A citation as a 1-char ``§`` superscript (compact draft reader)."""
+def _render_compact_cite(
+    slug: str, chunk: str | None, *, local: frozenset[str] | None = None
+) -> str:
+    """A citation as a full-size 1-char marker (compact draft reader): sky
+    ``§`` when the cited paper is one we hold, amber ``↗`` when it's an
+    external reference (``local`` decides; ``None`` keeps the sky ``§``)."""
     safe_slug = escape(slug)
     suffix = f"?chunk={escape(chunk[1:])}" if chunk else ""
+    anchor_cls, glyph = _cite_style(slug, local)
     return _anchor_html(
         href=f"/r/paper/{safe_slug}{suffix}",
         preview_url=f"/preview/paper/{safe_slug}{suffix}",
-        label="§",  # full-size 1-char marker (easy to hover), flow intact
+        label=glyph,  # full-size 1-char marker (easy to hover), flow intact
+        anchor_cls=anchor_cls,
     )
 
 
@@ -377,7 +404,11 @@ _CHUNK_SIGIL_DEFAULT = "¶"
 
 
 def _render_universal_handle(
-    handle: str, label: str, *, compact: bool = False
+    handle: str,
+    label: str,
+    *,
+    compact: bool = False,
+    local: frozenset[str] | None = None,
 ) -> str | None:
     """An ADR 0036 universal handle (``dc41`` chunk, ``pc10`` paper chunk,
     ``me5`` record, …) → an anchor. The one rule: a handle is a ref to
@@ -398,13 +429,25 @@ def _render_universal_handle(
         return None
     kind, is_chunk, pk = parsed
     if is_chunk:
-        h = escape(handle_registry.normalize(handle))
+        norm = handle_registry.normalize(handle)
+        h = escape(norm)
         # Full-size sigil (not a <sup>) so it stays an easy hover/click target.
-        shown = (
-            _CHUNK_SIGIL.get(kind, _CHUNK_SIGIL_DEFAULT) if compact else escape(label)
-        )
+        # A *paper* chunk cite (``pc10``) additionally colours local vs external
+        # (sky ``§`` / amber ``↗``); other chunk kinds keep the neutral sigil.
+        if compact and kind == "paper":
+            anchor_cls, shown = _cite_style(norm, local)
+        else:
+            anchor_cls = _ANCHOR_CLS
+            shown = (
+                _CHUNK_SIGIL.get(kind, _CHUNK_SIGIL_DEFAULT)
+                if compact
+                else escape(label)
+            )
         return _anchor_html(
-            href=f"/c/{h}", preview_url=f"/preview/chunk/{h}", label=shown
+            href=f"/c/{h}",
+            preview_url=f"/preview/chunk/{h}",
+            label=shown,
+            anchor_cls=anchor_cls,
         )
     # A record handle. In the compact draft reader an inline *evidence
     # citation* — a paper/patent referenced in the prose, e.g. ``[pa42624]``
@@ -414,22 +457,29 @@ def _render_universal_handle(
     # ``pa1pa2pa3`` run-on. Other record kinds (memory, conv, …) keep their
     # label — they surface as Connections chips, not inline citations.
     if compact and kind in _CHUNK_SIGIL:
+        if kind == "paper":
+            anchor_cls, sigil = _cite_style(handle_registry.normalize(handle), local)
+        else:
+            anchor_cls, sigil = _ANCHOR_CLS, _CHUNK_SIGIL[kind]
         return _anchor_html(
             href=f"/r/{kind}/{pk}",
             preview_url=f"/preview/{kind}/{pk}",
-            label=_CHUNK_SIGIL[kind],
+            label=sigil,
+            anchor_cls=anchor_cls,
         )
     return _anchor_html(
         href=f"/r/{kind}/{pk}", preview_url=f"/preview/{kind}/{pk}", label=escape(label)
     )
 
 
-def _render_authoring(addr: str, *, compact: bool = False) -> str:
+def _render_authoring(
+    addr: str, *, compact: bool = False, local: frozenset[str] | None = None
+) -> str:
     """``[[<handle>]]`` — the universal reference form. A handle resolves
     to an anchor (chunk / record); a legacy ``[[kind:id]]`` authoring link
     surfaces its inner handle for discoverability when it is a known kind;
     anything else stays literal."""
-    universal = _render_universal_handle(addr, addr, compact=compact)
+    universal = _render_universal_handle(addr, addr, compact=compact, local=local)
     if universal is not None:
         return universal
     m = _REF_PATTERN.fullmatch(addr)
@@ -504,6 +554,7 @@ def linkify_refs(
     markdown: bool = False,
     compact: bool = False,
     abbrevs: dict[str, str] | None = None,
+    local: frozenset[str] | None = None,
 ) -> Markup:
     """Replace ``kind:ref`` mentions in ``value`` with hover-preview anchors.
 
@@ -524,12 +575,20 @@ def linkify_refs(
     the old pre-injection path did, and which the escaping rewrite would
     otherwise neutralise).
 
+    ``local`` — the draft reader's local-vs-external citation set (see
+    :func:`_cite_style`): the normalised ``pc``/``pa`` handles and ``§``
+    slugs whose paper we actually hold. A compact paper cite not in the set
+    renders as an amber ``↗`` external marker instead of the sky ``§``.
+    ``None`` (every non-draft call site) keeps the uniform ``§``.
+
     Returns a :class:`markupsafe.Markup` instance so Jinja's autoescape
     treats the result as already-safe HTML.
     """
     if not value:
         return Markup("")
-    html = _linkify_prose(str(value), footnotes, markdown=markdown, compact=compact)
+    html = _linkify_prose(
+        str(value), footnotes, markdown=markdown, compact=compact, local=local
+    )
     if abbrevs:
         html = _highlight_abbrevs(html, abbrevs)
     return Markup(html)
@@ -576,6 +635,7 @@ def _linkify_prose(
     *,
     markdown: bool = False,
     compact: bool = False,
+    local: frozenset[str] | None = None,
 ) -> str:
     """Replace every ``kind:ref``, bare conv handle, and bare paper
     cite_key in plain prose with an anchor — single pass so we never
@@ -600,11 +660,11 @@ def _linkify_prose(
         # Draft bracket forms (ADR 0033 §8) — checked first; their groups
         # are consumed before the bare ``kind:ref`` alternatives.
         if m.group("auth") is not None:
-            return _render_authoring(m.group("auth"), compact=compact)
+            return _render_authoring(m.group("auth"), compact=compact, local=local)
         if m.group("disp") is not None:
             return _render_display_link(m.group("disp"), m.group("tgt"), m.group(0))
         if m.group("bare") is not None:
-            return _render_bare_bracket(m.group("bare"), compact=compact)
+            return _render_bare_bracket(m.group("bare"), compact=compact, local=local)
         if m.group("ref") is not None:
             kind = m.group("kind")
             raw_id = m.group("id")
@@ -616,7 +676,7 @@ def _linkify_prose(
             # Compact draft reader: a bare ``paper:slug~n`` citation also
             # collapses to a ``§`` superscript so it doesn't break flow.
             if compact and kind == "paper":
-                return _render_compact_cite(raw_id, chunk)
+                return _render_compact_cite(raw_id, chunk, local=local)
             anchor = _render_anchor(kind, raw_id, chunk)
             if footnotes:
                 # Footnote numbering keys on the bare id (no leading ``#``)
@@ -641,7 +701,7 @@ def _linkify_prose(
                 slug, _, suffix = slug.partition("~")
                 chunk = "~" + suffix
             if compact:
-                return _render_compact_cite(slug, chunk)
+                return _render_compact_cite(slug, chunk, local=local)
             return _render_anchor("paper", slug, chunk)
         return escape(m.group(0))
 

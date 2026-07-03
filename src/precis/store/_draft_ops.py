@@ -537,6 +537,58 @@ class DraftMixin:
             )
         return out
 
+    def live_paper_cites(self, handles: set[str], slugs: set[str]) -> set[str]:
+        """Citation tokens that resolve to a **live paper we hold** — the
+        draft reader's local-vs-external colouring signal.
+
+        ``handles`` are ADR 0036 universal handles (``pc10`` a paper
+        *chunk*, ``pa42624`` a paper *record*); ``slugs`` are ``§slug`` /
+        ``paper:slug`` cite_keys. Returns the subset of tokens (the
+        normalised handle string, or the slug) that point at a live
+        ``kind='paper'`` ref — a citation grounded in a paper we have
+        ingested. Anything *not* returned is an **external reference**.
+        One connection; batched by target table."""
+        chunk_pks: dict[int, str] = {}
+        record_pks: dict[int, str] = {}
+        for h in handles:
+            parsed = handle_registry.parse(h)
+            if parsed is None or parsed[0] != "paper":
+                continue
+            _kind, is_chunk, pk = parsed
+            (chunk_pks if is_chunk else record_pks)[pk] = handle_registry.normalize(h)
+        slug_list = list(slugs)
+        live: set[str] = set()
+        if not (slug_list or chunk_pks or record_pks):
+            return live
+        with self.pool.connection() as conn:
+            if slug_list:
+                rows = conn.execute(
+                    "SELECT ri.id_value FROM ref_identifiers ri "
+                    "JOIN refs r ON r.ref_id = ri.ref_id "
+                    "WHERE ri.id_kind = 'cite_key' AND r.kind = 'paper' "
+                    "  AND r.deleted_at IS NULL AND ri.id_value = ANY(%s)",
+                    (slug_list,),
+                ).fetchall()
+                live |= {str(v) for (v,) in rows}
+            if chunk_pks:
+                rows = conn.execute(
+                    "SELECT c.chunk_id FROM chunks c "
+                    "JOIN refs r ON r.ref_id = c.ref_id "
+                    "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+                    "  AND c.retired_at IS NULL AND c.chunk_id = ANY(%s)",
+                    (list(chunk_pks),),
+                ).fetchall()
+                live |= {chunk_pks[int(pk)] for (pk,) in rows}
+            if record_pks:
+                rows = conn.execute(
+                    "SELECT r.ref_id FROM refs r "
+                    "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+                    "  AND r.ref_id = ANY(%s)",
+                    (list(record_pks),),
+                ).fetchall()
+                live |= {record_pks[int(rid)] for (rid,) in rows}
+        return live
+
     def chunk_edit_stats(
         self, ref_id: int, handles: list[str]
     ) -> dict[str, dict[str, Any]]:

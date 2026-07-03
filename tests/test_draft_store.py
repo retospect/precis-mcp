@@ -441,3 +441,37 @@ def test_move_to_root_first(store: Store) -> None:
     a = _add(store, ref.id, "A", after=title.handle)
     store.move_chunk(a.handle, {"first": True})  # A, T
     assert _texts(store, ref.id) == ["A", "T"]
+
+
+def test_live_paper_cites_splits_local_vs_external(store: Store) -> None:
+    """The draft-reader colouring signal: only citation tokens that resolve
+    to a live paper we hold come back (slug cite_key, ``pc`` chunk handle,
+    ``pa`` record handle); unknown, non-paper, and soft-deleted targets are
+    external. Mirrors ``§slug`` / ``[pc..]`` / ``[pa..]`` inline forms."""
+    from precis.store.types import BlockInsert
+    from precis.utils import handle_registry
+
+    paper = store.insert_ref(kind="paper", slug="miller23", title="Paper")
+    store.insert_blocks(
+        paper.id, [BlockInsert(pos=0, text="We measured 12% FE.", meta={})]
+    )
+    with store.pool.connection() as conn:
+        chunk_id = int(
+            conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id=%s ORDER BY ord LIMIT 1",
+                (paper.id,),
+            ).fetchone()[0]
+        )
+    pc = handle_registry.format_handle("paper", chunk_id, chunk=True)  # pc<id>
+    pa = handle_registry.format_handle("paper", paper.id)  # pa<id> record
+    # a non-paper record (memory) whose handle must NOT count as a paper cite
+    mem = store.insert_ref(kind="memory", slug=None, title="note").id
+    me = handle_registry.format_handle("memory", mem)
+
+    live = store.live_paper_cites({pc, pa, me, "pc999999"}, {"miller23", "ghost404"})
+    assert live == {pc, pa, "miller23"}  # the paper's slug + both live handles
+    assert "ghost404" not in live and "pc999999" not in live and me not in live
+
+    # soft-deleting the paper flips every one of its tokens to external
+    store.soft_delete_ref(paper.id)
+    assert store.live_paper_cites({pc, pa}, {"miller23"}) == set()

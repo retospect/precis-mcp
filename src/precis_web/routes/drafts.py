@@ -289,6 +289,47 @@ def _ref_chips(text: str) -> list[Any]:
     return chips
 
 
+def _cite_candidates(text: str) -> tuple[set[str], set[str]]:
+    """Paper-citation tokens a block makes, split for the local-vs-external
+    existence check: ``handles`` (normalised ``pc``/``pa`` paper handles) and
+    ``slugs`` (``§slug`` / ``paper:slug`` cite_keys). Mirrors ``_ref_chips``
+    parsing so the colouring keys on exactly the tokens the linkifier
+    renders as compact ``§`` markers."""
+    handles: set[str] = set()
+    slugs: set[str] = set()
+    for ref in draft_markup.parse_references(text):
+        if ref.cls == draft_markup.CITE:
+            m = mentions.DRAFT_CITE_PATTERN.fullmatch(ref.target)
+            if m:
+                slugs.add(m.group("slug"))
+        elif ref.cls == draft_markup.AUTHORING:
+            parsed = handle_registry.parse(ref.target)
+            if parsed is not None and parsed[0] == "paper":
+                handles.add(handle_registry.normalize(ref.target))
+    for kind, ident, _chunk in mentions.extract_handles(text):
+        if kind == "paper":
+            slugs.add(ident.lstrip("#"))
+    return handles, slugs
+
+
+def _local_cites(store: Any, chunk_objs: list[Any], want: list[int]) -> frozenset[str]:
+    """The local-vs-external citation set for the window's rendered blocks:
+    the paper-cite tokens (``pc``/``pa`` handles, ``§`` slugs) whose paper we
+    actually hold. One batched existence check over every cite in the window,
+    shared by all its rows — a token is looked up only in the block whose
+    text contains it, so one set serves them all (:func:`linkify.linkify_refs`
+    ``local=``)."""
+    handles: set[str] = set()
+    slugs: set[str] = set()
+    for i in want:
+        h, s = _cite_candidates(chunk_objs[i].text or "")
+        handles |= h
+        slugs |= s
+    if not (handles or slugs):
+        return frozenset()
+    return frozenset(store.live_paper_cites(handles, slugs))
+
+
 #: Request lifecycle ordering for the per-block list: active first, then
 #: done/abandoned (which now *persist* so you can click in and debug the
 #: LLM run, rather than vanishing on completion).
@@ -494,6 +535,10 @@ def _build_rows(
     # not just the visible window). Counters key on ``parent_chunk_id`` so
     # nested lists each restart cleanly.
     item_marker, item_ordered = _list_markers(chunk_objs)
+    # Local-vs-external citation colouring (sky §, in-corpus | amber ↗,
+    # external): one batched existence check over every paper cite in the
+    # window, shared by all its rows.
+    local_cites = _local_cites(store, chunk_objs, want)
     rows: list[dict[str, Any]] = []
     for i in want:
         c = chunk_objs[i]
@@ -557,6 +602,9 @@ def _build_rows(
                 "blob_url": f"/drafts/blob/{c.handle}" if is_figure else None,
                 "ancestors": anc.get(c.handle, []),
                 "abbrevs": abbrevs,
+                # local-vs-external citation set for the compact linkifier
+                # (§ sky = paper we hold, ↗ amber = external reference).
+                "local": local_cites,
                 "refs": _ref_chips(c.text),
                 "requests": requests.get(c.handle, []),
                 # view slider: summary falls back to keywords → first line;

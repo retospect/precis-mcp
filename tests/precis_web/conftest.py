@@ -303,6 +303,12 @@ class FakeStore:
         # test can assert the access was registered.
         self.viewed.append(ref_id)
 
+    def live_paper_cites(self, handles: set[str], slugs: set[str]) -> set[str]:
+        # Draft-reader local-vs-external citation colouring. The fake pool
+        # parses no SQL, so default to "every cite is local" (unchanged sky
+        # §); DraftFakeStore overrides to exercise the external ↗ branch.
+        return set(handles) | set(slugs)
+
     def count_refs(
         self,
         *,

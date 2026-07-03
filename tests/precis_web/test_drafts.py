@@ -49,7 +49,10 @@ class DraftFakeStore(FakeStore):
             _chunk(
                 "BBBBBB",
                 "paragraph",
-                "Intro; see [the title](¶AAAAAA) and paper:smith2024. Uses PEI.",
+                # smith2024 is a paper we hold (local → sky §); ghost404 is an
+                # external reference (amber ↗). See DraftFakeStore.live_paper_cites.
+                "Intro; see [the title](¶AAAAAA) and paper:smith2024 vs "
+                "paper:ghost404. Uses PEI.",
                 1,
                 chunk_id=2,
                 parent_chunk_id=1,
@@ -162,6 +165,12 @@ class DraftFakeStore(FakeStore):
 
     def chunk_edit_stats(self, ref_id, handles):
         return {"BBBBBB": {"edits": 2, "last_at": None}}
+
+    def live_paper_cites(self, handles, slugs):
+        # smith2024 (+ the pc77 chunk) is a paper we hold; everything else —
+        # e.g. ghost404 — is external. Drives the §/↗ colour split.
+        local = {"smith2024", "pc77"}
+        return (set(handles) | set(slugs)) & local
 
     def draft_toc(self, ref_id, *, root_handle=None):
         return [
@@ -343,6 +352,26 @@ def test_reader_renders_per_block_grid(draft_client: TestClient) -> None:
     # rather than hiding under it. The :has() rule lifts the clipping while a
     # popover is open.
     assert '.ref-popover:not([style*="display: none"])' in r.text
+
+
+def test_citation_colour_splits_local_vs_external(draft_client: TestClient) -> None:
+    """Compact paper cites colour local (in-corpus) vs external: a paper we
+    hold renders a sky ``§``, an external reference an amber ``↗`` — so a
+    reader sees at a glance which citations are grounded (the color-pc-refs
+    feature). BBBBBB cites smith2024 (local) and ghost404 (external)."""
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    block = r.text.split('id="c-BBBBBB"', 1)[1].split('id="c-', 1)[0]
+    # local cite → sky § anchor (class precedes href; glyph is the anchor body)
+    smith = block.split('href="/r/paper/smith2024"', 1)
+    assert len(smith) == 2, "smith2024 cite not rendered"
+    assert "text-sky-700" in smith[0].rsplit("<a ", 1)[1]
+    assert smith[1].split("</a>", 1)[0].endswith(">§")
+    # external cite → amber ↗ anchor
+    ghost = block.split('href="/r/paper/ghost404"', 1)
+    assert len(ghost) == 2, "ghost404 cite not rendered"
+    assert "text-amber-600" in ghost[0].rsplit("<a ", 1)[1]
+    assert ghost[1].split("</a>", 1)[0].endswith(">↗")
 
 
 def test_figure_renders_img_and_origin_chip(draft_client: TestClient) -> None:
