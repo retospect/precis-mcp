@@ -40,7 +40,14 @@ Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summar
 1. **Repo dev — backlog.** Read `OPEN-ITEMS.md`. Take only *open* items (skip
    shipped / done / deferred / retired). The dark-factory workstream is active.
 2. **Repo dev — gripes.** `get(kind='gripe', id='/open')` (the bug tracker).
-   Tracked but **not auto-worked** — flag stale or high-impact ones.
+   Tracked but **not auto-worked** — flag stale or high-impact ones. **Close
+   the truly-fixed ones as you go:** if an open gripe's fix has already merged
+   to `main` (and ideally deployed), it is not open work — leave a one-line
+   resolution comment naming the sha, then soft-delete it
+   (`put(kind='gripe', id=N, text='resolved in <sha> …')` →
+   `delete(kind='gripe', id=N)`; history is preserved). A gripe stays open only
+   if it is genuinely unfixed or unverified. Don't let resolved bugs inflate
+   the backlog.
 3. **Repo dev — GitHub (PRs + Dependabot).** Declared repo dev work that
    lives on GitHub, not in `OPEN-ITEMS.md` — the inline previews above are the
    fresh read; expand them here.
