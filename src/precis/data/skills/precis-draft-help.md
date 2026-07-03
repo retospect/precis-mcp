@@ -354,8 +354,18 @@ silently stalling.
 ## Change a chunk's text
 
 ```python
-edit(id='dc12', text='Nanoscale transistors, defined as …')
+edit(id='dc12', text='Nanoscale transistors, defined as …')      # whole-chunk rewrite
+edit(id='dc12', mode='find-replace', find='60°C', text='65°C')   # substitute within the chunk
+edit(id='dc12', find='60°C', text='65°C')                        # find= alone implies find-replace
+edit(id='dc12', find='typo phrase', text='')                     # delete a span (text='')
 ```
+
+Plain `text=` **replaces the whole chunk**. To change only part of a chunk,
+use `mode='find-replace'` (or just pass `find=`): `find=` is located
+**literally** and every occurrence is swapped for `text=`. If `find=` isn't
+present in the chunk the edit is **refused** and the chunk is left untouched —
+so a mistargeted find-replace can't erase the surrounding text. (For a
+regex substitution across a whole section or draft, use `edit(sub=…)` above.)
 
 In-place: the handle (and every reference to it) survives; embeddings /
 keywords / gist re-derive automatically.

@@ -826,6 +826,7 @@ class DraftHandler(Handler):
         *,
         id: str | int | None = None,
         text: str | None = None,
+        find: str | None = None,
         move: dict[str, Any] | None = None,
         style: str | None = None,
         list_kind: str | None = None,
@@ -932,6 +933,60 @@ class DraftHandler(Handler):
                 regen=regen,
                 base_sha=base_sha,
             )
+        # ``find=`` substitutes *within* the chunk — never a wholesale
+        # overwrite. Presence of ``find`` is the sole signal: the wire
+        # defaults ``mode='find-replace'`` on *every* edit (tools.core),
+        # so a plain ``edit(id, text=)`` rewrite also arrives with that
+        # mode — gating on it would wrongly demand ``find=`` on every
+        # whole-chunk rewrite. Historically ``find`` fell into ``**_kw``
+        # and was dropped, so ``edit(mode='find-replace', find=, text=)``
+        # clobbered the whole chunk with just ``text`` (gr48203 — a
+        # data-loss footgun). Now ``find`` drives a literal substitution,
+        # and a ``find`` that is absent from the chunk *refuses* the edit
+        # (leaving the text untouched) instead of erasing it.
+        if find is not None:
+            if not find:
+                raise BadInput(
+                    "find= must be a non-empty string (the exact text to "
+                    "locate within the chunk)",
+                    next=(
+                        f"edit(kind='draft', id={_base.dc!r}, "
+                        "find='old text', text='new text')"
+                    ),
+                )
+            if text is None:
+                raise BadInput(
+                    "find-replace requires text=. Pass text='' to DELETE the "
+                    "matched span, or text='<replacement>' to substitute it.",
+                    next=(
+                        f"edit(kind='draft', id={_base.dc!r}, find={find!r}, "
+                        "text='')  # delete the span"
+                    ),
+                )
+            prior = self.store.get_draft_chunk(str(handle).lstrip("¶"))
+            old_text = prior.text if prior else ""
+            if find not in old_text:
+                raise NotFound(
+                    f"find= text not present in {_base.dc} — nothing replaced, "
+                    "the chunk was left unchanged. Re-read the exact current text.",
+                    next=f"get(kind='draft', id={_base.dc!r})",
+                )
+            occurrences = old_text.count(find)
+            new_text = old_text.replace(find, str(text))
+            c = self.store.edit_text(handle, new_text, base_sha=base_sha)
+            body = f"edited {c.dc}" if c else "edited"
+            if c is not None:
+                if occurrences > 1:
+                    body += f" ({occurrences} occurrences of find= replaced)"
+                self._sync_draft_links(c.ref_id)
+                self._attribute_touch([c.chunk_id])
+                ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
+                slug = ref.slug if ref and ref.slug else str(c.ref_id)
+                body += self._write_abbrev_hints(slug, c.ref_id, new_text, old_text)
+                body += self._citation_form_hint(new_text)
+                body += self._literal_cite_hint(new_text)
+                body += self._temperature_form_hint(new_text)
+            return Response(body=body)
         if text is not None:
             # Capture the prior text *before* the rewrite so the abbrev
             # hints fire only on what this edit introduced (not on
