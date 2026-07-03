@@ -22,10 +22,36 @@ def _draft_with_para(store: Store) -> tuple[DraftHandler, str]:
     return DraftHandler(hub=Hub(store=store)), para.dc
 
 
+def _draft_with_item(store: Store, text: str) -> tuple[DraftHandler, str]:
+    """A list item chunk — the shape that surfaced gr45083 as a ValueError."""
+    proj = store.insert_ref(kind="todo", slug=None, title="proj").id
+    ref, title = store.create_draft(name="frit", title="Title", project_ref_id=proj)
+    ul = store.add_chunks(
+        ref_id=ref.id, chunk_kind="ulist", text="", at={"after": title.handle}
+    )[0]
+    item = store.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="item",
+        text=text,
+        at={"into": ul.handle, "last": True},
+    )[0]
+    return DraftHandler(hub=Hub(store=store)), item.dc
+
+
 def _text(store: Store, dc: str) -> str:
     c = store.get_draft_chunk(dc)
     assert c is not None
     return c.text
+
+
+def test_find_replace_on_list_item(store: Store) -> None:
+    # gr45083: edit(id='dc1529074', find='175 °C', text='175°C') on a
+    # chunk_kind='item' raised ValueError on old code (find= swallowed →
+    # the item path errored). Same find= root cause as gr48203; the fix
+    # covers list items too — substitute in place, don't clobber.
+    h, dc = _draft_with_item(store, "Insulation rated for 175 °C operation.")
+    h.edit(id=dc, find="175 °C", text="175°C")
+    assert _text(store, dc) == "Insulation rated for 175°C operation."
 
 
 def test_find_replace_substitutes_within_chunk(store: Store) -> None:
