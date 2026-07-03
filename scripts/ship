@@ -8,15 +8,17 @@
 # or the LLM to resolve.
 #
 # Steps, in order:
-#   1. sanity      — refuse to run on main; set the git-town parent if unset
+#   1. sanity      — refuse to run on main
 #   2. commit WIP  — stage + commit any dirty tree
 #   3. lock        — mkdir-mutex on the shared .git dir: serialise ships across
 #                    sibling worktrees on this host so a second ship WAITS
 #                    instead of squashing a stale base over the first (the
 #                    shared-index clobber). Released on exit; steals >30-min lock.
 #   4. loop        — sync → gate → ship, re-running if main moves under us:
-#                    · sync   `git town sync` (merges origin/main in; the squash
-#                             below collapses the merge so main stays linear)
+#                    · sync   plain `git fetch origin main` + `git merge
+#                             origin/main` (integrate once; the squash below
+#                             collapses the merge so main stays linear). A
+#                             conflict aborts for a human to resolve.
 #                    · gate   in the precis-dev container over THIS worktree:
 #                             auto-fix ruff (amended) then ruff/format/mypy/pytest
 #                             (a docs/config-only diff runs a light ruff + doc-
@@ -26,15 +28,20 @@
 #                             during the gate (ancestor check) or the lease is
 #                             rejected, re-sync + re-gate + re-push (≤3×) — never
 #                             force a stale tree over a moved main.
-#   5. local main  — fast-forward the primary's main to the shipped sha
-#   6. report      — print the new main sha
+#   5. reset       — reset the feature branch to the shipped main: zero
+#                    divergence, so the next sync is a clean fast-forward and no
+#                    phantom squash-artifact conflict on already-shipped work.
+#   6. local main  — fast-forward the primary's main to the shipped sha
+#   7. report      — print the new main sha
 #
 # Usage:  scripts/ship "fix(x): one-line summary of the branch"
 #         scripts/ship            # falls back to a generated message
 #
-# Why a script and not `git town ship`: the latter does `git checkout main`,
-# which always fails from a linked worktree (main is checked out in the
-# primary). The CAS-push plumbing here is the standing workaround.
+# Plain git, no git-town: this repo runs flat feature branches on main, so the
+# only thing git-town did here was `fetch + merge main`. Its `ship` does
+# `git checkout main`, which fails from a linked worktree (main is checked out
+# in the primary) — hence the commit-tree + CAS-push plumbing below, the
+# standing worktree-safe workaround.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -49,9 +56,6 @@ die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 # ── 1. sanity ───────────────────────────────────────────────────────────
 [[ -n "$BRANCH" ]] || die "detached HEAD — check out a feature branch first."
 [[ "$BRANCH" != "main" ]] || die "on main — nothing to ship."
-if ! git config --get "git-town-branch.${BRANCH}.parent" >/dev/null 2>&1; then
-    git config "git-town-branch.${BRANCH}.parent" main
-fi
 
 # ── 2. commit WIP ───────────────────────────────────────────────────────
 if [[ -n "$(git status --porcelain)" ]]; then
@@ -173,8 +177,10 @@ shipped=0
 for attempt in 1 2 3; do
     [[ "$attempt" -gt 1 ]] && say "main moved under us — re-syncing + re-gating (attempt ${attempt}/3)"
 
-    say "git town sync"
-    git town sync || die "sync failed (merge conflict?) — resolve, git town continue, then re-run scripts/ship."
+    say "syncing origin/main"
+    git fetch -q origin main || die "git fetch failed — check the network/remote and re-run scripts/ship."
+    git merge --no-edit origin/main \
+        || die "merge conflict integrating origin/main — resolve in ${WORKTREE}, then 'git add -A && git commit' and re-run scripts/ship."
 
     # Classify the change: a docs/config-only ship can't break the test
     # suite, so it skips the ~3-min mypy+pytest gate and runs only ruff + the
@@ -246,6 +252,24 @@ EOF
 done
 [[ "$shipped" == 1 ]] || die "could not ship after 3 attempts — main kept moving under us. Re-run scripts/ship."
 git push origin --delete "$BRANCH" 2>/dev/null || true
+
+# ── 5. reset the feature branch to the freshly-shipped main ─────────────
+# The squash put this branch's tree onto main as a NEW commit that is not an
+# ancestor of the branch. Left as-is, the next `git merge origin/main` sees the
+# branch's commits AND main's squashed copy of the same lines as divergent → a
+# phantom conflict on already-shipped work (the squash-merge re-sync artifact).
+# Resetting the branch to the shipped main gives it zero divergence, so the next
+# sync is a clean fast-forward and only GENUINE conflicts (our new work vs a
+# concurrent main change) ever surface. Safe by construction: everything is
+# committed + shipped here, so the working tree already equals origin/main and
+# the reset moves pointers, not files. Guard anyway — never reset over a dirty
+# tree (it would eat uncommitted work).
+if [[ -z "$(git status --porcelain)" ]]; then
+    git reset --hard origin/main >/dev/null \
+        && say "reset ${BRANCH} → $(git rev-parse --short origin/main) (zero divergence; next sync is a clean ff)"
+else
+    echo "WARNING: worktree dirty after ship — skipping branch reset (run 'git reset --hard origin/main' when clean)."
+fi
 
 # ── 6. fast-forward the local main ──────────────────────────────────────
 # The CAS push moved refs/heads/main on the REMOTE only; the local main

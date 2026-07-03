@@ -28,8 +28,9 @@ Optional ship message from the user: `$ARGUMENTS`
    concise conventional-commit one-liner describing what this branch changes.
 
 3. **Ship.** `scripts/ship` is idempotent (re-run resumes cleanly): it does
-   commit WIP → `git town sync` → the container gate (auto-fixes ruff, then
-   authoritative `ruff · format · mypy · pytest`) → squash-merge to `main` →
+   commit WIP → sync (`git fetch` + `git merge` main) → the container gate
+   (auto-fixes ruff, then authoritative `ruff · format · mypy · pytest`) →
+   squash-merge to `main` → reset the branch to the shipped `main` →
    local-main fast-forward.
    ```
    scripts/ship "<message>"
@@ -40,7 +41,7 @@ Optional ship message from the user: `$ARGUMENTS`
    - **Red gate (mypy/pytest)** — fix the failure printed above the `✖`,
      re-run `scripts/ship`. (A lone `UniqueViolation` in an unrelated test is
      usually shared-`precis_test` pollution — clean the row, re-run.)
-   - **Merge conflict** — resolve, `git town continue`, re-run.
+   - **Merge conflict** — resolve, `git add -A && git commit`, re-run.
    - **CAS push rejected** — a sibling shipped first; just re-run.
    - A `WARNING:` about the primary main not fast-forwarding is best-effort,
      not a failure — relay it and continue to deploy.

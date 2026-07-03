@@ -19,20 +19,25 @@ Best practice for a unit of work:
    the work is isolated from `main` and from sibling sessions.
 2. **Do the work** in that worktree — implement, test, iterate.
 3. **End with `/endsession`** (ship) **or `/go`** (ship **+ deploy**).
-   Both run the deterministic `scripts/ship`: commit WIP → `git town
-   sync` → the container integration gate (auto-fix ruff, then
+   Both run the deterministic `scripts/ship`: commit WIP → sync
+   (`git fetch` + `git merge` main) → the container integration gate (auto-fix ruff, then
    authoritative `ruff` + `mypy` + `pytest`) → squash-merge to `main`
-   (only if green) → local-main fast-forward. `/go` additionally runs
+   (only if green) → reset the branch to the shipped `main` → local-main
+   fast-forward. `/go` additionally runs
    `scripts/deploy` on a green ship to push `main` to the cluster
    (`ansible-playbook redeploy-precis.yml` — the dark-factory
    one-keystroke). Both **abort and report** on any gate failure; fix
    and re-run (the scripts are idempotent). Landing on `main` — and, via
    `/go`, on the cluster — is the end goal of a feature branch.
 
-This relies on the repo's git-town config (`ship-strategy =
-squash-merge`, feature branches parented on `main`). git-town must be
-installed on the host (`brew install git-town`). NB the merge target is
-`main`, not `master` — the repo has no `master`.
+`scripts/ship` is **plain git — no git-town dependency** (this repo runs
+flat feature branches on `main`, so git-town only ever did `fetch + merge
+main` here). It integrates `origin/main` with `fetch` + `merge`, squashes
+the branch onto `main` via `commit-tree` + a `--force-with-lease` CAS
+push, then **resets the feature branch to the shipped `main`** so the next
+ship starts at zero divergence — no phantom squash-artifact conflict on
+already-shipped work. NB the merge target is `main`, not `master` — the
+repo has no `master`.
 
 ## The todo tree (five slices)
 

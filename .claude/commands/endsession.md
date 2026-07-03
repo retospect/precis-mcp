@@ -31,18 +31,19 @@ Optional ship message from the user: `$ARGUMENTS`
    ```
    scripts/ship "<message>"
    ```
-   `scripts/ship` does, in order: refuse-if-on-main + set the git-town parent
-   → commit any WIP → `git town sync` → **integration gate against this
+   `scripts/ship` does, in order: refuse-if-on-main → commit any WIP → sync
+   (`git fetch` + `git merge` origin/main) → **integration gate against this
    worktree** in the precis-dev container (it auto-fixes ruff `--fix` +
    `format` and amends them, then runs the authoritative
    `ruff · format · mypy · pytest`) → squash-merge to `main` via `commit-tree`
    + a `--force-with-lease` CAS push → delete the remote feature branch →
+   reset the feature branch to the shipped `main` (zero divergence) →
    fast-forward the local `main` → print the new `main` sha.
 
 3. **Handle failures.** The script exits non-zero and prints a `✖` line only
    on something it can't do mechanically:
-   - **Merge conflict during sync** — resolve the conflict, `git town
-     continue`, then re-run `scripts/ship`.
+   - **Merge conflict during sync** — resolve the conflict, then
+     `git add -A && git commit`, then re-run `scripts/ship`.
    - **Red gate (mypy/pytest)** — the failure is printed above the `✖`. Ruff
      lint/format drift is auto-fixed, so a ruff failure here means an
      *unfixable* lint error. Fix the code and re-run. Only real failures in
