@@ -187,6 +187,39 @@ The same one-liner is logged to stderr at server boot
 (`precis-mcp <version> @ <sha> (<branch>) [<git_source>] <path>`), so
 you can also read it straight from the process log.
 
+## Is the running server the code in this directory?
+## Are you running the precis-mcp in this repo / worktree?
+## Does the connected MCP match my current checkout?
+## What git hash is the live MCP server actually on?
+## Are my edits live in the running server?
+
+Reconcile the *connected* server against the checkout in front of you:
+
+1. **Boot facts** — `get(kind='skill', id='precis-status')`, read
+   **Build**: `git_sha`, `git_branch`, `git_source`, `source_path`
+   (frozen at process start).
+2. **Map `source_path` to a host dir** — `source_path`/`cwd` are
+   container-internal (a bare `/app`). For a Dockerized server, find the
+   bind mount on the host:
+   ```bash
+   ps aux | grep -Ei 'precis.*(serve|mcp)' | grep -v grep
+   # -v <HOST_PATH>:/app:ro  → HOST_PATH is the real checkout
+   ```
+3. **Compare** — `git -C <HOST_PATH> rev-parse HEAD` (and
+   `--abbrev-ref HEAD`) vs your worktree's HEAD.
+
+Reading it:
+
+- **branch is `main`, not `worktree-<name>`** → it's the main tree, not
+  your worktree; matching shas just mean you haven't committed yet (they
+  diverge on first commit — the frozen server never picks up worktree
+  commits).
+- **server `git_sha` != HOST_PATH HEAD** → checkout moved, process never
+  restarted → stale, restart to refresh.
+- **mount path != your worktree** → different tree; a local dev MCP
+  usually mounts the main repo `:ro` at prod, so worktree edits are
+  invisible until you rebuild + restart pointed at the worktree.
+
 ## See also
 
 - `get(kind='skill', id='precis-overview')` — orientation: seven

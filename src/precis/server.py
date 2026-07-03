@@ -41,7 +41,8 @@ _TOOL_KW: dict[str, Any] = {"structured_output": False}
 
 _INSTRUCTIONS = (
     "precis: verbs get/search/put/edit/delete/tag/link; kind= discriminator. "
-    "Discover: search(kind='skill', q='<goal>') | get(kind='skill', id='toc')."
+    "Discover: search(kind='skill', q='<goal>') | get(kind='skill', id='toc'). "
+    "Build/sha/DB: get(kind='skill', id='precis-status')."
 )
 
 # Sanity check the instructions actually advertise every verb. The MCP
