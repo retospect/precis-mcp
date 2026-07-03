@@ -33,7 +33,7 @@ log = logging.getLogger(__name__)
 
 #: Per-tick cost ceiling for the planner subprocess (``--max-budget-usd``).
 #: Set higher than the ``claude_agent`` default ($2) because a plan_tick is
-#: a 30-turn opus agentic run that legitimately spends more than a one-shot
+#: a multi-turn opus agentic run that legitimately spends more than a one-shot
 #: agent call, so a lower cap would truncate normal ticks. It is a
 #: runaway-spend backstop, not a normal-tick limit. A tick cut off by the
 #: cap is treated as a *resumable exhaustion* — the same handling as the
@@ -42,6 +42,17 @@ log = logging.getLogger(__name__)
 #: continues on a fresh tick rather than hard-failing. Override via
 #: ``PRECIS_PLAN_TICK_MAX_USD``.
 _DEFAULT_MAX_USD: float = 5.00
+
+
+#: Per-tick ``--max-turns`` ceiling for the planner subprocess. A research +
+#: write section tick (read chunks, search the corpus, mint citations, write
+#: paragraphs) legitimately needs many tool-call turns; 30 was too tight for
+#: citation-dense sections (the agent front-loaded research and hit the wall
+#: before writing — bubbling as a resume-streak failure), so the default is
+#: 60. A tick that still hits the ceiling is a *resumable exhaustion*, not a
+#: hard failure (see ``executors/claude_inproc._resume_reason``). Override via
+#: ``PRECIS_PLAN_TICK_MAX_TURNS``.
+_DEFAULT_MAX_TURNS: int = 60
 
 
 DESCRIPTION: str = (
@@ -224,7 +235,7 @@ def run(
         "--append-system-prompt",
         prompts.system,
         "--max-turns",
-        "30",
+        str(_max_turns()),
         # Runaway-spend backstop. A tick that hits this cap is a *resumable*
         # exhaustion (like --max-turns / timeout), not a hard failure — the
         # executor's _resume_reason detects the budget result event and a
@@ -377,6 +388,27 @@ def _model_alias(model: str) -> str:
     if tier is None:
         return model
     return resolve_model(tier)
+
+
+def _max_turns() -> int:
+    """The planner subprocess's ``--max-turns`` ceiling.
+
+    Reads ``PRECIS_PLAN_TICK_MAX_TURNS`` (an int) or falls back to
+    :data:`_DEFAULT_MAX_TURNS`. A malformed value logs and falls back rather
+    than crashing the tick.
+    """
+    raw = os.environ.get("PRECIS_PLAN_TICK_MAX_TURNS")
+    if not raw:
+        return _DEFAULT_MAX_TURNS
+    try:
+        return int(raw)
+    except ValueError:
+        log.warning(
+            "plan_tick: PRECIS_PLAN_TICK_MAX_TURNS=%r is not an int; using %d",
+            raw,
+            _DEFAULT_MAX_TURNS,
+        )
+        return _DEFAULT_MAX_TURNS
 
 
 def _max_budget_usd() -> float:

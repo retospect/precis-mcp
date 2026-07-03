@@ -137,7 +137,7 @@ def test_run_passes_resolved_model_and_budget_cap(
     assert "--max-budget-usd" in cmd
     assert cmd[cmd.index("--max-budget-usd") + 1] == "5.0"
     # Existing flags untouched.
-    assert cmd[cmd.index("--max-turns") + 1] == "30"
+    assert cmd[cmd.index("--max-turns") + 1] == "60"
     assert cmd[cmd.index("--permission-mode") + 1] == "acceptEdits"
 
 
@@ -148,3 +148,11 @@ def test_run_budget_cap_honours_env_override(
     cmd = _capture_cmd(monkeypatch, "sonnet")
     assert cmd[cmd.index("--max-budget-usd") + 1] == "9.0"
     assert cmd[cmd.index("--model") + 1] == "claude-sonnet-4-6"
+
+
+def test_max_turns_honours_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_PLAN_TICK_MAX_TURNS", "90")
+    cmd = _capture_cmd(monkeypatch, "sonnet")
+    assert cmd[cmd.index("--max-turns") + 1] == "90"
