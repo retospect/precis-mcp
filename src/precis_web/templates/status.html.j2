@@ -417,29 +417,42 @@
    keep up with ingest. -1 = query failed (schema drift). #}
 <section class="mt-6">
   <h2 class="text-sm font-semibold mb-2">Chunk pipeline backlog
-    <span class="font-normal text-xs text-slate-400">(0 = caught up)</span>
+    <span class="font-normal text-xs text-slate-400">(pending 0 = caught up)</span>
   </h2>
+  {# Counts are scoped to each pass's *eligible* universe (the chunks its
+     claim query would actually process — skipped kinds / no_index / short
+     / un-embedded chunks are excluded), so ``pending`` is the real
+     claimable backlog. The stacked bar splits the universe three ways:
+     done (green) + pending (blue) + failed (red). ``failed`` = terminal
+     ``status='failed'`` rows the worker never retries (embed/summarize
+     only); a non-zero red tail flags chunks stuck out of the corpus. #}
+  <div class="flex items-center gap-3 mb-2 text-[11px] text-slate-500">
+    <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded-sm bg-emerald-500"></span>done</span>
+    <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded-sm bg-sky-500"></span>pending</span>
+    <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded-sm bg-rose-500"></span>failed (terminal, never retried)</span>
+  </div>
   <div class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
     {% for pass_name, row in backlog.items() %}
-    {% set total = row.pending + row.done %}
-    {# ``pct`` is percent *complete* (done / total) — it drives the
-       progress bar (full + green = caught up) and reads as "how far
-       along is this pass". Label it "done" so it isn't misread as the
-       *pending* fraction sitting next to it (e.g. 96,826 / 1,477,096
-       pending is 93.4% done, not 93.4% pending). #}
+    {% set failed = row.failed|default(0) %}
+    {% set total = row.pending + row.done + failed %}
+    {# ``pct`` is percent *complete* (done / total). ``pct_pend`` /
+       ``pct_fail`` size the other two segments so they stack to 100%. #}
     {% set pct = ((row.done / total) * 100) if total > 0 else 100 %}
+    {% set pct_pend = ((row.pending / total) * 100) if total > 0 else 0 %}
+    {% set pct_fail = ((failed / total) * 100) if total > 0 else 0 %}
     <div class="px-4 py-2 text-xs flex items-center gap-2">
       <span class="font-mono text-slate-700 w-36 shrink-0">{{ pass_name }}</span>
       {% if row.pending == -1 %}
       <span class="text-rose-600">(query failed — see logs)</span>
       {% else %}
-      <span class="text-slate-500 w-32 shrink-0">
-        <span class="font-medium {% if row.pending > 0 %}text-amber-700{% else %}text-emerald-700{% endif %}">{{ '{:,}'.format(row.pending) }}</span>
-        / {{ '{:,}'.format(total) }} pending
+      <span class="w-44 shrink-0 tabular-nums" title="{{ '{:,}'.format(total) }} eligible chunks">
+        <span class="font-medium {% if row.pending > 0 %}text-amber-700{% else %}text-emerald-700{% endif %}">{{ '{:,}'.format(row.pending) }}</span><span class="text-slate-400"> pending</span>{% if failed > 0 %}<span class="text-rose-600"> · {{ '{:,}'.format(failed) }} failed</span>{% endif %}
       </span>
-      <div class="flex-1 h-2 rounded bg-slate-100 overflow-hidden">
-        <div class="h-2 {% if row.pending == 0 %}bg-emerald-500{% else %}bg-sky-500{% endif %}"
-             style="width: {{ '%.1f'|format(pct) }}%"></div>
+      <div class="flex-1 h-2 rounded bg-slate-100 overflow-hidden flex"
+           title="done {{ '{:,}'.format(row.done) }} · pending {{ '{:,}'.format(row.pending) }} · failed {{ '{:,}'.format(failed) }}">
+        <div class="h-2 bg-emerald-500" style="width: {{ '%.1f'|format(pct) }}%"></div>
+        <div class="h-2 bg-sky-500" style="width: {{ '%.1f'|format(pct_pend) }}%"></div>
+        <div class="h-2 bg-rose-500" style="width: {{ '%.1f'|format(pct_fail) }}%"></div>
       </div>
       <span class="w-20 text-right text-slate-500 tabular-nums">{{ '%.1f'|format(pct) }}% done</span>
       <span class="w-24 text-right text-slate-400 shrink-0 tabular-nums"

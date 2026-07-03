@@ -28,6 +28,33 @@ log = logging.getLogger(__name__)
 #: enough to ride out a missed reporter tick on a few-minute cadence.
 _STALE_AFTER_S = 600
 
+#: Backlog eligibility mirrors the worker *claim* predicates so the
+#: panel counts only chunks a pass will actually process. A naive
+#: ``NOT EXISTS(ok embedding)`` count includes chunk kinds the worker
+#: skips, ``no_index`` chunks, and terminally-``failed`` rows the
+#: worker treats as done — so it can never reach 0 even when the pass
+#: is fully caught up. Keep these in sync with the workers (they are
+#: small + stable; a mismatch only skews the panel, never the pipeline):
+#:   embed          — precis.workers.embed.EmbedHandler.skip_chunk_kinds
+#:   summarize      — precis.workers.summarize.RakeLemmaHandler.skip_chunk_kinds
+#:   chunk_keywords — precis.workers.chunk_keywords {_SKIP_KINDS,
+#:                    _MIN_CHUNK_CHARS, KEYWORDS_VERSION}
+_EMBED_ARTIFACT = "bge-m3"
+_SUMMARIZE_ARTIFACT = "rake-lemma"
+_EMBED_SKIP_KINDS = ("references",)
+_SUMMARIZE_SKIP_KINDS = ("references", "table")
+_KEYWORDS_SKIP_KINDS = (
+    "card_authors",
+    "card_combined",
+    "card_title",
+    "table",
+    "equation",
+    "figure",
+    "references",
+)
+_KEYWORDS_MIN_CHARS = 150
+_KEYWORDS_VERSION = "1.0"
+
 
 def _safe(fn) -> Any:  # type: ignore[no-untyped-def]
     """Run a query closure, returning its result or a sentinel on error."""
@@ -174,79 +201,143 @@ def _recent_todo_done(store: Any, limit: int = 5) -> list[dict[str, Any]]:
 
 
 def _backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
-    """Per-pass backlog counts: how many chunks are still waiting?
+    """Per-pass backlog counts: how many *claimable* chunks are waiting?
 
-    Each row maps to a worker pass and reports:
+    Each row maps to a worker pass and reports three disjoint tallies
+    over the pass's **eligible** universe (the chunks its claim query
+    would actually consider — see ``_*_SKIP_KINDS`` and the ``no_index``
+    / length / embedding gates above):
 
-    * ``pending`` — chunks the pass still needs to process. Keywords
-      live on ``chunks`` (``keywords IS NULL``); embeddings and
-      summaries live in their own tables (``chunk_embeddings`` /
-      ``chunk_summaries``, ADR 0007), so their predicates are
-      ``NOT EXISTS`` probes for a successful row rather than a column
-      test on ``chunks``. The exact predicate per pass is fragile to
-      schema drift; if any of these queries fails we surface the pass
-      with ``pending = -1`` so the operator sees the panel didn't lie
-      and can dig in.
-    * ``done`` — chunks already done (lets the panel show progress
-      as a fraction).
+    * ``done`` — has a terminal successful artifact for the current
+      ``content_sha`` (embeddings / summaries live in their own tables
+      per ADR 0007; keywords live in-place on ``chunks``).
+    * ``failed`` — has a terminal ``status='failed'`` row. The worker
+      treats these as *done* (a poison chunk must not loop, ADR 0007)
+      and never retries them, so they are neither progress nor
+      claimable work — they get their own bar. Keywords has no failure
+      state (it writes in place), so its ``failed`` is always 0.
+    * ``pending`` — eligible, not yet done, not failed. **This is the
+      real backlog**: ``pending = 0`` means the pass is caught up.
+      (The old panel counted skipped kinds, ``no_index`` chunks, and
+      terminally-failed rows as pending, so it could never reach 0.)
 
-    Cheap reads: keywords is a single index probe; the embed/summary
-    counts are correlated ``EXISTS`` probes against a chunk-id index.
+    ``total`` for the fraction is ``pending + done + failed`` (the
+    eligible universe), which differs per pass — keywords excludes
+    short + un-embedded chunks, so its universe is smaller than embed's.
+
+    The predicates mirror the worker claim SQL; on any query error we
+    surface the pass with ``pending = -1`` so the operator sees the
+    panel didn't lie and can dig in.
     """
     rows: dict[str, dict[str, Any]] = {}
 
-    def _two_count(label: str, pending_where: str, done_where: str) -> None:
+    def _terminal_pass(
+        label: str,
+        output_table: str,
+        artifact_col: str,
+        artifact: str,
+        skip_kinds: tuple[str, ...],
+    ) -> None:
+        # embed / summarize: artifact lives in its own table keyed
+        # (chunk_id, artifact). A chunk is *done* only with a non-failed
+        # row whose content_sha matches (stale rows re-derive); a
+        # ``failed`` row is terminal. Eligible = not a skipped kind and
+        # not ``no_index`` — exactly the worker's claim filter.
+        sql = f"""
+            SELECT count(*) FILTER (WHERE elig)                   AS total,
+                   count(*) FILTER (WHERE elig AND st = 'ok')     AS done,
+                   count(*) FILTER (WHERE elig AND st = 'failed') AS failed
+              FROM (
+                SELECT
+                    (c.chunk_kind <> ALL(%(skip)s)
+                     AND (c.meta->>'no_index') IS DISTINCT FROM 'true') AS elig,
+                    (SELECT o.status
+                       FROM {output_table} o
+                      WHERE o.chunk_id = c.chunk_id
+                        AND o.{artifact_col} = %(artifact)s
+                        AND (o.status = 'failed'
+                             OR o.content_sha IS NOT DISTINCT FROM c.content_sha)
+                      LIMIT 1) AS st
+                  FROM chunks c
+              ) t
+        """
         try:
             with store.pool.connection() as conn:
-                p = conn.execute(
-                    f"SELECT count(*)::int FROM chunks WHERE {pending_where}"
+                r = conn.execute(
+                    sql, {"skip": list(skip_kinds), "artifact": artifact}
                 ).fetchone()
-                d = conn.execute(
-                    f"SELECT count(*)::int FROM chunks WHERE {done_where}"
-                ).fetchone()
+            total, done, failed = int(r[0]), int(r[1]), int(r[2])
             rows[label] = {
-                "pending": int(p[0]) if p else 0,
-                "done": int(d[0]) if d else 0,
+                "pending": total - done - failed,
+                "done": done,
+                "failed": failed,
             }
         except Exception:
             log.exception("status: backlog query for %s failed", label)
-            rows[label] = {"pending": -1, "done": 0}
+            rows[label] = {"pending": -1, "done": 0, "failed": 0}
 
-    # ``embed`` writes one row per chunk to the separate
-    # ``chunk_embeddings`` table (ADR 0007) — there is no
-    # ``embedding`` column on ``chunks``. A chunk counts as done once
-    # it has a successful row (``status='ok'``); pending is the
-    # complement.
-    _two_count(
+    _terminal_pass(
         "embed",
-        pending_where=(
-            "NOT EXISTS (SELECT 1 FROM chunk_embeddings e "
-            "WHERE e.chunk_id = chunks.chunk_id AND e.status = 'ok')"
-        ),
-        done_where=(
-            "EXISTS (SELECT 1 FROM chunk_embeddings e "
-            "WHERE e.chunk_id = chunks.chunk_id AND e.status = 'ok')"
-        ),
+        "chunk_embeddings",
+        "embedder",
+        _EMBED_ARTIFACT,
+        _EMBED_SKIP_KINDS,
     )
-    _two_count(
-        "chunk_keywords",
-        pending_where="keywords IS NULL",
-        done_where="keywords IS NOT NULL",
-    )
-    # ``summarize`` likewise writes to a separate ``chunk_summaries``
-    # table (keyed (chunk_id, summarizer)), not a ``summary`` column
-    # on ``chunks``. Done = has a successful summary row.
-    _two_count(
+    _terminal_pass(
         "summarize",
-        pending_where=(
-            "NOT EXISTS (SELECT 1 FROM chunk_summaries s "
-            "WHERE s.chunk_id = chunks.chunk_id AND s.status = 'ok')"
-        ),
-        done_where=(
-            "EXISTS (SELECT 1 FROM chunk_summaries s "
-            "WHERE s.chunk_id = chunks.chunk_id AND s.status = 'ok')"
-        ),
+        "chunk_summaries",
+        "summarizer",
+        _SUMMARIZE_ARTIFACT,
+        _SUMMARIZE_SKIP_KINDS,
     )
+
+    # ``chunk_keywords`` writes in place on ``chunks`` and has a much
+    # stricter claim filter: skip the non-prose kinds, require
+    # ``length(text) >= _MIN_CHUNK_CHARS``, skip ``no_index``, and — a
+    # hard gate — require a *current* ``bge-m3`` embedding (KeyBERT
+    # scores against it), so a chunk whose embed failed is not yet
+    # eligible here. Pending = eligible and stale/missing keywords.
+    try:
+        with store.pool.connection() as conn:
+            r = conn.execute(
+                """
+                SELECT count(*) FILTER (WHERE elig)              AS total,
+                       count(*) FILTER (WHERE elig AND NOT pend) AS done
+                  FROM (
+                    SELECT
+                        (c.chunk_kind <> ALL(%(skip)s)
+                         AND length(c.text) >= %(minlen)s
+                         AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+                         AND EXISTS (
+                               SELECT 1 FROM chunk_embeddings ce
+                                WHERE ce.chunk_id = c.chunk_id
+                                  AND ce.embedder = %(emb)s
+                                  AND ce.status = 'ok'
+                                  AND ce.content_sha
+                                      IS NOT DISTINCT FROM c.content_sha)) AS elig,
+                        (c.keywords IS NULL
+                         OR (c.keywords_meta->>'version') IS DISTINCT FROM %(kv)s
+                         OR (c.keywords_meta->>'content_sha')
+                             IS DISTINCT FROM c.content_sha) AS pend
+                      FROM chunks c
+                  ) t
+                """,
+                {
+                    "skip": list(_KEYWORDS_SKIP_KINDS),
+                    "minlen": _KEYWORDS_MIN_CHARS,
+                    "emb": _EMBED_ARTIFACT,
+                    "kv": _KEYWORDS_VERSION,
+                },
+            ).fetchone()
+        total, done = int(r[0]), int(r[1])
+        rows["chunk_keywords"] = {
+            "pending": total - done,
+            "done": done,
+            "failed": 0,
+        }
+    except Exception:
+        log.exception("status: backlog query for chunk_keywords failed")
+        rows["chunk_keywords"] = {"pending": -1, "done": 0, "failed": 0}
 
     # Stamp each pass with the timestamp of its last *productive* batch
     # (``ok > 0``) from ``worker_logs`` so the panel can show "last
