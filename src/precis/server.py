@@ -467,6 +467,29 @@ def _warm_embedder_background(runtime: PrecisRuntime) -> None:
     thread.start()
 
 
+def _log_version_banner() -> None:
+    """Emit a one-line ``version @ sha (branch) [provenance]`` boot banner.
+
+    Reuses the same collector that backs ``get(kind='skill',
+    id='precis-status')`` so the log line and the on-demand surface can
+    never disagree. Best-effort — a broken collector must not stop boot.
+    """
+    try:
+        from precis.handlers.skill import _collect_build_info
+
+        fields = dict(_collect_build_info())
+        log.info(
+            "precis-mcp %s @ %s (%s) [%s] %s",
+            fields.get("version", "?"),
+            fields.get("git_sha_short", "unknown"),
+            fields.get("git_branch", "unknown"),
+            fields.get("git_source", "unknown"),
+            fields.get("source_path", ""),
+        )
+    except Exception:  # pragma: no cover — banner must never break boot
+        log.debug("version banner failed", exc_info=True)
+
+
 def main() -> None:
     """Run the MCP stdio server.
 
@@ -482,6 +505,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
+    _log_version_banner()
     runtime = _init_runtime()
     _warm_embedder_background(runtime)
     mcp.run(transport="stdio")

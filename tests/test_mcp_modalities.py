@@ -364,10 +364,89 @@ def test_precis_status_build_section_reads_env(monkeypatch) -> None:
     assert "unknown" in body
 
 
+def test_precis_status_build_prefers_env_over_live_git(monkeypatch) -> None:
+    """A baked image identity (``PRECIS_GIT_SHA`` set) wins over the
+    live-checkout git read, and ``git_source`` reports ``image-build``.
+    """
+    from precis.handlers import skill as skill_mod
+
+    monkeypatch.setenv("PRECIS_GIT_SHA", "bakedsha0000")
+    monkeypatch.setattr(
+        skill_mod,
+        "_SOURCE_GIT_INFO",
+        {"git_sha": "livesha1111", "source_path": "/live/checkout"},
+    )
+    rows = dict(skill_mod._collect_build_info())
+
+    assert rows["git_sha"] == "bakedsha0000"
+    assert rows["git_source"] == "image-build"
+
+
+def test_precis_status_build_falls_back_to_live_git(monkeypatch) -> None:
+    """With no baked env vars, the Build section reports the frozen
+    live-checkout git state and ``git_source`` == ``working-tree``.
+    """
+    from precis.handlers import skill as skill_mod
+
+    for env_name, _ in skill_mod._BUILD_ENV_KEYS:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setattr(
+        skill_mod,
+        "_SOURCE_GIT_INFO",
+        {
+            "git_sha": "livesha1111deadbeef",
+            "git_sha_short": "livesha1111d",
+            "git_branch": "feature-x",
+            "source_path": "/live/checkout",
+            "git_dirty": "true",
+        },
+    )
+    rows = dict(skill_mod._collect_build_info())
+
+    assert rows["git_sha"] == "livesha1111deadbeef"
+    assert rows["git_branch"] == "feature-x"
+    assert rows["source_path"] == "/live/checkout"
+    assert rows["git_source"] == "working-tree"
+
+
+def test_precis_status_build_unknown_without_env_or_git(monkeypatch) -> None:
+    """An installed wheel with no ``.git`` and no baked env vars renders
+    every git field as ``unknown`` — honestly, not by crashing.
+    """
+    from precis.handlers import skill as skill_mod
+
+    for env_name, _ in skill_mod._BUILD_ENV_KEYS:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setattr(skill_mod, "_SOURCE_GIT_INFO", {})
+    rows = dict(skill_mod._collect_build_info())
+
+    assert rows["git_sha"] == "unknown"
+    assert rows["git_source"] == "unknown"
+    assert rows["source_path"] == "unknown"
+    # ``version`` always populates regardless of git state.
+    assert rows["version"] and rows["version"] != "unknown"
+
+
+def test_live_git_info_reads_the_running_checkout() -> None:
+    """When the code runs from a git checkout (the dev/gate case),
+    ``_live_git_info`` returns a plausible 40-hex sha and a real path.
+    On an installed wheel it returns ``{}`` — both are acceptable.
+    """
+    from precis.handlers import skill as skill_mod
+
+    info = skill_mod._live_git_info()
+    assert isinstance(info, dict)
+    if info:  # inside a git checkout
+        assert "source_path" in info
+        assert len(info["git_sha"]) == 40
+        assert all(c in "0123456789abcdef" for c in info["git_sha"])
+        assert info["git_dirty"] in ("true", "false")
+
+
 def test_precis_status_runtime_section_present() -> None:
     """The Runtime section reports live process facts (hostname,
-    pid, uptime). Asserts presence + structural fields; values are
-    machine-dependent so we don't pin them.
+    pid, cwd, uptime). Asserts presence + structural fields; values
+    are machine-dependent so we don't pin them.
     """
     handler = SkillHandler(hub=Hub())
     body = handler._render_status()
@@ -377,6 +456,7 @@ def test_precis_status_runtime_section_present() -> None:
     assert "platform" in body
     assert "python" in body
     assert "pid" in body
+    assert "cwd" in body
     assert "uptime_seconds" in body
 
 

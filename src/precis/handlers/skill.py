@@ -37,10 +37,12 @@ import os
 import platform
 import re
 import socket
+import subprocess
 import sys
 from collections import Counter
 from datetime import UTC, datetime
 from importlib import resources
+from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
@@ -1413,6 +1415,73 @@ class SkillHandler(Handler):
 _STARTED_AT: datetime = datetime.now(UTC)
 
 
+def _live_git_info() -> dict[str, str]:
+    """Read the git state of the *source tree the running code loaded from*.
+
+    Shells ``git`` against the directory holding ``precis/__init__.py``
+    (``Path(precis.__file__).parent``). Returns ``{}`` when that dir is
+    not inside a git checkout — an installed wheel in ``site-packages``,
+    or a host without the ``git`` binary — so a baked Docker image (which
+    answers via :data:`_BUILD_ENV_KEYS` env vars instead) is unaffected.
+
+    Complements the build-time env vars: those describe the *image*, this
+    describes a *live checkout* (local dev, an editable install, or the
+    cluster's ``uv``/``pip``-from-git checkout — none of which run
+    ``scripts/build-image``). Keys match the :data:`_BUILD_ENV_KEYS`
+    labels so :func:`_collect_build_info` can fall back field-by-field.
+
+    Every ``git`` call is wrapped: this must never raise at import time.
+    """
+    import precis
+
+    src = Path(precis.__file__).resolve().parent
+
+    def _git(*args: str) -> str | None:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(src), *args],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        return proc.stdout.strip() or None
+
+    top = _git("rev-parse", "--show-toplevel")
+    if top is None:
+        # Not a git checkout (installed wheel) or no git binary — let the
+        # baked env vars answer, or render "unknown" honestly.
+        return {}
+
+    info: dict[str, str] = {"source_path": top}
+    if (sha := _git("rev-parse", "HEAD")) is not None:
+        info["git_sha"] = sha
+        info["git_sha_short"] = sha[:12]
+    if (branch := _git("rev-parse", "--abbrev-ref", "HEAD")) is not None:
+        info["git_branch"] = branch
+    if (describe := _git("describe", "--tags", "--always", "--dirty")) is not None:
+        info["git_describe"] = describe
+    if (last_tag := _git("describe", "--tags", "--abbrev=0")) is not None:
+        info["git_last_tag"] = last_tag
+    # ``rev-parse --show-toplevel`` already succeeded, so git works here:
+    # an empty ``status --porcelain`` means a genuinely clean tree.
+    info["git_dirty"] = "true" if _git("status", "--porcelain") else "false"
+    return info
+
+
+#: Live git state of the running source tree, **frozen at process start**
+#: (module import). Freezing is deliberate: ``precis-status`` answers "which
+#: commit is *this process* running", not "what does the checkout say now".
+#: If the checkout is later moved ahead (``git pull`` / a ship reset) without
+#: restarting, this stays at the loaded sha — so the drift is *visible* and
+#: the reader knows to restart, rather than a fresh on-demand read falsely
+#: reporting "current". Mirrors how the baked env vars freeze at build time.
+_SOURCE_GIT_INFO: dict[str, str] = _live_git_info()
+
+
 #: Build-metadata env vars baked into the image by ``scripts/build-image``.
 #: Each entry is ``(env name, display label)``. Order is the render order.
 #: Unset vars fall through to the literal string ``"unknown"`` — the
@@ -1433,16 +1502,41 @@ _BUILD_ENV_KEYS: tuple[tuple[str, str], ...] = (
 def _collect_build_info() -> list[tuple[str, str]]:
     """Return ``(field, value)`` rows for the **Build** section.
 
-    Sources: ``precis.__version__`` plus every entry in
-    :data:`_BUILD_ENV_KEYS`. Missing env vars render as ``"unknown"``
-    so a bare ``docker build .`` (no build-args) produces a well-formed
-    response rather than crashing.
+    Sources, in precedence order per git field:
+
+    1. The build-time env vars in :data:`_BUILD_ENV_KEYS` (baked into a
+       Docker image by ``scripts/build-image``) — the identity of a
+       *built image*.
+    2. Otherwise :data:`_SOURCE_GIT_INFO` — the git state of the *live
+       checkout* the code loaded from, frozen at process start. Covers
+       local dev, editable installs, and the cluster's from-git checkouts,
+       none of which run ``scripts/build-image``.
+    3. Otherwise the literal ``"unknown"`` — a bare source tree with no
+       git and no build-args still produces a well-formed response.
+
+    Also emits ``source_path`` (the on-disk checkout the process is
+    running, when known) and ``git_source`` — ``image-build`` /
+    ``working-tree`` / ``unknown`` — so the reader knows which lane the
+    git facts came from and can tell a live checkout from a frozen image.
     """
     from precis import __version__
 
     rows: list[tuple[str, str]] = [("version", __version__)]
     for env_name, label in _BUILD_ENV_KEYS:
-        rows.append((label, os.environ.get(env_name, "unknown")))
+        baked = os.environ.get(env_name)
+        if baked:
+            rows.append((label, baked))
+        else:
+            rows.append((label, _SOURCE_GIT_INFO.get(label, "unknown")))
+
+    if os.environ.get("PRECIS_GIT_SHA"):
+        git_source = "image-build"
+    elif _SOURCE_GIT_INFO:
+        git_source = "working-tree"
+    else:
+        git_source = "unknown"
+    rows.append(("git_source", git_source))
+    rows.append(("source_path", _SOURCE_GIT_INFO.get("source_path", "unknown")))
     return rows
 
 
@@ -1458,6 +1552,7 @@ def _collect_runtime_info() -> list[tuple[str, str]]:
         ("platform", platform.platform()),
         ("python", sys.version.split()[0]),
         ("pid", str(os.getpid())),
+        ("cwd", os.getcwd()),
         ("started_at", _STARTED_AT.isoformat(timespec="seconds")),
         ("uptime_seconds", str(uptime)),
     ]
