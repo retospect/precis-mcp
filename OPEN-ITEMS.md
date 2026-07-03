@@ -48,6 +48,15 @@ reproducible); the model spends tokens on judgment, not CI/CD plumbing.
   job for bugs; a build tick for features), so `dispatch` actually builds them.
   Pairs with `/checklogs` + cheap-model tiering. Until this lands, the backlog
   is a level-3 artifact the factory can't act on.
+- **Post-ship residual follow-through** → **shipped this workstream.** `/go`
+  and `/endsession` now end with a tiered follow-through step: after a green
+  ship, harvest the latent bugs the session parked — gated to **Opus-4.7+
+  finders** (this session or an opus reviewer memory; nursery-SQL / haiku
+  findings are filed, not chased) — persist them durably (so they survive the
+  harness's self-compaction), fix the in-reach ones in their own worktree→ship
+  cycles now, and file the investigations as todos/gripes. The "file the rest"
+  half feeds the Backlog groomer above; the "fix now" half is the in-session
+  interim until that groomer lands.
 - **`/testfeature <prompt>`** → open. Agent loop that exercises the precis MCP
   surface (`scripts/exercise-mcp` is a seed), finds bugs, applies fixes, then
   `/go`. Bounded by a turn/cost cap.

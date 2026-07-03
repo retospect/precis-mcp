@@ -67,3 +67,29 @@ Optional ship message from the user: `$ARGUMENTS`
    Use ✗ on any line that did not happen (a red gate → all three ✗; a green
    ship but failed deploy → first two ✓, deploy ✗). If the local primary
    `main` didn't fast-forward, add the `WARNING:` line as a fourth line.
+
+7. **Follow through on residuals (tiered).** A green ship+deploy is not the
+   end if this session surfaced latent bugs it parked. **Harvest** every
+   residual whose finder is **Opus 4.7 or better** — *this* session (you
+   qualify) or an opus reviewer memory (`structural` / `deep_review`). A
+   finding from nursery SQL or a haiku planner tick is *filed, never chased*
+   — that is the capability gate doing its job. A residual is a concrete
+   correctness gap — a latent bug, an incomplete fix, a message-only
+   mitigation of a real root cause — **not** a feature extension or a
+   nice-to-have.
+   - **Persist first — it must survive compaction.** Before anything else,
+     record every harvested residual durably: an `OPEN-ITEMS.md` "Residuals"
+     block and/or `kind='todo'` / `gripe` rows. Free-text residuals get
+     summarized away on the next auto-compaction; persisted ones don't. The
+     persisted list — not your memory — is the source of truth for the loop
+     below, so it keeps working after the harness self-compacts.
+   - **Fix the in-reach ones now.** For each residual that is a known,
+     bounded fix, open a fresh worktree cycle, fix it, and run `/go` again
+     (ship+deploy). Each residual is its own cycle so history stays legible.
+   - **File the rest.** Anything that needs investigation before a fix, or is
+     out of reach this session, becomes a `kind='todo'` (with `meta.executor`
+     where a `fix_gripe` job fits) or a `gripe` — the factory's backlog-groomer
+     lane — and you note it; you do not spin on it.
+   - **Stop-and-report guard.** If a residual's fix balloons in scope, or goes
+     red and isn't quickly greenable, stop, file it, and surface it — never
+     chain unbounded ship+deploys.
