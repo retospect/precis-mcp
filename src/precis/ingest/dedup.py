@@ -58,9 +58,22 @@ def merge_duplicate(
     if survivor_ref_id == duplicate_ref_id:
         raise ValueError("merge_duplicate: survivor and duplicate are the same ref")
 
-    # (a) External identifiers → survivor. Each value is globally unique
-    # per id_kind (PK on (id_kind, id_value)), so this never collides with
-    # the survivor's own rows.
+    # (a) External identifiers → survivor. First drop any identifier the
+    # survivor *already* holds, so the move below can't hit the
+    # (id_kind, id_value) PK. DOIs are compared case-insensitively: the 0049
+    # BEFORE-UPDATE trigger lowercases id_value on write, so moving a stub's
+    # mixed-case `.../D19-1371` onto a survivor that already owns the lowercase
+    # `.../d19-1371` would collide — that is exactly the reconcile-doi-case
+    # duplicate pair. Drop the redundant row, then migrate the rest.
+    conn.execute(
+        "DELETE FROM ref_identifiers d USING ref_identifiers s "
+        " WHERE d.ref_id = %s AND s.ref_id = %s "
+        "   AND d.id_kind = s.id_kind AND d.id_kind = ANY(%s) "
+        "   AND CASE WHEN d.id_kind = 'doi' "
+        "            THEN lower(d.id_value) = lower(s.id_value) "
+        "            ELSE d.id_value = s.id_value END",
+        (duplicate_ref_id, survivor_ref_id, list(_MIGRATABLE_ID_KINDS)),
+    )
     conn.execute(
         "UPDATE ref_identifiers SET ref_id = %s "
         "WHERE ref_id = %s AND id_kind = ANY(%s)",
@@ -316,6 +329,36 @@ def _normalize_doi_rows(conn: Any) -> int:
     return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
 
+def _maybe_validate_doi_constraint(conn: Any) -> bool:
+    """Promote the ``ref_identifiers_doi_lc`` CHECK from NOT VALID once clean.
+
+    Migration 0049 added the constraint ``NOT VALID`` because the legacy
+    mixed-case DOI rows would fail an immediate validation. Once a reconcile
+    pass has lowercased every stored DOI, the constraint can be validated so it
+    is enforced for existing rows too — turning the manual post-deploy step into
+    something the nightly sweep finishes itself. Idempotent: skips if the
+    constraint is already validated (or absent) or if any mixed-case DOI still
+    remains (e.g. an un-merged group left by a ``--limit`` run). Returns True
+    only when it actually validated.
+    """
+    row = conn.execute(
+        "SELECT convalidated FROM pg_constraint WHERE conname = 'ref_identifiers_doi_lc'"
+    ).fetchone()
+    if row is None or row[0]:
+        return False
+    remaining = conn.execute(
+        "SELECT 1 FROM ref_identifiers "
+        "WHERE id_kind = 'doi' AND id_value <> lower(id_value) LIMIT 1"
+    ).fetchone()
+    if remaining is not None:
+        return False
+    conn.execute(
+        "ALTER TABLE ref_identifiers VALIDATE CONSTRAINT ref_identifiers_doi_lc"
+    )
+    log.info("reconcile: validated ref_identifiers_doi_lc constraint")
+    return True
+
+
 def reconcile_by_doi_case(
     store: Store,
     *,
@@ -372,6 +415,13 @@ def reconcile_by_doi_case(
                 _normalize_doi_rows(conn)
         except Exception:
             log.exception("reconcile: doi-case normalize sweep failed")
+        # Once every DOI is lowercase, promote the NOT-VALID guard so it is
+        # enforced retroactively — the nightly sweep finishes the job itself.
+        try:
+            with store.tx() as conn:
+                _maybe_validate_doi_constraint(conn)
+        except Exception:
+            log.exception("reconcile: doi-case constraint validate failed")
     return outcomes
 
 

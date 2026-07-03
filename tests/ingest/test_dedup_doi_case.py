@@ -56,15 +56,35 @@ def _mk_pdf_paper(store: Store, *, slug: str, doi: str) -> int:
     return ref.id
 
 
-def _mk_stub(store: Store, *, slug: str, doi: str) -> int:
-    """Insert a PDF-less stub carrying a (lowercase) DOI."""
+def _mk_stub(store: Store, *, slug: str, doi: str, verbatim: bool = False) -> int:
+    """Insert a PDF-less stub carrying a DOI.
+
+    ``verbatim=True`` plants the DOI with its publisher case intact — bypassing
+    the 0049 lowercase trigger + constraint the same way :func:`_mk_pdf_paper`
+    does — to reproduce the *production* orientation where the stub holds the
+    mixed-case DOI and the ingested survivor holds the lowercase one. The
+    default lets the trigger canonicalise it.
+    """
     with store.tx() as conn:
         ref = store.insert_ref(kind="paper", slug=slug, title="SciBERT", conn=conn)
-        conn.execute(
-            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
-            "VALUES ('doi', %s, %s, 'test')",
-            (doi, ref.id),
-        )
+        if verbatim:
+            conn.execute("ALTER TABLE ref_identifiers DISABLE TRIGGER USER")
+            conn.execute(
+                "ALTER TABLE ref_identifiers DROP CONSTRAINT ref_identifiers_doi_lc"
+            )
+        try:
+            conn.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                "VALUES ('doi', %s, %s, 'test')",
+                (doi, ref.id),
+            )
+        finally:
+            if verbatim:
+                conn.execute(
+                    "ALTER TABLE ref_identifiers ADD CONSTRAINT ref_identifiers_doi_lc "
+                    "CHECK (id_kind <> 'doi' OR id_value = lower(id_value)) NOT VALID"
+                )
+                conn.execute("ALTER TABLE ref_identifiers ENABLE TRIGGER USER")
     return ref.id
 
 
@@ -135,6 +155,48 @@ class TestReconcileByDoiCase:
             ).fetchall()
         doi_rows = [(v, r) for v, r in rows if v.endswith("d19-1371")]
         assert doi_rows == [("10.18653/v1/d19-1371", paper)]
+
+    def test_merges_when_stub_holds_mixed_case_doi(self, store: Store):
+        # Production orientation (the mirror of the case above): the ingested
+        # paper holds the *lowercase* DOI and the stub carries the publisher's
+        # mixed-case one. Moving the stub's DOI onto the survivor re-fires the
+        # 0049 lowercase trigger, so without the drop-then-migrate guard in
+        # merge_duplicate the write collides with the survivor's existing
+        # lowercase row (the prod UniqueViolation that stalled 109 groups).
+        paper = _mk_pdf_paper(store, slug="beltagy19", doi="10.18653/v1/d19-1371")
+        stub = _mk_stub(
+            store, slug="scibert19", doi="10.18653/v1/D19-1371", verbatim=True
+        )
+
+        outcomes = reconcile_by_doi_case(store, dry_run=False)
+
+        assert len(outcomes) == 1
+        assert outcomes[0].survivor_ref_id == paper
+        assert outcomes[0].duplicate_ref_ids == [stub]
+        assert _is_deleted(store, stub)
+        assert not _is_deleted(store, paper)
+
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT id_value, ref_id FROM ref_identifiers WHERE id_kind = 'doi'"
+            ).fetchall()
+        doi_rows = [(v, r) for v, r in rows if v.endswith("d19-1371")]
+        assert doi_rows == [("10.18653/v1/d19-1371", paper)]
+
+    def test_validates_constraint_after_clean_pass(self, store: Store):
+        # A successful reconcile that leaves zero mixed-case DOIs promotes the
+        # NOT-VALID guard, so the nightly sweep finishes the post-deploy step.
+        _mk_pdf_paper(store, slug="beltagy19", doi="10.18653/v1/d19-1371")
+        _mk_stub(store, slug="scibert19", doi="10.18653/v1/D19-1371", verbatim=True)
+
+        reconcile_by_doi_case(store, dry_run=False)
+
+        with store.pool.connection() as conn:
+            validated = conn.execute(
+                "SELECT convalidated FROM pg_constraint "
+                "WHERE conname = 'ref_identifiers_doi_lc'"
+            ).fetchone()[0]
+        assert validated is True
 
     def test_dry_run_writes_nothing(self, store: Store):
         paper = _mk_pdf_paper(store, slug="beltagy19", doi="10.18653/v1/D19-1371")
