@@ -34,6 +34,26 @@ def structure(store):
     return StructureHandler(hub=Hub(store=store))
 
 
+@pytest.fixture
+def no_local_mlip(monkeypatch):
+    """Force the ML relax backend absent so an ``ml`` rung takes the
+    dispatch-to-GPU-node path (ADR 0044) deterministically. The gate container
+    installs ``[dft-ml]`` (Dockerfile ``uv sync --all-extras``), so without
+    this the handler would relax inline instead of minting a struct_relax job —
+    which is only correct on a host that *has* the backend, not the data hosts
+    these dispatch tests model."""
+    import importlib
+
+    # NB: the ``precis.structure`` package re-exports the ``relax`` *function*,
+    # shadowing the submodule name — reach the module via importlib.
+    relax_mod = importlib.import_module("precis.structure.relax")
+
+    def _no_mlip(model):  # type: ignore[no-untyped-def]
+        raise relax_mod.RelaxUnsupported("no MLIP backend (test)")
+
+    monkeypatch.setattr(relax_mod, "_ml_calculator", _no_mlip)
+
+
 def test_put_creates_lists_and_round_trips(structure):
     resp = structure.put(id="pd_pair", text=_PD)
     assert "created" in resp.body
@@ -142,7 +162,7 @@ def test_relax_clean_via_edit(structure):
     assert "relax[clean]" in structure.get(id="pd_pair").body
 
 
-def test_relax_ml_rung_dispatches_without_a_todo(structure):
+def test_relax_ml_rung_dispatches_without_a_todo(structure, no_local_mlip):
     """An energy rung with no local backend is *derived compute* (ADR 0044):
     it dispatches a struct_relax job parented on the structure itself — no
     todo required — instead of raising. (Pre-0044 this rung raised Unsupported
@@ -286,7 +306,7 @@ def _child_jobs(store, parent_id: int) -> list[dict]:
 
 
 def test_energy_rung_mints_a_struct_relax_job_parented_on_the_structure(
-    structure, store
+    structure, store, no_local_mlip
 ):
     """An energy rung that misses the cache and has no local backend dispatches
     a struct_relax job to the GPU node (ADR 0043 §23.12) — parented on the
@@ -311,7 +331,7 @@ def test_energy_rung_mints_a_struct_relax_job_parented_on_the_structure(
     assert set(params["poscar_labels"]) == {"aPd1", "aPd2"}
 
 
-def test_energy_rung_with_requester_wires_the_wait(structure, store):
+def test_energy_rung_with_requester_wires_the_wait(structure, store, no_local_mlip):
     """``requested_by=<todo>`` on the relax op links the todo ``requested`` →
     the job and arms a ``derived_job_succeeded`` auto_check so the intentful
     caller (a planner tick, a human) blocks on the build (ADR 0044)."""
