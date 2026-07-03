@@ -51,6 +51,7 @@ from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
 from precis.cli._common import resolve_dsn
+from precis.corpus_layout import corpus_pdf_dest
 from precis.ingest.add import IngestResult, PdfInput, PresInput, precis_add
 from precis.ingest.pres import kebab_slug
 from precis.store import Store
@@ -1011,18 +1012,11 @@ def _move_to_pres_corpus(pdf: Path, *, slug: str, corpus_pres_dir: Path) -> Path
     return dest
 
 
-def _corpus_pdf_dest(cite_key: str, corpus_dir: Path, *, suffix: str = ".pdf") -> Path:
-    """Compute the canonical on-disk path for ``cite_key`` under
-    ``corpus_dir``: ``<corpus_dir>/<letter>/<cite_key><suffix>``.
-
-    The letter shard is the lower-case first character of ``cite_key``,
-    or ``_`` if it isn't ASCII alphanumeric — the layout described in
-    ``docs/design/pip-merge.md``. Pure path math (no FS reads, no
-    move) so callers can probe existence before deciding where a PDF
-    should land. Used by both :func:`_move_to_corpus` and the
-    held-but-missing recovery branch in :func:`_handle_success`."""
-    letter = cite_key[0].lower() if cite_key and cite_key[0].isalnum() else "_"
-    return corpus_dir / letter / f"{cite_key}{suffix}"
+#: Canonical on-disk PDF path — the one definition lives in
+#: :mod:`precis.corpus_layout`; re-exported here under the historical name
+#: (used by :func:`_move_to_corpus` and the held-but-missing recovery
+#: branch in :func:`_handle_success`).
+_corpus_pdf_dest = corpus_pdf_dest
 
 
 def _move_to_corpus(pdf: Path, *, cite_key: str, corpus_dir: Path) -> Path:

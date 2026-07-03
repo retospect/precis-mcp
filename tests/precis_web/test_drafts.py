@@ -1072,8 +1072,15 @@ class _FakeRef:
 
 
 class _FakePaperStore:
-    def __init__(self, ref: _FakeRef | None) -> None:
+    """A ledger-backed stand-in: ``get_ref`` returns the paper, and
+    ``pdf_missing`` answers from a set of shas the (mocked) corpus-presence
+    ledger reports as held-but-missing."""
+
+    def __init__(
+        self, ref: _FakeRef | None, *, missing_shas: tuple[str, ...] = ()
+    ) -> None:
         self._ref = ref
+        self._missing = set(missing_shas)
 
     def get_ref(self, *, kind: str, id: object) -> _FakeRef | None:
         assert kind == "paper"
@@ -1082,38 +1089,31 @@ class _FakePaperStore:
     def ref_cite_keys(self, ref_id: int) -> list[str]:
         return list(self._ref.aliases) if self._ref else []
 
+    def pdf_missing(self, sha: str, *, ttl_days: int | None = None) -> bool:
+        return sha in self._missing
 
-def test_paper_pdf_missing(tmp_path) -> None:
-    """Held-but-absent → True; stub / present / no-roots / no-ref → False."""
+
+def test_paper_pdf_missing() -> None:
+    """Marker ⇔ held (pdf_sha256 set) AND the ledger reports it missing.
+
+    Post-Step-2 the marker is a pure DB read (``Store.pdf_missing``): no
+    corpus roots, no request-time filesystem stat."""
     from precis_web.routes.drafts import _paper_pdf_missing
 
-    roots = (tmp_path,)
-    held = _FakePaperStore(_FakeRef("kong24", "abc"))
-    # held (pdf_sha256 set) with no file on disk → the anomaly
-    assert _paper_pdf_missing(held, roots, "kong24") is True
-    # a stub (no pdf_sha256) is a known state, not an anomaly
-    assert _paper_pdf_missing(
-        _FakePaperStore(_FakeRef("kong24", None)), roots, "k"
-    ) is (False)
-    # once the file exists under the shard letter, no flag
-    (tmp_path / "k").mkdir()
-    (tmp_path / "k" / "kong24.pdf").write_bytes(b"%PDF")
-    assert _paper_pdf_missing(held, roots, "kong24") is False
-    # nothing to assert without corpus roots, or when the ref is gone
-    assert _paper_pdf_missing(held, (), "kong24") is False
-    assert _paper_pdf_missing(_FakePaperStore(None), roots, "kong24") is False
-
-
-def test_paper_pdf_missing_resolves_via_alias(tmp_path) -> None:
-    """A paper filed under a non-display cite_key alias is NOT flagged missing."""
-    from precis_web.routes.drafts import _paper_pdf_missing
-
-    # display slug "smith2024" has no file, but the alias "smithbook" does
-    aliased = _FakePaperStore(_FakeRef("smith2024", "abc", aliases=("smithbook",)))
-    assert _paper_pdf_missing(aliased, (tmp_path,), "smith2024") is True
-    (tmp_path / "s").mkdir()
-    (tmp_path / "s" / "smithbook.pdf").write_bytes(b"%PDF")
-    assert _paper_pdf_missing(aliased, (tmp_path,), "smith2024") is False
+    # held (pdf_sha256 set) + ledger says no node holds it → the anomaly
+    held_missing = _FakePaperStore(_FakeRef("kong24", "abc"), missing_shas=("abc",))
+    assert _paper_pdf_missing(held_missing, "kong24") is True
+    # held but the ledger reports a fresh copy somewhere → no flag
+    held_present = _FakePaperStore(_FakeRef("kong24", "abc"))
+    assert _paper_pdf_missing(held_present, "kong24") is False
+    # a stub (no pdf_sha256) is a known state, never the anomaly — even if a
+    # stray ledger row existed for some sha
+    stub = _FakePaperStore(_FakeRef("kong24", None), missing_shas=("abc",))
+    assert _paper_pdf_missing(stub, "kong24") is False
+    # a vanished ref asserts nothing
+    assert (
+        _paper_pdf_missing(_FakePaperStore(None, missing_shas=("abc",)), "5") is False
+    )
 
 
 def test_delete_change_request_dispatches_todo_delete(

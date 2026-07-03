@@ -139,7 +139,8 @@ driver; adding one is a `Reviewer(...)` instance):
   drives every chunk-level + SQL ref-level pass: `embed`, `summarize`,
   `chunk_keywords`, `chase`, `fetch`, `gp_fetch`, `tag_embeddings`,
   `auto_check`, `schedule`, `nursery`, `dispatch`, `sweeper`,
-  `job_coordinator`, `job_ssh_node`, `wake_runner`, `clusterize`.
+  `job_coordinator`, `job_ssh_node`, `wake_runner`, `clusterize`,
+  `corpus_reconcile`.
   (`llm_summarize` is opt-in on top — env `PRECIS_SUMMARIZE_LLM=1` or
   `--only llm_summarize`; enabled on melchior as a deliberate trickle.)
 * `precis worker --profile=agent` runs the passes that need the
@@ -166,6 +167,18 @@ driver; adding one is a `Reviewer(...)` instance):
   than `PRECIS_STUCK_JOB_HOURS` (1.0h), tagging `swept:claim-orphaned`
   so the parent's failure-bubble unblocks the cascade. Recovers
   deploy-time claim orphans.
+* `corpus_reconcile` — maintains the per-host `pdf_locations` presence
+  ledger (migration 0052). Each node stats the held-paper PDFs under its
+  own `PRECIS_CORPUS_DIR` roots (preferring `pdfs.storage_path`, falling
+  back to the `corpus_pdf_dest` cite_key convention) and records a verdict
+  per `(pdf_sha256, host)` — the path found, or `''` for checked-and-absent.
+  The draft reader's held-but-missing ▲ then reads that ledger
+  (`Store.pdf_missing`: checked-yet-no-fresh-copy) instead of re-stat-ing at
+  request time, so the marker is a corpus-wide fact independent of the web
+  host's mounts (ADR 0029). Self-throttling via a refresh window
+  (`PRECIS_CORPUS_RECONCILE_REFRESH_HOURS`, default 6, ≪ the ledger TTL
+  `PRECIS_PDF_LOCATION_TTL_DAYS`, default 7); idle once every verdict is
+  fresh. No-op on a node with no corpus roots.
 * `fetch` / `chase` backoff — **both exponential**. The OA fetcher's
   retry window arms on any `fetcher:%` event (not just `unpaywall`,
   which is disabled in prod) and doubles per prior attempt

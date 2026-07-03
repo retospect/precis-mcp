@@ -87,6 +87,13 @@ class FakeStore:
         #: collision branch can be exercised.
         self.identifier_writes: list[tuple[int, str, str]] = []
         self.taken_cite_keys: set[str] = set()
+        #: Corpus-presence ledger fakes. ``missing_pdf_shas`` are the shas
+        #: ``pdf_missing`` reports as held-but-missing (empty → nothing
+        #: flagged); ``storage_paths`` seeds ``pdf_storage_path``;
+        #: ``storage_path_writes`` records ``set_pdf_storage_path`` calls.
+        self.missing_pdf_shas: set[str] = set()
+        self.storage_paths: dict[str, str] = {}
+        self.storage_path_writes: list[tuple[str, str]] = []
         #: Canned sidebar-nav hits per scope_ref_id: lists of
         #: (block, ref, score) for the search_blocks_* fakes.
         self.nav_hits: dict[int, list[Any]] = {}
@@ -426,6 +433,24 @@ class FakeStore:
         r = next((p for p in self.papers if p.id == ref_id), None)
         keys = [r.slug] if r is not None and r.slug else []
         return keys + extra.get(ref_id, [])
+
+    def pdf_storage_path(self, pdf_sha256, *, conn=None):
+        """The seeded authoritative path (``resolve_pdf_for_ref`` prefers it),
+        or ``None`` so resolution falls back to the cite_key convention."""
+        return self.storage_paths.get(pdf_sha256) or None
+
+    def set_pdf_storage_path(self, pdf_sha256, path, *, conn=None):
+        """Record + reflect a storage_path correction (the /rename path)."""
+        if not pdf_sha256 or not path:
+            return False
+        self.storage_paths[pdf_sha256] = path
+        self.storage_path_writes.append((pdf_sha256, path))
+        return True
+
+    def pdf_missing(self, pdf_sha256, *, ttl_days=None):
+        """Ledger verdict for the draft reader's held-but-missing ▲ —
+        False unless a test seeds the sha into ``missing_pdf_shas``."""
+        return pdf_sha256 in self.missing_pdf_shas
 
     def identifiers_for_refs(self, ref_ids):
         # Paper 10 carries a DOI; paper 11 an arXiv id — exercises both

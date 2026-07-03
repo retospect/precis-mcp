@@ -20,6 +20,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from precis.corpus_layout import corpus_pdf_dest
+
 
 def pdf_candidates(
     corpus_dirs: tuple[Path, ...], cite_keys: str | Sequence[str]
@@ -29,7 +31,8 @@ def pdf_candidates(
     ``cite_keys`` accepts a single key or a sequence — a paper can carry more
     than one ``cite_key`` alias and the fetcher files the PDF under whichever
     it chose as the filename stem. Order is preserved and duplicates dropped so
-    the returned list is a stable, de-duped probe order.
+    the returned list is a stable, de-duped probe order. The per-root shard
+    math is :func:`precis.corpus_layout.corpus_pdf_dest` (the one definition).
     """
     keys = [cite_keys] if isinstance(cite_keys, str) else list(cite_keys)
     out: list[Path] = []
@@ -37,9 +40,8 @@ def pdf_candidates(
     for cite_key in keys:
         if not cite_key:
             continue
-        letter = cite_key[0].lower() if cite_key[0].isalnum() else "_"
         for root in corpus_dirs:
-            cand = root / letter / f"{cite_key}.pdf"
+            cand = corpus_pdf_dest(cite_key, root)
             if cand not in seen:
                 seen.add(cand)
                 out.append(cand)
@@ -72,4 +74,41 @@ def ref_pdf_keys(store: Any, ref: Any) -> list[str]:
     return keys
 
 
-__all__ = ["pdf_candidates", "ref_pdf_keys", "resolve_pdf"]
+def resolve_pdf_for_ref(
+    store: Any, corpus_dirs: tuple[Path, ...], ref: Any
+) -> Path | None:
+    """Locate ``ref``'s held PDF, preferring the path recorded at ingest.
+
+    ``pdfs.storage_path`` is the authoritative path the ingest host wrote —
+    honouring it first means a PDF filed *off* the cite_key convention (a
+    later rename, a bib-key alias) still resolves, killing the
+    false-"missing" the pure-convention probe reports. Two caveats keep the
+    convention fallback load-bearing, not vestigial:
+
+    * ``storage_path`` is ``NOT NULL`` but the ingest writer stores it as
+      ``paper.pdf_storage_path or ""`` — blank for corpus rows written
+      before it was populated — so a blank value is "unknown", not a real
+      path, and we fall through.
+    * It is a *single* path recorded on the ingest host; a differently
+      mounted node (ADR 0029) won't find the file there. So when the
+      recorded path doesn't resolve we still probe the cite_key convention
+      across every configured root.
+
+    Convention-filed PDFs (the common case) resolve identically to before.
+    """
+    sha = getattr(ref, "pdf_sha256", None)
+    if sha:
+        recorded = store.pdf_storage_path(sha)
+        if recorded:
+            p = Path(recorded)
+            if p.is_file():
+                return p
+    return resolve_pdf(corpus_dirs, ref_pdf_keys(store, ref))
+
+
+__all__ = [
+    "pdf_candidates",
+    "ref_pdf_keys",
+    "resolve_pdf",
+    "resolve_pdf_for_ref",
+]

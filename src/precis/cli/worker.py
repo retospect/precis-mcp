@@ -317,6 +317,12 @@ def run(args: argparse.Namespace) -> None:
                 # (PRECIS_CLUSTER_INTERVAL_HOURS), so it costs ~nothing
                 # to host on every node.
                 "clusterize",
+                # Corpus-presence ledger: each node stats the held-paper
+                # PDFs under its own PRECIS_CORPUS_DIR roots and records a
+                # per-(sha,host) verdict, so the draft reader's "held but
+                # missing" ▲ is a corpus-wide DB read, not a per-web-host FS
+                # probe. Self-throttling (refresh window) → idle once fresh.
+                "corpus_reconcile",
             }
         )
         # dream_agent stays out of the profile — it has its own
@@ -835,6 +841,27 @@ def run(args: argparse.Namespace) -> None:
                 return run_sweeper_pass(store, limit=batch_size)
 
             ref_passes.append(_sweeper_pass)
+
+        # Corpus-presence reconcile — maintain the per-host pdf_locations
+        # ledger so the draft reader's held-but-missing ▲ is a corpus-wide
+        # DB read, not a per-web-host FS probe. Each node stats the held
+        # PDFs under its own PRECIS_CORPUS_DIR roots. Self-throttling via a
+        # refresh window (idle once every verdict is fresh). No-op when this
+        # node has no corpus roots configured.
+        if _pass_enabled("corpus_reconcile"):
+            from precis.corpus_layout import corpus_roots_from_env, host_name
+            from precis.workers.corpus_reconcile import run_corpus_reconcile_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            _corpus_dirs = corpus_roots_from_env()
+            _host = host_name()
+
+            def _corpus_reconcile_pass(batch_size: int) -> _BatchResult:
+                return run_corpus_reconcile_pass(
+                    store, _corpus_dirs, _host, limit=batch_size
+                )
+
+            ref_passes.append(_corpus_reconcile_pass)
 
         # Quota-check pass — refresh the Claude.ai OAuth utilisation
         # snapshot via one 1-token `claude -p "quota" --output-format

@@ -86,12 +86,10 @@ from precis.utils.authors import (
 from precis.utils.embed_query import embed_query
 from precis.utils.figure_clearance import draft_figure_clearance, figure_status
 from precis.utils.table_data import table_payload
-from precis_web.corpus import ref_pdf_keys, resolve_pdf
 from precis_web.deps import (
     await_dispatch,
     get_runtime,
     get_store,
-    get_web_config,
     redirect_or_error,
     templates,
 )
@@ -520,18 +518,20 @@ def _list_markers(
     return marker, ordered
 
 
-def _paper_pdf_missing(store: Any, corpus_dirs: tuple[Path, ...], ident: str) -> bool:
+def _paper_pdf_missing(store: Any, ident: str) -> bool:
     """A cited paper whose PDF is *held but absent* — the anomaly the reader
     flags. True only when the ref exists, claims a PDF (``pdf_sha256`` set),
-    yet no file resolves under any corpus root — across *every* cite_key alias
-    (``ref_pdf_keys``), so a paper filed under a non-display alias isn't
-    falsely flagged. A stub (no ``pdf_sha256``, queued for fetch) is a known
-    state, not an anomaly, so it stays unflagged; a missing ref or unset corpus
-    roots also return False (nothing to assert). ``ident`` is the chip target —
-    a numeric ref_id (from a ``pa…`` handle) or a slug (from a ``paper:``
-    mention); ``get_ref`` resolves both."""
-    if not corpus_dirs:
-        return False
+    and the corpus-presence ledger says no node holds a fresh copy
+    (``Store.pdf_missing``) — a corpus-wide DB read, so the marker no longer
+    depends on which corpus roots *this* web process happens to mount
+    (ADR 0029; the ``corpus_reconcile`` worker keeps the ledger current).
+
+    A stub (no ``pdf_sha256``, queued for fetch) is a known state, not an
+    anomaly, so it stays unflagged; so does a paper the ledger has never
+    checked (``pdf_missing`` is False for an unswept sha), so the marker can't
+    false-fire before the first reconcile sweep. A missing ref returns False
+    too. ``ident`` is the chip target — a numeric ref_id (from a ``pa…``
+    handle) or a slug (from a ``paper:`` mention); ``get_ref`` resolves both."""
     key: int | str = ident
     stripped = str(ident).lstrip("#")
     if stripped.isdigit():
@@ -540,9 +540,10 @@ def _paper_pdf_missing(store: Any, corpus_dirs: tuple[Path, ...], ident: str) ->
         paper = store.get_ref(kind="paper", id=key)
     except Exception:  # pragma: no cover - defensive (bad ident never 500s the row)
         return False
-    if paper is None or not getattr(paper, "pdf_sha256", None):
+    sha = getattr(paper, "pdf_sha256", None) if paper is not None else None
+    if not sha:
         return False
-    return resolve_pdf(corpus_dirs, ref_pdf_keys(store, paper)) is None
+    return store.pdf_missing(sha)
 
 
 def _build_rows(
@@ -552,7 +553,6 @@ def _build_rows(
     want_idx: Any,
     *,
     abbrevs: dict[str, str],
-    corpus_dirs: tuple[Path, ...] = (),
 ) -> list[dict[str, Any]]:
     """Full per-block row context for the chunks at ``want_idx`` (an
     iterable of indices into ``chunk_objs``). The expensive per-handle
@@ -596,10 +596,10 @@ def _build_rows(
     _pdf_missing: dict[str, bool] = {}
 
     def _cite_missing(kind: str, ident: str) -> bool:
-        if kind != "paper" or not corpus_dirs:
+        if kind != "paper":
             return False
         if ident not in _pdf_missing:
-            _pdf_missing[ident] = _paper_pdf_missing(store, corpus_dirs, ident)
+            _pdf_missing[ident] = _paper_pdf_missing(store, ident)
         return _pdf_missing[ident]
 
     # Local-vs-external citation colouring (sky §, in-corpus | amber ↗,
@@ -688,9 +688,7 @@ def _build_rows(
     return rows
 
 
-def _rows_for(
-    store: Any, ref: Any, corpus_dirs: tuple[Path, ...] = ()
-) -> list[dict[str, Any]]:
+def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
     """Per-block row context for the **whole** draft (the no-arg ``/rows``
     fragment). The reader itself renders only an initial window fully (see
     ``reader``) and fetches the rest in windowed batches as you scroll."""
@@ -701,13 +699,10 @@ def _rows_for(
         chunk_objs,
         range(len(chunk_objs)),
         abbrevs=abbrevs,
-        corpus_dirs=corpus_dirs,
     )
 
 
-def _rows_for_handles(
-    store: Any, ref: Any, handles: list[str], corpus_dirs: tuple[Path, ...] = ()
-) -> list[dict[str, Any]]:
+def _rows_for_handles(store: Any, ref: Any, handles: list[str]) -> list[dict[str, Any]]:
     """Hydrate a *batch* of blocks by handle, in document order — the
     on-demand fragment the reader swaps in for a window of placeholders.
     One request hydrates many blocks (vs one HTTP per block), and the
@@ -715,17 +710,13 @@ def _rows_for_handles(
     chunk_objs, _version, abbrevs = _doc_state(store, ref)
     want = {h for h in handles}
     idx = [i for i, c in enumerate(chunk_objs) if c.handle in want]
-    return _build_rows(
-        store, ref, chunk_objs, idx, abbrevs=abbrevs, corpus_dirs=corpus_dirs
-    )
+    return _build_rows(store, ref, chunk_objs, idx, abbrevs=abbrevs)
 
 
-def _one_row(
-    store: Any, ref: Any, handle: str, corpus_dirs: tuple[Path, ...] = ()
-) -> dict[str, Any] | None:
+def _one_row(store: Any, ref: Any, handle: str) -> dict[str, Any] | None:
     """Hydrate a single block by handle — O(neighbours) enrichment over the
     cached reading order, not a whole-draft re-scan per block."""
-    rows = _rows_for_handles(store, ref, [handle], corpus_dirs=corpus_dirs)
+    rows = _rows_for_handles(store, ref, [handle])
     return rows[0] if rows else None
 
 
@@ -1496,10 +1487,7 @@ async def reader(request: Request, ident: str) -> Response:
     first = min(INITIAL_WINDOW, n)
     # The first screen is rendered server-side (correct + visible even if the
     # virtual-scroll JS never runs); the rest live only in the skeleton.
-    corpus_dirs = get_web_config(request).corpus_dirs
-    window_rows = _build_rows(
-        store, ref, chunk_objs, range(first), abbrevs=abbrevs, corpus_dirs=corpus_dirs
-    )
+    window_rows = _build_rows(store, ref, chunk_objs, range(first), abbrevs=abbrevs)
     skeleton = _skeleton(store, ref)
     botpad = sum(s["est"] for s in skeleton[first:])
     _, owner_ws = _owner_workspace(store, ref)
@@ -1532,7 +1520,7 @@ async def reader_row(request: Request, ident: str, handle: str) -> HTMLResponse:
     ref = _draft_ref(store, ident)
     if ref is None:
         return HTMLResponse("", status_code=404)
-    row = _one_row(store, ref, handle, corpus_dirs=get_web_config(request).corpus_dirs)
+    row = _one_row(store, ref, handle)
     if row is None:
         return HTMLResponse("", status_code=404)
     return templates.TemplateResponse(
@@ -1556,12 +1544,11 @@ async def reader_rows(request: Request, ident: str, handles: str = "") -> HTMLRe
     ref = _draft_ref(store, ident)
     if ref is None:
         return HTMLResponse("", status_code=404)
-    corpus_dirs = get_web_config(request).corpus_dirs
     if handles.strip():
         wanted = [h for h in handles.split(",") if h.strip()]
-        rows = _rows_for_handles(store, ref, wanted, corpus_dirs=corpus_dirs)
+        rows = _rows_for_handles(store, ref, wanted)
     else:
-        rows = _rows_for(store, ref, corpus_dirs=corpus_dirs)
+        rows = _rows_for(store, ref)
     return templates.TemplateResponse(
         request,
         "drafts/_rows.html.j2",

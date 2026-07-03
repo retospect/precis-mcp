@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from precis.corpus_layout import corpus_pdf_dest
 from precis.identity import make_cite_key
 from precis.ingest.cards import rewrite_cards
 from precis.ingest.dedup import merge_duplicate
@@ -53,16 +54,9 @@ log = logging.getLogger(__name__)
 TRIAGE_TAG = Tag.open("needs-triage")
 
 
-def _corpus_pdf_dest(cite_key: str, corpus_dir: Path, *, suffix: str = ".pdf") -> Path:
-    """Canonical on-disk path for ``cite_key``: ``<root>/<letter>/<key><suffix>``.
-
-    Mirrors ``precis.cli.watch._corpus_pdf_dest`` (and the web's
-    ``_pdf_candidates``) — the letter shard is the lower-case first
-    char of the cite_key, or ``_`` when it isn't ASCII-alphanumeric.
-    Inlined here to keep the ingest package off the watchdog dep chain.
-    """
-    letter = cite_key[0].lower() if cite_key and cite_key[0].isalnum() else "_"
-    return corpus_dir / letter / f"{cite_key}{suffix}"
+#: Canonical on-disk PDF path — one definition, in
+#: :mod:`precis.corpus_layout`. Re-exported under the historical name.
+_corpus_pdf_dest = corpus_pdf_dest
 
 
 @dataclass

@@ -24,12 +24,18 @@ from fastapi.responses import (
     Response,
 )
 
+from precis.corpus_layout import corpus_pdf_dest
 from precis.errors import BadInput, NotFound
 from precis.utils.authors import author_names
 from precis.utils.embed_query import embed_query
 from precis.utils.handle_registry import format_handle
 from precis.utils.toc_db import build_toc_segments
-from precis_web.corpus import pdf_candidates, ref_pdf_keys, resolve_pdf
+from precis_web.corpus import (
+    pdf_candidates,
+    ref_pdf_keys,
+    resolve_pdf,
+    resolve_pdf_for_ref,
+)
 from precis_web.deps import (
     await_dispatch,
     get_runtime,
@@ -121,6 +127,7 @@ def _suggest_slug(store: Any, ref: Any, prefill: dict[str, Any] | None) -> str:
 # Kept under the historical private names every call site below already uses.
 _pdf_candidates = pdf_candidates
 _resolve_pdf = resolve_pdf
+_resolve_pdf_for_ref = resolve_pdf_for_ref
 _ref_pdf_keys = ref_pdf_keys
 
 
@@ -417,7 +424,7 @@ def _render_detail(
     ref_id = ref.id
     cite_key = ref.slug or ""
     pdf_keys = _ref_pdf_keys(store, ref)
-    found = _resolve_pdf(cfg.corpus_dirs, pdf_keys)
+    found = _resolve_pdf_for_ref(store, cfg.corpus_dirs, ref)
     paper = _paper_row(ref)
     paper["links"] = _links_from_ids(
         store.identifiers_for_refs([ref_id]).get(ref_id, {})
@@ -793,7 +800,7 @@ async def pdf(request: Request, ref_id: int) -> FileResponse:
     cite_key = ref.slug or ""
     pdf_keys = _ref_pdf_keys(store, ref)
     cfg = get_web_config(request)
-    path = _resolve_pdf(cfg.corpus_dirs, pdf_keys)
+    path = _resolve_pdf_for_ref(store, cfg.corpus_dirs, ref)
     if path is None:
         tried = [str(p) for p in _pdf_candidates(cfg.corpus_dirs, pdf_keys)]
         raise NotFound(
@@ -885,9 +892,7 @@ def _render_edit_conflict(
             store.identifiers_for_refs([owner_id]).get(owner_id, {})
         )
         cfg = get_web_config(request)
-        owner_pdf = (
-            _resolve_pdf(cfg.corpus_dirs, _ref_pdf_keys(store, owner_ref)) is not None
-        )
+        owner_pdf = _resolve_pdf_for_ref(store, cfg.corpus_dirs, owner_ref) is not None
     return templates.TemplateResponse(
         request,
         "papers/edit_conflict.html.j2",
@@ -1041,18 +1046,26 @@ def _rename_slug(
         )
     store = get_store(request)
     cfg = get_web_config(request)
+    ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
     old_pdf = _resolve_pdf(cfg.corpus_dirs, old_slug) if old_slug else None
     try:
         store.set_ref_identifier(ref_id, "cite_key", new_slug, source="web-edit")
     except BadInput as exc:
         return str(exc)
     if old_pdf is not None:
-        letter = new_slug[0].lower() if new_slug[0].isalnum() else "_"
-        new_pdf = old_pdf.parent.parent / letter / f"{new_slug}.pdf"
+        # Same shard math as the fetcher/resolver — one definition.
+        new_pdf = corpus_pdf_dest(new_slug, old_pdf.parent.parent)
         try:
             new_pdf.parent.mkdir(parents=True, exist_ok=True)
             if not new_pdf.exists():
                 old_pdf.rename(new_pdf)
+            # Keep the authoritative path honest: the resolver prefers
+            # ``pdfs.storage_path``, so a move that didn't update it would
+            # leave the resolver pointing at the vanished old shard (a
+            # false "held but missing"). ``pdf_sha256`` keys the pdfs row.
+            sha = getattr(ref, "pdf_sha256", None) if ref is not None else None
+            if sha and new_pdf.is_file():
+                store.set_pdf_storage_path(sha, str(new_pdf))
         except OSError:
             # DB is updated; the file move is best-effort. The detail page's
             # "file expected but missing" panel will self-diagnose if the
