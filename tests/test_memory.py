@@ -178,18 +178,38 @@ def test_search_requires_q(handler: MemoryHandler) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_create_emits_card_combined(handler: MemoryHandler) -> None:
-    """A new memory emits a synthetic ``card_combined`` chunk (``ord=-1``)
-    holding its text, so the embed worker can vectorize it and semantic
-    search finds true neighbours (docs/design/dreaming.md)."""
-    r = handler.put(text="electrochemical CO2 reduction on copper")
+def test_create_emits_memory_body_chunk(handler: MemoryHandler) -> None:
+    """A new memory's prose lives in a ``memory_body`` chunk (``ord=0``), not
+    ``refs.title`` (migration 0050). That chunk is the single embed source —
+    the embed + chunk_keywords workers index it automatically, so semantic
+    search finds true neighbours and dreams live in a chunk, not the header.
+    No ``card_combined`` card any more (it would double-embed the prose)."""
+    body = "electrochemical CO2 reduction on copper"
+    r = handler.put(text=body, title="CO2 reduction on Cu")
     new_id = id_of(r.body)
     with handler.store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ord, chunk_kind, text FROM chunks WHERE ref_id = %s",
             (new_id,),
         ).fetchall()
-    assert rows == [(-1, "card_combined", "electrochemical CO2 reduction on copper")]
+        title = conn.execute(
+            "SELECT title FROM refs WHERE ref_id = %s", (new_id,)
+        ).fetchone()
+    assert rows == [(0, "memory_body", body)]
+    # The header is the short title, the prose is in the chunk.
+    assert title == ("CO2 reduction on Cu",)
+
+
+def test_create_derives_title_when_omitted(handler: MemoryHandler) -> None:
+    """Omitting title= derives one from the body's first line (capped 80)."""
+    body = "Copper facets steer CO2RED selectivity.\n\nThe (100) face favours…"
+    r = handler.put(text=body)
+    new_id = id_of(r.body)
+    with handler.store.pool.connection() as conn:
+        title = conn.execute(
+            "SELECT title FROM refs WHERE ref_id = %s", (new_id,)
+        ).fetchone()
+    assert title == ("Copper facets steer CO2RED selectivity.",)
 
 
 def test_upsert_card_combined_is_idempotent(store: Store) -> None:

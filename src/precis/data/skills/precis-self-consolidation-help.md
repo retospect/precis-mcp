@@ -76,10 +76,17 @@ synth_id = put(
     text=(
         "I tend to ... when ..., and the through-line is ... ."
     ),
+    title="I tend to ... (the gist in ~12 words)",  # scannable header;
+                                                     # omit → derived
+                                                     # from first body line
     tags=['internal-state', 'user:asa'],     # or internal-thought,
                                               # depending on scope
 )
 ```
+
+(If you consolidate via a memory `supersede` instead of the put+link
+below, it takes an optional `new_title=` alongside `new_text=`, derived
+from `new_text` when omitted — same header discipline.)
 
 Use first-person but abstract: *"I lean toward X under Y conditions"*
 rather than *"on Tuesday I thought Z."* The schema is the

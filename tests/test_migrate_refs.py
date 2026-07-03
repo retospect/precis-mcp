@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from precis.cli import migrate_refs
 from precis.utils import handle_registry
+from tests.conftest import id_of
 
 
 def _record(kind, ident):
@@ -112,26 +113,35 @@ def test_mixed_forms_in_one_body() -> None:
 # ── DB-backed scan + apply (real Postgres via the hub fixture) ────────
 
 
+def _memory_body_text(store, ref_id: int) -> str:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'memory_body'",
+            (ref_id,),
+        ).fetchone()
+    return row[0] if row else ""
+
+
 def test_scan_and_apply_memory(hub) -> None:
+    from precis.handlers.memory import MemoryHandler
+
     store = hub.store
+    handler = MemoryHandler(hub=hub)
     target = store.insert_ref(kind="memory", slug=None, title="cited note").id
     me = handle_registry.format_handle("memory", target)
-    body = store.insert_ref(
-        kind="memory", slug=None, title=f"as shown in memory:{target}, it holds"
-    ).id
+    # A memory's body lives in a memory_body chunk (migration 0050), so mint it
+    # through the handler — a bare insert_ref would leave no body to scan.
+    body = id_of(handler.put(text=f"as shown in memory:{target}, it holds").body)
 
     found = migrate_refs._scan_memories(store)
     plan = {c.ident: c.new for c in found}
     assert plan[body] == f"as shown in [{me}], it holds"
 
-    from precis.handlers.memory import MemoryHandler
-
-    handler = MemoryHandler(hub=hub)
     for c in found:
         handler.edit(id=c.ident, mode="replace", text=c.new)
 
-    ref = store.get_ref(kind="memory", id=body)
-    assert ref.title == f"as shown in [{me}], it holds"
+    # The rewrite lands in the body chunk (the prose), not refs.title.
+    assert _memory_body_text(store, body) == f"as shown in [{me}], it holds"
     # the auto-mention link to the target survives the rewrite
     links = {
         link.dst_ref_id

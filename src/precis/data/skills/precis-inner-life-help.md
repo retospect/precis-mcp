@@ -30,7 +30,9 @@ cap exist in the DB but don't surface until explicitly searched.
 
 ```python
 put(kind='memory',
-    text='I...',
+    text='I...',                       # the body prose (memory_body chunk)
+    title='<short scannable header>',   # the ref header shown in listings;
+                                        # omit → derived from the first body line
     tags=['internal-thought', 'user:asa'])
 # → integer id, auto_refresh_days defaults to None unless set
 ```
@@ -47,12 +49,14 @@ modes:
 
 ```python
 # Mode A: edit the latest in place — older states stay as history
-edit(kind='memory', id=<latest_id>, text='new body...')
+edit(kind='memory', id=<latest_id>, mode='replace',
+     text='new body...', title='new header...')
 
 # Mode B: write fresh — older states fall out of the preamble but
 # remain in the DB
 put(kind='memory',
-    text='...',
+    text='...',                 # body prose
+    title='<short header>',     # omit → derived from first body line
     tags=['internal-state', 'user:asa'])
 ```
 
@@ -114,6 +118,7 @@ recent-thoughts section on next turn.
 ```python
 put(kind='memory',
     text='I keep returning to ...',
+    title='<short header>',      # omit → derived from first body line
     tags=['interest:<topic>', 'user:asa'])
 # → integer id; consider auto_refresh_days=90 to let stale
 # interests fall off if not reinforced
@@ -147,8 +152,9 @@ search(kind='memory', tags=['internal-thought'],
 
 Two axes govern anything you write that resurfaces later:
 
-- **Scannable** (first-line discipline): lead with the conclusion, one
-  distinguishing detail, no filler. Gets the note *seen*.
+- **Scannable** (header / first-line discipline): put the conclusion in
+  `title=`, one distinguishing detail, no filler (omit it and it's
+  derived from the first body line). Gets the note *seen*.
 - **Actionable** (this section): for anything that points *forward* — a
   thought you'll re-read next turn, an `interest:<topic>` you'll pick
   back up, a `changed-mind:<topic>`, a `todo` — carry three things or
@@ -166,6 +172,7 @@ spot in the recent-thoughts section.
 ```python
 # inert: scans fine, useless next turn
 put(kind='memory', text='I keep thinking about the embedding cold-start',
+    title='I keep thinking about the embedding cold-start',
     tags=['internal-thought', 'user:asa'])
 
 # actionable: trigger + action + why/anchor
@@ -173,6 +180,7 @@ put(kind='memory',
     text="Next time bge-m3 cold-start bites skill search: point MCP at "
          "PRECIS_EMBEDDER=remote (always-hot serve-embeddings) rather "
          "than retrying. See skill:precis-search-help.",
+    title='bge-m3 cold-start → PRECIS_EMBEDDER=remote, not retry',
     tags=['internal-thought', 'user:asa'])
 ```
 

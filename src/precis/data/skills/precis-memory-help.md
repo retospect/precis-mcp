@@ -24,13 +24,23 @@ resolve on input.
 ```python
 put(kind='memory',
     text='Wang2020 chunk 38 has the cleanest Z-scheme diagram.',
+    title='Wang2020 has the cleanest Z-scheme diagram',   # short header
     tags=['topic:noxrr'],
     link='pc38')                       # chunk handle (legacy paper:wang2020state~38 still resolves)
 # → returns integer id (e.g. 73)
 ```
 
-`text=` is the only required arg. `tags=` and `link=` on create
-save a round-trip vs. a follow-up `tag()` / `link()`.
+`text=` is the only required arg — it is the memory's **body prose**,
+stored in a chunk (embedded + keyworded, so search finds it). `title=`
+is the short **header** shown in listings, search hits, and the grid;
+write the body first, then a title once its point is clear. Omit `title=`
+and one is derived from the body's first line (capped at 80 chars), but an
+explicit title reads better. `tags=` and `link=` on create save a
+round-trip vs. a follow-up `tag()` / `link()`.
+
+Rewrite a memory in place with `edit(kind='memory', id=N, mode='replace',
+text='new body'[, title='new header'])` — same id, links stay attached,
+old body kept in `view='log'`.
 
 ## Record a decision I just made
 ## Log a design choice with rationale

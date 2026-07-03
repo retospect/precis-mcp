@@ -741,6 +741,12 @@ def edit(
     id: str | int | None = None,
     mode: str = "find-replace",
     text: str | None = None,
+    # memory (see precis-memory-help): edit(mode='replace') rewrites the body
+    # prose; pass title= to also update the short header (omit to keep it).
+    title: str | None = None,
+    # todo (see precis-tasks-help): edit(mode='replace', body='…') sets/rewrites
+    # the optional details body; combine with text= to rewrite the task line too.
+    body: str | None = None,
     find: str | None = None,
     before: str | None = None,
     after: str | None = None,
@@ -797,6 +803,8 @@ def edit(
         "id": id,
         "mode": mode,
         "text": text,
+        "title": title,
+        "body": body,
         "find": find,
         "before": before,
         "after": after,

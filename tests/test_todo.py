@@ -49,6 +49,56 @@ def test_create_requires_text(handler: TodoHandler) -> None:
         handler.put(text="   ")
 
 
+# ── optional details body (additive, migration 0050) ─────────────────
+
+
+def _latest_todo_id(handler: TodoHandler) -> int:
+    return handler.store.list_refs(kind="todo", limit=1)[0].id
+
+
+def test_create_without_body_writes_no_chunk(handler: TodoHandler) -> None:
+    """The common case: a todo is just a task line — no body chunk at all."""
+    handler.put(text="finish the report")
+    tid = _latest_todo_id(handler)
+    assert handler.store.list_blocks_for_ref(tid) == []
+
+
+def test_create_with_body_writes_todo_body_chunk(handler: TodoHandler) -> None:
+    """put(body=...) attaches a todo_body chunk; the task line stays in
+    refs.title (a good header already), the details ride in the chunk."""
+    handler.put(text="finish the report", body="cover Q3 revenue and churn")
+    tid = _latest_todo_id(handler)
+    with handler.store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ord, chunk_kind, text FROM chunks WHERE ref_id = %s",
+            (tid,),
+        ).fetchall()
+    assert rows == [(0, "todo_body", "cover Q3 revenue and churn")]
+    # The body renders on the single-ref read.
+    detail = handler.get(id=tid).body
+    assert "finish the report" in detail
+    assert "cover Q3 revenue and churn" in detail
+
+
+def test_edit_body_replaces_the_chunk(handler: TodoHandler) -> None:
+    handler.put(text="finish the report", body="old details")
+    tid = _latest_todo_id(handler)
+    handler.edit(id=tid, mode="replace", body="new details")
+    with handler.store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_kind, text FROM chunks WHERE ref_id = %s AND ord >= 0",
+            (tid,),
+        ).fetchall()
+    assert rows == [("todo_body", "new details")]
+
+
+def test_edit_requires_text_or_body(handler: TodoHandler) -> None:
+    handler.put(text="finish the report")
+    tid = _latest_todo_id(handler)
+    with pytest.raises(BadInput, match="requires text= and/or body="):
+        handler.edit(id=tid, mode="replace")
+
+
 # ── put: status transitions ──────────────────────────────────────────
 
 

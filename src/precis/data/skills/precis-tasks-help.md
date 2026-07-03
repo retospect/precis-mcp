@@ -62,6 +62,24 @@ deleted), and be a `todo`. Cycles are rejected at write time
 exceed 10 deep — if you hit the wall, attach a `waiting-for:*` tag
 or a `blocked-by` link instead of splitting further.
 
+## Attach a details body to a todo
+
+The `text=` task line is the header — keep it a short imperative. For
+longer context (a spec, acceptance criteria, a plan), pass an optional
+`body=`; it lands in a `todo_body` chunk (embedded + keyworded, so it's
+searchable) and renders under the task line on `get(kind='todo', id=N)`.
+The tree / doable / attention views still show only the task line.
+
+```python
+put(kind='todo', text='Wire the export endpoint.',
+    body='Accept ?format=csv|json. 404 on unknown format. '
+         'Stream for >10k rows. See the design note in me812.')
+# rewrite it later:
+edit(kind='todo', id=N, mode='replace', body='updated acceptance criteria')
+# or rewrite both at once:
+edit(kind='todo', id=N, mode='replace', text='new task line', body='new body')
+```
+
 ## Dashboard: strategic roots and 7d accounting
 
 ```python

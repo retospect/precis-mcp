@@ -25,6 +25,17 @@ from precis.errors import BadInput
 from precis.handlers.memory import MemoryHandler
 from precis.store import BlockInsert, Store, Tag
 
+
+def _seed_memory_with_body(store: Store, text: str) -> int:
+    """Insert a memory whose prose lives in a ``memory_body`` chunk
+    (migration 0050) — memory search matches the chunk, not ``refs.title``."""
+    ref = store.insert_ref(kind="memory", slug=None, title=text)
+    store.insert_blocks(
+        ref.id, [BlockInsert(pos=0, text=text, meta={"chunk_kind": "memory_body"})]
+    )
+    return ref.id
+
+
 # ── per-kind axis enforcement ──────────────────────────────────────
 
 
@@ -265,11 +276,7 @@ class TestTotalHitsHeader:
         """End-to-end: handler.search renders the header with 'of K'
         when page_size truncates the result set."""
         for i in range(5):
-            store.insert_ref(
-                kind="memory",
-                slug=None,
-                title=f"precis fact {i}",
-            )
+            _seed_memory_with_body(store, f"precis fact {i}")
         h = MemoryHandler(hub=Hub(store=store))
         out = h.search(q="precis", page_size=2)
         # 2 hits returned, 5 total. Header should reflect both.
@@ -278,11 +285,7 @@ class TestTotalHitsHeader:
     def test_search_response_no_total_when_uncapped(self, store: Store) -> None:
         """When the agent already saw everything, no 'of K'."""
         for i in range(2):
-            store.insert_ref(
-                kind="memory",
-                slug=None,
-                title=f"precis fact {i}",
-            )
+            _seed_memory_with_body(store, f"precis fact {i}")
         h = MemoryHandler(hub=Hub(store=store))
         out = h.search(q="precis", page_size=10)
         # All 2 returned. No "of N" trailer.

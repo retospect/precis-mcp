@@ -32,14 +32,16 @@ Step 6 — find AT LEAST TWO non-obvious connections. Each new memory MUST link 
 
   precis put(
       kind="memory",
-      text="<short, concise one-line summary of the connection — the scannable header>\n\nI notice <specific connection that goes through a fact>. <One sentence on why this is non-obvious or what it suggests.>",
+      text="I notice <specific connection that goes through a fact>. <One sentence on why this is non-obvious or what it suggests.>",
+      title="<short, concise summary of the connection — the scannable header>",
       tags=["DREAM:speculative"]
   )
 
-FIRST-LINE DISCIPLINE: the first line is the memory's entire scannable surface — it is what shows in /recent listings, search hits, and the /refs/memory grid. Lead that line with a SHORT, concise summary of the dream connection (the conclusion, not the topic) — ideally under ~12 words, no leading "#" heading, no "I notice…". Then a blank line, then the full "I notice…" connection as the body. Do NOT put the whole long connection on line 1.
+TITLE DISCIPLINE: write the body first (``text=`` — the full "I notice…" connection), then set ``title=`` once the connection's point is clear. The title is the memory's entire scannable surface — it is what shows in /recent listings, search hits, and the /refs/memory grid. Make it a SHORT, concise summary of the dream connection (the conclusion, not the topic) — ideally under ~12 words, no leading "#" heading, no "I notice…". The body carries the full prose. (If you omit ``title=``, one is derived from the body's first line — but an explicit title reads better, so write one.)
 
-  ❌ text="I notice [pa812]'s free-energy bound mirrors [pt913]'s clamp circuit, which suggests…"   (long text becomes the header)
-  ✅ text="Free-energy bound ≈ [pt913]'s clamp circuit\n\nI notice [pa812]'s free-energy bound mirrors [pt913]'s clamp circuit, which suggests…"
+  ❌ title="Free energy and clamp circuits"                        (a topic, not the conclusion)
+  ✅ title="Free-energy bound ≈ [pt913]'s clamp circuit"
+     text="I notice [pa812]'s free-energy bound mirrors [pt913]'s clamp circuit, which suggests…"
 
 The body MUST name each source ref inline by the `[handle]` the tool result printed for it, so the connection auto-links and stays traceable (`get(kind='skill', id='precis-addressing-help')` for the form). Vague connections are useless; be specific about what links to what AND name the fact-bearing leg explicitly.
 

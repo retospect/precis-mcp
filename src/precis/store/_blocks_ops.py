@@ -1251,6 +1251,116 @@ class BlocksMixin:
         with self.pool.connection() as c:
             return _do(c)
 
+    def replace_body_chunk(
+        self,
+        ref_id: int,
+        new_text: str,
+        *,
+        chunk_kind: str,
+        source: str = "agent",
+        conn: Connection | None = None,
+    ) -> str | None:
+        """Replace the single body chunk of ``chunk_kind`` for a ref.
+
+        Delete + re-insert (never an in-place text UPDATE): a non-draft
+        chunk carries a NULL ``content_sha``, so an UPDATE would leave the
+        old ``chunk_embeddings`` / ``chunk_summaries`` rows stale (the embed
+        worker keys on ``content_sha IS DISTINCT FROM``, which a text-only
+        UPDATE doesn't move). Delete cascades the derived rows and the fresh
+        insert re-enters the embed + keyword queues. The new chunk lands at
+        the old chunk's ord (or ord 0 if none existed), preserving position.
+
+        Writes a ``body_replaced`` ``ref_events`` row (old + new text) so
+        ``view='log'`` keeps surfacing the rewrite. Returns the previous
+        body text (for a word-count / diff render), or ``None`` if the ref
+        had no such chunk yet. Mirrors :meth:`replace_ref_text`, but for a
+        chunk-backed body (memory / todo) rather than ``refs.title``.
+        """
+
+        def _do(c: Connection) -> str | None:
+            row = c.execute(
+                "SELECT text, ord FROM chunks "
+                "WHERE ref_id = %s AND chunk_kind = %s "
+                "ORDER BY ord ASC LIMIT 1",
+                (ref_id, chunk_kind),
+            ).fetchone()
+            old_text = row[0] if row is not None else None
+            pos = int(row[1]) if row is not None else 0
+            c.execute(
+                "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
+                (ref_id, chunk_kind),
+            )
+            self.insert_blocks(
+                ref_id,
+                [BlockInsert(pos=pos, text=new_text, meta={"chunk_kind": chunk_kind})],
+                conn=c,
+            )
+            c.execute(
+                "UPDATE refs SET updated_at = now() WHERE ref_id = %s",
+                (ref_id,),
+            )
+            c.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload) "
+                "VALUES (%s, %s, %s, %s::jsonb)",
+                (
+                    ref_id,
+                    source,
+                    "body_replaced",
+                    Jsonb({"old_text": old_text, "new_text": new_text}),
+                ),
+            )
+            return old_text
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def set_ref_title(
+        self,
+        ref_id: int,
+        new_title: str,
+        *,
+        source: str = "agent",
+        conn: Connection | None = None,
+    ) -> str | None:
+        """Update a ref's ``title`` header (the short title, not the body).
+
+        For chunk-backed bodies (memory / todo, migration 0050) the prose
+        lives in a chunk and ``refs.title`` is just the header, so a title
+        edit is a lightweight UPDATE + a ``title_changed`` audit row.
+        Returns the old title, or ``None`` if the ref is missing/deleted.
+        """
+
+        def _do(c: Connection) -> str | None:
+            row = c.execute(
+                "SELECT title FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            old_title = row[0]
+            c.execute(
+                "UPDATE refs SET title = %s, updated_at = now() WHERE ref_id = %s",
+                (new_title, ref_id),
+            )
+            c.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload) "
+                "VALUES (%s, %s, %s, %s::jsonb)",
+                (
+                    ref_id,
+                    source,
+                    "title_changed",
+                    Jsonb({"old_title": old_title, "new_title": new_title}),
+                ),
+            )
+            return old_title
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
     def upsert_card_combined(
         self,
         ref_id: int,
@@ -1360,23 +1470,53 @@ class BlocksMixin:
         return self.touch_attended("dream", chunk_ids, conn=conn)
 
     def card_chunk_ids(self, ref_ids: list[int]) -> list[int]:
-        """Resolve the ``card_combined`` (``ord=-1``) chunk id per ref.
+        """Resolve the primary salience-bearing chunk id per ref.
 
         Ref-level search (memory) returns refs, not chunks, but salience
-        lives on chunks — a memory's only salience-bearing chunk is its
-        card. This maps a page of hit ref ids to the chunk ids
-        :meth:`bump_salience` should heat. Refs without a card (kinds
-        that don't emit one) simply contribute nothing, so calling this
-        for a mixed/numeric-kind page is safe.
+        lives on chunks. This maps a page of hit ref ids to the chunk ids
+        :meth:`bump_salience` should heat, one per ref: the ``card_combined``
+        card (``ord=-1``) when the ref has one, else the lowest-ord body
+        chunk (e.g. a memory's ``memory_body`` at ``ord=0`` — memory bodies
+        moved off ``refs.title`` into a chunk in migration 0050, so there is
+        no card any more). Refs with no chunk at all contribute nothing, so
+        calling this for a mixed/numeric-kind page is safe.
         """
         if not ref_ids:
             return []
         with self.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT chunk_id FROM chunks WHERE ord = -1 AND ref_id = ANY(%s)",
+                # Prefer the card (ord=-1), else the lowest-ord body chunk.
+                "SELECT DISTINCT ON (ref_id) chunk_id FROM chunks "
+                "WHERE ref_id = ANY(%s) "
+                "ORDER BY ref_id, (ord = -1) DESC, ord ASC",
                 (list(ref_ids),),
             ).fetchall()
         return [int(r[0]) for r in rows]
+
+    def chunk_word_counts(
+        self, ref_ids: list[int], *, chunk_kind: str
+    ) -> dict[int, int]:
+        """Word count of each ref's ``chunk_kind`` body chunk(s), batched.
+
+        Feeds the memory list view's "how much body is hiding behind the id"
+        column now that ``refs.title`` is a short title, not the prose. One
+        query for the whole page (no N+1); refs with no such chunk are absent
+        from the map (caller defaults to 0).
+        """
+        if not ref_ids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, "
+                "SUM(COALESCE("
+                "  array_length(regexp_split_to_array(btrim(text), E'\\s+'), 1)"
+                ", 0))::int "
+                "FROM chunks "
+                "WHERE chunk_kind = %s AND ref_id = ANY(%s) AND btrim(text) <> '' "
+                "GROUP BY ref_id",
+                (chunk_kind, list(ref_ids)),
+            ).fetchall()
+        return {int(r[0]): int(r[1]) for r in rows}
 
     def select_salient(
         self,

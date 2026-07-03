@@ -9,9 +9,17 @@ status: active
 # precis-firstline-help — write a first line that gets the note *used*
 
 On any numeric-ref kind (`memory`, `todo`, `gripe`, `flashcard`) the
-**first line is the entire scannable surface** — it's what shows in
-`/recent` listings, search hits, and review tiers. Everything else is
-body you only see after you've already decided to open it.
+**header is the entire scannable surface** — it's what shows in
+`/recent` listings, search hits, the grid, and review tiers. Everything
+else is body you only see after you've already decided to open it.
+
+For `memory`, that header is the **`title=`** field: a short scannable
+line stored on the ref, separate from the body prose in `text=`. Write
+it with the same discipline as a first line. If you omit `title=`, it's
+derived from the body's **first line** (capped at 80 chars) — so the
+first-line discipline below still matters as the fallback header. For
+the other kinds the first line of the body *is* the header, by being
+first.
 
 ## The principle
 
@@ -25,16 +33,25 @@ it from its neighbours (date, scope, ref id). Skip filler:
 - ✅ `Switched the chunker to recursive-separator splitting — fixes the one-giant-chunk youtube bug.`
 - ✅ `bge-m3 beat e5 on our retrieval set (nDCG 0.71 vs 0.64).`
 
-No leading `#` heading, no bolding — the first line is the header *by
-being first*. The body (everything after line 1) stays terse for the
-same reason: no preamble, no "here's a memory about…".
+No leading `#` heading, no bolding — the header is a plain scannable
+line (~12 words). The body stays terse for the same reason: no preamble,
+no "here's a memory about…". For a memory, split the two explicitly:
+
+```python
+put(kind='memory',
+    text='bge-m3 beat e5 on our retrieval set; e5 lost most on the '
+         'long-context youtube transcripts. Kept bge-m3 as default.',
+    title='bge-m3 beat e5 on our retrieval set (nDCG 0.71 vs 0.64)',
+    tags=['memory:finding', 'user:asa'])
+```
 
 ## Per-shape patterns
 
-Pick the shape that fits, then write the first line to match:
+Pick the shape that fits, then write the header to match (the memory
+shapes go in `title=`; todo/gripe/flashcard in the first body line):
 
 ```
-shape            first-line pattern
+shape            header pattern
 memory:decision  Decided: <what> (+ short reason if it fits)
 memory:finding   <conclusion> (<scope or source>)
 memory:open      Open: <the literal question>

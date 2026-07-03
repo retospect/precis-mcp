@@ -18,10 +18,10 @@ prose like ``time:30`` is never touched — every rewrite is
 resolution-gated).
 
 Scope: **drafts** (live draft chunks, rewritten via ``edit_text`` so the
-embedding/link cascade re-derives) and **thoughts** (``memory`` bodies,
-rewritten via the memory ``edit`` verb so the card chunk + auto-mention
-links re-sync). Papers, jobs, convs and other body chunks are out of
-scope and reported as skipped.
+embedding/link cascade re-derives) and **thoughts** (``memory`` bodies —
+the ``memory_body`` chunk, rewritten via the memory ``edit`` verb so the
+body chunk re-embeds and auto-mention links re-sync). Papers, jobs, convs
+and other body chunks are out of scope and reported as skipped.
 
 Dry-run by default: prints the planned rewrites and writes nothing. Pass
 ``--apply`` to commit. Re-running ``--apply`` is safe and idempotent
@@ -217,24 +217,31 @@ def _scan_drafts(store: Any) -> list[Change]:
 
 
 def _scan_memories(store: Any) -> list[Change]:
-    """A :class:`Change` for every live memory whose body changes."""
+    """A :class:`Change` for every live memory whose body changes.
+
+    A memory's prose lives in its ``memory_body`` chunk (migration 0050),
+    not ``refs.title`` (now a short header) — so scan the chunk. The apply
+    side (``handler.edit(id, text=...)``) rewrites that same chunk.
+    """
     resolve_record, resolve_chunk = _make_resolvers(store)
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """SELECT ref_id, title FROM refs
-                WHERE kind = 'memory' AND deleted_at IS NULL
-                  AND title ~ %s""",
+            """SELECT c.ref_id, c.text
+                 FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
+                WHERE r.kind = 'memory' AND r.deleted_at IS NULL
+                  AND c.chunk_kind = 'memory_body'
+                  AND c.text ~ %s""",
             (_PREFILTER,),
         ).fetchall()
     out: list[Change] = []
-    for ref_id, title in rows:
-        if not title:
+    for ref_id, text in rows:
+        if not text:
             continue
         new, changes = rewrite(
-            title, resolve_record=resolve_record, resolve_chunk=resolve_chunk
+            text, resolve_record=resolve_record, resolve_chunk=resolve_chunk
         )
         if changes:
-            out.append(Change(int(ref_id), title, new, changes))
+            out.append(Change(int(ref_id), text, new, changes))
     return out
 
 

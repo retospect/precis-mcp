@@ -98,9 +98,20 @@ class TestBuildTagFilter:
 def _seed_two_memories(store: Store) -> tuple[int, int]:
     """Create two memory refs, tag the first with topic:co2-capture
     + PRIO:high, the second with topic:nox-reduction. Both share a
-    common keyword ('precis') in their title for lexical search."""
+    common keyword ('precis') in their body for lexical search."""
     a = store.insert_ref(kind="memory", slug=None, title="precis on co2")
     b = store.insert_ref(kind="memory", slug=None, title="precis on nox")
+    # A memory's body prose lives in a memory_body chunk (migration 0050),
+    # and memory search matches that chunk — seed one per ref so the shared
+    # 'precis' keyword is lexically searchable.
+    store.insert_blocks(
+        a.id,
+        [BlockInsert(pos=0, text="precis on co2", meta={"chunk_kind": "memory_body"})],
+    )
+    store.insert_blocks(
+        b.id,
+        [BlockInsert(pos=0, text="precis on nox", meta={"chunk_kind": "memory_body"})],
+    )
     store.add_tag(a.id, Tag.open("topic-co2-capture"))
     store.add_tag(a.id, Tag.closed("PRIO", "high"))
     store.add_tag(b.id, Tag.open("topic-nox-reduction"))

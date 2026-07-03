@@ -4428,7 +4428,7 @@ const defaultOptions = {
     kind: OptionKind.VIEWER
   },
   sidebarViewOnLoad: {
-    value: 0,
+    value: -1,
     kind: OptionKind.VIEWER + OptionKind.PREFERENCE
   },
   scrollModeOnLoad: {
@@ -12743,7 +12743,7 @@ class BasePreferences {
     "pageColorsBackground": "Canvas",
     "pageColorsForeground": "CanvasText",
     "pdfBugEnabled": false,
-    "sidebarViewOnLoad": 0,
+    "sidebarViewOnLoad": -1,
     "scrollModeOnLoad": -1,
     "spreadModeOnLoad": -1,
     "textLayerMode": 1,

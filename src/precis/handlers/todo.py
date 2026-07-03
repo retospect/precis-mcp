@@ -56,8 +56,15 @@ from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
+from precis.store.types import BlockInsert
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
+
+#: Chunk kind holding a todo's optional details body (ADR-parallel to
+#: ``memory_body``, migration 0050). The task line stays in ``refs.title``
+#: (a good header already); the body is extra prose read on ``get`` and
+#: embedded + keyworded for free. Additive — most todos never set one.
+_BODY_KIND = "todo_body"
 
 
 class TodoView(StrEnum):
@@ -411,6 +418,7 @@ class TodoHandler(NumericRefHandler):
         parent_id: int | str | None = None,
         prio: int | None = None,
         meta: dict[str, Any] | None = None,
+        body: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``PRIO:*`` tag form is back-compat — translate to the int
@@ -560,6 +568,9 @@ class TodoHandler(NumericRefHandler):
         self._pending_parent_id = parent_int
         self._pending_meta = meta
         self._pending_prio = prio
+        self._pending_body = (
+            body.strip() if isinstance(body, str) and body.strip() else None
+        )
         try:
             return super().put(
                 text=text,
@@ -577,12 +588,14 @@ class TodoHandler(NumericRefHandler):
             self._pending_parent_id = None
             self._pending_meta = None
             self._pending_prio = None
+            self._pending_body = None
 
-    # Per-call slots for plumbing parent_id / meta / prio from ``put``
+    # Per-call slots for plumbing parent_id / meta / prio / body from ``put``
     # into ``_create`` without changing the base class's signature.
     _pending_parent_id: int | None = None
     _pending_meta: dict[str, Any] | None = None
     _pending_prio: int | None = None
+    _pending_body: str | None = None
 
     def _create(
         self,
@@ -623,6 +636,22 @@ class TodoHandler(NumericRefHandler):
                 prio=self._pending_prio,
                 conn=conn,
             )
+            # Optional details body → a todo_body chunk at pos 0, written
+            # *before* the tag-overflow redirect (which appends at the next
+            # free ord). Additive: the task line stays in refs.title; the
+            # body is extra prose, embedded + keyworded by the workers.
+            if self._pending_body:
+                self.store.insert_blocks(
+                    ref.id,
+                    [
+                        BlockInsert(
+                            pos=0,
+                            text=self._pending_body,
+                            meta={"chunk_kind": _BODY_KIND},
+                        )
+                    ],
+                    conn=conn,
+                )
             # Redirect long/whitespace ask-user:/halt: yields into a
             # tag_overflow chunk on the just-minted ref *before*
             # parse_strict's whitespace guard fires — so a legitimate
@@ -685,16 +714,18 @@ class TodoHandler(NumericRefHandler):
         id: str | int | None = None,
         mode: str = "replace",
         text: str | None = None,
+        body: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """In-place rewrite of a todo's text (``mode='replace'``).
+        """In-place rewrite of a todo's task line and/or details body.
 
-        Same id; parent, links, and tags all stay attached — the old
-        body lands in ``ref_events`` as a ``body_replaced`` row
-        (``view='log'``). Owner-only on strategic / tactical nodes,
-        the same authority veto as delete / reparent. Distinct from
-        delete + re-put, which would break every inbound edge and the
-        tree position.
+        ``text=`` rewrites the task line (``refs.title``); ``body=`` sets or
+        rewrites the optional details body (a ``todo_body`` chunk). Pass
+        either or both. Same id; parent, links, and tags all stay attached —
+        the old text lands in ``ref_events`` as a ``body_replaced`` row
+        (``view='log'``). Owner-only on strategic / tactical nodes, the same
+        authority veto as delete / reparent. Distinct from delete + re-put,
+        which would break every inbound edge and the tree position.
         """
         if id is None:
             raise BadInput(
@@ -706,26 +737,45 @@ class TodoHandler(NumericRefHandler):
                 f"edit(kind='todo') only supports mode='replace', got {mode!r}",
                 next="edit(kind='todo', id=N, mode='replace', text='new text')",
             )
-        if text is None or not text.strip():
+        has_text = text is not None and text.strip()
+        has_body = body is not None and body.strip()
+        if not has_text and not has_body:
             raise BadInput(
-                "edit(kind='todo', mode='replace') requires text=",
+                "edit(kind='todo', mode='replace') requires text= and/or body=",
                 next="edit(kind='todo', id=N, mode='replace', text='new text')",
             )
         ref_id = self._coerce_id(id)
         guards.check_owner_only_ref(self.store, ref_id)
         ref = self._resolve_live_ref(ref_id)
+        old_text: str | None = None
         with self.store.tx() as conn:
-            old_text = self.store.replace_ref_text(
-                ref.id, text, source=guards._caller_source(), conn=conn
-            )
-            if self.emits_card:
-                self.store.upsert_card_combined(ref.id, text, conn=conn)
-        old_words = len((old_text or "").split())
-        new_words = len(text.split())
+            if has_text:
+                assert text is not None
+                old_text = self.store.replace_ref_text(
+                    ref.id, text, source=guards._caller_source(), conn=conn
+                )
+                if self.emits_card:
+                    self.store.upsert_card_combined(ref.id, text, conn=conn)
+            if has_body:
+                assert body is not None
+                self.store.replace_body_chunk(
+                    ref.id,
+                    body,
+                    chunk_kind=_BODY_KIND,
+                    source=guards._caller_source(),
+                    conn=conn,
+                )
+        parts: list[str] = []
+        if has_text:
+            assert text is not None
+            old_words = len((old_text or "").split())
+            new_words = len(text.split())
+            parts.append(f"task line ({old_words} → {new_words} words)")
+        if has_body:
+            parts.append("details body")
         return Response(
             body=(
-                f"replaced text of todo id={ref.id} "
-                f"({old_words} → {new_words} words). "
+                f"replaced {' + '.join(parts)} of todo id={ref.id}. "
                 "view='log' for the full diff."
             )
         )
@@ -972,10 +1022,23 @@ class TodoHandler(NumericRefHandler):
         if ref.parent_id is not None or ref.prio is not None:
             out.append("")
         out.append(ref.title)
+        # Optional details body (todo_body chunk), when the todo has one.
+        body = self._body_text(ref)
+        if body:
+            out.append("")
+            out.append(body)
         if tags:
             out.append("")
             out.append("tags: " + " ".join(str(t) for t in tags))
         return "\n".join(out)
+
+    def _body_text(self, ref: Ref) -> str | None:
+        """The todo's optional details body from its ``todo_body`` chunk,
+        or ``None`` when it has none (the common case)."""
+        for block in self.store.list_blocks_for_ref(ref.id):
+            if block.chunk_kind == _BODY_KIND:
+                return block.text
+        return None
 
     # ── create-ack: surface parent_id if set ──────────────────────
 
