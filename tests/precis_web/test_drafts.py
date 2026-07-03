@@ -1029,6 +1029,93 @@ def test_ref_chips_distinct_chunks_stay_separate() -> None:
     assert len(chips) == 3
 
 
+def test_ref_chips_missing_pdf_marker() -> None:
+    """A cited paper whose PDF is flagged missing carries a red ▲; others don't."""
+    from precis_web.routes.drafts import _ref_chips
+
+    chips = _ref_chips("see paper:kong24 here", lambda kind, ident: ident == "kong24")
+    html = str(chips[0])
+    assert "&#9650;" in html  # the red triangle glyph
+    assert "text-rose-600" in html
+    # tooltip is present (apostrophe HTML-escaped, so match the stable prefix)
+    assert 'title="PDF missing' in html
+    # a present paper (predicate False) gets a plain chip, no marker
+    ok = _ref_chips("see paper:kong24 here", lambda kind, ident: False)
+    assert "&#9650;" not in str(ok[0])
+    # no predicate at all (the historical one-arg call) also stays plain
+    assert "&#9650;" not in str(_ref_chips("see paper:kong24 here")[0])
+
+
+def test_ref_chips_missing_pdf_marker_on_pa_handle() -> None:
+    """The ``[pa5]`` universal-handle cite form flags too (the draft's cite form)."""
+    from precis_web.routes.drafts import _ref_chips
+
+    # pa5 → ('paper', False, 5); its chip target is /r/paper/5, ident "5".
+    chips = _ref_chips("[pa5]", lambda kind, ident: kind == "paper" and ident == "5")
+    assert "/r/paper/5" in str(chips[0])
+    assert "&#9650;" in str(chips[0])
+
+
+class _FakeRef:
+    def __init__(
+        self,
+        slug: str | None,
+        pdf_sha256: str | None,
+        *,
+        id: int = 1,
+        aliases: tuple[str, ...] = (),
+    ) -> None:
+        self.slug = slug
+        self.pdf_sha256 = pdf_sha256
+        self.id = id
+        self.aliases = aliases
+
+
+class _FakePaperStore:
+    def __init__(self, ref: _FakeRef | None) -> None:
+        self._ref = ref
+
+    def get_ref(self, *, kind: str, id: object) -> _FakeRef | None:
+        assert kind == "paper"
+        return self._ref
+
+    def ref_cite_keys(self, ref_id: int) -> list[str]:
+        return list(self._ref.aliases) if self._ref else []
+
+
+def test_paper_pdf_missing(tmp_path) -> None:
+    """Held-but-absent → True; stub / present / no-roots / no-ref → False."""
+    from precis_web.routes.drafts import _paper_pdf_missing
+
+    roots = (tmp_path,)
+    held = _FakePaperStore(_FakeRef("kong24", "abc"))
+    # held (pdf_sha256 set) with no file on disk → the anomaly
+    assert _paper_pdf_missing(held, roots, "kong24") is True
+    # a stub (no pdf_sha256) is a known state, not an anomaly
+    assert _paper_pdf_missing(
+        _FakePaperStore(_FakeRef("kong24", None)), roots, "k"
+    ) is (False)
+    # once the file exists under the shard letter, no flag
+    (tmp_path / "k").mkdir()
+    (tmp_path / "k" / "kong24.pdf").write_bytes(b"%PDF")
+    assert _paper_pdf_missing(held, roots, "kong24") is False
+    # nothing to assert without corpus roots, or when the ref is gone
+    assert _paper_pdf_missing(held, (), "kong24") is False
+    assert _paper_pdf_missing(_FakePaperStore(None), roots, "kong24") is False
+
+
+def test_paper_pdf_missing_resolves_via_alias(tmp_path) -> None:
+    """A paper filed under a non-display cite_key alias is NOT flagged missing."""
+    from precis_web.routes.drafts import _paper_pdf_missing
+
+    # display slug "smith2024" has no file, but the alias "smithbook" does
+    aliased = _FakePaperStore(_FakeRef("smith2024", "abc", aliases=("smithbook",)))
+    assert _paper_pdf_missing(aliased, (tmp_path,), "smith2024") is True
+    (tmp_path / "s").mkdir()
+    (tmp_path / "s" / "smithbook.pdf").write_bytes(b"%PDF")
+    assert _paper_pdf_missing(aliased, (tmp_path,), "smith2024") is False
+
+
 def test_delete_change_request_dispatches_todo_delete(
     draft_client: TestClient, draft_runtime: FakeRuntime
 ) -> None:

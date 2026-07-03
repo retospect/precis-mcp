@@ -63,6 +63,7 @@ import logging
 import re
 import tempfile
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -85,10 +86,12 @@ from precis.utils.authors import (
 from precis.utils.embed_query import embed_query
 from precis.utils.figure_clearance import draft_figure_clearance, figure_status
 from precis.utils.table_data import table_payload
+from precis_web.corpus import ref_pdf_keys, resolve_pdf
 from precis_web.deps import (
     await_dispatch,
     get_runtime,
     get_store,
+    get_web_config,
     redirect_or_error,
     templates,
 )
@@ -232,25 +235,45 @@ def _ancestor_headings(chunk_objs: list[Any]) -> dict[str, list[str]]:
     return out
 
 
-def _ref_chips(text: str) -> list[Any]:
+#: Tooltip on the red ▲ a cited paper carries when its PDF is held but
+#: not on disk where the web process looked (see ``_paper_pdf_missing``).
+_MISSING_PDF_WARN = "PDF missing — this cited paper is held but its file isn't on disk"
+
+
+def _ref_chips(
+    text: str, is_missing: Callable[[str, str], bool] | None = None
+) -> list[Any]:
     """The references a block makes, as terse hover-preview chips — the
     superset grammar (bracket/sigil forms ∪ bare ``kind:ref``), deduped
     by their navigate target so ``§kong24~2`` and ``paper:kong24~2`` (the
     same chunk) collapse to one chip. Each chip carries the cited quote
-    on hover (``popover_chip``). Reuses the shared parser/grammar (DRY)."""
+    on hover (``popover_chip``). Reuses the shared parser/grammar (DRY).
+
+    ``is_missing(kind, ident)`` — when supplied — flags a cited paper whose
+    PDF is missing on disk; its chip then carries a red ▲ marker."""
     seen: set[str] = set()
     chips: list[Any] = []
 
-    def add(label: str, href: str, preview: str | None) -> None:
+    def _warn(kind: str, ident: str) -> str | None:
+        return _MISSING_PDF_WARN if is_missing and is_missing(kind, ident) else None
+
+    def add(
+        label: str, href: str, preview: str | None, warn: str | None = None
+    ) -> None:
         if href in seen:
             return
         seen.add(href)
-        chips.append(popover_chip(label, href, preview))
+        chips.append(popover_chip(label, href, preview, warn=warn))
 
     def paper(slug: str, chunk: str | None, label: str) -> None:
         # chunk here is the regex group incl. leading ``~`` (or None).
         suffix = f"?chunk={chunk[1:]}" if chunk else ""
-        add(label, f"/r/paper/{slug}{suffix}", f"/preview/paper/{slug}{suffix}")
+        add(
+            label,
+            f"/r/paper/{slug}{suffix}",
+            f"/preview/paper/{slug}{suffix}",
+            warn=_warn("paper", slug),
+        )
 
     for ref in draft_markup.parse_references(text):
         if ref.cls == draft_markup.XREF:
@@ -274,6 +297,7 @@ def _ref_chips(text: str) -> list[Any]:
                         ref.surface or ref.target,
                         f"/r/{kind}/{pk}",
                         f"/preview/{kind}/{pk}",
+                        warn=_warn(kind, str(pk)),
                     )
                 continue
             m = mentions.REF_PATTERN.fullmatch(ref.target)
@@ -496,6 +520,31 @@ def _list_markers(
     return marker, ordered
 
 
+def _paper_pdf_missing(store: Any, corpus_dirs: tuple[Path, ...], ident: str) -> bool:
+    """A cited paper whose PDF is *held but absent* — the anomaly the reader
+    flags. True only when the ref exists, claims a PDF (``pdf_sha256`` set),
+    yet no file resolves under any corpus root — across *every* cite_key alias
+    (``ref_pdf_keys``), so a paper filed under a non-display alias isn't
+    falsely flagged. A stub (no ``pdf_sha256``, queued for fetch) is a known
+    state, not an anomaly, so it stays unflagged; a missing ref or unset corpus
+    roots also return False (nothing to assert). ``ident`` is the chip target —
+    a numeric ref_id (from a ``pa…`` handle) or a slug (from a ``paper:``
+    mention); ``get_ref`` resolves both."""
+    if not corpus_dirs:
+        return False
+    key: int | str = ident
+    stripped = str(ident).lstrip("#")
+    if stripped.isdigit():
+        key = int(stripped)
+    try:
+        paper = store.get_ref(kind="paper", id=key)
+    except Exception:  # pragma: no cover - defensive (bad ident never 500s the row)
+        return False
+    if paper is None or not getattr(paper, "pdf_sha256", None):
+        return False
+    return resolve_pdf(corpus_dirs, ref_pdf_keys(store, paper)) is None
+
+
 def _build_rows(
     store: Any,
     ref: Any,
@@ -503,6 +552,7 @@ def _build_rows(
     want_idx: Any,
     *,
     abbrevs: dict[str, str],
+    corpus_dirs: tuple[Path, ...] = (),
 ) -> list[dict[str, Any]]:
     """Full per-block row context for the chunks at ``want_idx`` (an
     iterable of indices into ``chunk_objs``). The expensive per-handle
@@ -540,6 +590,18 @@ def _build_rows(
     # not just the visible window). Counters key on ``parent_chunk_id`` so
     # nested lists each restart cleanly.
     item_marker, item_ordered = _list_markers(chunk_objs)
+    # Cited-paper PDF presence: resolve each distinct cited paper once, then
+    # flag its chip if the file is held-but-missing. Memoised so a paper cited
+    # in many blocks costs one lookup for the whole window.
+    _pdf_missing: dict[str, bool] = {}
+
+    def _cite_missing(kind: str, ident: str) -> bool:
+        if kind != "paper" or not corpus_dirs:
+            return False
+        if ident not in _pdf_missing:
+            _pdf_missing[ident] = _paper_pdf_missing(store, corpus_dirs, ident)
+        return _pdf_missing[ident]
+
     # Local-vs-external citation colouring (sky §, in-corpus | amber ↗,
     # external): one batched existence check over every paper cite in the
     # window, shared by all its rows.
@@ -610,7 +672,7 @@ def _build_rows(
                 # local-vs-external citation set for the compact linkifier
                 # (§ sky = paper we hold, ↗ amber = external reference).
                 "local": local_cites,
-                "refs": _ref_chips(c.text),
+                "refs": _ref_chips(c.text, _cite_missing),
                 "requests": requests.get(c.handle, []),
                 # view slider: summary falls back to keywords → first line;
                 # keywords falls back to first line.
@@ -626,15 +688,26 @@ def _build_rows(
     return rows
 
 
-def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
+def _rows_for(
+    store: Any, ref: Any, corpus_dirs: tuple[Path, ...] = ()
+) -> list[dict[str, Any]]:
     """Per-block row context for the **whole** draft (the no-arg ``/rows``
     fragment). The reader itself renders only an initial window fully (see
     ``reader``) and fetches the rest in windowed batches as you scroll."""
     chunk_objs, _version, abbrevs = _doc_state(store, ref)
-    return _build_rows(store, ref, chunk_objs, range(len(chunk_objs)), abbrevs=abbrevs)
+    return _build_rows(
+        store,
+        ref,
+        chunk_objs,
+        range(len(chunk_objs)),
+        abbrevs=abbrevs,
+        corpus_dirs=corpus_dirs,
+    )
 
 
-def _rows_for_handles(store: Any, ref: Any, handles: list[str]) -> list[dict[str, Any]]:
+def _rows_for_handles(
+    store: Any, ref: Any, handles: list[str], corpus_dirs: tuple[Path, ...] = ()
+) -> list[dict[str, Any]]:
     """Hydrate a *batch* of blocks by handle, in document order — the
     on-demand fragment the reader swaps in for a window of placeholders.
     One request hydrates many blocks (vs one HTTP per block), and the
@@ -642,13 +715,17 @@ def _rows_for_handles(store: Any, ref: Any, handles: list[str]) -> list[dict[str
     chunk_objs, _version, abbrevs = _doc_state(store, ref)
     want = {h for h in handles}
     idx = [i for i, c in enumerate(chunk_objs) if c.handle in want]
-    return _build_rows(store, ref, chunk_objs, idx, abbrevs=abbrevs)
+    return _build_rows(
+        store, ref, chunk_objs, idx, abbrevs=abbrevs, corpus_dirs=corpus_dirs
+    )
 
 
-def _one_row(store: Any, ref: Any, handle: str) -> dict[str, Any] | None:
+def _one_row(
+    store: Any, ref: Any, handle: str, corpus_dirs: tuple[Path, ...] = ()
+) -> dict[str, Any] | None:
     """Hydrate a single block by handle — O(neighbours) enrichment over the
     cached reading order, not a whole-draft re-scan per block."""
-    rows = _rows_for_handles(store, ref, [handle])
+    rows = _rows_for_handles(store, ref, [handle], corpus_dirs=corpus_dirs)
     return rows[0] if rows else None
 
 
@@ -1419,7 +1496,10 @@ async def reader(request: Request, ident: str) -> Response:
     first = min(INITIAL_WINDOW, n)
     # The first screen is rendered server-side (correct + visible even if the
     # virtual-scroll JS never runs); the rest live only in the skeleton.
-    window_rows = _build_rows(store, ref, chunk_objs, range(first), abbrevs=abbrevs)
+    corpus_dirs = get_web_config(request).corpus_dirs
+    window_rows = _build_rows(
+        store, ref, chunk_objs, range(first), abbrevs=abbrevs, corpus_dirs=corpus_dirs
+    )
     skeleton = _skeleton(store, ref)
     botpad = sum(s["est"] for s in skeleton[first:])
     _, owner_ws = _owner_workspace(store, ref)
@@ -1452,7 +1532,7 @@ async def reader_row(request: Request, ident: str, handle: str) -> HTMLResponse:
     ref = _draft_ref(store, ident)
     if ref is None:
         return HTMLResponse("", status_code=404)
-    row = _one_row(store, ref, handle)
+    row = _one_row(store, ref, handle, corpus_dirs=get_web_config(request).corpus_dirs)
     if row is None:
         return HTMLResponse("", status_code=404)
     return templates.TemplateResponse(
@@ -1476,11 +1556,12 @@ async def reader_rows(request: Request, ident: str, handles: str = "") -> HTMLRe
     ref = _draft_ref(store, ident)
     if ref is None:
         return HTMLResponse("", status_code=404)
+    corpus_dirs = get_web_config(request).corpus_dirs
     if handles.strip():
         wanted = [h for h in handles.split(",") if h.strip()]
-        rows = _rows_for_handles(store, ref, wanted)
+        rows = _rows_for_handles(store, ref, wanted, corpus_dirs=corpus_dirs)
     else:
-        rows = _rows_for(store, ref)
+        rows = _rows_for(store, ref, corpus_dirs=corpus_dirs)
     return templates.TemplateResponse(
         request,
         "drafts/_rows.html.j2",

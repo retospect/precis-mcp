@@ -13,8 +13,6 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from collections.abc import Sequence
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Form, Request
@@ -31,6 +29,7 @@ from precis.utils.authors import author_names
 from precis.utils.embed_query import embed_query
 from precis.utils.handle_registry import format_handle
 from precis.utils.toc_db import build_toc_segments
+from precis_web.corpus import pdf_candidates, ref_pdf_keys, resolve_pdf
 from precis_web.deps import (
     await_dispatch,
     get_runtime,
@@ -117,62 +116,12 @@ def _suggest_slug(store: Any, ref: Any, prefill: dict[str, Any] | None) -> str:
         return ""
 
 
-def _pdf_candidates(
-    corpus_dirs: tuple[Path, ...], cite_keys: str | Sequence[str]
-) -> list[Path]:
-    """All on-disk PDF paths to try, one per (cite_key × corpus root).
-
-    Mirrors ``precis.cli.watch._move_to_corpus``: the shard letter is
-    the lower-cased first alnum char of the cite_key, else ``_``. One
-    candidate per configured root so a per-host NFS mount difference
-    is searched rather than fatal.
-
-    ``cite_keys`` accepts a single key or a sequence — a paper can carry
-    more than one ``cite_key`` alias (e.g. an author-year key plus a
-    book's bib key added by ``tex-import``) and the fetcher files the PDF
-    under whichever it chose as the filename stem, which need not be the
-    one the display slug resolves to. Order is preserved and duplicates
-    dropped so the returned list is a stable, de-duped probe order.
-    """
-    keys = [cite_keys] if isinstance(cite_keys, str) else list(cite_keys)
-    out: list[Path] = []
-    seen: set[Path] = set()
-    for cite_key in keys:
-        if not cite_key:
-            continue
-        letter = cite_key[0].lower() if cite_key[0].isalnum() else "_"
-        for root in corpus_dirs:
-            cand = root / letter / f"{cite_key}.pdf"
-            if cand not in seen:
-                seen.add(cand)
-                out.append(cand)
-    return out
-
-
-def _resolve_pdf(
-    corpus_dirs: tuple[Path, ...], cite_keys: str | Sequence[str]
-) -> Path | None:
-    """First existing PDF path across the corpus roots, or ``None``.
-
-    Tries every cite_key alias (see :func:`_pdf_candidates`) so a paper
-    whose file is filed under a non-display alias still resolves.
-    """
-    for path in _pdf_candidates(corpus_dirs, cite_keys):
-        if path.is_file():
-            return path
-    return None
-
-
-def _ref_pdf_keys(store: Any, ref: Any) -> list[str]:
-    """De-duped cite_key probe order for ``ref``: display slug first, then
-    every other ``cite_key`` alias the ref carries."""
-    keys: list[str] = []
-    seen: set[str] = set()
-    for k in [ref.slug or "", *store.ref_cite_keys(ref.id)]:
-        if k and k not in seen:
-            seen.add(k)
-            keys.append(k)
-    return keys
+# Corpus PDF path resolution (alias-aware) now lives in ``precis_web.corpus`` so
+# the draft reader can share it (to flag a cited paper whose file is missing).
+# Kept under the historical private names every call site below already uses.
+_pdf_candidates = pdf_candidates
+_resolve_pdf = resolve_pdf
+_ref_pdf_keys = ref_pdf_keys
 
 
 def _authors_str(ref: Any) -> str:
