@@ -35,6 +35,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from precis.cad.bulk import _expr_aabb
 from precis.cad.bulk import volume as cad_volume
+from precis.cad.dsl import DslError
+from precis.cad.dsl import parse as parse_shape
 from precis.cad.export import (
     ExportError,
     export_mesh,
@@ -119,8 +121,9 @@ def _pose_str(node: Any) -> str:
 
 
 def _detail_ctx(store: Any, ref: Any) -> dict[str, Any]:
-    """Node list (coloured per part), a per-part legend, and an analysis block —
-    bbox + total volume + inter-part interference, all off the analytic IR."""
+    """The cheap-to-render context: node list (coloured per part), a per-part
+    legend, and counts. The heavy analysis (volume + interference) is computed
+    lazily by :func:`cad_analysis` and fetched by the page after first paint."""
     spec, _handles = store.cad_load(ref.id)
     colors = component_colors(spec.components)
     nodes = [
@@ -143,6 +146,39 @@ def _detail_ctx(store: Any, ref: Any) -> dict[str, Any]:
         for c in spec.components
     ]
 
+    return {
+        "nodes": nodes,
+        "legend": legend,
+        "n_nodes": len(nodes),
+        "n_parts": len(spec.components),
+    }
+
+
+#: Memoised analysis, keyed on ``(ref_id, version)``. A cad design's geometry is
+#: immutable for a given ref version (edits derive a *new* slug), so the volume /
+#: interference quadrature never needs recomputing for the same version.
+_ANALYSIS_CACHE: dict[tuple[int, str], dict[str, Any]] = {}
+_ANALYSIS_CACHE_MAX = 256
+
+
+def _ref_version(store: Any, ref_id: int) -> str:
+    """A cache-busting token for a ref's geometry (its ``updated_at``)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT updated_at FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    return str(row[0]) if row and row[0] is not None else "0"
+
+
+def _analysis(store: Any, ref_id: int, version: str) -> dict[str, Any]:
+    """Bounding box + total volume + inter-part interference, off the analytic
+    IR. Memoised per ``(ref_id, version)``."""
+    key = (ref_id, version)
+    cached = _ANALYSIS_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    spec, _handles = store.cad_load(ref_id)
     analysis: dict[str, Any] = {"parts": spec.components, "warnings": []}
     try:
         design = build_design(spec)
@@ -152,8 +188,8 @@ def _detail_ctx(store: Any, ref: Any) -> dict[str, Any]:
             vol = cad_volume(design)
             analysis["volume"] = round(float(vol.volume), 3)
             analysis["volume_err"] = round(float(vol.rel_err) * 100, 1)
-        except Exception:  # pragma: no cover - sampled volume is best-effort
-            log.debug("cad detail: volume failed", exc_info=True)
+        except Exception:  # pragma: no cover - volume is best-effort
+            log.debug("cad analysis: volume failed", exc_info=True)
         comps = list(dict.fromkeys(spec.components))
         for i in range(len(comps)):
             for j in range(i + 1, len(comps)):
@@ -165,16 +201,13 @@ def _detail_ctx(store: Any, ref: Any) -> dict[str, Any]:
                     analysis["warnings"].append(
                         f"{comps[i]} ↔ {comps[j]} interfere ({res.gap:g} mm)"
                     )
-    except Exception:  # pragma: no cover - a bad build shouldn't blank the page
-        log.debug("cad detail: analysis failed", exc_info=True)
+    except Exception:  # pragma: no cover - a bad build shouldn't blank the panel
+        log.debug("cad analysis: build failed", exc_info=True)
 
-    return {
-        "nodes": nodes,
-        "legend": legend,
-        "analysis": analysis,
-        "n_nodes": len(nodes),
-        "n_parts": len(spec.components),
-    }
+    if len(_ANALYSIS_CACHE) >= _ANALYSIS_CACHE_MAX:
+        _ANALYSIS_CACHE.clear()  # simple bound — the set is tiny and cheap to refill
+    _ANALYSIS_CACHE[key] = analysis
+    return analysis
 
 
 def _slug_of(store: Any, ref_id: int) -> str | None:
@@ -312,6 +345,57 @@ async def cad_model(request: Request, slug: str, mode: str = "features") -> Resp
         media_type="model/gltf-binary",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.get("/cad/{slug}/scene.json")
+async def cad_scene(request: Request, slug: str) -> JSONResponse:
+    """The design's *recipe* — parsed primitives + poses + colours — so the
+    browser tessellates client-side (the ~1 KB "3D-SVG" payload) instead of
+    downloading a baked mesh. Each node carries its parsed ``shape`` (alias +
+    numeric params); ``None`` for the unbounded chamfer half-space (no mesh)."""
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, slug)
+    except NotFound:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    spec, _handles = store.cad_load(ref.id)
+    colors = component_colors(spec.components)
+    nodes: list[dict[str, Any]] = []
+    for n in spec.nodes:
+        try:
+            sh = parse_shape(n.config)
+            shape: dict[str, Any] | None = {"alias": sh.alias, "params": sh.params}
+        except DslError:
+            shape = None  # e.g. chamfer — unbounded, drawn as a resolved cut only
+        nodes.append(
+            {
+                "name": n.name,
+                "component": n.component,
+                "op": n.op,
+                "loc": list(n.loc),
+                "rot": list(n.rot),
+                "pattern": n.pattern,
+                "shape": shape,
+                "color": colors.get(n.component, "#8a9bb0"),
+            }
+        )
+    return JSONResponse(
+        {"nodes": nodes, "components": spec.components, "meta": spec.meta}
+    )
+
+
+@router.get("/cad/{slug}/analysis")
+async def cad_analysis(request: Request, slug: str) -> JSONResponse:
+    """Bounding box + volume + interference for the design (the panel fetches
+    this after first paint; memoised per ref version)."""
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, slug)
+    except NotFound:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    version = _ref_version(store, ref.id)
+    result = await asyncio.to_thread(_analysis, store, ref.id, version)
+    return JSONResponse(result)
 
 
 @router.get("/cad/{slug}/export.{fmt}")

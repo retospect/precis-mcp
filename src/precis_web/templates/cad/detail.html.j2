@@ -84,27 +84,15 @@
       <div class="grid grid-cols-2 gap-2 text-sm">
         <div>
           <div class="text-[10px] text-slate-400 uppercase tracking-wide">Bounding box (mm)</div>
-          <div class="tabular-nums">
-            {% if analysis.bbox %}{{ '%g × %g × %g'|format(analysis.bbox[0], analysis.bbox[1], analysis.bbox[2]) }}{% else %}—{% endif %}
-          </div>
+          <div id="an-bbox" class="tabular-nums text-slate-400">computing…</div>
         </div>
         <div>
           <div class="text-[10px] text-slate-400 uppercase tracking-wide">Volume (mm³)</div>
-          <div class="tabular-nums">
-            {% if analysis.volume is defined and analysis.volume is not none %}{{ analysis.volume }}<span class="text-[10px] text-slate-400"> ±{{ analysis.volume_err }}%</span>{% else %}—{% endif %}
-          </div>
+          <div id="an-volume" class="tabular-nums text-slate-400">computing…</div>
         </div>
       </div>
 
-      {% if analysis.warnings %}
-      <div class="space-y-1">
-        {% for w in analysis.warnings %}
-        <div class="text-[11px] px-2 py-1 rounded bg-amber-50 text-amber-800 border border-amber-200">⚠ {{ w }}</div>
-        {% endfor %}
-      </div>
-      {% else %}
-      <div class="text-[11px] text-emerald-700">✓ no inter-part interference</div>
-      {% endif %}
+      <div id="an-warnings" data-slug="{{ slug }}"></div>
 
       <div class="pt-2 border-t border-slate-100">
         <div class="text-[10px] text-slate-400 uppercase tracking-wide mb-1">Download</div>
@@ -175,6 +163,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { nodeMesh } from '/static/cad-tessellate.js';
 
 const SLUG = {{ slug | tojson }};
 const NODES = {{ nodes | tojson }};
@@ -222,19 +211,64 @@ function fitCamera(root) {
   controls.update();
 }
 
+// z-up (IR) → y-up (three.js): (x, y, z) → (x, z, -y). Matches gltf._ZUP_TO_YUP
+// so the client build sits in the same frame the server glTF would.
+function registerMesh(mesh, name) {
+  mesh.name = name;
+  mesh.material.emissive = mesh.material.emissive || new THREE.Color(0);
+  mesh.userData.emissive = mesh.material.emissive.clone();
+  (meshesByName[name] = meshesByName[name] || []).push(mesh);
+}
+
+// ── features mode: tessellate the recipe client-side (the "3D-SVG" path) ──
+function buildFeatures() {
+  fetch('/cad/' + encodeURIComponent(SLUG) + '/scene.json')
+    .then((r) => r.json())
+    .then((data) => {
+      clearModel();
+      modelRoot = new THREE.Group();
+      const colorFor = {};
+      (data.nodes || []).forEach((n) => { colorFor[n.name] = n.color; });
+      (data.nodes || []).forEach((node) => {
+        const m = nodeMesh(node);              // world-space {verts, tris} (z-up)
+        if (!m || !m.verts.length) return;     // chamfer / empty — nothing to draw
+        const pos = new Float32Array(m.verts.length * 3);
+        m.verts.forEach((v, i) => {            // z-up → y-up
+          pos[i * 3] = v[0]; pos[i * 3 + 1] = v[2]; pos[i * 3 + 2] = -v[1];
+        });
+        const idx = new Uint32Array(m.tris.length * 3);
+        m.tris.forEach((t, i) => { idx[i * 3] = t[0]; idx[i * 3 + 1] = t[1]; idx[i * 3 + 2] = t[2]; });
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        geom.setIndex(new THREE.BufferAttribute(idx, 1));
+        geom.computeVertexNormals();
+        const translucent = node.op === 'cut' || node.op === 'intersect';
+        const material = new THREE.MeshStandardMaterial({
+          color: new THREE.Color(node.color || '#8a9bb0'),
+          metalness: 0.1, roughness: 0.6, flatShading: false,
+          transparent: translucent, opacity: translucent ? 0.32 : 1.0,
+          side: THREE.DoubleSide,
+        });
+        const mesh = new THREE.Mesh(geom, material);
+        registerMesh(mesh, node.name);
+        modelRoot.add(mesh);
+      });
+      scene.add(modelRoot);
+      fitCamera(modelRoot);
+    })
+    .catch((err) => { console.warn('cad scene build failed', err); });
+}
+
+// ── solid mode: the true CSG fold needs the server kernel (manifold3d) ──
 const loader = new GLTFLoader();
-function loadModel(mode) {
+function loadSolid() {
   loader.load(
-    '/cad/' + encodeURIComponent(SLUG) + '/model.gltf?mode=' + mode,
+    '/cad/' + encodeURIComponent(SLUG) + '/model.gltf?mode=solid',
     (gltf) => {
       clearModel();
       modelRoot = gltf.scene;
       modelRoot.traverse((o) => {
-        if (o.isMesh) {
-          o.material = o.material.clone();        // own material so we can glow one
-          o.userData.emissive = o.material.emissive ? o.material.emissive.clone() : new THREE.Color(0);
-          (meshesByName[o.name] = meshesByName[o.name] || []).push(o);
-        }
+        if (o.isMesh) { o.material = o.material.clone(); registerMesh(o, o.name); }
       });
       scene.add(modelRoot);
       fitCamera(modelRoot);
@@ -245,7 +279,7 @@ function loadModel(mode) {
 }
 
 function setMode(mode) {
-  loadModel(mode);
+  if (mode === 'solid') loadSolid(); else buildFeatures();
   document.querySelectorAll('.cad-mode').forEach((btn) => {
     const on = btn.getAttribute('data-mode') === mode;
     btn.classList.toggle('bg-slate-700', on);
@@ -326,6 +360,47 @@ window.addEventListener('resize', () => {
 })();
 
 setMode('features');
+</script>
+
+<script>
+// ── analysis panel (fetched after first paint; volume/interference are heavier) ──
+(function () {
+  const warnEl = document.getElementById('an-warnings');
+  const bboxEl = document.getElementById('an-bbox');
+  const volEl = document.getElementById('an-volume');
+  if (!warnEl) return;
+  const slug = warnEl.getAttribute('data-slug');
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  fetch('/cad/' + encodeURIComponent(slug) + '/analysis')
+    .then((r) => r.json())
+    .then((a) => {
+      if (a && a.bbox) {
+        bboxEl.textContent = a.bbox.map((x) => +x).join(' × ');
+        bboxEl.classList.remove('text-slate-400');
+      } else { bboxEl.textContent = '—'; }
+      if (a && a.volume != null) {
+        volEl.innerHTML = esc(a.volume) +
+          '<span class="text-[10px] text-slate-400"> ±' + esc(a.volume_err) + '%</span>';
+        volEl.classList.remove('text-slate-400');
+      } else { volEl.textContent = '—'; }
+      const warns = (a && a.warnings) || [];
+      if (warns.length) {
+        warnEl.className = 'space-y-1';
+        warnEl.innerHTML = warns.map((w) =>
+          '<div class="text-[11px] px-2 py-1 rounded bg-amber-50 text-amber-800 border border-amber-200">⚠ '
+          + esc(w) + '</div>').join('');
+      } else {
+        warnEl.className = 'text-[11px] text-emerald-700';
+        warnEl.textContent = '✓ no inter-part interference';
+      }
+    })
+    .catch(() => {
+      bboxEl.textContent = '—'; volEl.textContent = '—';
+      warnEl.className = 'text-[11px] text-slate-400';
+      warnEl.textContent = 'analysis unavailable';
+    });
+})();
 </script>
 
 <script>

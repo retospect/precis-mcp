@@ -46,6 +46,17 @@ def test_centroid_of_centered_box_near_origin_xy() -> None:
     assert math.isclose(res.centroid[2], 5.0, abs_tol=0.2)  # base at z=0, h=10
 
 
+def test_box_volume_is_exact() -> None:
+    # Ray-interval quadrature integrates the exact solid length, so an
+    # axis-aligned box (constant height over a rectangle) is exact — the old
+    # Monte-Carlo estimator could only get within ~2%.
+    d = Design()
+    d.add_component("b", d.prim("box", build_config("box:w40d20h10")))
+    res = volume(d)
+    assert math.isclose(res.volume, 40 * 20 * 10, rel_tol=1e-9)
+    assert res.rel_err == 0.0
+
+
 def test_rel_err_reported() -> None:
     # A cylinder fills only ~π/4 of its AABB, so the binomial estimate has
     # a non-zero standard error (a box fills its AABB exactly → rel_err 0).

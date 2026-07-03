@@ -91,6 +91,39 @@ def test_cad_model_gltf_returns_glb(cad_client, runtime_with_store) -> None:
     assert r.content[:4] == b"glTF"  # binary glTF magic
 
 
+def test_cad_scene_json_serves_recipe(cad_client, runtime_with_store) -> None:
+    _seed(runtime_with_store, slug="web_scene")
+    r = cad_client.get("/cad/web_scene/scene.json")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["components"] == ["flange", "ring"]
+    names = {n["name"]: n for n in body["nodes"]}
+    assert names["plate"]["shape"]["alias"] == "cyl"
+    assert names["plate"]["shape"]["params"]["r"] == 25
+    assert names["hub_bore"]["op"] == "cut"
+    # every node carries a colour + pose so the browser can build + place it
+    assert all("color" in n and "loc" in n and "rot" in n for n in body["nodes"])
+
+
+def test_cad_detail_viewer_uses_scene_json(cad_client, runtime_with_store) -> None:
+    _seed(runtime_with_store, slug="web_viewer")
+    r = cad_client.get("/cad/web_viewer")
+    assert r.status_code == 200
+    # the viewer now builds client-side from the recipe + the shared tessellator
+    assert "/static/cad-tessellate.js" in r.text
+    assert "scene.json" in r.text
+
+
+def test_cad_analysis_returns_bbox_and_volume(cad_client, runtime_with_store) -> None:
+    _seed(runtime_with_store, slug="web_analysis")
+    r = cad_client.get("/cad/web_analysis/analysis")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["bbox"]) == 3
+    assert body["volume"] > 0
+    assert "warnings" in body
+
+
 def test_cad_export_scad_downloads(cad_client, runtime_with_store) -> None:
     _seed(runtime_with_store, slug="web_scad")
     r = cad_client.get("/cad/web_scad/export.scad")

@@ -252,10 +252,14 @@ The master kinds table lives in the `precis-overview` skill.
   never pixels. `pcb` exporters in `src/precis/pcb/export.py` (JLCPCB BOM/CPL —
   **footgun:** CPL wants CCW, `jlc_rotation(r)=(360-r)%360`), route via
   `pcb/route.py` (headless Freerouting, skips if absent). Skills: `precis-pcb-help`.
-- **`cad` web editor (`/cad`)** — three.js viewer + edit-by-prompt; analytic IR
-  → glTF (`cad/tessellate.py`+`cad/gltf.py`, numpy-only) for view & download,
-  server-side STEP/STL/3MF/scad export; `cad_propose` job → `CadHandler.derive`.
-  Drive (`/drive`) is the default landing page. Skill: `precis-cad-help`.
+- **`cad` web editor (`/cad`)** — three.js viewer + edit-by-prompt. Viewer
+  tessellates **client-side** from a ~1 KB recipe (`GET /cad/<slug>/scene.json`)
+  via `static/cad-tessellate.js` (a port of `cad/tessellate.py`, drift-guarded
+  byte-for-byte by `tests/test_cad_parity.py`, node-gated); `model.gltf` kept for
+  download + solid-mode. Server-side STEP/STL/3mf/scad export; `cad_propose` job →
+  `CadHandler.derive`. Analysis is off the render path (`GET /cad/<slug>/analysis`,
+  memoised); `cad/bulk.py` volume is an exact ray-interval quadrature, not the old
+  200k-point Monte-Carlo. Drive (`/drive`) is the default landing. Skill: `precis-cad-help`.
 - **Broad + deep paper search** — Tier 1 `search(kind='paper', queries=[…],
   answers=[…HyDE], per_paper=N)` RRF fusion; Tier 2 `good=True` mints an async
   `good_search` coordinator campaign. `docs/design/good-search-coordinator.md`;
