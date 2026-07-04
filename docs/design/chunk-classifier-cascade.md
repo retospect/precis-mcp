@@ -87,7 +87,9 @@ PRECIS_CLASSIFY_ESCALATE_MODEL=claude-haiku-4-5 …          # enable Tier 2
 
 Forces `model=summarizer` (the node's `PRECIS_SUMMARIZE_MODEL=qwen` is a
 thinking model that returns empty). Node target: melchior (litellm proxy
-+ the cheap alias). See [[gold-set-classify]] memory for the ops quirks.
++ the cheap alias). Ops quirks (passwordless `.pgpass` DSN, the
+`summarizer` vs `qwen` alias, serial concurrency) are captured in
+`EVAL_RESULTS.md`.
 
 ## Files
 

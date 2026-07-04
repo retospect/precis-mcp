@@ -1,6 +1,21 @@
 # 0047 — Controlled chunk tagging: closed faceted vocabulary, one machine tagger, offline curation
 
-- **Status**: proposed (2026-07-02)
+- **Status**: accepted — **implemented 2026-07-04**.
+- **As-built**: [`docs/design/chunk-classifier-cascade.md`](../design/chunk-classifier-cascade.md)
+  (architecture) + [`scripts/classify/EVAL_RESULTS.md`](../../scripts/classify/EVAL_RESULTS.md)
+  (measured numbers + model finding). Worker:
+  `src/precis/workers/classify.py` (`run_classify_pass`), gated
+  `PRECIS_CLASSIFY_ENABLED`; gold sets + eval harness in `scripts/classify/`.
+- **Key change from this proposal.** The free local model cannot do the
+  11-way `role:` *attribution test* (72% accept-aware — `related-work`
+  recall 10/39). So the shipped writer is a **cascade**: a `junk` gate →
+  the **3-way `ROLE3:` collapse** (own / background / furniture — 88%
+  accept-aware, **91% own-claim precision**, the citation-grounding
+  filter), with a stronger model reserved for the `own` residual and the
+  full 11-way `role:` kept as an optional refinement. Human inter-annotator
+  agreement is ~89%, so ~85–90% is the ceiling; the `accept:` sets + the
+  query-time agent absorb the rest. `material`/`transport` ref axes pass on
+  the free model; the ref-axis production runner is not yet built.
 - **Deciders**: Reto + agent
 - **Builds on**:
   - [ADR 0007 — derived queue, no block jobs](./0007-derived-queue-no-block-jobs.md)
