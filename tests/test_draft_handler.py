@@ -170,6 +170,29 @@ def test_edit_flags_newly_introduced_dangling_ref(
     assert "this edit introduced unresolved reference(s)" not in r2.body
 
 
+def test_add_empty_block_inserts_paragraph_after_anchor(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The inline `+` affordance inserts an EMPTY paragraph after a block — the
+    web `/drafts/{id}/block` endpoint calls `store.add_chunks` directly (the
+    `put` verb rejects empty `text=`). It lands right after the anchor in
+    reading order, ready to type into."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt", chunk_kind="paragraph", text="First.", at={"after": "¶" + title_h}
+    )
+    para_h = _order(hub, "nt")[1].handle
+    ref = hub.store.get_ref(kind="draft", id="nt")
+    chunks = hub.store.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="", at={"after": "¶" + para_h}
+    )
+    assert len(chunks) == 1 and chunks[0].text == ""
+    order = [c.handle for c in _order(hub, "nt")]
+    assert order.index(chunks[0].handle) == order.index(para_h) + 1
+
+
 def test_newly_dangling_returns_only_new_breakage(
     draft: DraftHandler, hub: Hub
 ) -> None:

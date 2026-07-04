@@ -389,9 +389,46 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
 // it hands the refresh to the scroller via a `draft:edited` event, which
 // re-hydrates just this block in place — so the editor state and the render
 // stay decoupled (this node is about to be replaced).
-function draftEdit(ident, handle, baseSha, editable) {
+function draftEdit(ident, handle, baseSha, editable, isHeading) {
   return {
     raw: false, editing: false, saving: false, err: '', orig: '',
+    // A freshly-inserted block auto-opens its editor: draftDoc sets a global
+    // to this handle before it hydrates, and the new row's init() consumes it.
+    init() {
+      if (window.__draftAutoEdit === handle) {
+        window.__draftAutoEdit = null;
+        this.$nextTick(() => this.startEdit());
+      }
+    },
+    async add() {
+      try {
+        const res = await fetch(`/drafts/${ident}/block`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ after: handle }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.handle) {
+          window.dispatchEvent(new CustomEvent('draft:inserted', { detail: { handle: d.handle } }));
+        } else { window.alert(d.error || 'could not add a block'); }
+      } catch (e) { window.alert('network error — block not added'); }
+    },
+    async del() {
+      const msg = isHeading
+        ? 'Delete this heading AND its whole section (all blocks under it)?'
+        : 'Delete this block?';
+      if (!window.confirm(msg)) return;
+      try {
+        const res = await fetch(`/drafts/${ident}/block/${handle}/delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ cascade: isHeading ? '1' : '' }),
+        });
+        if (res.ok) {
+          window.dispatchEvent(new CustomEvent('draft:removed', { detail: { handle } }));
+        } else { const d = await res.json().catch(() => ({})); window.alert(d.error || 'delete failed'); }
+      } catch (e) { window.alert('network error — not deleted'); }
+    },
     startEdit() {
       if (!editable) return;
       this.editing = true; this.err = '';
@@ -810,6 +847,16 @@ function draftDoc(ident) {
         const w = (e.detail && e.detail.warnings) || [];
         this.flashEdit(w.length ? ('saved · ' + w.join(' · ')) : 'saved');
       });
+      // Inline add / delete of a block (no LLM): rebuild the skeleton so the
+      // structural change shows, then (for an add) auto-open the new block.
+      window.addEventListener('draft:inserted', (e) => {
+        const h = e.detail && e.detail.handle;
+        if (h) this.insertedBlock(h);
+      });
+      window.addEventListener('draft:removed', (e) => {
+        const h = e.detail && e.detail.handle;
+        if (h) this.removedBlock(h);
+      });
       // 4) drive windowing off scroll + resize.
       this._onScroll = () => this.onScroll();
       window.addEventListener('scroll', this._onScroll, {passive: true});
@@ -912,6 +959,19 @@ function draftDoc(ident) {
       this.editToast = msg;
       clearTimeout(this._toastT);
       this._toastT = setTimeout(() => { this.editToast = ''; }, 4000);
+    },
+    // A block was inserted: rebuild the skeleton (now includes it), scroll it
+    // into view + hydrate it; its init() consumes __draftAutoEdit and opens
+    // the editor so you type straight into the new empty block.
+    async insertedBlock(h) {
+      window.__draftAutoEdit = h;
+      await this.forceRefresh();
+      await this.ensureVisible(h);
+      this.flashEdit('block added');
+    },
+    async removedBlock(h) {
+      await this.forceRefresh();
+      this.flashEdit('block removed');
     },
     async swapAll(v) {
       try {

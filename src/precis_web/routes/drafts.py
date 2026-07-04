@@ -1876,6 +1876,66 @@ async def edit_text_inline(
     return JSONResponse({"ok": True, "warnings": warnings})
 
 
+@router.post("/drafts/{ident}/block")
+async def add_block(
+    request: Request,
+    ident: str,
+    after: str = Form(...),
+    chunk_kind: str = Form("paragraph"),
+) -> JSONResponse:
+    """Insert a new empty prose block right after ``after`` (same parent, a
+    fractional ``pos`` between it and its next sibling) — the inline editor's
+    ``+`` affordance (docs/design/draft-inline-editor.md, slice 2b). Returns
+    the new block's handle so the client can hydrate and open it for editing.
+
+    Goes straight to ``store.add_chunks`` rather than the ``put`` verb: the
+    verb rejects empty ``text=`` (an agent-ergonomics guard against blank
+    chunks), but "add a blank paragraph then type into it" is exactly the
+    human flow here."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    anchor = store.get_draft_chunk(after)
+    if anchor is None or anchor.ref_id != ref.id:
+        return JSONResponse(
+            {"ok": False, "error": "anchor block not found"}, status_code=404
+        )
+    kind = chunk_kind if chunk_kind in _EDITABLE_KINDS else "paragraph"
+    chunks = store.add_chunks(
+        ref_id=ref.id, chunk_kind=kind, text="", at={"after": f"¶{after}"}
+    )
+    new = chunks[0]
+    return JSONResponse({"ok": True, "handle": new.handle, "dc": new.dc})
+
+
+@router.post("/drafts/{ident}/block/{handle}/delete")
+async def delete_block(
+    request: Request,
+    ident: str,
+    handle: str,
+    cascade: str = Form(""),
+) -> JSONResponse:
+    """Retire (soft-delete) a block. ``cascade=1`` removes a heading's whole
+    subtree (the client sends it after confirming the section delete); a plain
+    block retires on its own. Routed through the ``delete`` verb so retire +
+    link-sync stay single-sourced with the MCP/CLI path."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    chunk = store.get_draft_chunk(handle)
+    if chunk is None or chunk.ref_id != ref.id:
+        return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
+    args: dict[str, Any] = {"kind": "draft", "id": f"¶{handle}"}
+    if cascade.strip():
+        args["mode"] = "cascade"
+    body, is_error = await await_dispatch(request, "delete", args)
+    if is_error:
+        return JSONResponse({"ok": False, "error": body}, status_code=400)
+    return JSONResponse({"ok": True})
+
+
 #: Reviewer briefs for the per-heading "review ▾" dropdown. Each files an
 #: anchored review-todo (→ plan_tick), scoped to the heading's subtree.
 #: ``all`` files one todo that tells the planner to fan out sequentially.
