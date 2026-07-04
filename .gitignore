@@ -51,3 +51,7 @@ examples/cad/out/
 
 # Claude Code auto-memory store — session-local, not source.
 memory/
+
+# Fixer loop runtime scratch (ADR 0048): build worktrees, lockfile, fixer.log.
+# Never source — and `scripts/ship`'s `git add -A` must not commit it.
+.fixer-work/

@@ -32,6 +32,11 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <!-- launchd gives a job a minimal PATH; uv/claude/git/docker are not
+             on it. Set the PATH that resolves them (Homebrew + /usr/local),
+             or every headless tick fails at `uv: command not found`. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>PRECIS_FIXER_AUTONOMY</key>
         <string>report</string>
         <!-- optional: loud-on-exception channel + post-deploy liveness
