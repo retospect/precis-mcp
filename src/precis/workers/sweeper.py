@@ -91,18 +91,30 @@ _EMBED_TRANSIENT_ERROR_PATTERNS = (
     "%connection%",
 )
 
-#: Only re-open a failed embed row while its ``attempts`` stay under this — a
-#: genuinely-poison chunk (real dim-mismatch) must still terminate rather than
-#: loop forever. Transient endpoint-down failures no longer re-strand under
-#: current code, so this only backstops the rare genuine per-row fault.
-_EMBED_REOPEN_MAX_ATTEMPTS = 6
+#: The llm-v1 gloss summarizer whose transient failures the sweeper re-opens —
+#: parallel to the embed case.
+_SUMMARIZE_LLM_MODEL = "llm-v1"
+
+#: ``last_error`` fragment marking an llm-v1 ``chunk_summaries`` failure as a
+#: *transient backend blank*: the shared 80B returned "" under contention and it
+#: was recorded as ``empty summary``. Root cause since fixed (llm_summarize
+#: retries in-process + a looser cross-pass cap, 2cd78cc7); the ~5k rows
+#: stranded before that landed are legacy debris safe to re-summarize.
+_SUMMARIZE_TRANSIENT_ERROR_PATTERNS = ("%empty summary%",)
+
+#: Only re-open a failed artifact row while its ``attempts`` stay under this — a
+#: genuinely-poison chunk (real dim-mismatch / always-blank) must still
+#: terminate rather than loop forever. Transient outages no longer re-strand
+#: under current code, so this only backstops the rare genuine per-row fault.
+_REOPEN_MAX_ATTEMPTS = 6
 
 
-def _embed_reopen_limit() -> int:
-    """Per-pass cap on transient-failed embed rows re-opened
-    (``PRECIS_EMBED_REOPEN_LIMIT``, default 1000, floor 0; 0 disables). Bounded
-    so each sweep stays cheap — the backlog drains over successive passes and
-    the load-gated embed pass, not this re-open, is the real throughput throttle.
+def _reopen_limit() -> int:
+    """Per-pass cap on transient-failed artifact rows re-opened, per table
+    (``PRECIS_EMBED_REOPEN_LIMIT``, default 1000, floor 0; 0 disables the whole
+    re-open step). Bounded so each sweep stays cheap — the backlog drains over
+    successive passes and the load-gated worker pass, not this re-open, is the
+    real throughput throttle.
     """
     raw = os.environ.get("PRECIS_EMBED_REOPEN_LIMIT")
     if raw is None:
@@ -113,52 +125,93 @@ def _embed_reopen_limit() -> int:
         return 1000
 
 
-def _reopen_transient_failed_embeds(store: Store, *, limit: int) -> int:
-    """Re-open a bounded batch of transient-classified ``status='failed'``
-    ``chunk_embeddings`` rows so the embed pass re-claims and re-embeds them.
+def _reopen_transient_failed_artifacts(
+    store: Store,
+    *,
+    table: str,
+    artifact_col: str,
+    artifact: str,
+    patterns: tuple[str, ...],
+    limit: int,
+) -> int:
+    """Re-open a bounded batch of transient-classified ``status='failed'`` rows
+    in a chunk-artifact table (``chunk_embeddings`` / ``chunk_summaries``) so the
+    owning worker pass re-claims and re-derives them.
 
-    Deletes the failed row (and any lingering ``chunk_claims`` lease) — the
-    exact remediation ``EmbedHandler.write_ok`` prescribes: the base claim
-    treats a ``failed`` row as terminal ("done until a manual DELETE",
-    ``base.py``), so removing it makes the chunk claimable again. Idempotent:
-    once the backlog is drained the SELECT finds nothing. ``FOR UPDATE SKIP
-    LOCKED`` dedups racing sweepers across nodes. Returns the count re-opened.
+    Deletes the failed row (and any lingering ``chunk_claims`` lease): the claim
+    treats a ``failed`` row as terminal ("done until a manual DELETE" —
+    ``base.py`` / ``llm_summarize``), so removing it makes the chunk claimable
+    again. ``table`` / ``artifact_col`` are internal constants (never user
+    input), safe to interpolate; the rest is parameterized. Idempotent — once
+    the backlog is drained the SELECT finds nothing; ``FOR UPDATE SKIP LOCKED``
+    dedups racing sweepers across nodes. Returns the count re-opened.
     """
     if limit <= 0:
         return 0
+    sql = f"""
+        WITH doomed AS (
+            SELECT chunk_id
+              FROM {table}
+             WHERE {artifact_col} = %(artifact)s
+               AND status = 'failed'
+               AND attempts < %(max_attempts)s
+               AND last_error ILIKE ANY(%(patterns)s)
+             ORDER BY chunk_id
+             LIMIT %(limit)s
+               FOR UPDATE SKIP LOCKED
+        ),
+        drop_claims AS (
+            DELETE FROM chunk_claims cl
+             USING doomed d
+             WHERE cl.chunk_id = d.chunk_id AND cl.artifact = %(artifact)s
+        )
+        DELETE FROM {table} t
+         USING doomed d
+         WHERE t.chunk_id = d.chunk_id AND t.{artifact_col} = %(artifact)s
+        RETURNING t.chunk_id
+    """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
-            WITH doomed AS (
-                SELECT chunk_id
-                  FROM chunk_embeddings
-                 WHERE embedder = %(embedder)s
-                   AND status = 'failed'
-                   AND attempts < %(max_attempts)s
-                   AND last_error ILIKE ANY(%(patterns)s)
-                 ORDER BY chunk_id
-                 LIMIT %(limit)s
-                   FOR UPDATE SKIP LOCKED
-            ),
-            drop_claims AS (
-                DELETE FROM chunk_claims cl
-                 USING doomed d
-                 WHERE cl.chunk_id = d.chunk_id AND cl.artifact = %(embedder)s
-            )
-            DELETE FROM chunk_embeddings e
-             USING doomed d
-             WHERE e.chunk_id = d.chunk_id AND e.embedder = %(embedder)s
-            RETURNING e.chunk_id
-            """,
+            sql,
             {
-                "embedder": _EMBED_MODEL,
-                "max_attempts": _EMBED_REOPEN_MAX_ATTEMPTS,
-                "patterns": list(_EMBED_TRANSIENT_ERROR_PATTERNS),
+                "artifact": artifact,
+                "max_attempts": _REOPEN_MAX_ATTEMPTS,
+                "patterns": list(patterns),
                 "limit": limit,
             },
         ).fetchall()
         conn.commit()
         return len(rows)
+
+
+def _reopen_transient_failed_embeds(store: Store, *, limit: int) -> int:
+    """Embed re-open (see :func:`_reopen_transient_failed_artifacts`). This is
+    the remediation ``EmbedHandler.write_ok`` prescribes. A stranded embedding
+    also blocks that chunk's KeyBERT keywords, so re-opening cascades to
+    un-stick the downstream ``chunk_keywords`` backlog for free."""
+    return _reopen_transient_failed_artifacts(
+        store,
+        table="chunk_embeddings",
+        artifact_col="embedder",
+        artifact=_EMBED_MODEL,
+        patterns=_EMBED_TRANSIENT_ERROR_PATTERNS,
+        limit=limit,
+    )
+
+
+def _reopen_transient_failed_summaries(store: Store, *, limit: int) -> int:
+    """llm-v1 gloss re-open (see :func:`_reopen_transient_failed_artifacts`).
+    Recovers the ~5k ``chunk_summaries`` rows stranded ``empty summary`` before
+    the llm_summarize in-process retry + looser cap (2cd78cc7) landed, so the
+    now-retry-capable pass re-summarizes them."""
+    return _reopen_transient_failed_artifacts(
+        store,
+        table="chunk_summaries",
+        artifact_col="summarizer",
+        artifact=_SUMMARIZE_LLM_MODEL,
+        patterns=_SUMMARIZE_TRANSIENT_ERROR_PATTERNS,
+        limit=limit,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,12 +296,20 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     )
     if reaped_logs:
         log.info("sweeper: GC'd %d stale agentlog(s)", reaped_logs)
-    reopened = _reopen_transient_failed_embeds(store, limit=_embed_reopen_limit())
+    reopen_limit = _reopen_limit()
+    reopened = _reopen_transient_failed_embeds(store, limit=reopen_limit)
     if reopened:
         log.info(
             "sweeper: re-opened %d transient-failed embed row(s) for re-embedding "
             "(also un-blocks their chunk_keywords)",
             reopened,
+        )
+    reopened_sum = _reopen_transient_failed_summaries(store, limit=reopen_limit)
+    if reopened_sum:
+        log.info(
+            "sweeper: re-opened %d transient-failed llm-v1 summary row(s) "
+            "for re-summarization",
+            reopened_sum,
         )
     threshold_hours = _stuck_job_hours()
     candidates = _enumerate_orphans(store, threshold_hours, limit=limit)

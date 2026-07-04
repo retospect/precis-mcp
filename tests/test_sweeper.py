@@ -26,8 +26,9 @@ from precis.handlers.todo import TodoHandler
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.sweeper import (
-    _EMBED_REOPEN_MAX_ATTEMPTS,
+    _REOPEN_MAX_ATTEMPTS,
     _reopen_transient_failed_embeds,
+    _reopen_transient_failed_summaries,
     run_sweeper_pass,
 )
 
@@ -181,7 +182,7 @@ def test_sweeper_reopens_transient_failed_embeds(store: Store) -> None:
     over_cap = _seed_failed_embed(
         store,
         last_error="all embedder endpoints failed",
-        attempts=_EMBED_REOPEN_MAX_ATTEMPTS,
+        attempts=_REOPEN_MAX_ATTEMPTS,
     )
     ok_row = _seed_failed_embed(store, last_error=None, status="ok")
     mine = [transient, oom, poison, over_cap, ok_row]
@@ -213,3 +214,65 @@ def test_sweeper_embed_reopen_disabled_at_zero_limit(store: Store) -> None:
             "SELECT 1 FROM chunk_embeddings WHERE chunk_id = %s", (transient,)
         ).fetchone()
     assert still_there is not None
+
+
+def _seed_failed_summary(
+    store: Store,
+    *,
+    last_error: str | None,
+    status: str = "failed",
+    attempts: int = 3,
+    summarizer: str = "llm-v1",
+) -> int:
+    """Create a ref + one chunk + a single ``chunk_summaries`` row; return the
+    chunk_id. Mirrors ``_seed_failed_embed`` for the llm-v1 gloss re-open."""
+    ref = store.insert_ref(kind="memory", slug=None, title="t", meta={})
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, 0, 'paragraph', %s) RETURNING chunk_id",
+            (ref.id, "a passage of prose long enough to summarize"),
+        ).fetchone()
+        assert row is not None
+        cid = int(row[0])
+        conn.execute(
+            "INSERT INTO chunk_summaries "
+            "(chunk_id, summarizer, status, attempts, last_error) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (cid, summarizer, status, attempts, last_error),
+        )
+        conn.commit()
+    return int(cid)
+
+
+def test_sweeper_reopens_transient_failed_llm_summaries(store: Store) -> None:
+    """The sweeper re-opens transient ``empty summary`` llm-v1 failures so the
+    (now retry-capable) llm_summarize pass re-summarizes them — but leaves
+    genuine faults, over-cap rows, ``ok`` rows, and *other* summarizers alone."""
+    empty = _seed_failed_summary(store, last_error="empty summary")
+    real = _seed_failed_summary(store, last_error="psycopg NUL byte write error")
+    over_cap = _seed_failed_summary(
+        store, last_error="empty summary", attempts=_REOPEN_MAX_ATTEMPTS
+    )
+    ok_row = _seed_failed_summary(store, last_error=None, status="ok")
+    other = _seed_failed_summary(
+        store, last_error="empty summary", summarizer="rake-lemma"
+    )
+    mine = [empty, real, over_cap, ok_row, other]
+
+    n = _reopen_transient_failed_summaries(store, limit=1000)
+
+    assert n >= 1  # at least my transient llm-v1 empty (shared DB may add more)
+    with store.pool.connection() as conn:
+        surviving = {
+            r[0]
+            for r in conn.execute(
+                "SELECT chunk_id FROM chunk_summaries WHERE chunk_id = ANY(%s)",
+                (mine,),
+            ).fetchall()
+        }
+    assert empty not in surviving  # transient blank → re-opened
+    assert real in surviving  # genuine fault → stays terminal
+    assert over_cap in surviving  # attempts at cap → not re-opened (no loop)
+    assert ok_row in surviving  # ok row is never touched
+    assert other in surviving  # a different summarizer is out of scope
