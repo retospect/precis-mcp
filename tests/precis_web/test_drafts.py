@@ -1238,6 +1238,19 @@ def test_audit_category_badge_renders_on_chunk() -> None:
     assert "⚑" not in plain
 
 
+def test_inline_editor_xdata_is_single_quoted() -> None:
+    """The per-block inline editor's `x-data="draftEdit(...)"` must pass its
+    string args **single-quoted**. Rendering them via `| tojson` emits DOUBLE
+    quotes (`draftEdit("nt", …)`) which terminate the double-quoted `x-data`
+    attribute, so Alpine never builds the component and every `editing`/`raw`/
+    `err` reference throws `Can't find variable` (the click-to-edit-dead bug).
+    A plain substring check for `draftEdit(` passes even on the broken form,
+    so assert the quoting explicitly."""
+    rows = _render_row([])
+    assert "x-data=\"draftEdit('nt', 'BBBBBB'" in rows  # single-quoted args
+    assert 'draftEdit("' not in rows  # the tojson double-quote that broke it
+
+
 def test_tasks_gist_summarises_long_bodies_only() -> None:
     """A multi-line / long todo body gets a 3-keyword RAKE gist; a short
     single-line one is shown verbatim (no gist)."""

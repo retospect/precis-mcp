@@ -11,7 +11,7 @@
      `raw` (click-to-pin) shows the chunk's verbatim source — the
      markdown + ¶/§ markers behind the rendered view, for debugging. #}
   <div data-content style="padding-left: {{ r.depth }}rem"
-       x-data="draftEdit({{ ref.ident | tojson }}, {{ r.handle | tojson }}, {{ r.content_sha | default('') | tojson }}, {{ r.editable | default(false) | tojson }})">
+       x-data="draftEdit('{{ ref.ident }}', '{{ r.handle }}', '{{ r.content_sha | default('') }}', {{ r.editable | default(false) | tojson }})">
     {% if r.is_heading %}
     {# items-baseline so the toggle caret + the small style/review/prompt
        controls sit on the heading's text baseline rather than floating at
