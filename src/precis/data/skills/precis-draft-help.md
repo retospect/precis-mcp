@@ -358,6 +358,8 @@ edit(id='dc12', text='Nanoscale transistors, defined as …')      # whole-chunk
 edit(id='dc12', mode='find-replace', find='60°C', text='65°C')   # substitute within the chunk
 edit(id='dc12', find='60°C', text='65°C')                        # find= alone implies find-replace
 edit(id='dc12', find='typo phrase', text='')                     # delete a span (text='')
+edit(id='dc12', text='… big rewrite …', dry_run=True)            # PREVIEW the diff, write nothing
+edit(id='dc12', text='… big rewrite …', dry_run='full')          # preview the whole post-edit text
 ```
 
 Plain `text=` **replaces the whole chunk**. To change only part of a chunk,
@@ -366,6 +368,13 @@ use `mode='find-replace'` (or just pass `find=`): `find=` is located
 present in the chunk the edit is **refused** and the chunk is left untouched —
 so a mistargeted find-replace can't erase the surrounding text. (For a
 regex substitution across a whole section or draft, use `edit(sub=…)` above.)
+
+**Preview a scary rewrite first.** Pass `dry_run=True` on a `text=` rewrite
+or a `find=`/`text=` substitution to get a unified diff of current-vs-proposed
+text and write **nothing**; `dry_run='full'` shows the entire post-edit chunk.
+Re-run without `dry_run` to commit. (Structural ops — `move`/`style`/`table`/
+`authors` — have no diff and reject `dry_run`; the regex `sub=` op previews by
+default and commits on `apply=True`.)
 
 In-place: the handle (and every reference to it) survives; embeddings /
 keywords / gist re-derive automatically.

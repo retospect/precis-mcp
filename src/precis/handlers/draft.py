@@ -38,6 +38,7 @@ from precis.response import Response
 from precis.store._draft_ops import content_sha
 from precis.utils import draft_regex, handle_registry
 from precis.utils.authors import to_author_dicts
+from precis.utils.edit_resolve import format_unified_diff, normalize_dry_run
 from precis.utils.embed_query import query_vec_for
 from precis.utils.table_data import normalize_table, table_to_markdown
 
@@ -821,6 +822,32 @@ class DraftHandler(Handler):
 
     # ── edit: text or move ───────────────────────────────────────────
 
+    def _render_draft_dry_run(
+        self,
+        dc: str,
+        old_text: str,
+        new_text: str,
+        *,
+        mode: str,
+        note: str = "",
+    ) -> Response:
+        """Preview a would-be text edit without writing (gr48518).
+
+        ``mode='diff'`` (dry_run=True) → a unified diff of the chunk's
+        current vs proposed text; ``mode='full'`` → the whole post-edit
+        chunk text. Nothing is persisted.
+        """
+        if old_text == new_text:
+            return Response(
+                body=f"[dry-run] {dc}: no change — pre and post are identical{note}"
+            )
+        if mode == "full":
+            head = f"[dry-run] {dc} — full post-edit text (nothing written){note}:"
+            return Response(body=f"{head}\n\n{new_text}")
+        diff = format_unified_diff(old_text, new_text, file_label=str(dc)).rstrip("\n")
+        head = f"[dry-run] {dc} — nothing written{note}. Proposed diff:"
+        return Response(body=f"{head}\n\n{diff or '(no diff)'}")
+
     def edit(  # type: ignore[override]
         self,
         *,
@@ -841,14 +868,38 @@ class DraftHandler(Handler):
         table: dict[str, Any] | None = None,
         caption: str | None = None,
         regen: dict[str, Any] | None = None,
+        dry_run: bool | str = False,
         **_kw: Any,
     ) -> Response:
+        # ``dry_run`` is advertised on the shared edit surface as "preview
+        # without writing". It used to be swallowed in ``**_kw`` and the edit
+        # *applied anyway* — a data-loss footgun (gr48518). It is now honored
+        # for the text-mutation paths (whole-chunk rewrite + find-replace):
+        # ``dry_run=True`` renders a unified diff and writes nothing, so a
+        # scary "massive rewrite" can be eyeballed first; ``dry_run='full'``
+        # shows the whole post-edit chunk. The structural / metadata ops
+        # (move, style, table, authors, …) have no diff semantics and reject
+        # the flag rather than silently writing; the regex ``sub`` op has its
+        # own apply=-gated preview.
+        dry_mode = normalize_dry_run(dry_run)
+
+        def _reject_dry_run(op: str) -> None:
+            if dry_mode is not None:
+                raise BadInput(
+                    f"dry_run has no preview for the '{op}' draft op — only "
+                    "text edits (whole-chunk rewrite + find-replace) render a "
+                    "diff. This op writes directly; omit dry_run to apply it.",
+                    next="for a text preview: edit(kind='draft', id='dc<id>', "
+                    "text='…', dry_run=True)",
+                )
+
         # ``authors`` is a draft-level op (set the byline + affiliations) —
         # id is the slug (or any handle in the draft), not a single chunk.
         # Stored on the draft ref's first-class ``authors`` column, so the
         # exporters + web reader render a byline; ROR ids on each entry
         # join to the canonical institution (https://ror.org).
         if authors is not None:
+            _reject_dry_run("authors")
             ref = self._resolve_draft_any(id)
             entries = to_author_dicts(authors)
             self.store.update_paper_fields(ref.id, authors=entries, source="draft-edit")
@@ -861,6 +912,7 @@ class DraftHandler(Handler):
         # ``not_abbrev`` is a draft-level op (silence the undefined-abbrev
         # hint) — id may be the slug or any ¶handle in the draft.
         if not_abbrev:
+            _reject_dry_run("not_abbrev")
             tokens = [not_abbrev] if isinstance(not_abbrev, str) else list(not_abbrev)
             ref = self._resolve_draft_any(id)
             self.store.add_abbrev_ignore(ref.id, tokens)
@@ -870,6 +922,15 @@ class DraftHandler(Handler):
         # section/chunk), not a single chunk. Dry-run by default; apply=True
         # commits.
         if sub is not None:
+            # sub has its own preview: apply=False (the default) is a dry run,
+            # apply=True commits. dry_run= is redundant/ambiguous here.
+            if dry_mode is not None:
+                raise BadInput(
+                    "dry_run is not used with sub= — the regex substitution op "
+                    "previews by default (apply=False) and commits on apply=True.",
+                    next="edit(kind='draft', id=<scope>, sub={...})  # preview; "
+                    "add apply=True to commit",
+                )
             return self._substitute(id, sub, apply=bool(apply))
         handle = self._require_chunk_id(id, verb="edit")
         # Normalize a ``dc<id>`` address to the legacy base-58 anchor the
@@ -878,6 +939,21 @@ class DraftHandler(Handler):
         if _base is None:
             raise NotFound(f"draft chunk {handle!r} not found")
         handle = _base.handle
+        # dry_run previews only the text-mutation paths (find-replace / rewrite,
+        # handled below). The structural / metadata ops write in place and have
+        # no diff semantics — reject rather than silently write (gr48518).
+        if dry_mode is not None and (
+            permission is not None
+            or origin is not None
+            or style is not None
+            or list_kind is not None
+            or word_target is not None
+            or move is not None
+            or table is not None
+            or regen is not None
+            or _base.chunk_kind == "table"
+        ):
+            _reject_dry_run("structural")
         if permission is not None or origin is not None:
             # Edit a figure's provenance (ADR 0034) — caption/bytes untouched.
             if origin is not None and origin not in _FIGURE_ORIGINS:
@@ -973,6 +1049,15 @@ class DraftHandler(Handler):
                 )
             occurrences = old_text.count(find)
             new_text = old_text.replace(find, str(text))
+            if dry_mode is not None:
+                note = (
+                    f" ({occurrences} occurrences of find= would be replaced)"
+                    if occurrences > 1
+                    else ""
+                )
+                return self._render_draft_dry_run(
+                    _base.dc, old_text, new_text, mode=dry_mode, note=note
+                )
             c = self.store.edit_text(handle, new_text, base_sha=base_sha)
             body = f"edited {c.dc}" if c else "edited"
             if c is not None:
@@ -993,6 +1078,10 @@ class DraftHandler(Handler):
             # acronyms already living in the chunk — the MOF re-nag).
             prior = self.store.get_draft_chunk(str(handle).lstrip("¶"))
             old_text = prior.text if prior else ""
+            if dry_mode is not None:
+                return self._render_draft_dry_run(
+                    _base.dc, old_text, str(text), mode=dry_mode
+                )
             c = self.store.edit_text(handle, str(text), base_sha=base_sha)
             body = f"edited {c.dc}" if c else "edited"
             if c is not None:

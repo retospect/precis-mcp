@@ -135,6 +135,42 @@ class TestTrig:
         r = handler.get(q="integrate(sin(x), x)", view="rad")
         assert "cos" in r.body and "180" not in r.body
 
+    def test_symbolic_calculus_clean_in_default_degrees_mode(
+        self, handler: CalcHandler
+    ) -> None:
+        """gr48509: a symbolic trig argument must NOT be degree-substituted
+        even in the default degrees mode — the degrees convention is for
+        numeric args only. Previously ``integrate(sin(x)**2, x)`` returned a
+        garbled ``pi*x/180`` antiderivative unless you passed view='rad'."""
+        r = handler.get(q="integrate(sin(x)**2, x)")
+        # Correct antiderivative x/2 - sin(x)*cos(x)/2 — no degrees garble.
+        assert "180" not in r.body
+        assert "pi" not in r.body
+        assert "x/2" in r.body
+        # No degrees note: no numeric trig actually ran in degrees.
+        assert "degrees" not in r.body
+
+    def test_symbolic_diff_clean_in_default_degrees_mode(
+        self, handler: CalcHandler
+    ) -> None:
+        """diff(sin(x), x) → cos(x) in default mode, not the old
+        ``pi*cos(pi*x/180)/180``."""
+        r = handler.get(q="diff(sin(x), x)")
+        assert "cos(x)" in r.body
+        assert "180" not in r.body
+
+    def test_numeric_trig_still_degrees_alongside_symbolic(
+        self, handler: CalcHandler
+    ) -> None:
+        """A mixed expression: numeric ``sin(30)`` collapses to 1/2
+        (degrees) while ``sin(x)`` stays symbolic-radian. Confirms the
+        per-argument split, not a blanket calculus carve-out."""
+        r = handler.get(q="sin(30) + diff(cos(x), x)")
+        # sin(30)=1/2 (degrees); diff(cos(x),x)=-sin(x) (radians).
+        assert "1/2" in r.body
+        assert "sin(x)" in r.body
+        assert "180" not in r.body
+
     def test_sqrt_and_power(self, handler: CalcHandler) -> None:
         assert "2" in handler.get(q="sqrt(4)").body
         assert "1024" in handler.get(q="2**10").body

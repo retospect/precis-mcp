@@ -43,6 +43,65 @@ def test_create_requires_project_then_outlines(draft: DraftHandler, hub: Hub) ->
     assert "Title" in out and bool(re.search(r"dc\d+", out)) and "[heading]" in out
 
 
+def test_dry_run_previews_text_edit_without_writing(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr48518: edit(kind='draft', ..., dry_run=True) used to be swallowed in
+    **_kw and the edit applied anyway — a data-loss footgun. It must now render
+    a diff preview and write NOTHING (the user wants to see scary rewrites
+    before committing)."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="The original paragraph text.",
+        at={"after": "¶" + _order(hub, "nt")[0].handle},
+    )
+    para_h = _order(hub, "nt")[1].handle
+
+    # whole-chunk rewrite, dry-run → diff preview, no write
+    r = draft.edit(
+        id=f"¶{para_h}", text="A completely rewritten paragraph.", dry_run=True
+    )
+    assert "[dry-run]" in r.body
+    assert "original paragraph" in r.body and "rewritten paragraph" in r.body
+    assert hub.store.get_draft_chunk(para_h).text == "The original paragraph text."
+
+    # find-replace, dry-run → preview, no write
+    r2 = draft.edit(id=f"¶{para_h}", find="original", text="pristine", dry_run=True)
+    assert "[dry-run]" in r2.body
+    assert hub.store.get_draft_chunk(para_h).text == "The original paragraph text."
+
+    # dry_run='full' shows the whole post-edit text
+    r3 = draft.edit(id=f"¶{para_h}", text="Brand new body.", dry_run="full")
+    assert "Brand new body." in r3.body
+    assert hub.store.get_draft_chunk(para_h).text == "The original paragraph text."
+
+    # Applying for real (no dry_run) still writes.
+    draft.edit(id=f"¶{para_h}", text="Committed text.")
+    assert hub.store.get_draft_chunk(para_h).text == "Committed text."
+
+
+def test_dry_run_rejected_on_structural_op(draft: DraftHandler, hub: Hub) -> None:
+    """dry_run has no diff semantics for structural ops (e.g. move) — it must
+    reject rather than silently write."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="Body.",
+        at={"after": "¶" + _order(hub, "nt")[0].handle},
+    )
+    order = _order(hub, "nt")
+    title_h, para_h = order[0].handle, order[1].handle
+    with pytest.raises(BadInput, match="dry_run has no preview"):
+        draft.edit(id=f"¶{para_h}", move={"before": "¶" + title_h}, dry_run=True)
+    # Order unchanged — the move was refused.
+    assert [c.handle for c in _order(hub, "nt")][0] == title_h
+
+
 def test_add_read_edit_move_delete(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)

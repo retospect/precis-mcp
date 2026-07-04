@@ -264,7 +264,8 @@ all 8.)
       only** — discoverable via `search(kind='skill', q='pcb'/'circuit'/
       'footprint'/'decoupling'/'i2c'…)` and the kind-gated index, not in the
       always-loaded catalog. A canonical PCB scenario lives in `precis-pcb-help`
-      itself (there is no separate `precis-toolpath-help` file in this build).
+      itself; the cross-kind toolpath index is `precis-toolpath-help` (its
+      Authoring-artifacts row points here for the deep PCB surface).
 - **DoD:** 8 skills served + searchable + not gated; one `pcb` row in
       `precis-overview`; a PCB scenario shipped (in `precis-pcb-help`). Skill
       suites green (the arbitrary ≤100 count cap bumped to ≤200 for the +8).

@@ -708,9 +708,9 @@ class PaperHandler(Handler):
         if id is None:
             return self._render_list_papers()
         raw_id = _maybe_resolve_doi(self.store, str(id))
-        slug, chunk_spec, path_view = _parse_paper_id(raw_id)
-
         kind = self.spec.kind
+        slug, chunk_spec, path_view = _parse_paper_id(raw_id, kind)
+
         ref = resolve_live_slug_ref(
             self.store,
             kind=kind,
@@ -1503,7 +1503,7 @@ class PaperHandler(Handler):
                 )
             return ref.slug or str(ref_id), ref_id
         raw_id = _maybe_resolve_doi(self.store, str(id))
-        slug, chunk_spec, path_view = _parse_paper_id(raw_id)
+        slug, chunk_spec, path_view = _parse_paper_id(raw_id, self.spec.kind)
         reject_chunk_or_path_view(
             kind=self.spec.kind,
             slug=slug,
@@ -2625,8 +2625,13 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
 
 def _parse_paper_id(
     raw: str,
+    kind: str = "paper",
 ) -> tuple[str, tuple[int, int] | None, str | None]:
     """Return (slug, chunk_range, view).
+
+    ``kind`` is the caller-requested kind (``paper`` / ``cfp`` / …) so the
+    error messages echo what the caller asked for rather than the internal
+    ``paper`` handler name (gr48511).
 
     ``slug`` is mandatory. Both ``chunk_range`` and ``view`` may be set
     when the id carries both — e.g. ``slug~46..105/toc`` is the
@@ -2643,11 +2648,11 @@ def _parse_paper_id(
     # the id=, papers list via the bare get". (Critic MINOR #7.)
     if isinstance(raw, str) and raw.startswith("/"):
         raise BadInput(
-            f"paper has no list view {raw!r} - list-view paths are "
+            f"{kind} has no list view {raw!r} - list-view paths are "
             "specific to numeric kinds (memory/todo/flashcard/...)",
             next=(
-                "papers don't accept '/recent' - use the bare list shape: "
-                "get(kind='paper')"
+                f"{kind} doesn't accept '/recent' - use the bare list shape: "
+                f"get(kind='{kind}')"
             ),
         )
     m = _SLUG_RE.match(raw)

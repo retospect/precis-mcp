@@ -79,6 +79,19 @@ class TestParsePaperId:
         with pytest.raises(BadInput):
             _parse_paper_id("/cite/bib")
 
+    def test_list_view_error_echoes_requested_kind(self) -> None:
+        """gr48511: `get(kind='cfp', id='/recent')` used to reply "paper has
+        no list view" — leaking the internal handler kind. The message and
+        the next-hint must echo the caller-requested kind instead."""
+        with pytest.raises(BadInput) as exc:
+            _parse_paper_id("/recent", "cfp")
+        assert "cfp has no list view" in str(exc.value)
+        assert exc.value.next is not None and "get(kind='cfp')" in exc.value.next
+        # The default (paper) path is unchanged.
+        with pytest.raises(BadInput) as exc2:
+            _parse_paper_id("/recent")
+        assert "paper has no list view" in str(exc2.value)
+
 
 # ---------------------------------------------------------------------------
 # DOI-form id resolution

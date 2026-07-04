@@ -2,8 +2,10 @@
 
 Pass an expression as `id=` (or `q=`); the result is the value. Full
 SymPy CAS — calculus, solve, algebra, linear algebra, number theory.
-Trig is **degrees by default** (``sin(30)`` → ``1/2``); ``view='rad'``
-switches to radians. Capability catalogue + examples live in the
+Trig is **degrees by default for numeric arguments** (``sin(30)`` →
+``1/2``); a *symbolic* argument (``sin(x)`` inside ``integrate``/``diff``)
+stays in sympy-native radians so calculus comes out clean. ``view='rad'``
+forces radians everywhere. Capability catalogue + examples live in the
 ``precis-calc-help`` skill, not here (handler stays token-light).
 """
 
@@ -25,8 +27,9 @@ class CalcHandler(Handler):
             "Local symbolic and numeric computation via sympy: arithmetic, "
             "roots, trigonometry (sin/cos/tan/atan2, pi), calculus, linear "
             "algebra. Pass an expression as `id` (or `q`); the result is the "
-            "value. Angles are degrees by default (sin(30)=1/2); pass "
-            "view='rad' for radians (symbolic calculus)."
+            "value. Numeric angles are degrees by default (sin(30)=1/2); "
+            "symbolic args (sin(x) in a calculus op) stay in radians so "
+            "integrate/diff come out clean. Pass view='rad' to force radians."
         ),
         supports_get=True,
         is_numeric=False,
@@ -254,26 +257,49 @@ def _degrees_note(degrees: bool, used: dict[str, bool]) -> str:
 
 
 def _degrees_locals(sympy: Any, used: dict[str, bool]) -> dict[str, Any]:
-    """Trig builtins that read/return **degrees** instead of radians.
+    """Trig builtins that read/return **degrees** instead of radians —
+    but only for **numeric** arguments.
 
     Forward functions interpret their argument as degrees (wrap in
     ``rad``); inverse functions return degrees (wrap in ``deg``). Sympy
     keeps these exact — ``sin(30)`` → ``1/2``, ``tan(45)`` → ``1`` — and
-    ``N(...)`` still works for a decimal. Applying any of them flips
-    ``used['trig']`` so the caller can stamp the degrees note; ``pi``,
-    ``sqrt``, calculus etc. fall through to sympy untouched.
+    ``N(...)`` still works for a decimal.
+
+    The degrees convention applies **only when the argument carries no
+    free symbols** (``sin(30)``, ``atan2(1, 1)``). A *symbolic* argument
+    — ``sin(x)`` inside ``integrate(sin(x)**2, x)`` — falls through to
+    sympy's native radians untouched, because substituting ``x → rad(x)``
+    into an indefinite integral over ``x`` corrupts the calculus (it
+    yields a garbled ``pi*x/180`` antiderivative instead of the correct
+    one). This is the "degrees for engineering numerics, radians for
+    symbolic calculus" split (gr48509) — the old code applied ``rad`` to
+    every argument, so ``integrate(sin(x)**2, x)`` in the default mode
+    returned nonsense until you remembered ``view='rad'``.
+
+    ``used['trig']`` flips only when the degrees conversion actually
+    fires (a numeric argument), so the "interpreted in degrees" note is
+    stamped only when it's true; ``pi``, ``sqrt``, calculus etc. fall
+    through to sympy untouched.
     """
     rad, deg = sympy.rad, sympy.deg
 
-    def fwd(fn: Any) -> Any:  # arg-in-degrees
+    def _is_symbolic(a: Any) -> bool:
+        arg = sympy.sympify(a)
+        return bool(getattr(arg, "free_symbols", set()))
+
+    def fwd(fn: Any) -> Any:  # arg-in-degrees (numeric args only)
         def f(a: Any) -> Any:
+            if _is_symbolic(a):
+                return fn(a)  # symbolic → sympy-native radians
             used["trig"] = True
             return fn(rad(a))
 
         return f
 
-    def inv(fn: Any) -> Any:  # result-in-degrees
+    def inv(fn: Any) -> Any:  # result-in-degrees (numeric args only)
         def f(a: Any) -> Any:
+            if _is_symbolic(a):
+                return fn(a)
             used["trig"] = True
             return deg(fn(a))
 
@@ -286,6 +312,8 @@ def _degrees_locals(sympy: Any, used: dict[str, bool]) -> dict[str, Any]:
         out[name] = inv(getattr(sympy, name))
 
     def _atan2(y: Any, x: Any) -> Any:
+        if _is_symbolic(y) or _is_symbolic(x):
+            return sympy.atan2(y, x)
         used["trig"] = True
         return deg(sympy.atan2(y, x))
 
