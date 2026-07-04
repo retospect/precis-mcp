@@ -494,6 +494,36 @@ class TestConversation:
         assert "how do I auth" in out.body
         assert "use OAuth" in out.body
 
+    def test_proactive_turn_marked_in_recent_and_digest(
+        self, conv: ConversationHandler
+    ) -> None:
+        # A scheduled briefing captured as an asa turn must read as
+        # scheduled content, not a live reply, in both renderings —
+        # else asa loses the provenance and denies her own briefing
+        # (gripe #47321).
+        conv.put(
+            kind="conv",
+            id="thread-b",
+            text="Morning briefing: the Bayeux Tapestry had 9-hour ticket queues.",
+            author="asa",
+            msg_id="brief-1",
+            meta={"proactive": True},
+        )
+        conv.put(
+            kind="conv",
+            id="thread-b",
+            text="Did I really say that about the tapestry?",
+            author="reto",
+            msg_id="u-1",
+        )
+        recent = conv.get(id="thread-b", recent=5)
+        assert "[asa · briefing]" in recent.body
+        assert "[reto]" in recent.body
+        # And the keyword digest keeps the marker (skip nothing so the
+        # briefing turn lands in the digest window).
+        digest = conv.get(id="thread-b", digest=5)
+        assert "[asa · briefing]" in digest.body
+
     def test_single_turn(self, conv: ConversationHandler) -> None:
         self._seed_conv(conv.store, "thread-1", "x", ["alpha", "beta", "gamma"])
         out = conv.get(id="thread-1~1")

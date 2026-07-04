@@ -513,7 +513,7 @@ class ConversationHandler(Handler):
         lines: list[str] = []
         for b in tail:
             meta = b.meta or {}
-            author = meta.get("author") or "?"
+            author = _author_label(meta)
             lines.append(
                 f"{handle_registry.try_format('conv', b.id, chunk=True) or f'~{b.pos}'}"
                 f" [{author}]"
@@ -569,7 +569,7 @@ class ConversationHandler(Handler):
         ]
         for b in window:
             meta = b.meta or {}
-            author = meta.get("author") or "?"
+            author = _author_label(meta)
             kws = b.keywords or []
             if kws:
                 kw_str = ", ".join(kws[:8])
@@ -615,6 +615,25 @@ class ConversationHandler(Handler):
             "ts": meta.get("ts"),
         }
         return Response(body="```json\n" + json.dumps(payload, indent=2) + "\n```")
+
+
+def _author_label(meta: dict[str, Any]) -> str:
+    """Author tag for a rendered turn, marking scheduled/proactive posts.
+
+    A morning briefing (or any worker-posted message) is captured as an
+    ``author='asa'`` turn carrying ``meta.proactive`` so asa's later
+    replies don't deny having said it (gripe #47321). But an un-marked
+    ``[asa]`` reads identically to a live, reasoned reply — and the
+    keyword digest strips even that — so asa loses the provenance that
+    the turn was scheduled content she posted, not analysis she stands
+    behind. Surfacing ``· briefing`` in the author label carries that
+    signal through both the verbatim (recent) and keyword (digest)
+    renderings.
+    """
+    author = meta.get("author") or "?"
+    if meta.get("proactive"):
+        return f"{author} · briefing"
+    return author
 
 
 def _compact_trailer(meta: dict[str, Any]) -> str:

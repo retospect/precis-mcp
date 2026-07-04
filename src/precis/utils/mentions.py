@@ -142,6 +142,18 @@ DISPLAY_LINK_PATTERN = re.compile(r"\[(?P<disp>[^\[\]]*)\]\((?P<tgt>[^()]+)\)")
 #: non-handle like ``[ab12]`` simply doesn't resolve and stays literal.
 BARE_BRACKET_REF_PATTERN = re.compile(r"\[(?P<bare>[¶§][^\[\]]+|[a-z]{2}\d+)\]")
 
+#: Bracketed patent *public number* — country code + serial (+ optional
+#: kind code), e.g. ``[US9927397B1]``, ``[EP1234567A1]``, or the app form
+#: ``[US20210012345A1]``. Distinct from the ADR-0036 handle form
+#: ``[pt34596]`` (2-char code + trailing digits): a public number carries
+#: trailing letters, so it never matches the handle alternation above and
+#: was silently dropped by the autolinker (gripe #48807). Case-insensitive
+#: because memories cite it lower-cased. **Emission is DB-gated** — see
+#: :func:`resolve_patent_pubnum`: a match becomes a link only when it
+#: resolves to a real ``ref_identifiers.id_kind='pub_id'`` patent, so
+#: prose like ``[US Patent 123]`` or an invented ``[US0000]`` stays literal.
+PATENT_PUBNUM_PATTERN = re.compile(r"\[(?P<pub>[A-Za-z]{2}\d{3,}[A-Za-z]?\d{0,2})\]")
+
 #: ``§<slug>~<n>`` citation sugar — equivalent to ``paper:<slug>~<n>``.
 DRAFT_CITE_PATTERN = re.compile(
     r"§(?P<slug>[A-Za-z][A-Za-z0-9_-]*)"
@@ -289,6 +301,48 @@ def resolve_handle_target(store: Any, token: str) -> LinkTarget | None:
     return LinkTarget(int(r.ref_id), pos)
 
 
+def resolve_patent_pubnum(store: Any, token: str) -> LinkTarget | None:
+    """A patent public number (``US9927397B1``) → its patent ``LinkTarget``.
+
+    Looks the token up in ``ref_identifiers`` under ``id_kind='pub_id'``
+    (case-insensitively — memories cite it lower-cased), and emits a link
+    only when the row resolves to a **live patent** ref. The kind guard
+    keeps a same-shaped ``pub_id`` on another kind from being mistaken for
+    a patent, and the DB hit is the over-fire gate: an unknown bracketed
+    ``[US0000]`` finds no row and stays literal (gripe #48807). ``None``
+    on no row / soft-deleted / non-patent, so the caller drops it.
+    """
+    val = token.strip()
+    if not val:
+        return None
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind = 'pub_id' AND upper(id_value) = upper(%s) LIMIT 1",
+                (val,),
+            ).fetchone()
+    except Exception:
+        log.debug("mentions: pub_id lookup failed for %r", val, exc_info=True)
+        return None
+    if row is None:
+        return None
+    rid = int(row[0])
+    ref = store.fetch_refs_by_ids([rid]).get(rid)
+    if ref is None or getattr(ref, "deleted_at", None) is not None:
+        return None
+    if getattr(ref, "kind", None) != "patent":
+        return None
+    return LinkTarget(rid, None)
+
+
+def _patent_pubnum_tokens(body: str) -> list[str]:
+    """Every bracketed patent-public-number token in ``body`` (inner text,
+    without the brackets). Resolution is DB-gated downstream, so this only
+    has to be shape-permissive."""
+    return [m.group("pub") for m in PATENT_PUBNUM_PATTERN.finditer(body)]
+
+
 def _universal_handle_tokens(body: str) -> list[str]:
     """Every bracketed handle token in ``body`` — the bare ``[me5]`` form,
     a ``[label](me5)`` target, or an ``[[me5]]`` authoring address.
@@ -330,6 +384,13 @@ def resolve_link_targets(
         targets.setdefault((ref.id, pos), LinkTarget(ref.id, pos))
     for token in _universal_handle_tokens(body):
         tgt = resolve_handle_target(store, token)
+        if tgt is None:
+            continue
+        if exclude_ref_id is not None and tgt.dst_ref_id == exclude_ref_id:
+            continue
+        targets.setdefault((tgt.dst_ref_id, tgt.dst_pos), tgt)
+    for token in _patent_pubnum_tokens(body):
+        tgt = resolve_patent_pubnum(store, token)
         if tgt is None:
             continue
         if exclude_ref_id is not None and tgt.dst_ref_id == exclude_ref_id:

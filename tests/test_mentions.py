@@ -54,17 +54,27 @@ def test_chunk_to_pos() -> None:
 
 
 class _FakeRef:
-    def __init__(self, ref_id: int, deleted_at: object = None) -> None:
+    def __init__(
+        self, ref_id: int, deleted_at: object = None, kind: str = "memory"
+    ) -> None:
         self.id = ref_id
         self.deleted_at = deleted_at
+        self.kind = kind
 
 
 class _FakeStore:
-    """Minimal store double: numeric id lookup + cite_key → ref_id."""
+    """Minimal store double: numeric id lookup + cite_key / pub_id → ref_id."""
 
-    def __init__(self, refs: dict[int, _FakeRef], cite_keys: dict[str, int]) -> None:
+    def __init__(
+        self,
+        refs: dict[int, _FakeRef],
+        cite_keys: dict[str, int],
+        pub_ids: dict[str, int] | None = None,
+    ) -> None:
         self._refs = refs
         self._cite = cite_keys
+        # Keyed upper-case: the pub_id resolver matches case-insensitively.
+        self._pub = {k.upper(): v for k, v in (pub_ids or {}).items()}
         self.pool = self  # resolve_handle_ref does `store.pool.connection()`
 
     # -- cite_key lookup path ------------------------------------------
@@ -82,8 +92,12 @@ class _FakeStore:
 
     def execute(self, _sql: str, params: tuple):
         ident = params[0]
-        rid = self._cite.get(ident)
-        store_rid = rid
+        # Route on the SQL: the patent path filters id_kind='pub_id' with a
+        # case-insensitive upper() compare; the legacy path is cite_key/pub_id.
+        if "upper(id_value)" in _sql:
+            store_rid = self._pub.get(str(ident).upper())
+        else:
+            store_rid = self._cite.get(ident)
 
         class _Cur:
             def fetchone(self_):
@@ -137,3 +151,61 @@ def test_resolve_dedups_repeated_target() -> None:
     store = _FakeStore(refs={6134: _FakeRef(6134)}, cite_keys={})
     targets = mentions.resolve_link_targets(store, "memory:6134 memory:6134")
     assert [(t.dst_ref_id, t.dst_pos) for t in targets] == [(6134, None)]
+
+
+# ---------------------------------------------------------------------------
+# Patent public-number autolinking (gripe #48807)
+# ---------------------------------------------------------------------------
+
+
+def test_bracketed_patent_pubnum_links_case_insensitively() -> None:
+    # Memory cites the public number lower-cased; the pub_id row is upper.
+    store = _FakeStore(
+        refs={70: _FakeRef(70, kind="patent")},
+        cite_keys={},
+        pub_ids={"US9927397B1": 70},
+    )
+    targets = mentions.resolve_link_targets(store, "see [us9927397b1] for the method")
+    assert [(t.dst_ref_id, t.dst_pos) for t in targets] == [(70, None)]
+
+
+def test_bracketed_pubnum_dedups_across_case() -> None:
+    store = _FakeStore(
+        refs={70: _FakeRef(70, kind="patent")},
+        cite_keys={},
+        pub_ids={"US9927397B1": 70},
+    )
+    # Two mentions in different case resolve to the same patent → one edge.
+    targets = mentions.resolve_link_targets(
+        store, "[us9927397b1] and again [US9927397B1]"
+    )
+    assert [(t.dst_ref_id, t.dst_pos) for t in targets] == [(70, None)]
+
+
+def test_unknown_bracketed_pubnum_stays_literal() -> None:
+    # No pub_id row → no link (the over-fire gate). Prose like [US0000]
+    # must not spuriously link.
+    store = _FakeStore(refs={}, cite_keys={}, pub_ids={})
+    assert mentions.resolve_link_targets(store, "the [US0000] filing") == []
+
+
+def test_bracketed_pubnum_on_non_patent_kind_is_dropped() -> None:
+    # A same-shaped pub_id belonging to another kind must not masquerade
+    # as a patent link.
+    store = _FakeStore(
+        refs={70: _FakeRef(70, kind="finding")},
+        cite_keys={},
+        pub_ids={"US9927397B1": 70},
+    )
+    assert mentions.resolve_link_targets(store, "[us9927397b1]") == []
+
+
+def test_unbracketed_pubnum_never_links() -> None:
+    # Only the bracketed form is a link intent; bare prose stays literal
+    # even when the pub_id exists (avoids over-firing on `US1234` text).
+    store = _FakeStore(
+        refs={70: _FakeRef(70, kind="patent")},
+        cite_keys={},
+        pub_ids={"US9927397B1": 70},
+    )
+    assert mentions.resolve_link_targets(store, "US9927397B1 was granted") == []
