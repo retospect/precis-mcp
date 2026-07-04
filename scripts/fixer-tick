@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# scripts/fixer-tick — one tick of the laptop fixer loop (ADR 0048).
+#
+# The git-world scheduler for the repo-dev lane: pick a ready proposal,
+# build it with claude in an isolated worktree, gate it, and — at higher
+# autonomy — ship/deploy/verify. Launched by launchd on an interval.
+#
+# Skip-on-battery lives HERE (launchd has no native battery condition):
+# a heavy build/gate on battery drains the laptop, so bail early unless
+# on AC power. Amphetamine keeps the machine awake; this keeps it from
+# working while unplugged.
+#
+# Autonomy is a dial via PRECIS_FIXER_AUTONOMY (report|ship|full),
+# defaulting to the SAFE rung (report — no ship, no deploy). Flip it up
+# deliberately once you've watched a few clean ticks.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+# ── skip on battery (macOS) ─────────────────────────────────────────
+if command -v pmset >/dev/null 2>&1; then
+    if pmset -g ps 2>/dev/null | grep -q "Battery Power"; then
+        echo "[fixer] on battery — skipping tick"
+        exit 0
+    fi
+fi
+
+exec uv run python -m precis.fixer.tick --once "$@"

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  com.precis.fixer — the laptop fixer loop (ADR 0048).
+
+  A LaunchAgent (NOT a LaunchDaemon): it runs in the user's session so
+  the host `claude` can reach `~/.claude` OAuth and the Keychain. This
+  is the one thing to verify before trusting the loop — a headless
+  `claude -p` under launchd reaching Keychain.
+
+  INSTALL (deliberately NOT auto-loaded — you flip autonomy up yourself):
+    1. edit RepoRoot / RunInterval / PRECIS_FIXER_* below
+    2. cp ops/launchd/com.precis.fixer.plist ~/Library/LaunchAgents/
+    3. launchctl load  ~/Library/LaunchAgents/com.precis.fixer.plist
+       launchctl unload ...   # to stop
+
+  Autonomy defaults to `report` (build + gate + push branch, NO ship /
+  deploy). Set PRECIS_FIXER_AUTONOMY to `ship` or `full` to dial up.
+  Skip-on-battery is handled inside scripts/fixer-tick.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.precis.fixer</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/reto/work/projects/code/precis-mcp/scripts/fixer-tick</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/reto/work/projects/code/precis-mcp</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PRECIS_FIXER_AUTONOMY</key>
+        <string>report</string>
+        <!-- optional: loud-on-exception channel + post-deploy liveness
+        <key>PRECIS_FIXER_DISCORD_WEBHOOK</key>
+        <string>https://discord.com/api/webhooks/...</string>
+        <key>PRECIS_FIXER_READYZ_URL</key>
+        <string>https://precis.example/readyz</string>
+        -->
+    </dict>
+
+    <!-- every 20 minutes; RunAtLoad off so loading doesn't fire a build -->
+    <key>StartInterval</key>
+    <integer>1200</integer>
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/precis-fixer.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/precis-fixer.log</string>
+</dict>
+</plist>
