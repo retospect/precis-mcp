@@ -45,8 +45,9 @@ slug, `vaswani17~0..14`, also resolves on input, so older copy-pastes
 still work.) Keywords are most-distinctive first — `keywords[0]` is
 what makes the range unique, not what the whole document is about.
 
-Short documents render one row per chunk with a text preview instead
-of clustered keywords — there's nothing to cluster.
+A short *top-level* TOC (under a page or so of chunks) renders one row
+per chunk — its keywords as the label — because there's nothing to
+cluster. Drilling is different: see below.
 
 ## Drill into a section
 ## Read a TOC row
@@ -58,8 +59,14 @@ get(kind='paper', id='pa5~15..29', view='toc')  # sub-TOC of the range
 get(kind='paper', id='pa5~15..29/toc')          # path form
 ```
 
-Sub-TOC re-clusters the chosen range into its own table. Recurse
-until rows are small enough to read directly.
+Sub-TOC re-clusters the chosen range into its own sub-groups —
+*regardless of how few chunks it holds*, unlike the top-level TOC
+which only clusters a long body. Each sub-group is itself a
+`~A..B` handle you can drill again, so recursing walks a hierarchy
+(papers have no heading tree; the hierarchy *is* this recursive
+keyword clustering). It stops sub-grouping only when a range is small
+enough to be a leaf — then it shows those chunks directly. So you never
+hit a wall of undrillable one-row-per-chunk singletons on the way down.
 
 ## See also
 

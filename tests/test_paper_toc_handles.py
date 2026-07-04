@@ -80,7 +80,7 @@ def test_toc_handles_use_universal_handle_and_round_trip(store: Store) -> None:
 
 
 def test_drill_in_hint_is_a_valid_get_id(store: Store) -> None:
-    """The ``Next: drill into fat clusters`` hint must parse as a get id."""
+    """The ``Next: drill ...`` hint's get id must parse + resolve."""
     hub = Hub(store=store, embedder=MockEmbedder(dim=1024))
     handler = PaperHandler(hub=hub)
     ref_id = _seed_paper(store, slug="attention", n=80)

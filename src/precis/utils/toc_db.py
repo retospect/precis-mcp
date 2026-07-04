@@ -23,7 +23,7 @@ Output shape — TOON table, always ``(handle, keywords)``::
     pa5~15..29	keyword phrases for cluster 1
     …
 
-    Next: drill into fat clusters                       (optional)
+    Next: drill a cluster for finer structure           (optional)
       get(kind='paper', id='pa5~15..29', view='toc')
 
 The ``handle`` is the record's ADR-0036 universal handle (``pa<id>``),
@@ -36,15 +36,23 @@ The ``Topics:`` line is a lossless summary — it lists keywords that
 appear in ≥75% of clusters; the per-row labels still include them,
 so the line is a redundant overview, never a transformation.
 
-The ``Next:`` block fires for any cluster large enough to re-bucket
-on its own (≥ ``_BUCKETING_THRESHOLD`` chunks). It hints the agent
-that a recursive ``view='toc'`` on that handle yields more structure.
+The ``Next:`` block fires for any cluster that would itself re-cluster
+if drilled (``> 2 * _DRILL_GROUP_SIZE`` chunks — the same predicate the
+drill-down path uses). It hints the agent that a recursive
+``view='toc'`` on that handle yields more structure.
 
-When the requested range is small enough to read directly
-(< ``_BUCKETING_THRESHOLD`` chunks), the renderer skips clustering
-and emits one row per chunk — same schema, per-chunk KeyBERT
-keywords as the label. For the actual chunk text, call
-``get(...)`` without ``view='toc'``.
+Clustering is **scope-aware** so drilling walks a hierarchy rather
+than bottoming out into a flat per-chunk dump. At the *top level* (no
+scope) a short body (< ``_BUCKETING_THRESHOLD`` chunks) is read
+directly — one row per chunk, nothing to drill. But a *drill-down*
+(``scope`` set, e.g. double-clicking a group in the web reader)
+re-clusters the sub-range into sub-groups whenever it can still split
+(≥ ``2 * _MIN_CLUSTER_SIZE`` chunks), targeting a shallow branching
+factor (``_DRILL_GROUP_SIZE``) instead of the log-scaled top-level
+table. Papers have no heading tree, so this recursive keyword
+clustering *is* the hierarchy (ADR-0018/F20). Only a range too small
+to split further shows one row per chunk. For the actual chunk text,
+call ``get(...)`` without ``view='toc'``.
 """
 
 from __future__ import annotations
@@ -57,10 +65,18 @@ from typing import Any
 from precis.format import render_agent_table
 from precis.utils.segmentation import Segment, segment_dp
 
-#: Below this chunk count, render per-chunk keywords directly
-#: instead of clustering — small ranges are scannable as-is and
-#: there is nothing to drill into.
+#: Below this chunk count, a *top-level* TOC (no scope) renders per-chunk
+#: keywords directly instead of clustering — a short paper is scannable
+#: as-is and there is nothing to drill into. A *drill-down* (scope set)
+#: ignores this floor and keeps sub-clustering (see ``_should_cluster``).
 _BUCKETING_THRESHOLD = 30
+
+#: Target chunks-per-group when re-clustering a drilled sub-range. A
+#: drill-down aims for a shallow branching factor (~this many chunks per
+#: sub-group) rather than the log-scaled ~15-row table the top level
+#: uses, so repeatedly drilling walks a legible hierarchy down to
+#: individual chunks instead of dumping one flat per-chunk list.
+_DRILL_GROUP_SIZE = 4
 
 #: Hard cap on the cluster count. Keeps the rendered table skimmable
 #: even on large ranges.
@@ -121,10 +137,10 @@ def render_from_store(
         return _empty_body(handle=handle, kind=kind, scope=scope)
 
     n = len(blocks)
-    if n < _BUCKETING_THRESHOLD:
+    if not _should_cluster(n, scope):
         return _render_per_chunk(handle=handle, blocks=blocks, scope=scope)
 
-    target_k = _bucket_count(n)
+    target_k = _target_k(n, scope)
     distances = _adjacent_jaccard_distances(blocks)
     if not distances:
         return _render_per_chunk(handle=handle, blocks=blocks, scope=scope)
@@ -147,7 +163,10 @@ def render_from_store(
         label_kws = _top_keywords(bucket, top_k=_LABEL_TOP_K)
         rows.append({"handle": row_handle, "keywords": ", ".join(label_kws)})
         row_keyword_sets.append(label_kws)
-        if len(bucket) >= _BUCKETING_THRESHOLD and lo_pos != hi_pos:
+        # Hint a drill exactly when re-clustering this bucket would yield
+        # sub-groups (same predicate the drill-down path uses), so the
+        # agent surface only points at handles that actually go deeper.
+        if lo_pos != hi_pos and _should_cluster(len(bucket), (lo_pos, hi_pos)):
             fat_clusters.append(row_handle)
 
     headline = _headline(handle=handle, n_chunks=n, n_clusters=len(rows), scope=scope)
@@ -159,7 +178,9 @@ def render_from_store(
         parts.extend([f"Topics: {topics}", ""])
     parts.append(table)
     if fat_clusters:
-        parts.extend(["", "Next: drill into fat clusters"])
+        parts.extend(
+            ["", "Next: drill a cluster for finer structure (recurses to chunks)"]
+        )
         for row_handle in fat_clusters:
             parts.append(f"  get(kind='paper', id='{row_handle}', view='toc')")
     return "\n".join(parts)
@@ -185,8 +206,10 @@ def build_toc_segments(
     segment's ``handle`` field prefixes it so the web row mirrors the
     copy-pasteable form the agent surface emits.
 
-    Short ranges (< ``_BUCKETING_THRESHOLD``) yield one segment per
-    chunk (``lo == hi``); larger ranges cluster. ``keywords`` is the
+    A range that shouldn't split (:func:`_should_cluster`) yields one
+    segment per chunk (``lo == hi``); a clusterable range — including any
+    drill-down ``scope`` down to ``2 * _MIN_CLUSTER_SIZE`` chunks — yields
+    multi-chunk sub-groups the reader can drill again. ``keywords`` is the
     per-segment label (top-K). The web layer adds the PDF page for each
     segment's ``lo`` chunk (a separate ``chunk_pages`` lookup) so a row
     click can jump the viewer. Returns ``[]`` for an empty range.
@@ -196,7 +219,7 @@ def build_toc_segments(
         return []
 
     n = len(blocks)
-    if n < _BUCKETING_THRESHOLD:
+    if not _should_cluster(n, scope):
         return [
             {
                 "handle": f"{handle}~{b.pos}",
@@ -221,7 +244,7 @@ def build_toc_segments(
             for b in blocks
         ]
 
-    raw_segments = segment_dp(distances, k=_bucket_count(n))
+    raw_segments = segment_dp(distances, k=_target_k(n, scope))
     segments = _collapse_singletons(raw_segments, min_size=_MIN_CLUSTER_SIZE)
 
     out: list[dict[str, Any]] = []
@@ -259,6 +282,37 @@ def _bucket_count(n_chunks: int) -> int:
         return 1
     target = math.ceil(_BUCKET_MULTIPLIER * math.log10(max(2, n_chunks)))
     return max(_BUCKET_MIN_COUNT, min(_BUCKET_MAX_COUNT, target))
+
+
+def _should_cluster(n: int, scope: tuple[int, int] | None) -> bool:
+    """Whether a range of ``n`` chunks re-clusters into sub-groups.
+
+    The bar depends on context: the *top-level* TOC only clusters a
+    substantial body (``>= _BUCKETING_THRESHOLD``) — a short paper is
+    scannable per-chunk with nothing to drill. A *drill-down* (``scope``
+    set) sub-clusters whenever the range is bigger than a comfortably
+    scannable leaf (``> 2 * _DRILL_GROUP_SIZE``), so double-clicking a
+    group walks a hierarchy instead of flattening to singletons (the
+    23-chunk sub-range that motivated this; papers have no heading tree,
+    so hierarchy is recursive keyword clustering, ADR-0018/F20). Below
+    that a drilled range is its own leaf — show its chunks directly.
+    """
+    if scope is None:
+        return n >= _BUCKETING_THRESHOLD
+    return n > 2 * _DRILL_GROUP_SIZE
+
+
+def _target_k(n: int, scope: tuple[int, int] | None) -> int:
+    """Requested cluster count for a range, context-aware.
+
+    Top-level uses the log-scaled :func:`_bucket_count` (~15 rows for a
+    big paper). A drill-down targets a shallow branching factor
+    (``~_DRILL_GROUP_SIZE`` chunks per sub-group), clamped to at least two
+    groups (so the split is real) and the same skimmable ceiling.
+    """
+    if scope is None:
+        return _bucket_count(n)
+    return max(2, min(_BUCKET_MAX_COUNT, round(n / _DRILL_GROUP_SIZE)))
 
 
 def _adjacent_jaccard_distances(blocks: Sequence[Any]) -> list[float]:

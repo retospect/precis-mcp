@@ -16,8 +16,9 @@ Synthetic block stubs only; no DB, no embedder.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import pairwise
 
-from precis.utils.toc_db import render_from_store
+from precis.utils.toc_db import build_toc_segments, render_from_store
 
 
 @dataclass
@@ -148,7 +149,7 @@ class TestDrillInHint:
             _Stub(pos=i, keywords=["alpha", "beta", "gamma"]) for i in range(40)
         ] + [_Stub(pos=i, keywords=["delta", "epsilon", "zeta"]) for i in range(40, 70)]
         out = _render(blocks)
-        assert "Next: drill into fat clusters" in out
+        assert "Next: drill" in out
         # The fat cluster's handle appears in a drill-in suggestion.
         next_lines = [
             line for line in out.splitlines() if "view='toc'" in line and "get(" in line
@@ -186,7 +187,7 @@ class TestDrillInHint:
             # Each chunk a different "topic" so DP cuts often.
             blocks.append(_Stub(pos=i, keywords=[f"topic{i // 3}", "shared"]))
         out = _render(blocks)
-        assert "Next: drill into fat clusters" not in out
+        assert "Next: drill" not in out
 
 
 # ── empty / scope paths ─────────────────────────────────────────────
@@ -201,3 +202,73 @@ class TestEdges:
         blocks = [_Stub(pos=i, keywords=[f"kw{i}"]) for i in range(5)]
         out = _render(blocks, scope=(0, 4))
         assert "sub-TOC ~0..4" in out
+
+
+# ── drill-down hierarchy (scope-aware sub-clustering) ────────────────
+
+
+def _segments(
+    blocks: list[_Stub], *, scope: tuple[int, int] | None = None
+) -> list[dict]:
+    return build_toc_segments(
+        store=_StubStore(blocks), ref_id=1, handle="pa1", scope=scope
+    )
+
+
+class TestDrillHierarchy:
+    """A drilled sub-range re-clusters into sub-groups instead of
+    flattening to one-row-per-chunk — the huang23f ~25..53 regression
+    where a 23-chunk group showed 23 undrillable singleton rows."""
+
+    def _range(self, lo: int, hi: int) -> list[_Stub]:
+        # Distinct per-chunk keyword + a shared topic; DP splits on size,
+        # mimicking a coherent drilled sub-range.
+        return [_Stub(pos=i, keywords=[f"kw{i}", "topic"]) for i in range(lo, hi + 1)]
+
+    def test_drilled_subrange_subclusters_not_flattened(self) -> None:
+        blocks = self._range(25, 47)  # 23 chunks, < top-level threshold 30
+        assert len(blocks) == 23
+        segs = _segments(blocks, scope=(25, 47))
+        # Grouped: fewer rows than chunks, and at least one multi-chunk
+        # sub-group the reader can drill again.
+        assert 1 < len(segs) < 23
+        assert any(s["hi"] > s["lo"] for s in segs)
+        # Sub-groups tile the range end-to-end, no gaps/overlap.
+        assert segs[0]["lo"] == 25 and segs[-1]["hi"] == 47
+        for a, b in pairwise(segs):
+            assert b["lo"] == a["hi"] + 1
+
+    def test_same_range_top_level_still_per_chunk(self) -> None:
+        # Without a scope, a 23-chunk body is under the top-level floor and
+        # stays scannable per-chunk (top-level behaviour is unchanged).
+        blocks = self._range(0, 22)
+        segs = _segments(blocks)
+        assert len(segs) == 23
+        assert all(s["lo"] == s["hi"] for s in segs)
+
+    def test_small_drilled_range_is_a_leaf(self) -> None:
+        # A drilled range at/under 2*_DRILL_GROUP_SIZE (8) is its own leaf —
+        # show its chunks directly so drilling terminates cleanly.
+        blocks = self._range(10, 17)  # 8 chunks
+        segs = _segments(blocks, scope=(10, 17))
+        assert len(segs) == 8
+        assert all(s["lo"] == s["hi"] for s in segs)
+
+    def test_just_over_leaf_floor_clusters(self) -> None:
+        blocks = self._range(10, 18)  # 9 chunks, > 8
+        segs = _segments(blocks, scope=(10, 18))
+        assert len(segs) < 9
+        assert any(s["hi"] > s["lo"] for s in segs)
+
+    def test_drilled_render_reports_clusters_not_flat_list(self) -> None:
+        blocks = self._range(25, 47)
+        out = render_from_store(
+            store=_StubStore(blocks),
+            ref_id=1,
+            handle="pa1",
+            kind="paper",
+            scope=(25, 47),
+        )
+        # Bucketed headline names a cluster count; the per-chunk fallback
+        # would omit it. This pins the fix.
+        assert "clusters" in out
