@@ -275,6 +275,12 @@ class TodoHandler(NumericRefHandler):
     def _supported_list_views(self) -> tuple[str, ...]:
         return ("recent", "open", "doing", "blocked", "done", "queue")
 
+    def _search_view_names(self) -> frozenset[str]:
+        # The tree-aware views live on search(), not get(); passing one to
+        # get(view=…) without an id gets a redirect hint (gr48523). Derived
+        # from the dispatch table so it stays in sync with TodoView.
+        return frozenset(str(v) for v in _TREE_SEARCH_VIEWS)
+
     def _list_view(self, view: str) -> Response | None:
         # Default behaviour for /recent / "" stays in the base class.
         if view in ("open", "doing", "blocked", "done"):

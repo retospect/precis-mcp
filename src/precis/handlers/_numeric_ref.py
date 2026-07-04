@@ -235,6 +235,16 @@ class NumericRefHandler(Handler):
                 next=f"get(kind={self.kind!r}, id=<int>)",
             )
 
+        if id is None and view is not None and view in self._search_view_names():
+            # A search-side view (e.g. todo's 'projects'/'doable') passed to
+            # get() with no id — without this the caller hits the generic
+            # "requires id=" and can't tell the view name was fine, just on
+            # the wrong verb. Redirect to search explicitly (gr48523).
+            raise BadInput(
+                f"{view!r} is a search view for kind={self.kind!r}, not a get view",
+                next=f"search(kind={self.kind!r}, view={view!r})",
+            )
+
         ref_id = self._coerce_id(id)
         ref = self._resolve_live_ref(ref_id)
         if view is not None:
@@ -1312,6 +1322,16 @@ class NumericRefHandler(Handler):
         ``recent``.
         """
         return ("recent",)
+
+    def _search_view_names(self) -> frozenset[str]:
+        """View names that live on ``search``, not ``get``.
+
+        When a caller passes one of these to ``get()`` with no ``id=``,
+        the base redirects to ``search`` with a targeted hint instead of
+        the generic "requires id=" (gr48523). Default: none; subclasses
+        with search-side views (todo's ``projects``/``doable``/…) override.
+        """
+        return frozenset()
 
     def _list_view(self, view: str) -> Response | None:
         """Handle ``id='/recent'`` and friends.

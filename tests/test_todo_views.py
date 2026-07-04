@@ -255,6 +255,19 @@ def test_unknown_view_rejected_with_options(handler: TodoHandler) -> None:
         handler.search(view="frobnicate")
 
 
+def test_get_with_search_view_redirects_to_search(handler: TodoHandler) -> None:
+    # gr48523: get(kind='todo', view='projects') is a search view on the
+    # wrong verb — redirect explicitly instead of the generic "requires id=".
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="search view") as ei:
+        handler.get(view="projects")
+    assert "search(kind='todo', view='projects')" in (ei.value.next or "")
+    # doable too (another search-only view)
+    with pytest.raises(BadInput, match="search view"):
+        handler.get(view="doable")
+
+
 # ── view='raw' (universal debug view) ─────────────────────────────
 
 

@@ -43,6 +43,15 @@ def test_create_requires_project_then_outlines(draft: DraftHandler, hub: Hub) ->
     assert "Title" in out and bool(re.search(r"dc\d+", out)) and "[heading]" in out
 
 
+def test_recent_list_path_redirects_to_search(draft: DraftHandler, hub: Hub) -> None:
+    # gr48523(2): a '/recent'-style list path on a slug-addressed kind used to
+    # dead-end as "slug '/recent' not found". It now raises a BadInput that
+    # names the real recovery path (search) instead of a bogus NotFound.
+    with pytest.raises(BadInput, match="no '/recent' list view") as ei:
+        draft.get(id="/recent")
+    assert "search(kind='draft'" in (ei.value.next or "")
+
+
 def test_dry_run_previews_text_edit_without_writing(
     draft: DraftHandler, hub: Hub
 ) -> None:

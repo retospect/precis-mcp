@@ -247,6 +247,18 @@ def resolve_live_slug_ref(
                   is therefore unreachable through ``get_ref``).
     """
     slug = str(id).strip()
+    # A ``/<view>`` list-path (e.g. ``/recent``) reaching the slug resolver
+    # is a list-view misfire, not a missing ref: slug-addressed kinds are
+    # keyed by slug/handle, and the numeric kinds' ``/recent`` shape isn't
+    # universal (gr48523). Handlers that DO support a bare list intercept it
+    # before calling here, so anything ``/``-prefixed that lands here has no
+    # such view — give a real recovery path, not the misleading
+    # "slug '/recent' not found".
+    if slug.startswith("/"):
+        raise BadInput(
+            f"{kind!r} has no {slug!r} list view — it is addressed by slug/handle",
+            next=next_hint or f"search(kind={kind!r}, q='...') to find refs",
+        )
     # ADR 0036: accept the universal record handle (e.g. ``or123``) — the
     # form output now emits — resolving it by ref_id; else the slug path.
     parsed = handle_registry.parse(slug)
