@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from precis_web.routes.status import (
+    _KEYWORDS_VERSION,
     _LIVENESS_SIGNALS,
     _background_anomalies,
     _backlog_counts,
@@ -66,6 +67,68 @@ def test_backlog_last_done_reads_handler_not_pass(store: Any) -> None:
     assert backlog["chunk_keywords"].get("last_ts") is None
     # summarize never logged at all → no timestamp.
     assert backlog["summarize"].get("last_ts") is None
+
+
+def _seed_kw_chunk(
+    store: Any,
+    *,
+    text: str,
+    with_ok_embedding: bool,
+    with_current_keywords: bool,
+) -> int:
+    """Create a keyword-eligible ``memory`` chunk; optionally give it a current
+    ``ok`` embedding and/or current keywords. content_sha is copied from the
+    chunk so the ``IS NOT DISTINCT FROM`` gates match regardless of triggers."""
+    ref = store.insert_ref(kind="memory", slug=None, title="t", meta={})
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, 0, 'paragraph', %s) RETURNING chunk_id",
+            (ref.id, text),
+        ).fetchone()
+        assert row is not None
+        cid = int(row[0])
+        if with_ok_embedding:
+            conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, embedder, status, content_sha) "
+                "VALUES (%s, 'bge-m3', 'ok', "
+                "        (SELECT content_sha FROM chunks WHERE chunk_id = %s))",
+                (cid, cid),
+            )
+        if with_current_keywords:
+            conn.execute(
+                "UPDATE chunks SET keywords = %s, "
+                "keywords_meta = jsonb_build_object("
+                "    'version', %s::text, 'content_sha', content_sha) "
+                "WHERE chunk_id = %s",
+                (["kw1", "kw2"], _KEYWORDS_VERSION, cid),
+            )
+        conn.commit()
+    return cid
+
+
+def test_backlog_keywords_split_pending_vs_blocked(store: Any) -> None:
+    """A keyword-eligible chunk missing its ``ok`` embedding is surfaced as
+    *blocked* (real backlog waiting on embed), NOT hidden — the bug that let
+    chunk_keywords read "100% done" while 71k paper chunks sat behind a stalled
+    embed pass. An embedded-but-unkeyworded chunk is *pending*; a fully
+    keyworded one is *done*."""
+    long = "graphene nanoribbons confine electrons in one dimension; " * 4  # >150
+    _seed_kw_chunk(
+        store, text=long, with_ok_embedding=False, with_current_keywords=False
+    )
+    _seed_kw_chunk(
+        store, text=long, with_ok_embedding=True, with_current_keywords=False
+    )
+    _seed_kw_chunk(store, text=long, with_ok_embedding=True, with_current_keywords=True)
+
+    kw = _backlog_counts(store)["chunk_keywords"]
+
+    # All three categories are populated by our seeds (>= on the shared test DB).
+    assert kw["blocked"] >= 1  # un-embedded eligible chunk is now visible…
+    assert kw["pending"] >= 1  # …distinct from claimable-now work…
+    assert kw["done"] >= 1  # …and from completed work.
+    assert kw["failed"] == 0  # keywords write in place — no terminal-failed state
 
 
 def test_recent_passes_surfaces_real_handler_name(store: Any) -> None:

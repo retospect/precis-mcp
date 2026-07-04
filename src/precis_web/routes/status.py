@@ -216,10 +216,18 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
       and never retries them, so they are neither progress nor
       claimable work — they get their own bar. Keywords has no failure
       state (it writes in place), so its ``failed`` is always 0.
-    * ``pending`` — eligible, not yet done, not failed. **This is the
-      real backlog**: ``pending = 0`` means the pass is caught up.
-      (The old panel counted skipped kinds, ``no_index`` chunks, and
-      terminally-failed rows as pending, so it could never reach 0.)
+    * ``pending`` — eligible, not yet done, not failed, and *claimable
+      now*. **This is the real backlog**: ``pending = 0`` means the pass
+      is caught up. (The old panel counted skipped kinds, ``no_index``
+      chunks, and terminally-failed rows as pending, so it could never
+      reach 0.)
+    * ``blocked`` — eligible and not done, but waiting on an upstream
+      artifact so the pass can't claim it yet (``chunk_keywords`` only:
+      KeyBERT needs the chunk's embedding, so a chunk whose embed is
+      pending/failed is real keyword backlog, not "done"). Folding this
+      into eligibility (the old code) hid it, letting keywords read
+      "100% done" while a large backlog sat behind a stalled embed pass.
+      0 for embed/summarize (no upstream dependency).
 
     ``total`` for the fraction is ``pending + done + failed`` (the
     eligible universe), which differs per pass — keywords excludes
@@ -291,30 +299,39 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
         _SUMMARIZE_SKIP_KINDS,
     )
 
-    # ``chunk_keywords`` writes in place on ``chunks`` and has a much
-    # stricter claim filter: skip the non-prose kinds, require
-    # ``length(text) >= _MIN_CHUNK_CHARS``, skip ``no_index``, and — a
-    # hard gate — require a *current* ``bge-m3`` embedding (KeyBERT
-    # scores against it), so a chunk whose embed failed is not yet
-    # eligible here. Pending = eligible and stale/missing keywords.
+    # ``chunk_keywords`` writes in place on ``chunks`` and has a stricter
+    # claim filter: skip the non-prose kinds, require ``length(text) >=
+    # _MIN_CHUNK_CHARS``, skip ``no_index``, and — a hard gate — require a
+    # *current* ``bge-m3`` embedding (KeyBERT scores against it). A chunk
+    # eligible by its own properties but lacking that embedding is **blocked**,
+    # not done: it still needs keywords, it just has to wait for ``embed``
+    # first. Folding the embedding into *eligibility* (the old code) hid those
+    # chunks entirely, so the pass read "100% done" while a large keyword
+    # backlog sat behind a stalled embed pass. Instead: eligible = the chunk's
+    # own properties; split the not-done rows into ``pending`` (embedding ready
+    # → claimable now, preserves "pending 0 = caught up") and ``blocked``
+    # (waiting on embed). ``blocked`` gets its own bar segment.
     try:
         with store.pool.connection() as conn:
             r = conn.execute(
                 """
-                SELECT count(*) FILTER (WHERE elig)              AS total,
-                       count(*) FILTER (WHERE elig AND NOT pend) AS done
+                SELECT
+                    count(*) FILTER (WHERE elig)                            AS total,
+                    count(*) FILTER (WHERE elig AND NOT pend)               AS done,
+                    count(*) FILTER (WHERE elig AND pend AND emb_ready)     AS pending,
+                    count(*) FILTER (WHERE elig AND pend AND NOT emb_ready) AS blocked
                   FROM (
                     SELECT
                         (c.chunk_kind <> ALL(%(skip)s)
                          AND length(c.text) >= %(minlen)s
-                         AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
-                         AND EXISTS (
+                         AND (c.meta->>'no_index') IS DISTINCT FROM 'true') AS elig,
+                        EXISTS (
                                SELECT 1 FROM chunk_embeddings ce
                                 WHERE ce.chunk_id = c.chunk_id
                                   AND ce.embedder = %(emb)s
                                   AND ce.status = 'ok'
                                   AND ce.content_sha
-                                      IS NOT DISTINCT FROM c.content_sha)) AS elig,
+                                      IS NOT DISTINCT FROM c.content_sha) AS emb_ready,
                         (c.keywords IS NULL
                          OR (c.keywords_meta->>'version') IS DISTINCT FROM %(kv)s
                          OR (c.keywords_meta->>'content_sha')
@@ -329,9 +346,10 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
                     "kv": _KEYWORDS_VERSION,
                 },
             ).fetchone()
-        total, done = int(r[0]), int(r[1])
+        done, pending, blocked = int(r[1]), int(r[2]), int(r[3])
         rows["chunk_keywords"] = {
-            "pending": total - done,
+            "pending": pending,
+            "blocked": blocked,
             "done": done,
             "failed": 0,
         }

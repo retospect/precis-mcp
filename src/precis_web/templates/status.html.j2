@@ -429,16 +429,21 @@
   <div class="flex items-center gap-3 mb-2 text-[11px] text-slate-500">
     <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded-sm bg-emerald-500"></span>done</span>
     <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded-sm bg-sky-500"></span>pending</span>
+    <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded-sm bg-amber-400"></span>blocked (waiting on embed)</span>
     <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded-sm bg-rose-500"></span>failed (terminal, never retried)</span>
   </div>
   <div class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
     {% for pass_name, row in backlog.items() %}
     {% set failed = row.failed|default(0) %}
-    {% set total = row.pending + row.done + failed %}
+    {% set blocked = row.blocked|default(0) %}
+    {% set total = row.pending + row.done + failed + blocked %}
     {# ``pct`` is percent *complete* (done / total). ``pct_pend`` /
-       ``pct_fail`` size the other two segments so they stack to 100%. #}
+       ``pct_block`` / ``pct_fail`` size the other segments so they stack
+       to 100%. ``blocked`` = eligible chunks waiting on an upstream artifact
+       (keywords need the embedding first) — real backlog, not done. #}
     {% set pct = ((row.done / total) * 100) if total > 0 else 100 %}
     {% set pct_pend = ((row.pending / total) * 100) if total > 0 else 0 %}
+    {% set pct_block = ((blocked / total) * 100) if total > 0 else 0 %}
     {% set pct_fail = ((failed / total) * 100) if total > 0 else 0 %}
     <div class="px-4 py-2 text-xs flex items-center gap-2">
       <span class="font-mono text-slate-700 w-36 shrink-0">{{ pass_name }}</span>
@@ -446,12 +451,13 @@
       <span class="text-rose-600">(query failed — see logs)</span>
       {% else %}
       <span class="w-44 shrink-0 tabular-nums" title="{{ '{:,}'.format(total) }} eligible chunks">
-        <span class="font-medium {% if row.pending > 0 %}text-amber-700{% else %}text-emerald-700{% endif %}">{{ '{:,}'.format(row.pending) }}</span><span class="text-slate-400"> pending</span>{% if failed > 0 %}<span class="text-rose-600"> · {{ '{:,}'.format(failed) }} failed</span>{% endif %}
+        <span class="font-medium {% if row.pending > 0 %}text-amber-700{% else %}text-emerald-700{% endif %}">{{ '{:,}'.format(row.pending) }}</span><span class="text-slate-400"> pending</span>{% if blocked > 0 %}<span class="text-amber-600"> · {{ '{:,}'.format(blocked) }} blocked</span>{% endif %}{% if failed > 0 %}<span class="text-rose-600"> · {{ '{:,}'.format(failed) }} failed</span>{% endif %}
       </span>
       <div class="flex-1 h-2 rounded bg-slate-100 overflow-hidden flex"
-           title="done {{ '{:,}'.format(row.done) }} · pending {{ '{:,}'.format(row.pending) }} · failed {{ '{:,}'.format(failed) }}">
+           title="done {{ '{:,}'.format(row.done) }} · pending {{ '{:,}'.format(row.pending) }} · blocked {{ '{:,}'.format(blocked) }} · failed {{ '{:,}'.format(failed) }}">
         <div class="h-2 bg-emerald-500" style="width: {{ '%.1f'|format(pct) }}%"></div>
         <div class="h-2 bg-sky-500" style="width: {{ '%.1f'|format(pct_pend) }}%"></div>
+        <div class="h-2 bg-amber-400" style="width: {{ '%.1f'|format(pct_block) }}%"></div>
         <div class="h-2 bg-rose-500" style="width: {{ '%.1f'|format(pct_fail) }}%"></div>
       </div>
       <span class="w-20 text-right text-slate-500 tabular-nums">{{ '%.1f'|format(pct) }}% done</span>
