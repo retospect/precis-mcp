@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: consolidate the cloud reasoning tier on opus-4.8 + finish the ADR-0046 router migration
 ---
 
@@ -32,10 +32,11 @@ the reasoning/agentic work is exactly where the stronger model earns its keep.
 2. **Migrate the hardcoded stragglers onto the router** (ADR-0046 unit 4b, for
    the reasoning tier only): the two reviewers (`workers/structural.py`,
    `workers/deep_review.py`), `dream_agent`, and the generic `claude_agent`
-   default → `resolve_model(Tier.CLOUD_SUPER)` (reviewers/dream) or the
-   appropriate tier, replacing the hardcoded `claude-opus-4-7` /
-   `claude-sonnet-4-6` constants. Keep per-caller env overrides where they
-   already exist.
+   default **all** resolve `resolve_model(Tier.CLOUD_SUPER)` (opus-4.8),
+   replacing the hardcoded `claude-opus-4-7` / `claude-sonnet-4-6` constants.
+   Keep each caller's existing env override (`PRECIS_CLAUDE_AGENT_MODEL`,
+   `PRECIS_DREAM_AGENT_MODEL`, `PRECIS_STRUCTURAL_MODEL`,
+   `PRECIS_DEEP_REVIEW_MODEL`) so a per-pass pin still wins.
 3. **Dream: model + directive.** With opus-4.8 on the dream pass, add a prompt
    directive to **pursue interesting threads that may be useful later** —
    where it sees an unexplored connection, a latent opportunity, or a question
