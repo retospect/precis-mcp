@@ -42,16 +42,27 @@ split/merge, and the vendored-PM-bundle spike are in the design doc).
   `draftDoc.rehydrateOne` to refresh the block in place + a toast. Tests:
   `test_newly_dangling_returns_only_new_breakage`; live-verified on melchior
   (markup served + endpoint JSON contract). **No ProseMirror yet.**
-  - *Residual (verify):* the browser click→edit→save→rehydrate JS path is not
-    covered by CI (no headless-browser test for the Alpine scroller) — only the
-    server halves are tested/smoke-verified. Additive + contained (hidden until
-    ✎), but a real click-through on melchior should confirm the round-trip.
-- **Slice 2b — rich editor (open).** Vendor the PM bundle (`esbuild` once →
+  Browser-confirmed working by Reto (edits save persistently). Two `x-data`
+  quoting bugs found + fixed post-deploy (the editor's `| tojson` double-quotes,
+  and a **pre-existing** wordcount-badge one) — both now have parse-level
+  regression tests (`test_inline_editor_xdata_is_single_quoted`,
+  `test_wordcount_badge_xdata_is_attribute_safe`). **Lesson:** verify the
+  rendered attribute *value* (parse it), not substring presence.
+- **Slice 2b-i — inline add / delete blocks → shipped + deployed.**
+  `POST /drafts/{ident}/block` (empty paragraph after an anchor via
+  `store.add_chunks`, since `put` rejects empty text) + `POST
+  /drafts/{ident}/block/{handle}/delete` (`delete` verb, `cascade=1` for a
+  heading's subtree, kind-aware confirm). Client: ＋¶ / 🗑 hover controls on
+  editable blocks; a new block auto-opens its editor (`__draftAutoEdit` flag
+  consumed by the row's `init()`). Test:
+  `test_add_empty_block_inserts_paragraph_after_anchor`; live add+delete
+  round-trip verified net-zero on dream-review (21→22→21). *Scoped to editable
+  prose kinds — figures/tables keep their own controls.*
+- **Slice 2b-ii — rich editor (open).** Vendor the PM bundle (`esbuild` once →
   `static/prosemirror.bundle.mjs`, ~372 KB/125 KB gz, spike proven); custom
   schema + serializer (refs/`$…$` opaque, **not** stock prosemirror-markdown —
-  it escapes our brackets); live ref squiggle; `+`/delete affordances
-  (`POST /drafts/{ident}/block|.../delete`); wired caret handoff between boxes;
-  blank-line split-on-save (first keeps the handle) + backspace-merge.
+  it escapes our brackets); live ref squiggle; wired caret handoff between
+  boxes; blank-line split-on-save (first keeps the handle) + backspace-merge.
 - **Slice 3 — polish (deferred).** Reveal-on-cursor ref rendering,
   `[`-autocomplete, structured-block creation from the editor, lang selector.
 
