@@ -84,6 +84,35 @@ green-in-twin/red-in-prod gaps close — the current `FakeStore`/`MockEmbedder`/
 `PRECIS_CLAUDE_BIN` twins are good enough for now); **auto-deploy as a daemon**
 (vs `/go`-chained — only if chaining proves insufficient).
 
+## 🟢 Chunk-tag classifier (ADR 0047) — remaining work
+
+**Status**: open · **Severity**: feature · **Owner**:
+`src/precis/workers/classify.py`, `src/precis/data/axes/`, cluster env
+
+The `junk`→`ROLE3` cascade is **shipped + deployed + validated** (worker
+pass ran green on melchior, `claimed=16 ok=16 failed=0`; 1,521 `ROLE3`
+tags on prod from the bounded backfill). Design:
+`docs/design/chunk-classifier-cascade.md`; numbers: `scripts/classify/
+EVAL_RESULTS.md`. What's left:
+
+- **Enable continuous corpus tagging** — the worker pass is deployed
+  **default-OFF**. Flip `PRECIS_CLASSIFY_ENABLED=1` on the system-worker
+  daemon (melchior, or cluster-wide) to drain the remaining ~1.29M chunks
+  on the free `summarizer` model. Deliberate large backfill; watch load.
+- **Tier-2 escalation (optional)** — set
+  `PRECIS_CLASSIFY_ESCALATE_MODEL=claude-haiku-4-5` to re-judge `own`
+  chunks and push own-claim precision past 91%. Was HTTP-429 blocked during
+  dev (proxy Anthropic quota); retry when free. Cost tradeoff, ~$200-400 on
+  the residual vs ~$1.3-2.6k all-haiku.
+- **Ref-axis production runner (`classify-papers`)** — not built. Only
+  `material` (93%) and `transport` (97%) clear the gate on the free model;
+  `domain`/`studytype`/`property` need a stronger model. Walk `paper` refs,
+  apply `applies_when` gates, write ref tags + `meta.processing.<axis>`.
+- **Better table detection (polish)** — the free Tier-0 `numeric_ratio`
+  heuristic catches only 0.1% (tables aren't digit-dense; labels+spaces).
+  Tables currently fall to the LLM (handled, but not free). A pipe/tab/
+  repeated-token heuristic would recover the ~free furniture drop.
+
 ## 🔵 `serverInfo.title` not set
 
 **Status**: blocked on upstream `FastMCP`
@@ -296,6 +325,8 @@ matching Dependabot alert until its recheck date, then resurfaces it as
 
 ---
 
-_Last updated: 2026-07-04 (pruned the Recently-retired graveyard + done CI
-item — both in git; snoozed Dependabot #44 transformers RCE until 2026-07-18,
-blocked by marker-pdf's transformers<5 cap)_
+_Last updated: 2026-07-04 (added the ADR 0047 chunk-tag classifier
+remaining-work section — enable continuous tagging / Tier-2 escalation /
+ref-axis runner / table heuristic; pruned the Recently-retired graveyard +
+done CI item — both in git; snoozed Dependabot #44 transformers RCE until
+2026-07-18, blocked by marker-pdf's transformers<5 cap)_
