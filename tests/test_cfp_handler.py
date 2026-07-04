@@ -10,6 +10,7 @@ from __future__ import annotations
 from precis.dispatch import Hub
 from precis.handlers.cfp import CfpHandler
 from precis.handlers.paper import PaperHandler
+from precis.store import Store
 from precis.utils import handle_registry
 
 
@@ -46,3 +47,16 @@ def test_cfp_handle_codes_registered() -> None:
     # Round-trips through the universal handle parser.
     kind, is_chunk = handle_registry.kind_for_code("cf")
     assert kind == "cfp" and is_chunk is False
+
+
+def test_cfp_empty_search_names_cfp_not_paper(store: Store) -> None:
+    """Regression: cfp (and datasheet) subclass PaperHandler and reuse
+    its search path, whose empty-result branch hardcoded the noun as
+    "no paper blocks match" — leaking the *paper* kind on a cfp miss.
+    The empty-result noun must be the actual searched kind, matching the
+    per-kind convention every other block handler follows (tex/web/
+    markdown/plaintext/perplexity all say "no <kind> blocks match")."""
+    lex_only = CfpHandler(hub=Hub(store=store))
+    resp = lex_only.search(q="zzqqxx-no-such-token")
+    assert "no cfp blocks match" in resp.body
+    assert "paper" not in resp.body

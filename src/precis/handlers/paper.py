@@ -1131,7 +1131,11 @@ class PaperHandler(Handler):
             # route to the structured stub-fetch pathway (finding +
             # ``precis worker --only fetch``) instead of suggesting a
             # wider search that will also miss.
-            body = f"no paper blocks match {q!r}"
+            # Noun is the actual kind, not a hardcoded "paper": cfp and
+            # datasheet subclass PaperHandler and reuse this search path,
+            # so a literal "paper" leaked the wrong kind
+            # (`no paper blocks match` on a cfp/datasheet search).
+            body = f"no {kind} blocks match {q!r}"
             doi_match = _DOI_RE.match(q.strip())
             if doi_match is not None:
                 doi = doi_match.group(1)

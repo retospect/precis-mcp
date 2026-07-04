@@ -35,8 +35,12 @@ For `get`/`put`/`edit`/`delete`/`tag`/`link`, `kind=` is required; for
 | Inspect a ref's link graph | `get(kind='todo', id=N, view='links')` | `precis-relations` |
 | Read a ref's event trail | `get(kind='todo', id=N, view='log')` | — |
 
-`view='raw'` / `view='links'` / `view='log'` work on **every**
-id-addressable ref kind.
+`view='raw'` / `view='links'` / `view='log'` work on the **numeric-ref
+kinds** (`todo`, `memory`, `gripe`, `finding`, `job`, `flashcard`,
+`citation`, `folder`, `alert`, `agentlog`, `cron`, `message`).
+Slug/file/compute kinds (`paper`, `draft`, `cad`, `structure`, `pcb`,
+`tex`, `markdown`, …) each expose their own view set instead — a bad
+`view=` returns that kind's option list.
 
 ## Capture and edit
 

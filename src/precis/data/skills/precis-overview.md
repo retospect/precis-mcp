@@ -125,11 +125,17 @@ stay `slug~A..B` since a handle names one chunk, not a span. See
 Currently TOC-capable: `paper`, `skill`. Other kinds pick up the
 grammar as their handlers wire `chunks_for_toc`.
 
-Three views work on **every** id-addressable ref kind: `view='links'`
-(the link graph), `view='log'` (the `ref_events` trail), and
-`view='raw'` (the verbatim record — every column **plus the full `meta`
-JSON**). Reach for `raw` to debug behaviour the default render hides —
-e.g. a todo's `meta.executor` / `meta.schedule` / `meta.auto_check`.
+Three inspection views work on the **numeric-ref kinds** (`todo`,
+`memory`, `gripe`, `finding`, `job`, `flashcard`, `citation`, `folder`,
+`alert`, `agentlog`, `cron`, `message`): `view='links'` (the link
+graph), `view='log'` (the `ref_events` trail), and `view='raw'` (the
+verbatim record — every column **plus the full `meta` JSON**). Reach for
+`raw` to debug behaviour the default render hides — e.g. a todo's
+`meta.executor` / `meta.schedule` / `meta.auto_check`. Slug/file/compute
+kinds (`paper`, `draft`, `cad`, `structure`, `pcb`, `tex`, `markdown`, …)
+don't inherit these — each exposes its own view set instead (e.g. `paper`
+has `view='log'` but not `links`/`raw`; a bad view returns the kind's
+option list).
 
 ## How do I find the right skill?
 
