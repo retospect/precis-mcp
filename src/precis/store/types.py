@@ -676,6 +676,24 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # typo fails loud and so new on-demand sources (gutenberg, …) are
     # added here deliberately, not sprayed as free tags.
     "ORIGIN": frozenset({"wikipedia"}),
+    # Manuscript-audit category (draft content-QA). A citation/preflight
+    # audit anchors a change-request ``todo`` at the offending draft chunk
+    # (``meta.anchor='dc<id>'``) and stamps an ``AUDIT:<category>`` tag so
+    # the defect is a first-class, filterable axis — ``search(kind='todo',
+    # tags=['AUDIT:missing-citation'])`` — and the draft reader can badge
+    # the chunk by category. This is the substrate a content defect belongs
+    # in (see ``precis-gripe-help`` "a gripe is a bug in precis, not a
+    # defect in your content"); it is *not* a gripe. Closed vocab so a typo
+    # fails loud and new categories are added here deliberately.
+    "AUDIT": frozenset(
+        {
+            "missing-citation",
+            "empty-stub",
+            "unsupported-claim",
+            "citation-drift",
+            "missing-data",
+        }
+    ),
 }
 
 # Bare flag values that collide with a closed-vocab value. Maintained as
@@ -705,7 +723,11 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # ``LLM`` so an ``LLM:opus`` / ``LLM:sonnet`` / ``LLM:haiku`` tag on
     # a todo flips it into the dispatch worker's candidate set and
     # picks the model.
-    "todo": frozenset({"STATUS", "PRIO", "LLM"}),
+    # ``AUDIT`` lets a content-QA audit categorise a change-request todo
+    # anchored at a draft chunk (missing-citation / empty-stub / …) so the
+    # defect is filterable and the draft reader can badge it by category.
+    # ``finding`` is unlisted (unrestricted), so it accepts AUDIT too.
+    "todo": frozenset({"STATUS", "PRIO", "LLM", "AUDIT"}),
     "gripe": frozenset({"STATUS", "PRIO"}),
     # Job state machine — STATUS only. PRIO not used (jobs run on
     # demand; if you want one prioritised, just submit it later).

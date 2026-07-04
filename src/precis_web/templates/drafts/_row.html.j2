@@ -327,6 +327,13 @@
         <a href="/r/todo/{{ t.ref_id }}" target="_blank" rel="noopener"
            class="min-w-0 flex-1 hover:underline" title="open the LLM run for this request">
           <span class="font-mono text-[10px] uppercase {% if t.done %}text-slate-400{% elif stuck %}text-rose-700{% else %}text-amber-700{% endif %}">{{ t.status }}</span>
+          {# AUDIT:<category> — a content-QA audit flagged this chunk. The
+             standardized category (missing-citation / empty-stub / …) lets
+             the reader show *what kind* of manuscript defect this is. #}
+          {% if t.audit %}
+          <span class="rounded-sm bg-violet-100 px-1 font-mono text-[10px] uppercase text-violet-700 {% if t.done %}opacity-50{% endif %}"
+                title="content-QA audit finding">⚑ {{ t.audit }}</span>
+          {% endif %}
           <span class="{% if not t.done %}text-slate-700{% endif %}{% if t.status == "won't-do" %} line-through{% endif %}">{{ t.title }}</span>
         </a>
         {# 📜 the full LLM transcript, once a job has run (debugging). #}

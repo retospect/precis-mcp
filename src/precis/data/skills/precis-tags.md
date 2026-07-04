@@ -140,6 +140,7 @@ the canonical list:
 | `WATCH:` | `hourly` / `daily` / `weekly` / `monthly` | agent (cache-backed refs) |
 | `DREAM:` | `consolidated` / `speculative` / `acquire` | dreaming worker |
 | `DENSITY:` | `dense` / `medium` / `sparse` | chunk pipeline (chunk-level — not applied to refs) |
+| `AUDIT:` | `missing-citation` / `empty-stub` / `unsupported-claim` / `citation-drift` / `missing-data` | content-QA audit (on the anchored change-request `todo`/`finding`) |
 
 Any UPPERCASE prefix outside that table is rejected — coin concepts
 as lowercase tags (`density:dense`, `confidence:strong`) instead.
@@ -171,8 +172,10 @@ axes and suggests the lowercase rewrite.
 
 | Kind | Allowed closed axes |
 |---|---|
-| `todo`, `gripe` | `STATUS`, `PRIO` |
-| `finding`, `job` | `STATUS` (lifecycle subsets — see table above) |
+| `todo` | `STATUS`, `PRIO`, `LLM` (dispatch tier), `AUDIT` (content-QA category) |
+| `gripe` | `STATUS`, `PRIO` |
+| `finding` | `STATUS` (lifecycle subsets — see table above); also `AUDIT` (content-QA category) |
+| `job` | `STATUS` (lifecycle subsets — see table above) |
 | `paper`, `patent` | `SRC`, `CACHE` |
 | `perplexity-research`, `perplexity-reasoning`, `websearch`, `web`, `youtube` | `CACHE`, `WATCH` |
 | `memory` | `DREAM` (dreaming-worker provenance) |

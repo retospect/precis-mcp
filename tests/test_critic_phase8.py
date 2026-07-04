@@ -109,6 +109,46 @@ class TestPerKindAxisEnforcement:
             h.search(q="x", tags=["STATUS:open"])
 
 
+class TestAuditAxis:
+    """AUDIT:<category> — the content-QA audit axis. A citation/preflight
+    audit stamps it on a change-request todo anchored at a draft chunk so
+    the manuscript defect is filterable and the reader can badge it, rather
+    than the defect landing (wrongly) in the gripe bug-tracker."""
+
+    def test_audit_allowed_on_todo(self) -> None:
+        t = Tag.parse_strict("AUDIT:missing-citation", kind="todo")
+        assert t.prefix == "AUDIT"
+        assert t.value == "missing-citation"
+
+    def test_audit_allowed_on_finding(self) -> None:
+        """finding is unlisted in _KIND_ALLOWED_AXES (unrestricted), so a
+        registered axis like AUDIT is accepted on it with no map edit."""
+        t = Tag.parse_strict("AUDIT:citation-drift", kind="finding")
+        assert t.value == "citation-drift"
+
+    def test_audit_rejected_on_memory(self) -> None:
+        """memory has a restricted allowlist (DREAM only) — AUDIT is not
+        allowed, so a stray audit tag on a note fails loud."""
+        with pytest.raises(BadInput, match="axis not allowed on kind 'memory'"):
+            Tag.parse_strict("AUDIT:missing-citation", kind="memory")
+
+    def test_bad_audit_value_rejected(self) -> None:
+        """Closed vocab: a typo'd category fails at write time instead of
+        silently dropping the todo from the reader's audit badge."""
+        with pytest.raises(BadInput, match="invalid AUDIT value"):
+            Tag.parse_strict("AUDIT:missing-citaton", kind="todo")
+
+    def test_audit_all_categories_parse(self) -> None:
+        for cat in (
+            "missing-citation",
+            "empty-stub",
+            "unsupported-claim",
+            "citation-drift",
+            "missing-data",
+        ):
+            assert Tag.parse_strict(f"AUDIT:{cat}", kind="todo").value == cat
+
+
 # ── auto-mirror inverse relations (read-side rewrite) ─────────────
 
 

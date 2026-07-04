@@ -389,7 +389,11 @@ def _requests_by_handle(
         "      AND t.value LIKE 'ask-user:%%' LIMIT 1) AS asking, "
         "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
         "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' "
-        "      AND t.value LIKE 'child-failed:%%' LIMIT 1) AS failed_tag "
+        "      AND t.value LIKE 'child-failed:%%' LIMIT 1) AS failed_tag, "
+        # AUDIT:<category> — a content-QA audit stamps this on the anchored
+        # change-request todo so the reader badges the chunk by category.
+        "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+        "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'AUDIT' LIMIT 1) AS audit "
         "FROM refs r "
         "WHERE r.kind = 'todo' AND r.deleted_at IS NULL "
         "  AND r.meta->>'anchor' = ANY(%s)"
@@ -397,7 +401,7 @@ def _requests_by_handle(
     out: dict[str, list[dict[str, Any]]] = {}
     with store.pool.connection() as conn:
         rows = conn.execute(sql, (anchors,)).fetchall()
-    for ref_id, title, anchor, status, started, asking, failed_tag in rows:
+    for ref_id, title, anchor, status, started, asking, failed_tag, audit in rows:
         status = status or "open"
         handle = (anchor or "").lstrip("¶")
         # ``OPEN:ask-user:<value>`` → the human question. The value is
@@ -436,6 +440,9 @@ def _requests_by_handle(
                 "ask_tag": ask_tag,
                 "failed": bool(failed_tag),
                 "fail_reason": fail_reason,
+                # AUDIT:<category> if this request came from a content-QA
+                # audit (missing-citation / empty-stub / …); '' otherwise.
+                "audit": audit or "",
             }
         )
     for reqs in out.values():

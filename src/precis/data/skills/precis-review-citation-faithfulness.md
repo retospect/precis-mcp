@@ -63,6 +63,19 @@ the precis tool/repo, not a content problem — see `precis-gripe-help`
 *gap* this pass surfaces that isn't a drift (a claim with **no**
 citation at all, an empty section stub, a table with no backing data)
 is a `todo` anchored to the draft chunk, not a finding and not a gripe.
+Anchor it with `meta.anchor='dc<id>'` and stamp an `AUDIT:<category>`
+tag (`missing-citation` / `empty-stub` / `unsupported-claim` /
+`citation-drift` / `missing-data`) so the draft reader badges the chunk
+by category and `search(kind='todo', tags=['AUDIT:missing-citation'])`
+enumerates the backlog:
+
+```python
+put(kind='todo',
+    text='dc1518518: algD operon claim for alginate EPS lacks a '
+         'gene-discovery citation — find + cite the foundational paper.',
+    meta={'anchor': 'dc1518518'},
+    tags=['AUDIT:missing-citation'])
+```
 
 ```python
 put(kind='finding',

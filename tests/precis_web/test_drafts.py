@@ -1175,7 +1175,15 @@ def _render_row(requests: list[SimpleNamespace]) -> str:
     return tmpl.module.draft_row(r, ref)  # type: ignore[attr-defined]  # Jinja macro, runtime-defined
 
 
-def _req(ref_id: int, *, started: bool, done: bool, failed: bool, status: str):
+def _req(
+    ref_id: int,
+    *,
+    started: bool,
+    done: bool,
+    failed: bool,
+    status: str,
+    audit: str = "",
+):
     return SimpleNamespace(
         ref_id=ref_id,
         status=status,
@@ -1184,6 +1192,7 @@ def _req(ref_id: int, *, started: bool, done: bool, failed: bool, status: str):
         done=done,
         failed=failed,
         asking="",
+        audit=audit,
     )
 
 
@@ -1202,6 +1211,31 @@ def test_change_request_close_x_on_terminal_and_unstarted_only() -> None:
     assert "/drafts/nt/todo/3/delete" in rows  # done → close
     assert "/drafts/nt/todo/4/delete" in rows  # failed → close
     assert "/drafts/nt/todo/2/delete" not in rows  # running → no X
+
+
+def test_audit_category_badge_renders_on_chunk() -> None:
+    """A change-request todo carrying an AUDIT:<category> tag renders its
+    category as a ⚑ badge on the chunk — so a content-QA audit finding is
+    visible in the draft reader (not buried in the gripe bug-tracker)."""
+    rows = _render_row(
+        [
+            _req(
+                7,
+                started=False,
+                done=False,
+                failed=False,
+                status="open",
+                audit="missing-citation",
+            )
+        ]
+    )
+    assert "⚑ missing-citation" in rows
+
+    # A plain change request (no audit tag) shows no ⚑ badge.
+    plain = _render_row(
+        [_req(8, started=False, done=False, failed=False, status="open")]
+    )
+    assert "⚑" not in plain
 
 
 def test_tasks_gist_summarises_long_bodies_only() -> None:
