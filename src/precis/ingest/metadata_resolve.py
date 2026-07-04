@@ -27,7 +27,10 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -53,6 +56,33 @@ _BOOK_DOI_RE = re.compile(r"/b97[89]", re.IGNORECASE)
 #: Resolver callables — real clients by default, injectable for tests.
 CrossrefFn = Callable[[str, str], "dict[str, Any] | None"]
 S2Fn = Callable[[str, str], "dict[str, Any] | None"]
+
+#: Network guards. The Crossref/S2 clients carry their own tenacity backoff
+#: (bounded — 5 attempts — so they can't loop forever), but under
+#: rate-limiting a single call can still cost tens of seconds. A wall-clock
+#: cap per call keeps one wedged lookup from stalling the batch, and a
+#: politeness delay between papers spreads requests so we don't provoke the
+#: 429s in the first place. Both env-tunable via the CLI.
+_DEFAULT_CALL_TIMEOUT = 20.0
+_DEFAULT_DELAY = 0.5
+#: Sentinel: the network call exceeded its wall-clock budget.
+_TIMED_OUT: Any = object()
+
+
+def _bounded(fn: Callable[..., Any], *args: Any, timeout: float) -> Any:
+    """Run ``fn(*args)`` with a wall-clock cap. Returns ``_TIMED_OUT`` if it
+    overran (the underlying thread is abandoned, not force-killed — it dies
+    on its own once the client's bounded retries give up)."""
+    if timeout <= 0:
+        return fn(*args)
+    ex = ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(fn, *args)
+    try:
+        return fut.result(timeout=timeout)
+    except FuturesTimeout:
+        return _TIMED_OUT
+    finally:
+        ex.shutdown(wait=False)
 
 
 @dataclass
@@ -133,6 +163,7 @@ def _resolve_one(
     s2_api_key: str,
     crossref_fn: CrossrefFn,
     s2_fn: S2Fn,
+    call_timeout: float = _DEFAULT_CALL_TIMEOUT,
 ) -> Resolution:
     rid = ref.id
     # Not-a-paper: a held-flag with no ingested body is a broken import.
@@ -150,7 +181,9 @@ def _resolve_one(
     if stored_doi:
         if _BOOK_DOI_RE.search(stored_doi):
             return Resolution(rid, "discard", "doi", "book-frontmatter-doi")
-        meta = crossref_fn(stored_doi, mailto)
+        meta = _bounded(crossref_fn, stored_doi, mailto, timeout=call_timeout)
+        if meta is _TIMED_OUT:
+            return Resolution(rid, "miss", "doi", "crossref-timeout")
         if meta is None:
             return Resolution(rid, "miss", "doi", "crossref-miss")
         res = _from_meta(rid, meta, track="doi")
@@ -165,7 +198,9 @@ def _resolve_one(
     qtitle = _query_title(store, ref)
     if not qtitle:
         return Resolution(rid, "miss", "title", "no-query-title")
-    cand = s2_fn(qtitle, s2_api_key)
+    cand = _bounded(s2_fn, qtitle, s2_api_key, timeout=call_timeout)
+    if cand is _TIMED_OUT:
+        return Resolution(rid, "miss", "title", "s2-timeout")
     if cand is None or not (cand.get("doi") or cand.get("arxiv_id")):
         return Resolution(rid, "miss", "title", "s2-miss")
     res = _from_meta(rid, cand, track="title")
@@ -263,11 +298,17 @@ def resolve_triage(
     limit: int | None = None,
     mailto: str = "",
     s2_api_key: str = "",
+    call_timeout: float = _DEFAULT_CALL_TIMEOUT,
+    delay: float = _DEFAULT_DELAY,
     crossref_fn: CrossrefFn = lookup_crossref,
     s2_fn: S2Fn = lookup_s2,
 ) -> list[Resolution]:
     """Resolve the needs-triage cohort. ``apply=False`` (default) plans
-    without writing; ``apply=True`` writes the ``auto`` verdicts."""
+    without writing; ``apply=True`` writes the ``auto`` verdicts.
+
+    ``call_timeout`` caps each network lookup; ``delay`` is a politeness
+    pause between papers that actually hit the network (skipped for the
+    no-network verdicts so a big discard set doesn't drag)."""
     results: list[Resolution] = []
     for ref in _triage_refs(store, limit):
         try:
@@ -278,6 +319,7 @@ def resolve_triage(
                 s2_api_key=s2_api_key,
                 crossref_fn=crossref_fn,
                 s2_fn=s2_fn,
+                call_timeout=call_timeout,
             )
         except Exception:
             log.exception("resolve-metadata: ref #%s failed", ref.id)
@@ -290,6 +332,13 @@ def resolve_triage(
                 log.exception("resolve-metadata: apply #%s failed", ref.id)
                 res.verdict, res.reason = "review", "apply-failed"
         results.append(res)
+        # Space out only the calls that touched the network (doi/title
+        # tracks that weren't a pre-network skip like book-frontmatter-doi).
+        hit_network = res.track in ("doi", "title") and not res.reason.startswith(
+            "book-frontmatter"
+        )
+        if delay > 0 and hit_network:
+            time.sleep(delay)
     return results
 
 

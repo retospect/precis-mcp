@@ -202,6 +202,31 @@ def test_track2_recovered_doi_collision_is_review(store: Store) -> None:
     assert _has_triage(store, rid)
 
 
+# ── network guards ────────────────────────────────────────────────
+
+
+def test_slow_lookup_times_out_to_miss(store: Store) -> None:
+    """A lookup that overruns the wall-clock cap is a miss, not a hang."""
+    import time as _t
+
+    rid = _triage_paper(store, slug="slow", title="A Slow To Resolve Title")
+
+    def _slow(_title: str, _key: str) -> dict[str, Any]:
+        _t.sleep(1.0)
+        return {"title": "whatever", "doi": "10.1/x"}
+
+    out = resolve_triage(
+        store,
+        apply=True,
+        crossref_fn=_no_call,
+        s2_fn=_slow,
+        call_timeout=0.15,
+        delay=0.0,
+    )
+    r = _verdict(out, rid)
+    assert r.verdict == "miss" and r.reason == "s2-timeout"
+
+
 # ── discard lane ──────────────────────────────────────────────────
 
 

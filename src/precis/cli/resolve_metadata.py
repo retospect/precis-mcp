@@ -44,6 +44,18 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         default=None,
         help="Process at most N triage papers (default: all).",
     )
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=20.0,
+        help="Per-lookup wall-clock cap in seconds (default: 20).",
+    )
+    p.add_argument(
+        "--delay",
+        type=float,
+        default=0.5,
+        help="Politeness pause between network lookups, seconds (default: 0.5).",
+    )
     p.add_argument("--database-url", default=None, help="Override PRECIS_DATABASE_URL.")
     return p
 
@@ -72,8 +84,20 @@ def run(args: argparse.Namespace) -> None:
     s2_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
     print(f"resolve-metadata [{mode}]: limit={args.limit}", file=sys.stderr)
 
+    if not s2_key:
+        print(
+            "resolve-metadata: SEMANTIC_SCHOLAR_API_KEY unset — S2 title search "
+            "will be heavily rate-limited (slow). Set it for the title track.",
+            file=sys.stderr,
+        )
     results = resolve_triage(
-        store, apply=apply, limit=args.limit, mailto=mailto, s2_api_key=s2_key
+        store,
+        apply=apply,
+        limit=args.limit,
+        mailto=mailto,
+        s2_api_key=s2_key,
+        call_timeout=args.timeout,
+        delay=args.delay,
     )
 
     # Group by verdict; print the actionable lanes (review / discard) in full.
