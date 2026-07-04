@@ -149,6 +149,10 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     prompt = build_prompt(slug, source, instruction)
     model = os.environ.get("PRECIS_CAD_PROPOSE_MODEL")
+    # A whole-design rewrite on opus overruns the shared 600s agent default,
+    # so give cad_propose the same 30-min wall-clock the other agent jobs get
+    # (plan_tick / fix_gripe = 1800s). Override with PRECIS_CAD_PROPOSE_TIMEOUT_S.
+    timeout_s = float(os.environ.get("PRECIS_CAD_PROPOSE_TIMEOUT_S", "1800"))
     ctx.append_chunk("job_event", f"propose: {instruction[:200]}")
     try:
         result = AGENT(
@@ -157,6 +161,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             mcp_config=None,  # tool-less: the agent cannot mutate anything
             disallowed_tools=("WebFetch", "WebSearch"),
             output_format="stream-json",
+            timeout_s=timeout_s,
             extra_args=("--verbose",),
             log_event=(ctx.store, ctx.ref_id, "cad_propose"),
         )
