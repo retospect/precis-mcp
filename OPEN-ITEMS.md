@@ -187,120 +187,6 @@ is a bounded correctness fix, so they're filed, not chained:
   dozens of duplicate `\section{…}` refs with `workspace=∅` (never attached to
   the project). Prod data hygiene — a one-off cleanup query, not a repo bug.
 
-## Recently retired (kept here briefly for grep-ability)
-
-The mcp-critic 2026-05-02 deep pass logged 14 findings; 13 are now
-closed. Removed from the open list, traceable via git log + the
-dated review document:
-
-- precis-overview drift from live registry → fixed
-- python callgraph entry resolution → fixed (separate session)
-- think-kind reasoning trace leak → fixed (perplexity.py orphan-tag handling)
-- view=links recovery hint pointing at `put(link=,rel=)` → fixed
-- python empty-search lacking `Next:` → fixed
-- soft-deleted vs never-existed conflated → fixed (`Gone` error class)
-- calc parse-vs-evaluate envelope drift → fixed
-- `tests/test_mcp_modalities.py` value-asserting `Overall: OK` → fixed
-- web search-options listing unregistered kinds → fixed
-- web slug not round-tripping through `get` → fixed
-- paper search omitting score annotation → fixed (consistency with block-level kinds)
-- gripe:3681 phase 2 — `tags=` on cache-backed `get` → **shipped 2026-05-02**
-  (one-call bookmark; pre-validates so a bad axis no longer pays the
-  upstream API cost before failing)
-- gripe:3681 phase 4 — `mode='refresh'` + `WATCH:<interval>` axis →
-  **shipped 2026-05-02**
-  (`Store.update_cache_entry` preserves tags/links across re-fetches;
-  `WATCH:hourly|daily|weekly|monthly` closed vocabulary on cache-backed
-  kinds; `precis maintenance run` cron driver composes both)
-- "eager skill cache" critic finding → **retracted** (was based on
-  incorrect storage-model assumption; skill kind is file-backed,
-  not DB-backed, so there's no async tsvector to make eager)
-- OQ-17 — `PRECIS_DEFAULT_TAGS` × `workspace` auto-tag layering →
-  **shipped 2026-05-26** (`PlaintextHandler.put` now accepts and
-  applies `tags=` via `apply_tag_ops`, so the runtime's default-tags
-  merge actually lands on prose-file refs alongside the
-  `workspace` flag; regression test in
-  `tests/test_default_tags.py::test_default_tags_layer_with_workspace_on_prose_handlers`)
-- acatome U+FFFD mojibake → **shipped 2026-05-27**
-  (`precis.ingest.pipeline._repair_or_fail_mojibake` auto-repairs the
-  alpha-space-FFFD-space-alpha em-dash loss pattern and fails the
-  bundle with paper_id + page + 60-char context on any other FFFD;
-  mirrored upstream in `acatome_extract.pipeline`; regression test in
-  `tests/ingest/test_pipeline.py::TestRepairOrFailMojibake`)
-- ingest: tiny-block embedding noise → **shipped 2026-05-27**
-  (`marker._merge_small_blocks` absorbs `section_header` blocks
-  forward into the next body block and merges adjacent same-type
-  small blocks within a `(section_path, page)` window; addresses
-  bge-m3's tendency to embed tiny chunks near the centroid where
-  short generic queries also land; regression test in
-  `tests/ingest/test_marker.py::TestMergeSmallBlocks`)
-- OQ-16 — `KindSpec.requires_env` convergence → **retracted 2026-05-27**
-  (description was stale: math already had `requires_env`; oracle has no
-  env reads at all; web uses trafilatura, not Firecrawl; youtube has no
-  env reads. The planned `OPENAI_API_KEY` / `FIRECRAWL_API_KEY` /
-  `YOUTUBE_API_KEY` gates never materialised because the implementation
-  went with free/local alternatives or doesn't need API access for those
-  kinds. No work needed.)
-- mypy errors on `test_toon_roundtrip.py` + `test_initial_migration.py` →
-  **shipped 2026-05-27** (`dump()` parameter relaxed from `list[Mapping]`
-  to `Sequence[Mapping]` to honour covariance; the 15 `cur.fetchone()`
-  unpacking sites route through a new `_one(cur)` helper that asserts
-  not-None. `mypy src tests` clean. All 24 migration tests still pass
-  against postgres.)
-- Persistent discovery layer → **shipped 2026-05-31** (ADR 0018).
-  `view='toc'` reads from `ref_segments` + `ref_segment_sentences`
-  instead of recomputing DP + KeyBERT at request time; search-result
-  rows carry indented `excerpt @ ~N: "..."` sub-lines drawn from a
-  query-aligned pgvector cosine rerank. Migrations 0005 / 0006 / 0007.
-  New worker: `precis worker --only segments`. Smoketest verified
-  end-to-end on a real paper (`butlin26` → 3 segments + 544 sentences
-  rendered as designed); test suite covered in
-  `tests/workers/test_segment_toc.py`, `tests/test_toc_db.py`.
-- `chunks.numerics TEXT[]` lexical numeric-token index →
-  **shipped 2026-05-31** (path-2 from the tables-curveball discussion;
-  ingest extracts every `<number><unit>` token from a closed unit
-  vocab. Structured `paper_facts` extraction — path-3 — remains
-  tracked separately in `docs/design/storage-v2.md § Open questions`.)
-- References pollution of search → **shipped 2026-05-31** (ingest now
-  tags bibliography blocks `chunk_kind='references'`; embed + RAKE
-  workers carry `skip_chunk_kinds=('references',)` which extends the
-  claim SQL so references never enter the queue. Bibliography stops
-  diluting search rankings.)
-- Mid-abbreviation chunk splits ("et al.", "Fig.", "i.e.") →
-  **shipped 2026-05-31** (pysbd-backed sentence splitter wired into
-  the chunker's fallback chain via a sentinel; abbreviation-aware
-  rules eliminate the naive `". "` literal split.)
-- Hyphenated line breaks corrupting verbatim quotes →
-  **shipped 2026-05-31** (regex pass in `marker._clean_text` joins
-  `-\s*\n\s*` when both sides are lowercase ASCII; preserves
-  semantically-significant compounds with uppercase boundaries.)
-- New `citation` kind (verifier-workflow scaffold) →
-  **shipped 2026-05-31** (`CitationHandler`, migration 0007;
-  `precis-citation-help` documents the agent surface.)
-- Retraction status invisible on paper views → **shipped 2026-05-31**
-  (`view='overview'`, `view='toc'`, and chunk drill-in all lead with
-  a `> [!] RETRACTED` (or EoC / corrected) banner when
-  `refs.retraction_status` is set; carries date, reason, and a
-  pointer at `get(kind='provenance', id='<doi>')`.)
-
-See the git history (`git log`, around the 6.0.0 tag) for the per-fix
-landing record.
-
-## ✅ CI: wire up a real PostgreSQL service on Linux
-
-**Status**: done (2026-06-27)
-**Severity**: polish
-**Owner**: `.github/workflows/check.yml`
-**Test**: `tests/conftest.py::_pg_available`
-
-The `check.yml` test job was split into `test-linux` (ubuntu, with a
-`pgvector/pgvector:pg16` `services: postgres` block + `PRECIS_TEST_PG_URL`
-pointing at it as the `postgres` superuser) and `test-other`
-(macOS/Windows, no service — db-tagged tests auto-skip via the
-`_pg_available()` probe). The db-tagged tests (~41% of the suite) now
-gate the release on Linux. macOS/Windows GHA runners don't support
-service containers, so they stay db-less by design.
-
 ## 🔵 Platform-specific test bugs (Windows + macOS Python 3.12)
 
 **Status**: open
@@ -376,8 +262,40 @@ banner notice carries the discovery channel — but the answer
 determines whether we can stop carrying the redundant banner
 line in a future cleanup.
 
+## ⏸️ Snoozed — blocked upstream (recheck dates)
+
+Real but unactionable until an upstream unblock. Each entry carries a
+machine-parseable `Recheck-after: YYYY-MM-DD` and an `Unblock-when:`
+condition. `/whatneedsdoing` reads this section and **suppresses** a
+matching Dependabot alert until its recheck date, then resurfaces it as
+"recheck due" for a re-probe (act, or re-snooze +2 weeks).
+
+- **Dependabot #44 — `transformers` <5.3.0 RCE (high).**
+  `Recheck-after: 2026-07-18`.
+  `Unblock-when:` `marker-pdf` drops its `transformers>=4.45.2,<5.0.0` cap so
+  that `transformers>=5.3.0` resolves. Today **every** `marker-pdf` (≤1.10.2)
+  pins `transformers<5.0.0`, and precis needs marker in the `[paper]` extra,
+  so `transformers>=5.3.0` is **unsatisfiable** — `uv lock --upgrade-package
+  transformers` stays at 4.57.6, and forcing `>=5.3.0` makes the whole
+  resolution fail. So the fix requires bumping **both** transformers *and*
+  marker; it cannot land as a lockfile bump alone.
+  **Why it's tolerable meanwhile:** the exploit surface here is ~nil — precis
+  only ever loads the trusted local **bge-m3** embedder, never a user-supplied
+  model path or `trust_remote_code`, which is what these `transformers` RCEs
+  require.
+  **When it unblocks** the bump is a *major* 4→5: validate a sample re-embed
+  for cosine drift before trusting mixed old/new vectors, and if material,
+  re-embed via an embed-model-version bump so the `embed` worker re-claims the
+  corpus (keywords self-heal the same way via `KEYWORDS_VERSION`). Stored rows
+  are never corrupted by the bump — the only risk is old-vs-new vector
+  comparability.
+  **Recheck procedure (on/after the date):** re-run `uv lock
+  --upgrade-package transformers`; if it now reaches ≥5.3.0, take the fix →
+  `/go`; if still capped by marker, bump `Recheck-after` +2 weeks.
+
 
 ---
 
-_Last updated: 2026-05-27 (OQ-17 + acatome mojibake + merge-forward + mypy
-closed; OQ-16 retracted as stale)_
+_Last updated: 2026-07-04 (pruned the Recently-retired graveyard + done CI
+item — both in git; snoozed Dependabot #44 transformers RCE until 2026-07-18,
+blocked by marker-pdf's transformers<5 cap)_

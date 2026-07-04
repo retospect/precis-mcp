@@ -61,6 +61,14 @@ Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summar
      **P0** repo dev work (a dependency bump / patch), fixed here → `/go`. If
      the API 403s it needs a token with security-read scope — say so rather
      than silently reporting "none".
+     - **Honor snoozes.** Read the `## ⏸️ Snoozed` section of `OPEN-ITEMS.md`
+       first. **Suppress** any alert whose `#num` is listed there with a
+       `Recheck-after` date still in the future (a known-held item, not new
+       work) — don't report it. If today ≥ its `Recheck-after`, surface it as
+       **recheck due**: re-probe the `Unblock-when` condition, then either act
+       (`/go`) or bump the date +2 weeks. This is what keeps a blocked-upstream
+       alert (e.g. #44, `transformers` capped by marker-pdf) from re-nagging
+       every triage.
 4. **Prod factory queue — todos.** `search(kind='todo', view='attention')`
    (asking-user + failed children) and `search(kind='todo', view='doable')`
    (what the loop picks up next). NB: these are `search(...)` calls, not
