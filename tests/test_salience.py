@@ -15,11 +15,30 @@ from __future__ import annotations
 
 import pytest
 
+from precis.embedder import MockEmbedder
 from precis.store import Store, as_background_actor, as_dream_actor
+
+_EMB = MockEmbedder(dim=1024)
+_DEFAULT_EMBEDDER = "bge-m3"
+
+
+def _embed(store: Store, chunk_id: int, text: str) -> None:
+    """Attach an ``ok`` embedding under the default embedder.
+
+    The dream seed is now ``embedded_only`` (gr48249), so any chunk that a
+    ``select_dream_seed`` test expects to be picked must carry a vector. The
+    vector value is irrelevant to salience ordering — only its existence is.
+    """
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status, attempts) "
+            "VALUES (%s, %s, %s, 'ok', 1) ON CONFLICT (chunk_id, embedder) DO NOTHING",
+            (chunk_id, _DEFAULT_EMBEDDER, _EMB.embed_one(text)),
+        )
 
 
 def _mk_chunk(store: Store, ref_id: int, ord_: int, text: str) -> int:
-    """Insert a body chunk and return its chunk_id."""
+    """Insert a body chunk (embedded) and return its chunk_id."""
     with store.pool.connection() as conn:
         row = conn.execute(
             "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
@@ -27,7 +46,9 @@ def _mk_chunk(store: Store, ref_id: int, ord_: int, text: str) -> int:
             (ref_id, ord_, text),
         ).fetchone()
     assert row is not None
-    return int(row[0])
+    cid = int(row[0])
+    _embed(store, cid, text)
+    return cid
 
 
 def _salience(store: Store, chunk_id: int) -> tuple:
@@ -117,6 +138,7 @@ def test_select_dream_seed_respects_kind_filter(
     cp = _mk_chunk(store, pa.id, 0, "p")
     mem = store.insert_ref(kind="memory", slug=None, title="m", meta={})
     cm = store.upsert_card_combined(mem.id, "m")
+    _embed(store, cm, "m")  # dream seed is embedded_only (gr48249)
     store.bump_salience([cp, cm])
     seed = store.select_dream_seed(kinds=kinds)
     assert seed == (cp if kinds == ("paper",) else cm)

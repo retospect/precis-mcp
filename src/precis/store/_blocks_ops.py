@@ -1552,6 +1552,7 @@ class BlocksMixin:
         limit: int = 1,
         boost_kind: str | None = None,
         boost_seconds: float = 0.0,
+        embedded_only: bool = False,
     ) -> list[int]:
         """Most-due salient chunks for ``actor``: ``argmax(last_seen - last_<actor>)``.
 
@@ -1572,9 +1573,30 @@ class BlocksMixin:
         starving the rest of the corpus — a long-overdue paper can still
         out-score a freshly-dreamt draft. Default (no boost) preserves the
         pure ``argmax`` for every other actor.
+
+        ``embedded_only`` restricts the candidates to chunks that carry an
+        ``ok`` embedding under the default embedder. The dream seed needs
+        this: :meth:`dreamable_region` bails to an empty region when the
+        most-due seed has no vector, so on a **partially-embedded** corpus
+        (e.g. patents mid-backfill — gr48249) the pure argmax keeps landing
+        on an un-embedded seed and dreaming silently yields nothing even
+        though thousands of sibling chunks *are* embedded. Requiring an
+        embedded seed makes the region non-empty whenever any target chunk
+        is embedded. Off by default so attention/watch callers keep the
+        pure due-ness argmax.
         """
         col = _ATTENTION_COLUMNS[actor]
         with self.pool.connection() as conn:
+            embed_join = ""
+            params: list[Any] = []
+            if embedded_only:
+                embed_join = (
+                    "JOIN chunk_embeddings ce "
+                    "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
+                    "  AND ce.status = 'ok' AND ce.vector IS NOT NULL "
+                )
+                params.append(self._default_embedder_name(conn))
+            params += [list(kinds), boost_kind or "", float(boost_seconds), limit]
             rows = conn.execute(
                 # ``col`` is a whitelisted identifier, never caller input.
                 # The boost adds an interval to the due-ness score for
@@ -1584,6 +1606,7 @@ class BlocksMixin:
                 SELECT c.chunk_id
                 FROM chunks c
                 JOIN refs r ON r.ref_id = c.ref_id
+                {embed_join}
                 WHERE r.deleted_at IS NULL
                   AND c.retired_at IS NULL
                   AND r.kind = ANY(%s)
@@ -1595,7 +1618,7 @@ class BlocksMixin:
                 ) DESC, c.chunk_id
                 LIMIT %s
                 """,
-                (list(kinds), boost_kind or "", float(boost_seconds), limit),
+                params,
             ).fetchall()
         return [int(r[0]) for r in rows]
 
@@ -1615,7 +1638,16 @@ class BlocksMixin:
         """
         boost = _draft_dream_boost_seconds() if "draft" in kinds else 0.0
         ids = self.select_salient(
-            "dream", kinds=kinds, limit=1, boost_kind="draft", boost_seconds=boost
+            "dream",
+            kinds=kinds,
+            limit=1,
+            boost_kind="draft",
+            boost_seconds=boost,
+            # The seed must be embeddable, else dreamable_region returns an
+            # empty region and dreaming silently no-ops on a partially-
+            # embedded corpus (gr48249: patents mid-backfill kept seeding an
+            # un-embedded chunk and losing the whole patent dream anchor).
+            embedded_only=True,
         )
         return ids[0] if ids else None
 
@@ -1638,8 +1670,11 @@ class BlocksMixin:
         reachable.
 
         Returns ``(seed_chunk_id, [(block, ref, cosine)])`` ordered
-        nearest-first; ``(None, [])`` when no target chunk exists and
-        ``(seed_id, [])`` when the seed itself has no embedding yet.
+        nearest-first; ``(None, [])`` when no *embedded* target chunk
+        exists. The seed is chosen ``embedded_only`` (gr48249), so it
+        always carries a vector when non-``None`` — the ``(seed_id, [])``
+        branch below is a defensive guard, not the partial-corpus path it
+        used to be.
 
         Pure retrieval — stamping ``last_dreamt`` on the surfaced
         chunks (the rotation) is the caller's job (the dream dispatch

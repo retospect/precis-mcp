@@ -96,16 +96,22 @@ def test_dreamable_excludes_non_target_kinds(store: Store) -> None:
     assert all(ref.kind in ("paper", "memory") for _b, ref, _c in region)
 
 
-def test_dreamable_seed_without_embedding_returns_empty_region(store: Store) -> None:
+def test_dreamable_seed_skips_unembedded_most_due(store: Store) -> None:
+    # gr48249: on a partially-embedded corpus the dream seed must skip the
+    # most-due UN-embedded chunk and land on an embedded one, so the region
+    # is non-empty whenever any target chunk is embedded (patents mid-backfill
+    # kept seeding a bare chunk and losing the whole patent dream anchor).
     paper = store.insert_ref(kind="paper", slug="pn", title="N", meta={})
     bare = _bare_chunk(store, paper.id, 0, "unembedded but most due")
     _set_score(store, bare, 100)
     other = store.insert_ref(kind="paper", slug="po", title="O", meta={})
-    _embed_chunk(store, other.id, 0, "embedded but less due")
+    embedded = _embed_chunk(store, other.id, 0, "embedded but less due")
+    _set_score(store, embedded, 50)
 
     seed_id, region = store.dreamable_region()
-    assert seed_id == bare
-    assert region == []
+    assert seed_id == embedded  # skipped the bare most-due chunk
+    assert region  # non-empty
+    assert region[0][0].id == embedded
 
 
 def test_dreamable_n_limits_region(store: Store) -> None:
