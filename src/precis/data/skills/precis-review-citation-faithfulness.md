@@ -57,6 +57,13 @@ Mint `kind='finding'` refs linked to the manuscript ref and the
 cited paper. Each finding's body carries the precise diff so a
 single re-tick on the writer can fix it.
 
+**Never file a manuscript defect as a `gripe`.** A gripe is a bug in
+the precis tool/repo, not a content problem — see `precis-gripe-help`
+("A gripe is a bug in *precis*, not a defect in your content"). A
+*gap* this pass surfaces that isn't a drift (a claim with **no**
+citation at all, an empty section stub, a table with no backing data)
+is a `todo` anchored to the draft chunk, not a finding and not a gripe.
+
 ```python
 put(kind='finding',
     text='''Citation drift in dc207 (Results > Kinetics):

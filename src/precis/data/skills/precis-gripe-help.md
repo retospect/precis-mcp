@@ -240,6 +240,29 @@ Gripe is pre-articulation friction. If you already know the fix,
 skip straight to `todo`. If you understand why something matters
 and want it findable, use `memory`.
 
+## A gripe is a bug in *precis*, not a defect in your content
+
+A gripe reports something wrong with the **precis tool / MCP surface /
+repo** — a verb that errors, a misleading message, a missing affordance,
+a handler bug. It routes to a `fix_gripe` job that edits *this codebase*.
+
+A defect in **content you are authoring or auditing** — a draft chunk
+with a missing `\citep{}`, an empty section stub, an unsupported claim, a
+table with no backing data — is **not** a gripe. Filing it as one dumps
+manuscript work into the code bug-tracker, where no `fix_gripe` job can
+act on it. Route it to the content substrate instead:
+
+| You found…                                              | File as |
+|---------------------------------------------------------|---------|
+| a precis verb/handler/message bug                       | `gripe` |
+| a draft chunk that needs work (add cite, fill stub)     | `todo`, linked to the draft chunk |
+| evidence that a claim *is* supported by a source chunk  | `finding` (`cited_in=` the source) |
+
+Rule of thumb: if the body leads with a draft/paper chunk handle
+(`dc…` / `pc…`) and describes a manuscript problem, it belongs on a
+`todo` (or `finding`) anchored to that chunk — never a `gripe`. A
+citation audit emits findings and todos, not gripes.
+
 ## Lifecycle reference
 
 | Tag                    | Meaning                                 |
