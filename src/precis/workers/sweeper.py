@@ -70,6 +70,96 @@ def _stuck_job_hours() -> float:
 
 STUCK_JOB_HOURS = _stuck_job_hours()
 
+#: The chunk-embedding model whose transient failures the sweeper re-opens.
+_EMBED_MODEL = "bge-m3"
+
+#: ``last_error`` fragments (SQL ILIKE) that mark an embed ``status='failed'``
+#: row as a *transient backend outage* — the embedder was down / overloaded /
+#: hit a memory spike — rather than a per-chunk fault. Such a row is safe to
+#: re-open for a fresh attempt. The mid-2026 embedder wedge/crash-loop outages
+#: stamped ~92k rows ``all embedder endpoints failed`` this way; the root cause
+#: is since fixed (``EmbedderUnavailable`` now *defers* the batch instead of
+#: stranding rows), so these are legacy debris that will never re-fail
+#: transiently again. A stranded embedding also blocks that chunk's KeyBERT
+#: keywords (they score against the vector), so re-opening cascades to
+#: un-stick the downstream ``chunk_keywords`` backlog for free.
+_EMBED_TRANSIENT_ERROR_PATTERNS = (
+    "%all embedder endpoints failed%",
+    "%out of memory%",
+    "%timeout%",
+    "%unavailable%",
+    "%connection%",
+)
+
+#: Only re-open a failed embed row while its ``attempts`` stay under this — a
+#: genuinely-poison chunk (real dim-mismatch) must still terminate rather than
+#: loop forever. Transient endpoint-down failures no longer re-strand under
+#: current code, so this only backstops the rare genuine per-row fault.
+_EMBED_REOPEN_MAX_ATTEMPTS = 6
+
+
+def _embed_reopen_limit() -> int:
+    """Per-pass cap on transient-failed embed rows re-opened
+    (``PRECIS_EMBED_REOPEN_LIMIT``, default 1000, floor 0; 0 disables). Bounded
+    so each sweep stays cheap — the backlog drains over successive passes and
+    the load-gated embed pass, not this re-open, is the real throughput throttle.
+    """
+    raw = os.environ.get("PRECIS_EMBED_REOPEN_LIMIT")
+    if raw is None:
+        return 1000
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 1000
+
+
+def _reopen_transient_failed_embeds(store: Store, *, limit: int) -> int:
+    """Re-open a bounded batch of transient-classified ``status='failed'``
+    ``chunk_embeddings`` rows so the embed pass re-claims and re-embeds them.
+
+    Deletes the failed row (and any lingering ``chunk_claims`` lease) — the
+    exact remediation ``EmbedHandler.write_ok`` prescribes: the base claim
+    treats a ``failed`` row as terminal ("done until a manual DELETE",
+    ``base.py``), so removing it makes the chunk claimable again. Idempotent:
+    once the backlog is drained the SELECT finds nothing. ``FOR UPDATE SKIP
+    LOCKED`` dedups racing sweepers across nodes. Returns the count re-opened.
+    """
+    if limit <= 0:
+        return 0
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH doomed AS (
+                SELECT chunk_id
+                  FROM chunk_embeddings
+                 WHERE embedder = %(embedder)s
+                   AND status = 'failed'
+                   AND attempts < %(max_attempts)s
+                   AND last_error ILIKE ANY(%(patterns)s)
+                 ORDER BY chunk_id
+                 LIMIT %(limit)s
+                   FOR UPDATE SKIP LOCKED
+            ),
+            drop_claims AS (
+                DELETE FROM chunk_claims cl
+                 USING doomed d
+                 WHERE cl.chunk_id = d.chunk_id AND cl.artifact = %(embedder)s
+            )
+            DELETE FROM chunk_embeddings e
+             USING doomed d
+             WHERE e.chunk_id = d.chunk_id AND e.embedder = %(embedder)s
+            RETURNING e.chunk_id
+            """,
+            {
+                "embedder": _EMBED_MODEL,
+                "max_attempts": _EMBED_REOPEN_MAX_ATTEMPTS,
+                "patterns": list(_EMBED_TRANSIENT_ERROR_PATTERNS),
+                "limit": limit,
+            },
+        ).fetchall()
+        conn.commit()
+        return len(rows)
+
 
 @dataclass(frozen=True, slots=True)
 class _Orphan:
@@ -153,6 +243,13 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     )
     if reaped_logs:
         log.info("sweeper: GC'd %d stale agentlog(s)", reaped_logs)
+    reopened = _reopen_transient_failed_embeds(store, limit=_embed_reopen_limit())
+    if reopened:
+        log.info(
+            "sweeper: re-opened %d transient-failed embed row(s) for re-embedding "
+            "(also un-blocks their chunk_keywords)",
+            reopened,
+        )
     threshold_hours = _stuck_job_hours()
     candidates = _enumerate_orphans(store, threshold_hours, limit=limit)
     if not candidates:

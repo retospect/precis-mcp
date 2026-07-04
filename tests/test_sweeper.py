@@ -25,7 +25,11 @@ from precis.dispatch import Hub
 from precis.handlers.todo import TodoHandler
 from precis.store import Store
 from precis.store.types import Tag
-from precis.workers.sweeper import run_sweeper_pass
+from precis.workers.sweeper import (
+    _EMBED_REOPEN_MAX_ATTEMPTS,
+    _reopen_transient_failed_embeds,
+    run_sweeper_pass,
+)
 
 
 @pytest.fixture
@@ -131,3 +135,81 @@ def test_orphan_job_without_parent_does_not_crash(store: Store) -> None:
 
     tags = {str(t) for t in store.tags_for(job_id)}
     assert "STATUS:failed" in tags
+
+
+def _seed_failed_embed(
+    store: Store,
+    *,
+    last_error: str | None,
+    status: str = "failed",
+    attempts: int = 1,
+) -> int:
+    """Create a ref + one chunk + a single ``chunk_embeddings`` row; return the
+    chunk_id. Used to seed the sweeper's transient-failed re-open scenarios."""
+    ref = store.insert_ref(kind="memory", slug=None, title="t", meta={})
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, 0, 'paragraph', %s) RETURNING chunk_id",
+            (ref.id, "a passage of prose long enough to embed and keyword"),
+        ).fetchone()
+        assert row is not None
+        cid = int(row[0])
+        conn.execute(
+            "INSERT INTO chunk_embeddings "
+            "(chunk_id, embedder, status, attempts, last_error) "
+            "VALUES (%s, 'bge-m3', %s, %s, %s)",
+            (cid, status, attempts, last_error),
+        )
+        conn.commit()
+    return int(cid)
+
+
+def test_sweeper_reopens_transient_failed_embeds(store: Store) -> None:
+    """The sweeper DELETEs transient-classified ``status='failed'`` embed rows
+    (embedder-down / OOM) so the embed pass re-claims them — but leaves genuine
+    faults and over-cap rows terminal, and never touches ``ok`` rows."""
+    transient = _seed_failed_embed(
+        store, last_error="all embedder endpoints failed (['http://127.0.0.1:8181'])"
+    )
+    oom = _seed_failed_embed(
+        store, last_error="MPS backend out of memory (MPS allocated: 15.03 GiB)"
+    )
+    poison = _seed_failed_embed(
+        store, last_error="embedding dimension mismatch: expected 1024 got 768"
+    )
+    over_cap = _seed_failed_embed(
+        store,
+        last_error="all embedder endpoints failed",
+        attempts=_EMBED_REOPEN_MAX_ATTEMPTS,
+    )
+    ok_row = _seed_failed_embed(store, last_error=None, status="ok")
+    mine = [transient, oom, poison, over_cap, ok_row]
+
+    n = _reopen_transient_failed_embeds(store, limit=1000)
+
+    assert n >= 2  # at least my two transient rows (shared DB may add more)
+    with store.pool.connection() as conn:
+        surviving = {
+            r[0]
+            for r in conn.execute(
+                "SELECT chunk_id FROM chunk_embeddings WHERE chunk_id = ANY(%s)",
+                (mine,),
+            ).fetchall()
+        }
+    assert transient not in surviving  # transient outage → re-opened
+    assert oom not in surviving  # OOM spike is transient → re-opened
+    assert poison in surviving  # genuine per-chunk fault → stays terminal
+    assert over_cap in surviving  # attempts at cap → not re-opened (no loop)
+    assert ok_row in surviving  # ok row is never touched
+
+
+def test_sweeper_embed_reopen_disabled_at_zero_limit(store: Store) -> None:
+    """``limit=0`` (env off-switch) is a no-op — nothing re-opened."""
+    transient = _seed_failed_embed(store, last_error="all embedder endpoints failed")
+    assert _reopen_transient_failed_embeds(store, limit=0) == 0
+    with store.pool.connection() as conn:
+        still_there = conn.execute(
+            "SELECT 1 FROM chunk_embeddings WHERE chunk_id = %s", (transient,)
+        ).fetchone()
+    assert still_there is not None
