@@ -111,16 +111,31 @@ class FolderHandler(NumericRefHandler):
     # ── edit: rename ───────────────────────────────────────────────
 
     def edit(  # type: ignore[override]
-        self, *, id: str | int, text: str | None = None, **_kw: Any
+        self,
+        *,
+        id: str | int,
+        text: str | None = None,
+        dry_run: bool | str | None = None,
+        **_kw: Any,
     ) -> Response:
         """Rename the folder — the title *is* the name; contents are
-        untouched (children key on ``parent_id``, not the name)."""
+        untouched (children key on ``parent_id``, not the name).
+
+        ``dry_run=True`` previews the rename without writing.
+        """
         ref_id = self._coerce_id(id)
-        self._resolve_live_ref(ref_id)
+        ref = self._resolve_live_ref(ref_id)
         if text is None or not text.strip():
             raise BadInput(
                 "rename requires text=<new name>",
                 next=f"edit(kind='folder', id={ref_id}, text='New name')",
+            )
+        if dry_run:
+            return Response(
+                body=(
+                    f"dry-run (no write) — would rename folder id={ref_id} "
+                    f"from {(ref.title or '')!r} to {text.strip()!r}."
+                )
             )
         self.store.update_ref(ref_id, title=text.strip())
         return Response(body=f"renamed folder id={ref_id} to {text.strip()!r}")

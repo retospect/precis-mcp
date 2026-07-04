@@ -1548,6 +1548,7 @@ class PaperHandler(Handler):
         abstract: str | None = None,
         doi: str | None = None,
         arxiv: str | None = None,
+        dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
         """Repair a paper's bibliographic metadata.
@@ -1565,6 +1566,16 @@ class PaperHandler(Handler):
         into ``meta``; ``doi`` / ``arxiv`` replace this ref's alias via
         :meth:`Store.set_ref_identifier`.
         """
+        if dry_run:
+            # Multi-field metadata patch (title/year/authors/abstract/
+            # identifier) — no faithful preview yet. Reject rather than
+            # silently apply on dry_run (that was a data-loss footgun).
+            # Inherited by cfp/datasheet (PaperHandler subclasses).
+            raise BadInput(
+                f"edit(kind={self.spec.kind!r}) does not support dry_run yet — "
+                "it patches bibliographic metadata; omit dry_run to apply",
+                next=f"edit(kind={self.spec.kind!r}, id=<slug|id>, year=2024)",
+            )
         ref_id = self._resolve_paper_ref_id(id)
         new_title = title.strip() if isinstance(title, str) and title.strip() else None
         new_authors = to_name_dicts(authors) if authors else None

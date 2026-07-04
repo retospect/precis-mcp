@@ -262,8 +262,18 @@ class StructureHandler(Handler):
         ops: list[dict[str, Any]] | None = None,
         text: str | None = None,
         args: dict[str, Any] | None = None,
+        dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
+        if dry_run:
+            # Structure ops mutate the cell/bond IR (and may dispatch a
+            # GPU relax). No faithful preview yet — reject rather than
+            # silently apply on dry_run (that was a data-loss footgun).
+            raise BadInput(
+                "edit(kind='structure') does not support dry_run yet — ops mutate "
+                "the cell/bond graph (and may dispatch compute); omit dry_run to apply",
+                next="edit(kind='structure', id='pd111', ops=[{'op':'add_atom', ...}])",
+            )
         if id is None or not str(id).strip():
             raise BadInput("edit(kind='structure') requires id= (the design slug)")
         ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())

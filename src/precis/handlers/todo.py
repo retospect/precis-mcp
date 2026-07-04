@@ -715,6 +715,7 @@ class TodoHandler(NumericRefHandler):
         mode: str = "replace",
         text: str | None = None,
         body: str | None = None,
+        dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
         """In-place rewrite of a todo's task line and/or details body.
@@ -726,6 +727,10 @@ class TodoHandler(NumericRefHandler):
         (``view='log'``). Owner-only on strategic / tactical nodes, the same
         authority veto as delete / reparent. Distinct from delete + re-put,
         which would break every inbound edge and the tree position.
+
+        ``dry_run=True`` previews the replacement without writing — the
+        tool-level contract every editable kind must honour (a silent
+        write on ``dry_run`` is data loss).
         """
         if id is None:
             raise BadInput(
@@ -747,6 +752,23 @@ class TodoHandler(NumericRefHandler):
         ref_id = self._coerce_id(id)
         guards.check_owner_only_ref(self.store, ref_id)
         ref = self._resolve_live_ref(ref_id)
+        if dry_run:
+            preview: list[str] = []
+            if has_text:
+                assert text is not None
+                old = ref.title or ""
+                preview.append(
+                    f"task line: {old!r} → {text!r} "
+                    f"({len(old.split())} → {len(text.split())} words)"
+                )
+            if has_body:
+                preview.append("details body would be replaced")
+            return Response(
+                body=(
+                    f"dry-run (no write) — would replace {' + '.join(preview)} "
+                    f"of todo id={ref.id}."
+                )
+            )
         old_text: str | None = None
         with self.store.tx() as conn:
             if has_text:

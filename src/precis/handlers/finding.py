@@ -490,6 +490,7 @@ class FindingHandler(NumericRefHandler):
         *,
         id: int | str | None = None,
         pick_candidate: str | int | None = None,
+        dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
         """Resolve a ``STATUS:multi_candidate`` finding by picking one cite.
@@ -516,6 +517,16 @@ class FindingHandler(NumericRefHandler):
         Idempotent — picking the same candidate twice is fine
         (re-flips to tracing, no-op on links).
         """
+        if dry_run:
+            # edit(kind='finding') resolves a candidate pick (link
+            # rewrites + status flip), not a text region — there is no
+            # faithful preview yet. Reject loudly rather than silently
+            # apply on dry_run (that was a data-loss footgun).
+            raise BadInput(
+                "edit(kind='finding') does not support dry_run — it promotes a "
+                "candidate cite (rewrites links + flips status); omit dry_run to apply",
+                next="edit(kind='finding', id=<N>, pick_candidate='<cite_key>')",
+            )
         if id is None:
             raise BadInput(
                 "edit(kind='finding') requires id=<finding ref_id or pub_id>",
