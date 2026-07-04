@@ -34,14 +34,24 @@ split/merge, and the vendored-PM-bundle spike are in the design doc).
   `_dangling_finding_tokens` + advisory `_dangling_edit_hint` wired into the
   MCP/CLI edit path (previously the edit path gave *no* dangling feedback).
   Test: `test_edit_flags_newly_introduced_dangling_ref`.
-- **Slice 2 — editor UI (open, multi-cycle).** Vendor the PM bundle
-  (`esbuild` once → `static/prosemirror.bundle.mjs`, ~372 KB/125 KB gz,
-  spike proven); custom schema + serializer (refs/`$…$` opaque, **not** stock
-  prosemirror-markdown — it escapes our brackets); per-chunk editor box with
-  source + live squiggle; `POST /drafts/{ident}/text|block|.../delete`
-  endpoints (the `/text` endpoint calls `_newly_dangling` as a **hard** 422
-  gate); wired caret handoff + scroller busy-row protection; blank-line
-  split-on-save (first keeps the handle). Browser-verify with `/verify`.
+- **Slice 2a — text-edit MVP → shipped + deployed.** `POST /drafts/{ident}/text`
+  (hard `_newly_dangling` 422 gate → `edit` verb → soft-warning tail); per-block
+  ✎ editor (plain textarea, saves on blur/⌘↵, Esc cancels) on prose kinds only
+  (`_EDITABLE_KINDS`); `base_sha` optimistic concurrency (sha computed in
+  `_build_rows`, no dataclass change); on success a `draft:edited` event drives
+  `draftDoc.rehydrateOne` to refresh the block in place + a toast. Tests:
+  `test_newly_dangling_returns_only_new_breakage`; live-verified on melchior
+  (markup served + endpoint JSON contract). **No ProseMirror yet.**
+  - *Residual (verify):* the browser click→edit→save→rehydrate JS path is not
+    covered by CI (no headless-browser test for the Alpine scroller) — only the
+    server halves are tested/smoke-verified. Additive + contained (hidden until
+    ✎), but a real click-through on melchior should confirm the round-trip.
+- **Slice 2b — rich editor (open).** Vendor the PM bundle (`esbuild` once →
+  `static/prosemirror.bundle.mjs`, ~372 KB/125 KB gz, spike proven); custom
+  schema + serializer (refs/`$…$` opaque, **not** stock prosemirror-markdown —
+  it escapes our brackets); live ref squiggle; `+`/delete affordances
+  (`POST /drafts/{ident}/block|.../delete`); wired caret handoff between boxes;
+  blank-line split-on-save (first keeps the handle) + backspace-merge.
 - **Slice 3 — polish (deferred).** Reveal-on-cursor ref rendering,
   `[`-autocomplete, structured-block creation from the editor, lang selector.
 
