@@ -298,7 +298,7 @@ def run_tick(cfg: FixerConfig) -> TickResult:
             return result
 
         # ship (authoritative container gate lives here)
-        ship_ok, ship_tail = _run_script_in_worktree(cfg, worktree, "ship", item.title)
+        ship_ok, ship_tail = _run_script_in_worktree(worktree, "ship", item.title)
         if not ship_ok:
             result.report = Report(
                 ReportStatus.NEEDS_YOU, item.title, f"ship gate:\n{ship_tail}"
@@ -326,16 +326,22 @@ def run_tick(cfg: FixerConfig) -> TickResult:
             )
         return result
     finally:
-        if cfg.autonomy is Autonomy.REPORT:
-            _worktree_remove(cfg.repo_root, worktree)
+        # Always clean up the build worktree — ship/full modes were
+        # leaking them under .fixer-work (report mode already removed).
+        _worktree_remove(cfg.repo_root, worktree)
 
 
-def _run_script_in_worktree(
-    cfg: FixerConfig, worktree: Path, script: str, msg: str
-) -> tuple[bool, str]:
-    """Run a repo script (ship) from inside the built worktree."""
+def _run_script_in_worktree(worktree: Path, script: str, msg: str) -> tuple[bool, str]:
+    """Run the worktree's OWN copy of a repo script (ship).
+
+    ``scripts/ship`` does ``cd "$(dirname "$0")/.."``, so it operates on
+    the repo rooted at the *script's path*, not on ``cwd``. Invoking the
+    main checkout's ``scripts/ship`` cd's back to main ("on main —
+    nothing to ship"); we must call ``<worktree>/scripts/ship`` so it
+    lands in the worktree on the feature branch.
+    """
     res = subprocess.run(
-        [str(cfg.repo_root / "scripts" / script), msg],
+        [str(worktree / "scripts" / script), msg],
         cwd=str(worktree),
         capture_output=True,
         text=True,
