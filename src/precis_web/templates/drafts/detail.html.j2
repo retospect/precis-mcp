@@ -328,6 +328,10 @@
      blocks (so the scrollbar is right); #dr-win holds the live rows. The
      first window is server-rendered (correct + visible even with JS off);
      the skeleton below drives windowing for everything else. #}
+  {# Transient note after an inline edit (soft warnings / "saved"). #}
+  <div x-show="editToast" x-cloak x-transition
+       class="fixed bottom-4 right-4 z-50 max-w-sm rounded bg-slate-800 px-3 py-2 text-xs text-white shadow-lg"
+       x-text="editToast"></div>
   <div id="doc" :class="compact ? 'draft-compact' : ''">
     <div id="dr-top" style="height:0px"></div>
     <div id="dr-win">
@@ -375,6 +379,62 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
 // 10k-block draft to ~a screenful of nodes instead of 10k — the prior
 // approach (a DOM node per block) made the browser style/lay-out/Alpine-walk
 // all of them ("works but with a minute lag").
+// Per-block inline editor (slice 2a). One instance per row content column;
+// edits are contained to a single chunk (Model B). Saves on blur / ⌘↵; a
+// newly-broken reference bounces back (422) and keeps the box open. On success
+// it hands the refresh to the scroller via a `draft:edited` event, which
+// re-hydrates just this block in place — so the editor state and the render
+// stay decoupled (this node is about to be replaced).
+function draftEdit(ident, handle, baseSha, editable) {
+  return {
+    raw: false, editing: false, saving: false, err: '', orig: '',
+    startEdit() {
+      if (!editable) return;
+      this.editing = true; this.err = '';
+      this.$nextTick(() => {
+        const t = this.$refs.ed;
+        if (t) { this.orig = t.value; t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+      });
+    },
+    cancel() {
+      const t = this.$refs.ed;
+      if (t) t.value = this.orig;                 // discard edits
+      this.editing = false; this.err = ''; this.saving = false;
+    },
+    async save() {
+      if (!this.editing || this.saving) return;
+      const t = this.$refs.ed;
+      if (!t) { this.editing = false; return; }
+      const text = t.value;
+      if (text === this.orig) { this.editing = false; this.err = ''; return; }  // no-op
+      this.saving = true; this.err = '';
+      try {
+        const res = await fetch(`/drafts/${ident}/text`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ handle, text, base_sha: baseSha }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          this.editing = false; this.saving = false;
+          window.dispatchEvent(new CustomEvent('draft:edited', {
+            detail: { handle, warnings: data.warnings || [] },
+          }));
+        } else {
+          // Hard bounce (422 newly-broken ref, 409 stale, …): keep the box
+          // open with the message so the author fixes it in place.
+          this.err = data.error || ('save failed (' + res.status + ')');
+          this.saving = false;
+          this.$nextTick(() => { const e = this.$refs.ed; if (e) e.focus(); });
+        }
+      } catch (e) {
+        this.err = 'network error — not saved'; this.saving = false;
+        this.$nextTick(() => { const e = this.$refs.ed; if (e) e.focus(); });
+      }
+    },
+  };
+}
+
 function draftDoc(ident) {
   const key = 'draft-collapsed:' + ident;
   return {
@@ -382,6 +442,8 @@ function draftDoc(ident) {
     version: 0,
     live: true,
     stale: false,
+    editToast: '',   // transient note after an inline edit (soft warnings / saved)
+    _toastT: null,
     view: localStorage.getItem('draft-view:' + ident) || 'body',
     setView(v) {
       if (v === this.view) return;
@@ -736,6 +798,14 @@ function draftDoc(ident) {
         const b = e.target.closest('[data-toggle]');
         if (b && doc.contains(b)) { e.preventDefault(); this.toggle(b.dataset.toggle); }
       });
+      // Inline edit saved → re-hydrate just that block in place + flash a note
+      // (the row's own editor component can't do this: its node is replaced).
+      window.addEventListener('draft:edited', (e) => {
+        const h = e.detail && e.detail.handle;
+        if (h) this.rehydrateOne(h);
+        const w = (e.detail && e.detail.warnings) || [];
+        this.flashEdit(w.length ? ('saved · ' + w.join(' · ')) : 'saved');
+      });
       // 4) drive windowing off scroll + resize.
       this._onScroll = () => this.onScroll();
       window.addEventListener('scroll', this._onScroll, {passive: true});
@@ -819,6 +889,25 @@ function draftDoc(ident) {
         this.stale = false;
         if (this.findQuery.trim()) this.runFind();  // the swap wiped the marks
       } catch (e) { /* leave the page as-is on a failed fetch */ }
+    },
+    // Re-hydrate exactly one mounted block (after an inline edit) — swap it
+    // for a fresh placeholder and pull the new fragment, mirroring swapAll's
+    // per-row refresh. The version bump from the edit is left for the poll to
+    // reconcile; this just makes the author's own change appear immediately.
+    rehydrateOne(h) {
+      const node = this.nodes[h];
+      if (!node || node.dataset.ph) return;
+      const n = this.skel.find((b) => b.h === h);
+      if (!n) return;
+      const ph = this.makePlaceholder(n);   // keeps the old measured height
+      this.nodes[h] = ph;
+      node.replaceWith(ph);
+      this.hydrate([h]);
+    },
+    flashEdit(msg) {
+      this.editToast = msg;
+      clearTimeout(this._toastT);
+      this._toastT = setTimeout(() => { this.editToast = ''; }, 4000);
     },
     async swapAll(v) {
       try {

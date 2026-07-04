@@ -76,6 +76,7 @@ from fastapi.responses import (
     Response,
 )
 
+from precis.store._draft_ops import content_sha
 from precis.utils import draft_markup, handle_registry, mentions
 from precis.utils.authors import (
     author_display,
@@ -553,6 +554,15 @@ def _paper_pdf_missing(store: Any, ident: str) -> bool:
     return store.pdf_missing(sha)
 
 
+#: Chunk kinds the inline editor may edit as raw prose (slice 2a,
+#: docs/design/draft-inline-editor.md). Non-prose kinds — figure (bytes),
+#: table (derived from meta.table), the ulist/olist containers, and
+#: code/listing/equation (verbatim) — keep their existing affordances.
+_EDITABLE_KINDS = frozenset(
+    {"paragraph", "heading", "item", "aside", "box", "callout", "term"}
+)
+
+
 def _build_rows(
     store: Any,
     ref: Any,
@@ -648,6 +658,12 @@ def _build_rows(
                 or c.handle,
                 "chunk_kind": c.chunk_kind,
                 "text": c.text,
+                # Optimistic-concurrency token for the inline editor: the sha
+                # of the current text (matches store.content_sha), computed
+                # here so the DraftChunk dataclass / reading_order need no new
+                # column. The client echoes it back as base_sha on save.
+                "content_sha": content_sha(c.text or ""),
+                "editable": c.chunk_kind in _EDITABLE_KINDS,
                 "depth": c.depth,
                 "is_heading": c.chunk_kind == "heading",
                 # List rendering (migration 0037): items carry a bullet/number
@@ -1800,6 +1816,64 @@ async def request_change(
     return await redirect_or_error(
         request, "put", args, redirect=back, error_title="Change request error"
     )
+
+
+@router.post("/drafts/{ident}/text")
+async def edit_text_inline(
+    request: Request,
+    ident: str,
+    handle: str = Form(...),
+    text: str = Form(...),
+    base_sha: str = Form(""),
+) -> JSONResponse:
+    """Direct (non-LLM) in-place text edit of one draft block — the inline
+    editor's save (docs/design/draft-inline-editor.md, slice 2a).
+
+    HARD-blocks (422, no write) a reference *this edit* newly breaks, so the
+    editor can bounce the author back with the offending tokens ("comes back
+    at you if you broke something serious"). Otherwise it writes through the
+    ``edit`` verb — so link-sync + the advisory hints stay single-sourced with
+    the MCP/CLI path — and returns any soft ``warnings`` (the ⚠ hint lines) for
+    a non-blocking note. Optimistic concurrency via ``base_sha``: a stale token
+    yields 409 so a concurrent agent edit isn't clobbered."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    chunk = store.get_draft_chunk(handle)
+    if chunk is None or chunk.ref_id != ref.id:
+        return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
+    old_text = chunk.text or ""
+    if text == old_text:  # no-op: don't churn content_sha / re-embed
+        return JSONResponse({"ok": True, "warnings": [], "noop": True})
+    # Hard gate: refuse to save a reference this edit newly breaks. Pre-existing
+    # dead refs stay soft (see DraftHandler._newly_dangling).
+    handler = get_runtime(request).hub.handler_for("draft")
+    bad_chunk, bad_find = handler._newly_dangling(text, old_text)
+    if bad_chunk or bad_find:
+        toks = [f"[{h}]" for h in bad_chunk] + [f"finding #{s}" for s in bad_find]
+        return JSONResponse(
+            {
+                "ok": False,
+                "hard": toks,
+                "error": "unresolved reference(s) introduced: "
+                + ", ".join(toks)
+                + " — fix or remove before saving",
+            },
+            status_code=422,
+        )
+    # Write through the edit verb (validation + link-sync + hints single-sourced).
+    args: dict[str, Any] = {"kind": "draft", "id": f"¶{handle}", "text": text}
+    if base_sha.strip():
+        args["base_sha"] = base_sha.strip()
+    body, is_error = await await_dispatch(request, "edit", args)
+    if is_error:
+        stale = "changed since you read" in body
+        return JSONResponse(
+            {"ok": False, "error": body}, status_code=409 if stale else 400
+        )
+    warnings = [ln.strip() for ln in body.splitlines() if ln.strip().startswith("⚠")]
+    return JSONResponse({"ok": True, "warnings": warnings})
 
 
 #: Reviewer briefs for the per-heading "review ▾" dropdown. Each files an

@@ -170,6 +170,21 @@ def test_edit_flags_newly_introduced_dangling_ref(
     assert "this edit introduced unresolved reference(s)" not in r2.body
 
 
+def test_newly_dangling_returns_only_new_breakage(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """`_newly_dangling(new, old)` is the inline editor's hard-gate core (the
+    web `/drafts/{id}/text` endpoint 422s on a non-empty result). It returns
+    `(chunk_tokens, finding_slugs)` — only refs dead in *new* that weren't
+    already dead in *old*."""
+    # a newly-introduced dead chunk ref
+    assert draft._newly_dangling("cites [dc999999]", "clean") == (["dc999999"], [])
+    # dead in both old and new → pre-existing, not this edit's fault
+    assert draft._newly_dangling("[dc999999] kept", "had [dc999999]") == ([], [])
+    # nothing unresolved either side
+    assert draft._newly_dangling("plain new text", "plain old text") == ([], [])
+
+
 def test_outline_prefers_summary_then_keywords_then_text(
     draft: DraftHandler, hub: Hub
 ) -> None:

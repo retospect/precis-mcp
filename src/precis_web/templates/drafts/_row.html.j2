@@ -10,7 +10,8 @@
   {# ── Col A: content ─────────────────────────────────────────── #
      `raw` (click-to-pin) shows the chunk's verbatim source — the
      markdown + ¶/§ markers behind the rendered view, for debugging. #}
-  <div data-content style="padding-left: {{ r.depth }}rem" x-data="{ raw: false }">
+  <div data-content style="padding-left: {{ r.depth }}rem"
+       x-data="draftEdit({{ ref.ident | tojson }}, {{ r.handle | tojson }}, {{ r.content_sha | default('') | tojson }}, {{ r.editable | default(false) | tojson }})">
     {% if r.is_heading %}
     {# items-baseline so the toggle caret + the small style/review/prompt
        controls sit on the heading's text baseline rather than floating at
@@ -268,10 +269,37 @@
       <button @click="raw = !raw"
               class="text-[10px] text-slate-300 opacity-0 group-hover:opacity-100 hover:text-slate-600"
               x-text="raw ? 'hide raw' : 'raw'"></button>
+      {% if r.editable %}
+      <button @click="startEdit()" x-show="!editing"
+              class="text-[10px] text-slate-400 opacity-0 group-hover:opacity-100 hover:text-sky-600"
+              title="edit this block's text — saves on click-out (Esc cancels)">✎ edit</button>
+      {% endif %}
     </div>
     {# raw source "cookie" — toggled (click-to-pin) under the block #}
     <pre x-show="raw" x-cloak
          class="mt-1 rounded border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 whitespace-pre-wrap break-words">{{ r.text }}</pre>
+    {% if r.editable %}
+    {# Inline editor (slice 2a, docs/design/draft-inline-editor.md): raw-text
+       edit of one block. Saves on blur / ⌘↵ / ctrl↵; a reference this edit
+       newly breaks bounces back (422) and keeps the box open; Esc cancels. #}
+    <div x-show="editing" x-cloak class="mt-1">
+      <textarea x-ref="ed" data-inline-edit rows="3"
+                @blur="save()"
+                @keydown.escape.stop.prevent="cancel()"
+                @keydown.enter.meta.prevent="save()"
+                @keydown.enter.ctrl.prevent="save()"
+                class="w-full resize-y rounded border p-2 font-mono text-[13px] leading-snug focus:outline-none"
+                :class="err ? 'border-rose-400 bg-rose-50' : 'border-sky-300 bg-white'">{{ r.text }}</textarea>
+      <div class="mt-0.5 flex items-center gap-2 text-[10px]">
+        <button @mousedown.prevent="save()"
+                class="rounded bg-sky-600 px-2 py-0.5 text-white hover:bg-sky-700">save</button>
+        <button @mousedown.prevent="cancel()"
+                class="text-slate-400 hover:text-slate-600">cancel</button>
+        <span x-show="saving" class="text-slate-400">saving…</span>
+        <span x-show="err" x-text="err" class="text-rose-600 break-words"></span>
+      </div>
+    </div>
+    {% endif %}
   </div>
 
   {# ── Col B: meta — refs + connections + in-flight ───────────── #
