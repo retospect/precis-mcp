@@ -64,7 +64,11 @@
          section is over/under its meta.word_target. #}
       {% if wordcount %}
       <span class="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs"
-            x-data="{ wc: {{ wordcount | tojson }} }"
+            {# forceescape: `tojson` emits double quotes that would terminate
+               this double-quoted attribute (the classic broken-x-data bug);
+               HTML-entity-escaping keeps the attribute intact and the browser
+               decodes it back to valid JSON for Alpine. #}
+            x-data="{ wc: {{ wordcount | tojson | forceescape }} }"
             x-init="setInterval(async () => {
                        try {
                          const r = await fetch('/drafts/{{ ref.ident }}/wordcount');

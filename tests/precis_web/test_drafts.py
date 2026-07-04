@@ -1251,6 +1251,18 @@ def test_inline_editor_xdata_is_single_quoted() -> None:
     assert 'draftEdit("' not in rows  # the tojson double-quote that broke it
 
 
+def test_wordcount_badge_xdata_is_attribute_safe(draft_client: TestClient) -> None:
+    """The word-count badge embeds a JSON object in `x-data`. Rendered via
+    `| tojson` alone, its double quotes terminate the double-quoted attribute
+    (`x-data="{ wc: {"` → Alpine 'Unexpected token'), so the live poll is dead.
+    It must be `forceescape`d so the browser decodes valid JSON. Regression:
+    the badge renders and is NOT in the attribute-breaking bare-quote form."""
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert "{ wc:" in r.text  # the badge renders
+    assert 'x-data="{ wc: {"' not in r.text  # not the bare-quote (broken) form
+
+
 def test_tasks_gist_summarises_long_bodies_only() -> None:
     """A multi-line / long todo body gets a 3-keyword RAKE gist; a short
     single-line one is shown verbatim (no gist)."""
