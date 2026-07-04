@@ -1216,6 +1216,43 @@ def test_non_memory_refs_detail_omits_references_panel(client, runtime) -> None:
     assert "References" not in resp.text
 
 
+def test_job_detail_shows_actions_not_ask_think(client, runtime) -> None:
+    """A failed job's detail page offers unstick affordances (retry /
+    transcript / parent) instead of the dream-memory ``Ask & think``
+    box — the fix for landing on a closed:failed plan_tick with no way
+    to act on it."""
+    runtime.dispatch_with_status = lambda verb, args: (
+        "# job 80\nstatus: failed\n## event 0\njob-swept: running since …",
+        False,
+    )
+    resp = client.get("/refs/job/80")
+    assert resp.status_code == 200
+    # The retry form posts to the existing tasks retry route.
+    assert 'action="/tasks/80/retry"' in resp.text
+    assert "Retry job" in resp.text
+    # LLM-planner parent → the model-swap dropdown is offered.
+    assert 'name="model"' in resp.text
+    assert "retry on sonnet" in resp.text
+    # Transcript + parent affordances.
+    assert "/tasks/80/transcript" in resp.text
+    assert "/tasks?focus=81" in resp.text
+    # The generic dream-memory Ask & think box is suppressed for jobs.
+    assert "Ask &amp; think" not in resp.text
+    assert 'action="/refs/job/80/ask"' not in resp.text
+
+
+def test_orphan_job_detail_blocks_retry(client, runtime) -> None:
+    """A job with no todo parent can't be re-minted; the strip explains
+    that instead of offering a button that would just error."""
+    runtime.dispatch_with_status = lambda verb, args: ("# job 82\nstatus: ?", False)
+    resp = client.get("/refs/job/82")
+    assert resp.status_code == 200
+    # No retry form (orphan / non-failed).
+    assert 'action="/tasks/82/retry"' not in resp.text
+    # Still no dream-memory box.
+    assert "Ask &amp; think" not in resp.text
+
+
 def test_refs_detail_kind_outside_legacy_nav_renders_200(client) -> None:
     """``web`` (and friends) are in ``_REFS_BROWSABLE_KINDS`` but were
     NOT in the legacy 6-kind nav set ``_REF_KIND_LABEL`` covers.

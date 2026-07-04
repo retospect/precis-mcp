@@ -155,6 +155,32 @@ class FakeStore:
             make_ref(id=20, kind="memory", title="A decision"),
             make_ref(id=21, kind="memory", title="An idea"),
         ]
+        # A failed plan_tick job under an LLM-planner todo (id=81), plus a
+        # legacy orphan job (no parent) — the two branches of the job
+        # detail actions strip.
+        self.todos.append(
+            make_ref(id=81, kind="todo", title="Plan the campaign", parent_id=None)
+        )
+        self.jobs = [
+            make_ref(
+                id=80,
+                kind="job",
+                title="plan_tick (dispatched from todo:81)",
+                parent_id=81,
+                meta={
+                    "job_type": "plan_tick",
+                    "executor": "claude_inproc",
+                    "transcript": '{"type":"assistant"}',
+                },
+            ),
+            make_ref(
+                id=82,
+                kind="job",
+                title="orphan job",
+                parent_id=None,
+                meta={"job_type": "fix_gripe"},
+            ),
+        ]
         self.oracles = [
             make_ref(id=30, kind="oracle", slug="planck-constant", title="Planck"),
         ]
@@ -204,6 +230,7 @@ class FakeStore:
             "oracle": self.oracles,
             "conv": self.convs,
             "web": self.webs,
+            "job": self.jobs,
         }.get(kind or "", [])
 
     def list_blocks_for_ref(self, ref_id: int, **kw: Any) -> list[Any]:
@@ -267,6 +294,7 @@ class FakeStore:
             + self.oracles
             + self.convs
             + self.webs
+            + self.jobs
         ):
             if r.kind == kind and (r.slug == id or r.id == id):
                 return r
@@ -367,6 +395,7 @@ class FakeStore:
             + self.oracles
             + self.convs
             + self.webs
+            + self.jobs
         }
         return {i: pool[i] for i in ids if i in pool}
 
@@ -464,7 +493,21 @@ class FakeStore:
     def tags_for(self, ref_id, *, pos=None):
         """Empty tag list — refs detail-page tag strip renders the
         ``no tags yet`` empty state. Routes that exercise add/remove
-        path through the fake runtime call recorder, not this method."""
+        path through the fake runtime call recorder, not this method.
+
+        Two exceptions seed the job detail actions strip: the failed
+        plan_tick job (id=80) carries ``STATUS:failed`` +
+        ``swept:claim-orphaned``, and its planner parent (id=81) carries
+        an ``LLM:opus`` tag so the retry model dropdown appears."""
+        from precis.store import Tag
+
+        if ref_id == 80:
+            return [
+                Tag.parse_strict("STATUS:failed", kind="job"),
+                Tag.open("swept:claim-orphaned"),
+            ]
+        if ref_id == 81:
+            return [Tag.parse_strict("LLM:opus", kind="todo")]
         return []
 
     def has_tag(self, ref_id, namespace, value):

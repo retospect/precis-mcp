@@ -267,6 +267,79 @@ def _followup_discussions(store: Any, ref_id: int) -> list[dict[str, Any]]:
     return rows
 
 
+#: Model tiers the retry dropdown offers for an LLM-planner job. Matches
+#: the closed vocab ``Tag.parse_strict`` accepts for ``LLM:<model>``.
+_RETRY_MODELS: tuple[str, ...] = ("opus", "sonnet", "haiku")
+
+
+def _job_actions(store: Any, ref: Any, tags: list[Any]) -> dict[str, Any]:
+    """Context for the job detail actions strip — retry, transcript, parent.
+
+    The ``/refs/job/{id}`` page is where an operator lands on a
+    ``closed:failed`` job (e.g. a swept ``claim-orphaned`` plan_tick).
+    They want to *unstick* it, not interrogate it. This gathers what the
+    template needs to offer the same affordances the ``/tasks`` dashboard
+    already has:
+
+    * **retry** — POST ``/tasks/{id}/retry`` clears the parent's
+      ``child-failed:`` bubble so ``dispatch`` re-mints a fresh attempt.
+      Only a ``failed`` / ``cancelled`` job is retryable (the handler
+      enforces this too; we gate the button to avoid a guaranteed error).
+    * **model swap** — offered only when the parent todo is an
+      ``LLM:*`` planner, so the re-minted tick can run on a different tier.
+    * **transcript** — a link to the readable ``stream-json`` turns, when
+      the job captured one.
+    * **parent** — the owning todo, so the intent is one click away.
+    """
+    status: str | None = None
+    for t in tags:
+        s = str(t)
+        if s.startswith("STATUS:"):
+            status = s[len("STATUS:") :]
+            break
+
+    # A job hangs off an owner ref via ``refs.parent_id`` (ADR 0044). Retry
+    # only re-dispatches through the *intent* lane (a ``kind='todo'``
+    # parent); a compute-lane job owned by a build subject, or a legacy
+    # orphan with no parent, can't be re-minted this way.
+    parent_id = getattr(ref, "parent_id", None)
+    parent_kind: str | None = None
+    is_llm_planner = False
+    if parent_id is not None:
+        try:
+            parent = store.fetch_refs_by_ids([parent_id]).get(parent_id)
+        except Exception:
+            parent = None
+        if parent is not None:
+            parent_kind = parent.kind
+            if parent_kind == "todo":
+                try:
+                    is_llm_planner = any(
+                        str(t).startswith("LLM:") for t in store.tags_for(parent_id)
+                    )
+                except Exception:
+                    is_llm_planner = False
+
+    meta = ref.meta or {}
+    return {
+        "job_id": ref.id,
+        "status": status,
+        "retryable": status in ("failed", "cancelled"),
+        # A retry re-dispatches through the parent todo; a legacy orphan
+        # (no todo parent) can't be re-minted, so don't offer the button.
+        "can_retry": (
+            status in ("failed", "cancelled")
+            and parent_id is not None
+            and parent_kind == "todo"
+        ),
+        "parent_id": parent_id if parent_kind == "todo" else None,
+        "is_llm_planner": is_llm_planner,
+        "retry_models": list(_RETRY_MODELS),
+        "has_transcript": bool(meta.get("transcript")),
+        "job_type": meta.get("job_type"),
+    }
+
+
 #: The kinds the Refs tab pre-checks by default — note-like, browsable,
 #: low-friction. The other checkbox-eligible kinds stay unchecked
 #: unless the operator opts in (via ``?all=1`` or by tickering them
@@ -729,6 +802,17 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
         # (which autoescape would now neutralise into visible markup).
         footnotes = handle_to_num
 
+    # Job detail gets an actions strip instead of the dream-memory
+    # "Ask & think" box: a failed/cancelled job is a thing you *unstick*
+    # (retry → re-mint) or *read* (transcript / parent intent), not a
+    # thought you interrogate. The generic Discussion affordance ran a
+    # slow agentic pass whose answer landed in a side conv thread — no
+    # help for "what went wrong / how do I fix it". See
+    # ``templates/refs/detail.html.j2``.
+    job_actions: dict[str, Any] | None = None
+    if kind == "job":
+        job_actions = _job_actions(store, ref, raw_tags)
+
     return templates.TemplateResponse(
         request,
         "refs/detail.html.j2",
@@ -744,7 +828,13 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
             "tags": tags,
             "body_disabled_notice": body_disabled_notice,
             "references": references,
-            "discussions": _followup_discussions(store, ref.id),
+            "job_actions": job_actions,
+            # The generic "Ask & think" Discussion box is a dream-memory
+            # affordance; a job wants the actions strip, not an agentic
+            # side-thread. Suppress it for jobs.
+            "discussions": (
+                None if kind == "job" else _followup_discussions(store, ref.id)
+            ),
         },
     )
 
