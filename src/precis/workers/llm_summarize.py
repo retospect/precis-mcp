@@ -48,6 +48,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -116,6 +117,27 @@ NUMERIC_DUMP_TAG = "(tabular data)"
 #: ``attempts`` starts at 0 on claim and increments per failure, so this
 #: allows 3 attempts total.
 MAX_SUMMARIZE_ATTEMPTS = 3
+
+#: Immediate in-process retries when the backend hands back an EMPTY completion
+#: (``EmptySummaryError``). The blank is a *transient* backend condition — the
+#: shared 80B slot returns "" in bursts under contention / model-swap, and the
+#: *same* chunk summarizes fine on replay (verified: 17/17 prod-failing chunks
+#: replayed clean, real prompt + doc_card). A short in-process retry recovers
+#: the chunk within the same pass instead of deferring it a whole 20-min
+#: cooldown, so a momentary blip costs neither a scarce cross-pass attempt nor a
+#: wasted claim. Only EMPTY misses retry here; a genuine exception falls
+#: straight through to the failure path (no point re-billing a real error).
+EMPTY_RETRY_ATTEMPTS = 3
+EMPTY_RETRY_BACKOFF_S = 1.0
+
+#: Cross-pass cap for EMPTY misses specifically — deliberately far above
+#: ``MAX_SUMMARIZE_ATTEMPTS``. An empty completion is a transient backend
+#: outage, not a poison chunk, so it must never *permanently strand* a
+#: summarizable chunk after a few unlucky windows (the disease behind the ~92k
+#: terminally-failed embeds). With the 20-min cooldown, 12 attempts spans ~4 h
+#: of recurring bad windows before a genuinely-always-empty chunk (rare, e.g.
+#: adversarial input) is finally retired. Real errors keep the tight cap of 3.
+MAX_SUMMARIZE_EMPTY_ATTEMPTS = 12
 
 #: A ``chunk_claims`` row older than this many minutes is treated as abandoned
 #: (the worker crashed or stalled) and re-claimed oldest-first; it is also the
@@ -893,12 +915,20 @@ def write_chunk_summary(
     )
 
 
-def _mark_failed(conn: Any, chunk_id: int, *, summarizer: str, error: str) -> None:
+def _mark_failed(
+    conn: Any, chunk_id: int, *, summarizer: str, error: str, transient: bool = False
+) -> None:
     """Record one failure (ADR 0007). Bumps the lease's ``attempts`` and keeps
     the claim row (``claimed_at = now()`` = backoff via the cooldown reaper) so
     a transient failure retries. Once ``attempts`` reaches the cap the failure
     is terminal: write a ``failed`` marker to chunk_summaries and DELETE the
     claim, so the poison chunk leaves the claims table and is never re-claimed.
+
+    ``transient=True`` (an empty-completion backend miss) applies the far
+    looser ``MAX_SUMMARIZE_EMPTY_ATTEMPTS`` cap instead of the tight
+    ``MAX_SUMMARIZE_ATTEMPTS``: a transient backend outage must never drive a
+    *summarizable* chunk to a terminal ``failed`` marker after a few unlucky
+    windows — that silently drops corpus coverage (the 92k-embeds disease).
 
     A GONE lease means another worker reaped it (this worker outlived the
     cooldown) and already drove the chunk to a terminal state — usually a
@@ -921,7 +951,8 @@ def _mark_failed(conn: Any, chunk_id: int, *, summarizer: str, error: str) -> No
         # elsewhere; a stale failure report must not clobber it.
         return
     attempts = int(row[0])
-    if attempts < MAX_SUMMARIZE_ATTEMPTS:
+    cap = MAX_SUMMARIZE_EMPTY_ATTEMPTS if transient else MAX_SUMMARIZE_ATTEMPTS
+    if attempts < cap:
         return
     conn.execute(
         """
@@ -1066,18 +1097,29 @@ def run_llm_summarize_pass(
 
     def _complete(item: tuple[_Claimed, list[dict[str, str]], str]) -> _Outcome:
         claim, messages, prompt_hash = item
-        try:
-            result = client.complete(messages)
-            summary = parse_summary(result.text)
-            return _Outcome(claim, prompt_hash, summary, result.total_tokens, None)
-        except EmptySummaryError as exc:
-            # A model miss, not a bug — no per-chunk ERROR traceback (it floods
-            # the log surface). Still recorded below so the retry cap engages;
-            # the caller emits one aggregated WARNING per batch.
-            return _Outcome(claim, prompt_hash, None, None, exc)
-        except Exception as exc:  # recorded per chunk, written below
-            log.exception("llm_summarize: chunk_id=%s failed", claim.chunk_id)
-            return _Outcome(claim, prompt_hash, None, None, exc)
+        empty_exc: EmptySummaryError | None = None
+        # Retry an EMPTY completion in-process: it is a transient backend blank
+        # (the shared 80B returns "" under contention), and the same input
+        # summarizes on replay — so a momentary blip is recovered here instead
+        # of deferring a whole cooldown. Runs in a pool worker thread, so the
+        # short backoff never blocks the main-thread lease heartbeat.
+        for attempt in range(EMPTY_RETRY_ATTEMPTS + 1):
+            try:
+                result = client.complete(messages)
+                summary = parse_summary(result.text)
+                return _Outcome(claim, prompt_hash, summary, result.total_tokens, None)
+            except EmptySummaryError as exc:
+                # A model/backend miss, not a bug — no per-chunk ERROR traceback
+                # (it floods the log surface). Recorded below only if *every*
+                # retry also comes back empty (a sustained window); the caller
+                # emits one aggregated WARNING per batch.
+                empty_exc = exc
+                if attempt < EMPTY_RETRY_ATTEMPTS:
+                    time.sleep(EMPTY_RETRY_BACKOFF_S * (attempt + 1))
+            except Exception as exc:  # a genuine error — no retry, recorded below
+                log.exception("llm_summarize: chunk_id=%s failed", claim.chunk_id)
+                return _Outcome(claim, prompt_hash, None, None, exc)
+        return _Outcome(claim, prompt_hash, None, None, empty_exc)
 
     # The slow phase. ex.map preserves order, so writes stay deterministic.
     # After each completion the MAIN thread heartbeats the batch's leases so
@@ -1098,10 +1140,16 @@ def run_llm_summarize_pass(
 
     # Phase 3 — write outcomes back, one tiny transaction per chunk so a
     # poison row cannot discard its siblings' writes (see the docstring).
-    def _record_failure(chunk_id: int, error: str) -> None:
+    def _record_failure(chunk_id: int, error: str, *, transient: bool = False) -> None:
         try:
             with store.pool.connection() as fconn:
-                _mark_failed(fconn, chunk_id, summarizer=summarizer, error=error)
+                _mark_failed(
+                    fconn,
+                    chunk_id,
+                    summarizer=summarizer,
+                    error=error,
+                    transient=transient,
+                )
         except Exception:  # keep the batch going; the lease reaper retries it
             log.exception(
                 "llm_summarize: failure-marker write failed chunk_id=%s", chunk_id
@@ -1138,9 +1186,10 @@ def run_llm_summarize_pass(
     empty = 0
     for o in outcomes:
         if o.error is not None or o.summary is None:
-            _record_failure(o.claim.chunk_id, str(o.error))
+            is_empty = isinstance(o.error, EmptySummaryError)
+            _record_failure(o.claim.chunk_id, str(o.error), transient=is_empty)
             failed += 1
-            if isinstance(o.error, EmptySummaryError):
+            if is_empty:
                 empty += 1
         elif _record_summary(
             o.claim.chunk_id,

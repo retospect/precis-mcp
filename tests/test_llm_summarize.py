@@ -16,9 +16,11 @@ from typing import Any
 import pytest
 
 from precis.workers.llm_summarize import (
+    EMPTY_RETRY_ATTEMPTS,
     HOT_WINDOW_MIN,
     MAX_CHUNK_CHARS,
     MAX_SUMMARIZE_ATTEMPTS,
+    MAX_SUMMARIZE_EMPTY_ATTEMPTS,
     SUMMARY_LEASE_COOLDOWN_MIN,
     SUMMARY_LEASE_GC_MIN,
     EmptySummaryError,
@@ -354,23 +356,28 @@ def test_run_pass_marks_failed_on_transport_error() -> None:
 
 def test_run_pass_empty_summary_aggregates_warning(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A model miss (blank completion) is recorded failed but logged ONCE per
-    batch at WARNING — never a per-chunk ERROR traceback. The free local model
-    misses on a sizable fraction of chunks; per-chunk ERRORs flooded ~7k/day on
-    melchior and read as an outage on /status even though summaries were
-    landing. Guards that regression."""
+    """A *persistently* blank completion (every in-process retry also empty — a
+    sustained backend window) is recorded failed but logged ONCE per batch at
+    WARNING — never a per-chunk ERROR traceback. Per-chunk ERRORs flooded
+    ~7k/day on melchior and read as an outage on /status even though summaries
+    were landing. Guards that regression."""
+    monkeypatch.setattr("precis.workers.llm_summarize.EMPTY_RETRY_BACKOFF_S", 0.0)
     conn = _FakeConn(
         claim_rows=[_claim_row(chunk_id=1), _claim_row(chunk_id=2)],
         card_text="Title: A study of MOF-5",
     )
     store = _FakeStore(conn)
-    client = LlmClient(LlmConfig(), transport=_FakeTransport(""))  # empty output
+    t = _FakeTransport("")  # always empty → exhausts the in-process retries
+    client = LlmClient(LlmConfig(), transport=t)
 
     with caplog.at_level(logging.WARNING):
         result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
     assert result == {"claimed": 2, "ok": 0, "failed": 2}
+    # Each chunk was retried in-process before being recorded as a miss.
+    assert len(t.calls) == (EMPTY_RETRY_ATTEMPTS + 1) * 2
     warns = [
         r
         for r in caplog.records
@@ -380,6 +387,45 @@ def test_run_pass_empty_summary_aggregates_warning(
     assert "2/2" in warns[0].getMessage()
     # no ERROR-level noise for a plain model miss
     assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+
+def test_run_pass_retries_transient_empty_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A *transient* blank (the shared 80B returns '' under contention) is
+    retried in-process; a good completion on retry lands the summary with no
+    failure recorded and no cross-pass attempt burned. This is the fix for the
+    ~48% empty-summary rate — the same chunk summarizes fine milliseconds later."""
+    monkeypatch.setattr("precis.workers.llm_summarize.EMPTY_RETRY_BACKOFF_S", 0.0)
+
+    class _EmptyThenGood:
+        """Returns ``empties`` blank completions, then a good one."""
+
+        def __init__(self, empties: int) -> None:
+            self.remaining = empties
+            self.calls: list[dict[str, Any]] = []
+
+        def post_json(self, *a: Any, **k: Any) -> dict[str, Any]:
+            self.calls.append({})
+            blank = self.remaining > 0
+            self.remaining -= 1 if blank else 0
+            content = "" if blank else "BRIEF: g\nDETAIL: d."
+            return {
+                "choices": [{"message": {"content": content}}],
+                "usage": {"total_tokens": 42},
+            }
+
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="")
+    store = _FakeStore(conn)
+    t = _EmptyThenGood(empties=2)  # 2 blanks then good, inside the 3-retry budget
+    client = LlmClient(LlmConfig(), transport=t)
+
+    result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert len(t.calls) == 3  # 2 empty + 1 good, all in one pass
+    assert conn.leases == {}  # success released the claim; no failure recorded
+    assert len(conn.writes) == 1  # the recovered summary landed
 
 
 def test_mark_failed_lease_gone_writes_nothing() -> None:
@@ -405,6 +451,26 @@ def test_mark_failed_at_cap_writes_guarded_terminal_marker() -> None:
     # Belt-and-braces guard: the terminal upsert never clobbers an 'ok' row.
     assert "chunk_summaries.status <> 'ok'" in sql
     assert params[:2] == (5, "llm-v1")
+    assert 5 not in conn.leases  # terminal → lease released
+
+
+def test_mark_failed_transient_empty_uses_looser_cap() -> None:
+    """A transient empty miss must NOT go terminal at MAX_SUMMARIZE_ATTEMPTS —
+    a recurring backend window would otherwise permanently strand a summarizable
+    chunk (the 92k-embeds disease). It keeps retrying up to the far looser
+    MAX_SUMMARIZE_EMPTY_ATTEMPTS, then finally retires a genuinely-always-empty
+    chunk so it can't re-bill the backend forever."""
+    conn = _FakeConn(claim_rows=[], card_text="")
+    # At the normal cap a real error would go terminal — a transient must not.
+    conn.leases[5] = MAX_SUMMARIZE_ATTEMPTS - 1
+    _mark_failed(conn, 5, summarizer="llm-v1", error="empty summary", transient=True)
+    assert conn.writes == []  # no terminal marker at the tight cap
+    assert conn.leases[5] == MAX_SUMMARIZE_ATTEMPTS  # bumped, lease kept for retry
+    # Only at the looser empty cap does it finally retire.
+    conn.leases[5] = MAX_SUMMARIZE_EMPTY_ATTEMPTS - 1
+    _mark_failed(conn, 5, summarizer="llm-v1", error="empty summary", transient=True)
+    assert len(conn.writes) == 1
+    assert "'failed'" in conn.writes[0][0]
     assert 5 not in conn.leases  # terminal → lease released
 
 
