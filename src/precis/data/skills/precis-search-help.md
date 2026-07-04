@@ -73,6 +73,8 @@ always first.
 | `queries` | list[str] | **Broad retrieval** (paper): extra question rephrasings, each fused as its own ranked leg. Up to 8. See below. |
 | `answers` | list[str] | **Broad retrieval** (paper): hypothetical answer passages (HyDE) — short paragraphs you'd *expect* a relevant chunk to read like; embedded and fused. Up to 8. See below. |
 | `per_paper` | int | **Broad retrieval** (paper): cap hits per paper to spread results across more sources (breadth triage). |
+| `title` | str | **Byline lookup** (paper): find a paper by its title. Returns paper *records* (handle + citation + cite path), not block hits. Matches `refs.title` via trigram + FTS, held copies first. See `precis-paper-help`. |
+| `author` | str | **Byline lookup** (paper): find papers by an author name (surname or full). Same record-row shape as `title=`; matches the structured `refs.authors` byline. Pass one of `title=`/`author=`, not both. |
 | `folder` | int/str | **Placement scope** (ADR 0045): restrict hits to one folder's live subtree. Accepts the id, `'folder:N'`, the `fo<N>` handle, or the folder's unique name. Forces the cross-kind fan-out even with a single `kind=`; works with `tags=`-only sweeps too. See `precis-folder-help`. |
 
 ## Broad retrieval — when the gold hides behind the wording

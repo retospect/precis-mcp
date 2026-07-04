@@ -425,11 +425,163 @@ def reconcile_by_doi_case(
     return outcomes
 
 
+# ---------------------------------------------------------------------------
+# Title-similarity reconciliation — the Phase 3 near-duplicate case
+# ---------------------------------------------------------------------------
+#
+# A title-only stub (no DOI/arXiv/S2 to collapse on) minted for a paper we
+# already hold slips past every identifier-based path above — its
+# title-derived cite_key can't collide with the held paper's author key.
+# Only a fuzzy title match catches it.
+#
+# The narrow-gate principle (it has to be TRUE, not just tidy): we only
+# retire a stub when the survivor is a paper we *demonstrably have* — a
+# pdf_sha256 AND real body chunks (a bare held-flag on a never-ingested ref
+# is not enough) — and the title/year match is high-confidence. This pass
+# only touches **id-less** stubs: a stub carrying its own DOI/arXiv/S2
+# asserts it is a distinct work, so a mere title match is not proof of
+# sameness (preprint vs published, erratum, version, namesake). Those are
+# left to the identifier-proven paths (reconcile_by_doi_case / pdf) or
+# surfaced for human review — never auto-merged on title alone.
+# See docs/design/duplicate-paper-handling.md (Phase 3).
+
+#: Auto-merge floor: trigram title similarity at/above this (with a
+#: compatible year) folds the stub into the held paper unattended.
+_TITLE_AUTO_SIM = 0.85
+#: Review floor: matches in ``[_TITLE_REVIEW_SIM, _TITLE_AUTO_SIM)`` — or
+#: high-similarity matches whose years disagree — are surfaced, never
+#: auto-merged.
+_TITLE_REVIEW_SIM = 0.6
+
+#: Live, id-less, PDF-less paper stubs — the only refs this pass may retire.
+#: (A stub carrying any external id is reconcile-able by the DOI/pdf paths
+#: and chaseable by fetch_oa, so it's out of scope here.)
+_TITLE_STUB_SQL = """
+    SELECT r.ref_id, r.title, r.year
+      FROM refs r
+     WHERE r.kind = 'paper' AND r.deleted_at IS NULL
+       AND r.pdf_sha256 IS NULL AND r.title IS NOT NULL
+       AND NOT EXISTS (
+             SELECT 1 FROM ref_identifiers ri
+              WHERE ri.ref_id = r.ref_id AND ri.id_kind = ANY(%s))
+     ORDER BY r.ref_id
+"""
+
+
+@dataclass
+class TitleMatchReview:
+    """A stub↔held fuzzy-title pair in the review band (not auto-merged)."""
+
+    stub_ref_id: int
+    held_ref_id: int
+    sim: float
+    stub_title: str
+    reason: str  # 'low-similarity' | 'year-mismatch'
+
+    def line(self) -> str:
+        return (
+            f"REVIEW stub #{self.stub_ref_id} ~ held #{self.held_ref_id} "
+            f"(sim {self.sim:.2f}, {self.reason}): {self.stub_title[:48]}"
+        )
+
+
+def _years_compatible(stub_year: int | None, held_year: int | None) -> bool:
+    """A preprint and its published version can differ by a year; allow ±1.
+    Unknown on either side isn't evidence of a mismatch, so it passes."""
+    if stub_year is None or held_year is None:
+        return True
+    return abs(int(stub_year) - int(held_year)) <= 1
+
+
+def reconcile_by_title_similarity(
+    store: Store,
+    *,
+    dry_run: bool = True,
+    limit: int | None = None,
+    source: str = "reconcile",
+    review_out: list[TitleMatchReview] | None = None,
+) -> list[ReconcileOutcome]:
+    """Fold id-less title-only stubs into the held paper they duplicate.
+
+    For each live, PDF-less, identifier-less paper stub, find the best
+    trigram-title match among *held* papers. A match at/above
+    :data:`_TITLE_AUTO_SIM` with a compatible year auto-merges (the held
+    copy is always the survivor). Matches in the review band — lower
+    similarity, or high similarity with disagreeing years — are appended
+    to ``review_out`` (when provided) and never merged. Dry-run (default)
+    plans the merges without writing. Returns one :class:`ReconcileOutcome`
+    per auto-merged stub.
+    """
+    with store.pool.connection() as conn:
+        stubs = conn.execute(_TITLE_STUB_SQL, (list(_MIGRATABLE_ID_KINDS),)).fetchall()
+    if limit:
+        stubs = stubs[:limit]
+
+    outcomes: list[ReconcileOutcome] = []
+    for stub_id, stub_title, stub_year in stubs:
+        stub_id = int(stub_id)
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT r.ref_id, r.year, similarity(r.title, %s) AS sim "
+                "FROM refs r "
+                "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+                "  AND r.pdf_sha256 IS NOT NULL AND r.title IS NOT NULL "
+                "  AND similarity(r.title, %s) >= %s "
+                # Survivor must be a *truly ingested* copy — a pdf_sha256
+                # AND body chunks — not a bare held-flag. We never retire a
+                # stub in favour of a paper we can't show we actually have.
+                "  AND EXISTS (SELECT 1 FROM chunks ck "
+                "              WHERE ck.ref_id = r.ref_id AND ck.ord >= 0) "
+                "ORDER BY sim DESC, r.ref_id ASC LIMIT 1",
+                (stub_title, stub_title, _TITLE_REVIEW_SIM),
+            ).fetchone()
+        if row is None:
+            continue
+        held_id, held_year, sim = int(row[0]), row[1], float(row[2])
+        if held_id == stub_id:  # defensive; a stub has no PDF so can't self-match
+            continue
+        years_ok = _years_compatible(stub_year, held_year)
+        if sim >= _TITLE_AUTO_SIM and years_ok:
+            if dry_run:
+                outcomes.append(
+                    ReconcileOutcome(held_id, [stub_id], stub_title[:24], "title")
+                )
+                continue
+            try:
+                with store.tx() as conn:
+                    merge_duplicate(
+                        store,
+                        survivor_ref_id=held_id,
+                        duplicate_ref_id=stub_id,
+                        source=source,
+                        reason="reconcile-title",
+                        conn=conn,
+                    )
+                outcomes.append(
+                    ReconcileOutcome(held_id, [stub_id], stub_title[:24], "title")
+                )
+            except Exception:
+                log.exception("reconcile: title stub #%s failed", stub_id)
+        elif review_out is not None:
+            review_out.append(
+                TitleMatchReview(
+                    stub_ref_id=stub_id,
+                    held_ref_id=held_id,
+                    sim=sim,
+                    stub_title=stub_title or "",
+                    reason="year-mismatch" if not years_ok else "low-similarity",
+                )
+            )
+    return outcomes
+
+
 __all__ = [
     "ReconcileOutcome",
+    "TitleMatchReview",
     "merge_duplicate",
     "pick_survivor",
     "pick_survivor_keep_chunks",
     "reconcile_by_doi_case",
     "reconcile_by_pdf_sha256",
+    "reconcile_by_title_similarity",
 ]

@@ -408,6 +408,14 @@ def search(
     # verdict) and returns a job handle instead of hits — poll
     # ``get(kind='job', id=…)``.
     good: bool | None = None,
+    # Field-scoped paper lookup (paper kind). ``title=`` / ``author=``
+    # return paper *records* — handle + one-line citation + a cite path —
+    # instead of body-block hits. The targeted finder for "I know the
+    # title / an author": matches refs.title (trigram+FTS) / refs.authors
+    # (jsonb) directly, held copies first, so an exact title or a bare
+    # surname lands the paper itself rather than other papers' text.
+    title: str | None = None,
+    author: str | None = None,
     # ADR 0045: scope results to a folder's placement subtree.
     # Accepts the folder id, 'folder:N', the fo<N> handle, or the
     # folder's (unique) name. Forces the cross-kind fan-out even with
@@ -416,21 +424,17 @@ def search(
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
-    `page_size` ≤ 100; `page=N` paginates (server-side OFFSET). Omit
-    `kind` (or pass `'*'`) for cross-kind fan-out; `exclude=` skips
-    slugs; `source=` is patent-only. `folder=` (id or name) scopes
-    hits to that folder's subtree (ADR 0045).
+    `page_size` ≤ 100; `page=N` paginates. Omit `kind` (or `'*'`) for
+    cross-kind fan-out; `exclude=` skips slugs; `source=` is patent-only;
+    `folder=` scopes to a subtree (ADR 0045).
 
-    `mode=`: `'hybrid'` (default — RRF of lexical+semantic),
-    `'lexical'` (FTS only — exact string / identifier, or when the
-    embedder is down), `'semantic'` (cosine). `angle=` + `like='kind:id'`
-    sprays `n` diverse items at that cosine; `view='dreamable'` /
-    `view='stubs'` are special browses.
+    `mode=` `'hybrid'` (default) / `'lexical'` (exact string) /
+    `'semantic'`. `angle=`+`like=` spray `n` diverse items;
+    `view='dreamable'`/`'stubs'` are special browses.
 
-    Broad retrieval (paper): `queries=` rephrasings + `answers=` HyDE
-    passages fuse extra ranked legs; `per_paper=` spreads across papers.
-    `good=True` (paper) queues an async deep-search campaign and
-    returns a job handle to poll instead of hits.
+    Broad retrieval (paper): `queries=`/`answers=` (HyDE) fuse ranked
+    legs; `per_paper=` spreads across papers; `good=True` queues a deep
+    search; `title=`/`author=` look up by byline.
 
     Full reference: get(kind='skill', id='precis-search-help').
     """
@@ -579,6 +583,10 @@ def search(
         payload["per_paper"] = per_paper
     if good is not None:
         payload["good"] = bool(good)
+    if title is not None:
+        payload["title"] = title
+    if author is not None:
+        payload["author"] = author
     if folder is not None:
         payload["folder"] = folder
 

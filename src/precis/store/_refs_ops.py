@@ -435,6 +435,42 @@ class RefsMixin:
                 if row is not None:
                     return int(row[0]), False
 
+            # Title-only fuzzy guard (dup-of-held prevention). With no
+            # external identifier to collapse on, a stub for a paper we
+            # ALREADY hold would mint a duplicate the identifier probe
+            # can't catch — its title-derived cite_key (e.g. ``attention17``
+            # off the title's first word) structurally can't collide with
+            # the held paper's author key (``vaswani17``). Fuzzy-match the
+            # title against *held* papers; a high-confidence hit returns
+            # the held ref instead of inserting, so a title-only
+            # re-acquire is idempotent too. Gated tight (held-only,
+            # trigram sim >= 0.85, publication year within 1 when both are
+            # known) so a genuinely-new paper still mints. See
+            # docs/design/duplicate-paper-handling.md (Phase 3).
+            if not norm and title and title.strip():
+                # "Truly held" = a real, ingested copy: a pdf_sha256 AND
+                # body chunks (ord >= 0). The chunk requirement is the
+                # strict gate — it rules out a bare pdf_sha256 flag on a
+                # never-ingested ref, so the guard only ever collapses a
+                # title-only acquire onto a paper we demonstrably have.
+                held = c.execute(
+                    "SELECT r.ref_id FROM refs r "
+                    "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+                    "  AND r.pdf_sha256 IS NOT NULL AND r.title IS NOT NULL "
+                    "  AND similarity(r.title, %s) >= 0.85 "
+                    # Cast the year param: a title-only acquire with no year
+                    # passes NULL, and a bare ``%s IS NULL`` leaves Postgres
+                    # unable to infer the parameter type (IndeterminateDatatype).
+                    "  AND (%s::int IS NULL OR r.year IS NULL "
+                    "       OR abs(r.year - %s::int) <= 1) "
+                    "  AND EXISTS (SELECT 1 FROM chunks ck "
+                    "              WHERE ck.ref_id = r.ref_id AND ck.ord >= 0) "
+                    "ORDER BY similarity(r.title, %s) DESC, r.ref_id ASC LIMIT 1",
+                    (title, year, year, title),
+                ).fetchone()
+                if held is not None:
+                    return int(held[0]), False
+
             # No collapse hit — mint a stub. Derive a non-colliding
             # cite_key from the title's first word + year.
             first_word = (title or "").split()
@@ -1585,6 +1621,110 @@ class RefsMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [(int(r[0]), float(r[1])) for r in rows]
+
+    def find_papers_by_title(
+        self,
+        *,
+        kind: str,
+        q: str,
+        limit: int = 20,
+        exclude_ref_ids: list[int] | None = None,
+    ) -> list[int]:
+        """Paper-level title lookup — ``search(kind='paper', title=…)``.
+
+        Fuses two title matchers so both an exact/near-exact title and a
+        partial-title query land the paper's own *record* (not a body
+        block of some other paper that merely repeats the words):
+
+        * ``pg_trgm similarity(r.title, q) >= 0.3`` — catches the whole
+          raw title regardless of FTS stop-word stripping (the failure
+          mode that buries a title query on the block path).
+        * ``to_tsvector('english', r.title) @@ websearch_to_tsquery`` —
+          catches a partial title / a few distinctive words.
+
+        Held papers (``pdf_sha256 IS NOT NULL``) sort first so a held
+        copy outranks an authorless request stub of the same title, then
+        by descending title similarity. Returns ``ref_id`` in rank order.
+        """
+        clauses = [
+            "r.deleted_at IS NULL",
+            # Defensive: a superseded ref is normally soft-deleted (caught
+            # above), but exclude it explicitly so a retired duplicate can
+            # never surface as a record row even if a merge skipped the
+            # soft-delete.
+            "NOT (r.meta ? 'superseded_by')",
+            "r.kind = %s",
+            "r.title IS NOT NULL",
+            "(similarity(r.title, %s) >= 0.3 "
+            "OR to_tsvector('english', r.title) @@ qq.qq)",
+        ]
+        # %s appear in SQL-text order: tsquery (FROM), kind (WHERE),
+        # sim-in-WHERE, [exclude], sim-in-ORDER-BY, limit.
+        params: list[Any] = [q, kind, q]
+        if exclude_ref_ids:
+            clauses.append("r.ref_id <> ALL(%s)")
+            params.append(list(exclude_ref_ids))
+        params.extend([q, limit])
+        sql = (
+            "SELECT r.ref_id "
+            "FROM refs r, websearch_to_tsquery('english', %s) qq(qq) "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY (r.pdf_sha256 IS NOT NULL) DESC, "
+            "         similarity(r.title, %s) DESC, r.ref_id ASC "
+            "LIMIT %s"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [int(r[0]) for r in rows]
+
+    def find_papers_by_author(
+        self,
+        *,
+        kind: str,
+        q: str,
+        limit: int = 20,
+        exclude_ref_ids: list[int] | None = None,
+    ) -> list[int]:
+        """Paper-level author lookup — ``search(kind='paper', author=…)``.
+
+        Matches against the structured ``refs.authors`` jsonb byline
+        (``[{"name": …}, …]``) — the source of truth — rather than the
+        diluted combined card the block path relies on (which is why bare
+        author search there surfaces other papers' bibliography lines, not
+        the paper itself). A name matches on either a substring (``Vaswani``
+        inside ``Ashish Vaswani``) or a ``pg_trgm`` fuzzy hit; the paper's
+        score is its best-matching author. Held papers sort first, then by
+        descending best-name similarity. Returns ``ref_id`` in rank order.
+        """
+        clauses = [
+            "r.deleted_at IS NULL",
+            # Defensive superseded-duplicate exclusion (see
+            # find_papers_by_title).
+            "NOT (r.meta ? 'superseded_by')",
+            "r.kind = %s",
+            "r.authors IS NOT NULL",
+            "jsonb_typeof(r.authors) = 'array'",
+            "(ae.elem->>'name' ILIKE '%%' || %s || '%%' "
+            "OR similarity(ae.elem->>'name', %s) >= 0.35)",
+        ]
+        # %s order: sim-in-SELECT, kind, ILIKE-q, sim-in-WHERE, exclude, limit.
+        params: list[Any] = [q, kind, q, q]
+        if exclude_ref_ids:
+            clauses.append("r.ref_id <> ALL(%s)")
+            params.append(list(exclude_ref_ids))
+        params.append(limit)
+        sql = (
+            "SELECT r.ref_id, max(similarity(ae.elem->>'name', %s)) AS sim "
+            "FROM refs r "
+            "CROSS JOIN LATERAL jsonb_array_elements(r.authors) ae(elem) "
+            f"WHERE {' AND '.join(clauses)} "
+            "GROUP BY r.ref_id, r.pdf_sha256 "
+            "ORDER BY (r.pdf_sha256 IS NOT NULL) DESC, sim DESC, r.ref_id ASC "
+            "LIMIT %s"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [int(r[0]) for r in rows]
 
     def count_refs_lexical(
         self,

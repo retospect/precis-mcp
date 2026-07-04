@@ -324,6 +324,14 @@ def run(args: argparse.Namespace) -> None:
                 # missing" ▲ is a corpus-wide DB read, not a per-web-host FS
                 # probe. Self-throttling (refresh window) → idle once fresh.
                 "corpus_reconcile",
+                # Paper-dedup reconcile: fold duplicate paper refs (shared
+                # pdf_sha256 / DOI-modulo-case / id-less title-only stubs
+                # that duplicate a held paper) into the survivor. Was
+                # manual-only (`precis reconcile-duplicates`); this runs it
+                # on a 24h cadence, single-runner (advisory lock) and
+                # throttled via an app_state marker so it's one cheap read
+                # between runs.
+                "paper_reconcile",
             }
         )
         # dream_agent stays out of the profile — it has its own
@@ -901,6 +909,23 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_corpus_reconcile_pass)
+
+        # Paper-dedup reconcile — the standing sweep behind
+        # `precis reconcile-duplicates`, now on a cadence. Merges
+        # duplicate paper refs (pdf_sha256 / DOI-case / id-less title-only
+        # stubs that duplicate a held paper) into the survivor. Cheap
+        # between runs: a `paper_reconcile:last_run` app_state marker gates
+        # the whole pass to once per PRECIS_PAPER_RECONCILE_REFRESH_HOURS
+        # (default 24), and a single-runner advisory lock keeps just one
+        # node sweeping corpus-wide.
+        if _pass_enabled("paper_reconcile"):
+            from precis.workers.paper_reconcile import run_paper_reconcile_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _paper_reconcile_pass(batch_size: int) -> _BatchResult:
+                return run_paper_reconcile_pass(store, limit=None)
+
+            ref_passes.append(_paper_reconcile_pass)
 
         # Quota-check pass — refresh the Claude.ai OAuth utilisation
         # snapshot via one 1-token `claude -p "quota" --output-format

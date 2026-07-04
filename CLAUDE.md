@@ -144,7 +144,7 @@ driver; adding one is a `Reviewer(...)` instance):
   `chunk_keywords`, `chase`, `fetch`, `gp_fetch`, `tag_embeddings`,
   `auto_check`, `schedule`, `nursery`, `dispatch`, `sweeper`,
   `job_coordinator`, `job_ssh_node`, `wake_runner`, `clusterize`,
-  `corpus_reconcile`.
+  `corpus_reconcile`, `paper_reconcile`.
   (`llm_summarize` is opt-in on top — env `PRECIS_SUMMARIZE_LLM=1` or
   `--only llm_summarize`; enabled on melchior as a deliberate trickle.)
 * `precis worker --profile=agent` runs the passes that need the
@@ -183,6 +183,23 @@ driver; adding one is a `Reviewer(...)` instance):
   (`PRECIS_CORPUS_RECONCILE_REFRESH_HOURS`, default 6, ≪ the ledger TTL
   `PRECIS_PDF_LOCATION_TTL_DAYS`, default 7); idle once every verdict is
   fresh. No-op on a node with no corpus roots.
+* `paper_reconcile` — the standing dedup sweep behind `precis
+  reconcile-duplicates`, now on a cadence (it was manual-only). Folds
+  duplicate paper refs into the survivor across three classes: shared
+  `pdf_sha256`, DOI-modulo-case, and **id-less title-only stubs that
+  duplicate a held paper** (`dedup.reconcile_by_title_similarity`, the
+  Phase-3 near-dup case — auto-merge only the high-confidence band, the
+  rest surfaced for review). Prevention is upstream in
+  `Store.upsert_stub_paper` (a title-only acquire fuzzy-matches held
+  papers first). Cheap between runs: an `app_state`
+  `paper_reconcile:last_run` marker gates the pass to once per
+  `PRECIS_PAPER_RECONCILE_REFRESH_HOURS` (default 24), and a single-runner
+  `pg_try_advisory_lock` keeps just one node sweeping corpus-wide. The same
+  pass also runs the deterministic **hygiene heals** (`ingest/paper_hygiene.py`):
+  rebuild drifted `card_combined` chunks (title repaired but the embedded
+  search card never rewritten), collapse `superseded_by` chains onto the
+  final live survivor, and repoint non-`supersedes` links off soft-deleted
+  papers. See `docs/design/duplicate-paper-handling.md` (Phase 3).
 * `fetch` / `chase` backoff — **both exponential**. The OA fetcher's
   retry window arms on any `fetcher:%` event (not just `unpaywall`,
   which is disabled in prod) and doubles per prior attempt

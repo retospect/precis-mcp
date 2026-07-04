@@ -41,6 +41,7 @@ from precis.cli import (
     reconcile,
     repl,
     resolve,
+    resolve_metadata,
     schema_doc,
     serve_embeddings,
     stats,
@@ -107,6 +108,10 @@ def main() -> None:
 
     if args.cmd == "reconcile-duplicates":
         reconcile.run(args)
+        return
+
+    if args.cmd == "resolve-metadata":
+        resolve_metadata.run(args)
         return
 
     if args.cmd == "gripes":
@@ -208,6 +213,7 @@ def _build_parser() -> argparse.ArgumentParser:
     fix_metadata.add_parser(sub)
     migrate_refs.add_parser(sub)
     reconcile.add_parser(sub)
+    resolve_metadata.add_parser(sub)
     gripe.add_parser(sub)
     add.add_parser(sub)
     watch.add_parser(sub)

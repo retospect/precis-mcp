@@ -23,11 +23,13 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register the ``reconcile-duplicates`` subparser on ``sub``."""
     p = sub.add_parser(
         "reconcile-duplicates",
-        help="Merge live paper refs that share a pdf_sha256 (same file).",
+        help="Merge duplicate paper refs (pdf_sha256 / doi-case / fuzzy title).",
         description=(
-            "Collapse duplicate paper refs sharing a pdf_sha256 to the best "
-            "survivor (soft-deletes the rest). Dry-run by default; --apply "
-            "to commit."
+            "Collapse duplicate paper refs — same file (pdf_sha256), same DOI "
+            "modulo case, and id-less title-only stubs that duplicate a held "
+            "paper (fuzzy title, high-confidence only) — to the best survivor, "
+            "soft-deleting the rest. Ambiguous title matches are flagged for "
+            "review, never merged. Dry-run by default; --apply to commit."
         ),
     )
     p.add_argument(
@@ -48,7 +50,12 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
 def run(args: argparse.Namespace) -> None:
     """Execute ``precis reconcile-duplicates``."""
     from precis.config import load_config
-    from precis.ingest.dedup import reconcile_by_doi_case, reconcile_by_pdf_sha256
+    from precis.ingest.dedup import (
+        TitleMatchReview,
+        reconcile_by_doi_case,
+        reconcile_by_pdf_sha256,
+        reconcile_by_title_similarity,
+    )
     from precis.runtime import build_runtime
 
     cfg = load_config()
@@ -79,13 +86,28 @@ def run(args: argparse.Namespace) -> None:
     for o in outcomes:
         print(o.line())
 
-    all_outcomes = doi_outcomes + outcomes
+    # Phase 3 — id-less title-only stubs that duplicate a held paper (the
+    # near-duplicate class that shares no identifier). Auto-merges only the
+    # high-confidence band; the ambiguous band is printed for human review,
+    # never merged.
+    review: list[TitleMatchReview] = []
+    title_outcomes = reconcile_by_title_similarity(
+        store, dry_run=dry_run, limit=args.limit, review_out=review
+    )
+    for o in title_outcomes:
+        print(o.line())
+    for r in review:
+        print(r.line())
+
+    all_outcomes = doi_outcomes + outcomes + title_outcomes
     merged = sum(len(o.duplicate_ref_ids) for o in all_outcomes)
     verb = "would merge" if dry_run else "merged"
+    review_note = f", {len(review)} flagged for review" if review else ""
     print(
         f"\nreconcile-duplicates [{mode}] done: {verb} {merged} duplicate ref(s) "
         f"across {len(all_outcomes)} group(s) "
-        f"({len(doi_outcomes)} doi-case, {len(outcomes)} pdf_sha256).",
+        f"({len(doi_outcomes)} doi-case, {len(outcomes)} pdf_sha256, "
+        f"{len(title_outcomes)} title){review_note}.",
         file=sys.stderr,
     )
     if dry_run and all_outcomes:

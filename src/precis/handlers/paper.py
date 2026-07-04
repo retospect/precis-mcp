@@ -841,6 +841,99 @@ class PaperHandler(Handler):
             )
             return hits
 
+    def _search_by_byline(
+        self, *, field: str, q: str, page: int, page_size: int
+    ) -> Response:
+        """Paper-level lookup by ``title=`` / ``author=`` — record rows,
+        not body-block hits.
+
+        Answers the block path's two weak spots: an exact-title query
+        dives below content-dense bodies of *other* papers, and a bare
+        author query surfaces those papers' bibliography lines instead of
+        the paper itself (the combined card dilutes the byline). Here we
+        match ``refs.title`` (trigram + FTS) / ``refs.authors`` (jsonb)
+        directly, held copies first, and return each paper's handle + a
+        one-line citation + a one-tap ``view='bibtex'`` path.
+        """
+        kind = self.spec.kind
+        offset = max(0, (int(page) - 1) * int(page_size))
+        # Probe one past the page so the has-more trailer is exact.
+        want = offset + page_size + 1
+        if field == "title":
+            ids = self.store.find_papers_by_title(kind=kind, q=q, limit=want)
+        else:
+            ids = self.store.find_papers_by_author(kind=kind, q=q, limit=want)
+        has_more = len(ids) > offset + page_size
+        page_ids = ids[offset : offset + page_size]
+
+        if not page_ids:
+            body = f"no paper matches {field}={q!r}"
+            fallback: list[tuple[str, str]] = [
+                (
+                    f"search(kind='paper', q={q!r})",
+                    "fall back to full-text search across paper bodies",
+                ),
+            ]
+            if field == "title":
+                fallback.append(
+                    (
+                        f"put(kind='paper', title={q!r})",
+                        "request the paper if the library doesn't hold it yet",
+                    )
+                )
+            return Response(body=body + render_next_section(fallback))
+
+        refs_map = self.store.fetch_refs_by_ids(page_ids)
+        rows: list[dict[str, str]] = []
+        for rid in page_ids:
+            ref = refs_map.get(rid)
+            if ref is None:
+                continue
+            handle = (
+                handle_registry.try_format(ref.kind, ref.id)
+                or ref.slug
+                or f"paper:{rid}"
+            )
+            authors = _format_authors(ref.authors) or "(authors unknown)"
+            year = ref.year if ref.year is not None else "n.d."
+            title_disp = _clean_inline_text(ref.title) if ref.title else "(untitled)"
+            rows.append(
+                {
+                    "handle": handle,
+                    "held": "held" if ref.pdf_sha256 is not None else "want",
+                    "citation": f"{authors} ({year}). {title_disp}",
+                }
+            )
+
+        head = format_search_headline(
+            n_returned=len(rows),
+            total=None,
+            noun="paper",
+            query=f"{field}={q!r}",
+        )
+        table = render_agent_table(rows, schema=["handle", "held", "citation"])
+        body = head + "\n\n" + table
+
+        top = rows[0]["handle"]
+        nav: list[tuple[str, str]] = [
+            (
+                f"get(id='{top}', view='bibtex')",
+                "cite it — BibTeX (also view='ris' / 'endnote')",
+            ),
+            (
+                f"get(kind='paper', id='{top}', view='toc')",
+                "open the paper — the TOC reading entry point",
+            ),
+        ]
+        if has_more:
+            nav.append(
+                (
+                    f"search(kind='paper', {field}={q!r}, page={int(page) + 1})",
+                    "see more matching papers",
+                )
+            )
+        return Response(body=body + render_next_section(nav))
+
     def search(  # type: ignore[override]
         self,
         *,
@@ -857,9 +950,37 @@ class PaperHandler(Handler):
         answers: list[str] | None = None,
         per_paper: int | None = None,
         good: bool = False,
+        title: str | None = None,
+        author: str | None = None,
         **_kw: Any,
     ) -> Response:
         kind = self.spec.kind
+        # Field-scoped byline lookup — ``title=`` / ``author=`` return
+        # paper *records* (handle + citation), the targeted alternative to
+        # the block-hit path when you know the title or an author. Routed
+        # first: it needs no q= and ignores the block-search filters.
+        title_q = title.strip() if isinstance(title, str) and title.strip() else None
+        author_q = (
+            author.strip() if isinstance(author, str) and author.strip() else None
+        )
+        if title_q or author_q:
+            if kind != "paper":
+                raise BadInput(
+                    f"title=/author= lookup is paper-only (kind={kind!r})",
+                    next="search(kind='paper', title='…')  # or author='…'",
+                )
+            if title_q and author_q:
+                raise BadInput(
+                    "pass title= or author=, not both",
+                    next="search(kind='paper', author='Vaswani')",
+                )
+            return self._search_by_byline(
+                field="title" if title_q else "author",
+                q=title_q or author_q,  # type: ignore[arg-type]
+                page=page,
+                page_size=page_size,
+            )
+
         if q is None or not q.strip():
             raise BadInput(
                 "search requires q=",

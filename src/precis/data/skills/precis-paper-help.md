@@ -67,27 +67,56 @@ search(kind='paper', q='…', queries=['…', '…'], answers=['…'], per_paper
 search(kind='paper', q='…', good=True)   # → poll get(kind='job', id=…)
 ```
 
-Search also matches a paper's **title / authors / abstract** (via its
-embedded metadata card), so a title query surfaces the paper even when
-the body never repeats the title. When a real body block of the same
-paper also matches, that body block is shown instead of the card — the
-card is a fallback introducer, not a duplicate hit. A paper whose
-metadata is missing (a bad-import stub) can still be unfindable; repair
-it with `edit(kind='paper', id='<slug>', title=…, authors=[…], year=…)`,
-which rebuilds the card.
+The default free-text `q=` search matches paper **bodies** and folds
+in the embedded metadata card, so a topic query works and a title query
+*often* surfaces the paper. But `q=` is body-first: for a known title or
+author, use the targeted byline lookup below — it's more reliable.
+
+## Look a paper up by its title
+## Find a paper by author
+## I know the title (or an author) — get the record, not body hits
+
+```python
+search(kind='paper', title='attention is all you need')   # → the paper record
+search(kind='paper', author='Vaswani')                     # → papers with that author
+```
+
+`title=` / `author=` return paper **records** — one row per paper, each
+leading with the `pa<id>` handle plus a one-line citation — not body-block
+hits. They match the structured `refs.title` (trigram + full-text) and
+`refs.authors` byline directly, held copies first, so an exact title or a
+bare surname lands the paper *itself* rather than other papers that merely
+mention those words. Each result row hands you a `get(id='pa<id>',
+view='bibtex')` cite path and a `view='toc'` read path. Use these instead
+of `q=` whenever you already know the byline; fall back to `q=` for topic
+search. (Pass one of `title=`/`author=`, not both.)
+
+Why this exists: a plain `q='attention is all you need'` gets stripped by
+full-text search to its content words (`'attent' & 'need'`), so the exact
+paper's short card can lose on rank to content-dense bodies elsewhere; a
+bare author `q='Vaswani'` tends to surface *other* papers' reference-list
+lines. The byline lookup sidesteps both.
 
 ## Find a paper that mentions an exact term
 ## Grep papers for a unique token (compound, DOI, exact string)
 ## Where does any paper mention this specific string?
 
 ```python
-search(kind='paper', q='LiBF4')                  # rare tokens rank high via lexical
+search(kind='paper', q='LiBF4', mode='lexical')  # exact token, FTS only — no embedding
+search(kind='paper', q='LiBF4')                  # hybrid also floats rare tokens high
 search(kind='paper', q='10.1038/nature10352')    # finds papers citing this DOI in body text
 ```
 
-Same hybrid search — there's no pure-lexical mode, but rare tokens
-land at the top of the result. Searching a DOI this way finds *citing*
-papers; use `get(kind='paper', id='<DOI>')` to fetch the paper itself.
+`mode='lexical'` pins the search to the Postgres full-text leg (no
+embedding) — reach for it on an exact identifier, acronym, code token, or
+numeric like `1.523 eV`, where embeddings blur the match. Note it's the
+`english` FTS config, so it stems and drops stop-words — precise on rare
+tokens, **not** a verbatim substring grep. Default hybrid also ranks rare
+tokens high, so either works for a unique string. Searching a DOI this way
+finds *citing* papers; use `get(kind='paper', id='<DOI>')` to fetch the
+paper itself. A paper whose metadata is missing (a bad-import stub) can be
+unfindable; repair it with `edit(kind='paper', id='<slug>', title=…,
+authors=[…], year=…)`, which rebuilds the card.
 
 ## See additional papers after a search
 ## Page through more search results
