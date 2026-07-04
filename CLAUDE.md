@@ -236,6 +236,36 @@ ADR 0018 status note):
 
 Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
 
+## Chunk-tag classifier (ADR 0047 cascade)
+
+Controlled chunk/paper tags written by a measured **cascade**, not a
+single model. Axis defs live in `src/precis/data/axes/*.yaml` (id +
+values + prompt + few-shot + `applies_when`); gold sets + accuracy live in
+`scripts/classify/` (`gold_set/`, `eval-classifier`, `EVAL_RESULTS.md`).
+
+- **Why a cascade.** The free local model (`summarizer` alias) is ~72% on
+  the 11-way `role` — it fails the *attribution test* (own-work vs
+  others') — but 94% at junk (furniture vs substance) and **88% /
+  91%-own-precision** at the 3-way collapse **`role3`** (own / background
+  / furniture). Human agreement is ~89%, so ~85-90% is the ceiling; the
+  residual is real ambiguity, absorbed by gold `accept:` sets + the
+  query-time agent. So the cheap model does the coarse, high-value calls
+  and a stronger model is reserved for the narrow residual.
+- **Tiers.** 0: free regex drops furniture (~24% of prod). 1: `junk` gate
+  → `role3`, local, cheap. 2 (optional, gated): re-judge `own` chunks with
+  a stronger model (`--escalate-model` / `PRECIS_CLASSIFY_ESCALATE_MODEL`).
+- **Writes** `Tag.closed("ROLE3", own|background|furniture)` → `chunk_tags`
+  (`pos=ord`, single-valued). `ROLE3:own` is the citation-grounding filter
+  (91% precision) — use as candidate-gen/soft-boost, verify with the agent,
+  never a lone hard precision gate.
+- **Pass.** `workers/classify.py` `run_classify_pass` (self-contained
+  ref-pass like `llm_summarize`; `chunk_claims` artifact
+  `classify:cascade-v<CLASSIFY_VERSION>`, idempotent, reversible),
+  registered in `cli/worker.py` **default-OFF** (`PRECIS_CLASSIFY_ENABLED=1`
+  / `--only classify`). Manual backfill + eval: `scripts/classify/classify
+  --cascade` (dry-run default; `--commit` to write). Full design:
+  `docs/design/chunk-classifier-cascade.md`.
+
 ## Other live affordances
 
 One line per affordance — code path + skill for the detail. The

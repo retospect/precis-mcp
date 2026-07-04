@@ -110,3 +110,28 @@ prompt: |
   Return JSON:
   {"value": "<one>", "confidence": <0..1>,
    "rationale": "<one sentence; required if confidence < 0.7>"}
+# Few-shot exemplars (v1.1) — synthetic, illustrative snippets (NOT from
+# the gold set), added because a small local model failed the attribution
+# test (related-work vs result vs interpretation). Rendered by build_prompt.
+examples:
+  - text: "Kumar et al. reported that reduced graphene oxide films reach conductivities of 500 S/cm."
+    value: related-work
+    why: "attributed to others -> related-work"
+  - text: "Here we find that our films reach 500 S/cm, a threefold increase over prior reports."
+    value: result
+    why: "this paper's OWN measured finding"
+  - text: "Metal-organic frameworks are crystalline porous solids built from metal nodes and organic linkers."
+    value: related-work
+    why: "unattributed general field background is still related-work"
+  - text: "The enhanced conductivity is attributed to improved pi-pi stacking between adjacent sheets."
+    value: interpretation
+    why: "explains what a result MEANS, introduces no new numbers"
+  - text: "Films were spin-coated at 2000 rpm and annealed at 300 C for 1 h under argon."
+    value: method
+    why: "a procedure THIS paper carried out"
+  - text: "Future studies should test whether the approach extends to nitrogen-doped analogues."
+    value: future-work
+    why: "prescribes what to do next"
+  - text: "(3) Zhang, L.; Li, H. Porous Carbons for Energy Storage. Adv. Mater. 2021, 33, 2100001."
+    value: boilerplate
+    why: "a reference-list entry is publisher furniture"

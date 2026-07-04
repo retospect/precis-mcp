@@ -203,6 +203,27 @@ summary of someone else's. Applied by the background `chunk_tag`
 pass; values are closed vocabularies — don't mint inside `role:` or
 `open-question:`.
 
+### `ROLE3:` — the coarse citation-grounding filter (shipped)
+
+The cheap classifier is only ~72% on the 11-way `role` but **91%** on a
+3-way collapse, so the *written* chunk tag is `ROLE3:` — the distinction
+citation-grounding actually needs:
+
+- `ROLE3:own` — this paper's own contribution (method/result/interp/
+  limitation/future-work) — the **citable-primary-source** filter.
+- `ROLE3:background` — others' work + field framing (related-work,
+  motivation).
+- `ROLE3:furniture` — references, tables, boilerplate.
+
+```python
+search(kind='paper', q='co2 adsorption capacity', tags=['ROLE3:own'])
+```
+
+`ROLE3:own` is ~91% precision — use it to *narrow candidates*, then
+confirm with the agentic search (`search(good=True)`), not as a lone hard
+filter. Full 11-way `role:` remains an optional refinement of `own`
+chunks. Design: `docs/design/chunk-classifier-cascade.md`.
+
 ## See also
 
 ```python

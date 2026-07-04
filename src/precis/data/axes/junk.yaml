@@ -1,0 +1,51 @@
+# Coarse binary gate (cascade Tier 1): is a chunk worth spending a
+# stronger model on? Junk = publisher furniture / non-prose data that no
+# researcher reads; substantive = real scientific prose. The cheap local
+# model is ~95% on this (vs 72% on the 11-way role axis) — so it prunes
+# the corpus for free and only the substantive residual reaches haiku.
+id: junk
+level: chunk
+applies_to_kinds: [paper, cfp]
+version: 1
+question: "Is this chunk junk (publisher furniture / non-prose data) or substantive scientific prose?"
+select: one
+values: [junk, substantive]
+default_unknown: substantive
+applies_when:
+  always: true
+cost_tier: small
+context: [section_path, position]
+prompt: |
+  Decide whether this chunk is JUNK or SUBSTANTIVE.
+
+  JUNK = not worth reading or searching as science:
+    - reference-list / bibliography entries
+    - copyright, licence, journal header/footer, DOI / received-accepted lines
+    - author lists, affiliations, ORCID blocks, corresponding-author info
+    - acknowledgements, funding, ethics / conflict-of-interest statements
+    - tables, numeric dumps, coordinate / XYZ lists, statistics grids
+    - figure captions that are only labels or numbers
+    - OCR garbage, page markers, name/subject indexes
+
+  SUBSTANTIVE = any real scientific prose a researcher would read:
+    motivation, background, methods, results, interpretation, limitations,
+    future work — even one meaningful sentence.
+
+  When a chunk mixes a little furniture with real prose, call it
+  SUBSTANTIVE. Only call JUNK when it is essentially all furniture or all
+  numbers.
+
+  Return JSON: {"value": "junk"} or {"value": "substantive"}.
+examples:
+  - text: "(3) Zhang, L.; Li, H. Porous Carbons for Energy Storage. Adv. Mater. 2021, 33, 2100001."
+    value: junk
+    why: "reference-list entry"
+  - text: "This article is licensed under CC-BY 4.0. Received 12 Jan 2024, accepted 3 Mar 2024."
+    value: junk
+    why: "publisher furniture"
+  - text: "We find the specific capacity increases threefold when the pore size exceeds 1 nm."
+    value: substantive
+    why: "a real finding"
+  - text: "0.35 30 25 33 23 0.5455 0.5893 0.5676 0.10 45 10 22 34 0.8182 0.3929"
+    value: junk
+    why: "a numeric table dump"

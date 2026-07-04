@@ -98,25 +98,34 @@ def main() -> None:
             seen_journals_per_cluster[c].add(chosen["journal"])
             picked.append(chosen)
 
-    # Pull abstracts for the picked slugs.
+    # Pull labeling context per slug: the best abstract card PLUS the
+    # first couple of body paragraphs. Many cards are thin (title +
+    # authors only, no embedded abstract), so the leading body text is
+    # what actually lets a labeler judge scale/dim/material/property.
     store, _cfg = open_store()
     abstracts: dict[str, str] = {}
     try:
         with store.pool.connection() as conn:
             for row in picked:
                 slug = row["slug"]
-                # First block whose density says abstract, else block 0.
-                ab = conn.execute(
+                # Slug is the cite_key (ref_identifiers); no refs.slug col.
+                parts = conn.execute(
                     """
-                    SELECT b.text FROM blocks b
-                    JOIN refs r ON r.id = b.ref_id
-                    WHERE r.slug = %s AND r.kind = 'paper'
-                    ORDER BY (b.density = 'abstract') DESC NULLS LAST, b.pos ASC
-                    LIMIT 1
+                    SELECT c.text
+                    FROM chunks c
+                    JOIN ref_identifiers ri ON ri.ref_id = c.ref_id
+                       AND ri.id_kind = 'cite_key' AND ri.id_value = %s
+                    WHERE c.chunk_kind IN
+                          ('card_abstract', 'card_combined', 'paragraph')
+                    ORDER BY (c.chunk_kind = 'card_abstract') DESC,
+                             (c.chunk_kind = 'card_combined') DESC,
+                             (c.ord >= 0) DESC, c.ord ASC
+                    LIMIT 3
                     """,
                     (slug,),
-                ).fetchone()
-                abstracts[slug] = (ab[0] if ab else "")[:1500]
+                ).fetchall()
+                text = "  ".join(p[0] for p in parts if p and p[0])
+                abstracts[slug] = text[:1500]
     finally:
         store.close()
 
@@ -128,15 +137,21 @@ def main() -> None:
         f.write("# Use `n-a` if the axis does not apply.\n")
         f.write("# Axis vocabularies live in src/precis/data/axes/*.yaml.\n\n")
         f.write("papers:\n")
+
+        # Strip backslashes too: a stray `\*` (escaped markdown) inside a
+        # double-quoted YAML scalar is an invalid escape and breaks the
+        # loader. Mirror the chunk sampler's _yaml_str cleaning.
+        def clean(s: str) -> str:
+            return s.replace("\\", " ").replace('"', "'").replace("\n", " ")
+
         for row in picked:
             slug = row["slug"]
-            title = row["title"].replace('"', "'")
             f.write(f"  - slug: {slug}\n")
-            f.write(f'    title: "{title}"\n')
+            f.write(f'    title: "{clean(row["title"])}"\n')
             f.write(f"    journal: {row['journal']!r}\n")
             f.write(f"    year: {row['year'] or 'null'}\n")
             f.write(f"    cluster: {row['cluster']}\n")
-            ab = abstracts.get(slug, "").replace('"', "'").replace("\n", " ")
+            ab = clean(abstracts.get(slug, ""))
             f.write(f'    abstract: "{ab[:600]}"\n')
             f.write("    labels:\n")
             for axis in GOLD_AXES:

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# classify — production chunk-axis classifier (dry-run by default; --commit to write).
+#
+# Wrapper that runs under the precis-mcp package's local venv.
+
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PKG_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VENV_PY="$PKG_DIR/.venv/bin/python"
+
+: "${PRECIS_DATABASE_URL:=postgresql://acatome:acatome@127.0.0.1:5432/precis}"
+: "${PRECIS_EMBEDDER:=bge-m3}"
+export PRECIS_DATABASE_URL PRECIS_EMBEDDER
+
+if [[ -x "$VENV_PY" ]]; then
+    exec "$VENV_PY" "$SCRIPT_DIR/_classify.py" "$@"
+fi
+
+exec uv run --project "$PKG_DIR" --extra paper python "$SCRIPT_DIR/_classify.py" "$@"

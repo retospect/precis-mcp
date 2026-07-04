@@ -1,0 +1,65 @@
+# Coarse 3-way collapse of `role` for citation-grounding: separate THIS
+# paper's own contribution from background (others' work + framing) from
+# furniture. Removes the result/interpretation/method sub-splits the cheap
+# model fumbles, keeping only the load-bearing attribution test.
+# Gold is derived from `role`:
+#   own        <- method, result, interpretation, limitation, future-work
+#   background <- related-work, motivation
+#   furniture  <- boilerplate, data, n-a
+id: role3
+level: chunk
+applies_to_kinds: [paper, cfp]
+version: 1
+question: "Whose content is this chunk — this paper's own contribution, background, or furniture?"
+select: one
+values: [own, background, furniture]
+default_unknown: background
+applies_when:
+  always: true
+cost_tier: small
+context: [section_path, position, title, neighbor_gists_1]
+prompt: |
+  Classify this chunk of a scientific paper into ONE coarse bucket by
+  WHOSE content it is:
+
+  - own        : THIS paper's own contribution — what the authors did
+                 (methods/procedures/setup), found (results/measurements/
+                 observations), concluded or interpreted, their stated
+                 limitations, or the future work they propose. Test: could
+                 you cite this as THIS paper's own claim? ("We measured…",
+                 "Our model…", "We conclude…", "Future work should…").
+  - background : NOT this paper's own result — other papers' findings
+                 ("Zhang et al. reported…"), general field background
+                 ("MOFs are porous solids…"), and the motivation /
+                 problem-framing that sets up the work ("no study has
+                 addressed…", "X remains a challenge").
+  - furniture  : publisher furniture or non-prose data — reference lists,
+                 copyright/licence, author/ORCID/affiliation blocks,
+                 acknowledgements, funding, tables, numeric dumps,
+                 figure-caption numbers, OCR garbage, indexes.
+
+  The load-bearing test is own vs background: "what THIS paper
+  established" vs "what it says about others' work or the field." A
+  results paragraph that cites one comparison value stays `own`; a survey
+  paragraph that mentions this work in passing stays `background`.
+
+  Return JSON: {"value": "own"} or {"value": "background"} or {"value": "furniture"}.
+examples:
+  - text: "Here we find that our films reach 500 S/cm, a threefold increase over prior reports."
+    value: own
+    why: "this paper's own measured finding"
+  - text: "Kumar et al. reported that reduced graphene oxide films reach conductivities of 500 S/cm."
+    value: background
+    why: "attributed to others"
+  - text: "Metal-organic frameworks are crystalline porous solids built from metal nodes and linkers."
+    value: background
+    why: "general field background"
+  - text: "Films were spin-coated at 2000 rpm and annealed at 300 C for 1 h under argon."
+    value: own
+    why: "a procedure this paper carried out"
+  - text: "However, no study has yet addressed the stability of these films above 400 C."
+    value: background
+    why: "problem framing / the gap"
+  - text: "(3) Zhang, L.; Li, H. Porous Carbons for Energy Storage. Adv. Mater. 2021, 33, 2100001."
+    value: furniture
+    why: "reference-list entry"

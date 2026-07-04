@@ -4,21 +4,56 @@ Tools for the paper auto-tagging system. See
 `src/precis/data/skills/precis-paper-tag-axes.md` for the taxonomy
 and `src/precis/data/axes/*.yaml` for axis definitions.
 
+Two families of axes, two samplers:
+
+- **ref axes** (`domain/scale/dim/…`, one label per *paper*) →
+  `cluster-papers` + `sample-gold` → `gold_set.yaml`.
+- **chunk axes** (`role`, `open-question`, one label per *chunk*;
+  ADR 0047) → `sample-gold-chunks` → `gold_set_chunks.yaml`.
+
+## Running against the real corpus (cluster)
+
+The samplers point at whatever `PRECIS_DATABASE_URL` names. For a
+real-corpus gold set, run them on a cluster node against `precis_prod`
+(that node has the bge-m3 embedder `cluster-papers` needs and, later,
+the `~/.claude` state the eval harness needs). The DB password comes
+from the node's `.pgpass` — use a passwordless DSN:
+
+```sh
+ssh <node> 'PRECIS_DATABASE_URL="postgresql://agent_rw@<pgbouncer>:6432/precis_prod" \
+  /opt/precis/venv/bin/python .../classify/_sample_gold_chunks.py --n 200 --output …'
+```
+
 ## Workflow
 
 ```
 1. cluster-papers          → cluster all papers by embedding; dump CSV
-                             for taxonomy validation
-2. sample-gold             → stratified-sample 30 papers (by cluster +
-                             journal) into gold_set.yaml for hand-labeling
-3. (you label by hand)     → fill in the values column for each axis
+                             for taxonomy validation                (ref axes)
+2. sample-gold             → stratified-sample papers by cluster +
+                             journal into gold_set.yaml             (ref axes)
+2b. sample-gold-chunks     → weak-role-stratified sample of body
+                             chunks into gold_set_chunks.yaml       (chunk axes)
+3. (label)                 → fill each `?` (by hand, or LLM pre-label
+                             + human adjudication of contested rows)
 4. eval-classifier         → run classifier on gold set; show
                              per-axis accuracy + confusion (read-only)
 5. classify-papers         → bulk run; writes tags + meta.processing
 ```
 
-Steps 1–3 are read-only. Steps 4 calls the LLM but does not write
+Steps 1–3 are read-only. Step 4 calls the LLM but does not write
 to the DB. Step 5 writes — versioned + idempotent.
+
+## sample-gold-chunks
+
+Stratified sample of paper *body chunks* for the chunk-level axes
+(`role`, `open-question`). The rhetorical `role` axis is
+section-driven, so the draw is stratified by a **weak-label bucket**
+(section_path + text regex — future-work / limitation / method /
+result / interp / motiv-related / data / boilerplate / other) so the
+rare roles and both open-question values are represented, capped per
+paper, each row enriched with slug / title / position / section_path /
+neighbor gists / ref-tags. Addresses chunks by `ref_id`+`ord` (stable
+across re-chunking). See `gold_set/README.md` for the labeling loop.
 
 ## cluster-papers
 
@@ -65,16 +100,23 @@ from the axis vocabulary. Save the file.
 
 ## eval-classifier
 
-(Stub; built next.) Reads `gold_set.yaml`, runs the LLM classifier,
-prints per-axis accuracy and confusion. Read-only.
+Reads a gold set (`gold_set.yaml` or `gold_set_chunks.yaml`), runs the
+LLM classifier, prints per-axis accuracy and confusion. Read-only.
+`_eval_junk.py` / `_eval_role3.py` are the derived-gold variants (binary
+junk; 3-way role collapse). **Grading honours accepted
+alternatives:** a prediction counts correct if it equals the primary
+label OR appears in that axis's `accept` / `role_accept` list (see
+`gold_set/README.md`). Report both strict (primary-only) and
+accept-aware accuracy.
 
-## classify-papers
+## classify (chunk axes — built) / classify-papers (ref axes — pending)
 
-(Stub; built last, after eval passes ≥ 85% on every axis.) The
-production runner. Walks `paper` refs, applies axis gates, calls
-the LLM, writes `meta.processing.<axis>` + open tag
-`<axis>:<value>` per ref. Idempotent: skips axes already at current
-version.
+The **chunk** cascade is built: `classify --cascade` (below). The
+**ref-axis** production runner (walk `paper` refs, apply `applies_when`
+gates, write `ROLE-per-axis` ref tags + `meta.processing.<axis>`) is not
+yet built — the ref axes are eval'd (`material`/`transport` pass on the
+free model; see `EVAL_RESULTS.md`) but only `material`/`transport` are
+worth shipping as hard filters today.
 
 ## Layout
 
@@ -89,4 +131,31 @@ scripts/classify/
   gold_set/
     README.md                       # how to hand-label
     gold_set.yaml                   # generated; you fill values
+```
+
+## Production: the cascade (`classify`)
+
+The chunk axes ship as a **cascade** — junk-gate → `role3` (own/background/
+furniture) → optional escalate. Full design + eval:
+`docs/design/chunk-classifier-cascade.md` and `EVAL_RESULTS.md`.
+
+```sh
+./scripts/classify/classify --cascade --limit 200            # DRY-RUN (default)
+./scripts/classify/classify --cascade --limit 2000 --commit  # write ROLE3 tags
+./scripts/classify/classify --cascade --commit \
+    --escalate-model claude-haiku-4-5                        # + Tier 2 on 'own'
+./scripts/classify/classify --axis role3 --limit 50          # single-axis debug
+```
+
+Runs against `PRECIS_DATABASE_URL` with `PRECIS_SUMMARIZE_MODEL=summarizer`
+on a node with the litellm proxy. Dry-run is read-only; `--commit` writes
+`ROLE3:<value>` chunk tags (idempotent via the `chunk_claims` lease,
+artifact `classify:cascade-v1`; reversible by deleting that namespace +
+artifact).
+
+**Continuous** operation is the worker pass `workers/classify.py`
+(`run_classify_pass`), registered in `cli/worker.py`, **default-OFF**:
+
+```sh
+PRECIS_CLASSIFY_ENABLED=1 precis worker --profile system   # or --only classify
 ```

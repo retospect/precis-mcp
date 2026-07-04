@@ -1,7 +1,7 @@
 """cluster-papers — k-means cluster paper refs by bge-m3 embedding.
 
 Pulls every non-deleted `paper` ref from the precis store, computes
-a per-paper representative vector (mean of the first N block
+a per-paper representative vector (mean of the first N body-chunk
 embeddings), runs sklearn KMeans, and writes a CSV.
 
 Used to validate the auto-tagging taxonomy (similar papers should
@@ -81,33 +81,54 @@ def main() -> None:
     store, _cfg = open_store()
     try:
         with store.pool.connection() as conn:
-            # Average first N block vectors per paper.
+            # Resolve the embedder from the DATA, not config: the worker
+            # runs with `--embedder remote`, so cfg.embedder is "remote",
+            # but chunk_embeddings.embedder stores the real model name
+            # (bge-m3). Pick the most common one actually present.
+            row = conn.execute(
+                """
+                SELECT embedder FROM chunk_embeddings
+                WHERE status = 'ok'
+                GROUP BY embedder ORDER BY count(*) DESC LIMIT 1
+                """
+            ).fetchone()
+            embedder = row[0] if row else "bge-m3"
+            print(f"using embedder '{embedder}'", file=sys.stderr)
+            # Average the first N body-chunk vectors per paper. Slug is
+            # the cite_key in ref_identifiers (no refs.slug column);
+            # embeddings live in chunk_embeddings keyed by chunk_id.
             rows = conn.execute(
                 """
                 WITH head AS (
-                    SELECT b.ref_id,
-                           b.embedding,
-                           ROW_NUMBER() OVER (PARTITION BY b.ref_id ORDER BY b.pos) AS rn
-                    FROM blocks b
-                    JOIN refs r ON r.id = b.ref_id
+                    SELECT c.ref_id,
+                           e.vector,
+                           ROW_NUMBER() OVER (PARTITION BY c.ref_id
+                                              ORDER BY c.ord) AS rn
+                    FROM chunks c
+                    JOIN chunk_embeddings e
+                      ON e.chunk_id = c.chunk_id
+                     AND e.embedder = %(embedder)s AND e.status = 'ok'
+                    JOIN refs r ON r.ref_id = c.ref_id
                     WHERE r.kind = 'paper' AND r.deleted_at IS NULL
-                      AND b.embedding IS NOT NULL
+                      AND c.ord >= 0
                 )
-                SELECT r.slug,
+                SELECT COALESCE((SELECT id_value FROM ref_identifiers
+                          WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
+                          LIMIT 1), 'ref' || r.ref_id)          AS slug,
                        r.title,
                        r.meta->>'journal'                        AS journal,
-                       (r.meta->>'year')::int                    AS year,
-                       (SELECT count(*) FROM blocks b2
-                          WHERE b2.ref_id = r.id)                AS n_blocks,
-                       AVG(h.embedding)::vector                  AS rep
+                       r.year                                    AS year,
+                       (SELECT count(*) FROM chunks c2
+                          WHERE c2.ref_id = r.ref_id AND c2.ord >= 0) AS n_blocks,
+                       AVG(h.vector)::vector                     AS rep
                 FROM refs r
-                JOIN head h ON h.ref_id = r.id AND h.rn <= %s
+                JOIN head h ON h.ref_id = r.ref_id AND h.rn <= %(head)s
                 WHERE r.kind = 'paper' AND r.deleted_at IS NULL
-                GROUP BY r.id, r.slug, r.title, journal, year
-                HAVING AVG(h.embedding) IS NOT NULL
-                ORDER BY r.slug
+                GROUP BY r.ref_id
+                HAVING AVG(h.vector) IS NOT NULL
+                ORDER BY slug
                 """,
-                (args.head_blocks,),
+                {"embedder": embedder, "head": args.head_blocks},
             ).fetchall()
     finally:
         store.close()

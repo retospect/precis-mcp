@@ -63,3 +63,18 @@ prompt: |
   Return JSON:
   {"value": "<yes|no|unknown|n-a>", "confidence": <0..1>,
    "rationale": "<one sentence; required if confidence < 0.7>"}
+# Few-shot exemplars (synthetic; NOT from the gold set). yes/no QUOTED to
+# avoid the YAML 1.1 boolean trap.
+examples:
+  - text: "The stability of these catalysts above 400 C has not yet been investigated."
+    value: "yes"
+    why: "names a specific untested condition"
+  - text: "Further research is needed to fully understand these systems."
+    value: "no"
+    why: "platitude with no named question or direction"
+  - text: "Our model does not account for solvent effects, which may shift the predicted barriers."
+    value: "yes"
+    why: "an acknowledged shortfall a reader could act on"
+  - text: "These measurements confirm the mechanism proposed in the previous section."
+    value: "no"
+    why: "closes a question rather than opening one"

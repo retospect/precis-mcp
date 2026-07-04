@@ -1,0 +1,530 @@
+# gold_set — hand-labeled papers for classifier eval.
+# 30 papers stratified across 24 clusters.
+# Replace each `?` with the correct value from the axis vocabulary.
+# Use `n-a` if the axis does not apply.
+# Axis vocabularies live in src/precis/data/axes/*.yaml.
+
+papers:
+  - slug: chen23a
+    title: "The remediation of hexavalent chromium-contaminated soil by nanoscale zero-valent iron supported on sludge-based biochar"
+    journal: 'Journal of Soils and Sediments'
+    year: 2023
+    cluster: 0
+    abstract: "The remediation of hexavalent chromium-contaminated soil by nanoscale zero-valent iron supported on sludge-based biochar  Chen, Xi; Fan, Guangjian; Zhu, Xiaoxuan; Li, Haibo; Li, Yinghua; Li, Hui; Xu, Xinyang  **SOILS, SEC 1 • SOIL ORGANIC MATTER DYNAMICS AND NUTRIENT CYCLING • RESEARCH ARTICLE**  **The remediation of hexavalent chromium‑contaminated soil by nanoscale zero‑valent iron supported on sludge‑based biochar**  **Xi Chen1 · Guangjian Fan1,2 · Xiaoxuan Zhu1 · Haibo Li1 · Yinghua Li1 · Hui Li3 · Xinyang Xu1,[2](http://orcid.org/0000-0002-6646-8445)**  Received: 29 April 2022 / Accepted:"
+    labels:
+      domain: chemistry
+      studytype: experimental-ensemble
+      scale: 100nm
+      dim: 0d
+      material: other
+      property: chemical
+      transport: n-a
+      accept: {scale: [10nm]}
+      conf: 0.6
+      note: "nZVI/biochar Cr(VI) remediation; metallic Fe=other; scale approx"
+
+  - slug: rashad24
+    title: "Enhancing Magnesium-Ion Storage in a Bi–Sn Anode through Dual-Phase Engineering"
+    journal: 'ACS Applied Materials &amp; Interfaces'
+    year: 2024
+    cluster: 1
+    abstract: "Enhancing Magnesium-Ion Storage in a Bi–Sn Anode through Dual-Phase Engineering  Rashad, Muhammad; Ngoipala, Apinya; Vandichel, Matthias; Geaney, Hugh  This article is licensed under CC-BY 4.0 © ( *)  Enhancing Magnesium-Ion Storage in a Bi—Sn Anode through Dual-**Phase Engineering**  Muhammad Rashad, Apinya Ngoipala, Matthias Vandichel, * and Hugh Geaney *  Cite This: ACS Appl. Mater. Interfaces 2024, 16, 55383–55394  ACCESS I  www.acsami.org  Metrics & More  Article Recommendations"
+    labels:
+      domain: materials
+      studytype: experimental-ensemble
+      scale: unknown
+      dim: 3d
+      material: other
+      property: chemical
+      transport: n-a
+      accept: {studytype: [mixed], property: [electrical], scale: [10nm]}
+      conf: 0.5
+      note: "Bi-Sn Mg-ion anode; DFT+expt; ionic storage not e-transport"
+
+  - slug: ruscic05
+    title: "Active Thermochemical Tables: thermochemistry for the 21st century"
+    journal: 'Journal of Physics: Conference Series'
+    year: 2005
+    cluster: 2
+    abstract: "Active Thermochemical Tables: thermochemistry for the 21st century  Ruscic, Branko; Pinzon, Reinhardt E; Laszewski, Gregor von; Kodeboyina, Deepti; Burcat, Alexander; Leahy, David; Montoy, David; Wagner, Albert F  **OPEN ACCESS**  Active Thermochemical Tables: thermochemistry for the 21st century  To cite this article: Branko Ruscic et al 2005 J. Phys.: Conf. Ser. 16 561  View the [article online](https://doi.org/10.1088/1742-6596/16/1/078) for updates and enhancements.  You may also like  - [Handbook of Thermochemical Data for](/article/10.1149/1.2129039) [Compounds and Aqueous Species](/arti"
+    labels:
+      domain: chemistry
+      studytype: conceptual
+      scale: n-a
+      dim: n-a
+      material: n-a
+      property: thermal
+      transport: n-a
+      accept: {studytype: [computational], property: [n-a]}
+      conf: 0.5
+      note: "thermochemical database/network method; property thermal vs chemical"
+
+  - slug: ahmadabadi26
+    title: "Investigating the effect of emulsion water added to high-cetane fuel in RCCI engine fueled with E85/n-heptane on spray, combustion, emission, and performance characteristics"
+    journal: 'Fuel'
+    year: 2026
+    cluster: 3
+    abstract: "Investigating the effect of emulsion water added to high-cetane fuel in RCCI engine fueled with E85/n-heptane on spray, combustion, emission, and performance characteristics  Ahmadabadi, Ata; Chehrmonavari, Hamed; Targolghasemi, Morteza; Mousavi, Seyed Abdullah; Kakaee, Amirhasan  Contents lists available at ScienceDirect  Fuel  journal homepage: www.elsevier.com/locate/fuel"
+    labels:
+      domain: eng
+      studytype: experimental-ensemble
+      scale: mm
+      dim: n-a
+      material: n-a
+      property: chemical
+      transport: n-a
+      accept: {studytype: [computational, mixed], property: [multi]}
+      conf: 0.5
+      note: "RCCI engine combustion; expt vs CFD unclear"
+
+  - slug: kim24b
+    title: "Biochemically Programmable Isothermal PCR"
+    journal: 'Advanced Science'
+    year: 2024
+    cluster: 4
+    abstract: "Biochemically Programmable Isothermal PCR  Kim, MinGin; Ravisankar, Vijay; Hassan, Yassin A.; Ugaz, Victor M.  **[www.advancedscience.com](http://www.advancedscience.com)**  **Biochemically Programmable Isothermal PCR**  *MinGin Kim, Vijay Ravisankar, Yassin A. Hassan, and Victor M. Ugaz **  **Isothermal PCR can be performed by imposing a static temperature gradient that continuously circulates reagents through denaturing, annealing, and extension conditions inside a PCR tube. But despite early promise, these systems have yet to demonstrate performance and repeatability sufficient for adoption"
+    labels:
+      domain: bio
+      studytype: experimental-ensemble
+      scale: mm
+      dim: n-a
+      material: n-a
+      property: chemical
+      transport: n-a
+      accept: {property: [thermal]}
+      conf: 0.5
+      note: "isothermal PCR device; property thermal vs chemical"
+
+  - slug: vaitkus21
+    title: "Validation of the Crystallography Open Database using the Crystallographic Information Framework"
+    journal: 'Journal of Applied Crystallography'
+    year: 2021
+    cluster: 5
+    abstract: "Validation of the Crystallography Open Database using the Crystallographic Information Framework  Vaitkus, Antanas; Merkys, Andrius; Gražulis, Saulius  ISSN 1600-5767  Received 29 July 2020 Accepted 21 December 2020  Edited by A. Barty, DESY, Hamburg, Germany  Keywords: Crystallography Open Database; Crystallographic Information Framework; CIF validation; CIF dictionary; DDLm.  Supporting information: this article has supporting information at journals.iucr.org/j  Validation of the Crystallography Open Database using the Crystallographic Information Framework  Antanas Vaitkus,<sup>a</sup>  * A"
+    labels:
+      domain: other
+      studytype: conceptual
+      scale: n-a
+      dim: n-a
+      material: n-a
+      property: n-a
+      transport: n-a
+      conf: 0.7
+      note: "crystallography database validation method"
+
+  - slug: potter21
+    title: "Influence of polymer additives on gas-phase emissions from 3D printer filaments."
+    journal: 'Chemosphere'
+    year: 2021
+    cluster: 6
+    abstract: "Influence of polymer additives on gas-phase emissions from 3D printer filaments.  Phillip M. Potter; S. Al-Abed; Farhana Hasan; S. Lomnicki  Influence of polymer additives on gas-phase emissions from 3D printer filaments  - 2 Potter, Phillip M.a; Al-Abed, Souhail R.b *; Hasan, Farhanac; Lomnicki, Slawomir M.c - <sup>a</sup>Oak Ridge Institute for Science and Education (ORISE), EPA, Cincinnati, OH, 45268, USA - <sup>b</sup>Center for Environmental Solutions and Emergency Response (CESER), EPA, Cincinnati, OH, 45268, USA - <sup>5</sup> CDepartment of Environmental Sciences, Louisiana State Unive"
+    labels:
+      domain: chemistry
+      studytype: experimental-ensemble
+      scale: n-a
+      dim: n-a
+      material: polymer
+      property: chemical
+      transport: n-a
+      conf: 0.6
+      note: "3D-printer filament gas-phase emissions"
+
+  - slug: lee07
+    title: "In situ Raman Measurements of Suspended Individual Single-Walled Carbon Nanotubes under Strain"
+    journal: 'Nano Letters'
+    year: 2007
+    cluster: 7
+    abstract: "In situ Raman Measurements of Suspended Individual Single-Walled Carbon Nanotubes under Strain  Lee, Sang Wook; Jeong, Goo-Hwan; Campbell, Eleanor E. B.  **In situ Raman Measurements of Suspended Individual Single-Walled Carbon Nanotubes under Strain**  **NANO LETTERS 2007 Vol. 7, No. 9 <sup>2590</sup>**-**<sup>2595</sup>**  **Sang Wook Lee,† Goo-Hwan Jeong,† and Eleanor E. B. Campbell *,#**  *Department of Physics, Go¨teborg Uni*V*ersity, Go¨teborg, SE-412 96, Sweden*  Received April 14, 2007; Revised Manuscript Received July 19, 2007  **ABSTRACT**  **We present a technique for in situ Raman "
+    labels:
+      domain: physics
+      studytype: experimental-single-entity
+      scale: 1nm
+      dim: 1d
+      material: cnt
+      property: mechanical
+      transport: n-a
+      accept: {property: [optical]}
+      conf: 0.7
+      note: "individual SWCNT Raman under strain; mechanical vs optical"
+
+  - slug: pilania17
+    title: "Multi-fidelity machine learning models for accurate bandgap predictions of solids"
+    journal: 'Computational Materials Science'
+    year: 2017
+    cluster: 8
+    abstract: "Multi-fidelity machine learning models for accurate bandgap predictions of solids  Pilania, G.; Gubernatis, J.E.; Lookman, T.  Computational Materials Science  journal homepage: [www.elsevier.com/locate/commatsci](http://www.elsevier.com/locate/commatsci)  Editor's Choice  Multi-fidelity machine learning models for accurate bandgap predictions of solids  G. Pilania a,⇑ , J.E. Gubernatis <sup>b</sup> , T. Lookman <sup>b</sup>"
+    labels:
+      domain: materials
+      studytype: computational
+      scale: n-a
+      dim: 3d
+      material: n-a
+      property: electrical
+      transport: n-a
+      conf: 0.75
+      note: "ML bandgap prediction; bandgap->electrical"
+
+  - slug: dantas22
+    title: "Determination of spin-orbit interaction in semiconductor nanostructures via nonlinear transport"
+    journal: 'Physical review B'
+    year: 2022
+    cluster: 9
+    abstract: "Determination of spin-orbit interaction in semiconductor nanostructures via nonlinear transport  Renato M. A. Dantas; H. F. Legg; S. Bosco; D. Loss; J. Klinovaja  Determination of spin-orbit interaction in semiconductor nanostructures via non-linear transport  Renato M. A. Dantas, <sup>1, *</sup> Henry F. Legg, <sup>1</sup> Stefano Bosco, <sup>1</sup> Daniel Loss, <sup>1</sup> and Jelena Klinovaja <sup>1,†</sup>  <sup>1</sup> Department of Physics, University of Basel, Klingelbergstrasse 82, 4056 Basel, Switzerland  (Dated: October 12, 2022)  We investigate non-linear transport signatures stem"
+    labels:
+      domain: physics
+      studytype: conceptual
+      scale: n-a
+      dim: n-a
+      material: n-a
+      property: electrical
+      transport: n-a
+      accept: {studytype: [computational], property: [magnetic], scale: [100nm]}
+      conf: 0.5
+      note: "theory of nonlinear transport; not measured so transport n-a"
+
+  - slug: chu19
+    title: "Bimetallic nickel–cobalt hydrides in H<sub>2</sub> activation and catalytic proton reduction"
+    journal: 'Chemical Science'
+    year: 2019
+    cluster: 10
+    abstract: "Bimetallic nickel–cobalt hydrides in H<sub>2</sub> activation and catalytic proton reduction  Chu, Xiaoxiao; Jin, Jihao; Ming, Bangrong; Pang, Maofu; Yu, Xin; Tung, Chen-Ho; Wang, Wenguang  Chemical Science  **EDGE ARTICLE**  View Article Online View Journal | View Issue  Cite this: Chem. Sci., 2019, 10, 761  dll publication charges for this article have been paid for by the Royal Society of Chemistry  Received 30th September 2018 Accepted 26th October 2018  DOI: 10.1039/c8sc04346a  rsc.li/chemical-science  Bimetallic nickel-cobalt hydrides in H<sub>2</sub> activation and catalytic proton redu"
+    labels:
+      domain: chemistry
+      studytype: experimental-ensemble
+      scale: atomic
+      dim: 0d
+      material: other
+      property: chemical
+      transport: n-a
+      accept: {studytype: [synthesis]}
+      conf: 0.5
+      note: "molecular bimetallic hydride catalysis; synthesis vs expt"
+
+  - slug: draper95
+    title: "Inference and Hierarchical Modeling in the Social Sciences"
+    journal: 'Journal of Educational and Behavioral Statistics'
+    year: 1995
+    cluster: 11
+    abstract: "Inference and Hierarchical Modeling in the Social Sciences  Draper, David  **Inference and Hierarchical Modeling in the Social Sciences**  **David Draper**  *University of Bath, UK*  Key words: *causal inference, education policy, inferential limitations, meta-analysis, multilevel models, school effectiveness*  *Hierarchical models (HMs; Lindley & Smith, 1972) offer considerable promise to increase the level of realism in social science modeling, but the scope of what can be validly concluded with them is limited, and recent technical advances in allied fields may not yet have been put to best"
+    labels:
+      domain: other
+      studytype: conceptual
+      scale: n-a
+      dim: n-a
+      material: n-a
+      property: n-a
+      transport: n-a
+      conf: 0.85
+      note: "statistics/social-science methodology"
+
+  - slug: dinh24
+    title: "Atomically Precise Graphene Nanoribbon Transistors with Long-Term Stability and Reliability"
+    journal: 'ACS Nano'
+    year: 2024
+    cluster: 12
+    abstract: "Atomically Precise Graphene Nanoribbon Transistors with Long-Term Stability and Reliability  Dinh, Christina; Yusufoglu, Muhammed; Yumigeta, Kentaro; Kinikar, Amogh; Sweepe, Thomas; Zeszut, Zoe; Chang, Yao-Jen; Copic, Christian; Janssen, Shelby; Holloway, Richard; Battaglia, Julian; Kuntubek, Aldiyar; Zahin, Farhan; Lin, Yuxuan Cosmi; Vandenberghe, William G.; LeRoy, Brian J.; Müllen, Klaus; Fasel, Roman; Borin Barin, Gabriela; Mutlu, Zafer  [www.acsnano.org](www.acsnano.org?ref=pdf)  **Atomically Precise Graphene Nanoribbon Transistors with Long-Term Stability and Reliability**  [Christina](h"
+    labels:
+      domain: materials
+      studytype: experimental-single-entity
+      scale: 1nm
+      dim: 1d
+      material: graphene
+      property: electrical
+      transport: thin-film
+      accept: {studytype: [experimental-ensemble], transport: [few-atom]}
+      conf: 0.6
+      note: "GNR FET; 1d ribbon; channel transport geometry boundary"
+
+  - slug: fan23a
+    title: "The state-of-the-art in electroreduction of NOx for production of ammonia in aqueous and non-aqueous media at ambient conditions: a review"
+    journal: 'New Journal of Chemistry'
+    year: 2023
+    cluster: 13
+    abstract: "The state-of-the-art in electroreduction of NOx for production of ammonia in aqueous and non-aqueous media at ambient conditions: a review  Yuxian Fan; X. Xue; Lingyue Zhu; Yu Qin; Dan-dan Yuan; D. Gu; Baohui Wang  **PERSPECTIVE**  **View Article Online**  Cite this: New J. Chem., 2023. **47**. 6018  Received 31st December 2022, Accepted 26th February 2023  DOI: 10.1039/d2nj06362j  rsc.li/nic  The state-of-the-art in the electroreduction of NO<sub>x</sub> for the production of ammonia in aqueous and nonaqueous media at ambient conditions: a review  Yuxian Fan, Xiang Xue, Lingyue Zhu, Yuwei Qin"
+    labels:
+      domain: chemistry
+      studytype: review
+      scale: n-a
+      dim: n-a
+      material: n-a
+      property: chemical
+      transport: n-a
+      conf: 0.85
+
+  - slug: mokhtari22
+    title: "Developing polysulfone-based mixed matrix membrane containing hydrazone-linked covalent organic frameworks towards dye wastewater purification"
+    journal: 'Chemical Engineering Journal'
+    year: 2022
+    cluster: 14
+    abstract: "Developing polysulfone-based mixed matrix membrane containing hydrazone-linked covalent organic frameworks towards dye wastewater purification  Mokhtari, Nazanin; Dinari, Mohammad; Fashandi, Hossein  Contents lists available at [ScienceDirect](www.sciencedirect.com/science/journal/13858947)  Chemical Engineering Journal  journal homepage: [www.elsevier.com/locate/cej](https://www.elsevier.com/locate/cej)"
+    labels:
+      domain: materials
+      studytype: synthesis
+      scale: 1nm
+      dim: 3d
+      material: polymer
+      property: chemical
+      transport: n-a
+      accept: {domain: [chemistry], studytype: [experimental-ensemble], material: [other]}
+      conf: 0.5
+      note: "COF/polysulfone membrane; material polymer vs COF; synthesis vs expt"
+
+  - slug: wang21h
+    title: "Recent advances in stretchable field-effect transistors"
+    journal: 'Journal of Materials Chemistry C'
+    year: 2021
+    cluster: 15
+    abstract: "Recent advances in stretchable field-effect transistors  Wang, Xiumei; Liu, Yaqian; Chen, Qizhen; Yan, Yujie; Rao, Zhichao; Lin, Zhixian; Chen, Huipeng; Guo, Tailiang  Journal of Materials Chemistry C  **REVIEW View Article Online**  Cite this: J. Mater. Chem. C, 2021, 9,7796  Received 8th March 2021, Accepted 7th May 2021  DOI: 10.1039/d1tc01082d  rsc.li/materials-c  Recent advances in stretchable field-effect transistors  Xiumei Wang, ab Yaqian Liu, a Qizhen Chen, a Yujie Yan, a Zhichao Rao, a Zhixian Lin, abc Huipeng Chen  * * and Tailiang Guo * *"
+    labels:
+      domain: eng
+      studytype: review
+      scale: n-a
+      dim: n-a
+      material: n-a
+      property: electrical
+      transport: n-a
+      conf: 0.85
+      note: "review of stretchable FET devices"
+
+  - slug: cucchi22
+    title: "Hands-on reservoir computing: a tutorial for practical implementation"
+    journal: 'Neuromorphic Computing and Engineering'
+    year: 2022
+    cluster: 16
+    abstract: "Hands-on reservoir computing: a tutorial for practical implementation  Cucchi, Matteo; Abreu, Steven; Ciccone, Giuseppe; Brunner, Daniel; Kleemann, Hans  **TOPICAL REVIEW • OPEN ACCESS**  Hands-on reservoir computing: a tutorial for practical implementation  To cite this article: Matteo Cucchi et al 2022 Neuromorph. Comput. Eng. 2 032002  View the [article online](https://doi.org/10.1088/2634-4386/ac7db7) for updates and enhancements.  You may also like  - [Brain-inspired nanophotonic spike](/article/10.1088/2634-4386/acdf17) [computing: challenges and prospects](/article/10.1088/2634-4386/acd"
+    labels:
+      domain: eng
+      studytype: review
+      scale: n-a
+      dim: n-a
+      material: n-a
+      property: n-a
+      transport: n-a
+      conf: 0.8
+      note: "reservoir-computing tutorial/review"
+
+  - slug: dong22a
+    title: "Catalytic ozone decomposition and adsorptive VOCs removal in bimetallic metal-organic frameworks"
+    journal: 'Nature Communications'
+    year: 2022
+    cluster: 17
+    abstract: "Catalytic ozone decomposition and adsorptive VOCs removal in bimetallic metal-organic frameworks  Dong, Chen; Yang, Jia-Jia; Xie, Lin-Hua; Cui, Ganglong; Fang, Wei-Hai; Li, Jian-Rong  nature communications  Article https://doi.org/10.1038/s41467-022-32678-2  Catalytic ozone decomposition and adsorptive VOCs removal in bimetallic metal-organic frameworks  Received: 7 April 2022  Accepted: 11 August 2022  Check for updates  Chen Dong1,3, Jia-Jia Yang2,3, Lin-Hua Xie [1](http://orcid.org/0000-0003-0017-3887) , Ganglong Cu[i](http://orcid.org/0000-0002-9752-1659) [2](http://orcid.org/0000-0002-975"
+    labels:
+      domain: chemistry
+      studytype: experimental-ensemble
+      scale: 1nm
+      dim: 3d
+      material: mof
+      property: chemical
+      transport: n-a
+      accept: {studytype: [synthesis]}
+      conf: 0.75
+      note: "synthesis vs catalysis boundary; performance-focused"
+
+  - slug: hinton79
+    title: "Some demonstrations of the effects of structural descriptions in mental imagery"
+    journal: 'Cognitive Science'
+    year: 1979
+    cluster: 18
+    abstract: "Some demonstrations of the effects of structural descriptions in mental imagery  HINTON, G  **Some Demonstrations of the Effects of Structural Descriptions in Mental Imagery ***  GEOFFREY HINTON  *University of California, San Diego*  A visual imagery task is presented which is beyond the limits of normal human ability, and some of the factors contributing to its difficulty are isolated by comparing the difficulty of related tasks. It is argu~,cl that complex objects are assigned hierarchical structural descriptions by being parsed into parts, each of which has its own local system of signific"
+    labels:
+      domain: bio
+      studytype: experimental-ensemble
+      scale: n-a
+      dim: n-a
+      material: n-a
+      property: n-a
+      transport: n-a
+      conf: 0.6
+      note: "human cognitive/behavioral demonstration"
+
+  - slug: baskerville10
+    title: "Dopamine and Oxytocin Interactions Underlying Behaviors: Potential Contributions to Behavioral Disorders"
+    journal: 'CNS Neuroscience &amp; Therapeutics'
+    year: 2010
+    cluster: 19
+    abstract: "Dopamine and Oxytocin Interactions Underlying Behaviors: Potential Contributions to Behavioral Disorders  Baskerville, Tracey A.; Douglas, Alison J.  **Dopamine and Oxytocin Interactions Underlying Behaviors: Potential Contributions to Behavioral Disorders**  Tracey A. Baskerville**<sup>1</sup>** & Alison J. Douglas**<sup>2</sup>**  1 Division of Clinical Neurosciences, Garscube Estate, University of Glasgow, UK 2 Centre for Integrative Physiology, University of Edinburgh, UK  **Keywords**  Autism; Bonding; Depression; Parental brain; Sexual dysfunction; Social disorders."
+    labels:
+      domain: bio
+      studytype: review
+      scale: n-a
+      dim: n-a
+      material: n-a
+      property: n-a
+      transport: n-a
+      conf: 0.9
+
+  - slug: tomagra23
+    title: "Alpha-synuclein oligomers alter the spontaneous firing discharge of cultured midbrain neurons"
+    journal: 'Frontiers in Cellular Neuroscience'
+    year: 2023
+    cluster: 20
+    abstract: "Alpha-synuclein oligomers alter the spontaneous firing discharge of cultured midbrain neurons  Giulia Tomagra; C. Franchino; F. Cesano; Giovanni Chiarion; Antonio de lure; E. Carbone; P. Calabresi; L. Mesin; B. Picconi; A. Marcantoni; V. Carabelli  TYPE [Original Research](https://www.frontiersin.org/journals/cellular-neuroscience#editorial-board) PUBLISHED [20 January 2023](https://www.frontiersin.org/journals/cellular-neuroscience#editorial-board) DOI [10.3389/fncel.2023.1078550](https://doi.org/10.3389/fncel.2023.1078550)  Alpha-synuclein oligomers alter the spontaneous firing discharge of "
+    labels:
+      domain: bio
+      studytype: experimental-ensemble
+      scale: 10um
+      dim: n-a
+      material: n-a
+      property: n-a
+      transport: n-a
+      conf: 0.65
+      note: "electrophysiology of cultured neurons"
+
+  - slug: wang19f
+    title: "Ultrafast Spectroscopic Study of Insulator–Semiconductor–Semimetal Transitions in Graphene Oxide and Its Reduced Derivatives"
+    journal: 'Journal of Physical Chemistry C'
+    year: 2019
+    cluster: 21
+    abstract: "Ultrafast Spectroscopic Study of Insulator–Semiconductor–Semimetal Transitions in Graphene Oxide and Its Reduced Derivatives  Yan Wang; Lei Wang; Hai‐Yu Wang; Qidai Chen; Hongbo Sun  Ultrafast Spectroscopic Study of Insulator-Semiconductor-Semimetal Transitions in Graphene Oxide and Its Reduced **Derivatives**  Yan Wang,<sup>†</sup> Lei Wang,<sup> *,†</sup> Hai-Yu Wang,<sup> *,†</sup> Qi-Dai Chen,<sup>†</sup> and Hong-Bo Sun<sup>†,‡</sup>  Supporting Information  ABSTRACT: In graphene oxide (GO)-based compound photocatalysts, where GO is a novel cocatalyst, the mainly photophysical processes a"
+    labels:
+      domain: materials
+      studytype: experimental-ensemble
+      scale: 1nm
+      dim: 2d
+      material: graphene
+      property: optical
+      transport: n-a
+      accept: {property: [electrical]}
+      conf: 0.6
+      note: "ultrafast spectroscopy probing electronic transitions; optical vs electrical"
+
+  - slug: baloyi20
+    title: "The development of a mining method selection model through a detailed assessment of multi-criteria decision methods"
+    journal: 'Results in Engineering'
+    year: 2020
+    cluster: 22
+    abstract: "The development of a mining method selection model through a detailed assessment of multi-criteria decision methods  Baloyi, V.D.; Meyer, L.D.  ELSEVIER  Contents lists available at ScienceDirect  Results in Engineering  journal homepage: www.editorialmanager.com/rineng/Default.aspx"
+    labels:
+      domain: eng
+      studytype: conceptual
+      scale: n-a
+      dim: n-a
+      material: n-a
+      property: n-a
+      transport: n-a
+      conf: 0.7
+      note: "mining MCDM decision-model methodology"
+
+  - slug: madelung25
+    title: "High-resolution mapping of substantia nigra in Parkinson’s disease using 7 tesla magnetic resonance imaging"
+    journal: "npj Parkinson's Disease"
+    year: 2025
+    cluster: 23
+    abstract: "High-resolution mapping of substantia nigra in Parkinson’s disease using 7 tesla magnetic resonance imaging  Madelung, Christopher F.; Løkkegaard, Annemette; Fuglsang, Søren A.; Marques, Marta M.; Boer, Vincent O.; Madsen, Kristoffer H.; Hejl, Anne-Mette; Meder, David; Siebner, Hartwig R.  Published in partnership with the Parkinson's Foundation  https://doi.org/10.1038/s41531-025-00972-7  High-resolution mapping of substantia nigra in Parkinson's disease using 7 tesla magnetic resonance imaging  Christopher F. Madelung<sup>1,2</sup>, Annemette Løkkegaard<sup>2,3</sup>, Søren A. Fuglsang<sup>1"
+    labels:
+      domain: bio
+      studytype: experimental-ensemble
+      scale: mm
+      dim: n-a
+      material: n-a
+      property: n-a
+      transport: n-a
+      conf: 0.7
+      note: "7T MRI brain-region imaging"
+
+  - slug: han24
+    title: "The effects of imposed swirling flow on the transport and deposition of particulate pollutants in the 90° industrial duct bends: An Eulerian-Lagrangian approach"
+    journal: 'Indoor and Built Environment'
+    year: 2024
+    cluster: 0
+    abstract: "The effects of imposed swirling flow on the transport and deposition of particulate pollutants in the 90° industrial duct bends: An Eulerian-Lagrangian approach  Han, Kun; Diao, Yongfa; Zhuang, Jiawei; Chu, Minghao  Original Paper  The effects of imposed swirling flow on the transport and deposition of particulate pollutants in the 90° industrial duct bends: An Eulerian-Lagrangian approach  Indoor and Built Environment  Indoor and Built Environment 2024, Vol. 33(4) 707–721 © The Author(s) 2023 Article reuse guidelines: sagepub.com/journals-permissions DOI: 10.1177/1420326X231219468 journals.sa"
+    labels:
+      domain: eng
+      studytype: computational
+      scale: mm
+      dim: n-a
+      material: n-a
+      property: n-a
+      transport: n-a
+      conf: 0.65
+      note: "CFD Eulerian-Lagrangian duct flow; duct scale mm-m boundary"
+
+  - slug: chen20e
+    title: "Continuous Electrical Conductivity Variation in M<sub>3</sub>(Hexaiminotriphenylene)<sub>2</sub> (M = Co, Ni, Cu) MOF Alloys"
+    journal: 'Journal of the American Chemical Society'
+    year: 2020
+    cluster: 1
+    abstract: "Continuous Electrical Conductivity Variation in M<sub>3</sub>(Hexaiminotriphenylene)<sub>2</sub> (M = Co, Ni, Cu) MOF Alloys  Chen, Tianyang; Dou, Jin-Hu; Yang, Luming; Sun, Chenyue; Libretto, Nicole J.; Skorupskii, Grigorii; Miller, Jeffrey T.; Dincă, Mircea  pubs.acs.org/JACS Article  Continuous Electrical Conductivity Variation in $M_3$ (Hexaiminotriphenylene)<sub>2</sub> (M = Co, Ni, Cu) MOF Alloys  Tianyang Chen, Jin-Hu Dou, Luming Yang, Chenyue Sun, Nicole J. Libretto, Grigorii Skorupskii, Jeffrey T. Miller, and Mircea Dincă *  Cite This: J. Am. Chem. Soc. 2020, 142, 12367-12373  ACCESS "
+    labels:
+      domain: materials
+      studytype: experimental-ensemble
+      scale: 1nm
+      dim: 3d
+      material: mof
+      property: electrical
+      transport: bulk-3d
+      accept: {studytype: [synthesis]}
+      conf: 0.7
+      note: "conductive MOF alloys; synthesis+conductivity"
+
+  - slug: zhang22c
+    title: "Melt polymerization synthesis of a class of robust self-shaped olefin-linked COF foams as high-efficiency separators"
+    journal: 'Science China Chemistry'
+    year: 2022
+    cluster: 2
+    abstract: "Melt polymerization synthesis of a class of robust self-shaped olefin-linked COF foams as high-efficiency separators  Zhang, Penghui; Wang, Zhifang; Yang, Yi; Wang, Sa; Wang, Ting; Liu, Jinjin; Cheng, Peng; Chen, Yao; Zhang, Zhenjie  SCIENCE CHINA Chemistry  ·ARTICLES·  June 2022 Vol.65 No.6: 1173–1184 https://doi.org/10.1007/s11426-022-1224-3  Melt polymerization synthesis of a class of robust self-shaped olefin-linked COF foams as high-efficiency separators  Penghui Zhang<sup>1</sup>, Zhifang Wang<sup>1</sup>, Yi Yang<sup>1</sup>, Sa Wang<sup>1</sup>, Ting Wang<sup>1</sup>, Jinjin Liu<sup>1<"
+    labels:
+      domain: chemistry
+      studytype: synthesis
+      scale: 1nm
+      dim: 3d
+      material: other
+      property: chemical
+      transport: n-a
+      conf: 0.7
+      note: "COF foam separators; material not in list"
+
+  - slug: wang24f
+    title: "Natural resource scarcity, fossil fuel energy consumption, and total greenhouse gas emissions in top emitting countries"
+    journal: 'Geoscience Frontiers'
+    year: 2024
+    cluster: 3
+    abstract: "Natural resource scarcity, fossil fuel energy consumption, and total greenhouse gas emissions in top emitting countries  Wang, Jiannan; Azam, Waseem  Geoscience Frontiers  journal homepage: [www.elsevier.com/locate/gsf](https://www.elsevier.com/locate/gsf)  Research Paper  Natural resource scarcity, fossil fuel energy consumption, and total greenhouse gas emissions in top emitting countries  Jiannan Wang <sup>a</sup> , Waseem Azam b,c,⇑"
+    labels:
+      domain: other
+      studytype: computational
+      scale: n-a
+      dim: n-a
+      material: n-a
+      property: n-a
+      transport: n-a
+      accept: {scale: [km]}
+      conf: 0.5
+      note: "environmental-economics econometric study"
+
+  - slug: hou24
+    title: "Advances in the application of logic gates in nanozymes"
+    journal: 'Analytical and Bioanalytical Chemistry'
+    year: 2024
+    cluster: 4
+    abstract: "Advances in the application of logic gates in nanozymes  Hou, Xiangru; Ga, Lu; Zhang, Xin; Ai, Jun  **CRITICAL REVIEW**  **Advances in the application of logic gates in nanozymes**  **Xiangru Hou1 · Lu Ga<sup>2</sup> · Xin Zhang3 · Jun Ai<sup>1</sup>**  Received: 12 January 2024 / Revised: 22 February 2024 / Accepted: 26 February 2024 / Published online: 15 March 2024 © The Author(s), under exclusive licence to Springer-Verlag GmbH, DE part of Springer Nature 2024  **Abstract**  Nanozymes are a class of nanomaterials with biocatalytic function and enzyme-like activity, whose advantages include"
+    labels:
+      domain: chemistry
+      studytype: review
+      scale: 1nm
+      dim: n-a
+      material: n-a
+      property: chemical
+      transport: n-a
+      conf: 0.7
+      note: "nanozyme logic-gate review"
+
+  - slug: zhou25
+    title: "Toward Greater Autonomy in Materials Discovery Agents: Unifying Planning, Physics, and Scientists"
+    journal: 'arXiv.org'
+    year: 2025
+    cluster: 5
+    abstract: "Toward Greater Autonomy in Materials Discovery Agents: Unifying Planning, Physics, and Scientists  Lianhao Zhou; Hongyi Ling; Keqiang Yan; Kaiji Zhao; Xiaoning Qian; Raymundo Arr'oyave; Xiaofeng Qian; Shuiwang Ji  Toward Greater Autonomy in Materials Discovery Agents: Unifying Planning, Physics, and Scientists  Lianhao Zhou $^{1*}$  Hongyi Ling $^{1*}$  Keqiang Yan $^{1*}$  Kaiji Zhao $^2$  Xiaoning Qian $^{1, ,3, ,4}$  Raymundo Arróyave $^2$  Xiaofeng Qian $^{2, ,3, ,5}$  Shuiwang Ji $^{1 dagger}$  **Abstract**  We aim at designing language agents with greater autonomy for crystal materials d"
+    labels:
+      domain: other
+      studytype: computational
+      scale: n-a
+      dim: n-a
+      material: n-a
+      property: n-a
+      transport: n-a
+      accept: {domain: [materials, eng]}
+      conf: 0.55
+      note: "LLM/AI agents for materials discovery; domain materials vs CS"
+

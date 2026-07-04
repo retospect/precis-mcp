@@ -142,6 +142,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "news_poll",
             "briefing",
             "llm_summarize",
+            "classify",
         ),
         default=None,
         help="Restrict to one handler kind. Overrides --profile when "
@@ -583,6 +584,44 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_llm_summarize_pass)
+
+        # classify — chunk-axis cascade (junk-gate -> role3), writing
+        # ROLE3 chunk tags via the litellm `summarizer` alias. Default-OFF
+        # (PRECIS_CLASSIFY_ENABLED=1 or --only classify): a 1.3M-chunk
+        # backfill is a deliberate, node-targeted batch, like llm_summarize.
+        # Forces model=`summarizer` (PRECIS_SUMMARIZE_MODEL=qwen returns
+        # empty — it's a thinking model). See workers/classify.py +
+        # scripts/classify/EVAL_RESULTS.md.
+        if _pass_enabled("classify") or os.environ.get("PRECIS_CLASSIFY_ENABLED"):
+            import dataclasses as _dc
+
+            from precis.workers.runner import BatchResult as _ClsBatchResult
+
+            _cls_cfg = _dc.replace(
+                LlmConfig.from_env(),
+                enabled=True,
+                model=os.environ.get("PRECIS_CLASSIFY_MODEL") or "summarizer",
+            )
+            _cls_client = LlmClient(_cls_cfg)
+            _cls_escalate = os.environ.get("PRECIS_CLASSIFY_ESCALATE_MODEL") or None
+
+            def _classify_pass(batch_size: int) -> _ClsBatchResult:
+                from precis.workers.classify import run_classify_pass
+
+                r = run_classify_pass(
+                    store,
+                    client=_cls_client,
+                    batch_size=min(batch_size, 16),
+                    escalate_model=_cls_escalate,
+                )
+                return _ClsBatchResult(
+                    handler="classify",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_classify_pass)
 
         # Plugin-registered ref passes: third-party packages can
         # ship their own background workers via the
