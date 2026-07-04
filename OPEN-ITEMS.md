@@ -17,6 +17,36 @@ what's still open.
 
 ---
 
+## 🟡 Draft inline editor (click-to-edit prose, no LLM)
+
+**Status**: in progress · **Severity**: feature · **Owner**:
+`precis_web/routes/drafts.py`, `static/`, `handlers/draft.py`
+· **Design**: [`docs/design/draft-inline-editor.md`](docs/design/draft-inline-editor.md)
+
+Direct human editing of `draft` prose from the reader — click a paragraph,
+edit raw text, save on click-out, `+`/delete paragraphs — bypassing the LLM
+change-request path. **Model B** (a box per chunk, wired caret handoff,
+contained edits; the full rationale + refs-as-decorated-text, spellcheck,
+split/merge, and the vendored-PM-bundle spike are in the design doc).
+
+- **Slice 1 — validation core → shipped.** `DraftHandler._newly_dangling`
+  (old-vs-new dead-ref diff) + extracted `_dangling_chunk_tokens` /
+  `_dangling_finding_tokens` + advisory `_dangling_edit_hint` wired into the
+  MCP/CLI edit path (previously the edit path gave *no* dangling feedback).
+  Test: `test_edit_flags_newly_introduced_dangling_ref`.
+- **Slice 2 — editor UI (open, multi-cycle).** Vendor the PM bundle
+  (`esbuild` once → `static/prosemirror.bundle.mjs`, ~372 KB/125 KB gz,
+  spike proven); custom schema + serializer (refs/`$…$` opaque, **not** stock
+  prosemirror-markdown — it escapes our brackets); per-chunk editor box with
+  source + live squiggle; `POST /drafts/{ident}/text|block|.../delete`
+  endpoints (the `/text` endpoint calls `_newly_dangling` as a **hard** 422
+  gate); wired caret handoff + scroller busy-row protection; blank-line
+  split-on-save (first keeps the handle). Browser-verify with `/verify`.
+- **Slice 3 — polish (deferred).** Reveal-on-cursor ref rendering,
+  `[`-autocomplete, structured-block creation from the editor, lang selector.
+
+---
+
 ## 🟢 Dark-factory build/deploy workstream
 
 **Status**: in progress · **Severity**: feature · **Owner**: `scripts/`,

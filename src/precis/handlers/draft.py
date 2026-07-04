@@ -1071,6 +1071,7 @@ class DraftHandler(Handler):
                 body += self._citation_form_hint(new_text)
                 body += self._literal_cite_hint(new_text)
                 body += self._temperature_form_hint(new_text)
+                body += self._dangling_edit_hint(new_text, old_text)
             return Response(body=body)
         if text is not None:
             # Capture the prior text *before* the rewrite so the abbrev
@@ -1093,6 +1094,7 @@ class DraftHandler(Handler):
                 body += self._citation_form_hint(str(text))
                 body += self._literal_cite_hint(str(text))
                 body += self._temperature_form_hint(str(text))
+                body += self._dangling_edit_hint(str(text), old_text)
             return Response(body=body)
         raise BadInput(
             "edit(kind='draft') requires text= (rewrite), move= (reorder/reparent), "
@@ -1587,13 +1589,10 @@ class DraftHandler(Handler):
     #: mention): a ``#<slug>`` label never autolinks and never exports.
     _FINDING_MARKER = re.compile(r"finding\s+#(?P<slug>[A-Za-z][A-Za-z0-9-]+)")
 
-    def _dangling_finding_hint(self, text: str) -> str:
-        """Flag ``[finding #slug]`` markers that resolve to no finding ref
-        (Fix C). The author leaves these as 'citation pending' placeholders;
-        on a verbatim read they're indistinguishable from a real, linked
-        citation. Resolve each marker's slug against the finding store and
-        warn about the ones that don't land — so a reader can't mistake a
-        placeholder for a live citation."""
+    def _dangling_finding_tokens(self, text: str) -> list[str]:
+        """The ``finding #slug`` markers in ``text`` that resolve to no live
+        finding ref — the placeholder slugs a reader could mistake for a real
+        citation. Order-preserving, deduped."""
         from precis.utils import mentions
 
         seen: list[str] = []
@@ -1606,6 +1605,16 @@ class DraftHandler(Handler):
             ref = mentions.resolve_handle_ref(self.store, slug)
             if ref is None or getattr(ref, "kind", None) != "finding":
                 dangling.append(slug)
+        return dangling
+
+    def _dangling_finding_hint(self, text: str) -> str:
+        """Flag ``[finding #slug]`` markers that resolve to no finding ref
+        (Fix C). The author leaves these as 'citation pending' placeholders;
+        on a verbatim read they're indistinguishable from a real, linked
+        citation. Resolve each marker's slug against the finding store and
+        warn about the ones that don't land — so a reader can't mistake a
+        placeholder for a live citation."""
+        dangling = self._dangling_finding_tokens(text)
         if not dangling:
             return ""
         toks = ", ".join(f"#{s}" for s in dangling)
@@ -1623,12 +1632,11 @@ class DraftHandler(Handler):
     #: not matched, so prose stays untouched.
     _CHUNK_REF = re.compile(r"\[(?P<h>[a-z]{2}\d+|\d+)\]")
 
-    def _dangling_chunk_hint(self, text: str) -> str:
-        """Flag ``[<handle>]`` references that resolve to nothing. A handle is
-        a ref to *something* (a chunk ``dc<id>``, a memory ``me<id>``, a paper
-        chunk ``pc<id>``, …); an LLM that writes a numeric id (``[45650]``) or
-        a typo'd handle produces a dead link. Warn here so the author fixes it
-        to a handle the outline / search actually shows."""
+    def _dangling_chunk_tokens(self, text: str) -> list[str]:
+        """The ``[<handle>]`` references in ``text`` that resolve to nothing —
+        a pure numeric id (``[45650]``) or a known type-code prefix that no
+        store row backs. A bare ``[ab12]`` with an unknown code is left as
+        literal prose, not flagged. Order-preserving, deduped."""
         from precis.utils import handle_registry
 
         seen: list[str] = []
@@ -1652,6 +1660,15 @@ class DraftHandler(Handler):
             except Exception:  # pragma: no cover — store hiccup, don't nag
                 continue
             dangling.append(h)
+        return dangling
+
+    def _dangling_chunk_hint(self, text: str) -> str:
+        """Flag ``[<handle>]`` references that resolve to nothing. A handle is
+        a ref to *something* (a chunk ``dc<id>``, a memory ``me<id>``, a paper
+        chunk ``pc<id>``, …); an LLM that writes a numeric id (``[45650]``) or
+        a typo'd handle produces a dead link. Warn here so the author fixes it
+        to a handle the outline / search actually shows."""
+        dangling = self._dangling_chunk_tokens(text)
         if not dangling:
             return ""
         toks = ", ".join(f"[{h}]" for h in dangling)
@@ -1660,6 +1677,46 @@ class DraftHandler(Handler):
             "handle that resolves to something (a chunk `dc<id>`, a memory "
             "`me<id>`, a paper chunk `pc<id>`, …), not a numeric id — use the "
             "handle the outline / search shows, or remove the reference."
+        )
+
+    def _newly_dangling(
+        self, new_text: str, old_text: str
+    ) -> tuple[list[str], list[str]]:
+        """``(newly-broken chunk-ref tokens, newly-broken finding slugs)`` — the
+        references that resolve to nothing in ``new_text`` and were *not* already
+        dead in ``old_text``. Pre-existing dead refs are the author's standing
+        debt, not this edit's regression, so they are excluded.
+
+        This is the shared core of the inline-editor validation gate
+        (``docs/design/draft-inline-editor.md``): the web editor turns the same
+        old-vs-new diff into a **hard** save-block ("comes back at you if you
+        broke something serious"), while the MCP/CLI edit path
+        (`_dangling_edit_hint`) surfaces it as a **non-blocking** ⚠ so an
+        autonomous planner minting a forward reference is warned, not stalled."""
+        old_bad = set(self._dangling_chunk_tokens(old_text))
+        chunk = [h for h in self._dangling_chunk_tokens(new_text) if h not in old_bad]
+        old_find = set(self._dangling_finding_tokens(old_text))
+        find = [s for s in self._dangling_finding_tokens(new_text) if s not in old_find]
+        return chunk, find
+
+    def _dangling_edit_hint(self, new_text: str, old_text: str) -> str:
+        """Advisory ⚠ naming the references *this edit* newly broke (see
+        `_newly_dangling`). Empty when the edit introduced no dead refs."""
+        chunk, find = self._newly_dangling(new_text, old_text)
+        if not chunk and not find:
+            return ""
+        parts: list[str] = []
+        if chunk:
+            parts.append(", ".join(f"[{h}]" for h in chunk))
+        if find:
+            parts.append(", ".join(f"finding #{s}" for s in find))
+        toks = "; ".join(parts)
+        return (
+            f"\n\n⚠ this edit introduced unresolved reference(s): {toks}. Each "
+            "resolves to nothing — fix it to a handle that lands (a chunk "
+            "`dc<id>` / memory `me<id>` / paper chunk `pc<id>`, or a live "
+            "`finding:<pub_id>`), or drop the reference. Only refs *this edit* "
+            "broke are flagged; pre-existing dead refs elsewhere are left alone."
         )
 
     def _render_toc(

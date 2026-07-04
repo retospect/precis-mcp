@@ -142,6 +142,34 @@ def test_add_read_edit_move_delete(draft: DraftHandler, hub: Hub) -> None:
     assert intro_h not in [c.handle for c in _order(hub, "nt")]
 
 
+def test_edit_flags_newly_introduced_dangling_ref(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """An edit that introduces a `[handle]` resolving to nothing is flagged
+    with a ⚠ scoped to *this edit* — the advisory half of the inline-editor
+    validation gate (docs/design/draft-inline-editor.md). A dead ref already
+    present in the chunk is NOT re-nagged: it isn't this edit's regression."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="A clean paragraph.",
+        at={"after": "¶" + title_h},
+    )
+    para_h = _order(hub, "nt")[1].handle
+
+    # introducing a dead ref → flagged, naming the offending token
+    r = draft.edit(id=f"¶{para_h}", text="Now cites [dc999999].")
+    assert "this edit introduced unresolved reference(s)" in r.body
+    assert "[dc999999]" in r.body
+
+    # re-editing OTHER text while the dead ref stays put → not re-nagged
+    r2 = draft.edit(id=f"¶{para_h}", text="Reworded, still cites [dc999999].")
+    assert "this edit introduced unresolved reference(s)" not in r2.body
+
+
 def test_outline_prefers_summary_then_keywords_then_text(
     draft: DraftHandler, hub: Hub
 ) -> None:
