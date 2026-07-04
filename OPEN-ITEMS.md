@@ -216,6 +216,27 @@ is a bounded correctness fix, so they're filed, not chained:
   dozens of duplicate `\section{…}` refs with `workspace=∅` (never attached to
   the project). Prod data hygiene — a one-off cleanup query, not a repo bug.
 
+### Residuals parked from the paper-dedup/hygiene/resolve session (shipped ea7ac1ac)
+
+Byline search + dedup Phase 3 + `paper_reconcile` (reconcilers + hygiene heals)
++ Bucket B resolver are shipped & deployed. Follow-ups, ops-gated (not repo bugs):
+
+- **Run Bucket B on prod.** `precis resolve-metadata` (dry-run) on-cluster over
+  the 94 `needs-triage` — inspect the auto/review/discard lanes, then `--apply`.
+  Network-bound (Crossref/S2), so it can't be exercised from the dev sandbox.
+  Expected shape from analysis: ~20 DOI-track + up to ~40-ish title-track auto,
+  the rest review/discard. Book-cruft (5) + held-without-chunks (4) print for a
+  human soft-delete decision. Runs on-cluster only.
+- **`paper_reconcile` first prod pass** self-heals on its 24h cadence: retires
+  3 dup-of-held id-less stubs (3 more to review), rebuilds ~173 drifted cards,
+  collapses 1 superseded chain, migrates 2 dangling links. Watch the first pass
+  in `/var/log/precis-worker.log`; no action unless it logs failures.
+- **Standing worker for future id-less stubs** (Bucket B track 2 as a pass, not
+  just the one-shot CLI) — build after the CLI proves the resolution on prod.
+- **id-bearing stubs that title-match a held paper (49)** are deliberately NOT
+  auto-merged (an authoritative id asserts distinctness). Real merges among them
+  need cross-id (S2) equivalence proof → review lane, future work.
+
 ## 🔵 Platform-specific test bugs (Windows + macOS Python 3.12)
 
 **Status**: open
