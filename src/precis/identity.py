@@ -35,9 +35,23 @@ from typing import Any
 _SURNAME_MAX = 30
 
 # 27th paper by the same first author in the same year ⇒ overflow.
-# All 26 lowercase letters consumed; bump to ``aa`` / ``ab`` is an
-# explicit ADR change, not a silent extension.
 _LETTERS = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _cite_suffix(n: int) -> str:
+    """The ``n``-th collision suffix (1-indexed), bijective base-26.
+
+    ``a``, ``b``, … ``z`` (n=1..26), then ``aa``, ``ab``, … ``az``,
+    ``ba`` … (n=27..), then ``aaa`` … — a spreadsheet-column roll, so the
+    suffix space is unbounded and a busy surname+year never overflows.
+    Single letters keep their old values (n≤26 → same as the legacy
+    ``_LETTERS`` scan), so existing cite_keys are unchanged.
+    """
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = _LETTERS[r] + s
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -46,8 +60,11 @@ _LETTERS = "abcdefghijklmnopqrstuvwxyz"
 
 
 class CiteKeyOverflow(ValueError):
-    """Raised by :func:`make_cite_key` when the base form *and* every
-    one-letter suffix ``a`` through ``z`` are taken.
+    """Defensive guard for :func:`make_cite_key`.
+
+    The suffix space is unbounded (``a``…``z``, ``aa``…``zz``, ``aaa``…),
+    so this is unreachable for a finite ``taken`` set — kept only as a
+    belt-and-suspenders backstop.
 
     Attributes:
         base: The ``<surname><yy>`` prefix that overflowed.
@@ -56,8 +73,8 @@ class CiteKeyOverflow(ValueError):
 
     def __init__(self, base: str, taken: set[str]) -> None:
         super().__init__(
-            f"cite_key {base!r} and all 26 letter suffixes are taken; "
-            "extend the algorithm or pick a different surname/year"
+            f"cite_key {base!r}: no free suffix found within {len(taken)} tries "
+            "(should be unreachable — suffix space is unbounded a…z, aa…zz)"
         )
         self.base = base
         self.taken = taken
@@ -457,8 +474,9 @@ def make_cite_key(
             id_kind='cite_key' AND id_value LIKE :prefix || '%'``.
 
     Raises:
-        CiteKeyOverflow: when the base form *and* every ``a``-``z``
-            suffix are taken.
+        CiteKeyOverflow: defensive only — the suffix space rolls
+            ``a``…``z``, ``aa``…``zz``, ``aaa``… so a real (finite)
+            corpus never overflows.
     """
     surname = _first_author_surname(authors) or "anon"
     yy = f"{year % 100:02d}" if year is not None else "00"
@@ -466,11 +484,14 @@ def make_cite_key(
     taken_set = set(taken)
     if base not in taken_set:
         return base
-    for letter in _LETTERS:
-        candidate = base + letter
+    # Roll a, b, … z, aa, ab, … (bijective base-26). Bounded by the taken
+    # count: among the first N+1 distinct candidates at least one is free,
+    # so this always terminates without CiteKeyOverflow for a real corpus.
+    for n in range(1, len(taken_set) + 2):
+        candidate = base + _cite_suffix(n)
         if candidate not in taken_set:
             return candidate
-    raise CiteKeyOverflow(base, taken_set)
+    raise CiteKeyOverflow(base, taken_set)  # unreachable for a finite taken set
 
 
 def make_node_id(paper_id: str, page: int | None, block_index: int) -> str:

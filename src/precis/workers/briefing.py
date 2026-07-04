@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -47,12 +48,22 @@ _DEFAULT_LOOKBACK_HOURS = 26  # 24h + 2h overlap (lifted from the old job)
 _BRIEF_MAX_TOKENS = 1200
 _MAX_ARTICLES = 200
 
+#: The briefing is a once-a-day call whose US section asks the model to
+#: separate operational signal from spectacle — analytically demanding, so it
+#: runs on a strong model (the litellm ``opus`` alias), not the free
+#: ``summarizer`` the per-chunk glosses use. Override with PRECIS_BRIEFING_MODEL.
+_DEFAULT_BRIEFING_MODEL = "opus"
+
 _SYSTEM_PROMPT = (
     "You are a news editor writing a concise morning briefing. You are "
     "given a list of headlines gathered overnight from several sources. "
     "Group them into a few themed sections, lead each item with a crisp "
     "one-line summary, merge duplicates across sources, and skip filler. "
     "Be factual and neutral; do not invent details beyond the headlines. "
+    "Each headline in the input carries its source URL — preserve it: render "
+    "every kept item as a markdown link on its summary text ('[summary](url)') "
+    "so each entry is clickable back to the source. When you merge duplicates, "
+    "link to the most authoritative source. "
     "\n\n"
     "Always include a dedicated '## United States' section. US coverage now "
     "arrives as a high-volume flood of announcements, controversies, and "
@@ -168,8 +179,9 @@ def run_briefing(
         log.info("briefing: no news in the last %dh — nothing to brief", lookback_hours)
         return {"articles": 0, "brief_chars": 0, "ref_id": None}
 
+    model = os.environ.get("PRECIS_BRIEFING_MODEL") or _DEFAULT_BRIEFING_MODEL
     llm = client or LlmClient(
-        replace(LlmConfig.from_env(), max_tokens=_BRIEF_MAX_TOKENS)
+        replace(LlmConfig.from_env(), model=model, max_tokens=_BRIEF_MAX_TOKENS)
     )
     context = _format_context(refs)
     result = llm.complete(

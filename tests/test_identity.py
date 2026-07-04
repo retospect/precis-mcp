@@ -17,7 +17,6 @@ import string
 import pytest
 
 from precis.identity import (
-    CiteKeyOverflow,
     make_cite_key,
     make_content_hash,
     make_finding_paper_id,
@@ -499,13 +498,17 @@ def test_cite_key_fills_letter_z() -> None:
     assert make_cite_key(["Miller"], 2023, taken=taken) == base + "z"
 
 
-def test_cite_key_overflow() -> None:
+def test_cite_key_rolls_past_z_to_two_letters() -> None:
+    """After a..z are exhausted the suffix rolls to aa, ab, … (no overflow)."""
     base = "miller23"
     taken = {base} | {base + letter for letter in string.ascii_lowercase}
-    with pytest.raises(CiteKeyOverflow) as exc:
-        make_cite_key(["Miller"], 2023, taken=taken)
-    assert exc.value.base == base
-    assert exc.value.taken == taken
+    # 26 single letters + base all taken → roll to the first two-letter suffix
+    assert make_cite_key(["Miller"], 2023, taken=taken) == base + "aa"
+    # aa taken → ab
+    assert make_cite_key(["Miller"], 2023, taken=taken | {base + "aa"}) == base + "ab"
+    # a-prefixed two-letter suffixes (aa..az) all taken → roll to ba
+    through_az = taken | {base + "a" + c for c in string.ascii_lowercase}
+    assert make_cite_key(["Miller"], 2023, taken=through_az) == base + "ba"
 
 
 def test_cite_key_deterministic_under_same_inputs() -> None:
