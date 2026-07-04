@@ -140,6 +140,18 @@ def _compose_prompt(item: WorkItem) -> str:
         "smallest correct change, run the relevant tests, and commit.\n\n"
         "Do NOT touch main. Do NOT switch branches. When done, commit your "
         "work (do not push — the fixer handles that).\n\n"
+        "## Keep the agent-context maps fresh (same commit)\n"
+        "If your change makes any agent-context *map* stale, update it in "
+        "the SAME commit — while you still know what you changed. The maps "
+        "are: `CLAUDE.md`, `AGENTS.md`, "
+        "`src/precis/data/skills/precis-*-help.md`, `OPEN-ITEMS.md`, and the "
+        "ADR index table in `docs/decisions/README.md`. This honours the "
+        "CLAUDE.md norm: update the map in the same commit that changes what "
+        "it describes.\n"
+        "Do NOT force-update: archival prose under `docs/design/` (a "
+        "drift-note is the honest treatment), the schema SVG, or existing "
+        "ADR bodies — ADRs are append-only, so a change may *add* an ADR but "
+        "never edit a sealed one.\n\n"
         f"# SPEC: {item.title}\n\n{item.spec_text}\n"
     )
 
