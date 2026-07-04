@@ -216,6 +216,37 @@ is a bounded correctness fix, so they're filed, not chained:
   dozens of duplicate `\section{…}` refs with `workspace=∅` (never attached to
   the project). Prod data hygiene — a one-off cleanup query, not a repo bug.
 
+## 🔵 Tool-friction reflection + dream diversification (spec, 2026-07-04)
+
+Spec: [`docs/design/tool-friction-reflection-and-dreams.md`](docs/design/tool-friction-reflection-and-dreams.md).
+Idle-time self-improvement; **not built**.
+
+- **Part A — end-of-run tool-friction reflection.** Every *eligible*
+  agentic run (has MCP `put`, no rigid output schema — excludes the
+  `claude_p.py` judges) gets a terminal, binary-first "did any tool get
+  in your way?" reflection appended at the `utils/claude_agent.py`
+  chokepoint; a genuine fumble files one `friction`-tagged gripe that
+  `link`s to the run's `agentlog` ref (model + transcript, 30-day). Ask
+  every time, not a 10% sample — "none" is the honored default, so a
+  clean run costs one word and the model self-samples on real friction.
+  Root-cause is a fixing-side job (often just a better skill); dedup is
+  a downstream LLM grouping pass; the auto-working branch's human spec
+  gate means no holding-pen status is needed.
+- **Part B — dream diversification.** Generalize `dream-prompt.md`
+  beyond the single connection-finding mode: a **mode seed** (connection
+  / library-gap / open-question / consolidation / analogy-transfer) and
+  a **lens seed** (named figure/process lenses — see
+  `src/precis/data/dream_lenses.yaml`), both injected via the variable
+  layer by `workers/dream_agent.py`. Remove the dream's own Step 6c
+  gripe hook once Part A lands (one friction mechanism, not two).
+- **Deferred — active dreams (DFT / CAD / compute lanes).** *We want
+  this, not yet.* An `active-build` dream mode that kicks a derived-lane
+  job (DFT relax on the GPU node, `cad_propose`, structure relax) on a
+  subject its wandering surfaced, then connects the *result* back into a
+  memory — turning idle time into speculative build progress. Gate
+  behind the load ceiling + a budget cap; derived jobs are
+  content-addressed (ADR 0044), so a re-request is a cheap cache hit.
+
 ### Residuals parked from the paper-dedup/hygiene/resolve session (shipped ea7ac1ac)
 
 Byline search + dedup Phase 3 + `paper_reconcile` (reconcilers + hygiene heals)
