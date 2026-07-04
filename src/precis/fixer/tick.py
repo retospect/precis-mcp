@@ -239,6 +239,38 @@ def _look_at_prod(cfg: FixerConfig) -> tuple[bool, str]:
         return False, f"/readyz unreachable: {exc}"
 
 
+# ── persistent per-tick log ────────────────────────────────────────
+
+
+def format_log_line(
+    timestamp: str, status: str, slug: str, branch: str, detail: str
+) -> str:
+    """Format one persistent per-tick record (pure — timestamp passed in).
+
+    A single greppable line, fields ``·``-separated, with ``detail``
+    collapsed to its first line so a multi-line report never spans rows.
+    The timestamp is an argument (not read from the clock) so the helper
+    is deterministic and unit-testable.
+    """
+    lines = detail.splitlines()
+    first = lines[0] if lines else ""
+    fields = (timestamp, status, slug, branch, first)
+    return " · ".join(f.replace("\n", " ") for f in fields)
+
+
+def _append_tick_log(work_dir: Path, item: WorkItem, report: Report) -> None:
+    """Append one ``format_log_line`` record to ``<work_dir>/fixer.log``."""
+    from datetime import UTC, datetime
+
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = format_log_line(
+        timestamp, report.status.value, item.slug, item.branch, report.detail
+    )
+    work_dir.mkdir(parents=True, exist_ok=True)
+    with open(work_dir / "fixer.log", "a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+
+
 # ── orchestration ──────────────────────────────────────────────────
 
 
@@ -401,6 +433,8 @@ def main(argv: list[str] | None = None) -> int:
     for note in result.notes:
         log.info("%s", note)
     if result.report is not None:
+        if result.picked is not None:
+            _append_tick_log(cfg.work_dir, result.picked, result.report)
         emit_report(result.report, cfg.discord_webhook)
     return 0
 
