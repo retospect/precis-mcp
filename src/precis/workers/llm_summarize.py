@@ -814,18 +814,31 @@ def _sanitize_model_text(text: str) -> str:
     return text
 
 
+class EmptySummaryError(ValueError):
+    """The model returned no parseable summary text.
+
+    A *model miss*, not a code bug: the free local ``summarizer`` returns a
+    blank/unparseable completion for a sizable fraction of chunks. Raised as a
+    distinct type so the pass can record the miss (for the retry cap) without
+    logging a per-chunk ERROR traceback — that floods the log surface (7k/day
+    on melchior) and reads as "on fire" on /status when the pass is in fact
+    working (successes land alongside the misses).
+    """
+
+
 def parse_summary(text: str) -> str:
     """Normalize the model output to ``"<brief>\\n\\n<detail>"``.
 
     Tolerant of casing and of the model omitting one label. If neither
     label is present we keep the whole thing as the brief (better than
-    dropping a faithful-but-unlabelled summary). Raises on empty output
-    so the pass marks it failed rather than storing a blank. Output is
-    sanitized (``_sanitize_model_text``) so it is always safely writable.
+    dropping a faithful-but-unlabelled summary). Raises ``EmptySummaryError``
+    on empty output so the pass marks it failed rather than storing a blank.
+    Output is sanitized (``_sanitize_model_text``) so it is always safely
+    writable.
     """
     raw = _sanitize_model_text(text or "").strip()
     if not raw:
-        raise ValueError("empty summary")
+        raise EmptySummaryError("empty summary")
     brief = ""
     detail = ""
     for line in raw.splitlines():
@@ -1057,6 +1070,11 @@ def run_llm_summarize_pass(
             result = client.complete(messages)
             summary = parse_summary(result.text)
             return _Outcome(claim, prompt_hash, summary, result.total_tokens, None)
+        except EmptySummaryError as exc:
+            # A model miss, not a bug — no per-chunk ERROR traceback (it floods
+            # the log surface). Still recorded below so the retry cap engages;
+            # the caller emits one aggregated WARNING per batch.
+            return _Outcome(claim, prompt_hash, None, None, exc)
         except Exception as exc:  # recorded per chunk, written below
             log.exception("llm_summarize: chunk_id=%s failed", claim.chunk_id)
             return _Outcome(claim, prompt_hash, None, None, exc)
@@ -1117,10 +1135,13 @@ def run_llm_summarize_pass(
         )
         ok += 1 if wrote else 0
         failed += 0 if wrote else 1
+    empty = 0
     for o in outcomes:
         if o.error is not None or o.summary is None:
             _record_failure(o.claim.chunk_id, str(o.error))
             failed += 1
+            if isinstance(o.error, EmptySummaryError):
+                empty += 1
         elif _record_summary(
             o.claim.chunk_id,
             text=o.summary,
@@ -1130,6 +1151,18 @@ def run_llm_summarize_pass(
             ok += 1
         else:
             failed += 1
+    if empty:
+        # One aggregated line per batch instead of a per-chunk ERROR traceback
+        # (the free local model misses on a sizable fraction; ~7k/day of ERROR
+        # tracebacks on melchior otherwise, which reads as an outage on /status
+        # even though summaries are landing). Recorded per chunk above for the
+        # retry cap; surfaced here only as a rate.
+        log.warning(
+            "llm_summarize: %d/%d chunks returned an empty summary "
+            "(model miss; recorded for retry)",
+            empty,
+            len(outcomes),
+        )
     return {"claimed": claimed, "ok": ok, "failed": failed}
 
 
@@ -1139,6 +1172,7 @@ def _truthy(value: str | None) -> bool:
 
 __all__ = [
     "SUMMARIZER_NAME",
+    "EmptySummaryError",
     "LlmClient",
     "LlmConfig",
     "LlmResult",

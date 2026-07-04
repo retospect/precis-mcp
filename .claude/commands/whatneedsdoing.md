@@ -1,5 +1,5 @@
 ---
-description: One honest "what needs doing" across the two work substrates — repo dev work (OPEN-ITEMS backlog + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus the latent LLM-confusion signal mined from prod agent transcripts.
+description: One honest "what needs doing" across the two work substrates — repo dev work (OPEN-ITEMS backlog + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a prod system-health read (per-host worker-log err/warn) and the latent LLM-confusion signal mined from prod agent transcripts.
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
 allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), mcp__precis__get, mcp__precis__search
 ---
@@ -73,7 +73,47 @@ Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summar
    (asking-user + failed children) and `search(kind='todo', view='doable')`
    (what the loop picks up next). NB: these are `search(...)` calls, not
    `get(...)`. This is the only substrate that acts on itself.
-5. **Latent repo dev — LLM-confusion mining (the bug hunt).** The server-side
+5. **Prod system health — worker-log err/warn (is the fleet solid?).** The
+   `/status` page footer shows a per-host `N err/warn 24h` count
+   (`spark · … · 106`, `melchior · … · 7134`, …); this is the same signal, read
+   from the `worker_logs` table. It is a **system-health** read, not a work
+   queue — but a broken pass here is often the *root cause* of stalled todos in
+   step 4 (the bridge), so mine it. Prod-hop and pull the per-host histogram:
+   ```sql
+   -- per-host err/warn in 24h (matches the /status footer)
+   SELECT host, level, count(*) FROM worker_logs
+   WHERE ts > now() - interval '24 hours' AND level IN ('WARNING','ERROR')
+   GROUP BY host, level ORDER BY host, level;
+   ```
+   **Read it by ratio, not absolute count.** A host an order of magnitude above
+   its peers is the signal (e.g. melchior 7000+ ERROR vs ~4 on the others).
+   Drill the outlier down to the offending pass + message shape:
+   ```sql
+   SELECT pass, level, count(*) FROM worker_logs
+   WHERE ts > now() - interval '24 hours' AND level='ERROR' AND host='<outlier>'
+   GROUP BY pass, level ORDER BY count(*) DESC LIMIT 15;
+   -- then one full traceback tail:
+   SELECT message FROM worker_logs
+   WHERE host='<outlier>' AND pass='<pass>' AND level='ERROR'
+     AND ts > now() - interval '24 hours' ORDER BY ts DESC LIMIT 1;
+   ```
+   Then classify — this is the load-bearing judgement:
+   - **Broken pass** — near-100% failure, *no* successes. Check the pass's
+     success-write table over the same window (does it write *anything*?). This
+     is a P0 repo bug or a downed backend; file a gripe or fix.
+   - **Noisy-but-working** — failures *alongside* successes (e.g. `llm_summarize`
+     wrote 5.7k `chunk_summaries` rows while logging 7k `empty summary` ERRORs —
+     a ~50% parse-failure rate that floods the error surface and wastes ~half the
+     compute, but is *not* down). Still a real bug (a false "on fire" reading +
+     wasted work) — file a gripe to downgrade the log level / harden the parse,
+     but don't page it as an outage.
+   - **Baseline noise** — WARNING-heavy hosts (`news_poll` feed timeouts,
+     `runner`/`chunk_keywords`/`tag_embeddings` soft-warnings). Report as green.
+
+   Say plainly whether the fleet is **solid** (only baseline noise) or has a
+   **hot pass** (broken / noisy), and fold any hot-pass root cause into
+   substrate 1 as a gripe.
+6. **Latent repo dev — LLM-confusion mining (the bug hunt).** The server-side
    agent runs (`plan_tick`, dream, cad/structure propose) store their full
    `claude -p` tool-call transcript in `refs.meta.transcript` on the
    `kind='job'` ref. Every `[error:...]` in a transcript is the LLM getting a
@@ -101,15 +141,17 @@ Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summar
    days (dozens of transcripts, same error) is both expensive and a loud bug
    signal — treat it as P0. File each distinct root cause as a `gripe`
    (`put(kind='gripe', ...)`) so it enters substrate 1, or fix it directly.
-6. **Group by substrate, then rank.** Keep the two substrates visually
+7. **Group by substrate, then rank.** Keep the two substrates visually
    separate; within each, highest-impact first with a one-line next action.
-   Latent bugs from step 5 fold into substrate 1 as new/unfiled repo dev work.
+   Latent bugs from steps 5–6 (a hot pass, or a mined confusion root cause)
+   fold into substrate 1 as new/unfiled repo dev work.
    Dedup the bridge (a gripe whose real cause is a failing todo, or vice
    versa). If `$ARGUMENTS` is set, scope to it.
-7. **Call out the gap honestly.** Per substrate: which repo items are
+8. **Call out the gap honestly.** Per substrate: which repo items are
    **actionable here** (fix → `/go`) vs blocked; which todos are **autonomous**
    (the loop will run) vs **stalled** (bubbled/halted, needing a prod unblock
-   or a repo bugfix). End with the single highest-leverage next action — and
+   or a repo bugfix); and whether the fleet is **solid** or has a hot pass
+   (step 5). End with the single highest-leverage next action — and
    say which substrate it lives in, so the reader knows whether it's a `/go` or
    a prod op.
 

@@ -9,6 +9,7 @@ wire, env config, and the end-to-end pass.
 from __future__ import annotations
 
 import contextlib
+import logging
 import threading
 from typing import Any
 
@@ -20,6 +21,7 @@ from precis.workers.llm_summarize import (
     MAX_SUMMARIZE_ATTEMPTS,
     SUMMARY_LEASE_COOLDOWN_MIN,
     SUMMARY_LEASE_GC_MIN,
+    EmptySummaryError,
     LlmClient,
     LlmConfig,
     _Claimed,
@@ -240,7 +242,9 @@ def test_parse_summary_detail_only_promotes_first_sentence() -> None:
 
 
 def test_parse_summary_empty_raises() -> None:
-    with pytest.raises(ValueError):
+    # EmptySummaryError (a ValueError subclass) so the pass can record the miss
+    # without a per-chunk ERROR traceback — see the batch aggregation.
+    with pytest.raises(EmptySummaryError):
         parse_summary("   ")
 
 
@@ -346,6 +350,36 @@ def test_run_pass_marks_failed_on_transport_error() -> None:
     assert result == {"claimed": 1, "ok": 0, "failed": 1}
     assert conn.leases == {1: 1}  # attempts bumped, lease kept for retry
     assert conn.writes == []  # sub-cap: nothing written to chunk_summaries
+
+
+def test_run_pass_empty_summary_aggregates_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A model miss (blank completion) is recorded failed but logged ONCE per
+    batch at WARNING — never a per-chunk ERROR traceback. The free local model
+    misses on a sizable fraction of chunks; per-chunk ERRORs flooded ~7k/day on
+    melchior and read as an outage on /status even though summaries were
+    landing. Guards that regression."""
+    conn = _FakeConn(
+        claim_rows=[_claim_row(chunk_id=1), _claim_row(chunk_id=2)],
+        card_text="Title: A study of MOF-5",
+    )
+    store = _FakeStore(conn)
+    client = LlmClient(LlmConfig(), transport=_FakeTransport(""))  # empty output
+
+    with caplog.at_level(logging.WARNING):
+        result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    assert result == {"claimed": 2, "ok": 0, "failed": 2}
+    warns = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "empty summary" in r.getMessage()
+    ]
+    assert len(warns) == 1  # one aggregated line, not two per-chunk
+    assert "2/2" in warns[0].getMessage()
+    # no ERROR-level noise for a plain model miss
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
 
 
 def test_mark_failed_lease_gone_writes_nothing() -> None:
