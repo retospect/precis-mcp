@@ -216,29 +216,49 @@ is a bounded correctness fix, so they're filed, not chained:
   dozens of duplicate `\section{…}` refs with `workspace=∅` (never attached to
   the project). Prod data hygiene — a one-off cleanup query, not a repo bug.
 
-## 🔵 Tool-friction reflection + dream diversification (spec, 2026-07-04)
+## 🔵 Tool-friction reflection + dream diversification (2026-07-04)
 
 Spec: [`docs/design/tool-friction-reflection-and-dreams.md`](docs/design/tool-friction-reflection-and-dreams.md).
-Idle-time self-improvement; **not built**.
+Idle-time self-improvement. Part A + the Part B lens seed are **built**
+(`utils/friction_reflect.py`, `utils/dream_seed.py`); the rest is filed.
 
-- **Part A — end-of-run tool-friction reflection.** Every *eligible*
-  agentic run (has MCP `put`, no rigid output schema — excludes the
-  `claude_p.py` judges) gets a terminal, binary-first "did any tool get
-  in your way?" reflection appended at the `utils/claude_agent.py`
-  chokepoint; a genuine fumble files one `friction`-tagged gripe that
-  `link`s to the run's `agentlog` ref (model + transcript, 30-day). Ask
-  every time, not a 10% sample — "none" is the honored default, so a
-  clean run costs one word and the model self-samples on real friction.
-  Root-cause is a fixing-side job (often just a better skill); dedup is
-  a downstream LLM grouping pass; the auto-working branch's human spec
-  gate means no holding-pen status is needed.
-- **Part B — dream diversification.** Generalize `dream-prompt.md`
-  beyond the single connection-finding mode: a **mode seed** (connection
-  / library-gap / open-question / consolidation / analogy-transfer) and
-  a **lens seed** (named figure/process lenses — see
-  `src/precis/data/dream_lenses.yaml`), both injected via the variable
-  layer by `workers/dream_agent.py`. Remove the dream's own Step 6c
-  gripe hook once Part A lands (one friction mechanism, not two).
+- **Part A — end-of-run tool-friction reflection → BUILT, default-OFF.**
+  `utils/friction_reflect.py` appends a terminal binary-first "did any
+  tool get in your way?" footer to `--append-system-prompt` at the
+  `utils/claude_agent.py` chokepoint, gated on `PRECIS_FRICTION_REFLECT`
+  + MCP present + `--max-turns >= 8`. "friction: none" is the honored
+  default; a genuine fumble files one `friction`-tagged gripe. Ships
+  **off** because once on it rides *every* production agentic run
+  (planner/reviewers/dream) — enable deliberately, like the classifier.
+  Residuals below.
+- **Part B lens seed → BUILT.** `utils/dream_seed.py` loads
+  `data/dream_lenses.yaml` and rotates one lens per cycle (bucket by
+  ~15-min cadence) into the dream prompt's variable layer
+  (`workers/dream_agent.py`); the dream's own Step 6c gripe hook is
+  removed (Part A covers friction now). 8 figure personas + Disney
+  process lens.
+
+### Residuals (filed 2026-07-04)
+
+- **Enable Part A in prod.** Flip `PRECIS_FRICTION_REFLECT=1` on the
+  agent-profile worker (melchior) once the downstream grouping/dedup
+  lane exists to absorb `friction` gripes — otherwise raw wishes pile
+  up untriaged. Gauge junk-rate; dial `--max-turns` floor if the
+  planner's budget suffers.
+- **Gripe → agentlog link (Part A).** The spec wants each `friction`
+  gripe linked to the run's 30-day `agentlog` (model + transcript). The
+  filing agent doesn't know its own agentlog id at `put` time, so this
+  needs post-hoc stitching (join `friction` gripes to agentlogs by
+  time+source) — or an agentlog id threaded into the run context.
+  Currently the gripe self-tags `friction-model:<model>` as a stopgap.
+  Confirm too that every *eligible* run emits an agentlog to link to
+  (the web follow-up path may not).
+- **Dream mode rotation (Part B).** Rotate the cycle's *deliverable*
+  (connection / library-gap / open-question / consolidation /
+  analogy-transfer), not just the lens. Deferred: it needs
+  deliverable-logic surgery on `dream-prompt.md` (the connection shape
+  is currently hardcoded into Step 6). Lens rotation shipped first as
+  the low-risk half.
 - **Deferred — active dreams (DFT / CAD / compute lanes).** *We want
   this, not yet.* An `active-build` dream mode that kicks a derived-lane
   job (DFT relax on the GPU node, `cad_propose`, structure relax) on a

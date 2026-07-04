@@ -58,6 +58,7 @@ from precis.utils._claude_subprocess import (
     run_claude,
     to_str,
 )
+from precis.utils.friction_reflect import append_friction_footer
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -190,6 +191,16 @@ def call_claude_agent(
         system_prompt_text: str | None = system_prompt.read_text()
     else:
         system_prompt_text = system_prompt
+
+    # End-of-run tool-friction reflection (default-OFF, PRECIS_FRICTION_REFLECT).
+    # Rides ``--append-system-prompt`` on eligible runs — MCP present (so the
+    # agent can ``put`` a gripe) with turn headroom. One-shot JSON judges use
+    # claude_p, not this path, so they are structurally excluded.
+    system_prompt_text = append_friction_footer(
+        system_prompt_text,
+        has_mcp=mcp_config is not None,
+        max_turns=max_turns,
+    )
 
     args: list[str] = [
         binary,

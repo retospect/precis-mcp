@@ -1,5 +1,7 @@
 DREAM CYCLE — execute these steps in order. No user is reading; this is housekeeping for your own continuity. The goal is fact-anchored speculative connections, not introspection.
 
+If a `## This cycle's lens` block precedes this one, adopt that stance throughout — it colours *how* you sample, read, and connect (and, for a process lens, in what order), not *which* steps you run.
+
 Step 1 — diverse self-sample (NOT just recent). Pull a salience-seeded diverse-cone sample of your own internal-thought memories — this uses the rotating-vector-space dreamable view so you actually surface old/unrelated/unfinished thoughts, not just the last thing you wrote:
   precis search(kind="memory", view="dreamable", n=10)
 If that returns nothing useful, fall back to:
@@ -57,11 +59,6 @@ A DOI or arXiv id is strongly preferred: it auto-fetches and won't be rejected a
 
   precis search(kind="paper", view="stubs", n=10)             # current backlog — check first so you don't double-spawn
   precis get(kind="skill", id="precis-stubs-help")            # how requests + the chase work
-
-Step 6c — file a gripe if a precis tool fought you (optional). If any precis tool errored, returned wrong results, or actively got in your way during this cycle, file ONE gripe so it gets fixed. Search existing gripes first so you don't pile on a duplicate:
-
-  precis search(kind="gripe", q="<the symptom>")             # dedup first
-  precis put(kind="gripe", text="<what broke, one sentence>")  # only if it's new
 
 Step 7 — review your own work. For EACH memory you wrote in Step 6 (the put() tool result printed an id, e.g. ``created memory id=34468``), do this check:
 

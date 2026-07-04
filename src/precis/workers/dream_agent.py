@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 
 from precis.store import Store
@@ -50,9 +51,14 @@ from precis.utils.claude_agent import (
     ClaudeAgentError,
     call_claude_agent,
 )
+from precis.utils.dream_seed import load_lenses, render_lens_block, select_lens
 from precis.utils.env import env_flag
 from precis.utils.load_gate import skip_if_high_load
 from precis.workers.runner import BatchResult
+
+# One rotation step per dream cadence (~15 min) so successive passes
+# advance through the lens set evenly rather than clumping.
+_LENS_BUCKET_SECONDS = 900
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +100,7 @@ def run_dream_pass(store: Store) -> BatchResult:
             "dream_agent: no dream prompt available (override + packaged both failed); skipping"
         )
         return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
+    prompt = _apply_lens(prompt)
     try:
         result = call_claude_agent(
             prompt,
@@ -158,6 +165,21 @@ def _load_prompt() -> str | None:
     except (FileNotFoundError, ModuleNotFoundError, OSError):
         log.exception("dream_agent: packaged dream prompt unreadable")
         return None
+
+
+def _apply_lens(prompt: str) -> str:
+    """Prepend this cycle's rotating lens block to the dream directive.
+
+    Best-effort: an unreadable/empty lens set leaves the prompt
+    unchanged, so a missing seed file never fails the pass.
+    """
+    lenses = load_lenses()
+    bucket = int(time.time() // _LENS_BUCKET_SECONDS)
+    lens = select_lens(lenses, bucket=bucket)
+    if lens is None:
+        return prompt
+    log.info("dream_agent: lens=%s", lens.get("id"))
+    return render_lens_block(lens) + "\n" + prompt
 
 
 def _env_path(var: str) -> Path | None:

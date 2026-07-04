@@ -1,7 +1,11 @@
 # Tool-friction reflection + dream diversification
 
-Status: **spec / not built** (2026-07-04). Two related idle-time
-self-improvement moves, discussed together because they share a host
+Status (2026-07-04): **Part A built (default-OFF)** in
+`utils/friction_reflect.py`; **Part B lens seed built** in
+`utils/dream_seed.py` + `workers/dream_agent.py`. Mode rotation,
+gripe→agentlog linking, prod-enable, and active-build dreams are filed
+residuals (see `OPEN-ITEMS.md`). Two related idle-time self-improvement
+moves, discussed together because they share a host
 (`utils/claude_agent.py`) and a substrate (`kind='gripe'` +
 `kind='memory'`).
 
