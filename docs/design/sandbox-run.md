@@ -66,7 +66,21 @@ capped token and scribble in `/work` but cannot reach the database.
 ### Reaping: detached + poll, by container name
 
 Claimer and runner are the same box (the pass runs on the sandbox host), so
-it's **local podman, no ssh**. Launch `podman run -d --name sandbox-<job_id>`;
+it's **local podman, no ssh**.
+
+**Process topology — a pass, not a new daemon.** `job_claude_docker` runs
+**inside the existing per-node `precis worker`**, gated ON only where
+`PRECIS_SANDBOX_ENABLED=1` (balthazar/spark) — no new launchd/systemd unit (the
+cluster already carries ~12 per host). This is viable *because* the executor is
+detached-poll: each tick is a cheap `inspect` + heartbeat, the heavy work is
+out-of-process in the container, so it's a good round-robin citizen. The worker
+runs as **`deploy`** (the trusted executor — holds DB-write creds + the token);
+it launches the container **as the locked-down `agent_sandbox`** (via a `sudo
+-u` / user-socket rule), so **executor-user ≠ container-user** — an escape lands
+on `agent_sandbox` (rootless subuid), never on the creds-bearing `deploy`
+process. Being "just a gated pass" also means it drops unchanged into a future
+one-supervisor-per-machine consolidation. Launch `podman run -d --name
+sandbox-<job_id>`;
 store `meta.container`, `meta.run_host`, `meta.deadline`. Each poll tick
 `inspect`s status+exit and **renews the lease** (heartbeat) so a legit
 multi-hour run never trips the stuck-job sweeper. `exited` → harvest → `rm` →
@@ -124,9 +138,16 @@ not blocking. The one genuinely backend-specific axis is **staging** (NFS local
    round-trip, the failure taxonomy in `job_summary`.
 3. **`mode:run` + recurring** (fast-follow proposal) — stored-tarball staging,
    `uv sync`, `RUN.json.cmd`, recurring umbrella.
-4. **Cluster ops** (human, `~/work/cluster`) — `code_task_image` build-in-place
-   play + the runbook (token, read-only DB role, `PRECIS_SANDBOX_ENABLED`,
-   network mode). Prerequisite for a *live* run; see `roles/code_task_image/README.md`.
+4. **Cluster ops** (human, `~/work/cluster`) — prerequisites for a *live* run;
+   see `roles/code_task_image/README.md`. Note **podman is not currently
+   installed on balthazar/spark** (the `services:[…podman]` + `agent_sandbox`
+   layer is unrealized — `podman_installed` is set nowhere, so the `mcps`
+   image tasks are dormant too), so **install-podman is prerequisite zero**.
+   Then: `code_task_image` build-in-place play; **enable the pass in
+   `precis_worker`** on the sandbox hosts (`PRECIS_SANDBOX_ENABLED=1` + token +
+   `PRECIS_SANDBOX_*` env) — **no new daemon**; the `deploy`→`agent_sandbox`
+   podman rule; the read-only DB role (for `precis_access:read`); the artifact
+   root dir; the network mode.
 
 ## Decisions log (2026-07-04)
 
@@ -156,6 +177,15 @@ not blocking. The one genuinely backend-specific axis is **staging** (NFS local
   bit at the todo, taxonomy is forensic.
 - **Reaping:** detached + poll, reaped by container name (survives restart);
   heartbeated lease defeats the sweeper false-reap; boot reconcile kills orphans.
+- **Process topology:** a **gated pass in the existing per-node worker**, NOT a
+  new daemon (avoids adding to ~12 units/host; fits a future one-supervisor
+  consolidation). Executor-user `deploy` (trusted, holds creds+token) ≠
+  container-user `agent_sandbox` (locked-down, rootless) — launched via a `sudo
+  -u`/socket rule. Enabled per-host by `PRECIS_SANDBOX_ENABLED`.
+- **Cluster reality (2026-07-04):** podman is installed on *neither* sandbox
+  host; the whole `agent_sandbox` layer is unrealized. Installing podman +
+  configuring rootless-for-`agent_sandbox` is prerequisite zero — independent
+  of, and blocking, everything else in the ops half.
 - **Verification:** MVP trusts self-authored green `tests/` (a named deferral;
   an independent verify pass is future work).
 - **Addressing:** folder ref → content hash → relative key under a per-host root.

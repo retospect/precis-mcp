@@ -573,3 +573,58 @@ EXPOSE 8181
 ENV PRECIS_EMBEDDER_HOST=0.0.0.0
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["precis", "serve-embeddings"]
+
+# =============================================================================
+# Stage: code-task — the sandbox_run coding-agent image (ADR 0048 / sandbox_run).
+# "Rent the toolchain, own nothing": uv + Node/Claude Code + git + tests +
+# psql client on a lean python base. Deliberately does NOT install precis (the
+# agent writes arbitrary scripts; harvesting runs OUTSIDE the container, in the
+# executor). Self-contained — FROMs the python base directly and COPYs nothing
+# from the repo, so it builds with a trivial context and can be built in place
+# on a sandbox host by ~/work/cluster roles/code_task_image with just this
+# Dockerfile. NO [paper] ML extras (marker/torch), NO baked models.
+# Auth is a long-lived CLAUDE_CODE_OAUTH_TOKEN passed as --env at run time
+# (NOT --bare / ANTHROPIC_API_KEY) — nothing baked here. The harvest run-wrapper
+# (code-task-run.sh) ships with the harvest slice; slice 1 has the executor pass
+# the command. Design: docs/design/sandbox-run.md.
+# =============================================================================
+FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS code-task
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_LINK_MODE=copy
+
+# Toolchain: git + build tools (arbitrary uv/pip builds) + psql client + tini.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        curl \
+        ca-certificates \
+        build-essential \
+        libpq-dev \
+        postgresql-client \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node + Claude Code CLI — pins match dev-system so the agent binary is
+# identical across images.
+ARG NODE_MAJOR=20
+ARG CLAUDE_CODE_VERSION=2.1.143
+RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && npm cache clean --force \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv (project + tool runner) + the test/lint trio the harvest contract runs
+# (pinned to uv.lock's versions so in-container checks match the host).
+ARG UV_VERSION
+RUN pip install --no-cache-dir \
+        "uv==${UV_VERSION}" \
+        ruff==0.15.16 \
+        mypy==2.1.0 \
+        pytest==9.0.3
+
+WORKDIR /work
+ENTRYPOINT ["tini", "--"]
+CMD ["bash"]
