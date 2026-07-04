@@ -269,15 +269,19 @@
       <button @click="raw = !raw"
               class="text-[10px] text-slate-300 opacity-0 group-hover:opacity-100 hover:text-slate-600"
               x-text="raw ? 'hide raw' : 'raw'"></button>
+      {# Edit affordances are ALWAYS visible (faint), not hover-gated: the
+         `group-hover` reveal doesn't fire on Safari, so hiding the only way to
+         edit behind it made the feature unreachable there. Faint by default,
+         colour on hover. #}
       {% if r.editable %}
       <button @click="startEdit()" x-show="!editing"
-              class="text-[10px] text-slate-400 opacity-0 group-hover:opacity-100 hover:text-sky-600"
+              class="text-[10px] text-slate-400 hover:text-sky-600"
               title="edit this block's text — saves on click-out (Esc cancels)">✎ edit</button>
       <button @click="add()" x-show="!editing"
-              class="text-[10px] text-slate-400 opacity-0 group-hover:opacity-100 hover:text-emerald-600"
+              class="text-[10px] text-slate-400 hover:text-emerald-600"
               title="add an empty paragraph below this block">＋ ¶</button>
       <button @click="del()" x-show="!editing"
-              class="text-[10px] text-slate-400 opacity-0 group-hover:opacity-100 hover:text-rose-600"
+              class="text-[10px] text-slate-400 hover:text-rose-600"
               title="delete this block">🗑</button>
       {% endif %}
     </div>
