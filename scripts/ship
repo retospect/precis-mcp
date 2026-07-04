@@ -57,6 +57,24 @@ die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 [[ -n "$BRANCH" ]] || die "detached HEAD — check out a feature branch first."
 [[ "$BRANCH" != "main" ]] || die "on main — nothing to ship."
 
+# ── 1b. prebuild Tailwind CSS ────────────────────────────────────────────
+# Regenerate the production static stylesheet from the content scan so it
+# tracks whatever classes this branch added (the app serves this file, not the
+# Play CDN). Best-effort: a network/npx hiccup WARNs rather than blocking a code
+# ship — the committed CSS is used as-is until the next successful rebuild.
+if command -v npx >/dev/null 2>&1; then
+    say "rebuilding Tailwind CSS (static production build)"
+    if npx --yes tailwindcss@3 -c tailwind.config.js \
+         -i src/precis_web/static/tailwind.src.css \
+         -o src/precis_web/static/tailwind.css --minify >/dev/null 2>&1; then
+        echo "→ src/precis_web/static/tailwind.css"
+    else
+        echo "WARNING: tailwind rebuild failed — shipping the committed CSS unchanged"
+    fi
+else
+    echo "WARNING: npx not found — skipping tailwind rebuild (committed CSS unchanged)"
+fi
+
 # ── 2. commit WIP ───────────────────────────────────────────────────────
 if [[ -n "$(git status --porcelain)" ]]; then
     say "committing WIP"

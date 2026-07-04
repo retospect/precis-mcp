@@ -4,7 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}precis{% endblock %} · precis web</title>
-  <script src="/static/tailwind.js"></script>
+  {# Prebuilt static Tailwind (scripts/ship regenerates it from the content
+     scan). Replaces the in-browser Play CDN, which warns in production and is
+     slower on first paint. See tailwind.config.js. #}
+  <link rel="stylesheet" href="/static/tailwind.css" />
   <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
   <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
   <style>[x-cloak] { display: none !important; }</style>
