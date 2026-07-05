@@ -392,6 +392,23 @@ the README lists only a sample). Cross-refs: `precis-tasks-help`,
 - **`uv` for everything.** Bare `pip` / `pytest` / `mypy` are
   not reproducible. Use `scripts/dev pytest …` inside the
   container, or `uv run …` on the host.
+- **Run the FULL suite in the dev container, not the host.** The
+  host venv is deliberately torch-free (no `[paper]` / `[embed]` /
+  most extras), so a host `uv run pytest` reports dozens of spurious
+  `ModuleNotFoundError` failures/errors (`sympy`, `marker`, `lxml`,
+  `sentence_transformers`, …) that are **not real bugs**. The
+  `precis-mcp:dev` image bakes **all extras** into `/opt/venv` and
+  wires `PRECIS_TEST_PG_URL`, so the canonical green run is::
+
+      scripts/dev pytest            # full suite, all extras, DB wired
+
+  Under the hood that is `docker compose … run --rm precis-dev`,
+  which bind-mounts THIS repo at `/app` (live edits, no rebuild). A
+  long-lived `precis-mcp-dev-*` container works too:
+  `docker exec -e PRECIS_TEST_PG_URL=<dsn> <ctr> bash -lc 'cd /app &&
+  /opt/venv/bin/python -m pytest …'` (note `/app` is a **read-only**
+  mount there — point `COVERAGE_FILE` / `-o cache_dir` at `/tmp`).
+  Reserve host `uv run pytest` for targeted, extra-free subsets.
 - **Container-first ops.** `scripts/dev` → dev shell;
   `scripts/db` → psql (LOCAL `precis` / `precis_test` only — the
   dev pgvector container is published at `127.0.0.1:5432`,
@@ -404,11 +421,15 @@ the README lists only a sample). Cross-refs: `precis-tasks-help`,
   -U agent_rw -d precis_prod -c "…"'` (caspar works too). `agent_rw`
   has SELECT; the local `scripts/db` creds do **not** reach prod. The
   `-o IdentityAgent=none` works around the flaky ssh-agent forwarding.
-- **Host pytest needs the DB URL + `paper` deps.** `scripts/dev`
-  mounts the MAIN repo, so to test *worktree* edits run host pytest
-  with `PRECIS_TEST_PG_URL=postgresql://postgres:<pw>@localhost:5432/precis_test`
-  (pw from the `postgres-postgres-1` container env). Worker tests that
-  import `precis.ingest.citations` need the S2 client —
+- **Host pytest is subset-only (prefer the container).** See the
+  full-suite rule above — the host is torch-free, so only run
+  targeted, extra-free subsets there. `scripts/dev` mounts the MAIN
+  repo, so to test *worktree* edits on the host set
+  `PRECIS_TEST_PG_URL=postgresql://postgres:<pw>@localhost:5432/precis_test`
+  (pw from the `postgres-postgres-1` container env; the secret DSN in
+  `~/.secrets/pw/PRECIS_TEST_PG_URL` uses `host.docker.internal` —
+  rewrite it to `127.0.0.1` on the host). Worker tests that import
+  `precis.ingest.citations` need the S2 client —
   `uv run --with semanticscholar pytest …` avoids pulling the whole
   heavy `[paper]` extra (marker/torch).
 - **Skills are runtime docs.** Updating a skill file under

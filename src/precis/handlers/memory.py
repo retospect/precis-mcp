@@ -34,9 +34,6 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
 from precis.store.types import BlockInsert, Ref
-from precis.utils.next_block import render_next_section
-from precis.utils.search_header import format_search_headline
-from precis.utils.search_merge import SearchHit
 
 #: Max memories that one ``supersede`` call may fold into a survivor.
 #: A guardrail, not a quota — the agent can do several small merges.
@@ -99,6 +96,13 @@ class MemoryHandler(NumericRefHandler):
     # Reinforce first-line discipline at write time (filler-title nudge +
     # skill pointer in the create ack). See precis-firstline-help.
     firstline_discipline: ClassVar[bool] = True
+
+    # Prose lives in the `memory_body` chunk, so search the chunks grouped
+    # by ref (base title-only search would miss the body). Heat salience on
+    # the hits — memories are the dream frontier. Shared machinery in
+    # NumericRefHandler._search_body_chunks / _body_search_hits.
+    search_body_chunks: ClassVar[bool] = True
+    heat_salience_on_body_search: ClassVar[bool] = True
 
     #: Set by :meth:`put` for the duration of one create so :meth:`_create`
     #: can pick up an explicit ``title=`` the base ``put`` signature drops.
@@ -405,121 +409,9 @@ class MemoryHandler(NumericRefHandler):
         schema = ["kind", "id", "summary", "body_words", "links", "age"]
         return render_agent_table(rows, schema=schema)
 
-    # ── search: query the body chunks and group by ref ──────────────
-
-    def search(  # type: ignore[override]
-        self,
-        *,
-        q: str | None = None,
-        tags: list[str] | None = None,
-        page_size: int = 10,
-        **_kw: Any,
-    ) -> Response:
-        """Lexical search over memory *body chunks*.
-
-        The base class matches ``refs.title`` only, but the body now lives in
-        a ``memory_body`` chunk — a title-only search would miss the prose.
-        We route through ``search_blocks_lexical`` (mirrors gripe) and group
-        by ref so each matching memory shows once with its best chunk teaser.
-        Semantic ``like=`` retrieval is unaffected (it already keys on the
-        embedded chunk). ``tags=`` without ``q=`` degrades to the base
-        recency-ordered list view.
-        """
-        normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
-        if q is None or not q.strip():
-            if normalized_tags:
-                return self._list_by_tags(normalized_tags, page_size=page_size)
-            raise BadInput(
-                "search requires q= or tags=",
-                next=(
-                    f"search(kind={self.kind!r}, q='your query') or "
-                    f"search(kind={self.kind!r}, tags=['<tag>'])"
-                ),
-            )
-        raw = self.store.search_blocks_lexical(
-            q=q, kind=self.kind, tags=normalized_tags, limit=page_size * 5
-        )
-        best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
-        for block, ref, rank in raw:
-            existing = best_by_ref.get(ref.id)
-            if existing is None or rank > existing[2]:
-                best_by_ref[ref.id] = (block, ref, rank)
-        hits = sorted(best_by_ref.values(), key=lambda t: t[2], reverse=True)[
-            :page_size
-        ]
-        # Heat salience on the hit refs' body chunks (recall reinforcement).
-        self.store.bump_salience(
-            self.store.card_chunk_ids([ref.id for _, ref, _ in hits])
-        )
-        if not hits:
-            tag_suffix = f" tagged {normalized_tags}" if normalized_tags else ""
-            body = f"no {self._sense()} entries match {q!r}{tag_suffix}"
-            nav: list[tuple[str, str]] = [
-                (f"search(kind={self.kind!r}, q='broader term')", "loosen the query")
-            ]
-            if normalized_tags:
-                nav.append(
-                    (f"search(kind={self.kind!r}, q={q!r})", "drop the tag filter")
-                )
-            nav.append(
-                (
-                    f"get(kind={self.kind!r}, id='/recent')",
-                    f"list recent {self._sense()} entries",
-                )
-            )
-            body += render_next_section(nav)
-            return Response(body=body)
-
-        total = len(best_by_ref)
-        lines = [
-            format_search_headline(
-                n_returned=len(hits),
-                total=total,
-                noun=f"{self._sense()} match",
-                query=q,
-            )
-        ]
-        for block, ref, rank in hits:
-            title = ref.title or ""
-            label = f"{self._sense()} {ref.id}"
-            if title:
-                label += f": {title}"
-            lines.append(f"\n## {label}  (rank={rank:.2f})\n{_snippet(block.text)}")
-        return Response(body="\n".join(lines))
-
-    def search_hits(  # type: ignore[override]
-        self,
-        *,
-        q: str,
-        tags: list[str] | None = None,
-        page_size: int = 10,
-        **_kw: Any,
-    ) -> list[SearchHit]:
-        """Ref-grouped chunk-level hits for the cross-kind merge."""
-        if not (q and q.strip()):
-            return []
-        normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
-        raw = self.store.search_blocks_lexical(
-            q=q, kind=self.kind, tags=normalized_tags, limit=page_size * 5
-        )
-        best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
-        for block, ref, rank in raw:
-            existing = best_by_ref.get(ref.id)
-            if existing is None or rank > existing[2]:
-                best_by_ref[ref.id] = (block, ref, rank)
-        ordered = sorted(best_by_ref.values(), key=lambda t: t[2], reverse=True)[
-            :page_size
-        ]
-        return [
-            SearchHit(
-                score=rank,
-                kind=self.kind,
-                title=ref.title or _snippet(block.text, max_chars=80),
-                preview=_snippet(block.text),
-                ref_id=ref.id,
-            )
-            for block, ref, rank in ordered
-        ]
+    # ── search: body-chunk search + cross-kind hits come from the base
+    # (NumericRefHandler._search_body_chunks / _body_search_hits) via the
+    # search_body_chunks opt-in above. ──────────────────────────────
 
     # ── supersede: the one guarded destructive verb (dreaming) ──────
 
@@ -699,11 +591,3 @@ def _derive_title(body: str, *, max_len: int = _TITLE_MAX) -> str:
     if len(first) > max_len:
         return first[: max_len - 1].rstrip() + "…"
     return first
-
-
-def _snippet(text: str, *, max_chars: int = 200) -> str:
-    """Trim a chunk's text for inline display in search results."""
-    flat = " ".join((text or "").split())
-    if len(flat) <= max_chars:
-        return flat
-    return flat[:max_chars].rstrip() + "…"

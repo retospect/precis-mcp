@@ -37,9 +37,6 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
 from precis.store.types import BlockInsert, Ref
-from precis.utils.next_block import render_next_section
-from precis.utils.search_header import format_search_headline
-from precis.utils.search_merge import SearchHit
 
 # Chunk-kind slugs we own. Match the seed in 0005.
 _BODY_KIND = "gripe_body"
@@ -71,6 +68,12 @@ class GripeHandler(NumericRefHandler):
     kind: ClassVar[str] = "gripe"
     sense: ClassVar[str] = "gripe"
     default_tags_on_create: ClassVar[tuple[str, ...]] = ("STATUS:open",)
+
+    # Body + append-only comment timeline live in chunks, so search the
+    # chunks grouped by ref (a term that only appears in a comment still
+    # surfaces the parent gripe). Salience stays cold — bug reports must
+    # not enter the dream frontier. Shared machinery in NumericRefHandler.
+    search_body_chunks: ClassVar[bool] = True
 
     # ── list-view filters (id='/<view>') ────────────────────────────
 
@@ -268,138 +271,11 @@ class GripeHandler(NumericRefHandler):
             )
         )
 
-    # ── search: query chunks (body + comments) and group by ref ────
+    # ── search: chunk (body + comment) search grouped by ref lives in
+    # NumericRefHandler via the search_body_chunks opt-in above. We only
+    # override the per-hit renderer to surface comment context. ───────
 
-    def search(  # type: ignore[override]
-        self,
-        *,
-        q: str | None = None,
-        tags: list[str] | None = None,
-        page_size: int = 10,
-        **_kw: Any,
-    ) -> Response:
-        """Search across gripe body + comment chunks.
-
-        Overrides ``NumericRefHandler.search``: the base class only
-        matches ``ref.title``, so a search term that lives in a
-        comment never surfaces the parent gripe. We route through
-        ``search_blocks_lexical`` and group hits by ref so each
-        matching gripe shows up once with the most-relevant chunk
-        as a teaser.
-
-        ``tags=`` without ``q=`` degrades to the recency-ordered
-        list view from the base class (the chunk-level query
-        wouldn't have a ``q`` to match against).
-        """
-        normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
-        if q is None or not q.strip():
-            if normalized_tags:
-                return self._list_by_tags(normalized_tags, page_size=page_size)
-            raise BadInput(
-                "search requires q= or tags=",
-                next=(
-                    f"search(kind={self.kind!r}, q='your query') or "
-                    f"search(kind={self.kind!r}, tags=['<tag>'])"
-                ),
-            )
-
-        # Over-fetch by ~5× page_size so a gripe with multiple
-        # matching chunks still leaves room for distinct gripes
-        # in the result. We then dedupe by ref.id, keeping the
-        # best-rank chunk per ref.
-        raw = self.store.search_blocks_lexical(
-            q=q, kind=self.kind, tags=normalized_tags, limit=page_size * 5
-        )
-        best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
-        for block, ref, rank in raw:
-            existing = best_by_ref.get(ref.id)
-            if existing is None or rank > existing[2]:
-                best_by_ref[ref.id] = (block, ref, rank)
-
-        hits = sorted(best_by_ref.values(), key=lambda t: t[2], reverse=True)[
-            :page_size
-        ]
-
-        if not hits:
-            tag_suffix = f" tagged {normalized_tags}" if normalized_tags else ""
-            body = f"no {self._sense()} entries match {q!r}{tag_suffix}"
-            nav: list[tuple[str, str]] = [
-                (
-                    f"search(kind={self.kind!r}, q='broader term')",
-                    "loosen the query",
-                )
-            ]
-            if normalized_tags:
-                nav.append(
-                    (
-                        f"search(kind={self.kind!r}, q={q!r})",
-                        "drop the tag filter",
-                    )
-                )
-            nav.append(
-                (
-                    f"get(kind={self.kind!r}, id='/recent')",
-                    f"list recent {self._sense()} entries",
-                )
-            )
-            body += render_next_section(nav)
-            return Response(body=body)
-
-        # Pad the headline with a ref-level total so the agent
-        # sees "10 of K hits" instead of just the page.
-        total = len(best_by_ref)
-        lines = [
-            format_search_headline(
-                n_returned=len(hits),
-                total=total,
-                noun=f"{self._sense()} match",
-                query=q,
-            )
-        ]
-        for block, ref, rank in hits:
-            lines.append(self._render_chunk_hit(ref, block, rank))
-        return Response(body="\n".join(lines))
-
-    def search_hits(  # type: ignore[override]
-        self,
-        *,
-        q: str,
-        tags: list[str] | None = None,
-        page_size: int = 10,
-        **_kw: Any,
-    ) -> list[SearchHit]:
-        """Ref-grouped chunk-level hits for cross-kind merge.
-
-        Same shape as :meth:`search`, but returns ``SearchHit``
-        records so the cross-kind merge can interleave gripe hits
-        with paper / skill / etc. results.
-        """
-        if not (q and q.strip()):
-            return []
-        normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
-        raw = self.store.search_blocks_lexical(
-            q=q, kind=self.kind, tags=normalized_tags, limit=page_size * 5
-        )
-        best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
-        for block, ref, rank in raw:
-            existing = best_by_ref.get(ref.id)
-            if existing is None or rank > existing[2]:
-                best_by_ref[ref.id] = (block, ref, rank)
-        ordered = sorted(best_by_ref.values(), key=lambda t: t[2], reverse=True)[
-            :page_size
-        ]
-        return [
-            SearchHit(
-                score=rank,
-                kind=self.kind,
-                title=ref.title,
-                preview=_snippet(block.text),
-                ref_id=ref.id,
-            )
-            for block, ref, rank in ordered
-        ]
-
-    def _render_chunk_hit(self, ref: Ref, block: Any, rank: float) -> str:
+    def _render_body_search_hit(self, ref: Ref, block: Any, rank: float) -> str:
         """One result line: header + chunk-kind context + matched text."""
         kind = block.chunk_kind
         if kind == _BODY_KIND:
@@ -408,8 +284,7 @@ class GripeHandler(NumericRefHandler):
             label = f"{self._sense()} {ref.id} (comment {block.pos})"
         else:
             label = f"{self._sense()} {ref.id} ({kind})"
-        snippet = _snippet(block.text)
-        return f"\n## {label}  (rank={rank:.2f})\n{snippet}"
+        return f"\n## {label}  (rank={rank:.2f})\n{self._snippet(block.text)}"
 
     # ── rendering: body + comment timeline ──────────────────────────
 
@@ -465,11 +340,3 @@ class GripeHandler(NumericRefHandler):
             ]
         )
         return Response(body=body)
-
-
-def _snippet(text: str, *, max_chars: int = 200) -> str:
-    """Trim a chunk's text for inline display in search results."""
-    flat = " ".join(text.split())
-    if len(flat) <= max_chars:
-        return flat
-    return flat[:max_chars].rstrip() + "…"

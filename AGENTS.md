@@ -90,6 +90,12 @@ precis-mcp/
 4. Implement. Keep edits minimal and scoped to the plan.
 5. Run the full check before claiming done:
    `uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run pytest`
+   Run the **full pytest suite in the dev container**, not the host:
+   `scripts/dev pytest` (or `scripts/dev bash -lc '<full check>'`). The
+   host venv is torch-free, so a host `uv run pytest` reports dozens of
+   spurious missing-extra failures (`sympy`, `marker`, `lxml`, …); the
+   `precis-mcp:dev` image bakes all extras and wires `PRECIS_TEST_PG_URL`.
+   Host `uv run pytest` is for targeted, extra-free subsets only.
 6. If you altered the schema, run `precis migrate --dry-run` against a
    throwaway DB; confirm only the new file is pending and apply
    succeeds.
@@ -109,8 +115,9 @@ precis-mcp/
 - [ ] `uv run ruff check .` passes.
 - [ ] `uv run ruff format --check .` passes.
 - [ ] `uv run mypy src tests` passes.
-- [ ] `uv run pytest` passes (coverage on touched modules ≥ existing
-      level).
+- [ ] The full suite passes in the dev container (`scripts/dev pytest`;
+      the torch-free host can only run extra-free subsets) with
+      coverage on touched modules ≥ existing level.
 - [ ] If schema changed: a new `migrations/NNNN_<slug>.sql` exists; old
       migrations are unmodified; the migration applies cleanly to a
       fresh DB.

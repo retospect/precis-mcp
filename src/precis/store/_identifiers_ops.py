@@ -204,9 +204,9 @@ class IdentifiersMixin:
         Returns the ``refs.id`` of the matching paper, or ``None``
         when no scheme matches or no ref carries this identifier.
 
-        This is the generalised replacement for the legacy
-        :meth:`RefsMixin.find_paper_slug_by_doi` — that method now
-        delegates here.
+        This is the generalised form behind the narrower, still-live
+        DOI-only convenience wrapper
+        :meth:`RefsMixin.find_paper_slug_by_doi`, which delegates here.
         """
         scheme = detect_identifier_scheme(value)
         if scheme is None:

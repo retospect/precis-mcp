@@ -17,7 +17,6 @@ from precis.store._salience import (
     as_dream_actor,
     background_actor_active,
     current_background_actor,
-    dream_actor_active,
 )
 from precis.store.migrate import Migrator
 from precis.store.store import SEMANTIC_DISTANCE_FLOOR, Store
@@ -54,5 +53,4 @@ __all__ = [
     "as_dream_actor",
     "background_actor_active",
     "current_background_actor",
-    "dream_actor_active",
 ]

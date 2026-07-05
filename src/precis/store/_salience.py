@@ -71,15 +71,6 @@ def as_background_actor(name: str) -> Iterator[None]:
 # ── back-compat: the dreamer was the first background actor ──────────
 
 
-def dream_actor_active() -> bool:
-    """Deprecated alias of :func:`background_actor_active`.
-
-    Kept so existing call sites and tests keep working; new code should
-    call ``background_actor_active``.
-    """
-    return background_actor_active()
-
-
 def as_dream_actor() -> AbstractContextManager[None]:
     """Deprecated alias of ``as_background_actor("dream")``.
 

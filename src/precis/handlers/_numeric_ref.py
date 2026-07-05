@@ -147,6 +147,19 @@ class NumericRefHandler(Handler):
     #: at the point of writing, no pre-fetch required. Scoped to memory.
     firstline_discipline: ClassVar[bool] = False
 
+    #: When True, ``search`` / ``search_hits`` query the ref's body (and
+    #: comment) *chunks* grouped by ref, instead of matching ``ref.title``
+    #: only. Kinds whose prose lives in chunks (memory's ``memory_body``,
+    #: gripe's body + comment timeline) opt in; kinds whose title *is* the
+    #: content keep the default title-only search. The shared machinery
+    #: lives in :meth:`_search_body_chunks` / :meth:`_body_search_hits`.
+    search_body_chunks: ClassVar[bool] = False
+
+    #: When body-chunk search surfaces hits, heat their salience-bearing
+    #: chunks (dreaming recall reinforcement). Memory opts in; gripe stays
+    #: out so bug reports never enter the dream frontier.
+    heat_salience_on_body_search: ClassVar[bool] = False
+
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
             raise InitError(f"{self.kind}: store required")
@@ -320,6 +333,13 @@ class NumericRefHandler(Handler):
                 ),
             )
 
+        # Kinds whose prose lives in chunks (memory, gripe) search the
+        # body/comment chunks grouped by ref rather than ``ref.title``.
+        if self.search_body_chunks:
+            return self._search_body_chunks(
+                q=q, tags=normalized_tags, page_size=page_size
+            )
+
         hits = self.store.search_refs_lexical(
             q=q, kind=self.kind, tags=normalized_tags, limit=page_size
         )
@@ -421,11 +441,14 @@ class NumericRefHandler(Handler):
 
         Numeric-ref kinds search the ref title only — bodies tend
         to be short enough that one row per ref is the right
-        granularity for cross-kind merge.  Subclasses with
-        block-level bodies (none today) should override.
+        granularity for cross-kind merge.  Kinds whose prose lives
+        in chunks opt in via ``search_body_chunks`` and get the
+        ref-grouped chunk-level shape from :meth:`_body_search_hits`.
         """
         if not (q and q.strip()):
             return []
+        if self.search_body_chunks:
+            return self._body_search_hits(q=q, tags=tags, page_size=page_size)
         normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
         pairs = self.store.search_refs_lexical(
             q=q, kind=self.kind, tags=normalized_tags, limit=page_size
@@ -433,6 +456,111 @@ class NumericRefHandler(Handler):
         # Salience bump (card chunks); no-op for cardless kinds / dreamer.
         self.store.bump_salience(self.store.card_chunk_ids([r.id for r, _ in pairs]))
         return ref_hits_to_search_hits(pairs, kind=self.kind)
+
+    # ── shared body-chunk search (opt-in via search_body_chunks) ────
+
+    @staticmethod
+    def _snippet(text: str, *, max_chars: int = 200) -> str:
+        """Trim a chunk's text for inline display in search results."""
+        flat = " ".join((text or "").split())
+        if len(flat) <= max_chars:
+            return flat
+        return flat[:max_chars].rstrip() + "…"
+
+    def _best_body_hits(
+        self, q: str, tags: list[str] | None, page_size: int
+    ) -> tuple[list[tuple[Any, Ref, float]], int]:
+        """Best-ranked chunk per ref for a lexical body-chunk query.
+
+        Over-fetches ~5× ``page_size`` so a ref with several matching
+        chunks still leaves room for distinct refs, dedupes to the
+        best-rank chunk per ref, and returns ``(ordered_hits, total)``
+        where ``total`` is the distinct-ref count (for the "N of K"
+        headline).
+        """
+        raw = self.store.search_blocks_lexical(
+            q=q, kind=self.kind, tags=tags, limit=page_size * 5
+        )
+        best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
+        for block, ref, rank in raw:
+            existing = best_by_ref.get(ref.id)
+            if existing is None or rank > existing[2]:
+                best_by_ref[ref.id] = (block, ref, rank)
+        ordered = sorted(best_by_ref.values(), key=lambda t: t[2], reverse=True)[
+            :page_size
+        ]
+        return ordered, len(best_by_ref)
+
+    def _search_body_chunks(
+        self, *, q: str, tags: list[str] | None, page_size: int
+    ) -> Response:
+        """Rendered body-chunk search: headline + one block per matching ref."""
+        hits, total = self._best_body_hits(q, tags, page_size)
+        if self.heat_salience_on_body_search:
+            self.store.bump_salience(
+                self.store.card_chunk_ids([ref.id for _, ref, _ in hits])
+            )
+        if not hits:
+            tag_suffix = f" tagged {tags}" if tags else ""
+            body = f"no {self._sense()} entries match {q!r}{tag_suffix}"
+            nav: list[tuple[str, str]] = [
+                (f"search(kind={self.kind!r}, q='broader term')", "loosen the query")
+            ]
+            if tags:
+                nav.append(
+                    (f"search(kind={self.kind!r}, q={q!r})", "drop the tag filter")
+                )
+            nav.append(
+                (
+                    f"get(kind={self.kind!r}, id='/recent')",
+                    f"list recent {self._sense()} entries",
+                )
+            )
+            body += render_next_section(nav)
+            return Response(body=body)
+        lines = [
+            format_search_headline(
+                n_returned=len(hits),
+                total=total,
+                noun=f"{self._sense()} match",
+                query=q,
+            )
+        ]
+        for block, ref, rank in hits:
+            lines.append(self._render_body_search_hit(ref, block, rank))
+        return Response(body="\n".join(lines))
+
+    def _render_body_search_hit(self, ref: Ref, block: Any, rank: float) -> str:
+        """One result line for a body-chunk hit.
+
+        Default: ``## <sense> <id>: <title>  (rank=…)`` + snippet.
+        Subclasses whose chunks carry structure (e.g. gripe's comment
+        timeline) override to add per-chunk context.
+        """
+        label = f"{self._sense()} {ref.id}"
+        title = ref.title or ""
+        if title:
+            label += f": {title}"
+        return f"\n## {label}  (rank={rank:.2f})\n{self._snippet(block.text)}"
+
+    def _body_search_hits(
+        self, *, q: str, tags: list[str] | None, page_size: int
+    ) -> list[SearchHit]:
+        """Ref-grouped chunk-level hits as ``SearchHit`` for cross-kind merge."""
+        if not (q and q.strip()):
+            return []
+        normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
+        ordered, _ = self._best_body_hits(q, normalized_tags, page_size)
+        return [
+            SearchHit(
+                score=rank,
+                kind=self.kind,
+                title=ref.title or self._snippet(block.text, max_chars=80),
+                preview=self._snippet(block.text),
+                ref_id=ref.id,
+            )
+            for block, ref, rank in ordered
+        ]
 
     # ── put: create-only on numeric-ref kinds ──────────────────────
 

@@ -43,13 +43,18 @@ agent pulls only when it reaches for it.
 introspects the live registry) is the **authoritative kinds
 catalogue** — the README lists only a representative sample. Broadly:
 
-- **Ref kinds** (addressed by slug/id): `paper`, `skill`, `oracle`,
-  `conv`, `markdown` / `plaintext` / `tex`, `python`, `todo`,
-  `memory`, `gripe`, `flashcard`, `citation`, `finding`, `job`,
-  `provenance`, `pres`.
+- **Reading & reference**: `paper`, `patent`, `cfp`, `skill`,
+  `oracle`, `conv`, `pres`.
+- **Files / code**: `markdown` / `plaintext` / `tex`, `python`.
+- **Authored artifacts**: `draft`, `cad`, `structure`, `pcb`,
+  `folder`.
+- **Personal state & knowledge**: `todo`, `memory`, `gripe`,
+  `flashcard`, `citation`, `finding`, `job`.
+- **Identity, comms & audit**: `orcid`, `cron`, `message`, `alert`,
+  `agentlog`, `provenance`.
 - **Tool kinds** (stateless / cache-backed): `calc`, `math`,
-  `youtube`, `web`, `websearch` / `perplexity-reasoning` /
-  `perplexity-research`, `patent`.
+  `youtube`, `web`, `wikipedia`, `websearch` /
+  `perplexity-reasoning` / `perplexity-research`.
 - **Discovery kind**: `random`.
 
 When to enable a new kind:

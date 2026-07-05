@@ -11,68 +11,60 @@ and searching across papers, documents, personal state, code, and
 cached tool calls. Small-model-friendly (7B-class agents are the design
 target); stores content in PostgreSQL with `pgvector`.
 
-> **Status.** v8.13.0 — see the git history (`git log`) for the
-> live story. v5.2.6 on PyPI is the last v1-line release.
->
-> **README is stale beyond this banner.** Things the architecture
-> section + verb table below still capture correctly: seven-verb
-> surface, `kind=` dispatch, `pgvector` hybrid search, content
-> kinds vs tool kinds. Things you should treat the ref-kinds list
-> as a sample of, not a catalogue:
->
-> * **The todo tree (Slices 1–5).** `kind='todo'` is now a
->   hierarchical task graph with `parent_id`, level gradient
->   (`strategic|tactical|recurring|subtask`), PRIO column on
->   refs, `meta.auto_check` wait-for-condition leaves,
->   `meta.schedule` recurring spawn (Watches umbrella), and
->   review tiers (`nursery` SQL-only hourly, `structural` 6h
->   opus, `deep_review` weekly opus).
-> * **`kind='job'` as child of `kind='todo'`.** Slice 5: every
->   new job requires `parent_id` pointing at a todo. The
->   `dispatch` worker is the canonical path from `meta.executor`
->   on a todo to a queued job.
-> * **Worker consolidation.** Two long-running worker daemons
->   (`precis worker --profile=system` everywhere,
->   `--profile=agent` on gateway) handle every pass between
->   them; per-pass LaunchDaemons are retired.
->
-> The skill catalogue under
-> `src/precis/data/skills/precis-*-help.md` is authoritative for
-> the LLM-facing surface. Start at `precis-toolpath-help`
-> ("I want to X — what do I call?") and
-> `precis-overview` (the kinds + skill index).
+> **Status.** Actively developed on the v8 line. There is no
+> CHANGELOG — `git log` is the change story. The kinds catalogue
+> below is a *living* set: the authoritative, build-specific
+> enumeration is always `get(kind='skill', id='precis-help')`
+> against a running server (it introspects the live registry),
+> paired with `get(kind='skill', id='precis-overview')` for the
+> guided tour. Agents should start at `precis-toolpath-help`
+> ("I want to X — what do I call?").
 
 ## What it does
 
 One tool surface — **seven verbs** discriminated by a single `kind=`
-argument — over three categories of content:
+argument — over three categories of content. Ref kinds are addressed
+by slug or integer id (output hands you a compact `<2-char><id>`
+handle, e.g. `pa5` a paper, `me42` a memory); tool kinds take `q=`
+or `id=` and hand back text.
 
-- **Ref kinds** (content addressed by slug or integer id): `paper`,
-  `skill`, `oracle`, `conv`, `markdown`, `plaintext`, `tex`,
-  `python`, `todo`, `memory`, `gripe`, `flashcard`,
+- **Reading & reference** — `paper` (ingested research PDF),
+  `patent` (EPO OPS record), `cfp` (call-for-proposal / spec doc),
+  `oracle` (curated wisdom entry), `conv` (past conversation),
+  `pres` (slide deck), `skill` (agent how-to — you're reading one).
+- **Files under `PRECIS_ROOT` / code** — `markdown`, `plaintext`,
+  `tex`, and `python` (symbol- and callgraph-aware repo navigator).
+- **Authored artifacts** — `draft` (chunk-native document that
+  exports to LaTeX/PDF/Word; ADR 0033), `cad` (parametric
+  solid-model design probed analytically, not meshed; ADR 0041),
+  `structure` (atomistic cell + bond graph for DFT/molecular work;
+  ADR 0043), `pcb` (netlist + placement graph → BOM/CPL/DSN +
+  Freerouting; ADR 0042), `folder` (organizational container for
+  the above; ADR 0045).
+- **Personal state & knowledge** — `todo` (hierarchical task tree),
+  `memory`, `gripe`, `flashcard` (SM-2 spaced repetition),
   `citation` (verified claim → source quote), `finding`
-  (reviewer-persona claim + chase chain), `job` (offline LLM run,
-  child of a `todo`), `provenance` (derivation audit trail),
-  `pres` (slide decks), `cad` (parametric solid-model design probed
-  analytically — point/ray/section/clearance — not meshed; ADR 0041),
-  `pcb` (netlist + placement graph read as a traversable graph,
-  exported to BOM/CPL/DSN + Freerouting; ADR 0042).
-  This is a sample — `precis-overview` and
-  the synthesised `precis-help` skill enumerate the live set.
-- **Tool kinds** (stateless or cache-backed; pass `q=` or `id=`, get
-  text back): `calc`, `math` (Wolfram), `youtube`, `web` (fetch +
-  search + bookmark), `websearch` / `perplexity-reasoning` /
-  `perplexity-research` (Perplexity Sonar tiers), `patent` (EPO OPS).
-- **Discovery kind**: `random` — pick a random indexed block to
-  stumble into content when you don't know what to ask for.
+  (chain-of-evidence over a citation chase), `job` (offline LLM run,
+  child of a `todo`).
+- **Identity, comms & audit** — `orcid` (researcher-identity hub;
+  ADR 0039), `cron` (push-notification scheduler; ADR 0030),
+  `message` (proactive outbound), `alert` (machine-detected ops
+  condition), `agentlog` (per-run attribution trail), `provenance`
+  (derivation audit).
+- **Tool kinds** (stateless or cache-backed) — `calc` (local SymPy),
+  `math` (Wolfram), `youtube` (transcript), `web` (fetch + extract),
+  `wikipedia` (on-demand article), `websearch` /
+  `perplexity-reasoning` / `perplexity-research` (Perplexity Sonar
+  tiers).
+- **Discovery** — `random`: pick a random indexed block to stumble
+  into content when you don't know what to ask for.
 
 The active set depends on which optional extras and env vars are
-configured (see [Install](#install)). Run
-`get(kind='skill', id='precis-help')` against a live server for the
-live enumeration of kinds currently wired (it's a synthesised skill
-that introspects the registry); pair with
-`get(kind='skill', id='precis-overview')` for the design-rationale
-tour.
+configured (see [Install](#install)) — a kind whose dependency or
+env var is missing simply drops off the surface. This list is a
+snapshot; `get(kind='skill', id='precis-help')` enumerates the kinds
+wired in *your* build, and `get(kind='skill', id='precis-overview')`
+gives the design-rationale tour with an example handle per kind.
 
 ## Seven verbs
 
@@ -98,17 +90,22 @@ pip install 'precis-mcp[all]'
 
 Extras (each enables its kinds; omit any you don't want):
 
-| Extra       | Enables                                           | Heavy? |
-|-------------|---------------------------------------------------|--------|
-| `paper`     | `paper` kind (sentence-transformers bge-m3 + `acatome-extract`) | yes (~2 GB model on first load) |
-| `calc`      | `calc` kind (sympy)                               | no |
-| `external`  | `math` (Wolfram), `youtube`, `web`, Perplexity trio | no |
-| `patent`    | `patent` kind (EPO Open Patent Services)          | no |
-| `web`       | `precis web` browser UI (FastAPI + Jinja + HTMX)  | no |
-| `tex`       | `tex` kind — `.tex` files under `PRECIS_ROOT` (lxml) | no |
-| `docx`      | (queued — not yet wired)                          | — |
-| `plot`      | (queued — not yet wired)                          | — |
-| `all`       | All of the above.                                 | yes |
+| Extra        | Enables                                            | Heavy? |
+|--------------|----------------------------------------------------|--------|
+| `embed`      | In-process bge-m3 embedder (sentence-transformers + torch) — needed for `search` unless you point at a remote embedder | yes (~2 GB model on first load) |
+| `paper`      | `paper` ingest — Marker PDF → chunks + CrossRef/S2 metadata | yes (pulls torch via Marker) |
+| `calc`       | `calc` kind (sympy)                                | no |
+| `external`   | `math` (Wolfram), `youtube`, `web`, Perplexity trio, `news` | no |
+| `patent`     | `patent` kind (EPO Open Patent Services)           | no |
+| `web`        | `precis web` browser UI (FastAPI + Jinja + HTMX)   | no |
+| `tex`        | `tex` kind — `.tex` files under `PRECIS_ROOT`      | no |
+| `docx`       | DOCX file handler                                  | no |
+| `plot`       | Declarative matplotlib plot renderer               | no |
+| `cad-export` | `cad` STL/3MF export (manifold3d CSG kernel)       | no |
+| `cad-step`   | `cad` exact STEP export (OpenCASCADE B-rep)        | yes (~200 MB OCCT libs) |
+| `pcb`        | `pcb` footprint resolution (LCSC → KiCad)          | no |
+| `dft`        | `structure` CIF I/O + symmetry (ASE + spglib)      | no |
+| `all`        | `embed` + `paper` + `docx` + `tex` + `calc` + `plot` + `external` + `patent` + `web` + `cad-export`. Excludes the heavy `cad-step`, `dft`, `dft-ml`, `pcb` tiers — install those explicitly. | yes |
 
 A bare `pip install precis-mcp` gives you the state kinds (`todo`,
 `memory`, `gripe`, `flashcard`, `conv`, `oracle`, `skill`,
@@ -167,6 +164,7 @@ config:
 | `PRECIS_PYTHON_ROOTS`         | `alias:/path,alias2:/path2` — exposed Python repos. |
 | `PRECIS_PYTHON_ALLOW_EXEC=1`  | Gate for `python` runtrace (spawns subprocess).  |
 | `EPO_OPS_CLIENT_KEY` + `_SECRET` + `PRECIS_PATENT_RAW_ROOT` | Enables `patent` kind. |
+| `ORCID_CLIENT_ID` + `_SECRET` | Enables the `orcid` researcher-identity kind.    |
 | `WOLFRAM_APP_ID`              | Enables `math` kind.                             |
 | `PERPLEXITY_API_KEY`          | Enables `websearch` / `perplexity-reasoning` / `perplexity-research`. |
 | `PRECIS_CORPUS_DIR`           | Corpus root(s) for the `precis web` paper viewer. An `os.pathsep`-separated list is allowed (e.g. `/opt/a/corpus:/opt/b/corpus`); the web tries each `<root>/<letter>/<cite_key>.pdf` in order and serves the first that exists. Point it at the same path the ingest watcher writes to. |
@@ -209,6 +207,21 @@ config:
   blades as you reach for them, instead of advertising 20
   unfamiliar buttons in `tools/list`. (UX literature calls this
   pattern progressive disclosure.)
+- **The todo tree.** `kind='todo'` is a hierarchical task graph — a
+  level gradient (`strategic` → `tactical` → `subtask`, plus
+  `recurring`), a PRIO sort key, `meta.auto_check` wait-for-condition
+  leaves, and `meta.schedule` recurring spawn (the *Watches*
+  umbrella). It is the unified substrate for intent, execution, and
+  review; `kind='job'` (an offline LLM run) always hangs off a todo
+  via `parent_id`, and the `dispatch` worker is the canonical path
+  from a todo's `meta.executor` to a queued job. See
+  [`precis-tasks-help`](src/precis/data/skills/precis-tasks-help.md).
+- **Two-profile worker.** Every background pass runs under one of two
+  long-running daemons: `precis worker --profile=system` (embeddings,
+  keywords, dispatch, sweepers — safe to run on every node) and
+  `--profile=agent` (the LLM-heavy review/planner rotation, each pass
+  self-gated by env + a load-average ceiling). Per-pass daemons are
+  retired.
 - **HintBus.** Any layer can emit deduplicated, novelty-decayed tips
   that are rendered after the verb's main output. Keeps slim models
   from drowning in self-inflicted reminders.
@@ -246,35 +259,51 @@ the server.
 ## CLI
 
 ```text
+# Serving
 precis serve                       # Start the MCP stdio server.
+precis serve-embeddings            # HTTP embedding service (server side of
+                                   #   PRECIS_EMBEDDER=remote; /healthz /readyz
+                                   #   /model /embed /metrics).
 precis web [--host H --port P]      # Browser UI: Tasks / Papers / Console /
                                    #   Conversations / Status tabs (needs the
                                    #   [web] extra; binds 127.0.0.1:9100, no
-                                   #   auth — reach it over Tailscale). Papers
-                                   #   carry DOI/arXiv verify links; PDFs serve
-                                   #   from PRECIS_CORPUS_DIR (multi-root);
-                                   #   conversations render as a transcript.
-precis serve-embeddings            # Run the HTTP embedding service (the
-                                   #   server side of PRECIS_EMBEDDER=remote;
-                                   #   /healthz /readyz /model /embed /metrics).
-precis worker                      # Drive the derived-artifact queue.
-precis migrate                     # Run pending SQL migrations.
-precis schema-doc                  # Generate the Mermaid ER diagram of the
-                                   #   DB schema (docs/design/schema.md) from a
-                                   #   DSN or piped rows. scripts/gen-schema
-                                   #   wraps it to regen from prod over ssh.
-precis jobs ingest [root]          # Pre-warm .md / .txt / .tex under PRECIS_ROOT
-                                   #   (mtime-gated; compose into launchers:
-                                   #    `precis jobs ingest && precis serve`).
-precis jobs ingest-bundle[s] ...   # Ingest .acatome paper bundles.
-precis jobs ingest-oracles ...     # Seed the oracle kind from YAML wisdom files.
-precis jobs dedupe-papers          # Collapse duplicate paper refs.
-precis jobs import-perplexity ...  # Bulk-import Perplexity web-UI answers.
-precis jobs watch-patents / run-patent-watches / sweep-patent-fulltext
-                                   # Saved CQL patent watches (patent kind).
+                                   #   auth — reach it over Tailscale).
+
+# Background processing
+precis worker [--profile system|agent]
+                                   # Drive the background passes. 'system'
+                                   #   (default) = embeddings/keywords/dispatch/
+                                   #   sweepers; 'agent' = the LLM-heavy review
+                                   #   + planner rotation. --only X --once for
+                                   #   ad-hoc backfills.
+precis watch [PATH]                # Watch an inbox dir and ingest dropped PDFs
+                                   #   (papers / books / presentations routing).
+precis add <pdf|url>               # Ingest one paper on the spot.
+
+# Database
+precis migrate                     # Run pending forward-only SQL migrations.
+precis db ...                      # Schema utilities (dump-schema, …).
+precis schema-doc                  # Generate the Mermaid ER diagram
+                                   #   (docs/design/schema.md) from a DSN.
+
+# Interactive & inspection
+precis repl                        # Interactive verb console (tab-complete).
+precis draft ...                   # Manage / export draft-kind documents.
+precis stats | logs | stubs | verify
+                                   # Corpus stats, event logs, stub triage,
+                                   #   integrity checks.
+precis cron | heartbeat            # Scheduler tick / liveness ping.
+
+# One-shot jobs
+precis jobs ingest[-md|-oracles] ...   # Pre-warm files under PRECIS_ROOT.
+precis jobs import-perplexity ...      # Bulk-import Perplexity web-UI answers.
+precis jobs {watch,list,run}-patent-watches / sweep-patent-fulltext
+                                       # Saved CQL patent watches (patent kind).
+precis jobs check-provenance / sync-retraction-watch
+                                       # Provenance + retraction audits.
 ```
 
-Run any subcommand with `--help` for detailed options.
+Run any subcommand with `--help` for the full option list.
 
 ### Utility scripts
 
@@ -294,7 +323,7 @@ high-traffic ones:
 
 ## Roadmap
 
-- `docx`, `book`, `rmk` file handlers (Phase 6b/c). (`tex` shipped.)
+- `book`, `rmk` file handlers. (`tex` and `docx` shipped.)
 - `web` bookmark mode + Wayback enrichment (gripe:3681 phase 2 + 4 — see [`OPEN-ITEMS.md`](OPEN-ITEMS.md)).
 - `voice` kind — STT/TTS bound to transcript refs (see [`docs/user-facing/voice-kind-spec.md`](docs/user-facing/voice-kind-spec.md)).
 - SDK extraction (`precis-core`) once the plugin API has settled.
@@ -328,12 +357,27 @@ The repo lives at
 Issues and PRs welcome. Development workflow:
 
 ```bash
-uv venv && source .venv/bin/activate
-uv pip install -e '.[all]' --group dev
-pytest -q
-ruff check . && ruff format --check .
-mypy src tests
+uv sync --all-extras --group dev
+uv run pytest
+uv run ruff check . && uv run ruff format --check .
+uv run mypy src tests
 ```
+
+Run the **full test suite in the dev container**, which bakes every
+optional extra and wires the test database:
+
+```bash
+scripts/dev pytest                       # full suite, all extras
+scripts/dev bash -lc "ruff check . && ruff format --check . && mypy src tests && pytest"
+```
+
+A host `uv run pytest` only sees the torch-free base install, so the
+full run there fails with spurious missing-extra errors (`sympy`,
+`marker`, `lxml`, …) — use it for targeted subsets only.
+
+All tooling goes through `uv run` (host) or `scripts/dev` (container)
+— see [`AGENTS.md`](AGENTS.md) for the full workflow and
+definition-of-done.
 
 ## License
 
