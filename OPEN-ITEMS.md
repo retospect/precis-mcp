@@ -199,6 +199,41 @@ for 1.5 days because nothing watched daemon health.
 `raise_alert` → `(ref_id, is_new)`; one-shot `notify_critical_alert` → Discord
 webhook `PRECIS_OPS_ALERT_WEBHOOK`. Tests in `test_nursery.py` / `test_alerts.py`.
 
+### Residuals — docx / EndNote export session (filed 2026-07-05, Opus-authored)
+
+Shipped this session: docx paper theme (black Times New Roman, 1-in margins);
+docx handle-citation resolution fix (`[pa<id>]`/`[pt<id>]`/`[fi<id>]` — imported
+drafts were exporting with **no** References section); and native EndNote CWYW
+export (`precis/export/endnote.py`, `citations=endnote` / `?citations=endnote`)
+emitting `ADDIN EN.CITE` + `EN.REFLIST` + `EN.*` doc-vars with the full record
+as a traveling library. Format reverse-engineered from a real EndNote sample and
+independently confirmed by web research (Journal Article=17, DOI in
+`electronic-resource-num`, one field/cite, `EN.REFLIST` is a marker, traveling
+library reformats with no library open).
+
+- **EndNote round-trip is validation-pending (not a code bug).** The CWYW format
+  is undocumented/version-sensitive; correctness can only be confirmed by opening
+  the export in real Word+EndNote and running "Update Citations and Bibliography".
+  Reto has Word+EndNote and is testing; a sample was generated straight off prod
+  via the `PRECIS_DATABASE_URL` secret (rewrite `host.docker.internal`→`127.0.0.1`)
+  + `export_docx(citations='endnote')`. If it doesn't reformat cleanly, likely
+  culprits: per-document output-style storage (publicly undocumented — recipient
+  may need to pick the style once in EndNote's Word toolbar), or `db-id` collision
+  with an open library.
+- **`EN.Layout` style is hardcoded to `"Annotated"`** (`endnote.install_document_vars`).
+  Fine as a default (recipient can change it), but a numbered/IEEE default might
+  suit a references-heavy manuscript better. Make it a param if requested.
+- **docx `[dc<id>]` cross-refs render as plain surface text, not Word
+  cross-reference fields** (the LaTeX exporter emits `\cref`). Pre-existing
+  fidelity gap, low priority — bare `[dc]` with no surface text still renders
+  nothing. A real Word `REF`/bookmark cross-ref field would close it.
+- **Feature idea (nice-to-have, not a gap): embed cited chunk passages in the
+  traveling-library record** (`<custom1>`/`<research-notes>`) so EndNote shows the
+  exact cited passage. Caveat: EndNote drops Abstract/Notes/Research-Notes on
+  library import (custom fields may survive) — needs a round-trip test. Offered to
+  Reto; build as its own cycle if wanted. Today `_cite` drops the `~chunk` address
+  and keys on the paper, so the passage identity is discarded before the record.
+
 ### Residuals (filed 2026-07-05; all Opus-authored this session — harvest-eligible)
 
 - **Activate the page (ops, in-reach).** The critical push is dark until
