@@ -33,43 +33,52 @@ from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 #: chunk depth → Word heading level (1..4); deeper collapses to 4.
 _MAX_HEADING_LEVEL = 4
 
-#: A deliberately drab, muted theme layered over python-docx's (bright,
-#: blue-accented) default template. All values are desaturated greys /
-#: slate so the output reads as sober and dreary rather than the stock
-#: Calibri-blue. ``_apply_dreary_theme`` writes these onto the built-in
-#: named styles, so every paragraph/heading picks them up without any
-#: per-run work. Tweak the palette here to re-tune the mood.
-_BODY_FONT = "Georgia"  # a staid serif, drearier than default Calibri
-_HEADING_FONT = "Georgia"
-_INK = "3B3B3B"  # body text — dark grey, not pure black
-_HEADING_INK = "5A5A5A"  # headings — mid grey, no accent colour
-_TITLE_INK = "6B6B6B"  # document title — a touch lighter, faded
-#: hyperlink colour — a muted slate rather than the stock bright blue.
-_LINK_INK = "5A6169"
+#: A sober scientific-manuscript theme layered over python-docx's (bright,
+#: blue-accented Calibri) default template. Times New Roman, all black, at
+#: the sizes a journal submission expects. ``_apply_paper_theme`` writes
+#: these onto the built-in named styles, so every paragraph/heading picks
+#: them up without any per-run work. Tweak the constants here to re-tune.
+_BODY_FONT = "Times New Roman"  # the journal / manuscript standard serif
+_HEADING_FONT = "Times New Roman"
+_BODY_PT = 12  # 12 pt body — standard for a double-spaced manuscript
+_INK = "000000"  # everything black — no grey, no accent colour
+#: hyperlink colour — black too (kept underlined so it still reads as a link).
+_LINK_INK = "000000"
+#: page margins, inches — the standard 1 in on all four sides.
+_MARGIN_IN = 1.0
 
 
-def _apply_dreary_theme(doc: Any) -> None:
-    """Recolour + reface the built-in styles to a drab, muted palette.
+def _apply_paper_theme(doc: Any) -> None:
+    """Reface the built-in styles + page margins to a sober paper look.
 
-    python-docx's default template ships bright Calibri body text and
-    blue Calibri-Light headings; we overwrite the named styles the walk
-    actually uses (``Normal``, ``Title``, ``Heading 1``–``4``) with a
-    subdued grey serif so the whole document reads dreary. Guarded per
-    style — a template missing one of these names just skips it."""
-    from docx.shared import RGBColor
+    python-docx's default template ships bright Calibri body text, blue
+    Calibri-Light headings, and Word's stock margins; we overwrite the
+    named styles the walk actually uses (``Normal``, ``Title``, ``Heading
+    1``–``4``) with black Times New Roman and set 1-inch margins. Guarded
+    per style — a template missing one of these names just skips it."""
+    from docx.shared import Inches, Pt, RGBColor
 
-    def _restyle(name: str, *, font: str, ink: str) -> None:
+    def _restyle(name: str, *, font: str, size_pt: int | None = None) -> None:
         try:
             style = doc.styles[name]
         except KeyError:  # pragma: no cover - depends on the docx template
             return
         style.font.name = font
-        style.font.color.rgb = RGBColor.from_string(ink)
+        style.font.color.rgb = RGBColor.from_string(_INK)
+        if size_pt is not None:
+            style.font.size = Pt(size_pt)
 
-    _restyle("Normal", font=_BODY_FONT, ink=_INK)
-    _restyle("Title", font=_HEADING_FONT, ink=_TITLE_INK)
+    _restyle("Normal", font=_BODY_FONT, size_pt=_BODY_PT)
+    _restyle("Title", font=_HEADING_FONT)
     for lvl in range(1, _MAX_HEADING_LEVEL + 1):
-        _restyle(f"Heading {lvl}", font=_HEADING_FONT, ink=_HEADING_INK)
+        _restyle(f"Heading {lvl}", font=_HEADING_FONT)
+
+    margin = Inches(_MARGIN_IN)
+    for section in doc.sections:
+        section.top_margin = margin
+        section.bottom_margin = margin
+        section.left_margin = margin
+        section.right_margin = margin
 
 
 @dataclass
@@ -185,7 +194,7 @@ def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
     )
 
     doc = Document()
-    _apply_dreary_theme(doc)
+    _apply_paper_theme(doc)
     terms = store.draft_terms(ref.id)  # handle → (short, long)
     byline = build_byline(getattr(ref, "authors", None))
 
