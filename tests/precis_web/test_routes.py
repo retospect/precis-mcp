@@ -191,6 +191,44 @@ def test_flag_toggle_blocks_open_redirect(runtime, client) -> None:
     assert resp.headers["location"] == "/papers-needed"
 
 
+# ── unified item view (/items) ─────────────────────────────────────
+
+
+def test_items_empty_shows_search_form(client) -> None:
+    resp = client.get("/items")
+    assert resp.status_code == 200
+    assert 'action="/items"' in resp.text
+    assert "Enter a query" in resp.text
+
+
+def test_items_search_renders_cross_kind_rows(client) -> None:
+    resp = client.get("/items?q=query")
+    assert resp.status_code == 200
+    # Both kinds surface through the one cross-kind primitive.
+    assert "A paper" in resp.text
+    assert "A web page" in resp.text
+    # The matching chunk is the preview.
+    assert "passage about the query" in resp.text
+    # Per-kind open_url: paper → reader, web → generic refs detail.
+    assert 'href="/papers/10"' in resp.text
+    assert 'href="/refs/web/70"' in resp.text
+    # Flag buttons ride along on each row.
+    assert 'action="/flags/paper/10"' in resp.text
+
+
+def test_items_kind_filter_narrows(client) -> None:
+    resp = client.get("/items?q=query&kinds=paper")
+    assert resp.status_code == 200
+    assert "A paper" in resp.text
+    assert "A web page" not in resp.text
+
+
+def test_items_recency_sort_accepted(client) -> None:
+    resp = client.get("/items?q=query&sort=recency")
+    assert resp.status_code == 200
+    assert "A paper" in resp.text
+
+
 def _stub_paging_client(total: int):
     """A TestClient whose store reports ``total`` stubs and pages them.
 

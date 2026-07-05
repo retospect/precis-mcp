@@ -83,8 +83,18 @@ contribute nothing, so an over-broad set is harmless. Breadth is the
 default (one hit per ref); depth (ranked chunks) is deferred to a later
 `per_paper`-style param.
 
-**Slice 3 — the per-kind presenter contract + unified list page.** A
-base `ItemPresenter` every kind implements:
+**Slice 3 — the per-kind presenter contract + unified list page.**
+*Slice 3a SHIPPED:* a read-only `/items` search page over the Slice-2
+primitive — one query box (kinds / sort / since / until), one
+best-matching chunk per ref as the preview, the flag buttons on each
+row, per-kind click-through (`ItemPresenter` seed: `open_url` overrides
++ `/refs/<kind>/<id>` default), nav entry. Additive; retires nothing.
+*Remaining Slice 3:* promote the presenter to the full contract below +
+`@abstractmethod` totality; author/source facet + folders + density
+presets + thumbnails/hover; retire `/drive` / `/papers-needed` / triage
+/ `/refs` / `/tags/refs` into filters; the coupled kind-taxonomy audit.
+
+A base `ItemPresenter` every kind implements:
 - `name()` — row/popover heading
 - `preview(query) -> text | image` — one method, union return: text
   kinds return the matching chunk, visual kinds return an image. The

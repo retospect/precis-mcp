@@ -532,6 +532,22 @@ class FakeStore:
                 out[rid] = present
         return out
 
+    def search_chunks_across_kinds(self, *, kinds, q, **_kw):
+        """Canned cross-kind hits for the /items page — one paper + one
+        web ref, filtered to the requested kinds. Tests override the raw
+        triples via ``self.cross_kind_hits``."""
+        hits = getattr(self, "cross_kind_hits", None)
+        if hits is None:
+            pref = make_ref(id=10, kind="paper", slug="smith2024", title="A paper")
+            wref = make_ref(
+                id=70, kind="web", slug="example.com/page", title="A web page"
+            )
+            blk_p = SimpleNamespace(id=1001, pos=3, text="passage about the query")
+            blk_w = SimpleNamespace(id=1002, pos=0, text="web snippet about the query")
+            hits = [(blk_p, pref, 0.9), (blk_w, wref, 0.8)]
+        want = set(kinds)
+        return [(b, r, s) for (b, r, s) in hits if r.kind in want]
+
     def ingest_timestamps(self, ref_id: int):
         # Canned ingest timeline for the paper detail page. tz-aware
         # datetimes (any may be None for a stub / un-chunked paper).

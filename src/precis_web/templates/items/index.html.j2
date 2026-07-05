@@ -1,0 +1,81 @@
+{% extends "base.html.j2" %}
+{% block title %}Items{% endblock %}
+{% block content %}
+<div class="mb-3">
+  <h1 class="text-lg font-semibold">Items</h1>
+  <p class="text-sm text-slate-500">
+    One cross-kind search over everything you've collected — papers,
+    patents, slides, cached answers, and more. One best-matching passage
+    per source; the same query the LLM runs. Flag what you want to read.
+  </p>
+</div>
+
+<form method="get" action="/items" class="mb-4 flex flex-wrap items-end gap-2">
+  <div class="flex-1 min-w-[16rem]">
+    <label class="block text-xs text-slate-500 mb-0.5">Search</label>
+    <input type="text" name="q" value="{{ q }}" autofocus
+           placeholder="e.g. MOF CO₂ capture"
+           class="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500 mb-0.5">Kinds</label>
+    <input type="text" name="kinds" value="{{ kinds }}"
+           placeholder="paper,patent (blank = all sources)"
+           class="rounded-md border border-slate-300 px-3 py-1.5 text-sm w-56" />
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500 mb-0.5">Sort</label>
+    <select name="sort" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+      <option value="relevance" {% if sort != 'recency' %}selected{% endif %}>Relevance</option>
+      <option value="recency" {% if sort == 'recency' %}selected{% endif %}>Newest first</option>
+    </select>
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500 mb-0.5">Since</label>
+    <input type="date" name="since" value="{{ since }}"
+           class="rounded-md border border-slate-300 px-2 py-1.5 text-sm" />
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500 mb-0.5">Until</label>
+    <input type="date" name="until" value="{{ until }}"
+           class="rounded-md border border-slate-300 px-2 py-1.5 text-sm" />
+  </div>
+  <button type="submit"
+          class="rounded-md bg-slate-800 text-white px-4 py-1.5 text-sm hover:bg-slate-700">
+    Search
+  </button>
+</form>
+
+{% if not q %}
+  <p class="text-sm text-slate-400">Enter a query to search across every source kind.</p>
+{% elif not rows %}
+  <p class="text-sm text-slate-500">
+    No matches for <span class="font-medium text-slate-700">{{ q }}</span>{% if since or until %} in that date window{% endif %}.
+  </p>
+{% else %}
+<ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+  {% for row in rows %}
+  <li class="px-4 py-3 hover:bg-slate-50">
+    <div class="flex items-start gap-3">
+      <span class="mt-0.5 shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{{ row.kind }}</span>
+      <div class="min-w-0 flex-1">
+        <a href="{{ row.open_url }}" class="text-sky-700 hover:underline font-medium">{{ row.title }}</a>
+        {% if row.preview %}
+          <p class="text-xs text-slate-500 mt-0.5">{{ row.preview }}</p>
+        {% endif %}
+      </div>
+      <div class="shrink-0">
+        {% set ref_kind = row.kind %}
+        {% set ref_id = row.id %}
+        {% set active = row.flags %}
+        {% include "_flag_buttons.html.j2" with context %}
+      </div>
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+<p class="mt-2 text-xs text-slate-400">
+  Showing up to {{ rows | length }} best-matching source{{ '' if rows | length == 1 else 's' }} · one passage per item.
+</p>
+{% endif %}
+{% endblock %}

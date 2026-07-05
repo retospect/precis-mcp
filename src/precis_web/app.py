@@ -83,6 +83,7 @@ def create_app(
         drive,
         env,
         flags,
+        items,
         needs_you,
         papers,
         papers_needed,
@@ -103,6 +104,7 @@ def create_app(
     app.include_router(pres.router)
     app.include_router(papers_needed.router)
     app.include_router(flags.router)
+    app.include_router(items.router)
     app.include_router(drafts.router)
     app.include_router(drive.router)
     app.include_router(refs.router)
