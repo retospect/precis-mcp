@@ -124,6 +124,50 @@ split/merge, and the vendored-PM-bundle spike are in the design doc).
 
 ---
 
+## 🔵 Retire the `equation` chunk kind → math as `$…$` / `$$…$$` in prose
+
+**Status**: decided · **Severity**: feature (simplification) · **Owner**:
+`draftimport/`, ingest/paper pipeline, `precis_web/routes/{papers,drafts}.py`,
+`export/latex.py`, a forward migration
+
+**North star.** No dedicated `equation` kind. Math is LaTeX *inside* prose —
+inline `$…$`, display `$$…$$` — KaTeX-rendered on read, edited as raw source.
+It behaves like every other block; no special reader/editor/export branch, no
+`needs-math-review` quarantine.
+
+**Scope reality (verified 2026-07-05, `precis_prod`).** ~54,920 live `equation`
+chunks, and they are **overwhelmingly papers, not drafts**:
+`paper = 54,642 · draft = 278`. So the earlier draft-scoped project prompt
+covers the *minority* — **papers are the real target** and have different
+mechanics. The two fronts:
+
+- **Drafts (278) — sorted.** Mutable chunks from the LaTeX importer
+  (`draftimport/tex.py`, `_MATH_ENVS`, `needs-math-review`); draft reader; bodies
+  are bare LaTeX + `\label{eq:…}`. Plan = the project prompt held by Reto
+  (2026-07-05): stop minting `equation` in the importer, migrate to `$$…$$`
+  paragraphs, drop the reader/editor special-casing.
+- **Papers (54,642) — the bulk, needs its own handling.** Different in three
+  ways: (1) **append-only body chunks** — migration is DELETE+INSERT (which
+  re-runs the embed/summary/keyword cascade at 55k scale), not in-place edit;
+  (2) produced by the **Marker/PDF ingest** pipeline, *not* the LaTeX importer —
+  the "stop producing `equation`" fix lives there; (3) rendered by the **two-pane
+  paper reader** (`routes/papers.py`), not the draft reader. Paper equations carry
+  source numbering like `\tag{A.5}`, e.g.
+  `H^{+}(aq) + e^{-} \leftrightarrow \frac{1}{2} H_2, \tag{A.5}`.
+
+**Shared work (both fronts).** A KaTeX-safe body normalizer (strip
+`\label`/`\tag`, unwrap `\begin{equation}`, map `align`→`aligned`, etc. — a pure
+tested `body → "$$…$$"` fn with a gold set); the numbering / `\label` / `\ref`
+decision (drop, auto-number, or map to `[¶handle]`); LaTeX export of `$$…$$`
+(and inline `$…$`); and `strip_markers`/card-combined handling so `$$` doesn't
+break embeddings. Forward-only migration, dry-run → `--commit`, reversible until
+browser-confirmed (use the Playwright-over-tunnel harness above). **Interim
+alternative** if the full retire isn't scheduled: just make `equation` *render*
+(wrap bodies in `$$` for KaTeX in both readers) — first-class display without the
+migration.
+
+---
+
 ## 🟢 Dark-factory build/deploy workstream
 
 **Status**: in progress · **Severity**: feature · **Owner**: `scripts/`,
