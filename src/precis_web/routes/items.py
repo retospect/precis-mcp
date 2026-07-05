@@ -150,9 +150,17 @@ def _run_search(
     )
     ref_ids = [ref.id for _, ref, _ in hits]
     flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
+    tags_bulk = store.ref_tags_bulk(ref_ids)
     # A search hit matched a chunk, so the ref is ingested by definition.
     return [
-        item_row(ref, block, score, flag_state.get(ref.id, set()), has_chunks=True)
+        item_row(
+            ref,
+            block,
+            score,
+            flag_state.get(ref.id, set()),
+            has_chunks=True,
+            tags=tags_bulk.get(ref.id),
+        )
         for block, ref, score in hits
     ]
 
@@ -165,6 +173,7 @@ def _recent_rows(store: Any, kinds: list[str]) -> list[dict[str, Any]]:
     ref_ids = [r.id for r in refs]
     flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
     ingested = store.refs_with_body_chunks(ref_ids)
+    tags_bulk = store.ref_tags_bulk(ref_ids)
     return [
         item_row(
             r,
@@ -172,6 +181,7 @@ def _recent_rows(store: Any, kinds: list[str]) -> list[dict[str, Any]]:
             0.0,
             flag_state.get(r.id, set()),
             has_chunks=r.id in ingested,
+            tags=tags_bulk.get(r.id),
         )
         for r in refs
     ]

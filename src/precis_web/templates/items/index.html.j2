@@ -1,13 +1,48 @@
 {% extends "base.html.j2" %}
 {% block title %}Items{% endblock %}
 {% block content %}
-<div class="mb-3">
-  <h1 class="text-lg font-semibold">Items</h1>
-  <p class="text-sm text-slate-500">
-    One cross-kind search over everything you've collected — papers,
-    patents, slides, cached answers, and more. One best-matching passage
-    per source; the same query the LLM runs. Flag what you want to read.
-  </p>
+<div class="mb-3 flex items-start gap-3" x-data="{ open: false, kind: 'draft' }">
+  <div class="min-w-0">
+    <h1 class="text-lg font-semibold">Items</h1>
+    <p class="text-sm text-slate-500">
+      One cross-kind search over everything you've collected — papers,
+      patents, slides, cached answers, and more. One best-matching passage
+      per source; the same query the LLM runs. Flag what you want to read.
+    </p>
+  </div>
+  {# + New — mirrors Drive's dropdown; reuses /drafts/new + /drive/new. #}
+  <div class="ml-auto relative shrink-0">
+    <button type="button" @click="open = !open"
+            class="rounded bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700">
+      + New <span class="text-[9px]">▾</span>
+    </button>
+    <form x-show="open" x-cloak @click.outside="open = false"
+          method="post"
+          :action="kind === 'draft' ? '/drafts/new' : '/drive/new'"
+          class="absolute right-0 mt-1 w-64 z-20 rounded-lg border border-slate-200 bg-white p-3 shadow-lg space-y-2">
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">Kind</label>
+        <select x-model="kind" name="kind"
+                class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm bg-white">
+          <option value="draft">Draft (document)</option>
+          <option value="cad">CAD (3D solid)</option>
+          <option value="structure">DFT (atomistic cell)</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">Title <span class="text-rose-500">*</span></label>
+        <input name="title" required autocomplete="off" x-init="$el.focus()"
+               placeholder="new document"
+               class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm">
+      </div>
+      <div class="flex justify-end">
+        <button type="submit"
+                class="rounded bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700">
+          Create ▸
+        </button>
+      </div>
+    </form>
+  </div>
 </div>
 
 <form method="get" action="/items" class="mb-4 flex flex-wrap items-end gap-2">
@@ -51,12 +86,22 @@
   {% for row in items %}
   <li class="px-4 py-3 hover:bg-slate-50">
     <div class="flex items-start gap-3">
-      <span class="mt-0.5 shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{{ row.kind }}</span>
+      {# marker group: [kind] [stub|chunks] #}
+      <div class="mt-0.5 shrink-0 flex items-center gap-1">
+        <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500" title="kind">{{ row.kind }}</span>
+        {% for b in row.state %}
+          <span class="text-[10px] px-1.5 py-0.5 rounded {{ b.cls }}" title="{{ b.title }}">{{ b.label }}</span>
+        {% endfor %}
+      </div>
       <div class="min-w-0 flex-1">
         <a href="{{ row.open_url }}" class="text-sky-700 hover:underline font-medium">{{ row.title }}</a>
-        {% for b in row.state %}
-          <span class="ml-1 text-[10px] px-1.5 py-0.5 rounded {{ b.cls }}" title="{{ b.title }}">{{ b.label }}</span>
-        {% endfor %}
+        {% if row.tags %}
+          <span class="ml-1 inline-flex flex-wrap gap-1 align-middle">
+            {% for t in row.tags %}
+            <a href="{{ t.href }}" class="text-[10px] px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 hover:bg-violet-100">{{ t.label }}</a>
+            {% endfor %}
+          </span>
+        {% endif %}
         {% if row.preview %}
           <p class="text-xs text-slate-500 mt-0.5">{{ row.preview }}</p>
         {% elif row.created_at %}

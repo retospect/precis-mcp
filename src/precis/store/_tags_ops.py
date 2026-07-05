@@ -328,6 +328,31 @@ class TagsMixin:
             out.setdefault(int(ref_id), set()).add(str(value))
         return out
 
+    def ref_tags_bulk(self, ref_ids: list[int]) -> dict[int, list[tuple[str, str]]]:
+        """All ref-level tags for many refs in one query — the N+1 avoidance
+        for a list view that renders per-row tag chips.
+
+        Returns ``{ref_id: [(namespace, value), …]}`` in insertion order,
+        containing only refs that carry at least one live tag. Expired tags
+        are excluded, matching :meth:`has_tag` / :meth:`ref_tag_values`.
+        """
+        if not ref_ids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT rt.ref_id, t.namespace, t.value "
+                "FROM ref_tags rt "
+                "JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = ANY(%s) "
+                "  AND (rt.expires_at IS NULL OR rt.expires_at > now()) "
+                "ORDER BY rt.ref_id, rt.created_at ASC, t.tag_id ASC",
+                (list(ref_ids),),
+            ).fetchall()
+        out: dict[int, list[tuple[str, str]]] = {}
+        for ref_id, ns, val in rows:
+            out.setdefault(int(ref_id), []).append((str(ns), str(val)))
+        return out
+
     def tags_for_with_expiry(
         self,
         ref_id: int,

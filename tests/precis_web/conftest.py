@@ -579,6 +579,15 @@ class FakeStore:
             rid for rid in ref_ids if rid in getattr(self, "ingested_ref_ids", set())
         }
 
+    def ref_tags_bulk(self, ref_ids):
+        """Canned per-ref tags for the /items row chips. Paper #10 carries
+        a topical tag + a flag + a machine tag so the display filter is
+        exercised (only the topical one should render as a chip)."""
+        canned = {
+            10: [("topic", "co2-capture"), ("OPEN", "read-later"), ("DREAM", "spec")],
+        }
+        return {rid: canned[rid] for rid in ref_ids if rid in canned}
+
     def list_all_tags(self, *, kind=None, page=1, page_size=50):
         """Canned tag-usage rows for the /items tag cloud. A machine
         namespace (DREAM) is included so the exclusion filter is exercised."""

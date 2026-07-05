@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from precis.embedder import MockEmbedder
-from precis.store import BlockInsert, Store
+from precis.store import BlockInsert, Store, Tag
 
 
 def _seed(store: Store, kind: str, slug: str, blocks: list[str], emb: MockEmbedder):
@@ -139,6 +139,18 @@ def test_recent_refs_newest_first_and_kind_scoped(store: Store) -> None:
     assert ids[:2] == [b.id, a.id]  # newest first
     assert c.id not in ids
     assert store.recent_refs([], limit=10) == []
+
+
+def test_ref_tags_bulk(store: Store) -> None:
+    a = store.insert_ref(kind="paper", slug="tb-a", title="A")
+    b = store.insert_ref(kind="paper", slug="tb-b", title="B")  # untagged
+    store.add_tag(a.id, Tag.open("topic-x"))
+    store.add_tag(a.id, Tag.closed("PRIO", "high"))
+
+    got = store.ref_tags_bulk([a.id, b.id])
+    assert set(got[a.id]) == {("OPEN", "topic-x"), ("PRIO", "high")}
+    assert b.id not in got  # untagged refs are simply absent
+    assert store.ref_tags_bulk([]) == {}
 
 
 def test_refs_with_body_chunks(store: Store) -> None:

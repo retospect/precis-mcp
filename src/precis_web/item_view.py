@@ -38,6 +38,32 @@ _PIPELINE_KINDS: frozenset[str] = frozenset(
     {"paper", "patent", "datasheet", "cfp", "pres"}
 )
 
+#: Namespaces hidden from the per-row tag chips — machine/control tags
+#: the operator doesn't browse by.
+_TAG_HIDE_NS: frozenset[str] = frozenset(
+    {"STATUS", "DREAM", "PRIO", "SRC", "CACHE", "EMBED", "LLM", "ROLE3", "CLASSIFY"}
+)
+
+#: Flag values shown as toggle buttons, not repeated as tag chips.
+_TAG_HIDE_VALUES: frozenset[str] = frozenset({"read-later", "must-read", "skim"})
+
+
+def _display_tags(raw: list[tuple[str, str]] | None) -> list[dict[str, str]]:
+    """Per-row tag chips: what this item was tagged with, minus the
+    machine namespaces and the reading-intent flags (which have buttons).
+    ``OPEN`` tags render bare; others as ``namespace:value``; each links
+    to the ``/tags/refs`` pivot.
+    """
+    out: list[dict[str, str]] = []
+    for ns, val in raw or []:
+        if ns in _TAG_HIDE_NS:
+            continue
+        if ns == "OPEN" and val in _TAG_HIDE_VALUES:
+            continue
+        label = val if ns == "OPEN" else f"{ns}:{val}"
+        out.append({"label": label, "href": f"/tags/refs?namespace={ns}&value={val}"})
+    return out
+
 
 class ItemPresenter:
     """Default renderer for one kind's search hit → row view-model."""
@@ -106,6 +132,7 @@ def item_row(
     flags: set[str],
     *,
     has_chunks: bool = False,
+    tags: list[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Build one unified-list row view-model from a search hit.
 
@@ -113,6 +140,8 @@ def item_row(
     toggle buttons). ``preview`` is the chunk that made the ref match.
     ``has_chunks`` drives the stub/ingested state badges (a search hit
     matched a chunk, so it's ``True``; a recent-list ref is probed).
+    ``tags`` are the ref's raw ``(namespace, value)`` tags → the per-row
+    chips.
     """
     p = presenter_for(getattr(ref, "kind", ""))
     return {
@@ -123,6 +152,7 @@ def item_row(
         "preview": p.preview(block),
         "created_at": getattr(ref, "created_at", None),
         "state": p.state(ref, has_chunks=has_chunks),
+        "tags": _display_tags(tags),
         "score": score,
         "flags": flags,
     }

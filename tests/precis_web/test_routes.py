@@ -265,6 +265,31 @@ def test_items_stub_vs_ingested_badges(runtime, client) -> None:
     assert ">stub<" not in resp2.text
 
 
+def test_items_rows_show_per_item_tags(client) -> None:
+    """Each row shows the item's own tags as chips — topical tags only;
+    the reading-intent flags (buttons) and machine namespaces are hidden.
+
+    Tested on the search view (?q=), which has no tag cloud, so the only
+    source of these links is the per-row chips."""
+    resp = client.get("/items?q=query")
+    assert resp.status_code == 200
+    # Paper #10's topical tag renders as a chip linking to the pivot.
+    assert "/tags/refs?namespace=topic&amp;value=co2-capture" in resp.text
+    # Its flag + machine tags do NOT appear as chips.
+    assert "namespace=OPEN&amp;value=read-later" not in resp.text
+    assert "namespace=DREAM&amp;value=spec" not in resp.text
+
+
+def test_items_has_new_button(client) -> None:
+    """The /items header carries a Drive-style '+ New' dropdown reusing
+    the existing /drafts/new + /drive/new creation flows."""
+    resp = client.get("/items")
+    assert "+ New" in resp.text
+    assert "/drafts/new" in resp.text
+    assert "/drive/new" in resp.text
+    assert "Draft (document)" in resp.text
+
+
 def test_items_search_renders_cross_kind_rows(client) -> None:
     resp = client.get("/items?q=query")
     assert resp.status_code == 200
