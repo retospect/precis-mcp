@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.export.latex import _COMBINED, _bibtex_authors, preprocess_draft_inline
+from precis.utils import handle_registry
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 
@@ -436,11 +437,67 @@ def _render_reference(m: re.Match[str], ctx: _Ctx, paragraph: Any) -> None:
         return
 
 
+def _handle_cite_key(tgt: str, ctx: _Ctx) -> str | None:
+    """A paper/patent handle (``pc<chunk_id>`` / ``pa<ref_id>``) → its
+    cite_key, via the one store resolver. ``None`` if it doesn't resolve to
+    a live paper. Mirrors :func:`precis.export.latex._handle_cite_key` so the
+    docx and PDF paths cite the identical resolved key."""
+    if ctx.store is None:
+        return None
+    try:
+        resolved = ctx.store.resolve_handle(tgt)
+    except Exception:  # pragma: no cover — store hiccup
+        return None
+    return resolved.public_id if resolved is not None else None
+
+
+def _finding_cite_key(tgt: str, ctx: _Ctx) -> str | None:
+    """A finding handle (``fi<id>``) → its bibliographic key (primary
+    cite_key once the chase establishes it, else the ``pub_id`` stub).
+    Mirrors :func:`precis.export.latex._finding_cite_key`."""
+    if ctx.store is None:
+        return None
+    parsed = handle_registry.parse(tgt)
+    if parsed is None:
+        return None
+    _kind, _is_chunk, pk = parsed
+    ref = ctx.store.fetch_refs_by_ids([pk]).get(pk)
+    if ref is None:
+        return None
+    meta = ref.meta or {}
+    key = meta.get("primary_cite_key") or meta.get("pub_id")
+    return str(key) if key else None
+
+
 def _render_target(tgt: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> None:
     if tgt.startswith("§"):  # a citation — keep the consecutive-cite run
         cm = DRAFT_CITE_PATTERN.fullmatch(tgt)
         if cm is not None:
             _cite(cm.group("slug"), ctx, paragraph)
+        return
+    # ADR 0036 universal handle: ``[pc10]`` / ``[pa5]`` (a paper) and
+    # ``[pt7]`` (a patent) are citations; ``[fi3]`` a finding cite; ``[dc41]``
+    # an intra-draft cross-ref; a record handle for a thought (``[me5]``) is
+    # provenance-only. The LaTeX exporter resolves these — the docx path used
+    # to drop them all, so handle-cited drafts (e.g. everything imported from
+    # LaTeX) rendered with no citations and no References section at all.
+    parsed = handle_registry.parse(tgt)
+    if parsed is not None:
+        kind, is_chunk, _pk = parsed
+        if kind in ("paper", "patent"):
+            slug = _handle_cite_key(tgt, ctx)
+            if slug:
+                _cite(slug, ctx, paragraph)
+            return
+        if kind == "finding":
+            slug = _finding_cite_key(tgt, ctx)
+            if slug:
+                _cite(slug, ctx, paragraph)
+            return
+        # draft cross-ref / other record handle → not a citation.
+        ctx.last_cite = None
+        if kind == "draft" and is_chunk and surface:
+            paragraph.add_run(surface)  # no Word cross-ref field yet — text only
         return
     # Any non-citation content breaks a run of consecutive citations.
     ctx.last_cite = None
@@ -483,7 +540,7 @@ def _format_reference(store: Any, slug: str, warnings: list[str]) -> str:
     """One reference line, resolved through the SAME paper lookup as the
     ``.bib`` path (citation-integrity parity with the PDF). A slug with no
     paper in the corpus degrades to a marked stub + a warning."""
-    pref = store.get_ref(kind="paper", id=slug)
+    pref = store.get_ref(kind="paper", id=slug) or store.get_ref(kind="patent", id=slug)
     if pref is None:
         warnings.append(f"cite {slug!r}: no paper in corpus — stub reference")
         return f"[missing paper {slug}] (cited slug not in corpus)"

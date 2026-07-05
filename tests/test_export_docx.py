@@ -297,6 +297,45 @@ def test_latex_cite_command_is_folded(
     assert "Wu 2022 study" in text  # References entry
 
 
+def test_handle_form_citation_resolves(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A draft that cites a paper by ADR-0036 handle (``[pa<ref_id>]``, the
+    form every LaTeX-imported draft uses) must produce a numbered mark +
+    References entry — NOT render as nothing. Regression: the docx exporter
+    used to drop handle citations entirely (the LaTeX/PDF path resolved them),
+    so handle-cited drafts exported with no citations and no References
+    section at all."""
+    from precis.utils import handle_registry
+
+    _seed_paper(hub.store, "nasibulin2007", "Multifunctional nanobuds", 2007)
+    pref = hub.store.get_ref(kind="paper", id="nasibulin2007")
+    handle = handle_registry.format_handle("paper", pref.id)  # 'pa<ref_id>'
+    assert handle.startswith("pa")
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="dh", title="T", project=pid)
+    draft.put(
+        id="dh",
+        chunk_kind="paragraph",
+        text=f"Nanobuds were first reported [{handle}].",
+        at={"last": True},
+    )
+    ref = hub.store.get_ref(kind="draft", id="dh")
+    out = tmp_path / "dh.docx"
+    res = export_docx(hub.store, ref, target_path=out)
+    assert res.cited_slugs == ["nasibulin2007"]  # handle resolved to the slug
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert "[1]" in text  # numbered mark emitted (not dropped)
+    assert "References" in text
+    assert "Multifunctional nanobuds" in text  # resolved entry
+
+
 def test_omml_converter_returns_none_on_empty() -> None:
     pytest.importorskip("latex2mathml")
     from precis.export.omml import latex_to_omml
