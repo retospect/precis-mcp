@@ -193,6 +193,36 @@ def test_add_empty_block_inserts_paragraph_after_anchor(
     assert order.index(chunks[0].handle) == order.index(para_h) + 1
 
 
+def test_split_keeps_handle_and_inserts_tail_after(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The inline Enter-split (web `/block/{h}/split`): the current chunk keeps
+    its handle + the `before` text, a new chunk with the `after` text lands
+    right after it. Mirrors what the endpoint does via edit_text + add_chunks."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt", chunk_kind="paragraph", text="Hello world", at={"after": "¶" + title_h}
+    )
+    para_h = _order(hub, "nt")[1].handle
+    ref = hub.store.get_ref(kind="draft", id="nt")
+    hub.store.edit_text(para_h, "Hello ")
+    new = hub.store.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="world",
+        at={"after": "¶" + para_h},
+        split=False,
+    )[0]
+    assert (
+        hub.store.get_draft_chunk(para_h).text == "Hello "
+    )  # first keeps handle + before
+    assert hub.store.get_draft_chunk(new.handle).text == "world"
+    handles = [c.handle for c in _order(hub, "nt")]
+    assert handles.index(new.handle) == handles.index(para_h) + 1
+
+
 def test_newly_dangling_returns_only_new_breakage(
     draft: DraftHandler, hub: Hub
 ) -> None:

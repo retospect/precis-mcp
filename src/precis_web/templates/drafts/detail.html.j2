@@ -404,6 +404,11 @@ function docToText(doc) {
                                   else if (n.isText) out += n.text; });
   return out;
 }
+// Text from the block start up to a doc position (the caret) — hard_breaks
+// count as '\n', matching docToText. Round-trip verified: before+after === full.
+function textUpTo(doc, pos) {
+  return doc.textBetween(0, pos, '\n', (leaf) => leaf.type.name === 'hard_break' ? '\n' : '');
+}
 
 const sqKey = new PluginKey('squiggle');
 function squigglePlugin() {
@@ -454,6 +459,29 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
           'Mod-z': undo, 'Mod-y': redo, 'Shift-Mod-z': redo,
           'Mod-Enter': () => { opts.onSave && opts.onSave(); return true; },
           'Escape': () => { opts.onCancel && opts.onCancel(); return true; },
+          // Enter splits the block at the caret into two chunks (this one keeps
+          // the text before, a new one gets the text after).
+          'Enter': (state) => {
+            const before = textUpTo(state.doc, state.selection.from);
+            const after = docToText(state.doc).slice(before.length);
+            opts.onSplit && opts.onSplit(before, after);
+            return true;
+          },
+          // Shift-Enter is a soft line break within the same block.
+          'Shift-Enter': (state, dispatch) => {
+            if (dispatch) dispatch(state.tr.replaceSelectionWith(
+              schema.nodes.hard_break.create()).scrollIntoView());
+            return true;
+          },
+          // Arrow past the top/bottom line hands off to the neighbouring block.
+          'ArrowUp': (state, dispatch, view) => {
+            if (view && view.endOfTextblock('up')) { opts.onLeave && opts.onLeave('up'); return true; }
+            return false;
+          },
+          'ArrowDown': (state, dispatch, view) => {
+            if (view && view.endOfTextblock('down')) { opts.onLeave && opts.onLeave('down'); return true; }
+            return false;
+          },
         }),
         keymap(baseKeymap),
         squigglePlugin(),
@@ -470,8 +498,11 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
     },
   });
   view.dom.addEventListener('blur', () => { opts.onBlur && opts.onBlur(); });
-  // Auto-place the caret at the end and focus, so you can type immediately.
-  view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)));
+  // Place the caret (end by default; 'start' when arriving from the block
+  // above / after a split) and focus, so you can type immediately.
+  const _d = view.state.doc;
+  const _sel = opts.caret === 'start' ? TextSelection.atStart(_d) : TextSelection.atEnd(_d);
+  view.dispatch(view.state.tr.setSelection(_sel));
   view.focus();
   setTimeout(() => validate(view, seedText, opts.validateUrl), 40);
   return {
@@ -519,6 +550,9 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
     // A freshly-inserted block auto-opens its editor: draftDoc sets a global
     // to this handle before it hydrates, and the new row's init() consumes it.
     init() {
+      // Registry so the doc can open a neighbour's editor (caret handoff / split).
+      if (!window.__dEditors) window.__dEditors = {};
+      window.__dEditors[handle] = this;
       if (window.__draftAutoEdit === handle) {
         window.__draftAutoEdit = null;
         this.$nextTick(() => this.startEdit());
@@ -553,7 +587,7 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
         } else { const d = await res.json().catch(() => ({})); window.alert(d.error || 'delete failed'); }
       } catch (e) { window.alert('network error — not deleted'); }
     },
-    startEdit() {
+    startEdit(caret) {
       if (!editable) return;
       this.editing = true; this.err = '';
       this.$nextTick(() => {
@@ -567,10 +601,13 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
             try {
               this._pm = window.__mountDraftPM(this.$refs.pm, this.orig, {
                 validateUrl: `/drafts/${ident}/validate-refs`,
+                caret: caret || 'end',
                 onChange: (txt) => { if (t) t.value = txt; },   // mirror into hidden textarea
                 onBlur: () => this.save(),
                 onSave: () => this.save(),
                 onCancel: () => this.cancel(),
+                onSplit: (before, after) => this.split(before, after),
+                onLeave: (dir) => this.leave(dir),
               });
             } catch (e) {
               this.pmActive = false; this._pm = null;
@@ -581,6 +618,34 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
         }
         if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
       });
+    },
+    // Enter: split this block at the caret. The current chunk keeps `before`
+    // (and its handle); a new chunk gets `after` and opens with caret at start.
+    async split(before, after) {
+      if (this.saving) return;
+      this.saving = true; this.err = '';
+      try {
+        const res = await fetch(`/drafts/${ident}/block/${handle}/split`, {
+          method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ before, after }),
+        });
+        const d = await res.json().catch(() => ({}));
+        this.saving = false;
+        if (res.ok && d.handle) {
+          this._teardownPM(); this.editing = false;
+          window.dispatchEvent(new CustomEvent('draft:split', { detail: { handle, newHandle: d.handle } }));
+        } else {
+          this.err = d.error || 'split failed';
+          this.$nextTick(() => { if (this._pm) this._pm.focus(); });
+        }
+      } catch (e) { this.saving = false; this.err = 'network error — not split'; }
+    },
+    // Arrow off the top/bottom edge: persist + close this block, then hand the
+    // caret to the neighbour (the doc computes which and opens it).
+    async leave(dir) {
+      await this.save();
+      if (this.editing) return;   // save bounced (a broken ref) → stay put
+      window.dispatchEvent(new CustomEvent('draft:goto', { detail: { handle, dir } }));
     },
     _teardownPM() {
       if (this._pm) { try { this._pm.destroy(); } catch (e) { /* ignore */ } this._pm = null; }
@@ -1008,6 +1073,17 @@ function draftDoc(ident) {
         const h = e.detail && e.detail.handle;
         if (h) this.removedBlock(h);
       });
+      // Enter-split: current block now holds `before`; refresh + open the new
+      // (tail) block with the caret at its start.
+      window.addEventListener('draft:split', async (e) => {
+        await this.forceRefresh();
+        await this.openEditor(e.detail.newHandle, 'start');
+      });
+      // Caret handoff: open the neighbour of `handle` in the arrow direction.
+      window.addEventListener('draft:goto', async (e) => {
+        const nb = this._neighbour(e.detail.handle, e.detail.dir);
+        if (nb) await this.openEditor(nb, e.detail.dir === 'up' ? 'end' : 'start');
+      });
       // 4) drive windowing off scroll + resize.
       this._onScroll = () => this.onScroll();
       window.addEventListener('scroll', this._onScroll, {passive: true});
@@ -1121,6 +1197,30 @@ function draftDoc(ident) {
       await this.forceRefresh();
       await this.ensureVisible(h);
       this.flashEdit('block added');
+    },
+    // Open a block's editor at `caret` ('start' | 'end'), scrolling it into
+    // view + hydrating it first. Retries briefly for the (re)hydrated row's
+    // Alpine component to register itself, so it works whether the target was a
+    // live row, an off-window placeholder, or a recycled node.
+    async openEditor(h, caret) {
+      await this.ensureVisible(h);
+      for (let i = 0; i < 20; i++) {
+        const ed = window.__dEditors && window.__dEditors[h];
+        if (ed && ed.startEdit && document.getElementById('c-' + h)) { ed.startEdit(caret); return; }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    },
+    // The nearest EDITABLE prose block above/below `h` in the visible order
+    // (skips figures/tables so an arrow-hop lands somewhere you can type).
+    _neighbour(h, dir) {
+      const ok = new Set(['paragraph', 'heading', 'item', 'aside', 'box', 'callout', 'term']);
+      const i = this.vis.findIndex((b) => b.h === h);
+      if (i < 0) return null;
+      const step = dir === 'up' ? -1 : 1;
+      for (let j = i + step; j >= 0 && j < this.vis.length; j += step) {
+        if (ok.has(this.vis[j].kind)) return this.vis[j].h;
+      }
+      return null;
     },
     async removedBlock(h) {
       // Pull the authoritative fresh skeleton, then drop every mounted row no

@@ -1931,6 +1931,52 @@ async def add_block(
     return JSONResponse({"ok": True, "handle": new.handle, "dc": new.dc})
 
 
+@router.post("/drafts/{ident}/block/{handle}/split")
+async def split_block(
+    request: Request,
+    ident: str,
+    handle: str,
+    before: str = Form(""),
+    after: str = Form(""),
+) -> JSONResponse:
+    """Split one block at the caret (inline editor's Enter): the current chunk
+    keeps ``before`` (and its handle, so cross-refs to it survive), a new chunk
+    carrying ``after`` lands right after it. Returns the new block's handle so
+    the client can open it with the caret at its start."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    chunk = store.get_draft_chunk(handle)
+    if chunk is None or chunk.ref_id != ref.id:
+        return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
+    # Splitting a heading/term yields a paragraph tail; a paragraph/item keeps
+    # its kind so a list stays a list.
+    tail_kind = (
+        chunk.chunk_kind
+        if chunk.chunk_kind
+        in (
+            "paragraph",
+            "item",
+            "aside",
+            "box",
+            "callout",
+        )
+        else "paragraph"
+    )
+    store.edit_text(handle, before)
+    new = store.add_chunks(
+        ref_id=ref.id,
+        chunk_kind=tail_kind,
+        text=after,
+        at={"after": f"¶{handle}"},
+        split=False,
+    )[0]
+    handler = get_runtime(request).hub.handler_for("draft")
+    handler._sync_draft_links(ref.id)
+    return JSONResponse({"ok": True, "handle": new.handle, "dc": new.dc})
+
+
 @router.post("/drafts/{ident}/block/{handle}/delete")
 async def delete_block(
     request: Request,
