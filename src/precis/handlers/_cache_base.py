@@ -68,6 +68,64 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Reader-render de-overlap
+# ---------------------------------------------------------------------------
+#
+# ``_split_body_blocks`` chops a single large body block (e.g. a YouTube
+# transcript) into ``chunk_target_chars`` chunks that deliberately OVERLAP by
+# ``text_chunker.DEFAULT_CHUNK_OVERLAP`` (150) chars — the overlap gives the
+# embedder cross-boundary context and is wanted in storage. But the reader
+# render reconstructs the display body by concatenating those stored chunks,
+# so the overlap prints twice at every seam (a ~150-char block echoed). This
+# helper rejoins consecutive blocks by detecting and dropping that exact
+# overlap, reconstructing the original text. It is a no-op for kinds whose
+# blocks don't overlap (papers, per-block-embedded web / perplexity), since no
+# long suffix/prefix match is found — those seams keep the ``\n\n`` join.
+
+#: Never drop more than this many chars at a seam — bounds the blast radius so
+#: a coincidental match can't swallow real content. Comfortably above the
+#: chunker's 150-char overlap to tolerate piece-boundary slack; if
+#: ``DEFAULT_CHUNK_OVERLAP`` is ever raised past ~250, raise this too.
+_MAX_SEAM_OVERLAP = 256
+
+#: Require at least this much exact suffix==prefix match before treating a seam
+#: as an overlap. Real overlaps are ~150 chars; an exact 24-char prose
+#: coincidence is vanishingly unlikely, so this stays clear of false positives
+#: (which would silently delete real text) while still catching genuine
+#: overlaps. Biased deliberately: a missed short overlap only leaves a small
+#: cosmetic dup, whereas a false positive would delete content.
+_MIN_SEAM_OVERLAP = 24
+
+
+def _seam_overlap(a: str, b: str) -> int:
+    """Longest ``k`` in ``[_MIN_SEAM_OVERLAP, _MAX_SEAM_OVERLAP]`` with
+    ``a[-k:] == b[:k]``; ``0`` when there is no qualifying overlap."""
+    hi = min(len(a), len(b), _MAX_SEAM_OVERLAP)
+    for k in range(hi, _MIN_SEAM_OVERLAP - 1, -1):
+        if a[-k:] == b[:k]:
+            return k
+    return 0
+
+
+def dedupe_overlap_join(texts: list[str]) -> str:
+    """Join block texts, dropping the chunker's overlap at each seam.
+
+    An overlapping seam is joined contiguously — the trailing block already
+    carries its own leading separator after the dropped overlap — so the
+    original text is reconstructed. A non-overlapping seam keeps the ``\\n\\n``
+    paragraph break the render has always used.
+    """
+    filtered = [t for t in texts if t]
+    if not filtered:
+        return ""
+    out = filtered[0]
+    for nxt in filtered[1:]:
+        k = _seam_overlap(out, nxt)
+        out = out + nxt[k:] if k else out + "\n\n" + nxt
+    return out.rstrip()
+
+
+# ---------------------------------------------------------------------------
 # Subclass return type for `_fetch`
 # ---------------------------------------------------------------------------
 
@@ -547,7 +605,11 @@ class CacheBackedHandler(Handler):
     def _render(self, ref: Ref, cache: CacheEntry, *, hit: bool) -> Response:
         """Render the cached body + attribution footer + cost trailer."""
         blocks = self.store.list_blocks_for_ref(ref.id)
-        body_text = "\n\n".join(b.text for b in blocks).rstrip()
+        # Blocks may be overlapping chunks from ``_split_body_blocks`` (a big
+        # single body split for the embedder). Drop the overlap when rejoining
+        # so the reader sees the original text, not ~150-char echoes at each
+        # seam. No-op for kinds whose blocks don't overlap.
+        body_text = dedupe_overlap_join([b.text for b in blocks])
 
         lines: list[str] = []
         lines.append(f"# {ref.title}")

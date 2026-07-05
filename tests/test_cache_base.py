@@ -13,7 +13,13 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
-from precis.handlers._cache_base import CacheBackedHandler, FetchResult
+from precis.handlers._cache_base import (
+    _MIN_SEAM_OVERLAP,
+    CacheBackedHandler,
+    FetchResult,
+    _seam_overlap,
+    dedupe_overlap_join,
+)
 from precis.protocol import KindSpec
 from precis.store import Store
 from precis.store.types import BlockInsert
@@ -508,3 +514,68 @@ def test_chunk_target_chars_zero_disables_splitting() -> None:
     out = h._split_body_blocks(blocks)
     assert len(out) == 1
     assert out[0].text == long_text
+
+
+# ── Reader-render de-overlap ───────────────────────────────────────────────
+#
+# ``_split_body_blocks`` splits one big body block into overlapping chunks for
+# the embedder; the render must drop that overlap so the reader sees the
+# original text, not ~150-char echoes at each seam.
+
+
+class TestDedupeOverlapJoin:
+    def test_roundtrips_the_real_splitter_exactly(self) -> None:
+        """The end-to-end contract: split a blob the way the handler does,
+        then de-overlap-join the chunks — the original text comes back
+        byte-for-byte (modulo outer strip)."""
+        from precis.ingest.text_chunker import split_text
+
+        blob = "\n".join(
+            f"line {i}: the quick brown fox jumps over the lazy dog again"
+            for i in range(120)
+        )
+        chunks = [c.strip() for c in split_text(blob, chunk_size=800)]
+        assert len(chunks) > 1, "test needs a multi-chunk blob to be meaningful"
+        assert dedupe_overlap_join(chunks) == blob.strip()
+
+    def test_drops_overlap_at_seam(self) -> None:
+        overlap = "x" * (_MIN_SEAM_OVERLAP + 10)
+        a = "head content " + overlap
+        b = overlap + " tail content"
+        joined = dedupe_overlap_join([a, b])
+        # The overlap appears exactly once, not twice.
+        assert joined.count(overlap) == 1
+        assert joined == "head content " + overlap + " tail content"
+
+    def test_no_overlap_keeps_paragraph_break(self) -> None:
+        """Non-overlapping blocks (papers, per-block-embedded kinds) keep the
+        historical ``\\n\\n`` join untouched."""
+        paras = [
+            "# Intro paragraph, entirely distinct.",
+            "## Methods, sharing nothing with intro.",
+            "## Results, also unique text here.",
+        ]
+        assert dedupe_overlap_join(paras) == "\n\n".join(paras)
+
+    def test_short_coincidence_below_threshold_is_not_collapsed(self) -> None:
+        """A sub-threshold suffix/prefix coincidence must NOT be treated as an
+        overlap — a false positive would silently delete real text."""
+        short = "z" * (_MIN_SEAM_OVERLAP - 1)
+        a = "alpha " + short
+        b = short + " beta"
+        # Below threshold → treated as a normal paragraph seam, nothing dropped.
+        assert dedupe_overlap_join([a, b]) == a + "\n\n" + b
+
+    def test_empty_and_singleton(self) -> None:
+        assert dedupe_overlap_join([]) == ""
+        assert dedupe_overlap_join(["only block"]) == "only block"
+        # Empty blocks are skipped, not joined as blank paragraphs.
+        assert dedupe_overlap_join(["a", "", "b"]) == "a\n\nb"
+
+    def test_seam_overlap_caps_and_floors(self) -> None:
+        # Exact match longer than the floor is found.
+        s = "abc " * 20  # 80 chars
+        assert _seam_overlap("PRE" + s, s + "POST") == len(s)
+        # Below the floor → 0.
+        tiny = "q" * (_MIN_SEAM_OVERLAP - 1)
+        assert _seam_overlap("PRE" + tiny, tiny + "POST") == 0
