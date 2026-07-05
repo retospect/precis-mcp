@@ -31,8 +31,9 @@
     {% if legend %}
     <div class="flex flex-wrap gap-2 mt-2">
       {% for e in legend %}
-      <span class="cad-hl inline-flex items-center gap-1 text-[11px] text-slate-500 cursor-pointer rounded px-1 hover:bg-amber-50"
-            data-part="{{ e.component }}">
+      <span class="cad-hl inline-flex items-center gap-1 text-[11px] text-slate-500 cursor-grab rounded px-1 hover:bg-amber-50"
+            data-part="{{ e.component }}" data-drag="{{ e.component }}" draggable="true"
+            title="drag into a prompt box to reference this part">
         <span class="inline-block w-3 h-3 rounded-full border border-slate-300" style="background: {{ e.color }};"></span>
         {{ e.component }}<span class="text-slate-400">×{{ e.count }}</span>
       </span>
@@ -41,7 +42,7 @@
     {% endif %}
 
     <p class="text-[11px] text-slate-400 mt-1">
-      Drag to rotate · scroll to zoom · <b>click a feature</b> for details. Parts are coloured; cut/intersect features are translucent tool volumes.
+      Drag to rotate · scroll to zoom · <b>click a feature</b> for details · <b>drag a body</b> (or a chip/feature below) into a prompt box to reference it. Parts are coloured; cut/intersect features are translucent tool volumes.
     </p>
 
     {# click-detail panel #}
@@ -57,8 +58,9 @@
       </summary>
       <div class="px-3 pb-2 max-h-52 overflow-y-auto space-y-0.5">
         {% for n in nodes %}
-        <div class="cad-hl flex items-center gap-2 text-xs rounded px-1 py-0.5 cursor-pointer hover:bg-amber-50"
-             data-node="{{ n.name }}">
+        <div class="cad-hl flex items-center gap-2 text-xs rounded px-1 py-0.5 cursor-grab hover:bg-amber-50"
+             data-node="{{ n.name }}" data-drag="{{ n.name }}" draggable="true"
+             title="drag into a prompt box to reference this feature">
           <span class="inline-block w-2.5 h-2.5 rounded-full border border-slate-300 shrink-0" style="background: {{ n.color }};"></span>
           <code class="text-slate-600 w-24 shrink-0 truncate">{{ n.name }}</code>
           <span class="text-[10px] px-1 rounded
@@ -333,16 +335,89 @@ document.addEventListener('mouseout', (ev) => {
 });
 
 // ── click → detail ──
+let justDragged = false;  // set by the body pointer-drag below; suppresses the click
 const ray = new THREE.Raycaster();
 const ptr = new THREE.Vector2();
 renderer.domElement.addEventListener('click', (ev) => {
   const rect = renderer.domElement.getBoundingClientRect();
   ptr.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
   ptr.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+  if (justDragged) { justDragged = false; return; }  // a drag, not a click
   ray.setFromCamera(ptr, camera);
   const hits = modelRoot ? ray.intersectObjects(modelRoot.children, true) : [];
   if (!hits.length) return;
   showNode(hits[0].object.name);
+});
+
+// ── drag a body / chip / feature → drop a reference token into a prompt box ──
+function insertToken(input, token) {
+  const hasSel = input.selectionStart != null && input.selectionEnd != null;
+  const start = hasSel ? input.selectionStart : input.value.length;
+  const end = hasSel ? input.selectionEnd : input.value.length;
+  const v = input.value;
+  const lead = start > 0 && !/\s$/.test(v.slice(0, start)) ? ' ' : '';
+  const ins = lead + token + ' ';
+  input.value = v.slice(0, start) + ins + v.slice(end);
+  const pos = start + ins.length;
+  try { input.focus(); input.setSelectionRange(pos, pos); } catch (_) { /* noop */ }
+}
+
+// Native HTML5 drag from the coloured legend chips + feature rows ([data-drag]).
+document.addEventListener('dragstart', (ev) => {
+  const t = ev.target.closest && ev.target.closest('[data-drag]');
+  if (!t || !ev.dataTransfer) return;
+  ev.dataTransfer.setData('text/plain', '`' + t.getAttribute('data-drag') + '`');
+  ev.dataTransfer.effectAllowed = 'copy';
+});
+document.querySelectorAll('input[name="instruction"]').forEach((input) => {
+  input.addEventListener('dragover', (ev) => {
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+  });
+  input.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    const tok = ev.dataTransfer && ev.dataTransfer.getData('text/plain');
+    if (tok) insertToken(input, tok);
+  });
+});
+
+// Pointer-drag a solid body straight out of the 3D view. (Native HTML5 DnD
+// can't source from a WebGL canvas, so we track pointer events and drop via
+// elementFromPoint; OrbitControls is paused once a real drag starts.)
+let dragName = null, dragStart = null, dragging = false, pill = null;
+renderer.domElement.addEventListener('pointerdown', (ev) => {
+  if (ev.button !== 0) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  ptr.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+  ptr.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+  ray.setFromCamera(ptr, camera);
+  const hits = modelRoot ? ray.intersectObjects(modelRoot.children, true) : [];
+  dragName = hits.length ? hits[0].object.name : null;
+  dragStart = dragName ? { x: ev.clientX, y: ev.clientY } : null;
+});
+window.addEventListener('pointermove', (ev) => {
+  if (!dragName || !dragStart) return;
+  if (!dragging) {
+    if (Math.hypot(ev.clientX - dragStart.x, ev.clientY - dragStart.y) < 6) return;
+    dragging = true;
+    controls.enabled = false;  // don't rotate while dragging a body out
+    pill = document.createElement('div');
+    pill.className = 'fixed z-50 pointer-events-none text-[11px] px-1.5 py-0.5 rounded bg-slate-800 text-white shadow font-mono';
+    pill.textContent = '`' + dragName + '`';
+    document.body.appendChild(pill);
+  }
+  pill.style.left = (ev.clientX + 10) + 'px';
+  pill.style.top = (ev.clientY + 10) + 'px';
+});
+window.addEventListener('pointerup', (ev) => {
+  if (dragging) {
+    const under = document.elementFromPoint(ev.clientX, ev.clientY);
+    const input = under && under.closest ? under.closest('input[name="instruction"]') : null;
+    if (input) insertToken(input, '`' + dragName + '`');
+    if (pill) pill.remove();
+    pill = null; dragging = false; justDragged = true; controls.enabled = true;
+  }
+  dragName = null; dragStart = null;
 });
 
 function row(k, v) {

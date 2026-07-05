@@ -85,6 +85,19 @@ def test_cad_detail_renders_viewer_and_parts(cad_client, runtime_with_store) -> 
     assert "export.scad" in r.text
 
 
+def test_cad_detail_renders_drag_affordances(cad_client, runtime_with_store) -> None:
+    _seed(runtime_with_store, slug="web_drag")
+    r = cad_client.get("/cad/web_drag")
+    assert r.status_code == 200
+    # legend chips + feature rows are draggable reference tokens
+    assert 'data-drag="flange"' in r.text  # a part chip
+    assert 'data-drag="plate"' in r.text  # a feature row
+    assert 'draggable="true"' in r.text
+    # the drop-into-prompt wiring + body pointer-drag are present
+    assert "insertToken" in r.text
+    assert 'input[name="instruction"]' in r.text
+
+
 def test_cad_model_gltf_returns_glb(cad_client, runtime_with_store) -> None:
     _seed(runtime_with_store, slug="web_glb")
     r = cad_client.get("/cad/web_glb/model.gltf")
