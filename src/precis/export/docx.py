@@ -33,6 +33,44 @@ from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 #: chunk depth → Word heading level (1..4); deeper collapses to 4.
 _MAX_HEADING_LEVEL = 4
 
+#: A deliberately drab, muted theme layered over python-docx's (bright,
+#: blue-accented) default template. All values are desaturated greys /
+#: slate so the output reads as sober and dreary rather than the stock
+#: Calibri-blue. ``_apply_dreary_theme`` writes these onto the built-in
+#: named styles, so every paragraph/heading picks them up without any
+#: per-run work. Tweak the palette here to re-tune the mood.
+_BODY_FONT = "Georgia"  # a staid serif, drearier than default Calibri
+_HEADING_FONT = "Georgia"
+_INK = "3B3B3B"  # body text — dark grey, not pure black
+_HEADING_INK = "5A5A5A"  # headings — mid grey, no accent colour
+_TITLE_INK = "6B6B6B"  # document title — a touch lighter, faded
+#: hyperlink colour — a muted slate rather than the stock bright blue.
+_LINK_INK = "5A6169"
+
+
+def _apply_dreary_theme(doc: Any) -> None:
+    """Recolour + reface the built-in styles to a drab, muted palette.
+
+    python-docx's default template ships bright Calibri body text and
+    blue Calibri-Light headings; we overwrite the named styles the walk
+    actually uses (``Normal``, ``Title``, ``Heading 1``–``4``) with a
+    subdued grey serif so the whole document reads dreary. Guarded per
+    style — a template missing one of these names just skips it."""
+    from docx.shared import RGBColor
+
+    def _restyle(name: str, *, font: str, ink: str) -> None:
+        try:
+            style = doc.styles[name]
+        except KeyError:  # pragma: no cover - depends on the docx template
+            return
+        style.font.name = font
+        style.font.color.rgb = RGBColor.from_string(ink)
+
+    _restyle("Normal", font=_BODY_FONT, ink=_INK)
+    _restyle("Title", font=_HEADING_FONT, ink=_TITLE_INK)
+    for lvl in range(1, _MAX_HEADING_LEVEL + 1):
+        _restyle(f"Heading {lvl}", font=_HEADING_FONT, ink=_HEADING_INK)
+
 
 @dataclass
 class DocxResult:
@@ -88,7 +126,7 @@ def _add_hyperlink(paragraph: Any, url: str, text: str) -> None:
     run = OxmlElement("w:r")
     rpr = OxmlElement("w:rPr")
     color = OxmlElement("w:color")
-    color.set(qn("w:val"), "0563C1")
+    color.set(qn("w:val"), _LINK_INK)
     rpr.append(color)
     underline = OxmlElement("w:u")
     underline.set(qn("w:val"), "single")
@@ -147,6 +185,7 @@ def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
     )
 
     doc = Document()
+    _apply_dreary_theme(doc)
     terms = store.draft_terms(ref.id)  # handle → (short, long)
     byline = build_byline(getattr(ref, "authors", None))
 
