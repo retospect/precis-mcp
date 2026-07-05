@@ -73,11 +73,20 @@ split/merge, and the vendored-PM-bundle spike are in the design doc).
   QA'd by Reto. *Verification gap:* no headless-browser test — bundle load,
   schema round-trip, endpoint, `.mjs` MIME, and syntax are checked, but the
   contenteditable/decoration rendering rides on the fallback + Reto's eyes.
-- **Slice 2b-iii — editor-feel (open).** Caret handoff between boxes (arrow
-  past an edge → focus the neighbour, hydrating a placeholder first) and
-  Enter-new-box / blank-line split-on-save (first keeps the handle) /
-  backspace-at-start merge. Separable from the squiggle; pure client + the
-  existing add/delete/text endpoints.
+- **Slice 2b-iii — editor-feel (caret flow + split/merge) → shipped + deployed.**
+  **Enter** splits at the caret (`/block/{h}/split`: current keeps `before` + its
+  handle, new chunk gets `after`, opens caret-at-start); **Shift-Enter** = soft
+  break. **Arrow up/down past the top/bottom line** hands off to the neighbouring
+  editable block (`draft:goto` → `_neighbour` skips figures/tables → `openEditor`
+  at end/start; a registry `__dEditors` + a retry loop make it robust to
+  live/placeholder/recycled rows). **Backspace at start** merges into the previous
+  block (`/block/{h}/merge-prev`: client sends live text so unsaved keystrokes
+  survive; empty block → just delete + go to prev end; caret at the join offset —
+  doc pos is `1+offset`; no-ops rather than folding a heading away). Split-point
+  math headless-verified (before+after reconstructs across 61 caret positions);
+  tests `test_split_keeps_handle_and_inserts_tail_after`,
+  `test_merge_prev_joins_text_and_deletes_block`; endpoints live-verified
+  net-zero on dream-review. Same headless-browser verification gap as 2b-ii.
 - **Slice 3 — polish (deferred).** Reveal-on-cursor ref rendering (pretty chip
   unless the caret is in its paragraph), `[`-autocomplete, structured-block
   creation from the editor, lang selector, remove the now-dead `tailwind.js`.
