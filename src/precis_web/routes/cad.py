@@ -14,8 +14,10 @@ feature, and edit it by natural-language instruction.
 * ``GET  /cad/{slug}/proposal`` — poll the latest proposal (back-compat).
 * ``GET  /cad/{slug}/proposals`` — poll ALL recent proposals (reload-safe; the
   box polls this so every outstanding request rehydrates on a page reload).
-* ``POST /cad/{slug}/apply`` — derive a new design from a proposal (optionally
-  soft-deleting the parent).
+* ``POST /cad/{slug}/apply`` — derive a NEW design from a proposal (snapshot
+  as a new version; optionally soft-deleting the parent).
+* ``POST /cad/{slug}/apply_in_place`` — apply a proposal to THIS design in
+  place (``put`` on the same slug) — edit the live model, no new version.
 
 The mesh the browser sees comes from the *same* IR→tessellate pipeline that feeds
 the STL/3MF exporter (:mod:`precis.cad.gltf`), so the view can never drift from
@@ -593,6 +595,43 @@ async def cad_apply(
     if not ok:
         return _err(request, msg)
     return RedirectResponse(url=f"/cad/{to_slug}", status_code=303)
+
+
+@router.post("/cad/{slug}/apply_in_place")
+async def cad_apply_in_place(
+    request: Request,
+    slug: str,
+    job_id: int = Form(...),
+) -> Any:
+    """Apply a proposal to **this** design in place — mutate the working part
+    (``put`` on the same slug), no new version. This is the "mess with the live
+    model without cutting a new version" path; ``/apply`` (derive) is the
+    explicit "snapshot as a new version" fork."""
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, slug)
+    except NotFound:
+        return RedirectResponse(url="/cad", status_code=303)
+    proposal = _proposal_by_job(store, ref.id, job_id)
+    source = ""
+    if proposal and proposal.get("proposal"):
+        source = str(proposal["proposal"].get("source") or "")
+    if not source.strip():
+        return _err(request, "that proposal has no source to apply")
+
+    handler = get_runtime(request).hub.handler_for("cad")
+
+    def _do() -> tuple[bool, str]:
+        try:
+            handler.put(id=slug, text=source)
+            return True, slug
+        except (BadInput, NotFound) as exc:
+            return False, str(exc)
+
+    ok, msg = await asyncio.to_thread(_do)
+    if not ok:
+        return _err(request, msg)
+    return RedirectResponse(url=f"/cad/{slug}", status_code=303)
 
 
 def _err(request: Request, detail: str) -> Any:

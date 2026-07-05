@@ -139,7 +139,7 @@
 {# ── further instructions → LLM proposal ── #}
 <div id="instruct" class="mt-6">
   <h2 class="text-sm font-semibold text-slate-700 mb-2">Further instructions
-    <span class="text-xs font-normal text-slate-400">— an LLM proposes a rewrite; you review &amp; apply to a new design</span>
+    <span class="text-xs font-normal text-slate-400">— an LLM proposes a rewrite; review, then apply in place or save as a new version</span>
   </h2>
   <form method="post" action="/cad/{{ slug }}/instruct" class="flex gap-2">
     <input name="instruction" required autocomplete="off"
@@ -450,13 +450,20 @@ setMode('features');
     const badge = p.valid
       ? '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">valid</span>'
       : '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800">invalid: ' + esc(p.error || '') + '</span>';
+    const applyInPlace = p.valid
+      ? '<form method="post" action="/cad/' + encodeURIComponent(slug) + '/apply_in_place" class="mt-2">'
+        + '<input type="hidden" name="job_id" value="' + esc(d.job_id) + '">'
+        + '<button class="rounded bg-slate-700 text-white text-xs px-3 py-1 hover:bg-slate-800 whitespace-nowrap">Apply in place</button>'
+        + '<span class="ml-2 text-[10px] text-slate-400">edit this design — no new version</span>'
+        + '</form>'
+      : '';
     const apply = p.valid
-      ? '<form method="post" action="/cad/' + encodeURIComponent(slug) + '/apply" class="mt-2 space-y-2">'
+      ? '<form method="post" action="/cad/' + encodeURIComponent(slug) + '/apply" class="mt-2 space-y-2 pt-2 border-t border-slate-200">'
         + '<input type="hidden" name="job_id" value="' + esc(d.job_id) + '">'
         + '<div class="flex gap-2">'
         + '<input name="to" required autocomplete="off" value="' + esc(slug) + '-v2" '
         + 'class="flex-1 rounded border border-slate-300 px-2 py-1 text-xs" placeholder="new design slug">'
-        + '<button class="rounded bg-emerald-600 text-white text-xs px-3 py-1 hover:bg-emerald-700 whitespace-nowrap">Apply → new design</button>'
+        + '<button class="rounded bg-emerald-600 text-white text-xs px-3 py-1 hover:bg-emerald-700 whitespace-nowrap">Save as new version</button>'
         + '</div>'
         + '<label class="flex items-center gap-1.5 text-[11px] text-slate-500">'
         + '<input type="checkbox" name="delete_original" value="1"> soft-delete this design after applying</label>'
@@ -467,6 +474,7 @@ setMode('features');
       + instr
       + (p.rationale ? '<p class="text-xs text-slate-500 mb-2">' + esc(p.rationale) + '</p>' : '')
       + '<pre class="text-[11px] font-mono bg-white border border-slate-200 rounded p-2 overflow-x-auto max-h-60">' + esc(p.source || '') + '</pre>'
+      + applyInPlace
       + apply
       + '</div>';
   }

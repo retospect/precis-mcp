@@ -202,6 +202,45 @@ def test_cad_apply_soft_deletes_parent_when_checked(
     assert store.get_ref(kind="cad", id="web_drop_v2") is not None
 
 
+def test_cad_apply_in_place_mutates_same_slug(
+    cad_client, runtime_with_store, monkeypatch
+) -> None:
+    """Apply-in-place edits the working part (same slug), mints no new ref."""
+    _seed(runtime_with_store, slug="web_live")
+    store = runtime_with_store.store
+    before = resolve_live_slug_ref(store, kind="cad", id="web_live")
+    import precis_web.routes.cad as cad_routes
+
+    monkeypatch.setattr(
+        cad_routes,
+        "_proposal_by_job",
+        lambda _s, _r, _j: {
+            "job_id": 7,
+            "status": "succeeded",
+            "created": "now",
+            "proposal": {
+                "source": "component flange\nplate add cyl:r99h9",
+                "valid": True,
+            },
+        },
+    )
+    r = cad_client.post(
+        "/cad/web_live/apply_in_place",
+        data={"job_id": "7"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cad/web_live"
+    # same slug, same ref id — no new version forked
+    after = resolve_live_slug_ref(store, kind="cad", id="web_live")
+    assert after.id == before.id
+    # no derived child got created
+    assert store.get_ref(kind="cad", id="web_live-v2") is None
+    # the new geometry is live (the r99 cylinder from the proposal)
+    handler = runtime_with_store.hub.handler_for("cad")
+    assert "r99" in handler.get(id="web_live").body
+
+
 def _seed_propose_job(
     store, cad_ref_id: int, slug: str, instruction: str, *, status: str
 ) -> int:
