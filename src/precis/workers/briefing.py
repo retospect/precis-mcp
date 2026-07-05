@@ -24,6 +24,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
+import urllib.error
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -40,7 +42,7 @@ from precis.utils.prompt import (
     Profile,
     assemble,
 )
-from precis.workers.llm_summarize import LlmClient, LlmConfig
+from precis.workers.llm_summarize import LlmClient, LlmConfig, LlmResult
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +58,15 @@ _MAX_ARTICLES = 200
 #: the proxy 400s on unknown names, which silently failed every briefing job
 #: from 2026-07-04 until this was pinned to a served alias.
 _DEFAULT_BRIEFING_MODEL = "claude-opus"
+
+#: A single transient litellm-proxy blip — a dropped connection, a 5xx, a 429 —
+#: must not silently lose a whole day's briefing (the job just bubbles
+#: child-failed with no retry, and the daily cron won't backfill a missed tick).
+#: Retry the completion a few times with exponential backoff. A 4xx (e.g. a
+#: retired model alias) is permanent and is re-raised on the first failure so
+#: real misconfiguration fails fast instead of stalling on backoff.
+_LLM_RETRY_ATTEMPTS = int(os.environ.get("PRECIS_BRIEFING_RETRY_ATTEMPTS") or 3)
+_LLM_RETRY_BACKOFF_S = float(os.environ.get("PRECIS_BRIEFING_RETRY_BACKOFF_S") or 2.0)
 
 _SYSTEM_PROMPT = (
     "You are a news editor writing a concise morning briefing. You are "
@@ -143,6 +154,47 @@ def _format_context(refs: list[Any], max_chars: int = 120_000) -> str:
     return "\n".join(lines)
 
 
+def _is_transient_llm_error(exc: BaseException) -> bool:
+    """Whether an ``LlmClient.complete`` failure is worth retrying.
+
+    Transient: a dropped connection, a timeout, or a 5xx/429 from the proxy.
+    Permanent: a 4xx (a bad request / retired model alias won't fix itself) or
+    a malformed-response ``RuntimeError`` — re-raised immediately so real
+    misconfiguration fails fast instead of stalling on backoff.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code == 429 or exc.code >= 500
+    return isinstance(exc, urllib.error.URLError | ConnectionError | TimeoutError)
+
+
+def _complete_with_retry(
+    llm: LlmClient,
+    messages: list[dict[str, str]],
+    *,
+    attempts: int = _LLM_RETRY_ATTEMPTS,
+    backoff_s: float = _LLM_RETRY_BACKOFF_S,
+    sleep: Callable[[float], None] = time.sleep,
+) -> LlmResult:
+    """``llm.complete`` with bounded exponential-backoff retries on transient
+    proxy failures; permanent errors propagate on the first attempt."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return llm.complete(messages)
+        except Exception as exc:
+            if attempt >= attempts or not _is_transient_llm_error(exc):
+                raise
+            wait = backoff_s * (2 ** (attempt - 1))
+            log.warning(
+                "briefing: transient LLM error (attempt %d/%d), retrying in %.1fs: %s",
+                attempt,
+                attempts,
+                wait,
+                exc,
+            )
+            sleep(wait)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def run_briefing(
     store: Store,
     *,
@@ -187,10 +239,11 @@ def run_briefing(
         replace(LlmConfig.from_env(), model=model, max_tokens=_BRIEF_MAX_TOKENS)
     )
     context = _format_context(refs)
-    result = llm.complete(
+    result = _complete_with_retry(
+        llm,
         _build_briefing_messages(
             date=now.date().isoformat(), count=len(refs), context=context
-        )
+        ),
     )
     brief = result.text.strip()
 
