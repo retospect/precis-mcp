@@ -268,52 +268,76 @@ def _set_severity_tag(store: Store, ref_id: int, severity: str, *, conn: Any) ->
     store.add_tag(ref_id, Tag.open(f"severity:{severity}"), set_by="system", conn=conn)
 
 
-#: Env var holding a Discord webhook URL for critical-alert pushes. Unset by
-#: default, so the push path merges dark: alerts still land in the ``/alerts``
-#: tab and agent triage surface, but nothing leaves the cluster until an
-#: operator wires a channel. Set it to actually get paged (the whole point of
-#: severity ``critical`` — a stalled planner or a dead worker that would
-#: otherwise fester unseen for days). Parallel to the fixer's own
-#: ``PRECIS_FIXER_DISCORD_WEBHOOK``.
-OPS_ALERT_WEBHOOK_ENV = "PRECIS_OPS_ALERT_WEBHOOK"
+#: Env var holding the Discord delivery target for critical-alert pushes — a
+#: ``discord/<guild>/<channel>[/<thread>]`` string, the *same* channel the daily
+#: news briefing is delivered to. Unset by default, so the push path merges
+#: dark: alerts still land in the ``/alerts`` tab and agent triage surface, but
+#: nothing is posted until an operator wires the channel. Set it to actually get
+#: paged (the whole point of severity ``critical`` — a stalled planner or a dead
+#: worker that would otherwise fester unseen for days). Delivery reuses the
+#: asa_bot bot + ``pg_notify('precis.messages')`` path (there are no Discord
+#: webhooks in this deployment — the bridge is a bot), so no new secret.
+OPS_ALERT_TARGET_ENV = "PRECIS_OPS_ALERT_TARGET"
 
 
-def notify_critical_alert(title: str, detail: str = "") -> bool:
-    """Best-effort Discord push for a newly-raised critical alert.
+def notify_critical_alert(
+    store: Store, title: str, detail: str = "", *, fingerprint: str = ""
+) -> bool:
+    """Best-effort proactive push for a newly-raised critical alert.
 
-    Fires a fire-and-forget HTTP POST to the webhook in
-    :data:`OPS_ALERT_WEBHOOK_ENV`. Returns ``True`` if a push was
-    attempted, ``False`` if no webhook is configured (the default — the
-    push path is off until an operator opts in). Never raises: a failed
-    push must not break the detector pass that called it, so network /
-    HTTP errors are swallowed with a warning. Intended to be called only
-    on the *first* sighting of a ``critical`` alert (``raise_alert`` →
-    ``is_new``), so a standing condition pages once, not every minute.
+    Queues a ``kind='message'`` to the channel in
+    :data:`OPS_ALERT_TARGET_ENV` and fires
+    ``pg_notify('precis.messages', …)`` in the same tx, exactly as
+    ``MessageHandler.put`` / ``briefing._deliver`` do — asa_bot (the one
+    process holding a Discord socket) then posts it. Returns ``True`` if a
+    push was queued, ``False`` if no target is configured (the default —
+    dark until an operator wires the channel). Never raises: a failed push
+    must not break the detector pass. Call only on the *first* sighting of
+    a ``critical`` alert (``raise_alert`` → ``is_new``), so a standing
+    condition pages once, not every minute.
     """
     import os
-    import urllib.error
-    import urllib.request
 
-    webhook = os.environ.get(OPS_ALERT_WEBHOOK_ENV, "").strip()
-    if not webhook:
+    from precis.store.types import BlockInsert
+
+    target = os.environ.get(OPS_ALERT_TARGET_ENV, "").strip()
+    if not target:
         return False
-    content = f"🚨 **{title}**"
+    body = f"🚨 {title}"
     if detail:
-        content += f"\n{detail}"
-    # Discord caps message content at 2000 chars.
-    body = json.dumps({"content": content[:1900]}).encode("utf-8")
-    req = urllib.request.Request(
-        webhook, data=body, headers={"Content-Type": "application/json"}
-    )
+        body += f"\n{detail}"
     try:
-        urllib.request.urlopen(req, timeout=10).close()
-    except (urllib.error.URLError, OSError, ValueError):
+        with store.tx() as conn:
+            meta = {
+                "target": target,
+                "status": "queued",
+                "reason": f"ops-alert {fingerprint or title}",
+                "author": "asa",
+                "proactive": True,
+            }
+            ref = store.insert_ref(
+                kind="message",
+                slug=None,
+                title=f"🚨 {title}"[:200],
+                meta=meta,
+                conn=conn,
+            )
+            store.insert_blocks(
+                ref.id,
+                [BlockInsert(pos=0, text=body, meta={"chunk_kind": "message_body"})],
+                conn=conn,
+            )
+            conn.execute(
+                "SELECT pg_notify('precis.messages', %s)",
+                (json.dumps({"ref_id": ref.id, "target": target, "author": "asa"}),),
+            )
+    except Exception:
         log.warning("notify_critical_alert: push failed", exc_info=True)
     return True
 
 
 __all__ = [
-    "OPS_ALERT_WEBHOOK_ENV",
+    "OPS_ALERT_TARGET_ENV",
     "SEVERITIES",
     "STATE_OPEN",
     "STATE_RESOLVED",

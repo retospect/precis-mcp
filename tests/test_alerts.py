@@ -200,3 +200,41 @@ def test_handler_get_by_id_reads_one_alert(hub: Hub, store: Store) -> None:
     aid, _ = raise_alert(store, source="s", fingerprint="fp:1", title="readable alert")
     resp = handler.get(id=aid)
     assert "readable alert" in resp.body
+
+
+# ── critical push (asa_bot message path) ───────────────────────────
+
+
+def test_notify_critical_alert_queues_message_when_target_set(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With PRECIS_OPS_ALERT_TARGET set, a critical push queues a
+    `kind='message'` to that channel (asa_bot then posts it)."""
+    from precis.alerts import notify_critical_alert
+
+    monkeypatch.setenv("PRECIS_OPS_ALERT_TARGET", "discord/1/2/3")
+    ok = notify_critical_alert(
+        store, "dead-worker: agent on melchior", "silent 12h", fingerprint="dw:m:agent"
+    )
+    assert ok is True
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT title, meta->>'target', meta->>'status', meta->>'proactive' "
+            "FROM refs WHERE kind='message' AND meta->>'target'='discord/1/2/3' "
+            "ORDER BY ref_id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None
+    assert "dead-worker" in row[0]
+    assert row[1] == "discord/1/2/3"
+    assert row[2] == "queued"
+    assert row[3] == "true"
+
+
+def test_notify_critical_alert_is_dark_without_target(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No target configured → no push, no message row (default)."""
+    from precis.alerts import notify_critical_alert
+
+    monkeypatch.delenv("PRECIS_OPS_ALERT_TARGET", raising=False)
+    assert notify_critical_alert(store, "x", "y") is False

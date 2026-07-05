@@ -131,9 +131,12 @@ driver; adding one is a `Reviewer(...)` instance):
   min while its host is otherwise alive). These two are the only
   `critical` categories — a thrashing/dead worker stalls the planner
   cluster-wide, so on the *first* sighting `raise_alert` (now returning
-  `(ref_id, is_new)`) fires a one-shot `notify_critical_alert` →
-  Discord webhook `PRECIS_OPS_ALERT_WEBHOOK` (default unset → the push
-  merges dark; alerts still land in `/alerts` + agent triage). Each
+  `(ref_id, is_new)`) fires a one-shot `notify_critical_alert` — a
+  `kind='message'` to `PRECIS_OPS_ALERT_TARGET`
+  (`discord/<guild>/<channel>`, the same asa_bot channel the daily news
+  briefing uses; no webhooks exist in this deployment) via
+  `pg_notify('precis.messages')`; default unset → the push merges dark;
+  alerts still land in `/alerts` + agent triage. Each
   finding is raised as a `kind='alert'` (one per condition, `alert_source
   = nursery:<category>`, deduped on `meta.fingerprint`; a non-ref-scoped
   worker-health finding sets `ref_id=None` + an explicit

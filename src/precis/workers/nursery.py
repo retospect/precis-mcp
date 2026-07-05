@@ -196,7 +196,7 @@ def run_nursery_pass(store: Store, *, limit: int = 50) -> BatchResult:
             # worker → planner stall). Bumps of an already-open alert
             # don't re-push, so a standing outage doesn't spam.
             if is_new and severity == "critical":
-                notify_critical_alert(title, f.detail)
+                notify_critical_alert(store, title, f.detail, fingerprint=fp)
         raised += len(findings)
         resolved += resolve_stale_alerts(store, source=source, live_fingerprints=live)
     if raised or resolved:

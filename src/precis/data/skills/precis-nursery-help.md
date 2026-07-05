@@ -14,8 +14,10 @@ The nursery is the first of three review tiers in
 SQL-only detectors, and raises a `kind='alert'` per condition (see
 `precis-alert-help`). No LLM call. The only proactive push is a
 one-shot Discord ping on a *new* `critical` condition (a thrashing or
-dead worker), and only when `PRECIS_OPS_ALERT_WEBHOOK` is set — unset by
-default, so the push merges dark and everything else stays pull-only. It
+dead worker), delivered as a `kind='message'` to the channel in
+`PRECIS_OPS_ALERT_TARGET` (the same asa_bot channel as the daily news
+briefing) — unset by default, so the push merges dark and everything
+else stays pull-only. It
 used to write a `kind='memory'` digest tagged `tier:nursery`
 — that conflated ops telemetry with reflective *thought*, polluted the
 memory namespace, and (because the spin-loop finding set churns every
