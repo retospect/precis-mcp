@@ -17,9 +17,10 @@ what's still open.
 
 ---
 
-## 🟡 Draft inline editor (click-to-edit prose, no LLM)
+## 🟢 Draft inline editor (click-to-edit prose, no LLM)
 
-**Status**: in progress · **Severity**: feature · **Owner**:
+**Status**: shipped + deployed (core complete; only optional extensions + a
+verification residual remain, below) · **Severity**: feature · **Owner**:
 `precis_web/routes/drafts.py`, `static/`, `handlers/draft.py`
 · **Design**: [`docs/design/draft-inline-editor.md`](docs/design/draft-inline-editor.md)
 
@@ -98,10 +99,28 @@ split/merge, and the vendored-PM-bundle spike are in the design doc).
   static build is confirmed good). All wrapped so a failure degrades gracefully
   (autocomplete `try`-guarded; chips are display-only). Live-verified:
   `ref-search?q=attention` → real papers; `tailwind.js` 404, `tailwind.css` 200.
-  - *Remaining (all optional, deferred):* autocomplete over non-paper kinds
-    (chunks/findings), resolved-title chips (needs a resolve endpoint; today the
-    chip shows the token), structured-block creation from the editor, lang
-    selector. And the standing **headless-browser verification gap** (2b-ii).
+  - *The editor is complete.* The deferred extensions and the verification
+    residual are broken out as their own backlog entries below.
+- **Draft editor — deferred extensions** → backlog (optional, none block use):
+  - **`[`-autocomplete over non-paper kinds** (chunks / findings), not just held
+    papers — extend `GET /drafts/{ident}/ref-search` + the picker's result set.
+  - **Resolved-title chips** — reveal-on-cursor shows the raw token today; a small
+    resolve endpoint would let the chip show the target's title/section instead.
+  - **Structured-block creation from the editor** — a slash-menu to insert a new
+    table / figure / code block inline (today those use the existing buttons).
+  - **Per-draft language selector** for browser spellcheck (defaults to OS lang).
+- **Headless-browser verification in CI** → backlog (testing infra, high-value).
+  The interactive editor + virtual-scroller JS has **no gate coverage**, and
+  several browser-only bugs reached prod this session — the `x-data` `| tojson`
+  quoting, Safari `group-hover`, `forceRefresh` early-return, and the
+  programmatic-open **focus** bug. An **ad-hoc Playwright-over-SSH-tunnel harness**
+  (2026-07-05) both *found* and *proved* the focus bug (system Chrome via
+  `channel:'chrome'`, tunnel to `melchior:8000`, `page.evaluate` probes of
+  `window.__dEditors`). Wire a slim version into `scripts/ship`/the gate: boot the
+  web app on the test DB with a seeded draft, load a page, assert a **clean
+  console** + a couple of core interactions (open editor → focused; arrow → the
+  neighbour opens focused). Closes the recurring "ship blind, Reto QAs" loop that
+  cost several round-trips this session.
 
 ---
 
