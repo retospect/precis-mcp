@@ -1381,7 +1381,9 @@ function draftDoc(ident) {
     // The nearest EDITABLE prose block above/below `h` in the visible order
     // (skips figures/tables so an arrow-hop lands somewhere you can type).
     _neighbour(h, dir) {
-      const ok = new Set(['paragraph', 'heading', 'item', 'aside', 'box', 'callout', 'term']);
+      // Keep in sync with _EDITABLE_KINDS (routes/drafts.py).
+      const ok = new Set(['paragraph', 'heading', 'item', 'aside', 'box',
+                          'callout', 'term', 'equation', 'code', 'listing']);
       const i = this.vis.findIndex((b) => b.h === h);
       if (i < 0) return null;
       const step = dir === 'up' ? -1 : 1;

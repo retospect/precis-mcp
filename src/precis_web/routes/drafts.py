@@ -555,12 +555,25 @@ def _paper_pdf_missing(store: Any, ident: str) -> bool:
     return store.pdf_missing(sha)
 
 
-#: Chunk kinds the inline editor may edit as raw prose (slice 2a,
-#: docs/design/draft-inline-editor.md). Non-prose kinds — figure (bytes),
-#: table (derived from meta.table), the ulist/olist containers, and
-#: code/listing/equation (verbatim) — keep their existing affordances.
+#: Chunk kinds the inline editor may edit as raw text (slice 2a,
+#: docs/design/draft-inline-editor.md). Prose kinds + the verbatim-text kinds
+#: (equation LaTeX / code / listing — you edit their source). Excludes figure
+#: (bytes), table (derived from meta.table, in DERIVED_KINDS), and the
+#: ulist/olist containers, which keep their own affordances.
+#: NB: keep the client `_neighbour` set (detail.html.j2) in sync with this.
 _EDITABLE_KINDS = frozenset(
-    {"paragraph", "heading", "item", "aside", "box", "callout", "term"}
+    {
+        "paragraph",
+        "heading",
+        "item",
+        "aside",
+        "box",
+        "callout",
+        "term",
+        "equation",
+        "code",
+        "listing",
+    }
 )
 #: Kinds whose text a backspace-merge may append onto — never a heading (would
 #: corrupt the title) or a derived/structural block.
