@@ -380,7 +380,7 @@
 </style>
 <script type="module">
 import * as PM from '/static/prosemirror.bundle.mjs';
-const { EditorState, EditorView, Schema, keymap, baseKeymap,
+const { EditorState, EditorView, Schema, keymap, baseKeymap, TextSelection,
         history, undo, redo, Plugin, PluginKey, Decoration, DecorationSet } = PM;
 
 // One block of plain text; newlines are hard_breaks (preserved verbatim on
@@ -470,8 +470,10 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
     },
   });
   view.dom.addEventListener('blur', () => { opts.onBlur && opts.onBlur(); });
-  setTimeout(() => validate(view, seedText, opts.validateUrl), 40);
+  // Auto-place the caret at the end and focus, so you can type immediately.
+  view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)));
   view.focus();
+  setTimeout(() => validate(view, seedText, opts.validateUrl), 40);
   return {
     getText() { return docToText(view.state.doc); },
     focus() { view.focus(); },
@@ -512,7 +514,7 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
 // stay decoupled (this node is about to be replaced).
 function draftEdit(ident, handle, baseSha, editable, isHeading) {
   return {
-    raw: false, editing: false, saving: false, err: '', orig: '',
+    editing: false, saving: false, err: '', orig: '',
     pmActive: false, _pm: null,   // ProseMirror surface (falls back to textarea)
     // A freshly-inserted block auto-opens its editor: draftDoc sets a global
     // to this handle before it hydrates, and the new row's init() consumes it.

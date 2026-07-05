@@ -8,10 +8,13 @@
      data-anc='{{ r.ancestors | tojson }}'
      class="dr-block grid grid-cols-1 lg:grid-cols-[1fr_20%_22%] gap-3 py-1.5 border-b border-slate-100 scroll-mt-4 group">
   {# ── Col A: content ─────────────────────────────────────────── #
-     `raw` (click-to-pin) shows the chunk's verbatim source — the
-     markdown + ¶/§ markers behind the rendered view, for debugging. #}
+     Rendered prose + edit affordances; clicking ✎ edit swaps this whole
+     view for the in-place ProseMirror editor (see draftEdit / detail.html). #}
   <div data-content style="padding-left: {{ r.depth }}rem"
        x-data="draftEdit('{{ ref.ident }}', '{{ r.handle }}', '{{ r.content_sha | default('') }}', {{ r.editable | default(false) | tojson }}, {{ r.is_heading | default(false) | tojson }})">
+    {# Rendered view + controls — hidden while editing so the editor replaces
+       the text in place (not a second box stacked below it). #}
+    <div x-show="!editing">
     {% if r.is_heading %}
     {# items-baseline so the toggle caret + the small style/review/prompt
        controls sit on the heading's text baseline rather than floating at
@@ -266,9 +269,6 @@
     <div class="flex items-center gap-2">
       <a href="#c-{{ r.handle }}"
          class="font-mono text-[10px] text-slate-300 opacity-0 group-hover:opacity-100">{{ r.dc }}</a>
-      <button @click="raw = !raw"
-              class="text-[10px] text-slate-300 opacity-0 group-hover:opacity-100 hover:text-slate-600"
-              x-text="raw ? 'hide raw' : 'raw'"></button>
       {# Edit affordances are ALWAYS visible (faint), not hover-gated: the
          `group-hover` reveal doesn't fire on Safari, so hiding the only way to
          edit behind it made the feature unreachable there. Faint by default,
@@ -285,14 +285,12 @@
               title="delete this block">🗑</button>
       {% endif %}
     </div>
-    {# raw source "cookie" — toggled (click-to-pin) under the block #}
-    <pre x-show="raw" x-cloak
-         class="mt-1 rounded border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 whitespace-pre-wrap break-words">{{ r.text }}</pre>
+    </div>{# /rendered view (x-show !editing) #}
     {% if r.editable %}
-    {# Inline editor (slice 2a, docs/design/draft-inline-editor.md): raw-text
-       edit of one block. Saves on blur / ⌘↵ / ctrl↵; a reference this edit
-       newly breaks bounces back (422) and keeps the box open; Esc cancels. #}
-    <div x-show="editing" x-cloak class="mt-1">
+    {# Inline editor — REPLACES the rendered text above while editing. Saves on
+       blur / ⌘↵ / ctrl↵; a reference this edit newly breaks bounces back (422)
+       and keeps the box open; Esc cancels. #}
+    <div x-show="editing" x-cloak>
       {# ProseMirror mount point (rich editor + live ref squiggle); shown once
          it mounts. The textarea below is the seed + save mirror AND the
          graceful fallback if the PM module didn't load. #}
