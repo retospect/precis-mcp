@@ -25,8 +25,8 @@ from precis.ingest.add import PresInput, precis_add
 from precis.ingest.pres import (
     PresSlide,
     PresToWrite,
-    _build_slide,
     _resolve_pres_slug,
+    _slide_from_page_text,
     derive_pres_slug,
     derive_pres_title,
     extract_pres,
@@ -100,75 +100,37 @@ class TestDerivePresTitle:
 
 
 # ---------------------------------------------------------------------------
-# Pure unit tests — slide builder
+# Pure unit tests — per-page slide splitter
 # ---------------------------------------------------------------------------
 
 
-class TestBuildSlide:
-    def test_section_header_becomes_title(self):
-        blocks = [
-            {"type": "section_header", "text": "Intro to QED"},
-            {"type": "text", "text": "Some body content"},
-        ]
-        slide = _build_slide(pos=0, page=1, blocks=blocks)
-        assert slide.slide_title == "Intro to QED"
-        assert slide.text == "Some body content"
+class TestSlideFromPageText:
+    def test_first_short_line_is_title(self):
+        title, body = _slide_from_page_text("Intro to QED\nSome body content", pos=0)
+        assert title == "Intro to QED"
+        assert body == "Intro to QED\nSome body content"
 
-    def test_first_short_line_promoted_when_no_header(self):
-        blocks = [{"type": "text", "text": "A short line\n\nlots of detail follows"}]
-        slide = _build_slide(pos=2, page=3, blocks=blocks)
-        assert slide.slide_title == "A short line"
+    def test_leading_slide_number_dropped(self):
+        # A bare slide-number line is stripped from the body and skipped
+        # for the title, so "3\nTechniques\n…" titles as "Techniques".
+        title, body = _slide_from_page_text("3\nTechniques\n- point one", pos=2)
+        assert title == "Techniques"
+        assert body == "Techniques\n- point one"
 
     def test_fallback_to_slide_n_when_empty(self):
-        slide = _build_slide(pos=4, page=5, blocks=[])
-        assert slide.slide_title == "Slide 5"  # 0-indexed pos + 1
-        assert slide.text == ""
+        title, body = _slide_from_page_text("", pos=4)
+        assert title == "Slide 5"  # 0-indexed pos + 1
+        assert body == ""
+
+    def test_numeric_only_page_falls_back(self):
+        # A page that is nothing but a slide number has no real title.
+        title, body = _slide_from_page_text("7", pos=6)
+        assert title == "Slide 7"
+        assert body == ""
 
     def test_long_first_line_skipped_for_title(self):
-        blocks = [
-            {
-                "type": "text",
-                "text": "x" * 200,  # too long for a title
-            }
-        ]
-        slide = _build_slide(pos=0, page=1, blocks=blocks)
-        assert slide.slide_title == "Slide 1"
-
-    def test_first_image_attached(self):
-        blocks = [
-            {"type": "section_header", "text": "Figures"},
-            {
-                "type": "figure",
-                "text": "",
-                "image_base64": "abc==",
-                "image_mime": "image/png",
-            },
-            {
-                "type": "figure",
-                "text": "",
-                "image_base64": "xyz==",  # second image — should be ignored
-                "image_mime": "image/png",
-            },
-        ]
-        slide = _build_slide(pos=0, page=1, blocks=blocks)
-        assert slide.image_base64 == "abc=="
-        assert slide.image_mime == "image/png"
-
-    def test_subsequent_headers_kept_in_body(self):
-        # The first heading owns the title; later headings on the
-        # same slide stay in the body (subtitles, section markers).
-        blocks = [
-            {"type": "section_header", "text": "Main"},
-            {"type": "section_header", "text": "Subtitle"},
-            {"type": "text", "text": "body"},
-        ]
-        slide = _build_slide(pos=0, page=1, blocks=blocks)
-        assert slide.slide_title == "Main"
-        # Subtitle text not emitted since we ``continue`` past
-        # subsequent ``section_header`` blocks in title detection,
-        # but the body still picks up the rest. (Conservative — we
-        # don't reformat headings as paragraphs.)
-        assert "body" in slide.text
+        title, _ = _slide_from_page_text("x" * 200 + "\nShorter", pos=0)
+        assert title == "Shorter"
 
 
 # ---------------------------------------------------------------------------
@@ -402,40 +364,83 @@ def _ref_tag_values(conn, ref_id: int) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# extract_pres — empty-page edge case
+# extract_pres — page-faithful extraction (fitz)
 # ---------------------------------------------------------------------------
 
 
-class TestExtractPresEmpty:
-    """Verify the empty-extraction fallback without invoking Marker."""
+def _make_pdf(pages: list[str], path: Path) -> Path:
+    """Write a real PDF with one page per entry in ``pages``.
 
-    def test_no_blocks_yields_placeholder(self, tmp_path: Path):
-        pdf = tmp_path / "empty.pdf"
-        pdf.write_bytes(b"%PDF-1.4 empty\n")
+    Each string is laid out line-by-line so ``page.get_text()`` reads it
+    back in order. An empty string yields a blank page.
+    """
+    import fitz
 
-        with patch("precis.ingest.marker.extract_blocks_marker", return_value=[]):
-            result = extract_pres(pdf)
+    doc = fitz.open()
+    for text in pages:
+        page = doc.new_page()
+        y = 72.0
+        for line in text.split("\n"):
+            if line:
+                page.insert_text((72, y), line, fontsize=14)
+            y += 22.0
+    doc.save(str(path))
+    doc.close()
+    return path
 
-        assert len(result.slides) == 1
-        assert result.slides[0].slide_title.startswith("Slide 1")
-        assert result.slides[0].text == ""
 
-    def test_groups_blocks_by_page(self, tmp_path: Path):
-        pdf = tmp_path / "deck.pdf"
-        pdf.write_bytes(b"%PDF-1.4 with-pages\n")
-        fake_blocks = [
-            {"type": "section_header", "text": "Title One", "page": 1},
-            {"type": "text", "text": "Body 1", "page": 1},
-            {"type": "section_header", "text": "Title Two", "page": 2},
-            {"type": "text", "text": "Body 2", "page": 2},
+class TestExtractPresPages:
+    """extract_pres yields exactly one slide per PDF page (the bug this
+    replaced collapsed a whole deck onto 1-2 slides because the Marker
+    path re-derived pages from a TOC decks don't have)."""
+
+    def test_one_slide_per_page(self, tmp_path: Path):
+        pytest.importorskip("fitz")
+        pdf = _make_pdf(
+            [
+                "Outline\n- what we cover",
+                "Lengthscales\n- angstroms to metres",
+                "Techniques\n- continuum\n- atomistic",
+            ],
+            tmp_path / "deck.pdf",
+        )
+        result = extract_pres(pdf)
+
+        assert len(result.slides) == 3
+        assert result.pdf_page_count == 3
+        assert [s.pos for s in result.slides] == [0, 1, 2]
+        assert [s.page for s in result.slides] == [0, 1, 2]
+        assert [s.slide_title for s in result.slides] == [
+            "Outline",
+            "Lengthscales",
+            "Techniques",
         ]
-        with patch(
-            "precis.ingest.marker.extract_blocks_marker", return_value=fake_blocks
-        ):
-            result = extract_pres(pdf)
+        assert "atomistic" in result.slides[2].text
 
-        assert len(result.slides) == 2
-        assert result.slides[0].slide_title == "Title One"
-        assert result.slides[0].text == "Body 1"
-        assert result.slides[1].slide_title == "Title Two"
-        assert result.slides[1].text == "Body 2"
+    def test_running_header_stripped_so_real_title_surfaces(self, tmp_path: Path):
+        pytest.importorskip("fitz")
+        # A slide master repeats "Nuts and Bolts 2001" on every page; the
+        # per-slide heading is the second line. Stripping the running
+        # header must let the real title win.
+        pdf = _make_pdf(
+            [
+                "Nuts and Bolts 2001\nOutline\n- agenda",
+                "Nuts and Bolts 2001\nTimescales\n- picoseconds",
+                "Nuts and Bolts 2001\nDislocations\n- core energy",
+            ],
+            tmp_path / "deck.pdf",
+        )
+        result = extract_pres(pdf)
+
+        titles = [s.slide_title for s in result.slides]
+        assert titles == ["Outline", "Timescales", "Dislocations"]
+        assert all("Nuts and Bolts 2001" not in s.text for s in result.slides)
+
+    def test_blank_page_yields_placeholder_slide(self, tmp_path: Path):
+        pytest.importorskip("fitz")
+        pdf = _make_pdf(["Intro", "", "Outro"], tmp_path / "deck.pdf")
+        result = extract_pres(pdf)
+
+        assert len(result.slides) == 3  # 1:1 with pages, blank kept
+        assert result.slides[1].text == ""
+        assert result.slides[1].slide_title == "Slide 2"

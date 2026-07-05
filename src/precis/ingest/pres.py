@@ -154,8 +154,13 @@ def derive_pres_title(pdf_path: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# extract_pres — Marker + per-page grouping
+# extract_pres — one PDF page = one slide (fitz)
 # ---------------------------------------------------------------------------
+
+# A standalone line that is nothing but a small integer — a slide-number
+# stamp. We skip it when choosing a title and trim a leading one off the
+# body so "3\nTechniques\n…" reads as "Techniques".
+_SLIDE_NUMBER_RE = re.compile(r"^\d{1,4}$")
 
 
 def extract_pres(
@@ -167,25 +172,29 @@ def extract_pres(
     """Build a :class:`PresToWrite` from a local slide PDF.
 
     1. Read bytes, compute ``pdf_sha256``.
-    2. Run Marker (same engine as :func:`precis.ingest.pipeline.extract_paper`,
-       reusing the leak-isolated subprocess machinery the watcher
-       sets up).
-    3. Group blocks by ``block["page"]`` — one slide per page.
-    4. For each page: derive ``slide_title`` (first section_header,
-       else first short line, else ``Slide N``), join non-header
-       texts into the slide body, attach the first ``image_base64``
-       if any block on the page is a figure.
+    2. Extract text **page by page** with fitz (PyMuPDF) — a slide deck
+       is one slide per PDF page by construction, so the page index *is*
+       the slide index. (We deliberately do **not** route decks through
+       Marker: Marker flattens to a single markdown blob and then
+       re-derives per-block pages from the PDF's table of contents
+       (:func:`precis.ingest.marker._assign_pages`). Decks have no TOC,
+       so every block collapses onto page 0 and the whole deck lands in
+       one or two giant "slides". Page-faithful fitz avoids that.)
+    3. Strip running headers/footers (a slide master repeats a title or
+       date band on every page) so the real per-slide heading surfaces.
+    4. For each page: derive ``slide_title`` (first short non-numeric
+       line, else ``Slide N``) and use the cleaned page text as the body.
 
     Empty pages still produce a placeholder slide so positions stay
     1:1 with the source PDF's pagination.
 
     Raises :class:`FileNotFoundError` if ``pdf_path`` is missing.
-    """
-    # Deferred — :mod:`precis.ingest.marker` pulls the marker-pdf
-    # dependency tree. Lazy import keeps ``precis serve`` /
-    # ``precis migrate`` lean.
-    from precis.ingest.marker import extract_blocks_marker
 
+    NB no images are attached: the page-faithful text path drops the
+    per-slide raster Marker used to base64 in. Deck bodies are text and
+    that is what search indexes; page thumbnails are a possible
+    follow-up (fitz ``get_pixmap``) if a visual is ever wanted.
+    """
     pdf_path = Path(pdf_path).resolve()
     if not pdf_path.is_file():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
@@ -195,41 +204,21 @@ def extract_pres(
     slug = slug_hint or derive_pres_slug(pdf_path)
     title = title_hint or derive_pres_title(pdf_path)
 
-    # ``paper_id`` here is just a seed for ``make_node_id``. The pres
-    # slug fills that role — stable across re-ingests, doesn't claim
-    # to be a real paper_id.
-    blocks = extract_blocks_marker(pdf_path, f"pres:{slug}")
-
-    pages: dict[int, list[dict[str, Any]]] = {}
-    for block in blocks:
-        page_num = int(block.get("page") or 0)
-        pages.setdefault(page_num, []).append(block)
-
-    if not pages:
-        # Marker produced nothing — image-only deck with OCR turned
-        # off, encrypted PDF, etc. Emit a single placeholder so the
-        # ref exists and the operator notices the empty body on
-        # search. (Better than swallowing the file silently.)
+    slides, n_pages = _extract_pres_slides(pdf_path)
+    if not slides:
+        # No extractable pages — image-only deck with OCR off, encrypted
+        # PDF, etc. Emit a single placeholder so the ref exists and the
+        # operator notices the empty body on search rather than the file
+        # being swallowed silently.
         slides = [
             PresSlide(
                 pos=0,
                 text="",
                 slide_title="Slide 1 (empty extraction)",
-                page=1,
+                page=0,
             )
         ]
         n_pages = 1
-    else:
-        # Marker pages are typically 0-indexed when ``page_stats`` is
-        # populated, but the fitz fallback may report 1-indexed values.
-        # We just stable-sort and assign ``pos`` ourselves so the
-        # slide numbering is contiguous regardless.
-        slides = []
-        sorted_pages = sorted(pages.items(), key=lambda kv: kv[0])
-        for pos, (page_num, page_blocks) in enumerate(sorted_pages):
-            slide = _build_slide(pos=pos, page=page_num, blocks=page_blocks)
-            slides.append(slide)
-        n_pages = len(sorted_pages)
 
     return PresToWrite(
         slug=slug,
@@ -243,49 +232,63 @@ def extract_pres(
     )
 
 
-def _build_slide(*, pos: int, page: int, blocks: list[dict[str, Any]]) -> PresSlide:
-    """Collapse one page's blocks into a single :class:`PresSlide`."""
-    body_parts: list[str] = []
-    slide_title: str | None = None
-    image_base64: str | None = None
-    image_mime: str | None = None
+def _extract_pres_slides(pdf_path: Path) -> tuple[list[PresSlide], int]:
+    """Extract one :class:`PresSlide` per PDF page via fitz.
 
-    for b in blocks:
-        btype = b.get("type")
-        text = (b.get("text") or "").strip()
-        # The first heading on the page is the slide title. We still
-        # include subsequent headings in the body since some decks
-        # have a title + subtitle on the same slide.
-        if btype == "section_header" and slide_title is None:
-            slide_title = text or None
-            continue
-        if btype == "junk":
-            continue
-        if text:
-            body_parts.append(text)
-        if image_base64 is None and b.get("image_base64"):
-            image_base64 = b["image_base64"]
-            image_mime = b.get("image_mime")
+    Returns ``(slides, page_count)``. ``slides`` is 1:1 with the PDF's
+    pages (empty pages become placeholder slides). ``page_count`` is the
+    true PDF page count. Returns ``([], 0)`` if the PDF has no pages, so
+    the caller can emit its own placeholder.
+    """
+    # Deferred imports: fitz pulls PyMuPDF; the marker helpers pull the
+    # chemistry-safe text cleaner and the running-header stripper. Both
+    # keep ``precis serve`` / ``precis migrate`` lean.
+    import fitz
 
-    if slide_title is None:
-        # Promote the first short non-empty line to title.
-        for part in body_parts:
-            first_line = part.split("\n", 1)[0].strip()
-            if first_line and len(first_line) <= 80:
-                slide_title = first_line
-                break
-    if slide_title is None:
-        slide_title = f"Slide {pos + 1}"
+    from precis.ingest.marker import _clean_text, _strip_running_lines
 
-    body = "\n\n".join(body_parts).strip()
-    return PresSlide(
-        pos=pos,
-        text=body,
-        slide_title=slide_title,
-        page=page,
-        image_base64=image_base64,
-        image_mime=image_mime,
+    doc = fitz.open(str(pdf_path))
+    total_pages = doc.page_count
+    raw_pages: list[tuple[int, str]] = [
+        (i, _clean_text(doc[i].get_text())) for i in range(total_pages)
+    ]
+    doc.close()
+
+    if not raw_pages:
+        return [], 0
+
+    # Strip lines that repeat on ≥40% of pages (deck master header/footer).
+    # Feed only non-empty pages; map the result back by page index.
+    stripped = dict(
+        _strip_running_lines([(i, t) for i, t in raw_pages if t], total_pages)
     )
+
+    slides: list[PresSlide] = []
+    for i, _raw in raw_pages:
+        slide_title, body = _slide_from_page_text(stripped.get(i, ""), i)
+        slides.append(PresSlide(pos=i, text=body, slide_title=slide_title, page=i))
+    return slides, total_pages
+
+
+def _slide_from_page_text(text: str, pos: int) -> tuple[str, str]:
+    """Split one page's cleaned text into ``(slide_title, body)``.
+
+    Drops a leading standalone slide-number line, then takes the first
+    short (≤80 char) non-numeric line as the title and returns the
+    remaining text as the body.
+    """
+    lines = [ln.rstrip() for ln in text.split("\n")]
+    while lines and _SLIDE_NUMBER_RE.match(lines[0].strip()):
+        lines.pop(0)
+    body = "\n".join(lines).strip()
+
+    slide_title: str | None = None
+    for ln in lines:
+        s = ln.strip()
+        if s and not _SLIDE_NUMBER_RE.match(s) and len(s) <= 80:
+            slide_title = s
+            break
+    return (slide_title or f"Slide {pos + 1}"), body
 
 
 # ---------------------------------------------------------------------------
