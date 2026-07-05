@@ -127,3 +127,15 @@ def test_lexical_only_when_no_vector(store: Store) -> None:
 
 def test_empty_kinds_returns_empty(store: Store) -> None:
     assert store.search_chunks_across_kinds(kinds=[], q="anything") == []
+
+
+def test_recent_refs_newest_first_and_kind_scoped(store: Store) -> None:
+    a = store.insert_ref(kind="paper", slug="rr-a", title="A")
+    b = store.insert_ref(kind="web", slug="rr-b", title="B")  # inserted later
+    c = store.insert_ref(kind="memory", slug=None, title="C")  # unlisted kind
+
+    got = store.recent_refs(["paper", "web"], limit=10)
+    ids = [r.id for r in got]
+    assert ids[:2] == [b.id, a.id]  # newest first
+    assert c.id not in ids
+    assert store.recent_refs([], limit=10) == []

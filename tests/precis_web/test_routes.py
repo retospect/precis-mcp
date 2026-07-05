@@ -194,11 +194,17 @@ def test_flag_toggle_blocks_open_redirect(runtime, client) -> None:
 # ── unified item view (/items) ─────────────────────────────────────
 
 
-def test_items_empty_shows_search_form(client) -> None:
+def test_items_empty_shows_form_and_recent(client) -> None:
+    """The no-query landing shows the search form plus a 'recently added'
+    list of source items (with their flag buttons)."""
     resp = client.get("/items")
     assert resp.status_code == 200
     assert 'action="/items"' in resp.text
-    assert "Enter a query" in resp.text
+    assert "Recently added" in resp.text
+    # Recent source items render with their flag buttons.
+    assert "A paper" in resp.text
+    assert "A web page" in resp.text
+    assert 'action="/flags/paper/10"' in resp.text
 
 
 def test_items_search_renders_cross_kind_rows(client) -> None:

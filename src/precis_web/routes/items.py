@@ -110,6 +110,16 @@ def _run_search(
     ]
 
 
+def _recent_rows(store: Any, kinds: list[str]) -> list[dict[str, Any]]:
+    """The no-query landing: most-recently-added source items, newest
+    first. No matching chunk (there's no query), so rows carry no preview
+    — just name, kind, when-added, and the flag buttons."""
+    refs = store.recent_refs(kinds, limit=_PAGE_SIZE)
+    ref_ids = [r.id for r in refs]
+    flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
+    return [item_row(r, None, 0.0, flag_state.get(r.id, set())) for r in refs]
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def index(
@@ -137,6 +147,7 @@ async def index(
     until_dt = _parse_date(until)
 
     rows: list[dict[str, Any]] = []
+    recent: list[dict[str, Any]] = []
     if q:
         runtime = get_runtime(request)
         embedder = getattr(getattr(runtime, "hub", None), "embedder", None)
@@ -150,6 +161,9 @@ async def index(
             since=since_dt,
             until=until_dt,
         )
+    else:
+        # Default landing: recent things under the search apparatus.
+        recent = await asyncio.to_thread(_recent_rows, store, kind_list)
 
     # Where a flag toggle bounces back to — this exact search.
     return_to = request.url.path + (
@@ -167,6 +181,7 @@ async def index(
             "since": since,
             "until": until,
             "rows": rows,
+            "recent": recent,
             "flag_defs": FLAG_DEFS,
             "return_to": return_to,
         },

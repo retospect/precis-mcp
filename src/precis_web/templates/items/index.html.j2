@@ -46,15 +46,9 @@
   </button>
 </form>
 
-{% if not q %}
-  <p class="text-sm text-slate-400">Enter a query to search across every source kind.</p>
-{% elif not rows %}
-  <p class="text-sm text-slate-500">
-    No matches for <span class="font-medium text-slate-700">{{ q }}</span>{% if since or until %} in that date window{% endif %}.
-  </p>
-{% else %}
+{% macro item_list(items) %}
 <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
-  {% for row in rows %}
+  {% for row in items %}
   <li class="px-4 py-3 hover:bg-slate-50">
     <div class="flex items-start gap-3">
       <span class="mt-0.5 shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{{ row.kind }}</span>
@@ -62,6 +56,8 @@
         <a href="{{ row.open_url }}" class="text-sky-700 hover:underline font-medium">{{ row.title }}</a>
         {% if row.preview %}
           <p class="text-xs text-slate-500 mt-0.5">{{ row.preview }}</p>
+        {% elif row.created_at %}
+          <p class="text-xs text-slate-400 mt-0.5">added <span title="{{ row.created_at | abs_ts }}">{{ row.created_at | ago }}</span></p>
         {% endif %}
       </div>
       <div class="shrink-0">
@@ -74,8 +70,27 @@
   </li>
   {% endfor %}
 </ul>
-<p class="mt-2 text-xs text-slate-400">
-  Showing up to {{ rows | length }} best-matching source{{ '' if rows | length == 1 else 's' }} · one passage per item.
-</p>
+{% endmacro %}
+
+{% if q %}
+  {% if not rows %}
+  <p class="text-sm text-slate-500">
+    No matches for <span class="font-medium text-slate-700">{{ q }}</span>{% if since or until %} in that date window{% endif %}.
+  </p>
+  {% else %}
+  {{ item_list(rows) }}
+  <p class="mt-2 text-xs text-slate-400">
+    Showing up to {{ rows | length }} best-matching source{{ '' if rows | length == 1 else 's' }} · one passage per item.
+  </p>
+  {% endif %}
+{% else %}
+  {# Default landing: recent things under the search apparatus. #}
+  <h2 class="text-sm font-semibold text-slate-600 mb-2">Recently added</h2>
+  {% if recent %}
+    {{ item_list(recent) }}
+    <p class="mt-2 text-xs text-slate-400">The {{ recent | length }} newest source item{{ '' if recent | length == 1 else 's' }}. Search above to go deeper.</p>
+  {% else %}
+    <p class="text-sm text-slate-400">Nothing here yet — ingest a paper or run a search above.</p>
+  {% endif %}
 {% endif %}
 {% endblock %}

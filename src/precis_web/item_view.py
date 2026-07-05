@@ -76,6 +76,7 @@ def item_row(ref: Any, block: Any, score: float, flags: set[str]) -> dict[str, A
         "title": p.name(ref),
         "open_url": p.open_url(ref),
         "preview": p.preview(block),
+        "created_at": getattr(ref, "created_at", None),
         "score": score,
         "flags": flags,
     }

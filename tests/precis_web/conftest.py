@@ -548,6 +548,16 @@ class FakeStore:
         want = set(kinds)
         return [(b, r, s) for (b, r, s) in hits if r.kind in want]
 
+    def recent_refs(self, kinds, *, limit=30):
+        """Canned recent source refs for the /items default landing —
+        one paper + one web, filtered to the requested kinds."""
+        src = [
+            make_ref(id=10, kind="paper", slug="smith2024", title="A paper"),
+            make_ref(id=70, kind="web", slug="example.com/page", title="A web page"),
+        ]
+        want = set(kinds)
+        return [r for r in src if r.kind in want][:limit]
+
     def ingest_timestamps(self, ref_id: int):
         # Canned ingest timeline for the paper detail page. tz-aware
         # datetimes (any may be None for a stub / un-chunked paper).

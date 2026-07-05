@@ -1609,6 +1609,23 @@ class RefsMixin:
             rows = conn.execute(sql, params).fetchall()
         return [_row_to_ref(r) for r in rows]
 
+    def recent_refs(self, kinds: list[str], *, limit: int = 30) -> list[Ref]:
+        """Most-recently-created live refs across a *set* of kinds, newest
+        first. Backs the ``/items`` default "recent things" browse (the
+        no-query landing). Kinds with no rows simply don't appear; an
+        empty ``kinds`` returns nothing.
+        """
+        if not kinds:
+            return []
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                f"SELECT {_REFS_COLS_ALIASED} FROM refs r "
+                "WHERE r.kind = ANY(%s) AND r.deleted_at IS NULL "
+                "ORDER BY r.created_at DESC, r.ref_id DESC LIMIT %s",
+                (list(kinds), limit),
+            ).fetchall()
+        return [_row_to_ref(r) for r in rows]
+
     def find_refs_by_title_similarity(
         self,
         *,
