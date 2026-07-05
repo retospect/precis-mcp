@@ -23,6 +23,7 @@ precision — deterministic, not Monte-Carlo.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -155,6 +156,129 @@ def clearance(design: Design, a: str, b: str) -> ClearanceResult:
     region = _region(design, [ea, eb])
     half, p = _min_max_sdf(design, ea, eb, vec3(0, 0, 0), region)
     return ClearanceResult(gap=round(2.0 * half, 5), interfering=half < 0, point=p)
+
+
+# ── connectivity — the assembly contact graph ─────────────────────────────
+#: Two components count as *connected* when their signed gap is ≤ this many mm
+#: (touching or interfering). It absorbs the small residual of the coarse-grid
+#: + gradient-descent minimiser so a true face-to-face contact reads as 0.
+CONTACT_TOL_MM = 1e-2
+
+
+@dataclass(frozen=True)
+class Contact:
+    """A touching (or interfering) pair of components, with their signed gap."""
+
+    a: str
+    b: str
+    gap: float
+    interfering: bool
+
+
+@dataclass(frozen=True)
+class ConnectivityResult:
+    """The contact graph over a design's components.
+
+    ``components`` are the graph nodes; ``contacts`` the edges (pairs whose
+    realised material touches or overlaps); ``groups`` the connected
+    components of that graph — each a set of parts welded into one solid body
+    by mutual contact. ``connected`` is True iff the whole assembly is a
+    single such body.
+    """
+
+    components: tuple[str, ...]
+    contacts: tuple[Contact, ...]
+    groups: tuple[tuple[str, ...], ...]
+    tol: float
+
+    @property
+    def connected(self) -> bool:
+        """True iff every component belongs to one contact group (one solid)."""
+        return len(self.groups) <= 1
+
+    def _adjacency(self) -> dict[str, set[str]]:
+        adj: dict[str, set[str]] = {c: set() for c in self.components}
+        for c in self.contacts:
+            adj[c.a].add(c.b)
+            adj[c.b].add(c.a)
+        return adj
+
+    def neighbors(self, name: str) -> list[str]:
+        """The components directly touching ``name`` (empty ⇒ floating body)."""
+        return sorted(self._adjacency().get(name, set()))
+
+    def isolated(self) -> list[str]:
+        """Components that touch nothing (only meaningful with ≥2 parts)."""
+        if len(self.components) <= 1:
+            return []
+        adj = self._adjacency()
+        return [c for c in self.components if not adj[c]]
+
+    def path(self, a: str, b: str) -> list[str] | None:
+        """A contact chain ``a … b`` (BFS, fewest hops), or None if the two
+        parts are in different bodies. ``[a]`` when ``a == b``."""
+        if a not in self.components or b not in self.components:
+            return None
+        if a == b:
+            return [a]
+        adj = self._adjacency()
+        prev: dict[str, str | None] = {a: None}
+        q: deque[str] = deque([a])
+        while q:
+            cur = q.popleft()
+            for nxt in sorted(adj[cur]):
+                if nxt in prev:
+                    continue
+                prev[nxt] = cur
+                if nxt == b:
+                    chain = [b]
+                    while prev[chain[-1]] is not None:
+                        chain.append(prev[chain[-1]])  # type: ignore[arg-type]
+                    return list(reversed(chain))
+                q.append(nxt)
+        return None
+
+
+def connectivity(design: Design, *, tol: float = CONTACT_TOL_MM) -> ConnectivityResult:
+    """Contact graph over a design's components: which bodies touch, the
+    connected groups they form, and whether the assembly is one solid.
+
+    Two components are *connected* when their realised (post-cut) material
+    touches or overlaps — signed gap ≤ ``tol`` mm via :func:`clearance` (the
+    exact-sign CSG SDF, so the overlapping-discs-before-cuts trap never
+    arises). This is the graph behind "what's connected to X", "is there a
+    path from A to B", and the "a real part is one connected solid" truism.
+    """
+    comps = tuple(design.components.keys())
+    parent = {c: c for c in comps}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    contacts: list[Contact] = []
+    for i in range(len(comps)):
+        for j in range(i + 1, len(comps)):
+            cl = clearance(design, comps[i], comps[j])
+            if cl.gap <= tol:
+                contacts.append(
+                    Contact(
+                        a=comps[i], b=comps[j], gap=cl.gap, interfering=cl.interfering
+                    )
+                )
+                parent[find(comps[i])] = find(comps[j])
+
+    grouped: dict[str, list[str]] = {}
+    for c in comps:
+        grouped.setdefault(find(c), []).append(c)
+    groups = tuple(
+        tuple(g) for g in sorted(grouped.values(), key=lambda g: comps.index(g[0]))
+    )
+    return ConnectivityResult(
+        components=comps, contacts=tuple(contacts), groups=groups, tol=tol
+    )
 
 
 @dataclass(frozen=True)

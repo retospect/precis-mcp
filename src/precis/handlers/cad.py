@@ -9,8 +9,9 @@ seven-verb surface (no new verbs):
 - ``put``    — create / replace a design (``id=`` slug, ``text=`` source).
 - ``get``    — list designs (no id), a design's node tree (``id=slug``), a
   single node (``id='ca<chunk_id>'``), or a probe / analysis
-  (``view='ray'|'point'|'arc'|'section'|'clearance'|'dof'|'volume'`` with
-  ``args=``).
+  (``view='ray'|'point'|'arc'|'section'|'clearance'|'connectivity'|'dof'|
+  'volume'`` with ``args=``). ``connectivity`` answers what-touches-what,
+  path-between-parts, and the one-connected-solid truism.
 - ``search`` — over design names + descriptions.
 - ``delete`` — soft-retire a whole design.
 
@@ -40,6 +41,7 @@ from precis.cad.probe import (
     probe_section_z,
 )
 from precis.cad.relate import clearance as cad_clearance
+from precis.cad.relate import connectivity as cad_connectivity
 from precis.cad.relate import translational_dof
 from precis.cad.scene import SceneError, build_design, parse_source
 from precis.cad.vec import Vec3, vec3
@@ -56,7 +58,16 @@ from precis.utils.search_merge import SearchHit
 
 log = logging.getLogger(__name__)
 
-_PROBE_VIEWS = ("ray", "point", "arc", "section", "clearance", "dof", "volume")
+_PROBE_VIEWS = (
+    "ray",
+    "point",
+    "arc",
+    "section",
+    "clearance",
+    "connectivity",
+    "dof",
+    "volume",
+)
 _EXPORT_VIEWS = ("scad", "stl", "3mf", "step")
 _VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS)
 
@@ -84,8 +95,10 @@ class CadHandler(Handler):
             "intersect> <config> [@x,y,z] [rot:..] [polar:nNrR|linear:..]', "
             "config e.g. cyl:r3h12 box:w40d20h10); get lists designs, shows a "
             "design's node tree (id=slug), one node (id='ca<id>'), or probes "
-            "analytically (view='ray|point|arc|section|clearance|dof|volume', "
-            "args={...}); search over names; delete soft-retires. Postgres-"
+            "analytically (view='ray|point|arc|section|clearance|connectivity|"
+            "dof|volume', args={...}; connectivity: what touches what, path "
+            "a→b, is-it-one-solid); search over names; delete soft-retires. "
+            "Postgres-"
             "canonical, no meshing in the design loop. See precis-cad-help."
         ),
         supports_get=True,
@@ -184,6 +197,7 @@ class CadHandler(Handler):
         head = (
             f"# {slug} — {verb}: {len(spec.components)} part(s), {n} node(s)"
             f"{self._interference_note(design, spec)}"
+            f"{self._connectivity_note(design, spec)}"
         )
         return Response(body=head + "\n" + self._tree_table(spec, handles))
 
@@ -241,6 +255,7 @@ class CadHandler(Handler):
             f"# {to_slug} — derived from {parent.slug}: "
             f"{len(spec.components)} part(s), {n} node(s)"
             f"{self._interference_note(design, spec)}"
+            f"{self._connectivity_note(design, spec)}"
         )
         return Response(body=head + "\n" + self._tree_table(spec, handles))
 
@@ -528,6 +543,23 @@ class CadHandler(Handler):
                     )
         return ("  " + "; ".join(warns)) if warns else ""
 
+    def _connectivity_note(self, design: Any, spec: Any) -> str:
+        """The "a part is one connected solid" truism, surfaced at author time:
+        warn when the design is >1 disconnected body (floating parts)."""
+        if len(dict.fromkeys(spec.components)) < 2:
+            return ""
+        try:
+            conn = cad_connectivity(design)
+        except Exception:  # pragma: no cover - defensive
+            return ""
+        if conn.connected:
+            return ""
+        iso = conn.isolated()
+        if iso:
+            return f"  ⚠ floating (touches nothing): {', '.join(iso)}"
+        bodies = " | ".join("+".join(g) for g in conn.groups)
+        return f"  ⚠ {len(conn.groups)} disconnected bodies: {bodies}"
+
     def _render_probe(
         self, view: str, design: Any, spec: Any, args: dict[str, Any]
     ) -> Response:
@@ -612,6 +644,8 @@ class CadHandler(Handler):
             cl = cad_clearance(design, a, b)
             tag = "interfere" if cl.interfering else "clear"
             return Response(body=f"clearance {a} ↔ {b}: {cl.gap:g} mm ({tag})")
+        if view == "connectivity":
+            return self._render_connectivity(design, spec, args)
         if view == "dof":
             mv = str(args.get("moving") or "")
             fx = str(args.get("fixed") or "")
@@ -638,6 +672,78 @@ class CadHandler(Handler):
                 f"centroid {tuple(round(float(x), 3) for x in vol.centroid)}"
             )
         )
+
+    def _render_connectivity(
+        self, design: Any, spec: Any, args: dict[str, Any]
+    ) -> Response:
+        """The assembly contact graph — "what's connected to X", "is there a
+        path A→B", and the whole-assembly "one connected solid?" verdict.
+
+        ``args``: ``{'of': part}`` → that part's neighbours; ``{'a': p, 'b':
+        q}`` → the contact chain p…q (or "different bodies"); nothing → the
+        full report (bodies + contacts). ``tol`` overrides the contact mm."""
+        tol = float(args.get("tol", 1e-2))
+        conn = cad_connectivity(design, tol=tol)
+
+        a, b = args.get("a"), args.get("b")
+        if a is not None and b is not None:
+            a, b = str(a), str(b)
+            for name in (a, b):
+                if name not in spec.components:
+                    raise BadInput(
+                        "connectivity path needs args.a and args.b (component names)",
+                        next=f"components: {spec.components}",
+                    )
+            chain = conn.path(a, b)
+            if chain is None:
+                return Response(
+                    body=f"no connected path {a} → {b} — they are in separate bodies"
+                )
+            hops = len(chain) - 1
+            return Response(
+                body=f"path {a} → {b}:  " + " → ".join(chain) + f"  ({hops} contact(s))"
+            )
+
+        of = args.get("of")
+        if of is not None:
+            of = str(of)
+            if of not in spec.components:
+                raise BadInput(
+                    "connectivity args.of must be a component name",
+                    next=f"components: {spec.components}",
+                )
+            nbrs = conn.neighbors(of)
+            body = f"{of} touches: " + (
+                ", ".join(nbrs) if nbrs else "nothing — floating body ⚠"
+            )
+            return Response(body=body)
+
+        verdict = (
+            "one connected solid ✓"
+            if conn.connected
+            else f"{len(conn.groups)} separate bodies ⚠"
+        )
+        lines = [f"# connectivity — {len(conn.components)} component(s): {verdict}"]
+        for i, g in enumerate(conn.groups, 1):
+            lines.append(f"  body {i}: {', '.join(g)}")
+        iso = conn.isolated()
+        if iso:
+            lines.append(f"  ⚠ floating (touch nothing): {', '.join(iso)}")
+        rows = [
+            {
+                "a": c.a,
+                "b": c.b,
+                "gap_mm": f"{c.gap:g}",
+                "state": "interfere" if c.interfering else "touch",
+            }
+            for c in conn.contacts
+        ]
+        table = (
+            render_agent_table(rows, schema=["a", "b", "gap_mm", "state"])
+            if rows
+            else "(no contacts)"
+        )
+        return Response(body="\n".join(lines) + "\n" + table)
 
     def _two_components(self, args: dict[str, Any], spec: Any) -> tuple[str, str]:
         a = str(args.get("a") or "")

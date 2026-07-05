@@ -94,6 +94,8 @@
 
       <div id="an-warnings" data-slug="{{ slug }}"></div>
 
+      <div id="an-connect" class="text-[11px]"></div>
+
       <div class="pt-2 border-t border-slate-100">
         <div class="text-[10px] text-slate-400 uppercase tracking-wide mb-1">Download</div>
         <div class="flex flex-wrap gap-1.5">
@@ -370,6 +372,7 @@ setMode('features');
   const warnEl = document.getElementById('an-warnings');
   const bboxEl = document.getElementById('an-bbox');
   const volEl = document.getElementById('an-volume');
+  const connEl = document.getElementById('an-connect');
   if (!warnEl) return;
   const slug = warnEl.getAttribute('data-slug');
   const esc = (s) => String(s == null ? '' : s)
@@ -396,6 +399,18 @@ setMode('features');
         warnEl.className = 'text-[11px] text-emerald-700';
         warnEl.textContent = '✓ no inter-part interference';
       }
+      // connectivity — is the assembly one connected solid?
+      const c = a && a.connectivity;
+      if (connEl && c) {
+        if (c.connected) {
+          connEl.className = 'text-[11px] text-emerald-700';
+          connEl.textContent = '✓ one connected solid (' + c.groups[0].length + ' parts touching)';
+        } else {
+          const bodies = (c.groups || []).map((g) => g.join('+')).join(' | ');
+          connEl.className = 'text-[11px] px-2 py-1 rounded bg-amber-50 text-amber-800 border border-amber-200';
+          connEl.innerHTML = '⚠ ' + (c.groups || []).length + ' disconnected bodies: ' + esc(bodies);
+        }
+      } else if (connEl) { connEl.textContent = ''; }
     })
     .catch(() => {
       bboxEl.textContent = '—'; volEl.textContent = '—';

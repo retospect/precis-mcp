@@ -1,7 +1,7 @@
 ---
 id: precis-cad-help
 title: precis — the CAD kind (analytic solid design you can read)
-summary: author a parametric solid as a text node-list, then probe it analytically (point/ray/arc/section/volume) and relate parts (clearance/interference/translational DOF) — no meshing, no pixels; STL/3MF/STEP/SCAD are downstream exports
+summary: author a parametric solid as a text node-list, then probe it analytically (point/ray/arc/section/volume) and relate parts (clearance/interference/connectivity/translational DOF) — no meshing, no pixels; STL/3MF/STEP/SCAD are downstream exports
 applies-to: get/search/put/delete (kind='cad')
 status: active
 ---
@@ -148,6 +148,49 @@ get(kind='cad', id='asm', view='dof', args={'moving': 'shaft', 'fixed': 'hub'})
 Clearance is measured against the *material* — a shaft sitting in a bored
 hub reads the **radial wall gap**, not a false collision against the
 un-bored plate.
+
+## Connectivity — is it one solid? what touches what?
+
+`view='connectivity'` builds the **contact graph** over the design's
+components: two parts are *connected* when their realised (post-cut)
+material touches or overlaps (signed gap ≤ tol). It answers three questions:
+
+```python
+# full report: the connected bodies + every contact + the one-solid verdict
+get(kind='cad', id='wheel', view='connectivity')
+
+# what touches this part? (empty ⇒ a floating body)
+get(kind='cad', id='wheel', view='connectivity', args={'of': 'hub'})
+
+# is there a contact path between two parts? (e.g. hub → rim through spokes)
+get(kind='cad', id='wheel', view='connectivity', args={'a': 'hub', 'b': 'rim'})
+
+# loosen/tighten what counts as "touching" (mm)
+get(kind='cad', id='wheel', view='connectivity', args={'tol': 0.05})
+```
+
+Because contact is tested on the **folded CSG** (cuts already applied),
+the classic trap is avoided: a rim (`disc − cutout`) and a hub
+(`disc − cutout`) whose *raw* discs overlapped massively before the cuts
+are correctly seen as **not touching** — only their post-cut annulus/disc
+material counts. So "is the hub connected to the rim?" gives the physical
+answer, not the pre-cut one.
+
+### Truisms — a real part is one connected solid
+
+A manufacturable part is a *single connected body*: a wheel is its hub, its
+spokes, **and** its rim, and they must all touch (directly or through each
+other). Model each distinct body as its own **component** (`hub`, `rim`,
+`spoke`) — then `connectivity` verifies the whole thing hangs together, and
+`put` warns you at author time if it doesn't:
+
+- `⚠ floating (touches nothing): rim` — a part welded to nothing.
+- `⚠ 2 disconnected bodies: hub+spoke | rim` — two islands that should be one.
+
+After any edit that moves or resizes a body, re-check connectivity: a spoke
+nudged 0.1 mm too short silently disconnects the rim. (Note: connectivity
+is at the **component** level — a stray *instance* inside one component is
+not yet caught; keep distinct bodies as distinct components.)
 
 > **Tip — need a number, exactly?** Don't eyeball arithmetic. The
 > `calc` kind is a local sympy engine: `get(kind='calc', q='2+3*4')`

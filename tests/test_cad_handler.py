@@ -102,6 +102,42 @@ def test_volume(cad):
     assert "mm³" in resp.body and "sampled" in resp.body
 
 
+# A hub (disc r5) + a rim (annulus r15..20) bridged by a spoke — hub and rim
+# don't touch directly, only through the spoke.
+_WHEEL = """
+component hub
+hdisc add cyl:r5h4
+component rim
+rdisc add cyl:r20h4
+rhole cut cyl:r15h6 @0,0,-1
+component spoke
+sbar  add box:w20d2h4 @10,0,0
+"""
+
+
+def test_connectivity_view_reports_one_solid_and_path(cad):
+    cad.put(id="wheel", text=_WHEEL)
+    rep = cad.get(id="wheel", view="connectivity")
+    assert "one connected solid" in rep.body
+    # what touches the spoke → hub and rim
+    nb = cad.get(id="wheel", view="connectivity", args={"of": "spoke"})
+    assert "hub" in nb.body and "rim" in nb.body
+    # a contact path hub → rim must route through the spoke
+    p = cad.get(id="wheel", view="connectivity", args={"a": "hub", "b": "rim"})
+    assert "spoke" in p.body and "→" in p.body
+
+
+def test_connectivity_flags_disconnected_bodies(cad):
+    text = "component hub\nh add cyl:r5h4\ncomponent rim\nr add cyl:r5h4 @100,0,0\n"
+    resp = cad.put(id="split", text=text)
+    assert "floating" in resp.body or "disconnected" in resp.body
+    rep = cad.get(id="split", view="connectivity")
+    assert "separate bodies" in rep.body
+    # no contact path between the two lone parts
+    p = cad.get(id="split", view="connectivity", args={"a": "hub", "b": "rim"})
+    assert "separate bodies" in p.body
+
+
 def test_delete(cad):
     cad.put(id="flange", text=_FLANGE)
     cad.delete(id="flange")

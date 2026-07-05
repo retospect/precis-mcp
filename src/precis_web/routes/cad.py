@@ -48,7 +48,7 @@ from precis.cad.export import (
     to_openscad,
 )
 from precis.cad.gltf import component_colors, solid_available, to_glb
-from precis.cad.relate import clearance as cad_clearance
+from precis.cad.relate import connectivity as cad_connectivity
 from precis.cad.scene import build_design
 from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
@@ -173,8 +173,9 @@ def _ref_version(store: Any, ref_id: int) -> str:
 
 
 def _analysis(store: Any, ref_id: int, version: str) -> dict[str, Any]:
-    """Bounding box + total volume + inter-part interference, off the analytic
-    IR. Memoised per ``(ref_id, version)``."""
+    """Bounding box + total volume + inter-part interference + the assembly
+    connectivity graph, off the analytic IR. Memoised per ``(ref_id,
+    version)``."""
     key = (ref_id, version)
     cached = _ANALYSIS_CACHE.get(key)
     if cached is not None:
@@ -192,17 +193,34 @@ def _analysis(store: Any, ref_id: int, version: str) -> dict[str, Any]:
             analysis["volume_err"] = round(float(vol.rel_err) * 100, 1)
         except Exception:  # pragma: no cover - volume is best-effort
             log.debug("cad analysis: volume failed", exc_info=True)
-        comps = list(dict.fromkeys(spec.components))
-        for i in range(len(comps)):
-            for j in range(i + 1, len(comps)):
-                try:
-                    res = cad_clearance(design, comps[i], comps[j])
-                except Exception:  # pragma: no cover - defensive
-                    continue
-                if res.interfering:
+        # One pairwise sweep drives both the interference warnings and the
+        # connectivity graph (contacts carry the interfering flag).
+        if len(dict.fromkeys(spec.components)) >= 2:
+            try:
+                conn = cad_connectivity(design)
+                for c in conn.contacts:
+                    if c.interfering:
+                        analysis["warnings"].append(
+                            f"{c.a} ↔ {c.b} interfere ({c.gap:g} mm)"
+                        )
+                analysis["connectivity"] = {
+                    "connected": conn.connected,
+                    "groups": [list(g) for g in conn.groups],
+                    "isolated": conn.isolated(),
+                    "contacts": [
+                        {"a": c.a, "b": c.b, "gap": c.gap, "interfering": c.interfering}
+                        for c in conn.contacts
+                    ],
+                }
+                if not conn.connected:
+                    iso = conn.isolated()
                     analysis["warnings"].append(
-                        f"{comps[i]} ↔ {comps[j]} interfere ({res.gap:g} mm)"
+                        f"floating (touches nothing): {', '.join(iso)}"
+                        if iso
+                        else f"{len(conn.groups)} disconnected bodies"
                     )
+            except Exception:  # pragma: no cover - defensive
+                log.debug("cad analysis: connectivity failed", exc_info=True)
     except Exception:  # pragma: no cover - a bad build shouldn't blank the panel
         log.debug("cad analysis: build failed", exc_info=True)
 
