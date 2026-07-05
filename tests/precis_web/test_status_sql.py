@@ -147,17 +147,22 @@ def test_recent_passes_surfaces_real_handler_name(store: Any) -> None:
     assert "chunk_keywords" not in names  # idle batch excluded
 
 
-def test_failed_passes_groups_by_handler_and_drops_schedule(store: Any) -> None:
-    """The failed-passes panel reports per-handler and excludes ``schedule``.
+def test_failed_passes_groups_by_handler_and_drops_verdict_passes(
+    store: Any,
+) -> None:
+    """The failed-passes panel reports per-handler and excludes the passes
+    that overload ``BatchResult.failed`` to mean a *normal verdict*.
 
-    ``schedule`` overloads ``BatchResult.failed`` to count *skipped*
-    ticks (collision-skip), not errors, so a single wedged recurring can
-    log tens of thousands of "failures" that are pure noise. Real handler
-    errors (``embed:bge-m3`` poison chunks) must still surface — keyed by
-    the real handler name recovered from ``payload->>'handler'``, never
-    the raw ``runner`` logger name.
+    ``schedule`` overloads it to count *skipped* ticks (collision-skip) and
+    ``corpus_reconcile`` to count held PDFs *recorded absent* on a host —
+    neither is an error, yet a single wedged recurring / partially-mounted
+    node logs tens of thousands of "failures" that are pure noise. Real
+    handler errors (``embed:bge-m3`` poison chunks) must still surface —
+    keyed by the real handler name recovered from ``payload->>'handler'``,
+    never the raw ``runner`` logger name.
     """
     _log_runner_batch(store, handler="schedule", ok=0, claimed=2, failed=999)
+    _log_runner_batch(store, handler="corpus_reconcile", ok=1, claimed=50, failed=49)
     _log_runner_batch(store, handler="embed:bge-m3", ok=0, claimed=4, failed=3)
     # A clean batch (failed=0) must not appear at all.
     _log_runner_batch(store, handler="chunk_keywords", ok=32, claimed=32, failed=0)
@@ -166,6 +171,7 @@ def test_failed_passes_groups_by_handler_and_drops_schedule(store: Any) -> None:
     by_handler = {f["handler"]: f for f in fails}
 
     assert "schedule" not in by_handler  # skip-as-failed noise excluded
+    assert "corpus_reconcile" not in by_handler  # absent-as-failed noise excluded
     assert "runner" not in by_handler  # logger name must never leak through
     assert "chunk_keywords" not in by_handler  # failed=0 → not a failure
     assert by_handler["embed:bge-m3"]["failed"] == 3

@@ -836,15 +836,21 @@ def _background_anomalies(store: Any) -> dict[str, list[dict[str, Any]]]:
               FROM worker_logs
              WHERE ts > now() - interval '24 hours'
                AND COALESCE((payload->>'failed')::int, 0) > 0
-               -- The schedule pass overloads BatchResult.failed to mean
-               -- "ticks *skipped* this pass" (collision-skip when the
-               -- previous spawned child is still open), not "errors". A
-               -- single recurring wedged behind an open child inflates
-               -- this to tens of thousands/day — pure noise here. The real
-               -- condition (a stalled recurring) surfaces as a nursery
-               -- 'stalled-recurring' alert, so drop the handler from this
-               -- error panel rather than cry wolf.
-               AND COALESCE(payload->>'handler', '') <> 'schedule'
+               -- Two passes overload BatchResult.failed to mean a normal
+               -- verdict, not an error, so they are dropped from this error
+               -- panel rather than cry wolf:
+               --   * schedule — 'ticks *skipped* this pass' (collision-skip
+               --     when the previous spawned child is still open). A single
+               --     recurring wedged behind an open child inflates this to
+               --     tens of thousands/day; the real condition (a stalled
+               --     recurring) surfaces as a nursery 'stalled-recurring' alert.
+               --   * corpus_reconcile — 'held PDFs *recorded absent* on this
+               --     host' (a normal presence-ledger verdict, not a pass
+               --     error; the count is already in the pass's INFO log). One
+               --     node with a partial corpus mount inflates this to tens of
+               --     thousands/day.
+               AND COALESCE(payload->>'handler', '') NOT IN
+                   ('schedule', 'corpus_reconcile')
              GROUP BY host, COALESCE(payload->>'handler', pass)
              ORDER BY failed DESC
              LIMIT 20
