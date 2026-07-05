@@ -1609,20 +1609,34 @@ class RefsMixin:
             rows = conn.execute(sql, params).fetchall()
         return [_row_to_ref(r) for r in rows]
 
-    def recent_refs(self, kinds: list[str], *, limit: int = 30) -> list[Ref]:
+    def recent_refs(
+        self,
+        kinds: list[str],
+        *,
+        tags: list[str] | None = None,
+        limit: int = 30,
+    ) -> list[Ref]:
         """Most-recently-created live refs across a *set* of kinds, newest
         first. Backs the ``/items`` default "recent things" browse (the
-        no-query landing). Kinds with no rows simply don't appear; an
-        empty ``kinds`` returns nothing.
+        no-query landing); ``tags`` narrows it to refs carrying all of them
+        (the tag-filter chips with no search query). Kinds with no rows
+        simply don't appear; an empty ``kinds`` returns nothing.
         """
         if not kinds:
             return []
+        clauses = ["r.kind = ANY(%s)", "r.deleted_at IS NULL"]
+        params: list[Any] = [list(kinds)]
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag)
+            params.extend(tag_params)
+        params.append(limit)
         with self.pool.connection() as conn:
             rows = conn.execute(
                 f"SELECT {_REFS_COLS_ALIASED} FROM refs r "
-                "WHERE r.kind = ANY(%s) AND r.deleted_at IS NULL "
+                f"WHERE {' AND '.join(clauses)} "
                 "ORDER BY r.created_at DESC, r.ref_id DESC LIMIT %s",
-                (list(kinds), limit),
+                params,
             ).fetchall()
         return [_row_to_ref(r) for r in rows]
 

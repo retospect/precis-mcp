@@ -141,6 +141,25 @@ def test_recent_refs_newest_first_and_kind_scoped(store: Store) -> None:
     assert store.recent_refs([], limit=10) == []
 
 
+def test_recent_refs_tag_filter(store: Store) -> None:
+    a = store.insert_ref(kind="paper", slug="rt-a", title="A")
+    store.insert_ref(kind="paper", slug="rt-b", title="B")  # untagged, excluded
+    store.add_tag(a.id, Tag.open("keepme"))
+
+    got = store.recent_refs(["paper"], tags=["keepme"])
+    assert [r.id for r in got] == [a.id]
+
+
+def test_suggest_tags_substring(store: Store) -> None:
+    a = store.insert_ref(kind="paper", slug="sg-a", title="A")
+    store.add_tag(a.id, Tag.open("topic-co2-capture"))
+
+    hits = store.suggest_tags("co2")
+    assert ("OPEN", "topic-co2-capture") in [(ns, val) for ns, val, _ in hits]
+    assert store.suggest_tags("") == []
+    assert store.suggest_tags("zzznomatch") == []
+
+
 def test_ref_tags_bulk(store: Store) -> None:
     a = store.insert_ref(kind="paper", slug="tb-a", title="A")
     b = store.insert_ref(kind="paper", slug="tb-b", title="B")  # untagged

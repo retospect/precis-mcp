@@ -19,8 +19,8 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis_web.deps import get_runtime, get_store, templates
@@ -28,6 +28,14 @@ from precis_web.item_view import item_row
 from precis_web.routes.flags import FLAG_DEFS, FLAG_NAMESPACE, FLAG_VALUE_LIST
 
 router = APIRouter(prefix="/items", tags=["items"])
+
+
+def _tag_filter_string(ns: str, value: str) -> str:
+    """Canonical tag-filter string for the search verb — ``OPEN`` tags are
+    bare, closed axes are ``NAMESPACE:value`` (what ``build_tag_filter``
+    parses)."""
+    return value if ns == "OPEN" else f"{ns}:{value}"
+
 
 #: Default kind set when the query doesn't name any — the block-searchable
 #: *source* kinds (ingested documents + cached external answers). Kinds
@@ -125,12 +133,13 @@ def _run_search(
     sort: str,
     since: datetime | None,
     until: datetime | None,
+    tags: list[str],
 ) -> list[dict[str, Any]]:
     """Blocking search + row-build; runs in a worker thread.
 
     Embeds the query once (degrading to lexical if the embedder is
-    absent or warming), runs the cross-kind primitive, then batches the
-    flag state for the whole page so the toggle buttons render active.
+    absent or warming), runs the cross-kind primitive filtered by the
+    selected ``tags``, then batches the flag/tag state for the whole page.
     """
     query_vec = None
     if embedder is not None:
@@ -145,6 +154,7 @@ def _run_search(
         sort=sort,
         since=since,
         until=until,
+        tags=tags or None,
         limit=_PAGE_SIZE,
         max_distance=SEMANTIC_DISTANCE_FLOOR,
     )
@@ -165,11 +175,12 @@ def _run_search(
     ]
 
 
-def _recent_rows(store: Any, kinds: list[str]) -> list[dict[str, Any]]:
+def _recent_rows(store: Any, kinds: list[str], tags: list[str]) -> list[dict[str, Any]]:
     """The no-query landing: most-recently-added source items, newest
-    first. No matching chunk (there's no query), so rows carry no preview
-    — just name, kind, when-added, the stub/ingested badges, and flags."""
-    refs = store.recent_refs(kinds, limit=_PAGE_SIZE)
+    first, optionally narrowed by the selected tag chips. No matching
+    chunk (no query), so rows carry no preview — just name, kind,
+    when-added, the stub/ingested badges, tags, and flags."""
+    refs = store.recent_refs(kinds, tags=tags or None, limit=_PAGE_SIZE)
     ref_ids = [r.id for r in refs]
     flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
     ingested = store.refs_with_body_chunks(ref_ids)
@@ -187,28 +198,60 @@ def _recent_rows(store: Any, kinds: list[str]) -> list[dict[str, Any]]:
     ]
 
 
+@router.get("/tags/suggest")
+async def tags_suggest(request: Request, q: str = "") -> JSONResponse:
+    """Autocomplete backend for the tag-filter chips — substring tag
+    matches as JSON ``[{label, tag}]`` (``tag`` is the filter string to
+    submit). Empty/1-char queries return nothing."""
+    q = (q or "").strip()
+    if len(q) < 2:
+        return JSONResponse([])
+    store = get_store(request)
+    rows = await asyncio.to_thread(store.suggest_tags, q, limit=10)
+    return JSONResponse(
+        [
+            {"label": _tag_filter_string(ns, val), "tag": _tag_filter_string(ns, val)}
+            for ns, val, _n in rows
+        ]
+    )
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def index(
     request: Request,
     q: str = "",
-    kinds: str = "",
     sort: str = "relevance",
     since: str = "",
     until: str = "",
+    k: list[str] = Query(default_factory=list),
+    tag: list[str] = Query(default_factory=list),
+    submitted: str = "",
 ) -> HTMLResponse:
     """Unified cross-kind search over the source kinds.
 
-    ``q=`` runs the search; ``kinds=`` (comma-list) narrows the set;
-    ``sort=recency`` orders newest-first; ``since=`` / ``until=`` (ISO
-    date) bound the date window. With no ``q`` the page is just the
-    search form.
+    ``q=`` runs the search; ``k=`` (repeated, one per checked kind)
+    narrows the set; ``tag=`` (repeated) are the tag-filter chips;
+    ``sort=recency`` orders newest-first; ``since=`` / ``until=`` bound
+    the date window. With no ``q`` the landing shows a tag cloud + recent.
+
+    Kind selection persists in an ``items_kinds`` cookie: an explicit
+    submit (``submitted=1``) sets it; a fresh visit reads it (or defaults
+    to every source kind). This is the "remembered checkboxes" behaviour.
     """
     store = get_store(request)
     q = (q or "").strip()
-    kind_list = [k.strip() for k in kinds.split(",") if k.strip()] or list(
-        _DEFAULT_SOURCE_KINDS
-    )
+
+    # Resolve the kind set: an explicit submit uses exactly the checked
+    # boxes (empty = none); a fresh visit uses the cookie, else all.
+    if submitted:
+        selected_kinds = [x.strip() for x in k if x.strip()]
+    else:
+        cookie = request.cookies.get("items_kinds", "")
+        selected_kinds = [x for x in cookie.split(",") if x] or list(
+            _DEFAULT_SOURCE_KINDS
+        )
+    tags = [t.strip() for t in tag if t.strip()]
     sort = "recency" if (sort or "").strip().lower() == "recency" else "relevance"
     since_dt = _parse_date(since)
     until_dt = _parse_date(until)
@@ -223,30 +266,33 @@ async def index(
             _run_search,
             store,
             embedder,
-            kinds=kind_list,
+            kinds=selected_kinds,
             q=q,
             sort=sort,
             since=since_dt,
             until=until_dt,
+            tags=tags,
         )
     else:
         # Default landing: a browse-by-vocabulary tag cloud + recent things
-        # under the search apparatus.
+        # (narrowed by the tag chips) under the search apparatus.
         cloud = await asyncio.to_thread(_tag_cloud, store)
-        recent = await asyncio.to_thread(_recent_rows, store, kind_list)
+        recent = await asyncio.to_thread(_recent_rows, store, selected_kinds, tags)
 
     # Where a flag toggle bounces back to — this exact search.
     return_to = request.url.path + (
         f"?{request.url.query}" if request.url.query else ""
     )
 
-    return templates.TemplateResponse(
+    resp = templates.TemplateResponse(
         request,
         "items/index.html.j2",
         {
             "active_tab": "items",
             "q": q,
-            "kinds": kinds,
+            "kind_defs": list(_DEFAULT_SOURCE_KINDS),
+            "selected_kinds": selected_kinds,
+            "tags": tags,
             "sort": sort,
             "since": since,
             "until": until,
@@ -257,3 +303,7 @@ async def index(
             "return_to": return_to,
         },
     )
+    if submitted:
+        # Remember the kind selection for the next visit (90 days).
+        resp.set_cookie("items_kinds", ",".join(selected_kinds), max_age=90 * 24 * 3600)
+    return resp

@@ -45,41 +45,108 @@
   </div>
 </div>
 
-<form method="get" action="/items" class="mb-4 flex flex-wrap items-end gap-2">
-  <div class="flex-1 min-w-[16rem]">
-    <label class="block text-xs text-slate-500 mb-0.5">Search</label>
-    <input type="text" name="q" value="{{ q }}" autofocus
-           placeholder="e.g. MOF CO₂ capture"
-           class="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
+<form method="get" action="/items" class="mb-4 space-y-2"
+      x-data='itemsFilter({{ kind_defs | tojson }}, {{ selected_kinds | tojson }}, {{ tags | tojson }})'>
+  {# submitted=1 tells the server the checkboxes are authoritative (so
+     "none checked" means none, and the choice is remembered in a cookie). #}
+  <input type="hidden" name="submitted" value="1" />
+  <div class="flex flex-wrap items-end gap-2">
+    <div class="flex-1 min-w-[16rem]">
+      <label class="block text-xs text-slate-500 mb-0.5">Search</label>
+      <input type="text" name="q" value="{{ q }}" autofocus
+             placeholder="e.g. MOF CO₂ capture"
+             class="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-0.5">Sort</label>
+      <select name="sort" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+        <option value="relevance" {% if sort != 'recency' %}selected{% endif %}>Relevance</option>
+        <option value="recency" {% if sort == 'recency' %}selected{% endif %}>Newest first</option>
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-0.5">Since</label>
+      <input type="date" name="since" value="{{ since }}"
+             class="rounded-md border border-slate-300 px-2 py-1.5 text-sm" />
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-0.5">Until</label>
+      <input type="date" name="until" value="{{ until }}"
+             class="rounded-md border border-slate-300 px-2 py-1.5 text-sm" />
+    </div>
+    <button type="submit"
+            class="rounded-md bg-slate-800 text-white px-4 py-1.5 text-sm hover:bg-slate-700">
+      Search
+    </button>
   </div>
-  <div>
-    <label class="block text-xs text-slate-500 mb-0.5">Kinds</label>
-    <input type="text" name="kinds" value="{{ kinds }}"
-           placeholder="paper,patent (blank = all sources)"
-           class="rounded-md border border-slate-300 px-3 py-1.5 text-sm w-56" />
+
+  {# Kind chips — click to toggle; All / None; remembered via cookie. #}
+  <div class="flex flex-wrap items-center gap-1.5 text-xs">
+    <span class="text-slate-500 mr-1">Kinds</span>
+    <button type="button" @click="allKinds()" class="px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50">All</button>
+    <button type="button" @click="noKinds()" class="px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50">None</button>
+    <template x-for="kk in kindDefs" :key="kk">
+      <label class="inline-flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer select-none"
+             :class="kinds.includes(kk) ? 'bg-sky-100 border-sky-300 text-sky-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
+        <input type="checkbox" name="k" :value="kk" x-model="kinds" class="sr-only" />
+        <span x-text="kk"></span>
+      </label>
+    </template>
   </div>
-  <div>
-    <label class="block text-xs text-slate-500 mb-0.5">Sort</label>
-    <select name="sort" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
-      <option value="relevance" {% if sort != 'recency' %}selected{% endif %}>Relevance</option>
-      <option value="recency" {% if sort == 'recency' %}selected{% endif %}>Newest first</option>
-    </select>
+
+  {# Tag filter — type to autocomplete (substring), click to add a chip,
+     ✕ to remove. Selected tags submit as repeated ?tag= params. #}
+  <div class="flex flex-wrap items-center gap-1.5 text-xs">
+    <span class="text-slate-500 mr-1">Tags</span>
+    <template x-for="(t, i) in tags" :key="t">
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-violet-100 text-violet-800">
+        <span x-text="t"></span>
+        <button type="button" @click="removeTag(i)" class="text-violet-500 hover:text-violet-900 leading-none">&times;</button>
+        <input type="hidden" name="tag" :value="t" />
+      </span>
+    </template>
+    <div class="relative">
+      <input type="text" x-model="tagQuery" @input.debounce.200ms="suggest()"
+             @keydown.escape="suggestions = []" placeholder="filter by tag…"
+             class="rounded border border-slate-300 px-2 py-0.5 text-xs w-44" />
+      <div x-show="suggestions.length" x-cloak @click.outside="suggestions = []"
+           class="absolute left-0 mt-1 z-30 w-56 max-h-56 overflow-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+        <template x-for="s in suggestions" :key="s.tag">
+          <button type="button" @click="addTag(s.tag)" x-text="s.label"
+                  class="block w-full text-left px-3 py-1 text-xs text-slate-600 hover:bg-slate-100"></button>
+        </template>
+      </div>
+    </div>
   </div>
-  <div>
-    <label class="block text-xs text-slate-500 mb-0.5">Since</label>
-    <input type="date" name="since" value="{{ since }}"
-           class="rounded-md border border-slate-300 px-2 py-1.5 text-sm" />
-  </div>
-  <div>
-    <label class="block text-xs text-slate-500 mb-0.5">Until</label>
-    <input type="date" name="until" value="{{ until }}"
-           class="rounded-md border border-slate-300 px-2 py-1.5 text-sm" />
-  </div>
-  <button type="submit"
-          class="rounded-md bg-slate-800 text-white px-4 py-1.5 text-sm hover:bg-slate-700">
-    Search
-  </button>
 </form>
+
+<script>
+  document.addEventListener('alpine:init', () => {
+    Alpine.data('itemsFilter', (kindDefs, selectedKinds, selectedTags) => ({
+      kindDefs: kindDefs,
+      kinds: selectedKinds,
+      tags: selectedTags,
+      tagQuery: '',
+      suggestions: [],
+      allKinds() { this.kinds = [...this.kindDefs]; },
+      noKinds() { this.kinds = []; },
+      removeTag(i) { this.tags.splice(i, 1); },
+      addTag(t) {
+        if (!this.tags.includes(t)) this.tags.push(t);
+        this.tagQuery = '';
+        this.suggestions = [];
+      },
+      async suggest() {
+        const term = this.tagQuery.trim();
+        if (term.length < 2) { this.suggestions = []; return; }
+        try {
+          const r = await fetch('/items/tags/suggest?q=' + encodeURIComponent(term));
+          this.suggestions = await r.json();
+        } catch (e) { this.suggestions = []; }
+      },
+    }));
+  });
+</script>
 
 {% macro item_list(items) %}
 <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">

@@ -328,6 +328,27 @@ class TagsMixin:
             out.setdefault(int(ref_id), set()).add(str(value))
         return out
 
+    def suggest_tags(self, q: str, *, limit: int = 10) -> list[tuple[str, str, int]]:
+        """Substring tag suggestions for the ``/items`` filter autocomplete.
+
+        Matches ``namespace:value`` (case-insensitive substring), most-used
+        first. Returns ``(namespace, value, usage_count)``. Empty query
+        returns nothing (the client only calls once the box has text).
+        """
+        q = (q or "").strip()
+        if not q:
+            return []
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT t.namespace, t.value, count(rt.ref_id) AS n "
+                "FROM tags t LEFT JOIN ref_tags rt USING(tag_id) "
+                "WHERE (t.namespace || ':' || t.value) ILIKE %s "
+                "GROUP BY t.namespace, t.value "
+                "ORDER BY n DESC, t.namespace, t.value LIMIT %s",
+                (f"%{q}%", limit),
+            ).fetchall()
+        return [(str(ns), str(val), int(n)) for ns, val, n in rows]
+
     def ref_tags_bulk(self, ref_ids: list[int]) -> dict[int, list[tuple[str, str]]]:
         """All ref-level tags for many refs in one query — the N+1 avoidance
         for a list view that renders per-row tag chips.

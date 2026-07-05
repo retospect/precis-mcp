@@ -306,7 +306,7 @@ def test_items_search_renders_cross_kind_rows(client) -> None:
 
 
 def test_items_kind_filter_narrows(client) -> None:
-    resp = client.get("/items?q=query&kinds=paper")
+    resp = client.get("/items?q=query&submitted=1&k=paper")
     assert resp.status_code == 200
     assert "A paper" in resp.text
     assert "A web page" not in resp.text
@@ -316,6 +316,44 @@ def test_items_recency_sort_accepted(client) -> None:
     resp = client.get("/items?q=query&sort=recency")
     assert resp.status_code == 200
     assert "A paper" in resp.text
+
+
+def test_items_kind_checkboxes_and_cookie(client) -> None:
+    """Kinds render as toggle chips (checkboxes) with All/None; an explicit
+    submit remembers the selection in a cookie."""
+    resp = client.get("/items")
+    assert 'name="k"' in resp.text
+    assert ">All<" in resp.text and ">None<" in resp.text
+    resp2 = client.get("/items?submitted=1&k=paper&k=web", follow_redirects=False)
+    cookie = resp2.headers.get("set-cookie", "")
+    # Starlette quotes the comma (round-trips fine on read); assert the
+    # cookie is set and carries both chosen kinds.
+    assert "items_kinds=" in cookie
+    assert "paper" in cookie and "web" in cookie
+    # Round-trip: the cookie drives kind selection on a fresh (unsubmitted)
+    # visit — the client persists the cookie across requests.
+    client.get("/items?submitted=1&k=paper", follow_redirects=False)
+    resp3 = client.get("/items")
+    assert '["paper"]' in resp3.text  # x-data seed reflects the remembered set
+
+
+def test_items_tag_suggest_endpoint(client) -> None:
+    """The autocomplete backend substring-matches tags; <2 chars is empty."""
+    assert client.get("/items/tags/suggest?q=c").json() == []
+    hits = client.get("/items/tags/suggest?q=co2").json()
+    assert {"label": "topic:co2-capture", "tag": "topic:co2-capture"} in hits
+
+
+def test_items_tag_filter_flows_to_search(runtime, client) -> None:
+    """Selected tag chips (?tag=) narrow the search."""
+    client.get("/items?q=query&tag=topic:co2-capture")
+    assert runtime.store.search_tags == ["topic:co2-capture"]
+
+
+def test_items_tag_filter_flows_to_recent(runtime, client) -> None:
+    """On the no-query landing, tag chips narrow the recent list."""
+    client.get("/items?tag=topic:co2-capture")
+    assert runtime.store.recent_tags == ["topic:co2-capture"]
 
 
 def _stub_paging_client(total: int):

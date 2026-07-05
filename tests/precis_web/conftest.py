@@ -549,7 +549,9 @@ class FakeStore:
     def search_chunks_across_kinds(self, *, kinds, q, **_kw):
         """Canned cross-kind hits for the /items page — one paper + one
         web ref, filtered to the requested kinds. Tests override the raw
-        triples via ``self.cross_kind_hits``."""
+        triples via ``self.cross_kind_hits`` and read the applied tag
+        filter via ``self.search_tags``."""
+        self.search_tags = _kw.get("tags")
         hits = getattr(self, "cross_kind_hits", None)
         if hits is None:
             pref = make_ref(id=10, kind="paper", slug="smith2024", title="A paper")
@@ -562,15 +564,23 @@ class FakeStore:
         want = set(kinds)
         return [(b, r, s) for (b, r, s) in hits if r.kind in want]
 
-    def recent_refs(self, kinds, *, limit=30):
+    def recent_refs(self, kinds, *, tags=None, limit=30):
         """Canned recent source refs for the /items default landing —
-        one paper (stub, no pdf) + one web, filtered to requested kinds."""
+        one paper (stub, no pdf) + one web, filtered to requested kinds.
+        ``self.recent_tags`` records the tag filter for assertions."""
+        self.recent_tags = tags
         src = [
             make_ref(id=10, kind="paper", slug="smith2024", title="A paper"),
             make_ref(id=70, kind="web", slug="example.com/page", title="A web page"),
         ]
         want = set(kinds)
         return [r for r in src if r.kind in want][:limit]
+
+    def suggest_tags(self, q, *, limit=10):
+        """Canned substring tag suggestions for the /items autocomplete."""
+        pool = [("topic", "co2-capture", 42), ("topic", "graphene", 17)]
+        ql = (q or "").lower()
+        return [(ns, v, n) for (ns, v, n) in pool if ql in f"{ns}:{v}".lower()][:limit]
 
     def refs_with_body_chunks(self, ref_ids):
         """Which refs the fake reports as ingested. Tests populate
