@@ -42,6 +42,7 @@ from precis.cli import (
     repl,
     resolve,
     resolve_metadata,
+    retire_draft_equations,
     schema_doc,
     serve_embeddings,
     stats,
@@ -108,6 +109,10 @@ def main() -> None:
 
     if args.cmd == "reconcile-duplicates":
         reconcile.run(args)
+        return
+
+    if args.cmd == "retire-draft-equations":
+        retire_draft_equations.run(args)
         return
 
     if args.cmd == "resolve-metadata":
@@ -213,6 +218,7 @@ def _build_parser() -> argparse.ArgumentParser:
     fix_metadata.add_parser(sub)
     migrate_refs.add_parser(sub)
     reconcile.add_parser(sub)
+    retire_draft_equations.add_parser(sub)
     resolve_metadata.add_parser(sub)
     gripe.add_parser(sub)
     add.add_parser(sub)

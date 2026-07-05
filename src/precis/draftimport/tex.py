@@ -435,7 +435,9 @@ def build_tree(body: str) -> tuple[Node, list[Cite]]:
 #                          `$...$` math stays *inside* the prose verbatim.
 # - itemize/enumerate    -> `ulist`/`olist` container + `item` children
 #                          (nested lists recurse as children of an item).
-# - equation/align/\[..\] -> `equation` chunk, raw LaTeX, needs-math-review.
+# - equation/align/\[..\] -> an internal `equation` plan marker (raw LaTeX);
+#   the writer (build.py) normalises it to a `$$…$$` `paragraph` chunk. There
+#   is no stored `equation` chunk kind — math is just KaTeX in prose.
 # - table                -> `table` chunk (best-effort), needs-table-review.
 # - figure               -> dropped.
 
@@ -563,11 +565,7 @@ def _plan_list(kind: str, inner: str) -> Chunk:
             elif seg[1] in _LIST_KIND:
                 item.children.append(_plan_list(_LIST_KIND[seg[1]], seg[2]))
             elif seg[1] in _MATH_ENVS:
-                item.children.append(
-                    Chunk(
-                        "equation", seg[2].strip(), meta={"flag": "needs-math-review"}
-                    )
-                )
+                item.children.append(Chunk("equation", seg[2].strip()))
             else:
                 texts.append(seg[2])
         item.text = re.sub(r"\s+", " ", " ".join(texts)).strip()
@@ -581,19 +579,11 @@ def plan_blocks(body: str) -> list[Chunk]:
     for seg in _split_top_envs(body):
         if seg[0] == "text":
             for kind, txt in _split_paras(seg[1]):
-                chunks.append(
-                    Chunk(
-                        "equation" if kind == "eq" else "paragraph",
-                        txt,
-                        meta={"flag": "needs-math-review"} if kind == "eq" else {},
-                    )
-                )
+                chunks.append(Chunk("equation" if kind == "eq" else "paragraph", txt))
         elif seg[1] in _LIST_KIND:
             chunks.append(_plan_list(_LIST_KIND[seg[1]], seg[2]))
         elif seg[1] in _MATH_ENVS:
-            chunks.append(
-                Chunk("equation", seg[2].strip(), meta={"flag": "needs-math-review"})
-            )
+            chunks.append(Chunk("equation", seg[2].strip()))
         elif seg[1] in _TABLE_BLOCK_ENVS:
             # keep the FULL tabular (raw LaTeX) — flagged for later review; the
             # dry-run report truncates for display, the stored chunk must not.

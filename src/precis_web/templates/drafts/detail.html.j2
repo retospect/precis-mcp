@@ -1383,7 +1383,7 @@ function draftDoc(ident) {
     _neighbour(h, dir) {
       // Keep in sync with _EDITABLE_KINDS (routes/drafts.py).
       const ok = new Set(['paragraph', 'heading', 'item', 'aside', 'box',
-                          'callout', 'term', 'equation', 'code', 'listing']);
+                          'callout', 'term', 'code', 'listing']);
       const i = this.vis.findIndex((b) => b.h === h);
       if (i < 0) return null;
       const step = dir === 'up' ? -1 : 1;

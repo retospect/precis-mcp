@@ -557,8 +557,9 @@ def _paper_pdf_missing(store: Any, ident: str) -> bool:
 
 #: Chunk kinds the inline editor may edit as raw text (slice 2a,
 #: docs/design/draft-inline-editor.md). Prose kinds + the verbatim-text kinds
-#: (equation LaTeX / code / listing — you edit their source). Excludes figure
-#: (bytes), table (derived from meta.table, in DERIVED_KINDS), and the
+#: (code / listing — you edit their source). Math is not a kind: display math
+#: is a `paragraph` carrying `$$…$$`, edited like any other paragraph. Excludes
+#: figure (bytes), table (derived from meta.table, in DERIVED_KINDS), and the
 #: ulist/olist containers, which keep their own affordances.
 #: NB: keep the client `_neighbour` set (detail.html.j2) in sync with this.
 _EDITABLE_KINDS = frozenset(
@@ -570,7 +571,6 @@ _EDITABLE_KINDS = frozenset(
         "box",
         "callout",
         "term",
-        "equation",
         "code",
         "listing",
     }

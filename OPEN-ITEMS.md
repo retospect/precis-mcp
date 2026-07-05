@@ -651,10 +651,49 @@ matching Dependabot alert until its recheck date, then resurfaces it as
   `/go`; if still capped by marker, bump `Recheck-after` +2 weeks.
 
 
+## 🔵 Paper-ingest `equation` chunk kind — retire later (2026-07-05)
+
+**Status**: deferred · **Severity**: feature · **Owner**:
+`ingest/marker.py`, `ingest/pipeline.py`, `ingest/literature.py`
+
+Companion to the **draft** equation-kind retirement (drafts→`$$…$$`
+paragraphs, done on `worktree-mission-doc`). The draft work deliberately
+left the **paper** side alone. Prod split as of 2026-07-05: **54,636**
+`equation` chunks belong to `kind='paper'` (99.5%) vs only 278 to drafts —
+so the `equation` `chunk_kind` is overwhelmingly a *PDF-ingest* artifact,
+minted by the Marker path (`ingest/marker.py:_classify` → `pipeline.py:99`
+Marker-type map), not the draft importer.
+
+**Why it wasn't folded into the draft retirement:**
+- **Different reader.** Papers render as the two-pane **PDF** reader
+  (`routes/papers.py` + pdf.js), *not* the prose/chunk reader — so the
+  "equation renders as raw `<p>`, not KaTeX" motivation doesn't apply to
+  papers at all.
+- **Deliberately un-embedded.** `ingest/literature.py` lists `equation` in
+  `SKIP_EMBED_TYPES` ("LaTeX/MathML doesn't embed well with text models"),
+  so paper equation chunks carry NULL embeddings by design. Migrating 54.6k
+  of them to `paragraph` would either leave odd un-embedded paragraphs or,
+  if embedded, dump 54k LaTeX blobs into the search index — a retrieval
+  regression + a large embed load. Reopening that requires deciding the
+  embed policy first (strip-to-placeholder? keep skipping? a `math`-marker
+  paragraph the embedder skips?).
+
+**If/when taken:** decide the paper-equation embed policy, change the Marker
+ingest classification + `SKIP_EMBED_TYPES`, batch-migrate the 54.6k paper
+chunks (throttle any cascade), then the `equation` slug can finally be
+`deprecated_at`-stamped in `chunk_kinds` once *no* live chunk of any owner
+kind carries it. Until then the FK row stays alive for the paper path.
+
+
 ---
 
-_Last updated: 2026-07-04 (added the ADR 0047 chunk-tag classifier
-remaining-work section — enable continuous tagging / Tier-2 escalation /
-ref-axis runner / table heuristic; pruned the Recently-retired graveyard +
-done CI item — both in git; snoozed Dependabot #44 transformers RCE until
-2026-07-18, blocked by marker-pdf's transformers<5 cap)_
+_Last updated: 2026-07-05 (added the paper-ingest `equation`-kind
+retirement as deferred backlog — companion to the draft equation→$$
+retirement on `worktree-mission-doc`; 54.6k paper equation chunks vs 278
+draft, different reader + deliberately un-embedded, so paper side needs its
+own embed-policy decision first). Prior: 2026-07-04 (added the ADR 0047
+chunk-tag classifier remaining-work section — enable continuous tagging /
+Tier-2 escalation / ref-axis runner / table heuristic; pruned the
+Recently-retired graveyard + done CI item — both in git; snoozed Dependabot
+#44 transformers RCE until 2026-07-18, blocked by marker-pdf's
+transformers<5 cap)_

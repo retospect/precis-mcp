@@ -32,6 +32,7 @@ from precis.draftimport.demacro import (
     resolve_deferred,
     strip_annotations,
 )
+from precis.draftimport.mathnorm import normalize_math
 from precis.draftimport.resolve import build_keymap, import_glossary
 from precis.draftimport.tex import (
     Chunk,
@@ -420,6 +421,12 @@ def run_import(
                     text = re.sub(
                         r"\n\s*\n+", "\n", raw
                     ).strip()  # keep raw, don't re-split
+                    if child.kind == "equation":
+                        # Math is not a stored kind — normalise the raw LaTeX to
+                        # a KaTeX-safe `$$…$$` and emit it as a `paragraph`. The
+                        # `\label`→handle map below still reads the raw body, so
+                        # cross-refs survive the label being stripped from `text`.
+                        text = normalize_math(text)
                 else:
                     text = demacro(
                         raw,
@@ -442,9 +449,13 @@ def run_import(
                             labels[lab] = parent_dc
                     continue
                 meta = {"flag": child.meta["flag"]} if child.meta.get("flag") else None
+                # `equation` is an internal plan marker only — math is stored as
+                # a `$$…$$` paragraph (normalised above). Every other kind is
+                # stored as-is.
+                store_kind = "paragraph" if child.kind == "equation" else child.kind
                 made = store.add_chunks(
                     ref_id=draft_ref.id,
-                    chunk_kind=child.kind,
+                    chunk_kind=store_kind,
                     text=text or "(figure omitted)",
                     at={"into": parent_handle, "last": True},
                     meta=meta,
