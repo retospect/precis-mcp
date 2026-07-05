@@ -70,16 +70,18 @@ paper: flag now, read when it lands. A shared route
 (`POST /flags/{kind}/{ref_id}`) + a Jinja partial (`_flag_buttons`) so
 the same widget drops onto any future item list.
 
-**Slice 2 — cross-kind search primitive (the DRY core).** Extend the
-MCP `search` verb + a store method to accept a *set* of kinds, filter
-by tag + date range, ordered by recency (reuse the existing
-`updated_at` / dream recency signal), returning refs with the existing
-token-efficient per-kind summary render. Semantic search unions over
-the shared `chunk_embeddings` table (cross-kind = union-then-group, not
-a new subsystem). Usable by the LLM the day it lands, before any web
-work. Decision fork: breadth (one best hit per ref) vs depth (ranked
-chunks) — likely both, gated by a param (see the existing
-"unique-per-paper search mode" backlog note).
+**Slice 2 — cross-kind search primitive (the DRY core). SHIPPED.**
+`Store.search_chunks_across_kinds` searches the chunks of a *set* of
+kinds at once (semantic + lexical, RRF-fused via `search_blocks_multi`),
+collapses to one best chunk per ref (breadth/triage), bounds by
+`refs.created_at`, and orders by relevance (default) or recency. The
+`search` verb grew `kinds` (via the existing `kind='a,b'` comma
+syntax), `sort=`, `since=`, `until=`; a `sort`/`since`/`until` call
+routes to `_dispatch_source_search` (one store query over `refs.kind =
+ANY(...)`, not the per-handler fan-out). Kinds with no embedded chunks
+contribute nothing, so an over-broad set is harmless. Breadth is the
+default (one hit per ref); depth (ranked chunks) is deferred to a later
+`per_paper`-style param.
 
 **Slice 3 — the per-kind presenter contract + unified list page.** A
 base `ItemPresenter` every kind implements:

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import os
 import random
+from datetime import UTC, datetime
 from typing import Any
 
 from psycopg import Connection
@@ -159,6 +160,45 @@ def _year_range_clauses(year_from: int | None, year_to: int | None) -> list[str]
     if year_to is not None:
         out.append(f"r.year <= {_coerce_year(year_to)}")
     return out
+
+
+#: tz-aware floor for recency sorting when a ref has no ``created_at``
+#: (defensive — real refs always carry one; a NULL sinks to the bottom).
+_EPOCH = datetime(1, 1, 1, tzinfo=UTC)
+
+
+def _kind_date_where(
+    kinds: list[str] | None,
+    kind: str | None,
+    created_from: datetime | None,
+    created_to: datetime | None,
+) -> tuple[list[str], list[Any]]:
+    """Kind-set + ``refs.created_at`` range predicates for cross-kind search.
+
+    ``kinds`` (a set → ``r.kind = ANY(%s)``) takes precedence over the
+    single ``kind`` (→ ``r.kind = %s``); pass one or neither. The
+    ``created_from`` / ``created_to`` bounds filter ``refs.created_at``
+    (the general cross-kind recency axis, distinct from the paper-only
+    ``r.year`` publish-date filter). Returns aligned ``(clauses, params)``
+    so a caller extends its clause list and bind-param list together.
+    Unlike :func:`_year_range_clauses` this uses bind params, so it is
+    for the single-leg methods, not the dual-CTE fused query.
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    if kinds is not None:
+        clauses.append("r.kind = ANY(%s)")
+        params.append(list(kinds))
+    elif kind is not None:
+        clauses.append("r.kind = %s")
+        params.append(kind)
+    if created_from is not None:
+        clauses.append("r.created_at >= %s")
+        params.append(created_from)
+    if created_to is not None:
+        clauses.append("r.created_at <= %s")
+        params.append(created_to)
+    return clauses, params
 
 
 def _chunk_scope_clauses(
@@ -483,6 +523,9 @@ class BlocksMixin:
         *,
         q: str,
         kind: str | None = None,
+        kinds: list[str] | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
@@ -519,9 +562,9 @@ class BlocksMixin:
             *_block_noise_clauses(text_alias="c.text"),
         ]
         params: list[Any] = [q]
-        if kind is not None:
-            params.append(kind)
-            clauses.append("r.kind = %s")
+        kd_clauses, kd_params = _kind_date_where(kinds, kind, created_from, created_to)
+        clauses.extend(kd_clauses)
+        params.extend(kd_params)
         if scope_ref_id is not None:
             params.append(scope_ref_id)
             clauses.append("c.ref_id = %s")
@@ -565,6 +608,9 @@ class BlocksMixin:
         *,
         query_vec: list[float],
         kind: str | None = None,
+        kinds: list[str] | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
@@ -606,9 +652,9 @@ class BlocksMixin:
             *_block_noise_clauses(text_alias="c.text"),
         ]
         where_params: list[Any] = []
-        if kind is not None:
-            where_params.append(kind)
-            clauses.append("r.kind = %s")
+        kd_clauses, kd_params = _kind_date_where(kinds, kind, created_from, created_to)
+        clauses.extend(kd_clauses)
+        where_params.extend(kd_params)
         if scope_ref_id is not None:
             where_params.append(scope_ref_id)
             clauses.append("c.ref_id = %s")
@@ -843,6 +889,9 @@ class BlocksMixin:
         query_vecs: list[list[float]],
         mode: str | None = None,
         kind: str | None = None,
+        kinds: list[str] | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
@@ -920,6 +969,9 @@ class BlocksMixin:
                     self.search_blocks_lexical(
                         q=qt,
                         kind=kind,
+                        kinds=kinds,
+                        created_from=created_from,
+                        created_to=created_to,
                         scope_ref_id=scope_ref_id,
                         tags=tags,
                         limit=pool,
@@ -938,6 +990,9 @@ class BlocksMixin:
                     self.search_blocks_semantic(
                         query_vec=qv,
                         kind=kind,
+                        kinds=kinds,
+                        created_from=created_from,
+                        created_to=created_to,
                         scope_ref_id=scope_ref_id,
                         tags=tags,
                         limit=pool,
@@ -978,6 +1033,65 @@ class BlocksMixin:
             results.append((block, ref, score))
 
         return results[offset : offset + limit]
+
+    def search_chunks_across_kinds(
+        self,
+        *,
+        kinds: list[str],
+        q: str,
+        query_vec: list[float] | None = None,
+        mode: str | None = None,
+        tags: list[str] | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        sort: str = "relevance",
+        limit: int = 20,
+        k: int = 60,
+        max_distance: float | None = None,
+    ) -> list[tuple[Block, Ref, float]]:
+        """Cross-kind chunk search — RRF-fused, per-ref best chunk, dated.
+
+        The Slice-2 primitive behind the unified item view
+        (``docs/proposals/unified-item-view.md``). Searches the ``chunks``
+        of a *set* of kinds at once (semantic + lexical, RRF-fused via
+        :meth:`search_blocks_multi`), collapses to one hit per ref — its
+        best-scoring chunk, the breadth / triage row — optionally bounds by
+        ``refs.created_at`` (``since`` / ``until``), and orders by relevance
+        (default) or recency (``sort='recency'`` → newest matching ref
+        first). Returns ``(Block, Ref, score)``, one per ref. Kinds with no
+        embedded chunks simply contribute nothing (the join filters them),
+        so an over-broad kind set is harmless.
+        """
+        if not kinds:
+            return []
+        recency = (sort or "relevance").strip().lower() == "recency"
+        # Recency re-ranks a *relevance-qualified* pool by date, so
+        # over-fetch beyond the caller's window (the lexical leg still
+        # requires an FTS match and the semantic leg a distance floor —
+        # the pool is query-relevant by construction, so date-sorting it
+        # yields "most recent among the relevant"). Relevance needs no
+        # over-fetch: the fused order is final.
+        pool = max(limit * 5, 100) if recency else limit
+        fused = self.search_blocks_multi(
+            q_texts=[q],
+            query_vecs=[query_vec] if query_vec is not None else [],
+            mode=mode,
+            kinds=kinds,
+            created_from=since,
+            created_to=until,
+            tags=tags,
+            limit=pool,
+            k=k,
+            max_distance=max_distance,
+            per_paper=1,  # one best chunk per ref (breadth / triage)
+        )
+        if recency:
+            fused.sort(
+                key=lambda t: (t[1].created_at or _EPOCH, t[1].id or 0),
+                reverse=True,
+            )
+            fused = fused[:limit]
+        return fused
 
     def search_blocks(
         self,

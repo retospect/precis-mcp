@@ -102,10 +102,17 @@ def test_tools_list_under_byte_budget() -> None:
     optional params. The verb description was trimmed (HyDE detail
     pushed to ``precis-search-help``) so this is schema-side growth
     only — same as the 06-11 / 06-19 bumps.
+
+    2026-07-05: cap raised from 16 KB → 17 KB to absorb the cross-kind
+    source-search kwargs on ``search`` (``sort`` / ``since`` / ``until``,
+    unified-item-view Slice 2): ~330 B of irreducible input-schema for
+    three new optional params. The verb description was left unchanged
+    (the new detail rides in the param comments, not the docstring), so
+    this is schema-side growth only — same as the 06-28 bump.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 16 * 1024, (
+    assert size < 17 * 1024, (
         f"tools/list wire-shape JSON is {size} bytes (cap: 16 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "

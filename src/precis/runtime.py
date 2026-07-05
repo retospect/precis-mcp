@@ -18,6 +18,7 @@ import inspect
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from precis.config import PrecisConfig
@@ -32,9 +33,14 @@ from precis.errors import (
 )
 from precis.protocol import _ALL_VERBS, Handler, Verb
 from precis.response import Response
+from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import Tag
 from precis.utils import handle_registry
-from precis.utils.search_merge import SearchHit, merge_and_render
+from precis.utils.search_merge import (
+    SearchHit,
+    block_hits_to_search_hits,
+    merge_and_render,
+)
 
 if TYPE_CHECKING:
     from precis._pagination import PaginationCache
@@ -340,6 +346,17 @@ class PrecisRuntime:
                 ),
                 dict(args),
             )
+
+        # Source search (unified-item-view Slice 2): a ``sort=`` /
+        # ``since=`` / ``until=`` search routes to the chunk-level
+        # cross-kind primitive — one store query over ``refs.kind =
+        # ANY(...)`` that RRF-fuses lexical+semantic, collapses to one
+        # best chunk per ref, bounds by ``refs.created_at``, and orders
+        # by relevance (default) or recency. Distinct from the per-handler
+        # fan-out below. Intercept before kind resolution so it composes
+        # with a single kind, a comma-list, a wildcard, or an omitted kind.
+        if verb == "search" and self._is_source_search_request(args):
+            return self._dispatch_source_search(kind, dict(args))
 
         # Cross-kind: ``kind='*'`` or comma-list. Other verbs keep the
         # single-kind contract — multi-kind get is meaningless and
@@ -1332,6 +1349,125 @@ class PrecisRuntime:
         raise BadInput(
             "angle search requires q= or like=",
             next="search(q='topic', angle=0.5)  or  search(like='memory:42', angle=0)",
+        )
+
+    @staticmethod
+    def _is_source_search_request(args: dict[str, Any]) -> bool:
+        """True when a search opts into the Slice-2 source primitive.
+
+        Triggered by an explicit ``sort=`` (``relevance`` / ``recency``)
+        or any ``since=`` / ``until=`` date bound. None of these args
+        exist on the legacy single-kind / fan-out paths, so the check
+        never hijacks an existing call shape.
+        """
+        sort = str(args.get("sort") or "").strip().lower()
+        if sort in ("relevance", "recency"):
+            return True
+        return args.get("since") is not None or args.get("until") is not None
+
+    @staticmethod
+    def _parse_search_date(value: Any, field: str) -> datetime | None:
+        """Parse a ``since=`` / ``until=`` bound into a tz-aware datetime.
+
+        Accepts an ISO date (``2024-01-01``) or a full ISO timestamp; a
+        naive value is assumed UTC (``refs.created_at`` is ``timestamptz``).
+        Raises ``BadInput`` on an unparseable string.
+        """
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            try:
+                dt = datetime.fromisoformat(str(value).strip())
+            except ValueError as exc:
+                raise BadInput(
+                    f"{field}= must be an ISO date/timestamp, got {value!r}",
+                    next=f"{field}='2024-01-01' or '2024-01-01T00:00:00'",
+                ) from exc
+        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
+    def _dispatch_source_search(
+        self, kind: str | None, args: dict[str, Any]
+    ) -> Response:
+        """Cross-kind chunk search — RRF-fused, per-ref best chunk, dated.
+
+        The Slice-2 primitive (see
+        :meth:`Store.search_chunks_across_kinds` +
+        ``docs/proposals/unified-item-view.md``). Resolves the kind set
+        (single / comma-list / wildcard / omitted → every cross-kind
+        kind; kinds with no embedded chunks contribute nothing), embeds
+        ``q`` once, runs the single store query, and renders the per-ref
+        hits — each stamped with its own ``ref.kind`` so handles/labels
+        stay correct — as one pre-ordered stream (RRF over a single
+        stream preserves the store's relevance-or-recency order).
+        """
+        store = self.hub.store
+        if store is None:
+            raise Unsupported("source search needs a store-backed deployment")
+        q = args.get("q")
+        if not (isinstance(q, str) and q.strip()):
+            raise BadInput(
+                "source search (sort=/since=/until=) requires q=",
+                next="search(kind='paper,patent', q='mof co2', sort='recency')",
+            )
+        expanded = (
+            self._expand_kind_code(str(kind))
+            if kind is not None
+            else _CROSS_KIND_WILDCARD
+        )
+        kinds = self._resolve_cross_kind_request(expanded)
+        since = self._parse_search_date(args.get("since"), "since")
+        until = self._parse_search_date(args.get("until"), "until")
+        sort = str(args.get("sort") or "relevance").strip().lower() or "relevance"
+        top_k = int(args.get("page_size") or args.get("top_k") or 10)
+        tags = args.get("tags")
+        mode = args.get("mode")
+        mode_lexical = isinstance(mode, str) and mode.strip().lower() == "lexical"
+
+        query_vec: list[float] | None = None
+        semantic_degraded = False
+        embedder = None if mode_lexical else getattr(self.hub, "embedder", None)
+        if embedder is not None:
+            try:
+                query_vec = embedder.embed_one(q)
+            except Upstream:
+                semantic_degraded = True
+            except Exception:
+                log.exception("source search: query embed failed; lexical-only")
+
+        results = store.search_chunks_across_kinds(
+            kinds=kinds,
+            q=q,
+            query_vec=query_vec,
+            mode=mode,
+            tags=tags,
+            since=since,
+            until=until,
+            sort=sort,
+            limit=top_k,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
+        )
+        hits: list[SearchHit] = []
+        for block, ref, score in results:
+            hits.extend(block_hits_to_search_hits([(block, ref, score)], kind=ref.kind))
+
+        date_suffix = " in the given date window" if (since or until) else ""
+        if semantic_degraded:
+            empty_body = (
+                f"no lexical matches across {', '.join(kinds)} for {q!r}"
+                f"{date_suffix}; semantic search degraded to lexical-only this "
+                "turn — retry in ~30s for the full ranked fan-out"
+            )
+        else:
+            empty_body = f"no matches across {', '.join(kinds)} for {q!r}{date_suffix}"
+        return merge_and_render(
+            [hits],
+            page_size=top_k,
+            query=q,
+            header_noun="match",
+            mode="rrf",
+            empty_body=empty_body,
         )
 
     def _dispatch_cross_kind(self, kind: str, args: dict[str, Any]) -> Response:

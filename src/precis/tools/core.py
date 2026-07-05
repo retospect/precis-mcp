@@ -421,6 +421,15 @@ def search(
     # folder's (unique) name. Forces the cross-kind fan-out even with
     # a single kind= so hits can be membership-filtered.
     folder: str | int | None = None,
+    # Unified item view (Slice 2): cross-kind chunk search — one best
+    # chunk per ref, over a set of kinds at once. ``sort='recency'``
+    # orders by ``refs.created_at`` (newest first) instead of relevance;
+    # ``since=`` / ``until=`` (ISO date/timestamp) bound that date axis.
+    # Any of the three routes to the cross-kind primitive — combine with
+    # ``kind='paper,patent'`` (or omit kind for every source kind).
+    sort: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
@@ -486,6 +495,21 @@ def search(
                 BadInput(
                     f"unknown search mode {mode!r}",
                     next="mode='hybrid' (default) | 'lexical' | 'semantic'",
+                )
+            )
+        )
+
+    # Validate the source-search sort at the boundary so a typo surfaces
+    # as the canonical BadInput envelope instead of silently falling
+    # through to a plain relevance search (the intercept only fires on a
+    # recognised value).
+    if sort is not None and sort.strip().lower() not in ("relevance", "recency"):
+        runtime = _get_runtime()
+        return _validation_error(
+            runtime.render_error(
+                BadInput(
+                    f"unknown search sort {sort!r}",
+                    next="sort='recency' (newest first) | 'relevance' (default)",
                 )
             )
         )
@@ -589,6 +613,14 @@ def search(
         payload["author"] = author
     if folder is not None:
         payload["folder"] = folder
+    # Cross-kind source-search knobs (Slice 2) — forwarded only when set
+    # so a plain search never trips the source-search interception path.
+    if sort is not None:
+        payload["sort"] = sort
+    if since is not None:
+        payload["since"] = since
+    if until is not None:
+        payload["until"] = until
 
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("search", payload)
