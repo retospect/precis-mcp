@@ -130,6 +130,18 @@ authoring job scoped to exactly those refs (the LLM re-runs the same
 verb to pull context). Nothing materialised — the human screen and the
 job's retrieval scope are the same query object.
 
+**Coupled workstream — kind taxonomy audit (rides on Slice 3).**
+Adopting the presenter forces a touch of every one of the ~40 kinds, so
+audit each kind's spec in the same pass: reconcile the `role` /
+`corpus_role` drift (datasheet `evidence`+`stream`; pres
+`corpus`+`none`), collapse near-duplicate kinds (the five external-
+answer kinds `perplexity-reasoning` / `perplexity-research` /
+`websearch` / `web` / `wikipedia` → possibly one kind + subtype; the
+computational `calc` / `math` / `oracle` similarly), rename for
+legibility, retire dead ones. Then (later) rewrite each `precis-*-help`
+skill to match. Fewer, sharper kinds = less surface for the LLM to
+learn. Presenter-per-kind and audit-per-kind are one loop, not two.
+
 ## Explicitly NOT in scope
 
 - Retiring the per-kind **detail viewers** (paper reader, `/cad`,
@@ -192,6 +204,20 @@ job's retrieval scope are the same query object.
   have both incremental adoption and the check-time-totality guarantee
   on day one; the default-render road stays shippable, the end state is
   the hard contract.
+- **DECIDED — no legacy-alias burden on the LLM surface.** A fresh LLM
+  instance re-reads the current skills/overview every session (no memory
+  of old kind names), so kind renames / merges / retirements need **zero**
+  backward-compat aliases for the LLM. Only stored refs + non-LLM
+  consumers (web routes, workers) need data migration. *The interface is
+  free to change; the data isn't.* This is the license for an aggressive
+  taxonomy cleanup (the coupled workstream above).
+- **DECIDED — search is chunk-level; the matching chunk is the preview.**
+  Semantic + keyword both run over chunks (`chunk_embeddings` + the
+  keyword index), fused per ref (best chunk per ref for the breadth /
+  triage row). `preview(query)` for a text kind returns that winning
+  chunk (highlighted); a visual kind with no chunk hit returns a
+  thumbnail. So the retrieval unit is the chunk, the row unit is the ref,
+  and the preview cell is the chunk that made the ref match.
 - **DECIDED — source spans cached external answers, not just documents.**
   The source kind-set is *every searchable non-artifact kind* — ingested
   documents **and** cached answers/references (`perplexity-*`,
