@@ -188,12 +188,44 @@ def _committed_anything(worktree: Path) -> bool:
     return bool(head) and head != base
 
 
+def _commit_if_dirty(worktree: Path, message: str) -> bool:
+    """Commit any working-tree changes; return True if a commit was made."""
+    if not _git(worktree, "status", "--porcelain", check=False).stdout.strip():
+        return False
+    _git(worktree, "add", "-A", check=False)
+    _git(worktree, "commit", "-m", message, check=False)
+    return True
+
+
+def _autofix_lint(worktree: Path) -> None:
+    """Auto-fix ruff (lint + format) the way ``scripts/ship`` does, then commit.
+
+    ``scripts/ship`` auto-fixes ruff *before* its authoritative check, but the
+    quick gate below only runs ``ruff check`` / ``ruff format --check`` — so a
+    stray unformatted line the build agent left behind reported NEEDS_YOU and
+    the whole build was discarded (branch unpushed, worktree GC'd), even though
+    ship would have fixed it in one command. Mirror ship: fix the mechanical
+    stuff here and commit it, leaving the gate to flag only genuine
+    (non-auto-fixable) lint/type errors.
+    """
+    for cmd in (
+        ("uv", "run", "ruff", "check", "--fix", "."),
+        ("uv", "run", "ruff", "format", "."),
+    ):
+        subprocess.run(
+            list(cmd), cwd=str(worktree), capture_output=True, text=True, check=False
+        )
+    _commit_if_dirty(worktree, "style: ruff autofix (fixer)")
+
+
 def _quick_gate(cfg: FixerConfig, worktree: Path) -> tuple[bool, str]:
     """Fast host gate (ruff + mypy) for the report signal.
 
     Not the authoritative gate — ``scripts/ship`` runs ruff/mypy/pytest
     in the container at ship/full autonomy. This is the cheap
-    "does it obviously pass" signal for the report-only rung.
+    "does it obviously pass" signal for the report-only rung. Formatting and
+    auto-fixable lint are resolved by :func:`_autofix_lint` first, so a failure
+    here means a genuine (non-mechanical) lint or type error.
     """
     for cmd in cfg.gate_cmds:
         res = subprocess.run(
@@ -314,6 +346,8 @@ def run_tick(cfg: FixerConfig) -> TickResult:
                 "claude exited cleanly but committed nothing — no change to review",
             )
             return result
+
+        _autofix_lint(worktree)
 
         gate_ok, gate_msg = _quick_gate(cfg, worktree)
         if not gate_ok:
