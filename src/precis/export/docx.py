@@ -101,6 +101,8 @@ class _Ctx:
     seen_acr: set[str] = field(default_factory=set)  # already expanded once
     used_acr: set[str] = field(default_factory=set)  # for the acronyms list
     last_cite: str | None = None  # paper of the immediately-preceding mark
+    endnote: bool = False  # emit EndNote CWYW fields instead of plain [n]
+    resolved: dict[str, dict[str, Any]] = field(default_factory=dict)  # slug→record
 
     def cite_number(self, slug: str) -> int:
         """1-based reference number for a slug (stable insertion order)."""
@@ -180,9 +182,20 @@ def _render_byline(doc: Any, byline: dict[str, Any]) -> None:
             run.italic = True
 
 
-def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
+def export_docx(
+    store: Any, ref: Any, *, target_path: Path, citations: str = "plain"
+) -> DocxResult:
     """Render a draft into ``target_path`` as a ``.docx``. Returns the
-    path plus the cited slugs and any resolution warnings."""
+    path plus the cited slugs and any resolution warnings.
+
+    ``citations`` selects how in-text references render:
+
+    * ``"plain"`` (default) — a superscript ``[n]`` marker + a plain
+      numbered **References** section. Universal, no add-in needed.
+    * ``"endnote"`` — native EndNote *Cite While You Write* fields
+      (``ADDIN EN.CITE`` + ``EN.REFLIST``), so EndNote recognizes and can
+      reformat / manage the citations (see :mod:`precis.export.endnote`).
+    """
     from docx import Document
 
     target_path = Path(target_path)
@@ -192,6 +205,7 @@ def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
         store=store,
         known_handles=handles,
         abbrevs=store.defined_abbrevs(ref.id),
+        endnote=(citations == "endnote"),
     )
 
     doc = Document()
@@ -264,6 +278,12 @@ def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
     if not terms:
         _append_acronyms(doc, ctx)
     _append_references(doc, ctx)
+    if ctx.endnote and ctx.cited:
+        from precis.export.endnote import install_document_vars
+
+        install_document_vars(
+            doc, list(range(1, len(ctx.cited) + 1)), style="Annotated"
+        )
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(target_path))
@@ -529,8 +549,62 @@ def _cite(slug: str, ctx: _Ctx, paragraph: Any) -> None:
     if ctx.last_cite == slug:
         return  # consecutive cite to the same paper — one mark for the run
     ctx.last_cite = slug
+    if ctx.endnote:
+        _cite_endnote(slug, n, ctx, paragraph)
+        return
     run = paragraph.add_run(f"[{n}]")
     run.font.superscript = True
+
+
+def _resolve_source(store: Any, slug: str, rec_number: int) -> dict[str, Any] | None:
+    """Resolve a cited slug to the structured record EndNote embeds — the
+    SAME paper/patent lookup the plain path and the ``.bib`` path use, so the
+    docx, PDF and EndNote outputs cite the identical resolved source."""
+    pref = store.get_ref(kind="paper", id=slug) or store.get_ref(kind="patent", id=slug)
+    if pref is None:
+        return None
+    doi = arxiv = None
+    try:
+        alias = store.identifiers_for_refs([pref.id]).get(pref.id, {})
+        doi, arxiv = alias.get("doi"), alias.get("arxiv")
+    except Exception:  # pragma: no cover — identifier lookup best-effort
+        pass
+    meta = pref.meta or {}
+    url = (
+        f"https://doi.org/{doi}"
+        if doi
+        else (f"https://arxiv.org/abs/{arxiv}" if arxiv else None)
+    )
+    return {
+        "kind": pref.kind,
+        "tag": slug,
+        "rec_number": rec_number,
+        "authors": pref.authors,
+        "title": pref.title or slug,
+        "year": pref.year,
+        "journal": meta.get("venue")
+        or meta.get("journal")
+        or meta.get("container_title"),
+        "volume": meta.get("volume"),
+        "doi": doi,
+        "url": url,
+    }
+
+
+def _cite_endnote(slug: str, n: int, ctx: _Ctx, paragraph: Any) -> None:
+    """Emit a native EndNote ``ADDIN EN.CITE`` field for one citation. An
+    unresolved slug degrades to a plain superscript marker (nothing lost)."""
+    from precis.export.endnote import add_citation_field
+
+    source = ctx.resolved.get(slug)
+    if source is None:
+        source = _resolve_source(ctx.store, slug, n)
+        if source is None:
+            ctx.warnings.append(f"cite {slug!r}: no paper in corpus — plain marker")
+            paragraph.add_run(f"[{n}]").font.superscript = True
+            return
+        ctx.resolved[slug] = source
+    add_citation_field(paragraph, source)
 
 
 # ── references + glossary sections ────────────────────────────────
@@ -571,6 +645,18 @@ def _append_references(doc: Any, ctx: _Ctx) -> None:
     if not ctx.cited:
         return
     doc.add_heading("References", level=1)
+    if ctx.endnote:
+        # EndNote regenerates this list on "Update Citations and Bibliography"
+        # from the records embedded in the in-text fields; the plain lines are
+        # cached placeholder text shown until then.
+        from precis.export.endnote import add_reflist_field
+
+        cached = [
+            f"[{i}] " + _format_reference(ctx.store, slug, ctx.warnings)
+            for i, slug in enumerate(ctx.cited, start=1)
+        ]
+        add_reflist_field(doc, cached)
+        return
     for i, slug in enumerate(ctx.cited, start=1):
         line = _format_reference(ctx.store, slug, ctx.warnings)
         p = doc.add_paragraph()

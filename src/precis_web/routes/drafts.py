@@ -1396,16 +1396,26 @@ _DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.do
 async def export_docx_route(request: Request, ident: str) -> Response:
     """Synchronous .docx export — renders the draft and streams it back as
     a download. Toolchain-free (python-docx), so this "just works"; the
-    rendering runs off the event loop."""
+    rendering runs off the event loop.
+
+    ``?citations=endnote`` emits native EndNote *Cite While You Write*
+    fields (``ADDIN EN.CITE`` + ``EN.REFLIST``) so EndNote recognizes and can
+    reformat the citations; the default (``plain``) is a numbered ``[n]`` +
+    References section that needs no add-in."""
     from precis.export.docx import export_docx
 
     store = get_store(request)
     ref = _draft_ref(store, ident)
     if ref is None:
         return RedirectResponse(url="/drafts", status_code=303)
+    citations = (
+        "endnote" if request.query_params.get("citations") == "endnote" else "plain"
+    )
     name = str(ref.slug or ref.id)
     out = Path(tempfile.mkdtemp(prefix="precis-docx-")) / f"{name}.docx"
-    await asyncio.to_thread(export_docx, store, ref, target_path=out)
+    await asyncio.to_thread(
+        export_docx, store, ref, target_path=out, citations=citations
+    )
     return FileResponse(out, filename=f"{name}.docx", media_type=_DOCX_MEDIA)
 
 

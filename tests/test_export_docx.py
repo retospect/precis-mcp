@@ -336,6 +336,59 @@ def test_handle_form_citation_resolves(
     assert "Multifunctional nanobuds" in text  # resolved entry
 
 
+def test_endnote_citations_emit_cwyw_fields(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """``citations='endnote'`` emits native EndNote Cite-While-You-Write
+    fields (``ADDIN EN.CITE`` carrying the full <record>, plus an
+    ``EN.REFLIST`` bibliography field and the EN.* doc-vars) instead of a
+    plain ``[n]`` marker — the format EndNote recognizes and can reformat.
+    Structure pinned against a real EndNote-authored .docx."""
+    import zipfile
+
+    _seed_paper(hub.store, "nasibulin2007", "Multifunctional nanobuds", 2007)
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="en", title="T", project=pid)
+    draft.put(
+        id="en",
+        chunk_kind="paragraph",
+        text="Nanobuds were first reported [§nasibulin2007~0].",
+        at={"last": True},
+    )
+    ref = hub.store.get_ref(kind="draft", id="en")
+    out = tmp_path / "en.docx"
+    res = export_docx(hub.store, ref, target_path=out, citations="endnote")
+    assert res.cited_slugs == ["nasibulin2007"]
+    with zipfile.ZipFile(out) as z:
+        body = z.read("word/document.xml").decode("utf-8")
+        settings = z.read("word/settings.xml").decode("utf-8")
+    # In-text EN.CITE complex field carrying the traveling-library record.
+    assert " ADDIN EN.CITE &lt;EndNote&gt;&lt;Cite&gt;" in body
+    assert '&lt;ref-type name="Journal Article"&gt;17' in body
+    assert "Multifunctional nanobuds" in body  # embedded record title
+    assert '<w:fldChar w:fldCharType="begin"/>' in body
+    # Bibliography field + the document-level EndNote state EndNote reads.
+    assert " ADDIN EN.REFLIST " in body
+    assert "EN.InstantFormat" in settings
+    assert "EN.Layout" in settings
+    assert "EN.Libraries" in settings
+    # Re-open as a validity check (a malformed part would fail here).
+    docx.Document(str(out))
+    # Plain mode is unchanged — no EndNote machinery leaks in.
+    plain = tmp_path / "plain.docx"
+    export_docx(hub.store, ref, target_path=plain, citations="plain")
+    with zipfile.ZipFile(plain) as z:
+        pbody = z.read("word/document.xml").decode("utf-8")
+    assert "ADDIN EN.CITE" not in pbody
+    assert "[1]" in "\n".join(p.text for p in docx.Document(str(plain)).paragraphs)
+
+
 def test_omml_converter_returns_none_on_empty() -> None:
     pytest.importorskip("latex2mathml")
     from precis.export.omml import latex_to_omml
