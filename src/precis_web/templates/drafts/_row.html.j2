@@ -293,7 +293,12 @@
        edit of one block. Saves on blur / ⌘↵ / ctrl↵; a reference this edit
        newly breaks bounces back (422) and keeps the box open; Esc cancels. #}
     <div x-show="editing" x-cloak class="mt-1">
+      {# ProseMirror mount point (rich editor + live ref squiggle); shown once
+         it mounts. The textarea below is the seed + save mirror AND the
+         graceful fallback if the PM module didn't load. #}
+      <div x-ref="pm" x-show="pmActive"></div>
       <textarea x-ref="ed" data-inline-edit rows="3"
+                x-show="!pmActive"
                 @blur="save()"
                 @keydown.escape.stop.prevent="cancel()"
                 @keydown.enter.meta.prevent="save()"

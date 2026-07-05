@@ -358,6 +358,127 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
   onload="window.__renderDocMath && window.__renderDocMath()"></script>
+
+{# Inline rich editor (slice 2b-ii): a per-block ProseMirror surface with a
+   live red squiggle on references that don't resolve. It edits raw source
+   (refs / $…$ stay literal text — reveal-on-cursor is a later polish) and
+   mirrors its text into the block's hidden <textarea>, so the existing save /
+   validate flow is unchanged. If the module fails to load or mount, the row
+   falls back to that plain textarea (today's behaviour) — so this can only
+   add, never regress. #}
+<style>
+  .pm-editor { border: 1px solid #7dd3fc; background: #fff; border-radius: 0.375rem;
+               padding: 0.5rem; }
+  .pm-editor .ProseMirror { white-space: pre-wrap; word-wrap: break-word; outline: none;
+               min-height: 3.25rem; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+               color: #1e293b; }
+  .pm-editor .ProseMirror:focus { outline: none; }
+  .pm-editor .pm-block { min-height: 1.4em; }
+  /* dangling-reference squiggle — a distinct wavy rose underline (NOT the
+     browser's spellcheck red, and NOT the amber link chips). */
+  .ref-bad { text-decoration: underline wavy #f43f5e; text-underline-offset: 3px; }
+</style>
+<script type="module">
+import * as PM from '/static/prosemirror.bundle.mjs';
+const { EditorState, EditorView, Schema, keymap, baseKeymap,
+        history, undo, redo, Plugin, PluginKey, Decoration, DecorationSet } = PM;
+
+// One block of plain text; newlines are hard_breaks (preserved verbatim on
+// serialize). Round-trip is identity (tests/headless-verified) so an edit
+// never mangles the source.
+const schema = new Schema({ nodes: {
+  doc: { content: 'block' },
+  block: { content: 'inline*', toDOM: () => ['div', { class: 'pm-block' }, 0] },
+  text: { group: 'inline' },
+  hard_break: { group: 'inline', inline: true, selectable: false, toDOM: () => ['br'] },
+} });
+function textToDoc(t) {
+  const parts = (t || '').split('\n'); const inline = [];
+  parts.forEach((p, i) => { if (i) inline.push(schema.nodes.hard_break.create());
+                            if (p) inline.push(schema.text(p)); });
+  return schema.node('doc', null, [schema.node('block', null, inline)]);
+}
+function docToText(doc) {
+  let out = '';
+  doc.firstChild.forEach((n) => { if (n.type.name === 'hard_break') out += '\n';
+                                  else if (n.isText) out += n.text; });
+  return out;
+}
+
+const sqKey = new PluginKey('squiggle');
+function squigglePlugin() {
+  return new Plugin({
+    key: sqKey,
+    state: {
+      init() { return DecorationSet.empty; },
+      apply(tr, old) { const m = tr.getMeta(sqKey); return m ? m : old.map(tr.mapping, tr.doc); },
+    },
+    props: { decorations(state) { return sqKey.getState(state); } },
+  });
+}
+// Underline every occurrence of each dangling on-screen form (e.g. "[dc999]").
+function decorate(view, forms) {
+  const set = (forms || []).filter(Boolean);
+  if (!set.length) { view.dispatch(view.state.tr.setMeta(sqKey, DecorationSet.empty)); return; }
+  const decos = [];
+  view.state.doc.descendants((node, pos) => {
+    if (!node.isText) return;
+    const t = node.text;
+    for (const form of set) {
+      let i = t.indexOf(form);
+      while (i !== -1) { decos.push(Decoration.inline(pos + i, pos + i + form.length, { class: 'ref-bad' }));
+                         i = t.indexOf(form, i + form.length); }
+    }
+  });
+  view.dispatch(view.state.tr.setMeta(sqKey, DecorationSet.create(view.state.doc, decos)));
+}
+async function validate(view, text, url) {
+  try {
+    const res = await fetch(url, { method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ text }) });
+    if (res.ok) decorate(view, (await res.json()).dangling || []);
+  } catch (e) { /* leave decorations as-is */ }
+}
+
+// Mount a PM editor into `mountEl`, seeded from `seedText`. Returns a small
+// controller; opts carries the callbacks the Alpine row wires up.
+window.__mountDraftPM = function (mountEl, seedText, opts) {
+  let timer = null;
+  const view = new EditorView(mountEl, {
+    state: EditorState.create({
+      doc: textToDoc(seedText),
+      plugins: [
+        history(),
+        keymap({
+          'Mod-z': undo, 'Mod-y': redo, 'Shift-Mod-z': redo,
+          'Mod-Enter': () => { opts.onSave && opts.onSave(); return true; },
+          'Escape': () => { opts.onCancel && opts.onCancel(); return true; },
+        }),
+        keymap(baseKeymap),
+        squigglePlugin(),
+      ],
+    }),
+    dispatchTransaction(tr) {
+      const ns = view.state.apply(tr); view.updateState(ns);
+      if (tr.docChanged) {
+        const text = docToText(ns.doc);
+        opts.onChange && opts.onChange(text);
+        clearTimeout(timer);
+        timer = setTimeout(() => validate(view, text, opts.validateUrl), 350);
+      }
+    },
+  });
+  view.dom.addEventListener('blur', () => { opts.onBlur && opts.onBlur(); });
+  setTimeout(() => validate(view, seedText, opts.validateUrl), 40);
+  view.focus();
+  return {
+    getText() { return docToText(view.state.doc); },
+    focus() { view.focus(); },
+    destroy() { clearTimeout(timer); view.destroy(); },
+  };
+};
+</script>
 <script>
 function __renderMath(el) {
   if (!window.renderMathInElement || !el) return;
@@ -392,6 +513,7 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
 function draftEdit(ident, handle, baseSha, editable, isHeading) {
   return {
     raw: false, editing: false, saving: false, err: '', orig: '',
+    pmActive: false, _pm: null,   // ProseMirror surface (falls back to textarea)
     // A freshly-inserted block auto-opens its editor: draftDoc sets a global
     // to this handle before it hydrates, and the new row's init() consumes it.
     init() {
@@ -434,10 +556,36 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
       this.editing = true; this.err = '';
       this.$nextTick(() => {
         const t = this.$refs.ed;
-        if (t) { this.orig = t.value; t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+        this.orig = t ? t.value : '';
+        // Prefer the ProseMirror surface (live squiggle); if the module isn't
+        // loaded or mount throws, fall back to the plain textarea.
+        if (window.__mountDraftPM && this.$refs.pm) {
+          this.pmActive = true;               // reveal the mount point first…
+          this.$nextTick(() => {              // …then mount+focus once it's visible
+            try {
+              this._pm = window.__mountDraftPM(this.$refs.pm, this.orig, {
+                validateUrl: `/drafts/${ident}/validate-refs`,
+                onChange: (txt) => { if (t) t.value = txt; },   // mirror into hidden textarea
+                onBlur: () => this.save(),
+                onSave: () => this.save(),
+                onCancel: () => this.cancel(),
+              });
+            } catch (e) {
+              this.pmActive = false; this._pm = null;
+              if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+            }
+          });
+          return;
+        }
+        if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
       });
     },
+    _teardownPM() {
+      if (this._pm) { try { this._pm.destroy(); } catch (e) { /* ignore */ } this._pm = null; }
+      this.pmActive = false;
+    },
     cancel() {
+      this._teardownPM();
       const t = this.$refs.ed;
       if (t) t.value = this.orig;                 // discard edits
       this.editing = false; this.err = ''; this.saving = false;
@@ -445,9 +593,9 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
     async save() {
       if (!this.editing || this.saving) return;
       const t = this.$refs.ed;
-      if (!t) { this.editing = false; return; }
-      const text = t.value;
-      if (text === this.orig) { this.editing = false; this.err = ''; return; }  // no-op
+      const text = this._pm ? this._pm.getText() : (t ? t.value : '');
+      if (t) t.value = text;
+      if (text === this.orig) { this._teardownPM(); this.editing = false; this.err = ''; return; }  // no-op
       this.saving = true; this.err = '';
       try {
         const res = await fetch(`/drafts/${ident}/text`, {
@@ -457,6 +605,7 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
+          this._teardownPM();
           this.editing = false; this.saving = false;
           window.dispatchEvent(new CustomEvent('draft:edited', {
             detail: { handle, warnings: data.warnings || [] },
@@ -466,11 +615,11 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
           // open with the message so the author fixes it in place.
           this.err = data.error || ('save failed (' + res.status + ')');
           this.saving = false;
-          this.$nextTick(() => { const e = this.$refs.ed; if (e) e.focus(); });
+          this.$nextTick(() => { if (this._pm) this._pm.focus(); else if (t) t.focus(); });
         }
       } catch (e) {
         this.err = 'network error — not saved'; this.saving = false;
-        this.$nextTick(() => { const e = this.$refs.ed; if (e) e.focus(); });
+        this.$nextTick(() => { if (this._pm) this._pm.focus(); else if (t) t.focus(); });
       }
     },
   };

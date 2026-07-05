@@ -1876,6 +1876,28 @@ async def edit_text_inline(
     return JSONResponse({"ok": True, "warnings": warnings})
 
 
+@router.post("/drafts/{ident}/validate-refs")
+async def validate_refs(
+    request: Request,
+    ident: str,
+    text: str = Form(""),
+) -> JSONResponse:
+    """Live ref validation for the inline editor's squiggle (slice 2b-ii):
+    return the on-screen forms of every reference in ``text`` that resolves to
+    nothing, so the editor can underline them as you type. Reuses the same
+    dangling-token detection as the save-time gate — the squiggle is the live
+    face of the hard gate."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"dangling": []})
+    handler = get_runtime(request).hub.handler_for("draft")
+    chunk = handler._dangling_chunk_tokens(text)
+    find = handler._dangling_finding_tokens(text)
+    dangling = [f"[{h}]" for h in chunk] + [f"#{s}" for s in find]
+    return JSONResponse({"dangling": dangling})
+
+
 @router.post("/drafts/{ident}/block")
 async def add_block(
     request: Request,
