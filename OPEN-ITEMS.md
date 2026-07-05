@@ -233,6 +233,14 @@ webhook `PRECIS_OPS_ALERT_WEBHOOK`. Tests in `test_nursery.py` / `test_alerts.py
   because it sat on an unmerged branch while deploys render from `master`. Add a
   deploy assert that deployed launchd plists match the rendered templates (analogue
   of the existing venv-commit convergence assert). Owner: `redeploy-precis.yml`.
+- **Convergence assert races the autonomous fixer** (observed 2026-07-05). The
+  final "each venv matches deployed ref" assert does a *fresh* `git ls-remote origin
+  main` per host, so when the hephaestus fixer ships mid-deploy the installed commit
+  ≠ HEAD and the assert fails — even though the installs succeeded and the cluster is
+  uniform (bit 2–3× per `/go` deploy while the fixer was active; a re-run in a quiet
+  window converges). Fix: capture the target sha ONCE at play start (or assert
+  against the commit each venv actually *installed*, not a fresh ls-remote), so a
+  `main` moving under an in-flight deploy can't false-fail. Owner: `redeploy-precis.yml`.
 
 ## 🟢 Chunk-tag classifier (ADR 0047) — remaining work
 
