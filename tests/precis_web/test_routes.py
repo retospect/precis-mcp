@@ -20,6 +20,16 @@ def test_healthz(client) -> None:
     assert client.get("/healthz").json() == {"status": "ok"}
 
 
+def test_pres_editor_routes_registered(client) -> None:
+    """The pres slide-deck editor wires four endpoints (reader / pdf /
+    bibtex / edit). Guards the app-factory registration + path shapes."""
+    paths = {getattr(r, "path", None) for r in client.app.routes}
+    assert "/pres/{slug}" in paths
+    assert "/pres/{ref_id}/pdf" in paths
+    assert "/pres/{ref_id}/bibtex" in paths
+    assert "/pres/{ref_id}/edit" in paths
+
+
 # ── papers-needed (stub backlog) ───────────────────────────────────
 
 

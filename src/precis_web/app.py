@@ -85,6 +85,7 @@ def create_app(
         needs_you,
         papers,
         papers_needed,
+        pres,
         preview,
         refs,
         status,
@@ -98,6 +99,7 @@ def create_app(
     app.include_router(asks.router)
     app.include_router(papers.router)
     app.include_router(cfp.router)
+    app.include_router(pres.router)
     app.include_router(papers_needed.router)
     app.include_router(drafts.router)
     app.include_router(drive.router)

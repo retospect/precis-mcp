@@ -1,0 +1,120 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ ref.title }}{% endblock %}
+{% block content %}
+<style>#pdf-frame{border:0}</style>
+
+{# Two-pane deck editor: attribution form + slide list (left), PDF (right).
+   The PDF viewer is the same vendored pdf.js the paper reader uses; only
+   the left-pane form is pres-specific (attribution → BibTeX). #}
+<div class="flex flex-col" style="height: calc(100vh - 4.5rem)">
+
+  <div class="flex items-center gap-3 py-2">
+    <span class="text-sm text-slate-500">slides</span>
+    <h1 class="truncate text-base font-semibold" title="{{ ref.title }}">{{ ref.title }}</h1>
+    <span class="shrink-0 font-mono text-xs text-slate-400">{{ slug }}</span>
+  </div>
+
+  <div class="flex min-h-0 flex-1 gap-3">
+    {# ── left: attribution form + slide list ─────────────────────── #}
+    <aside class="flex w-[24rem] shrink-0 flex-col overflow-y-auto rounded-lg border border-slate-200 bg-white">
+      <form method="post" action="/pres/{{ ref.id }}/edit" class="space-y-2 border-b border-slate-200 p-3 text-sm">
+        <h2 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Attribution</h2>
+
+        <label class="block">
+          <span class="text-xs text-slate-500">Title</span>
+          <input name="title" value="{{ ref.title }}"
+                 class="w-full rounded border border-slate-300 px-2 py-1"/>
+        </label>
+
+        <label class="block">
+          <span class="text-xs text-slate-500">Authors (one per line)</span>
+          <textarea name="authors" rows="3"
+                    class="w-full rounded border border-slate-300 px-2 py-1 font-mono text-xs"
+                    placeholder="Payne, M. C.">{{ attribution.authors }}</textarea>
+        </label>
+
+        <label class="block">
+          <span class="text-xs text-slate-500">Venue / howpublished</span>
+          <input name="venue" value="{{ attribution.venue }}"
+                 placeholder="CASTEP Workshop, Durham"
+                 class="w-full rounded border border-slate-300 px-2 py-1"/>
+        </label>
+
+        <div class="flex gap-2">
+          <label class="block flex-1">
+            <span class="text-xs text-slate-500">Date</span>
+            <input name="date" value="{{ attribution.date }}" placeholder="2001-12-06 or 2001"
+                   class="w-full rounded border border-slate-300 px-2 py-1"/>
+          </label>
+          <label class="block w-36">
+            <span class="text-xs text-slate-500">BibTeX type</span>
+            <select name="bibtex_type"
+                    class="w-full rounded border border-slate-300 px-2 py-1">
+              {% for t in ['misc', 'unpublished', 'inproceedings'] %}
+              <option value="{{ t }}" {% if attribution.bibtex_type == t %}selected{% endif %}>{{ t }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+
+        <label class="block">
+          <span class="text-xs text-slate-500">URL</span>
+          <input name="url" value="{{ attribution.url }}"
+                 class="w-full rounded border border-slate-300 px-2 py-1"/>
+        </label>
+
+        <label class="block">
+          <span class="text-xs text-slate-500">Note</span>
+          <input name="note" value="{{ attribution.note }}" placeholder="Lecture 1"
+                 class="w-full rounded border border-slate-300 px-2 py-1"/>
+        </label>
+
+        <button type="submit"
+                class="rounded bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700">
+          Save
+        </button>
+      </form>
+
+      {# BibTeX preview (copy target) #}
+      <div class="border-b border-slate-200 p-3">
+        <div class="mb-1 flex items-center gap-2">
+          <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-500">BibTeX</h2>
+          <a href="/pres/{{ ref.id }}/bibtex" target="_blank"
+             class="text-xs text-blue-600 hover:underline">open raw</a>
+        </div>
+        <pre class="overflow-x-auto rounded bg-slate-50 p-2 font-mono text-[11px] leading-snug text-slate-700">{{ bibtex }}</pre>
+      </div>
+
+      {# slide list #}
+      <div class="p-3">
+        <h2 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Slides ({{ slides | length }})
+        </h2>
+        <ol class="space-y-0.5 text-sm">
+          {% for s in slides %}
+          <li class="flex gap-2">
+            <span class="w-6 shrink-0 text-right font-mono text-xs text-slate-400">{{ s.pos }}</span>
+            <span class="truncate" title="{{ s.title }}">{{ s.title }}</span>
+          </li>
+          {% else %}
+          <li class="text-slate-400">no slides</li>
+          {% endfor %}
+        </ol>
+      </div>
+    </aside>
+
+    {# ── right: PDF.js reader ─────────────────────────────────────── #}
+    <section class="min-w-0 flex-1 overflow-hidden rounded-lg border border-slate-200 bg-white">
+      {% if has_pdf %}
+        <iframe id="pdf-frame" class="h-full w-full"
+                src="/static/pdfjs/web/viewer.html?file={{ ('/pres/' ~ ref.id ~ '/pdf') | urlencode }}"></iframe>
+      {% else %}
+        <div class="m-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          No PDF on disk for this deck. The attribution form and slide list
+          still work over the ingested slides.
+        </div>
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}

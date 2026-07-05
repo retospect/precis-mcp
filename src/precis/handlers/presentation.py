@@ -23,6 +23,7 @@ the watch-and-extract pattern the new_pres drop folder will reuse.
 
 from __future__ import annotations
 
+import re
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
@@ -35,6 +36,7 @@ from precis.handlers._link_tag_ops import (
     require_tag_ops,
     validate_link_mode,
 )
+from precis.handlers._paper_format import _clean_inline_text, _latex_escape
 from precis.handlers._slug_ref_shared import (
     reject_chunk_or_path_view,
     render_slug_ref_list,
@@ -64,6 +66,7 @@ class PresentationHandler(Handler):
         supports_search=True,
         supports_search_hits=True,
         supports_put=True,
+        supports_edit=True,
         supports_tag=True,
         supports_link=True,
         is_numeric=False,
@@ -76,6 +79,12 @@ class PresentationHandler(Handler):
         if hub.store is None:
             raise InitError("pres: store required")
         self.store = hub.store
+
+    def accepted_views(self, *, id: Any = None) -> list[str]:
+        # First entry is the conventional default (overview). ``full``
+        # renders every slide; ``bibtex`` / ``ris`` export the deck's
+        # attribution for citing slides.
+        return ["full", "bibtex", "ris"]
 
     # ── get ─────────────────────────────────────────────────────────
 
@@ -97,10 +106,12 @@ class PresentationHandler(Handler):
             return self._render_block(slug, ref.id, chunk)
         if effective_view == "full":
             return self._render_full(slug, ref)
+        if effective_view in ("bibtex", "ris"):
+            return Response(body=_format_pres_citation(ref, style=effective_view))
         if effective_view is not None:
             raise Unsupported(
                 f"unknown pres view {effective_view!r}",
-                next="try '/full' or '~N'",
+                next="try '/full', '/bibtex', or '~N'",
             )
         return self._render_overview(slug, ref)
 
@@ -298,6 +309,77 @@ class PresentationHandler(Handler):
             + (f" (subtype={subtype!r})" if (created and subtype) else "")
         )
 
+    # ── edit: attribution metadata (for citing slides) ──────────────
+
+    def edit(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        title: str | None = None,
+        authors: Any = None,
+        venue: str | None = None,
+        date: str | None = None,
+        url: str | None = None,
+        note: str | None = None,
+        bibtex_type: str | None = None,
+        meta: dict[str, Any] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Edit a deck's attribution metadata so slides can be cited.
+
+        pres has no first-class ``authors`` / ``year`` columns (those
+        are paper-only), so attribution lives in ``meta``: ``authors``
+        (a list of name strings), ``venue`` (BibTeX ``howpublished``),
+        ``date``, ``url``, ``note``, and ``bibtex_type``
+        (``misc`` / ``unpublished`` / ``inproceedings``). Body blocks
+        are never touched — this is metadata only.
+
+        Only the fields passed are changed; a ``None`` field is left
+        as-is (the web form's "leave blank to keep" contract). Passing
+        an explicit empty string clears a scalar field, and
+        ``authors=[]`` clears the author list. Feeds
+        ``get(view='bibtex')``.
+        """
+        ref = resolve_live_slug_ref(self.store, kind="pres", id=str(id))
+
+        patch: dict[str, Any] = {}
+        if authors is not None:
+            patch["authors"] = _normalize_pres_authors(authors)
+        for key, val in (
+            ("venue", venue),
+            ("date", date),
+            ("url", url),
+            ("note", note),
+            ("bibtex_type", bibtex_type),
+        ):
+            if val is not None:
+                patch[key] = str(val).strip()
+        if meta:
+            patch.update(meta)
+
+        new_title = title.strip() if isinstance(title, str) and title.strip() else None
+
+        if not patch and new_title is None:
+            raise BadInput(
+                "edit(kind='pres') needs at least one field to change",
+                next=(
+                    "edit(kind='pres', id='<slug>', venue='...', "
+                    "date='2001', authors=['Payne, M. C.'])"
+                ),
+            )
+
+        self.store.update_ref(ref.id, title=new_title, meta_patch=patch or None)
+        handle = handle_registry.format_handle("pres", ref.id)
+        changed = sorted([*(["title"] if new_title else []), *patch.keys()])
+        body = f"updated {handle}: {', '.join(changed)}"
+        body += render_next_section(
+            [
+                (f"get(id='{handle}', view='bibtex')", "get the BibTeX entry"),
+                (f"get(id='{handle}')", "see the overview"),
+            ]
+        )
+        return Response(body=body)
+
     # ── tag / link ──────────────────────────────────────────────────
 
     def _resolve_pres_slug(self, id: str | int) -> tuple[str, int]:
@@ -394,6 +476,9 @@ class PresentationHandler(Handler):
         meta = ref.meta or {}
         handle = handle_registry.format_handle("pres", ref.id)
         lines = [f"# {handle}", f"_{ref.title}_"]
+        authors = meta.get("authors") or []
+        if authors:
+            lines.append("by " + ", ".join(str(a) for a in authors))
         venue = meta.get("venue")
         date = meta.get("date")
         if venue or date:
@@ -405,19 +490,20 @@ class PresentationHandler(Handler):
         lines.append("")
         lines.append(f"{n_blocks} block{'s' if n_blocks != 1 else ''}")
         body = "\n".join(lines)
-        body += render_next_section(
-            [
-                (
-                    f"get(id='{handle}/full')",
-                    "read the whole body",
-                ),
-                (f"get(id='{handle}~0')", "read the first block"),
-                (
-                    f"search(kind='pres', q='...', scope='{handle}')",
-                    "search this presentation",
-                ),
-            ]
-        )
+        next_steps = [
+            (f"get(id='{handle}/full')", "read the whole body"),
+            (f"get(id='{handle}~0')", "read the first block"),
+            (
+                f"search(kind='pres', q='...', scope='{handle}')",
+                "search this presentation",
+            ),
+        ]
+        # Offer the citation once any attribution is filled in.
+        if authors or venue or date:
+            next_steps.append(
+                (f"get(id='{handle}', view='bibtex')", "get the BibTeX entry")
+            )
+        body += render_next_section(next_steps)
         return Response(body=body)
 
     def _render_full(self, slug: str, ref: Any) -> Response:
@@ -464,3 +550,86 @@ def _parse_pres_id(raw: str) -> tuple[str, int | None, str | None]:
         slug, _, view = raw.partition("/")
         return slug, None, view
     return raw, None, None
+
+
+def _normalize_pres_authors(raw: Any) -> list[str]:
+    """Coerce an authors input to a list of clean name strings.
+
+    Accepts a list (of name strings or ``{name|family|given}`` dicts) or
+    a single string with newline / semicolon separators. Commas are
+    *not* split on, so a BibTeX-style ``Family, Given`` name stays whole
+    — one author per line.
+    """
+    if raw is None:
+        return []
+    parts: list[str] = []
+    if isinstance(raw, str):
+        parts = [p.strip() for p in re.split(r"[\n;]+", raw)]
+    elif isinstance(raw, (list, tuple)):
+        for a in raw:
+            if isinstance(a, str):
+                parts.append(a.strip())
+            elif isinstance(a, dict):
+                name = a.get("name") or " ".join(
+                    str(x) for x in (a.get("given"), a.get("family")) if x
+                )
+                parts.append(str(name).strip())
+    else:
+        parts = [str(raw).strip()]
+    return [p for p in parts if p]
+
+
+def _format_pres_citation(ref: Any, *, style: str) -> str:
+    """Render a deck's attribution as BibTeX (``@misc`` by default) or RIS.
+
+    Reads the ``meta`` attribution keys written by
+    :meth:`PresentationHandler.edit`. Reuses the paper formatter's
+    ``_clean_inline_text`` / ``_latex_escape`` primitives so the escaping
+    matches the paper BibTeX view.
+    """
+    meta = ref.meta or {}
+    slug = ref.slug or "???"
+    title = _clean_inline_text(ref.title or "")
+    authors = [_clean_inline_text(str(a)) for a in (meta.get("authors") or [])]
+    authors = [a for a in authors if a]
+    venue = _clean_inline_text(str(meta.get("venue") or ""))
+    date = str(meta.get("date") or "")
+    year = date[:4] if date[:4].isdigit() else ""
+    url = str(meta.get("url") or "").strip()
+    note = _clean_inline_text(str(meta.get("note") or ""))
+    entry_type = str(meta.get("bibtex_type") or "").strip() or "misc"
+
+    if style == "ris":
+        out = ["TY  - SLIDE"]
+        if title:
+            out.append(f"TI  - {title}")
+        for a in authors:
+            out.append(f"AU  - {a}")
+        if year:
+            out.append(f"PY  - {year}")
+        if venue:
+            out.append(f"PB  - {venue}")
+        if url:
+            out.append(f"UR  - {url}")
+        if note:
+            out.append(f"N1  - {note}")
+        out.append("ER  - ")
+        return "\n".join(out)
+
+    lines = [f"@{entry_type}{{{slug},"]
+    if title:
+        lines.append(f"  title = {{{_latex_escape(title)}}},")
+    if authors:
+        lines.append(
+            f"  author = {{{' and '.join(_latex_escape(a) for a in authors)}}},"
+        )
+    if year:
+        lines.append(f"  year = {{{year}}},")
+    if venue:
+        lines.append(f"  howpublished = {{{_latex_escape(venue)}}},")
+    if url:
+        lines.append(f"  url = {{{url}}},")
+    if note:
+        lines.append(f"  note = {{{_latex_escape(note)}}},")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
