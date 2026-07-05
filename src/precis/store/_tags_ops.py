@@ -294,6 +294,40 @@ class TagsMixin:
             ).fetchone()
         return row is not None
 
+    def ref_tag_values(
+        self,
+        ref_ids: list[int],
+        namespace: str,
+        values: list[str],
+    ) -> dict[int, set[str]]:
+        """Batched ``(namespace, value)`` presence over many refs.
+
+        One query for a whole page of rows — the N+1 avoidance for a
+        list view that renders per-ref flag chips (e.g. the
+        ``read-later`` / ``must-read`` / ``skim`` toggles). Returns
+        ``{ref_id: {value, …}}`` containing only the refs that carry at
+        least one of ``values`` under ``namespace``; a ref with none is
+        simply absent from the map. Expired tags are excluded, matching
+        :meth:`has_tag`.
+        """
+        if not ref_ids or not values:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT rt.ref_id, t.value "
+                "FROM ref_tags rt "
+                "JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = ANY(%s) "
+                "  AND t.namespace = %s "
+                "  AND t.value = ANY(%s) "
+                "  AND (rt.expires_at IS NULL OR rt.expires_at > now())",
+                (list(ref_ids), namespace, list(values)),
+            ).fetchall()
+        out: dict[int, set[str]] = {}
+        for ref_id, value in rows:
+            out.setdefault(int(ref_id), set()).add(str(value))
+        return out
+
     def tags_for_with_expiry(
         self,
         ref_id: int,

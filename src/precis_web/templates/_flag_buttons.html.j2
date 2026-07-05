@@ -1,0 +1,27 @@
+{# Reading-intent flag toggles — kind-agnostic, reusable across item
+   lists. Caller provides:
+     flag_defs  — the FLAG_DEFS tuple (value/emoji/label/title)
+     active     — set of currently-active flag values for this ref
+     ref_kind   — the ref's kind (e.g. 'paper')
+     ref_id     — the ref id
+     return_to  — path to bounce back to after the toggle
+   Each button POSTs to /flags/<kind>/<id>; an active flag posts op=remove
+   so a second click toggles it off. #}
+<div class="flex items-center gap-1">
+  {% for f in flag_defs %}
+    {% set is_active = f.value in active %}
+    <form method="post" action="/flags/{{ ref_kind }}/{{ ref_id }}" class="shrink-0">
+      <input type="hidden" name="flag" value="{{ f.value }}" />
+      <input type="hidden" name="op" value="{{ 'remove' if is_active else 'add' }}" />
+      <input type="hidden" name="return_to" value="{{ return_to }}" />
+      <button type="submit"
+              title="{{ f.title }}{{ ' — click to clear' if is_active else '' }}"
+              aria-pressed="{{ 'true' if is_active else 'false' }}"
+              class="text-xs px-1.5 py-0.5 rounded border transition-colors
+                     {% if is_active %}border-sky-400 bg-sky-100 text-sky-800
+                     {% else %}border-slate-200 text-slate-400 hover:bg-slate-50 hover:text-slate-600{% endif %}">
+        {{ f.emoji }}<span class="ml-0.5">{{ f.label }}</span>
+      </button>
+    </form>
+  {% endfor %}
+</div>

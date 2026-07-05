@@ -99,6 +99,98 @@ def test_papers_needed_pager_preserves_awaiting(client) -> None:
     assert "stubs" in resp.text
 
 
+# ── reading-intent flags (read-later / must-read / skim) ───────────
+
+
+def test_papers_needed_shows_flag_buttons(client) -> None:
+    """Each stub row carries the three flag toggle forms, posting to the
+    kind-agnostic /flags/<kind>/<id> route."""
+    resp = client.get("/papers-needed")
+    assert resp.status_code == 200
+    assert 'action="/flags/paper/90"' in resp.text
+    assert "Read later" in resp.text
+    assert "Must-read" in resp.text
+    assert "Skim" in resp.text
+
+
+def test_papers_needed_active_flag_renders_pressed_and_removes(runtime, client) -> None:
+    """A ref already carrying OPEN:read-later renders that button active
+    (aria-pressed) and armed to remove on the next click."""
+    runtime.store.ref_open_values[90] = {"read-later"}
+    resp = client.get("/papers-needed")
+    assert resp.status_code == 200
+    # The active button posts op=remove so a second click toggles off.
+    assert 'aria-pressed="true"' in resp.text
+    assert '<input type="hidden" name="op" value="remove" />' in resp.text
+
+
+def test_flag_toggle_add_dispatches_tag(runtime, client) -> None:
+    resp = client.post(
+        "/flags/paper/90",
+        data={"flag": "read-later", "op": "add", "return_to": "/papers-needed"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers-needed"
+    assert (
+        "tag",
+        {"kind": "paper", "id": 90, "add": ["read-later"]},
+    ) in runtime.calls
+
+
+def test_flag_toggle_remove_dispatches_tag(runtime, client) -> None:
+    resp = client.post(
+        "/flags/paper/90",
+        data={
+            "flag": "must-read",
+            "op": "remove",
+            "return_to": "/papers-needed?page=2",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers-needed?page=2"
+    assert (
+        "tag",
+        {"kind": "paper", "id": 90, "remove": ["must-read"]},
+    ) in runtime.calls
+
+
+def test_flag_toggle_rejects_unknown_flag(runtime, client) -> None:
+    """An off-vocabulary flag is a no-op redirect, never a tag write."""
+    resp = client.post(
+        "/flags/paper/90",
+        data={"flag": "delete-everything", "op": "add"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert runtime.calls == []
+
+
+def test_flag_toggle_surfaces_handler_error(runtime, client) -> None:
+    """A rejected tag dispatch renders the handler error, not a silent
+    redirect (the untriage-bug lesson, applied to flags)."""
+    runtime.error_verbs.add("tag")
+    resp = client.post(
+        "/flags/paper/90",
+        data={"flag": "skim", "op": "add"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "invalid tag" in resp.text
+
+
+def test_flag_toggle_blocks_open_redirect(runtime, client) -> None:
+    """A non-local return_to falls back to /papers-needed."""
+    resp = client.post(
+        "/flags/paper/90",
+        data={"flag": "read-later", "return_to": "https://evil.example/x"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers-needed"
+
+
 def _stub_paging_client(total: int):
     """A TestClient whose store reports ``total`` stubs and pages them.
 

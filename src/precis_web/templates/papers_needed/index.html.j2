@@ -43,6 +43,7 @@
         <th class="text-right px-3 py-2">Tries</th>
         <th class="text-left px-3 py-2">Last attempt</th>
         <th class="text-left px-3 py-2">State</th>
+        <th class="text-left px-3 py-2">Flag</th>
       </tr>
     </thead>
     <tbody class="divide-y divide-slate-100">
@@ -112,6 +113,12 @@
           {% else %}
             <span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-600">{{ row.state }}</span>
           {% endif %}
+        </td>
+        <td class="px-3 py-2">
+          {% set ref_kind = 'paper' %}
+          {% set ref_id = row.id %}
+          {% set active = row.flags %}
+          {% include "_flag_buttons.html.j2" with context %}
         </td>
       </tr>
       {% endfor %}

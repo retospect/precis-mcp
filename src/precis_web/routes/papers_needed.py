@@ -39,6 +39,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from precis_web.deps import get_store, templates
+from precis_web.routes.flags import FLAG_DEFS, FLAG_NAMESPACE, FLAG_VALUE_LIST
 
 router = APIRouter(prefix="/papers-needed", tags=["papers-needed"])
 
@@ -209,15 +210,17 @@ async def index(
     lo = max(1, page - 3)
     hi = min(total_pages, page + 3)
     page_window = list(range(lo, hi + 1))
-    refs = store.fetch_refs_by_ids(
-        [row["ref_id"] for row in rows], include_deleted=False
-    )
+    row_ids = [row["ref_id"] for row in rows]
+    refs = store.fetch_refs_by_ids(row_ids, include_deleted=False)
+    # Batched flag state for the whole page (avoids an N+1 per row).
+    flag_state = store.ref_tag_values(row_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
     display: list[dict[str, Any]] = []
     for row in rows:
         rid = row["ref_id"]
         display.append(
             {
                 "id": rid,
+                "flags": flag_state.get(rid, set()),
                 "title": _title_for_ref(refs, rid),
                 "cite_key": row["cite_key"],
                 "identifier": row["identifier"],
@@ -232,6 +235,13 @@ async def index(
                 "attempts": row["attempts"],
             }
         )
+    # Where a flag toggle bounces back to — this exact filtered page.
+    _rt_params = []
+    if awaiting_flag:
+        _rt_params.append("awaiting=1")
+    if page > 1:
+        _rt_params.append(f"page={page}")
+    return_to = "/papers-needed" + ("?" + "&".join(_rt_params) if _rt_params else "")
     watch_dir = _watch_dir_from_plist()
     dropzones: list[dict[str, str]] = []
     if watch_dir:
@@ -249,6 +259,8 @@ async def index(
         {
             "active_tab": "papers-needed",
             "rows": display,
+            "flag_defs": FLAG_DEFS,
+            "return_to": return_to,
             "awaiting": awaiting_flag,
             "page": page,
             "has_next": has_next,

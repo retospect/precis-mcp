@@ -71,6 +71,10 @@ class FakeStore:
         #: ref_ids the fake reports as carrying OPEN:needs-triage (tests
         #: populate this to exercise the triage panel / tag-clear paths).
         self.triaged_ref_ids: set[int] = set()
+        #: {ref_id: {open-value, …}} the fake reports via ``ref_tag_values``
+        #: (the batched flag-state probe for a list view — tests populate
+        #: it to render active read-later / must-read / skim buttons).
+        self.ref_open_values: dict[int, set[str]] = {}
         #: ref_ids soft-deleted via the web delete route (the route calls
         #: the store directly — paper delete is web-only, not dispatched).
         self.deleted_ref_ids: set[int] = set()
@@ -516,6 +520,17 @@ class FakeStore:
         if namespace == "OPEN" and value == "needs-triage":
             return ref_id in self.triaged_ref_ids
         return False
+
+    def ref_tag_values(self, ref_ids, namespace, values):
+        """Batched flag-state probe over ``ref_open_values`` (namespace
+        ignored — the fake only models the OPEN flag axis)."""
+        want = set(values)
+        out: dict[int, set[str]] = {}
+        for rid in ref_ids:
+            present = self.ref_open_values.get(rid, set()) & want
+            if present:
+                out[rid] = present
+        return out
 
     def ingest_timestamps(self, ref_id: int):
         # Canned ingest timeline for the paper detail page. tz-aware
