@@ -58,13 +58,29 @@ split/merge, and the vendored-PM-bundle spike are in the design doc).
   `test_add_empty_block_inserts_paragraph_after_anchor`; live add+delete
   round-trip verified net-zero on dream-review (21→22→21). *Scoped to editable
   prose kinds — figures/tables keep their own controls.*
-- **Slice 2b-ii — rich editor (open).** Vendor the PM bundle (`esbuild` once →
-  `static/prosemirror.bundle.mjs`, ~372 KB/125 KB gz, spike proven); custom
-  schema + serializer (refs/`$…$` opaque, **not** stock prosemirror-markdown —
-  it escapes our brackets); live ref squiggle; wired caret handoff between
-  boxes; blank-line split-on-save (first keeps the handle) + backspace-merge.
-- **Slice 3 — polish (deferred).** Reveal-on-cursor ref rendering,
-  `[`-autocomplete, structured-block creation from the editor, lang selector.
+- **Slice 2b-ii — ProseMirror editor + live squiggle → shipped + deployed.**
+  Vendored `static/prosemirror.bundle.mjs` (206 KB / 63 KB gz — only the modules
+  used: state/view/model/keymap/commands/history/TextSelection; **not** stock
+  prosemirror-markdown — it escapes our ref brackets). Minimal schema
+  (`doc > block > text|hard_break`, identity round-trip, headless-verified);
+  `POST /drafts/{ident}/validate-refs` (reuses the dangling-token helpers) drives
+  a debounced **red wavy squiggle** (`.ref-bad`) on unresolved refs as you type —
+  the live face of the save-time gate. Editor **replaces** the rendered text in
+  place (rendered view is `x-show="!editing"`, editor a sibling), caret
+  auto-placed at end, raw toggle retired. Mirrors into the hidden textarea so the
+  save/validate flow is unchanged, and **falls back to that textarea** if the PM
+  module fails to load/mount (can't regress). Editable prose kinds only. Browser-
+  QA'd by Reto. *Verification gap:* no headless-browser test — bundle load,
+  schema round-trip, endpoint, `.mjs` MIME, and syntax are checked, but the
+  contenteditable/decoration rendering rides on the fallback + Reto's eyes.
+- **Slice 2b-iii — editor-feel (open).** Caret handoff between boxes (arrow
+  past an edge → focus the neighbour, hydrating a placeholder first) and
+  Enter-new-box / blank-line split-on-save (first keeps the handle) /
+  backspace-at-start merge. Separable from the squiggle; pure client + the
+  existing add/delete/text endpoints.
+- **Slice 3 — polish (deferred).** Reveal-on-cursor ref rendering (pretty chip
+  unless the caret is in its paragraph), `[`-autocomplete, structured-block
+  creation from the editor, lang selector, remove the now-dead `tailwind.js`.
 
 ---
 
