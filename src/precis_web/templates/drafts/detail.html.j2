@@ -377,6 +377,17 @@
   /* dangling-reference squiggle — a distinct wavy rose underline (NOT the
      browser's spellcheck red, and NOT the amber link chips). */
   .ref-bad { text-decoration: underline wavy #f43f5e; text-underline-offset: 3px; }
+  /* `[` citation autocomplete dropdown (positioned at the caret, on <body>). */
+  .pm-ac { position: absolute; z-index: 60; max-width: 30rem; max-height: 16rem;
+           overflow-y: auto; background: #fff; border: 1px solid #cbd5e1;
+           border-radius: 0.375rem; box-shadow: 0 4px 14px rgba(0,0,0,0.12); }
+  .pm-ac-item { display: flex; gap: 0.5rem; align-items: baseline;
+                padding: 0.25rem 0.6rem; cursor: pointer; }
+  .pm-ac-item.pm-ac-sel, .pm-ac-item:hover { background: #e0f2fe; }
+  .pm-ac-label { color: #1e293b; font-size: 12px; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }
+  .pm-ac-sub { color: #94a3b8; font-family: ui-monospace, monospace; font-size: 11px;
+               flex-shrink: 0; }
 </style>
 <script type="module">
 import * as PM from '/static/prosemirror.bundle.mjs';
@@ -446,10 +457,73 @@ async function validate(view, text, url) {
   } catch (e) { /* leave decorations as-is */ }
 }
 
+// `[`-triggered citation autocomplete. Detects a `[query` run before the caret,
+// searches papers, and inserts the picked token. All display/DOM; wrapped so a
+// failure can never break the editor (worst case: `[` just types literally).
+function makeAutocomplete(view, url) {
+  const box = document.createElement('div');
+  box.className = 'pm-ac'; box.style.display = 'none';
+  document.body.appendChild(box);
+  const st = { active: false, from: -1, items: [], sel: 0 };
+  let timer = null;
+  function close() { st.active = false; box.style.display = 'none'; }
+  function choose(i) {
+    const it = st.items[i]; if (!it) { close(); return; }
+    view.dispatch(view.state.tr.insertText(it.token, st.from, view.state.selection.from));
+    close(); view.focus();
+  }
+  function render() {
+    if (!st.items.length) { close(); return; }
+    box.innerHTML = '';
+    st.items.forEach((it, i) => {
+      const row = document.createElement('div');
+      row.className = 'pm-ac-item' + (i === st.sel ? ' pm-ac-sel' : '');
+      const l = document.createElement('span'); l.className = 'pm-ac-label'; l.textContent = it.label;
+      const s = document.createElement('span'); s.className = 'pm-ac-sub'; s.textContent = it.token;
+      row.appendChild(l); row.appendChild(s);
+      row.addEventListener('mousedown', (e) => { e.preventDefault(); choose(i); });
+      box.appendChild(row);
+    });
+    const c = view.coordsAtPos(view.state.selection.from);
+    box.style.left = c.left + 'px'; box.style.top = (c.bottom + 4) + 'px';
+    box.style.display = 'block'; st.active = true;
+  }
+  function update() {
+    const sel = view.state.selection;
+    if (!sel.empty) { close(); return; }
+    const before = textUpTo(view.state.doc, sel.from);
+    const lb = before.lastIndexOf('[');
+    if (lb === -1) { close(); return; }
+    const q = before.slice(lb + 1);
+    if (q.includes(']') || q.includes('\n') || q.length > 60) { close(); return; }
+    st.from = 1 + lb;   // doc pos of the '['
+    clearTimeout(timer);
+    if (q.trim().length < 2) { close(); return; }
+    timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${url}?q=${encodeURIComponent(q.trim())}`, { cache: 'no-store' });
+        if (!res.ok) { close(); return; }
+        st.items = (await res.json()).results || []; st.sel = 0;
+        render();
+      } catch (e) { close(); }
+    }, 200);
+  }
+  function key(name) {
+    if (!st.active || !st.items.length) return false;
+    if (name === 'down') { st.sel = (st.sel + 1) % st.items.length; render(); return true; }
+    if (name === 'up') { st.sel = (st.sel - 1 + st.items.length) % st.items.length; render(); return true; }
+    if (name === 'enter') { choose(st.sel); return true; }
+    if (name === 'esc') { close(); return true; }
+    return false;
+  }
+  return { get active() { return st.active; }, update, key, destroy() { clearTimeout(timer); box.remove(); } };
+}
+
 // Mount a PM editor into `mountEl`, seeded from `seedText`. Returns a small
 // controller; opts carries the callbacks the Alpine row wires up.
 window.__mountDraftPM = function (mountEl, seedText, opts) {
   let timer = null;
+  let ac = null;   // `[` autocomplete controller (assigned after the view exists)
   const view = new EditorView(mountEl, {
     state: EditorState.create({
       doc: textToDoc(seedText),
@@ -458,27 +532,36 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
         keymap({
           'Mod-z': undo, 'Mod-y': redo, 'Shift-Mod-z': redo,
           'Mod-Enter': () => { opts.onSave && opts.onSave(); return true; },
-          'Escape': () => { opts.onCancel && opts.onCancel(); return true; },
+          'Escape': () => {
+            if (ac && ac.key('esc')) return true;   // dismiss the picker first
+            opts.onCancel && opts.onCancel(); return true;
+          },
           // Enter splits the block at the caret into two chunks (this one keeps
-          // the text before, a new one gets the text after).
+          // the text before, a new one gets the text after). When the `[` picker
+          // is open, Enter accepts the highlighted result instead.
           'Enter': (state) => {
+            if (ac && ac.key('enter')) return true;
             const before = textUpTo(state.doc, state.selection.from);
             const after = docToText(state.doc).slice(before.length);
             opts.onSplit && opts.onSplit(before, after);
             return true;
           },
+          'Tab': () => { if (ac && ac.key('enter')) return true; return false; },
           // Shift-Enter is a soft line break within the same block.
           'Shift-Enter': (state, dispatch) => {
             if (dispatch) dispatch(state.tr.replaceSelectionWith(
               schema.nodes.hard_break.create()).scrollIntoView());
             return true;
           },
-          // Arrow past the top/bottom line hands off to the neighbouring block.
+          // Arrow past the top/bottom line hands off to the neighbouring block
+          // (or moves the `[` picker selection when it's open).
           'ArrowUp': (state, dispatch, view) => {
+            if (ac && ac.key('up')) return true;
             if (view && view.endOfTextblock('up')) { opts.onLeave && opts.onLeave('up'); return true; }
             return false;
           },
           'ArrowDown': (state, dispatch, view) => {
+            if (ac && ac.key('down')) return true;
             if (view && view.endOfTextblock('down')) { opts.onLeave && opts.onLeave('down'); return true; }
             return false;
           },
@@ -499,6 +582,7 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
     }),
     dispatchTransaction(tr) {
       const ns = view.state.apply(tr); view.updateState(ns);
+      if (ac) { try { ac.update(); } catch (e) { /* never break editing */ } }
       if (tr.docChanged) {
         const text = docToText(ns.doc);
         opts.onChange && opts.onChange(text);
@@ -508,6 +592,7 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
     },
   });
   view.dom.addEventListener('blur', () => { opts.onBlur && opts.onBlur(); });
+  if (opts.refSearchUrl) { try { ac = makeAutocomplete(view, opts.refSearchUrl); } catch (e) { ac = null; } }
   // Place the caret (end by default; 'start' from the block above / after a
   // split; a number = string offset, e.g. the merge join point — doc pos is
   // 1 + offset since every char is one position) and focus.
@@ -525,7 +610,7 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
   return {
     getText() { return docToText(view.state.doc); },
     focus() { view.focus(); },
-    destroy() { clearTimeout(timer); view.destroy(); },
+    destroy() { clearTimeout(timer); if (ac) ac.destroy(); view.destroy(); },
   };
 };
 </script>
@@ -618,6 +703,7 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
             try {
               this._pm = window.__mountDraftPM(this.$refs.pm, this.orig, {
                 validateUrl: `/drafts/${ident}/validate-refs`,
+                refSearchUrl: `/drafts/${ident}/ref-search`,
                 caret: caret || 'end',
                 onChange: (txt) => { if (t) t.value = txt; },   // mirror into hidden textarea
                 onBlur: () => this.save(),

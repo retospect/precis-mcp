@@ -1902,6 +1902,33 @@ async def validate_refs(
     return JSONResponse({"dangling": dangling})
 
 
+@router.get("/drafts/{ident}/ref-search")
+async def ref_search(request: Request, ident: str, q: str = "") -> JSONResponse:
+    """Autocomplete for the inline editor's ``[`` picker: title-search held
+    papers, returning the insertable citation token + a display label. Keeps it
+    to papers for now (the common authoring need); other kinds can join later."""
+    store = get_store(request)
+    q = q.strip()
+    if len(q) < 2:
+        return JSONResponse({"results": []})
+    ids = store.find_papers_by_title(kind="paper", q=q, limit=8)
+    refs = store.fetch_refs_by_ids(ids)
+    results = []
+    for rid in ids:
+        r = refs.get(rid)
+        slug = getattr(r, "slug", None) if r is not None else None
+        if not slug:
+            continue
+        results.append(
+            {
+                "token": f"[§{slug}]",
+                "label": getattr(r, "title", None) or slug,
+                "sub": slug,
+            }
+        )
+    return JSONResponse({"results": results})
+
+
 @router.post("/drafts/{ident}/block")
 async def add_block(
     request: Request,
