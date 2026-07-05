@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -440,10 +440,11 @@ class TestProcessPdf:
             identifiers={"doi": "10.1/x", "cite_key": "smith24"},
         )
 
+        store = MagicMock()
         with patch("precis.cli.watch.precis_add", return_value=fake_result):
             dest = process_pdf(
                 pdf,
-                store=object(),  # type: ignore[arg-type]  # stubbed precis_add ignores it
+                store=store,
                 watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
                 corpus_pres_dir=corpus_dir.parent / "corpus_pres",
@@ -457,6 +458,10 @@ class TestProcessPdf:
         assert dest == corpus_dir / "s" / "smith24.pdf"
         assert dest.exists()
         assert not pdf.exists()  # moved out of inbox
+
+        # The inbox→corpus move rewrites the authoritative storage_path to the
+        # post-move home (else every resolver drifts to the stale inbox path).
+        store.set_pdf_storage_path.assert_called_once_with("a" * 64, str(dest))
 
         # ingest.log written with correct columns.
         log_lines = (corpus_dir / "ingest.log").read_text().splitlines()
@@ -534,10 +539,11 @@ class TestProcessPdf:
             identifiers={"doi": "10.1126/science.1066115", "cite_key": "water01a"},
         )
 
+        store = MagicMock()
         with patch("precis.cli.watch.precis_add", return_value=fake_result):
             dest = process_pdf(
                 pdf,
-                store=object(),  # type: ignore[arg-type]
+                store=store,
                 watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
                 corpus_pres_dir=corpus_dir.parent / "corpus_pres",
@@ -556,6 +562,8 @@ class TestProcessPdf:
         # Log line records ``recovered``.
         log_text = (corpus_dir / "ingest.log").read_text()
         assert "\trecovered\t" in log_text
+        # Recovery is a corpus placement → storage_path is rewritten to it.
+        store.set_pdf_storage_path.assert_called_once_with("c" * 64, str(dest))
 
     def test_failure_path_moves_to_errors_with_traceback(self, tmp_path: Path):
         watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)

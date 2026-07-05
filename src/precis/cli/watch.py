@@ -657,6 +657,7 @@ def process_pdf(
     return _handle_success(
         pdf,
         result,
+        store=store,
         corpus_dir=corpus_dir,
         corpus_pres_dir=corpus_pres_dir,
         duplicates_dir=duplicates_dir,
@@ -664,10 +665,19 @@ def process_pdf(
     )
 
 
+#: Statuses whose ``dest`` is the file's new *canonical* home in the corpus
+#: (as opposed to ``existed*`` re-drops parked under ``duplicates/``). Only
+#: these rewrite ``pdfs.storage_path`` — see :func:`_handle_success`.
+_CORPUS_PLACING_STATUSES = frozenset(
+    {"inserted", "inserted_pres", "recovered", "recovered_pres"}
+)
+
+
 def _handle_success(
     pdf: Path,
     result: IngestResult,
     *,
+    store: Store,
     corpus_dir: Path,
     corpus_pres_dir: Path,
     duplicates_dir: Path,
@@ -681,6 +691,15 @@ def _handle_success(
     across slug-addressed kinds) is the filename. Status strings
     on the log line carry a ``_pres`` suffix so operators grepping
     ingest.log can distinguish kinds without joining against the DB.
+
+    The ingest writer recorded ``pdfs.storage_path`` as the *inbox* path
+    the file arrived on; the move above relocates it into the sharded
+    corpus. We rewrite ``storage_path`` to the post-move ``dest`` here so
+    the authoritative path never goes stale (otherwise every resolver — the
+    web reader, ``corpus_reconcile`` — falls back to the drift-prone cite_key
+    convention). Only corpus-placing statuses rewrite; a duplicate re-drop
+    parked under ``duplicates/`` must leave ``storage_path`` on the canonical
+    copy.
     """
     is_pres = result.kind == "pres"
     if result.inserted:
@@ -748,6 +767,9 @@ def _handle_success(
                 result.cite_key,
                 result.kind,
             )
+
+    if result.pdf_sha256 and status in _CORPUS_PLACING_STATUSES:
+        store.set_pdf_storage_path(result.pdf_sha256, str(dest))
 
     _append_ingest_log(corpus_dir, user=user, result=result, pdf=pdf, status=status)
     return dest

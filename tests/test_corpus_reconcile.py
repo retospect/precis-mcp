@@ -6,7 +6,42 @@ from pathlib import Path
 
 from precis.store import Store
 from precis.store._pdf_ops import DuePdf
-from precis.workers.corpus_reconcile import _resolve_local, run_corpus_reconcile_pass
+from precis.workers.corpus_reconcile import (
+    _rebase_onto_local,
+    _resolve_local,
+    run_corpus_reconcile_pass,
+)
+
+
+def test_rebase_onto_local_crosses_mount_prefix(tmp_path: Path) -> None:
+    """An absolute ``storage_path`` written by a differently-mounted host
+    resolves here by re-anchoring its ``/papers/…`` suffix under the local
+    corpus root's own ``papers`` dir (ADR 0029: Macs /opt/nas, Linux /nas)."""
+    # This node mounts the NAS at ``tmp_path`` → corpus root ``.../papers/corpus``.
+    local_root = tmp_path / "papers" / "corpus"
+    (local_root / "i").mkdir(parents=True)
+    f = local_root / "i" / "irie2000.pdf"
+    f.write_bytes(b"%PDF")
+    # A path a *Mac* recorded — valid there, but the wrong prefix locally.
+    foreign = "/opt/nas/botshome/papers/corpus/i/irie2000.pdf"
+    assert _rebase_onto_local(foreign, (local_root,)) == f
+    # storage_path with no ``/papers/`` pivot → no rebase.
+    assert _rebase_onto_local("/etc/passwd", (local_root,)) is None
+
+
+def test_resolve_local_rebases_foreign_absolute_path(tmp_path: Path) -> None:
+    """`_resolve_local` uses the mount-rebase when the raw absolute
+    ``storage_path`` isn't a file on this host."""
+    local_root = tmp_path / "papers" / "corpus"
+    (local_root / "k").mkdir(parents=True)
+    f = local_root / "k" / "kong24.pdf"
+    f.write_bytes(b"%PDF")
+    due = DuePdf(
+        pdf_sha256="a" * 64,
+        storage_path="/opt/nas/botshome/papers/corpus/k/kong24.pdf",
+        cite_keys=("kong24",),
+    )
+    assert _resolve_local((local_root,), due) == f
 
 
 def test_resolve_local_prefers_storage_path(tmp_path: Path) -> None:
