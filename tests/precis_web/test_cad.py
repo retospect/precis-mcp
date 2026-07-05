@@ -241,6 +241,67 @@ def test_cad_apply_in_place_mutates_same_slug(
     assert "r99" in handler.get(id="web_live").body
 
 
+def _seed_discuss_job(
+    store, cad_ref_id: int, slug: str, instruction: str, answer: str
+) -> int:
+    """Insert a succeeded cad_discuss job (a discussion turn) for ``cad_ref_id``."""
+    from precis.store.types import Tag
+
+    with store.tx() as conn:
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="cad_discuss",
+            meta={
+                "job_type": "cad_discuss",
+                "executor": "claude_inproc",
+                "params": {
+                    "cad_ref_id": cad_ref_id,
+                    "slug": slug,
+                    "instruction": instruction,
+                },
+            },
+            conn=conn,
+        )
+        conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta) "
+            "VALUES (%s,'agent',0,'job_result',%s,'{}')",
+            (job.id, json.dumps({"answer": answer, "instruction": instruction})),
+        )
+    store.add_tag(
+        job.id,
+        Tag.parse_strict("STATUS:succeeded", kind="job"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    return job.id
+
+
+def test_cad_thread_returns_turns_oldest_first(cad_client, runtime_with_store) -> None:
+    _seed(runtime_with_store, slug="web_chat")
+    store = runtime_with_store.store
+    ref = resolve_live_slug_ref(store, kind="cad", id="web_chat")
+    j1 = _seed_discuss_job(store, ref.id, "web_chat", "what is this?", "a flange.")
+    j2 = _seed_discuss_job(store, ref.id, "web_chat", "is it one solid?", "yes.")
+
+    r = cad_client.get("/cad/web_chat/thread")
+    assert r.status_code == 200
+    turns = r.json()["turns"]
+    assert [t["job_id"] for t in turns] == [j1, j2]  # oldest first
+    assert turns[0]["answer"] == "a flange." and turns[1]["answer"] == "yes."
+
+
+def test_cad_discuss_post_redirects(cad_client, runtime_with_store) -> None:
+    _seed(runtime_with_store, slug="web_ask")
+    r = cad_client.post(
+        "/cad/web_ask/discuss",
+        data={"instruction": "why isn't this functional?"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/cad/web_ask#discuss"
+
+
 def _seed_propose_job(
     store, cad_ref_id: int, slug: str, instruction: str, *, status: str
 ) -> int:

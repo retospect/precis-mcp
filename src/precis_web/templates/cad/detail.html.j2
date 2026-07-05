@@ -154,6 +154,21 @@
   <script type="application/json" id="cad-proposal-init">{{ (proposals or []) | tojson }}</script>
 </div>
 
+{# ── discuss → threaded conversation about the model (read-only) ── #}
+<div id="discuss" class="mt-6">
+  <h2 class="text-sm font-semibold text-slate-700 mb-2">Discuss
+    <span class="text-xs font-normal text-slate-400">— ask about the model (connectivity, why it's not functional, how to change it); nothing is applied</span>
+  </h2>
+  <div id="cad-thread" class="space-y-2 mb-2" data-slug="{{ slug }}"></div>
+  <form method="post" action="/cad/{{ slug }}/discuss" class="flex gap-2">
+    <input name="instruction" required autocomplete="off"
+           placeholder="e.g. is the hub connected to the rim? why isn't this functional?"
+           class="flex-1 rounded border border-slate-300 px-2 py-1 text-sm">
+    <button class="rounded bg-indigo-600 text-white text-sm px-3 py-1 hover:bg-indigo-700 whitespace-nowrap">Ask ▸</button>
+  </form>
+  <script type="application/json" id="cad-thread-init">{{ (thread or []) | tojson }}</script>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -501,6 +516,57 @@ setMode('features');
   // Paint the server-rendered seed immediately, then poll for updates.
   try {
     const seed = JSON.parse(document.getElementById('cad-proposal-init').textContent);
+    if (seed && seed.length) render(seed);
+  } catch (e) { /* ignore */ }
+  poll();
+})();
+</script>
+
+<script>
+// ── discussion thread (read-only conversation about the model) ──
+(function () {
+  const box = document.getElementById('cad-thread');
+  if (!box) return;
+  const slug = box.getAttribute('data-slug');
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const inFlight = (t) => t && (t.status === 'queued' || t.status === 'running');
+
+  function turn(t) {
+    const q = '<div class="text-[11px] text-slate-500"><span class="font-semibold">You:</span> ' + esc(t.instruction) + '</div>';
+    let a;
+    if (inFlight(t)) {
+      a = '<div class="text-[11px] text-slate-400">⟳ thinking… (' + esc(t.status) + ')</div>';
+    } else if (t.answer) {
+      a = '<div class="text-[11px] text-slate-700 whitespace-pre-wrap"><span class="font-semibold text-indigo-700">CAD:</span> ' + esc(t.answer) + '</div>';
+    } else {
+      a = '<div class="text-[11px] text-red-600">answer ' + esc(t.status) + ' — see the job log</div>';
+    }
+    return '<div class="rounded-lg border border-slate-200 bg-white p-2 space-y-1">' + q + a
+      + '<div class="text-[10px] text-slate-400">job r' + esc(t.job_id) + ' · ' + esc(t.created) + '</div></div>';
+  }
+
+  function render(turns) {
+    if (!turns || !turns.length) {
+      box.innerHTML = '<span class="text-xs text-slate-400">No discussion yet — ask a question below.</span>';
+      return;
+    }
+    box.innerHTML = turns.map(turn).join('');
+  }
+
+  function poll() {
+    fetch('/cad/' + encodeURIComponent(slug) + '/thread')
+      .then((r) => r.json())
+      .then((o) => {
+        const turns = (o && o.turns) || [];
+        render(turns);
+        if (turns.some(inFlight)) setTimeout(poll, 2500);
+      })
+      .catch(() => {});
+  }
+
+  try {
+    const seed = JSON.parse(document.getElementById('cad-thread-init').textContent);
     if (seed && seed.length) render(seed);
   } catch (e) { /* ignore */ }
   poll();

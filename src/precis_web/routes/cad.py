@@ -11,6 +11,9 @@ feature, and edit it by natural-language instruction.
 * ``GET  /cad/{slug}/model.gltf`` — the viewer/download glTF (features | solid).
 * ``GET  /cad/{slug}/export.{fmt}`` — stream a download (scad / stl / 3mf / step).
 * ``POST /cad/{slug}/instruct`` — mint a ``cad_propose`` job (the "Propose" box).
+* ``POST /cad/{slug}/discuss`` — mint a ``cad_discuss`` job (the "Discuss" box —
+  a threaded, read-only conversation about the model, nothing to apply).
+* ``GET  /cad/{slug}/thread`` — poll the discussion thread.
 * ``GET  /cad/{slug}/proposal`` — poll the latest proposal (back-compat).
 * ``GET  /cad/{slug}/proposals`` — poll ALL recent proposals (reload-safe; the
   box polls this so every outstanding request rehydrates on a page reload).
@@ -320,6 +323,51 @@ def _proposal_by_job(store: Any, ref_id: int, job_id: int) -> dict[str, Any] | N
     return _parse_proposal_row(row) if row else None
 
 
+def _discussion_thread(
+    store: Any, ref_id: int, limit: int = 40
+) -> list[dict[str, Any]]:
+    """The design's discussion turns (``cad_discuss`` jobs), oldest first — a
+    conversational thread. Each turn is ``{job_id, status, instruction, answer,
+    created}``; an in-flight turn has ``answer=''`` until it succeeds."""
+    sql = """
+        SELECT r.ref_id,
+               (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1) AS status,
+               (SELECT c.text FROM chunks c
+                 WHERE c.ref_id = r.ref_id AND c.chunk_kind = 'job_result'
+                 ORDER BY c.ord DESC LIMIT 1)                                  AS result,
+               r.meta->'params'->>'instruction'                               AS instruction,
+               r.created_at
+          FROM refs r
+         WHERE r.kind = 'job'
+           AND r.meta->>'job_type' = 'cad_discuss'
+           AND (r.meta->'params'->>'cad_ref_id')::int = %s
+           AND r.deleted_at IS NULL
+         ORDER BY r.ref_id ASC
+         LIMIT %s
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (ref_id, limit)).fetchall()
+    turns: list[dict[str, Any]] = []
+    for job_id, status, result_text, instruction, created in rows:
+        answer = ""
+        if result_text:
+            try:
+                answer = str(json.loads(result_text).get("answer") or "")
+            except (json.JSONDecodeError, TypeError):
+                answer = ""
+        turns.append(
+            {
+                "job_id": int(job_id),
+                "status": status or "queued",
+                "instruction": instruction or "",
+                "answer": answer,
+                "created": _ago(created),
+            }
+        )
+    return turns
+
+
 def _require_ref(store: Any, slug: str) -> Any:
     return resolve_live_slug_ref(store, kind="cad", id=slug)
 
@@ -360,6 +408,7 @@ async def cad_detail(request: Request, slug: str) -> HTMLResponse:
             "title": ref.title or ref.slug,
             "lineage": _lineage(store, ref.id),
             "proposals": _recent_proposals(store, ref.id),
+            "thread": _discussion_thread(store, ref.id),
             "solid_available": solid_available(),
             "manifold_available": manifold_available(),
             "step_available": step_available(),
@@ -529,6 +578,64 @@ async def cad_instruct(
         },
     )
     return RedirectResponse(url=f"/cad/{slug}#instruct", status_code=303)
+
+
+@router.post("/cad/{slug}/discuss")
+async def cad_discuss(
+    request: Request, slug: str, instruction: str = Form(...)
+) -> RedirectResponse:
+    """The "Discuss" box: mint a todo + a ``cad_discuss`` job so the agent worker
+    *answers a question* about the design (threaded, read-only — nothing to
+    apply). Distinct from ``/instruct`` which proposes a rewrite."""
+    store = get_store(request)
+    instruction = instruction.strip()
+    try:
+        ref = _require_ref(store, slug)
+    except NotFound:
+        return RedirectResponse(url="/cad", status_code=303)
+    if not instruction:
+        return RedirectResponse(url=f"/cad/{slug}", status_code=303)
+
+    # A todo to parent the job (JobHandler.put requires a live todo parent).
+    todo_body, err = await await_dispatch(
+        request,
+        "put",
+        {"kind": "todo", "text": f"cad discuss {slug}: {instruction[:200]}"},
+    )
+    if err:
+        return RedirectResponse(url=f"/cad/{slug}", status_code=303)
+    m = re.search(r"\btd(\d+)\b", todo_body)
+    if m is None:
+        return RedirectResponse(url=f"/cad/{slug}", status_code=303)
+    todo_id = int(m.group(1))
+
+    await await_dispatch(
+        request,
+        "put",
+        {
+            "kind": "job",
+            "parent_id": todo_id,
+            "job_type": "cad_discuss",
+            "executor": "claude_inproc",
+            "params": {
+                "cad_ref_id": ref.id,
+                "slug": slug,
+                "instruction": instruction,
+            },
+        },
+    )
+    return RedirectResponse(url=f"/cad/{slug}#discuss", status_code=303)
+
+
+@router.get("/cad/{slug}/thread")
+async def cad_thread(request: Request, slug: str) -> JSONResponse:
+    """Poll the design's discussion thread (the discuss panel polls this)."""
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, slug)
+    except NotFound:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse({"turns": _discussion_thread(store, ref.id)})
 
 
 @router.get("/cad/{slug}/proposal")
