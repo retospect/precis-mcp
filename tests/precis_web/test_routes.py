@@ -30,6 +30,47 @@ def test_pres_editor_routes_registered(client) -> None:
     assert "/pres/{ref_id}/edit" in paths
 
 
+def test_pres_reader_renders_shared_shell_and_attribution(client) -> None:
+    """The /pres editor renders the shared two-pane reader (Navigate/Jump
+    via paperDoc) with the pres attribution Meta panel. Guards the shared
+    reader reuse (pres joined _DOC_FAMILY) + the doc/meta_panel wiring."""
+    resp = client.get("/pres/2001-lecture01")
+    assert resp.status_code == 200
+    body = resp.text
+    # Shared reader shell (paperDoc drives Navigate/Jump + jump-to-page).
+    assert "paperDoc(" in body
+    assert "/static/paper-viewer.js" in body
+    assert "Navigate" in body and "Jump" in body
+    # Pres-specific Meta panel: the attribution form posts to the edit verb.
+    assert 'action="/pres/60/edit"' in body
+    assert "Attribution" in body
+
+
+def test_pres_edit_dispatches_edit_verb(client, runtime) -> None:
+    """Saving the attribution form dispatches the pres ``edit`` verb with
+    the form fields, then redirects back to the deck."""
+    resp = client.post(
+        "/pres/60/edit",
+        data={
+            "title": "Nuts and Bolts — Lecture 1",
+            "authors": "Payne, M. C.",
+            "venue": "CASTEP Workshop, Durham",
+            "date": "2001",
+            "url": "",
+            "note": "",
+            "bibtex_type": "misc",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/pres/2001-lecture01"
+    edits = [(v, a) for (v, a) in runtime.calls if v == "edit"]
+    assert edits, "edit verb was not dispatched"
+    _, args = edits[-1]
+    assert args["kind"] == "pres"
+    assert args["venue"] == "CASTEP Workshop, Durham"
+
+
 # ── papers-needed (stub backlog) ───────────────────────────────────
 
 

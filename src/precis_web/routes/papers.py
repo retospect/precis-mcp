@@ -483,6 +483,29 @@ def _render_detail(
             # Sidebar tab to open on (Navigate / Jump / Meta); a ?chunk
             # citation still wins in the client (forces Jump).
             "initial_tab": initial_tab,
+            # Neutral shell context consumed by the shared reader
+            # (_reader/reader.html.j2); the paper-specific Meta tab is
+            # plugged via ``doc.meta_panel`` and still reads the vars above.
+            "doc": {
+                "id": ref_id,
+                "title": paper["title"],
+                "handle": format_handle(ref.kind, ref_id),
+                "slug": cite_key,
+                "list_url": "/papers",
+                "list_label": "papers",
+                "n_chunks": n_chunks,
+                "pdf_on_disk": found is not None,
+                "has_pdf": bool(paper.get("has_pdf")),
+                "cited_ord": cited["ord"] if cited else -1,
+                "initial_tab": initial_tab,
+                "pdf_url": f"/papers/{ref_id}/pdf",
+                "meta_panel": "papers/_meta_panel.html.j2",
+                "cite_key": cite_key,
+                "pdf_lookup_paths": [
+                    str(p) for p in _pdf_candidates(cfg.corpus_dirs, pdf_keys)
+                ],
+                "corpus_dirs": [str(p) for p in cfg.corpus_dirs],
+            },
         },
     )
 
@@ -510,8 +533,10 @@ def _cited_chunk(store: Any, ref_id: int, chunk: str | None) -> dict[str, Any] |
 #: The document family that shares the two-pane reader (ADR: proposal
 #: writing). The ``ref_id``-scoped sidebar endpoints (search / toc /
 #: chunk / pdf) are kind-agnostic, so they accept any family member; the
-#: ``cfp`` reader reuses them. The slug-detail routes pass their own kind.
-_DOC_FAMILY: tuple[str, ...] = ("paper", "cfp")
+#: ``cfp`` and ``pres`` readers reuse them. The slug-detail routes pass
+#: their own kind. (``pres`` joins so the /pres slide-deck editor gets the
+#: same in-doc search / TOC / chunk-gloss / jump-to-page sidebar.)
+_DOC_FAMILY: tuple[str, ...] = ("paper", "cfp", "pres")
 
 
 def _resolve_paper(

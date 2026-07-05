@@ -1,0 +1,59 @@
+{# Paper Meta tab — bibliographic metadata + edit / triage / delete.
+   Rendered inside the shared reader's Meta tab (_reader/reader.html.j2),
+   which supplies the ``x-show="tab === 'Meta'"`` wrapper. Reads the paper
+   detail context (paper, pa_handle, n_chunks, pdf_on_disk, authors_display,
+   abstract, ingested, tags) built by papers._render_detail. #}
+<dl class="space-y-1 text-xs">
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">handle</dt><dd class="font-mono">{{ pa_handle }}</dd></div>
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">id</dt><dd>#{{ paper.id }}</dd></div>
+  {% if paper.slug %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">cite_key</dt><dd class="font-mono">{{ paper.slug }}</dd></div>{% endif %}
+  {% if paper.year %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">year</dt><dd>{{ paper.year }}</dd></div>{% endif %}
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">chunks</dt><dd>{{ n_chunks }}</dd></div>
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">pdf</dt><dd>{{ 'on disk' if pdf_on_disk else ('held, missing file' if paper.has_pdf else 'stub (no pdf)') }}</dd></div>
+  {% if authors_display %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">authors</dt><dd>{{ authors_display }}</dd></div>{% endif %}
+  {% if paper.links.doi_url %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">DOI</dt><dd><a class="text-sky-700 hover:underline" href="{{ paper.links.doi_url }}" target="_blank" rel="noopener">{{ paper.links.doi }}</a></dd></div>{% endif %}
+  {% if paper.links.arxiv_url %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">arXiv</dt><dd><a class="text-sky-700 hover:underline" href="{{ paper.links.arxiv_url }}" target="_blank" rel="noopener">{{ paper.links.arxiv }}</a></dd></div>{% endif %}
+</dl>
+
+{# ingestion timeline #}
+<div class="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-100 pt-2 text-[11px] text-slate-500">
+  <span><span class="text-slate-400">ref </span><span title="{{ ingested.ref | abs_ts }}">{{ ingested.ref | ago or '—' }}</span></span>
+  <span><span class="text-slate-400">PDF </span><span title="{{ ingested.pdf | abs_ts }}">{{ ingested.pdf | ago or '—' }}</span></span>
+  <span><span class="text-slate-400">first chunk </span><span title="{{ ingested.first_chunk | abs_ts }}">{{ ingested.first_chunk | ago or '—' }}</span></span>
+</div>
+
+{# Tag chips. OPEN (free) tags — the ``needs-triage`` review flag
+   included — carry a × that removes them via the tag verb; closed-
+   vocab tags (STATUS:*, project:*, …) render inert (remove those
+   through the agent tag() verb). An add box mints new OPEN tags. #}
+<div class="flex flex-wrap items-center gap-1 border-t border-slate-100 pt-2">
+  {% for t in tags %}
+    {% if t.deletable %}
+    <form method="post" action="/papers/{{ paper.id }}/tags" class="inline">
+      <input type="hidden" name="remove" value="{{ t.value }}" />
+      <span class="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+        {{ t.value }}
+        <button type="submit" class="text-slate-400 hover:text-rose-600" title="remove tag">×</button>
+      </span>
+    </form>
+    {% else %}
+    <span class="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-700"
+          title="closed-vocab tag — remove via tag(kind='paper', id={{ paper.id }}, remove=[…])">{{ t.label }}</span>
+    {% endif %}
+  {% else %}
+  <span class="text-[10px] italic text-slate-400">no tags yet</span>
+  {% endfor %}
+  <form method="post" action="/papers/{{ paper.id }}/tags" class="inline-flex items-center gap-1">
+    <input name="add" placeholder="+ tag"
+           class="w-20 rounded border border-slate-300 px-1.5 py-0.5 text-[10px]" />
+  </form>
+</div>
+
+{% if abstract %}
+<div class="border-t border-slate-100 pt-2">
+  <p class="text-[11px] uppercase tracking-wide text-slate-400">Abstract</p>
+  <p class="mt-1 text-xs leading-relaxed text-slate-700">{{ abstract }}</p>
+</div>
+{% endif %}
+
+{% include "papers/_meta_forms.html.j2" %}

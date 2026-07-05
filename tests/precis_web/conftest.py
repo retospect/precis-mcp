@@ -201,6 +201,17 @@ class FakeStore:
                 title="A cached web page",
             ),
         ]
+        # A pres slide deck for the /pres reader/editor render test.
+        self.press = [
+            make_ref(
+                id=60,
+                kind="pres",
+                slug="2001-lecture01",
+                title="lecture01",
+                pdf_sha256="pdeck",
+                meta={"authors": ["Payne, M. C."], "venue": "CASTEP Workshop"},
+            ),
+        ]
         self.convs = [
             make_ref(
                 id=40,
@@ -235,6 +246,7 @@ class FakeStore:
             "conv": self.convs,
             "web": self.webs,
             "job": self.jobs,
+            "pres": self.press,
         }.get(kind or "", [])
 
     def list_blocks_for_ref(self, ref_id: int, **kw: Any) -> list[Any]:
@@ -299,6 +311,7 @@ class FakeStore:
             + self.convs
             + self.webs
             + self.jobs
+            + self.press
         ):
             if r.kind == kind and (r.slug == id or r.id == id):
                 return r
@@ -400,6 +413,7 @@ class FakeStore:
             + self.convs
             + self.webs
             + self.jobs
+            + self.press
         }
         return {i: pool[i] for i in ids if i in pool}
 

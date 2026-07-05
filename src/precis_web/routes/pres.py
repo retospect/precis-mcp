@@ -31,6 +31,7 @@ from fastapi.responses import (
 )
 
 from precis.errors import NotFound
+from precis.utils.handle_registry import format_handle
 from precis_web.corpus import resolve_pdf_for_ref
 from precis_web.deps import await_dispatch, get_store, get_web_config, templates
 
@@ -89,6 +90,30 @@ async def detail(request: Request, slug: str) -> HTMLResponse:
         request, "get", {"kind": "pres", "id": ref.slug or slug, "view": "bibtex"}
     )
 
+    # ``doc`` drives the shared two-pane reader (_reader/reader.html.j2):
+    # the generic Navigate/Jump sidebar + PDF pane, with the pres Meta
+    # panel plugged in. The sidebar's search/toc/chunk fetches hit the
+    # kind-agnostic /papers/{id}/… endpoints (pres is in _DOC_FAMILY).
+    doc = {
+        "id": ref.id,
+        "title": ref.title,
+        "handle": format_handle("pres", ref.id),
+        "slug": ref.slug or slug,
+        "list_url": "/drive",
+        "list_label": "drive",
+        "n_chunks": len(slides),
+        "pdf_on_disk": pdf_path is not None,
+        "has_pdf": bool(ref.pdf_sha256),
+        "cited_ord": -1,
+        # Open on the attribution panel — the deck editor's primary purpose.
+        "initial_tab": "Meta",
+        "pdf_url": f"/pres/{ref.id}/pdf",
+        "meta_panel": "pres/_meta_panel.html.j2",
+        "cite_key": ref.slug or "",
+        "pdf_lookup_paths": [],
+        "corpus_dirs": [str(p) for p in cfg.corpus_dirs],
+    }
+
     return templates.TemplateResponse(
         request,
         "pres/detail.html.j2",
@@ -98,7 +123,7 @@ async def detail(request: Request, slug: str) -> HTMLResponse:
             "slides": slides,
             "attribution": _form_attribution(ref),
             "bibtex": bibtex,
-            "has_pdf": pdf_path is not None,
+            "doc": doc,
         },
     )
 
