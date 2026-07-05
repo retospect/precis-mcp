@@ -482,6 +482,16 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
             if (view && view.endOfTextblock('down')) { opts.onLeave && opts.onLeave('down'); return true; }
             return false;
           },
+          // Backspace at the very start merges this block into the previous one
+          // (an empty block just gets deleted; caret lands at the join point).
+          'Backspace': (state) => {
+            const sel = state.selection;
+            if (sel.empty && sel.$from.parentOffset === 0) {
+              opts.onMergePrev && opts.onMergePrev();
+              return true;
+            }
+            return false;
+          },
         }),
         keymap(baseKeymap),
         squigglePlugin(),
@@ -498,11 +508,18 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
     },
   });
   view.dom.addEventListener('blur', () => { opts.onBlur && opts.onBlur(); });
-  // Place the caret (end by default; 'start' when arriving from the block
-  // above / after a split) and focus, so you can type immediately.
+  // Place the caret (end by default; 'start' from the block above / after a
+  // split; a number = string offset, e.g. the merge join point — doc pos is
+  // 1 + offset since every char is one position) and focus.
   const _d = view.state.doc;
-  const _sel = opts.caret === 'start' ? TextSelection.atStart(_d) : TextSelection.atEnd(_d);
-  view.dispatch(view.state.tr.setSelection(_sel));
+  try {
+    let sel;
+    if (opts.caret === 'start') sel = TextSelection.atStart(_d);
+    else if (typeof opts.caret === 'number')
+      sel = TextSelection.create(_d, Math.max(1, Math.min(1 + opts.caret, _d.content.size - 1)));
+    else sel = TextSelection.atEnd(_d);
+    view.dispatch(view.state.tr.setSelection(sel));
+  } catch (e) { view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(_d))); }
   view.focus();
   setTimeout(() => validate(view, seedText, opts.validateUrl), 40);
   return {
@@ -608,6 +625,7 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
                 onCancel: () => this.cancel(),
                 onSplit: (before, after) => this.split(before, after),
                 onLeave: (dir) => this.leave(dir),
+                onMergePrev: () => this.mergePrev(),
               });
             } catch (e) {
               this.pmActive = false; this._pm = null;
@@ -646,6 +664,23 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
       await this.save();
       if (this.editing) return;   // save bounced (a broken ref) → stay put
       window.dispatchEvent(new CustomEvent('draft:goto', { detail: { handle, dir } }));
+    },
+    // Backspace at start: merge this block's (live) text into the previous one.
+    async mergePrev() {
+      if (isHeading) return;   // never fold a heading away (would orphan its section)
+      const text = this._pm ? this._pm.getText() : (this.$refs.ed ? this.$refs.ed.value : '');
+      try {
+        const res = await fetch(`/drafts/${ident}/block/${handle}/merge-prev`, {
+          method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ text }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.handle) {
+          this._teardownPM(); this.editing = false;
+          window.dispatchEvent(new CustomEvent('draft:merged', { detail: { prev: d.handle, caret: d.caret } }));
+        } else if (!res.ok) { this.err = d.error || 'merge failed'; }
+        // d.noop (first block / prev is a heading) → stay put, do nothing
+      } catch (e) { this.err = 'network error'; }
     },
     _teardownPM() {
       if (this._pm) { try { this._pm.destroy(); } catch (e) { /* ignore */ } this._pm = null; }
@@ -1083,6 +1118,12 @@ function draftDoc(ident) {
       window.addEventListener('draft:goto', async (e) => {
         const nb = this._neighbour(e.detail.handle, e.detail.dir);
         if (nb) await this.openEditor(nb, e.detail.dir === 'up' ? 'end' : 'start');
+      });
+      // Backspace-merge: this block folded into `prev`; refresh (prev now holds
+      // the joined text, this block is gone) and open prev at the join point.
+      window.addEventListener('draft:merged', async (e) => {
+        await this.forceRefresh();
+        await this.openEditor(e.detail.prev, e.detail.caret != null ? e.detail.caret : 'end');
       });
       // 4) drive windowing off scroll + resize.
       this._onScroll = () => this.onScroll();

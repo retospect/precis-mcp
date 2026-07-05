@@ -76,6 +76,7 @@ from fastapi.responses import (
     Response,
 )
 
+from precis.errors import BadInput
 from precis.store._draft_ops import content_sha
 from precis.utils import draft_markup, handle_registry, mentions
 from precis.utils.authors import (
@@ -561,6 +562,9 @@ def _paper_pdf_missing(store: Any, ident: str) -> bool:
 _EDITABLE_KINDS = frozenset(
     {"paragraph", "heading", "item", "aside", "box", "callout", "term"}
 )
+#: Kinds whose text a backspace-merge may append onto — never a heading (would
+#: corrupt the title) or a derived/structural block.
+_MERGE_KINDS = frozenset({"paragraph", "item", "aside", "box", "callout"})
 
 
 def _build_rows(
@@ -1975,6 +1979,49 @@ async def split_block(
     handler = get_runtime(request).hub.handler_for("draft")
     handler._sync_draft_links(ref.id)
     return JSONResponse({"ok": True, "handle": new.handle, "dc": new.dc})
+
+
+@router.post("/drafts/{ident}/block/{handle}/merge-prev")
+async def merge_prev_block(
+    request: Request,
+    ident: str,
+    handle: str,
+    text: str = Form(""),
+) -> JSONResponse:
+    """Backspace at the start of a block: append its (current, client-supplied)
+    text onto the previous block and retire this one. Covers both cases — an
+    empty block just gets deleted (caret lands at the end of the previous), a
+    non-empty one merges. ``text`` is the live editor text so unsaved keystrokes
+    aren't lost. Returns the previous block's handle + the caret offset (the
+    join point). No-ops (rather than corrupting structure) when there's no
+    previous block, the previous isn't mergeable prose (a heading), or this
+    block has children."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    chunk = store.get_draft_chunk(handle)
+    if chunk is None or chunk.ref_id != ref.id:
+        return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
+    order = store.reading_order(ref.id)
+    idx = next((i for i, c in enumerate(order) if c.handle == handle), None)
+    if idx is None or idx == 0:
+        return JSONResponse({"ok": True, "noop": True})
+    prev = order[idx - 1]
+    # Only join text into mergeable prose; an empty block may still fold into a
+    # non-prose previous (it's just a delete-and-go-to-end).
+    if text != "" and prev.chunk_kind not in _MERGE_KINDS:
+        return JSONResponse({"ok": True, "noop": True})
+    caret = len(prev.text or "")
+    try:
+        store.retire_chunk(handle)  # childless prose; refuses (→ noop) if it has kids
+    except BadInput:
+        return JSONResponse({"ok": True, "noop": True})
+    if text:
+        store.edit_text(prev.handle, (prev.text or "") + text)
+    handler = get_runtime(request).hub.handler_for("draft")
+    handler._sync_draft_links(ref.id)
+    return JSONResponse({"ok": True, "handle": prev.handle, "caret": caret})
 
 
 @router.post("/drafts/{ident}/block/{handle}/delete")

@@ -223,6 +223,31 @@ def test_split_keeps_handle_and_inserts_tail_after(
     assert handles.index(new.handle) == handles.index(para_h) + 1
 
 
+def test_merge_prev_joins_text_and_deletes_block(draft: DraftHandler, hub: Hub) -> None:
+    """Backspace-merge (web `/block/{h}/merge-prev`): the block's text is
+    appended onto the previous one and this block retired, caret at the join
+    offset. Mirrors what the endpoint does via retire_chunk + edit_text."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt", chunk_kind="paragraph", text="Hello", at={"after": "¶" + title_h}
+    )
+    p1 = _order(hub, "nt")[1].handle
+    hub.store.edit_text(p1, "Hello ")  # the editor saves verbatim (put would strip)
+    draft.put(id="nt", chunk_kind="paragraph", text="world", at={"after": "¶" + p1})
+    p2 = _order(hub, "nt")[2].handle
+
+    prev = hub.store.get_draft_chunk(p1)
+    caret = len(prev.text or "")
+    hub.store.retire_chunk(p2)
+    hub.store.edit_text(p1, (prev.text or "") + "world")
+
+    assert caret == 6
+    assert hub.store.get_draft_chunk(p1).text == "Hello world"
+    assert p2 not in [c.handle for c in _order(hub, "nt")]
+
+
 def test_newly_dangling_returns_only_new_breakage(
     draft: DraftHandler, hub: Hub
 ) -> None:
