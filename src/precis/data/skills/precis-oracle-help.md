@@ -42,6 +42,40 @@ at random (~150 tokens). Use this to perturb a stuck deliberation:
 read the entry, notice your reaction, treat the reaction as the
 signal.
 
+**Why the randomness — p-hacking, made honest.** The oracle runs the
+mechanic that's *fraud* in statistics: roll a random provocation, keep
+the one that lights up. It's honest here because the roll is only the
+**prompt**, never the finding — the entry is a spark to react to, not a
+conclusion, and anything it sparks still has to be verified downstream.
+Same move, made legitimate by putting the check *after* the roll.
+
+## Consult a persona — think as a scientist, leader, or artist
+
+```python
+get(kind='oracle', id='scientists')             # a random scientist's stance
+get(kind='oracle', id='leadership')             # a commander/statesman stance
+get(kind='oracle', id='artists')                # an artist/composer stance
+```
+
+The `scientists` / `leadership` / `artists` traditions are *stances* to
+inhabit for one pass (Feynman, Napoleon, Miles Davis, …), not aphorisms.
+Adopt the entry as a lens: let it colour how you sample, read, and
+connect — the same steps in a different register.
+
+## Consult with a lens — bias the draw across traditions
+
+```python
+get(kind='oracle', args={'lens': ['sci']})      # 50% scientists, 50% the rest
+get(kind='oracle', args={'lens': ['sci', 'art']})   # union the favoured sets
+```
+
+A **lens** biases *which* tradition the random draw favours without
+silencing the others: `sci` draws 50% from `scientists` and 50% evenly
+across every other loaded tradition (even across *traditions*, so a
+64-entry tradition doesn't drown out a 6-entry one). Predefined lenses:
+`sci` (scientists), `lead` (leadership), `art` (artists), `people` (all
+three). The dream cycle uses `sci` for its per-pass stance.
+
 ## See every entry in a tradition
 ## Browse a tradition's full catalogue
 ## What entries does the I-Ching contain?

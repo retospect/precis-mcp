@@ -164,3 +164,90 @@ def test_pass_counts_failure_on_dispatch_error(
     result = run_dream_pass(store)
     assert result.claimed == 1
     assert result.failed == 1
+
+
+# ── lens selection (persona-from-oracle + process fallback) ─────────
+
+
+def test_process_lens_prob_default_and_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.workers.dream_agent import _process_lens_prob
+
+    monkeypatch.delenv("PRECIS_DREAM_PROCESS_PROB", raising=False)
+    assert _process_lens_prob() == 0.15
+    monkeypatch.setenv("PRECIS_DREAM_PROCESS_PROB", "0.5")
+    assert _process_lens_prob() == 0.5
+    monkeypatch.setenv("PRECIS_DREAM_PROCESS_PROB", "nonsense")
+    assert _process_lens_prob() == 0.15
+
+
+def test_dream_lens_names_default_and_commalist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.workers.dream_agent import _dream_lens_names
+
+    monkeypatch.delenv("PRECIS_DREAM_LENS", raising=False)
+    assert _dream_lens_names() == ["sci"]
+    monkeypatch.setenv("PRECIS_DREAM_LENS", "sci, art")
+    assert _dream_lens_names() == ["sci", "art"]
+
+
+def test_select_lens_block_process_branch(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Force the process branch: it must return the Disney lens block and
+    # never touch the oracle.
+    from precis.workers import dream_agent as da
+
+    monkeypatch.setenv("PRECIS_DREAM_PROCESS_PROB", "1")
+
+    def _boom(*a, **kw):  # pragma: no cover — must not be called
+        raise AssertionError("oracle draw should be skipped in process branch")
+
+    monkeypatch.setattr(da, "draw_lens_entry", _boom)
+    block = da._select_lens_block(store)
+    assert block is not None
+    assert "Disney creativity strategy" in block
+
+
+def test_select_lens_block_oracle_branch(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+    from typing import cast
+
+    from precis.store import Block, Ref
+    from precis.utils.oracle_lens import LensDraw
+    from precis.workers import dream_agent as da
+
+    monkeypatch.setenv("PRECIS_DREAM_PROCESS_PROB", "0")
+    fake = LensDraw(
+        ref=cast(Ref, SimpleNamespace(id=1, slug="scientists", title="Scientists")),
+        block=cast(
+            Block,
+            SimpleNamespace(
+                id=11,
+                pos=6,
+                text="Take Shannon's stance.",
+                meta={"section_path": ["Shannon"]},
+            ),
+        ),
+        from_favoured=True,
+    )
+    monkeypatch.setattr(da, "draw_lens_entry", lambda *a, **kw: fake)
+    block = da._select_lens_block(store)
+    assert block is not None
+    assert block.startswith("## This cycle's lens: Shannon")
+    assert "Take Shannon's stance." in block
+
+
+def test_apply_lens_unlensed_when_no_oracle(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.workers import dream_agent as da
+
+    monkeypatch.setenv("PRECIS_DREAM_PROCESS_PROB", "0")
+    monkeypatch.setattr(da, "draw_lens_entry", lambda *a, **kw: None)
+    out = da._apply_lens("DIRECTIVE", store)
+    assert out == "DIRECTIVE"

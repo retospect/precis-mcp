@@ -12,12 +12,32 @@ Addressing modes:
 - ``get(kind='oracle', id='stoic~3')``  → entry at position 3
 - ``get(kind='oracle', id='stoic/index')`` → numbered entry catalog
 - ``get(kind='oracle', id='stoic', view='index')`` → same as above
+- ``get(kind='oracle', args={'lens': ['sci']})`` → a **lens** draw:
+  one random entry biased across traditions (see below)
 
 The random default matches oracle semantics ("consult the oracle"
 returns one piece of wisdom, not all of it) and keeps the per-call
 token footprint bounded (~50–200 tokens) instead of dumping all
 14–64 entries verbatim (MCP critic MAJOR-$: oracle:stoic was
 ~1750 tokens per call, oracle:engineering ~2355 tokens).
+
+Why the randomness — p-hacking, made honest. The oracle deliberately
+runs the mechanic that is *fraud* in statistics: roll a random
+provocation and keep the one that "lights up". In science p-hacking is
+dishonest because the random search *is* the published finding, with no
+independent test. Here the roll is only the **prompt**: the entry it
+returns is a spark to react to (notice the flinch, treat the reaction as
+signal), never a conclusion. Verification stays downstream and mandatory
+— e.g. dream memories start ``tier:dream`` and only earn
+``tier:synthetic-insight`` once grounded. Same statistical sin, made
+legitimate by putting the verifier *after* the roll instead of hiding it.
+
+Lenses (``utils/oracle_lens.py``) bias *which* tradition the roll draws
+from. The scientist / leader / artist personas are ordinary traditions
+(``scientists`` / ``leadership`` / ``artists``); a lens like ``sci``
+draws 50% from the favoured tradition and 50% evenly across the rest, so
+the bias never fully silences the other voices. The dream cycle uses this
+for its per-pass stance.
 """
 
 from __future__ import annotations
@@ -45,6 +65,7 @@ from precis.store import SEMANTIC_DISTANCE_FLOOR, Block, Ref
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query, query_vec_for
 from precis.utils.next_block import render_next_section
+from precis.utils.oracle_lens import draw_lens_entry
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import (
     SearchHit,
@@ -95,8 +116,15 @@ class OracleHandler(Handler):
         *,
         id: str | int | None = None,
         view: str | None = None,
+        lens: str | list[str] | None = None,
         **_kw: Any,
     ) -> Response:
+        # lens= → a biased draw across traditions, independent of any one
+        # slug. Takes precedence over id/view (the lens picks the
+        # tradition for you).
+        if lens is not None:
+            return self._render_lens_consult(lens)
+
         # No id → list oracles. Path-form lists (``id='/'``) land here
         # too for symmetry with other slug kinds.
         if id is None or (isinstance(id, str) and id.startswith("/")):
@@ -380,6 +408,48 @@ class OracleHandler(Handler):
         )
 
     # ── per-entry rendering ─────────────────────────────────────────
+
+    def _render_lens_consult(self, lens: str | list[str]) -> Response:
+        """Draw one entry under a lens policy (biased across traditions).
+
+        ``lens`` is a predefined lens name or a list of them (unioned).
+        Unknown names raise :class:`BadInput` inside ``draw_lens_entry``.
+        The draw is CSPRNG (the "consult" semantic); the trailer points
+        at the plain per-tradition paths for a deterministic follow-up.
+        """
+        names = [lens] if isinstance(lens, str) else list(lens)
+        draw = draw_lens_entry(self.store, names)
+        if draw is None:
+            raise NotFound(
+                "no oracle traditions are loaded to draw from",
+                next="get(kind='oracle') to list traditions",
+            )
+        ref, block = draw.ref, draw.block
+        slug = ref.slug or "???"
+        handle = handle_registry.format_handle("oracle", ref.id)
+        title = _entry_title(block) or f"entry {block.pos}"
+        lens_label = ", ".join(names)
+        body = (
+            f"# oracle {slug}~{block.pos}  (lens: {lens_label})\n"
+            f"_{ref.title} - {title}_\n\n{block.text}"
+        )
+        body += render_next_section(
+            [
+                (
+                    f"get(kind='oracle', args={{'lens': {names!r}}})",
+                    "consult again under the same lens",
+                ),
+                (
+                    f"get(kind='oracle', id='{slug}~{block.pos}')",
+                    "fetch THIS entry deterministically",
+                ),
+                (
+                    f"get(id='{handle}/index')",
+                    f"see all entries in {ref.title}",
+                ),
+            ]
+        )
+        return Response(body=body)
 
     def _render_random_entry(self, ref: Ref, blocks: list[Block]) -> Response:
         """Pick one entry at random; render it with catalog hints.

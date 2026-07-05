@@ -1,22 +1,18 @@
-"""Dream lens seeds (Part B of
+"""Dream PROCESS lens seeds (Part B of
 ``docs/design/tool-friction-reflection-and-dreams.md``).
 
-The dream cycle used to run one fixed shape (cross-kind
-connection-finding). This colours each cycle with a rotating **lens** —
-a named stance (Feynman, Napoleon, …) or a process (Disney's Dreamer →
-Realist → Critic) — injected into the dream prompt's *variable* layer so
-the same steps come out with a different register. Nearly free
-diversity: no new machinery, just a block prepended to the directive
-prompt.
+The dream cycle colours each pass with a **lens** injected into the dream
+prompt's *variable* layer so the same steps come out with a different
+register. The single-stance **persona** lenses (Feynman, Napoleon,
+Shannon, …) now live as first-class oracle traditions and are drawn via
+:mod:`precis.utils.oracle_lens` (the dream's default ``sci`` lens); this
+module now serves only the **process** lenses — a ``process`` is a
+sequential multi-phase pass (Disney's Dreamer → Realist → Critic) that
+doesn't fit the oracle's one-block-per-entry "random wisdom" shape.
 
-Lenses are data — ``precis/data/dream_lenses.yaml`` — so a new lens is a
-yaml entry, no code change. The worker picks one per pass by a rotating
-bucket (see :func:`select_lens`), keeping coverage even across the whole
-set rather than random clumping.
-
-(Full *mode* rotation — swapping the cycle's deliverable between
-connection / library-gap / open-question / consolidation — is deferred;
-see the OPEN-ITEMS residual. Lens rotation is the low-risk half.)
+Lenses are data — ``precis/data/dream_lenses.yaml`` — so a new process
+lens is a yaml entry, no code change. :func:`select_lens` still offers a
+deterministic rotation for callers that want even coverage across a set.
 """
 
 from __future__ import annotations

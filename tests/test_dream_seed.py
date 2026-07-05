@@ -1,28 +1,32 @@
-"""Part B — dream lens seed loading, rotation, and rendering."""
+"""Part B — dream PROCESS-lens seed loading + rendering.
+
+The single-stance persona lenses moved to oracle traditions (see
+``test_oracle_lens.py``); ``dream_lenses.yaml`` now carries only the
+multi-phase *process* lenses (Disney's Dreamer → Realist → Critic).
+"""
 
 from __future__ import annotations
 
 from precis.utils import dream_seed as ds
 
 
-def test_packaged_lenses_load():
+def test_packaged_lenses_are_process_only():
     lenses = ds.load_lenses()
     ids = {l["id"] for l in lenses}
-    # The 8 figure personas + the Disney process lens.
-    assert {"feynman", "shannon", "disney"} <= ids
-    assert len(lenses) >= 9
-    # Every lens carries an injectable prompt (the loader drops any that don't).
+    # Disney survives here; the personas emigrated to oracle.
+    assert "disney" in ids
+    assert "feynman" not in ids and "shannon" not in ids
+    # Every remaining lens is a process shape with an injectable prompt.
+    assert all(l.get("kind") == "process" for l in lenses)
     assert all(l.get("prompt") for l in lenses)
 
 
 def test_select_lens_rotates_and_wraps():
     lenses = ds.load_lenses()
     n = len(lenses)
-    # Deterministic: same bucket → same lens; +1 → next; wraps at N.
+    # Deterministic: same bucket → same lens; wraps at N.
     assert ds.select_lens(lenses, bucket=0) is ds.select_lens(lenses, bucket=0)
-    assert ds.select_lens(lenses, bucket=0) is not ds.select_lens(lenses, bucket=1)
     assert ds.select_lens(lenses, bucket=n) is ds.select_lens(lenses, bucket=0)
-    # Full sweep covers every lens over N consecutive buckets.
     swept = {ds.select_lens(lenses, bucket=b)["id"] for b in range(n)}
     assert swept == {l["id"] for l in lenses}
 
@@ -41,4 +45,3 @@ def test_render_lens_block():
 def test_disney_is_a_process_lens():
     lenses = {l["id"]: l for l in ds.load_lenses()}
     assert lenses["disney"]["kind"] == "process"
-    assert lenses["feynman"]["kind"] == "persona"

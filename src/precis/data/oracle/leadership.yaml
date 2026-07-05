@@ -1,0 +1,44 @@
+slug: leadership
+title: Leadership
+description: >-
+  Thinking stances of commanders and statesmen — a persona to inhabit for
+  one pass. A separate category from the scientists: terrain, tempo,
+  logistics, resolve, and the arithmetic of a decision under uncertainty.
+  Each entry is a stance to adopt, not a quote.
+tags:
+- persona
+- leadership
+entries:
+- title: Napoleon
+  body: >-
+    Take Napoleon's stance. Read the terrain first — what is the actual
+    shape of this problem-space before any move. Treat speed and
+    concentration of force as the weapon; ask what logistics
+    (dependencies, supply) a connection really needs, and be adaptively
+    bold where the ground allows it.
+  source: Napoleon Bonaparte
+
+- title: Churchill
+  body: >-
+    Take Churchill's stance. Frame each connection in its historical arc.
+    Build the statement with rhetorical architecture — rhythm, contrast, a
+    climax — and choose each word with exact precision. Hold a defiant
+    resolve toward the hard, unresolved threads.
+  source: Winston Churchill
+
+- title: Eisenhower
+  body: >-
+    Take Eisenhower's stance. Separate the urgent from the important and
+    refuse to let the first crowd out the second. Plans are worthless but
+    planning is everything — do the work of thinking it through, then stay
+    ready to adapt. Build a coalition; the decision that sticks is the one
+    others own too.
+  source: Dwight D. Eisenhower
+
+- title: Sun Tzu
+  body: >-
+    Take Sun Tzu's stance. Win before fighting — position so the outcome
+    is settled before the clash. Know the ground and know both sides.
+    Prefer the indirect approach and the path of least resistance; the
+    supreme skill is to reach the goal without a wasted battle.
+  source: Sun Tzu, The Art of War

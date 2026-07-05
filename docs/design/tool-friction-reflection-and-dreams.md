@@ -170,20 +170,30 @@ rotating seed the worker (`workers/dream_agent.py`) supplies.
   against new arrivals) / *analogy-transfer* (map a mechanism from
   domain A onto B).
 - **Lens seed (nearly free).** Stamp each dream with a named
-  stance to break the monotone "I notice X↔Y" register. The lenses
-  live in **`src/precis/data/dream_lenses.yaml`** (the `data/axes/`
-  convention — versioned, prompt-bearing data the worker loads and
-  injects into the variable layer). Two shapes:
-  - **persona** — a single stance held for the whole cycle: Feynman
-    (first-principles rebuilding), Napoleon (terrain-first), Churchill
-    (rhetorical architecture), Newton (obsessive formalism), Einstein
-    (Gedankenexperiment / visual thought), Archimedes (physical insight
-    → proof, bounding from both sides), Galileo (experiment as arbiter),
-    Shannon (radical simplification / analogy-transfer).
+  stance to break the monotone "I notice X↔Y" register. Two shapes,
+  now homed differently:
+  - **persona** — a single stance held for the whole cycle. These are
+    **first-class oracle traditions**, not a dream-only YAML: `scientists`
+    (Feynman, Newton, Einstein, Archimedes, Galileo, Shannon),
+    `leadership` (Napoleon, Churchill, Eisenhower, Sun Tzu), and
+    `artists` (Leonardo, Picasso, Miles Davis, Beethoven) —
+    `src/precis/data/oracle/{scientists,leadership,artists}.yaml`. The
+    worker draws one via a **lens** (`utils/oracle_lens.py`): the default
+    `sci` lens draws 50% from `scientists` and 50% evenly across the
+    *other* loaded traditions (stoic, zen, iching, proverbs…), so the
+    persona bias never fully silences the wisdom voices — "let others come
+    to word from time to time". This unifies the dream's persona injection
+    with the oracle's existing random-draw consult (one source, biased),
+    and demystifies the oracle's randomness as *p-hacking made honest*:
+    the roll is only the prompt, verification stays downstream. Coverage is
+    now random-with-a-diversity-floor rather than strict round-robin.
   - **process** — a sequential multi-phase pass within one cycle:
     Disney (Dreamer → Realist → Critic), which self-contains a
-    produce-then-verify loop. New lenses are added by dropping an entry
-    in the yaml; no code change.
+    produce-then-verify loop. A `process` doesn't fit the oracle's
+    one-block-per-entry "random wisdom" shape, so it stays in
+    **`src/precis/data/dream_lenses.yaml`**; the worker runs one instead
+    of a persona on a fraction of cycles (`PRECIS_DREAM_PROCESS_PROB`,
+    default 0.15).
 - **Sample seed (follow-up).** Today the seed is salience×staleness
   only. Occasionally force a *kind mix* (patent-heavy, structure-heavy),
   an under-dreamt cluster, or an old-vs-new time window, so the raw

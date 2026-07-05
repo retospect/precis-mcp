@@ -27,6 +27,12 @@ Inputs (env):
   workflow stays generic.
 * ``PRECIS_MCP_CONFIG`` — MCP config JSON the agent uses to call
   precis tools.
+* ``PRECIS_DREAM_LENS`` — the oracle lens (comma-list) biasing the
+  per-cycle persona stance. Default ``sci`` (50% scientists / 50%
+  evenly across the other traditions; see ``utils/oracle_lens.py``).
+* ``PRECIS_DREAM_PROCESS_PROB`` — fraction of cycles that hold a
+  multi-phase PROCESS lens (Disney) instead of a single-stance persona.
+  Default 0.15.
 
 Gating: ``PRECIS_DREAM_AGENT=1`` (env). The pass is explicit-only
 on the CLI (``--only dream_agent``) AND env-gated, mirroring the
@@ -43,7 +49,7 @@ from __future__ import annotations
 
 import logging
 import os
-import time
+import secrets
 from pathlib import Path
 
 from precis.store import Store
@@ -51,15 +57,21 @@ from precis.utils.claude_agent import (
     ClaudeAgentError,
     call_claude_agent,
 )
-from precis.utils.dream_seed import load_lenses, render_lens_block, select_lens
+from precis.utils.dream_seed import load_lenses, render_lens_block
 from precis.utils.env import env_flag
 from precis.utils.llm.router import Tier, resolve_model
 from precis.utils.load_gate import skip_if_high_load
+from precis.utils.oracle_lens import draw_lens_entry, render_lens_block_from_draw
 from precis.workers.runner import BatchResult
 
-# One rotation step per dream cadence (~15 min) so successive passes
-# advance through the lens set evenly rather than clumping.
-_LENS_BUCKET_SECONDS = 900
+# The dream's default lens: bias the persona draw toward the scientist
+# traditions (50% science / 50% evenly across the rest — see
+# utils/oracle_lens.py). Comma-list to widen (e.g. "sci,art").
+_DEFAULT_DREAM_LENS = "sci"
+
+# Fraction of cycles that hold a multi-phase PROCESS lens (Disney) instead
+# of a single-stance persona. The rest draw a persona from the oracle.
+_DEFAULT_PROCESS_LENS_PROB = 0.15
 
 log = logging.getLogger(__name__)
 
@@ -103,7 +115,7 @@ def run_dream_pass(store: Store) -> BatchResult:
             "dream_agent: no dream prompt available (override + packaged both failed); skipping"
         )
         return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
-    prompt = _apply_lens(prompt)
+    prompt = _apply_lens(prompt, store)
     try:
         result = call_claude_agent(
             prompt,
@@ -170,19 +182,74 @@ def _load_prompt() -> str | None:
         return None
 
 
-def _apply_lens(prompt: str) -> str:
-    """Prepend this cycle's rotating lens block to the dream directive.
+def _apply_lens(prompt: str, store: Store) -> str:
+    """Prepend this cycle's lens block to the dream directive.
 
-    Best-effort: an unreadable/empty lens set leaves the prompt
-    unchanged, so a missing seed file never fails the pass.
+    Best-effort: any failure leaves the prompt unchanged, so a missing
+    oracle corpus or seed file never fails the pass.
     """
-    lenses = load_lenses()
-    bucket = int(time.time() // _LENS_BUCKET_SECONDS)
-    lens = select_lens(lenses, bucket=bucket)
-    if lens is None:
+    block = _select_lens_block(store)
+    if block is None:
         return prompt
-    log.info("dream_agent: lens=%s", lens.get("id"))
-    return render_lens_block(lens) + "\n" + prompt
+    return block + "\n" + prompt
+
+
+def _select_lens_block(store: Store) -> str | None:
+    """This cycle's lens: usually a persona drawn from the oracle under
+    the ``sci`` lens (50% scientists / 50% evenly across the rest), and
+    occasionally a multi-phase PROCESS lens (Disney) instead.
+
+    Returns the rendered ``## This cycle's lens`` block, or ``None`` to
+    run unlensed.
+    """
+    # Occasionally hold a sequential process instead of a single stance.
+    if _coin(_process_lens_prob()):
+        processes = load_lenses()
+        if processes:
+            lens = processes[secrets.randbelow(len(processes))]
+            log.info("dream_agent: lens=process:%s", lens.get("id"))
+            return render_lens_block(lens)
+
+    # Default: draw a persona stance from the oracle under the dream lens.
+    try:
+        draw = draw_lens_entry(store, _dream_lens_names())
+    except Exception:
+        log.exception("dream_agent: oracle lens draw failed; running unlensed")
+        return None
+    if draw is None:
+        log.info("dream_agent: no oracle traditions loaded; running unlensed")
+        return None
+    log.info("dream_agent: lens=oracle:%s~%s", draw.ref.slug, draw.block.pos)
+    return render_lens_block_from_draw(draw)
+
+
+def _dream_lens_names() -> list[str]:
+    """The lens name(s) for the persona draw — ``PRECIS_DREAM_LENS`` (a
+    comma-list) or the ``sci`` default."""
+    raw = os.environ.get("PRECIS_DREAM_LENS", _DEFAULT_DREAM_LENS)
+    names = [s.strip() for s in raw.split(",") if s.strip()]
+    return names or [_DEFAULT_DREAM_LENS]
+
+
+def _process_lens_prob() -> float:
+    """Fraction of cycles that run a PROCESS lens — ``PRECIS_DREAM_PROCESS_PROB``
+    (default 0.15). Unset or a bad value falls back to the default."""
+    raw = os.environ.get("PRECIS_DREAM_PROCESS_PROB")
+    if raw is None:
+        return _DEFAULT_PROCESS_LENS_PROB
+    try:
+        return float(raw)
+    except ValueError:
+        return _DEFAULT_PROCESS_LENS_PROB
+
+
+def _coin(p: float) -> bool:
+    """True with probability ``p`` (CSPRNG)."""
+    if p <= 0.0:
+        return False
+    if p >= 1.0:
+        return True
+    return secrets.randbelow(10**9) / 10**9 < p
 
 
 def _env_path(var: str) -> Path | None:
