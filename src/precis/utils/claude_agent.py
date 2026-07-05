@@ -35,7 +35,8 @@ isn't reachable.
 Knobs (all overridable per call, project defaults via env):
 
 * ``PRECIS_CLAUDE_BIN``       — claude binary path (default ``claude``).
-* ``PRECIS_CLAUDE_AGENT_MODEL`` — default model (default ``claude-sonnet-4-6``).
+* ``PRECIS_CLAUDE_AGENT_MODEL`` — default model (falls back to the router's
+  ``Tier.CLOUD_SUPER`` = ``claude-opus-4-8``).
 * ``PRECIS_CLAUDE_AGENT_MAX_USD`` — per-call cost cap (default ``2.00``).
 * ``PRECIS_CLAUDE_AGENT_TIMEOUT_S`` — wall-clock timeout (default ``600``).
 """
@@ -70,12 +71,18 @@ _to_str = to_str
 _extract_cost_usd = extract_cost_usd
 
 
-# Default model: Sonnet is the right default for the agentic shape —
-# strong enough for tree analysis, fast enough for 6h cadences,
-# cheap enough that a single 5-turn pass stays under the default
-# cap. Reviewers that need opus pass ``model='claude-opus-4-7'``
-# explicitly.
-_DEFAULT_MODEL = "claude-sonnet-4-6"
+# Default model: the router's cloud-super tier (opus-4.8). This is the
+# agentic/reasoning shape — reviewers, dream, follow-up "ask & think" —
+# so it consolidates on the strong model rather than sonnet (ADR 0046
+# unit 4b; the reasoning tier is where the stronger model earns its keep,
+# and 4-7/4-8 are the same price). A caller can still pin a model via the
+# ``model=`` arg or ``PRECIS_CLAUDE_AGENT_MODEL``. Resolved lazily inside
+# :func:`call_claude_agent` because ``router`` imports this module.
+def _default_agent_model() -> str:
+    from precis.utils.llm.router import Tier, resolve_model
+
+    return resolve_model(Tier.CLOUD_SUPER)
+
 
 # Default budget per call. Agentic passes spend more than one-shot
 # JSON judges (the chase worker's claude_p default is $0.10); $2 is
@@ -140,7 +147,8 @@ def call_claude_agent(
             output is captured raw and the actual "result" is whatever
             tool calls it made (MCP precis writes, etc.).
         model: Override the default model (env
-            ``PRECIS_CLAUDE_AGENT_MODEL`` or sonnet-4-6).
+            ``PRECIS_CLAUDE_AGENT_MODEL`` or the router's cloud-super
+            tier, opus-4.8).
         system_prompt: Inject via ``--append-system-prompt``. Accepts
             a literal string OR a :class:`Path` (read at call time).
             Used by the dream pass to inject asa's SOUL.md.
@@ -177,7 +185,9 @@ def call_claude_agent(
             the binary was missing.
     """
     binary = resolve_binary()
-    model = model or os.environ.get("PRECIS_CLAUDE_AGENT_MODEL", _DEFAULT_MODEL)
+    model = (
+        model or os.environ.get("PRECIS_CLAUDE_AGENT_MODEL") or _default_agent_model()
+    )
     if timeout_s is None:
         env_timeout = os.environ.get("PRECIS_CLAUDE_AGENT_TIMEOUT_S")
         timeout_s = float(env_timeout) if env_timeout else _DEFAULT_TIMEOUT_S

@@ -1486,7 +1486,7 @@ def test_env_select_dream_renders_detail(client, monkeypatch) -> None:
     resp = client.get("/env?agent=dream_agent")
     assert resp.status_code == 200
     # Model fallback to the default when the model env is unset.
-    assert "claude-sonnet-4-6" in resp.text
+    assert "claude-opus-4-8" in resp.text
     # Env-var snapshot shows the gating flag as present.
     assert "PRECIS_DREAM_AGENT" in resp.text
     # Plist breadcrumb so the operator knows where the env came from.

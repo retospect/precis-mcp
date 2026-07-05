@@ -190,7 +190,7 @@ AGENTS: tuple[AgentSpec, ...] = (
             "melchior with Claude OAuth (no API key needed)."
         ),
         launchd_label="com.precis.dream",
-        model_default="claude-sonnet-4-6",
+        model_default="claude-opus-4-8",
         model_env="PRECIS_DREAM_AGENT_MODEL",
         system_prompt_env="PRECIS_DREAM_SOUL_PATH",
         directive_prompt_env="PRECIS_DREAM_PROMPT_PATH",
@@ -223,7 +223,7 @@ AGENTS: tuple[AgentSpec, ...] = (
             "contradictions / depth-fanout warnings. Opus."
         ),
         launchd_label="com.precis.worker-agent",
-        model_default="claude-opus-4-7",
+        model_default="claude-opus-4-8",
         model_env="PRECIS_STRUCTURAL_MODEL",
         system_prompt_env="",
         directive_prompt_env="",
@@ -251,7 +251,7 @@ AGENTS: tuple[AgentSpec, ...] = (
             "rebalance / long-wait review. Opus."
         ),
         launchd_label="com.precis.worker-agent",
-        model_default="claude-opus-4-7",
+        model_default="claude-opus-4-8",
         model_env="PRECIS_DEEP_REVIEW_MODEL",
         system_prompt_env="",
         directive_prompt_env="",

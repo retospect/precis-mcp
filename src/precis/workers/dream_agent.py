@@ -53,6 +53,7 @@ from precis.utils.claude_agent import (
 )
 from precis.utils.dream_seed import load_lenses, render_lens_block, select_lens
 from precis.utils.env import env_flag
+from precis.utils.llm.router import Tier, resolve_model
 from precis.utils.load_gate import skip_if_high_load
 from precis.workers.runner import BatchResult
 
@@ -63,12 +64,14 @@ _LENS_BUCKET_SECONDS = 900
 log = logging.getLogger(__name__)
 
 
-# Default model: sonnet matches the live dream-pass.sh setting
-# (Max-plan Opus-4-7 was the original target but the cluster's
-# bash script was running sonnet by the time of cutover; see
-# cluster/roles/precis_dream/files/dream-pass.sh comments). Override
-# with PRECIS_DREAM_AGENT_MODEL.
-_DEFAULT_MODEL = "claude-sonnet-4-6"
+# Default model: the router's cloud-super tier (opus-4.8). The dream
+# pass moved onto the consolidated cloud reasoning tier (ADR 0046 unit
+# 4b) — "if it's worth thinking about, think well": opus-4.8 is where
+# the speculative-connection work earns the stronger model, at the same
+# price as 4-7. Override with PRECIS_DREAM_AGENT_MODEL for a per-pass pin.
+def _default_model() -> str:
+    return resolve_model(Tier.CLOUD_SUPER)
+
 
 # Same turn cap as the bash script's --max-turns 20.
 _DEFAULT_MAX_TURNS = 20
@@ -104,7 +107,7 @@ def run_dream_pass(store: Store) -> BatchResult:
     try:
         result = call_claude_agent(
             prompt,
-            model=os.environ.get("PRECIS_DREAM_AGENT_MODEL", _DEFAULT_MODEL),
+            model=os.environ.get("PRECIS_DREAM_AGENT_MODEL") or _default_model(),
             system_prompt=soul_path,
             mcp_config=mcp_path,
             max_turns=_DEFAULT_MAX_TURNS,

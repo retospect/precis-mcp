@@ -66,10 +66,12 @@ class Tier(StrEnum):
       resolver names its model so the seam is ready.
     * ``CLOUD_SMALL`` — cloud haiku, tool-less one-shot JSON judgment
       (the chase verifier shape).
-    * ``CLOUD_MID`` — cloud sonnet, the agentic default (dream,
-      planner ticks, tex-fix).
-    * ``CLOUD_SUPER`` — cloud opus, heavy reasoning + tools (the
-      structural / deep reviewers, fix-gripe, ``LLM:opus`` ticks).
+    * ``CLOUD_MID`` — cloud sonnet, the mid agentic rung (planner
+      ticks, tex-fix).
+    * ``CLOUD_SUPER`` — cloud opus-4.8, the consolidated cloud
+      reasoning tier: heavy reasoning + tools (the structural / deep
+      reviewers, fix-gripe, ``LLM:opus`` ticks, the dream pass, and
+      the generic ``claude_agent`` default).
     """
 
     LOCAL_SMALL = "local-small"
@@ -101,18 +103,19 @@ class Transport(StrEnum):
 
 # ── the tier → model table (the ONE consolidation point) ───────────────
 #
-# Each row is ``tier: (env_var, default)`` and reproduces the default a
-# current call site would resolve to, so unit 4b's migration is
-# behavior-preserving. The cloud triad is the *pinned* set from
-# ``plan_tick._model_alias`` — ``PRECIS_MODEL_{OPUS,SONNET,HAIKU}`` — which
-# is the most deliberate of the scattered reads (it pins a model *id* so a
-# ``LLM:opus`` tag binds to one generation as the CLI default drifts). The
-# sonnet/opus defaults are shared verbatim by every other cloud site
-# (dream, tex-fix, reviewers, fix-gripe); the one reconciliation is
-# ``claude_p``'s legacy suffix-less ``claude-haiku-4-5`` default, folded
+# Each row is ``tier: (env_var, default)``. The cloud triad is the *pinned*
+# set from ``plan_tick._model_alias`` — ``PRECIS_MODEL_{OPUS,SONNET,HAIKU}`` —
+# which is the most deliberate of the scattered reads (it pins a model *id*
+# so a ``LLM:opus`` tag binds to one generation as the CLI default drifts).
+# The cloud-super default is ``claude-opus-4-8`` — the consolidation point
+# for the whole cloud reasoning tier (dream, tex-fix, reviewers, fix-gripe,
+# the generic ``claude_agent`` default all resolve through here). 4-7 and
+# 4-8 are the same price, so there is no cost reason to stay on 4-7 and the
+# reasoning/agentic work is exactly where the stronger model earns its keep.
+# ``claude_p``'s legacy suffix-less ``claude-haiku-4-5`` default is folded
 # onto the dated pin here (same family — see ADR 0046 §"Resolver").
 _TIER_MODEL: dict[Tier, tuple[str, str]] = {
-    Tier.CLOUD_SUPER: ("PRECIS_MODEL_OPUS", "claude-opus-4-7"),
+    Tier.CLOUD_SUPER: ("PRECIS_MODEL_OPUS", "claude-opus-4-8"),
     Tier.CLOUD_MID: ("PRECIS_MODEL_SONNET", "claude-sonnet-4-6"),
     Tier.CLOUD_SMALL: ("PRECIS_MODEL_HAIKU", "claude-haiku-4-5-20251001"),
     # The litellm ``summarizer`` alias (``LlmConfig.model`` default), read

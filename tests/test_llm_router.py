@@ -39,9 +39,10 @@ from precis.utils.llm.router import (
 @pytest.mark.parametrize(
     ("tier", "expected"),
     [
-        # cloud triad — the pinned plan_tick._model_alias defaults, shared
-        # verbatim by dream / tex-fix / reviewers / fix-gripe.
-        (Tier.CLOUD_SUPER, "claude-opus-4-7"),
+        # cloud triad — the pinned plan_tick._model_alias defaults. The
+        # cloud-super default is the consolidated opus-4.8 reasoning tier
+        # (reviewers / dream / fix-gripe / generic claude_agent all resolve it).
+        (Tier.CLOUD_SUPER, "claude-opus-4-8"),
         (Tier.CLOUD_MID, "claude-sonnet-4-6"),
         (Tier.CLOUD_SMALL, "claude-haiku-4-5-20251001"),
         # local — the litellm summarizer alias (LlmConfig.model default).

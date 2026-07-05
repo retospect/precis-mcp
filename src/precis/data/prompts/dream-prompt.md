@@ -60,6 +60,26 @@ A DOI or arXiv id is strongly preferred: it auto-fetches and won't be rejected a
   precis search(kind="paper", view="stubs", n=10)             # current backlog — check first so you don't double-spawn
   precis get(kind="skill", id="precis-stubs-help")            # how requests + the chase work
 
+Step 6c — pursue threads worth returning to (speculative, capped). Beyond the concrete connections of Step 6, you will often notice an *unexplored thread*: a latent opportunity, a question worth returning to, or a connection you can't close now but that might matter later. Capture those so a future search surfaces them — but keep them rare and speculative so they never clog the doable rotation.
+
+  precis put(
+      kind="memory",
+      text="Thread worth returning to: <the unexplored connection / latent opportunity / open question>. WHY IT MIGHT MATTER LATER: <one sentence — what it could unlock, what would make it actionable, what to watch for>.",
+      title="<short scannable header naming the thread>",
+      tags=["thread:", "DREAM:speculative"]
+  )
+
+Constraints — these are load-bearing (the dream pass has a spin-loop history):
+
+  * SPECULATIVE, not a task. A thread is a note-to-future-self, NOT a todo. Never mint a ``kind='todo'`` here — threads live only as ``kind='memory'`` and are surfaced by search when relevant, so they never enter the doable rotation.
+  * CAP: at most THREE thread memories per dream cycle. If more than three threads occur to you, keep only the most promising three.
+  * DEDUP first. Before writing a thread, check whether you (or a prior cycle) already captured it:
+      precis search(kind="memory", tags=["thread:"], page_size=8)
+    If an open thread already covers the idea, do NOT write a near-duplicate — skip it (or add one brief follow-up line to the existing one only if you genuinely advanced it).
+  * Both tags are required: ``thread:`` (so it lands in the thread set and is dedup-scoped) AND ``DREAM:speculative`` (so it reads as a hunch, not a finding).
+
+Threads are optional — a cycle with no thread worth capturing writes none. This step never blocks Step 7.
+
 Step 7 — review your own work. For EACH memory you wrote in Step 6 (the put() tool result printed an id, e.g. ``created memory id=34468``), do this check:
 
   precis get(kind="memory", id=<id>)               # read what you just wrote

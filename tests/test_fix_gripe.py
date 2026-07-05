@@ -172,14 +172,14 @@ class TestLoadConfig:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Unit 4b: with no bespoke override, claude_model resolves through
-        the ADR 0046 CLOUD_SUPER tier — byte-identical to the legacy
-        hard-coded ``claude-opus-4-7`` default."""
+        the ADR 0046 CLOUD_SUPER tier — the consolidated opus-4.8 cloud
+        reasoning default."""
         monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
         monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
         monkeypatch.delenv("PRECIS_FIX_CLAUDE_MODEL", raising=False)
         monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
         cfg = load_config_from_env()
-        assert cfg.claude_model == "claude-opus-4-7"
+        assert cfg.claude_model == "claude-opus-4-8"
 
     def test_claude_model_bespoke_override_wins(
         self, monkeypatch: pytest.MonkeyPatch

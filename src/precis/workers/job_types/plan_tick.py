@@ -362,9 +362,9 @@ def _disable_prose_file_kind(
 
 #: The ``LLM:<value>`` short-name → capability-tier map (ADR 0046). Each
 #: tier resolves (via :func:`~precis.utils.llm.router.resolve_model`) to the
-#: exact env-var + default the legacy inline table read, so a given
-#: ``LLM:opus`` tag still binds to the same pinned generation — byte-for-byte:
-#:   opus   → CLOUD_SUPER (``PRECIS_MODEL_OPUS``,  ``claude-opus-4-7``)
+#: env-var + default in the router table, so a given ``LLM:opus`` tag binds
+#: to the consolidated cloud reasoning generation (override via the env var):
+#:   opus   → CLOUD_SUPER (``PRECIS_MODEL_OPUS``,  ``claude-opus-4-8``)
 #:   sonnet → CLOUD_MID   (``PRECIS_MODEL_SONNET``, ``claude-sonnet-4-6``)
 #:   haiku  → CLOUD_SMALL (``PRECIS_MODEL_HAIKU``,  ``claude-haiku-4-5-20251001``)
 _TIER_BY_ALIAS: dict[str, Tier] = {
@@ -378,9 +378,9 @@ def _model_alias(model: str) -> str:
     """Translate the short LLM:<value> name to the real Claude model ID.
 
     Routes through the ADR 0046 resolver so model selection lives in one
-    table. The tier map reproduces the exact env var + default the legacy
-    inline table read, so a ``LLM:opus`` tag still binds to the same pinned
-    generation (override via ``PRECIS_MODEL_OPUS=…`` etc.). An unrecognized
+    table. The tier map binds each short name to a router tier, so a
+    ``LLM:opus`` tag resolves to the shared cloud-super default (opus-4.8),
+    overridable via ``PRECIS_MODEL_OPUS=…`` etc.. An unrecognized
     name passes through unchanged — mirrors the old ``.get(model, model)``
     fallback (``validate_submit`` already constrains it to opus/sonnet/haiku).
     """

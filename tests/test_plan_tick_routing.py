@@ -19,10 +19,11 @@ from precis.workers.job_types import plan_tick as pt
 
 # ── _model_alias: byte-identical to the legacy inline table ────────────
 
-# The legacy defaults, kept literal here so a drift in either the resolver
-# table or the plan_tick map is caught as a mismatch.
+# The resolver defaults, kept literal here so a drift in either the resolver
+# table or the plan_tick map is caught as a mismatch. ``opus`` = the
+# consolidated cloud-super tier (opus-4.8) after the ADR 0046 bump.
 _LEGACY_DEFAULTS = {
-    "opus": "claude-opus-4-7",
+    "opus": "claude-opus-4-8",
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5-20251001",
 }
@@ -130,9 +131,9 @@ def test_run_passes_resolved_model_and_budget_cap(
 
     cmd = _capture_cmd(monkeypatch, "opus")
 
-    # Resolved model is passed to --model (byte-identical to legacy default).
+    # Resolved model is passed to --model (the cloud-super tier default).
     assert "--model" in cmd
-    assert cmd[cmd.index("--model") + 1] == "claude-opus-4-7"
+    assert cmd[cmd.index("--model") + 1] == "claude-opus-4-8"
     # The runaway-spend backstop is present with the default value.
     assert "--max-budget-usd" in cmd
     assert cmd[cmd.index("--max-budget-usd") + 1] == "5.0"

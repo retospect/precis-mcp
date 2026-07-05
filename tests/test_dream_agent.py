@@ -39,6 +39,40 @@ def test_packaged_prompt_is_the_persona_neutral_default(
     assert "user:asa" not in prompt
 
 
+def test_packaged_prompt_carries_thread_directive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # opus-4.8 on the dream pass gains a "pursue threads worth returning
+    # to" directive — captured as ``thread:`` memories, capped + dedup'd
+    # + explicitly speculative so it never clogs the doable rotation.
+    monkeypatch.delenv("PRECIS_DREAM_PROMPT_PATH", raising=False)
+    prompt = _load_prompt()
+    assert prompt is not None
+    # The directive is present and lands as a memory, not a todo.
+    assert "thread:" in prompt
+    assert "Thread worth returning to" in prompt
+    assert "WHY IT MIGHT MATTER LATER" in prompt
+    # Anti-noise constraints: capped to a handful, dedup'd, speculative,
+    # and never a todo (so the doable rotation stays clean).
+    assert "at most THREE" in prompt
+    assert 'search(kind="memory", tags=["thread:"]' in prompt
+    assert "DREAM:speculative" in prompt
+    assert "Never mint a ``kind='todo'``" in prompt
+
+
+def test_dream_default_model_is_cloud_super(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The dream pass consolidated onto the router's cloud-super tier
+    # (opus-4.8); an explicit PRECIS_DREAM_AGENT_MODEL pin still wins.
+    from precis.utils.llm.router import Tier, resolve_model
+    from precis.workers.dream_agent import _default_model
+
+    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
+    assert _default_model() == resolve_model(Tier.CLOUD_SUPER)
+    assert _default_model() == "claude-opus-4-8"
+
+
 def test_override_prompt_wins_over_packaged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

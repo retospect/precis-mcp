@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from precis.handlers._todo_guards import todo_root_sql
 from precis.store import Store
+from precis.utils.llm.router import Tier, resolve_model
 from precis.utils.prompt import AssemblyContext, Layer, Module
 from precis.workers.review import (
     _SHARED_TRAILING_MODULES,
@@ -201,7 +202,9 @@ STRUCTURAL = Reviewer(
     tier_tag="tier:structural",
     gate_env="PRECIS_STRUCTURAL_REVIEW",
     meta_prefix="structural_",
-    model="claude-opus-4-7",
+    # Cloud reasoning tier (opus-4.8) via the router; a per-pass
+    # ``PRECIS_STRUCTURAL_MODEL`` pin still wins in ``run_review_pass``.
+    model=resolve_model(Tier.CLOUD_SUPER),
     max_turns=30,
     timeout_s=900,
     min_interval_hours=MIN_INTERVAL_HOURS,
