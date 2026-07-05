@@ -164,6 +164,55 @@ green-in-twin/red-in-prod gaps close — the current `FakeStore`/`MockEmbedder`/
 `PRECIS_CLAUDE_BIN` twins are good enough for now); **auto-deploy as a daemon**
 (vs `/go`-chained — only if chaining proves insufficient).
 
+## 🟠 Worker liveness + observability (2026-07-05)
+
+**Status**: slice 1 shipped · **Severity**: critical (was a silent 1.5-day
+outage) · **Owner**: `workers/nursery.py`, `cli/worker.py`, `alerts.py`,
+cluster repo · **Origin**: the mofs-for-electrodes plan_tick stall — melchior's
+agent worker (only host running `plan_tick`) was jetsam-culled ~50-200×/day
+under llama.cpp wired-RAM pressure, orphaning every in-flight tick, invisible
+for 1.5 days because nothing watched daemon health.
+
+**Slice 1 — observability → shipped + deployed (81a197c7).** Boot-event row at
+`cli/worker.run`; nursery `worker-restart` + `dead-worker` critical detectors;
+`raise_alert` → `(ref_id, is_new)`; one-shot `notify_critical_alert` → Discord
+webhook `PRECIS_OPS_ALERT_WEBHOOK`. Tests in `test_nursery.py` / `test_alerts.py`.
+
+### Residuals (filed 2026-07-05; all Opus-authored this session — harvest-eligible)
+
+- **Activate the page (ops, in-reach).** The critical push is dark until
+  `PRECIS_OPS_ALERT_WEBHOOK` is set on the system-profile workers (ansible env,
+  cluster repo). Until then worker-restart / dead-worker alerts only land in
+  `/alerts` — visible but not proactive. Set it to actually get paged.
+- **#2 Tier B — lease as the single job-substrate liveness authority.** Today
+  two clocks: `claim_executor_jobs` re-claims only `STATUS:queued` (lease-keyed),
+  so a crashed `STATUS:running` job is unreachable and only the sweeper's
+  independent `PRECIS_STUCK_JOB_HOURS` clock rescues it (fail→bubble→retry). Let
+  the reclaim path take over a `running` job whose lease has expired
+  (requeue-from-checkpoint: `meta.coordinator_state` for the coordinator, fresh
+  tick for plan_tick), then **retire the sweeper's hours clock** — lease becomes
+  sole authority. Needs a per-job attempt cap (the sweeper's terminal-fail is
+  today's backstop). Riskier; gated behind slice 1 (now shipped) so misbehaviour
+  pages. Owner: `executors/_common.py`, `sweeper.py`, `executors/coordinator.py`.
+- **#3 short — de-SPOF the agent worker.** `plan_tick` jobs are NOT node-pinned
+  (`claim_executor_jobs` node gate is null for `claude_inproc`); the melchior-only
+  confinement is purely operational (hermes `~/.claude` OAuth + `PRECIS_MCP_CONFIG`
+  live only there). Provision a **second agent host** (caspar/balthazar) with the
+  OAuth state + an agent-profile daemon → one worker dying no longer stalls all
+  planning. Ops/ansible, no code. Highest-value #3 move.
+- **#3 medium — co-location relief.** Get the ~73 G `mlock`'d llama.cpp weight off
+  the agent host (or drop `--mlock`/cap it) so jetsam stops targeting the worker.
+  `ProcessType=Interactive` (shipped on cluster `master` 7e1258f) is a mitigation,
+  not immunity. Ops.
+- **#3 long — sandbox substrate.** The `sandbox_run`/`claude_docker` substrate
+  (ADR 0048, `docs/proposals/sandbox-run-substrate.md`) runs ticks in isolated
+  containers, immune to host memory pressure and naturally multi-host — subsumes
+  both the SPOF and co-location. Big lift; the durable north star.
+- **Config-drift guard (cluster repo).** The `ProcessType` fix regressed once
+  because it sat on an unmerged branch while deploys render from `master`. Add a
+  deploy assert that deployed launchd plists match the rendered templates (analogue
+  of the existing venv-commit convergence assert). Owner: `redeploy-precis.yml`.
+
 ## 🟢 Chunk-tag classifier (ADR 0047) — remaining work
 
 **Status**: open · **Severity**: feature · **Owner**:
