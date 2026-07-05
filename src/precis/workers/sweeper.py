@@ -5,11 +5,23 @@ configured threshold without any subsequent status change is treated as
 an orphan: its claimer (worker subprocess) is presumed dead and the
 parent todo's ``child_job_succeeded`` auto_check is silently stuck.
 
+**Lease guard.** A running job may still carry a live ``meta.lease_until``
+— the executor writes one at claim time to cover the longest legitimate
+run (``claude_inproc`` sets 90 min for a ``plan_tick``, which can request
+a 60-min tick plus post-processing). A job whose lease has *not* yet
+expired is, by contract, still owned by a live worker: sweeping it is a
+false claim-orphaned that mints a spurious ``child-failed`` bubble and
+(under the ``claude_inproc`` executor) races the still-running subprocess.
+So the sweeper only fires when the lease is **absent or expired**, the
+same predicate the reclaim path uses (:func:`claim_executor_jobs` in
+``executors/_common.py``). The hours threshold then backstops lease-less
+legacy jobs and adds margin past a just-expired lease.
+
 The sweeper:
 
-1. Selects rows where the *current* ``STATUS:`` value is ``running`` and
-   the ``ref_tags`` row that wrote that tag is older than
-   :data:`STUCK_JOB_HOURS`.
+1. Selects rows where the *current* ``STATUS:`` value is ``running``, the
+   ``ref_tags`` row that wrote that tag is older than
+   :data:`STUCK_JOB_HOURS`, **and** ``meta.lease_until`` is null or past.
 2. Replaces ``STATUS:running`` with ``STATUS:failed`` (via
    ``replace_prefix=True`` on the STATUS namespace).
 3. Adds an ``OPEN:swept:claim-orphaned`` tag so the failure isn't
@@ -358,6 +370,10 @@ def _enumerate_orphans(
                AND t.namespace = 'STATUS'
                AND t.value = 'running'
                AND rt.created_at < now() - %s::interval
+               AND (
+                    (r.meta->>'lease_until') IS NULL
+                 OR (r.meta->>'lease_until')::timestamptz < now()
+               )
              ORDER BY r.ref_id
              LIMIT %s
             """,
@@ -395,6 +411,10 @@ def _transition_to_failed(
                AND t.namespace = 'STATUS'
                AND t.value = 'running'
                AND rt.created_at < now() - %s::interval
+               AND (
+                    (r.meta->>'lease_until') IS NULL
+                 OR (r.meta->>'lease_until')::timestamptz < now()
+               )
              FOR UPDATE OF r SKIP LOCKED
             """,
             (orphan.ref_id, f"{threshold_hours} hours"),

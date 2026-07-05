@@ -47,8 +47,15 @@ def _mint_running_job(
     parent_id: int | None,
     *,
     backdate_hours: float,
+    lease_offset_hours: float | None = None,
 ) -> int:
-    """Insert a ``kind='job'`` ref, tag STATUS:running, backdate the tag."""
+    """Insert a ``kind='job'`` ref, tag STATUS:running, backdate the tag.
+
+    ``lease_offset_hours`` (optional) stamps ``meta.lease_until`` at
+    ``now() + offset``: a positive value gives a *live* lease (worker
+    still owns the job — must not be swept), a negative value an
+    *expired* one. ``None`` leaves the meta lease-less (legacy job).
+    """
     job = store.insert_ref(
         kind="job",
         slug=None,
@@ -75,6 +82,14 @@ def _mint_running_job(
             """,
             (f"{backdate_hours} hours", job.id),
         )
+        if lease_offset_hours is not None:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "  'lease_until', (now() + %s::interval)::text) "
+                "WHERE ref_id = %s",
+                (f"{lease_offset_hours} hours", job.id),
+            )
+            conn.commit()
     return int(job.id)
 
 
@@ -111,6 +126,48 @@ def test_stale_running_job_is_swept_and_parent_bubbled(
     assert "swept:claim-orphaned" in job_tags
     parent_tags = {str(t) for t in store.tags_for(rid)}
     assert f"child-failed:{job_id}" in parent_tags
+
+
+def test_stale_running_job_with_live_lease_is_left_alone(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A job past the hours threshold but with an unexpired ``lease_until``
+    is still owned by a live worker — the sweeper must not touch it.
+
+    This is the plan_tick case: the ``claude_inproc`` executor stamps a
+    90-min lease so a long tick isn't false-swept at the 1h mark."""
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    # STATUS:running is 1.1h old (> threshold) but the lease still has
+    # ~30 min to run, mirroring a plan_tick claimed ~60 min ago.
+    job_id = _mint_running_job(store, rid, backdate_hours=1.1, lease_offset_hours=0.5)
+
+    result = run_sweeper_pass(store, limit=10)
+
+    assert result.claimed == 0
+    assert result.ok == 0
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:running" in job_tags
+    assert "STATUS:failed" not in job_tags
+    parent_tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{job_id}" not in parent_tags
+
+
+def test_stale_running_job_with_expired_lease_is_swept(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Once the lease has expired (and the hours threshold is past) the
+    worker is presumed dead — the sweeper transitions it as before."""
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(store, rid, backdate_hours=2.0, lease_offset_hours=-0.5)
+
+    result = run_sweeper_pass(store, limit=10)
+
+    assert result.ok == 1
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:failed" in job_tags
+    assert "swept:claim-orphaned" in job_tags
 
 
 def test_already_failed_job_is_skipped(handler: TodoHandler, store: Store) -> None:
