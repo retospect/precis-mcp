@@ -124,6 +124,19 @@ reproducible); the model spends tokens on judgment, not CI/CD plumbing.
 - **Cheap-model tiering** → open. Route mechanical LLM work (`llm_summarize`,
   triage children, CI-fix escalation) to a small 4B–14B model; reserve Opus for
   build/planner/reviewer judgment.
+- **Out-of-band DB-liveness monitor** → open (ops-observability). The
+  2026-07-05 ~03:00→11:00 prod outage (caspar's Postgres/pgbouncer host
+  degraded from ~22:00, flapped, then died) ran **~8h completely unalerted**:
+  every alerting path we have (`nursery` → `kind='alert'`, `precis-heartbeat`)
+  is **DB-backed**, so when the DB itself dies the alerter can't fire — and
+  can't even write the alert saying it's down. Blind spot: total DB death is
+  invisible to the system's own monitoring. Needs an external liveness check
+  that does **not** depend on `precis_prod` being up — e.g. a tiny watcher on a
+  different host (or the fixer host / a cron on the laptop) that `SELECT 1`s the
+  pgbouncer endpoint every N min and pushes to Discord/PushNotification on
+  failure. The precursor was visible ~5h early (per-host `worker_logs` volume
+  halving from 22:00), so a degradation trend-alarm is a cheap second signal.
+  Pairs with `/checklogs`.
 - **Widen `scripts/ship` auto-fix surface** → open (polish). Auto-fix + amend
   anything the gate can resolve without judgment (import sort, trivial mypy
   stubs); only real logic failures reach the model.

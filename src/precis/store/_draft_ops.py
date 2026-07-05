@@ -710,6 +710,30 @@ class DraftMixin:
 
     # -- position resolution -------------------------------------------------
 
+    @staticmethod
+    def _ghost_bracket(
+        sibs: list[DraftChunk], tgt: DraftChunk, *, before: bool
+    ) -> tuple[str | None, str | None]:
+        """(lo, hi) for inserting relative to a *retired* anchor (gripe 49153).
+
+        ``get_draft_chunk`` returns a chunk live-or-retired, but ``_children``
+        yields only live siblings (``retired_at IS NULL``), so a retired anchor
+        is absent from ``sibs`` and the plain ``next(...)`` index lookup raises
+        ``StopIteration``. A retired chunk keeps its ``pos`` though, so it still
+        names a valid slot: bracket the live siblings by position — ``before``
+        → (live-predecessor, ghost.pos]; else [ghost.pos, live-successor). Keeps
+        a stale handle working instead of a 500. Paired with the search-time
+        ``retired_at IS NULL`` filter that stops such handles being handed out
+        at all (so this path is only reached by a caller holding an old handle,
+        never a search-fed loop). Comparison matches ``_children``'s
+        ``ORDER BY pos COLLATE "C"`` — bytewise, == Python ``str`` order.
+        """
+        if before:
+            lo = max((s.pos for s in sibs if s.pos < tgt.pos), default=None)
+            return lo, tgt.pos
+        hi = min((s.pos for s in sibs if s.pos > tgt.pos), default=None)
+        return tgt.pos, hi
+
     def _resolve_at(
         self,
         conn: psycopg.Connection,
@@ -725,7 +749,12 @@ class DraftMixin:
             if tgt is None:
                 raise NotFound(f"at: unknown chunk handle {anchor!r}")
             sibs = self._children(conn, ref_id, tgt.parent_chunk_id)
-            idx = next(i for i, s in enumerate(sibs) if s.chunk_id == tgt.chunk_id)
+            idx = next(
+                (i for i, s in enumerate(sibs) if s.chunk_id == tgt.chunk_id), None
+            )
+            if idx is None:  # anchor retired → recover into its ghost slot
+                lo, hi = self._ghost_bracket(sibs, tgt, before="before" in at)
+                return tgt.parent_chunk_id, lo, hi
             if "before" in at:
                 lo = sibs[idx - 1].pos if idx > 0 else None
                 hi = tgt.pos
@@ -1325,7 +1354,9 @@ class DraftMixin:
             # Splice every child into the container's slot, then retire it —
             # the same shape as ``retire_chunk(mode='promote')``.
             sibs = self._children(conn, ref_id, parent)
-            idx = next(i for i, s in enumerate(sibs) if s.chunk_id == chunk_id)
+            idx = next((i for i, s in enumerate(sibs) if s.chunk_id == chunk_id), None)
+            if idx is None:  # invariant: a live container is among its siblings
+                raise BadInput(f"¶{_bare(handle)} is not a live positioned chunk")
             lo = sibs[idx - 1].pos if idx > 0 else None
             hi = sibs[idx + 1].pos if idx + 1 < len(sibs) else None
             keys = n_keys_between(lo, hi, len(kids))
@@ -1671,7 +1702,13 @@ class DraftMixin:
                     self._log(conn, chunk_id, "retired", source, {"mode": "cascade"})
                 else:  # promote — splice children into the parent's slot
                     sibs = self._children(conn, ref_id, parent)
-                    idx = next(i for i, s in enumerate(sibs) if s.chunk_id == chunk_id)
+                    idx = next(
+                        (i for i, s in enumerate(sibs) if s.chunk_id == chunk_id), None
+                    )
+                    if idx is None:  # invariant: chunk being promoted is live
+                        raise BadInput(
+                            "cannot promote a chunk absent from its live siblings"
+                        )
                     lo = sibs[idx - 1].pos if idx > 0 else None
                     hi = sibs[idx + 1].pos if idx + 1 < len(sibs) else None
                     keys = n_keys_between(lo, hi, len(kids))
@@ -1723,7 +1760,12 @@ class DraftMixin:
                 for s in self._children(conn, ref_id, tgt.parent_chunk_id)
                 if s.chunk_id != moving_id
             ]
-            idx = next(i for i, s in enumerate(sibs) if s.chunk_id == tgt.chunk_id)
+            idx = next(
+                (i for i, s in enumerate(sibs) if s.chunk_id == tgt.chunk_id), None
+            )
+            if idx is None:  # anchor retired → recover into its ghost slot
+                lo, hi = self._ghost_bracket(sibs, tgt, before="before" in move)
+                return tgt.parent_chunk_id, lo, hi
             if "before" in move:
                 lo = sibs[idx - 1].pos if idx > 0 else None
                 hi = tgt.pos

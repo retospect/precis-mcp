@@ -475,3 +475,97 @@ def test_live_paper_cites_splits_local_vs_external(store: Store) -> None:
     # soft-deleting the paper flips every one of its tokens to external
     store.soft_delete_ref(paper.id)
     assert store.live_paper_cites({pc, pa}, {"miller23"}) == set()
+
+
+# ---------------------------------------------------------------------------
+# Retired-chunk / "ghost" handling (gripe 49153)
+#
+# A retired draft chunk keeps its tsv/embedding + pos. Two faults it caused:
+#   A. search still surfaced it (handle returned yet uneditable);
+#   B. inserting/moving relative to it raised StopIteration.
+# ---------------------------------------------------------------------------
+
+
+def _kinds_texts(store: Store, ref_id: int) -> list[tuple[str, str]]:
+    return [(k, t) for k, t, _d in _order(store, ref_id)]
+
+
+def test_search_excludes_retired_draft_chunk(store: Store) -> None:
+    """Fix A: a retired draft chunk must drop out of search (its live sibling
+    with the same term stays)."""
+    proj = _project(store)
+    ref, _title = store.create_draft(name="gh", title="Ghost", project_ref_id=proj)
+    p1 = store.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="xenophilus alpha"
+    )[0]
+    p2 = store.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="xenophilus beta",
+        at={"after": p1.handle},
+    )[0]
+    texts = {
+        b.text
+        for b, _r, _s in store.search_blocks_lexical(q="xenophilus", kind="draft")
+    }
+    assert {"xenophilus alpha", "xenophilus beta"} <= texts
+
+    store.retire_chunk(p1.handle)  # p1 now retired (p2 keeps the draft non-empty)
+    texts2 = {
+        b.text
+        for b, _r, _s in store.search_blocks_lexical(q="xenophilus", kind="draft")
+    }
+    assert "xenophilus alpha" not in texts2  # the ghost is gone
+    assert "xenophilus beta" in texts2  # its live sibling stays
+    assert p2  # silence unused-var lint
+
+
+def test_add_after_retired_anchor_recovers(store: Store) -> None:
+    """Fix B: `add(after=<retired>)` recovers into the ghost slot instead of
+    raising StopIteration."""
+    proj = _project(store)
+    ref, title = store.create_draft(name="ga", title="T", project_ref_id=proj)
+    a = store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="A", at={"after": title.handle}
+    )[0]
+    b = store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="B", at={"after": a.handle}
+    )[0]
+    store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="C", at={"after": b.handle}
+    )
+    store.retire_chunk(b.handle)  # order now T, A, [B ghost], C
+
+    store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="X", at={"after": b.handle}
+    )
+    assert _kinds_texts(store, ref.id) == [
+        ("heading", "T"),
+        ("heading", "A"),
+        ("heading", "X"),  # landed in B's ghost slot, between A and C
+        ("heading", "C"),
+    ]
+
+
+def test_move_relative_to_retired_anchor_recovers(store: Store) -> None:
+    """Fix B (move path): `move(before=<retired>)` recovers rather than
+    raising StopIteration."""
+    proj = _project(store)
+    ref, title = store.create_draft(name="gmv", title="T", project_ref_id=proj)
+    a = store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="A", at={"after": title.handle}
+    )[0]
+    b = store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="B", at={"after": a.handle}
+    )[0]
+    c = store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="C", at={"after": b.handle}
+    )[0]
+    store.retire_chunk(b.handle)  # order now T, A, [B ghost], C
+
+    store.move_chunk(c.handle, {"before": b.handle})  # must not raise
+    assert _kinds_texts(store, ref.id) == [
+        ("heading", "T"),
+        ("heading", "A"),
+        ("heading", "C"),
+    ]

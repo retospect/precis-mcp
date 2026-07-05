@@ -366,6 +366,11 @@ class BlocksMixin:
         """
         clauses = [
             "r.deleted_at IS NULL",
+            # Ghost-chunk guard: a retired draft chunk keeps its embedding +
+            # tsv but must never surface in search — else a stale handle is
+            # returned-yet-uneditable (gripe 49153). No-op for paper chunks
+            # (never retired). Paired with _resolve_at's retired-anchor recovery.
+            "c.retired_at IS NULL",
             _ord_card_clause(card_kinds),
             "c.tsv @@ qq.qq",
             *_block_noise_clauses(text_alias="c.text"),
@@ -504,6 +509,11 @@ class BlocksMixin:
         """
         clauses = [
             "r.deleted_at IS NULL",
+            # Ghost-chunk guard: a retired draft chunk keeps its embedding +
+            # tsv but must never surface in search — else a stale handle is
+            # returned-yet-uneditable (gripe 49153). No-op for paper chunks
+            # (never retired). Paired with _resolve_at's retired-anchor recovery.
+            "c.retired_at IS NULL",
             _ord_card_clause(card_kinds),
             "c.tsv @@ qq.qq",
             *_block_noise_clauses(text_alias="c.text"),
@@ -589,6 +599,7 @@ class BlocksMixin:
 
         clauses = [
             "r.deleted_at IS NULL",
+            "c.retired_at IS NULL",  # ghost-chunk guard (gripe 49153)
             _ord_card_clause(card_kinds),
             "ce.vector IS NOT NULL",
             "ce.status = 'ok'",
@@ -703,6 +714,7 @@ class BlocksMixin:
 
         clauses = [
             "r.deleted_at IS NULL",
+            "c.retired_at IS NULL",  # ghost-chunk guard (gripe 49153)
             _ord_card_clause(card_kinds),
             *_block_noise_clauses(text_alias="c.text"),
         ]
