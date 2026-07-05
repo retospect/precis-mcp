@@ -356,6 +356,11 @@
 </div>
 
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+{# mhchem extension — registers \ce{}/\pu{} onto KaTeX so chemistry in $$…$$
+   bodies renders as reactions, not a parse error. Deferred scripts run in
+   document order, so this loads after katex.min.js and before auto-render
+   fires __renderDocMath. #}
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/mhchem.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
   onload="window.__renderDocMath && window.__renderDocMath()"></script>
 

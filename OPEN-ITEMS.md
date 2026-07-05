@@ -651,23 +651,6 @@ matching Dependabot alert until its recheck date, then resurfaces it as
   `/go`; if still capped by marker, bump `Recheck-after` +2 weeks.
 
 
-## 🔵 KaTeX mhchem extension not loaded in the draft/paper reader (2026-07-05)
-
-**Status**: open · **Severity**: polish · **Owner**:
-`precis_web/templates/drafts/detail.html.j2` (+ the paper reader)
-
-Surfaced by the draft equation→`$$` retirement (below): a handful of the
-converted draft bodies use mhchem chemistry (`\ce{NO(g)} &\to \ce{NO^*(ads)}`).
-KaTeX renders `\ce{…}` only with the **mhchem extension**, which the reader's
-`renderMathInElement` setup does not load — so those `$$…$$` blocks show a
-KaTeX parse error instead of the reaction. **Not a regression** (equation chunks
-never rendered at all pre-retirement, and inline `$\ce{…}$` in drafts/papers was
-already unrendered) — a pre-existing gap the retirement just made visible. Fix:
-add `katex/dist/contrib/mhchem.min.js` before the auto-render call in the draft
-reader (and the paper reader for consistency); additive, low-risk. Verify a
-`\ce` block renders as a reaction, not raw source.
-
-
 ## 🔵 Paper-ingest `equation` chunk kind — retire later (2026-07-05)
 
 **Status**: deferred · **Severity**: feature · **Owner**:
