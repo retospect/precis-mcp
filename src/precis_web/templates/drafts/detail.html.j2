@@ -638,7 +638,12 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
     else sel = TextSelection.atEnd(_d);
     view.dispatch(view.state.tr.setSelection(sel));
   } catch (e) { view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(_d))); }
+  // Focus now AND after the next paint: when the editor is opened
+  // programmatically (caret handoff / split / merge), the just-revealed
+  // contenteditable isn't focusable yet on this tick, so a lone view.focus()
+  // silently no-ops and the block opens blurred (looks like it "didn't open").
   view.focus();
+  requestAnimationFrame(() => { try { view.focus(); } catch (e) { /* torn down */ } });
   setTimeout(() => validate(view, seedText, opts.validateUrl), 40);
   return {
     getText() { return docToText(view.state.doc); },
