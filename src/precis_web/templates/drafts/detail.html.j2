@@ -925,8 +925,10 @@ function draftDoc(ident) {
     async forceRefresh() {
       // The explicit badge button: a full hard rebuild. (The live poll uses
       // the steady in-place path below; this is the escape hatch.)
-      let v;
-      try { v = await this.fetchVersion(); } catch (e) { return; }
+      // NB: don't early-return if the version probe hiccups — do the rebuild
+      // anyway (it's the part that matters); just skip stamping the version.
+      let v = null;
+      try { v = await this.fetchVersion(); } catch (e) { /* rebuild anyway */ }
       try {
         const data = await (await fetch(`/drafts/${this.ident}/skeleton`,
                                         {cache: 'no-store'})).json();
@@ -936,7 +938,7 @@ function draftDoc(ident) {
         this.heights = {};
         this.rebuildVis();
         this.render();
-        this.version = v;
+        if (v != null) this.version = v;
         this.stale = false;
         if (this.findQuery.trim()) this.runFind();  // the swap wiped the marks
       } catch (e) { /* leave the page as-is on a failed fetch */ }
@@ -970,8 +972,27 @@ function draftDoc(ident) {
       this.flashEdit('block added');
     },
     async removedBlock(h) {
-      await this.forceRefresh();
+      // Pull the authoritative fresh skeleton, then drop every mounted row no
+      // longer in it — so a deleted block AND a cascaded heading's whole
+      // subtree vanish at once. Done by direct node removal (not forceRefresh)
+      // so a version-probe hiccup can't leave the row (and its 🗑) on screen.
+      let skel = null;
+      try {
+        skel = (await (await fetch(`/drafts/${this.ident}/skeleton`,
+                                   {cache: 'no-store'})).json()).skeleton;
+      } catch (e) { /* fall back to dropping just this handle below */ }
+      if (skel) this.skel = skel;
+      else this.skel = this.skel.filter((b) => b.h !== h);
+      const live = new Set(this.skel.map((b) => b.h));
+      const win = document.getElementById('dr-win');
+      for (const node of [...win.children]) {
+        const nh = node.id.slice(2);
+        if (!live.has(nh)) { node.remove(); delete this.nodes[nh]; delete this.heights[nh]; }
+      }
+      this.rebuildVis();
+      this.render();
       this.flashEdit('block removed');
+      try { this.version = await this.fetchVersion(); } catch (e) { /* ignore */ }
     },
     async swapAll(v) {
       try {
