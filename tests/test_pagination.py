@@ -14,9 +14,21 @@ from __future__ import annotations
 import pytest
 
 from precis._pagination import (
+    _FOOTER_RESERVE_BYTES,
     DEFAULT_MAX_BODY_BYTES,
     PaginationCache,
 )
+
+#: Caps that leave a fixed head budget after the footer reserve —
+#: enough for one section but not two, so a multi-section body
+#: splits at an H2 boundary. Sized off the reserve so they survive
+#: footer-wording changes rather than hard-coding a number that
+#: assumes the old terse footer. ``_ONE_SECTION_CAP`` fits ~272-byte
+#: sections; ``_WIDE_SECTION_CAP`` fits ~407-byte sections. (The
+#: reserve is a few hundred bytes, so test sections must be larger
+#: than it to split at a boundary rather than a hard byte cut.)
+_ONE_SECTION_CAP = str(_FOOTER_RESERVE_BYTES + 340)
+_WIDE_SECTION_CAP = str(_FOOTER_RESERVE_BYTES + 410)
 
 
 @pytest.fixture(autouse=True)
@@ -60,10 +72,10 @@ class TestPassthrough:
 
 class TestSectionSplit:
     def test_splits_on_h2_boundary(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 400-byte cap with ~300-byte sections forces splitting:
-        # the head holds at most one full section after the footer
-        # reserve, so section three's content lives in the tail.
-        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "400")
+        # Cap chosen so the head holds at most one full section
+        # after the footer reserve, so section three's content
+        # lives in the tail.
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _ONE_SECTION_CAP)
         cache = PaginationCache()
         body = (
             "# heading\n"
@@ -84,7 +96,7 @@ class TestSectionSplit:
     def test_tail_starts_with_next_section(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "400")
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _ONE_SECTION_CAP)
         cache = PaginationCache()
         body = (
             "# heading\n"
@@ -102,14 +114,47 @@ class TestSectionSplit:
         assert tail.startswith("## ")
 
 
+# ── The footer is loud enough to not be mistaken for a full result ──
+
+
+class TestFooter:
+    def test_footer_states_incomplete_with_size_and_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A chunked head must carry a loud, actionable footer: it
+        says the body is incomplete, roughly how much remains, and
+        the exact ``more(cursor=...)`` call to continue. A terse hint
+        was being read as trailing noise and consumers acted on a
+        partial body."""
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _ONE_SECTION_CAP)
+        cache = PaginationCache()
+        body = (
+            "# heading\n"
+            "## section one\n" + ("a" * 260) + "\n"
+            "## section two\n" + ("b" * 260) + "\n"
+            "## section three\n" + ("c" * 260) + "\n"
+        )
+        head, cursor = cache.split(body)
+        assert cursor is not None
+        # Incompleteness is stated, not merely implied.
+        assert "NOT the complete result" in head
+        # A remaining-size readout is present (bytes rendered as B/KB/MB).
+        assert "more follows" in head
+        assert any(unit in head for unit in (" B", " KB", " MB"))
+        # The exact continuation call — kept stable for the more() tool.
+        assert f"more(cursor='{cursor}')" in head
+        # head + footer stays under the frame cap.
+        assert len(head.encode("utf-8")) <= int(_ONE_SECTION_CAP)
+
+
 # ── Pop semantics ──────────────────────────────────────────────────
 
 
 class TestPop:
     def test_pop_returns_tail(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "500")
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _WIDE_SECTION_CAP)
         cache = PaginationCache()
-        body = "## one\n" + ("a" * 350) + "\n## two\n" + ("b" * 350) + "\n"
+        body = "## one\n" + ("a" * 400) + "\n## two\n" + ("b" * 400) + "\n"
         head, cursor = cache.split(body)
         assert cursor is not None
         assert "## two" not in head

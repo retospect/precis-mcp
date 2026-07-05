@@ -922,8 +922,10 @@ def more(cursor: str) -> _ToolReturn:
 
     Pagination kicks in when a verb's rendered body exceeds the MCP
     stdio frame budget. The over-large response is split on Markdown
-    section boundaries; the head ends with ``Next: more(cursor='...')``.
-    Call this tool with the cursor verbatim to retrieve the tail.
+    section boundaries; the head ends with a ``⚠️ Truncated`` footer
+    carrying a ``more(cursor='...')`` call. Call this tool with that
+    cursor verbatim to retrieve the tail, and keep following each
+    page's cursor until no footer remains before acting on the body.
 
     Cursors are single-use and expire after a few minutes — if you
     miss the window, re-issue the original call to start fresh.

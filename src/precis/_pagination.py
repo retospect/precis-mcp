@@ -17,8 +17,8 @@ Splitting is textual, not structural — the renderer already emits
 GitHub-flavoured Markdown, so we split on ``\\n## `` (H2 section)
 boundaries. Sections fit inside a single chunk; only the boundary
 between sections moves to the next page. Each page ends with a
-``Next: more(cursor='...')`` footer so the agent knows pagination
-is in flight.
+loud ``more(cursor='...')`` footer so the agent knows the body is
+incomplete and pagination is in flight.
 
 The cache is per-process: a worker restart drops all cursors. The
 agent's recovery is to re-issue the original call. Acceptable for
@@ -56,7 +56,36 @@ DEFAULT_MAX_CURSORS = 256
 #: footer is appended *inside* the body (it's not metadata) so
 #: existing rendering / logging paths see the pagination hint
 #: without protocol changes.
-_FOOTER_TEMPLATE = "\n\nNext: more(cursor='{cursor}')\n"
+#:
+#: Deliberately loud: a terse "Next: more(...)" hint reads as
+#: trailing noise, and consumers were treating a first-frame head
+#: as a complete result and acting on it (e.g. a long YouTube
+#: transcript summarised as if it ended mid-sentence). The footer
+#: now states, in order: that the body is *incomplete*, roughly how
+#: much remains, the exact call to continue, and that the reader
+#: must drain every page before acting. ``{cursor}`` and the literal
+#: ``more(cursor='...')`` call are preserved for the ``more`` tool.
+_FOOTER_TEMPLATE = (
+    "\n\n---\n"
+    "⚠️ **Truncated — this is NOT the complete result.** It was cut to fit the "
+    "response frame; about {remaining} more follows on the next page. Call "
+    "`more(cursor='{cursor}')` to fetch it, then keep following each page's "
+    "cursor until no footer remains — do not summarise, quote, or act on this "
+    "content until you have drained every page.\n"
+)
+
+
+def _human_bytes(n: int) -> str:
+    """Render a byte count as a compact human-readable size.
+
+    Bounded width by construction (it steps up to KB / MB), so it
+    is safe to use in the footer-reserve upper bound below.
+    """
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
 
 
 def _max_body_bytes() -> int:
@@ -184,7 +213,8 @@ class PaginationCache:
             return body, None
 
         cursor = uuid.uuid4().hex
-        footer = _FOOTER_TEMPLATE.format(cursor=cursor)
+        remaining = _human_bytes(len(tail.encode("utf-8")))
+        footer = _FOOTER_TEMPLATE.format(cursor=cursor, remaining=remaining)
         head_with_footer = head + footer
 
         with self._lock:
@@ -232,8 +262,15 @@ class PaginationCache:
 _SECTION_DELIMITER = "\n## "
 _PARAGRAPH_DELIMITER = "\n\n"
 #: Footer space we keep in reserve when picking the head's byte
-#: budget — the ``Next: more(cursor='...')`` string fits inside.
-_FOOTER_RESERVE_BYTES = 96
+#: budget so ``head + footer`` stays under the frame cap. Derived
+#: from the template itself — rendered with a full-width cursor and
+#: a generous ``remaining`` token — so it self-corrects whenever the
+#: footer wording changes and can never silently under-reserve. The
+#: ``remaining`` readout is bounded-width by ``_human_bytes`` (it
+#: steps up to KB/MB), so ``"8888.8 MB"`` is a safe upper bound.
+_FOOTER_RESERVE_BYTES = len(
+    _FOOTER_TEMPLATE.format(cursor="f" * 32, remaining="8888.8 MB").encode("utf-8")
+)
 
 
 def _greedy_split(body: str, cap_bytes: int) -> tuple[str, str]:
@@ -246,7 +283,7 @@ def _greedy_split(body: str, cap_bytes: int) -> tuple[str, str]:
        section alone exceeds the cap.
     3. Last resort: hard-cut on a UTF-8 char boundary.
     """
-    # Reserve some bytes for the ``Next: more(cursor='...')`` footer;
+    # Reserve some bytes for the ``more(cursor='...')`` footer;
     # the rest is available to the head. For very small caps the
     # reserve can dominate — clamp to a minimum of 1 byte for the
     # head budget so the chunker still makes forward progress.
