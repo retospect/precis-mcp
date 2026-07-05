@@ -377,6 +377,11 @@
   /* dangling-reference squiggle — a distinct wavy rose underline (NOT the
      browser's spellcheck red, and NOT the amber link chips). */
   .ref-bad { text-decoration: underline wavy #f43f5e; text-underline-offset: 3px; }
+  /* reveal-on-cursor: a reference token shows as a subtle chip unless the caret
+     is inside it (then it's raw, for editing). A broken ref keeps its squiggle. */
+  .ref-chip { background: #eff6ff; color: #0369a1; border-radius: 3px;
+              padding: 0 2px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+  .ref-chip.ref-bad { color: #be123c; }
   /* `[` citation autocomplete dropdown (positioned at the caret, on <body>). */
   .pm-ac { position: absolute; z-index: 60; max-width: 30rem; max-height: 16rem;
            overflow-y: auto; background: #fff; border: 1px solid #cbd5e1;
@@ -419,6 +424,33 @@ function docToText(doc) {
 // count as '\n', matching docToText. Round-trip verified: before+after === full.
 function textUpTo(doc, pos) {
   return doc.textBetween(0, pos, '\n', (leaf) => leaf.type.name === 'hard_break' ? '\n' : '');
+}
+
+// Reveal-on-cursor: style each reference token as a subtle chip, EXCEPT the one
+// the caret is inside (that shows raw so you can edit it). Recomputes on every
+// selection change (props.decorations runs per state). Pure client, no fetch.
+const REF_TOKEN = /\[(?:§[A-Za-z][\w~.-]*|\[?[a-z]{2}\d+\]?|¶[\w-]+)\]/g;
+function chipPlugin() {
+  return new Plugin({
+    props: {
+      decorations(state) {
+        const sel = state.selection;
+        const decos = [];
+        state.doc.descendants((node, pos) => {
+          if (!node.isText) return;
+          const t = node.text; REF_TOKEN.lastIndex = 0;
+          let m;
+          while ((m = REF_TOKEN.exec(t))) {
+            const from = pos + m.index, to = from + m[0].length;
+            // reveal (no chip) while the caret/selection overlaps the token
+            if (!(sel.to <= from || sel.from >= to)) continue;
+            decos.push(Decoration.inline(from, to, { class: 'ref-chip' }));
+          }
+        });
+        return DecorationSet.create(state.doc, decos);
+      },
+    },
+  });
 }
 
 const sqKey = new PluginKey('squiggle');
@@ -578,6 +610,7 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
         }),
         keymap(baseKeymap),
         squigglePlugin(),
+        chipPlugin(),
       ],
     }),
     dispatchTransaction(tr) {
