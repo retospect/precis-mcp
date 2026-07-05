@@ -54,6 +54,9 @@
       <span class="mt-0.5 shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{{ row.kind }}</span>
       <div class="min-w-0 flex-1">
         <a href="{{ row.open_url }}" class="text-sky-700 hover:underline font-medium">{{ row.title }}</a>
+        {% for b in row.state %}
+          <span class="ml-1 text-[10px] px-1.5 py-0.5 rounded {{ b.cls }}" title="{{ b.title }}">{{ b.label }}</span>
+        {% endfor %}
         {% if row.preview %}
           <p class="text-xs text-slate-500 mt-0.5">{{ row.preview }}</p>
         {% elif row.created_at %}
@@ -84,7 +87,19 @@
   </p>
   {% endif %}
 {% else %}
-  {# Default landing: recent things under the search apparatus. #}
+  {# Default landing: browse-by-vocabulary tag cloud + recent things. #}
+  {% if cloud %}
+  <section class="mb-5">
+    <h2 class="text-sm font-semibold text-slate-600 mb-2">Browse by tag</h2>
+    <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      {% for t in cloud %}
+      <a href="{{ t.href }}" title="{{ t.count }} use{{ '' if t.count == 1 else 's' }}"
+         class="{{ t.font }} text-slate-600 hover:text-sky-700 hover:underline leading-tight">{{ t.label }}</a>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
   <h2 class="text-sm font-semibold text-slate-600 mb-2">Recently added</h2>
   {% if recent %}
     {{ item_list(recent) }}

@@ -1626,6 +1626,23 @@ class RefsMixin:
             ).fetchall()
         return [_row_to_ref(r) for r in rows]
 
+    def refs_with_body_chunks(self, ref_ids: list[int]) -> set[int]:
+        """Which of ``ref_ids`` have at least one body chunk (``ord >= 0``).
+
+        Batched presence probe for the ``/items`` list badges — an
+        ingested corpus doc (chunks written) vs a stub still awaiting the
+        pipeline. One query for the whole page (no N+1).
+        """
+        if not ref_ids:
+            return set()
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT c.ref_id FROM chunks c "
+                "WHERE c.ref_id = ANY(%s) AND c.ord >= 0",
+                (list(ref_ids),),
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
     def find_refs_by_title_similarity(
         self,
         *,

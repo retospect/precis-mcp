@@ -235,17 +235,34 @@ def test_flag_toggle_blocks_open_redirect(runtime, client) -> None:
 # ── unified item view (/items) ─────────────────────────────────────
 
 
-def test_items_empty_shows_form_and_recent(client) -> None:
-    """The no-query landing shows the search form plus a 'recently added'
-    list of source items (with their flag buttons)."""
+def test_items_empty_shows_form_recent_and_cloud(client) -> None:
+    """The no-query landing shows the search form, a tag cloud, and a
+    'recently added' list of source items (with their flag buttons)."""
     resp = client.get("/items")
     assert resp.status_code == 200
     assert 'action="/items"' in resp.text
     assert "Recently added" in resp.text
-    # Recent source items render with their flag buttons.
     assert "A paper" in resp.text
     assert "A web page" in resp.text
     assert 'action="/flags/paper/10"' in resp.text
+    # Tag cloud: topical tags shown + linked to the /tags pivot; the
+    # machine namespace (DREAM) is filtered out; OPEN tags shown bare.
+    assert "Browse by tag" in resp.text
+    assert "carbon-capture" in resp.text
+    assert "/tags/refs?namespace=topic&amp;value=graphene" in resp.text
+    assert "read-later" in resp.text
+    assert "DREAM:speculative" not in resp.text
+
+
+def test_items_stub_vs_ingested_badges(runtime, client) -> None:
+    """A recent paper with no chunks shows the 'stub' badge; once it has
+    chunks it shows 'chunks' instead."""
+    resp = client.get("/items")
+    assert ">stub<" in resp.text  # paper #10 has no pdf, no chunks
+    runtime.store.ingested_ref_ids = {10}
+    resp2 = client.get("/items")
+    assert ">chunks<" in resp2.text
+    assert ">stub<" not in resp2.text
 
 
 def test_items_search_renders_cross_kind_rows(client) -> None:

@@ -30,6 +30,14 @@ _OPEN_URL_OVERRIDES: dict[str, str] = {
     "paper": "/papers/{id}",
 }
 
+#: Kinds whose ingest runs a fetch→PDF→chunk pipeline, so the
+#: stub-vs-ingested distinction is meaningful. Other kinds (web,
+#: wikipedia, perplexity, …) are always chunked on arrival — a "chunks"
+#: badge on every row would be noise, so state markers are scoped here.
+_PIPELINE_KINDS: frozenset[str] = frozenset(
+    {"paper", "patent", "datasheet", "cfp", "pres"}
+)
+
 
 class ItemPresenter:
     """Default renderer for one kind's search hit → row view-model."""
@@ -56,6 +64,34 @@ class ItemPresenter:
             return text
         return text[: _PREVIEW_CHARS - 1].rstrip() + "…"
 
+    def state(self, ref: Any, *, has_chunks: bool) -> list[dict[str, str]]:
+        """Pipeline-state badges for the row (paper-family kinds only).
+
+        ``stub`` — a corpus doc still awaiting the fetcher (no PDF yet);
+        ``chunks`` — ingested, has body chunks (searchable). Mirrors the
+        Papers-tab vocabulary. Non-pipeline kinds get no badges.
+        """
+        if self.kind not in _PIPELINE_KINDS:
+            return []
+        badges: list[dict[str, str]] = []
+        if getattr(ref, "pdf_sha256", None) is None and not has_chunks:
+            badges.append(
+                {
+                    "label": "stub",
+                    "cls": "bg-slate-200 text-slate-500",
+                    "title": "awaiting fetch — no PDF yet",
+                }
+            )
+        if has_chunks:
+            badges.append(
+                {
+                    "label": "chunks",
+                    "cls": "bg-sky-100 text-sky-700",
+                    "title": "ingested — has body chunks",
+                }
+            )
+        return badges
+
 
 def presenter_for(kind: str) -> ItemPresenter:
     """Return the presenter for ``kind`` (the default for now — the
@@ -63,11 +99,20 @@ def presenter_for(kind: str) -> ItemPresenter:
     return ItemPresenter(kind)
 
 
-def item_row(ref: Any, block: Any, score: float, flags: set[str]) -> dict[str, Any]:
+def item_row(
+    ref: Any,
+    block: Any,
+    score: float,
+    flags: set[str],
+    *,
+    has_chunks: bool = False,
+) -> dict[str, Any]:
     """Build one unified-list row view-model from a search hit.
 
     ``flags`` is the ref's active reading-intent flag values (for the
     toggle buttons). ``preview`` is the chunk that made the ref match.
+    ``has_chunks`` drives the stub/ingested state badges (a search hit
+    matched a chunk, so it's ``True``; a recent-list ref is probed).
     """
     p = presenter_for(getattr(ref, "kind", ""))
     return {
@@ -77,6 +122,7 @@ def item_row(ref: Any, block: Any, score: float, flags: set[str]) -> dict[str, A
         "open_url": p.open_url(ref),
         "preview": p.preview(block),
         "created_at": getattr(ref, "created_at", None),
+        "state": p.state(ref, has_chunks=has_chunks),
         "score": score,
         "flags": flags,
     }

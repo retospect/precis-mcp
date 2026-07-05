@@ -139,3 +139,13 @@ def test_recent_refs_newest_first_and_kind_scoped(store: Store) -> None:
     assert ids[:2] == [b.id, a.id]  # newest first
     assert c.id not in ids
     assert store.recent_refs([], limit=10) == []
+
+
+def test_refs_with_body_chunks(store: Store) -> None:
+    emb = MockEmbedder(dim=store.embedding_dim())
+    ingested = _seed(store, "paper", "has-chunks", ["some body text"], emb)
+    stub = store.insert_ref(kind="paper", slug="no-chunks", title="stub")
+
+    got = store.refs_with_body_chunks([ingested, stub.id])
+    assert got == {ingested}
+    assert store.refs_with_body_chunks([]) == set()

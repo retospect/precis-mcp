@@ -564,13 +564,30 @@ class FakeStore:
 
     def recent_refs(self, kinds, *, limit=30):
         """Canned recent source refs for the /items default landing —
-        one paper + one web, filtered to the requested kinds."""
+        one paper (stub, no pdf) + one web, filtered to requested kinds."""
         src = [
             make_ref(id=10, kind="paper", slug="smith2024", title="A paper"),
             make_ref(id=70, kind="web", slug="example.com/page", title="A web page"),
         ]
         want = set(kinds)
         return [r for r in src if r.kind in want][:limit]
+
+    def refs_with_body_chunks(self, ref_ids):
+        """Which refs the fake reports as ingested. Tests populate
+        ``self.ingested_ref_ids``; default empty (all look like stubs)."""
+        return {
+            rid for rid in ref_ids if rid in getattr(self, "ingested_ref_ids", set())
+        }
+
+    def list_all_tags(self, *, kind=None, page=1, page_size=50):
+        """Canned tag-usage rows for the /items tag cloud. A machine
+        namespace (DREAM) is included so the exclusion filter is exercised."""
+        return [
+            ("topic", "carbon-capture", 42),
+            ("topic", "graphene", 17),
+            ("OPEN", "read-later", 5),
+            ("DREAM", "speculative", 999),
+        ][:page_size]
 
     def ingest_timestamps(self, ref_id: int):
         # Canned ingest timeline for the paper detail page. tz-aware

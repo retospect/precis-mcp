@@ -53,6 +53,52 @@ _DEFAULT_SOURCE_KINDS: tuple[str, ...] = (
 #: Results per page.
 _PAGE_SIZE = 30
 
+#: Machine / structural namespaces kept out of the tag cloud — they're
+#: high-cardinality control tags (``STATUS:running``, ``DREAM:*``) that
+#: would swamp the topical vocabulary a browsing human wants to see.
+_CLOUD_EXCLUDE_NS: frozenset[str] = frozenset(
+    {"STATUS", "DREAM", "PRIO", "SRC", "CACHE", "EMBED", "LLM", "ROLE3", "CLASSIFY"}
+)
+
+#: How many tags the cloud shows, and the font-size buckets (smallest →
+#: largest) it maps usage counts onto.
+_CLOUD_SIZE = 40
+_CLOUD_FONTS = ("text-xs", "text-sm", "text-base", "text-lg", "text-xl")
+
+
+def _tag_cloud(store: Any) -> list[dict[str, Any]]:
+    """Top topical tags sized by usage — a browse-by-vocabulary entry.
+
+    Pulls the most-used tags (excluding machine namespaces), buckets
+    each count onto a font size, and links to the existing ``/tags/refs``
+    pivot. Degrades to empty on any store hiccup — a cloud is a nicety,
+    never a page-breaker.
+    """
+    try:
+        raw = store.list_all_tags(page_size=_CLOUD_SIZE * 3)
+    except Exception:
+        return []
+    tags = [
+        (ns, val, n) for (ns, val, n) in raw if ns not in _CLOUD_EXCLUDE_NS and n > 0
+    ][:_CLOUD_SIZE]
+    if not tags:
+        return []
+    top = max(n for _, _, n in tags)
+    out: list[dict[str, Any]] = []
+    for ns, val, n in sorted(tags, key=lambda t: (t[0], t[1])):
+        # Bucket the count onto a font size (linear over the range).
+        idx = min(len(_CLOUD_FONTS) - 1, (n * len(_CLOUD_FONTS)) // (top + 1))
+        label = val if ns == "OPEN" else f"{ns}:{val}"
+        out.append(
+            {
+                "label": label,
+                "href": f"/tags/refs?namespace={ns}&value={val}",
+                "count": n,
+                "font": _CLOUD_FONTS[idx],
+            }
+        )
+    return out
+
 
 def _parse_date(raw: str) -> datetime | None:
     """Parse a ``since=``/``until=`` box into a tz-aware datetime, or None.
@@ -104,8 +150,9 @@ def _run_search(
     )
     ref_ids = [ref.id for _, ref, _ in hits]
     flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
+    # A search hit matched a chunk, so the ref is ingested by definition.
     return [
-        item_row(ref, block, score, flag_state.get(ref.id, set()))
+        item_row(ref, block, score, flag_state.get(ref.id, set()), has_chunks=True)
         for block, ref, score in hits
     ]
 
@@ -113,11 +160,21 @@ def _run_search(
 def _recent_rows(store: Any, kinds: list[str]) -> list[dict[str, Any]]:
     """The no-query landing: most-recently-added source items, newest
     first. No matching chunk (there's no query), so rows carry no preview
-    — just name, kind, when-added, and the flag buttons."""
+    — just name, kind, when-added, the stub/ingested badges, and flags."""
     refs = store.recent_refs(kinds, limit=_PAGE_SIZE)
     ref_ids = [r.id for r in refs]
     flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
-    return [item_row(r, None, 0.0, flag_state.get(r.id, set())) for r in refs]
+    ingested = store.refs_with_body_chunks(ref_ids)
+    return [
+        item_row(
+            r,
+            None,
+            0.0,
+            flag_state.get(r.id, set()),
+            has_chunks=r.id in ingested,
+        )
+        for r in refs
+    ]
 
 
 @router.get("", response_class=HTMLResponse)
@@ -148,6 +205,7 @@ async def index(
 
     rows: list[dict[str, Any]] = []
     recent: list[dict[str, Any]] = []
+    cloud: list[dict[str, Any]] = []
     if q:
         runtime = get_runtime(request)
         embedder = getattr(getattr(runtime, "hub", None), "embedder", None)
@@ -162,7 +220,9 @@ async def index(
             until=until_dt,
         )
     else:
-        # Default landing: recent things under the search apparatus.
+        # Default landing: a browse-by-vocabulary tag cloud + recent things
+        # under the search apparatus.
+        cloud = await asyncio.to_thread(_tag_cloud, store)
         recent = await asyncio.to_thread(_recent_rows, store, kind_list)
 
     # Where a flag toggle bounces back to — this exact search.
@@ -182,6 +242,7 @@ async def index(
             "until": until,
             "rows": rows,
             "recent": recent,
+            "cloud": cloud,
             "flag_defs": FLAG_DEFS,
             "return_to": return_to,
         },
