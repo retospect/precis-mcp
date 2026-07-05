@@ -50,9 +50,12 @@ _MAX_ARTICLES = 200
 
 #: The briefing is a once-a-day call whose US section asks the model to
 #: separate operational signal from spectacle — analytically demanding, so it
-#: runs on a strong model (the litellm ``opus`` alias), not the free
+#: runs on a strong model (the litellm ``claude-opus`` alias), not the free
 #: ``summarizer`` the per-chunk glosses use. Override with PRECIS_BRIEFING_MODEL.
-_DEFAULT_BRIEFING_MODEL = "opus"
+#: NB the bare ``opus`` alias was retired in the model-router consolidation —
+#: the proxy 400s on unknown names, which silently failed every briefing job
+#: from 2026-07-04 until this was pinned to a served alias.
+_DEFAULT_BRIEFING_MODEL = "claude-opus"
 
 _SYSTEM_PROMPT = (
     "You are a news editor writing a concise morning briefing. You are "
