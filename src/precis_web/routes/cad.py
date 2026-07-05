@@ -11,7 +11,9 @@ feature, and edit it by natural-language instruction.
 * ``GET  /cad/{slug}/model.gltf`` — the viewer/download glTF (features | solid).
 * ``GET  /cad/{slug}/export.{fmt}`` — stream a download (scad / stl / 3mf / step).
 * ``POST /cad/{slug}/instruct`` — mint a ``cad_propose`` job (the "Propose" box).
-* ``GET  /cad/{slug}/proposal`` — poll the latest proposal.
+* ``GET  /cad/{slug}/proposal`` — poll the latest proposal (back-compat).
+* ``GET  /cad/{slug}/proposals`` — poll ALL recent proposals (reload-safe; the
+  box polls this so every outstanding request rehydrates on a page reload).
 * ``POST /cad/{slug}/apply`` — derive a new design from a proposal (optionally
   soft-deleting the parent).
 
@@ -235,29 +237,29 @@ def _lineage(store: Any, ref_id: int) -> dict[str, list[dict[str, str]]]:
     return {"parents": parents, "children": children}
 
 
-def _latest_proposal(store: Any, ref_id: int) -> dict[str, Any] | None:
-    """The newest ``cad_propose`` job for this design — STATUS + its proposal
-    chunk. Keyed on ``params.cad_ref_id`` so the route never captures a job id."""
-    sql = """
-        SELECT r.ref_id,
-               (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                 WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1) AS status,
-               (SELECT c.text FROM chunks c
-                 WHERE c.ref_id = r.ref_id AND c.chunk_kind = 'job_result'
-                 ORDER BY c.ord DESC LIMIT 1)                                  AS result,
-               r.created_at
-          FROM refs r
-         WHERE r.kind = 'job'
-           AND r.meta->>'job_type' = 'cad_propose'
-           AND (r.meta->'params'->>'cad_ref_id')::int = %s
-           AND r.deleted_at IS NULL
-         ORDER BY r.ref_id DESC LIMIT 1
-    """
-    with store.pool.connection() as conn:
-        row = conn.execute(sql, (ref_id,)).fetchone()
-    if row is None:
-        return None
-    job_id, status, result_text, created = row
+# Every ``cad_propose`` job for a design — STATUS + its proposal chunk +
+# the originating instruction. Keyed on ``params.cad_ref_id`` (CAD is not on
+# the compute lane yet, ADR 0044), so the query never needs a captured job id.
+# The trailing WHERE/ORDER clause is appended per call site.
+_PROPOSAL_SELECT = """
+    SELECT r.ref_id,
+           (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1) AS status,
+           (SELECT c.text FROM chunks c
+             WHERE c.ref_id = r.ref_id AND c.chunk_kind = 'job_result'
+             ORDER BY c.ord DESC LIMIT 1)                                  AS result,
+           r.created_at,
+           r.meta->'params'->>'instruction'                               AS instruction
+      FROM refs r
+     WHERE r.kind = 'job'
+       AND r.meta->>'job_type' = 'cad_propose'
+       AND (r.meta->'params'->>'cad_ref_id')::int = %s
+       AND r.deleted_at IS NULL
+"""
+
+
+def _parse_proposal_row(row: Any) -> dict[str, Any]:
+    job_id, status, result_text, created, instruction = row
     proposal: dict[str, Any] | None = None
     if result_text:
         try:
@@ -268,8 +270,34 @@ def _latest_proposal(store: Any, ref_id: int) -> dict[str, Any] | None:
         "job_id": int(job_id),
         "status": status or "queued",
         "proposal": proposal,
+        "instruction": instruction or "",
         "created": _ago(created),
     }
+
+
+def _recent_proposals(store: Any, ref_id: int, limit: int = 6) -> list[dict[str, Any]]:
+    """All recent proposal jobs for this design, newest first. This is the
+    reload-safe view: every outstanding request rehydrates from the DB, not
+    just the single newest one."""
+    sql = _PROPOSAL_SELECT + " ORDER BY r.ref_id DESC LIMIT %s"
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (ref_id, limit)).fetchall()
+    return [_parse_proposal_row(r) for r in rows]
+
+
+def _latest_proposal(store: Any, ref_id: int) -> dict[str, Any] | None:
+    """The newest proposal job (back-compat single-row view)."""
+    rows = _recent_proposals(store, ref_id, limit=1)
+    return rows[0] if rows else None
+
+
+def _proposal_by_job(store: Any, ref_id: int, job_id: int) -> dict[str, Any] | None:
+    """A specific proposal job for this design — so Apply resolves the card the
+    user actually clicked, not merely the newest (matters once >1 outstanding)."""
+    sql = _PROPOSAL_SELECT + " AND r.ref_id = %s"
+    with store.pool.connection() as conn:
+        row = conn.execute(sql, (ref_id, job_id)).fetchone()
+    return _parse_proposal_row(row) if row else None
 
 
 def _require_ref(store: Any, slug: str) -> Any:
@@ -311,7 +339,7 @@ async def cad_detail(request: Request, slug: str) -> HTMLResponse:
             "slug": ref.slug,
             "title": ref.title or ref.slug,
             "lineage": _lineage(store, ref.id),
-            "proposal": _latest_proposal(store, ref.id),
+            "proposals": _recent_proposals(store, ref.id),
             "solid_available": solid_available(),
             "manifold_available": manifold_available(),
             "step_available": step_available(),
@@ -485,13 +513,26 @@ async def cad_instruct(
 
 @router.get("/cad/{slug}/proposal")
 async def cad_proposal(request: Request, slug: str) -> JSONResponse:
-    """Poll the latest proposal job for this design (the box polls this)."""
+    """Poll the latest proposal job for this design (back-compat single-row)."""
     store = get_store(request)
     try:
         ref = _require_ref(store, slug)
     except NotFound:
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse(_latest_proposal(store, ref.id) or {"status": None})
+
+
+@router.get("/cad/{slug}/proposals")
+async def cad_proposals(request: Request, slug: str) -> JSONResponse:
+    """Poll ALL recent proposal jobs for this design. The box polls this so a
+    page reload rehydrates every outstanding request from the DB, not just the
+    newest — the fix for "I reloaded and my in-flight requests vanished"."""
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, slug)
+    except NotFound:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse({"proposals": _recent_proposals(store, ref.id)})
 
 
 @router.post("/cad/{slug}/apply")
@@ -511,7 +552,7 @@ async def cad_apply(
         ref = _require_ref(store, slug)
     except NotFound:
         return RedirectResponse(url="/cad", status_code=303)
-    proposal = _latest_proposal(store, ref.id)
+    proposal = _proposal_by_job(store, ref.id, job_id)
     source = ""
     if proposal and proposal.get("proposal"):
         source = str(proposal["proposal"].get("source") or "")

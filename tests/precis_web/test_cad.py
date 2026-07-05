@@ -7,6 +7,8 @@ the detail render + glTF model endpoint + apply-derives-new-design flow.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -143,8 +145,8 @@ def test_cad_apply_derives_new_design(
 
     monkeypatch.setattr(
         cad_routes,
-        "_latest_proposal",
-        lambda _store, _ref_id: {
+        "_proposal_by_job",
+        lambda _store, _ref_id, _job_id: {
             "job_id": 1,
             "status": "succeeded",
             "created": "now",
@@ -178,8 +180,8 @@ def test_cad_apply_soft_deletes_parent_when_checked(
 
     monkeypatch.setattr(
         cad_routes,
-        "_latest_proposal",
-        lambda _s, _r: {
+        "_proposal_by_job",
+        lambda _s, _r, _j: {
             "job_id": 1,
             "status": "succeeded",
             "created": "now",
@@ -198,3 +200,94 @@ def test_cad_apply_soft_deletes_parent_when_checked(
     with pytest.raises(NotFound):
         resolve_live_slug_ref(store, kind="cad", id="web_drop")
     assert store.get_ref(kind="cad", id="web_drop_v2") is not None
+
+
+def _seed_propose_job(
+    store, cad_ref_id: int, slug: str, instruction: str, *, status: str
+) -> int:
+    """Insert a cad_propose job for ``cad_ref_id`` (a queued job carries no
+    job_result chunk; a succeeded one does). Returns the job ref_id."""
+    from precis.store.types import Tag
+
+    with store.tx() as conn:
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="cad_propose",
+            meta={
+                "job_type": "cad_propose",
+                "executor": "claude_inproc",
+                "params": {
+                    "cad_ref_id": cad_ref_id,
+                    "slug": slug,
+                    "instruction": instruction,
+                },
+            },
+            conn=conn,
+        )
+        if status == "succeeded":
+            conn.execute(
+                "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta) "
+                "VALUES (%s,'agent',0,'job_result',%s,'{}')",
+                (job.id, json.dumps({"source": "p add cyl:r5h5", "valid": True})),
+            )
+    store.add_tag(
+        job.id,
+        Tag.parse_strict(f"STATUS:{status}", kind="job"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    return job.id
+
+
+def test_recent_proposals_surfaces_every_outstanding_request(
+    cad_client, runtime_with_store
+) -> None:
+    """The reload bug: two in-flight requests must both survive a reload, not
+    just the newest. ``_recent_proposals`` / the /proposals endpoint return all."""
+    _seed(runtime_with_store, slug="web_multi")
+    store = runtime_with_store.store
+    ref = resolve_live_slug_ref(store, kind="cad", id="web_multi")
+
+    j1 = _seed_propose_job(
+        store, ref.id, "web_multi", "widen the plate", status="running"
+    )
+    j2 = _seed_propose_job(
+        store, ref.id, "web_multi", "add a bolt circle", status="queued"
+    )
+
+    import precis_web.routes.cad as cad_routes
+
+    got = cad_routes._recent_proposals(store, ref.id)
+    ids = {p["job_id"] for p in got}
+    assert {j1, j2} <= ids  # both outstanding jobs present, not just the newest
+    by_id = {p["job_id"]: p for p in got}
+    assert by_id[j1]["instruction"] == "widen the plate"
+    assert by_id[j2]["instruction"] == "add a bolt circle"
+
+    # the endpoint the box polls returns the same list
+    r = cad_client.get("/cad/web_multi/proposals")
+    assert r.status_code == 200
+    payload_ids = {p["job_id"] for p in r.json()["proposals"]}
+    assert {j1, j2} <= payload_ids
+
+
+def test_proposal_by_job_resolves_the_clicked_card(
+    cad_client, runtime_with_store
+) -> None:
+    """Apply must resolve the specific job the user clicked, not the newest."""
+    _seed(runtime_with_store, slug="web_pick")
+    store = runtime_with_store.store
+    ref = resolve_live_slug_ref(store, kind="cad", id="web_pick")
+
+    j_old = _seed_propose_job(
+        store, ref.id, "web_pick", "first idea", status="succeeded"
+    )
+    _seed_propose_job(store, ref.id, "web_pick", "second idea", status="succeeded")
+
+    import precis_web.routes.cad as cad_routes
+
+    got = cad_routes._proposal_by_job(store, ref.id, j_old)
+    assert got is not None
+    assert got["job_id"] == j_old
+    assert got["instruction"] == "first idea"
