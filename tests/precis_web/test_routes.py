@@ -2026,11 +2026,17 @@ def test_status_page_renders(client) -> None:
     # Background-health panel: empty under the fake store → green all-clear.
     assert "Background health" in resp.text
     assert "No spin loops or failed passes" in resp.text
+    # The slow backlog panel is lazy-loaded — the page ships only the
+    # htmx placeholder, not the full-table-scan counts.
+    assert 'hx-get="/status/backlog"' in resp.text
+    assert "loading backlog" in resp.text
 
 
 def test_status_backlog_shows_last_done(client, monkeypatch) -> None:
     """Each pipeline-backlog row shows when the pass last did work.
 
+    Served by the lazy ``/status/backlog`` fragment (deferred off the
+    main page so its full-table ``chunks`` scans don't block render).
     A pass with a recent productive batch renders its relative age
     ('Nm ago'); a pass that never ran renders the em-dash placeholder.
     """
@@ -2047,7 +2053,7 @@ def test_status_backlog_shows_last_done(client, monkeypatch) -> None:
             "summarize": {"pending": 5, "done": 95},  # never ran → no last_ts
         },
     )
-    resp = client.get("/status")
+    resp = client.get("/status/backlog")
     assert resp.status_code == 200
     assert "3m ago" in resp.text  # embed's last productive batch
     assert "last productive batch" in resp.text  # tooltip label

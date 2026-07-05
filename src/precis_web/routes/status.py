@@ -871,7 +871,11 @@ async def index(request: Request) -> HTMLResponse:
             "recent_todo_done": _safe(lambda: _recent_todo_done(store)) or [],
             "recent_passes": _safe(lambda: _recent_passes(store)) or [],
             "recent_agents": _safe(lambda: _recent_agent_activity(store)) or [],
-            "backlog": _safe(lambda: _backlog_counts(store)) or {},
+            # NB ``backlog`` is intentionally absent here — it is the
+            # slowest section (full-table ``chunks`` scans) and is
+            # lazy-loaded by the template via ``GET /status/backlog``
+            # (the ``_backlog`` fragment below) so it never blocks the
+            # initial page render.
             "liveness": _safe(lambda: _liveness(store)) or [],
             "usage": _safe(lambda: _claude_usage(store)) or {},
             "quota": _safe(lambda: _claude_quota(store)) or {},
@@ -882,4 +886,22 @@ async def index(request: Request) -> HTMLResponse:
             "corpus_dir": "  ".join(str(p) for p in cfg.corpus_dirs),
             "app_version": _app_version(),
         },
+    )
+
+
+@router.get("/backlog", response_class=HTMLResponse)
+async def backlog_fragment(request: Request) -> HTMLResponse:
+    """Lazy-loaded chunk-pipeline backlog panel (htmx fragment).
+
+    :func:`_backlog_counts` is the heaviest work on the Status page —
+    three full-table aggregate scans over ``chunks`` that mirror each
+    worker's claim SQL. The main ``index`` route deliberately omits it
+    so the page paints immediately; the template then fetches this
+    fragment via ``hx-get="/status/backlog"`` on load and swaps it in.
+    """
+    store = get_store(request)
+    return templates.TemplateResponse(
+        request,
+        "_status_backlog.html.j2",
+        {"backlog": _safe(lambda: _backlog_counts(store)) or {}},
     )
