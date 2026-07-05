@@ -17,20 +17,24 @@ boundary. SQL backdate is the cheapest knob.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 
-from precis.alerts import STATE_OPEN, STATE_RESOLVED, list_open_alerts
+from precis.alerts import STATE_OPEN, STATE_RESOLVED, list_open_alerts, raise_alert
 from precis.dispatch import Hub
 from precis.handlers.todo import TodoHandler
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.nursery import (
+    DEAD_WORKER_SILENCE_MIN,
     LONG_WAIT_DAYS,
     PLAN_TICK_REMINT_24H,
     SPIN_LOOP_EVENTS_24H,
     STALE_CLAIM_HOURS,
     STUCK_DOABLE_HOURS,
+    WORKER_RESTART_STORM_1H,
+    _detect_dead_workers,
     _detect_long_waits,
     _detect_orphans,
     _detect_plan_tick_spins,
@@ -38,6 +42,7 @@ from precis.workers.nursery import (
     _detect_stale_claims,
     _detect_stalled_recurrings,
     _detect_stuck_doable,
+    _detect_worker_restart_storms,
     run_nursery_pass,
 )
 
@@ -547,3 +552,180 @@ def test_helpers_hours_since_works() -> None:
     assert _hours_since(now) < 0.01
     assert _hours_since(now - timedelta(hours=3)) > 2.9
     assert _hours_since(None) == 0.0
+
+
+# ── worker-health detectors (daemon liveness) ─────────────────────
+
+
+def _seed_boot_rows(
+    store: Store, host: str, process: str, n: int, *, minutes_ago: float = 5.0
+) -> None:
+    """Insert ``n`` ``worker: started`` boot rows for one (host, process)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs (ts, host, process, level, logger, message) "
+            "SELECT now() - (%s || ' minutes')::interval, %s, %s, 'INFO', "
+            "'precis.cli.worker', 'worker: started' FROM generate_series(1, %s)",
+            (minutes_ago, host, process, n),
+        )
+        conn.commit()
+
+
+def _seed_worker_log(
+    store: Store, host: str, process: str, *, minutes_ago: float
+) -> None:
+    """Insert one ordinary per-pass log row (marks the daemon as having beaten)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs (ts, host, process, level, logger, message) "
+            "VALUES (now() - (%s || ' minutes')::interval, %s, %s, 'INFO', "
+            "'precis.workers.embed', 'worker: embed claimed=0 ok=0 failed=0')",
+            (minutes_ago, host, process),
+        )
+        conn.commit()
+
+
+def _seed_heartbeat(store: Store, host: str, *, minutes_ago: float = 0.0) -> None:
+    """Mark a host alive via a fresh host_heartbeat row."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts) "
+            "VALUES (%s, now() - (%s || ' minutes')::interval) "
+            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts",
+            (host, minutes_ago),
+        )
+        conn.commit()
+
+
+def _host() -> str:
+    return f"th-{uuid4().hex[:8]}"
+
+
+def test_worker_restart_storm_flags_thrashing_daemon(store: Store) -> None:
+    """> WORKER_RESTART_STORM_1H boot rows for a (host, process) in 1h fires."""
+    host = _host()
+    _seed_boot_rows(store, host, "precis-worker-agent", WORKER_RESTART_STORM_1H + 3)
+
+    findings = _detect_worker_restart_storms(store)
+    key = f"worker-restart:{host}:precis-worker-agent"
+    hits = [f for f in findings if f.fingerprint_key == key]
+    assert len(hits) == 1
+    assert hits[0].category == "worker-restart"
+    assert hits[0].ref_id is None
+    assert host in hits[0].title
+
+
+def test_worker_restart_storm_ignores_normal_bounce(store: Store) -> None:
+    """A couple of relaunches (a deploy) is not a storm."""
+    host = _host()
+    _seed_boot_rows(store, host, "precis-worker", 2)
+
+    findings = _detect_worker_restart_storms(store)
+    assert not any(
+        f.fingerprint_key == f"worker-restart:{host}:precis-worker" for f in findings
+    )
+
+
+def test_worker_restart_storm_ignores_old_boots(store: Store) -> None:
+    """Boots outside the 1h window don't count."""
+    host = _host()
+    _seed_boot_rows(
+        store, host, "precis-worker", WORKER_RESTART_STORM_1H + 3, minutes_ago=90
+    )
+
+    findings = _detect_worker_restart_storms(store)
+    assert not any(
+        f.fingerprint_key == f"worker-restart:{host}:precis-worker" for f in findings
+    )
+
+
+def test_dead_worker_flags_silent_daemon_on_live_host(store: Store) -> None:
+    """A continuous daemon silent > threshold while its host is alive fires."""
+    host = _host()
+    _seed_worker_log(
+        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+    )
+    _seed_heartbeat(store, host, minutes_ago=0)  # host is up
+
+    findings = _detect_dead_workers(store)
+    key = f"dead-worker:{host}:precis-worker-agent"
+    hits = [f for f in findings if f.fingerprint_key == key]
+    assert len(hits) == 1
+    assert hits[0].category == "dead-worker"
+    assert hits[0].ref_id is None
+
+
+def test_dead_worker_ignores_live_daemon(store: Store) -> None:
+    """A daemon that logged recently is not dead."""
+    host = _host()
+    _seed_worker_log(store, host, "precis-worker-agent", minutes_ago=1)
+    _seed_heartbeat(store, host, minutes_ago=0)
+
+    findings = _detect_dead_workers(store)
+    assert not any(
+        f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent" for f in findings
+    )
+
+
+def test_dead_worker_ignores_when_whole_host_down(store: Store) -> None:
+    """Silent daemon + no host liveness signal ⇒ a host/DB outage, not a
+    per-daemon dead-worker (don't fan one failure into N alerts)."""
+    host = _host()
+    _seed_worker_log(
+        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+    )
+    # no fresh log, no heartbeat → host not "alive"
+
+    findings = _detect_dead_workers(store)
+    assert not any(
+        f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent" for f in findings
+    )
+
+
+def test_dead_worker_ignores_periodic_process(store: Store) -> None:
+    """Only continuous daemons are watched — a periodic one-shot silent
+    between runs must not alarm."""
+    host = _host()
+    _seed_worker_log(
+        store, host, "precis-cron-tick", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+    )
+    _seed_heartbeat(store, host, minutes_ago=0)
+
+    findings = _detect_dead_workers(store)
+    assert not any(f.category == "dead-worker" and host in f.title for f in findings)
+
+
+def test_run_nursery_pass_raises_critical_for_dead_worker(store: Store) -> None:
+    """End to end: a dead-worker finding becomes an open ``critical`` alert
+    (exercises the fingerprint_key + is_new push-gate path; the push itself
+    is a no-op with no webhook configured)."""
+    host = _host()
+    _seed_worker_log(
+        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+    )
+    _seed_heartbeat(store, host, minutes_ago=0)
+
+    run_nursery_pass(store)
+
+    alerts = list_open_alerts(store)
+    mine = [
+        a
+        for a in alerts
+        if a["source"] == "nursery:dead-worker" and host in (a["title"] or "")
+    ]
+    assert len(mine) == 1
+    assert mine[0]["severity"] == "critical"
+
+
+def test_raise_alert_reports_new_then_bumped(store: Store) -> None:
+    """``raise_alert`` returns is_new=True on first sighting, False on repeat."""
+    fp = f"probe-new:{uuid4().hex[:8]}"
+    ref_id_1, new_1 = raise_alert(
+        store, source="test:probe", fingerprint=fp, title="probe", severity="critical"
+    )
+    ref_id_2, new_2 = raise_alert(
+        store, source="test:probe", fingerprint=fp, title="probe", severity="critical"
+    )
+    assert new_1 is True
+    assert new_2 is False
+    assert ref_id_1 == ref_id_2

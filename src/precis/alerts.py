@@ -66,8 +66,14 @@ def raise_alert(
     detail: str = "",
     severity: str = "warn",
     subject_ref_id: int | None = None,
-) -> int:
-    """Raise (or refresh) an alert. Returns the alert ref id.
+) -> tuple[int, bool]:
+    """Raise (or refresh) an alert. Returns ``(alert_ref_id, is_new)``.
+
+    ``is_new`` is ``True`` only on the first sighting (a fresh INSERT),
+    ``False`` when this call bumped an already-open alert. Callers use it
+    to fire a one-shot side effect — e.g. a Discord push for a *new*
+    ``critical`` condition — exactly once per condition rather than every
+    pass while it stays open (see :func:`notify_critical_alert`).
 
     Dedup is on ``(source, fingerprint)`` among *open* alerts: a repeat
     sighting bumps ``seen_count`` + ``updated_at`` and refreshes the
@@ -133,7 +139,7 @@ def raise_alert(
             # Severity can change between sightings (a loop that gets
             # worse); keep exactly one severity: tag.
             _set_severity_tag(store, ref_id, severity, conn=conn)
-            return ref_id
+            return ref_id, False
 
         meta: dict[str, Any] = {
             "alert_source": source,
@@ -153,7 +159,7 @@ def raise_alert(
             Tag.open(f"severity:{severity}"),
         ):
             store.add_tag(ref.id, tag, set_by="system", conn=conn)
-        return int(ref.id)
+        return int(ref.id), True
 
 
 def resolve_stale_alerts(
@@ -262,11 +268,57 @@ def _set_severity_tag(store: Store, ref_id: int, severity: str, *, conn: Any) ->
     store.add_tag(ref_id, Tag.open(f"severity:{severity}"), set_by="system", conn=conn)
 
 
+#: Env var holding a Discord webhook URL for critical-alert pushes. Unset by
+#: default, so the push path merges dark: alerts still land in the ``/alerts``
+#: tab and agent triage surface, but nothing leaves the cluster until an
+#: operator wires a channel. Set it to actually get paged (the whole point of
+#: severity ``critical`` — a stalled planner or a dead worker that would
+#: otherwise fester unseen for days). Parallel to the fixer's own
+#: ``PRECIS_FIXER_DISCORD_WEBHOOK``.
+OPS_ALERT_WEBHOOK_ENV = "PRECIS_OPS_ALERT_WEBHOOK"
+
+
+def notify_critical_alert(title: str, detail: str = "") -> bool:
+    """Best-effort Discord push for a newly-raised critical alert.
+
+    Fires a fire-and-forget HTTP POST to the webhook in
+    :data:`OPS_ALERT_WEBHOOK_ENV`. Returns ``True`` if a push was
+    attempted, ``False`` if no webhook is configured (the default — the
+    push path is off until an operator opts in). Never raises: a failed
+    push must not break the detector pass that called it, so network /
+    HTTP errors are swallowed with a warning. Intended to be called only
+    on the *first* sighting of a ``critical`` alert (``raise_alert`` →
+    ``is_new``), so a standing condition pages once, not every minute.
+    """
+    import os
+    import urllib.error
+    import urllib.request
+
+    webhook = os.environ.get(OPS_ALERT_WEBHOOK_ENV, "").strip()
+    if not webhook:
+        return False
+    content = f"🚨 **{title}**"
+    if detail:
+        content += f"\n{detail}"
+    # Discord caps message content at 2000 chars.
+    body = json.dumps({"content": content[:1900]}).encode("utf-8")
+    req = urllib.request.Request(
+        webhook, data=body, headers={"Content-Type": "application/json"}
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10).close()
+    except (urllib.error.URLError, OSError, ValueError):
+        log.warning("notify_critical_alert: push failed", exc_info=True)
+    return True
+
+
 __all__ = [
+    "OPS_ALERT_WEBHOOK_ENV",
     "SEVERITIES",
     "STATE_OPEN",
     "STATE_RESOLVED",
     "list_open_alerts",
+    "notify_critical_alert",
     "raise_alert",
     "resolve_stale_alerts",
 ]

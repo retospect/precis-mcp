@@ -117,16 +117,29 @@ driver; adding one is a `Reviewer(...)` instance):
 * `nursery` — SQL-only, every minute on the system worker. Flags
   orphans, stale claims, long waits, stuck doable, stalled recurrings,
   **spin loops** (any `(ref_id, source)` emitting >
-  `SPIN_LOOP_EVENTS_24H` (200) `ref_events` in 24h), and **plan-tick
+  `SPIN_LOOP_EVENTS_24H` (200) `ref_events` in 24h), **plan-tick
   spins** (a planner parent minting > `PLAN_TICK_REMINT_24H` (16)
   `plan_tick` jobs in 24h — the coroutine "succeeds" each tick but never
   converges, which the resume-streak cap doesn't catch since it only
-  guards exhaustion loops). Each finding is
-  raised as a `kind='alert'` (one per condition, `alert_source =
-  nursery:<category>`, deduped on `meta.fingerprint`; cleared
-  conditions auto-resolve) — **not** a `kind='memory'` digest any
-  more. See `## Other live affordances` → `alert`, and
-  `precis-nursery-help`. (Replacing the digest killed a self-spin: the
+  guards exhaustion loops), and **worker health** (daemon liveness, not
+  the todo graph): **worker-restart** (a `(host, process)` emitting >
+  `WORKER_RESTART_STORM_1H` (8) `worker: started` boot rows in 1h — the
+  jetsam-cull signature that was invisible for 1.5 days; the boot row is
+  emitted at `cli/worker.run` startup, the only DB restart signal there
+  is) and **dead-worker** (a continuous daemon in
+  `WORKER_CONTINUOUS_PROCESSES` silent > `DEAD_WORKER_SILENCE_MIN` (10)
+  min while its host is otherwise alive). These two are the only
+  `critical` categories — a thrashing/dead worker stalls the planner
+  cluster-wide, so on the *first* sighting `raise_alert` (now returning
+  `(ref_id, is_new)`) fires a one-shot `notify_critical_alert` →
+  Discord webhook `PRECIS_OPS_ALERT_WEBHOOK` (default unset → the push
+  merges dark; alerts still land in `/alerts` + agent triage). Each
+  finding is raised as a `kind='alert'` (one per condition, `alert_source
+  = nursery:<category>`, deduped on `meta.fingerprint`; a non-ref-scoped
+  worker-health finding sets `ref_id=None` + an explicit
+  `fingerprint_key`; cleared conditions auto-resolve) — **not** a
+  `kind='memory'` digest any more. See `## Other live affordances` →
+  `alert`, and `precis-nursery-help`. (Replacing the digest killed a self-spin: the
   spin-loop finding set churns every second, so the old
   `(category, ref_id)` digest fingerprint changed every pass and the
   per-node per-minute writer emitted >2000 near-dup memories/day.)

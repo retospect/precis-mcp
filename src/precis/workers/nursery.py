@@ -51,7 +51,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from precis.alerts import raise_alert, resolve_stale_alerts
+from precis.alerts import notify_critical_alert, raise_alert, resolve_stale_alerts
 from precis.handlers._todo_guards import todo_root_sql
 from precis.store import Store
 from precis.workers.runner import BatchResult
@@ -82,11 +82,32 @@ SPIN_LOOP_EVENTS_24H = 200
 #: sustained across a day (≈16) is already pathological.
 PLAN_TICK_REMINT_24H = 16
 
+#: A daemon relaunching more than this many times in an hour is in a
+#: restart storm, not a normal deploy bounce (which is one relaunch). The
+#: motivating incident: macOS jetsam culling the agent worker ~50-200x/day
+#: under memory pressure, orphaning every in-flight plan_tick — invisible
+#: for 1.5 days because nothing watched daemon health. A healthy daemon
+#: boots once and runs; even a busy deploy day is a handful of bounces.
+WORKER_RESTART_STORM_1H = 8
+
+#: A *continuously-running* daemon silent (no ``worker_logs`` row) for longer
+#: than this is dead or wedged — a healthy worker logs every loop iteration
+#: (~2s idle cadence) and the DB handler flushes at least every 5s, so a
+#: multi-minute gap while the host is otherwise alive means the process died.
+DEAD_WORKER_SILENCE_MIN = 10
+
+#: The ``worker_logs.process`` values that run as long-lived loops and so must
+#: never fall silent while their host is up. Periodic one-shots (cron-tick,
+#: dream) are excluded — their silence between runs is normal, not a fault.
+WORKER_CONTINUOUS_PROCESSES = ("precis-worker", "precis-worker-agent")
+
 #: Per-category alert severity (drives sort + colour on the /alerts
-#: tab). Spin loops and stuck claims/recurrings burn resources or block
-#: progress → ``warn``; orphans / long-waits / stuck-doable are hygiene
-#: nudges → ``info``. None are ``critical`` — nursery flags drift, not
-#: outages.
+#: tab, and — for ``critical`` — a one-shot Discord push via
+#: :func:`notify_critical_alert`). Spin loops and stuck claims/recurrings
+#: burn resources or block progress → ``warn``; orphans / long-waits /
+#: stuck-doable are hygiene nudges → ``info``. The worker-health detectors
+#: are the only ``critical`` ones — a dead or thrashing worker is an
+#: outage (the planner stalls cluster-wide), not drift.
 _SEVERITY: dict[str, str] = {
     "spin-loop": "warn",
     "plan-tick-spin": "warn",
@@ -95,17 +116,27 @@ _SEVERITY: dict[str, str] = {
     "long-wait": "info",
     "stuck-doable": "info",
     "stalled-recurring": "warn",
+    "worker-restart": "critical",
+    "dead-worker": "critical",
 }
 
 
 @dataclass(frozen=True, slots=True)
 class Finding:
-    """One nursery hit. ``ref_id`` + ``category`` is the dedup key."""
+    """One nursery hit.
+
+    ``ref_id`` + ``category`` is the dedup key for the graph detectors
+    (each finding is a specific todo/job ref). The worker-health detectors
+    are not ref-scoped — they set ``ref_id=None`` and supply an explicit
+    ``fingerprint_key`` (e.g. ``"worker-restart:melchior:precis-worker-agent"``)
+    so dedup / auto-resolve still work per (host, process).
+    """
 
     category: str
-    ref_id: int
+    ref_id: int | None
     title: str
     detail: str  # one-line human summary for the alert
+    fingerprint_key: str | None = None
 
 
 #: Detectors in catalogue order, each paired with its category. The
@@ -119,6 +150,8 @@ _DETECTORS: tuple[tuple[str, Callable[[Store], list[Finding]]], ...] = (
     ("long-wait", lambda s: _detect_long_waits(s)),
     ("stuck-doable", lambda s: _detect_stuck_doable(s)),
     ("stalled-recurring", lambda s: _detect_stalled_recurrings(s)),
+    ("worker-restart", lambda s: _detect_worker_restart_storms(s)),
+    ("dead-worker", lambda s: _detect_dead_workers(s)),
 )
 
 
@@ -147,17 +180,23 @@ def run_nursery_pass(store: Store, *, limit: int = 50) -> BatchResult:
         findings = detect(store)
         live: list[str] = []
         for f in findings:
-            fp = f"{f.category}:{f.ref_id}"
+            fp = f.fingerprint_key or f"{f.category}:{f.ref_id}"
             live.append(fp)
-            raise_alert(
+            title = f"[{f.category}] {f.title}"
+            _ref_id, is_new = raise_alert(
                 store,
                 source=source,
                 fingerprint=fp,
-                title=f"[{f.category}] {f.title}",
+                title=title,
                 detail=f.detail,
                 severity=severity,
                 subject_ref_id=f.ref_id,
             )
+            # A *new* critical condition pages once (dead / thrashing
+            # worker → planner stall). Bumps of an already-open alert
+            # don't re-push, so a standing outage doesn't spam.
+            if is_new and severity == "critical":
+                notify_critical_alert(title, f.detail)
         raised += len(findings)
         resolved += resolve_stale_alerts(store, source=source, live_fingerprints=live)
     if raised or resolved:
@@ -581,6 +620,116 @@ def _detect_plan_tick_spins(store: Store) -> list[Finding]:
         )
         for r in rows
     ]
+
+
+# ── worker health (daemon liveness, not the todo graph) ───────────
+
+
+def _detect_worker_restart_storms(store: Store) -> list[Finding]:
+    """Daemons relaunching abnormally often in the last hour.
+
+    Counts explicit ``worker: started`` boot rows (emitted at
+    :func:`precis.cli.worker.run` startup) per ``(host, process)``. A
+    count over :data:`WORKER_RESTART_STORM_1H` is a restart storm — the
+    signature of the jetsam-cull loop that orphaned plan_ticks for 1.5
+    days with nothing watching. Forward-looking: only fires once the
+    boot-row-emitting build is deployed and a worker actually thrashes.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT host, process, count(*)::int AS n
+              FROM worker_logs
+             WHERE message = 'worker: started'
+               AND process IS NOT NULL
+               AND ts > now() - interval '1 hour'
+             GROUP BY host, process
+            HAVING count(*) > %s
+             ORDER BY count(*) DESC
+             LIMIT 50
+            """,
+            (WORKER_RESTART_STORM_1H,),
+        ).fetchall()
+    return [
+        Finding(
+            category="worker-restart",
+            ref_id=None,
+            fingerprint_key=f"worker-restart:{r[0]}:{r[1]}",
+            title=f"{r[1]} on {r[0]} restarted {int(r[2])}× in 1h",
+            detail=(
+                f"{r[1]} on {r[0]} relaunched {int(r[2])} times in the last "
+                f"hour (> {WORKER_RESTART_STORM_1H}) — a restart storm, not a "
+                "deploy bounce. Likely macOS jetsam / OOM culling it under "
+                "memory pressure; each kill mid-job orphans in-flight work. "
+                "Check `launchctl print` for `immediate reason = inefficient` "
+                "and the host's wired-RAM pressure."
+            ),
+        )
+        for r in rows
+    ]
+
+
+def _detect_dead_workers(store: Store) -> list[Finding]:
+    """Continuous daemons that have gone silent while their host is up.
+
+    A worker in :data:`WORKER_CONTINUOUS_PROCESSES` that has written no
+    ``worker_logs`` row for :data:`DEAD_WORKER_SILENCE_MIN` minutes is
+    dead or wedged (a live one logs every loop). Gated on the host still
+    being alive — some other process on it logged recently, or its
+    ``host_heartbeat`` is fresh — so a whole-host / DB outage doesn't
+    fan out into one false "dead worker" per daemon (that is a different,
+    single failure). The 24h floor scopes it to daemons seen recently, so
+    a decommissioned worker doesn't alarm forever.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH last_seen AS (
+                SELECT host, process, max(ts) AS last_ts
+                  FROM worker_logs
+                 WHERE process = ANY(%(procs)s)
+                   AND ts > now() - interval '24 hours'
+                 GROUP BY host, process
+            ),
+            host_alive AS (
+                SELECT host FROM worker_logs
+                 WHERE ts > now() - interval '3 minutes'
+                 GROUP BY host
+                UNION
+                SELECT host FROM host_heartbeat
+                 WHERE ts > now() - interval '3 minutes'
+            )
+            SELECT ls.host, ls.process, ls.last_ts
+              FROM last_seen ls
+             WHERE ls.last_ts < now() - (%(silence_min)s || ' minutes')::interval
+               AND ls.host IN (SELECT host FROM host_alive)
+             ORDER BY ls.last_ts ASC
+             LIMIT 50
+            """,
+            {
+                "procs": list(WORKER_CONTINUOUS_PROCESSES),
+                "silence_min": DEAD_WORKER_SILENCE_MIN,
+            },
+        ).fetchall()
+    out: list[Finding] = []
+    for host, process, last_ts in rows:
+        silent = _hours_since(last_ts)
+        out.append(
+            Finding(
+                category="dead-worker",
+                ref_id=None,
+                fingerprint_key=f"dead-worker:{host}:{process}",
+                title=f"{process} on {host} silent {silent:.1f}h",
+                detail=(
+                    f"{process} on {host} has written no log for "
+                    f"{silent:.1f}h (> {DEAD_WORKER_SILENCE_MIN}min) while the "
+                    "host is otherwise alive — the daemon is dead or wedged. "
+                    "If it is the agent worker, plan_tick / claude_inproc jobs "
+                    "stall cluster-wide; `launchctl kickstart -k` to recover."
+                ),
+            )
+        )
+    return out
 
 
 # ── small helpers ─────────────────────────────────────────────────

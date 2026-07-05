@@ -263,6 +263,22 @@ def run(args: argparse.Namespace) -> None:
     # been migrated will fail INSERTs gracefully via the demote
     # path, so unattended deploys to a fresh DB don't die at boot.
     _attach_db_log_handler(dsn)
+    # Boot-event row. There is otherwise NO restart/boot/pid signal in the
+    # DB — a launchd restart storm (jetsam culling a worker ~200x/day) is
+    # invisible: the post-restart log stream is indistinguishable from
+    # steady state. This explicit "worker: started" marker lets the
+    # nursery's worker-restart-storm detector count relaunches per
+    # (host, process). Emitted right after the DB log handler attaches so
+    # it lands in worker_logs; the ``process`` column is filled from
+    # PRECIS_PROCESS by the handler. (A fast crash-loop that dies inside
+    # the ~5s buffered-flush window can still lose its boot row — the
+    # dead-worker detector, keyed on log silence, is the backstop.)
+    log.info(
+        "worker: started",
+        extra={
+            "payload": {"event": "boot", "pid": os.getpid(), "profile": args.profile}
+        },
+    )
     try:
         handlers = _build_handlers(args, store)
         if args.status:

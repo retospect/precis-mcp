@@ -38,7 +38,7 @@ def _tags(store: Store, ref_id: int) -> set[str]:
 
 
 def test_raise_alert_inserts_open_with_tags(store: Store) -> None:
-    aid = raise_alert(
+    aid, _ = raise_alert(
         store,
         source="nursery:spin-loop",
         fingerprint="spin-loop:42",
@@ -61,10 +61,10 @@ def test_raise_alert_inserts_open_with_tags(store: Store) -> None:
 
 
 def test_raise_alert_dedups_on_fingerprint(store: Store) -> None:
-    a1 = raise_alert(
+    a1, _ = raise_alert(
         store, source="s", fingerprint="fp:1", title="first", severity="info"
     )
-    a2 = raise_alert(
+    a2, _ = raise_alert(
         store, source="s", fingerprint="fp:1", title="second", severity="info"
     )
     assert a1 == a2  # same row
@@ -78,8 +78,8 @@ def test_raise_alert_dedups_on_fingerprint(store: Store) -> None:
 
 
 def test_raise_alert_distinct_fingerprints_are_distinct_rows(store: Store) -> None:
-    a1 = raise_alert(store, source="s", fingerprint="fp:1", title="a")
-    a2 = raise_alert(store, source="s", fingerprint="fp:2", title="b")
+    a1, _ = raise_alert(store, source="s", fingerprint="fp:1", title="a")
+    a2, _ = raise_alert(store, source="s", fingerprint="fp:2", title="b")
     assert a1 != a2
 
 
@@ -107,21 +107,25 @@ def test_resolved_then_reraise_does_not_conflict(store: Store) -> None:
     doesn't collide with the historical resolved one."""
     raise_alert(store, source="s", fingerprint="fp:re", title="a")
     resolve_stale_alerts(store, source="s", live_fingerprints=[])  # resolve it
-    aid = raise_alert(store, source="s", fingerprint="fp:re", title="b")
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:re", title="b")
     open_s = [a for a in list_open_alerts(store) if a["source"] == "s"]
     assert len(open_s) == 1
     assert open_s[0]["ref_id"] == aid
 
 
 def test_raise_alert_severity_change_keeps_single_tag(store: Store) -> None:
-    aid = raise_alert(store, source="s", fingerprint="fp:1", title="a", severity="info")
+    aid, _ = raise_alert(
+        store, source="s", fingerprint="fp:1", title="a", severity="info"
+    )
     raise_alert(store, source="s", fingerprint="fp:1", title="a", severity="critical")
     sev_tags = {t for t in _tags(store, aid) if t.startswith("severity:")}
     assert sev_tags == {"severity:critical"}
 
 
 def test_raise_alert_coerces_unknown_severity(store: Store) -> None:
-    aid = raise_alert(store, source="s", fingerprint="fp:1", title="a", severity="oops")
+    aid, _ = raise_alert(
+        store, source="s", fingerprint="fp:1", title="a", severity="oops"
+    )
     assert "severity:warn" in _tags(store, aid)
 
 
@@ -148,7 +152,7 @@ def test_resolve_stale_scoped_to_source(store: Store) -> None:
 
 
 def test_resolved_alert_carries_resolved_tag_and_timestamp(store: Store) -> None:
-    aid = raise_alert(store, source="s", fingerprint="fp", title="t")
+    aid, _ = raise_alert(store, source="s", fingerprint="fp", title="t")
     resolve_stale_alerts(store, source="s", live_fingerprints=[])
     tags = _tags(store, aid)
     assert STATE_RESOLVED in tags
@@ -193,6 +197,6 @@ def test_handler_open_view_empty_is_all_clear(hub: Hub) -> None:
 
 def test_handler_get_by_id_reads_one_alert(hub: Hub, store: Store) -> None:
     handler = AlertHandler(hub=hub)
-    aid = raise_alert(store, source="s", fingerprint="fp:1", title="readable alert")
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:1", title="readable alert")
     resp = handler.get(id=aid)
     assert "readable alert" in resp.body
