@@ -7,12 +7,26 @@ title: One unified item view — DRY cross-kind list/search over source + author
 
 ## Motivation / why
 
-Two big domains of "things" live in precis: **source** (papers, stubs
-awaiting fetch, slides/presentations, patents, datasheets, cfp — the
-`role='corpus'` / `corpus_role != 'none'` kinds) and **authored**
-artifacts (drafts, cad, structure, pcb, todo, folder — the
-`role='artifact'` kinds). Plus a few utils (status, calc) that are
-tools, not items.
+Two big domains of "things" live in precis: **source** — everything
+you *consume* and can search — and **authored** artifacts (drafts, cad,
+structure, pcb, todo, folder — the `role='artifact'` kinds). Source is
+broader than ingested documents: it is **every searchable non-artifact
+kind**, spanning two sub-families:
+
+- *ingested documents* — papers, stubs awaiting fetch,
+  slides/presentations, patents, datasheets, cfp (the
+  `corpus_role != 'none'` / `role='corpus'` kinds); and
+- *cached external answers / references* — `perplexity-reasoning`,
+  `perplexity-research`, `websearch`, `wikipedia`, `web`, `youtube`,
+  `semanticscholar`, and the computational answer kinds (`calc`/wolfram,
+  `math`, `oracle`). These are query results, not primary documents, but
+  they are embedded + searchable and legitimate LLM context ("what did
+  perplexity say about X" alongside the papers), so they belong in the
+  same retrieval surface.
+
+Only genuine ops/machine kinds (`status`, `agentlog`, `alert`, `job`,
+`cron`, `message`) are *not* items — they never get a presenter (see
+below), which is exactly what keeps them out of the list.
 
 Today each family is browsed through a pile of bespoke pages:
 `/papers-needed` (the stub fetch queue), `/papers` + `/papers/triage`,
@@ -100,6 +114,16 @@ pages become saved filters: `/drive` → `role='artifact'`;
 `/papers-needed` → `kind=paper, state=waiting`; triage →
 `tag=needs-triage`.
 
+**Which kinds appear = which kinds have a presenter.** This is the
+clean gate for membership, replacing a fragile `role`/`corpus_role`
+query. Source presenters cover both sub-families — ingested documents
+*and* the cached external-answer/reference kinds (`perplexity-*`,
+`websearch`, `wikipedia`, `web`, `youtube`, `semanticscholar`,
+`calc`/wolfram, `math`, `oracle`). Artifact kinds get presenters too.
+Ops/machine kinds (`status`, `agentlog`, `alert`, `job`, `cron`,
+`message`) get none and so never appear. The author/source split is
+then a facet derived from `KindSpec.role`, not a separate page.
+
 **Slice 4 — "write a document from this view."** A tailored filter *is*
 a serialized query; a "use as context → draft" action mints an
 authoring job scoped to exactly those refs (the LLM re-runs the same
@@ -120,7 +144,7 @@ job's retrieval scope are the same query object.
   the existing `tag` verb.
 - `edgar` as a kind (does not exist); `patent` stays registered-but-
   disabled until `PRECIS_PATENT_RAW_ROOT` is set — both slot into the
-  document-kind set automatically once present.
+  source-kind set automatically once they have a presenter.
 
 ## Acceptance criteria
 
@@ -168,6 +192,13 @@ job's retrieval scope are the same query object.
   have both incremental adoption and the check-time-totality guarantee
   on day one; the default-render road stays shippable, the end state is
   the hard contract.
+- **DECIDED — source spans cached external answers, not just documents.**
+  The source kind-set is *every searchable non-artifact kind* — ingested
+  documents **and** cached answers/references (`perplexity-*`,
+  `websearch`, `wikipedia`, `web`, `youtube`, `semanticscholar`,
+  `calc`/wolfram, `math`, `oracle`). Membership is gated by "has a
+  presenter," not a `role` query, so ops/machine kinds stay out and new
+  cached kinds opt in by implementing one.
 - **OPEN — flag namespace.** `OPEN:read-later` (bare tag) as in Slice 1,
   vs a dedicated closed axis. Bare `OPEN:` chosen for v1 (no vocab
   machinery); revisit if the OPEN-namespace teardown lands.
