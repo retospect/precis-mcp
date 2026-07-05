@@ -729,3 +729,23 @@ def test_raise_alert_reports_new_then_bumped(store: Store) -> None:
     assert new_1 is True
     assert new_2 is False
     assert ref_id_1 == ref_id_2
+
+
+def test_record_boot_event_lands_and_is_counted(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The emitter (`_record_boot_event`) writes a real `worker: started`
+    row that the restart-storm detector counts — closing the loop the
+    buffered log handler silently broke (boot line hit the file, not the DB)."""
+    from precis.cli.worker import _record_boot_event
+
+    host = _host()
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+    monkeypatch.setenv("PRECIS_PROCESS", "precis-worker-agent")
+    for _ in range(WORKER_RESTART_STORM_1H + 1):
+        _record_boot_event(store, profile="agent")
+
+    findings = _detect_worker_restart_storms(store)
+    key = f"worker-restart:{host}:precis-worker-agent"
+    hits = [f for f in findings if f.fingerprint_key == key]
+    assert len(hits) == 1

@@ -19,6 +19,7 @@ without downloading weights.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import signal
@@ -263,22 +264,7 @@ def run(args: argparse.Namespace) -> None:
     # been migrated will fail INSERTs gracefully via the demote
     # path, so unattended deploys to a fresh DB don't die at boot.
     _attach_db_log_handler(dsn)
-    # Boot-event row. There is otherwise NO restart/boot/pid signal in the
-    # DB — a launchd restart storm (jetsam culling a worker ~200x/day) is
-    # invisible: the post-restart log stream is indistinguishable from
-    # steady state. This explicit "worker: started" marker lets the
-    # nursery's worker-restart-storm detector count relaunches per
-    # (host, process). Emitted right after the DB log handler attaches so
-    # it lands in worker_logs; the ``process`` column is filled from
-    # PRECIS_PROCESS by the handler. (A fast crash-loop that dies inside
-    # the ~5s buffered-flush window can still lose its boot row — the
-    # dead-worker detector, keyed on log silence, is the backstop.)
-    log.info(
-        "worker: started",
-        extra={
-            "payload": {"event": "boot", "pid": os.getpid(), "profile": args.profile}
-        },
-    )
+    _record_boot_event(store, profile=args.profile)
     try:
         handlers = _build_handlers(args, store)
         if args.status:
@@ -1052,6 +1038,47 @@ def _build_handlers(
             )
         )
     return handlers
+
+
+def _record_boot_event(store: Store, *, profile: str) -> None:
+    """Write a single ``worker: started`` row to ``worker_logs``.
+
+    This is the DB's only restart/boot signal — there was none, so a
+    launchd/jetsam relaunch loop (the incident that orphaned plan_ticks
+    for 1.5 days) was invisible: the post-restart log stream looks like
+    steady state. The nursery's ``worker-restart`` detector counts these
+    rows per ``(host, process)``.
+
+    A **direct, synchronous INSERT** — deliberately NOT routed through the
+    buffered :class:`BufferedDBLogHandler` — because that handler can drop
+    the single startup record before its first successful flush (a
+    size-driven flush during the boot log burst can demote the batch to
+    the file channel before the DB connection warms; the boot line then
+    shows up in the file log but never in ``worker_logs``). Best-effort: a
+    failed insert must not block startup. A distinct human-readable line
+    also goes to the file/stdout channel (different message text, so it is
+    never double-counted even if it does reach the DB via the handler)."""
+    from precis.utils.db_log_handler import _resolve_host_name, _resolve_process_name
+
+    log.info("worker: starting (profile=%s pid=%d)", profile, os.getpid())
+    try:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO worker_logs "
+                "(host, process, level, logger, message, payload) "
+                "VALUES (%s, %s, 'INFO', 'precis.cli.worker', "
+                "'worker: started', %s::jsonb)",
+                (
+                    _resolve_host_name(),
+                    _resolve_process_name(),
+                    json.dumps(
+                        {"event": "boot", "pid": os.getpid(), "profile": profile}
+                    ),
+                ),
+            )
+            conn.commit()
+    except Exception:
+        log.warning("worker: failed to record boot event", exc_info=True)
 
 
 def _attach_db_log_handler(dsn: str) -> None:
