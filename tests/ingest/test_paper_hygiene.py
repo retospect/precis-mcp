@@ -138,3 +138,105 @@ def test_migrate_leaves_supersedes_edge_alone(store: Store) -> None:
             (survivor,),
         ).fetchone()
     assert row is not None and int(row[0]) == dead  # untouched
+
+
+# ── stranded OA fetches ───────────────────────────────────────────
+
+
+def _fetch_event(
+    store: Store,
+    ref_id: int,
+    event: str,
+    *,
+    hours_ago: float,
+    source: str = "fetcher:s2",
+) -> None:
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO ref_events (ref_id, source, event, ts) "
+                "VALUES (%s, %s, %s, now() - make_interval(hours => %s))",
+                (ref_id, source, event, hours_ago),
+            )
+
+
+def _fetcher_event_count(store: Store, ref_id: int) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM ref_events "
+            "WHERE ref_id=%s AND source LIKE 'fetcher:%%'",
+            (ref_id,),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def test_requeue_clears_backoff_on_stranded_fetch(store: Store) -> None:
+    """A stub with an old fetch_ok but no PDF is re-queued: fetcher events
+    deleted (backoff reset) and a one-shot guard stamped."""
+    from precis.ingest.paper_hygiene import requeue_stranded_fetches
+
+    rid = _paper(store, slug="stranded18", title="Stranded Fetch Paper")
+    # Several failed legs plus the black-holed fetch_ok, all >48h old.
+    _fetch_event(store, rid, "no_oa_version", hours_ago=100)
+    _fetch_event(store, rid, "fetch_ok", hours_ago=96)
+
+    out = requeue_stranded_fetches(store, dry_run=False)
+    assert rid in out
+    assert _fetcher_event_count(store, rid) == 0  # backoff reset
+    marker = _meta(store, rid).get("oa_requeued")
+    assert marker and marker["prior_attempts"] == 2
+
+
+def test_requeue_is_one_shot_guarded(store: Store) -> None:
+    """A stub already carrying the oa_requeued marker is never swept again."""
+    from precis.ingest.paper_hygiene import requeue_stranded_fetches
+
+    rid = _paper(store, slug="guarded18", title="Already Requeued Paper")
+    _fetch_event(store, rid, "fetch_ok", hours_ago=96)
+    assert requeue_stranded_fetches(store, dry_run=False) == [rid]
+    # A fresh black-holed fetch_ok arrives after the re-queue…
+    _fetch_event(store, rid, "fetch_ok", hours_ago=96)
+    # …but the marker blocks a second re-queue (so it can't spin).
+    assert requeue_stranded_fetches(store, dry_run=False) == []
+    assert _fetcher_event_count(store, rid) == 1  # left intact this time
+
+
+def test_requeue_skips_recent_fetch_ok(store: Store) -> None:
+    """A just-downloaded PDF still mid-ingest (fetch_ok < threshold) is left
+    alone — no premature re-queue."""
+    from precis.ingest.paper_hygiene import requeue_stranded_fetches
+
+    rid = _paper(store, slug="recent18", title="Recently Fetched Paper")
+    _fetch_event(store, rid, "fetch_ok", hours_ago=1)
+    assert requeue_stranded_fetches(store, dry_run=False) == []
+    assert _fetcher_event_count(store, rid) == 1
+
+
+def test_requeue_skips_held_paper(store: Store) -> None:
+    """A paper that actually landed a PDF is not a stranded stub."""
+    from precis.ingest.paper_hygiene import requeue_stranded_fetches
+
+    rid = _paper(store, slug="held18", title="Successfully Ingested Paper")
+    _fetch_event(store, rid, "fetch_ok", hours_ago=96)
+    sha = f"{rid:064d}"
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+                "size_bytes, storage_path) VALUES (%s, %s, 1, 100, '/tmp/held') "
+                "ON CONFLICT (pdf_sha256) DO NOTHING",
+                (sha, sha),
+            )
+            conn.execute("UPDATE refs SET pdf_sha256=%s WHERE ref_id=%s", (sha, rid))
+    assert requeue_stranded_fetches(store, dry_run=False) == []
+    assert _fetcher_event_count(store, rid) == 1  # untouched
+
+
+def test_requeue_dry_run_writes_nothing(store: Store) -> None:
+    from precis.ingest.paper_hygiene import requeue_stranded_fetches
+
+    rid = _paper(store, slug="drystr18", title="Dry Run Stranded Paper")
+    _fetch_event(store, rid, "fetch_ok", hours_ago=96)
+    assert requeue_stranded_fetches(store, dry_run=True) == [rid]
+    assert _fetcher_event_count(store, rid) == 1  # untouched
+    assert "oa_requeued" not in _meta(store, rid)

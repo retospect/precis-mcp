@@ -39,6 +39,8 @@
         <th class="text-left px-3 py-2">#</th>
         <th class="text-left px-3 py-2">Title / cite key</th>
         <th class="text-left px-3 py-2">Identifier</th>
+        <th class="text-left px-3 py-2">Requested</th>
+        <th class="text-right px-3 py-2">Tries</th>
         <th class="text-left px-3 py-2">Last attempt</th>
         <th class="text-left px-3 py-2">State</th>
       </tr>
@@ -77,6 +79,20 @@
               {% endif %}
             </span>
           {% endif %}
+        </td>
+        <td class="px-3 py-2 text-xs text-slate-500">
+          {% if row.created_at %}
+            <span title="{{ row.created_at | abs_ts }}">{{ row.created_at | ago }}</span>
+          {% else %}
+            —
+          {% endif %}
+          {% if row.requested_by %}
+            <span class="block text-slate-400">by {{ row.requested_by }}</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2 text-xs text-right tabular-nums {% if row.attempts >= 6 %}text-amber-700 font-medium{% else %}text-slate-500{% endif %}"
+            title="{{ row.attempts }} autofetch pass{{ '' if row.attempts == 1 else 'es' }} run so far">
+          {{ row.attempts }}
         </td>
         <td class="px-3 py-2 text-xs text-slate-500">
           {% if row.last_attempt %}

@@ -18,7 +18,8 @@ or mark won't-do).
 
 Two views:
 
-* ``/papers-needed`` — full backlog, newest stubs first
+* ``/papers-needed`` — full backlog, oldest request first (the
+  longest-waiting stubs — most overdue for manual help — at the top)
 * ``/papers-needed?awaiting=1`` — only stubs the fetcher would
   actually try on its next pass (never attempted or attempted >24h
   ago and still pending)
@@ -226,6 +227,9 @@ async def index(
                 "state": row["state"],
                 "last_attempt": row["last_attempt"],
                 "last_event": row["last_event"],
+                "created_at": row["created_at"],
+                "requested_by": row["requested_by"],
+                "attempts": row["attempts"],
             }
         )
     watch_dir = _watch_dir_from_plist()

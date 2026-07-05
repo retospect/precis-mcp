@@ -113,6 +113,9 @@ def _stub_paging_client(total: int):
             "last_source": "",
             "last_event": "",
             "state": "never attempted",
+            "created_at": "2026-07-01T08:00:00+00:00",
+            "requested_by": "dream",
+            "attempts": 0,
         }
         for rid in range(total, 0, -1)
     ]

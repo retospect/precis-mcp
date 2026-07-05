@@ -512,7 +512,7 @@ class RefsMixin:
         offset: int = 0,
         awaiting: bool = False,
     ) -> list[dict[str, Any]]:
-        """The "papers we still need to get" backlog, newest-stub-first.
+        """The "papers we still need to get" backlog, oldest-request-first.
 
         A *stub* is a ``paper`` ref with an external identifier
         (DOI / arXiv / S2) registered but ``pdf_sha256 IS NULL`` — the
@@ -521,6 +521,20 @@ class RefsMixin:
         method surfaces them joined with the latest ``fetcher:%``
         attempt per ref, returning one dict per stub with a one-line
         ``state`` summary an operator (or agent) can scan.
+
+        Each row also carries provenance an operator wants when
+        triaging the backlog: ``created_at`` (when the stub was first
+        requested), ``requested_by`` (``meta.set_by`` — the subsystem
+        that minted it: ``dream`` / ``chase`` / ``system`` /
+        ``tex-import``), and ``attempts`` (how many distinct autofetch
+        *passes* have run — one fetch pass writes one ``fetcher:%``
+        event *per cascade leg*, so raw event count over-reports;
+        collapsing to distinct minute-buckets recovers the pass count).
+
+        Ordered **oldest-request-first** (``created_at ASC, ref_id
+        ASC``) so the longest-waiting stubs — the ones most overdue for
+        manual intervention — sort to the top. The tie-break on
+        ``ref_id`` keeps the order total and stable across pages.
 
         Shared by ``precis stubs`` (CLI) and ``search(view='stubs')``
         (MCP) so both render from one query
@@ -546,7 +560,8 @@ class RefsMixin:
                          (SELECT 's2:' || min(id_value) FROM ref_identifiers
                            WHERE ref_id = r.ref_id AND id_kind = 's2')
                        ) AS identifier,
-                       r.ref_id AS sort_key
+                       r.created_at,
+                       r.meta->>'set_by' AS requested_by
                   FROM refs r
                  WHERE r.kind = 'paper'
                    AND r.pdf_sha256 IS NULL
@@ -562,17 +577,31 @@ class RefsMixin:
                   FROM ref_events
                  WHERE source LIKE 'fetcher:%%'
                  ORDER BY ref_id, ts DESC
+            ),
+            fetch_stats AS (
+                -- One fetch pass emits one event per cascade leg, so
+                -- count distinct minute-buckets to recover *passes*, not
+                -- leg-events (passes are minutes-to-hours apart; a pass's
+                -- own legs land within seconds).
+                SELECT ref_id,
+                       count(DISTINCT date_trunc('minute', ts)) AS attempts
+                  FROM ref_events
+                 WHERE source LIKE 'fetcher:%%'
+                 GROUP BY ref_id
             )
             SELECT s.ref_id, s.cite_key, s.identifier,
-                   le.ts, le.source, le.event
+                   le.ts, le.source, le.event,
+                   s.created_at, s.requested_by,
+                   COALESCE(fs.attempts, 0) AS attempts
               FROM stubs s
               LEFT JOIN latest_event le ON le.ref_id = s.ref_id
+              LEFT JOIN fetch_stats fs ON fs.ref_id = s.ref_id
              WHERE
                 CASE WHEN %s::bool THEN
                     (le.ref_id IS NULL
                      OR (le.ts < now() - INTERVAL '24 hours' AND le.event <> 'fetch_ok'))
                 ELSE TRUE END
-             ORDER BY s.sort_key DESC
+             ORDER BY s.created_at ASC, s.ref_id ASC
              LIMIT %s OFFSET %s
         """
         out: list[dict[str, Any]] = []
@@ -588,6 +617,9 @@ class RefsMixin:
                     "last_source": row[4] or "",
                     "last_event": row[5] or "",
                     "state": _stub_state_summary(row[5], row[3]),
+                    "created_at": row[6].isoformat() if row[6] is not None else "",
+                    "requested_by": row[7] or "",
+                    "attempts": int(row[8]),
                 }
             )
         return out

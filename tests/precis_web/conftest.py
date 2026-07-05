@@ -542,6 +542,9 @@ class FakeStore:
                 "last_source": "",
                 "last_event": "",
                 "state": "never attempted",
+                "created_at": "2026-07-01T08:00:00+00:00",
+                "requested_by": "dream",
+                "attempts": 0,
             },
             {
                 "ref_id": 91,
@@ -551,6 +554,9 @@ class FakeStore:
                 "last_source": "fetcher:unpaywall",
                 "last_event": "no_oa_version",
                 "state": "no OA version (24h ago)",
+                "created_at": "2026-06-10T09:00:00+00:00",
+                "requested_by": "system",
+                "attempts": 3,
             },
         ]
         # ``awaiting`` filtering — in the real query, recent fetch_ok

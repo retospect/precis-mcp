@@ -15,6 +15,11 @@ ingestion/edit bugs that the current code no longer produces:
   final live survivor (the "stub points at a stub" dereference chain).
 * :func:`migrate_dangling_paper_links` — a non-``supersedes`` graph edge
   still pointing at a soft-deleted paper; repoint it to the survivor.
+* :func:`requeue_stranded_fetches` — a stub that logged ``fetch_ok`` but
+  never ingested (``pdf_sha256`` still NULL): the pre-2026-06-19 inbox
+  misconfig black-holed the download, and the exponential fetch backoff
+  then parked the stub ~30 days out. Clears the backoff **once** so the
+  now-fixed pipeline re-fetches it.
 
 All are dry-run by default and idempotent: a clean corpus yields empty
 results and the next pass is a cheap no-op.
@@ -23,8 +28,12 @@ results and the next pass is a cheap no-op.
 from __future__ import annotations
 
 import logging
+import os
 import re
+from datetime import UTC, datetime
 from typing import Any
+
+from psycopg.types.json import Jsonb
 
 from precis.ingest.cards import rewrite_cards
 from precis.store import Store
@@ -234,6 +243,114 @@ def migrate_dangling_paper_links(
     if acted and not dry_run:
         log.info("paper_hygiene: migrated %d dangling link(s)", len(acted))
     return acted
+
+
+# ---------------------------------------------------------------------------
+# Stranded OA fetches
+# ---------------------------------------------------------------------------
+
+#: Minimum age a ``fetch_ok`` must reach before a still-stub paper counts
+#: as *stranded* (env ``PRECIS_OA_STRANDED_HOURS``). Comfortably past the
+#: watcher's ingest latency (minutes) so a just-downloaded PDF mid-ingest
+#: is never swept, yet far under the fetcher's ~30-day backoff cap so the
+#: stub is rescued long before it would retry on its own.
+_STRANDED_HOURS_DEFAULT = 48
+
+
+def _stranded_hours() -> int:
+    try:
+        return max(1, int(os.environ.get("PRECIS_OA_STRANDED_HOURS", "").strip()))
+    except (TypeError, ValueError):
+        return _STRANDED_HOURS_DEFAULT
+
+
+def requeue_stranded_fetches(
+    store: Store, *, dry_run: bool = True, limit: int | None = None
+) -> list[int]:
+    """Re-queue stubs that logged ``fetch_ok`` but never ingested.
+
+    The signature — ``kind='paper'``, ``pdf_sha256 IS NULL``, and a
+    ``fetcher:%`` ``fetch_ok`` event older than
+    ``PRECIS_OA_STRANDED_HOURS`` (default 48h) — is the fingerprint of
+    the pre-2026-06-19 inbox misconfig (stuck stub #34736): the bytes
+    downloaded (``fetch_ok``) but landed in a directory no watcher
+    scanned, so nothing ingested, and the exponential fetch backoff then
+    parked the stub ~30 days out — it will not self-recover promptly.
+
+    The heal clears the backoff **once**: it deletes the stub's
+    ``fetcher:%`` events (so :func:`claim_stubs_to_fetch` sees zero
+    attempts and re-qualifies it on the next fetch pass, feeding it back
+    through the now-fixed pipeline) and stamps ``meta.oa_requeued`` as a
+    one-shot guard. A stub that fails *again* after re-queue re-enters
+    normal backoff but — carrying the marker — is never re-queued a
+    second time, so this cannot spin. An ``oa_requeued`` breadcrumb
+    (source ``paper_reconcile``, deliberately **not** ``fetcher:%`` so it
+    doesn't re-arm the backoff) preserves the audit trail the delete
+    removes.
+
+    Returns the ref_ids re-queued.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, fe.attempts, fe.last_ok
+              FROM refs r
+              JOIN LATERAL (
+                    SELECT count(*) AS attempts,
+                           max(e.ts) FILTER (WHERE e.event = 'fetch_ok') AS last_ok
+                      FROM ref_events e
+                     WHERE e.ref_id = r.ref_id AND e.source LIKE 'fetcher:%%'
+              ) fe ON TRUE
+             WHERE r.kind = 'paper'
+               AND r.pdf_sha256 IS NULL
+               AND r.deleted_at IS NULL
+               AND NOT (r.meta ? 'oa_requeued')
+               AND fe.last_ok IS NOT NULL
+               AND fe.last_ok < now() - make_interval(hours => %s)
+             ORDER BY r.ref_id
+            """,
+            (_stranded_hours(),),
+        ).fetchall()
+    stranded = [(int(r[0]), int(r[1]), r[2]) for r in rows]
+    if limit:
+        stranded = stranded[:limit]
+
+    requeued: list[int] = []
+    for ref_id, attempts, last_ok in stranded:
+        if not dry_run:
+            last_ok_iso = last_ok.isoformat() if last_ok is not None else None
+            with store.tx() as conn:
+                conn.execute(
+                    "DELETE FROM ref_events "
+                    "WHERE ref_id = %s AND source LIKE 'fetcher:%%'",
+                    (ref_id,),
+                )
+                conn.execute(
+                    "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+                    (
+                        Jsonb(
+                            {
+                                "oa_requeued": {
+                                    "at": datetime.now(UTC).isoformat(),
+                                    "prior_attempts": attempts,
+                                    "last_ok": last_ok_iso,
+                                }
+                            }
+                        ),
+                        ref_id,
+                    ),
+                )
+                store.append_event(
+                    ref_id,
+                    source="paper_reconcile",
+                    event="oa_requeued",
+                    payload={"prior_attempts": attempts, "last_ok": last_ok_iso},
+                    conn=conn,
+                )
+        requeued.append(ref_id)
+    if requeued and not dry_run:
+        log.info("paper_hygiene: re-queued %d stranded OA fetch(es)", len(requeued))
+    return requeued
 
 
 __all__ = [

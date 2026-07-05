@@ -1048,13 +1048,20 @@ def run_oa_fetch_pass(
     Unpaywall is skipped (with an ``identifier_missing``-style
     event) — arXiv and S2 still run.
 
-    ``inbox_dir`` defaults to ``PRECIS_WATCH_INBOX`` or
-    ``~/work/new_papers/_oa_fetched``. The default **must** match the
-    directory the ``precis watch`` daemon scans — otherwise the bytes
-    download fine (``fetch_ok``) but no watcher ever ingests them and
-    the stub stays claimable, re-fetching every pass forever. In the
-    cluster, ``PRECIS_WATCH_INBOX`` is wired to ``papers_inbox_path``
-    (the NAS inbox) so fetcher and watcher share one source of truth.
+    ``inbox_dir`` is taken from ``PRECIS_WATCH_INBOX`` when not passed
+    explicitly. It **must** be the directory the ``precis watch``
+    daemon scans — otherwise the bytes download fine (``fetch_ok``) but
+    no watcher ever ingests them and the stub stays claimable,
+    re-fetching every pass forever. In the cluster,
+    ``PRECIS_WATCH_INBOX`` is wired to ``papers_inbox_path`` (the NAS
+    inbox) so fetcher and watcher share one source of truth. There is
+    deliberately **no HOME-relative fallback**: an unset
+    ``PRECIS_WATCH_INBOX`` used to default to
+    ``~/work/new_papers/_oa_fetched`` that no watcher scanned — under
+    the daemon's read-only ``HOME=/Users/deploy`` that black-holed
+    every download (``fetch_ok`` with ``pdf_sha256`` never set) *and*
+    spammed ``[Errno 13] Permission denied`` per cascade leg. We now
+    refuse the pass loudly instead (see the guard below).
 
     Gated by env: when ``PRECIS_OA_FETCH`` is unset or ``"0"`` the
     pass exits immediately with claimed=0. The fetcher only needs to
@@ -1070,10 +1077,36 @@ def run_oa_fetch_pass(
     wiley_token = wiley_token if wiley_token is not None else _wiley_tdm_token()
     core_key = core_key if core_key is not None else _core_api_key()
     if inbox_dir is None:
-        inbox_dir = os.environ.get("PRECIS_WATCH_INBOX") or str(
-            Path.home() / "work" / "new_papers" / "_oa_fetched"
-        )
+        configured = os.environ.get("PRECIS_WATCH_INBOX", "").strip()
+        if not configured:
+            # No inbox → no watcher will ever ingest what we download.
+            # Refuse rather than black-hole into a HOME-relative dir
+            # (the pre-2026-06-19 footgun behind stuck stub #34736).
+            log.error(
+                "fetch_oa: PRECIS_WATCH_INBOX is unset — skipping pass. "
+                "The fetcher must download into the directory `precis "
+                "watch` scans; there is no safe default. Set "
+                "PRECIS_WATCH_INBOX to the shared watch inbox."
+            )
+            return {"claimed": 0, "ok": 0, "failed": 0}
+        inbox_dir = configured
     inbox_path = Path(inbox_dir)
+
+    # Fail fast on an unwritable inbox (e.g. the NAS is unmounted) with a
+    # single clear log line, instead of letting every cascade leg's
+    # `inbox_dir.mkdir(...)` raise `[Errno 13] Permission denied` and
+    # bury the ref under hundreds of per-leg `api_error` events (the
+    # #34736 spam signature).
+    try:
+        inbox_path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.error(
+            "fetch_oa: watch inbox %s is not writable (%s) — skipping "
+            "pass. Downloads would be lost; check the mount / permissions.",
+            inbox_path,
+            exc,
+        )
+        return {"claimed": 0, "ok": 0, "failed": 0}
 
     with store.pool.connection() as conn:
         stubs = claim_stubs_to_fetch(conn, limit=limit)

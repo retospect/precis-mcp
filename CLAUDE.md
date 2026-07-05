@@ -198,8 +198,14 @@ driver; adding one is a `Reviewer(...)` instance):
   pass also runs the deterministic **hygiene heals** (`ingest/paper_hygiene.py`):
   rebuild drifted `card_combined` chunks (title repaired but the embedded
   search card never rewritten), collapse `superseded_by` chains onto the
-  final live survivor, and repoint non-`supersedes` links off soft-deleted
-  papers. See `docs/design/duplicate-paper-handling.md` (Phase 3).
+  final live survivor, repoint non-`supersedes` links off soft-deleted
+  papers, and **re-queue stranded OA fetches** (`requeue_stranded_fetches`
+  — a stub that logged `fetch_ok` but never ingested, i.e. `pdf_sha256`
+  still NULL, older than `PRECIS_OA_STRANDED_HOURS` (default 48): the
+  pre-2026-06-19 inbox-misconfig signature. Deletes the stub's `fetcher:%`
+  events to reset the exponential backoff so the fixed pipeline re-fetches,
+  stamping a one-shot `meta.oa_requeued` guard so a re-failure can't spin).
+  See `docs/design/duplicate-paper-handling.md` (Phase 3).
 * `fetch` / `chase` backoff — **both exponential**. The OA fetcher's
   retry window arms on any `fetcher:%` event (not just `unpaywall`,
   which is disabled in prod) and doubles per prior attempt

@@ -118,22 +118,25 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             collapse_superseded_chains,
             heal_drifted_cards,
             migrate_dangling_paper_links,
+            requeue_stranded_fetches,
         )
 
         healed_cards = heal_drifted_cards(store, dry_run=False, limit=limit)
         collapsed = collapse_superseded_chains(store, dry_run=False, limit=limit)
         relinked = migrate_dangling_paper_links(store, dry_run=False, limit=limit)
+        requeued = requeue_stranded_fetches(store, dry_run=False, limit=limit)
         store.set_setting(_STATE_KEY, datetime.now(UTC).isoformat())
 
         merged = sum(
             len(o.duplicate_ref_ids)
             for o in (*title_outcomes, *pdf_outcomes, *doi_outcomes)
         )
-        if merged or review or healed_cards or collapsed or relinked:
+        if merged or review or healed_cards or collapsed or relinked or requeued:
             log.info(
                 "paper_reconcile: merged %d duplicate ref(s) "
                 "(%d title, %d pdf_sha256, %d doi-case); %d flagged for review; "
-                "healed %d card(s), collapsed %d chain(s), migrated %d link(s)",
+                "healed %d card(s), collapsed %d chain(s), migrated %d link(s), "
+                "re-queued %d stranded fetch(es)",
                 merged,
                 len(title_outcomes),
                 len(pdf_outcomes),
@@ -142,10 +145,13 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 len(healed_cards),
                 len(collapsed),
                 len(relinked),
+                len(requeued),
             )
         for r in review:
             log.info("paper_reconcile: %s", r.line())
-        work = merged + len(healed_cards) + len(collapsed) + len(relinked)
+        work = (
+            merged + len(healed_cards) + len(collapsed) + len(relinked) + len(requeued)
+        )
         return BatchResult(handler="paper_reconcile", claimed=work, ok=work, failed=0)
     finally:
         try:
