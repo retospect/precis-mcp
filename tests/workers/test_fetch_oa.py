@@ -303,6 +303,25 @@ class TestClaimStubs:
         # ORDER BY r.ref_id DESC — newest first.
         assert [s.ref_id for s in stubs] == [second, first]
 
+    def test_requeued_stub_sorts_ahead_of_newer(self, store: Store) -> None:
+        # An explicitly re-queued (meta.oa_requeued) OLD stub jumps ahead
+        # of a newer un-requeued one, despite the lower ref_id — otherwise
+        # the reset stub starves at the back of the newest-first backlog.
+        old = _seed_paper_stub(store, cite_key="old2024", doi="10.1/old")
+        new = _seed_paper_stub(store, cite_key="new2024", doi="10.1/new")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || '{\"oa_requeued\": {}}'::jsonb "
+                "WHERE ref_id = %s",
+                (old,),
+            )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        # Re-queued `old` first, then the newer `new` — priority beats recency.
+        assert [s.ref_id for s in stubs] == [old, new]
+
 
 # ---------------------------------------------------------------------------
 # _try_unpaywall — per-leg outcomes

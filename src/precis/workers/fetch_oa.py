@@ -214,10 +214,16 @@ def claim_stubs_to_fetch(
     the backlog separately, at ingest dedup time (see
     ``precis.ingest.add``), so they don't even reach the cap.
 
-    Returns newest-stub-first (``ORDER BY ref_id DESC``) so the chase
-    bottleneck shows up promptly when a chain creates many stubs.
-    ``FOR UPDATE OF r SKIP LOCKED`` lets multiple fetcher workers run
-    in parallel.
+    Ordering: **explicitly re-queued stubs first**
+    (``meta.oa_requeued``), then newest-stub-first (``ref_id DESC``).
+    A re-queue — from the ``requeue_stranded_fetches`` heal or an
+    operator — is a "try this again *now*" signal; without the
+    priority the reset stub would sink behind the whole newest-first
+    backlog (hundreds of routine stubs, drained at a few per hour) and
+    effectively never retry, which would make the re-queue a no-op.
+    Among non-re-queued stubs, newest-first still surfaces a chase
+    bottleneck promptly when a chain creates many stubs. ``FOR UPDATE
+    OF r SKIP LOCKED`` lets multiple fetcher workers run in parallel.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -263,7 +269,9 @@ def claim_stubs_to_fetch(
                   WHERE ri.ref_id = r.ref_id
                     AND ri.id_kind IN ('doi', 'arxiv', 's2')
            )
-         ORDER BY r.ref_id DESC
+         -- jsonb_exists(...) not the `?` operator: `?` collides with the
+         -- param placeholder scan in a parameterised query.
+         ORDER BY jsonb_exists(r.meta, 'oa_requeued') DESC, r.ref_id DESC
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
