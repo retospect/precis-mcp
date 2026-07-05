@@ -331,6 +331,7 @@ high-traffic ones:
 ## Documentation
 
 - [`AGENTS.md`](AGENTS.md) — **start here to contribute or change code.** The canonical guide: conventions, workflow, definition-of-done, ingest guarantees.
+- [`docs/mission.md`](docs/mission.md) — the mission, the pitch narrative, and the current corpus facts (positioning, not architecture — the single source for decks and talks).
 - [`docs/README.md`](docs/README.md) — the documentation landing index (directory-by-directory map).
 - [`docs/architecture.md`](docs/architecture.md) — the system manual: a narrative overview tying the surface, kinds, storage, todo-tree, and workers together.
 - [`docs/design/schema.md`](docs/design/schema.md) — the **generated** DB schema diagram (Mermaid ER, produced from the live database — can't drift).

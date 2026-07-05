@@ -9,6 +9,7 @@ dive into the subdirectory that matches your task.
 |-----------------|------|
 | Contribute / change code (conventions, workflow, DoD) | [`../AGENTS.md`](../AGENTS.md) — **canonical** |
 | A narrative system overview | [`architecture.md`](./architecture.md) — the manual |
+| The mission / pitch narrative + corpus facts | [`mission.md`](./mission.md) — positioning, not architecture |
 | The present-tense map of live subsystems | [`../CLAUDE.md`](../CLAUDE.md) |
 | The user-facing intro + install | [`../README.md`](../README.md) |
 | The DB schema (generated, current) | [`design/schema.md`](./design/schema.md) |

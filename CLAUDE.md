@@ -384,6 +384,7 @@ the README lists only a sample). Cross-refs: `precis-tasks-help`,
 | Task                             | Read |
 |----------------------------------|------|
 | To-do list / what's planned next | `OPEN-ITEMS.md` |
+| Mission / pitch narrative + facts| `docs/mission.md` (positioning, not architecture — copy from here for decks/talks) |
 | Master kinds table + call recipes| skills: `precis-overview`, `precis-toolpath-help` |
 | Workflow + lint/test commands    | `AGENTS.md` |
 | Dated history of every change    | `git log` (no CHANGELOG file) |
