@@ -10,6 +10,9 @@ in one query degrades to an empty panel instead of a 500.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -56,17 +59,66 @@ _KEYWORDS_MIN_CHARS = 150
 _KEYWORDS_VERSION = "1.0"
 
 
+#: One DB connection shared across every section of a single request.
+#: The page runs ~15 independent SQL sections; opening a pooled
+#: connection per section means ~20 serial round-trips to the DB (which
+#: is a network hop from the web host), and that dominated page time far
+#: more than any single query. The ``index`` route opens ONE connection,
+#: parks it here, and :func:`_connect` hands it to every section instead
+#: of checking out a fresh one. Unset (``None``) outside a request →
+#: :func:`_connect` falls back to the pool, so each helper still works
+#: standalone (tests call them directly; the backlog fragment is its own
+#: request). A ContextVar keeps this per-async-task, so concurrent
+#: requests never share a connection.
+_request_conn: ContextVar[Any | None] = ContextVar("_status_request_conn", default=None)
+
+
+@contextmanager
+def _connect(store: Any) -> Iterator[Any]:
+    """Yield the request-shared connection if one is parked, else a pooled one.
+
+    When reusing the shared connection we must NOT close it (the route's
+    outer ``with`` owns its lifecycle); we only close connections we open
+    ourselves.
+    """
+    shared = _request_conn.get()
+    if shared is not None:
+        yield shared
+    else:
+        with store.pool.connection() as conn:
+            yield conn
+
+
+def _rollback_request_conn() -> None:
+    """Reset the shared connection after a failed section.
+
+    All sections read on one connection, so a query that errors leaves
+    the transaction aborted — every following section on the same
+    connection would then fail. Rolling back clears that state so the
+    next section starts clean. No-op when there's no shared connection
+    (each standalone helper owns a fresh connection that self-heals on
+    close) or when the rollback itself fails (best-effort).
+    """
+    conn = _request_conn.get()
+    if conn is not None:
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception("status: rollback of shared request connection failed")
+
+
 def _safe(fn) -> Any:  # type: ignore[no-untyped-def]
     """Run a query closure, returning its result or a sentinel on error."""
     try:
         return fn()
     except Exception:
         log.exception("precis web status: section query failed")
+        _rollback_request_conn()
         return None
 
 
 def _kind_counts(store: Any) -> list[dict[str, Any]]:
-    with store.pool.connection() as conn:
+    with _connect(store) as conn:
         rows = conn.execute(
             "SELECT kind, count(*)::int FROM refs WHERE deleted_at IS NULL "
             "GROUP BY kind ORDER BY count(*) DESC"
@@ -75,7 +127,7 @@ def _kind_counts(store: Any) -> list[dict[str, Any]]:
 
 
 def _paper_summary(store: Any) -> dict[str, int]:
-    with store.pool.connection() as conn:
+    with _connect(store) as conn:
         row = conn.execute(
             "SELECT count(*)::int AS total, "
             "count(*) FILTER (WHERE pdf_sha256 IS NOT NULL)::int AS held "
@@ -86,7 +138,7 @@ def _paper_summary(store: Any) -> dict[str, int]:
 
 
 def _todo_status(store: Any) -> list[dict[str, Any]]:
-    with store.pool.connection() as conn:
+    with _connect(store) as conn:
         rows = conn.execute(
             """
             SELECT COALESCE(st.value, 'open') AS status, count(*)::int
@@ -112,7 +164,7 @@ def _recent_dreams(store: Any, limit: int = 5) -> list[dict[str, Any]]:
     Step-7 self-review. Surface a flag for each so the operator's
     eye lands on the curated insights.
     """
-    with store.pool.connection() as conn:
+    with _connect(store) as conn:
         rows = conn.execute(
             """
             SELECT r.ref_id, r.title, r.updated_at,
@@ -151,7 +203,7 @@ def _synthetic_insights_count(store: Any) -> int:
     Used as the badge on the "Recent dreams" panel link to the
     full insights view at /tags/refs?namespace=tier&value=synthetic-insight.
     """
-    with store.pool.connection() as conn:
+    with _connect(store) as conn:
         row = conn.execute(
             """
             SELECT count(*)::int
@@ -175,7 +227,7 @@ def _recent_todo_done(store: Any, limit: int = 5) -> list[dict[str, Any]]:
     signal; auto-* siblings keep the panel honest about how a todo
     closed (manual vs evaluator).
     """
-    with store.pool.connection() as conn:
+    with _connect(store) as conn:
         rows = conn.execute(
             """
             SELECT e.ts, e.event, e.ref_id, r.title
@@ -270,7 +322,7 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
               ) t
         """
         try:
-            with store.pool.connection() as conn:
+            with _connect(store) as conn:
                 r = conn.execute(
                     sql, {"skip": list(skip_kinds), "artifact": artifact}
                 ).fetchone()
@@ -312,7 +364,7 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
     # → claimable now, preserves "pending 0 = caught up") and ``blocked``
     # (waiting on embed). ``blocked`` gets its own bar segment.
     try:
-        with store.pool.connection() as conn:
+        with _connect(store) as conn:
             r = conn.execute(
                 """
                 SELECT
@@ -379,7 +431,7 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
     # non-fatal — counts already rendered; we just skip the timestamp.
     for pass_name in rows:
         try:
-            with store.pool.connection() as conn:
+            with _connect(store) as conn:
                 row = conn.execute(
                     """
                     SELECT ts FROM worker_logs
@@ -410,7 +462,7 @@ def _recent_agent_activity(store: Any, limit: int = 10) -> list[dict[str, Any]]:
     passes" filter (which excludes idle ticks). Failed runs render
     in red so the eye lands on them first.
     """
-    with store.pool.connection() as conn:
+    with _connect(store) as conn:
         rows = conn.execute(
             """
             SELECT ts, host, pass,
@@ -464,7 +516,7 @@ def _recent_passes(store: Any, limit: int = 5) -> list[dict[str, Any]]:
     (``embed:bge-m3`` → ``embed``). Bounded to 6h so the index walk
     terminates fast.
     """
-    with store.pool.connection() as conn:
+    with _connect(store) as conn:
         rows = conn.execute(
             """
             SELECT ts, host,
@@ -502,7 +554,7 @@ def _recent_events(store: Any, limit: int = 20) -> list[dict[str, Any]]:
     # 0001_initial.sql), not ``created_at`` — the earlier name made
     # this query raise and the panel silently rendered empty under
     # the ``_safe`` wrapper.
-    with store.pool.connection() as conn:
+    with _connect(store) as conn:
         rows = conn.execute(
             "SELECT ts, source, event, ref_id FROM ref_events "
             "ORDER BY ts DESC LIMIT %s",
@@ -529,7 +581,7 @@ def _claude_usage(store: Any) -> dict[str, Any]:
     per-model breakdown. Rows without a cost (non-LLM events) are
     excluded by the ``cost_usd IS NOT NULL`` filter.
     """
-    with store.pool.connection() as conn:
+    with _connect(store) as conn:
         totals = conn.execute(
             "SELECT "
             "count(*) FILTER (WHERE ts > now() - interval '24 hours')::int, "
@@ -571,7 +623,7 @@ def _hosts(store: Any) -> list[dict[str, Any]]:
     WARNING/ERROR rows in the last 24h. ``stale`` flags hosts quiet
     for longer than ``_STALE_AFTER_S``.
     """
-    with store.pool.connection() as conn:
+    with _connect(store) as conn:
         rows = conn.execute(
             "SELECT host, max(ts) AS last_seen, "
             "count(*) FILTER (WHERE level IN ('WARNING','ERROR') "
@@ -601,7 +653,7 @@ def _heartbeats(store: Any) -> list[dict[str, Any]]:
     the reporting host couldn't read them; ``stale`` flags a missed
     reporter cadence.
     """
-    with store.pool.connection() as conn:
+    with _connect(store) as conn:
         rows = conn.execute(
             "SELECT host, ts, temp_c, load1, load5, load15 "
             "FROM host_heartbeat ORDER BY host"
@@ -635,7 +687,16 @@ _LIVENESS_SIGNALS: list[tuple[str, str, int | None]] = [
         "SELECT max(created_at) FROM refs WHERE kind = 'paper' AND deleted_at IS NULL",
         None,
     ),
-    ("Chunk extracted", "SELECT max(created_at) FROM chunks", None),
+    # ``max(created_at)`` seq-scans all ~1.5M chunks (no index on
+    # created_at) — ~900ms. ``created_at`` is monotonic with the serial
+    # ``chunk_id`` PK, so the newest row by id carries the newest
+    # timestamp: an ``ORDER BY chunk_id DESC LIMIT 1`` PK-index probe
+    # gives the same "last extracted" answer in ~1ms.
+    (
+        "Chunk extracted",
+        "SELECT created_at FROM chunks ORDER BY chunk_id DESC LIMIT 1",
+        None,
+    ),
     ("Chunk indexed (embed)", "SELECT max(created_at) FROM chunk_embeddings", None),
     ("Chunk summarized", "SELECT max(created_at) FROM chunk_summaries", None),
     (
@@ -671,34 +732,42 @@ def _liveness(store: Any) -> list[dict[str, Any]]:
     stages are informational since idle is normal on a quiet corpus.
     """
     out: list[dict[str, Any]] = []
-    for label, sql, stale_after_s in _LIVENESS_SIGNALS:
-        try:
-            with store.pool.connection() as conn:
+    # One connection for all seven signals (was one *per* signal — seven
+    # round-trips). A signal that errors rolls back so the shared
+    # transaction is clean for the next; the failed signal still degrades
+    # to its own "unknown" row rather than dropping the panel.
+    with _connect(store) as conn:
+        for label, sql, stale_after_s in _LIVENESS_SIGNALS:
+            try:
                 row = conn.execute(sql).fetchone()
-            ts = row[0] if row else None
-        except Exception:
-            log.exception("status: liveness query for %s failed", label)
+                ts = row[0] if row else None
+            except Exception:
+                log.exception("status: liveness query for %s failed", label)
+                try:
+                    conn.rollback()
+                except Exception:
+                    log.exception("status: liveness rollback failed")
+                out.append(
+                    {
+                        "label": label,
+                        "ago": "—",
+                        "stale": False,
+                        "scheduled": stale_after_s is not None,
+                        "unknown": True,
+                    }
+                )
+                continue
+            age = _age_seconds(ts)
+            stale = stale_after_s is not None and (age is None or age > stale_after_s)
             out.append(
                 {
                     "label": label,
-                    "ago": "—",
-                    "stale": False,
+                    "ago": _ago(ts) if ts is not None else "never",
+                    "stale": stale,
                     "scheduled": stale_after_s is not None,
-                    "unknown": True,
+                    "unknown": False,
                 }
             )
-            continue
-        age = _age_seconds(ts)
-        stale = stale_after_s is not None and (age is None or age > stale_after_s)
-        out.append(
-            {
-                "label": label,
-                "ago": _ago(ts) if ts is not None else "never",
-                "stale": stale,
-                "scheduled": stale_after_s is not None,
-                "unknown": False,
-            }
-        )
     return out
 
 
@@ -734,7 +803,7 @@ def _background_anomalies(store: Any) -> dict[str, list[dict[str, Any]]]:
     """
     spin_loops: list[dict[str, Any]] = []
     failed_passes: list[dict[str, Any]] = []
-    with store.pool.connection() as conn:
+    with _connect(store) as conn:
         spin_rows = conn.execute(
             """
             SELECT ref_id, source,
@@ -857,36 +926,44 @@ def _claude_quota(store: Any) -> dict[str, Any]:
 async def index(request: Request) -> HTMLResponse:
     store = get_store(request)
     cfg = get_web_config(request)
-    return templates.TemplateResponse(
-        request,
-        "status.html.j2",
-        {
-            "active_tab": "status",
-            "kind_counts": _safe(lambda: _kind_counts(store)) or [],
-            "papers": _safe(lambda: _paper_summary(store)) or {},
-            "todo_status": _safe(lambda: _todo_status(store)) or [],
-            "events": _safe(lambda: _recent_events(store)) or [],
-            "recent_dreams": _safe(lambda: _recent_dreams(store)) or [],
-            "insight_count": _safe(lambda: _synthetic_insights_count(store)) or 0,
-            "recent_todo_done": _safe(lambda: _recent_todo_done(store)) or [],
-            "recent_passes": _safe(lambda: _recent_passes(store)) or [],
-            "recent_agents": _safe(lambda: _recent_agent_activity(store)) or [],
-            # NB ``backlog`` is intentionally absent here — it is the
-            # slowest section (full-table ``chunks`` scans) and is
-            # lazy-loaded by the template via ``GET /status/backlog``
-            # (the ``_backlog`` fragment below) so it never blocks the
-            # initial page render.
-            "liveness": _safe(lambda: _liveness(store)) or [],
-            "usage": _safe(lambda: _claude_usage(store)) or {},
-            "quota": _safe(lambda: _claude_quota(store)) or {},
-            "hosts": _safe(lambda: _hosts(store)) or [],
-            "heartbeats": _safe(lambda: _heartbeats(store)) or [],
-            "bg_health": _safe(lambda: _background_anomalies(store))
-            or {"spin_loops": [], "failed_passes": []},
-            "corpus_dir": "  ".join(str(p) for p in cfg.corpus_dirs),
-            "app_version": _app_version(),
-        },
-    )
+    # Open ONE connection for the whole page and park it so every section
+    # reuses it (see ``_request_conn``) instead of checking out ~15
+    # separate pooled connections — that per-section round-trip fan-out,
+    # not any single query, was the bulk of the page's latency. Sections
+    # that don't touch SQL (``_claude_quota`` goes through a store method;
+    # ``_app_version`` is local) simply ignore it.
+    with store.pool.connection() as conn:
+        token = _request_conn.set(conn)
+        try:
+            ctx = {
+                "active_tab": "status",
+                "kind_counts": _safe(lambda: _kind_counts(store)) or [],
+                "papers": _safe(lambda: _paper_summary(store)) or {},
+                "todo_status": _safe(lambda: _todo_status(store)) or [],
+                "events": _safe(lambda: _recent_events(store)) or [],
+                "recent_dreams": _safe(lambda: _recent_dreams(store)) or [],
+                "insight_count": _safe(lambda: _synthetic_insights_count(store)) or 0,
+                "recent_todo_done": _safe(lambda: _recent_todo_done(store)) or [],
+                "recent_passes": _safe(lambda: _recent_passes(store)) or [],
+                "recent_agents": _safe(lambda: _recent_agent_activity(store)) or [],
+                # NB ``backlog`` is intentionally absent here — it is the
+                # slowest section (full-table ``chunks`` scans) and is
+                # lazy-loaded by the template via ``GET /status/backlog``
+                # (the ``_backlog`` fragment below) so it never blocks the
+                # initial page render.
+                "liveness": _safe(lambda: _liveness(store)) or [],
+                "usage": _safe(lambda: _claude_usage(store)) or {},
+                "quota": _safe(lambda: _claude_quota(store)) or {},
+                "hosts": _safe(lambda: _hosts(store)) or [],
+                "heartbeats": _safe(lambda: _heartbeats(store)) or [],
+                "bg_health": _safe(lambda: _background_anomalies(store))
+                or {"spin_loops": [], "failed_passes": []},
+                "corpus_dir": "  ".join(str(p) for p in cfg.corpus_dirs),
+                "app_version": _app_version(),
+            }
+        finally:
+            _request_conn.reset(token)
+    return templates.TemplateResponse(request, "status.html.j2", ctx)
 
 
 @router.get("/backlog", response_class=HTMLResponse)
