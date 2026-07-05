@@ -208,10 +208,42 @@ refs.meta     = {
 `blocks`: one block per parsed section/paragraph of the primary
 document (10-K item, 8-K item, narrative paragraph), density-
 classified via `precis.ingest.blocks.classify_density`, embedded
-lazily by the derived-queue worker. Filings are large (a 10-K can
-be 300k+ tokens) — cap and section-split so a single filing doesn't
-dominate the corpus; store the parse under the raw root for
-re-parse.
+lazily by the derived-queue worker.
+
+**Filing size — store it whole (decided).** No per-filing block cap
+and no truncation: a full 10-K (300k+ tokens) is ingested in its
+entirety. We have the disk + Postgres space, and a truncated filing
+is a foot-gun for search. The raw document is also mirrored under
+`$PRECIS_EDGAR_RAW_ROOT` for re-parse. The only splitting we do is
+the natural paragraph/section split into blocks (needed for
+block-level search + TOC clustering anyway).
+
+### Section tagging — standard sections are searchable (decided)
+
+Standard filing sections carry stable, well-known structure; the
+parser labels each block with its section so search can scope to a
+section. Section identity lives at the **block level** (not ref
+tags — a ref tag would apply to the whole filing), stored on
+`blocks.meta.section_path` + a `chunk_kind`, matching how
+paper-ingest stamps `section_path` / `chunk_kind` per Marker block:
+
+| Form | Standard sections labelled |
+|------|----------------------------|
+| 10-K / 10-Q | Item 1 Business, Item 1A Risk Factors, Item 3 Legal Proceedings, Item 7 MD&A, Item 7A Market Risk, Item 8 Financial Statements, … |
+| 8-K | Item codes (1.01 Entry into Material Agreement, 2.02 Results of Ops, 5.02 Officer/Director changes, 7.01 Reg FD, 8.01 Other, …) |
+| S-1 | Prospectus Summary, Risk Factors, Use of Proceeds, MD&A, Business |
+
+- `_edgar_parse.py` owns the section classifier: a table of
+  regex/heading patterns per form → canonical section id
+  (`item-1a`, `item-2.02`, …). Unrecognised headings fall back to
+  `section:body`.
+- Each block gets `chunk_kind='edgar_section'` +
+  `meta.section_path=['Item 1A', 'Risk Factors']` +
+  `meta.item_code='1a'`. `store.search_blocks(scope=...)` and the
+  `tags=`/section filter can then narrow to "risk factors across
+  all 10-Ks", etc.
+- The distinct `item_code` set per filing is also summarised into
+  `refs.meta.items` (above) for the overview + list views.
 
 ### Raw cache on disk (`$PRECIS_EDGAR_RAW_ROOT`)
 
@@ -228,6 +260,82 @@ $PRECIS_EDGAR_RAW_ROOT/
         └── ingest.log             # JSONL: timestamps + bytes per call
 ```
 
+## TOC + summary conveniences (decided: reuse the generic path)
+
+These are already kind-agnostic — `edgar` gets them almost for free:
+
+- **`view='toc'`** — `precis.utils.toc_db.render_from_store(store=,
+  ref_id=, handle=, kind='edgar', scope=)` clusters the filing's
+  blocks by their per-chunk keyword sets and renders a drill-able
+  TOON table. It keys only on `chunks.keywords` + the record handle,
+  so wiring it is: add `"toc"` to `_SUPPORTED_VIEWS` and route
+  `view='toc'` (and the `~lo..hi/toc` range form) to
+  `render_from_store` — exactly as `paper._render_toc` does. A
+  300k-token 10-K is precisely where this pays off.
+- **`view='summaries'`** — per-chunk glosses render from
+  `chunk_summaries`, populated by the summarize worker. Add
+  `"summaries"` to `_SUPPORTED_VIEWS`.
+- **Chunk keywords come free from the derived-queue worker.**
+  `chunk_keywords` claims any chunk whose `chunk_kind` is *not* on
+  its skip-list and whose length ≥ 150 chars. `edgar_section` is a
+  content kind, so blocks are keyworded automatically once embedded
+  — no per-kind wiring, no backfill. (Confirm `edgar_section` is
+  absent from `_SKIP_KINDS` in `workers/chunk_keywords.py`; it is,
+  since that set is paper front-matter/table/figure kinds.)
+- **Abbreviation legend + shared-phrases footer** ride along inside
+  `render_from_store`, so a filing's defined-terms glossary surfaces
+  in its TOC with no extra code.
+
+Net: the only handler code is adding two view names and a
+`_render_toc` that calls the shared renderer. The heavy lifting is
+the derived-queue workers that already run cluster-wide.
+
+## New / unusual filings → morning news report (decided)
+
+No new briefing plumbing: the `briefing` worker
+(`workers/briefing.py`) already summarises recent **`news`** refs
+and renders each as a clickable markdown link from its `meta.url`.
+So "surface unusual/new filings in the morning report" =
+**the edgar watcher mints a `news` ref for notable filings**, and
+the existing brief folds it in on the next 06:00 tick.
+
+Mechanism (in the phase-2 `edgar_watches` runner, mirroring
+`news_poll`'s minting call):
+
+```python
+store.put_cache_entry(
+    kind="news", provider="news", request_hash=<accession-hash>,
+    slug=slug_from_text(url), title=f"{company} filed {form} — {headline}",
+    body_blocks=article_blocks(summary_text, embedder=None),  # lazy embed
+    ttl_seconds=None,                                          # pinned record
+    ref_meta={"url": <espacenet-style edgar filing url>, "source": "edgar"},
+    cache_meta={"source": "edgar", "form": form, "cik": cik},
+)
+# then apply_tag_ops(..., tags=["category:news", "source:edgar",
+#                               f"form:{form.lower()}", f"published:{filed}"])
+```
+
+**What counts as "notable" (the trigger, tunable):**
+
+- a **form type never before seen for that CIK** (novelty per
+  company — the "new things" case);
+- a filing whose form is in a curated **notable-forms set** —
+  `8-K` with high-signal item codes (1.03 bankruptcy, 2.01
+  acquisition/disposition, 5.02 exec change), `S-1` (IPO),
+  `SC 13D` (activist stake), `DEFM14A` (merger vote),
+  `NT 10-K`/`NT 10-Q` (late-filing notice);
+- a **form the SEC itself is new/rare** (unrecognised form code)
+  → always notable, so genuinely novel disclosure types bubble up.
+
+Routine, expected filings (a quarterly 10-Q from a company that
+files them every quarter) do **not** mint news — they still ingest
+as `edgar` refs and are searchable, they just don't spam the brief.
+The notability predicate lives in `_edgar_notable.py` with a table
+of item codes + form allow-list, unit-tested in isolation.
+
+The news ref links straight to the EDGAR filing page, so the
+morning brief's rendered link opens the actual document.
+
 ## Implementation (files mirror patent 1:1)
 
 ```
@@ -237,20 +345,24 @@ src/precis/handlers/_edgar_accession.py  # Accession + parse (mirror _patent_slu
 src/precis/handlers/_edgar_client.py     # httpx shim + FakeEdgarClient (mirror _patent_ops.py)
 src/precis/handlers/_edgar_parse.py      # filing HTML/XML → ParsedFiling (mirror _patent_xml.py)
 src/precis/handlers/_edgar_query.py      # tag → FTS param lift (mirror _patent_cql.py)
+src/precis/handlers/_edgar_sections.py   # form → section/item classifier (block labels)
 src/precis/handlers/_edgar_ingest.py     # fetch → refs+blocks (mirror _patent_ingest.py)
 src/precis/migrations/0053_edgar_kind.sql
 src/precis/data/skills/precis-edgar-help.md
 tests/test_edgar_accession.py
 tests/test_edgar_query.py
+tests/test_edgar_sections.py
 tests/test_edgar_parse.py
 tests/test_edgar_ingest.py
-tests/test_edgar_handler.py
+tests/test_edgar_handler.py             # incl. view='toc' + view='summaries'
 
-# Phase 2 — saved full-text watches
+# Phase 2 — saved full-text watches + morning-report minting
 src/precis/migrations/0054_edgar_watches.sql
 src/precis/handlers/_edgar_watch_db.py
+src/precis/handlers/_edgar_notable.py     # notability predicate (form/item allow-list)
 src/precis/cli/edgar.py                   # watch-edgar / list / run (mirror cli/patent.py)
 tests/test_edgar_watch_db.py
+tests/test_edgar_notable.py
 tests/test_edgar_watch_cli.py
 ```
 
@@ -287,11 +399,14 @@ top-level dependency without an ADR").
    SEC just blocks abusers. We add a token-bucket (10 req/s) in
    `_edgar_client.py` + reuse patent's rolling fair-use byte
    accounting to self-throttle.
-3. **Filings are huge.** A 10-K dwarfs a patent. Need a section
-   splitter (10-K Item boundaries, 8-K Item codes) and a
-   per-filing block cap, plus a decision on whether to ingest
-   exhibits. **Open question — pick a cap + splitter strategy in
-   review.**
+3. **Filings are huge, but we store them whole (decided).** A 10-K
+   dwarfs a patent; we ingest it in full — no cap, no truncation.
+   The only structure work is the section classifier
+   (`_edgar_sections.py`): label each block with its 10-K Item /
+   8-K item code so search can scope to a section. **Open
+   sub-question:** whether to also ingest exhibits (EX-*) as
+   additional blocks or leave them link-only — lean *link-only* in
+   v1, revisit if search demand shows exhibits matter.
 4. **Search backend is JSON params, not CQL.** `_edgar_query.py`
    builds a param dict; no auto-promote heuristic and no
    `validate_strict_cql` bare-keyword guard needed (EDGAR FTS is a
@@ -303,6 +418,12 @@ top-level dependency without an ADR").
    inline and had to be fixed; `edgar` uses the derived-queue
    worker (ADR 0007) from the start — no synchronous embed in the
    verb.
+7. **Cross-kind spillover into `news`.** Unlike patent (self-
+   contained), the edgar watcher writes into a *different* kind
+   (`news`) for notable filings so the morning brief picks them
+   up. This is a deliberate reuse of the news→briefing pipeline,
+   not a new subsystem — but it's the one place `edgar` reaches
+   outside its own tables, so it's called out for review.
 
 ## Build order
 
@@ -311,25 +432,34 @@ top-level dependency without an ADR").
 3. `_edgar_client.py` — `httpx` shim (search / submissions /
    archive-doc) + `FakeEdgarClient` + token bucket. Live test gated
    on `PRECIS_EDGAR_TEST_LIVE=1`.
-4. `_edgar_parse.py` — filing → `ParsedFiling` (title, sections,
-   items, block texts); fixture-driven tests on a real 10-K / 8-K.
-5. `_edgar_ingest.py` — fetch → write raw → parse → refs+blocks
-   (lazy embed) → auto-tags. Idempotent on accession.
-6. `EdgarHandler.get(id=)` — render local; on miss ingest;
-   `cik:`/`ticker:` list views.
-7. `EdgarHandler.search(...)` + `search_hits(...)` — remote leg
+4. `_edgar_sections.py` — form → canonical section/item classifier
+   + tests (10-K Items, 8-K item codes, S-1 sections).
+5. `_edgar_parse.py` — filing → `ParsedFiling` (title, sections via
+   the classifier, items, block texts); fixture-driven tests on a
+   real 10-K / 8-K.
+6. `_edgar_ingest.py` — fetch → write raw → parse → refs+blocks
+   (lazy embed, section labels on `blocks.meta`) → auto-tags.
+   Idempotent on accession.
+7. `EdgarHandler.get(id=)` — render local; on miss ingest;
+   `cik:`/`ticker:` list views; `view='toc'` + `view='summaries'`
+   via the shared renderers.
+8. `EdgarHandler.search(...)` + `search_hits(...)` — remote leg
    cache-backed via `_cache_base.py`, local leg via
-   `store.search_blocks`; `merge_and_render` with `[local]` marks.
-8. `0053_edgar_kind.sql` + dispatch gate + `_KIND_ALLOWED_AXES` +
+   `store.search_blocks` (section-scopeable); `merge_and_render`
+   with `[local]` marks.
+9. `0053_edgar_kind.sql` + dispatch gate + `_KIND_ALLOWED_AXES` +
    `precis-edgar-help` skill.
-9. Phase 2: `edgar_watches` + DAO + `cli/edgar.py` + Ansible
-   follow-up for the watch runner (mirror the patent launchd job).
+10. Phase 2: `edgar_watches` + DAO + `_edgar_notable.py` +
+    news-minting in the runner + `cli/edgar.py` + Ansible
+    follow-up for the watch runner (mirror the patent launchd job).
+    Verify a notable filing surfaces in the next `run_briefing`.
 
 ## Definition of done (per AGENTS.md)
 
 - This plan reviewed; ADR **0049-edgar-kind.md** for the
-  substantive trade-offs (backend choice, no-XBRL scope, filing
-  size cap, dep decision).
+  substantive trade-offs (backend choice, no-XBRL scope,
+  store-whole-filing decision, notability→news spillover, dep
+  decision).
 - Migration `0053` applies cleanly to a fresh DB; only the new
   file pending on `precis migrate --dry-run`.
 - `uv run ruff check . && uv run ruff format --check . && uv run
@@ -347,6 +477,6 @@ PRECIS_EDGAR_USER_AGENT="precis-mcp/x.y (you@example.com)"   # SEC mandates a de
 PRECIS_EDGAR_RAW_ROOT=/opt/nfs/shared/edgar                  # raw filing cache on disk
 
 # Optional
-PRECIS_EDGAR_FAIR_USE_LIMIT_GB=3        # rolling 7-day warn-and-pause
-PRECIS_EDGAR_MAX_BLOCKS_PER_FILING=800  # per-filing block cap
+PRECIS_EDGAR_FAIR_USE_LIMIT_GB=3        # rolling 7-day warn-and-pause (courtesy)
+# No block cap — filings are stored whole (see § Filing size).
 ```
