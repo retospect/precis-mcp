@@ -87,9 +87,21 @@ split/merge, and the vendored-PM-bundle spike are in the design doc).
   tests `test_split_keeps_handle_and_inserts_tail_after`,
   `test_merge_prev_joins_text_and_deletes_block`; endpoints live-verified
   net-zero on dream-review. Same headless-browser verification gap as 2b-ii.
-- **Slice 3 — polish (deferred).** Reveal-on-cursor ref rendering (pretty chip
-  unless the caret is in its paragraph), `[`-autocomplete, structured-block
-  creation from the editor, lang selector, remove the now-dead `tailwind.js`.
+- **Slice 3 — polish → shipped + deployed.** (1) **`[`-autocomplete**:
+  `GET /drafts/{ident}/ref-search` title-searches held papers
+  (`find_papers_by_title` + `fetch_refs_by_ids`) → citation tokens; a PM
+  dropdown (arrow/enter/tab, coordinates with the split/leave keymap via an
+  `ac.active` gate) inserts `[§slug]`. (2) **Reveal-on-cursor**: a selection-aware
+  `chipPlugin` styles ref tokens (`REF_TOKEN` regex) as chips, showing raw only
+  when the caret is inside — the in-editor complement to the reader's already-
+  pretty non-editing view. (3) **Removed the dead `tailwind.js`** Play CDN (the
+  static build is confirmed good). All wrapped so a failure degrades gracefully
+  (autocomplete `try`-guarded; chips are display-only). Live-verified:
+  `ref-search?q=attention` → real papers; `tailwind.js` 404, `tailwind.css` 200.
+  - *Remaining (all optional, deferred):* autocomplete over non-paper kinds
+    (chunks/findings), resolved-title chips (needs a resolve endpoint; today the
+    chip shows the token), structured-block creation from the editor, lang
+    selector. And the standing **headless-browser verification gap** (2b-ii).
 
 ---
 
