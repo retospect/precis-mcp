@@ -457,18 +457,22 @@ def _render_reference(m: re.Match[str], ctx: _Ctx, paragraph: Any) -> None:
         return
 
 
-def _handle_cite_key(tgt: str, ctx: _Ctx) -> str | None:
+def _handle_cite_key(tgt: str, ctx: _Ctx) -> tuple[str, int | None] | None:
     """A paper/patent handle (``pc<chunk_id>`` / ``pa<ref_id>``) → its
-    cite_key, via the one store resolver. ``None`` if it doesn't resolve to
-    a live paper. Mirrors :func:`precis.export.latex._handle_cite_key` so the
-    docx and PDF paths cite the identical resolved key."""
+    ``(cite_key, chunk_id)``, via the one store resolver. ``chunk_id`` is set
+    only for a chunk handle (``pc<id>``) — the specific cited passage, which
+    the EndNote path embeds as a traveling note. ``None`` if it doesn't
+    resolve to a live paper. Mirrors :func:`precis.export.latex._handle_cite_key`
+    so the docx and PDF paths cite the identical resolved key."""
     if ctx.store is None:
         return None
     try:
         resolved = ctx.store.resolve_handle(tgt)
     except Exception:  # pragma: no cover — store hiccup
         return None
-    return resolved.public_id if resolved is not None else None
+    if resolved is None or not resolved.public_id:
+        return None
+    return resolved.public_id, resolved.chunk_id
 
 
 def _finding_cite_key(tgt: str, ctx: _Ctx) -> str | None:
@@ -505,9 +509,10 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> 
     if parsed is not None:
         kind, is_chunk, _pk = parsed
         if kind in ("paper", "patent"):
-            slug = _handle_cite_key(tgt, ctx)
-            if slug:
-                _cite(slug, ctx, paragraph)
+            hit = _handle_cite_key(tgt, ctx)
+            if hit:
+                slug, chunk_id = hit
+                _cite(slug, ctx, paragraph, chunk_id=chunk_id)
             return
         if kind == "finding":
             slug = _finding_cite_key(tgt, ctx)
@@ -532,7 +537,7 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> 
         return
 
 
-def _cite(slug: str, ctx: _Ctx, paragraph: Any) -> None:
+def _cite(slug: str, ctx: _Ctx, paragraph: Any, chunk_id: int | None = None) -> None:
     """Emit a numbered citation marker — a superscript ``[n]`` keyed on the
     **paper**. The numbered **References** section at the document end
     (:func:`_append_references`) carries the resolved entry, so entry ``n``
@@ -543,14 +548,17 @@ def _cite(slug: str, ctx: _Ctx, paragraph: Any) -> None:
     A paper cited many times prints ``[n]`` at each site — a plain run, so
     it *repeats* freely (a real Word endnote field can't: endnotes are
     1:1 with their reference, and reusing one corrupts the document). And
-    **consecutive** marks for the same paper collapse to a single mark."""
+    **consecutive** marks for the same paper collapse to a single mark.
+
+    ``chunk_id`` (set for a ``pc<id>`` chunk citation) is the specific cited
+    passage — carried into the EndNote field's traveling note."""
     slug = slug.split("~", 1)[0]  # the paper, not the cited chunk
     n = ctx.cite_number(slug)  # registers the paper (idempotent)
     if ctx.last_cite == slug:
         return  # consecutive cite to the same paper — one mark for the run
     ctx.last_cite = slug
     if ctx.endnote:
-        _cite_endnote(slug, n, ctx, paragraph)
+        _cite_endnote(slug, n, ctx, paragraph, chunk_id)
         return
     run = paragraph.add_run(f"[{n}]")
     run.font.superscript = True
@@ -591,9 +599,16 @@ def _resolve_source(store: Any, slug: str, rec_number: int) -> dict[str, Any] | 
     }
 
 
-def _cite_endnote(slug: str, n: int, ctx: _Ctx, paragraph: Any) -> None:
+def _cite_endnote(
+    slug: str, n: int, ctx: _Ctx, paragraph: Any, chunk_id: int | None = None
+) -> None:
     """Emit a native EndNote ``ADDIN EN.CITE`` field for one citation. An
-    unresolved slug degrades to a plain superscript marker (nothing lost)."""
+    unresolved slug degrades to a plain superscript marker (nothing lost).
+
+    A ``pc<id>`` chunk citation (``chunk_id`` set) embeds that chunk's text as
+    the field's traveling note — so the exact cited passage rides along in
+    EndNote. Per-citation, not per-paper: different cite sites of the same
+    paper carry the passage each one actually pointed at."""
     from precis.export.endnote import add_citation_field
 
     source = ctx.resolved.get(slug)
@@ -604,7 +619,13 @@ def _cite_endnote(slug: str, n: int, ctx: _Ctx, paragraph: Any) -> None:
             paragraph.add_run(f"[{n}]").font.superscript = True
             return
         ctx.resolved[slug] = source
-    add_citation_field(paragraph, source)
+    notes: str | None = None
+    if chunk_id is not None and ctx.store is not None:
+        try:
+            notes = ctx.store.chunk_text_by_id(chunk_id)
+        except Exception:  # pragma: no cover — chunk fetch best-effort
+            notes = None
+    add_citation_field(paragraph, source, notes=notes)
 
 
 # ── references + glossary sections ────────────────────────────────

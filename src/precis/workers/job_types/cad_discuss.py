@@ -8,11 +8,13 @@ is this?", "why isn't it functional?", "how would I connect the rim to the hub?"
 Two things make it useful:
 
 * **It is fed the model's measured facts.** The prompt carries the current design
-  source *plus* a precomputed facts block — the connectivity verdict (which parts
-  touch, whether it is one solid, which are floating), interference, bbox and
-  volume, and the node tree. So "explore the model, tell me why it's not
-  functional" is answered from real geometry, not a guess. (Live MCP probing is a
-  later enhancement; today the facts are precomputed and inlined.)
+  source *plus* a precomputed facts block — the coordinate convention, the
+  connectivity verdict (which parts touch, whether it is one solid, which are
+  floating), interference, bbox and volume, and **per-feature world bounds** (the
+  real x/y/z extent of every node). So "why isn't it functional?" is answered
+  from real geometry — and the model doesn't have to *guess* where a part's zero
+  is (a cyl at ``loc.z=-8 h16`` spans z −8..+8, not −16..0). (Live MCP probing is
+  a later enhancement; today the facts are precomputed and inlined.)
 * **It is threaded.** Each turn's prompt includes the prior turns for the same
   design (their questions + answers), so it is a real back-and-forth. The thread
   *is* the sequence of ``cad_discuss`` jobs for the design.
@@ -57,6 +59,36 @@ DESCRIPTION = (
 #: The claude boundary — tests monkeypatch this to run offline.
 AGENT = call_claude_agent
 
+#: One-line coordinate convention, inlined into the facts so the model reads
+#: where each part actually sits instead of guessing its local zero (the
+#: cyl-base-at-0 vs centred-on-loc trap that produced a wrong z-extent).
+_CONVENTION = (
+    "Coordinates: +Z up, mm. cyl/cone/frustum have their BASE at z=0 and "
+    "extend +z; box/ngon/hex are centred in x/y with base at z=0; `loc` "
+    "translates the primitive and `rot` is degrees. So a part's z-extent is "
+    "loc.z .. loc.z+h — it is NOT centred on loc.z. Use the per-feature world "
+    "bounds below rather than inferring positions from the source."
+)
+
+
+def _feature_bounds(design: Any) -> dict[str, tuple[Any, Any]]:
+    """World-space AABB per node name (patterns like ``spoke#3`` folded back to
+    ``spoke``), so the discussion can cite real extents, not guessed ones."""
+    import numpy as np
+
+    acc: dict[str, tuple[Any, Any]] = {}
+    for inst in design.instances.values():
+        base = str(inst.label).split("#", 1)[0]
+        lo, hi = inst.placed.aabb()
+        if not np.all(np.isfinite(lo)):
+            continue
+        if base in acc:
+            plo, phi = acc[base]
+            acc[base] = (np.minimum(plo, lo), np.maximum(phi, hi))
+        else:
+            acc[base] = (lo, hi)
+    return acc
+
 
 def _design_facts(store: Any, cad_ref_id: int) -> tuple[str, str]:
     """Return ``(source, facts)`` — the design source plus a measured-facts
@@ -72,6 +104,7 @@ def _design_facts(store: Any, cad_ref_id: int) -> tuple[str, str]:
         from precis.cad.relate import connectivity as cad_connectivity
 
         design = build_design(scene_spec)
+        lines.append(_CONVENTION)
         lo, hi = _expr_aabb(design, design.whole())
         lines.append(
             f"Bounding box (mm): {hi[0] - lo[0]:.3g} × {hi[1] - lo[1]:.3g} × "
@@ -101,6 +134,22 @@ def _design_facts(store: Any, cad_ref_id: int) -> tuple[str, str]:
             lines.append("Contacts: " + (", ".join(contacts) if contacts else "none"))
         else:
             lines.append("Connectivity: single component.")
+        # Real per-feature world bounds — the fix for the model guessing where a
+        # part's zero is (e.g. a cyl at loc.z=-8 h16 spans z −8..+8, not −16..0).
+        bounds = _feature_bounds(design)
+        if bounds:
+            lines.append("Per-feature world bounds (mm):")
+            for node in scene_spec.nodes:
+                b = bounds.get(node.name)
+                if b is None:
+                    continue
+                blo, bhi = b
+                lines.append(
+                    f"  {node.name} [{node.component}] {node.op}: "
+                    f"x[{blo[0]:.3g}..{bhi[0]:.3g}] "
+                    f"y[{blo[1]:.3g}..{bhi[1]:.3g}] "
+                    f"z[{blo[2]:.3g}..{bhi[2]:.3g}]"
+                )
     except Exception as exc:  # pragma: no cover - a bad build shouldn't blank facts
         lines.append(f"(geometry facts unavailable: {exc})")
     return source, "\n".join(lines)

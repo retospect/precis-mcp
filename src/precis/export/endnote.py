@@ -90,10 +90,20 @@ def _display_text(authors: list[dict[str, Any]] | None, year: int | None) -> str
     return f"({inside})"
 
 
-def build_record(source: dict[str, Any]) -> str:
+#: cap on an embedded cited-passage note so one field's XML stays sane.
+_NOTE_MAX_CHARS = 4000
+
+
+def build_record(source: dict[str, Any], notes: str | None = None) -> str:
     """One EndNote ``<record>…</record>`` from a resolved source dict
     (``kind``, ``tag``, ``rec_number``, ``authors``, ``title``, ``year``,
-    ``journal``, ``volume``, ``doi``, ``url``). Absent fields are omitted."""
+    ``journal``, ``volume``, ``doi``, ``url``). Absent fields are omitted.
+
+    ``notes`` (the cited passage from a ``pc<id>`` chunk citation) is embedded
+    as ``<research-notes>`` — EndNote's *Research Notes* field — so the author
+    sees the exact cited text on the citation. (Caveat: EndNote drops
+    Research Notes when a traveling library is imported into a real library;
+    the passage is present in the field data regardless.)"""
     name, code = _REF_TYPES.get(source.get("kind", "paper"), _REF_TYPES["paper"])
     rec = source["rec_number"]
     parts = [
@@ -132,13 +142,19 @@ def build_record(source: dict[str, Any]) -> str:
         )
     else:
         parts.append("<urls></urls>")
+    if notes:
+        text = notes.strip()
+        if len(text) > _NOTE_MAX_CHARS:
+            text = text[:_NOTE_MAX_CHARS].rstrip() + "…"
+        parts.append(f"<research-notes>{_esc(text)}</research-notes>")
     parts.append("</record>")
     return "".join(parts)
 
 
-def citation_payload(source: dict[str, Any]) -> str:
+def citation_payload(source: dict[str, Any], notes: str | None = None) -> str:
     """The full ``<EndNote><Cite>…</Cite></EndNote>`` instruction payload for
-    one in-text citation of ``source``."""
+    one in-text citation of ``source``. ``notes`` is the cited passage
+    (``pc<id>`` chunk citation) → the record's ``<research-notes>``."""
     first_family = _first_family(source.get("authors"))
     year = source.get("year")
     display = _display_text(source.get("authors"), year)
@@ -149,7 +165,7 @@ def citation_payload(source: dict[str, Any]) -> str:
         f"<Year>{_esc(year) if year else ''}</Year>"
         f"<RecNum>{rec}</RecNum>"
         f"<DisplayText>{_esc(display)}</DisplayText>"
-        f"{build_record(source)}"
+        f"{build_record(source, notes)}"
         "</Cite></EndNote>"
     )
 
@@ -201,12 +217,15 @@ def _cached_run(text: str) -> Any:
     return r
 
 
-def add_citation_field(paragraph: Any, source: dict[str, Any]) -> None:
+def add_citation_field(
+    paragraph: Any, source: dict[str, Any], notes: str | None = None
+) -> None:
     """Append an ``ADDIN EN.CITE`` complex field to ``paragraph`` — the
     in-text citation. Shape mirrors a real EndNote field: begin · instrText ·
-    separate · cached ``(Author Year)`` display · end."""
+    separate · cached ``(Author Year)`` display · end. ``notes`` embeds the
+    cited passage into the record's Research Notes."""
     p = paragraph._p
-    payload = citation_payload(source)
+    payload = citation_payload(source, notes)
     p.append(_fld_char("begin"))
     p.append(_instr_text(" ADDIN EN.CITE " + payload))
     p.append(_fld_char("separate"))

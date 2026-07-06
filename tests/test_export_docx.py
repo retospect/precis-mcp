@@ -389,6 +389,55 @@ def test_endnote_citations_emit_cwyw_fields(
     assert "[1]" in "\n".join(p.text for p in docx.Document(str(plain)).paragraphs)
 
 
+def test_endnote_pc_citation_embeds_cited_passage(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A ``[pc<id>]`` chunk citation embeds that chunk's text as the EndNote
+    record's ``<research-notes>`` (the traveling note) — so the exact cited
+    passage rides along. A ``[pa<id>]`` ref-level cite (whole paper) carries
+    no passage."""
+    import zipfile
+
+    store = hub.store
+    store.insert_ref(
+        kind="paper", slug="nas07", title="Nanobuds paper", year=2007, provider="manual"
+    )
+    pref = store.get_ref(kind="paper", id="nas07")
+    passage = "The exact cited passage about sp3 rehybridization at junctions."
+    store.insert_blocks(pref.id, [BlockInsert(pos=0, text=passage, slug="b0")])
+    with store.pool.connection() as conn:
+        chunk_id = int(
+            conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord >= 0 "
+                "ORDER BY ord LIMIT 1",
+                (pref.id,),
+            ).fetchone()[0]
+        )
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="pc", title="T", project=pid)
+    draft.put(
+        id="pc",
+        chunk_kind="paragraph",
+        text=f"Junctions rehybridize [pc{chunk_id}].",
+        at={"last": True},
+    )
+    ref = store.get_ref(kind="draft", id="pc")
+    out = tmp_path / "pc.docx"
+    res = export_docx(store, ref, target_path=out, citations="endnote")
+    assert res.cited_slugs == ["nas07"]
+    body = zipfile.ZipFile(out).read("word/document.xml").decode("utf-8")
+    # The cited chunk's text is embedded as the record's Research Notes.
+    assert "&lt;research-notes&gt;" in body
+    assert "sp3 rehybridization at junctions" in body  # the passage rode along
+    docx.Document(str(out))  # validity
+
+
 def test_omml_converter_returns_none_on_empty() -> None:
     pytest.importorskip("latex2mathml")
     from precis.export.omml import latex_to_omml

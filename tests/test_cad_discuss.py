@@ -109,6 +109,13 @@ def test_dispatch_writes_prose_answer_grounded_in_facts(seeded, monkeypatch):
     # the prompt is grounded in the measured connectivity facts
     assert "SEPARATE bodies" in sink["prompt"]
     assert "cd_split" in sink["prompt"] and "why not functional?" in sink["prompt"]
+    # …and in real per-feature bounds + the coordinate convention, so the model
+    # doesn't guess where a part's zero is (the reported-bug fix).
+    assert "Per-feature world bounds" in sink["prompt"]
+    assert "Coordinates:" in sink["prompt"]
+    # the rim disc is r20 h4 at origin → z spans 0..4 (base-at-0, not centred)
+    assert "rdisc [rim]" in sink["prompt"]
+    assert "z[0..4]" in sink["prompt"]
 
 
 def test_dispatch_fails_on_empty_answer(seeded, monkeypatch):

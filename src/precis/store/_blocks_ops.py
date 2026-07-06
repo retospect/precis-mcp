@@ -1844,6 +1844,19 @@ class BlocksMixin:
 
     # ── angle spray (diverse-cone semantic neighbours) ─────────────
 
+    def chunk_text_by_id(self, chunk_id: int) -> str | None:
+        """The body text of one chunk by ``chunk_id`` (live ref, body chunk
+        ``ord >= 0``), or ``None`` if absent. Used by the docx→EndNote export
+        to embed a cited paper chunk's passage as the citation's traveling
+        note (``pc<id>`` handle → the exact cited text)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT c.text FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+                "WHERE c.chunk_id = %s AND c.ord >= 0 AND r.deleted_at IS NULL",
+                (chunk_id,),
+            ).fetchone()
+        return str(row[0]) if row is not None and row[0] is not None else None
+
     def get_chunk_vector(self, chunk_id: int) -> list[float] | None:
         """Read a chunk's stored embedding under the default embedder.
 
