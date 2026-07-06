@@ -132,6 +132,15 @@ embed = ["sentence-transformers>=3.0"]
 # Marker's surya / torch stack doesn't support Windows; on Windows
 # the install resolves but PDF layout extraction will error out at
 # call time with a clear ``ModuleNotFoundError: marker``.
+#
+# ⚠️ SECURITY PIN — DO NOT hand-bump ``transformers`` to fix Dependabot #44
+# (transformers <5.3.0 RCE, high). ``marker-pdf`` (≤1.10.2, the PDF OCR/layout
+# toolkit below) hard-caps ``transformers<5.0.0``, so ``>=5.3.0`` is
+# **unsatisfiable** — a lockfile-only bump WILL fail to resolve. The alert is
+# knowingly accepted (precis only loads the trusted local bge-m3 embedder, never
+# ``trust_remote_code`` / a user model path). Full risk note + recheck date:
+# SECURITY.md "Known / accepted open alerts" and OPEN-ITEMS.md "Snoozed —
+# blocked upstream". Unblocks only when marker-pdf lifts its transformers<5 cap.
 paper = [
     "marker-pdf>=1.0; sys_platform != 'win32'",
     "pymupdf>=1.24.10",     # ``fitz`` — page-level PDF text + metadata.
