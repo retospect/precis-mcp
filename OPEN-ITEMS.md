@@ -932,9 +932,50 @@ Suggested next step: one `docs/design/` roadmap doc capturing all nine with the
 dependency graph (structured-ingest → fetch legs; #7/#8/#9 share the multilingual
 layer), then build #1 (the keystone).
 
+### Residuals — stub↔ingest dedup-split fix (SHIPPED c6152950, 2026-07-06; Opus-authored)
+
+The "fetched 16h ago but not ingested" cards (stubs 50698/50754) were a
+**dedup split**: the OA fetcher's stub and the PDF-derived identity didn't
+intersect (Marker truncated the DOI, or extracted none), so ingest minted a
+duplicate ref and left the stub `pdf_sha256 IS NULL`. Fixed forward with an
+**acquisition sidecar** (`ingest/fetch_sidecar.py`) carrying the stub `ref_id`
+so `precis_add` folds into it in place, **plus** the root-cause fix
+(`_reconcile_orphan_stub` now also runs on the new-ref branch, not just the
+dedup-hit branches). Residuals parked (all harvest-eligible, Opus-authored):
+
+1. **Multi-host inbox race — spurious `no such file` errors (deliberately
+   deferred).** 28/30 ingest `error.txt`/day are the 4 watchers racing the
+   shared NFS inbox: the loser's Marker run dies with `FileNotFoundError` when
+   the winner moves the PDF mid-extraction. The winner ingests fine (not data
+   loss) but the loser writes a bogus `error.txt` — the `errors/` dir lies. The
+   "vanished mid-ingest, skip silently" guard (`watch.py:619`) misses it because
+   pymupdf/pdftext **wraps** the `FileNotFoundError`, so it hits the generic
+   `except Exception`. Fix: recognize a wrapped file-vanished error (check
+   `pdf.exists()` / walk `__cause__`) and skip silently instead of erroring.
+   Owner: `cli/watch.py`. Severity: polish (noise + wasted Marker cycles).
+2. **Metadata-poor extraction leaves the ref titleless.** For 50995 (`anon00ag`)
+   Marker extracted the title into chunk 0 ("CONTINUOUS DEFORMATIONS…") but the
+   **ref-level `title` stayed empty** (`[no metadata]`) and cite_key degraded to
+   `anon00ag`. This is what makes after-the-fact title-similarity reconcile
+   impossible for this class. Fix: fall the ref title/cite_key back to the
+   document title Marker already found (or first body chunk). Owner:
+   `ingest/pipeline.py` / `ingest/marker.py` metadata cascade. Severity: feature.
+3. **Verify the 7 existing orphans self-heal post-deploy.** 50698, 50754, 49915,
+   50223, 50227, 50335, 49503 are already split (content under duplicate refs).
+   They should self-heal when `requeue_stranded_fetches` re-fetches them at >48h
+   (the re-fetch now writes a sidecar → folds into the stub instead of
+   re-splitting), OR immediately if re-queued now (`meta.oa_requeued`). Confirm
+   the cards resolve; if a metadata-poor re-fetch (no sidecar-fold) leaves a
+   residual junk dup (e.g. 50995), that's covered by #2 + a title-sim reconcile
+   extension to id-bearing chunkless stubs. Owner: verify on prod.
+
 ---
 
-_Last updated: 2026-07-06 (added the OA-acquisition + structured-ingest +
+_Last updated: 2026-07-06 (added the stub↔ingest dedup-split residuals block
+under the OA section — shipped c6152950: acquisition sidecar + new-ref-branch
+reconcile; 3 residuals parked: multi-host `no such file` race, titleless
+metadata-poor refs, verify the 7 existing orphans self-heal). Prior same day:
+added the OA-acquisition + structured-ingest +
 external-search roadmap — 9 interdependent items from the "it's OA but we don't
 have it" diagnosis: publisher Cloudflare-403 is the common wall, PMC OA subset is
 the free unblock for 2/3; keystone = a PMC-OA fetch leg; incl. JATS re-ingest with
