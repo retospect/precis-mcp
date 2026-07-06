@@ -294,7 +294,7 @@
       {# ProseMirror mount point (rich editor + live ref squiggle); shown once
          it mounts. The textarea below is the seed + save mirror AND the
          graceful fallback if the PM module didn't load. #}
-      <div x-ref="pm" x-show="pmActive"></div>
+      <div x-ref="pm" x-show="pmActive" class="pm-editor"></div>
       <textarea x-ref="ed" data-inline-edit rows="3"
                 x-show="!pmActive"
                 @blur="save()"
