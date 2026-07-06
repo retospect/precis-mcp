@@ -199,6 +199,35 @@ def test_deliver_idempotent_skips_when_already_sent() -> None:
     assert not any("precis.messages" in c[0] for c in store.conn.calls)
 
 
+def test_deliver_splits_long_brief_into_multiple_messages() -> None:
+    # A brief over Discord's 2000-char limit (gr51155) must fan out into
+    # several message refs — each under the cap, each with its own notify,
+    # tagged part i/N — instead of one truncated post.
+    import json
+
+    from precis.utils.msgsplit import DISCORD_MAX_CHARS
+
+    store = _FakeDeliverStore()
+    long_brief = "\n".join(f"- item number {i} in the digest" for i in range(400))
+    assert len(long_brief) > DISCORD_MAX_CHARS
+    briefing._deliver(store, "discord/1/2/2", long_brief, "2026-06-23")  # type: ignore[arg-type]
+
+    assert len(store.inserted) > 1, "long brief should split into >1 message"
+    total = len(store.inserted)
+    for i, rec in enumerate(store.inserted, start=1):
+        assert rec["kind"] == "message"
+        assert rec["meta"]["briefing_date"] == "2026-06-23"
+        assert rec["meta"]["briefing_part"] == i
+        assert rec["meta"]["briefing_parts"] == total
+    # every part's body is within the Discord cap
+    for _ref_id, blocks in store.blocks:
+        assert len(blocks[0].text) <= DISCORD_MAX_CHARS
+    # one notify per part
+    notifies = [c for c in store.conn.calls if "precis.messages" in c[0]]
+    assert len(notifies) == total
+    assert json.loads(notifies[0][1][0])["target"] == "discord/1/2/2"
+
+
 def test_news_help_skill_present_and_shaped() -> None:
     import pathlib
 

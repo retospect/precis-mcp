@@ -284,7 +284,7 @@ def run_briefing(
 
 
 def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
-    """Queue the brief as a ``message`` ref for verbatim delivery.
+    """Queue the brief as one or more ``message`` refs for verbatim delivery.
 
     Mirrors ``MessageHandler.put``: insert a ``message`` ref + body chunk
     and fire ``pg_notify('precis.messages', {ref_id, target, author})``
@@ -293,12 +293,27 @@ def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
     asa_bot (the one process holding a Discord socket) posts
     it. The worker itself needs no socket — delivery is just a DB write.
 
-    Idempotent per brief-date: if a delivery message for ``date_tag``
-    already exists, skip — so a job retry (or a same-day re-run) can't
-    double-post. Best-effort: a failure is logged, never fatal (the brief
-    is persisted as a ``news`` ref regardless)."""
+    A brief routinely runs past Discord's 2000-char per-message limit;
+    asa_bot posts each ``message`` verbatim (it does not chunk), so a long
+    brief was cut off mid-URL, dropping the tail of the digest (gr51155).
+    Split the brief into Discord-sized parts here (:func:`split_message`,
+    on line/word boundaries so no markdown link is broken) and queue each
+    part as its own ``message`` ref, in order, each with its own notify —
+    Postgres delivers a single tx's notifications in send order, so a
+    serial asa_bot listener posts the parts in sequence.
+
+    Idempotent per brief-date: if *any* delivery message for ``date_tag``
+    already exists, skip the whole set — so a job retry (or a same-day
+    re-run) can't double-post. Best-effort: a failure is logged, never
+    fatal (the brief is persisted as a ``news`` ref regardless)."""
     import json
 
+    from precis.utils.msgsplit import split_message
+
+    parts = split_message(brief)
+    if not parts:
+        return
+    total = len(parts)
     try:
         with store.tx() as conn:
             existing = conn.execute(
@@ -309,30 +324,43 @@ def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
             if existing is not None:
                 log.info("briefing: %s already delivered — skipping", date_tag)
                 return
-            meta = {
-                "target": target,
-                "status": "queued",
-                "reason": f"briefing {date_tag}",
-                "briefing_date": date_tag,
-                "author": "asa",
-                "proactive": True,
-            }
-            ref = store.insert_ref(
-                kind="message",
-                slug=None,
-                title=f"Morning briefing — {date_tag}",
-                meta=meta,
-                conn=conn,
-            )
-            store.insert_blocks(
-                ref.id,
-                [BlockInsert(pos=0, text=brief, meta={"chunk_kind": "message_body"})],
-                conn=conn,
-            )
-            conn.execute(
-                "SELECT pg_notify('precis.messages', %s)",
-                (json.dumps({"ref_id": ref.id, "target": target, "author": "asa"}),),
-            )
+            for i, part in enumerate(parts, start=1):
+                suffix = f" ({i}/{total})" if total > 1 else ""
+                meta = {
+                    "target": target,
+                    "status": "queued",
+                    "reason": f"briefing {date_tag}{suffix}",
+                    "briefing_date": date_tag,
+                    "author": "asa",
+                    "proactive": True,
+                }
+                if total > 1:
+                    meta["briefing_part"] = i
+                    meta["briefing_parts"] = total
+                ref = store.insert_ref(
+                    kind="message",
+                    slug=None,
+                    title=f"Morning briefing — {date_tag}{suffix}",
+                    meta=meta,
+                    conn=conn,
+                )
+                store.insert_blocks(
+                    ref.id,
+                    [
+                        BlockInsert(
+                            pos=0, text=part, meta={"chunk_kind": "message_body"}
+                        )
+                    ],
+                    conn=conn,
+                )
+                conn.execute(
+                    "SELECT pg_notify('precis.messages', %s)",
+                    (
+                        json.dumps(
+                            {"ref_id": ref.id, "target": target, "author": "asa"}
+                        ),
+                    ),
+                )
     except Exception as exc:
         log.warning("briefing: delivery to %s failed: %s", target, exc)
 
