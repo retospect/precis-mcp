@@ -745,6 +745,33 @@ chunks (throttle any cascade), then the `equation` slug can finally be
 kind carries it. Until then the FK row stays alive for the paper path.
 
 
+## 🔵 CAD — spoked-wheel spokes don't bridge rim↔hub + no job-log link on the page (2026-07-06)
+
+**Status**: open · **Severity**: feature · **Owner**: `cad/` (geometry
+authoring / connectivity), `precis_web/routes/cad.py` (job-log link)
+· **Reported on**: `/cad/make-a-spoked-wheel-with-a-mounting-bracket-v2`
+
+Two separate issues surfaced from one CAD page:
+
+1. **Spokes don't connect the rim to the hub.** In the renderer, the glTF,
+   and the exported SCAD each spoke penetrates the rim and sticks out both
+   sides while never reaching the hub — it reads as "a ring with spikes,"
+   not a wheel. The connectivity lint agrees: *"2 disconnected bodies:
+   wheel+bearing | hub."* The model's spoke op is
+   `spoke  cyl:r2.5h28  polar n16 r26 z` (16 spokes, radius 26, axis z),
+   but the rim is `torus:R40r6` (major radius 40) and the inner hub is
+   `cyl:r12h16` — so a spoke centred at r=26 spanning ±14 reaches neither
+   the rim wall (~34–40) nor the hub outer wall (12). This is a
+   model-parameterisation problem (the edit-by-prompt / propose step
+   authored geometry that doesn't span the gap), possibly worth a
+   spoke-radial-length lint or a connectivity check fed back into the
+   propose loop so a disconnected result is caught before it lands.
+2. **No link to the failing job from the CAD page.** The page shows
+   "answer failed — see the job log" (job r50911) but renders no link to
+   that job, so there's no click-through to the forensics. The CAD route
+   should surface a link to the owning job (`/cad/<slug>` → job r50911's
+   log) when a propose/derive step fails.
+
 ---
 
 ## 🔵 OA acquisition + structured ingest + external search (2026-07-06)
@@ -841,8 +868,10 @@ _Last updated: 2026-07-06 (added the OA-acquisition + structured-ingest +
 external-search roadmap — 9 interdependent items from the "it's OA but we don't
 have it" diagnosis: publisher Cloudflare-403 is the common wall, PMC OA subset is
 the free unblock for 2/3; keystone = a PMC-OA fetch leg; incl. JATS re-ingest with
-the citation-reanchor hazard + the bge-m3 cn↔en measurement Reto asked to store).
-Prior: 2026-07-05 (added the paper-ingest `equation`-kind
+the citation-reanchor hazard + the bge-m3 cn↔en measurement Reto asked to store);
+also added the CAD spoked-wheel disconnected-spokes geometry bug + missing
+job-log link on the CAD page. Prior: 2026-07-05 (added the paper-ingest
+`equation`-kind
 retirement as deferred backlog — companion to the draft equation→$$
 retirement on `worktree-mission-doc`; 54.6k paper equation chunks vs 278
 draft, different reader + deliberately un-embedded, so paper side needs its
