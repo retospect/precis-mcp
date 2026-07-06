@@ -317,7 +317,10 @@ emitting `ADDIN EN.CITE` + `EN.REFLIST` + `EN.*` doc-vars with the full record
 as a traveling library. Format reverse-engineered from a real EndNote sample and
 independently confirmed by web research (Journal Article=17, DOI in
 `electronic-resource-num`, one field/cite, `EN.REFLIST` is a marker, traveling
-library reformats with no library open).
+library reformats with no library open). **Also shipped** (f1b6f82f): `[pc<id>]`
+chunk citations embed that chunk's exact text as the record's `<research-notes>`
+(traveling provenance, per-cite-site not per-paper) via `Store.chunk_text_by_id`
+— on nanobuds 54/93 cites carry their source passage.
 
 - **EndNote round-trip is validation-pending (not a code bug).** The CWYW format
   is undocumented/version-sensitive; correctness can only be confirmed by opening
@@ -335,12 +338,14 @@ library reformats with no library open).
   cross-reference fields** (the LaTeX exporter emits `\cref`). Pre-existing
   fidelity gap, low priority — bare `[dc]` with no surface text still renders
   nothing. A real Word `REF`/bookmark cross-ref field would close it.
-- **Feature idea (nice-to-have, not a gap): embed cited chunk passages in the
-  traveling-library record** (`<custom1>`/`<research-notes>`) so EndNote shows the
-  exact cited passage. Caveat: EndNote drops Abstract/Notes/Research-Notes on
-  library import (custom fields may survive) — needs a round-trip test. Offered to
-  Reto; build as its own cycle if wanted. Today `_cite` drops the `~chunk` address
-  and keys on the paper, so the passage identity is discarded before the record.
+- **Cited-passage embedding — SHIPPED (f1b6f82f), round-trip still unverified.**
+  `[pc<id>]` cites now carry the chunk text as `<research-notes>`. Caveat holds:
+  EndNote **drops** Abstract/Notes/Research-Notes when a traveling library is
+  imported into a real library, so the passage is visible in the field data +
+  survives a reformat-in-place, but does **not** persist into the recipient's
+  library. If persistence is wanted, retry with a `<custom1>` field (may survive)
+  — needs the same Word+EndNote round-trip test. `pa<id>` ref-level cites carry no
+  passage (correct — no chunk). Cap `_NOTE_MAX_CHARS=4000` per note.
 
 ### Residuals (filed 2026-07-05; all Opus-authored this session — harvest-eligible)
 
