@@ -242,14 +242,34 @@ reproducible); the model spends tokens on judgment, not CI/CD plumbing.
   It keeps the substrates separate rather than flattening them, flags which
   todos are autonomous vs stalled, and names the *bridge* — a prod todo failing
   because of a repo bug.
-- **Backlog groomer (close the loop)** → open. Today nothing promotes repo dev
-  work into the acting queue automatically — `/whatneedsdoing` only *reads* both
-  substrates. The dark-factory move: a `level:recurring` watch that reads
-  `OPEN-ITEMS.md` + open gripes and mints `kind='todo'` rows with `meta.executor`
-  (a `fix_gripe` job for bugs; a build tick for features), so `dispatch` builds
-  them — i.e. it bridges repo dev work *into* the prod factory queue. Pairs with
-  `/checklogs` + cheap-model tiering. Until this lands, the backlog is a level-3
-  artifact the factory can't act on.
+- **Backlog groomer (close the loop) — gripe slice shipped; OPEN-ITEMS half open.**
+  The dark-factory move: promote declared repo dev work into the acting queue so
+  `dispatch` builds it, bridging repo dev work *into* the prod factory queue.
+  - **Gripe side → shipped.** `workers/backlog_groom.py` (`run_backlog_groom_pass`)
+    mints one `kind='todo'` per open gripe carrying
+    `meta.executor='claude_inproc'` + `meta.job_type='fix_gripe'` +
+    `meta.params={'gripe_id': N}`, hung under a `level:strategic` groomer root
+    (find-or-create, so children aren't nursery orphans). Deduped on
+    `meta.params.gripe_id` (no re-mint even after the fix todo is done);
+    `no-groom` open tag is the human opt-out; cadence-throttled
+    (`backlog_groom:last_run`, `PRECIS_BACKLOG_GROOM_REFRESH_HOURS` default 6) +
+    single-runner `pg_try_advisory_xact_lock`. Registered **default-OFF** in
+    `cli/worker.py` (`--only backlog_groom` / `PRECIS_BACKLOG_GROOM_ENABLED=1`) —
+    enabling it starts handing repo bugs to `claude_inproc`, a deliberate flip
+    like the classifier. Tests: `tests/test_backlog_groom.py` (incl. the
+    end-to-end hand-off — the groomed todo is a valid `dispatch` candidate that
+    mints a `fix_gripe` job).
+  - **OPEN-ITEMS half → open (residual, filed 2026-07-06).** Not groomed, for two
+    concrete reasons: (1) `OPEN-ITEMS.md` lives at the repo root and is **not**
+    packaged into the installed wheel, so a deployed worker can't read it — needs
+    a packaged/DB-backed source of the backlog first; and (2) there is **no**
+    `build_feature` job_type for a free-text feature item to hand off to
+    (`fix_gripe` is gripe-specific) — needs a build executor. Both are
+    prerequisites before a feature item can become a dispatchable todo.
+  - **Activation (ops, when ready).** Flip `PRECIS_BACKLOG_GROOM_ENABLED=1` on a
+    system-profile worker to start draining open gripes into `fix_gripe` todos;
+    watch the first pass's mint count + the fixer's throughput before widening.
+  Pairs with `/checklogs` + cheap-model tiering.
 - **Post-ship residual follow-through** → **shipped this workstream.** `/go`
   and `/endsession` now end with a tiered follow-through step: after a green
   ship, harvest the latent bugs the session parked — gated to **Opus-4.7+

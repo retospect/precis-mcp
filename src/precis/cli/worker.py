@@ -144,6 +144,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "briefing",
             "llm_summarize",
             "classify",
+            "backlog_groom",
         ),
         default=None,
         help="Restrict to one handler kind. Overrides --profile when "
@@ -661,6 +662,23 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_classify_pass)
+
+        # Backlog groomer (default-OFF; PRECIS_BACKLOG_GROOM_ENABLED=1 or
+        # --only backlog_groom): promote open gripes into dispatchable
+        # ``fix_gripe`` todos so the autonomous fixer substrate acts on the
+        # bug backlog. Off by default because enabling it starts handing
+        # repo bugs to claude_inproc — a deliberate flip, like classify.
+        if _pass_enabled("backlog_groom") or os.environ.get(
+            "PRECIS_BACKLOG_GROOM_ENABLED"
+        ):
+            from precis.workers.runner import BatchResult as _GroomBatchResult
+
+            def _backlog_groom_pass(batch_size: int) -> _GroomBatchResult:
+                from precis.workers.backlog_groom import run_backlog_groom_pass
+
+                return run_backlog_groom_pass(store, batch_size=min(batch_size, 16))
+
+            ref_passes.append(_backlog_groom_pass)
 
         # Plugin-registered ref passes: third-party packages can
         # ship their own background workers via the
