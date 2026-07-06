@@ -747,7 +747,102 @@ kind carries it. Until then the FK row stays alive for the paper path.
 
 ---
 
-_Last updated: 2026-07-05 (added the paper-ingest `equation`-kind
+## 🔵 OA acquisition + structured ingest + external search (2026-07-06)
+
+**Status**: open (roadmap; nothing built) · **Severity**: feature · **Owner**:
+`workers/fetch_oa.py`, `ingest/`, search/discovery layer
+
+Root diagnosis from three "it's OA but we don't have it" reports
+(`10.1002/open.70197` ref 50597, `10.1101/2024.09.13.612990` ref 50559,
+`10.1126/sciadv.adx3969` no stub). All three are genuinely OA; the common
+wall is **publisher-side Cloudflare/anti-bot `403`** on `onlinelibrary.wiley.com`,
+`biorxiv.org`, `science.org` — the fetcher's `_BROWSER_UA` doesn't pass. The
+aggregators either expose no direct PDF URL or point at the Cloudflare-gated
+landing page. This is why Reto pulls them by hand via the UoL library proxy.
+**Key discovery:** 2 of the 3 are in the **PMC OA subset** (Wiley→PMC13130153
+CC-BY, Sci Adv→PMC12787524 CC-BY-NC) — freely + legitimately downloadable from
+NCBI/EBI infra with **no Cloudflare**. So the biggest win needs no proxy and no
+librarian. (Sandbox egress blocked FTP/some HTTPS here; prod cluster nodes have
+open egress — the existing `europepmc` leg already succeeds 104× there.)
+
+Interdependent items (the structured-ingest ones ride on the fetch legs):
+
+1. **PMC OA / Europe PMC fetch leg** *(keystone — do first).* DOI→PMCID
+   (`pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/`) → PMC OA service
+   (`.../oa/oa.fcgi?id=PMCID`) → download the OA package (`.tar.gz`: JATS XML +
+   figures + **supplementary**) or `oa_pdf`. Order it *ahead* of the
+   Cloudflare-gated legs. Fixes the current `europepmc` leg's flaky
+   `?pdf=render` path. Immediately lands ref 50597 + a to-be-acquired sciadv stub.
+2. **bioRxiv/medRxiv S3 leg** — for `10.1101` preprints not in PMC: bioRxiv API +
+   AWS `s3://biorxiv-src-monthly/` (requester-pays). Note ref 50559's VoR *is*
+   the Sci Adv paper (#1 covers it) → add preprint→VoR dedup.
+3. **Paid Web-Unlocker proxy leg** — last resort for Cloudflare-only-OA not in
+   PMC/S3 (Zyte API / ScraperAPI / Bright Data / Oxylabs; pay-per-success,
+   real-browser fingerprint). Config-gated, **off by default**. ToS caveat: this
+   evades bot protection — defensible for CC-licensed content we're entitled to,
+   never for paywalled. **No Sci-Hub** (copyright infringement; won't build on it).
+4. **Supplementary / methods ingestion** — the PMC OA `.tar.gz` already bundles SI;
+   design the storage shape (child refs linked `has-supplement` vs extra chunks
+   under the paper). Same embed pipeline.
+5. **JATS/XML structured ingest** — clean seam: a `extract_blocks_jats(xml, paper_id)`
+   emitting Marker's block-dict shape (`{node_id,page,type,text,section_path,…}`,
+   `marker.py:415`) reuses the whole downstream (`_blocks_to_chunks` →
+   `_retag_references` → `_build_cards` → `write_paper`) + the NULL-embedding
+   cascade + `mathnorm.normalize_math()` for MathML→`$$…$$`. **Phase 1** (new
+   papers, prefer-XML, keep PDF for the reader/`pdf_sha256`) is low-risk.
+   **Phase 2** (re-ingest existing PDF-Marker papers) is a registered *reversible*
+   ref-pass — **hazard:** citations anchor by string `source_handle="slug~ord"`
+   in `refs.meta` (not an FK), so a re-chunk restales them; must **reanchor by
+   `source_quote` text**, snapshot old chunks at *ref* scope (chunk_events cascades
+   away), add an `ingest_source` marker column (none today), and gate/prioritize
+   (re-embed cost). **Phase 3** — stable per-chunk `handle` + citation-by-quote so
+   re-chunks stop destabilizing anchors. Wrinkle: JATS has no pages → synthetic
+   `page_first/last`, coarser PDF-highlight anchoring.
+6. **Parallel scholarly-graph providers** — S2 alone under-covers chemistry/materials
+   citation edges. Fan out to `{OpenAlex, Crossref, OpenCitations, Europe PMC, Lens}`
+   and **RRF-fuse** (rank-based → robust to cross-lingual score gaps), dedup by
+   DOI→title-fuzzy. OpenAlex + Crossref clients already exist (fetch legs);
+   promoting them to *search/graph* providers is low effort. Lens adds paper↔patent
+   linkage (synergizes with `patent` kind). Two modes: discovery-search + citation-
+   graph-edge-union. Same fan-out-and-fuse subsystem as #7/#8.
+7. **Chinese-lit abstract discovery** — scope to *abstract-level* discovery via
+   OpenAlex/Crossref (they index Acta Chimica Sinica 化学学报 etc. with Chinese
+   abstracts + DOIs) + translation; **not** CNKI full-text scrape (paywalled,
+   anti-bot, low ROI — the frontier is English-first per Reto's research).
+8. **Historical & foreign-language archive import** — distinct *bulk, scan-derived,
+   identifier-less* class (not per-DOI). Parts: bulk fetcher (Internet Archive
+   `internetarchive` lib / HathiTrust / J-STAGE) · **copyright-era gating** (pre-~1930
+   PD = full-ingest; in-copyright = index/abstract-only) · **specialized OCR tier**
+   (Fraktur/Cyrillic/CJK; prefer IA hOCR, re-OCR on low confidence) · historical
+   cite-key identity (vol/page/year, title-fuzzy fallback). **Pilot: German
+   *Chemische Berichte* (1868–1997) via IA + HathiTrust** — largest coherent PD run,
+   OCR done, direct ancestor of MOF SBU/single-site catalyst theory. Legit routes
+   only (IA/HathiTrust/J-STAGE); **no Sci-Hub**; CNKI = East View / institutional.
+9. **Measure bge-m3 cn↔en placement for technical content** *(Reto's explicit
+   ask — measure, don't assume).* bge-m3 is genuinely strong at en↔zh (BAAI =
+   heavy Chinese training) and already multilingual, so cross-lingual retrieval
+   works *in principle* without translating the corpus — but two open questions
+   for *technical* content: (a) specialized chemistry jargon is thinner in
+   multilingual pretraining; (b) the language-clustering bias systematically
+   lowers cross-lingual cosine, so relevant zh chunks can be pushed below en in a
+   single fused list (RRF-per-language-pool mitigates). **Probe:** hit the live
+   embedder (`POST /embed`, port 8181, `embedder_service.py`) with N zh technical
+   abstracts + their English equivalents; report cross-lingual vs same-language
+   cosine gap + top-k retrieval of the zh chunk against distractors. Numerics/
+   formulae/Latin-script terms are language-agnostic anchors and should help.
+
+Suggested next step: one `docs/design/` roadmap doc capturing all nine with the
+dependency graph (structured-ingest → fetch legs; #7/#8/#9 share the multilingual
+layer), then build #1 (the keystone).
+
+---
+
+_Last updated: 2026-07-06 (added the OA-acquisition + structured-ingest +
+external-search roadmap — 9 interdependent items from the "it's OA but we don't
+have it" diagnosis: publisher Cloudflare-403 is the common wall, PMC OA subset is
+the free unblock for 2/3; keystone = a PMC-OA fetch leg; incl. JATS re-ingest with
+the citation-reanchor hazard + the bge-m3 cn↔en measurement Reto asked to store).
+Prior: 2026-07-05 (added the paper-ingest `equation`-kind
 retirement as deferred backlog — companion to the draft equation→$$
 retirement on `worktree-mission-doc`; 54.6k paper equation chunks vs 278
 draft, different reader + deliberately un-embedded, so paper side needs its
