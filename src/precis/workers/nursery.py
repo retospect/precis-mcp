@@ -83,11 +83,14 @@ SPIN_LOOP_EVENTS_24H = 200
 PLAN_TICK_REMINT_24H = 16
 
 #: A daemon relaunching more than this many times in an hour is in a
-#: restart storm, not a normal deploy bounce (which is one relaunch). The
-#: motivating incident: macOS jetsam culling the agent worker ~50-200x/day
-#: under memory pressure, orphaning every in-flight plan_tick — invisible
-#: for 1.5 days because nothing watched daemon health. A healthy daemon
-#: boots once and runs; even a busy deploy day is a handful of bounces.
+#: restart storm — abnormal churn, whatever the cause. The motivating
+#: incident was macOS jetsam culling the agent worker ~50-200x/day under
+#: memory pressure, orphaning every in-flight plan_tick — invisible for 1.5
+#: days because nothing watched daemon health. But a *deploy* storm trips it
+#: too (a burst of `/go` ship+deploys each bounce every worker), so the
+#: alert can't assert the cause from the count alone — it hedges (see
+#: :func:`_restart_storm_detail`). A healthy daemon boots once and runs;
+#: even a busy deploy day is a handful of bounces.
 WORKER_RESTART_STORM_1H = 8
 
 #: A *continuously-running* daemon silent (no ``worker_logs`` row) for longer
@@ -625,20 +628,66 @@ def _detect_plan_tick_spins(store: Store) -> list[Finding]:
 # ── worker health (daemon liveness, not the todo graph) ───────────
 
 
+def _restart_storm_detail(process: str, host: str, n: int, platform: str | None) -> str:
+    """Hedged, OS-aware body for a worker-restart finding.
+
+    The detector counts boot rows; it cannot see *why* a daemon restarted,
+    so it must not assert a cause. A restart storm is one of two things and
+    the count alone can't tell them apart: (a) repeated **deploy bounces** (a
+    burst of `/go` ship+deploys, each of which restarts every worker
+    unconditionally — the spark 2026-07-06 case), or (b) a **crash / OOM
+    cull** (the melchior jetsam case). The old text hardcoded "not a deploy
+    bounce … macOS jetsam" + a `launchctl` command, which was flatly wrong on
+    a Linux host. ``platform`` (from the boot row payload; NULL on pre-fix
+    boots) selects the right diagnostic command.
+    """
+    base = (
+        f"{process} on {host} relaunched {n} times in the last hour "
+        f"(> {WORKER_RESTART_STORM_1H}) — a restart storm. Each kill mid-job "
+        "orphans in-flight work (swept + re-run at the stuck-job clock). The "
+        "boot count can't tell the cause apart: either (a) repeated deploy "
+        "bounces (a burst of ship+deploys restarting every worker), or (b) a "
+        "crash / OOM cull. "
+    )
+    if platform == "darwin":
+        how = (
+            "Diagnose (macOS): `launchctl print system/<label>` for "
+            "`immediate reason = inefficient` (jetsam) + wired-RAM pressure; "
+            "correlate the boot timestamps with recent deploys."
+        )
+    elif platform and platform.startswith("linux"):
+        how = (
+            "Diagnose (Linux): `journalctl -u <unit> -n50` — a clean external "
+            "`Stopping→Stopped→Started` cycle is a deploy bounce; a signal / "
+            "non-zero exit (or an oom-killer line in `dmesg`) is a crash. "
+            "Correlate the boot timestamps with recent deploys."
+        )
+    else:
+        how = (
+            "Diagnose: correlate the boot timestamps with recent deploys; on "
+            "macOS check `launchctl print` for jetsam + wired-RAM pressure, on "
+            "Linux `journalctl -u <unit>` for an external stop vs a signal/OOM "
+            "exit."
+        )
+    return base + how
+
+
 def _detect_worker_restart_storms(store: Store) -> list[Finding]:
     """Daemons relaunching abnormally often in the last hour.
 
     Counts explicit ``worker: started`` boot rows (emitted at
     :func:`precis.cli.worker.run` startup) per ``(host, process)``. A
-    count over :data:`WORKER_RESTART_STORM_1H` is a restart storm — the
-    signature of the jetsam-cull loop that orphaned plan_ticks for 1.5
-    days with nothing watching. Forward-looking: only fires once the
+    count over :data:`WORKER_RESTART_STORM_1H` is a restart storm — either a
+    jetsam/OOM cull loop or a deploy-bounce burst; the message hedges the
+    cause and tailors the diagnostic command to the host's ``platform`` (read
+    from the boot row payload). Forward-looking: only fires once the
     boot-row-emitting build is deployed and a worker actually thrashes.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT host, process, count(*)::int AS n
+            SELECT host, process, count(*)::int AS n,
+                   max(payload->>'platform') AS platform
               FROM worker_logs
              WHERE message = 'worker: started'
                AND process IS NOT NULL
@@ -656,14 +705,7 @@ def _detect_worker_restart_storms(store: Store) -> list[Finding]:
             ref_id=None,
             fingerprint_key=f"worker-restart:{r[0]}:{r[1]}",
             title=f"{r[1]} on {r[0]} restarted {int(r[2])}× in 1h",
-            detail=(
-                f"{r[1]} on {r[0]} relaunched {int(r[2])} times in the last "
-                f"hour (> {WORKER_RESTART_STORM_1H}) — a restart storm, not a "
-                "deploy bounce. Likely macOS jetsam / OOM culling it under "
-                "memory pressure; each kill mid-job orphans in-flight work. "
-                "Check `launchctl print` for `immediate reason = inefficient` "
-                "and the host's wired-RAM pressure."
-            ),
+            detail=_restart_storm_detail(str(r[1]), str(r[0]), int(r[2]), r[3]),
         )
         for r in rows
     ]

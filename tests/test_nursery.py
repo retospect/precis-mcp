@@ -16,6 +16,7 @@ boundary. SQL backdate is the cheapest knob.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -43,6 +44,7 @@ from precis.workers.nursery import (
     _detect_stalled_recurrings,
     _detect_stuck_doable,
     _detect_worker_restart_storms,
+    _restart_storm_detail,
     run_nursery_pass,
 )
 
@@ -558,15 +560,34 @@ def test_helpers_hours_since_works() -> None:
 
 
 def _seed_boot_rows(
-    store: Store, host: str, process: str, n: int, *, minutes_ago: float = 5.0
+    store: Store,
+    host: str,
+    process: str,
+    n: int,
+    *,
+    minutes_ago: float = 5.0,
+    platform: str | None = None,
 ) -> None:
-    """Insert ``n`` ``worker: started`` boot rows for one (host, process)."""
+    """Insert ``n`` ``worker: started`` boot rows for one (host, process).
+
+    ``platform`` stamps the boot payload so the detector can tailor its
+    diagnosis (mirrors what ``_record_boot_event`` writes in prod).
+    """
+    payload = "NULL" if platform is None else "%(payload)s::jsonb"
     with store.pool.connection() as conn:
         conn.execute(
-            "INSERT INTO worker_logs (ts, host, process, level, logger, message) "
-            "SELECT now() - (%s || ' minutes')::interval, %s, %s, 'INFO', "
-            "'precis.cli.worker', 'worker: started' FROM generate_series(1, %s)",
-            (minutes_ago, host, process, n),
+            "INSERT INTO worker_logs "
+            "(ts, host, process, level, logger, message, payload) "
+            "SELECT now() - (%(minutes_ago)s || ' minutes')::interval, "
+            "%(host)s, %(process)s, 'INFO', 'precis.cli.worker', "
+            f"'worker: started', {payload} FROM generate_series(1, %(n)s)",
+            {
+                "minutes_ago": minutes_ago,
+                "host": host,
+                "process": process,
+                "n": n,
+                "payload": json.dumps({"event": "boot", "platform": platform}),
+            },
         )
         conn.commit()
 
@@ -637,6 +658,64 @@ def test_worker_restart_storm_ignores_old_boots(store: Store) -> None:
     assert not any(
         f.fingerprint_key == f"worker-restart:{host}:precis-worker" for f in findings
     )
+
+
+def test_restart_storm_message_is_hedged_not_cause_asserting() -> None:
+    """The detail no longer asserts a single cause (the gr51351 bug)."""
+    for plat in ("darwin", "linux", None):
+        detail = _restart_storm_detail("precis-worker", "h", 9, plat)
+        # Both hypotheses are named; neither is asserted as fact.
+        assert "deploy bounce" in detail
+        assert "crash" in detail or "OOM" in detail
+        assert "not a deploy bounce" not in detail
+
+
+def test_restart_storm_message_tailors_command_to_linux(store: Store) -> None:
+    """A Linux boot storm gets journalctl advice, not launchctl/jetsam."""
+    host = _host()
+    _seed_boot_rows(
+        store, host, "precis-worker", WORKER_RESTART_STORM_1H + 1, platform="linux"
+    )
+    finding = next(
+        f
+        for f in _detect_worker_restart_storms(store)
+        if f.fingerprint_key == f"worker-restart:{host}:precis-worker"
+    )
+    assert "journalctl" in finding.detail
+    assert "launchctl" not in finding.detail
+    assert "jetsam" not in finding.detail
+
+
+def test_restart_storm_message_tailors_command_to_macos(store: Store) -> None:
+    """A macOS boot storm keeps the launchctl/jetsam diagnosis."""
+    host = _host()
+    _seed_boot_rows(
+        store,
+        host,
+        "precis-worker-agent",
+        WORKER_RESTART_STORM_1H + 1,
+        platform="darwin",
+    )
+    finding = next(
+        f
+        for f in _detect_worker_restart_storms(store)
+        if f.fingerprint_key == f"worker-restart:{host}:precis-worker-agent"
+    )
+    assert "launchctl" in finding.detail
+    assert "jetsam" in finding.detail
+
+
+def test_restart_storm_message_neutral_without_platform(store: Store) -> None:
+    """Pre-fix boot rows (no platform) fall back to an OS-neutral message."""
+    host = _host()
+    _seed_boot_rows(store, host, "precis-worker", WORKER_RESTART_STORM_1H + 1)
+    finding = next(
+        f
+        for f in _detect_worker_restart_storms(store)
+        if f.fingerprint_key == f"worker-restart:{host}:precis-worker"
+    )
+    # Neutral fallback names both OSes' tools rather than guessing.
+    assert "journalctl" in finding.detail and "launchctl" in finding.detail
 
 
 def test_dead_worker_flags_silent_daemon_on_live_host(store: Store) -> None:

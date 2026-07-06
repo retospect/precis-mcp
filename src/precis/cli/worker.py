@@ -1119,7 +1119,15 @@ def _record_boot_event(store: Store, *, profile: str) -> None:
                     _resolve_host_name(),
                     _resolve_process_name(),
                     json.dumps(
-                        {"event": "boot", "pid": os.getpid(), "profile": profile}
+                        {
+                            "event": "boot",
+                            "pid": os.getpid(),
+                            "profile": profile,
+                            # OS family (darwin/linux) so the nursery's
+                            # worker-restart alert can tailor its diagnosis
+                            # instead of guessing macOS/jetsam on a Linux host.
+                            "platform": sys.platform,
+                        }
                     ),
                 ),
             )
