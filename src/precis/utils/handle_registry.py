@@ -57,6 +57,7 @@ KIND_CODES: dict[str, str] = {
     # corpus / documents
     "paper": "pa",
     "patent": "pt",
+    "edgar": "eg",
     "cfp": "cf",
     "news": "nw",
     "draft": "dr",
@@ -105,6 +106,7 @@ KIND_CODES: dict[str, str] = {
 CHUNK_CODES: dict[str, str] = {
     "paper": "pc",
     "patent": "pk",
+    "edgar": "ec",
     "cfp": "qc",
     "plaintext": "lc",
     "markdown": "mc",

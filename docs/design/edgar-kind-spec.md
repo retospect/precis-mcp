@@ -469,6 +469,41 @@ top-level dependency without an ADR").
 - CLI (phase 2) has `--help`, an integration test, and a README
   line.
 
+## Quarter-to-quarter comparison (added 2026-07-05)
+
+Stakeholder requirement beyond the original plan: **identify and tag the
+interesting bits so we can compare quarter to quarter.** This rides
+entirely on the block-level section labels above — the same
+`meta.canonical_id` / `section_path` the parser stamps is what a
+comparison layer aligns on.
+
+New module `_edgar_diff.py` (phase 1 for compute + tags + view; phase 2
+for the minting surfaces):
+
+- **Align.** `find_prior_ref(store, ref)` finds the most-recent
+  locally-ingested **same-form** filing for the same CIK with an earlier
+  period/filed date (10-Q vs prior 10-Q, 10-K vs prior 10-K).
+- **Diff.** `diff_sections(current, prior)` is a **pure** function over
+  the two filings grouped by `canonical_id`. It reports added / removed
+  sections and, for changed sections, paragraph-level additions/removals
+  (new risk factors, changed MD&A). "Material" = raw-text SequenceMatcher
+  ratio below `_MATERIAL_CHANGE_RATIO` **and** a non-empty paragraph-level
+  set difference (so whitespace churn / reordering are filtered).
+- **Surface (all three, per the stakeholder):**
+  - `view='diff'` on the handler renders the section-by-section delta and
+    stamps `changed:<canonical_id>` + `new-risk-factor` open tags on the
+    current filing (so `search(tags=['changed:item-1a'])` finds every
+    filing whose risk factors moved).
+  - **Findings** — each material change mints a `finding` linked to both
+    filings (phase 2, in the watch runner).
+  - **Morning brief** — material changes mint a `news` ref so the change
+    folds into the 06:00 briefing (phase 2, extends notability→news).
+
+Build order: `_edgar_diff.py` slots after step 7 (the handler wires
+`view='diff'`); the findings/news minting is part of step 10 (phase 2).
+Tests: `tests/test_edgar_diff.py` (pure `diff_sections` + `diff_tags`)
+plus the end-to-end diff case in `tests/test_edgar_handler.py`.
+
 ## Configuration summary
 
 ```bash

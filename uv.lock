@@ -2777,7 +2777,7 @@ wheels = [
 
 [[package]]
 name = "precis-mcp"
-version = "8.20.1"
+version = "8.21.0"
 source = { editable = "." }
 dependencies = [
     { name = "ftfy" },
@@ -2843,6 +2843,9 @@ docx = [
     { name = "lxml" },
     { name = "python-docx" },
 ]
+edgar = [
+    { name = "httpx" },
+]
 embed = [
     { name = "sentence-transformers" },
 ]
@@ -2902,6 +2905,7 @@ requires-dist = [
     { name = "feedparser", marker = "extra == 'external'", specifier = ">=6.0" },
     { name = "ftfy", specifier = ">=6.3" },
     { name = "habanero", marker = "extra == 'paper'", specifier = ">=2.0" },
+    { name = "httpx", marker = "extra == 'edgar'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'external'", specifier = ">=0.27" },
     { name = "jinja2", marker = "extra == 'web'", specifier = ">=3.1" },
     { name = "latex2mathml", marker = "extra == 'docx'", specifier = ">=3.77" },
@@ -2916,7 +2920,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24" },
     { name = "pgvector", specifier = ">=0.3.0" },
     { name = "platformdirs", specifier = ">=4.0" },
-    { name = "precis-mcp", extras = ["embed", "paper", "docx", "tex", "calc", "plot", "external", "patent", "web", "cad-export"], marker = "extra == 'all'" },
+    { name = "precis-mcp", extras = ["embed", "paper", "docx", "tex", "calc", "plot", "external", "patent", "edgar", "web", "cad-export"], marker = "extra == 'all'" },
     { name = "prompt-toolkit", specifier = ">=3.0" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "pydantic", marker = "extra == 'plot'", specifier = ">=2.0" },
@@ -2940,7 +2944,7 @@ requires-dist = [
     { name = "wolframalpha", marker = "extra == 'external'", specifier = ">=5.0" },
     { name = "youtube-transcript-api", marker = "extra == 'external'", specifier = ">=1.0" },
 ]
-provides-extras = ["embed", "paper", "docx", "tex", "calc", "dft", "dft-ml", "plot", "external", "patent", "web", "cad-export", "cad-step", "pcb", "all"]
+provides-extras = ["embed", "paper", "docx", "tex", "calc", "dft", "dft-ml", "plot", "external", "patent", "web", "cad-export", "cad-step", "pcb", "edgar", "all"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "8.20.1"
+version = "8.21.0"
 description = "MCP server giving LLM agents a seven-verb API over papers, documents, code, personal state, patents, and cached web/Wolfram/YouTube tool calls — backed by PostgreSQL + pgvector"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -214,7 +214,11 @@ cad-step = ["cadquery-ocp-novtk>=7.8"]
 # autorouter and kicad-cli (``precis.pcb.route`` / gerber export) are external
 # binaries, gated at call time — not Python deps, so not listed here.
 pcb = ["easyeda2kicad>=0.8"]
-all = ["precis-mcp[embed,paper,docx,tex,calc,plot,external,patent,web,cad-export]"]
+# EDGAR kind — SEC filings. Free, key-free (descriptive User-Agent only).
+# Needs only httpx (the shared outbound-HTTP seam); the filing parser is
+# stdlib. No new top-level dependency.
+edgar = ["httpx>=0.27"]
+all = ["precis-mcp[embed,paper,docx,tex,calc,plot,external,patent,edgar,web,cad-export]"]
 
 [project.scripts]
 precis = "precis.cli:main"

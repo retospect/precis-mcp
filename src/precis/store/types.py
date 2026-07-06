@@ -772,6 +772,10 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # (cluster-wide cache discipline). STATUS doesn't apply — patents
     # don't have a workflow lifecycle.
     "patent": frozenset({"SRC", "CACHE"}),
+    # EDGAR filings are public record; SRC (primary/secondary provenance)
+    # + CACHE (cluster cache discipline). No STATUS lifecycle. Company
+    # name / ticker / form live in refs.meta + open tags, not closed axes.
+    "edgar": frozenset({"SRC", "CACHE"}),
 }
 
 

@@ -868,6 +868,17 @@ def boot(
 
             _gated(PatentHandler)
 
+        # EDGAR — SEC filings. ``EdgarHandler.spec.requires_env`` declares
+        # PRECIS_EDGAR_USER_AGENT / PRECIS_EDGAR_RAW_ROOT, so the kind_gate
+        # skips the handler cleanly when either is missing (and surfaces it
+        # on the cold-start ``Kinds unavailable:`` banner). Unlike patent,
+        # the SEC APIs need no credentials and the HTTP dep (``httpx``) is
+        # already a top-level dep (web / news), so no package probe is
+        # needed — the env gate alone is honest here.
+        from precis.handlers.edgar import EdgarHandler
+
+        _gated(EdgarHandler)
+
     # Third-party plugins load last. See ``docs/user-facing/plugin-authoring.md``
     # and :func:`_load_plugins` for the contract and failure modes.
     # Built-ins win on kind-name collisions because they register
