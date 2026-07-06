@@ -67,6 +67,7 @@ Don't use a job for work that fits inside the current conversation.
 | `struct_relax`      | `ssh_node`      | DFT/ML relax of a `structure` on a GPU node   |
 | `good_search`       | `coordinator`   | Deep paper-search campaign — normally minted for you by `search(kind='paper', q=…, good=True)`, not submitted by hand (see `precis-search-help`) |
 | `good_search_triage`| `claude_inproc` | A `good_search` triage batch (internal — the campaign spawns these itself) |
+| `sandbox_run`       | `claude_docker` | Run an open-ended coding task in a throwaway, cgroup-capped container on an `agent_sandbox_host` (slice 1: `mode:build` only). **Dark** — the `job_claude_docker` pass registers only under `PRECIS_SANDBOX_ENABLED=1`, so a put on a host without it queues a job nothing claims. Params: `prompt`, `target_node` (a sandbox host, never melchior), `wall_seconds`. `validate_submit` rejects `mode:run` / `precis_access:read` / `secrets` / a non-sandbox target / a missing `CLAUDE_CODE_OAUTH_TOKEN`. See `docs/design/sandbox-run.md`. |
 
 (More land as new modules under `precis/workers/job_types/`. See
 the per-type recipe skills for invocation details.)

@@ -223,9 +223,18 @@ class JobHandler(NumericRefHandler):
         # ``PRECIS_FIX_REPO_DIR`` fallback). Surfacing the
         # rejection at put time avoids a zombie queued job that
         # would only fail when the runner picked it up.
-        if spec.validate_submit is not None and target is not None:
+        # Fires for a linked put (``target`` = the gripe/todo the job
+        # acts on, passed as ``gripe_id``) AND for a parent-only put
+        # (``target is None`` → ``gripe_id=None``). The latter is how a
+        # linkless job_type like ``sandbox_run`` gets its fail-closed
+        # gate at put time; ``validate_submit`` signatures accept
+        # ``gripe_id=None`` (fix_gripe always carries a link, so it still
+        # sees a real id).
+        if spec.validate_submit is not None:
             err = spec.validate_submit(
-                self.store, gripe_id=target.ref_id, params=params
+                self.store,
+                gripe_id=(target.ref_id if target is not None else None),
+                params=params,
             )
             if err is not None:
                 raise BadInput(err)

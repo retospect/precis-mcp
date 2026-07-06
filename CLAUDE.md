@@ -162,7 +162,10 @@ driver; adding one is a `Reviewer(...)` instance):
   `job_coordinator`, `job_ssh_node`, `wake_runner`, `clusterize`,
   `corpus_reconcile`, `paper_reconcile`.
   (`llm_summarize` is opt-in on top — env `PRECIS_SUMMARIZE_LLM=1` or
-  `--only llm_summarize`; enabled on melchior as a deliberate trickle.)
+  `--only llm_summarize`; enabled on melchior as a deliberate trickle.
+  `job_claude_docker` is opt-in on top too — env `PRECIS_SANDBOX_ENABLED=1`
+  or `--only job_claude_docker`; default-OFF so the slice merges dark,
+  meant only for the `agent_sandbox_host` nodes, **never melchior**.)
 * `precis worker --profile=agent` runs the passes that need the
   hermes OAuth / `~/.claude` state on melchior: the LLM-heavy
   reviewers (`structural`, `deep_review`) plus `job_claude_inproc`
@@ -328,7 +331,13 @@ The master kinds table lives in the `precis-overview` skill.
   sweeper GCs past `PRECIS_AGENTLOG_RETENTION_DAYS`. Skill: `precis-agentlog-help`.
 - **`job` substrate** — `meta.job_type`+`meta.executor`, `STATUS:` tag,
   forensics as `job_event`/`job_summary`/`job_result` chunks; `claude_inproc`
-  executor; `fix_gripe` is the reference job_type. Skill: `precis-job-help`.
+  executor; `fix_gripe` is the reference job_type. The `claude_docker`
+  executor (`job_claude_docker` pass, **default-OFF** under
+  `PRECIS_SANDBOX_ENABLED`) runs the `sandbox_run` job_type as a detached,
+  cgroup-capped, poll-reaped container on an `agent_sandbox_host` — slice 1
+  is the stub-podman substrate (mint→claim→launch→poll→terminal, `mode:build`
+  only; harvest is slice 2). See `docs/design/sandbox-run.md`. Skill:
+  `precis-job-help`.
 - **`structure`** — atomistic cell+bond IR (ADR 0043); typed ops + in-memory
   probes, relax on the GPU node (derived-lane job, ADR 0044), cursors/measures
   on `struct_measures`, web `/structure`. Skill: `precis-structure-help`.

@@ -47,6 +47,13 @@ EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
     # run …``). Phase 1: static capability set = the spark node.
     # Host-aware PROVIDES is a later refinement (precis-dispatch doc).
     "ssh_node": frozenset({"has_gpaw"}),
+    # ``claude_docker`` runs a ``sandbox_run`` job as a detached,
+    # cgroup-capped container on an ``agent_sandbox_host`` — launch,
+    # poll by name, reap (ADR 0048 / docs/design/sandbox-run.md). The
+    # pass is registered only where ``PRECIS_SANDBOX_ENABLED=1`` (the
+    # sandbox hosts), so this capability set is only *satisfiable*
+    # there; a data host without podman + the OAuth token can't run it.
+    "claude_docker": frozenset({"podman", "claude_oauth"}),
 }
 
 

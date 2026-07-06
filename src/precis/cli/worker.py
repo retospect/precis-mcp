@@ -545,6 +545,35 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_job_ssh_node_pass)
 
+        # job_claude_docker — drains sandbox_run jobs (meta.executor==
+        # 'claude_docker') by launching a detached, cgroup-capped
+        # container, polling it by name, and reaping it (ADR 0048 /
+        # docs/design/sandbox-run.md). Registered **default-OFF** — only
+        # under PRECIS_SANDBOX_ENABLED=1 (the sandbox hosts) or an
+        # explicit `--only job_claude_docker`, mirroring classify. So a
+        # deploy of this slice changes nothing until a human enables it
+        # on a box with podman + a dedicated CLAUDE_CODE_OAUTH_TOKEN.
+        if _pass_enabled("job_claude_docker") or os.environ.get(
+            "PRECIS_SANDBOX_ENABLED"
+        ):
+            from precis.workers.executors.claude_docker import (
+                run_claude_docker_pass,
+            )
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _job_claude_docker_pass(batch_size: int) -> _BatchResult:
+                # Detached-poll: each tick is a cheap inspect + heartbeat
+                # plus up to a couple of launches, so the cap is small.
+                r = run_claude_docker_pass(store, limit=min(batch_size, 4))
+                return _BatchResult(
+                    handler="job_claude_docker",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_job_claude_docker_pass)
+
         # wake_runner — re-queues paused coordinator jobs whose wake
         # condition has fired (children done, time reached, ask-user
         # tag cleared, manual_kick tag added, or cancel_requested

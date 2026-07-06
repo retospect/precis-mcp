@@ -164,6 +164,26 @@ def _load_cad_discuss() -> JobTypeSpec:
     return cad_discuss.SPEC
 
 
+def _load_sandbox_run() -> JobTypeSpec:
+    # Open-ended coding task in a throwaway container, run by the
+    # claude_docker poll executor (ADR 0048 / docs/design/sandbox-run.md).
+    # The executor pass is gated on PRECIS_SANDBOX_ENABLED, but the
+    # job_type registers unconditionally so put/dispatch validation and
+    # error messages work everywhere (a put on a non-sandbox host is
+    # rejected by validate_submit, not by an unknown-job_type error).
+    from precis.workers.job_types import sandbox_run
+
+    return JobTypeSpec(
+        name="sandbox_run",
+        params_schema=sandbox_run.PARAMS_SCHEMA,
+        compatible_executors=sandbox_run.COMPATIBLE_EXECUTORS,
+        requires=sandbox_run.REQUIRES,
+        description=sandbox_run.DESCRIPTION,
+        run=sandbox_run.run,
+        validate_submit=sandbox_run.validate_submit,
+    )
+
+
 def _load_good_search() -> JobTypeSpec:
     # Deep-search coordinator campaign (fuse → triage children → merged
     # verdict). Runs via plugin dispatch under the coordinator executor.
@@ -328,6 +348,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "cad_discuss":
         _REGISTRY["cad_discuss"] = _load_cad_discuss()
         return _REGISTRY["cad_discuss"]
+    if name == "sandbox_run":
+        _REGISTRY["sandbox_run"] = _load_sandbox_run()
+        return _REGISTRY["sandbox_run"]
     if name == "good_search":
         _REGISTRY["good_search"] = _load_good_search()
         return _REGISTRY["good_search"]
@@ -356,6 +379,7 @@ def known_job_types() -> list[str]:
         "structure_propose",
         "cad_propose",
         "cad_discuss",
+        "sandbox_run",
         "good_search",
         "good_search_triage",
     ]
