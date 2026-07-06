@@ -40,13 +40,16 @@ import logging
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml  # type: ignore[import-untyped]
 
 from precis.embedder import Embedder
 from precis.store import Store
 from precis.store.types import BlockInsert, Tag
+
+if TYPE_CHECKING:
+    from psycopg import Connection
 
 log = logging.getLogger(__name__)
 
@@ -168,11 +171,19 @@ def ingest_paper(
     embedder: Embedder | None,
     overwrite: bool = False,
     dry_run: bool = False,
+    conn: Connection | None = None,
 ) -> dict[str, int]:
     """Ingest one tradition's YAML into ``oracle:<slug>``.
 
     Returns stats: ``{created, replaced, chunks, skipped, errors}``.
     Writes are skipped when ``dry_run=True``.
+
+    ``conn`` — when supplied, all writes participate in the caller's
+    transaction and exceptions **propagate** (so an atomic multi-file
+    re-ingest rolls back as a unit). When ``None`` (the standalone CLI
+    case) each file gets its own ``store.tx()`` and per-file errors are
+    swallowed into ``stats['errors']`` so one bad file can't abort a
+    whole directory run.
     """
     if not yaml_path.exists():
         raise FileNotFoundError(yaml_path)
@@ -263,15 +274,22 @@ def ingest_paper(
         "ingested_at": _now_iso(),
     }
 
-    try:
-        with store.tx() as conn:
-            if existing is not None:
-                # Overwrite path: delete the existing ref outright (cascades
-                # to blocks + tags) and re-create from scratch. Simpler
-                # than a partial replace and keeps the ref-id discipline
-                # honest (ingested_at moves forward, slug stable).
-                conn.execute("DELETE FROM refs WHERE ref_id = %s", (existing.id,))
-
+    def _write(c: Connection) -> None:
+        if existing is not None:
+            # Idempotent in-place overwrite: keep the ref_id (and its
+            # cite_key) STABLE. Two wins over the old delete-and-recreate:
+            # (1) the oracle's ``or<id>`` handle survives a corpus
+            # re-ingest, so citations/links pointing at an entry don't
+            # dangle every corpus bump; (2) concurrent racers converge on
+            # the one row instead of minting duplicate refs whose cite_key
+            # insert then silently no-ops (`ON CONFLICT DO NOTHING`),
+            # leaving a slug-less orphan. Body blocks are replaced
+            # wholesale — DELETE+INSERT is the sanctioned "update a chunk"
+            # path (it re-runs the embed/summary cascade).
+            store.update_ref(existing.id, title=title, meta_patch=ref_meta, conn=c)
+            c.execute("DELETE FROM chunks WHERE ref_id = %s", (existing.id,))
+            ref_id = existing.id
+        else:
             # provider stays NULL: oracle YAMLs aren't sourced from any
             # of the registered upstream providers (arxiv, crossref, …).
             # Origin is encoded via the ``built-in`` open tag instead.
@@ -280,23 +298,29 @@ def ingest_paper(
                 slug=slug,
                 title=title,
                 meta=ref_meta,
-                conn=conn,
+                conn=c,
             )
-            store.insert_blocks(ref.id, inserts, conn=conn)
+            ref_id = ref.id
+        store.insert_blocks(ref_id, inserts, conn=c)
+        for tag_str in open_tags:
+            store.add_tag(ref_id, Tag.open(tag_str), set_by="system", conn=c)
 
-            for tag_str in open_tags:
-                store.add_tag(
-                    ref.id,
-                    Tag.open(tag_str),
-                    set_by="system",
-                    conn=conn,
-                )
-
-        if existing is not None:
-            stats["replaced"] = 1
-        else:
-            stats["created"] = 1
+    def _record_success() -> None:
+        stats["replaced" if existing is not None else "created"] = 1
         stats["chunks"] = len(inserts)
+
+    # Shared-conn (atomic multi-file) mode: let exceptions propagate so
+    # the caller's transaction rolls back the whole re-ingest.
+    if conn is not None:
+        _write(conn)
+        _record_success()
+        return stats
+
+    # Standalone mode: own tx, swallow per-file errors.
+    try:
+        with store.tx() as own_conn:
+            _write(own_conn)
+        _record_success()
     except Exception as exc:
         log.error("ingest failed for oracle %r: %s", slug, exc)
         stats["errors"] += 1
@@ -311,8 +335,13 @@ def ingest_directory(
     embedder: Embedder | None,
     overwrite: bool = False,
     dry_run: bool = False,
+    conn: Connection | None = None,
 ) -> dict[str, Any]:
     """Ingest every ``*.yaml`` / ``*.yml`` file under ``src_dir``.
+
+    ``conn`` — when supplied, every file's writes run inside the caller's
+    single transaction (atomic all-or-nothing re-ingest); exceptions
+    propagate. See :func:`ingest_paper`.
 
     Returns aggregate stats with a per-file breakdown:
 
@@ -343,6 +372,7 @@ def ingest_directory(
             embedder=embedder,
             overwrite=overwrite,
             dry_run=dry_run,
+            conn=conn,
         )
         aggregate["files"] += 1
         for k in ("created", "replaced", "chunks", "skipped", "errors"):

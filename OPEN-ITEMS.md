@@ -501,43 +501,55 @@ Idle-time self-improvement. Part A + the Part B lens seed are **built**
   documented as *p-hacking made honest*. `get(kind='oracle',
   args={'lens': ['sci']})` exposes the draw on the agent surface.
 
-### Residual — orphaned oracle refs from boot-time re-ingest race (filed 2026-07-06, Opus-authored)
+### 🟢 Orphaned oracle refs from boot-time re-ingest race — FIXED (2026-07-06, Opus-authored)
 
 **Surfaced while verifying the persona→oracle deploy (d7368c28).** Prod
-`precis_prod` carries **13 orphaned `kind='oracle'` refs** — live
-(`deleted_at IS NULL`), *no* `cite_key` identifier (so `slug=None`), each
-a full duplicate of a real tradition with all its embedded blocks (I-Ching
-×64, Stoic ×22, Zen, Buddhist, Chengyu, Engineering, …). They were **not**
-created by tonight's deploy (that produced a clean 12) — the burst
-timestamps are the **07-04 00:12** and **07-05 12:20** oracle-corpus
-changes. So this is pre-existing debris that recurs on *some* oracle
-re-ingests, not a regression from this change.
+carried **13 orphaned `kind='oracle'` refs** — live (`deleted_at IS NULL`),
+*no* `cite_key` (so `slug=None`), each a full duplicate of a real tradition
+with all its blocks. The 2026-07-05 deploy produced a clean 12; the orphans
+were pre-existing debris from the **07-04 00:12** and **07-05 12:20**
+oracle-corpus changes.
 
-- **Impact.** Low but real: (1) `search(kind='oracle', …)` returns
-  duplicate hits from the orphan blocks; (2) the new lens draw's "rest"
-  bucket over-weights traditions that have an orphan duplicate (even
-  across traditions → a duplicated tradition gets ~2× share). The
-  favoured (`scientists`) draw is clean. No correctness break.
-- **Root cause — NEEDS INVESTIGATION before a fix (don't blind-fix).**
-  `jobs/oracle_sync._try_advisory_lock` takes `pg_try_advisory_lock` on a
-  pool connection inside a `with` block that returns the connection
-  immediately — through **pgbouncer transaction pooling the session ends
-  and the advisory lock is released before the ingest even runs**, so the
-  4-host post-deploy boot re-ingest has *no* mutual exclusion. Combined
-  with `ingest_paper(overwrite=True)` doing DELETE+INSERT (new ref_ids),
-  a race/interrupted-boot double-ingest orphans the loser (the `cite_key`
-  UNIQUE keeps only the last writer's identifier). Candidate fixes: hold
-  `pg_advisory_xact_lock` for the whole ingest tx; or gate re-ingest to a
-  single host; or make overwrite idempotent (UPSERT by slug, stable
-  ref_id) so a race converges instead of orphaning. Confirm which of
-  {pooler lock no-op, interrupted-boot double-run, multi-host race} is
-  the actual trigger first.
-- **Immediate remediation (safe, reversible, NOT yet applied — needs
-  Reto's ok to mutate prod).** Soft-delete the 13 orphans:
+**Root cause — three compounding bugs (all now understood + fixed):**
+1. `jobs/oracle_sync` took a **session-level** `pg_try_advisory_lock` on a
+   pool connection returned immediately — through **pgbouncer `pool_mode =
+   transaction`** the lock strands on a recycled backend and re-acquires
+   *re-entrantly* (false success) → **zero mutual exclusion**, so all 4
+   post-deploy boots re-ingested concurrently.
+2. `insert_ref` attaches the cite_key with `ON CONFLICT (id_kind,id_value)
+   DO NOTHING` — so a racing loser's ref + blocks commit but its cite_key
+   is *silently dropped* → the slug-less orphan (rather than a safe
+   unique-violation rollback).
+3. `ingest_paper(overwrite=True)` did DELETE-ref + INSERT-new-ref → a fresh
+   `ref_id` every corpus bump, which also **churns the `or<id>` handle and
+   dangles any citation/link to an oracle entry** (an independent bug).
+
+**Fix (shipped this session):**
+- **A — real lock + atomic tx.** `oracle_sync.maybe_reingest` now takes
+  `pg_try_advisory_xact_lock` inside one `store.tx()` spanning the whole
+  re-ingest (transaction-scoped → pinned to the tx backend → works through
+  transaction pooling; auto-releases on commit; loser bails). State markers
+  write on the same tx (`_write_state_conn`) so a crash can't leave the
+  marker ahead of the data. Non-PG stores (test stubs, `pool is None`)
+  degrade to the direct path. Old `_try_advisory_lock` /
+  `_release_advisory_lock` removed.
+- **C — idempotent in-place overwrite.** `ingest_paper` now `update_ref` +
+  `DELETE chunks` + re-insert under the **stable ref_id** (cite_key never
+  moves). Fixes handle-churn *and* means a race converges on one row
+  instead of orphaning. Tests: `test_overwrite_keeps_ref_id_stable`,
+  `test_shared_conn_ingest_is_atomic`, `test_advisory_xact_lock_sql_is_valid`.
+- Skipped **B** (loosening `insert_ref`'s shared `ON CONFLICT` — too broad;
+  C means the oracle path never re-claims a cite_key anyway).
+- **Prod cleanup done:** the 13 orphans soft-deleted 2026-07-06 (reversible
   `UPDATE refs SET deleted_at=now() WHERE kind='oracle' AND deleted_at IS
-  NULL AND NOT EXISTS (SELECT 1 FROM ref_identifiers ri WHERE
-  ri.ref_id=refs.ref_id AND ri.id_kind='cite_key');` (verify the count is
-  13 first). Reversible; clears the search/lens pollution.
+  NULL AND NOT EXISTS(cite_key)`); prod now 12 clean traditions, 0 orphans.
+
+**Follow-up (filed, not chased):** `workers/paper_reconcile.py` uses the
+*same* session-`pg_try_advisory_lock`-over-pool pattern (line ~100). There
+it's an **advisory single-runner optimisation** over an idempotent pass, so
+the worst case is two nodes running the reconcile (wasteful, not
+corrupting) — lower priority, but the same `pg_try_advisory_xact_lock`
+(or accepting the double-run) should be applied for consistency.
 
 ### Residuals (filed 2026-07-04)
 

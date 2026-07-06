@@ -4,8 +4,14 @@ Runs at boot time on every precis-mcp process that has the oracle
 handler registered. Compares the bundled oracle YAML's
 *(wheel_version, sha256)* tuple against what's recorded in the
 ``system`` table; re-ingests only when the local copy is **strictly
-newer**, holding a Postgres advisory lock to prevent concurrent
-boots from racing each other.
+newer**, holding a Postgres **transaction-scoped** advisory lock
+(``pg_try_advisory_xact_lock``) across one transaction that spans the
+whole re-ingest so concurrent boots can't race. A *session*-level lock
+would be unsafe here — through pgbouncer transaction pooling it strands
+on a recycled backend and re-acquires re-entrantly (false success),
+which orphaned oracle refs in prod. The re-ingest is also idempotent
+(``ingest_paper`` overwrites in place, keeping ref_ids stable), so even
+without the lock a race converges instead of orphaning.
 
 Why version + sha256:
 
@@ -36,10 +42,13 @@ import socket
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import precis as _precis_pkg
 from precis.jobs.ingest_oracles import bundled_oracle_dir, ingest_directory
+
+if TYPE_CHECKING:
+    from psycopg import Connection
 
 log = logging.getLogger(__name__)
 
@@ -185,6 +194,28 @@ def _write_state(store: Any, state: CorpusState) -> None:
         log.warning("oracle_sync: cannot write system state: %s", exc)
 
 
+def _write_state_conn(conn: Connection, state: CorpusState) -> None:
+    """Persist the four corpus-state rows on the caller's transaction.
+
+    Used by the Postgres re-ingest path so the version/sha markers commit
+    **atomically with the data** — a crash mid-ingest can't leave the
+    marker claiming a corpus that didn't fully land.
+    """
+    now = datetime.now(UTC).replace(tzinfo=None).strftime("%Y-%m-%dT%H:%M:%SZ")
+    host = socket.gethostname() or "unknown"
+    for key, val in (
+        (_KEY_VERSION, str(state.version)),
+        (_KEY_SHA256, state.sha256),
+        (_KEY_INGESTED_AT, now),
+        (_KEY_INGESTED_BY, host),
+    ):
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+            (key, val),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Boot-time entry point
 # ---------------------------------------------------------------------------
@@ -255,112 +286,108 @@ def maybe_reingest(
                 "sha256": local.sha256,
             }
 
-    # Take the advisory lock. Multiple workers booting in parallel
-    # will all race here; the loser sees ``locked`` and bails — the
-    # winner's ingest is what they would have written anyway.
-    if not _try_advisory_lock(store):
-        return {"status": "locked"}
+    # Serialise the ingest across concurrent boots. A SESSION-level
+    # advisory lock is UNSAFE through pgbouncer transaction pooling: the
+    # lock is acquired on whatever backend serves the statement, then that
+    # backend is recycled to another client while the lock lingers — and
+    # session locks are re-entrant, so a second host's acquire landing on
+    # the same backend gets a false success. Net: no mutual exclusion, and
+    # concurrent re-ingests orphaned oracle refs in prod. A
+    # TRANSACTION-scoped lock held for one tx that spans the whole
+    # re-ingest is pinned to that tx's backend (which pooling keeps
+    # stable) and auto-releases on commit — real exclusion, no leak.
+    pool = getattr(store, "pool", None)
+    if pool is None:
+        # Non-Postgres store (test stub / no pool): can't hold a lock or
+        # span a tx. Ingest directly — mirrors the old degrade-gracefully
+        # path; the version+sha gate above is the only serialisation.
+        return _do_ingest(store, embedder, src_dir, local, force=force, conn=None)
 
+    lock_id = _advisory_lock_id()
     try:
-        # Re-read after acquiring the lock: another worker may have
-        # raced us and already done the work. Skip if so.
-        post_stored = _read_state(store)
-        if post_stored is not None and post_stored[0] == -1:
-            return {"status": "error", "reason": "could not read system state"}
-        post_version = post_stored[0] if post_stored else 0
-        post_sha = post_stored[1] if post_stored else ""
-        if not force:
-            if local.version < post_version:
-                return {
-                    "status": "older_local",
-                    "local_version": local.version,
-                    "stored_version": post_version,
-                }
-            if local.version == post_version and local.sha256 == post_sha:
-                return {
-                    "status": "up_to_date",
-                    "version": local.version,
-                    "sha256": local.sha256,
-                }
+        with store.tx() as conn:
+            got = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(%s)", (lock_id,)
+            ).fetchone()
+            if not (got and got[0]):
+                # A peer holds the ingest lock; it writes the same content,
+                # so bail. The (empty) tx commits and releases nothing.
+                return {"status": "locked"}
+            # All writes below run inside this one tx: atomic + lock-held.
+            return _do_ingest(store, embedder, src_dir, local, force=force, conn=conn)
+    except Exception as exc:
+        # Any ingest error rolls the whole re-ingest back (no half-state,
+        # no orphans) — boot continues; the next boot retries.
+        log.warning("oracle_sync: ingest failed: %s", exc)
+        return {"status": "error", "reason": str(exc)}
 
-        log.info(
-            "oracle_sync: ingesting bundled oracle dir (local=%d/%s, stored=%d/%s)",
-            local.version,
-            local.sha256[:8],
-            post_version,
-            (post_sha or "—")[:8],
-        )
 
-        try:
-            agg = ingest_directory(
-                src_dir,
-                store=store,
-                embedder=embedder,
-                overwrite=True,
-                dry_run=False,
-            )
-        except Exception as exc:  # pragma: no cover — ingest failure
-            log.warning("oracle_sync: ingest failed: %s", exc)
-            return {"status": "error", "reason": str(exc)}
+def _do_ingest(
+    store: Any,
+    embedder: Any,
+    src_dir: Path,
+    local: CorpusState,
+    *,
+    force: bool,
+    conn: Connection | None,
+) -> dict[str, Any]:
+    """Post-lock re-check + ingest + state write.
 
+    Shared by the Postgres (``conn`` set → atomic, lock-held) and the
+    non-PG degrade (``conn=None``) paths. Re-reads committed state so a
+    racer that finished between the pre-lock check and here is a no-op.
+    """
+    post_stored = _read_state(store)
+    if post_stored is not None and post_stored[0] == -1:
+        return {"status": "error", "reason": "could not read system state"}
+    post_version = post_stored[0] if post_stored else 0
+    post_sha = post_stored[1] if post_stored else ""
+    if not force:
+        if local.version < post_version:
+            return {
+                "status": "older_local",
+                "local_version": local.version,
+                "stored_version": post_version,
+            }
+        if local.version == post_version and local.sha256 == post_sha:
+            return {
+                "status": "up_to_date",
+                "version": local.version,
+                "sha256": local.sha256,
+            }
+
+    log.info(
+        "oracle_sync: ingesting bundled oracle dir (local=%d/%s, stored=%d/%s)",
+        local.version,
+        local.sha256[:8],
+        post_version,
+        (post_sha or "—")[:8],
+    )
+
+    agg = ingest_directory(
+        src_dir,
+        store=store,
+        embedder=embedder,
+        overwrite=True,
+        dry_run=False,
+        conn=conn,
+    )
+
+    # Persist state atomically with the data on the PG path (same tx);
+    # best-effort on the degrade path.
+    if conn is not None:
+        _write_state_conn(conn, local)
+    else:
         _write_state(store, local)
-        return {
-            "status": "ingested",
-            "version": local.version,
-            "sha256": local.sha256,
-            "files": agg.get("files", 0),
-            "created": agg.get("created", 0),
-            "replaced": agg.get("replaced", 0),
-            "errors": agg.get("errors", 0),
-        }
-    finally:
-        _release_advisory_lock(store)
-
-
-# ---------------------------------------------------------------------------
-# Advisory-lock helpers
-# ---------------------------------------------------------------------------
-
-
-def _try_advisory_lock(store: Any) -> bool:
-    """Try-acquire the oracle-sync advisory lock.
-
-    Uses ``pg_try_advisory_lock(BIGINT)`` so concurrent boots don't
-    race the ingest. Returns True on acquisition, False otherwise.
-    Any error (e.g. SQLite test fixture, mock store without
-    ``pool``) is logged at debug and treated as "not Postgres,
-    don't lock" — the gate still works via the version+sha checks
-    above, just without cross-process serialisation.
-    """
-    lock_id = _advisory_lock_id()
-    pool = getattr(store, "pool", None)
-    if pool is None:
-        return True  # no pool → no lock; degrades gracefully
-    try:
-        with pool.connection() as conn:
-            row = conn.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,)).fetchone()
-        return bool(row and row[0])
-    except Exception as exc:
-        log.debug("oracle_sync: advisory_lock probe failed: %s", exc)
-        return True  # fall through; no cross-process safety today
-
-
-def _release_advisory_lock(store: Any) -> None:
-    """Release the oracle-sync advisory lock.
-
-    Errors are swallowed at debug level — Postgres releases all
-    advisory locks at session end anyway, so a failed unlock leaves
-    no permanent state behind.
-    """
-    lock_id = _advisory_lock_id()
-    pool = getattr(store, "pool", None)
-    if pool is None:
-        return
-    try:
-        with pool.connection() as conn:
-            conn.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
-    except Exception as exc:
-        log.debug("oracle_sync: advisory_unlock failed: %s", exc)
+    return {
+        "status": "ingested",
+        "version": local.version,
+        "sha256": local.sha256,
+        "files": agg.get("files", 0),
+        "created": agg.get("created", 0),
+        "replaced": agg.get("replaced", 0),
+        "errors": agg.get("errors", 0),
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -390,7 +390,12 @@ def test_build_runtime_resolves_default_tags_from_config(
     from precis.config import PrecisConfig
     from precis.runtime import build_runtime
 
-    config = PrecisConfig(default_tags="fbproj,2026-q2")
+    # database_url=None keeps build_runtime from opening a real store pool
+    # (it only connects when database_url is truthy). Without this the test
+    # inherits the ambient PRECIS_DATABASE_URL and tries to reach the real
+    # pgbouncer — which flakes with a 10s PoolTimeout under the concurrent
+    # full-suite gate. This test only cares about default_tags_resolved.
+    config = PrecisConfig(default_tags="fbproj,2026-q2", database_url=None)
     monkeypatch.setattr(
         "precis.dispatch.boot",
         lambda **_kw: MagicMock(kinds=set()),
@@ -404,7 +409,9 @@ def test_build_runtime_default_tags_default_empty(monkeypatch) -> None:
     from precis.config import PrecisConfig
     from precis.runtime import build_runtime
 
-    config = PrecisConfig(default_tags=None)
+    # database_url=None → build_runtime skips the store pool (see the
+    # sibling test above); keeps this hermetic instead of hitting a real DB.
+    config = PrecisConfig(default_tags=None, database_url=None)
     monkeypatch.setattr(
         "precis.dispatch.boot",
         lambda **_kw: MagicMock(kinds=set()),

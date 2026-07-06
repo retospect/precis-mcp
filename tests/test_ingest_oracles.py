@@ -239,6 +239,102 @@ class TestIngestPaper:
         assert len(blocks) == 1
         assert blocks[0].text.startswith("Replaced.")
 
+    def test_overwrite_keeps_ref_id_stable(self, store: Store, yaml_dir: Path) -> None:
+        """Overwrite updates in place — the ref_id (and its cite_key /
+        ``or<id>`` handle) survives a re-ingest.
+
+        This is the anti-orphan + anti-dangling-handle property: because
+        overwrite no longer deletes-and-recreates the ref, (a) citations
+        pointing at an oracle entry don't break every corpus bump, and
+        (b) concurrent boot re-ingests converge on the one row instead of
+        minting duplicate refs whose cite_key then silently no-ops into a
+        slug-less orphan.
+        """
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        ingest_paper(yaml_dir / "minitest.yaml", store=store, embedder=embedder)
+        ref1 = store.get_ref(kind="oracle", id="minitest")
+        assert ref1 is not None
+        id1 = ref1.id
+
+        # Mutate + re-ingest with overwrite.
+        (yaml_dir / "minitest.yaml").write_text(
+            textwrap.dedent(
+                """\
+                slug: minitest
+                title: Mini Test (v2)
+                tags: [mini]
+                entries:
+                  - title: Only entry
+                    body: Replaced.
+                """
+            ),
+            encoding="utf-8",
+        )
+        ingest_paper(
+            yaml_dir / "minitest.yaml",
+            store=store,
+            embedder=embedder,
+            overwrite=True,
+        )
+
+        ref2 = store.get_ref(kind="oracle", id="minitest")
+        assert ref2 is not None
+        assert ref2.id == id1, "overwrite must keep the ref_id stable"
+        assert ref2.title == "Mini Test (v2)"
+        # Exactly one live oracle ref carries this slug — no orphan dup.
+        live = [
+            r
+            for r in store.list_refs(kind="oracle", limit=1000)
+            if r.slug == "minitest"
+        ]
+        assert len(live) == 1
+
+    def test_shared_conn_ingest_is_atomic(self, store: Store, tmp_path: Path) -> None:
+        """In shared-conn mode a bad file rolls back the WHOLE re-ingest.
+
+        Fix A's atomicity guarantee: the boot re-ingest runs every file
+        in one transaction, so an interrupted/failed run leaves no
+        half-written state (which is where orphans and partial corpora
+        came from).
+        """
+        d = tmp_path / "atomic"
+        d.mkdir()
+        # Sorted glob → a_good before b_bad. a_good ingests into the tx,
+        # then b_bad (valid YAML, missing required keys) raises at
+        # validation → the shared tx rolls back a_good too.
+        (d / "a_good.yaml").write_text(
+            "slug: aaa\ntitle: Good\nentries:\n  - title: X\n    body: Y\n",
+            encoding="utf-8",
+        )
+        (d / "b_bad.yaml").write_text("x: 1\n", encoding="utf-8")
+        embedder = MockEmbedder(dim=store.embedding_dim())
+
+        with pytest.raises(ValueError):
+            with store.tx() as conn:
+                ingest_directory(
+                    d,
+                    store=store,
+                    embedder=embedder,
+                    overwrite=True,
+                    conn=conn,
+                )
+
+        # a_good was rolled back with the bad file — nothing committed.
+        assert store.get_ref(kind="oracle", id="aaa") is None
+
+    def test_advisory_xact_lock_sql_is_valid(self, store: Store) -> None:
+        """Pin that ``pg_try_advisory_xact_lock`` is a real function and
+        binds — a typo here would 500 the whole boot re-ingest."""
+        from precis.jobs.oracle_sync import _advisory_lock_id
+
+        with store.tx() as conn:
+            row = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(%s)", (_advisory_lock_id(),)
+            ).fetchone()
+        # Don't assert True (a sibling xdist tx may hold the same id) —
+        # only that the call returns a boolean.
+        assert row is not None and isinstance(row[0], bool)
+
     def test_dry_run_writes_nothing(self, store: Store, yaml_dir: Path) -> None:
         # dry_run skips both DB writes and embedder calls; passing a
         # null embedder must therefore be safe.
