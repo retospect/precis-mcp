@@ -334,6 +334,11 @@ class GripeHandler(NumericRefHandler):
                     "hand off to an agent",
                 ),
                 (
+                    f"link(kind={self.kind!r}, id={ref_id}, "
+                    f"target={self.kind!r}+':N', rel='supersedes')",
+                    "mark this as superseding/refining another",
+                ),
+                (
                     f"get(kind={self.kind!r}, id='/recent')",
                     f"recent {self._sense()} entries",
                 ),

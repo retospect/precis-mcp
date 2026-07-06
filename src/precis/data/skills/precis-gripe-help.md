@@ -202,6 +202,37 @@ link(kind='gripe', id=42, target='paper:abazari2024design', rel='related-to')
 link(kind='gripe', id=42, target='gripe:38', rel='supersedes')
 ```
 
+The supersession/related graph shows up in the `Links:` section of
+`get(kind='gripe', id=N)`, so a reader sees the relationship without
+prose spelunking — but only if you actually make the link. A prose
+pointer ("supersedes gr38") in a comment is invisible to the graph;
+planner and search can't traverse it.
+
+## Split a big gripe into focused children
+## Break one broad complaint into several actionable ones
+## Supersede a vague gripe with sharper ones
+
+A sprawling gripe ("embedders keep dying") is hard to fix as one
+unit. Split it into focused children and record the relationship as a
+**link**, not prose — do it at creation so the step never gets skipped:
+
+```python
+# child carries the supersedes link from birth
+put(kind='gripe', text='embedder health signals lie — nothing can auto-heal a wedged embedder',
+    link='gripe:50906', rel='supersedes')
+put(kind='gripe', text='decouple spark embedder from the compute GPU',
+    link='gripe:50906', rel='supersedes')
+
+# then park (or wontfix / delete) the broad parent
+put(kind='gripe', id=50906, text='split into gr51394 (health signals) + gr51395 (GPU contention)')
+tag(kind='gripe', id=50906, add=['STATUS:wontfix'])   # kept on record, superseded
+```
+
+Use `rel='supersedes'` when the child *replaces* the parent's scope,
+`rel='related-to'` when it's merely adjacent. Retire the parent
+(`delete`) only once every live thread it carried is linked out —
+otherwise you lose the trail.
+
 ## Tag the repo a gripe is about
 ## Which project is this bug in?
 
