@@ -487,12 +487,57 @@ Idle-time self-improvement. Part A + the Part B lens seed are **built**
   **off** because once on it rides *every* production agentic run
   (planner/reviewers/dream) — enable deliberately, like the classifier.
   Residuals below.
-- **Part B lens seed → BUILT.** `utils/dream_seed.py` loads
-  `data/dream_lenses.yaml` and rotates one lens per cycle (bucket by
-  ~15-min cadence) into the dream prompt's variable layer
-  (`workers/dream_agent.py`); the dream's own Step 6c gripe hook is
-  removed (Part A covers friction now). 8 figure personas + Disney
-  process lens.
+- **Part B lens seed → BUILT, then REHOMED (shipped d7368c28,
+  2026-07-05).** The single-stance persona lenses moved out of
+  `data/dream_lenses.yaml` into first-class **oracle traditions**
+  (`data/oracle/{scientists,leadership,artists}.yaml`) and are drawn via
+  a named **lens** policy (`utils/oracle_lens.py`): the dream's default
+  `sci` lens draws 50% from `scientists` and 50% evenly across the other
+  traditions (even across *traditions*, not entries). `dream_lenses.yaml`
+  now holds only the Disney **process** lens (multi-phase, doesn't fit
+  the oracle one-block shape); the worker runs it on a fraction of cycles
+  (`PRECIS_DREAM_PROCESS_PROB`, default 0.15). Round-robin coverage gave
+  way to random-with-a-diversity-floor. The oracle's randomness is now
+  documented as *p-hacking made honest*. `get(kind='oracle',
+  args={'lens': ['sci']})` exposes the draw on the agent surface.
+
+### Residual — orphaned oracle refs from boot-time re-ingest race (filed 2026-07-06, Opus-authored)
+
+**Surfaced while verifying the persona→oracle deploy (d7368c28).** Prod
+`precis_prod` carries **13 orphaned `kind='oracle'` refs** — live
+(`deleted_at IS NULL`), *no* `cite_key` identifier (so `slug=None`), each
+a full duplicate of a real tradition with all its embedded blocks (I-Ching
+×64, Stoic ×22, Zen, Buddhist, Chengyu, Engineering, …). They were **not**
+created by tonight's deploy (that produced a clean 12) — the burst
+timestamps are the **07-04 00:12** and **07-05 12:20** oracle-corpus
+changes. So this is pre-existing debris that recurs on *some* oracle
+re-ingests, not a regression from this change.
+
+- **Impact.** Low but real: (1) `search(kind='oracle', …)` returns
+  duplicate hits from the orphan blocks; (2) the new lens draw's "rest"
+  bucket over-weights traditions that have an orphan duplicate (even
+  across traditions → a duplicated tradition gets ~2× share). The
+  favoured (`scientists`) draw is clean. No correctness break.
+- **Root cause — NEEDS INVESTIGATION before a fix (don't blind-fix).**
+  `jobs/oracle_sync._try_advisory_lock` takes `pg_try_advisory_lock` on a
+  pool connection inside a `with` block that returns the connection
+  immediately — through **pgbouncer transaction pooling the session ends
+  and the advisory lock is released before the ingest even runs**, so the
+  4-host post-deploy boot re-ingest has *no* mutual exclusion. Combined
+  with `ingest_paper(overwrite=True)` doing DELETE+INSERT (new ref_ids),
+  a race/interrupted-boot double-ingest orphans the loser (the `cite_key`
+  UNIQUE keeps only the last writer's identifier). Candidate fixes: hold
+  `pg_advisory_xact_lock` for the whole ingest tx; or gate re-ingest to a
+  single host; or make overwrite idempotent (UPSERT by slug, stable
+  ref_id) so a race converges instead of orphaning. Confirm which of
+  {pooler lock no-op, interrupted-boot double-run, multi-host race} is
+  the actual trigger first.
+- **Immediate remediation (safe, reversible, NOT yet applied — needs
+  Reto's ok to mutate prod).** Soft-delete the 13 orphans:
+  `UPDATE refs SET deleted_at=now() WHERE kind='oracle' AND deleted_at IS
+  NULL AND NOT EXISTS (SELECT 1 FROM ref_identifiers ri WHERE
+  ri.ref_id=refs.ref_id AND ri.id_kind='cite_key');` (verify the count is
+  13 first). Reversible; clears the search/lens pollution.
 
 ### Residuals (filed 2026-07-04)
 
