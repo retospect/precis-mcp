@@ -78,6 +78,20 @@ class TestPutValidation:
             h.put(title="t", body="b", cited_in=None)
         assert "cited_in" in str(exc.value)
 
+    def test_only_cited_in_missing_gets_spin_breaker_hint(self, store) -> None:
+        """A claim (title+body) with no cited_in is the turn-eating spin
+        signature — the agent has no source handle and re-submits the same
+        finding every turn. The recovery hint must tell it what to do when
+        it has nothing to cite, not just repeat the happy-path example."""
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as exc:
+            h.put(title="a real claim", body="claim + setup prose", cited_in=None)
+        hint = str(exc.value.next)
+        assert "do NOT resubmit" in hint or "do not resubmit" in hint.lower()
+        # points at the real recovery paths, not the generic example
+        assert "search(kind='paper'" in hint
+        assert "not a finding" in hint.lower()
+
     def test_reports_all_missing_required_at_once(self, store) -> None:
         """An under-specified put names every missing field in one error
         — not one-per-call, which made the agent round-trip (and burn

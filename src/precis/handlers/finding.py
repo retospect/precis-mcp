@@ -160,9 +160,28 @@ class FindingHandler(NumericRefHandler):
         if not cited_in or not str(cited_in).strip():
             missing.append("cited_in=<frontier handle, e.g. miller23a~42>")
         if missing:
-            raise BadInput(
-                "put(kind='finding') requires " + ", ".join(missing),
-                next=(
+            # Spin-breaker: a caller that supplies a claim (title+body) but
+            # NO cited_in usually has no corpus source handle to give, so it
+            # re-submits the SAME claim every turn — a turn-eating loop seen
+            # across MOF/citation plan_ticks (transcript review 2026-07-06:
+            # one tick fired the identical finding 6× and never converged).
+            # Repeating the happy-path example doesn't help an agent that has
+            # nothing to cite; tell it what to do instead.
+            only_cited_in = missing == ["cited_in=<frontier handle, e.g. miller23a~42>"]
+            if only_cited_in:
+                next_hint = (
+                    "A finding MUST cite a corpus chunk — do NOT resubmit the "
+                    "same claim without cited_in. If the source paper is in "
+                    "the corpus, pass its handle: cited_in='miller23a~42' "
+                    "(chunk) or 'miller23a' (ref-level). If it is NOT in the "
+                    "corpus yet, search(kind='paper', q='…') to find it or "
+                    "stub it (put(kind='paper', doi='…')) and cite the "
+                    "resulting chunk. If this is your own synthesis with no "
+                    "single source, it is NOT a finding — write it into the "
+                    "draft or record a memory instead."
+                )
+            else:
+                next_hint = (
                     "put(kind='finding', "
                     "title='gate-bias 2.4 kV / 30 s on Si/SiO2', "
                     "body='Device prep: 2.4 kV applied for 30 s on Si/SiO2 "
@@ -172,7 +191,10 @@ class FindingHandler(NumericRefHandler):
                     "— cited_in is the frontier paper chunk the claim "
                     "starts from (ref-level 'miller23a', chunk-level "
                     "'miller23a~42', or 'paper:miller23a')"
-                ),
+                )
+            raise BadInput(
+                "put(kind='finding') requires " + ", ".join(missing),
+                next=next_hint,
             )
         if scope is not None and not isinstance(scope, dict):
             raise BadInput(

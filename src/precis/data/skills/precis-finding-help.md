@@ -71,6 +71,17 @@ Different setups need different findings even when the bare number
 is identical: 2.4 kV on Cu / N₂ is not the same finding as 2.4 kV on
 Ag / Ar.
 
+**`cited_in` is mandatory — a finding is not a free-standing note.**
+Every finding must point at the corpus chunk you read the claim in.
+If you have a claim but **no `cited_in` handle**, do *not* retry the
+same `put` — it will keep failing. Instead:
+
+- source in the corpus → cite it (`cited_in='miller23a~42'`);
+- source not ingested yet → `search(kind='paper', q='…')` to find it,
+  or stub it (`put(kind='paper', doi='…')`) and cite the result;
+- your own synthesis with no single source → it is **not** a finding;
+  write it into the draft or record a `memory` instead.
+
 ## Find an existing finding before creating one
 ## Search findings to avoid duplicates
 ## Has someone already chased this claim?
