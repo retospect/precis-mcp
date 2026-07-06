@@ -21,9 +21,16 @@ Two guards keep it from being expensive or racy:
   pass is a single cheap ``app_state`` read, so the per-minute worker loop
   doesn't re-scan the corpus.
 * **Single-runner advisory lock.** The reconcile writes corpus-wide (not
-  node-local like ``corpus_reconcile``), so a session-scoped
-  ``pg_try_advisory_lock`` ensures only one cluster node runs a given pass
-  even if two clear the throttle in the same tick. A miss simply idles.
+  node-local like ``corpus_reconcile``), so a **transaction-scoped**
+  ``pg_try_advisory_xact_lock`` — held inside one open transaction that
+  spans the whole pass — ensures only one cluster node runs a given pass
+  even if two clear the throttle in the same tick. A miss simply idles. A
+  *session*-scoped lock is unsafe here: through pgbouncer
+  ``pool_mode=transaction`` the backend holding a session lock is recycled
+  at each transaction boundary (and with autocommit, that's every
+  statement), so a peer's acquire landing on the shared backend gets a
+  re-entrant false success and both nodes run. The xact lock is pinned to
+  its transaction's backend for the pass and auto-releases on commit.
 """
 
 from __future__ import annotations
@@ -92,74 +99,79 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
         reconcile_by_title_similarity,
     )
 
-    # Single-runner lock on a dedicated autocommit connection — released on
-    # close even if the process dies. A miss means another node owns the
-    # sweep this cycle.
-    conn = psycopg.connect(dsn, autocommit=True)
+    # Single-runner lock: hold pg_try_advisory_xact_lock inside ONE open
+    # transaction on a dedicated connection for the whole pass. The lock is
+    # transaction-scoped, so pgbouncer keeps the backend pinned for the
+    # duration and it auto-releases on commit/rollback (no explicit unlock,
+    # no leak if the process dies). A session lock would be recycled at the
+    # first transaction boundary under transaction pooling — see the module
+    # docstring. The dedicated conn only holds the lock; the reconcile work
+    # runs on the ``store`` pool.
+    conn = psycopg.connect(dsn)
     try:
-        row = conn.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_KEY,)).fetchone()
-        if not (row and row[0]):
-            return idle
-    except Exception:
-        conn.close()
-        raise
+        with conn.transaction():
+            row = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(%s)", (_LOCK_KEY,)
+            ).fetchone()
+            if not (row and row[0]):
+                return idle  # another node owns the sweep this cycle
 
-    try:
-        review: list[TitleMatchReview] = []
-        title_outcomes = reconcile_by_title_similarity(
-            store, dry_run=False, limit=limit, review_out=review
-        )
-        pdf_outcomes = reconcile_by_pdf_sha256(store, dry_run=False, limit=limit)
-        doi_outcomes = reconcile_by_doi_case(store, dry_run=False, limit=limit)
-
-        # Deterministic hygiene heals (run after the merges so a fresh
-        # supersede/soft-delete is picked up the same pass).
-        from precis.ingest.paper_hygiene import (
-            collapse_superseded_chains,
-            heal_drifted_cards,
-            migrate_dangling_paper_links,
-            requeue_stranded_fetches,
-        )
-
-        healed_cards = heal_drifted_cards(store, dry_run=False, limit=limit)
-        collapsed = collapse_superseded_chains(store, dry_run=False, limit=limit)
-        relinked = migrate_dangling_paper_links(store, dry_run=False, limit=limit)
-        requeued = requeue_stranded_fetches(store, dry_run=False, limit=limit)
-        store.set_setting(_STATE_KEY, datetime.now(UTC).isoformat())
-
-        merged = sum(
-            len(o.duplicate_ref_ids)
-            for o in (*title_outcomes, *pdf_outcomes, *doi_outcomes)
-        )
-        if merged or review or healed_cards or collapsed or relinked or requeued:
-            log.info(
-                "paper_reconcile: merged %d duplicate ref(s) "
-                "(%d title, %d pdf_sha256, %d doi-case); %d flagged for review; "
-                "healed %d card(s), collapsed %d chain(s), migrated %d link(s), "
-                "re-queued %d stranded fetch(es)",
-                merged,
-                len(title_outcomes),
-                len(pdf_outcomes),
-                len(doi_outcomes),
-                len(review),
-                len(healed_cards),
-                len(collapsed),
-                len(relinked),
-                len(requeued),
+            review: list[TitleMatchReview] = []
+            title_outcomes = reconcile_by_title_similarity(
+                store, dry_run=False, limit=limit, review_out=review
             )
-        for r in review:
-            log.info("paper_reconcile: %s", r.line())
-        work = (
-            merged + len(healed_cards) + len(collapsed) + len(relinked) + len(requeued)
-        )
-        return BatchResult(handler="paper_reconcile", claimed=work, ok=work, failed=0)
+            pdf_outcomes = reconcile_by_pdf_sha256(store, dry_run=False, limit=limit)
+            doi_outcomes = reconcile_by_doi_case(store, dry_run=False, limit=limit)
+
+            # Deterministic hygiene heals (run after the merges so a fresh
+            # supersede/soft-delete is picked up the same pass).
+            from precis.ingest.paper_hygiene import (
+                collapse_superseded_chains,
+                heal_drifted_cards,
+                migrate_dangling_paper_links,
+                requeue_stranded_fetches,
+            )
+
+            healed_cards = heal_drifted_cards(store, dry_run=False, limit=limit)
+            collapsed = collapse_superseded_chains(store, dry_run=False, limit=limit)
+            relinked = migrate_dangling_paper_links(store, dry_run=False, limit=limit)
+            requeued = requeue_stranded_fetches(store, dry_run=False, limit=limit)
+            store.set_setting(_STATE_KEY, datetime.now(UTC).isoformat())
+
+            merged = sum(
+                len(o.duplicate_ref_ids)
+                for o in (*title_outcomes, *pdf_outcomes, *doi_outcomes)
+            )
+            if merged or review or healed_cards or collapsed or relinked or requeued:
+                log.info(
+                    "paper_reconcile: merged %d duplicate ref(s) "
+                    "(%d title, %d pdf_sha256, %d doi-case); %d flagged for review; "
+                    "healed %d card(s), collapsed %d chain(s), migrated %d link(s), "
+                    "re-queued %d stranded fetch(es)",
+                    merged,
+                    len(title_outcomes),
+                    len(pdf_outcomes),
+                    len(doi_outcomes),
+                    len(review),
+                    len(healed_cards),
+                    len(collapsed),
+                    len(relinked),
+                    len(requeued),
+                )
+            for r in review:
+                log.info("paper_reconcile: %s", r.line())
+            work = (
+                merged
+                + len(healed_cards)
+                + len(collapsed)
+                + len(relinked)
+                + len(requeued)
+            )
+            return BatchResult(
+                handler="paper_reconcile", claimed=work, ok=work, failed=0
+            )
     finally:
-        try:
-            conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_KEY,))
-        except Exception as exc:  # best effort — close releases it anyway
-            log.warning("paper_reconcile: advisory unlock failed: %s", exc)
-        finally:
-            conn.close()
+        conn.close()
 
 
 __all__ = ["run_paper_reconcile_pass"]

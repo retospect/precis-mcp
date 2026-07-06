@@ -544,12 +544,15 @@ oracle-corpus changes.
   `UPDATE refs SET deleted_at=now() WHERE kind='oracle' AND deleted_at IS
   NULL AND NOT EXISTS(cite_key)`); prod now 12 clean traditions, 0 orphans.
 
-**Follow-up (filed, not chased):** `workers/paper_reconcile.py` uses the
-*same* session-`pg_try_advisory_lock`-over-pool pattern (line ~100). There
-it's an **advisory single-runner optimisation** over an idempotent pass, so
-the worst case is two nodes running the reconcile (wasteful, not
-corrupting) — lower priority, but the same `pg_try_advisory_xact_lock`
-(or accepting the double-run) should be applied for consistency.
+**Follow-up — DONE (2026-07-06).** `workers/paper_reconcile.py` used the
+*same* pooler-unsafe session-`pg_try_advisory_lock` pattern (a dedicated
+*autocommit* connection, so every statement was its own transaction and the
+lock-holding backend recycled immediately). Converted to
+`pg_try_advisory_xact_lock` held inside one open transaction spanning the
+whole pass (transaction-scoped → pinned through pooling, auto-releases on
+commit; the dedicated conn only holds the lock, the reconcile work runs on
+the `store` pool). Non-corrupting either way (the reconcilers are
+idempotent), but now the single-runner guarantee is real.
 
 ### Residuals (filed 2026-07-04)
 
