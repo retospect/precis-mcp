@@ -17,6 +17,51 @@ what's still open.
 
 ---
 
+## 🟡 Unified item view (`/items`) — one DRY cross-kind list/search
+
+**Status**: slices 1–3a shipped + deployed; rest of slice 3 + slice 4 open
+· **Severity**: feature · **Owner**: `precis_web/routes/items.py`,
+`precis_web/item_view.py`, `handlers`/`store` search surface
+· **Design**: [`docs/proposals/unified-item-view.md`](docs/proposals/unified-item-view.md)
+
+One surface where the human's filter == the LLM's retrieval scope (a
+tailored view is a context set). Author/source is a `kind` facet, not a
+separate page.
+
+- **Slice 1 — reading-intent flags → shipped + deployed** (`94a5dcc1`).
+  `read-later`/`must-read`/`skim` toggle buttons (kind-agnostic
+  `POST /flags/{kind}/{ref_id}` + `_flag_buttons.html.j2` + batched
+  `Store.ref_tag_values`), first on `/papers-needed`; ride through ingest.
+- **Slice 2 — cross-kind search primitive → shipped + deployed** (`f1139ef7`).
+  `Store.search_chunks_across_kinds` (RRF lexical+semantic over `refs.kind =
+  ANY(...)`, per-ref best chunk, `created_at` window, relevance|recency);
+  `search` verb gained `kinds`/`sort`/`since`/`until` → `_dispatch_source_search`.
+- **Slice 3a — `/items` page + presenter seed → shipped + deployed**
+  (`efce60df`…`f2c027b3`): read-only cross-kind search page; per-item tag
+  chips + grouped `[kind][state]` markers; New dropdown; kind chips
+  (All/None, cookie-remembered); tag autocomplete→chips filter
+  (`GET /items/tags/suggest`); "recently added" default landing; stub filter
+  (papers-to-get); UoL/Scholar/DOI find-links (shared `precis_web/paper_links.py`).
+  `ItemPresenter` is a plain class with a generic default (`open_url`/`state`/
+  `links`/`preview`), not yet the abstract contract.
+- **Rest of slice 3 — open.** Promote `ItemPresenter` to the full contract
+  (`preview(query)->text|image`, `hover_preview`, `thumbnail`, `actions`) and
+  to `@abstractmethod` once every kind adopts (check-time totality); result
+  pagination (currently capped at 30, no paging); author/source facet +
+  folders + thumbnails/hover for visual kinds; retire `/drive` /
+  `/papers-needed` / `/papers/triage` / `/refs` / `/tags/refs` into `/items`
+  filters.
+- **Coupled — kind-taxonomy audit — open.** Reconcile `role`/`corpus_role`
+  drift (datasheet `evidence`+`stream`; pres `corpus`+`none`), collapse
+  near-dup kinds (perplexity-*/websearch/web/wikipedia; calc/math/oracle),
+  rewrite `precis-*-help` skills. No-legacy-alias license (a fresh LLM
+  re-reads skills each session): interface free to change, data isn't.
+- **Slice 4 — "write a document from this view" — open.** A tailored filter
+  is a serialized query → mint an authoring job scoped to exactly those refs.
+- **Verification residual.** The `/items` filter-bar JS (Alpine
+  tag-autocomplete + chip add/remove) is backend-tested but not visually
+  verified — eyeball the live page.
+
 ## 🟢 Draft inline editor (click-to-edit prose, no LLM)
 
 **Status**: shipped + deployed (core complete; only optional extensions + a
