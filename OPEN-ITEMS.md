@@ -954,12 +954,21 @@ dedup-hit branches). Residuals parked (all harvest-eligible, Opus-authored):
    `pdf.exists()` / walk `__cause__`) and skip silently instead of erroring.
    Owner: `cli/watch.py`. Severity: polish (noise + wasted Marker cycles).
 2. **Metadata-poor extraction leaves the ref titleless.** For 50995 (`anon00ag`)
-   Marker extracted the title into chunk 0 ("CONTINUOUS DEFORMATIONS…") but the
-   **ref-level `title` stayed empty** (`[no metadata]`) and cite_key degraded to
-   `anon00ag`. This is what makes after-the-fact title-similarity reconcile
-   impossible for this class. Fix: fall the ref title/cite_key back to the
-   document title Marker already found (or first body chunk). Owner:
-   `ingest/pipeline.py` / `ingest/marker.py` metadata cascade. Severity: feature.
+   Marker put the title in chunk 0 ("CONTINUOUS DEFORMATIONS…") but the
+   **ref-level `title` stayed empty** (`[no metadata]`), cite_key degraded to
+   `anon00ag`, blocking after-the-fact title-similarity reconcile. Prod
+   population (2026-07-06): **187 titleless chunked papers — 32 with a DOI, 155
+   with no external id**. **Do NOT** backfill title from chunk 0 (a wrong title
+   is worse than none). The confident fix already exists: `metadata_resolve.py`
+   (`precis fix-metadata`) never trusts PDF text as a title — Track 1 re-resolves
+   CrossRef by DOI (the 32); Track 2 S2-title-searches with chunk-0's first line
+   and **auto-applies only at similarity ≥ 0.85 + compatible year + recovered-DOI
+   not already owned**, everything else → `needs-triage` (human). Reversible,
+   source-stamped, dry-run-previewable. Work: (a) dry-run over the 187 → verdict
+   distribution, (b) gold-check the `auto` set, (c) `--apply`, (d) **schedule it**
+   (manual-only today) into `paper_reconcile`/hygiene so titleless refs self-heal.
+   The shipped sidecar fold means the 187 is a fixed backlog, not growing. Owner:
+   `ingest/metadata_resolve.py`, `cli/fix_metadata.py`. Severity: feature.
 3. **Verify the 7 existing orphans self-heal post-deploy.** 50698, 50754, 49915,
    50223, 50227, 50335, 49503 are already split (content under duplicate refs).
    They should self-heal when `requeue_stranded_fetches` re-fetches them at >48h
