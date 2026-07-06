@@ -1614,18 +1614,25 @@ class RefsMixin:
         kinds: list[str],
         *,
         tags: list[str] | None = None,
+        has_pdf: bool | None = None,
         limit: int = 30,
     ) -> list[Ref]:
         """Most-recently-created live refs across a *set* of kinds, newest
         first. Backs the ``/items`` default "recent things" browse (the
         no-query landing); ``tags`` narrows it to refs carrying all of them
-        (the tag-filter chips with no search query). Kinds with no rows
-        simply don't appear; an empty ``kinds`` returns nothing.
+        (the tag-filter chips with no search query). ``has_pdf=False`` keeps
+        only stubs (``pdf_sha256 IS NULL`` — the "papers to get" filter);
+        ``True`` keeps only those with a PDF. Kinds with no rows simply
+        don't appear; an empty ``kinds`` returns nothing.
         """
         if not kinds:
             return []
         clauses = ["r.kind = ANY(%s)", "r.deleted_at IS NULL"]
         params: list[Any] = [list(kinds)]
+        if has_pdf is not None:
+            clauses.append(
+                "r.pdf_sha256 IS NOT NULL" if has_pdf else "r.pdf_sha256 IS NULL"
+            )
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
             clauses.append(tag_frag)
@@ -1639,6 +1646,29 @@ class RefsMixin:
                 params,
             ).fetchall()
         return [_row_to_ref(r) for r in rows]
+
+    def paper_identifiers(self, ref_ids: list[int]) -> dict[int, str]:
+        """Best external identifier per ref (DOI > arXiv > S2), for the
+        UoL / Scholar lookup links on ``/items``. Returns a bare DOI,
+        ``arxiv:<id>``, or ``s2:<hash>`` — the same shape ``stub_backlog``
+        uses; refs with no external id are absent.
+        """
+        if not ref_ids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT r.ref_id, COALESCE("
+                " (SELECT min(id_value) FROM ref_identifiers"
+                "   WHERE ref_id = r.ref_id AND id_kind = 'doi'),"
+                " (SELECT 'arxiv:' || min(id_value) FROM ref_identifiers"
+                "   WHERE ref_id = r.ref_id AND id_kind = 'arxiv'),"
+                " (SELECT 's2:' || min(id_value) FROM ref_identifiers"
+                "   WHERE ref_id = r.ref_id AND id_kind = 's2')"
+                ") AS identifier "
+                "FROM refs r WHERE r.ref_id = ANY(%s)",
+                (list(ref_ids),),
+            ).fetchall()
+        return {int(rid): ident for rid, ident in rows if ident}
 
     def refs_with_body_chunks(self, ref_ids: list[int]) -> set[int]:
         """Which of ``ref_ids`` have at least one body chunk (``ord >= 0``).

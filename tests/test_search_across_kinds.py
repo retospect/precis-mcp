@@ -160,6 +160,42 @@ def test_suggest_tags_substring(store: Store) -> None:
     assert store.suggest_tags("zzznomatch") == []
 
 
+def test_recent_refs_stub_filter(store: Store) -> None:
+    stub = store.insert_ref(kind="paper", slug="hp-stub", title="stub")
+    full = store.insert_ref(kind="paper", slug="hp-full", title="full")
+    # refs.pdf_sha256 is a char(64) FK into pdfs — seed a real row first.
+    sha = f"{full.id:064d}"
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+            "size_bytes, storage_path) VALUES (%s, %s, 1, 100, '/tmp/held') "
+            "ON CONFLICT (pdf_sha256) DO NOTHING",
+            (sha, sha),
+        )
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s", (sha, full.id)
+        )
+
+    stubs = [r.id for r in store.recent_refs(["paper"], has_pdf=False)]
+    assert stub.id in stubs and full.id not in stubs
+    held = [r.id for r in store.recent_refs(["paper"], has_pdf=True)]
+    assert full.id in held and stub.id not in held
+
+
+def test_paper_identifiers(store: Store) -> None:
+    a = store.insert_ref(kind="paper", slug="pi-a", title="A")
+    b = store.insert_ref(kind="paper", slug="pi-b", title="B")  # no identifier
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES ('doi', %s, %s, 'test')",
+            ("10.1038/nature01797", a.id),
+        )
+    got = store.paper_identifiers([a.id, b.id])
+    assert got == {a.id: "10.1038/nature01797"}
+    assert store.paper_identifiers([]) == {}
+
+
 def test_ref_tags_bulk(store: Store) -> None:
     a = store.insert_ref(kind="paper", slug="tb-a", title="A")
     b = store.insert_ref(kind="paper", slug="tb-b", title="B")  # untagged

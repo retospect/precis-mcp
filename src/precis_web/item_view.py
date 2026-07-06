@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from precis_web.paper_links import doi_url, scholar_url, uol_url
+
 #: Max characters of the matching chunk shown as the row preview.
 _PREVIEW_CHARS = 240
 
@@ -118,6 +120,29 @@ class ItemPresenter:
             )
         return badges
 
+    def links(self, identifier: str | None) -> list[dict[str, str]]:
+        """Off-site "go find it" links from a paper's external identifier —
+        the publisher/arXiv page, University of Limerick Primo, and Google
+        Scholar. Empty when there's no identifier (non-paper rows)."""
+        if not identifier:
+            return []
+        out: list[dict[str, str]] = []
+        pub = doi_url(identifier)
+        if pub:
+            out.append(
+                {
+                    "label": "arXiv" if identifier.startswith("arxiv:") else "DOI",
+                    "href": pub,
+                }
+            )
+        u = uol_url(identifier)
+        if u:
+            out.append({"label": "UoL", "href": u})
+        s = scholar_url(identifier)
+        if s:
+            out.append({"label": "Scholar", "href": s})
+        return out
+
 
 def presenter_for(kind: str) -> ItemPresenter:
     """Return the presenter for ``kind`` (the default for now — the
@@ -133,6 +158,7 @@ def item_row(
     *,
     has_chunks: bool = False,
     tags: list[tuple[str, str]] | None = None,
+    identifier: str | None = None,
 ) -> dict[str, Any]:
     """Build one unified-list row view-model from a search hit.
 
@@ -153,6 +179,7 @@ def item_row(
         "created_at": getattr(ref, "created_at", None),
         "state": p.state(ref, has_chunks=has_chunks),
         "tags": _display_tags(tags),
+        "links": p.links(identifier),
         "score": score,
         "flags": flags,
     }

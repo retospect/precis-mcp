@@ -65,6 +65,13 @@
       </select>
     </div>
     <div>
+      <label class="block text-xs text-slate-500 mb-0.5">Show</label>
+      <select name="state" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+        <option value="all" {% if state != 'stub' %}selected{% endif %}>All</option>
+        <option value="stub" {% if state == 'stub' %}selected{% endif %}>Stubs (to get)</option>
+      </select>
+    </div>
+    <div>
       <label class="block text-xs text-slate-500 mb-0.5">Since</label>
       <input type="date" name="since" value="{{ since }}"
              class="rounded-md border border-slate-300 px-2 py-1.5 text-sm" />
@@ -174,6 +181,14 @@
         {% elif row.created_at %}
           <p class="text-xs text-slate-400 mt-0.5">added <span title="{{ row.created_at | abs_ts }}">{{ row.created_at | ago }}</span></p>
         {% endif %}
+        {% if row.links %}
+          <p class="text-xs text-slate-400 mt-0.5">
+            find:
+            {% for l in row.links %}
+              <a href="{{ l.href }}" target="_blank" rel="noopener" class="text-sky-700 hover:underline">{{ l.label }}</a>{% if not loop.last %} · {% endif %}
+            {% endfor %}
+          </p>
+        {% endif %}
       </div>
       <div class="shrink-0">
         {% set ref_kind = row.kind %}
@@ -199,25 +214,23 @@
   </p>
   {% endif %}
 {% else %}
-  {# Default landing: browse-by-vocabulary tag cloud + recent things. #}
-  {% if cloud %}
-  <section class="mb-5">
-    <h2 class="text-sm font-semibold text-slate-600 mb-2">Browse by tag</h2>
-    <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-      {% for t in cloud %}
-      <a href="{{ t.href }}" title="{{ t.count }} use{{ '' if t.count == 1 else 's' }}"
-         class="{{ t.font }} text-slate-600 hover:text-sky-700 hover:underline leading-tight">{{ t.label }}</a>
-      {% endfor %}
-    </div>
-  </section>
-  {% endif %}
-
-  <h2 class="text-sm font-semibold text-slate-600 mb-2">Recently added</h2>
+  {# Default landing: the recent list (or stub queue) under the search. #}
+  <h2 class="text-sm font-semibold text-slate-600 mb-2">
+    {% if state == 'stub' %}Stubs — papers to get{% else %}Recently added{% endif %}
+  </h2>
   {% if recent %}
     {{ item_list(recent) }}
-    <p class="mt-2 text-xs text-slate-400">The {{ recent | length }} newest source item{{ '' if recent | length == 1 else 's' }}. Search above to go deeper.</p>
+    <p class="mt-2 text-xs text-slate-400">
+      {% if state == 'stub' %}
+        The {{ recent | length }} newest stub{{ '' if recent | length == 1 else 's' }} — use the find: links to track a copy down.
+      {% else %}
+        The {{ recent | length }} newest source item{{ '' if recent | length == 1 else 's' }}. Search above to go deeper.
+      {% endif %}
+    </p>
   {% else %}
-    <p class="text-sm text-slate-400">Nothing here yet — ingest a paper or run a search above.</p>
+    <p class="text-sm text-slate-400">
+      {% if state == 'stub' %}No stubs in the selected kinds — nothing waiting to be fetched.{% else %}Nothing here yet — ingest a paper or run a search above.{% endif %}
+    </p>
   {% endif %}
 {% endif %}
 {% endblock %}

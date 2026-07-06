@@ -235,9 +235,9 @@ def test_flag_toggle_blocks_open_redirect(runtime, client) -> None:
 # ── unified item view (/items) ─────────────────────────────────────
 
 
-def test_items_empty_shows_form_recent_and_cloud(client) -> None:
-    """The no-query landing shows the search form, a tag cloud, and a
-    'recently added' list of source items (with their flag buttons)."""
+def test_items_empty_shows_form_and_recent(client) -> None:
+    """The no-query landing shows the search form and a 'recently added'
+    list of source items (with their flag buttons). No tag cloud."""
     resp = client.get("/items")
     assert resp.status_code == 200
     assert 'action="/items"' in resp.text
@@ -245,13 +245,25 @@ def test_items_empty_shows_form_recent_and_cloud(client) -> None:
     assert "A paper" in resp.text
     assert "A web page" in resp.text
     assert 'action="/flags/paper/10"' in resp.text
-    # Tag cloud: topical tags shown + linked to the /tags pivot; the
-    # machine namespace (DREAM) is filtered out; OPEN tags shown bare.
-    assert "Browse by tag" in resp.text
-    assert "carbon-capture" in resp.text
-    assert "/tags/refs?namespace=topic&amp;value=graphene" in resp.text
-    assert "read-later" in resp.text
-    assert "DREAM:speculative" not in resp.text
+    assert "Browse by tag" not in resp.text  # cloud dropped
+
+
+def test_items_stub_filter(runtime, client) -> None:
+    """state=stub narrows the landing to PDF-less papers (the to-get
+    queue) and relabels the heading."""
+    resp = client.get("/items?state=stub")
+    assert resp.status_code == 200
+    assert runtime.store.recent_has_pdf is False
+    assert "Stubs — papers to get" in resp.text
+
+
+def test_items_rows_show_paper_lookup_links(client) -> None:
+    """Paper rows carry off-site UoL + Scholar 'find:' links built from
+    the paper's identifier."""
+    resp = client.get("/items")
+    assert "uol.primo.exlibrisgroup.com" in resp.text
+    assert "scholar.google.com" in resp.text
+    assert "doi.org/10.1038/nature01797" in resp.text
 
 
 def test_items_stub_vs_ingested_badges(runtime, client) -> None:

@@ -564,11 +564,12 @@ class FakeStore:
         want = set(kinds)
         return [(b, r, s) for (b, r, s) in hits if r.kind in want]
 
-    def recent_refs(self, kinds, *, tags=None, limit=30):
+    def recent_refs(self, kinds, *, tags=None, has_pdf=None, limit=30):
         """Canned recent source refs for the /items default landing —
         one paper (stub, no pdf) + one web, filtered to requested kinds.
-        ``self.recent_tags`` records the tag filter for assertions."""
+        ``self.recent_tags`` / ``self.recent_has_pdf`` record the filters."""
         self.recent_tags = tags
+        self.recent_has_pdf = has_pdf
         src = [
             make_ref(id=10, kind="paper", slug="smith2024", title="A paper"),
             make_ref(id=70, kind="web", slug="example.com/page", title="A web page"),
@@ -597,6 +598,11 @@ class FakeStore:
             10: [("topic", "co2-capture"), ("OPEN", "read-later"), ("DREAM", "spec")],
         }
         return {rid: canned[rid] for rid in ref_ids if rid in canned}
+
+    def paper_identifiers(self, ref_ids):
+        """Canned identifiers for the /items UoL/Scholar links — paper #10
+        carries a DOI so its find: links render."""
+        return {rid: "10.1038/nature01797" for rid in ref_ids if rid == 10}
 
     def list_all_tags(self, *, kind=None, page=1, page_size=50):
         """Canned tag-usage rows for the /items tag cloud. A machine
