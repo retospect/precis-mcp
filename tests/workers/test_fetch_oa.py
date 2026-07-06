@@ -29,6 +29,7 @@ from typing import Any
 import httpx
 import pytest
 
+from precis.ingest.fetch_sidecar import read_sidecar
 from precis.store import Store
 from precis.utils.safe_fetch import SsrfBlocked
 from precis.workers import fetch_oa
@@ -987,6 +988,33 @@ class TestRunCascade:
                 (ref_id,),
             ).fetchall()
         assert rows == [("fetcher:publisher", "fetch_ok")]
+
+    def test_fetch_ok_writes_sidecar_manifest(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A successful fetch drops an acquisition manifest next to the PDF
+        # carrying the stub's ref_id, so ingest folds into *this* stub
+        # instead of minting a duplicate when Marker mis-extracts identity.
+        ref_id = _seed_paper_stub(
+            store, doi="10.1186/s13027-026-00740-z", cite_key="thorpe83"
+        )
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_pdf",
+            lambda url, target: _write_synthetic_pdf(target, size=256),
+        )
+        run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+
+        pdf = tmp_path / "thorpe83.pdf"
+        assert pdf.exists()
+        sc = read_sidecar(pdf)
+        assert sc is not None
+        assert sc.ref_id == ref_id
+        assert sc.identifiers.get("doi") == "10.1186/s13027-026-00740-z"
+        assert sc.source == "fetcher:publisher"
 
     def test_publisher_miss_falls_through_to_unpaywall(
         self,

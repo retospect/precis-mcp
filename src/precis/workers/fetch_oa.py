@@ -82,6 +82,8 @@ from tenacity import (
     wait_exponential,
 )
 
+from precis.ingest.fetch_sidecar import write_sidecar
+
 log = logging.getLogger(__name__)
 
 
@@ -1243,6 +1245,25 @@ def _run_cascade(
             cost_usd=outcome.cost_usd,
         )
         if outcome.event == "fetch_ok":
+            # Drop an acquisition manifest next to the PDF so ingest folds
+            # into *this* stub (keeping its good title/DOI) instead of
+            # re-deriving identity from the bytes and minting a duplicate
+            # when Marker's extracted DOI is truncated / missing. Keyed on
+            # the deterministic download name, not the payload, so a
+            # fetcher that omits ``filename`` still gets a sidecar. See
+            # precis.ingest.fetch_sidecar.
+            pdf_path = inbox_dir / (_stub_filename(stub) + ".pdf")
+            write_sidecar(
+                pdf_path,
+                ref_id=stub.ref_id,
+                identifiers={
+                    "doi": stub.doi or "",
+                    "arxiv": stub.arxiv or "",
+                    "s2": stub.s2_id or "",
+                    "cite_key": stub.cite_key or "",
+                },
+                source=source,
+            )
             return
 
 

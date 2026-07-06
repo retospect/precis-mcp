@@ -30,6 +30,7 @@ from precis.ingest.add import (
     IngestResult,
     PdfInput,
     _reconcile_orphan_stub,
+    _valid_fold_stub,
     precis_add,
 )
 from precis.ingest.db_writer import ChunkToWrite, PaperToWrite
@@ -445,3 +446,126 @@ class TestReconcileOrphanStub:
             )
             conn.commit()
         assert merged is None
+
+
+class TestSidecarFold:
+    """A fetched PDF whose *extracted* identity doesn't dedup against any
+    ref folds into the OA-fetch sidecar's designated stub in place —
+    keeping the stub's good title/DOI — instead of minting a duplicate."""
+
+    def test_folds_into_fold_ref_id_stub_in_place(self, store, tmp_path: Path):
+        pdf = tmp_path / "download.pdf"
+        pdf.write_bytes(b"%PDF-1.4 sidecar")
+        sha = hashlib.sha256(b"%PDF-1.4 sidecar").hexdigest()
+
+        # The stub the fetcher created: good title + DOI, no PDF yet.
+        stub = store.insert_ref(
+            kind="paper",
+            slug="continuous83",
+            title="Continuous deformations in random networks",
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'doi', '10.1016/0022-3093(83)90424-6', 'manual')",
+                (stub.id,),
+            )
+            conn.commit()
+
+        # Marker extracts metadata-poor content (no DOI) — nothing to dedup
+        # against the stub, so without the sidecar this would mint a duplicate.
+        poor = _fixture_paper(paper_id="anonpid7", doi=None, pdf_sha256=sha)
+        with patch("precis.ingest.pipeline.extract_paper", return_value=poor):
+            result = precis_add(
+                PdfInput(pdf_path=pdf, fold_ref_id=stub.id), store=store
+            )
+
+        assert result.inserted is False  # folded, not a fresh insert
+        assert result.ref_id == stub.id
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT pdf_sha256, title FROM refs WHERE ref_id=%s", (stub.id,)
+            ).fetchone()
+            nchunks = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s", (stub.id,)
+            ).fetchone()[0]
+            owners = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind='pdf_sha256' AND id_value=%s",
+                (sha,),
+            ).fetchall()
+        assert row[0] == sha  # promoted in place
+        # Good stub metadata preserved — NOT overwritten by the poor extract.
+        assert row[1] == "Continuous deformations in random networks"
+        assert nchunks >= 1
+        # Exactly one ref owns the new PDF — no duplicate minted.
+        assert [o[0] for o in owners] == [stub.id]
+
+    def test_invalid_fold_target_falls_through_to_insert(self, store, tmp_path: Path):
+        # fold_ref_id points at a soft-deleted ref (e.g. a stub already
+        # merged away) → not a valid fold target → normal insert, no crash.
+        pdf = tmp_path / "d2.pdf"
+        pdf.write_bytes(b"%PDF-1.4 d2")
+        sha = hashlib.sha256(b"%PDF-1.4 d2").hexdigest()
+        dead = store.insert_ref(kind="paper", slug="dead24", title="merged away")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET deleted_at = now() WHERE ref_id = %s", (dead.id,)
+            )
+            conn.commit()
+            assert _valid_fold_stub(dead.id, kind="paper", conn=conn) is None
+
+        paper = _fixture_paper(paper_id="ftpid", doi="10.1/ft", pdf_sha256=sha)
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            result = precis_add(
+                PdfInput(pdf_path=pdf, fold_ref_id=dead.id), store=store
+            )
+        assert result.inserted is True
+        assert result.ref_id != dead.id
+
+    def test_new_ref_branch_folds_orphan_stub_by_filename(self, store, tmp_path: Path):
+        """Root-cause fix: the *first* ingest of a paper (a dedup miss →
+        new ref) must still fold the orphan stub it was fetched for, even
+        with no sidecar. Previously this reconcile ran only on the
+        dedup-*hit* branches, so a metadata-mismatched paper stayed split
+        until a second ingest."""
+        pdf = tmp_path / "fair26.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fair")
+        sha = hashlib.sha256(b"%PDF-1.4 fair").hexdigest()
+
+        # Orphan stub: good full DOI, named after its cite_key (= file stem).
+        stub = store.insert_ref(
+            kind="paper", slug="fair26", title="FAIR Data and the Future"
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'doi', '10.17352/gjmccr.000235', 'manual')",
+                (stub.id,),
+            )
+            conn.commit()
+
+        # Extracted DOI is truncated → misses the stub → new-ref branch.
+        paper = _fixture_paper(
+            paper_id="chetrypid",
+            cite_key_prefix="chetry26",
+            doi="10.17352/gjmccr",
+            pdf_sha256=sha,
+        )
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            result = precis_add(PdfInput(pdf_path=pdf), store=store)  # no sidecar
+
+        assert result.inserted is True
+        assert result.ref_id != stub.id
+        with store.pool.connection() as conn:
+            stub_row = conn.execute(
+                "SELECT deleted_at, meta->>'superseded_by' FROM refs WHERE ref_id=%s",
+                (stub.id,),
+            ).fetchone()
+            doi_owner = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind='doi' AND id_value='10.17352/gjmccr.000235'"
+            ).fetchone()
+        assert stub_row[0] is not None  # stub soft-deleted
+        assert stub_row[1] == str(result.ref_id)  # provenance → survivor
+        assert doi_owner is not None and doi_owner[0] == result.ref_id  # DOI migrated

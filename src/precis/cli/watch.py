@@ -53,6 +53,7 @@ from watchdog.observers.polling import PollingObserver
 from precis.cli._common import resolve_dsn
 from precis.corpus_layout import corpus_pdf_dest
 from precis.ingest.add import IngestResult, PdfInput, PresInput, precis_add
+from precis.ingest.fetch_sidecar import clear_sidecar, read_sidecar
 from precis.ingest.pres import kebab_slug
 from precis.store import Store
 
@@ -606,13 +607,28 @@ def process_pdf(
         return None
 
     routing = route_pdf(pdf, watch_dir)
+    # OA-fetch acquisition manifest (if any): its ``ref_id`` is the stub
+    # this PDF was fetched for. Threaded into the PdfInput so ingest folds
+    # into that stub deterministically instead of minting a duplicate when
+    # Marker's extracted DOI is truncated/missing. Absent for manual drops
+    # (``None`` → identity re-derivation, unchanged). Pres decks never carry
+    # a sidecar, so the hint is paper/cfp-only.
+    sidecar = read_sidecar(pdf)
+    fold_ref_id = sidecar.ref_id if sidecar is not None else None
     input_: PdfInput | PresInput
     if routing.kind == "pres":
         input_ = PresInput(pdf_path=pdf, extra_tags=routing.extra_tags)
     elif routing.kind == "cfp":
-        input_ = PdfInput(pdf_path=pdf, extra_tags=routing.extra_tags, as_kind="cfp")
+        input_ = PdfInput(
+            pdf_path=pdf,
+            extra_tags=routing.extra_tags,
+            as_kind="cfp",
+            fold_ref_id=fold_ref_id,
+        )
     else:
-        input_ = PdfInput(pdf_path=pdf, extra_tags=routing.extra_tags)
+        input_ = PdfInput(
+            pdf_path=pdf, extra_tags=routing.extra_tags, fold_ref_id=fold_ref_id
+        )
 
     try:
         result = precis_add(input_, store=store)
@@ -630,6 +646,7 @@ def process_pdf(
             return None
         log.exception("precis watch: ingest failed for %s", pdf.name)
         _handle_failure(pdf, exc, errors_dir=errors_dir)
+        clear_sidecar(pdf)
         return None
     except OperationalError as exc:
         # Transient DB outage (server restart, network blip,
@@ -646,15 +663,17 @@ def process_pdf(
     except Exception as exc:
         log.exception("precis watch: ingest failed for %s", pdf.name)
         _handle_failure(pdf, exc, errors_dir=errors_dir)
+        clear_sidecar(pdf)
         return None
 
     if result is None:
         # Claim contention: another host is processing this content
-        # right now (advisory lock held in the DB). Leave the file in
-        # place — the owning host will move it on completion.
+        # right now (advisory lock held in the DB). Leave the file — and
+        # its sidecar — in place so the owning host folds correctly and
+        # clears the manifest on its own success.
         return None
 
-    return _handle_success(
+    dest = _handle_success(
         pdf,
         result,
         store=store,
@@ -663,6 +682,11 @@ def process_pdf(
         duplicates_dir=duplicates_dir,
         user=user,
     )
+    # This host moved the PDF out of the inbox; the manifest has served its
+    # purpose (fold target already threaded into the ingest). Idempotent —
+    # a racing loser that also reaches here just no-ops.
+    clear_sidecar(pdf)
+    return dest
 
 
 #: Statuses whose ``dest`` is the file's new *canonical* home in the corpus

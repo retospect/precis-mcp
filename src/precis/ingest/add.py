@@ -88,6 +88,15 @@ class PdfInput:
     #: into :class:`~precis.ingest.db_writer.PaperToWrite.kind` via
     #: :func:`_build_paper`.
     as_kind: str = "paper"
+    #: Authoritative fold target from the OA-fetch sidecar
+    #: (:mod:`precis.ingest.fetch_sidecar`). When set and still a live
+    #: metadata-only stub (``pdf_sha256 IS NULL``), a PDF whose extracted
+    #: identifiers *don't* dedup against any existing ref is folded into
+    #: this stub in place — promoting it and keeping its good title/DOI —
+    #: instead of minting a duplicate ref. ``None`` for manual drops (no
+    #: sidecar), which fall back to identity re-derivation. Immune to the
+    #: filename munging that breaks the ``cite_key``-stem match.
+    fold_ref_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -298,6 +307,22 @@ def _ingest_pdf(
             content_hash=paper.content_hash,
             conn=conn,
         )
+        if existing is None and input.fold_ref_id is not None:
+            # No identifier-based dedup hit, but the OA-fetch sidecar named
+            # the stub this PDF was fetched *for*. Fold into it directly
+            # (promote in place) rather than minting a duplicate — the
+            # deterministic, filename-independent path that survives the
+            # multi-host inbox race. Guarded to a *live metadata-only stub*
+            # of the same kind, so a stale / already-upgraded / soft-deleted
+            # target falls through to a normal insert.
+            existing = _valid_fold_stub(input.fold_ref_id, kind=paper.kind, conn=conn)
+            if existing is not None:
+                log.info(
+                    "precis_add: folding %s into sidecar stub ref_id=%s "
+                    "(no id dedup hit; keeping stub metadata)",
+                    input.pdf_path.name,
+                    existing,
+                )
         if existing is not None:
             # Existing ref hit — never re-insert, but always (a) register
             # this ingest's pdf/content hashes as aliases and (b) when
@@ -341,6 +366,23 @@ def _ingest_pdf(
         paper = _maybe_patch_pdf(input.pdf_path, paper)
 
         result = write_paper(paper, conn=conn)
+        # Root-cause fold: this is the *first* ingest of this content, so
+        # it dedup-missed and minted a fresh ref. If a live stub was fetched
+        # for this same paper but its identity didn't intersect (Marker
+        # truncated/dropped the DOI, or extracted none), fold that orphan
+        # stub into the new ref now — by ``cite_key == filename stem`` — so
+        # it doesn't linger ``pdf_sha256 IS NULL`` and re-qualify for OA
+        # fetch forever. Previously this reconcile ran only on the dedup-hit
+        # branches (a *re*-drop), so every metadata-mismatched paper stayed
+        # split until a second ingest. The sidecar ``fold_ref_id`` above is
+        # the deterministic version of the same fold; this filename fallback
+        # covers manual drops and legacy PDFs that carry no sidecar.
+        _reconcile_orphan_stub(
+            store,
+            survivor_ref_id=result.ref_id,
+            file_stem=input.pdf_path.stem,
+            conn=conn,
+        )
         conn.commit()
 
     _apply_extra_tags(store, paper.kind, result.ref_id, input.extra_tags)
@@ -356,6 +398,30 @@ def _ingest_pdf(
         identifiers=result.identifiers_written,
         kind=paper.kind,
     )
+
+
+def _valid_fold_stub(ref_id: int, *, kind: str, conn: Any) -> int | None:
+    """Return ``ref_id`` iff it's a live metadata-only stub of ``kind``.
+
+    The OA-fetch sidecar names a fold target, but by the time a watcher
+    ingests the PDF that target may have moved on — already upgraded
+    (``pdf_sha256`` now set), soft-deleted (merged away), or of a
+    different kind (a mis-pointed sidecar). Any of those disqualify the
+    direct fold; the caller falls back to a normal insert. Only a live
+    ``pdf_sha256 IS NULL`` stub of the expected kind is a safe promote-
+    in-place target.
+    """
+    row = conn.execute(
+        """
+        SELECT ref_id FROM refs
+         WHERE ref_id = %s
+           AND kind = %s
+           AND pdf_sha256 IS NULL
+           AND deleted_at IS NULL
+        """,
+        (ref_id, kind),
+    ).fetchone()
+    return int(row[0]) if row is not None else None
 
 
 def _reconcile_orphan_stub(
