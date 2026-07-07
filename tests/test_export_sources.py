@@ -219,3 +219,69 @@ def test_preamble_template_carries_pdfpages() -> None:
     """The appendix's ``\\includepdf`` needs the ``pdfpages`` package in the
     checked-in preamble."""
     assert r"\usepackage{pdfpages}" in latex._template_text("preamble.tex")
+
+
+# ── source-filename sanitization (gr52398) ────────────────────────────
+
+
+def test_safe_source_filename_passes_clean_slugs_through() -> None:
+    """An ordinary alnum cite_key is used verbatim (no gratuitous hashing)."""
+    assert sources.safe_source_filename("smith2020") == "smith2020"
+    assert sources.safe_source_filename("kong-24") == "kong-24"
+
+
+def test_safe_source_filename_strips_latex_specials_and_disambiguates() -> None:
+    """A slug with LaTeX-special chars / spaces is reduced to ``[A-Za-z0-9-]``
+    and gets a stable hash suffix so distinct slugs can't collide on disk."""
+    a = sources.safe_source_filename("ti_lm#5")
+    b = sources.safe_source_filename("ti-lm-5")  # cleans to the same base
+    assert set(a) <= set(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+    )
+    assert a != b  # hash suffix keeps them apart
+    assert sources.safe_source_filename("ti_lm#5") == a  # deterministic
+    # An all-special slug still yields a non-empty safe name.
+    assert sources.safe_source_filename("%%%")
+
+
+def test_appendix_uses_sanitized_filename() -> None:
+    """A special-char slug must not leak a raw ``_``/``#`` into the
+    ``\\includepdf`` path — pdfpages would choke on it."""
+    bundle = sources.SourceBundle(
+        entries=[
+            sources.SourceEntry(
+                "ti_lm#5",
+                "datasheet",
+                "TI LM#5",
+                "TI",
+                2019,
+                "a" * 64,
+                Path("/tmp/x.pdf"),
+            )
+        ]
+    )
+    tex = latex.build_source_appendix(bundle, [])
+    fname = sources.safe_source_filename("ti_lm#5")
+    assert f"sources/{fname}.pdf" in tex
+    assert "ti_lm#5.pdf" not in tex  # raw slug never reaches the path arg
+
+
+def test_zip_arcname_and_manifest_use_sanitized_filename(tmp_path: Path) -> None:
+    """The zip member + the manifest agree on the sanitized filename."""
+    root = tmp_path / "corpus"
+    (root / "s").mkdir(parents=True)
+    (root / "s" / "ti_lm#5.pdf").write_bytes(b"%PDF")
+    store = _FakeStore(
+        refs={("datasheet", "ti_lm#5"): _paper("ti_lm#5", "a" * 64, kind="datasheet")},
+        storage={"a" * 64: str(root / "s" / "ti_lm#5.pdf")},
+    )
+    out = tmp_path / "papers.zip"
+    sources.build_sources_zip(
+        store, _draft(), out, cited_slugs=["ti_lm#5"], corpus_dirs=(root,)
+    )
+    fname = sources.safe_source_filename("ti_lm#5")
+    with zipfile.ZipFile(out) as zf:
+        names = set(zf.namelist())
+        manifest = zf.read("manifest.txt").decode()
+    assert f"{fname}.pdf" in names
+    assert f"{fname}.pdf" in manifest

@@ -267,6 +267,62 @@ def test_handle_finding_fi_renders_cite_via_meta() -> None:
     assert r"\cite{ab12c3}" in out  # in-flight → pub_id placeholder
 
 
+class _BibStore:
+    """Minimal store for :func:`latex.build_bib`: resolves a slug to a
+    paper / patent / datasheet ref and carries no DOI/arXiv aliases."""
+
+    def __init__(self, refs):
+        self._refs = refs  # (kind, slug) -> Ref-ish
+
+    def get_ref(self, *, kind, id):
+        return self._refs.get((kind, id))
+
+    def identifiers_for_refs(self, ref_ids):
+        return {}
+
+
+def _bibref(rid, slug, kind, *, title, authors=None, year=None):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=rid, slug=slug, kind=kind, title=title, authors=authors, year=year
+    )
+
+
+def test_build_bib_emits_datasheet_entry_not_stub() -> None:
+    """A cited datasheet resolves to a real ``@misc`` bib entry (gr52396) —
+    not the 'missing source' auto-stub — so the bibliography lists it."""
+    store = _BibStore(
+        {
+            ("datasheet", "stm32f4"): _bibref(
+                7,
+                "stm32f4",
+                "datasheet",
+                title="STM32F4 Reference Manual",
+                authors=[{"name": "STMicroelectronics"}],
+                year=2019,
+            )
+        }
+    )
+    warnings: list[str] = []
+    bib = latex.build_bib(store, ["stm32f4"], warnings)
+    assert "@misc{stm32f4," in bib
+    assert "STM32F4 Reference Manual" in bib
+    assert "author = {STMicroelectronics}" in bib
+    assert "howpublished = {Datasheet}" in bib
+    assert "missing source" not in bib
+    assert warnings == []
+
+
+def test_build_bib_unresolved_slug_stubs_with_warning() -> None:
+    """A slug that matches no paper/patent/datasheet still degrades to a
+    compile-safe stub + a warning."""
+    warnings: list[str] = []
+    bib = latex.build_bib(_BibStore({}), ["ghost"], warnings)
+    assert "@misc{ghost," in bib and "[missing source ghost]" in bib
+    assert any("ghost" in w for w in warnings)
+
+
 def test_build_acronyms() -> None:
     tex = latex.build_acronyms({"PEI": "polyethyleneimine", "MOF": "metal-organic"})
     assert r"\newacronym{pei}{PEI}{polyethyleneimine}" in tex

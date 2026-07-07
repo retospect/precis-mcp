@@ -584,3 +584,45 @@ def test_render_byline_empty_authors_is_noop() -> None:
     before = len(doc.paragraphs)
     _render_byline(doc, build_byline(None))
     assert len(doc.paragraphs) == before
+
+
+class _RefStore:
+    """Minimal store for the pure reference/EndNote resolvers: resolves a
+    slug to a paper/patent/datasheet ref, no DOI/arXiv aliases."""
+
+    def __init__(self, refs):
+        self._refs = refs  # (kind, slug) -> Ref-ish
+
+    def get_ref(self, *, kind, id):
+        return self._refs.get((kind, id))
+
+    def identifiers_for_refs(self, ref_ids):
+        return {}
+
+
+def test_format_reference_resolves_datasheet_not_stub() -> None:
+    """A cited datasheet resolves to a real reference line — parity with the
+    .bib path (gr52396) — not the 'missing source' stub."""
+    from types import SimpleNamespace
+
+    from precis.export.docx import _format_reference
+
+    store = _RefStore(
+        {
+            ("datasheet", "stm32f4"): SimpleNamespace(
+                id=7,
+                slug="stm32f4",
+                kind="datasheet",
+                title="STM32F4 Reference Manual",
+                authors=[{"name": "STMicroelectronics"}],
+                year=2019,
+                meta={},
+            )
+        }
+    )
+    warnings: list[str] = []
+    line = _format_reference(store, "stm32f4", warnings)
+    assert "STM32F4 Reference Manual" in line
+    assert "STMicroelectronics" in line
+    assert "missing source" not in line
+    assert warnings == []

@@ -566,9 +566,14 @@ def _cite(slug: str, ctx: _Ctx, paragraph: Any, chunk_id: int | None = None) -> 
 
 def _resolve_source(store: Any, slug: str, rec_number: int) -> dict[str, Any] | None:
     """Resolve a cited slug to the structured record EndNote embeds — the
-    SAME paper/patent lookup the plain path and the ``.bib`` path use, so the
-    docx, PDF and EndNote outputs cite the identical resolved source."""
-    pref = store.get_ref(kind="paper", id=slug) or store.get_ref(kind="patent", id=slug)
+    SAME paper/patent/datasheet lookup the plain path and the ``.bib`` path
+    use, so the docx, PDF and EndNote outputs cite the identical resolved
+    source."""
+    pref = (
+        store.get_ref(kind="paper", id=slug)
+        or store.get_ref(kind="patent", id=slug)
+        or store.get_ref(kind="datasheet", id=slug)
+    )
     if pref is None:
         return None
     doi = arxiv = None
@@ -632,13 +637,18 @@ def _cite_endnote(
 
 
 def _format_reference(store: Any, slug: str, warnings: list[str]) -> str:
-    """One reference line, resolved through the SAME paper lookup as the
-    ``.bib`` path (citation-integrity parity with the PDF). A slug with no
-    paper in the corpus degrades to a marked stub + a warning."""
-    pref = store.get_ref(kind="paper", id=slug) or store.get_ref(kind="patent", id=slug)
+    """One reference line, resolved through the SAME paper/patent/datasheet
+    lookup as the ``.bib`` path (citation-integrity parity with the PDF). A
+    slug with no matching source in the corpus degrades to a marked stub + a
+    warning."""
+    pref = (
+        store.get_ref(kind="paper", id=slug)
+        or store.get_ref(kind="patent", id=slug)
+        or store.get_ref(kind="datasheet", id=slug)
+    )
     if pref is None:
-        warnings.append(f"cite {slug!r}: no paper in corpus — stub reference")
-        return f"[missing paper {slug}] (cited slug not in corpus)"
+        warnings.append(f"cite {slug!r}: no source in corpus — stub reference")
+        return f"[missing source {slug}] (cited slug not in corpus)"
     authors = _bibtex_authors(pref.authors).replace(" and ", "; ")
     # "Authors (year). Title." — robust plain-text assembly.
     head = " ".join(x for x in [authors, f"({pref.year})" if pref.year else ""] if x)

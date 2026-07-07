@@ -25,6 +25,8 @@ be legitimately incomplete rather than an error.
 
 from __future__ import annotations
 
+import hashlib
+import re
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +42,29 @@ from precis.corpus_layout import (
 # bundling. Datasheets are citable (``corpus_role='evidence'``) so they can
 # appear in the cited set alongside papers / patents.
 _SOURCE_KINDS = ("paper", "patent", "datasheet")
+
+_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9-]+")
+
+
+def safe_source_filename(slug: str) -> str:
+    """A filesystem- and LaTeX-safe base name for a source PDF, derived from
+    its cite_key / slug.
+
+    The bundled PDF is written to disk (``sources/<name>.pdf``) *and* named as
+    a ``\\includepdf`` path argument, where a slug with LaTeX-special chars
+    (``_ # % & { } $`` …) or spaces would trip the TeX tokenizer / pdfpages.
+    We keep ``[A-Za-z0-9-]`` and collapse every other run to a single ``-``.
+    When that sanitization actually changed the slug (or emptied it), we append
+    a short stable hash so two distinct slugs that clean to the same base can't
+    collide on disk / in the zip. Pure + deterministic, so every caller
+    (the LaTeX appendix, the disk copy, the zip arcname, the manifest) agrees
+    on the same name without threading shared state.
+    """
+    safe = _SAFE_NAME_RE.sub("-", slug).strip("-")
+    if safe == slug and safe:
+        return safe
+    digest = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8]
+    return f"{safe}-{digest}" if safe else digest
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,7 +243,8 @@ def write_manifest(ref: Any, bundle: SourceBundle) -> str:
             lines.append(head)
             if e.authors:
                 lines.append(f"    {e.authors}")
-            lines.append(f"    {e.kind}:{e.slug}  ->  {e.slug}.pdf")
+            fname = f"{safe_source_filename(e.slug)}.pdf"
+            lines.append(f"    {e.kind}:{e.slug}  ->  {fname}")
         lines.append("")
     if bundle.missing:
         lines.append("== Not bundled ==")
@@ -268,7 +294,7 @@ def build_sources_zip(
         written: set[str] = set()
         for e in bundle.present:
             assert e.local_path is not None
-            arcname = f"{src_prefix}{e.slug}.pdf"
+            arcname = f"{src_prefix}{safe_source_filename(e.slug)}.pdf"
             if arcname in written:
                 continue
             written.add(arcname)
@@ -282,5 +308,6 @@ __all__ = [
     "ZipResult",
     "build_sources_zip",
     "collect_cited_sources",
+    "safe_source_filename",
     "write_manifest",
 ]

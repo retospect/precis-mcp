@@ -617,30 +617,44 @@ def _bibtex_authors(authors: list[dict[str, Any]] | None) -> str:
     return " and ".join(names)
 
 
+# A cited handle resolves to one of these citeable kinds (checked in order),
+# each with its BibTeX entry type. Datasheets are citeable evidence
+# (``corpus_role='evidence'``) so they can land in the cited set alongside
+# papers / patents — a ``@misc`` entry keeps them in the bibliography instead
+# of degrading to a "missing paper" stub.
+_CITE_ENTRY_TYPES = (("paper", "article"), ("patent", "patent"), ("datasheet", "misc"))
+
+
 def build_bib(store: Any, slugs: list[str], warnings: list[str]) -> str:
-    """Generate ``refs.bib`` from the cited paper refs. Resolves each
-    slug to its paper ref, pulling title / authors / year / DOI / arXiv.
-    A slug with no matching paper gets a stub entry + a warning so the
-    document still compiles."""
+    """Generate ``refs.bib`` from the cited source refs. Resolves each
+    slug to its paper / patent / datasheet ref, pulling
+    title / authors / year / DOI / arXiv. A slug with no matching source
+    gets a stub entry + a warning so the document still compiles."""
     entries: list[str] = []
     ref_by_slug: dict[str, Any] = {}
+    entry_type_by_slug: dict[str, str] = {}
     ids: list[int] = []
     for slug in slugs:
-        # A cited handle resolves to a paper or a patent (both citeable);
-        # a finding has already been mapped to its primary cite_key (a
-        # paper) or its pub_id placeholder upstream, so it lands here as a
+        # A cited handle resolves to a paper, a patent, or a datasheet (all
+        # citeable); a finding has already been mapped to its primary cite_key
+        # (a paper) or its pub_id placeholder upstream, so it lands here as a
         # paper slug or a stub.
-        pref = store.get_ref(kind="paper", id=slug) or store.get_ref(
-            kind="patent", id=slug
-        )
+        pref = None
+        entry_type = "misc"
+        for kind, etype in _CITE_ENTRY_TYPES:
+            pref = store.get_ref(kind=kind, id=slug)
+            if pref is not None:
+                entry_type = etype
+                break
         if pref is None:
-            warnings.append(f"cite {slug!r}: no paper in corpus — stub bib entry")
+            warnings.append(f"cite {slug!r}: no source in corpus — stub bib entry")
             entries.append(
-                f"@misc{{{slug},\n  title = {{[missing paper {slug}]}},\n"
+                f"@misc{{{slug},\n  title = {{[missing source {slug}]}},\n"
                 "  note = {Auto-stub by precis export; cited slug not in corpus.},\n}"
             )
             continue
         ref_by_slug[slug] = pref
+        entry_type_by_slug[slug] = entry_type
         ids.append(pref.id)
     aliases = store.identifiers_for_refs(ids) if ids else {}
     for slug, pref in ref_by_slug.items():
@@ -657,7 +671,11 @@ def build_bib(store: Any, slugs: list[str], warnings: list[str]) -> str:
             fields.append(
                 f"  eprint = {{{alias['arxiv']}}},\n  archiveprefix = {{arXiv}}"
             )
-        entry_type = "patent" if getattr(pref, "kind", None) == "patent" else "article"
+        entry_type = entry_type_by_slug[slug]
+        if entry_type == "misc":
+            # Datasheets have no journal/publisher fields; mark them so the
+            # bibliography reads as a datasheet rather than a bare @misc.
+            fields.append("  howpublished = {Datasheet}")
         entries.append(f"@{entry_type}{{{slug},\n" + ",\n".join(fields) + ",\n}")
     return "\n\n".join(entries) + ("\n" if entries else "")
 
@@ -723,12 +741,15 @@ def build_source_appendix(bundle: Any, warnings: list[str]) -> str:
     """
     present = bundle.present
     lines = ["\\clearpage", "\\appendix", "\\section{Referenced Sources}"]
+    from precis.export.sources import safe_source_filename
+
     for e in present:
         heading = _tex(e.title)
+        fname = safe_source_filename(e.slug)
         lines += [
             "\\phantomsection",
             f"\\addcontentsline{{toc}}{{subsection}}{{{heading}}}",
-            f"\\includepdf[pages=-]{{sources/{e.slug}.pdf}}",
+            f"\\includepdf[pages=-]{{sources/{fname}.pdf}}",
         ]
     for e in bundle.missing:
         warnings.append(f"source {e.slug!r} not bundled: {e.reason or 'unknown'}")
@@ -803,7 +824,7 @@ def export_draft(
     appendix_tex = ""
     source_bundle = None
     if include_sources:
-        from precis.export.sources import collect_cited_sources
+        from precis.export.sources import collect_cited_sources, safe_source_filename
 
         source_bundle = collect_cited_sources(
             store, ref, cited_slugs=rendered.cited_slugs
@@ -813,7 +834,9 @@ def export_draft(
             src_dir.mkdir(parents=True, exist_ok=True)
             for e in source_bundle.present:
                 assert e.local_path is not None
-                shutil.copyfile(e.local_path, src_dir / f"{e.slug}.pdf")
+                shutil.copyfile(
+                    e.local_path, src_dir / f"{safe_source_filename(e.slug)}.pdf"
+                )
         appendix_tex = build_source_appendix(source_bundle, rendered.warnings)
 
     main_tex = assemble_document(
