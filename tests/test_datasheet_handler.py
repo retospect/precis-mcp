@@ -8,7 +8,10 @@ registration smoke test."""
 
 from __future__ import annotations
 
+import pytest
+
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.datasheet import DatasheetHandler
 from precis.handlers.paper import PaperHandler
 from precis.store import Store
@@ -55,6 +58,34 @@ def test_datasheet_of_relation_is_registered_with_inverse() -> None:
     # advertises; the Literal + inverse map must stay in sync with the seed.
     assert _INVERSE_RELATIONS["datasheet-of"] == "has-datasheet"
     assert _INVERSE_RELATIONS["has-datasheet"] == "datasheet-of"
+
+
+def test_meta_patch_normalises_vendor_subtype_part() -> None:
+    patch = DatasheetHandler._datasheet_meta_patch(
+        "  Espressif Systems  ", "app-note", " c2934569 "
+    )
+    assert patch == {
+        "vendor": "Espressif Systems",
+        "subtype": "app-note",
+        "part_lcsc": "C2934569",  # upper-cased LCSC C-number
+    }
+
+
+def test_meta_patch_omitted_fields_untouched() -> None:
+    # None ⇒ leave alone; blank string ⇒ explicit clear.
+    assert DatasheetHandler._datasheet_meta_patch(None, None, None) == {}
+    assert DatasheetHandler._datasheet_meta_patch("", None, None) == {"vendor": ""}
+
+
+def test_meta_patch_rejects_unknown_subtype() -> None:
+    with pytest.raises(BadInput):
+        DatasheetHandler._datasheet_meta_patch(None, "brochure", None)
+
+
+def test_edit_with_no_fields_is_rejected(store: Store) -> None:
+    handler = DatasheetHandler(hub=Hub(store=store))
+    with pytest.raises(BadInput):
+        handler.edit(id="whatever")  # no meta + no bibliographic field
 
 
 def test_datasheet_empty_search_names_datasheet_not_paper(store: Store) -> None:

@@ -281,16 +281,22 @@ class _BibStore:
         return {}
 
 
-def _bibref(rid, slug, kind, *, title, authors=None, year=None):
+def _bibref(rid, slug, kind, *, title, authors=None, year=None, meta=None):
     from types import SimpleNamespace
 
     return SimpleNamespace(
-        id=rid, slug=slug, kind=kind, title=title, authors=authors, year=year
+        id=rid,
+        slug=slug,
+        kind=kind,
+        title=title,
+        authors=authors,
+        year=year,
+        meta=meta,
     )
 
 
 def test_build_bib_emits_datasheet_entry_not_stub() -> None:
-    """A cited datasheet resolves to a real ``@misc`` bib entry (gr52396) —
+    """A cited datasheet resolves to a real ``@manual`` bib entry (gr52396) —
     not the 'missing source' auto-stub — so the bibliography lists it."""
     store = _BibStore(
         {
@@ -306,11 +312,39 @@ def test_build_bib_emits_datasheet_entry_not_stub() -> None:
     )
     warnings: list[str] = []
     bib = latex.build_bib(store, ["stm32f4"], warnings)
-    assert "@misc{stm32f4," in bib
+    assert "@manual{stm32f4," in bib
     assert "STM32F4 Reference Manual" in bib
     assert "author = {STMicroelectronics}" in bib
     assert "howpublished = {Datasheet}" in bib
     assert "missing source" not in bib
+    assert warnings == []
+
+
+def test_build_bib_datasheet_carries_vendor_subtype_and_part() -> None:
+    """vendor → @manual organization, subtype → howpublished label, and the
+    documented part → a note (the datasheet meta fields the reader edits)."""
+    store = _BibStore(
+        {
+            ("datasheet", "esp32c3"): _bibref(
+                9,
+                "esp32c3",
+                "datasheet",
+                title="ESP32-C3 App Note",
+                year=2022,
+                meta={
+                    "vendor": "Espressif Systems",
+                    "subtype": "app-note",
+                    "part_lcsc": "C2934569",
+                },
+            )
+        }
+    )
+    warnings: list[str] = []
+    bib = latex.build_bib(store, ["esp32c3"], warnings)
+    assert "@manual{esp32c3," in bib
+    assert "organization = {Espressif Systems}" in bib
+    assert "howpublished = {Application note}" in bib
+    assert "note = {Part C2934569}" in bib
     assert warnings == []
 
 

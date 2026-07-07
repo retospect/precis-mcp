@@ -212,6 +212,22 @@ class FakeStore:
                 meta={"authors": ["Payne, M. C."], "venue": "CASTEP Workshop"},
             ),
         ]
+        # A datasheet for the /datasheets reader render test — carries the
+        # vendor / sub-type / part meta the datasheet Meta panel edits.
+        self.datasheets = [
+            make_ref(
+                id=95,
+                kind="datasheet",
+                slug="esp32c3",
+                title="ESP32-C3 Datasheet",
+                pdf_sha256="dsheet",
+                meta={
+                    "vendor": "Espressif Systems",
+                    "subtype": "app-note",
+                    "part_lcsc": "C2934569",
+                },
+            ),
+        ]
         self.convs = [
             make_ref(
                 id=40,
@@ -247,6 +263,7 @@ class FakeStore:
             "web": self.webs,
             "job": self.jobs,
             "pres": self.press,
+            "datasheet": self.datasheets,
         }.get(kind or "", [])
 
     def list_blocks_for_ref(self, ref_id: int, **kw: Any) -> list[Any]:
@@ -312,6 +329,7 @@ class FakeStore:
             + self.webs
             + self.jobs
             + self.press
+            + self.datasheets
         ):
             if r.kind == kind and (r.slug == id or r.id == id):
                 return r
@@ -414,6 +432,7 @@ class FakeStore:
             + self.webs
             + self.jobs
             + self.press
+            + self.datasheets
         }
         return {i: pool[i] for i in ids if i in pool}
 

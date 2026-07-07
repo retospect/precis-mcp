@@ -624,5 +624,38 @@ def test_format_reference_resolves_datasheet_not_stub() -> None:
     line = _format_reference(store, "stm32f4", warnings)
     assert "STM32F4 Reference Manual" in line
     assert "STMicroelectronics" in line
+    assert "[Datasheet]" in line  # sub-type genre label
     assert "missing source" not in line
+
+
+def test_format_reference_datasheet_uses_vendor_subtype_part() -> None:
+    """A bylineless datasheet: vendor stands in as the org, the sub-type
+    label + documented part ride along — parity with the .bib @manual entry."""
+    from types import SimpleNamespace
+
+    from precis.export.docx import _format_reference
+
+    store = _RefStore(
+        {
+            ("datasheet", "esp32c3"): SimpleNamespace(
+                id=9,
+                slug="esp32c3",
+                kind="datasheet",
+                title="ESP32-C3 App Note",
+                authors=None,
+                year=2022,
+                meta={
+                    "vendor": "Espressif Systems",
+                    "subtype": "app-note",
+                    "part_lcsc": "C2934569",
+                },
+            )
+        }
+    )
+    warnings: list[str] = []
+    line = _format_reference(store, "esp32c3", warnings)
+    assert "Espressif Systems" in line
+    assert "(2022)" in line
+    assert "[Application note]" in line
+    assert "Part C2934569" in line
     assert warnings == []

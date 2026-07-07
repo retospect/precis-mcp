@@ -26,7 +26,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from precis.export.latex import _COMBINED, _bibtex_authors, preprocess_draft_inline
+from precis.export.latex import (
+    _COMBINED,
+    _bibtex_authors,
+    datasheet_pub_label,
+    preprocess_draft_inline,
+)
 from precis.utils import handle_registry
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
@@ -650,9 +655,19 @@ def _format_reference(store: Any, slug: str, warnings: list[str]) -> str:
         warnings.append(f"cite {slug!r}: no source in corpus — stub reference")
         return f"[missing source {slug}] (cited slug not in corpus)"
     authors = _bibtex_authors(pref.authors).replace(" and ", "; ")
+    # A datasheet has no byline; its vendor stands in as the "author" org so the
+    # reference reads "Espressif (2023). ESP32-C3. [Datasheet] Part C123."
+    meta = pref.meta or {}
+    if getattr(pref, "kind", "") == "datasheet" and not authors:
+        authors = str(meta.get("vendor") or "").strip()
     # "Authors (year). Title." — robust plain-text assembly.
     head = " ".join(x for x in [authors, f"({pref.year})" if pref.year else ""] if x)
     line = (head + ". " if head else "") + (pref.title or slug) + "."
+    if getattr(pref, "kind", "") == "datasheet":
+        line += f" [{datasheet_pub_label(meta)}]"
+        part = str(meta.get("part_lcsc") or "").strip()
+        if part:
+            line += f" Part {part}."
     try:
         alias = store.identifiers_for_refs([pref.id]).get(pref.id, {})
         if alias.get("doi"):

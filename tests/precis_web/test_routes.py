@@ -31,10 +31,54 @@ def test_pres_editor_routes_registered(client) -> None:
 
 
 def test_datasheet_reader_route_registered(client) -> None:
-    """The /datasheets reader is a thin delegate to the paper renderer
-    (datasheet joined _DOC_FAMILY). Guards the app-factory registration."""
+    """The /datasheets reader + edit endpoints are wired (datasheet joined
+    _DOC_FAMILY). Guards the app-factory registration."""
     paths = {getattr(r, "path", None) for r in client.app.routes}
     assert "/datasheets/{ident}" in paths
+    assert "/datasheets/{ref_id}/edit" in paths
+
+
+def test_datasheet_reader_renders_shared_shell_and_meta_panel(client) -> None:
+    """The /datasheets reader renders the shared two-pane reader (paperDoc)
+    with the datasheet Meta panel — vendor / sub-type / part fields posting to
+    the datasheet edit verb. Guards the _render_detail override hook."""
+    resp = client.get("/datasheets/esp32c3")
+    assert resp.status_code == 200
+    body = resp.text
+    # Shared reader shell (reused paper renderer).
+    assert "paperDoc(" in body
+    assert "/static/paper-viewer.js" in body
+    # Datasheet-specific Meta panel: fields + the sub-type badge + edit action.
+    assert 'action="/datasheets/95/edit"' in body
+    assert 'name="vendor"' in body
+    assert 'name="subtype"' in body
+    assert 'name="part_lcsc"' in body
+    assert "Espressif Systems" in body  # current vendor value
+    assert "Application note" in body  # sub-type badge label
+    assert "C2934569" in body  # documented part
+
+
+def test_datasheet_edit_dispatches_edit_verb(client, runtime) -> None:
+    """Saving the datasheet Meta form dispatches the datasheet ``edit`` verb
+    with the vendor/sub-type/part fields, then redirects back to the reader."""
+    resp = client.post(
+        "/datasheets/95/edit",
+        data={
+            "title": "ESP32-C3 Datasheet",
+            "vendor": "Espressif Systems",
+            "subtype": "errata",
+            "part_lcsc": "C2934569",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/datasheets/esp32c3"
+    edits = [(v, a) for (v, a) in runtime.calls if v == "edit"]
+    assert edits, "edit verb was not dispatched"
+    _, args = edits[-1]
+    assert args["kind"] == "datasheet"
+    assert args["subtype"] == "errata"
+    assert args["part_lcsc"] == "C2934569"
 
 
 def test_pres_reader_renders_shared_shell_and_attribution(client) -> None:

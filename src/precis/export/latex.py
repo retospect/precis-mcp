@@ -620,9 +620,32 @@ def _bibtex_authors(authors: list[dict[str, Any]] | None) -> str:
 # A cited handle resolves to one of these citeable kinds (checked in order),
 # each with its BibTeX entry type. Datasheets are citeable evidence
 # (``corpus_role='evidence'``) so they can land in the cited set alongside
-# papers / patents — a ``@misc`` entry keeps them in the bibliography instead
-# of degrading to a "missing paper" stub.
-_CITE_ENTRY_TYPES = (("paper", "article"), ("patent", "patent"), ("datasheet", "misc"))
+# papers / patents — a ``@manual`` entry (BibTeX's technical-manual type) is
+# the natural home for a datasheet: it carries ``organization`` (the vendor)
+# and ``howpublished`` (the sub-type) instead of degrading to a bare stub.
+_CITE_ENTRY_TYPES = (
+    ("paper", "article"),
+    ("patent", "patent"),
+    ("datasheet", "manual"),
+)
+
+# Human labels for the ``meta.subtype`` sub-genre of a datasheet — surfaced in
+# the bibliography (``howpublished``) + the reader badge + the docx reference
+# line so a cited app-note reads as an app-note, not a bare "Datasheet".
+_DATASHEET_SUBTYPE_LABELS = {
+    "datasheet": "Datasheet",
+    "app-note": "Application note",
+    "errata": "Errata",
+    "reference-manual": "Reference manual",
+}
+
+
+def datasheet_pub_label(meta: dict[str, Any] | None) -> str:
+    """The human sub-type label for a datasheet ref's ``meta`` (default
+    ``"Datasheet"``). Shared by the LaTeX bib, the docx reference line, and
+    the web reader badge so all three agree on the genre string."""
+    sub = str((meta or {}).get("subtype") or "datasheet")
+    return _DATASHEET_SUBTYPE_LABELS.get(sub, "Datasheet")
 
 
 def build_bib(store: Any, slugs: list[str], warnings: list[str]) -> str:
@@ -672,10 +695,18 @@ def build_bib(store: Any, slugs: list[str], warnings: list[str]) -> str:
                 f"  eprint = {{{alias['arxiv']}}},\n  archiveprefix = {{arXiv}}"
             )
         entry_type = entry_type_by_slug[slug]
-        if entry_type == "misc":
-            # Datasheets have no journal/publisher fields; mark them so the
-            # bibliography reads as a datasheet rather than a bare @misc.
-            fields.append("  howpublished = {Datasheet}")
+        if entry_type == "manual":
+            # A datasheet: vendor → @manual organization, sub-type → the
+            # howpublished genre label, and the documented part (if recorded
+            # in meta) as a note. All optional — absent fields just drop.
+            meta = pref.meta or {}
+            vendor = str(meta.get("vendor") or "").strip()
+            if vendor:
+                fields.append(f"  organization = {{{_tex(vendor)}}}")
+            fields.append(f"  howpublished = {{{datasheet_pub_label(meta)}}}")
+            part = str(meta.get("part_lcsc") or "").strip()
+            if part:
+                fields.append(f"  note = {{Part {_tex(part)}}}")
         entries.append(f"@{entry_type}{{{slug},\n" + ",\n".join(fields) + ",\n}")
     return "\n\n".join(entries) + ("\n" if entries else "")
 

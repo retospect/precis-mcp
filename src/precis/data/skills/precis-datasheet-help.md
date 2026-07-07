@@ -63,6 +63,22 @@ same reader as `/papers` and `/pres`). It's reached from Drive, cross-kind
 search (`/items`), or the part it documents — there is no standalone
 `/datasheets` list page (like `/pres`).
 
+The **Meta** tab is datasheet-shaped (not the paper's bibliographic form): it
+edits three `meta` fields —
+
+- **vendor** (manufacturer, e.g. `Espressif Systems`),
+- **sub-type** — one of `datasheet` / `app-note` / `errata` / `reference-manual`
+  (the one-kind-for-the-family selector), and
+- **part** — the LCSC C-number of the documented part.
+
+Set them here or via `edit(kind='datasheet', id='<slug>', vendor=…,
+subtype='app-note', part_lcsc='C2934569')`. They **flow into citations**: a
+cited datasheet renders as a BibTeX `@manual` with `organization={vendor}` +
+`howpublished={<sub-type label>}` (LaTeX/PDF export) and as a
+"Vendor (year). Title. [Sub-type] Part C…" line in the docx **References**
+(`export.latex.build_bib` / `export.docx`). (The part is stored on `meta`, not
+yet a `datasheet-of` graph edge — `part` is a catalog kind, not a `refs` row.)
+
 ## The move
 
 Read the datasheet → decide pin functions, supply, decoupling, bus rules →

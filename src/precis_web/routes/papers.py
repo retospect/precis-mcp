@@ -410,6 +410,10 @@ def _render_detail(
     triage_msg: str = "",
     cited: dict[str, Any] | None = None,
     initial_tab: str = "",
+    meta_panel: str | None = None,
+    list_url: str | None = None,
+    list_label: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> HTMLResponse:
     """Render the paper detail page. Shared by ``detail`` and the triage
     lookup so an S2 result can re-render the page with the edit form
@@ -418,6 +422,12 @@ def _render_detail(
     ``initial_tab`` (``Navigate`` / ``Jump`` / ``Meta``) seeds the sidebar
     tab; a triaged paper defaults to ``Meta`` (where the triage panel +
     edit form live) so the queue opens straight onto the metadata it needs.
+
+    A paper-family sibling (``cfp`` / ``datasheet``) can override the Meta tab
+    with its own panel: ``meta_panel`` swaps ``doc.meta_panel`` and ``extra``
+    merges kind-specific vars into the template context, while everything else
+    (the shared reader shell, the ``/papers/{id}/…`` sidebar endpoints) is
+    reused. ``list_url`` / ``list_label`` retarget the "back to list" link.
     """
     store = get_store(request)
     cfg = get_web_config(request)
@@ -443,71 +453,80 @@ def _render_detail(
         slug_default = suggested_slug
     else:
         slug_default = cite_key
-    return templates.TemplateResponse(
-        request,
-        "papers/detail.html.j2",
-        {
-            "active_tab": "papers",
-            "paper": paper,
-            # Universal handle (ADR 0036, ``pa<ref_id>`` / ``cf<ref_id>``) —
-            # the address that works regardless of whether a slug is minted.
-            "pa_handle": format_handle(ref.kind, ref_id),
-            "handle": cite_key or str(ref_id),
+    context: dict[str, Any] = {
+        "active_tab": "papers",
+        "paper": paper,
+        # Universal handle (ADR 0036, ``pa<ref_id>`` / ``cf<ref_id>``) —
+        # the address that works regardless of whether a slug is minted.
+        "pa_handle": format_handle(ref.kind, ref_id),
+        "handle": cite_key or str(ref_id),
+        "n_chunks": n_chunks,
+        "tags": tags,
+        "authors_display": _authors_str(ref),
+        "author_lines": _author_edit_lines(ref),
+        "abstract": _abstract_full(ref),
+        "ingested": stamps,
+        "pdf_on_disk": found is not None,
+        # Diagnostics for the "file expected but missing" case (a
+        # held paper whose corpus roots / mount are misconfigured,
+        # or a paper with no cite_key to address the file by): list
+        # every path we tried so it's self-diagnosing.
+        "cite_key": cite_key,
+        "pdf_lookup_paths": [
+            str(p) for p in _pdf_candidates(cfg.corpus_dirs, pdf_keys)
+        ],
+        "corpus_dirs": [str(p) for p in cfg.corpus_dirs],
+        # Triage panel state (paste-title -> S2 lookup -> pre-filled edit).
+        "is_triage": has_triage,
+        "prefill": prefill,
+        "triage_msg": triage_msg,
+        # Editable short handle (cite_key) + a free suggestion.
+        "slug_default": slug_default,
+        "suggested_slug": suggested_slug,
+        # Cited passage (from a ``?chunk=N`` citation click) — rendered
+        # as a highlighted card so the reader lands on "the relevant
+        # thing", with a PDF-page link for the full context.
+        "cited": cited,
+        # Sidebar tab to open on (Navigate / Jump / Meta); a ?chunk
+        # citation still wins in the client (forces Jump).
+        "initial_tab": initial_tab,
+        # Neutral shell context consumed by the shared reader
+        # (_reader/reader.html.j2); the paper-specific Meta tab is
+        # plugged via ``doc.meta_panel`` and still reads the vars above.
+        "doc": {
+            "id": ref_id,
+            "title": paper["title"],
+            "handle": format_handle(ref.kind, ref_id),
+            "slug": cite_key,
+            "list_url": "/papers",
+            "list_label": "papers",
             "n_chunks": n_chunks,
-            "tags": tags,
-            "authors_display": _authors_str(ref),
-            "author_lines": _author_edit_lines(ref),
-            "abstract": _abstract_full(ref),
-            "ingested": stamps,
             "pdf_on_disk": found is not None,
-            # Diagnostics for the "file expected but missing" case (a
-            # held paper whose corpus roots / mount are misconfigured,
-            # or a paper with no cite_key to address the file by): list
-            # every path we tried so it's self-diagnosing.
+            "has_pdf": bool(paper.get("has_pdf")),
+            "cited_ord": cited["ord"] if cited else -1,
+            "initial_tab": initial_tab,
+            "pdf_url": f"/papers/{ref_id}/pdf",
+            "meta_panel": "papers/_meta_panel.html.j2",
             "cite_key": cite_key,
             "pdf_lookup_paths": [
                 str(p) for p in _pdf_candidates(cfg.corpus_dirs, pdf_keys)
             ],
             "corpus_dirs": [str(p) for p in cfg.corpus_dirs],
-            # Triage panel state (paste-title -> S2 lookup -> pre-filled edit).
-            "is_triage": has_triage,
-            "prefill": prefill,
-            "triage_msg": triage_msg,
-            # Editable short handle (cite_key) + a free suggestion.
-            "slug_default": slug_default,
-            "suggested_slug": suggested_slug,
-            # Cited passage (from a ``?chunk=N`` citation click) — rendered
-            # as a highlighted card so the reader lands on "the relevant
-            # thing", with a PDF-page link for the full context.
-            "cited": cited,
-            # Sidebar tab to open on (Navigate / Jump / Meta); a ?chunk
-            # citation still wins in the client (forces Jump).
-            "initial_tab": initial_tab,
-            # Neutral shell context consumed by the shared reader
-            # (_reader/reader.html.j2); the paper-specific Meta tab is
-            # plugged via ``doc.meta_panel`` and still reads the vars above.
-            "doc": {
-                "id": ref_id,
-                "title": paper["title"],
-                "handle": format_handle(ref.kind, ref_id),
-                "slug": cite_key,
-                "list_url": "/papers",
-                "list_label": "papers",
-                "n_chunks": n_chunks,
-                "pdf_on_disk": found is not None,
-                "has_pdf": bool(paper.get("has_pdf")),
-                "cited_ord": cited["ord"] if cited else -1,
-                "initial_tab": initial_tab,
-                "pdf_url": f"/papers/{ref_id}/pdf",
-                "meta_panel": "papers/_meta_panel.html.j2",
-                "cite_key": cite_key,
-                "pdf_lookup_paths": [
-                    str(p) for p in _pdf_candidates(cfg.corpus_dirs, pdf_keys)
-                ],
-                "corpus_dirs": [str(p) for p in cfg.corpus_dirs],
-            },
         },
-    )
+    }
+    # Paper-family override hook: a cfp/datasheet reader swaps the Meta panel
+    # + retargets the list link, and merges its own kind-specific vars, while
+    # reusing the whole reader shell + sidebar endpoints.
+    doc = context["doc"]
+    if meta_panel is not None:
+        doc["meta_panel"] = meta_panel
+    if list_url is not None:
+        doc["list_url"] = list_url
+    if list_label is not None:
+        doc["list_label"] = list_label
+    if extra:
+        context.update(extra)
+    return templates.TemplateResponse(request, "papers/detail.html.j2", context)
 
 
 def _cited_chunk(store: Any, ref_id: int, chunk: str | None) -> dict[str, Any] | None:
