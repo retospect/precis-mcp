@@ -17,6 +17,42 @@ what's still open.
 
 ---
 
+## 🟠 Planner "new writing task" wizard — don't auto-dispatch on create (2026-07-07)
+
+- **Status**: `open` — **Severity**: `feature` — **Owner**:
+  `precis_web/routes/tasks.py` (create-root form) + `handlers/todo.py`
+  (`TodoHandler.put` LLM-tag auto-stamp, lines ~525–549).
+- **Why**: today a strategic root is born with `LLM:opus` +
+  `level:strategic` already attached, so `dispatch` mints a `plan_tick`
+  the instant it exists and the planner fans the whole doc into
+  section-todos — each of which auto-gets `LLM:opus` and dispatches its
+  own tick. Reto watched this run away three times in one session on a
+  "Suitcase Design" paper (roots 52247, 52306) and had to SQL-kill the
+  subtrees. The **stop/start buttons shipped 339b77f4** make the kill
+  one click, but the root cause is *creation auto-starts the planner*.
+- **Spec (agreed this session)**: replace the bare new-root form
+  (`dashboard.html.j2:185-203`) with an old-timey **wizard** that
+  *collects intent before outputting*:
+  - a **description** textbox ("what are we doing / what's in the doc"),
+  - a **doc-type** select (paper / draft / pres / cfp / …),
+  - a **"Start planning now"** checkbox, **default OFF**.
+  `POST /tasks/roots` gains `doc_type` + `start`. **OFF** → create the
+  root **with no `LLM:` tag** (stash description + `meta.doc_type`); it
+  sits parked, invisible to `dispatch` (absence of the planner tag *is*
+  the gate — no dispatch change needed). **ON** → stamp `LLM:opus` as
+  today. The **▶ start** button on a parked root then stamps `LLM:opus`
+  (+ seeds the chosen doc-type workspace) to begin.
+- **Open design point** (Reto leaned "every planner todo gated" earlier,
+  then reframed to the wizard): once a root is started, do its
+  section-children flow automatically (recommended — else ▶ per
+  section), or stay individually gated? The shipped ⏹/▶ already give
+  per-subtree control on demand, which argues for root-only gating.
+- **Test**: a `POST /tasks/roots` with `start` unset creates a todo
+  carrying **no** `LLM:`/executor tag (dispatch-invisible); with
+  `start=on` it carries `LLM:opus`.
+
+---
+
 ## 🟡 Unified item view (`/items`) — one DRY cross-kind list/search
 
 **Status**: slices 1–3a shipped + deployed; rest of slice 3 + slice 4 open
