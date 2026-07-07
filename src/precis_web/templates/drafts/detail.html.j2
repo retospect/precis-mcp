@@ -1015,6 +1015,14 @@ function draftDoc(ident) {
       }
       return ph;
     },
+    // Server-rendered heading rows (_row.html.j2) hardcode the ▾ caret, but
+    // collapse state lives only client-side (localStorage). Without this sync
+    // a collapsed section's caret reads "open" the moment its placeholder is
+    // hydrated or its server row is adopted at load — the scary mismatch.
+    _syncToggle(node) {
+      const tg = node.querySelector('.dr-toggle[data-toggle]');
+      if (tg) tg.textContent = this.collapsed.includes(node.id.slice(2)) ? '▸' : '▾';
+    },
     // Reconcile #dr-win to exactly the blocks intersecting the viewport
     // (± MARGIN). Reuses existing nodes (no Alpine churn for blocks that
     // stay); only entering/leaving blocks touch the DOM.
@@ -1061,6 +1069,7 @@ function draftDoc(ident) {
             if (ph && ph.dataset.ph && ph.parentElement) {
               ph.replaceWith(node);                  // Alpine binds via MutationObserver
               this.nodes[h] = node;
+              this._syncToggle(node);
               if (window.htmx) window.htmx.process(node);
               __renderMath(node);
               this.heights[h] = node.offsetHeight || this.heights[h] || 0;
@@ -1231,6 +1240,7 @@ function draftDoc(ident) {
         const h = node.id.slice(2);
         this.nodes[h] = node;
         this.heights[h] = node.offsetHeight || this.heights[h] || 0;
+        this._syncToggle(node);
       });
       this.rebuildVis();
       // 3) delegated caret clicks (placeholders are inert; one handler for
