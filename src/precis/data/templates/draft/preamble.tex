@@ -48,6 +48,24 @@
 \usepackage[acronym,toc]{glossaries-extra}
 \setabbreviationstyle[acronym]{long-short}
 
+% Screen-only abbreviation tooltips (pdfcomment, after hyperref/glossaries).
+% First use of an acronym still expands inline; every LATER use is the bare
+% short wrapped in a non-printing PDF tooltip that reveals the full term on
+% hover — mirroring the web reader's instant popup without touching the
+% printed page. Only later uses are wrapped: a \pdftooltip box can't break
+% across a line and the first-use expansion is multi-word. hyper=false avoids
+% overlapping the glossary link rectangle with the tooltip annotation.
+% Loaded defensively: if pdfcomment is absent the macros degrade to a plain
+% \gls / \glspl, so a draft still compiles (just without the hover).
+\IfFileExists{pdfcomment.sty}{%
+  \usepackage{pdfcomment}%
+  \newcommand{\glstip}[1]{\pdftooltip{\gls[hyper=false]{#1}}{\glsentrylong{#1}}}%
+  \newcommand{\glspltip}[1]{\pdftooltip{\glspl[hyper=false]{#1}}{\glsentrylong{#1}}}%
+}{%
+  \newcommand{\glstip}[1]{\gls{#1}}%
+  \newcommand{\glspltip}[1]{\glspl{#1}}%
+}
+
 % Code/listing blocks (chunk_kind = listing/code).
 \lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,
         columns=fullflexible,keepspaces=true}

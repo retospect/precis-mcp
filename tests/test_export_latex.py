@@ -195,12 +195,21 @@ def test_glsify_known_abbrev() -> None:
 
 
 def test_glsify_plural_uses_glspl() -> None:
-    """A plural surface (MOFs) links to the same term via \\glspl — so MOF
-    and MOFs share one glossary entry rather than leaving the plural bare."""
+    """A plural surface (MOFs) links to the same term as MOF rather than
+    leaving the plural bare. Here the plural is a *later* use, so it renders
+    as the tooltip-wrapped short (\\glspltip), not a plain \\glspl."""
     out, _ = _inline("one MOF, several MOFs.", {"MOF": "metal-organic framework"})
-    assert r"\gls{mof}" in out
-    assert r"\glspl{mof}" in out
+    assert r"\gls{mof}" in out  # first use expands inline
+    assert r"\glspltip{mof}" in out  # later plural → tooltip-wrapped short
     assert "MOFs" not in out  # the plural was absorbed, not left literal
+
+
+def test_glsify_tooltip_on_later_use() -> None:
+    """First use expands (plain \\gls); every later use is the bare short
+    wrapped in a \\glstip pdftooltip revealing the full term on hover."""
+    out, _ = _inline("PEI first, then PEI again.", {"PEI": "polyethyleneimine"})
+    assert out.count(r"\gls{pei}") == 1  # only the first use is a plain \gls
+    assert r"\glstip{pei}" in out  # the later use is tooltip-wrapped
 
 
 def test_glsify_plural_no_false_match() -> None:

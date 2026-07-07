@@ -13,9 +13,11 @@ That assumption is what lets us stamp machine labels on everything:
   and a ``refs.bib`` is generated from the cited paper refs (DOI/arXiv
   included when the corpus knows them);
 * every defined abbreviation becomes a ``\\newacronym`` and each surface
-  occurrence becomes ``\\gls{key}`` — so first use expands to the full
+  occurrence becomes a glossary call — so first use expands to the full
   term and every later use is the abbreviation, automatically, with the
-  page-number "where it occurs" list in the glossary.
+  page-number "where it occurs" list in the glossary. Later uses are also
+  wrapped in a non-printing ``\\pdftooltip`` so hovering the short reveals
+  the full term on screen (the PDF analogue of the web reader's popup).
 
 This module produces the *project files* (``main.tex`` + ``refs.bib`` +
 the copied ``preamble.tex``). Compiling them (latexmk + biber +
@@ -252,18 +254,29 @@ def _encode_unicode(escaped: str) -> str:
     return _U2L.unicode_to_latex(_normalize_subsup(escaped))
 
 
-def _glsify(escaped: str, keymap: dict[str, str]) -> str:
+def _glsify(escaped: str, keymap: dict[str, str], seen: set[str] | None = None) -> str:
     """Replace whole-word occurrences of each known abbreviation short
-    with ``\\gls{key}`` (longest-first, word-bounded). Runs on
+    with a glossary call (longest-first, word-bounded). Runs on
     already-escaped prose; shorts are alphanumerics so escaping never
     touched them.
 
-    A trailing plural ``s`` is absorbed and rendered with ``\\glspl`` —
-    so a defined ``MOF`` term links *both* ``MOF`` (``\\gls``) and ``MOFs``
-    (``\\glspl``) to the one glossary entry, rather than leaving the plural
-    un-linked. Longest-first ordering means a literal short ``As`` still
-    wins over treating ``A`` + plural ``s``. (Irregular plurals still need
-    the explicit form; ``s`` covers the overwhelming majority.)"""
+    A trailing plural ``s`` is absorbed and rendered with the plural form
+    — so a defined ``MOF`` term links *both* ``MOF`` and ``MOFs`` to the one
+    glossary entry, rather than leaving the plural un-linked. Longest-first
+    ordering means a literal short ``As`` still wins over treating ``A`` +
+    plural ``s``. (Irregular plurals still need the explicit form; ``s``
+    covers the overwhelming majority.)
+
+    First-use vs. later-use split (``seen`` threads the set of already-seen
+    keys across the whole render, so document order == glossaries' first-use
+    order): the *first* occurrence renders as a plain ``\\gls`` / ``\\glspl``
+    so the glossaries package expands it inline (full term + short). Every
+    *later* occurrence renders as ``\\glstip`` / ``\\glspltip`` — the bare
+    short wrapped in a non-printing ``\\pdftooltip`` that reveals the full
+    term on hover (the PDF analogue of the web reader's abbreviation popup).
+    Only later uses are wrapped because a pdftooltip box can't break across a
+    line and the first-use expansion is multi-word. When ``seen`` is omitted
+    every occurrence renders plain (used by isolated unit tests)."""
     if not keymap:
         return escaped
     shorts = sorted((s for s in keymap if s), key=len, reverse=True)
@@ -273,7 +286,12 @@ def _glsify(escaped: str, keymap: dict[str, str]) -> str:
 
     def _sub(m: re.Match[str]) -> str:
         key = keymap[m.group(1)]
-        return f"\\glspl{{{key}}}" if m.group(2) else f"\\gls{{{key}}}"
+        plural = m.group(2)
+        if seen is None or key not in seen:
+            if seen is not None:
+                seen.add(key)
+            return f"\\glspl{{{key}}}" if plural else f"\\gls{{{key}}}"
+        return f"\\glspltip{{{key}}}" if plural else f"\\glstip{{{key}}}"
 
     return pat.sub(_sub, escaped)
 
@@ -288,6 +306,7 @@ class _Ctx:
     legacy_to_dc: dict[str, str] = field(default_factory=dict)  # ¶base58 → dc
     cited: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    seen_acr: set[str] = field(default_factory=set)  # glossary keys already emitted
 
 
 def _render_gap(text: str, ctx: _Ctx) -> str:
@@ -318,8 +337,8 @@ def _render_gap(text: str, ctx: _Ctx) -> str:
     s = _encode_unicode(_latex_escape(s))
     # 5. Bold (the ** survived escaping — * is not a LaTeX special).
     s = _MD_BOLD.sub(r"\\textbf{\1}", s)
-    # 6. Abbreviations → \gls.
-    s = _glsify(s, ctx.keymap)
+    # 6. Abbreviations → \gls (first use) / \glstip tooltip (later uses).
+    s = _glsify(s, ctx.keymap, ctx.seen_acr)
     # 7. Restore the stashed verbatim spans.
     return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], s)
 
