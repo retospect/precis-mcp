@@ -56,15 +56,20 @@
 % across a line and the first-use expansion is multi-word. hyper=false avoids
 % overlapping the glossary link rectangle with the tooltip annotation.
 % Loaded defensively: if pdfcomment is absent the macros degrade to a plain
-% \gls / \glspl, so a draft still compiles (just without the hover).
-\IfFileExists{pdfcomment.sty}{%
-  \usepackage{pdfcomment}%
-  \newcommand{\glstip}[1]{\pdftooltip{\gls[hyper=false]{#1}}{\glsentrylong{#1}}}%
-  \newcommand{\glspltip}[1]{\pdftooltip{\glspl[hyper=false]{#1}}{\glsentrylong{#1}}}%
-}{%
-  \newcommand{\glstip}[1]{\gls{#1}}%
-  \newcommand{\glspltip}[1]{\glspl{#1}}%
-}
+% \gls / \glspl, so a draft still compiles (just without the hover). The
+% \newcommand definitions live under a primitive \ifdefined conditional
+% (branches delimited by \else/\fi, NOT absorbed as a macro argument) — a
+% \newcommand nested inside \IfFileExists{}{...}{...} trips "Illegal
+% parameter number" because LaTeX copies the branch through \def\reserved@a,
+% where the bare #1 is no longer a legal parameter.
+\IfFileExists{pdfcomment.sty}{\usepackage{pdfcomment}}{}
+\ifdefined\pdftooltip
+  \newcommand{\glstip}[1]{\pdftooltip{\gls[hyper=false]{#1}}{\glsentrylong{#1}}}
+  \newcommand{\glspltip}[1]{\pdftooltip{\glspl[hyper=false]{#1}}{\glsentrylong{#1}}}
+\else
+  \newcommand{\glstip}[1]{\gls{#1}}
+  \newcommand{\glspltip}[1]{\glspl{#1}}
+\fi
 
 % Code/listing blocks (chunk_kind = listing/code).
 \lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,
