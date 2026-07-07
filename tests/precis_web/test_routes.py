@@ -3445,3 +3445,111 @@ def test_ask_followup_thinking_failure_records_error_turn(
     answer_put = [a for v, a in runtime.calls if v == "put"][-1]
     assert "thinking failed" in answer_put["text"]
     assert answer_put["author"] == "system"
+
+
+# ── tape-player stop / start (halt a subtree) ──────────────────────
+
+
+def _patch_subtree(monkeypatch, rows, *, parent=None, halts=None):
+    """Stub the subtree/halt DB helpers so the stop/start route logic is
+    exercised without Postgres (the fake pool returns empty cursors)."""
+    from precis_web.routes import tasks
+
+    monkeypatch.setattr(tasks, "_subtree_rows", lambda store, root_id: rows)
+    monkeypatch.setattr(
+        tasks,
+        "_halt_tags_for",
+        lambda store, ids: {i: (halts or {}).get(i, []) for i in ids},
+    )
+    monkeypatch.setattr(tasks, "_parent_todo_id", lambda store, ref_id: parent)
+
+
+def test_stop_todo_halts_subtree_and_cancels_live_jobs(
+    runtime, client, monkeypatch
+) -> None:
+    """⏹ on a todo halts every descendant todo and cancels only the
+    live (queued/running) jobs — a succeeded job is left untouched."""
+    _patch_subtree(
+        monkeypatch,
+        rows=[
+            (100, "todo", "open"),
+            (101, "todo", "open"),
+            (102, "job", "running"),
+            (103, "job", "queued"),
+            (104, "job", "succeeded"),
+        ],
+    )
+    resp = client.post("/tasks/100/stop", data={}, follow_redirects=False)
+    assert resp.status_code == 303
+    halts = [a for v, a in runtime.calls if v == "tag" and a.get("add") == ["halt"]]
+    assert {a["id"] for a in halts} == {100, 101}
+    cancels = [
+        a
+        for v, a in runtime.calls
+        if v == "tag" and a.get("add") == ["STATUS:cancelled"]
+    ]
+    assert {a["id"] for a in cancels} == {102, 103}  # not the succeeded 104
+
+
+def test_stop_skips_already_halted_todo(runtime, client, monkeypatch) -> None:
+    """A todo already carrying a halt marker is not re-tagged."""
+    _patch_subtree(
+        monkeypatch,
+        rows=[(100, "todo", "open"), (101, "todo", "open")],
+        halts={101: ["halt:cost-cap"]},
+    )
+    resp = client.post("/tasks/100/stop", data={}, follow_redirects=False)
+    assert resp.status_code == 303
+    halted_ids = {
+        a["id"] for v, a in runtime.calls if v == "tag" and a.get("add") == ["halt"]
+    }
+    assert halted_ids == {100}
+
+
+def test_stop_job_cancels_and_halts_parent(runtime, client, monkeypatch) -> None:
+    """⏹ on a job cancels it and halts its owner todo."""
+    _patch_subtree(monkeypatch, rows=[(200, "job", "running")], parent=42)
+    resp = client.post("/tasks/200/stop", data={}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert (
+        "tag",
+        {"kind": "job", "id": 200, "add": ["STATUS:cancelled"]},
+    ) in runtime.calls
+    assert ("tag", {"kind": "todo", "id": 42, "add": ["halt"]}) in runtime.calls
+
+
+def test_stop_missing_ref_is_noop(runtime, client, monkeypatch) -> None:
+    """Posting stop for a ref not in the subtree walk redirects, no writes."""
+    _patch_subtree(monkeypatch, rows=[])
+    resp = client.post("/tasks/999/stop", data={}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert runtime.calls == []
+
+
+def test_start_removes_halt_from_subtree(runtime, client, monkeypatch) -> None:
+    """▶ clears every halt marker (bare + reason-tagged) across the subtree."""
+    _patch_subtree(
+        monkeypatch,
+        rows=[(100, "todo", "open"), (101, "todo", "open"), (102, "job", "queued")],
+        halts={100: ["halt"], 101: ["halt", "halt:tick-cap"]},
+    )
+    resp = client.post("/tasks/100/start", data={}, follow_redirects=False)
+    assert resp.status_code == 303
+    removes = {
+        tuple(sorted(a["remove"])): a["id"] for v, a in runtime.calls if v == "tag"
+    }
+    assert removes == {("halt",): 100, ("halt", "halt:tick-cap"): 101}
+
+
+def test_stop_surfaces_handler_error(runtime, client, monkeypatch) -> None:
+    """A rejected tag mutation renders the error page (not a silent redirect)."""
+    _patch_subtree(monkeypatch, rows=[(100, "todo", "open")])
+    runtime.error_verbs.add("tag")
+    resp = client.post("/tasks/100/stop", data={}, follow_redirects=False)
+    assert resp.status_code == 400
+
+
+def test_stop_start_routes_registered(client) -> None:
+    paths = {getattr(r, "path", None) for r in client.app.routes}
+    assert "/tasks/{ref_id}/stop" in paths
+    assert "/tasks/{ref_id}/start" in paths

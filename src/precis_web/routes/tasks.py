@@ -529,6 +529,91 @@ def _child_jobs(store: Any, todo_ids: list[int]) -> list[dict[str, Any]]:
     ]
 
 
+def _subtree_rows(store: Any, root_id: int) -> list[tuple[int, str, str]]:
+    """Return ``(ref_id, kind, status)`` for the subtree of ``root_id``.
+
+    A recursive walk over ``refs.parent_id`` (root inclusive), skipping
+    soft-deleted refs — the same shape the dashboard's tree build uses,
+    but scoped to one root so a stop / start button touches only that
+    subtree. ``status`` is the current ``STATUS:`` value ('' when unset).
+    Degrades to ``[]`` under the test fake's empty cursor.
+    """
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                WITH RECURSIVE tree AS (
+                    SELECT ref_id, kind FROM refs
+                     WHERE ref_id = %s AND deleted_at IS NULL
+                    UNION ALL
+                    SELECT r.ref_id, r.kind FROM refs r
+                      JOIN tree t ON r.parent_id = t.ref_id
+                     WHERE r.deleted_at IS NULL
+                )
+                SELECT tr.ref_id, tr.kind,
+                       COALESCE((
+                           SELECT t.value FROM ref_tags rt
+                             JOIN tags t ON t.tag_id = rt.tag_id
+                            WHERE rt.ref_id = tr.ref_id
+                              AND t.namespace = 'STATUS'
+                            LIMIT 1), '') AS status
+                  FROM tree tr
+                """,
+                (root_id,),
+            ).fetchall()
+    except Exception:  # pragma: no cover - defensive (fake cursor)
+        return []
+    return [(int(r[0]), str(r[1]), str(r[2] or "")) for r in rows]
+
+
+def _halt_tags_for(store: Any, todo_ids: list[int]) -> dict[int, list[str]]:
+    """Return each todo's ``halt`` / ``halt:<reason>`` open tags.
+
+    The start (▶) button clears every halt marker on a subtree — bare
+    ``halt`` (a stop-button brake) and any ``halt:<reason>`` a planner
+    self-imposed (``halt:cost-cap`` …) — so resume needs the exact tag
+    strings to remove. The stop (⏹) button reads the same map to skip a
+    todo that is already halted. Returns ``{todo_id: [halt tag, ...]}``.
+    """
+    out: dict[int, list[str]] = {tid: [] for tid in todo_ids}
+    if not todo_ids:
+        return out
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT rt.ref_id, t.value
+                  FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE rt.ref_id = ANY(%s)
+                   AND t.namespace = 'OPEN'
+                   AND (t.value = 'halt' OR t.value LIKE 'halt:%%')
+                """,
+                (todo_ids,),
+            ).fetchall()
+    except Exception:  # pragma: no cover - defensive (fake cursor)
+        return out
+    for ref_id, value in rows:
+        rid = int(ref_id)
+        if rid in out:
+            out[rid].append(str(value))
+    return out
+
+
+def _parent_todo_id(store: Any, ref_id: int) -> int | None:
+    """Return the ``parent_id`` of one ref (the owner todo of a job), or None."""
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT parent_id FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+    except Exception:  # pragma: no cover - defensive (fake cursor)
+        return None
+    if not row or row[0] is None:
+        return None
+    return int(row[0])
+
+
 def _job_notes(store: Any, job_ids: list[int]) -> dict[int, dict[str, Any]]:
     """Bulk-fetch the ``job_result`` / ``job_event`` / ``job_summary`` chunks.
 
@@ -739,6 +824,9 @@ def _build_rows(store: Any, *, precis_root: Path | None = None) -> list[dict[str
                 "locked": node["id"] in locked,
                 "lease_until": lease_until,
                 "lease_active": _lease_active(lease_until),
+                # Halted (⏸) when a stop-button brake or a planner self-halt
+                # sits on the todo — the ▶ start button shows in place of ⏹.
+                "halted": any(t == "halt" or t.startswith("halt:") for t in row_tags),
                 "tags": row_tags,
                 "attention_icons": attention_icons,
                 "note": note,
@@ -1049,6 +1137,118 @@ async def retry_job(
             require, exclude, focus, show_jobs if show_jobs != "active" else None
         ),
     )
+
+
+#: STATUS values that mean a job is still in flight (claimable / running).
+#: A ⏹ stop cancels exactly these; a terminal job is left untouched.
+_LIVE_JOB_STATUSES: frozenset[str] = frozenset({"queued", "running"})
+
+
+def _stop_error(request: Request, body: str, title: str) -> Response:
+    """Render the shared error page for a failed stop/start mutation."""
+    return templates.TemplateResponse(
+        request,
+        "error.html.j2",
+        {"title": title, "detail": body, "status": 400},
+        status_code=400,
+    )
+
+
+@router.post("/{ref_id}/stop")
+async def stop_task(
+    request: Request,
+    ref_id: int,
+    require: list[str] = Form(default=[]),
+    exclude: list[str] = Form(default=[]),
+    focus: int | None = Form(default=None),
+    show_jobs: str = Form(default="active"),
+) -> Response:
+    """Tape-player ⏹ STOP — pause a whole subtree so nothing re-mints.
+
+    On a **todo**: add the ``halt`` marker to the todo and every
+    descendant todo, and cancel (``STATUS:cancelled``) each live child
+    job in the subtree. ``halt`` is the lever ``dispatch`` and the doable
+    view already honour (``_DOABLE_EXCLUSION_TAGS``), so the planner stops
+    minting ``plan_tick`` jobs across the whole tree — one click kills a
+    runaway (each descendant section-todo dispatches its own tick, so a
+    root-only halt would leave the children spinning).
+
+    On a **job**: cancel that job and ``halt`` its owner todo (so the
+    owner doesn't immediately re-mint a fresh tick).
+
+    Mutations route through the runtime ``tag`` verb (owner source) so the
+    closed STATUS vocabulary and the halt-remove owner guard stay
+    single-sourced. Idempotent: an already-halted todo / already-terminal
+    job is skipped.
+    """
+    store = get_store(request)
+    redirect = _tasks_url(
+        require, exclude, focus, show_jobs if show_jobs != "active" else None
+    )
+    rows = _subtree_rows(store, ref_id)
+    root = next((r for r in rows if r[0] == ref_id), None)
+    if root is None:
+        return RedirectResponse(url=redirect, status_code=303)
+
+    if root[1] == "job":
+        halt_todo_ids = [pid] if (pid := _parent_todo_id(store, ref_id)) else []
+        cancel_job_ids = [ref_id] if root[2] in _LIVE_JOB_STATUSES else []
+    else:
+        halt_todo_ids = [r[0] for r in rows if r[1] == "todo"]
+        cancel_job_ids = [
+            r[0] for r in rows if r[1] == "job" and r[2] in _LIVE_JOB_STATUSES
+        ]
+
+    already_halted = _halt_tags_for(store, halt_todo_ids)
+    for tid in halt_todo_ids:
+        if already_halted.get(tid):
+            continue  # already halted — halt add would be a churn no-op
+        body, is_error = await await_dispatch(
+            request, "tag", {"kind": "todo", "id": tid, "add": ["halt"]}
+        )
+        if is_error:
+            return _stop_error(request, body, "Stop failed")
+    for jid in cancel_job_ids:
+        body, is_error = await await_dispatch(
+            request, "tag", {"kind": "job", "id": jid, "add": ["STATUS:cancelled"]}
+        )
+        if is_error:
+            return _stop_error(request, body, "Stop failed")
+    return RedirectResponse(url=redirect, status_code=303)
+
+
+@router.post("/{ref_id}/start")
+async def start_task(
+    request: Request,
+    ref_id: int,
+    require: list[str] = Form(default=[]),
+    exclude: list[str] = Form(default=[]),
+    focus: int | None = Form(default=None),
+    show_jobs: str = Form(default="active"),
+) -> Response:
+    """Tape-player ▶ START — resume a halted subtree.
+
+    Removes every ``halt`` / ``halt:<reason>`` marker from the todo and
+    all descendant todos, so ``dispatch`` starts minting ``plan_tick``s
+    again. Owner-sourced (the web process runs as owner), so the
+    halt-remove owner guard in ``check_halt_remove`` passes. A no-op on a
+    subtree that carries no halt marker.
+    """
+    store = get_store(request)
+    redirect = _tasks_url(
+        require, exclude, focus, show_jobs if show_jobs != "active" else None
+    )
+    rows = _subtree_rows(store, ref_id)
+    todo_ids = [r[0] for r in rows if r[1] == "todo"]
+    for tid, halts in _halt_tags_for(store, todo_ids).items():
+        if not halts:
+            continue
+        body, is_error = await await_dispatch(
+            request, "tag", {"kind": "todo", "id": tid, "remove": halts}
+        )
+        if is_error:
+            return _stop_error(request, body, "Start failed")
+    return RedirectResponse(url=redirect, status_code=303)
 
 
 @router.post("/{ref_id}/move")

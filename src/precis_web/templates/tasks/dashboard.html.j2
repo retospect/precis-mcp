@@ -364,6 +364,15 @@
                     title="clear the failure bubble on the parent todo so dispatch re-mints a fresh job">Retry</button>
           </form>
           {% endif %}
+          {# Tape-player ⏹ for a live job: cancel it and halt its parent task
+             so dispatch doesn't immediately re-mint a fresh tick. #}
+          {% if r.kind == 'job' and r.status in ['queued', 'running'] %}
+          <form method="post" action="/tasks/{{ r.id }}/stop" class="ml-auto inline-flex">
+            {{ filter_inputs() }}
+            <button class="text-sm leading-none text-rose-600 hover:text-rose-800"
+                    title="⏹ stop — cancel this job &amp; halt its parent task">⏹</button>
+          </form>
+          {% endif %}
           {% if r.kind == 'todo' %}
           {# Per-row navigation: 🔍 focus (drill into subtree),
              📊 tree (focus + mermaid 3 deep). 📊 collapses both into
@@ -377,6 +386,22 @@
              title="focus + show tree diagram (3 deep)">📊</a>
           {% else %}
           <span class="ml-auto"></span>
+          {% endif %}
+          {# Tape-player stop/start: ⏹ halts this whole subtree (and cancels
+             its live jobs) so the planner stops minting ticks; ▶ clears the
+             halt to resume. State flips on whether a halt marker is present. #}
+          {% if r.halted %}
+          <form method="post" action="/tasks/{{ r.id }}/start" class="inline-flex">
+            {{ filter_inputs() }}
+            <button class="text-sm leading-none text-emerald-600 hover:text-emerald-800"
+                    title="▶ start — resume this subtree (clears halt)">▶</button>
+          </form>
+          {% else %}
+          <form method="post" action="/tasks/{{ r.id }}/stop" class="inline-flex">
+            {{ filter_inputs() }}
+            <button class="text-sm leading-none text-rose-600 hover:text-rose-800"
+                    title="⏹ stop — halt this whole subtree &amp; cancel its running jobs">⏹</button>
+          </form>
           {% endif %}
           <button type="button" @click="actions=!actions"
                   class="text-xs text-slate-400 hover:text-slate-700">⋯</button>
