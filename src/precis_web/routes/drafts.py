@@ -1401,7 +1401,12 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     ``?citations=endnote`` emits native EndNote *Cite While You Write*
     fields (``ADDIN EN.CITE`` + ``EN.REFLIST``) so EndNote recognizes and can
     reformat the citations; the default (``plain``) is a numbered ``[n]`` +
-    References section that needs no add-in."""
+    References section that needs no add-in.
+
+    ``?sources=1`` returns a ``.zip`` instead — the ``.docx`` plus a
+    ``sources/`` folder of every cited paper/datasheet PDF the host holds
+    (Word can't embed PDF pages inline the way the compiled-PDF path can),
+    with a ``manifest.txt`` listing anything that couldn't be located."""
     from precis.export.docx import export_docx
 
     store = get_store(request)
@@ -1411,19 +1416,63 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     citations = (
         "endnote" if request.query_params.get("citations") == "endnote" else "plain"
     )
+    with_sources = request.query_params.get("sources") in ("1", "true", "yes")
     name = str(ref.slug or ref.id)
-    out = Path(tempfile.mkdtemp(prefix="precis-docx-")) / f"{name}.docx"
-    await asyncio.to_thread(
+    work = Path(tempfile.mkdtemp(prefix="precis-docx-"))
+    out = work / f"{name}.docx"
+    docx_result = await asyncio.to_thread(
         export_docx, store, ref, target_path=out, citations=citations
     )
-    return FileResponse(out, filename=f"{name}.docx", media_type=_DOCX_MEDIA)
+    if not with_sources:
+        return FileResponse(out, filename=f"{name}.docx", media_type=_DOCX_MEDIA)
+
+    from precis.export.sources import build_sources_zip
+
+    zip_path = work / f"{name}-bundle.zip"
+    await asyncio.to_thread(
+        build_sources_zip,
+        store,
+        ref,
+        zip_path,
+        cited_slugs=docx_result.cited_slugs,
+        report_path=out,
+    )
+    return FileResponse(
+        zip_path, filename=f"{name}-bundle.zip", media_type="application/zip"
+    )
+
+
+@router.get("/drafts/{ident}/papers.zip")
+async def papers_zip_route(request: Request, ident: str) -> Response:
+    """Zip up the draft's cited paper/datasheet PDFs + a manifest.
+
+    Resolves the draft's cited sources (the exact bibliography set) to the
+    PDFs *this host* holds and streams them as a ``.zip`` with a
+    ``manifest.txt`` bibliography. Sources the host can't locate are listed
+    in the manifest (the corpus is a per-host mount, so a bundle can be
+    legitimately incomplete)."""
+    from precis.export.sources import build_sources_zip
+
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return RedirectResponse(url="/drafts", status_code=303)
+    name = str(ref.slug or ref.id)
+    zip_path = Path(tempfile.mkdtemp(prefix="precis-papers-")) / f"{name}-papers.zip"
+    await asyncio.to_thread(build_sources_zip, store, ref, zip_path)
+    return FileResponse(
+        zip_path, filename=f"{name}-papers.zip", media_type="application/zip"
+    )
 
 
 @router.post("/drafts/{ident}/export.pdf")
 async def export_pdf_route(request: Request, ident: str) -> Response:
     """Start a ``draft_export`` job (LaTeX → PDF). The job runs on a
     worker; its progress logs + result land under the draft's project on
-    the task page. Redirects back to the reader."""
+    the task page. Redirects back to the reader.
+
+    A ``sources=1`` form field additionally bundles every cited
+    paper/datasheet PDF the worker holds as a ``pdfpages`` appendix."""
     store = get_store(request)
     ref = _draft_ref(store, ident)
     if ref is None:
@@ -1440,7 +1489,14 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
             },
             status_code=400,
         )
+    form = await request.form()
+    with_sources = str(form.get("sources") or "") in ("1", "true", "yes", "on")
     slug = str(ref.slug or ref.id)
+    params: dict[str, Any] = {"draft": slug}
+    idem = f"draft_export:{slug}"
+    if with_sources:
+        params["include_sources"] = True
+        idem = f"draft_export:{slug}:sources"
     return await redirect_or_error(
         request,
         "put",
@@ -1448,8 +1504,8 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
             "kind": "job",
             "job_type": "draft_export",
             "parent_id": project,
-            "params": {"draft": slug},
-            "idem_key": f"draft_export:{slug}",
+            "params": params,
+            "idem_key": idem,
         },
         redirect=f"/drafts/{ident}",
         error_title="PDF export error",
@@ -1657,14 +1713,19 @@ async def wordcount(request: Request, ident: str) -> JSONResponse:
     return JSONResponse(_wordcount_summary(chunk_objs))
 
 
-def _pdf_cache_dir(ref_id: int, version: int) -> Path:
+def _pdf_cache_dir(ref_id: int, version: int, *, sources: bool = False) -> Path:
     """Per-(draft, version) build dir for the compiled PDF. Lives under
     the system temp so it survives within a deploy and is cheap to
     discard; a new version compiles into a fresh dir, so a stale PDF is
-    never served."""
+    never served.
+
+    ``sources=True`` uses a distinct ``<version>-src`` dir so the
+    self-contained (pdfpages-appendix) PDF caches separately from the plain
+    one — both variants can coexist for the same version."""
     import tempfile
 
-    return Path(tempfile.gettempdir()) / "precis-draft-pdf" / str(ref_id) / str(version)
+    tag = f"{version}-src" if sources else str(version)
+    return Path(tempfile.gettempdir()) / "precis-draft-pdf" / str(ref_id) / tag
 
 
 @router.get("/drafts/{ident}/pdf")
@@ -1694,10 +1755,12 @@ async def pdf(request: Request, ident: str) -> Response:
             },
             status_code=404,
         )
+    with_sources = request.query_params.get("sources") in ("1", "true", "yes")
     version_token = _draft_version(store, ref.id)
-    cache_dir = _pdf_cache_dir(ref.id, version_token)
+    cache_dir = _pdf_cache_dir(ref.id, version_token, sources=with_sources)
     pdf_path = cache_dir / "main.pdf"
-    filename = f"{ref.slug or ref.id}.pdf"
+    suffix = "-with-sources" if with_sources else ""
+    filename = f"{ref.slug or ref.id}{suffix}.pdf"
 
     if not pdf_path.exists():
         if not have_latexmk():
@@ -1717,7 +1780,7 @@ async def pdf(request: Request, ident: str) -> Response:
                 },
                 status_code=503,
             )
-        export_draft(store, ref, target_dir=cache_dir)
+        export_draft(store, ref, target_dir=cache_dir, include_sources=with_sources)
         result = compile_pdf(cache_dir)
         if not result.ok:
             return templates.TemplateResponse(

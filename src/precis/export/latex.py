@@ -26,6 +26,7 @@ increment; so is the Word/pandoc path.
 from __future__ import annotations
 
 import re
+import shutil
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
@@ -153,6 +154,10 @@ class ExportResult:
     cited_slugs: list[str]
     acronyms: dict[str, str]
     warnings: list[str]
+    #: Set only when ``export_draft(include_sources=True)`` — the resolved
+    #: cited-source bundle whose present PDFs were copied into ``sources/``
+    #: and appended as a ``pdfpages`` appendix. ``None`` otherwise.
+    source_bundle: Any | None = None
 
 
 def _latex_escape(text: str) -> str:
@@ -707,13 +712,43 @@ def build_author_block(authors_raw: Any, *, fallback: str) -> str:
     return "\n".join(lines)
 
 
+def build_source_appendix(bundle: Any, warnings: list[str]) -> str:
+    """A ``pdfpages`` appendix that inlines every cited source PDF the host
+    holds, one bookmarked entry each. Empty string when nothing is present.
+
+    Each present source is preceded by an ``\\addcontentsline`` so it gets a
+    TOC / PDF-bookmark entry, then ``\\includepdf[pages=-]`` pulls in all its
+    pages. Missing sources become a ``% not bundled`` comment + a warning, so
+    the .tex records the gap without breaking the build.
+    """
+    present = bundle.present
+    lines = ["\\clearpage", "\\appendix", "\\section{Referenced Sources}"]
+    for e in present:
+        heading = _tex(e.title)
+        lines += [
+            "\\phantomsection",
+            f"\\addcontentsline{{toc}}{{subsection}}{{{heading}}}",
+            f"\\includepdf[pages=-]{{sources/{e.slug}.pdf}}",
+        ]
+    for e in bundle.missing:
+        warnings.append(f"source {e.slug!r} not bundled: {e.reason or 'unknown'}")
+        lines.append(f"% not bundled: {e.kind or 'source'}:{e.slug} — {e.reason}")
+    if not present:
+        # No PDFs to inline — a bare "\appendix \section" with only comments
+        # would still typeset an empty section; skip the appendix entirely.
+        return ""
+    return "\n".join(lines)
+
+
 def assemble_document(
-    *, title: str, author_block: str, body: str, acronyms: str
+    *, title: str, author_block: str, body: str, acronyms: str, appendix: str = ""
 ) -> str:
     """Assemble the full ``main.tex`` around the checked-in preamble.
 
     ``author_block`` is the pre-rendered ``\\author{}`` / ``\\affil{}``
-    lines from :func:`build_author_block` (already escaped).
+    lines from :func:`build_author_block` (already escaped). ``appendix`` is
+    an optional pre-rendered block (e.g. the ``pdfpages`` referenced-sources
+    appendix) placed after the bibliography.
     """
     parts = [
         _template_text("preamble.tex").rstrip(),
@@ -736,16 +771,25 @@ def assemble_document(
         "",
         "\\printglossaries",
         "\\printbibliography",
-        "\\end{document}",
-        "",
     ]
+    if appendix:
+        parts += ["", appendix]
+    parts += ["\\end{document}", ""]
     return "\n".join(parts)
 
 
-def export_draft(store: Any, ref: Any, *, target_dir: Path) -> ExportResult:
+def export_draft(
+    store: Any, ref: Any, *, target_dir: Path, include_sources: bool = False
+) -> ExportResult:
     """Render a draft into a compilable LaTeX project under
     ``target_dir``: ``main.tex`` + ``refs.bib`` + a copy of the
-    checked-in ``preamble.tex`` (so the project is self-contained)."""
+    checked-in ``preamble.tex`` (so the project is self-contained).
+
+    ``include_sources=True`` additionally copies every cited source PDF the
+    host holds into ``target_dir/sources/`` and appends them as a
+    ``pdfpages`` appendix, so the compiled PDF is self-contained (report +
+    its referenced papers / datasheets). Sources the host can't locate are
+    listed in ``ExportResult.warnings`` and ``source_bundle.missing``."""
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -755,11 +799,29 @@ def export_draft(store: Any, ref: Any, *, target_dir: Path) -> ExportResult:
     title = (ref.title or ref.slug or "Untitled").split("\n", 1)[0]
     fallback = str((ref.meta or {}).get("author") or "precis")
     author_block = build_author_block(getattr(ref, "authors", None), fallback=fallback)
+
+    appendix_tex = ""
+    source_bundle = None
+    if include_sources:
+        from precis.export.sources import collect_cited_sources
+
+        source_bundle = collect_cited_sources(
+            store, ref, cited_slugs=rendered.cited_slugs
+        )
+        if source_bundle.present:
+            src_dir = target_dir / "sources"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            for e in source_bundle.present:
+                assert e.local_path is not None
+                shutil.copyfile(e.local_path, src_dir / f"{e.slug}.pdf")
+        appendix_tex = build_source_appendix(source_bundle, rendered.warnings)
+
     main_tex = assemble_document(
         title=title,
         author_block=author_block,
         body=rendered.body,
         acronyms=acronyms_tex,
+        appendix=appendix_tex,
     )
 
     main_path = target_dir / "main.tex"
@@ -781,6 +843,7 @@ def export_draft(store: Any, ref: Any, *, target_dir: Path) -> ExportResult:
         cited_slugs=rendered.cited_slugs,
         acronyms=rendered.acronyms,
         warnings=rendered.warnings,
+        source_bundle=source_bundle,
     )
 
 
@@ -791,6 +854,7 @@ __all__ = [
     "build_acronyms",
     "build_author_block",
     "build_bib",
+    "build_source_appendix",
     "export_draft",
     "render_body",
 ]

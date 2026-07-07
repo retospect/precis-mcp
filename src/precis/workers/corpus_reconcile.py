@@ -34,7 +34,7 @@ import logging
 import os
 from pathlib import Path
 
-from precis.corpus_layout import corpus_pdf_dest
+from precis.corpus_layout import corpus_pdf_dest, rebase_onto_local
 from precis.store import Store
 from precis.store._pdf_ops import DuePdf
 from precis.workers.runner import BatchResult
@@ -58,30 +58,6 @@ def _refresh_hours() -> float:
         return 6.0
 
 
-def _rebase_onto_local(stored: str, corpus_dirs: tuple[Path, ...]) -> Path | None:
-    """Rebase an absolute ``storage_path`` onto this node's own NAS mount.
-
-    The corpus lives on one shared NFS export mounted at a *different*
-    prefix per OS (ADR 0029): the Macs see ``/opt/nas/botshome/papers/…``,
-    the Linux node ``/nas/botshome/papers/…``. A ``storage_path`` written
-    by another host is therefore a valid path on the *wrong* prefix here.
-    We split on the common ``/papers/`` pivot and re-anchor the suffix under
-    each configured root's own ``papers`` dir, so a Mac-authored path still
-    resolves on the Linux node (and vice-versa) with no per-host rewrite.
-    """
-    marker = "/papers/"
-    idx = stored.rfind(marker)
-    if idx == -1:
-        return None
-    suffix = stored[idx + len(marker) :]  # e.g. "corpus/i/foo.pdf"
-    for root in corpus_dirs:
-        papers = root.parent if root.name in ("corpus", "corpus_pres") else root
-        cand = papers / suffix
-        if cand.is_file():
-            return cand
-    return None
-
-
 def _resolve_local(corpus_dirs: tuple[Path, ...], due: DuePdf) -> Path | None:
     """Where this node holds ``due``'s PDF, or ``None`` if absent locally.
 
@@ -94,7 +70,7 @@ def _resolve_local(corpus_dirs: tuple[Path, ...], due: DuePdf) -> Path | None:
         p = Path(due.storage_path)
         if p.is_file():
             return p
-        rebased = _rebase_onto_local(due.storage_path, corpus_dirs)
+        rebased = rebase_onto_local(due.storage_path, corpus_dirs)
         if rebased is not None:
             return rebased
     for cite_key in due.cite_keys:

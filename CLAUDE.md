@@ -371,6 +371,15 @@ The master kinds table lives in the `precis-overview` skill.
   reader** (`routes/drafts.py`) is a true virtual scroller for 10k-block drafts
   (skeleton + windowed DOM, no IntersectionObserver — see git log for the
   feedback-loop lesson). `precis_web` is a sibling package over the handlers (ADR 0026).
+  **Export can bundle the cited sources** (`export/sources.py`,
+  `collect_cited_sources`/`build_sources_zip`): the reader's `+ sources`
+  checkbox appends every cited paper/datasheet PDF the host holds to the PDF as
+  a `pdfpages` appendix (`export_draft(include_sources=True)`) — Word gets a zip
+  (`report.docx` + `sources/`) since it can't embed PDF pages — and
+  `GET /drafts/{id}/papers.zip` (also `precis draft papers`) zips just the cited
+  PDFs + a `manifest.txt`. PDFs resolve via the same corpus resolver as
+  `corpus_reconcile` (`corpus_layout.rebase_onto_local`); the corpus being
+  per-host, unlocatable sources are listed in the manifest rather than failing.
 - **SSRF guard** — `src/precis/utils/safe_fetch.py` (used by `handlers/web.py`
   + `workers/fetch_oa.py`); DNS-resolves + revalidates every redirect against the
   private/loopback/link-local/cloud-metadata blocklist.

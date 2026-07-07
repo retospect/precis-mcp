@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from precis.corpus_layout import rebase_onto_local
 from precis.store import Store
 from precis.store._pdf_ops import DuePdf
 from precis.workers.corpus_reconcile import (
-    _rebase_onto_local,
     _resolve_local,
     run_corpus_reconcile_pass,
 )
@@ -24,9 +24,9 @@ def test_rebase_onto_local_crosses_mount_prefix(tmp_path: Path) -> None:
     f.write_bytes(b"%PDF")
     # A path a *Mac* recorded — valid there, but the wrong prefix locally.
     foreign = "/opt/nas/botshome/papers/corpus/i/irie2000.pdf"
-    assert _rebase_onto_local(foreign, (local_root,)) == f
+    assert rebase_onto_local(foreign, (local_root,)) == f
     # storage_path with no ``/papers/`` pivot → no rebase.
-    assert _rebase_onto_local("/etc/passwd", (local_root,)) is None
+    assert rebase_onto_local("/etc/passwd", (local_root,)) is None
 
 
 def test_resolve_local_rebases_foreign_absolute_path(tmp_path: Path) -> None:

@@ -374,6 +374,38 @@ def test_citation_colour_splits_local_vs_external(draft_client: TestClient) -> N
     assert ghost[1].split("</a>", 1)[0].endswith(">↗")
 
 
+def test_reader_has_include_sources_controls(draft_client: TestClient) -> None:
+    """The export toolbar offers the include-referenced-sources checkbox and
+    the download-papers zip link (the two new affordances)."""
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert 'x-model="withSources"' in r.text
+    assert "/drafts/nt/papers.zip" in r.text
+    assert 'name="sources"' in r.text  # threaded into the export→project form
+
+
+def test_papers_zip_route_streams_zip(
+    draft_client: TestClient, monkeypatch, tmp_path
+) -> None:
+    """``GET /papers.zip`` delegates to ``build_sources_zip`` and streams the
+    result as application/zip. We stub the builder (unit-tested elsewhere) to
+    keep the route test store-agnostic."""
+    import precis.export.sources as src
+
+    def _fake_zip(store, ref, out_path, **kw):
+        import zipfile
+
+        with zipfile.ZipFile(out_path, "w") as zf:
+            zf.writestr("manifest.txt", "x")
+        return src.ZipResult(path=out_path, bundle=src.SourceBundle())
+
+    monkeypatch.setattr(src, "build_sources_zip", _fake_zip)
+    r = draft_client.get("/drafts/nt/papers.zip")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+    assert "nt-papers.zip" in r.headers.get("content-disposition", "")
+
+
 def test_figure_renders_img_and_origin_chip(draft_client: TestClient) -> None:
     # ADR 0034 — a figure block renders an <img> pointed at the blob route,
     # an origin chip, and a clearance badge (original ⇒ cleared).
@@ -1140,7 +1172,9 @@ def test_draft_pdf_serves_cached(
     the cache without recompiling."""
     from precis_web.routes import drafts as drafts_mod
 
-    monkeypatch.setattr(drafts_mod, "_pdf_cache_dir", lambda ref_id, version: tmp_path)
+    monkeypatch.setattr(
+        drafts_mod, "_pdf_cache_dir", lambda ref_id, version, *, sources=False: tmp_path
+    )
     (tmp_path / "main.pdf").write_bytes(b"%PDF-1.4 fake\n%%EOF\n")
     r = draft_client.get("/drafts/nt/pdf", follow_redirects=False)
     assert r.status_code == 200

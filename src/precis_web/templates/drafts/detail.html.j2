@@ -110,14 +110,32 @@
          current (recompiles only after an edit) and the only slow hit is
          the first per version. "export →project" starts a background job
          that persists the PDF into the project workspace for the task
-         page (durable artifact, not an ephemeral download). #}
-      <a href="/drafts/{{ ref.ident }}/export.docx"
-         class="text-slate-500 underline hover:text-slate-800">download .docx</a>
-      <a href="/drafts/{{ ref.ident }}/pdf"
-         class="text-slate-500 underline hover:text-slate-800">download PDF</a>
-      <form method="post" action="/drafts/{{ ref.ident }}/export.pdf" class="inline">
-        <button type="submit" class="text-slate-500 underline hover:text-slate-800">export →project</button>
-      </form>
+         page (durable artifact, not an ephemeral download).
+
+         The "sources" checkbox toggles include-referenced-sources: the PDF
+         gets a pdfpages appendix of every cited paper/datasheet the host
+         holds (one self-contained PDF); Word can't embed PDF pages, so
+         .docx returns a zip (report + sources/). "download papers" zips
+         just the cited PDFs + a manifest. #}
+      <span class="inline-flex items-center gap-3" x-data="{ withSources: false }">
+        <label class="flex items-center gap-1 text-slate-500"
+               title="include the referenced papers & datasheets in the export">
+          <input type="checkbox" x-model="withSources" class="h-3 w-3">
+          <span>+ sources</span>
+        </label>
+        <a :href="'/drafts/{{ ref.ident }}/export.docx' + (withSources ? '?sources=1' : '')"
+           class="text-slate-500 underline hover:text-slate-800"
+           x-text="withSources ? 'download .docx+zip' : 'download .docx'">download .docx</a>
+        <a :href="'/drafts/{{ ref.ident }}/pdf' + (withSources ? '?sources=1' : '')"
+           class="text-slate-500 underline hover:text-slate-800">download PDF</a>
+        <form method="post" action="/drafts/{{ ref.ident }}/export.pdf" class="inline">
+          <input type="hidden" name="sources" :value="withSources ? '1' : ''">
+          <button type="submit" class="text-slate-500 underline hover:text-slate-800">export →project</button>
+        </form>
+        <a href="/drafts/{{ ref.ident }}/papers.zip"
+           class="text-slate-500 underline hover:text-slate-800"
+           title="zip the cited paper/datasheet PDFs + a manifest">download papers</a>
+      </span>
       <a href="/drafts" class="text-slate-500 underline hover:text-slate-800">all drafts</a>
       {# Author byline editor — the web twin of edit(kind='draft',
          authors=…). One author per line, "Name | Affiliation | ROR"

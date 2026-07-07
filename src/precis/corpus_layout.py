@@ -57,6 +57,30 @@ def corpus_roots_from_env(env: dict[str, str] | None = None) -> tuple[Path, ...]
     return tuple(roots) if roots else (DEFAULT_CORPUS,)
 
 
+def rebase_onto_local(stored: str, corpus_dirs: tuple[Path, ...]) -> Path | None:
+    """Rebase an absolute ``storage_path`` onto this node's own NAS mount.
+
+    The corpus lives on one shared NFS export mounted at a *different*
+    prefix per OS (ADR 0029): the Macs see ``/opt/nas/botshome/papers/…``,
+    the Linux node ``/nas/botshome/papers/…``. A ``storage_path`` written
+    by another host is therefore a valid path on the *wrong* prefix here.
+    We split on the common ``/papers/`` pivot and re-anchor the suffix under
+    each configured root's own ``papers`` dir, so a Mac-authored path still
+    resolves on the Linux node (and vice-versa) with no per-host rewrite.
+    """
+    marker = "/papers/"
+    idx = stored.rfind(marker)
+    if idx == -1:
+        return None
+    suffix = stored[idx + len(marker) :]  # e.g. "corpus/i/foo.pdf"
+    for root in corpus_dirs:
+        papers = root.parent if root.name in ("corpus", "corpus_pres") else root
+        cand = papers / suffix
+        if cand.is_file():
+            return cand
+    return None
+
+
 def host_name(env: dict[str, str] | None = None) -> str:
     """This node's stable identity: ``PRECIS_HOST_NAME`` or the hostname.
 
@@ -68,4 +92,10 @@ def host_name(env: dict[str, str] | None = None) -> str:
     return src.get("PRECIS_HOST_NAME") or socket.gethostname()
 
 
-__all__ = ["DEFAULT_CORPUS", "corpus_pdf_dest", "corpus_roots_from_env", "host_name"]
+__all__ = [
+    "DEFAULT_CORPUS",
+    "corpus_pdf_dest",
+    "corpus_roots_from_env",
+    "host_name",
+    "rebase_onto_local",
+]

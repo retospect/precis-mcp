@@ -322,6 +322,39 @@ def test_export_draft_end_to_end(hub, tmp_path) -> None:
     assert r"\section{Glossary}" not in main
 
 
+def test_export_draft_include_sources_bundles_appendix(hub, tmp_path, monkeypatch):
+    """``include_sources=True`` copies each present cited PDF into
+    ``sources/`` and appends a ``pdfpages`` appendix. We stub the cited-
+    source resolution so the test needs no held-paper corpus setup."""
+    from precis.export import sources as src
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    d = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    d.put(id="rep", title="Report", project=proj)
+    ref = store.get_ref(kind="draft", id="rep")
+
+    pdf = tmp_path / "smith2020.pdf"
+    pdf.write_bytes(b"%PDF-source")
+    bundle = src.SourceBundle(
+        entries=[
+            src.SourceEntry(
+                "smith2020", "paper", "A Study", "A. Smith", 2020, "a" * 64, pdf
+            )
+        ]
+    )
+    monkeypatch.setattr(src, "collect_cited_sources", lambda *a, **k: bundle)
+
+    out = tmp_path / "out"
+    result = latex.export_draft(store, ref, target_dir=out, include_sources=True)
+
+    assert (out / "sources" / "smith2020.pdf").read_bytes() == b"%PDF-source"
+    main = result.main_tex.read_text()
+    assert r"\includepdf[pages=-]{sources/smith2020.pdf}" in main
+    assert result.source_bundle is bundle
+
+
 # ── compile (stub latexmk) ────────────────────────────────────────────
 
 

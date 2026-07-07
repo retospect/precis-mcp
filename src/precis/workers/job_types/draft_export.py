@@ -33,6 +33,9 @@ _PARAMS_SCHEMA: dict[str, Any] = {
     "properties": {
         "draft": {"type": "string"},
         "format": {"type": "string"},  # reserved; only 'pdf' today
+        # Bundle cited paper/datasheet PDFs into a pdfpages appendix so the
+        # compiled PDF is self-contained (report + its sources).
+        "include_sources": {"type": "boolean"},
     },
     "required": ["draft"],
     "additionalProperties": False,
@@ -111,13 +114,16 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         )
         return
 
+    include_sources = bool(params.get("include_sources"))
     out_dir, in_workspace = _resolve_out_dir(ctx, slug)
     where = (
         "project workspace (shows on the task page)" if in_workspace else "export dir"
     )
     ctx.append_chunk("job_event", f"exporting draft {slug!r} → {out_dir} [{where}]")
     try:
-        result = export_draft(ctx.store, ref, target_dir=out_dir)
+        result = export_draft(
+            ctx.store, ref, target_dir=out_dir, include_sources=include_sources
+        )
     except Exception as exc:
         log.warning("draft_export: render failed for %s", slug, exc_info=True)
         ctx.record_failure(f"draft_export: LaTeX render failed: {exc}")
@@ -129,6 +135,13 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         f"wrote {result.main_tex.name} + {result.bib.name}; "
         f"{len(result.cited_slugs)} citation(s)",
     )
+    if include_sources and result.source_bundle is not None:
+        b = result.source_bundle
+        ctx.append_chunk(
+            "job_event",
+            f"bundled {len(b.present)}/{len(b.entries)} cited source PDF(s) "
+            "as a pdfpages appendix",
+        )
 
     if not have_latexmk():
         ctx.append_chunk(
