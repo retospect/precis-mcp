@@ -97,6 +97,13 @@ Relation = Literal[
     # it. Keep in sync with the `relations` seed in 0046.
     "requested",
     "requested-by",
+    # Datasheet ↔ part linkage — migration 0054 (ADR 0042 §7). A
+    # `datasheet` (evidence-role ingested PDF) `datasheet-of` → the `part`
+    # it documents; the inverse `has-datasheet` lets the part surface its
+    # doc. Asymmetric, auto-mirrored. Keep in sync with the `relations`
+    # seed in 0054_datasheet_of_relation.sql.
+    "datasheet-of",
+    "has-datasheet",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -150,6 +157,8 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "requirement-of": "has-requirement",
     "requested": "requested-by",
     "requested-by": "requested",
+    "datasheet-of": "has-datasheet",
+    "has-datasheet": "datasheet-of",
 }
 
 

@@ -38,6 +38,7 @@ _READER_URL = {
     "draft": "/drafts/{ident}",
     "structure": "/structure/{ident}",
     "cad": "/cad/{ident}",
+    "datasheet": "/datasheets/{ident}",
     "todo": "/tasks?focus={ref_id}",
 }
 

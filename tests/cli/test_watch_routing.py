@@ -55,6 +55,18 @@ class TestKindSelection:
         assert r.kind == "cfp"
         assert set(r.extra_tags) == {"topic:grants-2026"}
 
+    def test_datasheets_dir_routes_to_datasheet(self, inbox: Path):
+        pdf = _drop(inbox, "datasheets", "esp32-c3.pdf")
+        r = route_pdf(pdf, inbox)
+        assert r.kind == "datasheet"
+        assert r.extra_tags == ()
+
+    def test_datasheets_dir_with_tagging(self, inbox: Path):
+        pdf = _drop(inbox, "datasheets", "tagging", "esp32", "ds.pdf")
+        r = route_pdf(pdf, inbox)
+        assert r.kind == "datasheet"
+        assert set(r.extra_tags) == {"topic:esp32"}
+
     def test_presentations_dir_routes_to_pres(self, inbox: Path):
         pdf = _drop(inbox, "presentations", "lecture-3.pdf")
         r = route_pdf(pdf, inbox)

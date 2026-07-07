@@ -41,10 +41,27 @@ research evidence.
 
 ## Where a datasheet comes from
 
-Every catalog `part` row carries a `datasheet_url` ([[precis-part-select-help]]).
-Lazy ingestion from that URL — fetch on first reference, link `datasheet-of` /
-`has-datasheet` to the `part` — is the planned path; until it's wired, ingest a
-datasheet PDF through the normal `precis add` route and read it here.
+**Drop a PDF into `<inbox>/datasheets/`** — the `precis watch` inbox routes
+that subtree through the paper Marker→chunks pipeline stamped as `datasheet`
+(exactly like `<inbox>/cfp/` for a `cfp`). On the cluster the inbox is
+`$PRECIS_WATCH_INBOX` (`/opt/nas/botshome/papers/inbox`), so the drop dir is
+`/opt/nas/botshome/papers/inbox/datasheets/`; locally it's the `datasheets/`
+subdir of whatever you pass to `precis watch <dir>`. The usual `tagging/`
+sentinel works too (`datasheets/tagging/<topic>/foo.pdf` → `topic:<topic>`).
+
+Every catalog `part` row also carries a `datasheet_url`
+([[precis-part-select-help]]); link a datasheet to the part it documents with
+`link(kind='datasheet', id='<slug>', rel='datasheet-of', to='part:<C-number>')`
+(inverse `has-datasheet`, seeded by migration 0054). Lazy fetch-on-first-
+reference from `datasheet_url` is still the planned automation.
+
+## Read it in the browser
+
+Datasheets have a dedicated two-pane reader at **`/datasheets/<slug>`**
+(vendored pdf.js on the right, Navigate/Jump/in-doc search on the left — the
+same reader as `/papers` and `/pres`). It's reached from Drive, cross-kind
+search (`/items`), or the part it documents — there is no standalone
+`/datasheets` list page (like `/pres`).
 
 ## The move
 

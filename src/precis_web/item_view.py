@@ -30,6 +30,7 @@ _PREVIEW_CHARS = 240
 #: only needs the exceptions — grow it as kinds gain dedicated readers.
 _OPEN_URL_OVERRIDES: dict[str, str] = {
     "paper": "/papers/{id}",
+    "datasheet": "/datasheets/{id}",
 }
 
 #: Kinds whose ingest runs a fetch→PDF→chunk pipeline, so the

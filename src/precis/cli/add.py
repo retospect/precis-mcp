@@ -67,13 +67,15 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--as",
         dest="as_kind",
-        choices=("paper", "cfp"),
+        choices=("paper", "cfp", "datasheet"),
         default="paper",
         help=(
             "Stored kind for a PDF ingest (default: paper). Use "
             "--as cfp to land a call-for-proposal / requirements "
-            "document as a non-citable spec (same extraction pipeline, "
-            "own reader namespace). Ignored for --doi / --arxiv."
+            "document as a non-citable spec, or --as datasheet for a "
+            "component datasheet (evidence role, read at /datasheets) — "
+            "both share the paper extraction pipeline in their own reader "
+            "namespace. Ignored for --doi / --arxiv."
         ),
     )
     p.add_argument(

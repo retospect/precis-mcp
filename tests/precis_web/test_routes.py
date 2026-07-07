@@ -30,6 +30,13 @@ def test_pres_editor_routes_registered(client) -> None:
     assert "/pres/{ref_id}/edit" in paths
 
 
+def test_datasheet_reader_route_registered(client) -> None:
+    """The /datasheets reader is a thin delegate to the paper renderer
+    (datasheet joined _DOC_FAMILY). Guards the app-factory registration."""
+    paths = {getattr(r, "path", None) for r in client.app.routes}
+    assert "/datasheets/{ident}" in paths
+
+
 def test_pres_reader_renders_shared_shell_and_attribution(client) -> None:
     """The /pres editor renders the shared two-pane reader (Navigate/Jump
     via paperDoc) with the pres attribution Meta panel. Guards the shared

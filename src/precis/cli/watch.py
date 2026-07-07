@@ -84,7 +84,9 @@ _MANAGED_DIRS: frozenset[str] = frozenset({"errors", "completed"})
 # Inbox sub-trees that select the ingest kind. Files outside any of
 # these go through the paper pipeline (back-compat with the flat
 # layout the watcher saw before this routing landed).
-_KIND_DIRS: frozenset[str] = frozenset({"papers", "books", "presentations", "cfp"})
+_KIND_DIRS: frozenset[str] = frozenset(
+    {"papers", "books", "presentations", "cfp", "datasheets"}
+)
 
 # Sentinel segment inside any kind subtree: components *after* this
 # segment become ``topic:<kebab-slug>`` open tags on the ingested
@@ -625,6 +627,13 @@ def process_pdf(
             as_kind="cfp",
             fold_ref_id=fold_ref_id,
         )
+    elif routing.kind == "datasheet":
+        input_ = PdfInput(
+            pdf_path=pdf,
+            extra_tags=routing.extra_tags,
+            as_kind="datasheet",
+            fold_ref_id=fold_ref_id,
+        )
     else:
         input_ = PdfInput(
             pdf_path=pdf, extra_tags=routing.extra_tags, fold_ref_id=fold_ref_id
@@ -915,10 +924,11 @@ def _should_skip(path: Path, watch_dir: Path) -> bool:
 class _Routing:
     """How to ingest a PDF based on its position in the inbox tree.
 
-    * ``kind`` — ``"paper"``, ``"pres"``, or ``"cfp"``. Determines
-      which ``precis_add`` input variant the watcher builds (``cfp``
-      is a :class:`PdfInput` with ``as_kind="cfp"``) and which corpus
-      directory the file moves to on success.
+    * ``kind`` — ``"paper"``, ``"pres"``, ``"cfp"``, or ``"datasheet"``.
+      Determines which ``precis_add`` input variant the watcher builds
+      (``cfp``/``datasheet`` are a :class:`PdfInput` with the matching
+      ``as_kind``) and which corpus directory the file moves to on success
+      (paper corpus for everything but ``pres``).
     * ``extra_tags`` — open tags to apply post-commit. Always
       contains the ``books/`` sentinel tags when relevant, plus
       one ``topic:<slug>`` per component after a ``tagging/``
@@ -940,6 +950,10 @@ def route_pdf(pdf: Path, watch_dir: Path) -> _Routing:
     * ``inbox/cfp/...`` → :class:`PdfInput` with ``as_kind="cfp"`` (a
       call-for-proposal / requirements doc — same Marker → chunks
       pipeline as a paper, stamped the spec-role ``cfp`` kind)
+    * ``inbox/datasheets/...`` → :class:`PdfInput` with
+      ``as_kind="datasheet"`` (a component datasheet — same Marker →
+      chunks pipeline as a paper, stamped the evidence-role ``datasheet``
+      kind; read at ``/datasheets/<slug>``)
     * ``inbox/presentations/...`` → :class:`PresInput` (one chunk
       per slide, ``subtype:slides`` applied by the ingester)
     * Anywhere under a ``tagging/`` segment: each remaining path
@@ -972,6 +986,10 @@ def route_pdf(pdf: Path, watch_dir: Path) -> _Routing:
             # Call-for-proposal / requirements doc → spec-role ``cfp``
             # kind via the same Marker pipeline (see ingest/add.py).
             kind = "cfp"
+        elif first == "datasheets":
+            # Component datasheet → evidence-role ``datasheet`` kind via
+            # the same Marker pipeline (PdfInput as_kind="datasheet").
+            kind = "datasheet"
         elif first == "books":
             extra_tags.extend(["subtype:book", "topic:book"])
 

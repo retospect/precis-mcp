@@ -533,10 +533,11 @@ def _cited_chunk(store: Any, ref_id: int, chunk: str | None) -> dict[str, Any] |
 #: The document family that shares the two-pane reader (ADR: proposal
 #: writing). The ``ref_id``-scoped sidebar endpoints (search / toc /
 #: chunk / pdf) are kind-agnostic, so they accept any family member; the
-#: ``cfp`` and ``pres`` readers reuse them. The slug-detail routes pass
-#: their own kind. (``pres`` joins so the /pres slide-deck editor gets the
-#: same in-doc search / TOC / chunk-gloss / jump-to-page sidebar.)
-_DOC_FAMILY: tuple[str, ...] = ("paper", "cfp", "pres")
+#: ``cfp``, ``pres`` and ``datasheet`` readers reuse them. The slug-detail
+#: routes pass their own kind. (``pres`` joins so the /pres slide-deck editor
+#: gets the same in-doc search / TOC / chunk-gloss / jump-to-page sidebar;
+#: ``datasheet`` joins so /datasheets reuses the paper reader verbatim.)
+_DOC_FAMILY: tuple[str, ...] = ("paper", "cfp", "pres", "datasheet")
 
 
 def _resolve_paper(
