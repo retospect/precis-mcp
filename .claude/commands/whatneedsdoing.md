@@ -139,8 +139,36 @@ Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summar
    bug), or a **task-template** fix (a stored todo instruction teaches a broken
    call). Watch for *spin*: one parent re-minting the same failing tick for
    days (dozens of transcripts, same error) is both expensive and a loud bug
-   signal — treat it as P0. File each distinct root cause as a `gripe`
-   (`put(kind='gripe', ...)`) so it enters substrate 1, or fix it directly.
+   signal — treat it as P0.
+
+   **Before you file — prove the error is live AND unfixed** (the mining's two
+   false-positive traps; gr51426 hit both):
+   - **`created_at` filters the *job*, not when the error happened.** Transcripts
+     are persisted **forever** on their `kind='job'` ref, so `[error:...]` in a
+     "recent" transcript may be an *old* failure echoed or *quoted text* — most
+     insidiously a **gripe body that itself contains the error string** read back
+     into a fresh planner tick. A raw histogram over-counts. Two filters before
+     trusting a count:
+     - **Demand a real `tool_result`.** Only count a match that appears inside a
+       `tool_result` block with `"is_error":true`, tied to a `tool_use.id` — not
+       narration, a prior assistant message, or quoted gripe/OPEN-ITEMS text.
+       (`transcript LIKE '%tool_result%<err>%'` is a cheap first cut; confirm by
+       walking the stream-json.)
+     - **Pull the *real* occurrence timestamps.** `SELECT ref_id, created_at`
+       for the jobs whose transcript carries the error, ordered `DESC`. If the
+       newest is days old / clustered in the past, the error is **not** current.
+   - **Cross-reference the fix + deploy date.** Once you've found the callsite,
+     `git log -S'<callsite>'` for a fix and check it's deployed
+     (`git merge-base --is-ancestor <fix_sha> <deployed_sha>`; deployed sha via
+     `direct_url.json`, see the deploy-sha memory). If **every** real occurrence
+     predates the fix's deploy, it is **already fixed** — a stale-transcript
+     artifact, not new work. Resolve it per step 2 (comment naming the sha →
+     soft-delete); do **not** file a gripe or write code. This is the mining
+     analogue of the "spin-loop spike usually means redeploy, not new bug" rule.
+
+   Only after both gates: file each distinct, *confirmed-live* root cause as a
+   `gripe` (`put(kind='gripe', ...)`) so it enters substrate 1, or fix it
+   directly.
 7. **Group by substrate, then rank.** Keep the two substrates visually
    separate; within each, highest-impact first with a one-line next action.
    Latent bugs from steps 5–6 (a hot pass, or a mined confusion root cause)
