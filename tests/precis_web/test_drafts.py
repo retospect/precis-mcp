@@ -14,6 +14,8 @@ import pytest
 
 pytest.importorskip("fastapi")
 
+from datetime import UTC
+
 from fastapi.testclient import TestClient
 
 from precis_web.app import create_app
@@ -1179,6 +1181,28 @@ def test_draft_pdf_serves_cached(
     r = draft_client.get("/drafts/nt/pdf", follow_redirects=False)
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/pdf"
+
+
+def test_pdf_cache_token_includes_ref_updated_at(monkeypatch) -> None:
+    """Regression: the PDF cache token folds in the ref's ``updated_at``,
+    not just the chunk-level version. A metadata-only edit (setting the
+    author via the Authors panel bumps ``refs.updated_at`` but emits no
+    ``chunk_event``) must bust the cache — else the stale pre-edit PDF, with
+    the fallback ``precis`` byline, is served for the new author."""
+    from datetime import datetime
+
+    from precis_web.routes import drafts as drafts_mod
+
+    monkeypatch.setattr(drafts_mod, "_draft_version", lambda store, ref_id: 42)
+    ref0 = SimpleNamespace(id=500, updated_at=datetime(2026, 7, 7, 10, tzinfo=UTC))
+    ref1 = SimpleNamespace(id=500, updated_at=datetime(2026, 7, 8, 0, 9, tzinfo=UTC))
+
+    tok0 = drafts_mod._pdf_cache_token(None, ref0)
+    assert tok0.startswith("42.")  # chunk version still present
+    assert tok0 != drafts_mod._pdf_cache_token(None, ref1)  # later edit → new token
+    # a missing updated_at degrades to a stable ".0" suffix, never raises
+    no_ts = SimpleNamespace(id=1, updated_at=None)
+    assert drafts_mod._pdf_cache_token(None, no_ts) == "42.0"
 
 
 def _render_row(requests: list[SimpleNamespace]) -> str:

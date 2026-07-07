@@ -1713,11 +1713,30 @@ async def wordcount(request: Request, ident: str) -> JSONResponse:
     return JSONResponse(_wordcount_summary(chunk_objs))
 
 
-def _pdf_cache_dir(ref_id: int, version: int, *, sources: bool = False) -> Path:
+def _pdf_cache_token(store: Any, ref: Any) -> str:
+    """Cache key for a compiled PDF — the chunk-level ``_draft_version``
+    token *plus* the ref's ``updated_at`` epoch.
+
+    ``_draft_version`` only counts ``chunk_events``, so it misses ref-level
+    metadata the export actually renders — the author byline, title, year —
+    because editing those columns emits no chunk event. Without the
+    ``updated_at`` component, setting the author via the Authors panel left
+    the token unchanged and the stale pre-edit PDF (with the ``meta.author``
+    / ``precis`` fallback byline) was served from cache. ``mark_viewed``
+    touches only ``last_viewed_at`` (not ``updated_at``), so a plain page
+    view does not bump this token and force a needless recompile."""
+    version = _draft_version(store, ref.id)
+    updated = getattr(ref, "updated_at", None)
+    rev = int(updated.timestamp()) if updated is not None else 0
+    return f"{version}.{rev}"
+
+
+def _pdf_cache_dir(ref_id: int, version: int | str, *, sources: bool = False) -> Path:
     """Per-(draft, version) build dir for the compiled PDF. Lives under
     the system temp so it survives within a deploy and is cheap to
     discard; a new version compiles into a fresh dir, so a stale PDF is
-    never served.
+    never served. ``version`` is the composite token from
+    :func:`_pdf_cache_token` (chunk version + ref ``updated_at``).
 
     ``sources=True`` uses a distinct ``<version>-src`` dir so the
     self-contained (pdfpages-appendix) PDF caches separately from the plain
@@ -1756,8 +1775,8 @@ async def pdf(request: Request, ident: str) -> Response:
             status_code=404,
         )
     with_sources = request.query_params.get("sources") in ("1", "true", "yes")
-    version_token = _draft_version(store, ref.id)
-    cache_dir = _pdf_cache_dir(ref.id, version_token, sources=with_sources)
+    cache_token = _pdf_cache_token(store, ref)
+    cache_dir = _pdf_cache_dir(ref.id, cache_token, sources=with_sources)
     pdf_path = cache_dir / "main.pdf"
     suffix = "-with-sources" if with_sources else ""
     filename = f"{ref.slug or ref.id}{suffix}.pdf"
