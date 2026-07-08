@@ -1087,16 +1087,30 @@ chase→fetch→Marker path. Common machinery:
      machine-parsed full text, sharded gzipped JSONL, continuously updated. Needs
      a free S2 key; **no per-file charge**. *The priority-one adapter + the "big
      pass" backbone.*
-  2. **`core`** — CORE `fullText` field / bulk data dump (~300M OA works, free
-     key). OCR-ish plaintext; the green-OA net S2ORC misses.
-  3. **`openalex_snapshot`** — free S3 metadata snapshot (`--no-sign-request`).
+  2. **`core`** — CORE (core.ac.uk) aggregates OA **full texts from ~10k
+     repositories worldwide** (~300M works). Two modes: the **REST API**
+     (`fullText` field + `downloadUrl`, free key — per-work, the existing
+     `fetcher:core` leg's richer sibling) and the **bulk data dump** (the whole
+     corpus as a snapshot — the *bulk-harvest* mode for this arm). OCR-ish
+     plaintext; the broad green-OA net S2ORC misses. *Second after S2ORC.*
+  3. **`oai_repositories`** — direct harvest from institutional / disciplinary
+     repositories via **OAI-PMH** (`ListRecords`, incremental by datestamp) or
+     their REST APIs: **Zenodo**, **PubMed Central OA**, **arXiv**, the **UoL /
+     university repositories**, and disciplinary archives. This is where CORE's
+     coverage or freshness lags — go to the source. OAI-PMH gives Dublin-Core /
+     often JATS metadata + a link to the PDF/XML; a generic OAI harvester +
+     per-repo endpoint list is the reusable core (dedup by DOI/handle against the
+     corpus, copyright-gate as below). Complements #2 (CORE *aggregates* these;
+     direct harvest gets what it hasn't indexed and stays current). arXiv here is
+     the *bulk* path (the per-DOI arXiv leg already exists in `fetch_oa`).
+  4. **`openalex_snapshot`** — free S3 metadata snapshot (`--no-sign-request`).
      **Index/planner only, NOT a full-text source** — mines *what* to ingest and
      in what priority (feeds §E); the paid Content API (§B) is the per-file
      full-text gap-filler, a *separate* thing.
-  4. **`internet_archive` / `hathitrust` / `jstage`** — scan-derived corpora for
+  5. **`internet_archive` / `hathitrust` / `jstage`** — scan-derived corpora for
      the historical/PD run (#8; old-German *Chemische Berichte* pilot). hOCR in,
      OCR tier for low-confidence.
-  5. **`east_view` / institutional** — Russian-lit full text (paywalled/licensed;
+  6. **`east_view` / institutional** — Russian-lit full text (paywalled/licensed;
      copyright-gated per below).
 - **Structured-text → blocks** — reuse the #5 `extract_blocks_*` seam so S2ORC
   JSON / TEI / JATS / IA hOCR all land in Marker's block-dict shape → existing

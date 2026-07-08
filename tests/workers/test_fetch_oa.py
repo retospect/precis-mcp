@@ -968,6 +968,63 @@ class TestTryOpenalexContent:
         assert fetch_oa._openalex_content_auto() is True
 
 
+class TestQueryOpenalexContentUrls:
+    """The keyless metadata call that decides whether to spend."""
+
+    @staticmethod
+    def _fake_client(
+        monkeypatch: pytest.MonkeyPatch, *, status: int, body: Any
+    ) -> None:
+        class _Resp:
+            status_code = status
+
+            def raise_for_status(self) -> None:
+                if status >= 400:
+                    raise httpx.HTTPStatusError(
+                        f"{status}",
+                        request=httpx.Request("GET", "http://x"),
+                        response=httpx.Response(status),
+                    )
+
+            def json(self) -> Any:
+                return body
+
+        class _Client:
+            def __init__(self, *a: Any, **k: Any) -> None:
+                pass
+
+            def __enter__(self) -> _Client:
+                return self
+
+            def __exit__(self, *a: Any) -> None:
+                return None
+
+            def get(self, *a: Any, **k: Any) -> _Resp:
+                return _Resp()
+
+        monkeypatch.setattr(fetch_oa.httpx, "Client", _Client)
+
+    def test_404_is_empty_not_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A DOI not in OpenAlex → {} (→ no_oa_version), never a raised api_error.
+        self._fake_client(monkeypatch, status=404, body=None)
+        assert fetch_oa._query_openalex_content_urls("10.1/missing") == {}
+
+    def test_keeps_only_cached_types(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._fake_client(
+            monkeypatch,
+            status=200,
+            body={
+                "has_content": {"pdf": True, "grobid_xml": False},
+                "content_urls": {
+                    "pdf": "https://c/W.pdf",
+                    "grobid_xml": "https://c/W.x",
+                },
+            },
+        )
+        got = fetch_oa._query_openalex_content_urls("10.1/x")
+        assert got == {"pdf": "https://c/W.pdf"}  # grobid dropped (has_content False)
+
+
 class TestTryEuropepmc:
     def test_none_without_doi(self, tmp_path: Path) -> None:
         assert _try_europepmc(_stub(doi=None), inbox_dir=tmp_path) is None

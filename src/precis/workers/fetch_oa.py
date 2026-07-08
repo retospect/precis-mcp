@@ -1549,6 +1549,10 @@ def _query_openalex_content_urls(doi: str, *, email: str = "") -> dict[str, str]
     types ``has_content`` marks true — so a ``{'pdf': '…', 'grobid_xml': '…'}``
     result means both are actually fetchable, and an empty dict means OpenAlex
     has no cached full text (don't spend). ``mailto`` is polite, optional.
+
+    A ``404`` (the DOI simply isn't in OpenAlex) is *not* an error — it's just
+    "no content here", so return ``{}`` (→ ``no_oa_version``) rather than
+    letting ``raise_for_status`` bubble it up as an ``api_error``.
     """
     url = f"https://api.openalex.org/works/doi:{doi}"
     params = {"mailto": email} if email else {}
@@ -1556,6 +1560,8 @@ def _query_openalex_content_urls(doi: str, *, email: str = "") -> dict[str, str]
         timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
     ) as client:
         resp = client.get(url, params=params)
+        if resp.status_code == 404:
+            return {}
         resp.raise_for_status()
         data = resp.json()
     has = data.get("has_content") or {}
