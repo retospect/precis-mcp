@@ -21,8 +21,11 @@
      actually say?" answer for a citation hover. #}
   {% if chunk_label %}<p class="text-[10px] font-mono text-slate-400">{{ chunk_label }}</p>{% endif %}
   {# render_markdown: bold/code/sub/sup (no ref-linking). Math ($…$) is
-     rendered client-side by KaTeX after the htmx swap (see detail page). #}
-  <pre class="text-xs text-slate-700 whitespace-pre-wrap break-words font-sans">{{ quote | render_markdown }}</pre>
+     rendered client-side by KaTeX after the htmx swap (see detail page).
+     NB: a <div> (not <pre>) — KaTeX auto-render's default ignoredTags
+     skips <pre>/<code>/<textarea>, so math inside a <pre> stays literal
+     ($2^4$ never renders). whitespace-pre-wrap keeps the verbatim quote. #}
+  <div class="text-xs text-slate-700 whitespace-pre-wrap break-words font-sans">{{ quote | render_markdown }}</div>
   {% elif body_preview %}
   <p class="text-xs text-slate-600 break-words">{{ body_preview }}</p>
   {% endif %}
