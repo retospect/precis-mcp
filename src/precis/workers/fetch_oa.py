@@ -907,9 +907,13 @@ def _try_openalex_content(
     try:
         size_bytes = _download_pdf(_with_api_key(pdf_url, api_key), target)
     except Exception as exc:
+        # httpx folds the *full* request URL — with ``?api_key=…`` — into its
+        # error message, so scrub the key before it lands in ``ref_events`` /
+        # the CLI. The recorded ``url`` is the clean keyless one.
+        err = str(exc).replace(api_key, "***") if api_key else str(exc)
         return FetchOutcome(
             event="fetch_failed",
-            payload={"doi": stub.doi, "url": pdf_url, "error": str(exc)[:200]},
+            payload={"doi": stub.doi, "url": pdf_url, "error": err[:200]},
             duration_ms=_ms(t0),
         )
     return FetchOutcome(

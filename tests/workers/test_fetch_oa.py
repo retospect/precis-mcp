@@ -907,6 +907,33 @@ class TestTryOpenalexContent:
         assert out.event == "no_oa_version"
         assert out.payload["cached"] == ["grobid_xml"]
 
+    def test_failure_scrubs_key_from_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # httpx errors embed the full request URL incl. ?api_key=… — the leg
+        # must scrub it before it lands in ref_events / the CLI.
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_openalex_content_urls",
+            lambda doi, *, email="": {"pdf": "https://content.openalex.org/W1.pdf"},
+        )
+
+        def _boom(url: str, target: Path, **kw: Any) -> int:
+            raise httpx.HTTPStatusError(
+                f"Client error '403 Forbidden' for url '{url}'",
+                request=httpx.Request("GET", url),
+                response=httpx.Response(403),
+            )
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _boom)
+        out = fetch_oa._try_openalex_content(
+            _stub(doi="10.3390/x"), inbox_dir=tmp_path, api_key="SECRETKEY"
+        )
+        assert out is not None
+        assert out.event == "fetch_failed"
+        assert "SECRETKEY" not in str(out.payload)
+        assert "***" in out.payload["error"]
+
     def test_fetch_ok_records_cost_and_hides_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
