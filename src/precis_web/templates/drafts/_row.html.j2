@@ -402,8 +402,26 @@
         🔔 asks: {{ t.asking }}
       </a>
       {% elif t.failed %}
-      <a href="/r/todo/{{ t.ref_id }}" target="_blank" rel="noopener"
-         class="block text-rose-700 hover:underline">⚠ failed{% if t.fail_reason %} — {{ t.fail_reason }}{% else %} — open to debug{% endif %}</a>
+      <div class="flex items-start gap-1">
+        <a href="/r/todo/{{ t.ref_id }}" target="_blank" rel="noopener"
+           class="min-w-0 flex-1 text-rose-700 hover:underline">⚠ failed{% if t.fail_reason %} — {{ t.fail_reason }}{% else %} — open to debug{% endif %}</a>
+        {# ▶ restart: clears the child-failed bubble & re-mints, optionally on
+           a different model tier. Posts to put(kind='job', mode='retry'). #}
+        {% if t.fail_job_id %}
+        <form method="post" action="/drafts/{{ ref.ident }}/todo/{{ t.fail_job_id }}/retry"
+              class="flex shrink-0 items-center gap-0.5">
+          <select name="model" class="rounded border-rose-300 text-[10px] border px-0.5 py-0 bg-white"
+                  title="model to retry on (blank = keep the current LLM tier)">
+            <option value="">↻ same</option>
+            <option value="opus">opus</option>
+            <option value="sonnet">sonnet</option>
+            <option value="haiku">haiku</option>
+          </select>
+          <button class="leading-none text-emerald-600 hover:text-emerald-800"
+                  title="▶ restart — clear the failure and re-run">▶</button>
+        </form>
+        {% endif %}
+      </div>
       {% endif %}
     </div>
     {% endfor %}

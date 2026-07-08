@@ -668,6 +668,18 @@ def _job_notes(store: Any, job_ids: list[int]) -> dict[int, dict[str, Any]]:
     return out
 
 
+def _reason_from_summary(summary: str, *, limit: int = 200) -> str:
+    """Collapse a job's ``job_summary`` into a one-line 'why it failed'
+    string — whitespace-flattened and capped. Mirrors
+    ``Store.job_fail_reason`` so the tasks page and the draft reader show
+    the same reason for the same failed job. ``''`` when there's no
+    summary yet."""
+    if not summary:
+        return ""
+    text = " ".join(summary.split())
+    return text[:limit].rstrip() + ("…" if len(text) > limit else "")
+
+
 def _lease_active(lease_until: str | None) -> bool:
     """True when ``lease_until`` parses and lies in the future."""
     if not lease_until:
@@ -789,6 +801,21 @@ def _build_rows(store: Any, *, precis_root: Path | None = None) -> list[dict[str
             note = "\n".join(p for p in parts if p).strip()
         row_tags = freeform.get(node["id"], []) if node["kind"] == "todo" else []
         attention_icons = _attention_icons(row_tags)
+        # A ``child-failed:<job>`` bubble parks the parent behind a failed
+        # attempt. Resolve each to ``{job_id, reason}`` (the reason from the
+        # job's ``job_summary`` chunk, already bulk-fetched into job_notes) so
+        # the row can show *why* it failed + a ▶ restart button, not a bare
+        # chip. The generic tag strip skips these — they render richly.
+        child_failures: list[dict[str, Any]] = []
+        for t in row_tags:
+            if not t.startswith("child-failed:"):
+                continue
+            rest = t.split("child-failed:", 1)[1].strip()
+            if not rest.isdigit():
+                continue
+            jid = int(rest)
+            reason = _reason_from_summary(job_notes.get(jid, {}).get("summary", ""))
+            child_failures.append({"job_id": jid, "reason": reason})
         # Compiled-PDF affordance: when this todo's workspace has a PDF on
         # disk, link to it. Memoised per workspace path so a project
         # subtree of N todos costs one stat, not N.
@@ -828,6 +855,7 @@ def _build_rows(store: Any, *, precis_root: Path | None = None) -> list[dict[str
                 # sits on the todo — the ▶ start button shows in place of ⏹.
                 "halted": any(t == "halt" or t.startswith("halt:") for t in row_tags),
                 "tags": row_tags,
+                "child_failures": child_failures,
                 "attention_icons": attention_icons,
                 "note": note,
             }

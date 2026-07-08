@@ -1159,6 +1159,34 @@ def test_delete_change_request_dispatches_todo_delete(
     assert verb == "delete" and args["kind"] == "todo" and args["id"] == 777
 
 
+def test_retry_change_request_dispatches_job_retry(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    """▶ restart posts the failed *job* id → put(kind='job', mode='retry')
+    and redirects back to the draft (not the tasks page)."""
+    r = draft_client.post("/drafts/nt/todo/888/retry", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/drafts/nt"
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put"
+    assert args["kind"] == "job" and args["id"] == 888 and args["mode"] == "retry"
+    # No model swap when the picker is left on "same".
+    assert "model" not in args
+
+
+def test_retry_change_request_forwards_model_swap(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    """Picking a tier threads ``model=`` into the retry so the re-minted
+    tick runs on a different model."""
+    r = draft_client.post(
+        "/drafts/nt/todo/888/retry", data={"model": "sonnet"}, follow_redirects=False
+    )
+    assert r.status_code == 303
+    _verb, args = draft_runtime.calls[-1]
+    assert args["model"] == "sonnet"
+
+
 def test_draft_pdf_503_without_latexmk(draft_client: TestClient, monkeypatch) -> None:
     """No TeX toolchain on the host → a friendly 503, not a 500."""
     monkeypatch.setenv("PRECIS_LATEXMK_BIN", "definitely-no-such-binary-xyz")

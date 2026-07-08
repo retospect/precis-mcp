@@ -2832,6 +2832,86 @@ def test_dashboard_hides_closed_jobs_by_default(client, runtime) -> None:
         tasks_mod._load_tags = original_tags  # type: ignore[assignment]
 
 
+def test_dashboard_child_failed_shows_reason_and_retry(client, runtime) -> None:
+    """A parent todo behind a ``child-failed:<job>`` bubble shows *why* the
+    child failed (its job_summary) plus a ▶ restart form + model picker —
+    the bare chip is replaced, not just listed."""
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos = [make_ref(id=1, kind="todo", title="parent todo")]
+    import precis_web.routes.tasks as tasks_mod
+
+    original = {
+        "child": tasks_mod._child_jobs,
+        "tags": tasks_mod._load_tags,
+        "free": tasks_mod._load_freeform_tags,
+        "notes": tasks_mod._job_notes,
+    }
+
+    def child_jobs(store, todo_ids):
+        return (
+            [{"id": 99, "parent_id": 1, "title": "attempt", "lease_until": None}]
+            if 1 in todo_ids
+            else []
+        )
+
+    def load_tags(store, ref_ids):
+        out = {rid: {"status": "open", "level": ""} for rid in ref_ids}
+        if 99 in out:
+            out[99] = {"status": "failed", "level": ""}
+        return out
+
+    def load_freeform(store, ref_ids):
+        return {1: ["child-failed:99"]}
+
+    def job_notes(store, job_ids):
+        return {
+            99: {
+                "result": "",
+                "events": [],
+                "summary": "API Error: Claude Code is unable to respond",
+            }
+        }
+
+    tasks_mod._child_jobs = child_jobs  # type: ignore[assignment]
+    tasks_mod._load_tags = load_tags  # type: ignore[assignment]
+    tasks_mod._load_freeform_tags = load_freeform  # type: ignore[assignment]
+    tasks_mod._job_notes = job_notes  # type: ignore[assignment]
+    try:
+        resp = client.get("/tasks")
+        assert resp.status_code == 200
+        # The reason is surfaced inline…
+        assert "⚠ failed" in resp.text
+        assert "API Error: Claude Code is unable to respond" in resp.text
+        # …with a ▶ restart form posting to the *job* retry endpoint…
+        assert 'action="/tasks/99/retry"' in resp.text
+        assert "▶" in resp.text
+        # …and a model picker (opus/sonnet/haiku).
+        assert 'name="model"' in resp.text
+        assert ">opus<" in resp.text
+        # The bare chip is not also rendered as a plain removable tag.
+        assert ">child-failed:99<" not in resp.text
+    finally:
+        tasks_mod._child_jobs = original["child"]  # type: ignore[assignment]
+        tasks_mod._load_tags = original["tags"]  # type: ignore[assignment]
+        tasks_mod._load_freeform_tags = original["free"]  # type: ignore[assignment]
+        tasks_mod._job_notes = original["notes"]  # type: ignore[assignment]
+
+
+def test_reason_from_summary_flattens_and_caps() -> None:
+    """``_reason_from_summary`` collapses whitespace to one line and caps
+    length — mirroring ``Store.job_fail_reason`` so both surfaces match."""
+    from precis_web.routes.tasks import _reason_from_summary
+
+    assert _reason_from_summary("") == ""
+    assert (
+        _reason_from_summary("  API Error:\n  timed  out\n") == "API Error: timed out"
+    )
+    long = "x" * 500
+    out = _reason_from_summary(long, limit=200)
+    assert out.endswith("…") and len(out) == 201
+
+
 def test_dashboard_status_badge_is_clickable_filter(client) -> None:
     """STATUS / level badges render as ``<a>`` links that filter on click."""
     resp = client.get("/tasks")

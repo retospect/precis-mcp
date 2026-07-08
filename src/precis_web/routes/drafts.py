@@ -421,10 +421,12 @@ def _requests_by_handle(
         # A failed child job parks the parent behind a ``child-failed:<id>``
         # bubble — surface *why* (its job_summary), not just "failed".
         fail_reason = ""
+        fail_job_id: int | None = None
         if failed_tag:
             job_id = failed_tag.split("child-failed:", 1)[-1].strip()
             if job_id.isdigit():
-                fail_reason = store.job_fail_reason(int(job_id)) or ""
+                fail_job_id = int(job_id)
+                fail_reason = store.job_fail_reason(fail_job_id) or ""
         out.setdefault(handle, []).append(
             {
                 "ref_id": ref_id,
@@ -442,6 +444,8 @@ def _requests_by_handle(
                 "ask_tag": ask_tag,
                 "failed": bool(failed_tag),
                 "fail_reason": fail_reason,
+                # The failed child job id — the ▶ restart button posts to it.
+                "fail_job_id": fail_job_id,
                 # AUDIT:<category> if this request came from a content-QA
                 # audit (missing-citation / empty-stub / …); '' otherwise.
                 "audit": audit or "",
@@ -2565,6 +2569,32 @@ async def delete_change_request(request: Request, ident: str, todo_id: int) -> R
         {"kind": "todo", "id": todo_id},
         redirect=back,
         error_title="Delete change request error",
+    )
+
+
+@router.post("/drafts/{ident}/todo/{job_id}/retry")
+async def retry_change_request(
+    request: Request,
+    ident: str,
+    job_id: int,
+    model: str = Form(default=""),
+) -> Response:
+    """▶ restart a failed change-request from the draft reader. ``job_id``
+    is the failed child job; this clears the parent request's
+    ``child-failed:<job>`` bubble (optionally swapping its ``LLM:<model>``
+    tier) so the dispatch worker re-mints a fresh attempt. Mirrors
+    ``/tasks/{job}/retry`` but redirects back to the draft. The job handler
+    validates terminal-state + closed-vocab model and surfaces its own
+    error message on rejection."""
+    args: dict[str, Any] = {"kind": "job", "id": job_id, "mode": "retry"}
+    if model.strip():
+        args["model"] = model.strip()
+    return await redirect_or_error(
+        request,
+        "put",
+        args,
+        redirect=f"/drafts/{ident}",
+        error_title="Retry change request error",
     )
 
 

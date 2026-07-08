@@ -414,7 +414,38 @@
              removes it via the tag verb. -->
         <div class="mt-1 flex flex-wrap items-center gap-1"
              style="padding-left: {{ (r.depth * 1.25) + 1.5 }}rem">
+          {# Failed child job(s): show *why* it died (its job_summary) plus a
+             ▶ restart button + model picker. Restart clears the
+             child-failed:<job> bubble (optionally swapping the LLM tier) so
+             dispatch re-mints a fresh attempt. The bare child-failed chip is
+             skipped in the generic loop below — this replaces it. #}
+          {% for cf in r.child_failures %}
+          <span class="inline-flex items-center gap-1 text-xs pl-2 pr-1 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
+            <a href="/tasks/{{ r.id }}/transcript" target="_blank" rel="noopener"
+               class="hover:underline" title="open the failed job's LLM transcript">⚠ failed{% if cf.reason %} — {{ cf.reason }}{% else %} (job #{{ cf.job_id }} — open to debug){% endif %}</a>
+            <form method="post" action="/tasks/{{ cf.job_id }}/retry" class="inline-flex items-center gap-1">
+              {{ filter_inputs() }}
+              <select name="model" class="rounded border-rose-300 text-xs border px-1 py-0.5 bg-white"
+                      title="model to retry on (blank = keep the current LLM tier)">
+                <option value="">↻ same model</option>
+                <option value="opus">opus</option>
+                <option value="sonnet">sonnet</option>
+                <option value="haiku">haiku</option>
+              </select>
+              <button class="leading-none text-emerald-600 hover:text-emerald-800"
+                      title="▶ restart — clear the failure and re-run this job">▶</button>
+            </form>
+            <form method="post" action="/tasks/{{ r.id }}/tags" class="inline-flex">
+              {{ filter_inputs() }}
+              <input type="hidden" name="remove" value="child-failed:{{ cf.job_id }}" />
+              <button class="leading-none text-rose-400 hover:text-rose-600"
+                      title="dismiss this failure bubble"
+                      aria-label="remove child-failed:{{ cf.job_id }}">&times;</button>
+            </form>
+          </span>
+          {% endfor %}
           {% for t in r.tags %}
+          {% if not t.startswith('child-failed:') %}
           <span class="inline-flex items-center gap-1 text-xs pl-2 pr-1 py-0.5 rounded-full bg-slate-100 text-slate-600">
             <span>{{ t }}</span>
             <form method="post" action="/tasks/{{ r.id }}/tags" class="inline-flex">
@@ -424,6 +455,7 @@
                       title="remove tag" aria-label="remove tag {{ t }}">&times;</button>
             </form>
           </span>
+          {% endif %}
           {% endfor %}
           <form method="post" action="/tasks/{{ r.id }}/tags" class="inline-flex items-center gap-1">
             {{ filter_inputs() }}

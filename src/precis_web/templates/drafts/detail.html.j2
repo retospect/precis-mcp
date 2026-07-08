@@ -249,9 +249,27 @@
          the job. #}
       {% for j in w.jobs %}
       {% if j.reason %}
-      <li class="ml-7 mb-1 text-rose-700">
-        <a href="/refs/job/{{ j.id }}" class="font-mono text-rose-500 hover:underline">job:{{ j.id }}</a>
-        — {{ j.reason }}
+      <li class="ml-7 mb-1 flex items-start gap-1 text-rose-700">
+        <span class="min-w-0 flex-1">
+          <a href="/refs/job/{{ j.id }}" class="font-mono text-rose-500 hover:underline">job:{{ j.id }}</a>
+          — {{ j.reason }}
+        </span>
+        {# ▶ restart the failed job — clears the child-failed bubble & re-mints,
+           optionally on a different model tier. #}
+        {% if j.status == 'failed' %}
+        <form method="post" action="/drafts/{{ ref.ident }}/todo/{{ j.id }}/retry"
+              class="flex shrink-0 items-center gap-0.5">
+          <select name="model" class="rounded border-rose-300 text-[10px] border px-0.5 py-0 bg-white"
+                  title="model to retry on (blank = keep the current LLM tier)">
+            <option value="">↻ same</option>
+            <option value="opus">opus</option>
+            <option value="sonnet">sonnet</option>
+            <option value="haiku">haiku</option>
+          </select>
+          <button class="leading-none text-emerald-600 hover:text-emerald-800"
+                  title="▶ restart — clear the failure and re-run">▶</button>
+        </form>
+        {% endif %}
       </li>
       {% endif %}
       {% endfor %}
