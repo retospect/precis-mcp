@@ -27,6 +27,8 @@ from precis.cli import (
     cron,
     db,
     draft,
+    enrich_openalex,
+    fetch_openalex,
     fix_metadata,
     gripe,
     heartbeat,
@@ -99,6 +101,12 @@ def main() -> None:
         maintenance.run(args)
         return
 
+    if args.cmd == "enrich-openalex":
+        enrich_openalex.run(args)
+        return
+    if args.cmd == "fetch-openalex":
+        fetch_openalex.run(args)
+        return
     if args.cmd == "fix-metadata":
         fix_metadata.run(args)
         return
@@ -215,6 +223,8 @@ def _build_parser() -> argparse.ArgumentParser:
     schema_doc.add_parser(sub)
     db.add_parser(sub)
     maintenance.add_parser(sub)
+    enrich_openalex.add_parser(sub)
+    fetch_openalex.add_parser(sub)
     fix_metadata.add_parser(sub)
     migrate_refs.add_parser(sub)
     reconcile.add_parser(sub)

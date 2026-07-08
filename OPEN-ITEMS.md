@@ -1001,6 +1001,199 @@ Suggested next step: one `docs/design/` roadmap doc capturing all nine with the
 dependency graph (structured-ingest → fetch legs; #7/#8/#9 share the multilingual
 layer), then build #1 (the keystone).
 
+### 2026-07-08 update — MDPI/Akamai wall, OpenAlex Content co-keystone, the bulk arm
+
+New evidence from a batch of "failed to ingest" reports (refs 53423, 53481,
+53495, 53533, 53536, 53537 — mostly MDPI `10.3390`, plus IOP/APS). **Diagnosis
+confirmed + sharpened, and the keystone re-ranked.**
+
+**A. The wall is publisher-agnostic and PMC does NOT rescue MDPI.** MDPI's PDF
+host `www.mdpi.com` is behind **Akamai** bot management (error page cites
+`errors.edgesuite.net`), returning a hard `403 Access Denied` to *every* client
+we can field — polite UA, full Chrome UA, complete browser header set + HTTP/2 —
+from both a laptop IP and cluster nodes (caspar/melchior). It is TLS/fingerprint/
+IP-reputation, **not** a User-Agent gate, so the `_BROWSER_UA` idea is dead for
+this class. Worse: MDPI *Chemosensors* (53423) is **not in PMC** ("Identifier not
+found"), **not in Europe PMC** (0 hits), CORE returned a bogus id, and DOAJ only
+points back to the blocked MDPI page. So roadmap **#1 (PMC-OA leg) whiffs on the
+MDPI inflow entirely** — PMC is biomedical, MDPI's chemistry/materials/eng
+journals aren't indexed there. We need a route that isn't the publisher host and
+isn't PMC.
+
+**B. OpenAlex Content API is that route — verified against 53423, promote to
+co-keystone (new roadmap #1b).** OpenAlex caches full-text content and serves it
+from `content.openalex.org`, *not* the publisher. For 53423 the keyless metadata
+already advertises it:
+
+```
+has_fulltext: True
+has_content: {'pdf': True, 'grobid_xml': False}
+content_urls.pdf: https://content.openalex.org/works/W4386410574.pdf   (401 w/o key)
+```
+
+So the leg is: read the (free, keyless) work metadata → check `has_content` →
+if `grobid_xml` fetch the **TEI** (structured; feeds #5), elif `pdf` fetch the
+**PDF** (Marker path) — both from `content.openalex.org`, a fixed trusted host
+(safe_fetch still applies). **This kills the whole Akamai/Cloudflare-403 class in
+one publisher-agnostic leg** instead of the per-publisher whack-a-mole of #1/#2/
+#3. Key-gated (`PRECIS_OPENALEX_API_KEY`) + ~$0.01/file, but gated by
+`has_content` so we only pay on a hit. **Cascade order:** free legs first
+(publisher-deterministic → PMC-OA JATS → arXiv → Crossref/OpenAlex `oa_url`, all
+$0, version-of-record), then **OpenAlex Content as the first *paid* fallback,
+ahead of the web-unlocker proxy (#3)** which is costlier and ToS-greyer. Gate the
+paid leg with a per-pass budget cap (mirror the cost caps on the agent legs). A
+later optimization: when the only `oa_url` is a known-blocked host
+(mdpi/wiley/science), short-circuit straight to the Content leg.
+
+**C. XML/TEI vs PDF — the decision (generalizes #5 Phase 1).** OpenAlex content is
+**PDF and/or GROBID TEI** — *not* publisher JATS and *not* LaTeX source.
+- **Prefer TEI for text/chunks/embeddings when present; still store the PDF.**
+  TEI → the `extract_blocks_*` seam (#5), skips the expensive/GPU/OCR Marker
+  step, gives clean `section_path` + MathML→`$$` via `mathnorm`. But GROBID TEI
+  is itself PDF-derived (parse errors happen) and **has no page geometry**, so a
+  TEI-only ingest loses the reader's PDF-highlight anchoring (the #5 "JATS has no
+  pages" hazard). Therefore fetch **both** when both are cached: PDF for the
+  reader + `pdf_sha256` + highlight coords, TEI for the structured blocks. If only
+  PDF is cached (like 53423), Marker it as today.
+- **TeX/LaTeX source is a different route** — neither OpenAlex nor S2ORC ships it;
+  the only real `.tex` source is **arXiv e-print tarballs**
+  (`arxiv.org/e-print/<id>`), relevant only for arXiv preprints. Note, don't
+  build now.
+
+**D. The bulk arm (Reto's ask — "set up for a big pass") — unify with the
+historical/foreign-language importer (#8).** On-demand fetch legs and bulk
+snapshot import are two *front ends* onto the same `chunks → embed` backend. The
+bulk front end wants a shared **bulk-ingest substrate**, and the Russian-lit +
+old-German (Chemische Berichte, #8) importers are the *same shape* — bulk,
+identifier-messy, non-per-DOI, structured-or-scanned text that must skip the
+chase→fetch→Marker path. Common machinery:
+- **Free vs paid — the key money fact.** OpenAlex ships TWO products: the **data
+  snapshot** (S3 `s3://openalex --no-sign-request`, **FREE**, ~monthly) is
+  **metadata only** — titles/authors/citations/OA-status/`has_content`/`oa_url`/
+  abstract-inverted-index, **no body text**. OpenAlex **full text** (PDF + GROBID
+  TEI, ~60M works) is the **PAID** per-file Content API (§B), *not* in the free
+  snapshot. So the free bulk-full-text routes are **S2ORC** (S2 Datasets API,
+  needs a key, no per-file charge) and **CORE** (`fullText` + bulk dump, free
+  key). The architecture this implies: **OpenAlex free snapshot = the planning/
+  index layer** (mine it to decide what+priority — this is where §E's "things we
+  already have stuff on" is computed); **S2ORC + CORE = the free bulk full-text
+  backbone**; **OpenAlex Content API (paid) = gap-filler for the blocked residual
+  S2ORC/CORE miss** (the MDPI/Akamai case), pay-per-file only on the tail.
+- **`BulkSource` adapters — the roster** (one per corpus; each yields a normalized
+  "document = metadata + (pre-parsed text | TEI/JATS | to-OCR scan)"). **Build
+  order: S2ORC first** (biggest free full-text win, feeds the pilot), then CORE,
+  then the scan sources.
+  1. **`s2orc`** — Semantic Scholar S2ORC / S2AG **Datasets API**: bulk
+     machine-parsed full text, sharded gzipped JSONL, continuously updated. Needs
+     a free S2 key; **no per-file charge**. *The priority-one adapter + the "big
+     pass" backbone.*
+  2. **`core`** — CORE `fullText` field / bulk data dump (~300M OA works, free
+     key). OCR-ish plaintext; the green-OA net S2ORC misses.
+  3. **`openalex_snapshot`** — free S3 metadata snapshot (`--no-sign-request`).
+     **Index/planner only, NOT a full-text source** — mines *what* to ingest and
+     in what priority (feeds §E); the paid Content API (§B) is the per-file
+     full-text gap-filler, a *separate* thing.
+  4. **`internet_archive` / `hathitrust` / `jstage`** — scan-derived corpora for
+     the historical/PD run (#8; old-German *Chemische Berichte* pilot). hOCR in,
+     OCR tier for low-confidence.
+  5. **`east_view` / institutional** — Russian-lit full text (paywalled/licensed;
+     copyright-gated per below).
+- **Structured-text → blocks** — reuse the #5 `extract_blocks_*` seam so S2ORC
+  JSON / TEI / JATS / IA hOCR all land in Marker's block-dict shape → existing
+  `_blocks_to_chunks → _retag_references → _build_cards → write_paper` → NULL-
+  embedding cascade. **Skips Marker entirely** (text already parsed) except the
+  scan/OCR tier.
+- **Dedup + identity** — DOI → title-fuzzy → cite-key against the live corpus
+  (reuse `dedup.py` / `paper_hygiene`), so a bulk pass folds into held/stub refs
+  instead of minting millions of duplicates.
+- **Copyright-era gating** (from #8) — pre-~1930 PD = full-ingest; in-copyright,
+  non-OA = index/abstract-only. CC-licensed OA = full.
+- **Specialized OCR tier** (from #8) — Fraktur/Cyrillic/CJK; prefer source hOCR,
+  re-OCR on low confidence.
+This is a **new subsystem**, not a fetch leg — the deliverable "set up for a big
+pass" = land this design + the S2ORC `BulkSource` scaffold, then run a gated
+pilot. **Decisions needed before executing:** (a) S2 API key availability +
+storage target for a multi-hundred-GB snapshot, (b) target scale (tens-of-
+thousands vs millions — sets on-demand-per-file vs bulk-snapshot), (c) chemistry/
+materials-first vs broad (S2ORC under-covers MDPI/Chinese-lit; OpenAlex broadest).
+
+**E. Embedding-prioritization — OPEN design question, deliberately NOT solved
+(Reto: "let's not complete that part").** A bulk pass dumps millions of NULL-
+embedding chunks; bge-m3 throughput is finite + load-gated, so naive FIFO starves
+fresh on-demand papers behind the cold-import flood for weeks. Reto's instinct:
+**"prioritize the things we already have stuff on."** Candidate priority signals to
+weigh later — ref referenced by a todo/draft/project/citation/link (warm set);
+recently viewed/searched/flagged (`last_viewed_at`, flags); explicit `PRIO` /
+in-a-project; ref-creation recency (on-demand fresh > bulk backfill); topical
+adjacency to existing high-signal chunks (chicken/egg — needs an embedding to
+know; use cheap lexical/keyword overlap as a proxy). Mechanism sketch: an
+embed-priority ordering in the claim query, bulk chunks stamped a low-priority
+`meta.ingest_source='bulk'` that **trickles behind live traffic** (same principle
+as `llm_summarize` on melchior). **Not a decision yet — captured so the bulk pass
+doesn't ship without a queue policy.**
+
+**F. Small concrete items found in the dig:**
+- **CORE leg bug** — the 53423 log shows `fetcher:core` tried to download the URL
+  `"587670336"` (a bare CORE work-id where a `downloadUrl` was expected) →
+  "refusing non-http(s) URL". `_query_core_pdf_urls` passes the field through
+  unvalidated. Fix: validate it's an http(s) URL, and/or switch CORE to its
+  `fullText` field (bulk-arm-relevant anyway). Owner: `workers/fetch_oa.py`.
+  **STILL OPEN.**
+
+**G. OpenAlex free-metadata enrichment — WANTED (Reto: "we want that meta").**
+The OpenAlex *work* object is free + keyless (`api.openalex.org/works/doi:<doi>`,
+49 fields) and far richer than what we hold. Slurp it into the ref — independent
+of (and cheaper than) the paid content pull. Field → home:
+- `referenced_works` (OpenAlex IDs of cited works, 110 on 53423) → **citation-graph
+  edges** (`links` `cites`, resolvable to DOIs → link held papers / mint stubs).
+  The highest-value field — it densifies the graph S2 alone under-covers.
+- `authorships` → **authors** (ORCID per author + institution **ROR** + country)
+  into the `authors` JSONB byline.
+- `topics` / `concepts` / `keywords` → controlled **`ref_tags`** (topic axis).
+- `funders` / `grants`, `fwci`, `cited_by_count`, `sustainable_development_goals`,
+  `mesh` → `ref.meta`.
+- `is_retracted` → cross-check `retraction_status`; register `openalex:W…` in
+  `ref_identifiers`.
+Home: a metadata source alongside CrossRef/S2 in `ingest/metadata_resolve.py`,
+**or** a dedicated `openalex_enrich` ref-pass (idempotent upsert, polite `mailto`
+pool, fixed host so no SSRF concern). Runs at stub-promotion/ingest **and** as a
+backfill over existing paper refs. Same free API also = the §D
+`openalex_snapshot` planner at per-record granularity (live API for a handful; the
+free S3 snapshot for millions). **BUILT this session (unshipped) — see below.**
+Deferred within G: `referenced_works` **edge materialization** (W-ids → DOIs →
+`links` `cites`) rides on the scholarly-graph fan-out (#6) — the raw W-ids are
+captured in `meta.openalex.referenced_works` now so no re-fetch is needed later;
+topics→`ref_tags` waits on the OPEN-namespace teardown; wiring the backfill CLI
+into a scheduled worker pass is a follow-up (the CLI covers the sweep today).
+
+**BUILT this session (unshipped, green: ruff+mypy+targeted pytest):**
+- **OpenAlex Content leg** (`workers/fetch_oa.py` `_try_openalex_content`) — the
+  §B rescue, Phase 1 (PDF only; TEI deferred to #5). Reads free `has_content`,
+  downloads from `content.openalex.org` with `?api_key=`, records `cost_usd`
+  ≈$0.01, key never leaves the query (not in the payload). LAST in the cascade,
+  **double-gated**: `PRECIS_OPENALEX_CONTENT_KEY` **and**
+  `PRECIS_OPENALEX_CONTENT_AUTO` (default OFF) so it merges dark and can't
+  auto-bill the backlog.
+- **`precis fetch-openalex <doi|ref_id>`** (`cli/fetch_openalex.py`) — the manual
+  "penny now" one-shot (bypasses the auto gate); downloads into
+  `PRECIS_WATCH_INBOX`, writes the stub-fold sidecar when given a ref_id. This is
+  the path to prove 53423 the moment the key + funded balance exist.
+- **Failure-reason surfacing** (`store/_refs_ops.py`) — `/papers-needed` now
+  renders the concrete why ("fetch failed: mdpi.com 403 — will retry in 24h")
+  instead of a bare `fetch_failed`; payload threaded into `_stub_state_summary`,
+  host+HTTP-status extracted. Verified end-to-end against real Postgres.
+- **§G OpenAlex free-metadata enrichment** — `ingest/openalex_meta.py`
+  (`fetch_openalex_work` + pure `normalize` + `enrich_ref`) writes the
+  `meta.openalex` block (abstract, topics, funders, fwci, cited_by, 110
+  `referenced_works` W-ids, ORCID+ROR authorships), registers `openalex:W…`, and
+  fills the byline only when empty. CLI `precis enrich-openalex <doi|ref_id>` +
+  `--backfill --limit N`. Verified live against 53423 (fetch+normalize) and
+  end-to-end against real Postgres (write). 11 unit tests.
+- **NOT yet built:** the TEI/`grobid_xml` structured-ingest path (#5), the CORE
+  bug fix, the bulk arm (§D), the auto-leg budget cap for when AUTO is flipped on.
+  **Verify on first real key:** OpenAlex Content auth is `?api_key=` (per their
+  docs + the URL format) — confirm on the first live 200.
+
 ### Residuals — stub↔ingest dedup-split fix (SHIPPED c6152950, 2026-07-06; Opus-authored)
 
 The "fetched 16h ago but not ingested" cards (stubs 50698/50754) were a
@@ -1057,10 +1250,25 @@ dedup-hit branches). Residuals parked (all harvest-eligible, Opus-authored):
 
 ---
 
-_Last updated: 2026-07-06 (added the stub↔ingest dedup-split residuals block
-under the OA section — shipped c6152950: acquisition sidecar + new-ref-branch
-reconcile; 3 residuals parked: multi-host `no such file` race, titleless
-metadata-poor refs, verify the 7 existing orphans self-heal). Prior same day:
+_Last updated: 2026-07-08 (added the "2026-07-08 update" block to the OA section:
+MDPI/Akamai wall confirmed publisher-agnostic + PMC-doesn't-cover-MDPI; OpenAlex
+Content API verified reaching 53423 → promoted to co-keystone #1b, killing the
+Akamai/Cloudflare-403 class in one leg; XML/TEI-vs-PDF decision (prefer TEI, keep
+PDF; TeX only via arXiv e-print); the bulk arm unified with the historical/
+foreign-language importer #8 (S2ORC/CORE = free bulk full text, OpenAlex free
+snapshot = index/planner only, OpenAlex Content paid = blocked-residual gap-
+filler) + Russian-lit; embedding-prioritization left OPEN per Reto; CORE bare-id
+bug + failure-reason surfacing noted. Same day, later: made the `BulkSource`
+roster an explicit named-adapter list — **`s2orc` priority-one** + `core` +
+`openalex_snapshot` (index-only) + IA/HathiTrust/J-STAGE + East View; added item
+**G — OpenAlex free-metadata enrichment (WANTED)** with the field→home map
+(referenced_works→citation edges, ORCID/ROR→authors, topics→tags); and built
+(unshipped) the OpenAlex Content leg + `precis fetch-openalex` CLI + failure-
+reason surfacing). Prior: 2026-07-06 (added the stub↔ingest
+dedup-split residuals block under the OA section — shipped c6152950: acquisition
+sidecar + new-ref-branch reconcile; 3 residuals parked: multi-host `no such file`
+race, titleless metadata-poor refs, verify the 7 existing orphans self-heal).
+Prior same day:
 added the OA-acquisition + structured-ingest +
 external-search roadmap — 9 interdependent items from the "it's OA but we don't
 have it" diagnosis: publisher Cloudflare-403 is the common wall, PMC OA subset is

@@ -34,6 +34,7 @@ MRO against the concrete ``Store``.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -573,7 +574,7 @@ class RefsMixin:
                    )
             ),
             latest_event AS (
-                SELECT DISTINCT ON (ref_id) ref_id, ts, source, event
+                SELECT DISTINCT ON (ref_id) ref_id, ts, source, event, payload
                   FROM ref_events
                  WHERE source LIKE 'fetcher:%%'
                  ORDER BY ref_id, ts DESC
@@ -592,7 +593,8 @@ class RefsMixin:
             SELECT s.ref_id, s.cite_key, s.identifier,
                    le.ts, le.source, le.event,
                    s.created_at, s.requested_by,
-                   COALESCE(fs.attempts, 0) AS attempts
+                   COALESCE(fs.attempts, 0) AS attempts,
+                   le.payload
               FROM stubs s
               LEFT JOIN latest_event le ON le.ref_id = s.ref_id
               LEFT JOIN fetch_stats fs ON fs.ref_id = s.ref_id
@@ -616,7 +618,7 @@ class RefsMixin:
                     "last_attempt": row[3].isoformat() if row[3] is not None else "",
                     "last_source": row[4] or "",
                     "last_event": row[5] or "",
-                    "state": _stub_state_summary(row[5], row[3]),
+                    "state": _stub_state_summary(row[5], row[3], row[9]),
                     "created_at": row[6].isoformat() if row[6] is not None else "",
                     "requested_by": row[7] or "",
                     "attempts": int(row[8]),
@@ -1970,12 +1972,19 @@ class RefsMixin:
         return int(row[0])
 
 
-def _stub_state_summary(last_event: str | None, last_ts: Any) -> str:
+def _stub_state_summary(
+    last_event: str | None, last_ts: Any, payload: dict[str, Any] | None = None
+) -> str:
     """One-line state per stub for operator / agent triage.
 
     Shared by :meth:`RefsMixin.stub_backlog` so the CLI
     (``precis stubs``) and the MCP ``search(view='stubs')`` render the
     same human-readable status string.
+
+    ``payload`` is the latest ``fetcher:%`` event's payload — used to
+    fold the concrete *why* into the failure line (e.g. ``mdpi.com
+    403``) so the operator can tell an anti-bot block apart from a real
+    "no OA anywhere" without opening the event log.
     """
     if last_event is None:
         return "awaiting fetch (never tried)"
@@ -1986,12 +1995,66 @@ def _stub_state_summary(last_event: str | None, last_ts: Any) -> str:
     if last_event == "no_oa_version":
         return "no OA version available"
     if last_event in ("fetch_failed", "api_error"):
-        return f"{last_event} — will retry in 24h"
+        reason = _fetch_failure_reason(payload)
+        detail = f": {reason}" if reason else ""
+        return f"fetch failed{detail} — will retry in 24h"
     if last_event == "rate_limited":
         return "rate-limited — backed off"
     if last_event == "invalid_identifier":
         return "identifier rejected — operator review"
     return last_event
+
+
+# Matches the tail of httpx's raise_for_status message,
+# ``Client error '403 Forbidden' for url '...'`` / ``Server error
+# '500 ...'`` — the leading status code is what an operator wants.
+_HTTP_STATUS_RE = re.compile(r"(?:Client|Server) error '(\d{3})")
+
+
+def _fetch_failure_reason(payload: dict[str, Any] | None) -> str:
+    """Concise ``host code`` (or a short error) from a fetcher payload.
+
+    Turns a ``fetch_failed`` / ``api_error`` payload into a compact
+    reason for the one-line stub state — e.g. a 403 on an MDPI PDF URL
+    renders ``mdpi.com 403``. Falls back to the bare HTTP status, then a
+    truncated error string, then ``""`` (caller drops the ``:`` detail).
+
+    The host comes from the attempted ``url`` / first ``urls`` entry and
+    is stripped of a leading ``www.``; the status from the httpx error
+    message. Both are best-effort — a payload without either yields a
+    short snippet rather than raising.
+    """
+    if not payload:
+        return ""
+    error = str(payload.get("error") or "")
+
+    code = ""
+    m = _HTTP_STATUS_RE.search(error)
+    if m:
+        code = m.group(1)
+    elif payload.get("status") is not None:  # api_error carries a raw status
+        code = str(payload["status"])
+
+    url = payload.get("url")
+    if not url:
+        urls = payload.get("urls")
+        if isinstance(urls, list) and urls:
+            url = urls[0]
+    host = ""
+    if isinstance(url, str) and url.startswith(("http://", "https://")):
+        from urllib.parse import urlsplit
+
+        host = urlsplit(url).netloc.removeprefix("www.")
+
+    if host and code:
+        return f"{host} {code}"
+    if code:
+        return f"HTTP {code}"
+    if host:
+        return host
+    # No structured host/code (e.g. a non-HTTP URL or a transport error)
+    # — a short slice of the raw error still beats a bare "fetch failed".
+    return error[:60].strip()
 
 
 __all__ = ["RefsMixin"]

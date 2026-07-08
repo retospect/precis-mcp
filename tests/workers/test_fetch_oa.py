@@ -860,6 +860,87 @@ class TestTryOpenalex:
         assert out.payload["host_type"] == "openalex"
 
 
+class TestTryOpenalexContent:
+    def test_none_without_key(self, tmp_path: Path) -> None:
+        assert (
+            fetch_oa._try_openalex_content(
+                _stub(doi="10.3390/x"), inbox_dir=tmp_path, api_key=""
+            )
+            is None
+        )
+
+    def test_none_without_doi(self, tmp_path: Path) -> None:
+        assert (
+            fetch_oa._try_openalex_content(
+                _stub(doi=None), inbox_dir=tmp_path, api_key="K"
+            )
+            is None
+        )
+
+    def test_no_oa_when_nothing_cached(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            fetch_oa, "_query_openalex_content_urls", lambda doi, *, email="": {}
+        )
+        out = fetch_oa._try_openalex_content(
+            _stub(doi="10.3390/x"), inbox_dir=tmp_path, api_key="K"
+        )
+        assert out is not None
+        assert out.event == "no_oa_version"
+
+    def test_no_oa_when_only_tei_cached(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Phase 1 fetches PDF only; a TEI-only work has no PDF to pull yet.
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_openalex_content_urls",
+            lambda doi, *, email="": {
+                "grobid_xml": "https://content.openalex.org/w.grobid-xml"
+            },
+        )
+        out = fetch_oa._try_openalex_content(
+            _stub(doi="10.3390/x"), inbox_dir=tmp_path, api_key="K"
+        )
+        assert out is not None
+        assert out.event == "no_oa_version"
+        assert out.payload["cached"] == ["grobid_xml"]
+
+    def test_fetch_ok_records_cost_and_hides_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_openalex_content_urls",
+            lambda doi, *, email="": {"pdf": "https://content.openalex.org/W1.pdf"},
+        )
+        seen: dict[str, str] = {}
+
+        def _fake_download(url: str, target: Path, **kw: Any) -> int:
+            seen["url"] = url
+            return _write_synthetic_pdf(target, size=256)
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _fake_download)
+        out = fetch_oa._try_openalex_content(
+            _stub(doi="10.3390/x"), inbox_dir=tmp_path, api_key="SECRET"
+        )
+        assert out is not None
+        assert out.event == "fetch_ok"
+        assert out.payload["host_type"] == "openalex_content"
+        assert out.cost_usd == fetch_oa._OPENALEX_CONTENT_COST_USD
+        # key rides the download URL...
+        assert "api_key=SECRET" in seen["url"]
+        # ...but never the recorded payload.
+        assert "SECRET" not in str(out.payload)
+
+    def test_auto_gate_off_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PRECIS_OPENALEX_CONTENT_AUTO", raising=False)
+        assert fetch_oa._openalex_content_auto() is False
+        monkeypatch.setenv("PRECIS_OPENALEX_CONTENT_AUTO", "1")
+        assert fetch_oa._openalex_content_auto() is True
+
+
 class TestTryEuropepmc:
     def test_none_without_doi(self, tmp_path: Path) -> None:
         assert _try_europepmc(_stub(doi=None), inbox_dir=tmp_path) is None

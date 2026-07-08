@@ -97,6 +97,12 @@ _SOURCE_EUROPEPMC = "fetcher:europepmc"
 _SOURCE_CORE = "fetcher:core"
 _SOURCE_ARXIV = "fetcher:arxiv"
 _SOURCE_S2 = "fetcher:s2"
+_SOURCE_OPENALEX_CONTENT = "fetcher:openalex_content"
+
+# OpenAlex Content API per-file price (their published ~$0.01/file). Recorded
+# as ``cost_usd`` on the ``fetch_ok`` event so the paid spend is auditable in
+# ``ref_events`` alongside the free legs (which record None).
+_OPENALEX_CONTENT_COST_USD = 0.01
 
 # Browser-ish UA for hosts that Cloudflare-gate non-browser agents
 # (CORE's API + many institutional repositories answer the default
@@ -443,6 +449,42 @@ _CORE_SEARCH_BASE = "https://api.core.ac.uk/v3/search/works/"
 def _core_api_key() -> str:
     """CORE API key from the env, or '' when unconfigured."""
     return os.environ.get("PRECIS_CORE_API_KEY", "").strip()
+
+
+# ── OpenAlex Content API (paid, publisher-agnostic full text) ──────
+#
+# OpenAlex caches full-text content (PDF + GROBID TEI) for ~60M works and
+# serves it from ``content.openalex.org`` — **not** the publisher host. That
+# is the rescue for the anti-bot wall the free legs all 403 on: MDPI's Akamai,
+# Wiley/science.org's Cloudflare. Key-gated (``PRECIS_OPENALEX_CONTENT_KEY``,
+# free to obtain) and billed per file (~$0.01), so it is the last leg and only
+# pays when OpenAlex reports content actually cached (``has_content``).
+#
+# Two safety gates: the credential (silent no-op without it, like Elsevier/
+# Wiley/CORE) **and** ``PRECIS_OPENALEX_CONTENT_AUTO`` for the automatic
+# cascade — default OFF so merging the leg can't silently spend across a
+# thousand-stub backlog. The manual one-shot (``precis fetch-openalex``) calls
+# the leg directly, bypassing the auto gate, for deliberate one-at-a-time pulls.
+
+_OPENALEX_CONTENT_HOST = "content.openalex.org"
+
+
+def _openalex_content_key() -> str:
+    """OpenAlex Content API key from the env, or '' when unconfigured."""
+    return os.environ.get("PRECIS_OPENALEX_CONTENT_KEY", "").strip()
+
+
+def _openalex_content_auto() -> bool:
+    """Whether the paid OpenAlex-content leg runs in the *automatic* cascade.
+
+    Default OFF: the credential alone must not auto-spend on every stub. Flip
+    ``PRECIS_OPENALEX_CONTENT_AUTO=1`` once a budget is intended.
+    """
+    return os.environ.get("PRECIS_OPENALEX_CONTENT_AUTO", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 # ── Per-stub logic ─────────────────────────────────────────────────
@@ -811,6 +853,79 @@ def _try_s2(
     )
 
 
+def _try_openalex_content(
+    stub: StubRef,
+    *,
+    inbox_dir: Path,
+    api_key: str,
+    email: str = "",
+) -> FetchOutcome | None:
+    """Fetch full text from OpenAlex's content cache for one stub.
+
+    Returns ``None`` (silent fall-through) without a key, DOI, or a valid
+    DOI. Otherwise reads the **free** work metadata to learn what content
+    OpenAlex has cached (``has_content`` / ``content_urls``); when a PDF is
+    cached, downloads it from ``content.openalex.org`` (paid, ``?api_key=``)
+    into the inbox. Because the bytes come from OpenAlex — not the publisher
+    — this is the one leg that clears the MDPI/Akamai (and Wiley/Cloudflare)
+    403 wall the free legs die on.
+
+    **Phase 1: PDF only.** OpenAlex also serves GROBID **TEI**
+    (``grobid_xml``), which is structurally richer, but its structured-ingest
+    seam isn't built yet (OPEN-ITEMS OA #5), so we take the PDF (→ Marker)
+    even when TEI exists. When only TEI is cached (no PDF), records
+    ``no_oa_version`` for now — Phase 2 will fetch the TEI instead.
+
+    The ``api_key`` rides in the URL query, not the payload — the recorded
+    event keeps the clean (keyless) ``pdf_url`` so the credential never lands
+    in ``ref_events``.
+    """
+    if not api_key or not stub.doi or not _DOI_RE.match(stub.doi):
+        return None
+    t0 = time.perf_counter()
+    try:
+        content = _query_openalex_content_urls(stub.doi, email=email)
+    except Exception as exc:
+        return FetchOutcome(
+            event="api_error",
+            payload={"doi": stub.doi, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
+        )
+
+    pdf_url = content.get("pdf")
+    if not pdf_url:
+        # Nothing cached, or only TEI (Phase 2). Either way no PDF to pull.
+        return FetchOutcome(
+            event="no_oa_version",
+            payload={"doi": stub.doi, "cached": sorted(content)},
+            duration_ms=_ms(t0),
+        )
+
+    filename = _stub_filename(stub) + ".pdf"
+    target = inbox_dir / filename
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        size_bytes = _download_pdf(_with_api_key(pdf_url, api_key), target)
+    except Exception as exc:
+        return FetchOutcome(
+            event="fetch_failed",
+            payload={"doi": stub.doi, "url": pdf_url, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
+        )
+    return FetchOutcome(
+        event="fetch_ok",
+        payload={
+            "doi": stub.doi,
+            "url": pdf_url,
+            "size_bytes": size_bytes,
+            "host_type": "openalex_content",
+            "filename": filename,
+        },
+        duration_ms=_ms(t0),
+        cost_usd=_OPENALEX_CONTENT_COST_USD,
+    )
+
+
 def _try_crossref(
     stub: StubRef,
     *,
@@ -1030,6 +1145,7 @@ def run_oa_fetch_pass(
     api_key: str | None = None,
     wiley_token: str | None = None,
     core_key: str | None = None,
+    openalex_content_key: str | None = None,
 ) -> dict[str, int]:
     """Process up to ``limit`` stubs through the OA fetcher cascade.
 
@@ -1086,6 +1202,11 @@ def run_oa_fetch_pass(
     api_key = api_key if api_key is not None else _elsevier_api_key()
     wiley_token = wiley_token if wiley_token is not None else _wiley_tdm_token()
     core_key = core_key if core_key is not None else _core_api_key()
+    openalex_content_key = (
+        openalex_content_key
+        if openalex_content_key is not None
+        else _openalex_content_key()
+    )
     if inbox_dir is None:
         configured = os.environ.get("PRECIS_WATCH_INBOX", "").strip()
         if not configured:
@@ -1128,7 +1249,16 @@ def run_oa_fetch_pass(
     failed = 0
     for stub in stubs:
         try:
-            _run_cascade(store, stub, inbox_path, email, api_key, wiley_token, core_key)
+            _run_cascade(
+                store,
+                stub,
+                inbox_path,
+                email,
+                api_key,
+                wiley_token,
+                core_key,
+                openalex_content_key,
+            )
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
             log.warning(
@@ -1149,6 +1279,7 @@ def _run_cascade(
     api_key: str,
     wiley_token: str,
     core_key: str,
+    openalex_content_key: str = "",
 ) -> None:
     """Walk providers in order; stop at first fetch_ok.
 
@@ -1171,7 +1302,12 @@ def _run_cascade(
     8. ``core``      — green-OA repository copies, key-gated.
     9. ``arxiv``     — deterministic preprint PDF; after the published
        sources so a version of record is preferred over the preprint.
-    10. ``s2``       — Semantic Scholar openAccessPdf, last resort.
+    10. ``s2``       — Semantic Scholar openAccessPdf, last resort (free).
+    11. ``openalex_content`` — paid OpenAlex cache (PDF/TEI), publisher-
+        agnostic; clears the MDPI-Akamai / Cloudflare 403 wall. Gated by
+        ``PRECIS_OPENALEX_CONTENT_KEY`` **and** ``PRECIS_OPENALEX_CONTENT_AUTO``
+        so it only runs when opted in, and last so it only spends after every
+        free leg fails.
     """
     providers: list[tuple[str, Any]] = [
         (_SOURCE_PUBLISHER, lambda: _try_publisher(stub, inbox_dir=inbox_dir)),
@@ -1221,6 +1357,21 @@ def _run_cascade(
         )
     providers.append((_SOURCE_ARXIV, lambda: _try_arxiv(stub, inbox_dir=inbox_dir)))
     providers.append((_SOURCE_S2, lambda: _try_s2(stub, inbox_dir=inbox_dir)))
+    # Paid, publisher-agnostic full text — LAST, so we only spend after every
+    # free leg has failed, and only when the operator opted the auto-cascade in
+    # (the credential alone must not auto-bill a thousand-stub backlog).
+    if openalex_content_key and _openalex_content_auto():
+        providers.append(
+            (
+                _SOURCE_OPENALEX_CONTENT,
+                lambda: _try_openalex_content(
+                    stub,
+                    inbox_dir=inbox_dir,
+                    api_key=openalex_content_key,
+                    email=email,
+                ),
+            )
+        )
 
     for source, runner in providers:
         try:
@@ -1385,6 +1536,46 @@ def _query_core_pdf_urls(doi: str, *, api_key: str) -> list[str]:
         if rec_doi == want and href and href not in out:
             out.append(href)
     return out
+
+
+def _query_openalex_content_urls(doi: str, *, email: str = "") -> dict[str, str]:
+    """Return the ``content_urls`` OpenAlex reports as *cached* for a DOI.
+
+    Keyless metadata call (the work object is free). Keeps only the content
+    types ``has_content`` marks true — so a ``{'pdf': '…', 'grobid_xml': '…'}``
+    result means both are actually fetchable, and an empty dict means OpenAlex
+    has no cached full text (don't spend). ``mailto`` is polite, optional.
+    """
+    url = f"https://api.openalex.org/works/doi:{doi}"
+    params = {"mailto": email} if email else {}
+    with httpx.Client(
+        timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
+    ) as client:
+        resp = client.get(url, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+    has = data.get("has_content") or {}
+    urls = data.get("content_urls") or {}
+    return {
+        kind: href
+        for kind, href in urls.items()
+        if has.get(kind) and isinstance(href, str)
+    }
+
+
+def _with_api_key(url: str, api_key: str) -> str:
+    """Return ``url`` with ``api_key=<key>`` merged into its query string.
+
+    Preserves any existing query params (OpenAlex content URLs are bare, but
+    be defensive). Used only for the OpenAlex Content leg — the key travels in
+    the query, never in a header or the recorded payload.
+    """
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+    parts = urlparse(url)
+    query = dict(parse_qsl(parts.query))
+    query["api_key"] = api_key
+    return urlunparse(parts._replace(query=urlencode(query)))
 
 
 def _download_pdf(

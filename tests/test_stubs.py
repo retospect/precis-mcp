@@ -58,13 +58,21 @@ def _mark_held(store: Store, ref_id: int) -> None:
         )
 
 
-def _fetch_event(store: Store, ref_id: int, event: str, *, hours_ago: float) -> None:
+def _fetch_event(
+    store: Store,
+    ref_id: int,
+    event: str,
+    *,
+    hours_ago: float,
+    payload: str = "{}",
+    source: str = "fetcher:unpaywall",
+) -> None:
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
-            "VALUES (%s, 'fetcher:unpaywall', %s, '{}'::jsonb, "
+            "VALUES (%s, %s, %s, %s::jsonb, "
             "        now() - make_interval(hours => %s))",
-            (ref_id, event, hours_ago),
+            (ref_id, source, event, payload, hours_ago),
         )
 
 
@@ -106,6 +114,26 @@ def test_stub_backlog_state_reflects_latest_event(store: Store) -> None:
     _fetch_event(store, rid, "no_oa_version", hours_ago=1)
     rows = store.stub_backlog()
     assert rows[0]["state"] == "no OA version available"
+
+
+def test_stub_backlog_state_surfaces_failure_reason(store: Store) -> None:
+    # A fetch_failed whose payload carries the attempted URL + httpx error
+    # should render the concrete why (host + HTTP status), not a bare
+    # "fetch_failed" — so /papers-needed shows "mdpi.com 403" at a glance.
+    rid = _stub(store, cite_key="mdpi2023", doi="10.3390/x")
+    _fetch_event(
+        store,
+        rid,
+        "fetch_failed",
+        hours_ago=1,
+        source="fetcher:s2",
+        payload=(
+            '{"url": "https://www.mdpi.com/2227-9040/11/9/486/pdf?version=1", '
+            "\"error\": \"Client error '403 Forbidden' for url 'x'\"}"
+        ),
+    )
+    rows = store.stub_backlog()
+    assert rows[0]["state"] == "fetch failed: mdpi.com 403 — will retry in 24h"
 
 
 def test_stub_backlog_awaiting_filters_recent_attempts(store: Store) -> None:
