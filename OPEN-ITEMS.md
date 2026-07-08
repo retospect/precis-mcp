@@ -461,14 +461,23 @@ chunk citations embed that chunk's exact text as the record's `<research-notes>`
   because it sat on an unmerged branch while deploys render from `master`. Add a
   deploy assert that deployed launchd plists match the rendered templates (analogue
   of the existing venv-commit convergence assert). Owner: `redeploy-precis.yml`.
-- **Convergence assert races the autonomous fixer** (observed 2026-07-05). The
-  final "each venv matches deployed ref" assert does a *fresh* `git ls-remote origin
-  main` per host, so when the hephaestus fixer ships mid-deploy the installed commit
-  ≠ HEAD and the assert fails — even though the installs succeeded and the cluster is
-  uniform (bit 2–3× per `/go` deploy while the fixer was active; a re-run in a quiet
-  window converges). Fix: capture the target sha ONCE at play start (or assert
-  against the commit each venv actually *installed*, not a fresh ls-remote), so a
-  `main` moving under an in-flight deploy can't false-fail. Owner: `redeploy-precis.yml`.
+- **Convergence assert races the autonomous fixer → FIXED** (cluster `master`
+  `3ff4fc2`, 2026-07-08). The install, the pre-flight gate, and the convergence
+  assert each re-sampled `git ls-remote origin main` independently, so a commit
+  landing mid-deploy (the hephaestus fixer, a sibling `/go`) left the venvs on the
+  sha they installed while the assert compared against a NEWER HEAD → spurious
+  "DEPLOY DID NOT CONVERGE" on a uniform cluster (hit 2–3× per deploy while the
+  fixer was active; a quiet-window re-run converged). Fix: `redeploy-precis.yml`
+  step 0 resolves the ref to ONE commit via a single `run_once` `git ls-remote`,
+  broadcasts it to all hosts, and pins the three `precis_*_git_ref` install vars +
+  a `precis_target_sha` compare target to it; install (`@<sha>`), pre-flight, and
+  assert all use the frozen sha, so a `main` that advances under an in-flight deploy
+  can't false-fail it. `-e precis_worker_git_ref=<branch>` still wins. Validated
+  live: deployed cleanly first-try *while* the fixer was shipping (`main` moved
+  `6c9c8a01`→`aa74b0d1` mid-run), pinned + converged on all 4 hosts, `failed=0` —
+  the exact condition that needed a manual re-run twice before, now green in one
+  pass. Retires the old workaround ("confirm your sha is an ancestor of
+  origin/main and re-run"). Owner: `redeploy-precis.yml` (cluster repo).
 
 ## 🟢 Chunk-tag classifier (ADR 0047) — remaining work
 
