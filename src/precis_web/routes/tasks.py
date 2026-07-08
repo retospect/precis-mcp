@@ -639,11 +639,16 @@ def _job_notes(store: Any, job_ids: list[int]) -> dict[int, dict[str, Any]]:
         return out
     try:
         with store.pool.connection() as conn:
+            # Read the ``chunk_kind`` *column*, not ``meta->>'chunk_kind'``:
+            # job forensics chunks set the column but leave the meta mirror
+            # NULL, so the meta path silently returned nothing (empty hover
+            # tooltips + a blank child-failure reason). Matches the
+            # authoritative ``Store.job_fail_reason`` query.
             rows = conn.execute(
-                "SELECT ref_id, meta->>'chunk_kind' AS kind, text "
+                "SELECT ref_id, chunk_kind AS kind, text "
                 "FROM chunks "
                 "WHERE ref_id = ANY(%s) "
-                "AND meta->>'chunk_kind' IN "
+                "AND chunk_kind IN "
                 "  ('job_result', 'job_event', 'job_summary') "
                 "ORDER BY ref_id, ord",
                 (job_ids,),

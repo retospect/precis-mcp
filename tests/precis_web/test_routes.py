@@ -2007,6 +2007,33 @@ def test_job_notes_includes_result() -> None:
     assert "5 children" in out[6689]["summary"]
 
 
+def test_job_notes_reads_chunk_kind_column_not_meta_mirror(store) -> None:
+    """Regression (real PG): job forensics chunks set the ``chunk_kind``
+    *column* — ``insert_blocks`` pops it out of meta — so
+    ``meta->>'chunk_kind'`` is NULL. ``_job_notes`` must read the column,
+    else the failure reason + hover tooltip come back empty (the exact bug
+    that made a child-failed row show 'open to debug' instead of the real
+    'API Error: …')."""
+    from precis.workers.executors._common import append_chunk
+    from precis_web.routes.tasks import _job_notes
+
+    ref = store.insert_ref(kind="job", slug=None, title="attempt", meta={})
+    append_chunk(store, ref.id, "job_summary", "API Error: unable to respond")
+    append_chunk(store, ref.id, "job_event", "runner: exit 1")
+
+    out = _job_notes(store, [ref.id])
+    assert "API Error: unable to respond" in out[ref.id]["summary"]
+    assert out[ref.id]["events"] == ["runner: exit 1"]
+    # Guard the root cause: the meta mirror really is absent, so a
+    # meta->>'chunk_kind' query would have found nothing.
+    with store.pool.connection() as conn:
+        metas = conn.execute(
+            "SELECT meta->>'chunk_kind' FROM chunks WHERE ref_id = %s ORDER BY ord",
+            (ref.id,),
+        ).fetchall()
+    assert metas and all(m[0] is None for m in metas)
+
+
 def test_resolve_workspace_pdf(tmp_path) -> None:
     """``_resolve_workspace_pdf`` returns the path only when it exists."""
     from precis_web.routes.tasks import _resolve_workspace_pdf
