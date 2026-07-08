@@ -7,7 +7,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from precis.ingest.metadata_resolve import TRIAGE_TAG, resolve_triage
+from precis.ingest.metadata_resolve import (
+    TRIAGE_TAG,
+    _title_candidates,
+    _triage_refs,
+    resolve_triage,
+)
 from precis.store import Store
 
 
@@ -236,3 +241,133 @@ def test_held_without_chunks_flagged_discard(store: Store) -> None:
     r = _verdict(out, rid)
     assert r.verdict == "discard" and "chunks" in r.reason
     assert _has_triage(store, rid)  # only flagged, never deleted
+
+
+# ── multi-chunk title candidates + widened selection ──────────────
+
+
+def _fake_s2_by_query(mapping: dict[str, dict[str, Any] | None]):
+    """S2 fake that answers per query title (multi-candidate tests)."""
+
+    def fn(title: str, api_key: str) -> dict[str, Any] | None:
+        return mapping.get(title)
+
+    return fn
+
+
+def _titleless_paper(
+    store: Store,
+    *,
+    slug: str,
+    n: int,
+    title: str = "",
+    chunks: tuple[str, ...] = (),
+    doi: str | None = None,
+    tag: bool = False,
+) -> int:
+    """A chunked (``pdf_sha256`` set) paper with N body chunks. ``tag=False``
+    leaves it *untagged* — the case the widened selection must now reach."""
+    ref = store.insert_ref(kind="paper", slug=slug, title=title)
+    sha = f"{n:064x}"
+    with store.pool.connection() as conn, conn.transaction():
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, size_bytes, "
+            "storage_path) VALUES (%s, %s, 1, 100, '') ON CONFLICT DO NOTHING",
+            (sha, sha),
+        )
+        conn.execute("UPDATE refs SET pdf_sha256=%s WHERE ref_id=%s", (sha, ref.id))
+        for i, text in enumerate(chunks):
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, %s, 'paragraph', %s)",
+                (ref.id, i, text),
+            )
+        if doi:
+            store.set_ref_identifier(ref.id, "doi", doi, source="system", conn=conn)
+        if tag:
+            store.add_tag(ref.id, TRIAGE_TAG, set_by="system", conn=conn)
+    return ref.id
+
+
+def test_title_candidates_scans_beyond_chunk0(store: Store) -> None:
+    # chunk 0 is a masthead; the real title sits in chunk 1. The old
+    # chunk-0-only query would have searched "Contents lists available…".
+    rid = _titleless_paper(
+        store,
+        slug="beyond0",
+        n=0x101,
+        chunks=(
+            "Contents lists available at ScienceDirect",
+            "Continuous deformations in random networks",
+            "M.F. Thorpe, Cavendish Laboratory",
+        ),
+    )
+    cands = _title_candidates(store, _ref(store, rid))
+    assert "Continuous deformations in random networks" in cands
+    assert all("ScienceDirect" not in c for c in cands)
+
+
+def test_title_candidates_filter_furniture_and_strip_markdown(store: Store) -> None:
+    rid = _titleless_paper(
+        store,
+        slug="furn",
+        n=0x102,
+        chunks=(
+            "Received 2 Sep 2015 | Accepted 4 Mar 2016\n"
+            "https://doi.org/10.1000/xyz\n"
+            "Journal of Business Volume 10\n"
+            "**Large Dual Encoders Are Generalizable Retrievers**<sup>1</sup>\n"
+            "Jianmo Ni, Chen Qu",
+        ),
+    )
+    cands = _title_candidates(store, _ref(store, rid))
+    # Furniture (received-line, URL, masthead) dropped; markdown stripped; the
+    # real title is the first candidate (it precedes the author line).
+    assert cands[0] == "Large Dual Encoders Are Generalizable Retrievers"
+    assert not any("Received" in c or "doi.org" in c or "Volume" in c for c in cands)
+
+
+def test_track2_scans_past_missing_candidate(store: Store) -> None:
+    # First candidate misses S2; the resolver must keep scanning to the real
+    # title in chunk 1 rather than giving up (the old single-query behaviour).
+    rid = _titleless_paper(
+        store,
+        slug="scanpast",
+        n=0x103,
+        title="",
+        chunks=(
+            "Preliminary Notes And Acknowledgements Section",
+            "Continuous deformations in random networks",
+        ),
+    )
+    title = "Continuous deformations in random networks"
+    mapping: dict[str, dict[str, Any] | None] = {
+        "Preliminary Notes And Acknowledgements Section": None,
+        title: {
+            "title": title,
+            "authors": [{"name": "Thorpe, M"}],
+            "year": None,
+            "doi": "10.1016/scanpast",
+        },
+    }
+    out = resolve_triage(
+        store, apply=True, crossref_fn=_no_call, s2_fn=_fake_s2_by_query(mapping)
+    )
+    r = _verdict(out, rid)
+    assert r.verdict == "auto" and r.doi == "10.1016/scanpast"
+
+
+def test_widened_selection_reaches_untagged_titleless(store: Store) -> None:
+    # The core gap: a chunked paper with an empty title but NO needs-triage tag
+    # (what the dedup-split fix mints) must now be in the resolver's cohort.
+    untagged = _titleless_paper(store, slug="untag", n=0x201, title="", chunks=("x",))
+    tagged = _titleless_paper(
+        store, slug="tag", n=0x202, title="", chunks=("y",), tag=True
+    )
+    titled = _titleless_paper(
+        store, slug="hastitle", n=0x203, title="A Perfectly Good Title", chunks=("z",)
+    )
+    ids = {r.id for r in _triage_refs(store, None)}
+    assert untagged in ids  # widened selection now reaches it
+    assert tagged in ids  # old cohort still covered
+    assert titled not in ids  # a populated title is never re-resolved

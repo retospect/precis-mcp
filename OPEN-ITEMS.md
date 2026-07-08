@@ -1033,11 +1033,19 @@ dedup-hit branches). Residuals parked (all harvest-eligible, Opus-authored):
    CrossRef by DOI (the 32); Track 2 S2-title-searches with chunk-0's first line
    and **auto-applies only at similarity ≥ 0.85 + compatible year + recovered-DOI
    not already owned**, everything else → `needs-triage` (human). Reversible,
-   source-stamped, dry-run-previewable. Work: (a) dry-run over the 187 → verdict
-   distribution, (b) gold-check the `auto` set, (c) `--apply`, (d) **schedule it**
+   source-stamped, dry-run-previewable. **Progress (SHIPPED, 2026-07-08):**
+   `resolve-metadata` now (i) scans the **first ~4 body chunks** for the title
+   query — not just chunk-0's first line, which is a masthead/received-line/bare
+   author list ~half the time — filtering body furniture + stripping markdown,
+   trying each candidate and keeping the best-similarity S2 hit (recall up,
+   precision unchanged: the 0.85 gate still guards every write); and (ii) its
+   `_triage_refs` cohort is **widened** to include any titleless chunked paper,
+   not just `needs-triage`-tagged ones (the 135 untagged of 187 were previously
+   unreachable). **Remaining:** (a) run the dry-run over the cohort → verdict
+   distribution + gold-check the `auto` set, then `--apply`; (b) **schedule it**
    (manual-only today) into `paper_reconcile`/hygiene so titleless refs self-heal.
    The shipped sidecar fold means the 187 is a fixed backlog, not growing. Owner:
-   `ingest/metadata_resolve.py`, `cli/fix_metadata.py`. Severity: feature.
+   `ingest/metadata_resolve.py`, `cli/resolve_metadata.py`. Severity: feature.
 3. **Verify the 7 existing orphans self-heal post-deploy.** 50698, 50754, 49915,
    50223, 50227, 50335, 49503 are already split (content under duplicate refs).
    They should self-heal when `requeue_stranded_fetches` re-fetches them at >48h

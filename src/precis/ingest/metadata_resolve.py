@@ -114,22 +114,96 @@ def _years_compatible(a: int | None, b: int | None) -> bool:
     return abs(int(a) - int(b)) <= 1
 
 
-def _query_title(store: Store, ref: Any) -> str | None:
-    """A title to search S2 with: the stored title if it's usable, else
-    the first substantial line of the first body chunk."""
+# How many leading body chunks to scan for a title candidate, and how many
+# candidates to hand the S2 title track. Chunk 0's first line is often a
+# masthead / received-line / bare author list (see the resolve-metadata
+# confidence probe, 2026-07-06), hiding the real title one chunk down — so we
+# scan a few and try each. The Track-2 similarity gate still guards every
+# write, so extra candidates only add recall, never a wrong auto-title.
+_TITLE_SCAN_CHUNKS = 4
+_MAX_TITLE_CANDIDATES = 4
+
+# Body-text furniture that looks title-length but never is a title. Distinct
+# from ``is_garbage_title`` (which targets PDF ``/Title`` *embedded-metadata*
+# junk — filenames, "No Job Name"): these are lines that show up in the body
+# text of the first page — journal mastheads, submission dates, availability
+# notices, DOIs/URLs, copyright, section labels.
+_FURNITURE_LINE_RES = [
+    re.compile(r"^(received|accepted|revised|published|submitted)\b", re.I),
+    re.compile(r"^available\s+online\b", re.I),
+    re.compile(r"^contents\s+lists?\s+available\b", re.I),
+    re.compile(r"^downloaded\s+from\b", re.I),
+    re.compile(r"^(issn|isbn|doi|pmid|pmcid)\b[:\s]", re.I),
+    re.compile(r"^https?://|doi\.org/", re.I),
+    re.compile(r"^(vol\.?|volume|issue|no\.?)\s*\d", re.I),
+    re.compile(r"^(journal|proceedings|transactions|bulletin)\s+of\b", re.I),
+    re.compile(r"^\W*(©|copyright)\b", re.I),
+    re.compile(r"^\s*(abstract|keywords?|introduction)\s*$", re.I),
+]
+
+# Super/subscript spans carry footnote/affiliation markers, never title text —
+# strip the whole span (tag *and* content) so "Retrievers<sup>1</sup>" doesn't
+# leave a dangling "Retrievers1".
+_SUPSUB_RE = re.compile(r"<(sup|sub)\b[^>]*>.*?</\1>", re.I | re.S)
+# Remaining markdown / inline-HTML artifacts (``**bold**``, other tags,
+# ``[..](#anchor)``) — stripped before a line is judged as a title candidate so
+# they don't inflate length or poison the query.
+_MD_ARTIFACT_RE = re.compile(r"\*\*|__|<[^>]+>|\]\([^)]*\)|[\[\]]|[*_^~]")
+
+
+def _clean_title_line(raw: str) -> str:
+    """Strip markdown/HTML artifacts, collapse whitespace, and drop a trailing
+    footnote/superscript digit a header line often carries."""
+    s = _SUPSUB_RE.sub("", raw)
+    s = _MD_ARTIFACT_RE.sub("", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"\s+\d+$", "", s).strip()
+    return s
+
+
+def _is_title_like(line: str) -> bool:
+    """True if ``line`` could plausibly be a paper title — length-bounded, has
+    real words, isn't embedded-metadata junk or first-page furniture."""
+    if not (12 <= len(line) <= 250):
+        return False
+    if is_garbage_title(line) or is_pii(line):
+        return False
+    if any(p.search(line) for p in _FURNITURE_LINE_RES):
+        return False
+    letters = sum(c.isalpha() for c in line)
+    # A title is mostly letters; reject mostly-digit/punct lines (page refs,
+    # ID strings, equation fragments).
+    return letters >= 0.5 * len(line)
+
+
+def _title_candidates(store: Store, ref: Any) -> list[str]:
+    """Ordered title-query candidates for the S2 title track.
+
+    The stored title wins if usable. Otherwise scan the first
+    ``_TITLE_SCAN_CHUNKS`` body chunks — not just chunk 0's first line — and
+    collect title-like lines in document order (the title usually precedes the
+    authors/abstract, so first-seen is the best guess; the Track-2 similarity
+    gate resolves ambiguity by keeping the best-matching candidate).
+    """
     t = (ref.title or "").strip()
     if t and not is_garbage_title(t) and not is_pii(t):
-        return t
-    block = store.get_block(ref.id, pos=0)
-    if block is None or not block.text:
-        return None
-    for raw in block.text.splitlines():
-        line = raw.strip()
-        # Strip trailing footnote/superscript digits a header often carries.
-        line = re.sub(r"\s+\d+$", "", line).strip()
-        if len(line) >= 12 and not is_garbage_title(line):
-            return line
-    return None
+        return [t]
+    blocks = store.list_blocks_for_ref(ref.id, pos_range=(0, _TITLE_SCAN_CHUNKS - 1))
+    seen: set[str] = set()
+    cands: list[str] = []
+    for block in blocks:
+        if not block.text:
+            continue
+        for raw in block.text.splitlines():
+            line = _clean_title_line(raw)
+            key = line.lower()
+            if key in seen or not _is_title_like(line):
+                continue
+            seen.add(key)
+            cands.append(line)
+            if len(cands) >= _MAX_TITLE_CANDIDATES:
+                return cands
+    return cands
 
 
 def _similarity(store: Store, a: str, b: str) -> float:
@@ -195,18 +269,32 @@ def _resolve_one(
         return res
 
     # ── Track 2: title search recovers a DOI ─────────────────────────
-    qtitle = _query_title(store, ref)
-    if not qtitle:
+    # Try each candidate title from the first few chunks; keep the S2 hit whose
+    # returned title best matches its query. Extra candidates only raise recall
+    # — the similarity gate below still guards every write. Early-exit once a
+    # candidate already clears the auto bar so we don't spend needless lookups.
+    candidates = _title_candidates(store, ref)
+    if not candidates:
         return Resolution(rid, "miss", "title", "no-query-title")
-    cand = _bounded(s2_fn, qtitle, s2_api_key, timeout=call_timeout)
-    if cand is _TIMED_OUT:
-        return Resolution(rid, "miss", "title", "s2-timeout")
-    if cand is None or not (cand.get("doi") or cand.get("arxiv_id")):
+    best: Resolution | None = None
+    for qtitle in candidates:
+        cand = _bounded(s2_fn, qtitle, s2_api_key, timeout=call_timeout)
+        if cand is _TIMED_OUT:
+            # Network is slow — return the best so far rather than burn more time.
+            return best or Resolution(rid, "miss", "title", "s2-timeout")
+        if cand is None or not (cand.get("doi") or cand.get("arxiv_id")):
+            continue
+        res = _from_meta(rid, cand, track="title")
+        if not res.title or is_garbage_title(res.title):
+            continue
+        res.sim = _similarity(store, qtitle, res.title)
+        if best is None or res.sim > best.sim:
+            best = res
+        if best.sim >= _AUTO_SIM:
+            break
+    if best is None:
         return Resolution(rid, "miss", "title", "s2-miss")
-    res = _from_meta(rid, cand, track="title")
-    if not res.title or is_garbage_title(res.title):
-        return Resolution(rid, "discard", "title", "s2-title-junk")
-    res.sim = _similarity(store, qtitle, res.title)
+    res = best
     years_ok = _years_compatible(ref.year, res.year)
     if res.sim < _REVIEW_SIM:
         res.verdict, res.reason = "miss", "below-review-threshold"
@@ -276,13 +364,25 @@ def apply_resolution(
 
 
 def _triage_refs(store: Store, limit: int | None) -> list[Any]:
+    # Two cohorts, unioned: (a) papers explicitly tagged ``needs-triage`` (the
+    # remediate path flags empty-title / empty-author imports), and (b) any
+    # ingested paper whose ref-level title never got populated — a chunked
+    # paper (``pdf_sha256`` set) with an empty/sentinel title. The dedup-split
+    # fix (c6152950) mints such refs from metadata-poor PDFs and never tags
+    # them, so scoping to the tag alone left them unreachable (135 of 187 on
+    # prod, 2026-07-06). Both cohorts feed the same DOI/title-search resolver.
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT r.ref_id FROM refs r "
-            "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
-            "JOIN tags t ON t.tag_id = rt.tag_id "
-            "WHERE r.kind='paper' AND r.deleted_at IS NULL "
+            "SELECT DISTINCT r.ref_id FROM refs r "
+            "LEFT JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+            "LEFT JOIN tags t ON t.tag_id = rt.tag_id "
             "  AND t.namespace='OPEN' AND t.value='needs-triage' "
+            "WHERE r.kind='paper' AND r.deleted_at IS NULL "
+            "  AND ( t.tag_id IS NOT NULL "
+            "        OR ( r.pdf_sha256 IS NOT NULL "
+            "             AND ( r.title IS NULL OR btrim(r.title) = '' "
+            "                   OR lower(r.title) IN "
+            "                      ('[no metadata]', 'untitled', 'no title') ) ) ) "
             "ORDER BY r.ref_id" + (" LIMIT %s" if limit else ""),
             ((limit,) if limit else ()),
         ).fetchall()
