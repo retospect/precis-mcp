@@ -168,6 +168,30 @@ def test_edit_table_rederives_and_rejects_text(draft: DraftHandler, hub: Hub) ->
     assert hub.store.draft_chunk_meta(tc.handle)["table"]["rows"] == [[1], [2], [3]]
 
 
+def test_edit_table_clears_caption_from_data_and_markdown(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # An explicit empty caption clears the legend from BOTH meta and the
+    # derived markdown — no stranded ``**…**`` lead line (one-source, no drift).
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    draft.put(
+        id="d",
+        chunk_kind="table",
+        table={"header": ["x"], "rows": [[1]]},
+        caption="Legend",
+        at={"last": True},
+    )
+    tc = _table_chunk(hub, "d")
+    assert hub.store.get_draft_chunk(tc.dc).text.startswith("**Legend**\n")
+
+    draft.edit(id=tc.dc, table={"header": ["x"], "rows": [[1]]}, caption="")
+    chunk = hub.store.get_draft_chunk(tc.dc)
+    assert not chunk.text.startswith("**")  # legend line dropped
+    assert chunk.text.startswith("| x |")
+    assert hub.store.draft_chunk_meta(tc.handle)["caption"] == ""
+
+
 def test_edit_table_on_non_table_chunk_errors(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="d", title="T", project=proj)

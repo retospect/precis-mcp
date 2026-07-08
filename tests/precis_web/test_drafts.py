@@ -433,6 +433,84 @@ def test_table_renders_as_html_table(draft_client: TestClient) -> None:
     assert "| ID | Title |" not in block
 
 
+def test_table_offers_grid_editor(draft_client: TestClient) -> None:
+    # ADR 0035 §1 — the table block carries the ⊞ grid editor (tableEditor
+    # scope + edit button), the structured-only edit affordance.
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    block = r.text.split('id="c-TBLTBL"', 1)[1].split('x-show="raw"', 1)[0]
+    assert "tableEditor(" in block
+    assert "⊞ edit table" in block
+    # the editor seeds from the canonical data (header names present in x-data)
+    assert '"ID"' in block and '"Title"' in block
+
+
+def test_edit_table_dispatches_structured_edit(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    # The grid editor POSTs JSON; the route resolves the bare handle to dc<id>
+    # and dispatches edit(table=…, caption=…) — single-sourced with MCP/CLI.
+    r = draft_client.post(
+        "/drafts/nt/table",
+        json={
+            "handle": "TBLTBL",
+            "base_sha": "sha0",
+            "header": ["element", "gap_eV"],
+            "rows": [["Si", "1.12"], ["Ge", "0.67"]],
+            "caption": "Band gaps",
+        },
+    )
+    assert r.status_code == 200 and r.json()["ok"] is True
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "edit" and args["kind"] == "draft" and args["id"] == "dc5"
+    assert args["table"]["header"] == ["element", "gap_eV"]
+    # numeric-looking cells coerce to numbers (numerics index); text stays text
+    assert args["table"]["rows"] == [["Si", 1.12], ["Ge", 0.67]]
+    assert args["caption"] == "Band gaps"
+    assert args["base_sha"] == "sha0"
+
+
+def test_edit_table_coerces_only_clean_numbers(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    # Round-trip guard: "007" / "1e3" keep their string form (not mangled to
+    # 7 / 1000.0); a blank cell becomes null; a clean float coerces.
+    draft_client.post(
+        "/drafts/nt/table",
+        json={
+            "handle": "TBLTBL",
+            "header": ["a", "b", "c", "d"],
+            "rows": [["007", "1e3", "", "3.5"]],
+            "caption": "",
+        },
+    )
+    _, args = draft_runtime.calls[-1]
+    assert args["table"]["rows"] == [["007", "1e3", None, 3.5]]
+
+
+def test_edit_table_bad_block_404(draft_client: TestClient) -> None:
+    r = draft_client.post(
+        "/drafts/nt/table",
+        json={"handle": "NOPExx", "header": ["a"], "rows": [["1"]]},
+    )
+    assert r.status_code == 404
+
+
+def test_edit_table_surfaces_linter_error_422(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    # A handler-rejected table (ragged / empty header) bounces 422 with the
+    # linter message so the grid keeps the box open. Force the edit verb to
+    # fail via the fake's error_verbs hook.
+    draft_runtime.error_verbs.add("edit")
+    r = draft_client.post(
+        "/drafts/nt/table",
+        json={"handle": "TBLTBL", "header": ["a", "b"], "rows": [["1"]]},
+    )
+    assert r.status_code == 422
+    assert r.json()["ok"] is False and "rejected by handler" in r.json()["error"]
+
+
 def test_reader_shows_all_clear_note(draft_client: TestClient) -> None:
     # Both fixture figures are cleared (original + granted third-party), so
     # the end-of-document all-clear note shows and no warning banner.

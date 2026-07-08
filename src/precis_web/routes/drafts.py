@@ -87,7 +87,7 @@ from precis.utils.authors import (
 )
 from precis.utils.embed_query import embed_query
 from precis.utils.figure_clearance import draft_figure_clearance, figure_status
-from precis.utils.table_data import table_payload
+from precis.utils.table_data import Scalar, table_payload
 from precis_web.deps import (
     await_dispatch,
     get_runtime,
@@ -1984,6 +1984,92 @@ async def edit_text_inline(
         stale = "changed since you read" in body
         return JSONResponse(
             {"ok": False, "error": body}, status_code=409 if stale else 400
+        )
+    warnings = [ln.strip() for ln in body.splitlines() if ln.strip().startswith("⚠")]
+    return JSONResponse({"ok": True, "warnings": warnings})
+
+
+def _coerce_cell(value: Any) -> Scalar:
+    """Coerce one grid-editor cell to the JSON scalar stored in ``meta.table``.
+
+    The browser grid posts every cell as a string. Recover typed numbers —
+    so they land in the ``numerics`` index and export as numbers, not quoted
+    text — behind a round-trip guard: only coerce when ``str(n)`` reproduces
+    the trimmed input exactly, so ``"007"`` / ``"1e3"`` / ``"1.20"`` stay
+    verbatim strings rather than being silently renormalised. A blank cell is
+    a genuinely empty value → ``None`` (which ``normalize_table`` accepts and
+    the markdown renders as an empty cell)."""
+    if not isinstance(value, str):
+        return value  # client already sent a typed scalar — trust it
+    s = value.strip()
+    if s == "":
+        return None
+    try:
+        if str(int(s)) == s:
+            return int(s)
+    except ValueError:
+        pass
+    try:
+        if str(float(s)) == s:
+            return float(s)
+    except ValueError:
+        pass
+    return value
+
+
+@router.post("/drafts/{ident}/table")
+async def edit_table_inline(request: Request, ident: str) -> JSONResponse:
+    """Direct (non-LLM) structured edit of a data-table chunk — the grid
+    editor's save (ADR 0035 §1). The browser posts JSON
+    ``{handle, base_sha, header:[…], rows:[[…]], caption}``; cells arrive as
+    strings and are coerced back to JSON scalars (numbers stay numbers). The
+    write goes through the ``edit`` verb so the strict ``normalize_table``
+    gate + link-sync stay single-sourced with the MCP/CLI path — a
+    ragged/empty-header table bounces 422 with the linter's own message so the
+    author fixes it in place, and a stale ``base_sha`` yields 409.
+
+    Structured-only by design: the table's markdown text is *derived*, so
+    there is no free-text edit path (the inline text editor excludes tables).
+    Editing a table that predates ``meta.table`` (a Marker/LaTeX import)
+    through this route rewrites it into the canonical structured form."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    handle = str(payload.get("handle") or "")
+    addr = _chunk_addr(store, handle)
+    if addr is None:
+        return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
+    header = payload.get("header") or []
+    rows_in = payload.get("rows") or []
+    if not isinstance(header, list) or not isinstance(rows_in, list):
+        return JSONResponse(
+            {"ok": False, "error": "header and rows must be lists"}, status_code=422
+        )
+    rows = [
+        [_coerce_cell(c) for c in row] if isinstance(row, list) else row
+        for row in rows_in
+    ]
+    args: dict[str, Any] = {
+        "kind": "draft",
+        "id": addr,
+        "table": {"header": [str(h) for h in header], "rows": rows},
+        "caption": str(payload.get("caption") or ""),
+    }
+    base_sha = str(payload.get("base_sha") or "").strip()
+    if base_sha:
+        args["base_sha"] = base_sha
+    body, is_error = await await_dispatch(request, "edit", args)
+    if is_error:
+        stale = "changed since you read" in body
+        return JSONResponse(
+            {"ok": False, "error": body}, status_code=409 if stale else 422
         )
     warnings = [ln.strip() for ln in body.splitlines() if ln.strip().startswith("⚠")]
     return JSONResponse({"ok": True, "warnings": warnings})

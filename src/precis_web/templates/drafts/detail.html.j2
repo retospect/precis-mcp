@@ -895,6 +895,60 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
   };
 }
 
+// Structured grid editor for a chunk_kind='table' block (ADR 0035 §1). The
+// derived pipe-markdown text has no free-text edit path, so tables are edited
+// as {header, rows, caption} and POSTed to /drafts/<id>/table. `seed` is the
+// recovered table ({header, rows, caption}); on save we dispatch the same
+// `draft:edited` event the text editor uses, so the doc re-hydrates the row in
+// place with the freshly re-derived <table>.
+function tableEditor(ident, handle, baseSha, seed) {
+  return {
+    ted: false, saving: false, err: '',
+    hdr: [], rows: [], cap: '',
+    open() {
+      // Deep-copy the seed so Cancel restores cleanly and edits stay local
+      // until Save. Coerce to strings — the grid binds text inputs; the server
+      // recovers typed numbers on save.
+      this.hdr = (seed.header || []).map((h) => String(h));
+      this.rows = (seed.rows || []).map((r) => r.map((c) => (c == null ? '' : String(c))));
+      this.cap = seed.caption ? String(seed.caption) : '';
+      if (this.hdr.length === 0) this.hdr = ['Column 1'];   // never an empty header
+      this.err = ''; this.saving = false; this.ted = true;
+    },
+    cancel() { this.ted = false; this.err = ''; this.saving = false; },
+    addCol() { this.hdr.push('Column ' + (this.hdr.length + 1)); this.rows.forEach((r) => r.push('')); },
+    delCol(ci) {
+      if (this.hdr.length <= 1) return;   // keep at least one column (non-empty header)
+      this.hdr.splice(ci, 1); this.rows.forEach((r) => r.splice(ci, 1));
+    },
+    addRow() { this.rows.push(this.hdr.map(() => '')); },
+    delRow(ri) { this.rows.splice(ri, 1); },
+    async save() {
+      if (this.saving) return;
+      this.saving = true; this.err = '';
+      try {
+        const res = await fetch(`/drafts/${ident}/table`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ handle, base_sha: baseSha, header: this.hdr, rows: this.rows, caption: this.cap }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok) {
+          this.ted = false; this.saving = false;
+          window.dispatchEvent(new CustomEvent('draft:edited', {
+            detail: { handle, warnings: d.warnings || [] },
+          }));
+        } else {
+          // 422 (ragged / empty header) or 409 (stale): keep the grid open with
+          // the linter's own message so the author fixes it in place.
+          this.err = d.error || ('save failed (' + res.status + ')');
+          this.saving = false;
+        }
+      } catch (e) { this.err = 'network error — not saved'; this.saving = false; }
+    },
+  };
+}
+
 function draftDoc(ident) {
   const key = 'draft-collapsed:' + ident;
   return {

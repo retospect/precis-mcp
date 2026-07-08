@@ -1447,12 +1447,20 @@ class DraftHandler(Handler):
                 "this table chunk has no stored data — pass table={header, rows}",
                 next="edit(kind='draft', id='dc<chunk_id>', table={'header': […], 'rows': […]})",
             )
-        cap = caption.strip() if caption else cur.get("caption")
-        cap = cap or None
+        # Caption: an explicit string (even "") replaces the legend; None
+        # keeps the stored one. Derive the markdown from the SAME resolved
+        # caption we persist, so clearing a caption drops the ``**…**`` lead
+        # line instead of leaving it stranded in the derived text (one-source,
+        # no drift — the empty-string clear used to zero meta.caption while the
+        # markdown kept the old legend).
+        if caption is not None:
+            cap = caption.strip() or None
+        else:
+            cap = cur.get("caption") or None
         md = table_to_markdown(norm, caption=cap)
         patch: dict[str, Any] = {"table": norm}
         if caption is not None:
-            patch["caption"] = caption.strip()
+            patch["caption"] = cap or ""
         if regen is not None:
             patch["regen"] = regen
         c = self.store.edit_text(handle, md, base_sha=base_sha, meta_patch=patch)

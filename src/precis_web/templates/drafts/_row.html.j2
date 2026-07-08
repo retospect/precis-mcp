@@ -206,37 +206,113 @@
       {% endif %}
     </div>
     {% elif r.is_table %}
-    {# ADR 0035 §1 — data table: render meta.table as a real <table> in body
-       view; summary / keywords keep their one-line projections. Falls back
-       to the raw markdown if the table can't be recovered. #}
+    {# ADR 0035 §1 — data table. Body view renders meta.table as a real
+       <table>; the ⊞ grid editor (tableEditor) swaps in for structured edits
+       — add/remove rows + columns, rename headers, edit the caption — that
+       POST /drafts/<id>/table (structured-only: the derived markdown text has
+       no free-text edit path). Summary / keywords keep their one-line
+       projections. Falls back to raw markdown if the table can't be recovered
+       (a Marker/LaTeX import) — the editor still opens a starter grid so it
+       can be rewritten into the canonical structured form. #}
+    {% set _seed = r.table or {'header': ['Column 1', 'Column 2'], 'rows': [], 'caption': none} %}
     <div x-show="view === 'body'">
-      {% if r.table %}
-      <div class="overflow-x-auto">
-        <table class="w-full border-collapse text-sm">
-          {% if r.table.caption %}
-          <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ r.table.caption | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</caption>
+      <div x-data='tableEditor({{ ref.ident | tojson }}, {{ r.handle | tojson }}, {{ (r.content_sha or "") | tojson }}, {{ _seed | tojson }})'>
+        {# ── rendered <table> (read-only) ─────────────────────────────── #}
+        <div x-show="!ted">
+          {% if r.table %}
+          <div class="overflow-x-auto">
+            <table class="w-full border-collapse text-sm">
+              {% if r.table.caption %}
+              <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ r.table.caption | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</caption>
+              {% endif %}
+              <thead>
+                <tr>
+                  {% for h in r.table.header %}
+                  <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</th>
+                  {% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in r.table.rows %}
+                <tr class="even:bg-slate-50">
+                  {% for cell in row %}
+                  <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</td>
+                  {% endfor %}
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</p>
           {% endif %}
-          <thead>
-            <tr>
-              {% for h in r.table.header %}
-              <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</th>
-              {% endfor %}
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in r.table.rows %}
-            <tr class="even:bg-slate-50">
-              {% for cell in row %}
-              <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</td>
-              {% endfor %}
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+          <div class="mt-1">
+            <button type="button" @click="open()"
+                    class="text-[10px] text-slate-400 hover:text-sky-600"
+                    title="edit this table — add/remove rows and columns, rename headers">⊞ edit table</button>
+          </div>
+        </div>
+        {# ── grid editor (structured) ─────────────────────────────────── #}
+        <div x-show="ted" x-cloak class="space-y-2 rounded border border-slate-200 bg-slate-50 p-2">
+          <label class="block">
+            <span class="text-[9px] uppercase tracking-wide text-slate-500">Caption</span>
+            <input x-model="cap" placeholder="optional table legend"
+                   class="w-full rounded border border-slate-200 bg-white px-1.5 py-0.5 text-sm" />
+          </label>
+          <div class="overflow-x-auto">
+            <table class="border-collapse text-sm">
+              <thead>
+                <tr>
+                  <template x-for="(h, ci) in hdr" :key="ci">
+                    <th class="p-0.5 align-bottom">
+                      <div class="flex flex-col gap-0.5">
+                        <button type="button" @click="delCol(ci)" x-show="hdr.length > 1"
+                                class="self-end text-[9px] text-slate-300 hover:text-rose-600"
+                                title="delete this column">✕ col</button>
+                        <input x-model="hdr[ci]"
+                               class="w-28 rounded border border-slate-300 bg-white px-1 py-0.5 font-semibold" />
+                      </div>
+                    </th>
+                  </template>
+                  <th class="p-0.5 align-bottom">
+                    <button type="button" @click="addCol()"
+                            class="rounded border border-dashed border-slate-300 px-1 py-0.5 text-[10px] text-slate-500 hover:text-emerald-600"
+                            title="add a column">＋ col</button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(row, ri) in rows" :key="ri">
+                  <tr>
+                    <template x-for="(cell, ci) in row" :key="ci">
+                      <td class="p-0.5">
+                        <input x-model="rows[ri][ci]"
+                               class="w-28 rounded border border-slate-200 bg-white px-1 py-0.5" />
+                      </td>
+                    </template>
+                    <td class="p-0.5 align-middle">
+                      <button type="button" @click="delRow(ri)"
+                              class="text-[10px] text-slate-300 hover:text-rose-600"
+                              title="delete this row">✕</button>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+          <div class="flex items-center gap-2">
+            <button type="button" @click="save()" :disabled="saving"
+                    class="rounded bg-violet-600 px-2 py-0.5 text-[11px] text-white hover:bg-violet-700 disabled:opacity-50"
+                    x-text="saving ? 'saving…' : 'save'"></button>
+            <button type="button" @click="addRow()"
+                    class="text-[11px] text-slate-500 hover:text-emerald-600"
+                    title="add a row">＋ row</button>
+            <button type="button" @click="cancel()"
+                    class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+            <span x-show="err" x-cloak x-text="err" class="text-[11px] text-rose-600"></span>
+          </div>
+        </div>
       </div>
-      {% else %}
-      <p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</p>
-      {% endif %}
     </div>
     <p x-show="view === 'summary'" x-cloak class="text-sm italic text-slate-600 break-words">{{ r.summary }}</p>
     <p x-show="view === 'keywords'" x-cloak class="text-xs font-mono text-slate-500 break-words">{{ r.keywords }}</p>
