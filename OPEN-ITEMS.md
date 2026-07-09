@@ -21,25 +21,17 @@ what's still open.
 
 - **Status**: `deferred` (design captured, not sliced) —
   **Severity**: `feature` — **Owner**: `handlers/job.py` +
-  `workers/dispatch.py` + `utils/handle_registry.py` + a new
-  context-assembly layer; router touches ADR 0046 / `utils/claude_agent.py`.
-- **What**: two co-dependent pieces on the `kind='job'` substrate —
-  **(1)** per-turn routing as *delegate-on-confidence* (the driver, by
-  default Opus, continues the thread and assigns helper models
-  directly; triage *is* briefing; helpers evaluated by the parent next
-  turn via their surfaced return; driver-descent is audit-sampled), and
-  **(2)** a stateful **context DSL** (ADR 0036 handle grammar +
-  `:+/:s/:k/:-` fidelity suffix, live sticky set, warn-then-demote
-  ladder, receipt-default collapse where the store is the collapse
-  buffer). Taxonomy: Followup / Call / Spawn (rename "subtask" — it
-  collides with the todo hierarchy level).
+  `workers/dispatch.py` + `utils/handle_registry.py` +
+  `utils/prompt/` (assembler) + a scheduler affinity layer; router
+  touches ADR 0046 / `utils/claude_agent.py`.
 - **Design of record**:
-  [`docs/proposals/turn-routing-and-context-dsl.md`](docs/proposals/turn-routing-and-context-dsl.md)
-  (WIP — carries the open issues: unproven router calibration → ship
-  shadow-mode first; silent-bad delegation; latency asymmetry;
-  **universal short codes are a hard prerequisite**; demotion constants
-  unTuned; the deferred Lisp-like transactional-subtree/undo-stack
-  idea). First slice = persist turn-as-job + shadow router.
+  [`docs/proposals/turn-routing-and-context-dsl.md`](docs/proposals/turn-routing-and-context-dsl.md).
+  Every turn is a `kind='job'`; Part 0 = thread persona + cache-ordering
+  gradient + affinity scheduling; Part 1 = delegate-on-confidence
+  routing (Opus drives, assigns helpers); Part 2 = the stateful context
+  DSL (ADR 0036 handles + fidelity ladder, receipt-default collapse).
+  Taxonomy: Followup / Call / Spawn. First slice = persist turn-as-job +
+  shadow router.
 
 ## 🟠 Planner "new writing task" wizard — don't auto-dispatch on create (2026-07-07)
 

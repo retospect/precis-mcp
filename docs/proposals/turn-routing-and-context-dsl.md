@@ -1,18 +1,25 @@
 ---
-status: draft (WIP — design conversation, not yet sliced)
-title: Turn-as-job routing (delegate-on-confidence) + a stateful context DSL
+status: draft (WIP — design conversation; decisions recorded in ADR 0051)
+title: Turn-as-job routing (delegate-on-confidence) + context curation
 ---
 
-# Turn-as-job routing + a stateful context DSL
+# Turn-as-job routing + context curation
 
-> **WIP.** This is a captured design conversation, not a committed
-> plan. The shape has stabilized enough to write down; the open
-> issues below are real and unresolved. Two parts that turn out to be
-> co-dependent: **(1)** how a turn is routed across model tiers, and
-> **(2)** how the model curates its own context window. Both ride the
-> existing `kind='job'` substrate and the ADR 0036 handle grammar —
-> almost no new mechanism, mostly a surface syntax over primitives we
-> already have.
+> **WIP design conversation.** The settled decisions are recorded in
+> [ADR 0051](../decisions/0051-turn-taking-persona-threads-and-blackboard-convergence.md);
+> this doc keeps the fuller reasoning and the still-open issues. Parts
+> that turn out to be co-dependent: **(0)** who the thread *is* (persona)
+> and how its context is ordered for the cache, **(1)** how a turn is
+> routed across model tiers, and **(2)** how the model curates its own
+> context window. All ride the existing `kind='job'` substrate and the
+> ADR 0036 handle grammar — mostly composition of primitives we already
+> have, plus a small tool-call surface.
+>
+> **Note (2026-07-09):** the inline context-DSL framing below (magic-text
+> `pc1234:+` ops) is **superseded by ADR 0051 §6** — curation is now
+> *structured tool calls* (`resticky`, `spawn`), not prose syntax. The
+> `:±` grammar is retained here only as shorthand for the *fidelity
+> levels* (full/summary/keywords/drop); it is not a wire format.
 
 ## Motivation / why
 
@@ -35,7 +42,111 @@ interactive web, reviewers, planner — under one substrate, one router,
 one context DSL. Persisting every turn is also what makes the routing
 tunable: the stored prompts/routes/outcomes are the training corpus.
 
+## Part 0 — thread persona + the cache-ordering gradient
+
+Two things ride *ahead* of routing and the DSL, because they shape the
+prompt every turn assembles: **who the thread is** (a pinned persona)
+and **in what order its blocks are laid down** (so the prompt cache
+stays hot). Both are ADR 0038 assembler concerns — this is the layer
+`workers/planner_prompt.py` already half-implements
+(`_PINNED_SKILL_ID` at the head of `_CACHED_MODULES`; the
+`has_review`-gated `_m_reviewer_persona`), generalized.
+
+### The persona is a pinned charter, first block
+
+Each **thread type** (`write-document`, `dream`, `review`, `triage`,
+…) is fronted by a persona skill — "you are a document-writer; you are
+doing X" — pinned as the leading block and **exempt from the demotion
+clock** (Part 2). It is the finer-grained successor to the coarse
+`Profile` enum (`AGENT`/`HELPER`): a registry `thread_type →
+persona_skill_id`, resolved once per thread and cached.
+
+The persona is a *floor*, not a sticky item: it never ages out, never
+demotes, and its cache segment only changes when the thread type does
+(i.e. never, within a thread). Everything else in the window rides the
+fidelity ladder; the persona sits under it.
+
+### The ordering gradient — stable before volatile
+
+Prompt caching is a **strict prefix match**: only a contiguous run
+from position 0 is reused. So block order *is* the cache policy. Lay
+blocks down in a monotonic volatility gradient — never a
+more-volatile block before a less-volatile one, or you truncate every
+downstream prefix:
+
+1. **Immutable-within-session** — the persona + skills, the
+   fleet-invariant mechanics (tools/kinds/skill-menu/MCP contract),
+   **and static resources**: papers, paper chunks, held figures. None of
+   these can change within a session → the deepest cache prefix.
+2. **Static-ish snapshots** — indexes, search results, glossaries. These
+   *can* change, but only if re-run: treat a fetched search result as a
+   **frozen snapshot** (cacheable); **re-running is the explicit
+   invalidation act**. This is also how the liveness/cache tension
+   resolves — snapshot the things that don't have to be live, live-resolve
+   only what must be (Part 2).
+3. **Transient memories** — the thread's self-authored worldview
+   carryover (Part 2), TTL'd; re-surfaced from the store rather than kept
+   cache-warm.
+4. **Active work** — the tail: the brief, ancestry, `doc_context`,
+   children's returns, the sibling roster. Volatile *and* attention-hot
+   (front-and-tail placement counteracts lost-in-the-middle — a
+   mid-context block at full fidelity is not necessarily *attended* to,
+   so put the live work at the end).
+
+The subtlety for Part 2: **decay is a cache adversary.** If fidelity
+flips every turn, the tier-3 segment churns and every downstream prefix
+resets. Batch evictions to a cache-break event — only re-render the
+sticky region when it *actually* changes, in a burst — so most turns
+keep tiers 1–3 stable and only append a fresh tail.
+
+### The fleet-shared vs. lineage-hot tradeoff (→ scheduling)
+
+Here is the crux the persona-first instinct collides with. Because
+caching is prefix-only:
+
+- **Persona at position 0** → each thread type is its own cache
+  island; **cross-type sharing is exactly zero** (the shared mechanics
+  now sit *behind* a per-type prefix and can't be reused across
+  types). Strong personality framing (the model attends hardest to the
+  head); worst cross-fleet economics.
+- **Mechanics at position 0, persona second** → the big fleet-invariant
+  prefix (~5k tokens of tools/kinds/skill-menu) is hot across *every*
+  turn fleetwide; the persona forks a smaller tail that's hot
+  per-lineage. Best economics for an interleaved, heterogeneous fleet;
+  the persona is no longer the literal first token.
+
+You cannot have both from ordering alone — that is the real tradeoff:
+**one hot fleet-wide prefix, or one hot prefix per thread-type
+lineage.**
+
+**Scheduling is what rescues persona-first.** If the dispatcher
+*batches ready turns by cache affinity* — bunch all the same-persona
+(and, within that, same-lineage) turns and run them consecutively,
+then move to the next batch — each per-type island stays hot for the
+duration of its batch, so persona-first stops costing sharing *in
+practice*. This trades a little fairness/latency (a turn waits for its
+batch) for hit-rate. The pressure is **provider-dependent**:
+
+- **Anthropic (Opus/Sonnet)** caches many prefixes with a ~5-min TTL,
+  so mild interleaving survives — batching is an optimization.
+- **Local llama.cpp** (the litellm helper alias) holds ~one hot KV
+  slot, so a prefix switch is a cold reload — batching by affinity is
+  close to mandatory there.
+
+Decision leaning (per this session): **persona-first + affinity-batched
+scheduling**, accepting per-lineage islands, because the fleet does
+long runs of same-type work and the local models punish prefix
+switching hardest. Revisit if interactive/interleaved load dominates.
+
 ## Part 1 — routing: the driver continues the thread
+
+> **Tiers (current vs. future).** Concretely today there are **two**
+> tiers: **Opus** drives, **Sonnet** helps (map "the strongest model"
+> / "Haiku" in the text below onto Opus/Sonnet for now). The
+> high/medium/low tier *vocabulary* — and any third cheap tier — is a
+> later refactor once the two-tier loop is proven; the routing shape
+> (driver assigns helpers directly, evaluation lives above the work)
+> is tier-count-agnostic.
 
 ### The core inversion: delegate-on-confidence, not escalate-on-failure
 
@@ -99,10 +210,25 @@ next turn.
 
 ## Part 2 — a stateful context DSL
 
-The model is the operator of its own window — a small register machine
-over the context set. MCP does the document mutations; the rest of the
-turn's output carries **context ops** that mutate a per-thread sticky
-set (state, persisted on the thread; survives until changed).
+The model is the operator of its own window. It curates the per-thread
+sticky set via **structured MCP tool calls** — *not* an inline
+magic-text DSL (ADR 0051 §6). Tool-calling is on-distribution
+(higher adherence than a novel `pc1234:+` grammar), validated, logged as
+the structured data the routing corpus needs, and a clean trust boundary
+(Injection, below). The surface:
+
+- **`resticky(handles=[…])`** — keep/add the named handles for the next
+  turn and reset their TTL; everything else decays.
+- **fidelity** (full / summary / keywords / drop) is a structured
+  argument, not a `:±` suffix.
+- **delegation** (`spawn(...)` / a synchronous helper call) is likewise
+  a tool call, reusing the `put(kind='todo')` + `requested`→job
+  primitives `plan_tick` already uses.
+
+A bare handle mention in prose may still act as "keep warm" (free — the
+output is scanned for handles regardless), but every *explicit* change
+is structured. The `:±` notation below is retained only as shorthand for
+the fidelity *levels*.
 
 ### Addressing — reuse ADR 0036, add a fidelity suffix
 
@@ -136,31 +262,81 @@ context of the larger plan), and previous job outputs are all
 stickyable the same way. Default: the last *n* jobs stickied
 (input+output), older jobs demoted to summary.
 
-### Demotion — a fidelity ladder with warnings
+### Decay — one TTL, one warn, batched eviction
 
-Full → summary → keywords → gone. Hybrid clock (not a pure global
-timer, which mass-demotes and punishes a chunk you cite every turn):
+Each stickied item has a **TTL** (turns or wallclock) and passes through
+a **single `Warn: will remove` state**, then drops. Eviction is **not**
+run per-item on a clock (that churns the cache, §Part 0) — it is
+**batched to a cache-break event**: let items reach the warn state,
+render the "about to expire" list in the *tail*, let the model
+`resticky` what it wants to keep, then apply all drops in **one** batch
+(one cache break at the earliest dropped position, not one per item).
+Segment order stays stable; TTL is metadata, not a sort key.
 
-- per-item **age** = turns since last touched; a bare mention resets it
-- **warn at N-1, demote at N** (N≈3), rendered inline:
-  `pc1234 [full · demotes next turn]`
-- **budget pressure overrides the clock**: over the token ceiling,
-  demote the oldest immediately regardless of age
-- **dropped items stay marked** so the model can `+` them back
+**Eviction is quality-driven, not cost-driven.** Cached reads bill only
+~10% (Anthropic) / free-but-single-slot (local), so the dollar incentive
+to evict is weak; the real reasons are context *quality*
+(lost-in-the-middle / context rot) and *churn avoidance* (the cache-write
+premium). **LRU-by-usage is rejected**: you cannot measure whether a
+present chunk was used or washed over, so recency ≠ usefulness. The
+model's `resticky` call is the authoritative "still needed" signal
+instead — the model is the oracle of what it actually used.
 
-### Liveness — always live, never snapshot
+### Liveness — live in the tail only
 
-References resolve at render time (live). The sticky *set* is **also
-live** (decision: no snapshot) — working off data that moved on is the
-cardinal sin for a grounding system. Consequences:
+The earlier "sticky set is always live" stance contradicts a stable
+cache prefix: a live handle whose ref is edited changes the rendered
+bytes and busts the whole downstream prefix. Resolution (ADR 0051 §4):
+**live-resolved handles appear only in the active tail; the cached
+prefix holds immutable resources or frozen snapshots.** A soft-deleted
+handle renders `pc1234 [gone]` rather than crashing. The audit/tuning
+log still snapshots the *rendered* prompt at turn time (the set holds
+live pointers; the log holds the immutable render), so liveness never
+corrupts the Part-1 corpus.
 
-- a live handle can be soft-deleted out from under the set → render it
-  `pc1234 [gone]`, don't crash, let the model react
-- **but the audit/tuning log snapshots what was actually rendered** at
-  turn time. The *set* is live pointers; the *log* is the immutable
-  render. Otherwise liveness corrupts the Part-1 tuning corpus (you'd
-  replay a prompt that no longer reproduces). No conflict — the set
-  holds pointers, the log holds the render.
+### Handoff notes — thin, store-first, never load-bearing
+
+Continuity is **store-first, note-second** (decision: ADR 0051 §7). The
+bulk of what a turn knows is reconstructible from durable artifacts
+(plan outline, draft chunks, findings), re-read losslessly each turn, so
+the handoff note is **not a worldview dump** (that is a telephone-game
+ratchet needing a super-capable instance every turn) — it is a **thin
+intent delta carrying handles, not content** (`continue dc2323; next
+check pc998`). It is **never load-bearing**: a turn killed before writing
+it degrades (next turn rebuilds from the store, as `plan_tick` already
+does on exhaustion), it does not lobotomize. Protect the write with a
+**soft-cap handoff reserve** + **incremental checkpointing**. Persisted
+as a `kind='memory'` / `MEM:transient` ref (GC-swept, out of default
+search); two subtypes — **self-handoff** (consume-on-next-own-turn) and
+**directed message** (until recipient reads) — the latter being the
+best-effort sibling mailbox substrate (Part 3).
+
+### Newer decisions folded into ADR 0051 (2026-07-09)
+
+The conversation past the original Parts converged several mechanisms;
+the precise decisions live in the ADR, summarized here so this doc is
+not misleading:
+
+- **Fisheye is the render primitive** (ADR 0051 §6) — two axes: *eyes*
+  (model-placed: big = full, small = TOC-path bookmark, none =
+  collapsible) and *DOI fidelity* (auto, by distance to nearest eye).
+  `get` returns a **neighborhood, never a bare chunk** (`view='fisheye'`:
+  target full + pre/post summary/keywords + ancestor branch), which
+  needs a **derived-compute priority lane** for touched refs.
+- **Curation verbs** = `resticky` (keep) / `close` (actively clear,
+  reversible via handle receipt) / decay (neglect default), on a
+  **big→small→gone** ladder with one warn each; the turn is
+  **curate→work→handoff** (curation is deferred-effect on the next turn).
+- **Budget is not a forcing function** (§5) — the driver right-sizes via
+  eyes; collapse is for *sharpness*, not cost; only the context window +
+  runaway cap are hard.
+- **Plan ≠ dispatchable tree** (§2b) — the plan is an outline artifact on
+  the chunk substrate (rendered whole each turn), distinct from the
+  `kind='todo'` dispatch queue, linked by anchors; this also fixes the
+  runaway planner.
+- **find-Call auto-docks a provenance region** in the parent (§9); the
+  child absorbs the search noise, only the attributed region returns.
+- **The synthesis flow is emergent, not a procedure** (§13).
 
 ### Math — ephemeral by default, promote on cite
 
@@ -274,6 +450,18 @@ bodies.** Same discipline class as the SSRF guard.
 7. **Precise predicate for entry triage** — when does the driver step
    down vs. do it itself? Currently "Opus decides"; a learned
    pre-router is the endpoint but the bootstrap heuristic is TBD.
+8. **Fleet-shared vs. lineage-hot cache is unresolved policy** (Part
+   0). Persona-first gives per-type islands + zero cross-fleet sharing;
+   mechanics-first gives one fleet-wide hot prefix but demotes the
+   personality framing. The lean is persona-first + affinity-batched
+   scheduling, but the batch policy (bunch size, max wait, fairness vs.
+   hit-rate) is unspecified and provider-asymmetric (Anthropic TTL
+   cache tolerates interleave; local llama.cpp does not).
+9. **Demotion churn is a cache adversary** (Part 0). A per-turn fidelity
+   flip resets the downstream prefix. Batching demotions to a cache
+   boundary is the mitigation, but the batching trigger (only on real
+   change? every N turns?) and its interaction with the warn-at-N-1
+   ladder are unspecified.
 
 ## Ideas / later
 
