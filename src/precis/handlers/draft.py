@@ -642,11 +642,15 @@ class DraftHandler(Handler):
                     next="put(kind='draft', id='nanotrans', chunk_kind='paragraph', text='…', at={'after': 'dc<chunk_id>'})",
                 )
             kind = chunk_kind or "paragraph"
-            # A glossary ``term`` files under an auto-created "Glossary"
-            # heading (the doc's glossary subtree) unless the caller placed
-            # it explicitly.
-            if kind == "term" and at is None:
-                at = {"into": self.store.ensure_glossary_heading(ref.id)}
+            # A registry ``term`` leaf (glossary / parts / components, ADR
+            # 0052) is stamped with its ``meta.registry`` family, gets its
+            # insert-callout frozen if the policy is ``assign="insert"``, and
+            # files under that registry's one home heading unless the caller
+            # placed it explicitly.
+            if kind == "term":
+                meta, term_role = self._prepare_term_meta(ref.id, meta)
+                if at is None:
+                    at = {"into": self.store.ensure_registry_heading(ref.id, term_role)}
             chunks = self.store.add_chunks(
                 ref_id=ref.id,
                 chunk_kind=kind,
@@ -688,6 +692,25 @@ class DraftHandler(Handler):
                 f"linked draft-of project {project_ref_id}"
             )
         )
+
+    def _prepare_term_meta(
+        self, ref_id: int, meta: dict[str, Any] | None
+    ) -> tuple[dict[str, Any], str]:
+        """Stamp a registry ``term`` leaf's ``meta`` and return ``(meta, role)``
+        (ADR 0052 §2/§3). Records the ``meta.registry`` family (defaulting to
+        the glossary) so the projection + reconcile can find it, and freezes a
+        consecutive ``meta.callout`` when the registry's policy is
+        ``assign="insert"`` (a BOM item number, stable under later reorder)."""
+        from precis.draft import registry as _reg
+
+        m = dict(meta or {})
+        role = str(m.get("registry") or _reg.DEFAULT_REGISTRY)
+        m["registry"] = role
+        policy = _reg.policy_for(role)
+        if policy.assign == "insert" and m.get("callout") is None:
+            existing = self.store.registry_callouts(ref_id, role)
+            m["callout"] = _reg.next_insert_callout(existing, policy)
+        return m, role
 
     def _add_figure(
         self,
@@ -868,6 +891,7 @@ class DraftHandler(Handler):
         table: dict[str, Any] | None = None,
         caption: str | None = None,
         regen: dict[str, Any] | None = None,
+        meta: dict[str, Any] | None = None,
         dry_run: bool | str = False,
         **_kw: Any,
     ) -> Response:
@@ -980,6 +1004,13 @@ class DraftHandler(Handler):
             if list_kind == "normal":
                 return Response(body=f"dissolved list {dc} → normal text")
             return Response(body=f"set list {dc} → {list_kind}")
+        if meta is not None:
+            # Patch a registry ``term`` leaf's attribute bag / hover surfaces
+            # in place (ADR 0052): manufacturer / mpn / url / ordering, and the
+            # short / surface_forms surfaces. Metadata-only — no re-embed.
+            _reject_dry_run("meta")
+            c = self.store.set_term_attrs(handle, meta)
+            return Response(body=f"updated term attributes {c.dc}" if c else "updated")
         if word_target is not None:
             # Set/clear a heading section's word limit (proposal writing).
             # ``word_target={'min':200,'max':400}`` sets it; ``{}`` clears.

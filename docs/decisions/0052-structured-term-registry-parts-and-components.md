@@ -1,10 +1,16 @@
 # ADR 0052 — Structured `term` registry: parts, components, and policy-numbered callouts
 
-- **Status**: proposed (2026-07-09) · design conversation captured, not
-  yet sliced. This ADR records the *decisions*; the fuller storage/render
-  discussion lives in
+- **Status**: accepted — **implemented** (2026-07-09). Both sequencing
+  steps shipped (manufacturing BOM `assign="insert"` + patent
+  `assign="render"`). This ADR records the *decisions*; the fuller
+  storage/render discussion lives in
   [`docs/design/draft-section-styles.md`](../design/draft-section-styles.md)
-  (the `part`/`term` expansion table).
+  (the `part`/`term` expansion table). Code map: numbering policy +
+  `TermEntry` in `src/precis/draft/registry.py`; `defined_terms` /
+  `ensure_registry_heading` / `parts_callout_map` in
+  `src/precis/store/_draft_ops.py`; the rich `.pa-pop` hover + `[[dc…]]`
+  numeral substitution in `src/precis_web/linkify.py`; the `components`
+  section-style skill in `src/precis/data/skills/components.md`.
 - **Deciders**: Reto + agent
 - **Builds on**:
   - [ADR 0033 — Draft-as-chunks](./0033-draft-chunks-editable-document.md)

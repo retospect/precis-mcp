@@ -23,7 +23,7 @@
       <button data-toggle="{{ r.handle }}"
               class="dr-toggle font-mono text-xs text-slate-400 hover:text-slate-700 select-none">▾</button>
       <h3 class="min-w-0 break-words font-semibold text-slate-900
-                 {% if r.depth == 0 %}text-lg{% elif r.depth == 1 %}text-base{% else %}text-sm{% endif %}">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</h3>
+                 {% if r.depth == 0 %}text-lg{% elif r.depth == 1 %}text-base{% else %}text-sm{% endif %}">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</h3>
       {# style / review / prompt stay one nowrap cluster pinned top-right;
          min-w-0 on the heading lets it shrink/wrap rather than push these
          onto a second line. #}
@@ -84,7 +84,7 @@
     <figure class="rounded-md border border-slate-200 bg-white p-2">
       <img src="{{ r.blob_url }}" alt="{{ r.text }}" loading="lazy"
            class="max-h-96 w-auto max-w-full rounded" />
-      <figcaption class="mt-1.5 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</figcaption>
+      <figcaption class="mt-1.5 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</figcaption>
       {% set p = r.figure_permission or {} %}
       <div class="mt-1 flex items-center gap-1.5">
         <span class="rounded px-1.5 py-0.5 text-[10px] font-mono uppercase
@@ -223,12 +223,12 @@
           <div class="overflow-x-auto">
             <table class="w-full border-collapse text-sm">
               {% if r.table.caption %}
-              <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ r.table.caption | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</caption>
+              <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ r.table.caption | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</caption>
               {% endif %}
               <thead>
                 <tr>
                   {% for h in r.table.header %}
-                  <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</th>
+                  <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</th>
                   {% endfor %}
                 </tr>
               </thead>
@@ -236,7 +236,7 @@
                 {% for row in r.table.rows %}
                 <tr class="even:bg-slate-50">
                   {% for cell in row %}
-                  <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</td>
+                  <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</td>
                   {% endfor %}
                 </tr>
                 {% endfor %}
@@ -244,7 +244,7 @@
             </table>
           </div>
           {% else %}
-          <p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</p>
+          <p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</p>
           {% endif %}
           <div class="mt-1">
             <button type="button" @click="open()"
@@ -322,7 +322,7 @@
     <div class="flex gap-2">
       <span class="mt-0.5 shrink-0 select-none {% if r.list_ordered %}font-mono text-[13px] text-slate-500{% else %}text-slate-400{% endif %}">{{ r.marker }}</span>
       <div class="min-w-0 flex-1">
-        <div x-show="view === 'body'"><p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</p></div>
+        <div x-show="view === 'body'"><p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</p></div>
         <p x-show="view === 'summary'" x-cloak class="text-sm italic text-slate-600 break-words">{{ r.summary }}</p>
         <p x-show="view === 'keywords'" x-cloak class="text-xs font-mono text-slate-500 break-words">{{ r.keywords }}</p>
       </div>
@@ -332,11 +332,19 @@
        keywords. Headings (above) always show their title. #}
     <div x-show="view === 'body'">
       {% if r.chunk_kind in ('aside', 'box') %}
-      <div class="rounded-md border-l-4 border-amber-300 bg-amber-50 px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</div>
+      <div class="rounded-md border-l-4 border-amber-300 bg-amber-50 px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</div>
       {% elif r.chunk_kind in ('listing', 'code') %}
       <pre class="rounded-md bg-slate-900 text-slate-100 text-xs p-3 overflow-x-auto whitespace-pre-wrap">{{ r.text }}</pre>
+      {% elif r.is_term %}
+      {# ADR 0052 registry entry (glossary / part / component): a numbered
+         line — callout · short — definition · [MPN] — the derived BOM/parts
+         projection, rendered from the leaf (never an authored table). #}
+      <p class="text-[15px] leading-relaxed text-slate-800 break-words">
+        {% if r.callout is not none %}<span class="font-mono text-xs text-slate-500 mr-1.5">{{ r.callout }}</span>{% endif %}
+        {% if r.term_short %}<span class="font-semibold text-slate-900">{{ r.term_short }}</span> — {% endif %}{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}{% if r.term_mpn %} <span class="font-mono text-xs text-slate-500">[{{ r.term_mpn }}]</span>{% endif %}
+      </p>
       {% else %}
-      <p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local) }}</p>
+      <p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</p>
       {% endif %}
     </div>
     <p x-show="view === 'summary'" x-cloak class="text-sm italic text-slate-600 break-words">{{ r.summary }}</p>

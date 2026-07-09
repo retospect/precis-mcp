@@ -1531,7 +1531,9 @@ def test_reader_highlights_defined_abbrev(draft_client: TestClient) -> None:
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
     assert '<abbr class="pa"' in r.text
-    assert '<span class="pa-pop">polyethyleneimine</span>' in r.text
+    # The definition rides in a .pa-def span inside the .pa-pop tooltip (ADR
+    # 0052 rich hover — a part additionally shows MPN/manufacturer/datasheet).
+    assert '<span class="pa-def">polyethyleneimine</span>' in r.text
     assert ".pa>.pa-pop" in r.text  # the instant-tooltip CSS shipped
 
 

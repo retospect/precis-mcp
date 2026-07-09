@@ -579,7 +579,9 @@ def test_abbrev_highlight_wraps_known_tokens() -> None:
         )
     )
     assert out.count('<abbr class="pa"') == 2  # two standalone PEI, not PEINE
-    assert '<span class="pa-pop">polyethyleneimine</span>' in out
+    # The definition rides in a .pa-def span inside .pa-pop (ADR 0052 rich
+    # hover — a part additionally shows MPN/manufacturer/datasheet rows).
+    assert '<span class="pa-pop"><span class="pa-def">polyethyleneimine</span>' in out
     assert "title=" not in out  # no native tooltip (that was the lag)
     assert "PEINE" in out  # untouched (PEI is not a whole token there)
 

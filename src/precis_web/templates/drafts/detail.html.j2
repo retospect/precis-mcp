@@ -19,6 +19,11 @@
       border-radius:4px;background:#1e293b;color:#fff;
       padding:2px 6px;font-size:11px;font-weight:400;line-height:1.3}
   .pa:hover>.pa-pop,.pa:focus>.pa-pop,.pa:focus-within>.pa-pop{display:block}
+  /* ADR 0052 rich part hover: the definition plus optional MPN / manufacturer
+     / datasheet rows stack (each on its own line inside the dark card). */
+  .pa-pop>.pa-def,.pa-pop>.pa-attr,.pa-pop>.pa-link{display:block}
+  .pa-pop>.pa-attr{color:#cbd5e1;font-size:10px}
+  .pa-pop>.pa-link{color:#7dd3fc;margin-top:1px}
   /* Compact view: the content column drives each row's height. The
      meta column (links + in-flight) is taken out of flow so it stops
      inflating the row track, then capped to the cell and scrolled. */

@@ -294,19 +294,26 @@ def _render_display_link(disp: str, tgt: str, raw: str) -> str:
 
 
 def _render_bare_bracket(
-    bare: str, *, compact: bool = False, local: frozenset[str] | None = None
+    bare: str,
+    *,
+    compact: bool = False,
+    local: frozenset[str] | None = None,
+    callouts: dict[str, str] | None = None,
 ) -> str:
     """``[¶h]`` / ``[§p~n]`` — a sigil ref with no display text.
 
     In ``compact`` mode (the draft reader) the verbose handle is replaced
     by a 1-char superscript sigil so it doesn't break the reading flow;
-    the hover popover + sidebar carry the meaning.
+    the hover popover + sidebar carry the meaning. A ``[dc…]`` that is a
+    render-policy part carries its numeral instead (``callouts``).
     """
     # The universal form: ``[me6184]`` / ``[dc41]`` / ``[pc10]`` — a handle
     # is a ref to something, rendered as an anchor (the 2-char prefix says
     # what it is). In compact mode a chunk handle collapses to a kind sigil
     # (§ paper / Ⓟ patent / ¶ other — see the helper).
-    universal = _render_universal_handle(bare, bare, compact=compact, local=local)
+    universal = _render_universal_handle(
+        bare, bare, compact=compact, local=local, callouts=callouts
+    )
     if universal is not None:
         return universal
     if bare.startswith("¶"):
@@ -409,6 +416,7 @@ def _render_universal_handle(
     *,
     compact: bool = False,
     local: frozenset[str] | None = None,
+    callouts: dict[str, str] | None = None,
 ) -> str | None:
     """An ADR 0036 universal handle (``dc41`` chunk, ``pc10`` paper chunk,
     ``me5`` record, …) → an anchor. The one rule: a handle is a ref to
@@ -431,10 +439,18 @@ def _render_universal_handle(
     if is_chunk:
         norm = handle_registry.normalize(handle)
         h = escape(norm)
+        # A render-policy part reference (ADR 0052) shows its **numeral** — the
+        # display label the callout series assigns at render — in place of the
+        # verbose handle / ¶ sigil, still hovering the part. Takes precedence
+        # over the sigil since the numeral *is* the reference in patent prose.
+        numeral = callouts.get(norm) if callouts else None
+        if numeral is not None:
+            anchor_cls = _ANCHOR_CLS
+            shown = escape(str(numeral))
         # Full-size sigil (not a <sup>) so it stays an easy hover/click target.
         # A *paper* chunk cite (``pc10``) additionally colours local vs external
         # (sky ``§`` / amber ``↗``); other chunk kinds keep the neutral sigil.
-        if compact and kind == "paper":
+        elif compact and kind == "paper":
             anchor_cls, shown = _cite_style(norm, local)
         else:
             anchor_cls = _ANCHOR_CLS
@@ -473,13 +489,20 @@ def _render_universal_handle(
 
 
 def _render_authoring(
-    addr: str, *, compact: bool = False, local: frozenset[str] | None = None
+    addr: str,
+    *,
+    compact: bool = False,
+    local: frozenset[str] | None = None,
+    callouts: dict[str, str] | None = None,
 ) -> str:
     """``[[<handle>]]`` — the universal reference form. A handle resolves
     to an anchor (chunk / record); a legacy ``[[kind:id]]`` authoring link
     surfaces its inner handle for discoverability when it is a known kind;
-    anything else stays literal."""
-    universal = _render_universal_handle(addr, addr, compact=compact, local=local)
+    anything else stays literal. A ``[[dc…]]`` render-policy part shows its
+    numeral (``callouts``)."""
+    universal = _render_universal_handle(
+        addr, addr, compact=compact, local=local, callouts=callouts
+    )
     if universal is not None:
         return universal
     m = _REF_PATTERN.fullmatch(addr)
@@ -495,35 +518,66 @@ def _render_authoring(
 _TAG_SPLIT = re.compile(r"(<[^>]+>)")
 
 
-def _highlight_abbrevs(html: str, abbrevs: dict[str, str]) -> str:
-    """Wrap each occurrence of a known abbreviation ``short`` (in the
-    *text* runs of already-rendered HTML) in an ``<abbr>`` carrying an
-    **instant** custom tooltip — the definition rides in a nested
-    ``.pa-pop`` span shown on hover/focus via CSS (``.pa`` styling lives
-    in the draft reader's ``<style>``). We deliberately avoid the native
-    ``title=`` tooltip: its ~1s browser-controlled show-delay is the "lag"
-    — the definition is already inline, so there's nothing to precompute,
-    only a faster way to reveal it.
+def _term_pop_html(entry: object) -> str:
+    """Inner HTML for a registry surface's ``.pa-pop`` tooltip (ADR 0052 §4).
 
-    Operates on the final HTML: splits off ``<…>`` tag runs and only
-    rewrites the plain-text runs between them, so an abbreviation that
-    happens to look like part of an attribute / handle is never touched.
-    Longest shorts first so ``RNA-seq`` wins over ``RNA``. The matched
-    text is already HTML-escaped; the definition is escaped here.
+    A plain glossary/patent entry (``{definition}`` or a bare ``str``) renders
+    just the definition, exactly as before. A manufacturing **part** entry adds
+    optional rows from its attribute bag — MPN, manufacturer, and a datasheet
+    link (an ``<a>`` that stays clickable because hovering it keeps ``:hover``
+    on the enclosing ``.pa``). Every value is HTML-escaped here."""
+    if isinstance(entry, str):
+        return f'<span class="pa-def">{escape(entry)}</span>'
+    e = entry if isinstance(entry, dict) else {}
+    parts = [f'<span class="pa-def">{escape(str(e.get("definition", "")))}</span>']
+    mpn = e.get("mpn")
+    if mpn:
+        parts.append(f'<span class="pa-attr">MPN {escape(str(mpn))}</span>')
+    mfr = e.get("manufacturer")
+    if mfr:
+        parts.append(f'<span class="pa-attr">{escape(str(mfr))}</span>')
+    url = e.get("url")
+    if url:
+        parts.append(
+            f'<a class="pa-link" href="{escape(str(url))}" '
+            f'target="_blank" rel="noopener nofollow">datasheet ↗</a>'
+        )
+    return "".join(parts)
 
-    The matcher is compiled **once** for the whole HTML (not per call
-    site), so a long draft doesn't recompile the alternation per chunk.
+
+def _highlight_abbrevs(html: str, terms: dict[str, object]) -> str:
+    """Wrap each occurrence of a known surface ``short`` (in the *text* runs of
+    already-rendered HTML) in an ``<abbr>`` carrying an **instant** custom
+    tooltip — the record rides in a nested ``.pa-pop`` span shown on hover/focus
+    via CSS (``.pa`` styling lives in the draft reader's ``<style>``). We
+    deliberately avoid the native ``title=`` tooltip: its ~1s browser-controlled
+    show-delay is the "lag" — the content is already inline, so there's nothing
+    to precompute, only a faster way to reveal it.
+
+    ``terms`` maps each string surface (an abbreviation ``short``, a part name,
+    a ``surface_forms`` alias, or an ``mpn``) to either a bare definition
+    ``str`` (a glossary term / inline pair) or a rich ``TermEntry`` dict (a
+    manufacturing part — definition + attribute bag, ADR 0052).
+
+    Operates on the final HTML: splits off ``<…>`` tag runs and only rewrites
+    the plain-text runs between them, so a surface that happens to look like
+    part of an attribute / handle is never touched. Longest surfaces first so
+    ``RNA-seq`` wins over ``RNA``. The matched text is already HTML-escaped; the
+    record is escaped in :func:`_term_pop_html`.
+
+    The matcher is compiled **once** for the whole HTML (not per call site), so
+    a long draft doesn't recompile the alternation per chunk.
     """
-    if not abbrevs:
+    if not terms:
         return html
-    shorts = sorted((s for s in abbrevs if s), key=len, reverse=True)
+    shorts = sorted((s for s in terms if s), key=len, reverse=True)
     if not shorts:
         return html
-    # Match the defined short, plus an optional plural / possessive
+    # Match the defined surface, plus an optional plural / possessive
     # inflection (``FET`` → ``FETs`` / ``FET's``) so an inflected mention
-    # inherits the same hover-definition. We only store the base form; the
-    # suffix is matched here, not in ``defined_abbrevs``.
-    # Trailing guard is ``(?!\w)`` (not ``(?![\w-])``) so a defined acronym
+    # inherits the same hover. We only store the base form; the suffix is
+    # matched here, not in ``defined_terms``.
+    # Trailing guard is ``(?!\w)`` (not ``(?![\w-])``) so a defined surface
     # used as a hyphenated-compound prefix still highlights its base —
     # ``GNR`` in ``GNR-FETs`` / ``GNR-based``. The leading ``(?<![\w-])``
     # still prevents matching inside a longer token (e.g. ``AGNR``).
@@ -534,10 +588,10 @@ def _highlight_abbrevs(html: str, abbrevs: dict[str, str]) -> str:
 
     def _wrap(m: re.Match[str]) -> str:
         short = m.group(1)  # the defined key
-        shown = m.group(0)  # short + any inflection, e.g. "FETs"
+        shown = m.group(0)  # surface + any inflection, e.g. "FETs"
         return (
             f'<abbr class="pa" tabindex="0">{shown}'
-            f'<span class="pa-pop">{escape(abbrevs[short])}</span></abbr>'
+            f'<span class="pa-pop">{_term_pop_html(terms[short])}</span></abbr>'
         )
 
     parts = _TAG_SPLIT.split(html)
@@ -553,8 +607,9 @@ def linkify_refs(
     *,
     markdown: bool = False,
     compact: bool = False,
-    abbrevs: dict[str, str] | None = None,
+    abbrevs: dict[str, object] | None = None,
     local: frozenset[str] | None = None,
+    callouts: dict[str, str] | None = None,
 ) -> Markup:
     """Replace ``kind:ref`` mentions in ``value`` with hover-preview anchors.
 
@@ -581,13 +636,24 @@ def linkify_refs(
     renders as an amber ``↗`` external marker instead of the sky ``§``.
     ``None`` (every non-draft call site) keeps the uniform ``§``.
 
+    ``callouts`` — the draft reader's ``{normalised dc-handle: numeral}`` map
+    for ``assign="render"`` registry parts (ADR 0052 §3): a bare ``[[dc…]]`` /
+    ``[dc…]`` reference to such a part renders as its **numeral** (e.g. ``105``)
+    instead of the ``¶`` sigil, still hover-previewing the part. ``None`` (every
+    non-part reference / call site) is unchanged.
+
     Returns a :class:`markupsafe.Markup` instance so Jinja's autoescape
     treats the result as already-safe HTML.
     """
     if not value:
         return Markup("")
     html = _linkify_prose(
-        str(value), footnotes, markdown=markdown, compact=compact, local=local
+        str(value),
+        footnotes,
+        markdown=markdown,
+        compact=compact,
+        local=local,
+        callouts=callouts,
     )
     if abbrevs:
         html = _highlight_abbrevs(html, abbrevs)
@@ -636,6 +702,7 @@ def _linkify_prose(
     markdown: bool = False,
     compact: bool = False,
     local: frozenset[str] | None = None,
+    callouts: dict[str, str] | None = None,
 ) -> str:
     """Replace every ``kind:ref``, bare conv handle, and bare paper
     cite_key in plain prose with an anchor — single pass so we never
@@ -660,11 +727,15 @@ def _linkify_prose(
         # Draft bracket forms (ADR 0033 §8) — checked first; their groups
         # are consumed before the bare ``kind:ref`` alternatives.
         if m.group("auth") is not None:
-            return _render_authoring(m.group("auth"), compact=compact, local=local)
+            return _render_authoring(
+                m.group("auth"), compact=compact, local=local, callouts=callouts
+            )
         if m.group("disp") is not None:
             return _render_display_link(m.group("disp"), m.group("tgt"), m.group(0))
         if m.group("bare") is not None:
-            return _render_bare_bracket(m.group("bare"), compact=compact, local=local)
+            return _render_bare_bracket(
+                m.group("bare"), compact=compact, local=local, callouts=callouts
+            )
         if m.group("ref") is not None:
             kind = m.group("kind")
             raw_id = m.group("id")

@@ -110,28 +110,70 @@ log = logging.getLogger(__name__)
 #: kicks in past it.
 INITIAL_WINDOW = 30
 
-#: Bounded ``(ref_id, version) → abbrevs`` cache. ``defined_abbrevs`` is a
-#: whole-draft ``string_agg`` + Schwartz-Hearst scan; on the on-demand row
-#: path it would otherwise re-run for every block hydrated. Keyed by the
-#: draft's version token, so any chunk edit invalidates it. Tiny LRU.
-_ABBREV_CACHE: OrderedDict[tuple[int, int], dict[str, str]] = OrderedDict()
+#: Bounded ``(ref_id, version) → terms`` cache. ``defined_terms`` is a
+#: whole-draft ``string_agg`` + Schwartz-Hearst scan plus the registry
+#: ``term`` leaves; on the on-demand row path it would otherwise re-run for
+#: every block hydrated. Keyed by the draft's version token, so any chunk
+#: edit invalidates it. Tiny LRU. The value is the rich ADR 0052 map
+#: (``{surface: TermEntry|str}``) that :func:`linkify._highlight_abbrevs`
+#: renders as a hover — a bare definition for a glossary/patent term, a rich
+#: card (MPN / manufacturer / datasheet) for a manufacturing part.
+_ABBREV_CACHE: OrderedDict[tuple[int, int], dict[str, Any]] = OrderedDict()
 _ABBREV_CACHE_MAX = 64
 
 
-def _abbrevs_cached(store: Any, ref_id: int, version: int) -> dict[str, str]:
-    """Whole-draft abbreviation map, memoised per (draft, version) so the
-    per-row hydrate path doesn't re-scan the whole draft each time."""
+def _abbrevs_cached(store: Any, ref_id: int, version: int) -> dict[str, Any]:
+    """Whole-draft term/abbreviation map (rich records, ADR 0052), memoised
+    per (draft, version) so the per-row hydrate path doesn't re-scan the whole
+    draft each time. Falls back to the plain ``{short: str}`` map for a store
+    that predates :meth:`defined_terms` (older FakeStore in tests)."""
     key = (ref_id, version)
     hit = _ABBREV_CACHE.get(key)
     if hit is not None:
         _ABBREV_CACHE.move_to_end(key)
         return hit
-    val = store.defined_abbrevs(ref_id)
+    fn = getattr(store, "defined_terms", None) or store.defined_abbrevs
+    val = fn(ref_id)
     _ABBREV_CACHE[key] = val
     _ABBREV_CACHE.move_to_end(key)
     while len(_ABBREV_CACHE) > _ABBREV_CACHE_MAX:
         _ABBREV_CACHE.popitem(last=False)
     return val
+
+
+def _callouts_from_order(chunk_objs: list[Any]) -> dict[str, str]:
+    """``{normalised dc-handle: numeral-str}`` for every ``assign="render"``
+    registry present in the reading order (ADR 0052 §3) — the numerals a bare
+    ``[[dc…]]`` part reference renders as. Derived from the already-loaded
+    reading order, so it costs no extra query; recomputed each render so an
+    insert/reorder renumbers the series."""
+    from precis.draft import registry as _reg
+    from precis.utils import handle_registry
+
+    out: dict[str, str] = {}
+    for role, policy in _reg.REGISTRY_POLICY.items():
+        if policy.assign != "render":
+            continue
+        ordered = [
+            c.dc
+            for c in chunk_objs
+            if c.chunk_kind == "term" and (c.meta or {}).get("registry") == role
+        ]
+        for handle, numeral in _reg.render_callouts(ordered, policy).items():
+            out[handle_registry.normalize(handle)] = str(numeral)
+    return out
+
+
+def _row_callout(c: Any, callouts: dict[str, str]) -> str | None:
+    """The callout to badge on a term row: the frozen ``meta.callout`` for an
+    insert registry, or the positional numeral from ``callouts`` for a
+    render-policy part. ``None`` for a plain glossary term / non-term."""
+    if c.chunk_kind != "term":
+        return None
+    stored = (getattr(c, "meta", None) or {}).get("callout")
+    if stored is not None:
+        return str(stored)
+    return callouts.get(handle_registry.normalize(c.dc))
 
 
 #: Bounded ``(ref_id, version) → reading_order`` cache. ``reading_order``
@@ -644,6 +686,10 @@ def _build_rows(
     # external): one batched existence check over every paper cite in the
     # window, shared by all its rows.
     local_cites = _local_cites(store, chunk_objs, want)
+    # Render-policy part numerals (ADR 0052): a bare ``[[dc…]]`` reference to a
+    # patent part renders as its numeral. One map for the whole draft, shared
+    # by every row's linkify.
+    callouts = _callouts_from_order(chunk_objs)
     rows: list[dict[str, Any]] = []
     for i in want:
         c = chunk_objs[i]
@@ -703,6 +749,18 @@ def _build_rows(
                 if c.chunk_kind == "heading"
                 else None,
                 "section_styles": section_styles if c.chunk_kind == "heading" else None,
+                # ADR 0052 registry term leaf: its assigned callout (frozen
+                # in meta for insert; from the render map for parts), plus the
+                # short name + MPN so the row reads as a numbered BOM/parts
+                # entry (the derived projection §6, no authored table chunk).
+                "is_term": c.chunk_kind == "term",
+                "callout": _row_callout(c, callouts),
+                "term_short": (getattr(c, "meta", None) or {}).get("short")
+                if c.chunk_kind == "term"
+                else None,
+                "term_mpn": (getattr(c, "meta", None) or {}).get("mpn")
+                if c.chunk_kind == "term"
+                else None,
                 "is_table": is_table,
                 "table": table,
                 "is_figure": is_figure,
@@ -713,6 +771,9 @@ def _build_rows(
                 "blob_url": f"/drafts/blob/{c.handle}" if is_figure else None,
                 "ancestors": anc.get(c.handle, []),
                 "abbrevs": abbrevs,
+                # render-policy part numerals for the compact linkifier
+                # (a bare [[dc…]] to a patent part shows its numeral).
+                "callouts": callouts,
                 # local-vs-external citation set for the compact linkifier
                 # (§ sky = paper we hold, ↗ amber = external reference).
                 "local": local_cites,
@@ -998,6 +1059,17 @@ _DOC_TYPES: list[dict[str, str]] = [
         "presenting new results.",
     },
     {
+        "value": "manufacturing",
+        "label": "System / manufacturing spec",
+        "brief": "This is a system-description / manufacturing document: "
+        "describe the design and how it is built, and maintain a components "
+        "list where each part is a registry entry with a short name, a "
+        "description, its manufacturer part number (MPN), and a datasheet / "
+        "ordering link. Register a part once, then refer to it by its short "
+        "name or number in the prose; the callout numbers are taken in order "
+        "and stay stable.",
+    },
+    {
         "value": "article",
         "label": "General article",
         "brief": "",
@@ -1036,6 +1108,11 @@ _SECTION_STYLES: dict[str, list[tuple[str, str]]] = {
         ("sci-survey-section", "Synthesis section"),
         ("sci-discussion", "Discussion"),
         ("sci-conclusion", "Conclusion"),
+    ],
+    "manufacturing": [
+        ("sci-abstract", "Overview"),
+        ("components", "Components / BOM"),
+        ("sci-methods", "Description"),
     ],
 }
 
@@ -1079,6 +1156,11 @@ _SCAFFOLDS: dict[str, list[tuple[str, str]]] = {
         ("Themes", "sci-survey-section"),
         ("Open Problems", "sci-survey-section"),
         ("Conclusion", "sci-conclusion"),
+    ],
+    "manufacturing": [
+        ("Overview", "sci-abstract"),
+        ("Components", "components"),
+        ("Description", "sci-methods"),
     ],
 }
 
@@ -2761,6 +2843,11 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
     quote = "\n".join(lines[:20]) + ("\n…" if len(lines) > 20 else "")
     if len(quote) > 1600:
         quote = quote[:1600].rstrip() + "…"
+    # A manufacturing part (ADR 0052) hovers its attribute bag — MPN /
+    # manufacturer / datasheet / callout — from its ``term`` leaf's meta, so a
+    # ``[[dc…]]`` part reference in prose shows the rich card. Absent for a
+    # patent part / glossary term (empty bag) — the plain quote renders.
+    part_meta = chunk.meta if chunk is not None else {}
     return templates.TemplateResponse(
         request,
         "preview/popover.html.j2",
@@ -2777,5 +2864,9 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
             "body_preview": "",
             "deleted": False,
             "missing": False,
+            "manufacturer": (part_meta or {}).get("manufacturer"),
+            "mpn": (part_meta or {}).get("mpn"),
+            "datasheet_url": (part_meta or {}).get("url"),
+            "callout": (part_meta or {}).get("callout"),
         },
     )

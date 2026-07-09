@@ -29,6 +29,21 @@
   {% elif body_preview %}
   <p class="text-xs text-slate-600 break-words">{{ body_preview }}</p>
   {% endif %}
+  {# ADR 0052 manufacturing-part rows — a term leaf's attribute bag. Each is
+     optional; a patent part / glossary term (empty bag) shows none. Guarded
+     with `is defined` so the other routes rendering this template are safe. #}
+  {% if callout is defined and callout is not none %}
+  <p class="text-[11px] text-slate-500">callout <span class="font-mono text-slate-700">{{ callout }}</span></p>
+  {% endif %}
+  {% if mpn is defined and mpn %}
+  <p class="text-[11px] text-slate-500">MPN <span class="font-mono text-slate-700">{{ mpn }}</span></p>
+  {% endif %}
+  {% if manufacturer is defined and manufacturer %}
+  <p class="text-[11px] text-slate-500">{{ manufacturer }}</p>
+  {% endif %}
+  {% if datasheet_url is defined and datasheet_url %}
+  <p class="text-xs"><a class="text-sky-700 underline decoration-dotted" href="{{ datasheet_url }}" target="_blank" rel="noopener nofollow">datasheet ↗</a></p>
+  {% endif %}
   <p class="text-xs text-sky-700">click to open →</p>
   {% endif %}
 </div>

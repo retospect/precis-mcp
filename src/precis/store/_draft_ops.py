@@ -1286,6 +1286,62 @@ class DraftMixin:
             )
         return self.get_draft_chunk(handle)
 
+    #: The manufacturing-part attribute bag + hover surfaces that
+    #: :meth:`set_term_attrs` may patch in place (ADR 0052 §2). ``registry``
+    #: and ``callout`` are structural (set at add-time / re-home) and are not
+    #: patched here.
+    _TERM_ATTR_KEYS = (
+        "short",
+        "surface_forms",
+        "manufacturer",
+        "mpn",
+        "url",
+        "ordering",
+    )
+
+    def set_term_attrs(self, handle: str, attrs: dict[str, Any]) -> DraftChunk | None:
+        """Patch a ``term`` leaf's attribute bag / hover surfaces in place
+        (ADR 0052) — ``manufacturer``/``mpn``/``url``/``ordering`` and the
+        ``short``/``surface_forms`` surfaces. Metadata-only, so ``text`` and
+        the embedding are untouched. A key set to ``None`` clears it; unknown
+        keys are ignored. Rejected on a non-``term`` chunk."""
+        patch = {k: v for k, v in (attrs or {}).items() if k in self._TERM_ATTR_KEYS}
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT chunk_id, chunk_kind, meta, retired_at "
+                "FROM chunks WHERE handle = %s",
+                (_bare(handle),),
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
+            chunk_id, chunk_kind, meta, retired = row
+            if chunk_kind != "term":
+                raise BadInput(
+                    f"term attributes apply to a term leaf; {_bare(handle)} "
+                    f"is a {chunk_kind}"
+                )
+            if retired is not None:
+                raise Gone(
+                    f"¶{_bare(handle)} is retired — it was removed or replaced; "
+                    "edit the current live chunk instead"
+                )
+            meta = dict(meta or {})
+            for key, val in patch.items():
+                if val is None:
+                    meta.pop(key, None)
+                else:
+                    meta[key] = val
+            conn.execute(
+                "UPDATE chunks SET meta = %s WHERE chunk_id = %s",
+                (Jsonb(meta), chunk_id),
+            )
+            conn.execute(
+                "INSERT INTO chunk_events (chunk_id, event_kind, source) "
+                "VALUES (%s, 'edited', %s)",
+                (chunk_id, Jsonb({"reason": "set-term-attrs"})),
+            )
+        return self.get_draft_chunk(handle)
+
     def set_list_kind(
         self,
         handle: str,
@@ -1801,24 +1857,127 @@ class _AbbrevMixin:
     pool: Any
     tx: Any
     add_chunks: Any  # provided by DraftMixin
+    reading_order: Any  # provided by DraftMixin
+    move_chunk: Any  # provided by DraftMixin
+    retire_chunk: Any  # provided by DraftMixin
+    _children: Any  # provided by DraftMixin
 
     def ensure_glossary_heading(self, ref_id: int) -> str:
-        """``dc<chunk_id>`` handle of the draft's "Glossary" heading (ADR
-        0036), creating it (at the end) if absent. Glossary ``term`` chunks
-        file under it."""
+        """Back-compat alias for the glossary registry's home heading (ADR
+        0036). Superseded by :meth:`ensure_registry_heading`; kept for the
+        draft-importer and any legacy caller."""
+        return self.ensure_registry_heading(ref_id, "glossary")
+
+    def ensure_registry_heading(self, ref_id: int, role: str) -> str:
+        """``dc<chunk_id>`` handle of the draft's home heading for ``role``
+        (``glossary`` / ``parts`` / ``components``), which ``term`` leaves of
+        that registry file under (ADR 0052 §7).
+
+        The home is found **by ``meta.registry == role``** — a stable tag that
+        survives a heading rename and can't be duplicated by wording (the fix
+        for the two-cluster glossary bug, where a text-only match minted a
+        second "Glossary" whenever the heading was renamed/imported). Failing
+        that it **adopts** a legacy text-matched heading (stamping
+        ``meta.registry`` on it) rather than mint a duplicate, and only mints +
+        stamps a fresh heading as a last resort. A one-per-role reconcile then
+        folds any stragglers."""
+        from precis.draft import registry as _reg
+
         with self.pool.connection() as conn:
+            # 1. The role-tagged home (earliest by pos if several — the
+            #    reconcile below collapses the rest).
             row = conn.execute(
                 "SELECT chunk_id FROM chunks WHERE ref_id = %s "
                 "AND chunk_kind = 'heading' AND retired_at IS NULL "
-                "AND pos IS NOT NULL AND lower(text) = 'glossary' LIMIT 1",
-                (ref_id,),
+                "AND pos IS NOT NULL AND meta->>'registry' = %s "
+                "ORDER BY pos LIMIT 1",
+                (ref_id, role),
             ).fetchone()
-        if row:
+            if row is None:
+                # 2. Adopt a legacy text-matched heading — stamp the role on it.
+                aliases = list(_reg.LEGACY_HEADING_ALIASES.get(role, frozenset()))
+                if aliases:
+                    row = conn.execute(
+                        "SELECT chunk_id FROM chunks WHERE ref_id = %s "
+                        "AND chunk_kind = 'heading' AND retired_at IS NULL "
+                        "AND pos IS NOT NULL AND lower(btrim(text)) = ANY(%s) "
+                        "ORDER BY pos LIMIT 1",
+                        (ref_id, aliases),
+                    ).fetchone()
+                if row is not None:
+                    conn.execute(
+                        "UPDATE chunks SET meta = COALESCE(meta, '{}'::jsonb) "
+                        "|| jsonb_build_object('registry', %s::text) "
+                        "WHERE chunk_id = %s",
+                        (role, int(row[0])),
+                    )
+        if row is not None:
+            self._reconcile_registry_headings(ref_id, role)
             return handle_registry.format_handle("draft", int(row[0]), chunk=True)
+        # 3. Mint + stamp a fresh home heading at the end of the draft.
         created = self.add_chunks(
-            ref_id=ref_id, chunk_kind="heading", text="Glossary", at={"last": True}
+            ref_id=ref_id,
+            chunk_kind="heading",
+            text=_reg.heading_title(role),
+            at={"last": True},
+            meta={"registry": role},
         )
-        return str(created[0].handle)
+        return str(created[0].dc)  # dc handle, matching the lookup/adopt paths
+
+    def _reconcile_registry_headings(self, ref_id: int, role: str) -> None:
+        """Invariant: at most one registry heading per role per draft (ADR
+        §7). If several carry ``meta.registry == role``, keep the earliest-pos
+        one canonical, reparent every other role heading's children under it,
+        and retire the emptied duplicate. The belt is §6's placement-
+        independent projection; this is the suspenders."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id, handle FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'heading' AND retired_at IS NULL "
+                "AND pos IS NOT NULL AND meta->>'registry' = %s "
+                "ORDER BY pos",
+                (ref_id, role),
+            ).fetchall()
+        if len(rows) < 2:
+            return  # the common path — one home, nothing to fold
+        canonical_id = int(rows[0][0])
+        canonical = handle_registry.format_handle("draft", canonical_id, chunk=True)
+        # ``move_chunk``/``retire_chunk`` key on the legacy ``chunks.handle``
+        # (via ``_row``), so the *acting* handle must be legacy; the ``into``
+        # target resolves through ``get_draft_chunk`` which accepts ``dc…``.
+        for _dup_id, dup_handle in rows[1:]:
+            with self.pool.connection() as conn:
+                kids = self._children(conn, ref_id, int(_dup_id))
+            # Move each child under the canonical home (its subtree follows).
+            for kid in kids:
+                self.move_chunk(
+                    kid.handle,
+                    {"into": canonical, "last": True},
+                    source={"reconcile": f"registry:{role}"},
+                )
+            # Retire the now-empty duplicate heading (legacy handle).
+            self.retire_chunk(str(dup_handle), source={"reconcile": f"registry:{role}"})
+
+    def parts_callout_map(self, ref_id: int, role: str = "parts") -> dict[str, int]:
+        """``{normalized dc-handle: numeral}`` for an ``assign="render"``
+        registry (ADR §3). The numerals are **display labels derived from
+        reading-order position** — not stored — so inserting/reordering a leaf
+        renumbers the whole series. Empty for a non-render registry."""
+        from precis.draft import registry as _reg
+
+        policy = _reg.policy_for(role)
+        if policy.assign != "render":
+            return {}
+        ordered = [
+            c.dc
+            for c in self.reading_order(ref_id)
+            if c.chunk_kind == "term" and (c.meta or {}).get("registry") == role
+        ]
+        norm = {
+            handle_registry.normalize(h): n
+            for h, n in _reg.render_callouts(ordered, policy).items()
+        }
+        return norm
 
     def undefined_abbrevs(self, ref_id: int, text: str) -> list[str]:
         """Acronym-shaped tokens in ``text`` that aren't yet defined for
@@ -1887,6 +2046,79 @@ class _AbbrevMixin:
                 if short and (long or "").strip():
                     out[str(short)] = str(long).strip()
         return out
+
+    def defined_terms(self, ref_id: int) -> dict[str, Any]:
+        """Rich per-**surface** hover records for every registry ``term`` leaf
+        in this draft (ADR 0052 §4) — the generalization of
+        :meth:`defined_abbrevs`. Returns ``{surface: TermEntry}`` where a leaf
+        is reachable under each of its string surfaces (``meta.short``, every
+        ``meta.surface_forms`` entry, and ``meta.mpn``), all mapping to the
+        same record ``{definition, registry?, callout?, mpn?, manufacturer?,
+        url?, ordering?}``. Inline ``Long Form (ABBR)`` first-uses (Schwartz-
+        Hearst) contribute bare ``{definition}`` records; explicit ``term``
+        leaves win on a clash. Drives the reader's rich ``.pa-pop`` hover."""
+        from precis.utils.abbreviations import find as _sh_find
+
+        out: dict[str, dict[str, Any]] = {}
+        with self.pool.connection() as conn:
+            prow = conn.execute(
+                "SELECT string_agg(text, ' ') FROM chunks WHERE ref_id = %s "
+                "AND ord >= 0 AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            # Inline pairs first; explicit term leaves overwrite them (same
+            # precedence + huge-draft cap as ``defined_abbrevs``).
+            if prow and prow[0] and len(prow[0]) <= _ABBREV_INLINE_SCAN_CAP:
+                for short, long in _sh_find(prow[0]).items():
+                    if short and (long or "").strip():
+                        out[str(short)] = {"definition": str(long).strip()}
+            for meta, text in conn.execute(
+                "SELECT meta, text FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'term' AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchall():
+                definition = (text or "").strip()
+                if not definition:
+                    continue
+                m = meta or {}
+                entry: dict[str, Any] = {"definition": definition}
+                for key in (
+                    "registry",
+                    "callout",
+                    "mpn",
+                    "manufacturer",
+                    "url",
+                    "ordering",
+                ):
+                    val = m.get(key)
+                    if val is not None and val != "":
+                        entry[key] = val
+                # Every string surface of the leaf routes to the same record.
+                surfaces: list[str] = []
+                short = m.get("short")
+                if short:
+                    surfaces.append(str(short))
+                for sf in m.get("surface_forms") or []:
+                    if sf:
+                        surfaces.append(str(sf))
+                mpn = m.get("mpn")
+                if mpn:
+                    surfaces.append(str(mpn))
+                for surface in surfaces:
+                    out[surface] = entry
+        return out
+
+    def registry_callouts(self, ref_id: int, role: str) -> list[int]:
+        """The assigned ``meta.callout`` values for a registry's live ``term``
+        leaves — the input to the next ``assign="insert"`` callout (ADR §3)."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT (meta->>'callout')::int FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'term' AND retired_at IS NULL "
+                "AND meta->>'registry' = %s AND meta ? 'callout'",
+                (ref_id, role),
+            ).fetchall()
+        return [int(r[0]) for r in rows if r[0] is not None]
 
     def add_abbrev_ignore(self, ref_id: int, tokens: list[str]) -> None:
         """Add ``tokens`` to ``refs.meta.abbrev_ignore`` (deduped) — the

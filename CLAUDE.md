@@ -347,6 +347,15 @@ The master kinds table lives in the `precis-overview` skill.
 - **`cfp`** — spec-role sibling of `paper` (proposal requirements doc); same
   Marker→chunks ingest + reader, `KindSpec.corpus_role='spec'` (never cited as
   evidence), links to its project via `has-requirement`. Skill: `precis-proposal-help`.
+- **Term registry (`draft`, ADR 0052)** — glossary / patent parts / manufacturing
+  components are one abstraction over the `chunk_kind='term'` leaf, discriminated by
+  `meta.registry ∈ {glossary,parts,components}` + a per-registry numbering policy
+  (`src/precis/draft/registry.py`: `components→insert`/frozen `meta.callout`,
+  `parts→render`/positional numerals). Store: `defined_terms` (rich hover map) +
+  `ensure_registry_heading(role)` (lookup-by-tag → adopt-legacy → one-per-role
+  reconcile) + `parts_callout_map`. Reader: rich `.pa-pop` card (MPN/mfr/datasheet)
+  + a bare `[[dc…]]` part ref renders as its numeral (`linkify.callouts`). No new
+  kind, no migration. Section-style skill: `components.md` (+ `patent-image-part`).
 - **Keystone kinds (`cad`/`pcb`/`structure`)** — "own a legible IR, rent the
   heavy kernel only at export" (ADR 0041/0042/0043); the LLM traverses a graph,
   never pixels. `pcb` exporters in `src/precis/pcb/export.py` (JLCPCB BOM/CPL —
