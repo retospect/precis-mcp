@@ -5,8 +5,30 @@
 {% macro draft_row(r, ref) %}
 <div id="c-{{ r.handle }}"
      {% if r.is_heading %}data-heading="{{ r.handle }}"{% endif %}
+     {% if r.dc %}data-dc="{{ r.dc }}"{% endif %}
      data-anc='{{ r.ancestors | tojson }}'
-     class="dr-block grid grid-cols-1 lg:grid-cols-[1fr_20%_22%] gap-3 py-1.5 border-b border-slate-100 scroll-mt-4 group">
+     class="dr-block relative grid grid-cols-1 lg:grid-cols-[1fr_20%_22%] gap-3 py-1.5 border-b border-slate-100 scroll-mt-4 group">
+  {# ── Eye/pen gutter (ADR 0051 §6, hand-driven working set) ──────
+     A big 🖊 pen (edit-target hint) + a small 👁 eye (context). On a heading
+     the § eyes the whole section. Hidden until row-hover unless active (the
+     `.on` state, set imperatively by draftDoc after (re)hydrate). Buttons just
+     $dispatch — draftDoc owns the state + the POSTs. #}
+  {% if r.dc %}
+  <div class="dr-marks absolute -left-6 top-1.5 z-10 flex flex-col items-center gap-0.5
+              opacity-0 group-hover:opacity-100 transition-opacity select-none">
+    <button type="button" title="edit here (pen)" data-dc="{{ r.dc }}"
+            class="dr-pen text-sm leading-none text-slate-300 hover:text-amber-600"
+            @click="$dispatch('draft-mark', {op:'pen', dc:'{{ r.dc }}'})">&#128394;</button>
+    <button type="button" title="context here (eye)" data-dc="{{ r.dc }}"
+            class="dr-eye text-[10px] leading-none text-slate-300 hover:text-sky-600"
+            @click="$dispatch('draft-mark', {op:'eye', dc:'{{ r.dc }}'})">&#128065;</button>
+    {% if r.is_heading %}
+    <button type="button" title="eye the whole section" data-handle="{{ r.handle }}"
+            class="dr-eye-sec font-mono text-[11px] leading-none text-slate-300 hover:text-sky-600"
+            @click="$dispatch('draft-mark', {op:'eye-section', handle:'{{ r.handle }}'})">&sect;</button>
+    {% endif %}
+  </div>
+  {% endif %}
   {# ── Col A: content ─────────────────────────────────────────── #
      Rendered prose + edit affordances; clicking ✎ edit swaps this whole
      view for the in-place ProseMirror editor (see draftEdit / detail.html). #}

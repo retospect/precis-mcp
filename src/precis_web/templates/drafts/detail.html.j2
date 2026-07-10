@@ -46,7 +46,15 @@
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
 
-<div x-data="draftDoc('{{ ref.ident }}')" x-init="init()">
+<style>
+  /* Hand-driven working-set glyphs (ADR 0051 §6). Active marks stay visible
+     and coloured even when the row isn't hovered. */
+  .dr-marks .dr-pen.on { color: #d97706; }               /* amber-600 — pen */
+  .dr-marks .dr-eye.on, .dr-marks .dr-eye-sec.on { color: #0284c7; }  /* sky-600 — eye */
+  .dr-marks:has(.on) { opacity: 1; }
+</style>
+<div x-data="draftDoc('{{ ref.ident }}')" x-init="init()"
+     @draft-mark="onMark($event.detail)">
   <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
     <div>
       <h1 class="text-xl font-semibold">{{ ref.title }}</h1>
@@ -386,6 +394,52 @@
     <div id="dr-bot" style="height:{{ botpad }}px"></div>
   </div>
   <script type="application/json" id="dr-skel">{{ skeleton | tojson }}</script>
+  <script type="application/json" id="dr-marks">{{ marks | tojson }}</script>
+
+  {# ── Working-set tray (ADR 0051 §6, hand-driven) ────────────────────
+     Appears once anything is marked: the pens (edit-these-at-a-minimum hints)
+     + the eyes (context, incl. promoted ring targets). "Around here" expands
+     rings; "eye whole doc" eyes every block; the box files a change request
+     carrying the whole set to the editor. #}
+  <div x-show="penSet.size || eyeList.length" x-cloak
+       class="fixed bottom-4 left-4 z-50 w-72 rounded-lg border border-slate-300 bg-white text-xs shadow-xl">
+    <div class="flex items-center gap-2 border-b border-slate-200 px-3 py-2">
+      <span class="font-semibold text-slate-700">Working set</span>
+      <span class="text-slate-500" x-text="'🖊 ' + penSet.size + ' · 👁 ' + eyeList.length"></span>
+      <button class="ml-auto text-slate-400 hover:text-rose-600" @click="clearMarks()">clear</button>
+    </div>
+    <div class="max-h-40 space-y-0.5 overflow-auto px-3 py-2">
+      <template x-for="e in eyeList" :key="e.handle">
+        <div class="flex items-center gap-1">
+          <span x-text="e.dc ? '👁' : (e.kind === 'paper' ? '📄' : '🔗')"></span>
+          <span class="font-mono text-[10px] text-slate-500" x-text="e.handle"></span>
+          <span class="min-w-0 flex-1 truncate text-slate-600" x-text="e.title"></span>
+          <button class="text-slate-300 hover:text-rose-600" @click="dropEye(e.handle)">&times;</button>
+        </div>
+      </template>
+    </div>
+    <div class="space-y-1 border-t border-slate-200 px-3 py-2">
+      <div class="flex gap-1">
+        <button @click="around()"
+                class="flex-1 rounded bg-sky-50 py-1 text-sky-700 hover:bg-sky-100"
+                title="promote each eye's references (cited papers, linked notes) to eyes">👁 around here</button>
+        <button @click="eyeAll()"
+                class="rounded bg-slate-50 px-2 py-1 text-slate-600 hover:bg-slate-100"
+                title="eye every block in the document">eye all</button>
+      </div>
+      <textarea x-model="wsText" rows="2"
+                placeholder="Instruction for the editor (edits the pens, reads the eyes)…"
+                class="w-full rounded border border-slate-200 px-2 py-1"></textarea>
+      <div class="flex items-center gap-1">
+        <select x-model="wsModel" class="rounded border border-slate-200 px-1 py-0.5 text-slate-600">
+          <option>opus</option><option>sonnet</option><option>haiku</option>
+        </select>
+        <span class="text-slate-400" x-show="wsMsg" x-text="wsMsg"></span>
+        <button @click="submitWs()" :disabled="!wsText.trim()"
+                class="ml-auto rounded bg-slate-800 px-2 py-1 text-white disabled:opacity-40">Send to editor 🖊</button>
+      </div>
+    </div>
+  </div>
 
   {# All-clear note at the very end — shown only when there are figures and
      every one is cleared to ship (ADR 0034 §4). #}
@@ -1008,6 +1062,99 @@ function draftDoc(ident) {
     collapsed: JSON.parse(localStorage.getItem(key) || '[]'),
     save() { localStorage.setItem(key, JSON.stringify(this.collapsed)); },
 
+    // ── hand-driven working set (ADR 0051 §6) ────────────────────
+    // pens = edit-target hints (big 🖊); eyes = read-only context (small 👁),
+    // incl. ring targets promoted by "around here". The row glyphs reflect the
+    // dc-only sets; the tray shows the full eye list (papers/notes too).
+    penSet: new Set(),      // dc handles marked as edit targets
+    eyeSet: new Set(),      // dc handles with an eye (for row glyphs)
+    eyeList: [],            // full eye list [{handle,extent,kind,title,dc}]
+    wsText: '', wsModel: 'opus', wsMsg: '',
+    _seedMarks() {
+      let m = {};
+      try { m = JSON.parse(document.getElementById('dr-marks').textContent || '{}'); }
+      catch (e) { m = {}; }
+      this._absorb(m);
+    },
+    _absorb(m) {
+      this.penSet = new Set(m.pens || []);
+      this.eyeList = m.eyes || [];
+      this.eyeSet = new Set(this.eyeList.filter((e) => e.dc).map((e) => e.handle));
+      this._applyAllMarks();
+    },
+    async _postMarks(body) {
+      try {
+        const r = await fetch(`/drafts/${this.ident}/marks`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const d = await r.json();
+        if (d.ok) this._absorb(d.marks);
+      } catch (e) {}
+    },
+    onMark(detail) {
+      if (!detail) return;
+      if (detail.op === 'pen') this._postMarks({ op: 'pen', handles: [detail.dc] });
+      else if (detail.op === 'eye') this._postMarks({ op: 'eye', handles: [detail.dc] });
+      else if (detail.op === 'eye-section') this.eyeSection(detail.handle);
+    },
+    // Eye a whole section: every skeleton block under this heading (+ itself).
+    eyeSection(headingH) {
+      const hs = this.skel
+        .filter((b) => b.h === headingH || (b.anc || []).includes(headingH))
+        .map((b) => b.dc).filter(Boolean);
+      if (hs.length) this._postMarks({ op: 'eye', handles: hs, on: true });
+    },
+    eyeAll() {
+      const hs = this.skel.map((b) => b.dc).filter(Boolean);
+      if (hs.length) this._postMarks({ op: 'eye', handles: hs, on: true });
+    },
+    async around() {
+      const hs = [...new Set([...this.eyeSet, ...this.penSet])];
+      if (!hs.length) return;
+      try {
+        const r = await fetch(`/drafts/${this.ident}/around`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ handles: hs }),
+        });
+        const d = await r.json();
+        if (d.ok) this._absorb(d.marks);
+      } catch (e) {}
+    },
+    dropEye(h) { this._postMarks({ op: 'eye', handles: [h], on: false }); },
+    clearMarks() { this._postMarks({ op: 'clear' }); this.wsMsg = ''; },
+    async submitWs() {
+      if (!this.wsText.trim()) return;
+      this.wsMsg = 'sending…';
+      try {
+        const r = await fetch(`/drafts/${this.ident}/request-ws`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: this.wsText, model: this.wsModel }),
+        });
+        const d = await r.json();
+        this.wsMsg = d.ok ? 'sent to editor ✓' : ('error: ' + (d.error || ''));
+        if (d.ok) this.wsText = '';
+      } catch (e) { this.wsMsg = 'network error'; }
+    },
+    _applyMarks(node) {
+      if (!node || !node.querySelectorAll) return;
+      node.querySelectorAll('.dr-pen').forEach(
+        (b) => b.classList.toggle('on', this.penSet.has(b.dataset.dc)));
+      node.querySelectorAll('.dr-eye').forEach(
+        (b) => b.classList.toggle('on', this.eyeSet.has(b.dataset.dc)));
+      // A section eye lights when every child block under the heading is eyed.
+      node.querySelectorAll('.dr-eye-sec').forEach((b) => {
+        const kids = this.skel
+          .filter((x) => (x.anc || []).includes(b.dataset.handle))
+          .map((x) => x.dc).filter(Boolean);
+        b.classList.toggle('on', kids.length > 0 && kids.every((h) => this.eyeSet.has(h)));
+      });
+    },
+    _applyAllMarks() {
+      const win = document.getElementById('dr-win');
+      if (win) [...win.querySelectorAll('.dr-block')].forEach((n) => this._applyMarks(n));
+    },
+
     // ── virtual-scroll state ─────────────────────────────────────
     skel: [],        // all blocks: {h,dc,kind,depth,anc,heading,title,est}
     vis: [],         // collapse-filtered blocks, in document order
@@ -1149,6 +1296,7 @@ function draftDoc(ident) {
               this._syncToggle(node);
               if (window.htmx) window.htmx.process(node);
               __renderMath(node);
+              this._applyMarks(node);   // paint pen/eye glyphs on the fresh row
               this.heights[h] = node.offsetHeight || this.heights[h] || 0;
             }
           });
@@ -1320,6 +1468,9 @@ function draftDoc(ident) {
         this._syncToggle(node);
       });
       this.rebuildVis();
+      // 2b) seed the hand-driven working set (pens/eyes) + paint the glyphs on
+      //     the server-rendered first window (later rows paint on hydrate).
+      this._seedMarks();
       // 3) delegated caret clicks (placeholders are inert; one handler for
       //    both placeholder and hydrated headings).
       const doc = document.getElementById('doc');

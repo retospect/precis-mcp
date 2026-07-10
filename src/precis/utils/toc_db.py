@@ -269,6 +269,42 @@ def build_toc_segments(
     return out
 
 
+def cluster_blocks(
+    blocks: Sequence[Any],
+    *,
+    scope: tuple[int, int] | None = None,
+) -> list[tuple[list[Any], list[str]]]:
+    """Cluster a ref's ``blocks`` by adjacent keyword-Jaccard distance (F20),
+    returning ``[(bucket_blocks, keyword_label)]`` in reading order.
+
+    The same DP segmentation behind :func:`render_from_store` /
+    ``view='toc'``, but handed back as **the Block objects themselves** (with
+    their ``id``/``pos``/``text``) rather than a rendered table — so a caller
+    that addresses chunks by their universal ``pc<id>`` handle (the fisheye
+    eye render) can build handles off ``block.id`` instead of the legacy
+    ``slug~pos`` form. A short or keyword-barren body that shouldn't cluster
+    (:func:`_should_cluster`) yields one single-block cluster per block, so the
+    contract is uniform regardless of size. ``keyword_label`` is the bucket's
+    top-K label (possibly empty when no member carries keywords yet)."""
+    if not blocks:
+        return []
+    n = len(blocks)
+    singles = [([b], _top_keywords([b], top_k=_LABEL_TOP_K)) for b in blocks]
+    if not _should_cluster(n, scope):
+        return singles
+    distances = _adjacent_jaccard_distances(blocks)
+    if not distances:
+        return singles
+    raw_segments = segment_dp(distances, k=_target_k(n, scope))
+    segments = _collapse_singletons(raw_segments, min_size=_MIN_CLUSTER_SIZE)
+    out: list[tuple[list[Any], list[str]]] = []
+    for seg in segments:
+        bucket = list(blocks[seg.start : seg.end + 1])
+        if bucket:
+            out.append((bucket, _top_keywords(bucket, top_k=_LABEL_TOP_K)))
+    return out
+
+
 # ── helpers: cluster shape ───────────────────────────────────────────
 
 
@@ -475,4 +511,4 @@ def _empty_body(*, handle: str, kind: str, scope: tuple[int, int] | None) -> str
     )
 
 
-__all__ = ["build_toc_segments", "render_from_store"]
+__all__ = ["build_toc_segments", "cluster_blocks", "render_from_store"]

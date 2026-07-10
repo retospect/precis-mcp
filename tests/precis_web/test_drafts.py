@@ -1122,6 +1122,85 @@ def test_change_request_omits_parent_when_project_soft_deleted(tmp_path) -> None
     assert args["meta"]["anchor"] == "BBBBBB"
 
 
+# ── hand-driven working set: pen/eye marks + request-ws (ADR 0051 §6) ──
+
+
+class WsFakeStore(DraftFakeStore):
+    """DraftFakeStore that actually *persists* the sticky working set meta and
+    resolves ``dc<id>`` chunk handles (the real store's ``get_draft_chunk``
+    contract), so the pen/eye routes round-trip."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._ref_meta: dict[int, dict] = {}
+
+    def get_draft_chunk(self, handle, *, kind="draft"):
+        from precis.utils import handle_registry
+
+        p = handle_registry.parse(handle)
+        if p and p[1]:  # dc<id> universal chunk handle → look up by chunk_id
+            return next((c for c in self._chunks if c.chunk_id == p[2]), None)
+        return super().get_draft_chunk(handle)
+
+    def stamp_ref_meta(self, ref_id, updates, *, conn=None):
+        super().stamp_ref_meta(ref_id, updates)  # keeps meta_writes for other tests
+        self._ref_meta.setdefault(ref_id, {}).update(updates)
+
+    def fetch_refs_by_ids(self, ids, *, include_deleted=False):
+        base = super().fetch_refs_by_ids(ids, include_deleted=include_deleted)
+        if 500 in ids and 500 not in base:
+            base[500] = SimpleNamespace(
+                id=500,
+                kind="draft",
+                title="Nano draft",
+                meta=self._ref_meta.get(500, {}),
+                deleted_at=None,
+            )
+        return base
+
+
+def _ws_client(tmp_path):
+    rt = FakeRuntime(WsFakeStore())
+    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
+    return rt, TestClient(app)
+
+
+def test_marks_pen_round_trips_and_auto_opens_an_eye(tmp_path) -> None:
+    _rt, client = _ws_client(tmp_path)
+    r = client.post("/drafts/nt/marks", json={"op": "pen", "handles": ["dc2"]})
+    assert r.status_code == 200
+    marks = r.json()["marks"]
+    assert "dc2" in marks["pens"]
+    assert any(e["handle"] == "dc2" for e in marks["eyes"])  # pen implies eye
+
+
+def test_marks_clear_wipes_the_set(tmp_path) -> None:
+    _rt, client = _ws_client(tmp_path)
+    client.post("/drafts/nt/marks", json={"op": "pen", "handles": ["dc2"]})
+    r = client.post("/drafts/nt/marks", json={"op": "clear"})
+    assert r.json()["marks"] == {"pens": [], "eyes": []}
+
+
+def test_request_ws_422_without_any_marks(tmp_path) -> None:
+    _rt, client = _ws_client(tmp_path)
+    r = client.post("/drafts/nt/request-ws", json={"text": "tighten"})
+    assert r.status_code == 422
+
+
+def test_request_ws_files_todo_carrying_the_working_set(tmp_path) -> None:
+    rt, client = _ws_client(tmp_path)
+    client.post("/drafts/nt/marks", json={"op": "pen", "handles": ["dc2"]})
+    r = client.post(
+        "/drafts/nt/request-ws", json={"text": "tighten this", "model": "opus"}
+    )
+    assert r.status_code == 200 and r.json()["ok"]
+    verb, args = rt.calls[-1]
+    assert verb == "put" and args["kind"] == "todo"
+    assert args["parent_id"] == 1  # the draft-of project
+    assert args["meta"]["working_set"]["edit_hint"] == ["dc2"]  # the pen hint
+    assert args["meta"]["anchor"] == "BBBBBB"  # dc2 → its base-58 anchor
+
+
 def test_ref_chips_dedup_sigil_and_kindref() -> None:
     """§kong24~2 and paper:kong24~2 are the same target → one chip."""
     from precis_web.routes.drafts import _ref_chips

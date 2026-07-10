@@ -34,6 +34,12 @@ Routes:
 * ``GET /draft/{ident}`` — singular convenience alias → 303 to the reader.
 * ``POST /drafts/{ident}/request`` — file a change request (anchored todo
   parented on the draft's project; flows into the todo tree → dispatch).
+* ``POST /drafts/{ident}/marks`` / ``/around`` / ``/request-ws`` — the
+  hand-driven working set (ADR 0051 §6, see ``precis_web.draft_eyes``): toggle
+  pen/eye markers on paragraphs, expand a selection into eyes over its
+  reference ring, and file a change request carrying the whole set
+  (``meta.working_set``) so the planner tick edits the pens grounded in the
+  eyes instead of a single anchor.
 * ``POST /drafts/{ident}/delete`` — soft-delete the whole draft, gated on
   typing its name (atomic: ref ``deleted_at`` + chunks retired; recoverable).
 * ``GET /c/{handle}`` — resolve a chunk handle → redirect to where it
@@ -88,6 +94,7 @@ from precis.utils.authors import (
 from precis.utils.embed_query import embed_query
 from precis.utils.figure_clearance import draft_figure_clearance, figure_status
 from precis.utils.table_data import Scalar, table_payload
+from precis_web import draft_eyes
 from precis_web.deps import (
     await_dispatch,
     get_runtime,
@@ -1696,6 +1703,9 @@ async def reader(request: Request, ident: str) -> Response:
             "work": _work_items(store, ref.id),
             "clearance": draft_figure_clearance(store, ref.id),
             "wordcount": _wordcount_summary(chunk_objs),
+            # The sticky hand-driven working set (ADR 0051 §6) — pens/eyes the
+            # client seeds its glyph state from (empty when unset/expired).
+            "marks": _marks_view(store, draft_eyes.load_marks(store, ref.id)),
             # Genre + project-context editor (post-creation; ADR 0037).
             "doctypes": _DOC_TYPES,
             "cur_doctype": str(owner_ws.get("doc_type") or ""),
@@ -2011,6 +2021,147 @@ async def request_change(
     return await redirect_or_error(
         request, "put", args, redirect=back, error_title="Change request error"
     )
+
+
+def _is_dc(handle: str) -> bool:
+    """True for a universal draft-chunk handle (``dc<id>``)."""
+    p = handle_registry.parse(handle)
+    return bool(p and p[0] == "draft" and p[1])
+
+
+def _marks_view(store: Any, marks: dict[str, Any]) -> dict[str, Any]:
+    """A client-friendly render of the sticky set: ``pens`` (dc handles) + an
+    ``eyes`` list carrying each eye's kind/title/is-draft-chunk so the tray can
+    label a promoted ring target (``pa721 — Rigidity percolation``)."""
+    eyes_map: dict[str, str] = marks.get("eyes") or {}
+    parsed = {h: handle_registry.parse(h) for h in eyes_map}
+    ref_ids = [p[2] for p in parsed.values() if p and not p[1]]
+    titles = store.fetch_refs_by_ids(ref_ids) if ref_ids else {}
+    eyes: list[dict[str, Any]] = []
+    for h, ext in eyes_map.items():
+        p = parsed[h]
+        is_chunk = bool(p and p[1])
+        title = ""
+        if p and not is_chunk:
+            r = titles.get(p[2])
+            title = (getattr(r, "title", None) or "") if r else ""
+        eyes.append(
+            {
+                "handle": h,
+                "extent": ext,
+                "kind": p[0] if p else "?",
+                "title": title,
+                "dc": is_chunk,
+            }
+        )
+    return {"pens": list(marks.get("pens") or []), "eyes": eyes}
+
+
+@router.post("/drafts/{ident}/marks")
+async def edit_marks(request: Request, ident: str) -> JSONResponse:
+    """Toggle a pen/eye on draft chunks in the reader's sticky working set (ADR
+    0051 §6, hand-driven). Body ``{op:'pen'|'eye'|'clear', handles:[dc…],
+    on?:bool, extent?:str}``. Penning auto-opens an eye; ``clear`` wipes. Returns
+    the stored marks so the client re-syncs its glyph sets."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    op = str(payload.get("op") or "")
+    handles = [str(h) for h in (payload.get("handles") or []) if str(h).strip()]
+    on = payload.get("on")
+    marks = draft_eyes.load_marks(store, ref.id)
+    if op == "clear":
+        marks = {"pens": [], "eyes": {}, "updated_at": None}
+    elif op == "pen":
+        for h in handles:
+            draft_eyes.toggle_pen(marks, h, on=on)
+    elif op == "eye":
+        ext = payload.get("extent")
+        for h in handles:
+            draft_eyes.toggle_eye(marks, h, on=on, extent=ext)
+    else:
+        return JSONResponse({"ok": False, "error": f"bad op {op!r}"}, status_code=400)
+    stored = draft_eyes.save_marks(store, ref.id, marks)
+    return JSONResponse({"ok": True, "marks": _marks_view(store, stored)})
+
+
+@router.post("/drafts/{ident}/around")
+async def edit_around(request: Request, ident: str) -> JSONResponse:
+    """*Around here*: expand the given draft chunks into eyes — the chunks plus
+    their reference rings promoted to real eyes (cited papers, cross-refs, linked
+    notes). Body ``{handles:[dc…]}``. Returns the stored marks."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    handles = [str(h) for h in (payload.get("handles") or []) if _is_dc(str(h))]
+    marks = draft_eyes.load_marks(store, ref.id)
+    draft_eyes.expand_around(store, ref.id, handles, marks)
+    stored = draft_eyes.save_marks(store, ref.id, marks)
+    return JSONResponse({"ok": True, "marks": _marks_view(store, stored)})
+
+
+@router.post("/drafts/{ident}/request-ws")
+async def request_change_ws(request: Request, ident: str) -> JSONResponse:
+    """File a change request carrying the reader's hand-curated working set: the
+    todo gets ``meta.working_set = {eyes, edit_hint}`` (the planner tick renders
+    the whole set) and ``meta.anchor`` set to the first pen so the classic
+    anchor modules still fire. Body ``{text, model}``."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"ok": False, "error": "empty request"}, status_code=422)
+    marks = draft_eyes.load_marks(store, ref.id)
+    if not marks["pens"] and not marks["eyes"]:
+        return JSONResponse(
+            {"ok": False, "error": "no eyes or pens set — mark some paragraphs first"},
+            status_code=422,
+        )
+    model = str(payload.get("model") or "opus")
+    tier = model if model in _PLANNER_MODELS else "opus"
+    # Anchor at the first pen (else the first draft-chunk eye), in the base-58
+    # form the classic anchor modules + the reader deep-link expect.
+    anchor_dc = (
+        marks["pens"][0]
+        if marks["pens"]
+        else next((h for h in marks["eyes"] if _is_dc(h)), None)
+    )
+    anchor = None
+    if anchor_dc:
+        chunk = store.get_draft_chunk(anchor_dc, kind="draft")
+        anchor = chunk.handle if chunk is not None else None
+    meta: dict[str, Any] = {"working_set": draft_eyes.to_working_set_meta(marks)}
+    if anchor:
+        meta["anchor"] = anchor
+    args: dict[str, Any] = {
+        "kind": "todo",
+        "text": text,
+        "meta": meta,
+        "tags": [f"LLM:{tier}"],
+    }
+    project = _project_id(store, ref.id)
+    if project is not None:
+        args["parent_id"] = project
+    body, is_error = await await_dispatch(request, "put", args)
+    if is_error:
+        return JSONResponse({"ok": False, "error": body}, status_code=400)
+    return JSONResponse({"ok": True, "anchor": anchor})
 
 
 @router.post("/drafts/{ident}/text")

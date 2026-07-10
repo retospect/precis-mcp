@@ -1343,17 +1343,69 @@ def _planner_fisheye_enabled() -> bool:
     )
 
 
+def _render_reader_working_set(store: Store, ref_id: int) -> str:
+    """Render a hand-curated working set (ADR 0051 §6) the draft reader attached
+    to this change-request as ``meta.working_set`` — the author's **eyes** (pens
+    + context + promoted ring targets) composed into one deduplicated context,
+    plus the **edit-these-at-a-minimum** pen hint. Empty when the tick carries no
+    working set (the classic single-anchor path then applies)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->'working_set' FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    ws_meta = row[0] if row and isinstance(row[0], dict) else None
+    if not ws_meta:
+        return ""
+    eyes = ws_meta.get("eyes") or []
+    if not eyes:
+        return ""
+    from precis.utils.working_set_render import render_working_set
+    from precis.workers.working_set import WorkingSet
+
+    ws = WorkingSet()
+    for e in eyes:
+        try:
+            ws.focus(str(e["handle"]), e.get("extent", "fisheye+1hop"))
+        except Exception:
+            continue  # skip a malformed eye, keep the rest
+    if not ws.eyes:
+        return ""
+    try:
+        rendered = render_working_set(store, ws)
+    except Exception:
+        log.debug("planner working-set render failed for ref %s", ref_id, exc_info=True)
+        return ""
+    parts: list[str] = []
+    hint = [str(h) for h in (ws_meta.get("edit_hint") or [])]
+    if hint:
+        parts.append(
+            "## Edit these, at a minimum (probably)\n\n"
+            + ", ".join(hint)
+            + "\n\nThese are the author's marked edit targets — start here; the "
+            "working set below is your read-only grounding."
+        )
+    parts.append(f"## Working set — the author's eyes in context (§6)\n\n{rendered}")
+    return "\n\n".join(parts)
+
+
 def _m_fisheye(ctx: AssemblyContext) -> str:
     """A `fisheye+1hop` over the anchored section (ADR 0051 §6) — its
     neighborhood **plus the reference ring** (cited papers/patents + linked
     notes) the planner otherwise never sees. Complements the whole-draft body
     (that is every section; this is the anchor's locale + what it points at).
 
+    When the change-request carries a hand-curated ``meta.working_set`` (the
+    reader's pens + eyes), that **multi-eye** set is rendered instead — the
+    author drove the curation, so honour it over the single-anchor default.
+
     **Additive and fallback-safe:** gated `has_anchor`, flag default-ON, and any
     render failure degrades to empty — it can never break the planner prompt."""
     if not _planner_fisheye_enabled():
         return ""
     assert ctx.store is not None
+    curated = _render_reader_working_set(ctx.store, ctx.ref_id)
+    if curated:
+        return curated
     anchor = ctx.extras.get("anchor")
     if not anchor:
         return ""
