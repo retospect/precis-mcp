@@ -262,3 +262,89 @@ class TestPrintStatus:
         # nested-record consumers want real ints.
         assert isinstance(decoded[0]["total"], int)
         assert decoded[0]["handler"] == "embed:bge-m3"
+
+
+# ---------------------------------------------------------------------------
+# Ref-pass scheduling priority (real work before background I/O)
+# ---------------------------------------------------------------------------
+
+
+class TestRefPassPriority:
+    """``ref_passes`` must run job execution + planner lifecycle ahead
+    of slow fetch/enrichment/reviewer passes, or a fetch backlog
+    starves ``dispatch`` and the planner stalls (the incident this
+    ordering was introduced for). The run loop is sequential per cycle,
+    so priority == list order.
+    """
+
+    @staticmethod
+    def _named(name):
+        # Stand-in for a registered ref-pass closure: only ``__name__``
+        # matters to the scheduler.
+        def _pass(_batch_size):  # pragma: no cover - never invoked
+            raise AssertionError("scheduling test never calls the pass")
+
+        _pass.__name__ = name
+        return _pass
+
+    def test_real_work_outranks_background_fetch(self):
+        from precis.cli.worker import _ref_pass_priority
+
+        dispatch = _ref_pass_priority(self._named("_dispatch_pass"))
+        inproc = _ref_pass_priority(self._named("_job_claude_inproc_pass"))
+        for slow in ("_fetch_pass", "_chase_pass", "_gp_fetch_pass"):
+            assert dispatch < _ref_pass_priority(self._named(slow))
+            assert inproc < _ref_pass_priority(self._named(slow))
+
+    def test_plan_tick_executor_outranks_reviewers(self):
+        # On the agent profile the plan_tick executor must not sit
+        # behind the multi-minute opus reviewers.
+        from precis.cli.worker import _ref_pass_priority
+
+        inproc = _ref_pass_priority(self._named("_job_claude_inproc_pass"))
+        for reviewer in (
+            "_structural_pass",
+            "_deep_review_pass",
+            "_llm_summarize_pass",
+        ):
+            assert inproc < _ref_pass_priority(self._named(reviewer))
+
+    def test_unknown_pass_lands_between_real_work_and_tail(self):
+        from precis.cli.worker import _ref_pass_priority
+
+        unknown = _ref_pass_priority(self._named("_some_plugin_pass"))
+        assert _ref_pass_priority(self._named("_dispatch_pass")) < unknown
+        assert unknown < _ref_pass_priority(self._named("_fetch_pass"))
+
+    def test_stable_sort_pulls_dispatch_ahead_of_fetch(self):
+        # Registration order has fetch before dispatch (fetch_oa at 746,
+        # dispatch at 924); the sort must invert that while keeping
+        # intra-band registration order stable.
+        from precis.cli.worker import _ref_pass_priority
+
+        registered = [
+            self._named(n)
+            for n in (
+                "_chase_pass",
+                "_fetch_pass",
+                "_llm_summarize_pass",
+                "_auto_check_pass",
+                "_dispatch_pass",
+                "_sweeper_pass",
+                "_job_claude_inproc_pass",
+            )
+        ]
+        registered.sort(key=_ref_pass_priority)
+        order = [p.__name__ for p in registered]
+        # Job execution first, then lifecycle, then the fetch tail.
+        assert order.index("_job_claude_inproc_pass") < order.index("_auto_check_pass")
+        assert order.index("_dispatch_pass") < order.index("_fetch_pass")
+        assert order.index("_dispatch_pass") < order.index("_chase_pass")
+        assert order.index("_sweeper_pass") < order.index("_llm_summarize_pass")
+        # Stable within the lifecycle band: auto_check kept ahead of
+        # dispatch kept ahead of sweeper (their registration order).
+        assert (
+            order.index("_auto_check_pass")
+            < order.index("_dispatch_pass")
+            < order.index("_sweeper_pass")
+        )

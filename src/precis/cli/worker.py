@@ -24,7 +24,7 @@ import logging
 import os
 import signal
 import sys
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from precis.cli._common import (
     add_format_argument,
@@ -40,6 +40,66 @@ from precis.workers import (
     WorkerHandler,
     run_loop,
 )
+
+if TYPE_CHECKING:
+    from precis.workers.runner import RefPass
+
+# ── ref-pass scheduling priority ──────────────────────────────────
+#
+# ``run_loop`` (workers/runner.run_loop) walks ``ref_passes`` in list
+# order, sequentially, once per cycle: a slow pass registered ahead of
+# another delays every pass behind it by its full batch duration. That
+# is how a post-outage ``fetch_oa`` backlog once froze the planner —
+# the fetch pass monopolised the single worker thread for tens of
+# minutes each cycle while ``dispatch`` (which mints the planner's
+# ``plan_tick`` jobs) sat near the end of the registration list and
+# never got a turn, so freshly-created ``LLM:*`` todos went
+# un-dispatched cluster-wide.
+#
+# Fix: sort ``ref_passes`` by this band just before the loop so
+# latency-critical *real work* (job execution + planner lifecycle)
+# always runs before slow *background I/O* (paper/patent fetch, LLM
+# enrichment, weekly reviewers). ``list.sort`` is STABLE, so the
+# registration order is preserved within a band. Keyed by the
+# closure's ``__name__``; anything unlisted falls in the DEFAULT band
+# (after real work, before the heavy background tail). Applies to both
+# profiles — on the agent worker it also keeps ``job_claude_inproc``
+# (the plan_tick executor) ahead of the multi-minute opus reviewers.
+_REF_PASS_PRIORITY_DEFAULT = 20
+_REF_PASS_PRIORITY: dict[str, int] = {
+    # 0 — job execution: the planner coroutine itself (plan_tick via
+    # job_claude_inproc) plus the other job runners.
+    "_job_claude_inproc_pass": 0,
+    "_job_coordinator_pass": 0,
+    "_job_ssh_node_pass": 0,
+    "_job_claude_docker_pass": 0,
+    "_wake_runner_pass": 0,
+    # 10 — planner lifecycle: unblock, schedule, mint, unstick.
+    "_auto_check_pass": 10,
+    "_schedule_pass": 10,
+    "_dispatch_pass": 10,
+    "_sweeper_pass": 10,
+    # 15 — cheap SQL health.
+    "_nursery_pass": 15,
+    # 20 — DEFAULT band (enrichment / indexing / reconcile / plugins).
+    # 30 — heavy background tail: external fetch + LLM + reviewers.
+    "_chase_pass": 30,
+    "_fetch_pass": 30,
+    "_gp_fetch_pass": 30,
+    "_llm_summarize_pass": 30,
+    "_classify_pass": 30,
+    "_structural_pass": 30,
+    "_deep_review_pass": 30,
+    "_dream_agent_pass": 30,
+}
+
+
+def _ref_pass_priority(fn: RefPass) -> int:
+    """Scheduling band for a ref-pass closure (lower runs earlier)."""
+    return _REF_PASS_PRIORITY.get(
+        getattr(fn, "__name__", ""), _REF_PASS_PRIORITY_DEFAULT
+    )
+
 
 # Column order for ``precis worker --status``. Keeping it in one
 # place means every renderer (TOON, JSON, table) sees the same
@@ -371,8 +431,10 @@ def run(args: argparse.Namespace) -> None:
         # runs the chunk-level handlers + this pass each cycle; the
         # ``--only chunk_keywords`` choice drops chunk-level work and
         # drains this queue alone.
-        from precis.workers.runner import RefPass
-
+        #
+        # ``RefPass`` is imported at module scope under TYPE_CHECKING;
+        # the annotation below is stringized (``from __future__ import
+        # annotations``) so no runtime import is needed here.
         ref_passes: list[RefPass] = []
         if _pass_enabled("chunk_keywords"):
             from precis.workers.chunk_keywords import run_chunk_keywords_pass
@@ -1006,6 +1068,14 @@ def run(args: argparse.Namespace) -> None:
                 return run_dream_pass(store)
 
             ref_passes.append(_dream_agent_pass)
+
+        # Real work before background I/O. The run loop is sequential
+        # per cycle, so ordering is priority: job execution + planner
+        # lifecycle must run ahead of slow fetch/enrichment/reviewer
+        # passes or a fetch backlog starves ``dispatch`` and the
+        # planner stalls. Stable sort ⇒ registration order preserved
+        # within a band. See ``_REF_PASS_PRIORITY``.
+        ref_passes.sort(key=_ref_pass_priority)
 
         stop_flag = _install_signal_handlers()
         run_loop(
