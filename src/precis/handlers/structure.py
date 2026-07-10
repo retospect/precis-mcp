@@ -177,7 +177,7 @@ class StructureHandler(Handler):
             "Atomistic cell + bond-graph design (ADR 0043). put creates/replaces "
             "from JSON {cell:{a,b,c,pbc}|{lattice,pbc}, ops:[...]}; edit applies "
             "more ops (set_cell/add_atom/set_element/vacancy/displace/add_bond/"
-            "remove_bond/constrain, plus cursor/measure/unmark/remove_measure "
+            "remove_bond/constrain, plus eye/measure/unmark/remove_measure "
             "markers); get lists designs, shows a TOC (id=slug), or probes "
             "(view='atom|neighborhood|bonds|find|validate|markers', args={...}); "
             "link relates designs (rel='derived-from'); delete soft-retires. "
@@ -449,18 +449,18 @@ class StructureHandler(Handler):
         )
 
     def _render_markers(self, scene: Scene) -> Response:
-        """The design's cursors + measures (§6.8/§7), each re-evaluated against
+        """The design's eyes + measures (§6.8/§7), each re-evaluated against
         the current geometry so value + verdict are live, never stale."""
         if not scene.measures:
             return Response(
-                body="# no cursors or measures yet\n\nNext: edit(kind='structure', "
-                "id=…, ops=[{'op':'cursor','name':'active_site',"
+                body="# no eyes or measures yet\n\nNext: edit(kind='structure', "
+                "id=…, ops=[{'op':'eye','name':'active_site',"
                 "'atoms':['aPd12'],'reach':3.0,'for':'the reactive site'}])"
             )
         rows: list[dict[str, str]] = []
         for m in scene.measures:
             value, verdict = evaluate_measure(scene, m)
-            if m.kind == "cursor":
+            if m.kind == "eye":
                 shown = (
                     value["error"]
                     if "error" in value
@@ -482,7 +482,7 @@ class StructureHandler(Handler):
                 }
             )
         return Response(
-            body=f"# {len(rows)} cursor(s) + measure(s)\n"
+            body=f"# {len(rows)} eye(s) + measure(s)\n"
             + render_agent_table(
                 rows,
                 schema=["marker", "kind", "atoms", "for", "value", "verdict"],

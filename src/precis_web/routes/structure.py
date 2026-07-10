@@ -337,12 +337,12 @@ def _viewer(store: Any, ref: Any, runs: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _markers(scene: Any) -> list[dict[str, Any]]:
-    """The design's cursors + measures, each live-evaluated, shaped for the panel
+    """The design's eyes + measures, each live-evaluated, shaped for the panel
     + the viewer overlay (``operands`` become the ``data-atoms`` hover targets)."""
     out: list[dict[str, Any]] = []
     for m in scene.measures:
         value, verdict = evaluate_measure(scene, m)
-        if m.kind == "cursor":
+        if m.kind == "eye":
             shown = value.get("error") or f"touches {len(value.get('touch', []))}"
         elif "error" in value:
             shown = value["error"]
@@ -352,7 +352,7 @@ def _markers(scene: Any) -> list[dict[str, Any]]:
         out.append(
             {
                 "kind": m.kind,
-                "is_cursor": m.kind == "cursor",
+                "is_eye": m.kind == "eye",
                 "label": m.name or m.kind,
                 "operands": m.operands,
                 "for": m.for_,

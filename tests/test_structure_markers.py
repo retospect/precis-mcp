@@ -1,6 +1,6 @@
-"""Cursors + measures + lineage links for the ``structure`` kind (ADR 0043 §6.8/§7).
+"""Eyes + measures + lineage links for the ``structure`` kind (ADR 0043 §6.8/§7).
 
-Increment 1 of the viewer bundle: the write path (cursor/measure/unmark/
+Increment 1 of the viewer bundle: the write path (eye/measure/unmark/
 remove_measure ops), the versioned persistence (markers survive an edit and
 re-evaluate), the ``view='markers'`` read, dangling-anchor handling, and the
 ``derived-from`` lineage link between two designs.
@@ -53,13 +53,13 @@ def _pd_scene() -> Scene:
 # ── pure-unit: ops + evaluation ──────────────────────────────────────────
 
 
-def test_cursor_and_measure_ops_populate_and_evaluate():
+def test_eye_and_measure_ops_populate_and_evaluate():
     scene = _pd_scene()
     apply_ops(
         scene,
         [
             {
-                "op": "cursor",
+                "op": "eye",
                 "name": "active_site",
                 "atoms": ["aPd1"],
                 "reach": 3.0,
@@ -77,10 +77,10 @@ def test_cursor_and_measure_ops_populate_and_evaluate():
         ],
     )
     assert len(scene.measures) == 2
-    cursor = next(m for m in scene.measures if m.kind == "cursor")
+    eye = next(m for m in scene.measures if m.kind == "eye")
     dist = next(m for m in scene.measures if m.kind == "distance")
 
-    cval, cverdict = evaluate_measure(scene, cursor)
+    cval, cverdict = evaluate_measure(scene, eye)
     assert cverdict is None
     assert [t["label"] for t in cval["touch"]] == [
         "aPd2"
@@ -102,13 +102,13 @@ def test_measure_op_arity_and_kind_validation():
             scene, [{"op": "measure", "kind": "bogus", "atoms": ["aPd1", "aPd2"]}]
         )
     with pytest.raises(OpError):
-        apply_ops(scene, [{"op": "cursor", "atoms": ["aPd1"]}])  # no name
+        apply_ops(scene, [{"op": "eye", "atoms": ["aPd1"]}])  # no name
 
 
-def test_cursor_replace_and_unmark():
+def test_eye_replace_and_unmark():
     scene = _pd_scene()
-    apply_ops(scene, [{"op": "cursor", "name": "site", "atoms": ["aPd1"]}])
-    apply_ops(scene, [{"op": "cursor", "name": "site", "atoms": ["aPd2"]}])  # replace
+    apply_ops(scene, [{"op": "eye", "name": "site", "atoms": ["aPd1"]}])
+    apply_ops(scene, [{"op": "eye", "name": "site", "atoms": ["aPd2"]}])  # replace
     assert len(scene.measures) == 1 and scene.measures[0].operands == ["aPd2"]
     apply_ops(scene, [{"op": "unmark", "name": "site"}])
     assert scene.measures == []
@@ -134,7 +134,7 @@ def test_markers_persist_and_reevaluate_across_edit(structure):
         id="pd_marks",
         ops=[
             {
-                "op": "cursor",
+                "op": "eye",
                 "name": "active_site",
                 "atoms": ["aPd1"],
                 "reach": 3.0,
@@ -161,13 +161,9 @@ def test_markers_persist_and_reevaluate_across_edit(structure):
     ref = resolve_live_slug_ref(structure.store, kind="structure", id="pd_marks")
     scene, _ = structure.store.structure_load(ref.id)
     kinds = sorted(m.kind for m in scene.measures)
-    assert kinds == ["cursor", "distance"]
-    cursor = next(m for m in scene.measures if m.kind == "cursor")
-    assert (
-        cursor.name == "active_site"
-        and cursor.reach == 3.0
-        and cursor.for_ == "reactive Pd"
-    )
+    assert kinds == ["distance", "eye"]
+    eye = next(m for m in scene.measures if m.kind == "eye")
+    assert eye.name == "active_site" and eye.reach == 3.0 and eye.for_ == "reactive Pd"
 
 
 def test_remove_measure_op_persists(structure):
@@ -219,9 +215,7 @@ def test_link_requires_target(structure):
 def test_derive_branches_new_slug_with_lineage(structure):
     structure.put(id="pd_base", text=_PD)
     # give the parent a marker so we can prove it carries over
-    structure.edit(
-        id="pd_base", ops=[{"op": "cursor", "name": "site", "atoms": ["aPd1"]}]
-    )
+    structure.edit(id="pd_base", ops=[{"op": "eye", "name": "site", "atoms": ["aPd1"]}])
 
     resp = structure.derive(
         id="pd_base",
@@ -233,10 +227,10 @@ def test_derive_branches_new_slug_with_lineage(structure):
     parent = resolve_live_slug_ref(structure.store, kind="structure", id="pd_base")
     child = resolve_live_slug_ref(structure.store, kind="structure", id="pd_base_o")
 
-    # the derived design has the new atom + the carried-over cursor
+    # the derived design has the new atom + the carried-over eye
     scene, _ = structure.store.structure_load(child.id)
     assert "aO1" in scene.atoms
-    assert any(m.kind == "cursor" and m.name == "site" for m in scene.measures)
+    assert any(m.kind == "eye" and m.name == "site" for m in scene.measures)
 
     # lineage recorded child → parent
     out = structure.store.links_for(child.id, direction="out", relation="derived-from")

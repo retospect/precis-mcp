@@ -204,13 +204,13 @@
     </div>
   </div>
 
-  {# ── cursors & measures ── #}
+  {# ── eyes & measures ── #}
   <div>
-    <h2 class="text-sm font-semibold text-slate-700 mb-2">Cursors &amp; measures
+    <h2 class="text-sm font-semibold text-slate-700 mb-2">Eyes &amp; measures
       <span class="text-xs font-normal text-slate-400">— hover a row to glow its atoms (§6.8/§7)</span>
     </h2>
     {% if not markers %}
-      <p class="text-sm text-slate-500">None yet. Add one via an instruction ("mark the active site") or a cursor/measure op.</p>
+      <p class="text-sm text-slate-500">None yet. Add one via an instruction ("mark the active site") or an eye/measure op.</p>
     {% else %}
     <div class="space-y-1">
       {% for m in markers %}
@@ -377,12 +377,12 @@
       viewer.render();
     }
 
-    // ── cursors & measures overlay ──
+    // ── eyes & measures overlay ──
     function drawMarkers() {
       (V.markers || []).forEach((mk) => {
         const pts = mk.operands.map((l) => currentPos[l]).filter(Boolean);
         if (!pts.length) { return; }
-        if (mk.is_cursor) {
+        if (mk.is_eye) {
           const c = pts.reduce((a, p) => [a[0]+p[0], a[1]+p[1], a[2]+p[2]], [0,0,0])
                        .map((x) => x / pts.length);
           viewer.addLabel('⚑ ' + mk.label, {

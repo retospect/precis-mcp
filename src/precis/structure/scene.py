@@ -54,11 +54,11 @@ class Bond:
 
 @dataclass
 class Measure:
-    """A persisted cursor or measure (ADR 0043 §6.8 / §7), re-evaluated on read.
+    """A persisted eye or measure (ADR 0043 §6.8 / §7), re-evaluated on read.
 
     Two shapes over one row (``struct_measures``), discriminated by ``kind``:
 
-    * ``kind='cursor'`` — a **named embodiment** (``@active_site``): ``name`` +
+    * ``kind='eye'`` — a **named embodiment** (``@active_site``): ``name`` +
       an ``operands`` support set of atom labels + an optional ``reach`` Å, with
       a ``for_`` purpose. The "you are here / this is the reactive site" handle.
     * ``kind`` in ``{distance, angle, coordination, bond_length}`` — a **measure**
@@ -71,8 +71,8 @@ class Measure:
 
     kind: str
     operands: list[str] = field(default_factory=list)  # atom labels
-    name: str | None = None  # cursor name (@active_site)
-    reach: float | None = None  # cursor embodiment reach (Å)
+    name: str | None = None  # eye name (@active_site)
+    reach: float | None = None  # eye embodiment reach (Å)
     direction: str | None = None  # min | max | target
     goal: dict[str, float] | None = None  # e.g. {'target': 2.4, 'tol': 0.1}
     strength: str = "gauge"  # hard | soft | gauge
@@ -86,7 +86,7 @@ class Scene:
     cell: Cell
     atoms: dict[str, Atom] = field(default_factory=dict)
     bonds: list[Bond] = field(default_factory=list)
-    #: Persisted cursors + measures (ADR 0043 §6.8/§7), re-evaluated on read.
+    #: Persisted eyes + measures (ADR 0043 §6.8/§7), re-evaluated on read.
     measures: list[Measure] = field(default_factory=list)
     #: Per-element never-recycled high-water mark, seeded from the store on load
     #: so a label survives a vacancy (ADR 0043 §12 no-recycle). The store

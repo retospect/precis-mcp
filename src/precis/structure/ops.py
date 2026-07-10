@@ -145,27 +145,27 @@ def _op_constrain(scene: Scene, op: dict[str, Any]) -> None:
         _require_atom(scene, label).fixed = mask
 
 
-def _op_cursor(scene: Scene, op: dict[str, Any]) -> None:
-    """Drop / replace a named cursor — a §6.8 embodiment over a support set."""
+def _op_eye(scene: Scene, op: dict[str, Any]) -> None:
+    """Drop / replace a named eye — a §6.8 embodiment over a support set."""
     name = op.get("name")
     if not name:
-        raise OpError("cursor needs a 'name' (e.g. 'active_site')")
+        raise OpError("eye needs a 'name' (e.g. 'active_site')")
     atoms = op.get("atoms") or op.get("support") or []
     if not atoms:
-        raise OpError("cursor needs 'atoms' (its support set)")
+        raise OpError("eye needs 'atoms' (its support set)")
     for label in atoms:
         _require_atom(scene, label)
     reach = op.get("reach")
     m = Measure(
-        kind="cursor",
+        kind="eye",
         name=str(name),
         operands=[str(a) for a in atoms],
         reach=float(reach) if reach is not None else None,
         for_=op.get("for"),
     )
-    # a cursor name is unique within the design — replace any prior one
+    # an eye name is unique within the design — replace any prior one
     scene.measures = [
-        x for x in scene.measures if not (x.kind == "cursor" and x.name == m.name)
+        x for x in scene.measures if not (x.kind == "eye" and x.name == m.name)
     ]
     scene.measures.append(m)
 
@@ -203,16 +203,16 @@ def _op_measure(scene: Scene, op: dict[str, Any]) -> None:
 
 
 def _op_unmark(scene: Scene, op: dict[str, Any]) -> None:
-    """Retire a cursor by name."""
+    """Retire an eye by name."""
     name = op.get("name")
     if not name:
-        raise OpError("unmark needs a cursor 'name'")
+        raise OpError("unmark needs an eye 'name'")
     before = len(scene.measures)
     scene.measures = [
-        x for x in scene.measures if not (x.kind == "cursor" and x.name == str(name))
+        x for x in scene.measures if not (x.kind == "eye" and x.name == str(name))
     ]
     if len(scene.measures) == before:
-        raise OpError(f"no cursor named {name!r}")
+        raise OpError(f"no eye named {name!r}")
 
 
 def _op_remove_measure(scene: Scene, op: dict[str, Any]) -> None:
@@ -236,7 +236,7 @@ _OPS = {
     "add_bond": _op_add_bond,
     "remove_bond": _op_remove_bond,
     "constrain": _op_constrain,
-    "cursor": _op_cursor,
+    "eye": _op_eye,
     "measure": _op_measure,
     "unmark": _op_unmark,
     "remove_measure": _op_remove_measure,

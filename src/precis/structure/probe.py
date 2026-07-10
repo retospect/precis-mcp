@@ -463,7 +463,7 @@ def pov(scene: Scene, support: list[str], reach: float = 3.0) -> Pov:
 
     Stateless v1: the support is given explicitly (a single atom or a set —
     e.g. a fragment from ``fragments()`` or a ring from ``rings()``). The
-    *persisted, named* cursor with a bookmark stack is the stateful refinement
+    *persisted, named* eye with a bookmark stack is the stateful refinement
     (§6.8, vision). ``i_touch`` = atoms within ``reach`` Å of any support atom,
     excluding the support itself, nearest-first.
     """

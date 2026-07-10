@@ -1,4 +1,4 @@
-"""Evaluate persisted cursors + measures against the live Scene (ADR 0043 §6.8/§7).
+"""Evaluate persisted eyes + measures against the live Scene (ADR 0043 §6.8/§7).
 
 A :class:`~precis.structure.scene.Measure` is *declared intent* — the anchor atom
 labels, an optional goal, a purpose. Its **current** value (a distance in Å, an
@@ -7,7 +7,7 @@ derived from the present geometry, so they refresh after every edit or relax.
 This module is the single place that derivation lives; the store snapshots it on
 save and the read surfaces (handler view + web viewer) recompute it on load.
 
-Cursors carry no goal — they are navigation handles, so their "value" is just the
+Eyes carry no goal — they are navigation handles, so their "value" is just the
 support set + what it currently touches (the §6.6 embodiment readout).
 """
 
@@ -26,11 +26,11 @@ _MEASURE_ARITY: dict[str, int] = {
     "coordination": 1,
 }
 _MEASURE_KINDS = frozenset(_MEASURE_ARITY)
-CURSOR = "cursor"
+EYE = "eye"
 
 
-def is_cursor(m: Measure) -> bool:
-    return m.kind == CURSOR
+def is_eye(m: Measure) -> bool:
+    return m.kind == EYE
 
 
 def _missing(scene: Scene, labels: list[str]) -> list[str]:
@@ -69,7 +69,7 @@ def evaluate(scene: Scene, m: Measure) -> tuple[dict[str, Any], str | None]:
     if missing:
         return {"error": f"missing atoms: {', '.join(missing)}"}, "dangling"
 
-    if is_cursor(m):
+    if is_eye(m):
         pov = probe.pov(scene, m.operands, reach=m.reach or 3.0)
         return {
             "support": pov.i_include,
@@ -95,4 +95,4 @@ def evaluate(scene: Scene, m: Measure) -> tuple[dict[str, Any], str | None]:
     return {"value": round(val, 4), "unit": unit}, verdict
 
 
-__all__ = ["CURSOR", "_MEASURE_ARITY", "_MEASURE_KINDS", "evaluate", "is_cursor"]
+__all__ = ["EYE", "_MEASURE_ARITY", "_MEASURE_KINDS", "evaluate", "is_eye"]

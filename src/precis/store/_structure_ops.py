@@ -149,7 +149,7 @@ class StructureMixin:
         return ref, created
 
     def _write_measures(self, conn: Connection, *, ref_id: int, scene: Scene) -> None:
-        """Insert the live cursor/measure set, snapshotting each marker's derived
+        """Insert the live eye/measure set, snapshotting each marker's derived
         value + verdict against the final geometry. Anchors are atom **labels**
         in the jsonb (stable identity), never row ids that an edit would orphan.
         """

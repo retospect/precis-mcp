@@ -829,6 +829,29 @@ backend returns the measured truth as feedback.**
   but aC3 relaxed to 4 neighbours / a bond stretched to 1.8× / 30° angular
   strain / valence sum ≠ declared oxidation"), which is precisely the feedback
   that tells the LLM its arrangement was unphysical.
+- **The read/write topology of the IR — why it is thin, and what we own.**
+  The whole intent-vs-derived split above collapses to three lens kinds,
+  distinguished by *who may write them*:
+  - **Atoms — conserved identity, flowing position.** The atom's **label is
+    a stable handle** (`aPd2` is the same atom before and after any relax —
+    the relaxer moves atoms, never creates / destroys / transmutes them);
+    its **position** is write-once-then-refined; its **charge / force** are
+    read-only, written back by physics. A conservation law bonds lack.
+  - **Bonds — the *sole bidirectional* lens.** The LLM both **writes** the
+    graph (order + hybridization + image offset = intent) and **reads** it
+    back refined (`declared` → `inferred` → `dft`), order flowing as a
+    scalar continuum. The edge set itself may be re-perceived — no identity
+    conservation, unlike atoms.
+  - **Fields — read-only from physics.** Energy, forces, and the spatial
+    fields (density / ESP / spin / d-band / reactivity) are *looked
+    through*, never authored; they are blank until a backend produces them
+    (§8.1).
+
+  This is *why* atoms and bonds get authoring verbs and fields never will,
+  and *why the IR is thin*: we own exactly the two writable lenses (atoms,
+  bonds) + their labels + the observers over them, and **rent every
+  read-only field** from the backend (§8.1) — the same own-the-IR /
+  rent-the-kernel line 0041/0042 draw.
 
 #### 8.1 Do we model bonds or electron states? — neither as physics; we rent the physics
 

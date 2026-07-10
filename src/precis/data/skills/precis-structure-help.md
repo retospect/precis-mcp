@@ -73,9 +73,9 @@ put(kind='structure', id='pd111', text='''{
 | `add_bond` | `i`, `j`, `order?`, `image?:[i,j,k]` | declare a bond (intent) |
 | `remove_bond` | `i`, `j` | drop a declared bond |
 | `constrain` | `atoms:[…]`, `kind` | `fixed-x|y|z|all` — freeze axes (use sparingly) |
-| `cursor` | `name`, `atoms:[…]`, `reach?`, `for?` | drop/replace a named cursor (§6.8) — see Cursors & measures |
+| `eye` | `name`, `atoms:[…]`, `reach?`, `for?` | drop/replace a named eye (§6.8) — see Eyes & measures |
 | `measure` | `kind`, `atoms:[…]`, `direction?`, `goal?`, `strength?`, `for?` | pin a measurement with an optional graded goal (§7) |
-| `unmark` | `name` | retire a cursor by name |
+| `unmark` | `name` | retire an eye by name |
 | `remove_measure` | `kind`, `atoms:[…]` | retire a measure |
 | `relax` | `fidelity?`, `steps?`, `model?` | terminal op — see the ladder below |
 
@@ -164,11 +164,11 @@ get(..., view='pov', args={'support': ['aC1','aC2','aC3','aC4','aC5','aC6'], 're
 
 Returns **`i_am`** (atom/fragment) · **`i_include`** (the support) ·
 **`i_touch`** (everything within reach, nearest-first). `pov` is the
-*stateless* readout; a **cursor** is the persisted, named form — see below.
+*stateless* readout; an **eye** is the persisted, named form — see below.
 
-## Cursors & measures — persisted, re-evaluated markers (§6.8/§7)
+## Eyes & measures — persisted, re-evaluated markers (§6.8/§7)
 
-Unlike a `pov` (recomputed each call), a **cursor** or **measure** is *saved*
+Unlike a `pov` (recomputed each call), an **eye** or **measure** is *saved*
 on the design and **re-evaluated after every edit/relax**, so its value +
 verdict stay live. Anchors are atom **labels** (stable identity), so a marker
 survives an edit.
@@ -176,7 +176,7 @@ survives an edit.
 ```python
 # a named navigation handle over a support set
 edit(kind='structure', id='pd111',
-     ops=[{"op": "cursor", "name": "active_site", "atoms": ["aPd12"],
+     ops=[{"op": "eye", "name": "active_site", "atoms": ["aPd12"],
            "reach": 3.0, "for": "the reactive Pd"}])
 
 # a pinned measurement with a graded goal
@@ -185,7 +185,7 @@ edit(kind='structure', id='pd111',
            "direction": "target", "goal": {"target": 2.4, "tol": 0.1},
            "strength": "soft", "for": "keep the H bound"}])
 
-get(kind='structure', id='pd111', view='markers')   # all cursors + measures, live value + verdict
+get(kind='structure', id='pd111', view='markers')   # all eyes + measures, live value + verdict
 ```
 
 - **measure `kind`**: `distance` / `bond_length` (2 atoms) · `angle` (3) ·
@@ -303,7 +303,7 @@ remove_bond / constrain / relax. Probes: atom / neighborhood / bonds / find
 / rings / fragments / diff / pov. Relax: `clean` (pure) + `ml` (MLIP-gated).
 Compute runs recorded with convergence curves. Export: POSCAR / extXYZ /
 CIF. **Deferred (vision):** Wyckoff-orbit TOC, named adsorption sites,
-bulk-insert ops (add_layer / fill / add_chain), persisted named cursors +
+bulk-insert ops (add_layer / fill / add_chain), persisted named eyes +
 bookmark stack, electronic-field lenses (charge / ESP / spin / Fukui),
 voids/channels, MD/NEB trajectories with per-frame geometry, the
 cross-experiment ensemble cube, external-DB import, GPAW/DFT as a cluster
