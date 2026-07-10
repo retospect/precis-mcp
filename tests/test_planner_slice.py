@@ -351,6 +351,41 @@ def test_user_prompt_surfaces_anchor_chunk(hub: Hub, store: Store) -> None:
     assert "Act on THIS chunk" in prompt
 
 
+def test_planner_prompt_carries_fisheye_ring_on_anchor(
+    hub: Hub, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0051 Level-1: an anchored section gets a fisheye+1hop block — its
+    reference ring (here a cited paper) — that the planner otherwise lacks.
+    Default-ON; PRECIS_PLANNER_FISHEYE=0 removes it."""
+    from precis.handlers.draft import DraftHandler
+
+    monkeypatch.delenv("PRECIS_PLANNER_FISHEYE", raising=False)  # default-ON
+    paper = store.insert_ref(kind="paper", slug="ringpaper", title="A Ring Paper")
+    draft = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    draft.put(id="d1", title="T", project=proj)
+    dref = store.get_ref(kind="draft", id="d1")
+    title_h = store.reading_order(dref.id)[0].handle
+    draft.put(
+        id="d1",
+        chunk_kind="paragraph",
+        text=f"This section builds on paper:{paper.id}.",
+        at={"after": title_h},
+    )
+    para = next(
+        c for c in store.reading_order(dref.id) if c.text.startswith("This section")
+    )
+    todo = store.insert_ref(kind="todo", slug=None, title="review section")
+    store.stamp_ref_meta(todo.id, {"anchor": para.handle})
+
+    prompt = _build_user_prompt(store, ref_id=todo.id, model="opus")
+    assert "## Fisheye" in prompt
+    assert "ringpaper" in prompt  # the ring resolved the cited paper
+
+    monkeypatch.setenv("PRECIS_PLANNER_FISHEYE", "0")
+    assert "## Fisheye" not in _build_user_prompt(store, ref_id=todo.id, model="opus")
+
+
 def test_user_prompt_anchor_missing_chunk(hub: Hub, store: Store) -> None:
     """An anchor pointing at a nonexistent chunk tells the agent to ask a
     grounded question, not guess."""

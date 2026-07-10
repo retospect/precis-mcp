@@ -203,6 +203,9 @@ def export_docx(
     """
     from docx import Document
 
+    from precis.export import guard_exportable
+
+    guard_exportable(ref)
     target_path = Path(target_path)
     chunks = store.reading_order(ref.id)
     handles = {c.handle for c in chunks}

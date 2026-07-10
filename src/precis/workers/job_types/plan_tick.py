@@ -22,8 +22,10 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from precis.utils.llm.router import Tier, resolve_model
@@ -253,7 +255,23 @@ def run(
         "--verbose",
     ]
     if mcp_config:
-        cmd.extend(["--mcp-config", mcp_config, "--strict-mcp-config"])
+        # Absolute so the neutral cwd below can't strand a relative path.
+        cmd.extend(["--mcp-config", os.path.abspath(mcp_config), "--strict-mcp-config"])
+
+    # ADR 0051 §12 — the turn-taker owns the entire system prompt. Run from a
+    # neutral cwd so `claude -p` discovers no project CLAUDE.md, and surface
+    # any ambient CLAUDE.md (user file or an unexpected one up the cwd tree)
+    # that would still be prepended outside the assembler and bust the cache
+    # prefix. Warn loudly + signal rather than hard-refuse, so a stray file
+    # degrades observably instead of silently stalling the planner.
+    cwd = _neutral_cwd()
+    ambient = _ambient_claude_md_paths(cwd)
+    if ambient:
+        log.warning(
+            "plan_tick: ambient CLAUDE.md would contaminate the persona floor "
+            "outside the assembler (ADR 0051 §12) — remove it on agent hosts: %s",
+            ambient,
+        )
 
     try:
         if log_event:
@@ -265,6 +283,8 @@ def run(
                     "model": model,
                     "system_chars": len(prompts.system),
                     "user_chars": len(prompts.user),
+                    "cwd": cwd,
+                    "ambient_claude_md": ambient,
                 },
             )
         proc = subprocess.run(
@@ -274,6 +294,7 @@ def run(
             timeout=timeout_s,
             check=False,
             env=subprocess_env,
+            cwd=cwd,
         )
     except subprocess.TimeoutExpired as exc:
         duration = time.monotonic() - started
@@ -409,6 +430,53 @@ def _max_turns() -> int:
             _DEFAULT_MAX_TURNS,
         )
         return _DEFAULT_MAX_TURNS
+
+
+#: Process-wide neutral cwd for the planner subprocess (ADR 0051 §12). Lazily
+#: created, reused across ticks (an empty dir needs no per-tick churn).
+_NEUTRAL_CWD: str | None = None
+
+
+def _neutral_cwd() -> str:
+    """A stable, empty working directory the planner subprocess runs in so
+    ``claude -p``'s *project* ``CLAUDE.md`` auto-discovery finds nothing
+    (ADR 0051 §12).
+
+    The turn-taker must own the entire system prompt: a tick's rendered
+    system prompt has to equal the assembler's bytes. Running from the
+    daemon's cwd lets ``claude`` discover a project ``CLAUDE.md`` up the tree
+    and prepend it *outside* the assembler — a competing uncontrolled persona
+    that also silently busts the "stable" cache prefix (§2/§3). A fresh temp
+    dir (ancestors ``/tmp`` → ``/``, none carrying a ``CLAUDE.md``) removes
+    that discovery surface without ``--bare`` (which would force API-key auth
+    and break OAuth). The *user* file ``~/.claude/CLAUDE.md`` is discovered
+    regardless of cwd — :func:`_ambient_claude_md_paths` guards that."""
+    global _NEUTRAL_CWD
+    if _NEUTRAL_CWD is not None and os.path.isdir(_NEUTRAL_CWD):
+        return _NEUTRAL_CWD
+    _NEUTRAL_CWD = tempfile.mkdtemp(prefix="precis-plan-tick-cwd-")
+    return _NEUTRAL_CWD
+
+
+def _ambient_claude_md_paths(cwd: str) -> list[str]:
+    """Every ``CLAUDE.md`` ``claude -p`` could auto-discover for a run in
+    ``cwd`` and prepend outside the assembler (ADR 0051 §12): the user file
+    ``~/.claude/CLAUDE.md`` plus any project ``CLAUDE.md`` from ``cwd`` up to
+    the filesystem root. An empty list means a clean persona environment —
+    the rendered system prompt is exactly the assembler's bytes."""
+    found: list[str] = []
+    try:
+        home_md = Path.home() / ".claude" / "CLAUDE.md"
+        if home_md.is_file():
+            found.append(str(home_md))
+        base = Path(cwd).resolve()
+        for d in (base, *base.parents):
+            md = d / "CLAUDE.md"
+            if md.is_file():
+                found.append(str(md))
+    except OSError:  # a stat failure must not abort the tick
+        log.warning("plan_tick: CLAUDE.md ambient-scan failed", exc_info=True)
+    return found
 
 
 def _max_budget_usd() -> float:

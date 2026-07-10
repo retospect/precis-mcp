@@ -53,6 +53,7 @@ import secrets
 from pathlib import Path
 
 from precis.store import Store
+from precis.utils import handle_registry
 from precis.utils.claude_agent import (
     ClaudeAgentError,
     call_claude_agent,
@@ -62,7 +63,9 @@ from precis.utils.env import env_flag
 from precis.utils.llm.router import Tier, resolve_model
 from precis.utils.load_gate import skip_if_high_load
 from precis.utils.oracle_lens import draw_lens_entry, render_lens_block_from_draw
+from precis.utils.working_set_render import render_working_set
 from precis.workers.runner import BatchResult
+from precis.workers.working_set import Provenance, WorkingSet
 
 # The dream's default lens: bias the persona draw toward the scientist
 # traditions (50% science / 50% evenly across the rest — see
@@ -116,6 +119,7 @@ def run_dream_pass(store: Store) -> BatchResult:
         )
         return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
     prompt = _apply_lens(prompt, store)
+    prompt = _apply_fisheye(prompt, store)
     try:
         result = call_claude_agent(
             prompt,
@@ -192,6 +196,77 @@ def _apply_lens(prompt: str, store: Store) -> str:
     if block is None:
         return prompt
     return block + "\n" + prompt
+
+
+#: The dream's fisheye eye-draw (ADR 0051): a **kind-diverse** sample of fresh
+#: refs given to the dream as its working set — cross-pollination fuel, patents
+#: included (Reto). ``(kind, extent, count)``. Memories at ``fisheye+1hop`` so
+#: their link neighbourhood (the connections a dream feeds on) rides along.
+_DREAM_EYE_KINDS: tuple[tuple[str, str, int], ...] = (
+    ("memory", "fisheye+1hop", 3),
+    ("paper", "summary", 2),
+    ("patent", "summary", 1),
+)
+
+
+def _dream_fisheye_enabled() -> bool:
+    """Default-ON; ``PRECIS_DREAM_FISHEYE=0`` disables the eye-draw without a
+    redeploy."""
+    return os.environ.get("PRECIS_DREAM_FISHEYE", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _recent_ref_ids(store: Store, kind: str, limit: int) -> list[int]:
+    """The most-recently-touched live refs of ``kind`` (the recency draw)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = %s AND deleted_at IS NULL "
+            "ORDER BY updated_at DESC LIMIT %s",
+            (kind, limit),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _draw_dream_eyes(store: Store) -> WorkingSet:
+    """Place a kind-diverse set of fresh eyes for this cycle."""
+    ws = WorkingSet()
+    for kind, extent, count in _DREAM_EYE_KINDS:
+        for rid in _recent_ref_ids(store, kind, count):
+            ws.focus(
+                handle_registry.format_handle(kind, rid),
+                extent,
+                provenance=Provenance.INFERRED,  # an auto-lens the system offered
+            )
+    return ws
+
+
+def _apply_fisheye(prompt: str, store: Store) -> str:
+    """Append a fisheye working-set of fresh, kind-diverse material (memories +
+    papers + patents) for the dream to connect (ADR 0051).
+
+    Best-effort + flag-gated: default-ON, and any failure (or an empty draw)
+    leaves the prompt unchanged — the eye-draw can never fail a dream pass."""
+    if not _dream_fisheye_enabled():
+        return prompt
+    try:
+        ws = _draw_dream_eyes(store)
+        if not ws.eyes:
+            return prompt
+        block = render_working_set(store, ws)
+    except Exception:
+        log.exception("dream_agent: fisheye eye-draw failed; dreaming without it")
+        return prompt
+    if not block.strip() or block == "— empty working set —":
+        return prompt
+    return (
+        f"{prompt}\n\n## Fresh material to dream over (fisheye)\n\n"
+        "A kind-diverse draw of recent memories, papers and patents — look for "
+        "connections across them.\n\n" + block
+    )
 
 
 def _select_lens_block(store: Store) -> str | None:

@@ -212,7 +212,7 @@ _PD_MARKS = json.dumps(
             {"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]},
             {"op": "add_atom", "element": "Pd", "frac": [0.26, 0.0, 0.0]},
             {
-                "op": "cursor",
+                "op": "eye",
                 "name": "active_site",
                 "atoms": ["aPd1"],
                 "reach": 3.0,
@@ -237,7 +237,7 @@ def test_markers_helper_evaluates(store):
     scene, _ = store.structure_load(ref.id)
     marks = _markers(scene)
     by = {m["label"]: m for m in marks}
-    assert by["active_site"]["is_cursor"] and by["active_site"]["operands"] == ["aPd1"]
+    assert by["active_site"]["is_eye"] and by["active_site"]["operands"] == ["aPd1"]
     dist = next(m for m in marks if m["kind"] == "distance")
     assert dist["operands"] == ["aPd1", "aPd2"]
     assert dist["verdict"] == "warn"  # 2.6 vs 2.5±0.05, soft → warn

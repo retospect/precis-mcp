@@ -37,6 +37,7 @@ strings. The executor is responsible for actually invoking
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -59,11 +60,13 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-#: Skill that always rides in the cached system prompt verbatim. The
-#: planner's operational manual — without it the contract isn't
-#: visible. Other skills are summary-only in the index and pulled
-#: on demand via MCP ``get``.
-_PINNED_SKILL_ID: str = "precis-tasks-help"
+#: The thread **persona** rides first in the cached system prompt verbatim
+#: (ADR 0051 §2) — the floor that states how the thread works. Selected per
+#: thread type from :data:`~precis.workers.thread_persona.THREAD_PERSONAS`;
+#: the default ``write-document`` persona is the operational manual
+#: ``precis-tasks-help``, so the cached floor is byte-identical to the
+#: pre-A2 pinned skill. Other skills are summary-only in the index (personas
+#: excluded, §2) and pulled on demand via MCP ``get``.
 
 
 #: Hard cap on the skill index. Each entry costs ~40 tokens; at the
@@ -122,20 +125,22 @@ def _build_system_prompt(store: Store) -> str:
     return system
 
 
-def _load_pinned_skill(store: Store | None = None) -> str:
-    """Return the verbatim text of the pinned skill (precis-tasks-help).
+def _load_skill_verbatim(skill_id: str, store: Store | None = None) -> str:
+    """Return the verbatim body of a skill (the persona floor, ADR 0051 §2).
 
     ``store`` is accepted for a uniform module-builder signature but
-    unused — the pinned skill is file-backed (loaded via importlib)."""
+    unused — skills are file-backed (loaded via importlib). A load failure
+    degrades to a stub rather than crashing the tick, so a thread never runs
+    persona-less."""
     try:
         from precis.handlers.skill import SkillHandler
 
         handler = SkillHandler(hub=None)  # type: ignore[arg-type]
-        resp = handler.get(id=_PINNED_SKILL_ID)
+        resp = handler.get(id=skill_id)
         return resp.body
     except Exception:
-        log.exception("planner_prompt: failed to load pinned skill")
-        return f"# {_PINNED_SKILL_ID}\n\n(skill load failed — fall back to MCP get)\n"
+        log.exception("planner_prompt: failed to load persona skill %s", skill_id)
+        return f"# {skill_id}\n\n(skill load failed — fall back to MCP get)\n"
 
 
 def _build_skill_index(store: Store | None = None) -> str:
@@ -157,6 +162,10 @@ def _build_skill_index(store: Store | None = None) -> str:
     for slug, raw in skills_map.items():
         fm = parse_frontmatter(raw)
         if fm.status not in (None, "active"):
+            continue
+        # Personas (ADR 0051 §2) are pinned as a thread's floor, not
+        # on-demand reference docs — keep them out of the discovery menu.
+        if fm.flavor == "persona":
             continue
         summary = (fm.summary or "").strip()
         if not summary:
@@ -1235,8 +1244,18 @@ def _load_child_summaries(store: Store, ref_id: int) -> str:
 # table (gated on an anchored change-request).
 
 
-def _m_pinned(ctx: AssemblyContext) -> str:
-    return _load_pinned_skill(ctx.store)
+def _m_persona(ctx: AssemblyContext) -> str:
+    """The thread's persona floor (ADR 0051 §2) — first cached block.
+
+    Selects the persona skill from the registry by the tick's
+    ``thread_type`` (``extras['thread_type']``); absent — as in the current
+    thread-type-invariant cached layer — it falls back to the default
+    ``write-document`` persona (``precis-tasks-help``), reproducing the
+    pre-A2 pinned-skill bytes exactly."""
+    from precis.workers.thread_persona import persona_for
+
+    spec = persona_for(ctx.extras.get("thread_type"))
+    return _load_skill_verbatim(spec.persona_skill_id, ctx.store)
 
 
 def _m_skill_index(ctx: AssemblyContext) -> str:
@@ -1312,6 +1331,44 @@ def _m_doc_context(ctx: AssemblyContext) -> str:
     return doc_context_table(ctx.store, anchor)
 
 
+def _planner_fisheye_enabled() -> bool:
+    """The planner fisheye is the first live ADR-0051 integration (Level 1) —
+    default-ON, one env var (`PRECIS_PLANNER_FISHEYE=0`) turns it off cluster-wide
+    without a redeploy if it ever misbehaves on prod."""
+    return os.environ.get("PRECIS_PLANNER_FISHEYE", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _m_fisheye(ctx: AssemblyContext) -> str:
+    """A `fisheye+1hop` over the anchored section (ADR 0051 §6) — its
+    neighborhood **plus the reference ring** (cited papers/patents + linked
+    notes) the planner otherwise never sees. Complements the whole-draft body
+    (that is every section; this is the anchor's locale + what it points at).
+
+    **Additive and fallback-safe:** gated `has_anchor`, flag default-ON, and any
+    render failure degrades to empty — it can never break the planner prompt."""
+    if not _planner_fisheye_enabled():
+        return ""
+    assert ctx.store is not None
+    anchor = ctx.extras.get("anchor")
+    if not anchor:
+        return ""
+    try:
+        from precis.utils.fisheye import render_fisheye
+
+        ring = render_fisheye(
+            ctx.store, kind="draft", handle=str(anchor), extent="fisheye+1hop"
+        )
+    except Exception:
+        log.debug("planner fisheye render failed for %r", anchor, exc_info=True)
+        return ""
+    return f"## Fisheye — {anchor} in context (§6)\n\n{ring}" if ring.strip() else ""
+
+
 def _m_section_style(ctx: AssemblyContext) -> str:
     assert ctx.store is not None
     return _render_section_style(ctx.store, ctx.ref_id)
@@ -1385,7 +1442,7 @@ def _m_review_section(ctx: AssemblyContext) -> str:
 
 #: Cached layer — one stable cache prefix across every planner tick.
 _CACHED_MODULES: list[Module] = [
-    Module(id="pinned-skill", layer=Layer.CACHED, build=_m_pinned),
+    Module(id="persona", layer=Layer.CACHED, build=_m_persona),
     Module(id="skill-menu", layer=Layer.CACHED, build=_m_skill_index),
     Module(id="tools", layer=Layer.CACHED, build=_m_tools),
     Module(id="kinds", layer=Layer.CACHED, build=_m_kinds),
@@ -1414,6 +1471,12 @@ _VARIABLE_MODULES: list[Module] = [
         id="doc_context",
         layer=Layer.VARIABLE,
         build=_m_doc_context,
+        applies_when="has_anchor",
+    ),
+    Module(
+        id="fisheye",
+        layer=Layer.VARIABLE,
+        build=_m_fisheye,
         applies_when="has_anchor",
     ),
     Module(

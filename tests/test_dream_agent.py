@@ -8,12 +8,41 @@ import pytest
 
 from precis.store import Store
 from precis.utils.claude_agent import AgentResult, ClaudeAgentError
-from precis.workers.dream_agent import _gate_enabled, _load_prompt, run_dream_pass
+from precis.workers.dream_agent import (
+    _apply_fisheye,
+    _gate_enabled,
+    _load_prompt,
+    run_dream_pass,
+)
 
 
 def test_gate_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_DREAM_AGENT", raising=False)
     assert _gate_enabled() is False
+
+
+def test_apply_fisheye_appends_kind_diverse_draw(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dream eye-draw (default-ON) appends fresh memories/papers/patents as a
+    fisheye working set; PRECIS_DREAM_FISHEYE=0 leaves the prompt untouched."""
+    monkeypatch.delenv("PRECIS_DREAM_FISHEYE", raising=False)
+    store.insert_ref(kind="memory", slug=None, title="a recent dreamable note")
+    store.insert_ref(kind="paper", slug="freshpaper", title="A Fresh Paper")
+
+    out = _apply_fisheye("DREAM DIRECTIVE", store)
+    assert "DREAM DIRECTIVE" in out
+    assert "Fresh material to dream over" in out
+    assert "a recent dreamable note" in out
+    assert "A Fresh Paper" in out  # rendered by handle+title, not the slug
+
+    monkeypatch.setenv("PRECIS_DREAM_FISHEYE", "0")
+    assert _apply_fisheye("DREAM DIRECTIVE", store) == "DREAM DIRECTIVE"
+
+
+def test_apply_fisheye_noop_on_empty_corpus(store: Store) -> None:
+    # no memories/papers/patents → prompt unchanged (never a spurious block)
+    assert _apply_fisheye("D", store) == "D"
 
 
 def test_pass_skips_when_gate_off(

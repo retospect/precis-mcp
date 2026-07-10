@@ -104,6 +104,13 @@ Relation = Literal[
     # seed in 0054_datasheet_of_relation.sql.
     "datasheet-of",
     "has-datasheet",
+    # Plan kind — migration 0056 (ADR 0051 §2b). `plan-of` binds a `plan`
+    # ref 1:1 to its project todo (the reasoning-outline sibling of the
+    # draft's `draft-of`); the inverse `has-plan` lives on the project. A
+    # project can own both a draft and its plan without collision. Keep in
+    # sync with the `relations` seed in 0056_plan_kind.sql.
+    "plan-of",
+    "has-plan",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -159,6 +166,8 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "requested-by": "requested",
     "datasheet-of": "has-datasheet",
     "has-datasheet": "datasheet-of",
+    "plan-of": "has-plan",
+    "has-plan": "plan-of",
 }
 
 

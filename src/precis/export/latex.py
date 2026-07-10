@@ -861,6 +861,9 @@ def export_draft(
     ``pdfpages`` appendix, so the compiled PDF is self-contained (report +
     its referenced papers / datasheets). Sources the host can't locate are
     listed in ``ExportResult.warnings`` and ``source_bundle.missing``."""
+    from precis.export import guard_exportable
+
+    guard_exportable(ref)
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 

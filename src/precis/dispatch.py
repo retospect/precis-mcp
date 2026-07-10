@@ -656,6 +656,7 @@ def boot(
         from precis.handlers.paper import PaperHandler
         from precis.handlers.part import PartHandler
         from precis.handlers.pcb import PcbHandler
+        from precis.handlers.plan import PlanHandler
         from precis.handlers.presentation import PresentationHandler
         from precis.handlers.random import RandomHandler
         from precis.handlers.skill import SkillHandler
@@ -681,6 +682,7 @@ def boot(
         _gated(MessageHandler)
         _gated(PresentationHandler)
         _gated(DraftHandler)
+        _gated(PlanHandler)
         _gated(CadHandler)
         _gated(StructureHandler)
         _gated(PcbHandler)

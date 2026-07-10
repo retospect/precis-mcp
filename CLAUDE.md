@@ -321,6 +321,14 @@ The master kinds table lives in the `precis-overview` skill.
 - **`folder`** — single-parent placement container for authored artifacts on
   `refs.parent_id` (ADR 0045); `handlers/_placement.py`, `KindSpec.role`,
   `search(folder=)` scopes a subtree. Skill: `precis-folder-help`.
+- **`plan`** — a thread's reasoning outline (ADR 0051 §2b, slice A1): a
+  hierarchical todo-list + notes on the `draft` chunk-tree substrate
+  (`handlers/plan.py`, reusing the kind-parameterized `DraftMixin`), but a
+  **distinct kind that is never exported** (`export/guard_exportable`,
+  `corpus_role='none'`). Rendered whole with `[open]`/`[wip]`/`done:` +
+  `?`/`⚠` + a model-owned `▸` cursor (`meta.cursor` on the ref); nodes
+  `pe<id>`, one per project via `plan-of`. Migration `0056_plan_kind.sql`.
+  Ships dark — nothing dispatches to it yet.
 - **`gripe`** — first-class bug tracker; body + comment timeline as chunks
   (`gripe_body`/`gripe_comment`), so they embed + keyword-index automatically.
 - **`alert`** — machine-detected ops/health conditions (spin loops, orphans),

@@ -59,12 +59,18 @@ class DraftChunk:
     parent_chunk_id: int | None
     depth: int
     meta: dict[str, Any] = field(default_factory=dict)
+    #: Owning ref kind — ``'draft'`` (default) or ``'plan'`` (ADR 0051 §2b).
+    #: Drives the ``.dc`` handle code so plan chunks render ``pe<id>`` while
+    #: drafts stay ``dc<id>``. The chunk *columns* are identical; only the
+    #: handle namespace differs.
+    kind: str = "draft"
 
     @property
     def dc(self) -> str:
-        """ADR 0036 universal handle for this draft chunk (e.g. ``dc42``).
-        The agent-facing address; supersedes the legacy ``¶<base58>``."""
-        return handle_registry.format_handle("draft", self.chunk_id, chunk=True)
+        """ADR 0036 universal handle for this chunk (``dc42`` for a draft,
+        ``pe42`` for a plan). The agent-facing address; supersedes the legacy
+        ``¶<base58>``."""
+        return handle_registry.format_handle(self.kind, self.chunk_id, chunk=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,11 +86,15 @@ class TocEntry:
     keywords: list[str]
     gist: str | None
     chunk_id: int = 0
+    #: Owning ref kind — ``'draft'`` (default) or ``'plan'`` (ADR 0051 §2b);
+    #: drives the ``.dc`` handle code (see :class:`DraftChunk`).
+    kind: str = "draft"
 
     @property
     def dc(self) -> str:
-        """ADR 0036 universal handle for this heading (e.g. ``dc42``)."""
-        return handle_registry.format_handle("draft", self.chunk_id, chunk=True)
+        """ADR 0036 universal handle for this heading (``dc42`` draft /
+        ``pe42`` plan)."""
+        return handle_registry.format_handle(self.kind, self.chunk_id, chunk=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +145,7 @@ class DraftMixin:
         pos: str,
         meta: dict[str, Any] | None = None,
         source: dict[str, Any] | None = None,
+        kind: str = "draft",
     ) -> DraftChunk:
         """Insert one draft chunk: mint a unique handle (savepoint-retry),
         assign an insertion-serial `ord`, set pos/parent/content_sha/meta,
@@ -199,6 +210,7 @@ class DraftMixin:
             parent_chunk_id=parent_chunk_id,
             depth=0,
             meta=meta,
+            kind=kind,
         )
 
     # -- lookups -------------------------------------------------------------
@@ -312,14 +324,17 @@ class DraftMixin:
             "text": row[3] or "",
         }
 
-    def get_draft_chunk(self, handle: str) -> DraftChunk | None:
-        """A single live-or-retired draft chunk by its address.
+    def get_draft_chunk(self, handle: str, *, kind: str = "draft") -> DraftChunk | None:
+        """A single live-or-retired draft/plan chunk by its address.
 
-        Accepts the ADR 0036 universal handle ``dc<chunk_id>`` (looked up by
-        ``chunk_id``) or the legacy ADR-0033 ``¶<base58>`` / bare base-58
-        anchor (looked up by ``chunks.handle``)."""
+        Accepts the ADR 0036 universal handle (``dc<chunk_id>`` draft /
+        ``pe<chunk_id>`` plan — looked up by ``chunk_id``) or the legacy
+        ADR-0033 ``¶<base58>`` / bare base-58 anchor (looked up by
+        ``chunks.handle``). ``kind`` sets the handle namespace of the returned
+        chunk (so a plan chunk renders ``pe<id>``) and, for a universal-handle
+        address, the code prefix that must match."""
         parsed = handle_registry.parse(handle.strip())
-        if parsed is not None and parsed[0] == "draft" and parsed[1]:
+        if parsed is not None and parsed[0] == kind and parsed[1]:
             where, key = "chunk_id = %s", parsed[2]
         else:
             where, key = "handle = %s", _bare(handle)
@@ -342,10 +357,14 @@ class DraftMixin:
             parent_chunk_id=row[5],
             depth=0,
             meta=dict(row[7] or {}),
+            kind=kind,
         )
 
-    def draft_relative_chunk_ids(self, addr: str) -> list[int] | None:
-        """Resolve an ADR 0036 relative draft handle to target chunk id(s).
+    def draft_relative_chunk_ids(
+        self, addr: str, *, kind: str = "draft"
+    ) -> list[int] | None:
+        """Resolve an ADR 0036 relative draft/plan handle to target chunk
+        id(s).
 
         ``dc<id>^N`` walks ``N`` ancestors (via ``parent_chunk_id``);
         ``dc<id>+N`` / ``-N`` steps ``N`` siblings (ordered by ``pos`` under
@@ -353,17 +372,16 @@ class DraftMixin:
         reading-context window). Returns the target ids (one for a
         step/ancestor, the contiguous sibling run for a span), an **empty
         list** when the target is out of range / past the root, or ``None``
-        when ``addr`` is not a relative draft handle (so the caller can try
-        the absolute path).
-        """
+        when ``addr`` is not a relative handle of ``kind`` (so the caller can
+        try the absolute path). ``kind='plan'`` resolves ``pe<id>`` handles."""
         parsed = handle_registry.parse_relative(addr)
         if parsed is None:
             return None
-        kind, _is_chunk, chunk_id, op = parsed
-        if kind != "draft":
+        parsed_kind, _is_chunk, chunk_id, op = parsed
+        if parsed_kind != kind:
             return None
         base = self.get_draft_chunk(
-            handle_registry.format_handle("draft", chunk_id, chunk=True)
+            handle_registry.format_handle(kind, chunk_id, chunk=True), kind=kind
         )
         if base is None:
             return []
@@ -404,6 +422,8 @@ class DraftMixin:
         conn: psycopg.Connection,
         ref_id: int,
         parent_chunk_id: int | None,
+        *,
+        kind: str = "draft",
     ) -> list[DraftChunk]:
         """Live children of a parent (NULL = roots), ordered by pos."""
         rows = conn.execute(
@@ -425,11 +445,12 @@ class DraftMixin:
                 pos=r[4],
                 parent_chunk_id=r[5],
                 depth=0,
+                kind=kind,
             )
             for r in rows
         ]
 
-    def reading_order(self, ref_id: int) -> list[DraftChunk]:
+    def reading_order(self, ref_id: int, *, kind: str = "draft") -> list[DraftChunk]:
         """All live chunks of a draft in DFS reading order (roots by pos,
         recurse into children by pos), with depth.
 
@@ -480,6 +501,7 @@ class DraftMixin:
                     parent_chunk_id=r[5],
                     depth=depth,
                     meta=dict(r[6] or {}),
+                    kind=kind,
                 )
             )
             kids = children.get(r[0])
@@ -933,18 +955,24 @@ class DraftMixin:
         title: str,
         project_ref_id: int,
         meta: dict[str, Any] | None = None,
+        kind: str = "draft",
+        relation: str = "draft-of",
     ) -> tuple[Any, DraftChunk]:
-        """Create a draft ref bound 1:1 to its project, born with a title
-        `heading` chunk so it is never empty. Returns (ref, title_chunk)."""
+        """Create a draft (or ``kind='plan'``, ADR 0051 §2b) ref bound 1:1 to
+        its project, born with a title `heading` chunk so it is never empty.
+        ``relation`` is the project-binding link (``draft-of`` for a draft,
+        ``plan-of`` for a plan) — each is 1:1 per project, so a project can own
+        both a draft and its plan without collision. Returns (ref,
+        title_chunk)."""
         with self.tx() as conn:
             dup = conn.execute(
-                "SELECT 1 FROM links WHERE dst_ref_id = %s AND relation = 'draft-of'",
-                (project_ref_id,),
+                "SELECT 1 FROM links WHERE dst_ref_id = %s AND relation = %s",
+                (project_ref_id, relation),
             ).fetchone()
             if dup is not None:
-                raise ValueError(f"project ref {project_ref_id} already has a draft")
+                raise ValueError(f"project ref {project_ref_id} already has a {kind}")
             ref = self.insert_ref(
-                kind="draft",
+                kind=kind,
                 slug=name,
                 title=title,
                 meta=dict(meta or {}),
@@ -958,11 +986,12 @@ class DraftMixin:
                 parent_chunk_id=None,
                 pos=key_between(None, None),
                 source={"reason": "draft-title"},
+                kind=kind,
             )
             self.add_link(
                 src_ref_id=ref.id,
                 dst_ref_id=project_ref_id,
-                relation="draft-of",
+                relation=relation,
                 conn=conn,
             )
         return ref, title_chunk
@@ -976,10 +1005,13 @@ class DraftMixin:
         at: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
         split: bool = True,
+        kind: str = "draft",
     ) -> list[DraftChunk]:
         """Add one or more chunks (a multi-paragraph `text` splits at blank
         lines). Returns the created chunks in order. ``meta`` (e.g. a
         ``term``'s ``{short, long}``) is stamped on each created chunk.
+        ``kind`` sets the returned chunks' handle namespace (``'plan'`` →
+        ``pe<id>``).
 
         ``split=False`` inserts ``text`` verbatim as a single chunk — used
         by chunks whose text is a derived projection that must not
@@ -998,6 +1030,7 @@ class DraftMixin:
                     pos=key,
                     source={"reason": "add"},
                     meta=meta,
+                    kind=kind,
                 )
                 for block, key in zip(blocks, keys, strict=True)
             ]
@@ -1285,6 +1318,43 @@ class DraftMixin:
                 (chunk_id, Jsonb({"reason": "set-style", "style": style})),
             )
         return self.get_draft_chunk(handle)
+
+    def patch_chunk_meta(self, handle: str, patch: dict[str, Any]) -> None:
+        """Shallow-merge ``patch`` into a chunk's ``meta`` in place — a key
+        mapped to ``None`` is **removed** (clear a marker), any other value
+        set. Metadata-only, so ``text``/``content_sha`` are untouched and no
+        re-embed fires. Logs an ``edited`` event. Used by the plan handler's
+        ``status``/``belief`` markers (ADR 0051 §2b). No-op on an empty patch."""
+        if not patch:
+            return
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT chunk_id, meta, retired_at FROM chunks WHERE handle = %s",
+                (_bare(handle),),
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
+            chunk_id, meta, retired = row
+            if retired is not None:
+                raise Gone(
+                    f"¶{_bare(handle)} is retired — it was removed or replaced; "
+                    "edit the current live chunk instead"
+                )
+            new_meta = dict(meta or {})
+            for k, v in patch.items():
+                if v is None:
+                    new_meta.pop(k, None)
+                else:
+                    new_meta[k] = v
+            conn.execute(
+                "UPDATE chunks SET meta = %s WHERE chunk_id = %s",
+                (Jsonb(new_meta), chunk_id),
+            )
+            conn.execute(
+                "INSERT INTO chunk_events (chunk_id, event_kind, source) "
+                "VALUES (%s, 'edited', %s)",
+                (chunk_id, Jsonb({"reason": "patch-meta", "keys": list(patch)})),
+            )
 
     #: The manufacturing-part attribute bag + hover surfaces that
     #: :meth:`set_term_attrs` may patch in place (ADR 0052 §2). ``registry``
@@ -1605,6 +1675,7 @@ class DraftMixin:
         base_sha: str | None = None,
         source: dict[str, Any] | None = None,
         meta_patch: dict[str, Any] | None = None,
+        kind: str = "draft",
     ) -> DraftChunk | None:
         """In-place text edit: bump `content_sha`, log an `edited` event with
         `prev_text`. The handle (and references to it) survive; derived data
@@ -1670,7 +1741,7 @@ class DraftMixin:
                    VALUES (%s, 'edited', %s, %s, %s)""",
                 (row[0], sha, row[5], Jsonb(source or {})),
             )
-        return self.get_draft_chunk(handle)
+        return self.get_draft_chunk(handle, kind=kind)
 
     def move_chunk(
         self,
@@ -1678,10 +1749,11 @@ class DraftMixin:
         move: dict[str, Any],
         *,
         source: dict[str, Any] | None = None,
+        kind: str = "draft",
     ) -> DraftChunk | None:
         """Reorder / reparent a chunk (its subtree follows). Writes `pos` +
         `parent_chunk_id`, logs a `moved`/`reparented` event. No text change
-        → no re-embed."""
+        → no re-embed. ``kind`` sets the returned chunk's handle namespace."""
         with self.tx() as conn:
             row = self._row(conn, handle)
             if row is None:
@@ -1706,18 +1778,18 @@ class DraftMixin:
                 "UPDATE chunks SET pos = %s, parent_chunk_id = %s WHERE chunk_id = %s",
                 (new_pos, new_parent, chunk_id),
             )
-            kind = "reparented" if new_parent != old_parent else "moved"
+            event_kind = "reparented" if new_parent != old_parent else "moved"
             self._log(
                 conn,
                 chunk_id,
-                kind,
+                event_kind,
                 source,
                 {
                     "from": {"parent": old_parent, "pos": old_pos},
                     "to": {"parent": new_parent, "pos": new_pos},
                 },
             )
-        return self.get_draft_chunk(handle)
+        return self.get_draft_chunk(handle, kind=kind)
 
     def retire_chunk(
         self,
@@ -1725,10 +1797,13 @@ class DraftMixin:
         *,
         mode: str | None = None,
         source: dict[str, Any] | None = None,
+        kind: str = "draft",
     ) -> None:
         """Soft-delete (retire) a chunk. A chunk with live children needs
         `mode='cascade'` (retire the subtree) or `'promote'` (lift the
-        children to the parent). Refuses to retire the last live chunk."""
+        children to the parent). Refuses to retire the last live chunk.
+        ``kind`` is accepted for symmetry with the other plan-facing ops
+        (retire returns nothing, so it does not affect the return handle)."""
         with self.tx() as conn:
             row = self._row(conn, handle)
             if row is None:
