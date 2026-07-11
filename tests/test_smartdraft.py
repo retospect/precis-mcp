@@ -178,6 +178,21 @@ def test_search_tag_outweighs_a_single_literal_signal() -> None:
     assert hits[0].node.dc == "dc101" and hits[0].t
 
 
+def test_assemble_view_keep_dcs_keeps_a_hit_uncollapsed() -> None:
+    from precis_web.smartdraft import assemble_view
+
+    # a far, quiet chunk that would normally collapse — but it's a search hit,
+    # so keep_dcs keeps it visible in the in-TOC view.
+    nodes = (
+        [_node(0, ["alpha"])]
+        + [_node(i, ["z"]) for i in range(1, 6)]
+        + [_node(6, ["target"])]
+    )
+    view = assemble_view(nodes, focus_dc="dc100", relevance=True, keep_dcs={"dc106"})
+    kept = {r.node.dc for r in view.toc if r.node}
+    assert "dc106" in kept
+
+
 def test_focus_index_defaults_to_first_body_chunk() -> None:
     nodes = [_node(0, ["h"], kind="heading"), _node(1, ["a"]), _node(2, ["b"])]
     assert focus_index(nodes, None) == 1  # skips the heading

@@ -17,7 +17,7 @@
   </div>
 </div>
 
-<div class="grid grid-cols-1 items-start gap-3 lg:grid-cols-[28%_44%_28%]">
+<div id="sd-content" class="grid grid-cols-1 items-start gap-3 lg:grid-cols-[28%_44%_28%]">
 
   {# ── LEFT: fisheye TOC nav (sticky sidebar; the middle flows so its
        hover-preview popovers aren't clipped by an overflow container) ── #}
@@ -50,6 +50,9 @@
         <a href="{{ slink(to_view='toc') }}" class="{% if sview == 'toc' %}font-semibold text-sky-700{% else %}hover:text-slate-700{% endif %}">in-toc</a>
         <a href="{{ slink(to_q='') }}" class="ml-auto hover:text-rose-600">clear</a>
       </div>
+      {% if sem_degraded and 's' in active_sig %}
+      <div class="text-[10px] text-amber-600" title="the web embedder returned nothing — semantic search is unavailable right now">⚠ semantic unavailable (embedder warming?) — V/K/T only</div>
+      {% endif %}
       {% endif %}
     </div>
 
@@ -165,6 +168,18 @@
   <div class="sticky top-2 self-start rounded border border-slate-200 bg-white" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')">
     <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Collaborate</div>
     <div class="space-y-2 p-2 text-xs">
+      {% if needs %}
+      <div class="rounded border border-amber-200 bg-amber-50 p-1.5">
+        <div class="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">Needs · in-flight</div>
+        {% for w in needs %}
+        <div class="flex items-center gap-1 py-0.5 text-[10px]">
+          {% if w.asks %}<span title="{{ w.asks | join('; ') }}">✋</span>{% endif %}
+          <a href="/r/todo/{{ w.todo_id }}" target="_blank" rel="noopener" class="min-w-0 flex-1 truncate text-slate-700 hover:underline">{{ w.title }}</a>
+          <span class="shrink-0 rounded px-1 {% if w.blocked %}bg-rose-100 text-rose-700{% else %}bg-slate-200 text-slate-600{% endif %}">{{ w.status }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
       <div class="flex items-center gap-2 text-slate-500">
         <span>Pinned: 📌 {{ eye_count }}</span>
         {% if eye_count %}<button onclick="smartClearPins()" class="text-[10px] text-slate-400 hover:text-rose-600">unpin all</button>
@@ -193,6 +208,7 @@
   const ORDER = {{ view.order | tojson }};      // [[dc, depth], ...]
   const HITS = {{ (hits | map(attribute='node') | map(attribute='dc') | list) | tojson }};  // search hits, in rank order
   const FOCUS = {{ focus_dc | tojson }};
+  const Q = {{ q | tojson }};
   // Navigate preserving EVERY current param (q/sig/sview/relevance) — only focus
   // changes, so arrowing never drops the search.
   const jump = (dc) => {
@@ -200,15 +216,49 @@
     p.set('focus', dc);
     location = `/smartdraft/${IDENT}?` + p.toString();
   };
+  const clearSearch = () => {
+    const p = new URLSearchParams(location.search);
+    p.set('q', '');
+    location = `/smartdraft/${IDENT}?` + p.toString();
+  };
+  // Highlight the query term wherever it shows (light blue) — a find-style mark.
+  function highlightTerm(root, term) {
+    if (!root || !term || term.length < 2) return;
+    const re = new RegExp('(' + term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(n) {
+        const p = n.parentNode;
+        if (!n.nodeValue.trim() || !p) return NodeFilter.FILTER_REJECT;
+        // skip marks/scripts/inputs and links (don't disturb linkify internals)
+        if (['MARK', 'SCRIPT', 'STYLE', 'TEXTAREA', 'BUTTON', 'A'].includes(p.tagName)) return NodeFilter.FILTER_REJECT;
+        return re.test(n.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      },
+    });
+    const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach((n) => {
+      const span = document.createElement('span');
+      span.innerHTML = n.nodeValue.replace(re, '<mark class="rounded bg-sky-200 text-inherit">$1</mark>');
+      n.parentNode.replaceChild(span, n);
+    });
+  }
   window.addEventListener('DOMContentLoaded', () => {
     const el = document.getElementById('toc-' + FOCUS);
     if (el) el.scrollIntoView({ block: 'center' });
     const mid = document.getElementById('mid-focus');
     if (mid) mid.scrollIntoView({ block: 'center' });
+    if (Q) highlightTerm(document.getElementById('sd-content'), Q);
   });
   document.addEventListener('keydown', (e) => {
     const t = document.activeElement;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+    if (e.key === 'Escape' && Q) { e.preventDefault(); clearSearch(); return; }
+    if (e.key === '/' && !inField) {   // focus the search box
+      e.preventDefault();
+      const box = document.querySelector('input[name="q"]');
+      if (box) box.focus();
+      return;
+    }
+    if (inField) return;
     if (e.key === 'p' || e.key === 'P') {   // toggle pin/unpin the focus
       e.preventDefault();
       fetch(`/drafts/${IDENT}/marks`, {

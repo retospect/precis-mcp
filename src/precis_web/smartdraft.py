@@ -286,12 +286,16 @@ def _left_toc(
     *,
     relevance: bool,
     shared_idx: set[int] | None = None,
+    keep_dcs: set[str] | None = None,
 ) -> list[TocRow]:
     """The fisheye TOC. ``relevance=False`` → the plain full outline (every
     chunk). ``relevance=True`` → keep headings + status + **keyword-shared** +
     high-pressure chunks; collapse quiet-irrelevant runs to a ``⋯ n ⋯`` marker
-    (order never reshuffles — only expand/collapse tracks the focus)."""
+    (order never reshuffles — only expand/collapse tracks the focus).
+    ``keep_dcs`` (search hits) are always kept — the in-TOC search view shows
+    every match, uncollapsed."""
     shared_idx = shared_idx or set()
+    keep_dcs = keep_dcs or set()
     rows: list[TocRow] = []
     run: list[ChunkNode] = []
 
@@ -312,6 +316,7 @@ def _left_toc(
             or n.is_heading
             or n.has_status
             or is_shared
+            or n.dc in keep_dcs
             or pres.get(n.idx, 0.0) >= _KEEP_THRESHOLD
         )
         if keep:
@@ -330,11 +335,28 @@ def build_view(
     focus_dc: str | None = None,
     relevance: bool = True,
     marks: dict[str, Any] | None = None,
+    keep_dcs: set[str] | None = None,
 ) -> SmartView:
-    """Assemble the whole three-pane view for one focus. Pure over the store's
-    read methods — the route just renders it (and an MCP `focus` verb would
-    serialize the same object to text)."""
+    """Build the nodes for a draft and assemble its view (the store-backed entry;
+    the route uses :func:`build_nodes` + :func:`assemble_view` directly so it can
+    search the same nodes)."""
     nodes = build_nodes(store, ref_id, marks=marks)
+    return assemble_view(
+        nodes, ref_id=ref_id, focus_dc=focus_dc, relevance=relevance, keep_dcs=keep_dcs
+    )
+
+
+def assemble_view(
+    nodes: list[ChunkNode],
+    *,
+    ref_id: int = 0,
+    focus_dc: str | None = None,
+    relevance: bool = True,
+    keep_dcs: set[str] | None = None,
+) -> SmartView:
+    """Assemble the three-pane view from pre-built nodes. ``keep_dcs`` (search
+    hits) are always shown in the TOC. Pure — the same object an MCP `focus` verb
+    would serialize to text."""
     if not nodes:
         return SmartView(ref_id=ref_id, focus=None)
     fi = focus_index(nodes, focus_dc)
@@ -347,7 +369,9 @@ def build_view(
         if focus_kw
         else set()
     )
-    toc = _left_toc(nodes, pres, relevance=relevance, shared_idx=shared_idx)
+    toc = _left_toc(
+        nodes, pres, relevance=relevance, shared_idx=shared_idx, keep_dcs=keep_dcs
+    )
 
     middle: list[MidRow] = []
     if not relevance:
