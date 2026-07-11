@@ -7,10 +7,13 @@ wants to be noticed *relative to the current focus* — computed with **no LLM**
 from signals we already store:
 
 - **keyword overlap** (`chunks.keywords`, KeyBERT) — literal,
-- **embedding similarity** (`chunk_embeddings`, bge-m3) — semantic,
 - **reading proximity** (distance in reading order) — structural,
 - **status boost** — a pin / lock / pending need pokes through regardless of
   topical relevance (so "what needs you" is never collapsed away).
+
+Pressure is embedding-free on purpose: loading every vector + a python cosine
+blocked the page for seconds on a 10k-chunk draft. The **semantic** search
+signal comes from the HNSW index at query time (`semantic_ranks`), not a scan.
 
 The focus is a chunk (the current para) *or* a query (search is just "focus =
 these keywords"). Rank once; three panes read the same ranking at three
@@ -25,7 +28,6 @@ working reader — dark by construction.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,7 +35,6 @@ from precis.store._draft_ops import content_sha
 
 # ── pressure weights (tune later; env-overridable is a follow-up) ────────
 _W_KEYWORD = 1.0
-_W_EMBED = 1.0
 _W_PROX = 0.6
 #: A pin/lock/need adds this so a marked chunk always clears the keep bar.
 _STATUS_BOOST = 10.0
@@ -74,7 +75,6 @@ class ChunkNode:
     text: str
     summary: str
     keywords: list[str]
-    embedding: list[float] | None
     #: content_sha of ``text`` — the optimistic-concurrency token the inline
     #: editor passes to ``POST /drafts/{id}/text`` (a stale one 409s).
     sha: str = ""
@@ -105,15 +105,6 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return inter / len(a | b) if inter else 0.0
 
 
-def _cosine(a: list[float] | None, b: list[float] | None) -> float:
-    if not a or not b:
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b, strict=False))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    return dot / (na * nb) if na and nb else 0.0
-
-
 def _first_line(text: str, cap: int = 140) -> str:
     flat = " ".join((text or "").split())
     return flat if len(flat) <= cap else flat[: cap - 1].rstrip() + "…"
@@ -140,15 +131,10 @@ def build_nodes(
     reading-order (structure) + `list_blocks_for_ref` (keywords + embedding) +
     `block_views` (llm summary). ``marks`` stamps pin/lock status."""
     chunks = store.reading_order(ref_id)
-    # with_embedding drives the semantic + embedding-pressure signals; if that
-    # path ever fails (a pgvector shape we can't coerce), degrade to no-embedding
-    # rather than 500 the whole reader.
-    try:
-        blocks = {
-            b.id: b for b in store.list_blocks_for_ref(ref_id, with_embedding=True)
-        }
-    except Exception:
-        blocks = {b.id: b for b in store.list_blocks_for_ref(ref_id)}
+    # NB: do NOT load embeddings here — for a 10k-chunk draft that fetches ~10M
+    # floats and (with a python cosine) blocks the page for seconds. Semantic is
+    # served by the HNSW index at query time (`semantic_ranks`), not a full scan.
+    blocks = {b.id: b for b in store.list_blocks_for_ref(ref_id)}
     views = store.block_views(ref_id)
     tag_map = _load_chunk_tags(store, ref_id)
     pins = set((marks or {}).get("pens") or [])
@@ -171,7 +157,6 @@ def build_nodes(
                 text=c.text or "",
                 summary=summary,
                 keywords=kws,
-                embedding=list(b.embedding) if (b and b.embedding) else None,
                 sha=content_sha(c.text or ""),
                 tags=tag_map.get(c.chunk_id, []),
                 pinned=(c.dc in pins or c.dc in eyes),
@@ -234,9 +219,8 @@ def pressures(nodes: list[ChunkNode], focus_idx: int) -> dict[int, float]:
             out[n.idx] = 1.0
             continue
         kw = _jaccard(fk, set(n.keywords))
-        emb = max(0.0, _cosine(f.embedding, n.embedding))
         prox = 1.0 / (1.0 + abs(n.idx - focus_idx))
-        p = _W_KEYWORD * kw + _W_EMBED * emb + _W_PROX * prox
+        p = _W_KEYWORD * kw + _W_PROX * prox
         if n.has_status:
             p += _STATUS_BOOST
         out[n.idx] = p
@@ -462,40 +446,28 @@ def search_chunks(
     query: str,
     *,
     active: set[str],
-    query_embedding: list[float] | None = None,
+    semantic_ranks: dict[int, int] | None = None,
     weights: dict[str, float] | None = None,
 ) -> list[SearchHit]:
     """Fuse the four signals by **Reciprocal Rank Fusion** (the same fusion the
     corpus search uses): each active signal contributes ``w / (k + rank)``.
     Literal/keyword/tag are boolean (rank 1 when matched); semantic contributes
-    by its top-N similarity rank — so a semantic-only hit still surfaces and a
-    strong-semantic tie-breaks. A chunk with no *active* match scores 0 and is
-    dropped. Results are sorted by score desc."""
+    by ``semantic_ranks`` (``{chunk_id: rank}`` from the HNSW top-N, computed once
+    in SQL — never a python scan over every vector) — so a semantic-only hit still
+    surfaces and a strong-semantic tie-breaks. A chunk with no *active* match
+    scores 0 and is dropped. Results are sorted by score desc."""
     q = (query or "").strip().lower()
     if not q:
         return []
     w = weights or _SEARCH_W
-
-    s_rank: dict[int, int] = {}
-    if query_embedding:
-        sims = sorted(
-            (
-                (n.idx, _cosine(query_embedding, n.embedding))
-                for n in nodes
-                if n.embedding
-            ),
-            key=lambda x: x[1],
-            reverse=True,
-        )
-        for rank, (idx, _sim) in enumerate(sims[:_SEM_TOPN], start=1):
-            s_rank[idx] = rank
+    sranks = semantic_ranks or {}
 
     hits: list[SearchHit] = []
     for n in nodes:
         v = q in (n.text or "").lower()
         km = any(q in kw.lower() for kw in n.keywords)
         tm = any(q in tag.lower() for tag in n.tags)
-        sr = s_rank.get(n.idx)
+        sr = sranks.get(n.chunk_id)
         score = 0.0
         if v and "v" in active:
             score += w["v"] / (_RRF_K + 1)
@@ -509,3 +481,27 @@ def search_chunks(
             hits.append(SearchHit(node=n, v=v, k=km, t=tm, s_rank=sr, score=score))
     hits.sort(key=lambda h: h.score, reverse=True)
     return hits
+
+
+def semantic_ranks(
+    store: Any, ref_id: int, query_vec: list[float] | None, *, k: int = _SEM_TOPN
+) -> dict[int, int]:
+    """``{chunk_id: rank}`` for a query's top-``k`` semantically-nearest chunks in
+    a ref — computed by the **HNSW index** (pgvector ``<=>``), not a python scan
+    over every vector. Empty on no query vector / any failure (semantic degrades
+    to lexical, never 500s)."""
+    if not query_vec:
+        return {}
+    lit = "[" + ",".join(repr(float(x)) for x in query_vec) + "]"
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT c.chunk_id FROM chunks c "
+                "JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id "
+                "WHERE c.ref_id = %s AND c.ord >= 0 "
+                "ORDER BY ce.vector <=> %s::vector LIMIT %s",
+                (ref_id, lit, k),
+            ).fetchall()
+    except Exception:
+        return {}
+    return {int(cid): rank for rank, (cid,) in enumerate(rows, start=1)}

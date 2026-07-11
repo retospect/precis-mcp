@@ -15,7 +15,7 @@ from precis_web.smartdraft import (
 )
 
 
-def _snode(idx, *, text="", kws=None, tags=None, emb=None) -> ChunkNode:
+def _snode(idx, *, text="", kws=None, tags=None) -> ChunkNode:
     return ChunkNode(
         idx=idx,
         dc=f"dc{100 + idx}",
@@ -26,12 +26,11 @@ def _snode(idx, *, text="", kws=None, tags=None, emb=None) -> ChunkNode:
         text=text,
         summary=text[:40],
         keywords=kws or [],
-        embedding=emb,
         tags=tags or [],
     )
 
 
-def _node(idx, kws, *, kind="paragraph", emb=None, pinned=False) -> ChunkNode:
+def _node(idx, kws, *, kind="paragraph", pinned=False) -> ChunkNode:
     return ChunkNode(
         idx=idx,
         dc=f"dc{100 + idx}",
@@ -42,7 +41,6 @@ def _node(idx, kws, *, kind="paragraph", emb=None, pinned=False) -> ChunkNode:
         text=f"body {idx}",
         summary=f"summary {idx}",
         keywords=kws,
-        embedding=emb,
         pinned=pinned,
     )
 
@@ -143,10 +141,11 @@ def test_search_rrf_ranks_multisignal_and_surfaces_semantic_only() -> None:
     nodes = [
         _snode(0, text="alpha appears here", kws=["alpha"]),  # V + K
         _snode(1, text="nothing here", kws=["alpha"]),  # K only
-        _snode(2, text="unrelated", kws=["zzz"], emb=[1.0, 0.0]),  # semantic only
+        _snode(2, text="unrelated", kws=["zzz"]),  # semantic only (chunk_id 102)
     ]
+    # semantic top-N (from the HNSW query) ranks chunk 102 first
     hits = search_chunks(
-        nodes, "alpha", active={"v", "k", "t", "s"}, query_embedding=[1.0, 0.0]
+        nodes, "alpha", active={"v", "k", "t", "s"}, semantic_ranks={102: 1}
     )
     by = {h.node.dc: h for h in hits}
     # V+K outranks K-only
@@ -158,11 +157,11 @@ def test_search_rrf_ranks_multisignal_and_surfaces_semantic_only() -> None:
 def test_search_toggling_a_signal_drops_its_only_matches() -> None:
     nodes = [
         _snode(0, text="alpha here", kws=["alpha"]),
-        _snode(1, text="unrelated", kws=["zzz"], emb=[1.0, 0.0]),  # semantic only
+        _snode(1, text="unrelated", kws=["zzz"]),  # semantic only (chunk_id 101)
     ]
     # semantic OFF → the semantic-only chunk is gone; the literal one stays
     hits = search_chunks(
-        nodes, "alpha", active={"v", "k", "t"}, query_embedding=[1.0, 0.0]
+        nodes, "alpha", active={"v", "k", "t"}, semantic_ranks={101: 1}
     )
     dcs = {h.node.dc for h in hits}
     assert "dc100" in dcs and "dc101" not in dcs

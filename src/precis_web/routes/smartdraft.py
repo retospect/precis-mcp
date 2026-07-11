@@ -93,15 +93,17 @@ async def reader(
     hits: list[smartdraft.SearchHit] = []
     sem_degraded = False
     if query:
-        qvec = None
+        sranks: dict[int, int] = {}
         if "s" in active:
             embedder = getattr(
                 getattr(get_runtime(request), "hub", None), "embedder", None
             )
             qvec = embed_query(embedder, query)  # None if no embedder / failure
             sem_degraded = qvec is None
+            # top-N nearest via the HNSW index — no full-vector scan.
+            sranks = smartdraft.semantic_ranks(store, ref.id, qvec)
         hits = smartdraft.search_chunks(
-            nodes, query, active=active, query_embedding=qvec
+            nodes, query, active=active, semantic_ranks=sranks
         )
 
     # The in-TOC search view keeps every hit visible (uncollapsed).
