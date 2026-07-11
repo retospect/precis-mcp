@@ -7,7 +7,8 @@
   <h1 class="truncate text-base font-semibold">{{ ref.title }}</h1>
   <div class="flex items-center gap-3 text-[11px] text-slate-500">
     <a href="/smartdraft/{{ ident }}?focus={{ focus_dc }}{% if relevance %}&relevance=0{% endif %}"
-       class="rounded border border-slate-200 px-2 py-0.5 {% if relevance %}bg-sky-600 text-white{% else %}text-slate-600{% endif %}">relevance {{ 'on' if relevance else 'off' }}</a>
+       class="rounded border border-slate-200 px-2 py-0.5 {% if relevance %}bg-sky-600 text-white{% else %}text-slate-600{% endif %}"
+       title="toggle fisheye vs the full uncompressed document (both panes)">{{ '🔍 Fisheye' if relevance else '📄 Full doc' }}</a>
     <a href="/drafts/{{ ident }}" class="hover:text-slate-800">open in classic ↗</a>
   </div>
 </div>
@@ -53,10 +54,13 @@
         {% set n = m.node %}
         {% set hd = 'font-semibold text-slate-900 text-base' if n.is_heading else '' %}
         {% if m.mode == 'full' %}
-        <div class="rounded border border-amber-200 bg-amber-50 p-2">
+        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
           {% if n.pinned or n.locked %}<div class="mb-1 text-[10px] text-amber-700">{% if n.pinned %}📌{% endif %}{% if n.locked %} 🔒{% endif %}</div>{% endif %}
           <div class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True) }}</div>
         </div>
+        {% elif m.mode == 'doc' %}
+        {# full-doc mode: every chunk verbatim, plain (focus is the amber box above) #}
+        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}">{{ m.display | linkify_refs(markdown=True) }}</a>
         {% elif m.mode in ('tail', 'head') %}
         {# ±1 neighbour: verbatim, truncated toward the focus (tail leads in, head flows out) #}
         <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}">{{ m.display | linkify_refs(markdown=True) }}</a>
@@ -109,6 +113,9 @@
   window.addEventListener('DOMContentLoaded', () => {
     const el = document.getElementById('toc-' + FOCUS);
     if (el) el.scrollIntoView({ block: 'center' });
+    // in full-doc mode the middle is long — bring the focus para into view too
+    const mid = document.getElementById('mid-focus');
+    if (mid) mid.scrollIntoView({ block: 'center' });
   });
   document.addEventListener('keydown', (e) => {
     const t = document.activeElement;

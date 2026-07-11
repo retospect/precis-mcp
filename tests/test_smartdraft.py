@@ -164,6 +164,17 @@ def test_build_view_populates_three_panes(hub) -> None:
     assert any(r.node and r.node.is_heading for r in view.toc)
 
 
+def test_full_doc_mode_renders_every_chunk_verbatim(hub) -> None:
+    # relevance=False (the Fisheye⇄Full toggle) → the middle is the whole
+    # uncompressed document, every chunk verbatim, focus still framed.
+    store = hub.store
+    ref_id = _seed_draft(store, regimes=[["a"], ["b"], ["c"], ["d"]])
+    view = build_view(store, ref_id, relevance=False)
+    assert len(view.middle) == len(store.reading_order(ref_id))
+    assert all(m.mode in ("full", "doc") for m in view.middle)
+    assert sum(1 for m in view.middle if m.is_focus) == 1
+
+
 def test_build_view_marks_a_pinned_chunk(hub) -> None:
     store = hub.store
     ref_id = _seed_draft(store, regimes=[["alpha"], ["beta"]])

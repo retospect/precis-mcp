@@ -281,33 +281,51 @@ def build_view(
     pres = pressures(nodes, fi)
     toc = _left_toc(nodes, pres, relevance=relevance)
 
-    lo = max(0, fi - _MID_BACK)
-    hi = min(len(nodes), fi + _MID_FWD + 1)
     middle: list[MidRow] = []
-    for i in range(lo, hi):
-        n = nodes[i]
-        dist = i - fi
-        if dist == 0:
-            mode, display = "full", n.text
-        elif dist == -1:
-            mode, display = "tail", _trunc_tail(n.text, _NEIGHBOR_CAP)
-        elif dist == 1:
-            mode, display = "head", _trunc_head(n.text, _NEIGHBOR_CAP)
-        else:
-            mode, display = "summary", n.summary
-        middle.append(MidRow(node=n, is_focus=(dist == 0), mode=mode, display=display))
+    if not relevance:
+        # Full / uncompressed document: every chunk verbatim (the focus is still
+        # framed). The Fisheye⇄Full toggle drives both panes from one flag.
+        for i, n in enumerate(nodes):
+            middle.append(
+                MidRow(
+                    node=n,
+                    is_focus=(i == fi),
+                    mode=("full" if i == fi else "doc"),
+                    display=n.text,
+                )
+            )
+    else:
+        lo = max(0, fi - _MID_BACK)
+        hi = min(len(nodes), fi + _MID_FWD + 1)
+        for i in range(lo, hi):
+            n = nodes[i]
+            dist = i - fi
+            if dist == 0:
+                mode, display = "full", n.text
+            elif dist == -1:
+                mode, display = "tail", _trunc_tail(n.text, _NEIGHBOR_CAP)
+            elif dist == 1:
+                mode, display = "head", _trunc_head(n.text, _NEIGHBOR_CAP)
+            else:
+                mode, display = "summary", n.summary
+            middle.append(
+                MidRow(node=n, is_focus=(dist == 0), mode=mode, display=display)
+            )
 
-    # "relevant elsewhere" — highest-pressure chunks outside the reading window,
-    # excluding the focus itself; the semantic pull the spatial window misses.
-    near = set(range(lo, hi))
-    ranked = sorted(
-        (n for n in nodes if n.idx not in near and not n.is_heading),
-        key=lambda n: pres.get(n.idx, 0.0),
-        reverse=True,
-    )
-    elsewhere = [
-        n for n in ranked[:_ELSEWHERE_K] if pres.get(n.idx, 0.0) >= _KEEP_THRESHOLD
-    ]
+    # "relevant elsewhere" — highest-pressure chunks outside the fisheye window
+    # (empty in full-doc mode, where everything is already shown). Kept on the
+    # model for a future TOC-hover surfacing.
+    elsewhere: list[ChunkNode] = []
+    if relevance:
+        near = {m.node.idx for m in middle}
+        ranked = sorted(
+            (n for n in nodes if n.idx not in near and not n.is_heading),
+            key=lambda n: pres.get(n.idx, 0.0),
+            reverse=True,
+        )
+        elsewhere = [
+            n for n in ranked[:_ELSEWHERE_K] if pres.get(n.idx, 0.0) >= _KEEP_THRESHOLD
+        ]
 
     return SmartView(
         ref_id=ref_id,
