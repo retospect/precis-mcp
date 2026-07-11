@@ -56,14 +56,14 @@
         {% if m.mode == 'full' %}
         <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
           {% if n.pinned or n.locked %}<div class="mb-1 text-[10px] text-amber-700">{% if n.pinned %}📌{% endif %}{% if n.locked %} 🔒{% endif %}</div>{% endif %}
-          <div class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True) }}</div>
+          <div class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True) }}</div>
         </div>
         {% elif m.mode == 'doc' %}
         {# full-doc mode: every chunk verbatim, plain (focus is the amber box above) #}
-        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}">{{ m.display | linkify_refs(markdown=True) }}</a>
+        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True) }}</a>
         {% elif m.mode in ('tail', 'head') %}
         {# ±1 neighbour: verbatim, truncated toward the focus (tail leads in, head flows out) #}
-        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}">{{ m.display | linkify_refs(markdown=True) }}</a>
+        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True) }}</a>
         {% else %}
         {# ±2 neighbour: one-line summary #}
         <a href="{{ qs(n.dc) }}" class="block truncate rounded px-2 py-0.5 text-slate-400 hover:bg-slate-50 {{ hd }}" title="{{ n.text[:400] }}">· {{ m.display }}</a>
