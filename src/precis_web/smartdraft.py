@@ -140,7 +140,15 @@ def build_nodes(
     reading-order (structure) + `list_blocks_for_ref` (keywords + embedding) +
     `block_views` (llm summary). ``marks`` stamps pin/lock status."""
     chunks = store.reading_order(ref_id)
-    blocks = {b.id: b for b in store.list_blocks_for_ref(ref_id, with_embedding=True)}
+    # with_embedding drives the semantic + embedding-pressure signals; if that
+    # path ever fails (a pgvector shape we can't coerce), degrade to no-embedding
+    # rather than 500 the whole reader.
+    try:
+        blocks = {
+            b.id: b for b in store.list_blocks_for_ref(ref_id, with_embedding=True)
+        }
+    except Exception:
+        blocks = {b.id: b for b in store.list_blocks_for_ref(ref_id)}
     views = store.block_views(ref_id)
     tag_map = _load_chunk_tags(store, ref_id)
     pins = set((marks or {}).get("pens") or [])

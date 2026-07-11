@@ -180,9 +180,20 @@ def _row_to_block(row: tuple) -> Block:
     """
     embedding = row[6]
     if embedding is not None and not isinstance(embedding, list):
-        # pgvector returns numpy.ndarray when registered; coerce for stable
-        # cross-version output.
-        embedding = list(map(float, embedding))
+        # pgvector returns different shapes across versions when registered — a
+        # numpy.ndarray (older) OR a pgvector ``Vector`` (newer, NOT iterable via
+        # map) — and a ``"[..]"`` string when the type isn't registered. Coerce
+        # all of them to a plain float list for stable cross-version output.
+        if hasattr(embedding, "to_list"):  # pgvector Vector
+            embedding = list(embedding.to_list())
+        elif hasattr(embedding, "tolist"):  # numpy.ndarray
+            embedding = embedding.tolist()
+        elif isinstance(embedding, str):  # unregistered text form
+            embedding = [
+                float(x) for x in embedding.strip("[]").split(",") if x.strip()
+            ]
+        else:
+            embedding = list(map(float, embedding))
     # ``section_path`` lives in its own TEXT[] column on ``chunks``
     # (v2; ADR 0018). For compatibility with code that still reads
     # ``block.meta['section_path']`` (oracle entry-title resolver,
