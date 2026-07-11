@@ -38,9 +38,10 @@ _STATUS_BOOST = 10.0
 #: Body chunks below this pressure collapse into a ``⋯ N ⋯`` run (headings and
 #: status-boosted chunks never collapse — the outline + needs always show).
 _KEEP_THRESHOLD = 0.18
-#: Middle reading window around the focus (forward-biased).
-_MID_BACK = 2
-_MID_FWD = 2
+#: Middle reading window around the focus (forward-biased, sized to fill a
+#: typical viewport). A true measure-and-fill is a client-side follow-up.
+_MID_BACK = 4
+_MID_FWD = 6
 #: Verbatim cap for the ±1 neighbours (truncated toward the focus edge so the
 #: text reads continuously into/out of the focus).
 _NEIGHBOR_CAP = 400
