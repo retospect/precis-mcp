@@ -189,6 +189,17 @@ def test_keyword_shared_distal_chunk_surfaces_in_the_toc(hub) -> None:
     assert any("zeta" in (r.node.keywords or []) for r in shared)
 
 
+def test_focus_carries_a_content_sha_and_is_editable(hub) -> None:
+    # The inline editor needs the focus's content_sha (optimistic concurrency)
+    # and a body chunk must be flagged editable.
+    store = hub.store
+    ref_id = _seed_draft(store, regimes=[["a"], ["b"]])
+    view = build_view(store, ref_id)
+    assert view.focus is not None
+    assert view.focus.sha  # non-empty content_sha
+    assert view.focus.editable  # a paragraph is inline-editable
+
+
 def test_build_view_marks_a_pinned_chunk(hub) -> None:
     store = hub.store
     ref_id = _seed_draft(store, regimes=[["alpha"], ["beta"]])

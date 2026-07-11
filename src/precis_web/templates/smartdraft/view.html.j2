@@ -55,9 +55,23 @@
         {% set n = m.node %}
         {% set hd = 'font-semibold text-slate-900 text-base' if n.is_heading else '' %}
         {% if m.mode == 'full' %}
-        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
-          {% if n.pinned or n.locked %}<div class="mb-1 text-[10px] text-amber-700">{% if n.pinned %}📌{% endif %}{% if n.locked %} 🔒{% endif %}</div>{% endif %}
-          <div class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True) }}</div>
+        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2"
+             x-data="smartEdit('{{ ident }}', '{{ n.base58 }}', '{{ n.sha }}', {{ n.text | tojson }}, {{ n.editable | tojson }})">
+          <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
+            <span>{% if n.pinned %}📌{% endif %}{% if n.locked %} 🔒{% endif %}</span>
+            <button x-show="!editing && canEdit" @click="start()" class="ml-auto text-slate-400 hover:text-slate-700">✎ edit</button>
+          </div>
+          {# rendered view (with links) — hidden while editing #}
+          <div x-show="!editing" class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True) }}</div>
+          {# inline editor — raw text, saves through the shipped /drafts/{id}/text #}
+          <div x-show="editing" x-cloak>
+            <textarea x-model="draft" rows="10" class="w-full rounded border border-amber-300 px-2 py-1 font-mono text-xs focus:border-amber-500 focus:outline-none"></textarea>
+            <div class="mt-1 flex items-center gap-2">
+              <button @click="save()" :disabled="saving" class="rounded bg-amber-600 px-2 py-0.5 text-[11px] text-white hover:bg-amber-700 disabled:opacity-40">save</button>
+              <button @click="cancel()" class="text-[11px] text-slate-500 hover:text-slate-800">cancel</button>
+              <span class="text-[11px] text-rose-600" x-show="msg" x-text="msg"></span>
+            </div>
+          </div>
         </div>
         {% elif m.mode == 'doc' %}
         {# full-doc mode: every chunk verbatim, plain (focus is the amber box above) #}
@@ -143,6 +157,32 @@
     if (j >= 0 && j !== i) { e.preventDefault(); jump(ORDER[j][0]); }
   });
 })();
+
+// Inline text edit of the focus para — saves through the shipped
+// /drafts/{id}/text (validation + link-sync single-sourced with the MCP path).
+// A 422 (broken ref introduced) / 409 (stale) surfaces its message in place.
+function smartEdit(ident, handle, sha, text, canEdit) {
+  return {
+    ident, handle, sha, canEdit,
+    editing: false, saving: false, msg: '', orig: text, draft: text,
+    start() { this.draft = this.orig; this.msg = ''; this.editing = true; },
+    cancel() { this.editing = false; this.msg = ''; },
+    async save() {
+      if (this.draft === this.orig) { this.editing = false; return; }
+      this.saving = true; this.msg = '';
+      try {
+        const r = await fetch(`/drafts/${this.ident}/text`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ handle: this.handle, text: this.draft, base_sha: this.sha }),
+        });
+        const d = await r.json();
+        if (d.ok) { location.reload(); }
+        else { this.msg = d.error || (d.hard ? ('broke: ' + d.hard.join(', ')) : 'save failed'); this.saving = false; }
+      } catch (e) { this.msg = 'network error'; this.saving = false; }
+    },
+  };
+}
 
 function smartAsk(ident, focus) {
   return {

@@ -29,6 +29,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from precis.store._draft_ops import content_sha
+
 # ── pressure weights (tune later; env-overridable is a follow-up) ────────
 _W_KEYWORD = 1.0
 _W_EMBED = 1.0
@@ -65,12 +67,21 @@ class ChunkNode:
     summary: str
     keywords: list[str]
     embedding: list[float] | None
+    #: content_sha of ``text`` — the optimistic-concurrency token the inline
+    #: editor passes to ``POST /drafts/{id}/text`` (a stale one 409s).
+    sha: str = ""
     pinned: bool = False
     locked: bool = False
 
     @property
     def is_heading(self) -> bool:
         return self.chunk_kind == "heading"
+
+    @property
+    def editable(self) -> bool:
+        """Only free-text body chunks are inline-editable here (a heading is
+        text too; a table/figure needs its own editor — a follow-up)."""
+        return self.chunk_kind in ("paragraph", "heading")
 
     @property
     def has_status(self) -> bool:
@@ -142,6 +153,7 @@ def build_nodes(
                 summary=summary,
                 keywords=kws,
                 embedding=list(b.embedding) if (b and b.embedding) else None,
+                sha=content_sha(c.text or ""),
                 pinned=(c.dc in pins or c.dc in eyes),
                 locked=(c.dc in locked),
             )
