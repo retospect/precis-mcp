@@ -20,6 +20,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, Response
 
+from precis.utils.embed_query import embed_query
 from precis_web import draft_eyes, smartdraft
 from precis_web.deps import get_runtime, get_store, templates
 from precis_web.routes.drafts import _draft_ref
@@ -89,13 +90,12 @@ async def reader(
     active = {c for c in sig.lower() if c in _SIGNALS}
     hits: list[smartdraft.SearchHit] = []
     if query:
-        embedder = getattr(getattr(get_runtime(request), "hub", None), "embedder", None)
         qvec = None
-        if embedder is not None and "s" in active:
-            try:
-                qvec = embedder.embed_one(query)
-            except Exception:
-                qvec = None
+        if "s" in active:
+            embedder = getattr(
+                getattr(get_runtime(request), "hub", None), "embedder", None
+            )
+            qvec = embed_query(embedder, query)  # None if no embedder / failure
         hits = smartdraft.search_chunks(
             view.nodes, query, active=active, query_embedding=qvec
         )

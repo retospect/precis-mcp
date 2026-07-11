@@ -56,7 +56,7 @@
       {% for h in hits %}
       {% set n = h.node %}
       <a href="{{ slink(to_focus=n.dc) }}"
-         class="flex items-center gap-1 px-2 py-1 hover:bg-slate-50 {% if n.dc == focus_dc %}bg-amber-50{% endif %}">
+         class="flex items-center gap-1 px-2 py-1 hover:bg-sky-100 {% if n.dc == focus_dc %}bg-sky-100 ring-1 ring-inset ring-sky-400{% else %}bg-sky-50{% endif %}">
         {% for b in [('v', h.v, 'V', 'bg-sky-600'), ('k', h.k, 'K', 'bg-teal-600'), ('t', h.t, 'T', 'bg-amber-600')] %}
           {% if b[1] %}<span title="{{ b[0] }} match{{ '' if b[0] in active_sig else ' (off — not counted)' }}"
              class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white {% if b[0] in active_sig %}{{ b[3] }}{% else %}bg-slate-300{% endif %}">{{ b[2] }}</span>{% endif %}
@@ -83,7 +83,7 @@
         <a id="toc-{{ n.dc }}" href="{{ qs(n.dc) }}"
            style="padding-left: {{ 0.4 + n.depth * 0.75 }}rem"
            class="flex items-start gap-1 py-0.5 pr-2 hover:bg-slate-50
-                  {% if q and n.dc in hit_dcs %}bg-yellow-100{% elif n.dc == focus_dc %}bg-amber-50 ring-1 ring-inset ring-amber-400{% elif row.shared %}bg-emerald-50{% elif row.pressure >= 0.4 %}bg-sky-50{% endif %}">
+                  {% if q and n.dc in hit_dcs %}bg-sky-100{% elif n.dc == focus_dc %}bg-amber-50 ring-1 ring-inset ring-amber-400{% elif row.shared %}bg-emerald-50{% elif row.pressure >= 0.4 %}bg-sky-50{% endif %}">
           <span class="min-w-0 flex-1 truncate
                        {% if n.is_heading %}font-semibold text-slate-800{% else %}text-slate-600{% endif %}"
                 >{% if n.is_heading %}{{ n.summary }}{% else %}<span class="text-slate-400">·</span> {{ n.summary }}{% endif %}</span>
@@ -162,7 +162,11 @@
   <div class="sticky top-2 self-start rounded border border-slate-200 bg-white" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')">
     <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Collaborate</div>
     <div class="space-y-2 p-2 text-xs">
-      <div class="text-slate-500">Pinned: 📌 {{ eye_count }}{% if not eye_count %} · <span class="text-slate-400">nothing pinned — the ask works on the current para + what's visible</span>{% endif %}</div>
+      <div class="flex items-center gap-2 text-slate-500">
+        <span>Pinned: 📌 {{ eye_count }}</span>
+        {% if eye_count %}<button onclick="smartClearPins()" class="text-[10px] text-slate-400 hover:text-rose-600">unpin all</button>
+        {% else %}<span class="text-[10px] text-slate-400">nothing pinned — the ask works on the current para</span>{% endif %}
+      </div>
       <textarea x-model="text" rows="3" placeholder="Ask the LLM (works on the pinned context, or the current para if nothing is pinned)…"
                 class="w-full rounded border border-slate-200 px-2 py-1"></textarea>
       <div class="flex items-center gap-2">
@@ -184,14 +188,18 @@
 (function () {
   const IDENT = {{ ident | tojson }};
   const ORDER = {{ view.order | tojson }};      // [[dc, depth], ...]
+  const HITS = {{ (hits | map(attribute='node') | map(attribute='dc') | list) | tojson }};  // search hits, in rank order
   const FOCUS = {{ focus_dc | tojson }};
-  const REL = new URLSearchParams(location.search).get('relevance');
-  const jump = (dc) => { location = `/smartdraft/${IDENT}?focus=${dc}` + (REL === '0' ? '&relevance=0' : ''); };
-  // keep the active TOC row visible after a server-rendered reload
+  // Navigate preserving EVERY current param (q/sig/sview/relevance) — only focus
+  // changes, so arrowing never drops the search.
+  const jump = (dc) => {
+    const p = new URLSearchParams(location.search);
+    p.set('focus', dc);
+    location = `/smartdraft/${IDENT}?` + p.toString();
+  };
   window.addEventListener('DOMContentLoaded', () => {
     const el = document.getElementById('toc-' + FOCUS);
     if (el) el.scrollIntoView({ block: 'center' });
-    // in full-doc mode the middle is long — bring the focus para into view too
     const mid = document.getElementById('mid-focus');
     if (mid) mid.scrollIntoView({ block: 'center' });
   });
@@ -205,6 +213,14 @@
         body: JSON.stringify({ op: 'eye', handles: [FOCUS] }),
       }).then(() => location.reload());
       return;
+    }
+    // In search mode the arrows step through the RESULTS (not the outline).
+    if (HITS && HITS.length) {
+      let hi = HITS.indexOf(FOCUS);
+      if (e.key === 'ArrowDown' || e.key === 'ArrowRight') hi = hi < 0 ? 0 : Math.min(HITS.length - 1, hi + 1);
+      else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') hi = hi < 0 ? 0 : Math.max(0, hi - 1);
+      else return;
+      e.preventDefault(); jump(HITS[hi]); return;
     }
     const i = ORDER.findIndex((o) => o[0] === FOCUS);
     if (i < 0) return;
@@ -227,6 +243,12 @@ function smartPin(dc) {
   fetch(`/drafts/{{ ident }}/marks`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ op: 'eye', handles: [dc] }),
+  }).then(() => location.reload()).catch(() => {});
+}
+function smartClearPins() {
+  fetch(`/drafts/{{ ident }}/marks`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ op: 'clear' }),
   }).then(() => location.reload()).catch(() => {});
 }
 
