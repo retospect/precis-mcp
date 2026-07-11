@@ -61,6 +61,7 @@ async def reader(
     q: str = "",
     sig: str = _SIGNALS,
     sview: str = "list",
+    debug: str = "",
 ) -> Response:
     """The three-pane fisheye reader. ``q`` runs multi-signal search (RRF); ``sig``
     is the active-signal letter set (e.g. ``vkts``); ``sview`` is ``list``/``toc``."""
@@ -116,6 +117,7 @@ async def reader(
             "active_sig": "".join(c for c in _SIGNALS if c in active),
             "sview": "toc" if sview == "toc" else "list",
             "hits": hits,
+            "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
         },
     )
 

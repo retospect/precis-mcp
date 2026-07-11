@@ -4,14 +4,17 @@
 {# One URL builder for the whole panel — every control overrides one param.
    Params are to_* so they don't shadow the render-context globals they
    default to (a macro can't see template-level {% set %} vars). #}
-{% macro slink(to_focus=None, to_q=None, to_sig=None, to_view=None, to_rel=None) -%}
-/smartdraft/{{ ident }}?focus={{ to_focus if to_focus is not none else focus_dc }}&relevance={{ '1' if (to_rel if to_rel is not none else relevance) else '0' }}&q={{ (to_q if to_q is not none else q) | urlencode }}&sig={{ to_sig if to_sig is not none else active_sig }}&sview={{ to_view if to_view is not none else sview }}
+{% macro slink(to_focus=None, to_q=None, to_sig=None, to_view=None, to_rel=None, to_debug=None) -%}
+/smartdraft/{{ ident }}?focus={{ to_focus if to_focus is not none else focus_dc }}&relevance={{ '1' if (to_rel if to_rel is not none else relevance) else '0' }}&q={{ (to_q if to_q is not none else q) | urlencode }}&sig={{ to_sig if to_sig is not none else active_sig }}&sview={{ to_view if to_view is not none else sview }}&debug={{ '1' if (to_debug if to_debug is not none else debug) else '0' }}
 {%- endmacro %}
 {% macro qs(dc) %}{{ slink(to_focus=dc) }}{% endmacro %}
 
 <div class="mb-2 flex items-center justify-between">
   <h1 class="truncate text-base font-semibold">{{ ref.title }}</h1>
-  <a href="/drafts/{{ ident }}" class="text-[11px] text-slate-500 hover:text-slate-800">open in classic ↗</a>
+  <div class="flex items-center gap-3 text-[11px] text-slate-500">
+    <a href="{{ slink(to_debug=(not debug)) }}" class="{% if debug %}text-sky-700{% else %}hover:text-slate-800{% endif %}" title="show chunk ids (debug)">ids</a>
+    <a href="/drafts/{{ ident }}" class="hover:text-slate-800">open in classic ↗</a>
+  </div>
 </div>
 
 <div class="grid grid-cols-1 items-start gap-3 lg:grid-cols-[28%_44%_28%]">
@@ -86,7 +89,7 @@
                   {% if q and n.dc in hit_dcs %}bg-sky-100{% elif n.dc == focus_dc %}bg-amber-50 ring-1 ring-inset ring-amber-400{% elif row.shared %}bg-emerald-50{% elif row.pressure >= 0.4 %}bg-sky-50{% endif %}">
           <span class="min-w-0 flex-1 truncate
                        {% if n.is_heading %}font-semibold text-slate-800{% else %}text-slate-600{% endif %}"
-                >{% if n.is_heading %}{{ n.summary }}{% else %}<span class="text-slate-400">·</span> {{ n.summary }}{% endif %}</span>
+                >{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.is_heading %}{{ n.summary }}{% else %}<span class="text-slate-400">·</span> {{ n.summary }}{% endif %}</span>
           <span class="shrink-0 text-[10px]">
             {%- if row.shared %}<span title="shares a keyword with the focus">🔑</span>{% endif -%}
             {%- if n.pinned %}📌{% endif -%}
@@ -117,7 +120,7 @@
         <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2"
              x-data="smartEdit('{{ ident }}', '{{ n.base58 }}', '{{ n.sha }}', {{ n.editable | tojson }})">
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
-            <span>{% if n.locked %}🔒{% endif %}</span>
+            <span>{% if debug %}<span class="font-mono text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.locked %}🔒{% endif %}</span>
             <div class="ml-auto flex items-center gap-2" x-show="!editing">
               <button onclick="smartPin('{{ n.dc }}')"
                       class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
@@ -140,13 +143,13 @@
         </div>
         {% elif m.mode == 'doc' %}
         {# full-doc mode: every chunk verbatim, plain (focus is the amber box above) #}
-        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True) }}</a>
+        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ m.display | linkify_refs(markdown=True, compact=True) }}</a>
         {% elif m.mode in ('tail', 'head') %}
         {# ±1 neighbour: verbatim, truncated toward the focus (tail leads in, head flows out) #}
-        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True) }}</a>
+        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ m.display | linkify_refs(markdown=True, compact=True) }}</a>
         {% else %}
         {# ±2 neighbour: one-line summary #}
-        <a href="{{ qs(n.dc) }}" class="block truncate rounded px-2 py-0.5 text-slate-400 hover:bg-slate-50 {{ hd }}" title="{{ n.text[:400] }}">· {{ m.display }}</a>
+        <a href="{{ qs(n.dc) }}" class="block truncate rounded px-2 py-0.5 text-slate-400 hover:bg-slate-50 {{ hd }}" title="{{ n.text[:400] }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}· {{ m.display }}</a>
         {% endif %}
       {% else %}
         <div class="text-slate-400">Empty draft.</div>
