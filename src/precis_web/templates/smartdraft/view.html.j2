@@ -248,6 +248,25 @@
     if (mid) mid.scrollIntoView({ block: 'center' });
     if (Q) highlightTerm(document.getElementById('sd-content'), Q);
   });
+  // Portal-lite (smartdraft only, no shared-linkify change): when a hover-preview
+  // card opens, pin it to FIXED coords at its anchor so it floats above content
+  // and escapes any pane — kills the "¶… fragment one block below" artifact.
+  const PW = 384;  // the card's w-96
+  window.addEventListener('ref-popover-open', (e) => {
+    const src = e.detail && e.detail.source;
+    if (!src || !src.parentNode) return;
+    const pop = src.parentNode.querySelector('.ref-popover');
+    if (!pop) return;
+    requestAnimationFrame(() => {
+      const r = src.getBoundingClientRect();
+      const below = r.bottom + 8 + 200 < window.innerHeight;  // room under the link?
+      pop.style.position = 'fixed';
+      pop.style.left = Math.max(4, Math.min(r.left, window.innerWidth - PW - 8)) + 'px';
+      if (below) { pop.style.top = (r.bottom + 4) + 'px'; pop.style.bottom = 'auto'; }
+      else { pop.style.bottom = (window.innerHeight - r.top + 4) + 'px'; pop.style.top = 'auto'; }
+      pop.style.zIndex = '200';
+    });
+  });
   document.addEventListener('keydown', (e) => {
     const t = document.activeElement;
     const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
