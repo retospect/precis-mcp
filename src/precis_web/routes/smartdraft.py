@@ -81,7 +81,7 @@ async def reader(
             "view": view,
             "relevance": rel_on,
             "focus_dc": view.focus.dc if view.focus else "",
-            "pens": list(marks.get("pens") or []),
+            "focus_pinned": bool(view.focus and view.focus.pinned),
             "eye_count": len(marks.get("eyes") or {}),
         },
     )

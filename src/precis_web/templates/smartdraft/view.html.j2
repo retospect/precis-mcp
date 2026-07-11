@@ -83,7 +83,7 @@
     <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Collaborate</div>
     <div class="space-y-2 p-2 text-xs">
       <div class="text-slate-500">Pinned: 📌 {{ eye_count }}</div>
-      <button @click="pin()" class="w-full rounded bg-sky-50 py-1 text-sky-700 hover:bg-sky-100" title="pin the current focus into the working set">📌 pin focus</button>
+      <button @click="pin()" class="w-full rounded {% if focus_pinned %}bg-amber-100 text-amber-800 hover:bg-amber-200{% else %}bg-sky-50 text-sky-700 hover:bg-sky-100{% endif %} py-1" title="toggle the current focus in the working set (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }} focus</button>
       <textarea x-model="text" rows="3" placeholder="Ask the LLM (reads the pinned context)…"
                 class="w-full rounded border border-slate-200 px-2 py-1"></textarea>
       <div class="flex items-center gap-2">
@@ -120,6 +120,14 @@
   document.addEventListener('keydown', (e) => {
     const t = document.activeElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (e.key === 'p' || e.key === 'P') {   // toggle pin/unpin the focus
+      e.preventDefault();
+      fetch(`/drafts/${IDENT}/marks`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ op: 'eye', handles: [FOCUS] }),
+      }).then(() => location.reload());
+      return;
+    }
     const i = ORDER.findIndex((o) => o[0] === FOCUS);
     if (i < 0) return;
     const depth = ORDER[i][1];
