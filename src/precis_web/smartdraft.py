@@ -202,6 +202,10 @@ class TocRow:
 
     node: ChunkNode | None = None
     pressure: float = 0.0
+    #: True when this chunk shares ≥1 keyword with the focus — a first-class
+    #: keep+highlight reason (distal shared-keyword paras surface in the map,
+    #: not just spatial/embedding neighbours).
+    shared: bool = False
     collapsed_nodes: list[ChunkNode] = field(default_factory=list)
 
 
@@ -230,12 +234,17 @@ class SmartView:
 
 
 def _left_toc(
-    nodes: list[ChunkNode], pres: dict[int, float], *, relevance: bool
+    nodes: list[ChunkNode],
+    pres: dict[int, float],
+    *,
+    relevance: bool,
+    shared_idx: set[int] | None = None,
 ) -> list[TocRow]:
     """The fisheye TOC. ``relevance=False`` → the plain full outline (every
-    chunk). ``relevance=True`` → keep headings + status + high-pressure chunks;
-    collapse quiet-irrelevant runs to a ``⋯ n ⋯`` marker (order never
-    reshuffles — only expand/collapse tracks the focus)."""
+    chunk). ``relevance=True`` → keep headings + status + **keyword-shared** +
+    high-pressure chunks; collapse quiet-irrelevant runs to a ``⋯ n ⋯`` marker
+    (order never reshuffles — only expand/collapse tracks the focus)."""
+    shared_idx = shared_idx or set()
     rows: list[TocRow] = []
     run: list[ChunkNode] = []
 
@@ -243,21 +252,24 @@ def _left_toc(
         if not run:
             return
         if len(run) == 1:  # a lone quiet chunk — show it, collapsing saves nothing
-            rows.append(TocRow(node=run[0], pressure=pres.get(run[0].idx, 0.0)))
+            n = run[0]
+            rows.append(TocRow(node=n, pressure=pres.get(n.idx, 0.0)))
         else:
             rows.append(TocRow(collapsed_nodes=list(run)))
         run.clear()
 
     for n in nodes:
+        is_shared = n.idx in shared_idx
         keep = (
             not relevance
             or n.is_heading
             or n.has_status
+            or is_shared
             or pres.get(n.idx, 0.0) >= _KEEP_THRESHOLD
         )
         if keep:
             flush()
-            rows.append(TocRow(node=n, pressure=pres.get(n.idx, 0.0)))
+            rows.append(TocRow(node=n, pressure=pres.get(n.idx, 0.0), shared=is_shared))
         else:
             run.append(n)
     flush()
@@ -280,7 +292,15 @@ def build_view(
         return SmartView(ref_id=ref_id, focus=None)
     fi = focus_index(nodes, focus_dc)
     pres = pressures(nodes, fi)
-    toc = _left_toc(nodes, pres, relevance=relevance)
+    # Chunks that share ≥1 keyword with the focus (the focus itself excluded) —
+    # a first-class keep+highlight so distal shared-keyword paras surface.
+    focus_kw = set(nodes[fi].keywords)
+    shared_idx = (
+        {n.idx for n in nodes if n.idx != fi and focus_kw & set(n.keywords)}
+        if focus_kw
+        else set()
+    )
+    toc = _left_toc(nodes, pres, relevance=relevance, shared_idx=shared_idx)
 
     middle: list[MidRow] = []
     if not relevance:

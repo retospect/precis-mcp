@@ -175,6 +175,20 @@ def test_full_doc_mode_renders_every_chunk_verbatim(hub) -> None:
     assert sum(1 for m in view.middle if m.is_focus) == 1
 
 
+def test_keyword_shared_distal_chunk_surfaces_in_the_toc(hub) -> None:
+    # The focus (first body chunk) shares 'zeta' with a FAR chunk; the chunks
+    # between share nothing. The distal shared-keyword chunk is kept + flagged
+    # (bg-emerald 🔑), even though proximity/Jaccard alone wouldn't clear the bar.
+    store = hub.store
+    ref_id = _seed_draft(
+        store,
+        regimes=[["zeta"], ["a"], ["b"], ["c"], ["d"], ["e"], ["zeta", "f"]],
+    )
+    view = build_view(store, ref_id, relevance=True)
+    shared = [r for r in view.toc if r.node and r.shared]
+    assert any("zeta" in (r.node.keywords or []) for r in shared)
+
+
 def test_build_view_marks_a_pinned_chunk(hub) -> None:
     store = hub.store
     ref_id = _seed_draft(store, regimes=[["alpha"], ["beta"]])

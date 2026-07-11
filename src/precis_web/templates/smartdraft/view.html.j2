@@ -30,11 +30,12 @@
         <a id="toc-{{ n.dc }}" href="{{ qs(n.dc) }}"
            style="padding-left: {{ 0.4 + n.depth * 0.75 }}rem"
            class="flex items-start gap-1 py-0.5 pr-2 hover:bg-slate-50
-                  {% if n.dc == focus_dc %}bg-amber-50 ring-1 ring-inset ring-amber-400{% elif row.pressure >= 0.4 %}bg-sky-50{% endif %}">
+                  {% if n.dc == focus_dc %}bg-amber-50 ring-1 ring-inset ring-amber-400{% elif row.shared %}bg-emerald-50{% elif row.pressure >= 0.4 %}bg-sky-50{% endif %}">
           <span class="min-w-0 flex-1 truncate
                        {% if n.is_heading %}font-semibold text-slate-800{% else %}text-slate-600{% endif %}"
                 >{% if n.is_heading %}{{ n.summary }}{% else %}<span class="text-slate-400">·</span> {{ n.summary }}{% endif %}</span>
           <span class="shrink-0 text-[10px]">
+            {%- if row.shared %}<span title="shares a keyword with the focus">🔑</span>{% endif -%}
             {%- if n.pinned %}📌{% endif -%}
             {%- if n.locked %}🔒{% endif -%}
           </span>
