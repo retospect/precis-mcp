@@ -40,7 +40,10 @@ _STATUS_BOOST = 10.0
 _KEEP_THRESHOLD = 0.18
 #: Middle reading window around the focus (forward-biased).
 _MID_BACK = 2
-_MID_FWD = 3
+_MID_FWD = 2
+#: Verbatim cap for the ±1 neighbours (truncated toward the focus edge so the
+#: text reads continuously into/out of the focus).
+_NEIGHBOR_CAP = 400
 #: How many high-pressure *non-neighbour* chunks to surface as "relevant
 #: elsewhere" under the middle window.
 _ELSEWHERE_K = 4
@@ -92,6 +95,20 @@ def _cosine(a: list[float] | None, b: list[float] | None) -> float:
 def _first_line(text: str, cap: int = 140) -> str:
     flat = " ".join((text or "").split())
     return flat if len(flat) <= cap else flat[: cap - 1].rstrip() + "…"
+
+
+def _trunc_head(text: str, cap: int) -> str:
+    """Keep the START (drop the end) — for the +1 neighbour, whose beginning
+    flows out of the focus."""
+    t = (text or "").strip()
+    return t if len(t) <= cap else t[: cap - 1].rstrip() + "…"
+
+
+def _trunc_tail(text: str, cap: int) -> str:
+    """Keep the END (drop the beginning) — for the −1 neighbour, whose tail
+    leads into the focus."""
+    t = (text or "").strip()
+    return t if len(t) <= cap else "…" + t[-(cap - 1) :].lstrip()
 
 
 def build_nodes(
@@ -178,17 +195,25 @@ def pressures(nodes: list[ChunkNode], focus_idx: int) -> dict[int, float]:
 @dataclass(slots=True)
 class TocRow:
     """A left-pane row: either a kept chunk (relevant / heading / status) or a
-    collapsed ``⋯ n ⋯`` run of quiet chunks."""
+    collapsed run of ≥2 quiet chunks (``collapsed_nodes`` carries them, so the
+    marker can hover-list their summaries and click to open). A *single* quiet
+    chunk is never collapsed — the ``⋯ 1 para ⋯`` marker saves no space."""
 
     node: ChunkNode | None = None
     pressure: float = 0.0
-    collapsed: int = 0  # >0 → a collapsed run marker, `node` is None
+    collapsed_nodes: list[ChunkNode] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class MidRow:
+    """A middle-pane row. ``mode`` grades the fidelity by distance to focus:
+    ``full`` (focus) · ``tail``/``head`` (±1 verbatim, truncated toward the
+    focus) · ``summary`` (±2). ``display`` is the text to render at that mode."""
+
     node: ChunkNode
     is_focus: bool
+    mode: str = "summary"
+    display: str = ""
 
 
 @dataclass(slots=True)
@@ -198,6 +223,9 @@ class SmartView:
     toc: list[TocRow] = field(default_factory=list)
     middle: list[MidRow] = field(default_factory=list)
     elsewhere: list[ChunkNode] = field(default_factory=list)
+    #: ``[dc, depth]`` per chunk in reading order — the keyboard nav sequence.
+    #: Up/down step linearly; indent/outdent walk the depth (parent/child).
+    order: list[list[Any]] = field(default_factory=list)
 
 
 def _left_toc(
@@ -208,13 +236,16 @@ def _left_toc(
     collapse quiet-irrelevant runs to a ``⋯ n ⋯`` marker (order never
     reshuffles — only expand/collapse tracks the focus)."""
     rows: list[TocRow] = []
-    run = 0
+    run: list[ChunkNode] = []
 
     def flush() -> None:
-        nonlocal run
-        if run:
-            rows.append(TocRow(collapsed=run))
-            run = 0
+        if not run:
+            return
+        if len(run) == 1:  # a lone quiet chunk — show it, collapsing saves nothing
+            rows.append(TocRow(node=run[0], pressure=pres.get(run[0].idx, 0.0)))
+        else:
+            rows.append(TocRow(collapsed_nodes=list(run)))
+        run.clear()
 
     for n in nodes:
         keep = (
@@ -227,7 +258,7 @@ def _left_toc(
             flush()
             rows.append(TocRow(node=n, pressure=pres.get(n.idx, 0.0)))
         else:
-            run += 1
+            run.append(n)
     flush()
     return rows
 
@@ -252,7 +283,19 @@ def build_view(
 
     lo = max(0, fi - _MID_BACK)
     hi = min(len(nodes), fi + _MID_FWD + 1)
-    middle = [MidRow(node=nodes[i], is_focus=(i == fi)) for i in range(lo, hi)]
+    middle: list[MidRow] = []
+    for i in range(lo, hi):
+        n = nodes[i]
+        dist = i - fi
+        if dist == 0:
+            mode, display = "full", n.text
+        elif dist == -1:
+            mode, display = "tail", _trunc_tail(n.text, _NEIGHBOR_CAP)
+        elif dist == 1:
+            mode, display = "head", _trunc_head(n.text, _NEIGHBOR_CAP)
+        else:
+            mode, display = "summary", n.summary
+        middle.append(MidRow(node=n, is_focus=(dist == 0), mode=mode, display=display))
 
     # "relevant elsewhere" — highest-pressure chunks outside the reading window,
     # excluding the focus itself; the semantic pull the spatial window misses.
@@ -267,5 +310,10 @@ def build_view(
     ]
 
     return SmartView(
-        ref_id=ref_id, focus=nodes[fi], toc=toc, middle=middle, elsewhere=elsewhere
+        ref_id=ref_id,
+        focus=nodes[fi],
+        toc=toc,
+        middle=middle,
+        elsewhere=elsewhere,
+        order=[[n.dc, n.depth] for n in nodes],
     )

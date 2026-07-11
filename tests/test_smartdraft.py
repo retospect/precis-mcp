@@ -89,10 +89,34 @@ def test_relevance_on_collapses_quiet_runs_but_keeps_the_heading() -> None:
     kept = {r.node.dc for r in rows if r.node}
     assert nodes[0].dc in kept  # heading always survives
     assert nodes[1].dc in kept  # the relevant/focus chunk
-    assert any(r.collapsed for r in rows)  # the far quiet run collapsed
+    assert any(r.collapsed_nodes for r in rows)  # the far quiet run collapsed
     # order never reshuffles: kept nodes stay in reading order
     kept_idx = [r.node.idx for r in rows if r.node]
     assert kept_idx == sorted(kept_idx)
+
+
+def test_a_lone_quiet_chunk_is_shown_not_collapsed() -> None:
+    # focus at idx0; idx1 is relevant (kept), idx2 is a single quiet chunk
+    # between two kept chunks — collapsing it to "⋯ 1 para ⋯" saves nothing.
+    nodes = [
+        _node(0, ["alpha"]),
+        _node(1, ["alpha"]),
+        _node(2, ["zzz"]),
+        _node(3, ["alpha"]),
+    ]
+    # force idx2 quiet: far weighting can't help here, but proximity keeps it —
+    # so use a spread where the lone chunk is genuinely below threshold.
+    nodes = [
+        _node(0, ["alpha"]),
+        _node(1, ["alpha"]),
+        _node(2, ["alpha"]),
+        _node(3, ["alpha"]),
+        _node(4, ["zzz"]),  # lone quiet chunk, far
+        _node(5, ["alpha"]),
+    ]
+    rows = _left_toc(nodes, pressures(nodes, 0), relevance=True)
+    # no collapse marker of size 1 is ever emitted
+    assert all(len(r.collapsed_nodes) != 1 for r in rows)
 
 
 def test_focus_index_defaults_to_first_body_chunk() -> None:
