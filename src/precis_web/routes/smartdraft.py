@@ -31,7 +31,15 @@ router = APIRouter(tags=["smartdraft"])
 async def index(request: Request) -> Response:
     """List drafts, linking each into the smartdraft reader."""
     store = get_store(request)
-    drafts = store.list_drafts() if hasattr(store, "list_drafts") else []
+    refs = store.list_refs(kind="draft", order_by="viewed_desc", limit=200)
+    drafts = [
+        {
+            "id": r.id,
+            "slug": r.slug,
+            "title": (r.title or r.slug or "untitled").split("\n", 1)[0],
+        }
+        for r in refs
+    ]
     return templates.TemplateResponse(
         request,
         "smartdraft/index.html.j2",

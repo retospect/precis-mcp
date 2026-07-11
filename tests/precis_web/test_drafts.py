@@ -1201,6 +1201,15 @@ def test_request_ws_files_todo_carrying_the_working_set(tmp_path) -> None:
     assert args["meta"]["anchor"] == "BBBBBB"  # dc2 → its base-58 anchor
 
 
+def test_smartdraft_index_lists_drafts(draft_client: TestClient) -> None:
+    # The parallel /smartdraft index lists drafts via list_refs (the same source
+    # the classic /drafts index uses) — not a nonexistent list_drafts().
+    r = draft_client.get("/smartdraft")
+    assert r.status_code == 200
+    assert "Nano draft" in r.text
+    assert "/smartdraft/nt" in r.text
+
+
 def test_ref_chips_dedup_sigil_and_kindref() -> None:
     """§kong24~2 and paper:kong24~2 are the same target → one chip."""
     from precis_web.routes.drafts import _ref_chips
