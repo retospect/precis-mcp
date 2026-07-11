@@ -91,6 +91,7 @@ def create_app(
         pres,
         preview,
         refs,
+        smartdraft,
         status,
         structure,
         tags,
@@ -108,6 +109,7 @@ def create_app(
     app.include_router(flags.router)
     app.include_router(items.router)
     app.include_router(drafts.router)
+    app.include_router(smartdraft.router)
     app.include_router(drive.router)
     app.include_router(refs.router)
     app.include_router(tags.router)

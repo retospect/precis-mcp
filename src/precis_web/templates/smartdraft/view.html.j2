@@ -1,0 +1,140 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ ref.title }} — smartdraft{% endblock %}
+{% block content %}
+{% macro qs(dc) %}/smartdraft/{{ ident }}?focus={{ dc }}{% if not relevance %}&relevance=0{% endif %}{% endmacro %}
+
+<div class="mb-2 flex items-center justify-between">
+  <h1 class="truncate text-base font-semibold">{{ ref.title }}</h1>
+  <div class="flex items-center gap-3 text-[11px] text-slate-500">
+    <a href="/smartdraft/{{ ident }}?focus={{ focus_dc }}{% if relevance %}&relevance=0{% endif %}"
+       class="rounded border border-slate-200 px-2 py-0.5 {% if relevance %}bg-sky-600 text-white{% else %}text-slate-600{% endif %}">relevance {{ 'on' if relevance else 'off' }}</a>
+    <a href="/drafts/{{ ident }}" class="hover:text-slate-800">open in classic ↗</a>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 gap-3 lg:grid-cols-[28%_44%_28%]">
+
+  {# ── LEFT: fisheye TOC nav ─────────────────────────────────────── #}
+  <div class="rounded border border-slate-200 bg-white">
+    <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Outline · fisheye</div>
+    <div class="max-h-[75vh] overflow-auto py-1 text-xs">
+      {% for row in view.toc %}
+        {% if row.collapsed %}
+        <div class="px-2 py-0.5 text-slate-300">⋯ {{ row.collapsed }} para{{ 's' if row.collapsed != 1 }} ⋯</div>
+        {% else %}
+        {% set n = row.node %}
+        <a href="{{ qs(n.dc) }}"
+           style="padding-left: {{ 0.4 + n.depth * 0.75 }}rem"
+           class="flex items-start gap-1 py-0.5 pr-2 hover:bg-slate-50
+                  {% if n.dc == focus_dc %}bg-amber-50{% elif row.pressure >= 0.4 %}bg-sky-50{% endif %}">
+          <span class="min-w-0 flex-1 truncate
+                       {% if n.is_heading %}font-semibold text-slate-800{% else %}text-slate-600{% endif %}"
+                >{% if n.is_heading %}{{ n.summary }}{% else %}<span class="text-slate-400">·</span> {{ n.summary }}{% endif %}</span>
+          <span class="shrink-0 text-[10px]">
+            {%- if n.pinned %}📌{% endif -%}
+            {%- if n.locked %}🔒{% endif -%}
+          </span>
+        </a>
+        {% endif %}
+      {% else %}
+        <div class="px-2 py-3 text-slate-400">No chunks yet.</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  {# ── MIDDLE: the focus + its neighbourhood ─────────────────────── #}
+  <div class="rounded border border-slate-200 bg-white">
+    <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Focus</div>
+    <div class="max-h-[75vh] space-y-2 overflow-auto p-3 text-sm">
+      {% for m in view.middle %}
+        {% set n = m.node %}
+        {% if m.is_focus %}
+        <div class="rounded border border-amber-200 bg-amber-50 p-2">
+          <div class="mb-1 font-mono text-[10px] text-amber-700">▸ {{ n.dc }}{% if n.pinned %} 📌{% endif %}{% if n.locked %} 🔒{% endif %}</div>
+          <div class="whitespace-pre-wrap text-slate-800">{{ n.text }}</div>
+        </div>
+        {% else %}
+        <a href="{{ qs(n.dc) }}" class="block rounded px-2 py-1 text-slate-500 hover:bg-slate-50" title="{{ n.text[:400] }}">
+          <span class="font-mono text-[10px] text-slate-400">{{ n.dc }}</span> · {{ n.summary }}
+        </a>
+        {% endif %}
+      {% else %}
+        <div class="text-slate-400">Empty draft.</div>
+      {% endfor %}
+
+      {% if view.elsewhere %}
+      <div class="mt-3 border-t border-slate-100 pt-2">
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Relevant elsewhere</div>
+        {% for n in view.elsewhere %}
+        <a href="{{ qs(n.dc) }}" class="block rounded px-2 py-0.5 text-xs text-sky-700 hover:bg-sky-50" title="{{ n.text[:400] }}">
+          <span class="font-mono text-[10px] text-slate-400">{{ n.dc }}</span> · {{ n.summary }}
+        </a>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── RIGHT: collaboration (working set + request box) ──────────── #}
+  <div class="rounded border border-slate-200 bg-white" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')">
+    <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Collaborate</div>
+    <div class="space-y-2 p-2 text-xs">
+      <div class="text-slate-500">Working set: 🖊 {{ pens | length }} · 👁 {{ eye_count }}</div>
+      {% if pens %}
+      <div class="rounded bg-slate-50 p-1.5">
+        <div class="mb-0.5 text-[10px] uppercase tracking-wide text-slate-400">Edit targets</div>
+        {% for p in pens %}<div class="font-mono text-[10px] text-slate-600">🖊 {{ p }}</div>{% endfor %}
+      </div>
+      {% endif %}
+      <div class="flex gap-1">
+        <button @click="pen()" class="flex-1 rounded bg-amber-50 py-1 text-amber-700 hover:bg-amber-100" title="mark the current focus as an edit target">🖊 pen focus</button>
+        <button @click="eye()" class="flex-1 rounded bg-sky-50 py-1 text-sky-700 hover:bg-sky-100" title="eye the current focus (context)">👁 eye focus</button>
+      </div>
+      <textarea x-model="text" rows="3" placeholder="Ask the LLM (edits the pens, reads the eyes)…"
+                class="w-full rounded border border-slate-200 px-2 py-1"></textarea>
+      <div class="flex items-center gap-2">
+        <select x-model="model" class="rounded border border-slate-200 px-1 py-0.5 text-slate-600">
+          <option>opus</option><option>sonnet</option><option>haiku</option>
+        </select>
+        <span class="text-slate-400" x-show="msg" x-text="msg"></span>
+        <button @click="send()" :disabled="!text.trim()" class="ml-auto rounded bg-slate-800 px-2 py-1 text-white disabled:opacity-40">Send ▸</button>
+      </div>
+      <p class="text-[10px] text-slate-400">Slice 1 — reuses the shipped /marks + /request-ws. Needs/asks land here next.</p>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function smartAsk(ident, focus) {
+  return {
+    ident, focus, text: '', model: 'opus', msg: '',
+    async _marks(op) {
+      if (!this.focus) return;
+      try {
+        await fetch(`/drafts/${this.ident}/marks`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ op, handles: [this.focus] }),
+        });
+        location.reload();
+      } catch (e) { this.msg = 'error'; }
+    },
+    pen() { this._marks('pen'); },
+    eye() { this._marks('eye'); },
+    async send() {
+      if (!this.text.trim()) return;
+      this.msg = 'sending…';
+      try {
+        const r = await fetch(`/drafts/${this.ident}/request-ws`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: this.text, model: this.model }),
+        });
+        const d = await r.json();
+        this.msg = d.ok ? 'sent ✓' : ('error: ' + (d.error || ''));
+        if (d.ok) this.text = '';
+      } catch (e) { this.msg = 'network error'; }
+    },
+  };
+}
+</script>
+{% endblock %}
