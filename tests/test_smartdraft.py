@@ -11,7 +11,24 @@ from precis_web.smartdraft import (
     build_view,
     focus_index,
     pressures,
+    search_chunks,
 )
+
+
+def _snode(idx, *, text="", kws=None, tags=None, emb=None) -> ChunkNode:
+    return ChunkNode(
+        idx=idx,
+        dc=f"dc{100 + idx}",
+        base58=f"b{idx}",
+        chunk_id=100 + idx,
+        depth=1,
+        chunk_kind="paragraph",
+        text=text,
+        summary=text[:40],
+        keywords=kws or [],
+        embedding=emb,
+        tags=tags or [],
+    )
 
 
 def _node(idx, kws, *, kind="paragraph", emb=None, pinned=False) -> ChunkNode:
@@ -117,6 +134,48 @@ def test_a_lone_quiet_chunk_is_shown_not_collapsed() -> None:
     rows = _left_toc(nodes, pressures(nodes, 0), relevance=True)
     # no collapse marker of size 1 is ever emitted
     assert all(len(r.collapsed_nodes) != 1 for r in rows)
+
+
+# ── search (RRF fusion) ───────────────────────────────────────────────
+
+
+def test_search_rrf_ranks_multisignal_and_surfaces_semantic_only() -> None:
+    nodes = [
+        _snode(0, text="alpha appears here", kws=["alpha"]),  # V + K
+        _snode(1, text="nothing here", kws=["alpha"]),  # K only
+        _snode(2, text="unrelated", kws=["zzz"], emb=[1.0, 0.0]),  # semantic only
+    ]
+    hits = search_chunks(
+        nodes, "alpha", active={"v", "k", "t", "s"}, query_embedding=[1.0, 0.0]
+    )
+    by = {h.node.dc: h for h in hits}
+    # V+K outranks K-only
+    assert hits.index(by["dc100"]) < hits.index(by["dc101"])
+    # the semantic-only chunk still surfaces (not buried) with a rank
+    assert "dc102" in by and by["dc102"].s_rank == 1
+
+
+def test_search_toggling_a_signal_drops_its_only_matches() -> None:
+    nodes = [
+        _snode(0, text="alpha here", kws=["alpha"]),
+        _snode(1, text="unrelated", kws=["zzz"], emb=[1.0, 0.0]),  # semantic only
+    ]
+    # semantic OFF → the semantic-only chunk is gone; the literal one stays
+    hits = search_chunks(
+        nodes, "alpha", active={"v", "k", "t"}, query_embedding=[1.0, 0.0]
+    )
+    dcs = {h.node.dc for h in hits}
+    assert "dc100" in dcs and "dc101" not in dcs
+
+
+def test_search_tag_outweighs_a_single_literal_signal() -> None:
+    nodes = [
+        _snode(0, text="alpha", kws=[]),  # V only
+        _snode(1, text="x", tags=["alpha"]),  # T only (weighted higher)
+    ]
+    hits = search_chunks(nodes, "alpha", active={"v", "k", "t"})
+    # the tag match ranks above the lone verbatim match (human-curated weight)
+    assert hits[0].node.dc == "dc101" and hits[0].t
 
 
 def test_focus_index_defaults_to_first_body_chunk() -> None:

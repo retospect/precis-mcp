@@ -21,7 +21,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, Response
 
 from precis_web import draft_eyes, smartdraft
-from precis_web.deps import get_store, templates
+from precis_web.deps import get_runtime, get_store, templates
 from precis_web.routes.drafts import _draft_ref
 
 router = APIRouter(tags=["smartdraft"])
@@ -47,11 +47,22 @@ async def index(request: Request) -> Response:
     )
 
 
+#: Search signal letters, in display order.
+_SIGNALS = "vkts"
+
+
 @router.get("/smartdraft/{ident}", response_class=HTMLResponse)
 async def reader(
-    request: Request, ident: str, focus: str = "", relevance: str = "1"
+    request: Request,
+    ident: str,
+    focus: str = "",
+    relevance: str = "1",
+    q: str = "",
+    sig: str = _SIGNALS,
+    sview: str = "list",
 ) -> Response:
-    """The three-pane fisheye reader for one draft at one focus."""
+    """The three-pane fisheye reader. ``q`` runs multi-signal search (RRF); ``sig``
+    is the active-signal letter set (e.g. ``vkts``); ``sview`` is ``list``/``toc``."""
     store = get_store(request)
     ref = _draft_ref(store, ident)
     if ref is None:
@@ -71,6 +82,24 @@ async def reader(
     view = smartdraft.build_view(
         store, ref.id, focus_dc=focus or None, relevance=rel_on, marks=marks
     )
+
+    # Search (RRF over the active signals). Embed the query once, degrading to
+    # lexical-only if the embedder is down (the search-embed guard).
+    query = q.strip()
+    active = {c for c in sig.lower() if c in _SIGNALS}
+    hits: list[smartdraft.SearchHit] = []
+    if query:
+        embedder = getattr(getattr(get_runtime(request), "hub", None), "embedder", None)
+        qvec = None
+        if embedder is not None and "s" in active:
+            try:
+                qvec = embedder.embed_one(query)
+            except Exception:
+                qvec = None
+        hits = smartdraft.search_chunks(
+            view.nodes, query, active=active, query_embedding=qvec
+        )
+
     return templates.TemplateResponse(
         request,
         "smartdraft/view.html.j2",
@@ -83,6 +112,10 @@ async def reader(
             "focus_dc": view.focus.dc if view.focus else "",
             "focus_pinned": bool(view.focus and view.focus.pinned),
             "eye_count": len(marks.get("eyes") or {}),
+            "q": query,
+            "active_sig": "".join(c for c in _SIGNALS if c in active),
+            "sview": "toc" if sview == "toc" else "list",
+            "hits": hits,
         },
     )
 

@@ -2112,10 +2112,11 @@ async def edit_around(request: Request, ident: str) -> JSONResponse:
 
 @router.post("/drafts/{ident}/request-ws")
 async def request_change_ws(request: Request, ident: str) -> JSONResponse:
-    """File a change request carrying the reader's hand-curated working set: the
-    todo gets ``meta.working_set = {eyes, edit_hint}`` (the planner tick renders
-    the whole set) and ``meta.anchor`` set to the first pen so the classic
-    anchor modules still fire. Body ``{text, model}``."""
+    """File a change request. With a hand-curated working set, the todo gets
+    ``meta.working_set = {eyes, edit_hint}`` (+ ``meta.anchor`` = first pen). With
+    **nothing pinned**, it falls back to anchoring on the caller's current focus
+    (``anchor``) so the ask still works on the current para + its fisheye. Body
+    ``{text, model, anchor?}``."""
     try:
         payload = await request.json()
     except Exception:
@@ -2128,25 +2129,31 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
     if not text:
         return JSONResponse({"ok": False, "error": "empty request"}, status_code=422)
     marks = draft_eyes.load_marks(store, ref.id)
-    if not marks["pens"] and not marks["eyes"]:
-        return JSONResponse(
-            {"ok": False, "error": "no eyes or pens set — mark some paragraphs first"},
-            status_code=422,
-        )
+    has_marks = bool(marks["pens"] or marks["eyes"])
     model = str(payload.get("model") or "opus")
     tier = model if model in _PLANNER_MODELS else "opus"
-    # Anchor at the first pen (else the first draft-chunk eye), in the base-58
-    # form the classic anchor modules + the reader deep-link expect.
+    # Anchor at the first pen (else the first draft-chunk eye, else the caller's
+    # current focus) — in the base-58 form the classic anchor modules expect.
     anchor_dc = (
         marks["pens"][0]
         if marks["pens"]
         else next((h for h in marks["eyes"] if _is_dc(h)), None)
-    )
+    ) or (str(payload.get("anchor") or "").strip() or None)
     anchor = None
     if anchor_dc:
         chunk = store.get_draft_chunk(anchor_dc, kind="draft")
         anchor = chunk.handle if chunk is not None else None
-    meta: dict[str, Any] = {"working_set": draft_eyes.to_working_set_meta(marks)}
+    if not has_marks and not anchor:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "nothing to work on — focus a paragraph or pin some",
+            },
+            status_code=422,
+        )
+    meta: dict[str, Any] = {}
+    if has_marks:
+        meta["working_set"] = draft_eyes.to_working_set_meta(marks)
     if anchor:
         meta["anchor"] = anchor
     args: dict[str, Any] = {

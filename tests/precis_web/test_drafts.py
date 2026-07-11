@@ -1187,6 +1187,18 @@ def test_request_ws_422_without_any_marks(tmp_path) -> None:
     assert r.status_code == 422
 
 
+def test_request_ws_falls_back_to_focus_anchor_when_nothing_pinned(tmp_path) -> None:
+    # Nothing pinned + a focus anchor → the request still files, anchored on the
+    # current para (no working_set) so the ask "just works on the current context".
+    rt, client = _ws_client(tmp_path)
+    r = client.post("/drafts/nt/request-ws", json={"text": "tighten", "anchor": "dc2"})
+    assert r.status_code == 200 and r.json()["ok"]
+    verb, args = rt.calls[-1]
+    assert verb == "put"
+    assert args["meta"]["anchor"] == "BBBBBB"  # dc2 → its base-58 anchor
+    assert "working_set" not in args["meta"]  # anchor-only, no working set
+
+
 def test_request_ws_files_todo_carrying_the_working_set(tmp_path) -> None:
     rt, client = _ws_client(tmp_path)
     client.post("/drafts/nt/marks", json={"op": "pen", "handles": ["dc2"]})

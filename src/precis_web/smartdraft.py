@@ -51,6 +51,14 @@ _NEIGHBOR_CAP = 400
 #: elsewhere" under the middle window.
 _ELSEWHERE_K = 4
 
+#: RRF fusion constant (standard ~60) + per-signal weights. A tag is
+#: human-curated attention, so it outweighs the machine literal signals.
+_RRF_K = 60
+_SEARCH_W: dict[str, float] = {"v": 1.0, "k": 1.0, "t": 2.0, "s": 1.0}
+#: Only the top-N most-similar chunks count as a *semantic* match (below that,
+#: cosine is baseline noise — including it would make everything a hit).
+_SEM_TOPN = 20
+
 
 @dataclass(slots=True)
 class ChunkNode:
@@ -70,6 +78,8 @@ class ChunkNode:
     #: content_sha of ``text`` — the optimistic-concurrency token the inline
     #: editor passes to ``POST /drafts/{id}/text`` (a stale one 409s).
     sha: str = ""
+    #: chunk tags (``chunk_tags.value``) — the ``T`` search signal.
+    tags: list[str] = field(default_factory=list)
     pinned: bool = False
     locked: bool = False
 
@@ -132,6 +142,7 @@ def build_nodes(
     chunks = store.reading_order(ref_id)
     blocks = {b.id: b for b in store.list_blocks_for_ref(ref_id, with_embedding=True)}
     views = store.block_views(ref_id)
+    tag_map = _load_chunk_tags(store, ref_id)
     pins = set((marks or {}).get("pens") or [])
     eyes = set((marks or {}).get("eyes") or {})
     locked = set((marks or {}).get("locks") or [])  # forward-compat; unused v1
@@ -154,6 +165,7 @@ def build_nodes(
                 keywords=kws,
                 embedding=list(b.embedding) if (b and b.embedding) else None,
                 sha=content_sha(c.text or ""),
+                tags=tag_map.get(c.chunk_id, []),
                 pinned=(c.dc in pins or c.dc in eyes),
                 locked=(c.dc in locked),
             )
@@ -164,6 +176,27 @@ def build_nodes(
 def _kw_from_view(v: dict[str, str]) -> list[str]:
     raw = v.get("keywords") or ""
     return [k.strip() for k in raw.split(",") if k.strip()]
+
+
+def _load_chunk_tags(store: Any, ref_id: int) -> dict[int, list[str]]:
+    """``{chunk_id: [tag value, …]}`` for a ref's chunks (``chunk_tags`` — the
+    ``T`` search signal). Best-effort: a store without a raw pool degrades to
+    no tags rather than raising."""
+    out: dict[int, list[str]] = {}
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ct.chunk_id, t.value FROM chunk_tags ct "
+                "JOIN tags t ON t.tag_id = ct.tag_id "
+                "JOIN chunks c ON c.chunk_id = ct.chunk_id "
+                "WHERE c.ref_id = %s",
+                (ref_id,),
+            ).fetchall()
+    except Exception:
+        return out
+    for cid, val in rows:
+        out.setdefault(int(cid), []).append(str(val))
+    return out
 
 
 def focus_index(nodes: list[ChunkNode], focus_dc: str | None) -> int:
@@ -243,6 +276,8 @@ class SmartView:
     #: ``[dc, depth]`` per chunk in reading order — the keyboard nav sequence.
     #: Up/down step linearly; indent/outdent walk the depth (parent/child).
     order: list[list[Any]] = field(default_factory=list)
+    #: All nodes (reading order) — the route searches these (`search_chunks`).
+    nodes: list[ChunkNode] = field(default_factory=list)
 
 
 def _left_toc(
@@ -367,4 +402,78 @@ def build_view(
         middle=middle,
         elsewhere=elsewhere,
         order=[[n.dc, n.depth] for n in nodes],
+        nodes=nodes,
     )
+
+
+# ── search: multi-signal RRF fusion (V / K / T / semantic) ───────────────
+
+
+@dataclass(slots=True)
+class SearchHit:
+    """One search result. ``v``/``k``/``t`` are the literal/keyword/tag matches
+    (shown as badges *regardless* of whether the signal is active — an off
+    signal renders greyed). ``s_rank`` is the semantic rank (1-based) when the
+    chunk is in the top-N most-similar, else ``None``. ``score`` counts only the
+    **active** signals (RRF)."""
+
+    node: ChunkNode
+    v: bool
+    k: bool
+    t: bool
+    s_rank: int | None
+    score: float
+
+
+def search_chunks(
+    nodes: list[ChunkNode],
+    query: str,
+    *,
+    active: set[str],
+    query_embedding: list[float] | None = None,
+    weights: dict[str, float] | None = None,
+) -> list[SearchHit]:
+    """Fuse the four signals by **Reciprocal Rank Fusion** (the same fusion the
+    corpus search uses): each active signal contributes ``w / (k + rank)``.
+    Literal/keyword/tag are boolean (rank 1 when matched); semantic contributes
+    by its top-N similarity rank — so a semantic-only hit still surfaces and a
+    strong-semantic tie-breaks. A chunk with no *active* match scores 0 and is
+    dropped. Results are sorted by score desc."""
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    w = weights or _SEARCH_W
+
+    s_rank: dict[int, int] = {}
+    if query_embedding:
+        sims = sorted(
+            (
+                (n.idx, _cosine(query_embedding, n.embedding))
+                for n in nodes
+                if n.embedding
+            ),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        for rank, (idx, _sim) in enumerate(sims[:_SEM_TOPN], start=1):
+            s_rank[idx] = rank
+
+    hits: list[SearchHit] = []
+    for n in nodes:
+        v = q in (n.text or "").lower()
+        km = any(q in kw.lower() for kw in n.keywords)
+        tm = any(q in tag.lower() for tag in n.tags)
+        sr = s_rank.get(n.idx)
+        score = 0.0
+        if v and "v" in active:
+            score += w["v"] / (_RRF_K + 1)
+        if km and "k" in active:
+            score += w["k"] / (_RRF_K + 1)
+        if tm and "t" in active:
+            score += w["t"] / (_RRF_K + 1)
+        if sr is not None and "s" in active:
+            score += w["s"] / (_RRF_K + sr)
+        if score > 0:
+            hits.append(SearchHit(node=n, v=v, k=km, t=tm, s_rank=sr, score=score))
+    hits.sort(key=lambda h: h.score, reverse=True)
+    return hits

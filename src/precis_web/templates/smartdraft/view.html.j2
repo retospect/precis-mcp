@@ -1,24 +1,77 @@
 {% extends "base.html.j2" %}
 {% block title %}{{ ref.title }} — smartdraft{% endblock %}
 {% block content %}
-{% macro qs(dc) %}/smartdraft/{{ ident }}?focus={{ dc }}{% if not relevance %}&relevance=0{% endif %}{% endmacro %}
+{# One URL builder for the whole panel — every control overrides one param.
+   Params are to_* so they don't shadow the render-context globals they
+   default to (a macro can't see template-level {% set %} vars). #}
+{% macro slink(to_focus=None, to_q=None, to_sig=None, to_view=None, to_rel=None) -%}
+/smartdraft/{{ ident }}?focus={{ to_focus if to_focus is not none else focus_dc }}&relevance={{ '1' if (to_rel if to_rel is not none else relevance) else '0' }}&q={{ (to_q if to_q is not none else q) | urlencode }}&sig={{ to_sig if to_sig is not none else active_sig }}&sview={{ to_view if to_view is not none else sview }}
+{%- endmacro %}
+{% macro qs(dc) %}{{ slink(to_focus=dc) }}{% endmacro %}
 
 <div class="mb-2 flex items-center justify-between">
   <h1 class="truncate text-base font-semibold">{{ ref.title }}</h1>
-  <div class="flex items-center gap-3 text-[11px] text-slate-500">
-    <a href="/smartdraft/{{ ident }}?focus={{ focus_dc }}{% if relevance %}&relevance=0{% endif %}"
-       class="rounded border border-slate-200 px-2 py-0.5 {% if relevance %}bg-sky-600 text-white{% else %}text-slate-600{% endif %}"
-       title="toggle fisheye vs the full uncompressed document (both panes)">{{ '🔍 Fisheye' if relevance else '📄 Full doc' }}</a>
-    <a href="/drafts/{{ ident }}" class="hover:text-slate-800">open in classic ↗</a>
-  </div>
+  <a href="/drafts/{{ ident }}" class="text-[11px] text-slate-500 hover:text-slate-800">open in classic ↗</a>
 </div>
 
-<div class="grid grid-cols-1 gap-3 lg:grid-cols-[28%_44%_28%]">
+<div class="grid grid-cols-1 items-start gap-3 lg:grid-cols-[28%_44%_28%]">
 
-  {# ── LEFT: fisheye TOC nav ─────────────────────────────────────── #}
-  <div class="rounded border border-slate-200 bg-white">
-    <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Outline · fisheye</div>
-    <div class="h-[calc(100vh-9rem)] overflow-auto py-1 text-xs">
+  {# ── LEFT: fisheye TOC nav (sticky sidebar; the middle flows so its
+       hover-preview popovers aren't clipped by an overflow container) ── #}
+  <div class="sticky top-2 self-start rounded border border-slate-200 bg-white">
+    {# header: search + signal toggles + fisheye/full + results view #}
+    <div class="space-y-1.5 border-b border-slate-100 p-2">
+      <form method="get" action="/smartdraft/{{ ident }}">
+        <input type="hidden" name="focus" value="{{ focus_dc }}">
+        <input type="hidden" name="relevance" value="{{ '1' if relevance else '0' }}">
+        <input type="hidden" name="sig" value="{{ active_sig }}">
+        <input type="hidden" name="sview" value="{{ sview }}">
+        <input name="q" value="{{ q }}" placeholder="search…" autocomplete="off"
+               class="w-full rounded border border-slate-200 px-2 py-1 text-xs focus:border-sky-400 focus:outline-none">
+      </form>
+      <div class="flex items-center gap-1">
+        {% for s in [('v','verbatim text'),('k','keywords'),('t','tags'),('s','semantic (embedding)')] %}
+        {% set on = s[0] in active_sig %}
+        {% set nsig = (active_sig|replace(s[0],'')) if on else (active_sig ~ s[0]) %}
+        <a href="{{ slink(to_sig=nsig) }}" title="{{ s[1] }} — click to toggle"
+           class="inline-flex h-6 w-6 items-center justify-center rounded-full border text-[11px] font-semibold
+                  {% if on %}border-sky-500 bg-sky-600 text-white{% else %}border-slate-200 text-slate-300 hover:text-slate-500{% endif %}">{{ s[0]|upper }}</a>
+        {% endfor %}
+        <a href="{{ slink(to_rel=(not relevance)) }}" title="fisheye vs full document"
+           class="ml-auto rounded border border-slate-200 px-1.5 py-0.5 text-[11px] {% if relevance %}bg-sky-600 text-white{% else %}text-slate-500{% endif %}">{{ '🔍' if relevance else '📄' }}</a>
+      </div>
+      {% if q %}
+      <div class="flex items-center gap-2 text-[10px] text-slate-500">
+        <span>{{ hits | length }} hit{{ 's' if hits | length != 1 }}</span>
+        <a href="{{ slink(to_view='list') }}" class="{% if sview == 'list' %}font-semibold text-sky-700{% else %}hover:text-slate-700{% endif %}">list</a>
+        <a href="{{ slink(to_view='toc') }}" class="{% if sview == 'toc' %}font-semibold text-sky-700{% else %}hover:text-slate-700{% endif %}">in-toc</a>
+        <a href="{{ slink(to_q='') }}" class="ml-auto hover:text-rose-600">clear</a>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="max-h-[calc(100vh-9rem)] overflow-auto py-1 text-xs">
+      {% if q and sview == 'list' %}
+      {# ── search results (ranked list) ── #}
+      {% for h in hits %}
+      {% set n = h.node %}
+      <a href="{{ slink(to_focus=n.dc) }}"
+         class="flex items-center gap-1 px-2 py-1 hover:bg-slate-50 {% if n.dc == focus_dc %}bg-amber-50{% endif %}">
+        {% for b in [('v', h.v, 'V', 'bg-sky-600'), ('k', h.k, 'K', 'bg-teal-600'), ('t', h.t, 'T', 'bg-amber-600')] %}
+          {% if b[1] %}<span title="{{ b[0] }} match{{ '' if b[0] in active_sig else ' (off — not counted)' }}"
+             class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white {% if b[0] in active_sig %}{{ b[3] }}{% else %}bg-slate-300{% endif %}">{{ b[2] }}</span>{% endif %}
+        {% endfor %}
+        {% if h.s_rank %}<span title="semantic rank #{{ h.s_rank }}{{ '' if 's' in active_sig else ' (off)' }}"
+           class="inline-flex h-4 shrink-0 items-center justify-center rounded-full px-1 text-[9px] font-semibold text-white {% if 's' in active_sig %}bg-violet-600{% else %}bg-slate-300{% endif %}">S{{ h.s_rank }}</span>{% endif %}
+        <span class="min-w-0 flex-1 truncate text-slate-600">{{ n.summary }}</span>
+      </a>
+      {% else %}
+      <div class="px-2 py-3 text-slate-400">No matches.</div>
+      {% endfor %}
+
+      {% else %}
+      {# ── fisheye TOC (default; in-toc search view tints hits) ── #}
+      {% set hit_dcs = hits | map(attribute='node') | map(attribute='dc') | list %}
       {% for row in view.toc %}
         {% if row.collapsed_nodes %}
         {% set first = row.collapsed_nodes[0] %}
@@ -30,7 +83,7 @@
         <a id="toc-{{ n.dc }}" href="{{ qs(n.dc) }}"
            style="padding-left: {{ 0.4 + n.depth * 0.75 }}rem"
            class="flex items-start gap-1 py-0.5 pr-2 hover:bg-slate-50
-                  {% if n.dc == focus_dc %}bg-amber-50 ring-1 ring-inset ring-amber-400{% elif row.shared %}bg-emerald-50{% elif row.pressure >= 0.4 %}bg-sky-50{% endif %}">
+                  {% if q and n.dc in hit_dcs %}bg-yellow-100{% elif n.dc == focus_dc %}bg-amber-50 ring-1 ring-inset ring-amber-400{% elif row.shared %}bg-emerald-50{% elif row.pressure >= 0.4 %}bg-sky-50{% endif %}">
           <span class="min-w-0 flex-1 truncate
                        {% if n.is_heading %}font-semibold text-slate-800{% else %}text-slate-600{% endif %}"
                 >{% if n.is_heading %}{{ n.summary }}{% else %}<span class="text-slate-400">·</span> {{ n.summary }}{% endif %}</span>
@@ -44,13 +97,16 @@
       {% else %}
         <div class="px-2 py-3 text-slate-400">No chunks yet.</div>
       {% endfor %}
+      {% endif %}
     </div>
   </div>
 
-  {# ── MIDDLE: the focus + its neighbourhood ─────────────────────── #}
+  {# ── MIDDLE: the focus + its neighbourhood. NOT an overflow container —
+       it flows with the page so linkify hover-preview popovers escape freely
+       (an overflow-auto ancestor would clip them at the panel edge). ── #}
   <div class="rounded border border-slate-200 bg-white">
     <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Focus</div>
-    <div class="h-[calc(100vh-9rem)] space-y-2 overflow-auto p-3 text-sm">
+    <div class="space-y-2 p-3 text-sm">
       {% for m in view.middle %}
         {% set n = m.node %}
         {% set hd = 'font-semibold text-slate-900 text-base' if n.is_heading else '' %}
@@ -61,8 +117,13 @@
         <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2"
              x-data="smartEdit('{{ ident }}', '{{ n.base58 }}', '{{ n.sha }}', {{ n.editable | tojson }})">
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
-            <span>{% if n.pinned %}📌{% endif %}{% if n.locked %} 🔒{% endif %}</span>
-            <button x-show="!editing && canEdit" @click="start()" class="ml-auto text-slate-400 hover:text-slate-700">✎ edit</button>
+            <span>{% if n.locked %}🔒{% endif %}</span>
+            <div class="ml-auto flex items-center gap-2" x-show="!editing">
+              <button onclick="smartPin('{{ n.dc }}')"
+                      class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
+                      title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
+              <button x-show="canEdit" @click="start()" class="text-slate-400 hover:text-slate-700">✎ edit</button>
+            </div>
           </div>
           {# rendered view (with links) — hidden while editing #}
           <div x-show="!editing" class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True) }}</div>
@@ -97,13 +158,12 @@
     </div>
   </div>
 
-  {# ── RIGHT: collaboration (working set + request box) ──────────── #}
-  <div class="rounded border border-slate-200 bg-white" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')">
+  {# ── RIGHT: collaboration (working set + request box) — sticky sidebar ── #}
+  <div class="sticky top-2 self-start rounded border border-slate-200 bg-white" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')">
     <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Collaborate</div>
     <div class="space-y-2 p-2 text-xs">
-      <div class="text-slate-500">Pinned: 📌 {{ eye_count }}</div>
-      <button @click="pin()" class="w-full rounded {% if focus_pinned %}bg-amber-100 text-amber-800 hover:bg-amber-200{% else %}bg-sky-50 text-sky-700 hover:bg-sky-100{% endif %} py-1" title="toggle the current focus in the working set (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }} focus</button>
-      <textarea x-model="text" rows="3" placeholder="Ask the LLM (reads the pinned context)…"
+      <div class="text-slate-500">Pinned: 📌 {{ eye_count }}{% if not eye_count %} · <span class="text-slate-400">nothing pinned — the ask works on the current para + what's visible</span>{% endif %}</div>
+      <textarea x-model="text" rows="3" placeholder="Ask the LLM (works on the pinned context, or the current para if nothing is pinned)…"
                 class="w-full rounded border border-slate-200 px-2 py-1"></textarea>
       <div class="flex items-center gap-2">
         <select x-model="model" class="rounded border border-slate-200 px-1 py-0.5 text-slate-600">
@@ -112,7 +172,6 @@
         <span class="text-slate-400" x-show="msg" x-text="msg"></span>
         <button @click="send()" :disabled="!text.trim()" class="ml-auto rounded bg-slate-800 px-2 py-1 text-white disabled:opacity-40">Send ▸</button>
       </div>
-      <p class="text-[10px] text-slate-400">Slice 1 — reuses the shipped /marks + /request-ws. Needs/asks land here next.</p>
     </div>
   </div>
 
@@ -162,6 +221,15 @@
   });
 })();
 
+// Pin/unpin any chunk (a persistent context eye) — used by the focus header
+// and the TOC rows. POSTs the shipped /marks toggle, then reloads.
+function smartPin(dc) {
+  fetch(`/drafts/{{ ident }}/marks`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ op: 'eye', handles: [dc] }),
+  }).then(() => location.reload()).catch(() => {});
+}
+
 // Inline text edit of the focus para — saves through the shipped
 // /drafts/{id}/text (validation + link-sync single-sourced with the MCP path).
 // A 422 (broken ref introduced) / 409 (stale) surfaces its message in place.
@@ -191,24 +259,15 @@ function smartEdit(ident, handle, sha, canEdit) {
 function smartAsk(ident, focus) {
   return {
     ident, focus, text: '', model: 'opus', msg: '',
-    async _marks(op) {
-      if (!this.focus) return;
-      try {
-        await fetch(`/drafts/${this.ident}/marks`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ op, handles: [this.focus] }),
-        });
-        location.reload();
-      } catch (e) { this.msg = 'error'; }
-    },
-    pin() { this._marks('eye'); },  // a pin is a persistent context eye
     async send() {
       if (!this.text.trim()) return;
       this.msg = 'sending…';
       try {
+        // `anchor` = the current focus, so with nothing pinned the request still
+        // works on the current para + its fisheye (server falls back to it).
         const r = await fetch(`/drafts/${this.ident}/request-ws`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: this.text, model: this.model }),
+          body: JSON.stringify({ text: this.text, model: this.model, anchor: this.focus }),
         });
         const d = await r.json();
         this.msg = d.ok ? 'sent ✓' : ('error: ' + (d.error || ''));
