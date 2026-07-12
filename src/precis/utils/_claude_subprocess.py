@@ -16,6 +16,8 @@ import os
 import re
 import subprocess
 
+from precis.utils.claude_oauth import ensure_oauth_token
+
 # Claude emits a one-liner like "Cost: $0.0123" on stderr; capture it
 # for budgeting telemetry. Best-effort — if claude's accounting format
 # changes, this just returns None.
@@ -86,6 +88,15 @@ def run_claude(
     timeout / exit error messages (e.g. ``"claude -p"`` vs
     ``"claude -p (agent)"``).
     """
+    # Bootstrap the long-lived OAuth token from ~/.claude_oauth_token so any
+    # ``claude -p`` caller — call_claude_p (figure turn, web follow-up, run as
+    # the ``deploy`` precis-web user) as well as call_claude_agent — auths off
+    # the token file instead of the daemon user's empty/stale keychain and 401s
+    # (2026-07-12 incident). Central chokepoint: every claude -p goes through
+    # here. Idempotent + override-safe (an env token already set wins).
+    if env is None:
+        env = dict(os.environ)
+    ensure_oauth_token(env)
     try:
         res = subprocess.run(
             argv,
