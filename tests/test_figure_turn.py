@@ -21,12 +21,14 @@ def ref(store):
     return store.get_ref(kind="figure", id="m")
 
 
-def _fixed(reply="ok", svg=None, vocab=None):
+def _fixed(reply="ok", svg=None, vocab=None, notes=None):
     payload = {"reply": reply}
     if svg is not None:
         payload["svg"] = svg
     if vocab is not None:
         payload["vocab"] = vocab
+    if notes is not None:
+        payload["notes"] = notes
     return lambda prompt: dict(payload)
 
 
@@ -38,14 +40,33 @@ def test_build_prompt_carries_the_parts():
         message="draw a face",
         svg="<svg/>",
         vocab="green circles are foos",
+        notes="the face is <g id='face'>",
         findings=[],
         viewbox=(0.0, 0.0, 100.0, 100.0),
         skills="SKILLZ",
     )
     assert "draw a face" in p
     assert "green circles are foos" in p
+    assert "id='face'" in p  # implementation notes carried
     assert "SKILLZ" in p
     assert '"reply"' in p  # the JSON contract
+    assert '"notes"' in p  # the contract now asks for notes
+
+
+def test_build_prompt_admonishes_updating_docs():
+    # The floor guidance (present even if the skill fails to load) must tell
+    # the model to keep the vocabulary high-level and updated.
+    p = build_prompt(
+        message="x",
+        svg="<svg/>",
+        vocab="",
+        findings=[],
+        viewbox=(0.0, 0.0, 100.0, 100.0),
+    )
+    low = p.lower()
+    assert "update the vocab" in low
+    assert "high-level" in low
+    assert "short" in low  # keep the reply short
 
 
 # ── run_turn ─────────────────────────────────────────────────────────────
@@ -65,9 +86,35 @@ def test_turn_persists_source(store, ref):
 
 
 def test_turn_updates_vocab(store, ref):
-    run_turn(store, ref, "note the convention", claude_fn=_fixed(vocab="foo=green"))
+    res = run_turn(
+        store, ref, "note the convention", claude_fn=_fixed(vocab="foo=green")
+    )
+    assert res.vocab == "foo=green"  # returned for pane reload
     fh = FigureHandler(hub=Hub(store=store))
     assert "foo=green" in fh.get(id="m").body
+
+
+def test_turn_updates_notes(store, ref):
+    res = run_turn(
+        store, ref, "record structure", claude_fn=_fixed(notes="face = g#face")
+    )
+    assert res.notes == "face = g#face"  # returned for pane reload
+    fh = FigureHandler(hub=Hub(store=store))
+    body = fh.get(id="m").body
+    assert "Implementation notes" in body
+    assert "face = g#face" in body
+
+
+def test_turn_vocab_and_notes_are_separate_chunks(store, ref):
+    run_turn(
+        store,
+        ref,
+        "both",
+        claude_fn=_fixed(vocab="a mascot", notes="head = circle#head"),
+    )
+    kinds = [c.chunk_kind for c in store.reading_order(ref.id, kind="figure")]
+    assert kinds.count("figure_vocab") == 1
+    assert kinds.count("figure_notes") == 1
 
 
 def test_chat_only_turn_leaves_source(store, ref):

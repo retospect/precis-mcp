@@ -41,12 +41,13 @@ log = logging.getLogger(__name__)
 #: A figure source-node address — the universal handle ``fn<chunk_id>``.
 _FIGURE_NODE_ADDR_RE = re.compile(r"^fn\d+$")
 
-_VOCAB_SEED = (
-    "# Shared vocabulary\n\n"
-    "Define what the shapes and colours mean as we go — e.g. "
-    '"green circles are foos", "keep the palette warm". This is our '
-    "negotiated ground truth; I read it every turn."
-)
+# NB: the vocab / notes docs are born EMPTY (lazy-created on first write), not
+# seeded with placeholder prose. The explanation of what each doc is *for* is
+# instruction, not content, so it lives in the turn prompt + the
+# `precis-figure-svg` skill — never in the stored doc (a stored seed would be
+# shown to the human as if it were real content and the model would have to
+# work around it). The SVG source is different: its `default_svg()` is real
+# content (a valid empty canvas the browser must render), so that DOES seed.
 
 
 def _is_node_addr(s: str) -> bool:
@@ -87,7 +88,8 @@ class FigureHandler(Handler):
             "viewbox='0 0 W H' or text=<svg>); get lists / renders the figure "
             "(assembled SVG + shared vocabulary + fn<id> source handle + "
             "lints) / reads a node fn<id>; edit sets the SVG source (text=), "
-            "the shared vocabulary (vocab=), or the viewBox (viewbox=); delete "
+            "the shared vocabulary (vocab=), the implementation notes (notes="
+            "— the model's private design log), or the viewBox (viewbox=); delete "
             "soft-retires the figure. The interactive draw-with-me chat is in "
             "the /figure web editor. corpus_role=none (never exported). See "
             "precis-figure-help."
@@ -163,19 +165,23 @@ class FigureHandler(Handler):
         )
         self.store.add_chunks(
             ref_id=ref.id,
-            chunk_kind="figure_vocab",
-            text=vocab.strip() if vocab and vocab.strip() else _VOCAB_SEED,
-            split=False,
-            kind="figure",
-        )
-        self.store.add_chunks(
-            ref_id=ref.id,
             chunk_kind="figure_node",
             text=source_svg,
             meta={"no_index": "true"},
             split=False,
             kind="figure",
         )
+        # The vocab doc is born only when there's real content for it (an
+        # explicit vocab=); otherwise it stays empty until the model writes it.
+        # Notes are always born empty (lazy). See the note above the constants.
+        if vocab and vocab.strip():
+            self.store.add_chunks(
+                ref_id=ref.id,
+                chunk_kind="figure_vocab",
+                text=vocab.strip(),
+                split=False,
+                kind="figure",
+            )
         linked = ""
         if project is not None:
             pid = self._resolve_project(project)
@@ -193,12 +199,13 @@ class FigureHandler(Handler):
         id: str | int | None = None,
         text: str | None = None,
         vocab: str | None = None,
+        notes: str | None = None,
         viewbox: Any = None,
         base_sha: str | None = None,
         **_kw: Any,
     ) -> Response:
         ref = self._resolve_any(id)
-        source, vocab_chunk = self._docs(ref.id)
+        source, vocab_chunk, notes_chunk = self._docs(ref.id)
 
         if viewbox is not None:
             box = _parse_viewbox(viewbox)
@@ -213,19 +220,18 @@ class FigureHandler(Handler):
         if vocab is not None:
             if not str(vocab).strip():
                 raise BadInput("edit vocab= must be non-empty")
-            if vocab_chunk is None:
-                self.store.add_chunks(
-                    ref_id=ref.id,
-                    chunk_kind="figure_vocab",
-                    text=str(vocab),
-                    split=False,
-                    kind="figure",
-                )
-            else:
-                self.store.edit_text(
-                    vocab_chunk.handle, str(vocab), base_sha=base_sha, kind="figure"
-                )
+            self._set_doc(
+                ref.id, vocab_chunk, "figure_vocab", str(vocab), base_sha, index=True
+            )
             return Response(body=f"updated shared vocabulary on {ref.slug}")
+
+        if notes is not None:
+            if not str(notes).strip():
+                raise BadInput("edit notes= must be non-empty")
+            self._set_doc(
+                ref.id, notes_chunk, "figure_notes", str(notes), base_sha, index=False
+            )
+            return Response(body=f"updated implementation notes on {ref.slug}")
 
         if text is not None:
             clean = self._validate_source(text)
@@ -251,9 +257,33 @@ class FigureHandler(Handler):
 
         raise BadInput(
             "edit(kind='figure') needs text= (SVG source), vocab= (shared "
-            "vocabulary), or viewbox=",
+            "vocabulary), notes= (implementation notes), or viewbox=",
             next="edit(kind='figure', id='<slug>', text='<svg>…')",
         )
+
+    def _set_doc(
+        self,
+        ref_id: int,
+        chunk: Any | None,
+        chunk_kind: str,
+        text: str,
+        base_sha: str | None,
+        *,
+        index: bool,
+    ) -> None:
+        """Create-or-replace a figure's vocab / notes prose chunk. ``index``
+        False mints ``meta.no_index`` (notes are internal, never searched)."""
+        if chunk is None:
+            self.store.add_chunks(
+                ref_id=ref_id,
+                chunk_kind=chunk_kind,
+                text=text,
+                meta=None if index else {"no_index": "true"},
+                split=False,
+                kind="figure",
+            )
+        else:
+            self.store.edit_text(chunk.handle, text, base_sha=base_sha, kind="figure")
 
     # ── delete: soft-retire the figure ───────────────────────────────
 
@@ -301,15 +331,17 @@ class FigureHandler(Handler):
         except SvgError as exc:  # pragma: no cover — parse_error already guards
             raise BadInput(f"invalid SVG source: {exc}") from exc
 
-    def _docs(self, ref_id: int) -> tuple[Any | None, Any | None]:
-        """Return ``(source_chunk, vocab_chunk)`` for a figure ref."""
-        source = vocab = None
+    def _docs(self, ref_id: int) -> tuple[Any | None, Any | None, Any | None]:
+        """Return ``(source_chunk, vocab_chunk, notes_chunk)`` for a figure."""
+        source = vocab = notes = None
         for c in self.store.reading_order(ref_id, kind="figure"):
             if c.chunk_kind == "figure_node" and source is None:
                 source = c
             elif c.chunk_kind == "figure_vocab" and vocab is None:
                 vocab = c
-        return source, vocab
+            elif c.chunk_kind == "figure_notes" and notes is None:
+                notes = c
+        return source, vocab, notes
 
     def _resolve_any(self, id: str | int | None) -> Any:
         """Resolve a figure ref from its slug or an ``fn<id>`` node address."""
@@ -357,7 +389,7 @@ class FigureHandler(Handler):
         )
 
     def _render_figure(self, slug: str, ref: Any) -> Response:
-        source, vocab_chunk = self._docs(ref.id)
+        source, vocab_chunk, notes_chunk = self._docs(ref.id)
         turns = sum(
             1
             for c in self.store.reading_order(ref.id, kind="figure")
@@ -374,6 +406,8 @@ class FigureHandler(Handler):
         )
         if vocab_chunk is not None and vocab_chunk.text.strip():
             lines.append("\n## Shared vocabulary\n" + vocab_chunk.text.strip())
+        if notes_chunk is not None and notes_chunk.text.strip():
+            lines.append("\n## Implementation notes\n" + notes_chunk.text.strip())
         lines.append("\n## SVG source\n" + (svg or "(empty)"))
         if findings:
             lines.append("\n## Lints")

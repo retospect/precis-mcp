@@ -13,17 +13,23 @@ substrate as `draft`/`plan` but is a distinct kind (`corpus_role='none'` —
 **never exported** as a deliverable; its rendered raster is a later slice).
 Slug-addressed; the ref handle is `fg<id>`, the SVG source node is `fn<id>`.
 
-A figure is **two documents you both own**:
+A figure is **three model-owned documents**:
 
 - **the SVG source** — one `figure_node` chunk holding the whole
   `<svg>…</svg>`. Name elements with stable `id=` and `<title>` so you can
   talk about "the left eye". (Raw markup isn't embedded/searched.)
-- **the shared vocabulary** — one `figure_vocab` chunk: the negotiated
-  ground truth ("green circles are foos", "keep the palette warm"). This
-  **is** embedded + searchable, and it's what keeps a long session coherent.
+- **the shared vocabulary** — one `figure_vocab` chunk: the *human-facing*,
+  high-level ground truth ("green circles are foos", "a friendly round
+  mascot"). Embedded + searchable; what keeps a long session coherent.
+- **the implementation notes** — one `figure_notes` chunk: the model's
+  *private* design log (element ids, structure, conventions). Fed to the
+  model every turn but not embedded and hidden from the human by default —
+  it's what makes edits consistent without cluttering the shared vocabulary.
 
-Chat turns persist as `figure_turn` chunks, so a drawing session is
-resumable and searchable.
+Vocab and notes are born **empty** (the "what this doc is for" text is
+instruction, kept in the prompt/`precis-figure-svg` skill, never stored as
+content); the model fills them as it draws. Chat turns persist as
+`figure_turn` chunks, so a session is resumable and searchable.
 
 ## Call sequences
 

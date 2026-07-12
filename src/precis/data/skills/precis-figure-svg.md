@@ -12,6 +12,32 @@ This is the medium manual for the `figure` kind (see `precis-figure-help`
 for the kind's verbs). It's pinned into the /figure turn loop so the model
 always has it while drawing.
 
+## The three things you maintain each turn
+
+You are drawing *with* a human. You own three documents, and each turn you
+rewrite the SVG and keep the other two current:
+
+1. **The SVG source** — the drawing itself (below).
+2. **The shared vocabulary** — the *human-facing* answer to "what is this
+   drawing?", high-level and short. e.g. *"A Sierpinski triangle: an
+   equilateral triangle recursively subdivided into its bottom-left corner
+   for 3 levels; recursion marked by blue inverted centre triangles."* This
+   is the negotiated ground truth you and the human share.
+3. **The implementation notes** — *your private* design log: element ids, the
+   structural scheme, numbering, palette hexes — everything you need to make
+   the next edit consistent. The human doesn't normally read this.
+
+**The rule that keeps this working:** the vocabulary is for the human, the
+notes are for you. Keep the vocabulary **high-level and concise** — if you
+catch yourself writing element ids, subdivision schemes, or opacity values
+into the vocabulary, that belongs in the **notes**; move it. If an existing
+figure's vocabulary is bloated with low-level detail, migrate it to notes.
+
+**Every turn:** update the vocabulary and the notes to match what you just
+drew (revise and *prune* them — they're living documents, not append-only
+logs), and keep your chat `reply` **short** — a sentence. The detail lives in
+the docs and the drawing, not in the chat.
+
 ## The shape of a figure's source
 
 One well-formed `<svg>` document, with a `viewBox` defining the shared

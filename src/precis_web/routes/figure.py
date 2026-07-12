@@ -56,19 +56,22 @@ def _viewbox(ref: Any, svg: str) -> tuple[float, float, float, float]:
     return read_viewbox(svg) or DEFAULT_VIEWBOX
 
 
-def _docs(store: Any, ref_id: int) -> tuple[str, str, list[str]]:
-    """Return ``(svg_source, vocab, turn_texts)`` for a figure ref."""
+def _docs(store: Any, ref_id: int) -> tuple[str, str, str, list[str]]:
+    """Return ``(svg_source, vocab, notes, turn_texts)`` for a figure ref."""
     svg = ""
     vocab = ""
+    notes = ""
     turns: list[str] = []
     for c in store.reading_order(ref_id, kind="figure"):
         if c.chunk_kind == "figure_node" and not svg:
             svg = c.text
         elif c.chunk_kind == "figure_vocab" and not vocab:
             vocab = c.text
+        elif c.chunk_kind == "figure_notes" and not notes:
+            notes = c.text
         elif c.chunk_kind == "figure_turn":
             turns.append(c.text)
-    return svg or default_svg(), vocab, turns
+    return svg or default_svg(), vocab, notes, turns
 
 
 @router.get("/figure", response_class=HTMLResponse)
@@ -102,7 +105,7 @@ async def figure_detail(request: Request, slug: str) -> HTMLResponse:
             },
             status_code=404,
         )
-    svg, vocab, turns = _docs(store, ref.id)
+    svg, vocab, notes, turns = _docs(store, ref.id)
     box = _viewbox(ref, svg)
     findings = lint_svg(svg, box)
     ctx = {
@@ -110,7 +113,10 @@ async def figure_detail(request: Request, slug: str) -> HTMLResponse:
         "slug": ref.slug,
         "title": ref.title or ref.slug,
         "vocab": vocab,
-        "turns": turns,
+        "notes": notes,
+        # Only the last couple of turns — the memory is the vocab + notes, not
+        # the chat log; showing more is noise (and the log persists for search).
+        "turns": turns[-2:],
         "viewbox": " ".join(_num(v) for v in box),
         "vb_w": _num(box[2]),
         "vb_h": _num(box[3]),
@@ -126,7 +132,7 @@ async def figure_source(request: Request, slug: str) -> RawResponse:
         ref = resolve_live_slug_ref(store, kind="figure", id=slug)
     except NotFound:
         return RawResponse(status_code=404, content="not found")
-    svg, _vocab, _turns = _docs(store, ref.id)
+    svg, _vocab, _notes, _turns = _docs(store, ref.id)
     try:
         safe = sanitize_svg(svg)  # defense-in-depth; storage is already clean
     except Exception:
@@ -158,6 +164,8 @@ async def figure_turn(
             "svg": result.svg,
             "changed": result.changed,
             "healed": result.healed,
+            "vocab": result.vocab,
+            "notes": result.notes,
             "findings": [
                 {"kind": f.kind, "node": f.node, "message": f.message}
                 for f in result.findings

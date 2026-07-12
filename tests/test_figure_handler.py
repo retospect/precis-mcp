@@ -33,12 +33,30 @@ def test_put_duplicate_rejected(figure):
 
 
 def test_get_renders_source_and_vocab(figure):
-    figure.put(id="m", title="M", text=_CIRCLE)
+    figure.put(id="m", title="M", text=_CIRCLE, vocab="green circles are foos")
     body = figure.get(id="m").body
     assert "SVG source" in body
     assert "circle" in body
     assert "Shared vocabulary" in body
+    assert "green circles are foos" in body
     assert "fn" in body  # the source node handle
+
+
+def test_bare_figure_has_no_seed_prose(figure):
+    # Vocab / notes are born EMPTY — the "what this doc is for" text is
+    # instruction (in the prompt/skill), never stored content.
+    figure.put(id="m")
+    body = figure.get(id="m").body
+    assert "Shared vocabulary" not in body  # no seed chunk yet
+    assert "Implementation notes" not in body
+
+
+def test_edit_notes(figure):
+    figure.put(id="m")
+    figure.edit(id="m", notes="the face is <g id='face'>")
+    body = figure.get(id="m").body
+    assert "Implementation notes" in body
+    assert "id='face'" in body
 
 
 def test_put_with_source_viewbox_wins(figure):

@@ -34,11 +34,18 @@
     </div>
   </div>
 
-  {# ── right: vocabulary + chat ── #}
+  {# ── right: docs (two tabs) + chat ── #}
   <div class="flex flex-col gap-4">
     <div>
-      <h2 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Shared vocabulary</h2>
-      <pre id="fig-vocab" class="text-xs bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap max-h-40 overflow-y-auto">{{ vocab or '(empty — define terms as you draw)' }}</pre>
+      <div class="flex items-center gap-1 mb-1">
+        <button id="fig-tab-vocab" type="button"
+                class="px-2 py-0.5 rounded text-xs font-semibold text-slate-700 bg-slate-100">Shared vocabulary</button>
+        <button id="fig-tab-notes" type="button"
+                class="px-2 py-0.5 rounded text-xs text-slate-500 hover:bg-slate-50">Implementation notes</button>
+        <span class="ml-auto text-[10px] text-slate-400">vocab is for you · notes are the model's</span>
+      </div>
+      <pre id="fig-vocab" class="text-xs bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap max-h-40 overflow-y-auto">{{ vocab or '(empty — the model will describe what the drawing is)' }}</pre>
+      <pre id="fig-notes" class="hidden text-xs bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap max-h-40 overflow-y-auto">{{ notes or "(empty — the model records ids / structure / conventions here)" }}</pre>
     </div>
 
     <div class="flex-1 min-h-0">
@@ -70,7 +77,25 @@
   const send = document.getElementById('fig-send');
   const canvas = document.getElementById('fig-canvas');
   const vocab = document.getElementById('fig-vocab');
+  const notes = document.getElementById('fig-notes');
   const lints = document.getElementById('fig-lints');
+  const tabVocab = document.getElementById('fig-tab-vocab');
+  const tabNotes = document.getElementById('fig-tab-notes');
+
+  // ── the two doc tabs ──
+  const ON = 'px-2 py-0.5 rounded text-xs font-semibold text-slate-700 bg-slate-100';
+  const OFF = 'px-2 py-0.5 rounded text-xs text-slate-500 hover:bg-slate-50';
+  function showTab(which) {
+    const v = which === 'vocab';
+    vocab.classList.toggle('hidden', !v);
+    notes.classList.toggle('hidden', v);
+    tabVocab.className = v ? ON : OFF;
+    tabNotes.className = v ? OFF : ON;
+  }
+  tabVocab.addEventListener('click', () => showTab('vocab'));
+  tabNotes.addEventListener('click', () => showTab('notes'));
+
+  function toBottom() { chat.scrollTop = chat.scrollHeight; }
 
   // textContent (never innerHTML) — model output is untrusted text.
   function bubble(text, cls) {
@@ -78,7 +103,7 @@
     pre.className = 'border rounded p-2 whitespace-pre-wrap ' + cls;
     pre.textContent = text;
     chat.appendChild(pre);
-    chat.scrollTop = chat.scrollHeight;
+    toBottom();
     return pre;
   }
 
@@ -103,6 +128,9 @@
           // SVG-in-<img> is script-safe; a data URI avoids a round trip.
           canvas.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(d.svg);
         }
+        // Reload the docs — they are the memory, and the model just revised them.
+        if (typeof d.vocab === 'string' && d.vocab.trim()) vocab.textContent = d.vocab;
+        if (typeof d.notes === 'string' && d.notes.trim()) notes.textContent = d.notes;
         lints.innerHTML = '';
         (d.findings || []).forEach((f) => {
           const div = document.createElement('div');
@@ -112,8 +140,10 @@
         });
       })
       .catch((err) => { pending.textContent = 'request failed: ' + err; })
-      .finally(() => { send.disabled = false; msg.focus(); });
+      .finally(() => { send.disabled = false; toBottom(); msg.focus(); });
   });
+
+  toBottom();  // start scrolled to the latest turn, input ready
 })();
 </script>
 {% endblock %}

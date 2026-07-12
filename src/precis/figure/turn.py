@@ -1,25 +1,29 @@
 """One interactive turn on a figure — the draw-with-me loop.
 
 Each turn the model sees the *current* state (the SVG source with its named
-``id``s), the two mechanical **lints** (compile + out-of-bounds), the shared
-**vocabulary** ("green circles are foos"), and the user's message; it emits
-a JSON reply carrying a chat ``reply``, the whole rewritten ``svg`` (cad-
-style whole-source rewrite, ADR-simplest for slice 1), and optionally an
-updated ``vocab``.
+``id``s), the two mechanical **lints** (compile + out-of-bounds), the two
+model-owned prose docs, and the user's message; it emits a JSON reply
+carrying a short chat ``reply``, the whole rewritten ``svg`` (cad-style
+whole-source rewrite), and optionally updated ``vocab`` / ``notes``.
 
-Robustness seams (from the design discussion):
+The two docs are deliberately split (they were one and got overloaded):
 
-- **Sanitize** every model-authored SVG before it touches storage or a DOM
-  (:func:`precis.figure.svg.sanitize_svg`).
-- **Bounded auto-heal**: if the reply's SVG doesn't compile, re-prompt once
-  with the parse error rather than surfacing a broken canvas; if it still
-  fails, keep the *old* source and report the finding (never overwrite good
-  source with broken).
-- **Conventions are the model's job**: they live in ``vocab`` (in-context
-  every turn), not in a checker.
+- **vocab** — the *human-facing* shared vocabulary: high-level, "what the
+  drawing IS". Embedded + searchable. Shown by default.
+- **notes** — the model's *private* implementation notes: element ids,
+  structure, conventions. Not embedded; shown behind a tab. Both are fed to
+  the model every turn (both are its memory), but only the vocab is for the
+  human.
 
-The model call is injected (``claude_fn``) so the whole loop is testable
-without a real ``claude`` — the default wraps :func:`call_claude_p`.
+Robustness seams: **sanitize** every model SVG before storage/DOM; **bounded
+auto-heal** on a compile failure (never overwrite good source with broken);
+**conventions are the model's job**, held via the docs, not a checker.
+
+The guidance the model follows (keep the vocab high-level + updated, put
+detail in notes, keep the reply short, safety rules) lives in the pinned
+``precis-figure-svg`` skill, which is prepended to the prompt — so editing
+the skill edits the prompt. The model call is injected (``claude_fn``) so the
+whole loop is testable without a real ``claude``.
 """
 
 from __future__ import annotations
@@ -29,6 +33,8 @@ import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Protocol
 
 from precis.figure.svg import (
@@ -44,10 +50,12 @@ log = logging.getLogger(__name__)
 
 #: The model reply is a single JSON object with these keys.
 _JSON_CONTRACT = (
-    'Reply with ONE JSON object and nothing else: {"reply": "<a short chat '
+    'Reply with ONE JSON object and nothing else: {"reply": "<a SHORT chat '
     'message to the human>", "svg": "<the COMPLETE new <svg>…</svg> source, '
     'or omit/empty to leave the drawing unchanged>", "vocab": "<the updated '
-    'shared vocabulary, or omit to leave it unchanged>"}.'
+    'shared vocabulary — high-level, for the human — or omit if unchanged>", '
+    '"notes": "<the updated implementation notes — your private design log — '
+    'or omit if unchanged>"}.'
 )
 
 #: Drawing wants a capable model; haiku (call_claude_p's default) is too weak.
@@ -65,6 +73,30 @@ class _StoreLike(Protocol):
 ClaudeFn = Callable[[str], dict[str, Any]]
 
 
+@lru_cache(maxsize=1)
+def _pinned_skill() -> str:
+    """The ``precis-figure-svg`` skill body (frontmatter stripped), pinned into
+    every turn prompt so editing the skill edits the guidance. Empty on any
+    failure — a turn must never break because a doc file moved."""
+    try:
+        import precis
+
+        path = (
+            Path(precis.__file__).resolve().parent
+            / "data"
+            / "skills"
+            / "precis-figure-svg.md"
+        )
+        raw = path.read_text(encoding="utf-8")
+    except Exception:  # pragma: no cover — defensive
+        return ""
+    if raw.startswith("---"):
+        parts = raw.split("---", 2)
+        if len(parts) == 3:
+            return parts[2].strip()
+    return raw.strip()
+
+
 @dataclass(frozen=True, slots=True)
 class TurnResult:
     """Outcome of one :func:`run_turn`."""
@@ -74,6 +106,8 @@ class TurnResult:
     findings: list[Any]  # list[LintFinding] on the final source
     changed: bool  # did the source SVG change this turn?
     healed: bool  # did an auto-heal retry run?
+    vocab: str = ""  # the shared vocabulary after the turn (for pane reload)
+    notes: str = ""  # the implementation notes after the turn (for pane reload)
 
 
 def _default_claude(prompt: str) -> dict[str, Any]:
@@ -88,15 +122,17 @@ def _default_claude(prompt: str) -> dict[str, Any]:
     return res.data
 
 
-def _docs(store: _StoreLike, ref_id: int) -> tuple[Any | None, Any | None]:
-    """Return ``(source_chunk, vocab_chunk)`` — the figure's two documents."""
-    source = vocab = None
+def _docs(store: _StoreLike, ref_id: int) -> tuple[Any | None, Any | None, Any | None]:
+    """Return ``(source_chunk, vocab_chunk, notes_chunk)`` for a figure."""
+    source = vocab = notes = None
     for c in store.reading_order(ref_id, kind="figure"):
         if c.chunk_kind == "figure_node" and source is None:
             source = c
         elif c.chunk_kind == "figure_vocab" and vocab is None:
             vocab = c
-    return source, vocab
+        elif c.chunk_kind == "figure_notes" and notes is None:
+            notes = c
+    return source, vocab, notes
 
 
 def _viewbox(ref: Any, svg: str) -> tuple[float, float, float, float]:
@@ -118,15 +154,16 @@ def build_prompt(
     message: str,
     svg: str,
     vocab: str,
+    notes: str = "",
     findings: list[Any],
     viewbox: tuple[float, float, float, float],
     skills: str = "",
 ) -> str:
     """Assemble the turn prompt. Pure — tested for carrying each part.
 
-    Ordering mirrors the cached/variable split (skills + contract are stable;
-    state + lint + message are per-turn), though call_claude_p sends it as
-    one blob.
+    The pinned skill (``skills``) carries the full guidance; the inline block
+    below is the guaranteed floor (the admonishment + safety + JSON contract)
+    so the prompt still steers even if the skill fails to load.
     """
     x, y, w, h = viewbox
     lint_block = (
@@ -138,15 +175,26 @@ def build_prompt(
     if skills.strip():
         parts.append(skills.strip())
     parts.append(
-        "You are drawing an SVG figure together with a human. You own two "
-        "documents: the SVG source and the shared vocabulary. Edit by "
-        "rewriting the whole <svg>. Name elements with stable id= attributes "
-        "and <title> (NOT XML comments — those are stripped). Never use "
-        "<script>, <foreignObject>, event handlers, or external/data href — "
-        "they are stripped for safety. Keep shapes inside the viewBox."
+        "You are drawing an SVG figure WITH a human. You maintain three "
+        "things: the SVG source; the shared VOCABULARY (high-level and "
+        "human-facing — what the drawing is); and your private implementation "
+        "NOTES (element ids, structure, conventions). Every turn: update the "
+        "vocabulary and keep it high-level and concise (move any low-level "
+        "detail into notes), keep notes accurate for consistent edits, and "
+        "keep your chat reply short — the detail lives in the docs, not the "
+        "chat. Edit by rewriting the whole <svg>; name elements with stable "
+        "id= and <title>. Safety: no <script>/<foreignObject>/event handlers/"
+        "external or data href (all stripped). Keep shapes inside the viewBox."
     )
     parts.append(f"## Canvas\nviewBox = {x} {y} {w} {h}")
-    parts.append(f"## Shared vocabulary\n{vocab or '(empty — define terms as you go)'}")
+    parts.append(
+        f"## Shared vocabulary (for the human — high-level)\n"
+        f"{vocab or '(empty — describe what the drawing is)'}"
+    )
+    parts.append(
+        f"## Implementation notes (your private design log)\n"
+        f"{notes or '(empty — record ids / structure / conventions here)'}"
+    )
     parts.append(f"## Current SVG source\n{svg}")
     parts.append(f"## Lints on the current source\n{lint_block}")
     parts.append(f"## The human says\n{message}")
@@ -160,13 +208,15 @@ def run_turn(
     message: str,
     *,
     claude_fn: ClaudeFn | None = None,
-    skills: str = "",
+    skills: str | None = None,
 ) -> TurnResult:
     """Run one draw-with-me turn and persist the result. See module docstring."""
     call = claude_fn or _default_claude
-    source_chunk, vocab_chunk = _docs(store, ref.id)
+    skills_text = skills if skills is not None else _pinned_skill()
+    source_chunk, vocab_chunk, notes_chunk = _docs(store, ref.id)
     current_svg = source_chunk.text if source_chunk is not None else ""
     vocab = vocab_chunk.text if vocab_chunk is not None else ""
+    notes = notes_chunk.text if notes_chunk is not None else ""
     viewbox = _viewbox(ref, current_svg)
     findings = lint_svg(current_svg, viewbox) if current_svg else []
 
@@ -174,12 +224,13 @@ def run_turn(
         message=message,
         svg=current_svg,
         vocab=vocab,
+        notes=notes,
         findings=findings,
         viewbox=viewbox,
-        skills=skills,
+        skills=skills_text,
     )
 
-    reply, new_svg, new_vocab, healed = _ask_with_heal(call, prompt, viewbox)
+    reply, new_svg, new_vocab, new_notes, healed = _ask_with_heal(call, prompt)
 
     changed = False
     final_svg = current_svg
@@ -202,17 +253,12 @@ def run_turn(
         if vb is not None:
             store.stamp_ref_meta(ref.id, {"viewbox": list(vb)})
 
-    if new_vocab is not None and new_vocab.strip() and new_vocab != vocab:
-        if vocab_chunk is not None:
-            store.edit_text(vocab_chunk.handle, new_vocab, kind="figure")
-        else:
-            store.add_chunks(
-                ref_id=ref.id,
-                chunk_kind="figure_vocab",
-                text=new_vocab,
-                split=False,
-                kind="figure",
-            )
+    final_vocab = _persist_doc(
+        store, ref.id, vocab_chunk, "figure_vocab", new_vocab, vocab, index=True
+    )
+    final_notes = _persist_doc(
+        store, ref.id, notes_chunk, "figure_notes", new_notes, notes, index=False
+    )
 
     _persist_turn(store, ref.id, message, reply)
     final_findings = lint_svg(final_svg, viewbox) if final_svg else []
@@ -222,32 +268,62 @@ def run_turn(
         findings=final_findings,
         changed=changed,
         healed=healed,
+        vocab=final_vocab,
+        notes=final_notes,
     )
+
+
+def _persist_doc(
+    store: _StoreLike,
+    ref_id: int,
+    chunk: Any | None,
+    chunk_kind: str,
+    new_text: str | None,
+    current: str,
+    *,
+    index: bool,
+) -> str:
+    """Persist a changed vocab/notes doc (create-or-replace); return the value
+    after the turn. No-op when the model didn't change it. ``index`` False
+    mints ``meta.no_index`` (notes are internal, never searched)."""
+    if new_text is None or not new_text.strip() or new_text == current:
+        return current
+    if chunk is not None:
+        store.edit_text(chunk.handle, new_text, kind="figure")
+    else:
+        store.add_chunks(
+            ref_id=ref_id,
+            chunk_kind=chunk_kind,
+            text=new_text,
+            meta=None if index else {"no_index": "true"},
+            split=False,
+            kind="figure",
+        )
+    return new_text
 
 
 def _ask_with_heal(
     call: ClaudeFn,
     prompt: str,
-    viewbox: tuple[float, float, float, float],
-) -> tuple[str, str | None, str | None, bool]:
+) -> tuple[str, str | None, str | None, str | None, bool]:
     """Call the model; auto-heal one compile failure. Returns
-    ``(reply, sanitized_svg_or_None, vocab_or_None, healed)``.
+    ``(reply, sanitized_svg_or_None, vocab_or_None, notes_or_None, healed)``.
 
-    ``sanitized_svg`` is ``None`` when the model changed nothing OR when it
-    never produced compilable SVG (the caller keeps the old source either
-    way — a broken reply must not overwrite good work)."""
+    ``sanitized_svg`` is ``None`` when the model changed nothing OR never
+    produced compilable SVG (the caller keeps the old source either way — a
+    broken reply must not overwrite good work)."""
     data = _safe_call(call, prompt)
     reply = str(data.get("reply") or "").strip()
-    vocab = data.get("vocab")
-    vocab_out = str(vocab) if isinstance(vocab, str) else None
+    vocab_out = _str_or_none(data.get("vocab"))
+    notes_out = _str_or_none(data.get("notes"))
 
     raw_svg = data.get("svg")
     if not isinstance(raw_svg, str) or not raw_svg.strip():
-        return reply, None, vocab_out, False  # chat-only turn
+        return reply, None, vocab_out, notes_out, False  # chat-only turn
 
     ok = _clean_if_valid(raw_svg)
     if ok is not None:
-        return reply, ok, vocab_out, False
+        return reply, ok, vocab_out, notes_out, False
 
     # One bounded auto-heal: re-prompt with the parse error.
     err = parse_error(raw_svg) or "the SVG did not parse"
@@ -257,16 +333,20 @@ def _ask_with_heal(
     )
     data2 = _safe_call(call, heal_prompt)
     reply2 = str(data2.get("reply") or reply).strip()
-    vocab2 = data2.get("vocab")
-    vocab_out2 = str(vocab2) if isinstance(vocab2, str) else vocab_out
+    vocab_out2 = _str_or_none(data2.get("vocab")) or vocab_out
+    notes_out2 = _str_or_none(data2.get("notes")) or notes_out
     raw2 = data2.get("svg")
     if isinstance(raw2, str) and raw2.strip():
         ok2 = _clean_if_valid(raw2)
         if ok2 is not None:
-            return reply2, ok2, vocab_out2, True
+            return reply2, ok2, vocab_out2, notes_out2, True
     # Still broken — keep the old source, surface nothing new to storage.
     log.warning("figure turn: model SVG failed to compile after auto-heal")
-    return reply2, None, vocab_out2, True
+    return reply2, None, vocab_out2, notes_out2, True
+
+
+def _str_or_none(v: Any) -> str | None:
+    return v if isinstance(v, str) else None
 
 
 def _safe_call(call: ClaudeFn, prompt: str) -> dict[str, Any]:

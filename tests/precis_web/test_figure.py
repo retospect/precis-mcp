@@ -64,6 +64,9 @@ def test_detail_renders_canvas_and_vocab(fig_client, runtime_with_store) -> None
     assert "/figure/web_fig/source.svg" in r.text  # the canvas <img>
     assert "green circles are foos" in r.text  # the vocab pane
     assert "100×100" in r.text  # the viewBox caption
+    # both doc tabs present
+    assert "Shared vocabulary" in r.text
+    assert "Implementation notes" in r.text
 
 
 def test_source_svg_served_and_sanitized(fig_client, runtime_with_store) -> None:
@@ -92,6 +95,8 @@ def test_turn_route_returns_json(fig_client, runtime_with_store, monkeypatch) ->
             findings=[],
             changed=True,
             healed=False,
+            vocab="a green face",
+            notes="face = circle#face",
         )
 
     monkeypatch.setattr("precis_web.routes.figure.run_turn", fake_run_turn)
@@ -101,6 +106,9 @@ def test_turn_route_returns_json(fig_client, runtime_with_store, monkeypatch) ->
     assert body["changed"] is True
     assert "drew: draw a face" in body["reply"]
     assert "circle" in body["svg"]
+    # docs come back so the panes can reload
+    assert body["vocab"] == "a green face"
+    assert body["notes"] == "face = circle#face"
 
 
 def test_turn_route_rejects_empty(fig_client, runtime_with_store) -> None:

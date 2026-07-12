@@ -332,9 +332,15 @@ The master kinds table lives in the `precis-overview` skill.
 - **`figure`** — an interactive **SVG canvas you draw *with* the model**
   (`handlers/figure.py` + `precis/figure/{svg,turn}.py`, reusing the
   kind-parameterized `DraftMixin`), a **distinct kind that is never exported**
-  (`corpus_role='none'`). Two model-owned docs — the SVG source (`figure_node`
-  chunk `fn<id>`, `meta.no_index` so raw markup never embeds) + a shared
-  vocabulary (`figure_vocab`, embedded) — plus a `figure_turn` chat log. The
+  (`corpus_role='none'`). Three model-owned docs — the SVG source (`figure_node`
+  chunk `fn<id>`, `meta.no_index` so raw markup never embeds), a **shared
+  vocabulary** (`figure_vocab`, embedded — high-level, human-facing), and
+  **implementation notes** (`figure_notes`, `no_index` — the model's private
+  design log; migration 0058) — plus a `figure_turn` chat log. Vocab/notes are
+  born empty (the "what this doc is for" seed is instruction, kept in the
+  prompt/`precis-figure-svg` skill, never stored as content). The pinned
+  `precis-figure-svg` skill body is prepended to the turn prompt (editing the
+  skill edits the prompt). The
   draw-with-me turn loop (`figure/turn.py`: state + two lints (compile +
   out-of-bounds) + vocab + user msg → whole-source rewrite, sanitize, bounded
   auto-heal) is the **web** editor `/figure` (`precis_web/routes/figure.py`);
