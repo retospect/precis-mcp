@@ -166,7 +166,9 @@ def test_turn_survives_model_exception(store, ref):
 
     res = run_turn(store, ref, "draw", claude_fn=boom)
     assert not res.changed
-    assert "failed" in res.reply.lower()
+    # jargon-free, actionable — not a raw "claude -p exited 1"
+    assert "couldn't reach" in res.reply.lower()
+    assert "exited" not in res.reply.lower()
 
 
 def test_turn_logs_persist_across_turns(store, ref):

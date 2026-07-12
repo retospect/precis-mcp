@@ -93,6 +93,24 @@ def test_sanitize_raises_on_unparseable() -> None:
         S.sanitize_svg("<svg><rect></svg>")
 
 
+def test_sanitize_keeps_smil_animation() -> None:
+    # Animation renders live in the <img> canvas — it must survive sanitize.
+    out = S.sanitize_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<circle r="5"><animate attributeName="r" values="5;10;5" dur="1s"/>'
+        "</circle></svg>"
+    )
+    assert "animate" in out
+
+
+def test_sanitize_keeps_css_keyframes() -> None:
+    out = S.sanitize_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        "<style>@keyframes p{to{opacity:0}}</style><rect/></svg>"
+    )
+    assert "keyframes" in out
+
+
 # ── viewBox ──────────────────────────────────────────────────────────────
 
 

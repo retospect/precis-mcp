@@ -91,10 +91,21 @@ polyline, polygon** — and only when they carry no `transform`. So:
 Author self-contained vector art: shapes, paths, gradients, `<text>`. If you
 need an "image", draw it.
 
-## Animation (looking ahead)
+## Animation — yes, animate directly in SVG
 
-Raster/animated export is a later slice, and when it lands, animation will be
-**declarative keyframes on named nodes** that we interpolate and rasterize
-frame-by-frame — *not* raw SMIL/CSS animation (which wouldn't survive
-export). For now, author static SVG; keep elements named so keyframes can
-target them later.
+The canvas renders your SVG in the browser, so **declarative animation plays
+live** — no rasterization needed. Use whichever fits:
+
+- **SMIL** — `<animate>`, `<animateTransform>`, `<animateMotion>`,
+  `<set>` (e.g. a flame that wiggles, a pulse, a spinner). `animateMotion`
+  may reference a local path (`href="#…"`).
+- **CSS** — a `<style>` block with `@keyframes` + `animation:` on an `id`.
+
+Both survive the sanitizer and animate in the `<img>` canvas (scripts and
+external fetches are still blocked — that's the secure static context, so
+your animation is safe *and* self-contained). Name the animated elements with
+stable `id=` so we can talk about "the flame" while it's moving.
+
+(Only *file* export to an animated GIF/APNG is deferred — that later slice
+will re-derive frames from your animation; it does not limit what you can
+animate live now.)
