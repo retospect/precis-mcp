@@ -91,21 +91,24 @@ polyline, polygon** — and only when they carry no `transform`. So:
 Author self-contained vector art: shapes, paths, gradients, `<text>`. If you
 need an "image", draw it.
 
-## Animation — yes, animate directly in SVG
+## Animation — opt-in, plays live in the browser
 
-The canvas renders your SVG in the browser, so **declarative animation plays
-live** — no rasterization needed. Use whichever fits:
+**Default to static** — most figures don't move; only animate when the human
+asks ("make the flame flicker", "spin the gear"). When they do, the canvas
+inlines your SVG into the page DOM, so **declarative animation plays live** —
+no rasterization. Use whichever fits:
 
-- **SMIL** — `<animate>`, `<animateTransform>`, `<animateMotion>`,
-  `<set>` (e.g. a flame that wiggles, a pulse, a spinner). `animateMotion`
-  may reference a local path (`href="#…"`).
+- **SMIL** — `<animate>`, `<animateTransform>`, `<animateMotion>`, `<set>`
+  (a flame that wiggles, a pulse, a spinner). `animateMotion` may reference a
+  local path (`href="#…"`).
 - **CSS** — a `<style>` block with `@keyframes` + `animation:` on an `id`.
 
-Both survive the sanitizer and animate in the `<img>` canvas (scripts and
-external fetches are still blocked — that's the secure static context, so
-your animation is safe *and* self-contained). Name the animated elements with
-stable `id=` so we can talk about "the flame" while it's moving.
+Both survive the sanitizer (scripts, event handlers, external/`data:` refs,
+and CSS `@import` / external `url()` are still stripped — so your animation is
+safe *and* self-contained; SMIL that animates an `on*`/`href` attribute is
+dropped). Name the animated elements with stable `id=` so we can talk about
+"the flame" while it's moving. See
+`get(kind='skill', id='precis-figure-animate')` for how to do it well.
 
 (Only *file* export to an animated GIF/APNG is deferred — that later slice
-will re-derive frames from your animation; it does not limit what you can
-animate live now.)
+re-derives frames; it doesn't limit what you can animate live now.)

@@ -61,7 +61,8 @@ def test_detail_renders_canvas_and_vocab(fig_client, runtime_with_store) -> None
     _seed(runtime_with_store)
     r = fig_client.get("/figure/web_fig")
     assert r.status_code == 200
-    assert "/figure/web_fig/source.svg" in r.text  # the canvas <img>
+    assert 'id="fig-canvas"' in r.text  # the inline-SVG canvas (not an <img>)
+    assert 'id="face"' in r.text  # SVG is inlined into the page so animation plays
     assert "green circles are foos" in r.text  # the vocab pane
     assert "100×100" in r.text  # the viewBox caption
     # both doc tabs present

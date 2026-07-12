@@ -93,14 +93,67 @@ def test_sanitize_raises_on_unparseable() -> None:
         S.sanitize_svg("<svg><rect></svg>")
 
 
-def test_sanitize_keeps_smil_animation() -> None:
-    # Animation renders live in the <img> canvas — it must survive sanitize.
+# ── inline-render hardening: animation kept, its abuse + css fetch stripped ──
+
+
+def test_sanitize_keeps_declarative_animation() -> None:
     out = S.sanitize_svg(
-        '<svg xmlns="http://www.w3.org/2000/svg">'
-        '<circle r="5"><animate attributeName="r" values="5;10;5" dur="1s"/>'
-        "</circle></svg>"
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+        '<circle cx="5" cy="5" r="2">'
+        '<animate attributeName="r" values="2;3;2" dur="1s" '
+        'repeatCount="indefinite"/></circle>'
+        "<style>@keyframes k { from { opacity: 0 } to { opacity: 1 } }</style>"
+        "</svg>"
     )
     assert "animate" in out
+    assert "@keyframes" in out
+    assert S.parse_error(out) is None
+
+
+def test_sanitize_drops_animation_targeting_event_handler() -> None:
+    # <set attributeName="onclick"> would re-add a handler at runtime.
+    out = S.sanitize_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<rect><set attributeName="onclick" to="evil()"/></rect></svg>'
+    )
+    assert "onclick" not in out
+    assert "evil" not in out
+
+
+def test_sanitize_drops_animation_targeting_href() -> None:
+    out = S.sanitize_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<rect><animate attributeName="href" to="https://evil/"/></rect></svg>'
+    )
+    assert "evil" not in out
+
+
+def test_sanitize_strips_css_import() -> None:
+    out = S.sanitize_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<style>@import url("https://evil/x.css"); rect { fill: red }</style></svg>'
+    )
+    assert "@import" not in out
+    assert "evil" not in out
+    assert "fill: red" in out  # the legit rule survives
+
+
+def test_sanitize_neutralizes_external_css_url_but_keeps_fragment() -> None:
+    out = S.sanitize_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<style>.a { fill: url("https://evil/x") } .b { fill: url(#grad) }</style>'
+        "</svg>"
+    )
+    assert "evil" not in out
+    assert "url(#grad)" in out  # local fragment ref preserved
+
+
+def test_sanitize_neutralizes_external_style_attribute_url() -> None:
+    out = S.sanitize_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<rect style="fill: url(https://evil/x)"/></svg>'
+    )
+    assert "evil" not in out
 
 
 def test_sanitize_keeps_css_keyframes() -> None:

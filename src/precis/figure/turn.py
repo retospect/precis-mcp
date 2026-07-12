@@ -184,7 +184,11 @@ def build_prompt(
         "keep your chat reply short — the detail lives in the docs, not the "
         "chat. Edit by rewriting the whole <svg>; name elements with stable "
         "id= and <title>. Safety: no <script>/<foreignObject>/event handlers/"
-        "external or data href (all stripped). Keep shapes inside the viewBox."
+        "external or data href (all stripped). Keep shapes inside the viewBox. "
+        "Figures are static by default; only when the human asks for motion, "
+        "you may animate declaratively with SMIL (<animate>, "
+        "<animateTransform>, <animateMotion>, <set>) or a <style> with CSS "
+        "@keyframes — both are preserved and animate natively in the browser."
     )
     parts.append(f"## Canvas\nviewBox = {x} {y} {w} {h}")
     parts.append(

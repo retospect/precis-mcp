@@ -1,6 +1,8 @@
 {% extends "base.html.j2" %}
 {% block title %}{{ title }}{% endblock %}
 {% block content %}
+{# inline SVG fills the canvas box; declarative SMIL/CSS animation then plays #}
+<style>#fig-canvas > svg { width: 100%; height: 100%; display: block; }</style>
 
 <div class="mb-4 flex items-center gap-3">
   <a href="/figure" class="text-xs text-slate-400 hover:text-slate-600">← Figures</a>
@@ -20,8 +22,8 @@
              linear-gradient(to right, #cbd5e1 1px, transparent 1px),
              linear-gradient(to bottom, #cbd5e1 1px, transparent 1px);
              background-size: 10% 10%;"></div>
-      <img id="fig-canvas" src="/figure/{{ slug }}/source.svg"
-           alt="figure canvas" class="absolute inset-0 w-full h-full object-contain z-0">
+      {# inline (not <img>) so browser-native animation plays; server-sanitized #}
+      <div id="fig-canvas" class="absolute inset-0 z-0">{{ svg | safe }}</div>
     </div>
     <div class="mt-1 flex items-center gap-2 text-[11px] text-slate-400">
       <span>viewBox {{ viewbox }}</span>
@@ -125,8 +127,10 @@
         pending.textContent = 'assistant: ' + (d.reply || '(no reply)');
         pending.className = 'border rounded p-2 whitespace-pre-wrap bg-slate-50 border-slate-200';
         if (d.changed && d.svg) {
-          // SVG-in-<img> is script-safe; a data URI avoids a round trip.
-          canvas.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(d.svg);
+          // Inline the server-sanitized SVG so SMIL/CSS animation plays.
+          // innerHTML never executes <script>, and sanitize already stripped
+          // handlers / external refs / css url() — sanitize is the trust boundary.
+          canvas.innerHTML = d.svg;
         }
         // Reload the docs — they are the memory, and the model just revised them.
         if (typeof d.vocab === 'string' && d.vocab.trim()) vocab.textContent = d.vocab;

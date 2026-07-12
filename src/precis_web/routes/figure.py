@@ -3,8 +3,9 @@
 The ``figure`` kind is otherwise a text/MCP surface (put/get/edit). This
 route is the *human* affordance on the same data: a 3-pane canvas —
 
-* left: the rendered SVG (served as an ``<img>`` so model-authored markup
-  can never execute — SVG-in-``<img>`` is script-safe by browser policy),
+* left: the rendered SVG **inlined** into the page DOM (so declarative
+  SMIL/CSS animation plays natively — an ``<img>`` embed would freeze it),
+  made safe by :func:`precis.figure.svg.sanitize_svg` (the trust boundary),
   with a light coordinate grid overlay (the shared spatial frame);
 * right: the shared **vocabulary** above a **chat** that drives the
   draw-with-me turn loop.
@@ -112,6 +113,8 @@ async def figure_detail(request: Request, slug: str) -> HTMLResponse:
         "active_tab": "figure",
         "slug": ref.slug,
         "title": ref.title or ref.slug,
+        # Inlined into the canvas via ``| safe`` — sanitize is the trust boundary.
+        "svg": _safe_svg(svg),
         "vocab": vocab,
         "notes": notes,
         # Only the last couple of turns — the memory is the vocab + notes, not
@@ -133,10 +136,7 @@ async def figure_source(request: Request, slug: str) -> RawResponse:
     except NotFound:
         return RawResponse(status_code=404, content="not found")
     svg, _vocab, _notes, _turns = _docs(store, ref.id)
-    try:
-        safe = sanitize_svg(svg)  # defense-in-depth; storage is already clean
-    except Exception:
-        safe = default_svg()
+    safe = _safe_svg(svg)  # defense-in-depth; storage is already clean
     return RawResponse(
         content=safe,
         media_type="image/svg+xml",
@@ -161,7 +161,8 @@ async def figure_turn(
     return JSONResponse(
         {
             "reply": result.reply,
-            "svg": result.svg,
+            # Re-sanitized: the client injects this inline (innerHTML).
+            "svg": _safe_svg(result.svg) if result.svg else result.svg,
             "changed": result.changed,
             "healed": result.healed,
             "vocab": result.vocab,
@@ -176,3 +177,11 @@ async def figure_turn(
 
 def _num(v: float) -> str:
     return str(int(v)) if v == int(v) else str(v)
+
+
+def _safe_svg(svg: str) -> str:
+    """Sanitize an SVG for inline rendering; empty canvas on any parse error."""
+    try:
+        return sanitize_svg(svg)
+    except Exception:
+        return default_svg()

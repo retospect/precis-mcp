@@ -50,6 +50,7 @@ from precis.utils._claude_subprocess import (
     resolve_binary,
     run_claude,
 )
+from precis.utils.claude_oauth import ensure_oauth_token
 
 log = logging.getLogger(__name__)
 
@@ -153,6 +154,16 @@ def call_claude_p(
         *extra_args,
     ]
 
+    # Bootstrap the OAuth token into the subprocess env. call_claude_p is
+    # spawned from launchd daemons (the figure web canvas via precis-web,
+    # finding_chase on the system worker) that run no shell hook, so
+    # ``claude -p`` would otherwise fall back to stale/absent keychain
+    # credentials and 401. Mirrors claude_agent / plan_tick / claude_quota
+    # (2026-07-12 incident) — see utils/claude_oauth. Override-safe: a token
+    # already in the env (plist var / interactive shell / test) wins.
+    proc_env = dict(os.environ)
+    ensure_oauth_token(proc_env)
+
     log.debug("claude_p: invoking model=%s max_usd=%.4f", model, max_usd)
     res = run_claude(
         args,
@@ -160,6 +171,7 @@ def call_claude_p(
         label="claude -p",
         timeout_s=timeout_s,
         error_cls=ClaudePError,
+        env=proc_env,
     )
 
     data = _parse_last_json_block(res.stdout)

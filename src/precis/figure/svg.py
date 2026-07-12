@@ -2,11 +2,15 @@
 
 Three jobs, each a mechanical fact about a string of SVG:
 
-- :func:`sanitize_svg` — strip the XSS/SSRF surface (``<script>``,
-  ``<foreignObject>``, ``on*`` event handlers, external ``href`` /
-  ``xlink:href``) so the canvas can be rendered into the editor DOM and
-  fed to a rasterizer safely. The model authors SVG; this is the seam
-  that makes model-authored markup safe to render.
+- :func:`sanitize_svg` — strip the XSS/SSRF surface so model-authored markup
+  is safe to **inline into the page DOM** (the canvas renders the SVG inline,
+  not sandboxed in an ``<img>``, so declarative SMIL/CSS animation plays). It
+  removes ``<script>`` / ``<foreignObject>``, ``on*`` event handlers, external
+  ``href`` / ``xlink:href``; neutralises ``@import`` and external ``url(...)``
+  in ``<style>`` bodies and ``style=`` attributes; and drops SMIL animation
+  elements that target an ``on*`` / ``href`` attribute (a runtime re-injection
+  of the attributes stripped at rest). This is the seam — the trust boundary
+  — that makes model markup safe to inline.
 - :func:`parse_error` — the *compile* check: does it parse as XML at all?
   ``None`` when clean, else a one-line reason. This is one of the two
   auto-lints fed back into the turn loop.
@@ -22,6 +26,7 @@ Everything is namespace-agnostic — SVG may be authored bare (no
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
@@ -35,6 +40,23 @@ DEFAULT_VIEWBOX: tuple[float, float, float, float] = (0.0, 0.0, 256.0, 256.0)
 
 #: Elements removed wholesale by :func:`sanitize_svg` (active content).
 _DANGEROUS_TAGS = frozenset({"script", "foreignObject", "foreignobject"})
+
+#: SMIL animation elements. Allowed (declarative, browser-native — see the
+#: ``precis-figure-animate`` skill), but dropped when their ``attributeName``
+#: targets an ``on*`` handler or ``href`` — animating those would re-introduce
+#: at *runtime* exactly the attributes we strip at rest (a live-DOM XSS vector
+#: once the SVG is inlined rather than sandboxed in an ``<img>``).
+_ANIMATION_TAGS = frozenset(
+    {"animate", "animatetransform", "animatemotion", "animatecolor", "set"}
+)
+
+#: CSS ``@import`` at-rule (external fetch) — stripped from ``<style>`` bodies.
+_CSS_AT_IMPORT_RE = re.compile(r"@import\b[^;]*;?", re.IGNORECASE)
+
+#: A ``url(...)`` reference in CSS. Local ``url(#id)`` fragment refs are kept;
+#: any external / ``data:`` target is neutralised to ``url(#)`` so an inlined
+#: ``<style>`` or ``style=`` can't fetch off-origin.
+_CSS_URL_RE = re.compile(r"""url\(\s*(['"]?)([^)]*?)\1\s*\)""", re.IGNORECASE)
 
 #: Shapes whose bounding box :func:`lint_svg` can compute cheaply. Paths,
 #: text and groups are not bounds-checked in slice 1 (documented limitation).
@@ -123,8 +145,13 @@ def sanitize_svg(svg: str) -> str:
     Removes ``<script>`` / ``<foreignObject>`` subtrees, every ``on*`` event
     handler attribute, and any ``href`` / ``xlink:href`` that is not a local
     ``#fragment`` reference (external URLs *and* ``data:`` URIs — both are an
-    SSRF/XSS vector). Guarantees ``xmlns`` on the root so the result renders
-    standalone. Raises :class:`SvgError` if ``svg`` does not parse (the
+    SSRF/XSS vector). Because the result is **inlined into the page DOM**, it
+    also neutralises CSS external fetches (``@import`` and non-fragment
+    ``url(...)`` in ``<style>`` bodies and ``style=`` attributes) and drops any
+    SMIL animation element whose ``attributeName`` targets an ``on*`` / ``href``
+    attribute (declarative animation itself is kept — see
+    ``precis-figure-animate``). Guarantees ``xmlns`` on the root so the result
+    renders standalone. Raises :class:`SvgError` if ``svg`` does not parse (the
     caller compile-checks first).
     """
     root = _parse(svg)
@@ -146,17 +173,58 @@ def _strip_dangerous(root: ET.Element) -> None:
     # ElementTree has no parent pointers — build one to delete children.
     parents = {child: parent for parent in root.iter() for child in parent}
     for el in list(root.iter()):
-        if _localname(el.tag) in _DANGEROUS_TAGS:
+        tag = _localname(el.tag).lower()
+        if tag in _DANGEROUS_TAGS or (
+            tag in _ANIMATION_TAGS and _animates_dangerous_attr(el)
+        ):
             parent = parents.get(el)
             if parent is not None:
                 parent.remove(el)
             continue
-        for attr in list(el.attrib):
-            local = _localname(attr).lower()
-            if local.startswith("on") or (
-                local == "href" and not (el.attrib[attr] or "").lstrip().startswith("#")
-            ):
-                del el.attrib[attr]
+        _strip_attrs(el)
+        # A <style> body is inlined into the page DOM (no <img> sandbox), so its
+        # CSS can fetch off-origin via @import / url(...) — neutralise both while
+        # keeping @keyframes (the animation payload) intact.
+        if tag == "style" and el.text:
+            el.text = _sanitize_css(el.text)
+
+
+def _animates_dangerous_attr(el: ET.Element) -> bool:
+    """True if a SMIL element's ``attributeName`` targets ``on*`` or ``href``."""
+    for name, value in el.attrib.items():
+        if _localname(name).lower() == "attributename":
+            target = (value or "").strip().lower().rsplit(":", 1)[-1]
+            return target.startswith("on") or target == "href"
+    return False
+
+
+def _strip_attrs(el: ET.Element) -> None:
+    """Drop ``on*`` handlers + external ``href``; neutralise ``style=`` urls."""
+    for attr in list(el.attrib):
+        local = _localname(attr).lower()
+        if local.startswith("on") or (
+            local == "href" and not (el.attrib[attr] or "").lstrip().startswith("#")
+        ):
+            del el.attrib[attr]
+        elif local == "style":
+            el.attrib[attr] = _sanitize_css(el.attrib[attr] or "")
+
+
+def _sanitize_css(css: str) -> str:
+    """Strip ``@import`` and rewrite any non-fragment ``url(...)`` to ``url(#)``.
+
+    Keeps local ``url(#gradient)`` refs and ``@keyframes`` rules; removes the
+    external-fetch surface that becomes live once ``<style>`` / ``style=`` is
+    inlined into the page. Regex-level (not a full CSS parser) — adequate for
+    model-authored, operator-viewed SVG, not a hostile-multi-tenant boundary.
+    """
+    if not css:
+        return css
+    css = _CSS_AT_IMPORT_RE.sub("", css)
+    return _CSS_URL_RE.sub(
+        lambda m: m.group(0) if m.group(2).strip().startswith("#") else "url(#)",
+        css,
+    )
 
 
 def _promote_namespace(root: ET.Element) -> None:
