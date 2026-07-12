@@ -59,6 +59,7 @@ from precis.utils._claude_subprocess import (
     run_claude,
     to_str,
 )
+from precis.utils.claude_oauth import ensure_oauth_token
 from precis.utils.friction_reflect import append_friction_footer
 
 if TYPE_CHECKING:
@@ -283,14 +284,7 @@ def call_claude_agent(
     # ``cost=$0 turns=None`` success in our logs (2026-06-17 dream
     # incident). Load the file ourselves when the var is missing.
     proc_env = dict(os.environ)
-    if "CLAUDE_CODE_OAUTH_TOKEN" not in proc_env:
-        token_path = Path.home() / ".claude_oauth_token"
-        try:
-            token = token_path.read_text().strip()
-        except OSError:
-            token = ""
-        if token:
-            proc_env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    ensure_oauth_token(proc_env)
 
     started = time.monotonic()
     # ``stdin_devnull`` because Claude Code 2.1.x reads stdin in

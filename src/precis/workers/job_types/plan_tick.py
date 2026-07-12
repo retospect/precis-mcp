@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from precis.utils.claude_oauth import ensure_oauth_token
 from precis.utils.llm.router import Tier, resolve_model
 
 log = logging.getLogger(__name__)
@@ -170,6 +171,12 @@ def run(
     # paths manually and can get them wrong.
     workspace = _load_parent_workspace(store, parent_ref_id)
     subprocess_env = dict(os.environ)
+    # Bootstrap the long-lived OAuth token from ~/.claude_oauth_token when the
+    # env doesn't already carry it — launchd daemons don't source the shell
+    # hook that would, so without this the spawned ``claude -p`` authenticates
+    # off stale keychain creds and 401s (2026-07-12 plan_tick incident). Same
+    # bootstrap ``claude_agent`` already does; shared helper keeps them in sync.
+    ensure_oauth_token(subprocess_env)
     if workspace is not None:
         subprocess_env["PRECIS_WORKSPACE"] = workspace.path
     # Draft-bound tick: gate the colliding prose-file kind off the tool

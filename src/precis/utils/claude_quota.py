@@ -39,6 +39,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from precis.utils.claude_oauth import ensure_oauth_token
+
 log = logging.getLogger(__name__)
 
 
@@ -250,6 +252,11 @@ def refresh_snapshot(
     accounts return nothing — we no-op gracefully).
     """
     cmd_binary = binary or os.environ.get("PRECIS_CLAUDE_BIN", "claude")
+    # Bootstrap the OAuth token from ~/.claude_oauth_token so a launchd
+    # daemon's ``claude -p`` doesn't fall back to stale keychain creds and
+    # 401 (2026-07-12 incident — same fix as plan_tick / claude_agent).
+    quota_env = dict(os.environ)
+    ensure_oauth_token(quota_env)
     try:
         res = subprocess.run(
             [
@@ -265,6 +272,7 @@ def refresh_snapshot(
             capture_output=True,
             text=True,
             timeout=timeout_s,
+            env=quota_env,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         log.warning("claude_quota: refresh failed (%s)", exc)
