@@ -211,29 +211,59 @@
     </div>
   </div>
 
+  {# nav state travels INSIDE #sd-content so a swap carries the fresh values #}
+  <script type="application/json" id="sd-state">{{ {"order": view.order, "hits": (hits | map(attribute='node') | map(attribute='dc') | list), "focus": focus_dc, "q": q} | tojson }}</script>
 </div>
 
 <script>
-// Keyboard nav (when NOT editing): ↑/↓ step the TOC linearly; →/Tab indent to
-// the next deeper chunk (child), ←/Shift-Tab outdent to the parent (nearest
-// shallower). Frames the active TOC entry + scrolls it into view on load.
+// No-reload navigation: every TOC/result/toggle link + the search form + the
+// pin/tag/mark actions fetch the page and swap ONLY #sd-content (persistent
+// listeners below stay bound; Alpine re-inits the swapped components). Nav-state
+// (order/hits/focus/q) rides inside #sd-content and is re-read after each swap.
 (function () {
   const IDENT = {{ ident | tojson }};
-  const ORDER = {{ view.order | tojson }};      // [[dc, depth], ...]
-  const HITS = {{ (hits | map(attribute='node') | map(attribute='dc') | list) | tojson }};  // search hits, in rank order
-  const FOCUS = {{ focus_dc | tojson }};
-  const Q = {{ q | tojson }};
-  // Navigate preserving EVERY current param (q/sig/sview/relevance) — only focus
-  // changes, so arrowing never drops the search.
-  const jump = (dc) => {
+  let ST = readState();
+  function readState() {
+    try { return JSON.parse(document.getElementById('sd-state').textContent); }
+    catch (e) { return { order: [], hits: [], focus: '', q: '' }; }
+  }
+  async function swapFrom(url) {
+    try {
+      const html = await (await fetch(url, { cache: 'no-store' })).text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const fresh = doc.getElementById('sd-content');
+      const cur = document.getElementById('sd-content');
+      if (!fresh || !cur) { location.href = url; return; }
+      cur.innerHTML = fresh.innerHTML;
+      if (window.Alpine && window.Alpine.initTree) window.Alpine.initTree(cur);
+      ST = readState();
+      afterSwap();
+    } catch (e) { location.href = url; }
+  }
+  function afterSwap() {
+    const el = document.getElementById('toc-' + ST.focus);
+    if (el) el.scrollIntoView({ block: 'center' });
+    const mid = document.getElementById('mid-focus');
+    if (mid) mid.scrollIntoView({ block: 'center' });
+    if (ST.q) highlightTerm(document.getElementById('sd-content'), ST.q);
+    if (window.htmx) window.htmx.process(document.getElementById('sd-content'));
+  }
+  async function navTo(dc) {
     const p = new URLSearchParams(location.search);
     p.set('focus', dc);
-    location = `/smartdraft/${IDENT}?` + p.toString();
-  };
+    const url = `/smartdraft/${IDENT}?` + p.toString();
+    history.pushState({}, '', url);
+    await swapFrom(url);
+  }
+  // expose a reload-free refresh for the action helpers (pin/tag/mark/save)
+  window.__sdRefresh = () => swapFrom(location.href);
+  const jump = navTo;
   const clearSearch = () => {
     const p = new URLSearchParams(location.search);
     p.set('q', '');
-    location = `/smartdraft/${IDENT}?` + p.toString();
+    const url = `/smartdraft/${IDENT}?` + p.toString();
+    history.pushState({}, '', url);
+    swapFrom(url);
   };
   // Highlight the query term wherever it shows (light blue) — a find-style mark.
   function highlightTerm(root, term) {
@@ -255,12 +285,27 @@
       n.parentNode.replaceChild(span, n);
     });
   }
-  window.addEventListener('DOMContentLoaded', () => {
-    const el = document.getElementById('toc-' + FOCUS);
-    if (el) el.scrollIntoView({ block: 'center' });
-    const mid = document.getElementById('mid-focus');
-    if (mid) mid.scrollIntoView({ block: 'center' });
-    if (Q) highlightTerm(document.getElementById('sd-content'), Q);
+  window.addEventListener('DOMContentLoaded', afterSwap);
+  window.addEventListener('popstate', () => swapFrom(location.href));
+  // Delegate: any internal /smartdraft link (TOC rows, results, header toggles)
+  // and the search form swap #sd-content instead of a full page navigation.
+  const INT = 'a[href^="/smartdraft/' + IDENT + '?"]';
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest ? e.target.closest(INT) : null;
+    if (!a || e.metaKey || e.ctrlKey) return;
+    if (!a.closest('#sd-content')) return;   // header links (ids/debug) full-nav
+    e.preventDefault();
+    const href = a.getAttribute('href');
+    history.pushState({}, '', href);
+    swapFrom(href);
+  });
+  document.addEventListener('submit', (e) => {
+    const f = e.target;
+    if (!f.matches || !f.matches('form[action^="/smartdraft/' + IDENT + '"]')) return;
+    e.preventDefault();
+    const url = f.getAttribute('action') + '?' + new URLSearchParams(new FormData(f)).toString();
+    history.pushState({}, '', url);
+    swapFrom(url);
   });
   // Portal-lite (smartdraft only, no shared-linkify change): when a hover-preview
   // card opens, pin it to FIXED coords at its anchor so it floats above content
@@ -284,7 +329,7 @@
   document.addEventListener('keydown', (e) => {
     const t = document.activeElement;
     const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
-    if (e.key === 'Escape' && Q) { e.preventDefault(); clearSearch(); return; }
+    if (e.key === 'Escape' && ST.q) { e.preventDefault(); clearSearch(); return; }
     if (e.key === '/' && !inField) {   // focus the search box
       e.preventDefault();
       const box = document.querySelector('input[name="q"]');
@@ -296,19 +341,20 @@
       e.preventDefault();
       fetch(`/drafts/${IDENT}/marks`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ op: 'eye', handles: [FOCUS] }),
-      }).then(() => location.reload());
+        body: JSON.stringify({ op: 'eye', handles: [ST.focus] }),
+      }).then(() => window.__sdRefresh());
       return;
     }
     // In search mode the arrows step through the RESULTS (not the outline).
-    if (HITS && HITS.length) {
-      let hi = HITS.indexOf(FOCUS);
-      if (e.key === 'ArrowDown' || e.key === 'ArrowRight') hi = hi < 0 ? 0 : Math.min(HITS.length - 1, hi + 1);
+    if (ST.hits && ST.hits.length) {
+      let hi = ST.hits.indexOf(ST.focus);
+      if (e.key === 'ArrowDown' || e.key === 'ArrowRight') hi = hi < 0 ? 0 : Math.min(ST.hits.length - 1, hi + 1);
       else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') hi = hi < 0 ? 0 : Math.max(0, hi - 1);
       else return;
-      e.preventDefault(); jump(HITS[hi]); return;
+      e.preventDefault(); jump(ST.hits[hi]); return;
     }
-    const i = ORDER.findIndex((o) => o[0] === FOCUS);
+    const ORDER = ST.order || [];
+    const i = ORDER.findIndex((o) => o[0] === ST.focus);
     if (i < 0) return;
     const depth = ORDER[i][1];
     let j = -1;
@@ -324,25 +370,25 @@
 })();
 
 // Pin/unpin any chunk (a persistent context eye) — used by the focus header
-// and the TOC rows. POSTs the shipped /marks toggle, then reloads.
+// and the TOC rows. POSTs the shipped /marks toggle, then swaps in place.
 function smartPin(dc) {
   fetch(`/drafts/{{ ident }}/marks`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ op: 'eye', handles: [dc] }),
-  }).then(() => location.reload()).catch(() => {});
+  }).then(() => window.__sdRefresh()).catch(() => {});
 }
 function smartClearPins() {
   fetch(`/drafts/{{ ident }}/marks`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ op: 'clear' }),
-  }).then(() => location.reload()).catch(() => {});
+  }).then(() => window.__sdRefresh()).catch(() => {});
 }
-// Chunk tags (the T search signal). Add/remove reload so the chip + search reflect it.
+// Chunk tags (the T search signal). Add/remove refresh so the chip + search reflect it.
 function _chunkTag(dc, body) {
   fetch(`/smartdraft/{{ ident }}/chunk-tag`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(Object.assign({ handle: dc }, body)),
-  }).then(() => location.reload()).catch(() => {});
+  }).then(() => window.__sdRefresh()).catch(() => {});
 }
 function smartTagAdd(dc, tag) { if (tag && tag.trim()) _chunkTag(dc, { add: tag.trim() }); }
 function smartTagRemove(dc, tag) { _chunkTag(dc, { remove: tag }); }
@@ -381,7 +427,7 @@ function smartEdit(ident, handle, sha, canEdit) {
           body: new URLSearchParams({ handle: this.handle, text, base_sha: this.sha }),
         });
         const d = await r.json();
-        if (d.ok) { location.reload(); }
+        if (d.ok) { this.editing = false; window.__sdRefresh(); }
         else { this.msg = d.error || (d.hard ? ('broke: ' + d.hard.join(', ')) : 'save failed'); this.saving = false; }
       } catch (e) { this.msg = 'network error'; this.saving = false; }
     },
