@@ -99,6 +99,9 @@ KIND_CODES: dict[str, str] = {
     # reasoning artifacts (ADR 0051 §2b) — the plan is a chunk-tree sibling
     # of the draft, never exported. Record ``po`` (plan) / chunk ``pe`` below.
     "plan": "po",
+    # interactive SVG canvas (the figure/sketch kind) — chunk-tree sibling of
+    # the draft, never exported. Record ``fg`` / chunk ``fn`` below.
+    "figure": "fg",
 }
 
 # --- chunk codes (kinds that expose addressable body chunks) --------------
@@ -129,6 +132,9 @@ CHUNK_CODES: dict[str, str] = {
     # reasoning artifacts (ADR 0051 §2b) — plan body chunks (``pe<id>``),
     # the plan's addressable nodes; disjoint from draft's ``dc``.
     "plan": "pe",
+    # figure source nodes (``fn<id>``) — a figure's addressable SVG
+    # elements/groups; disjoint from draft's ``dc``.
+    "figure": "fn",
 }
 
 # Reverse map (code -> (kind, is_chunk)).

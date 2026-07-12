@@ -17,6 +17,43 @@ what's still open.
 
 ---
 
+## 🎨 `figure` kind — deferred slices (2026-07-12)
+
+Slice 1 shipped: the `figure` kind (interactive SVG canvas), migration 0057,
+`handlers/figure.py` + `precis/figure/{svg,turn}.py`, the `/figure` web editor
+(draw-with-me turn loop, compile + out-of-bounds lints, sanitize, bounded
+auto-heal), skills `precis-figure-help` + `precis-figure-svg`. All **feature
+extensions**, not bugs — ordered roughly by value:
+
+- **PNG / animated-raster export** — `feature`, Owner: a `figure_render`
+  derived-lane job + a rasterizer. No SVG rasterizer is a dep today
+  (cairosvg/resvg need system libs / rust — the reason it's deferred). Design:
+  own the timeline as **declarative keyframes on named nodes**, interpolate +
+  render each frame as static SVG via `resvg`, encode GIF/APNG/WebP — **no
+  headless browser** (raw SMIL/CSS wouldn't survive export). Still PNG is the
+  first step.
+- **three.js / `scene3d` mode** — `feature`. One kind, `meta.render ∈
+  {svg,scene3d}`; 3D uses a **declarative scene IR + trusted client renderer**
+  (never eval raw three.js — XSS). Add `precis-figure-scene3d` skill.
+- **Per-node chunk split** — `feature`, Owner: `figure/svg.py` + handler.
+  Today the source is one `figure_node` chunk (the whole `<svg>`); split into
+  one chunk per top-level element/group (`fn<id>` each) once per-node *edits*
+  (batch transaction) land — the payoff that justifies the XML round-trip.
+- **Draft-embedding** — `feature`. A draft includes a figure's rendered raster
+  as an **asset** (not a document export — orthogonal to `corpus_role='none'`;
+  reuse `export/sources.py`'s asset resolver). Add a `figure-in`→draft link.
+- **`read(handle)` reference tool in the turn loop** — `feature`. Let the
+  model pull any `dc…`/`fn…`/`pc…` handle into the turn (vocab-by-reference:
+  "eyes like dc1234"). One read-only tool, on-demand into the variable layer.
+- **Pin full `precis-figure-svg` skill text into the turn prompt** — `polish`,
+  Owner: `figure/turn.py` + route. The turn currently inlines a *condensed*
+  operating manual in `build_prompt`; wire the real skill body as the pinned
+  cached layer (`run_turn(..., skills=…)` is already the seam).
+- **Formalized-convention hard-checks** — `polish`. Optional opt-in: promote a
+  *specific* formalizable convention (e.g. an explicit hex palette allowlist
+  declared in the vocab) to a mechanical lint. Most conventions stay the
+  model's job (held via the vocab), never a general "convention linter".
+
 ## 🔵 Turn-as-job routing + context DSL — WIP design (2026-07-07)
 
 - **Status**: `deferred` (design captured, not sliced) —

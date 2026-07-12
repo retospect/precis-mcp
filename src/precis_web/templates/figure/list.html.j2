@@ -1,0 +1,27 @@
+{% extends "base.html.j2" %}
+{% block title %}Figures{% endblock %}
+{% block content %}
+
+<div class="mb-4 flex items-center gap-3">
+  <h1 class="text-lg font-semibold">Figures</h1>
+  <span class="text-xs text-slate-400">interactive SVG canvases you draw with the model</span>
+</div>
+
+{% if figures %}
+<ul class="divide-y divide-slate-100 rounded border border-slate-200 bg-white">
+  {% for f in figures %}
+  <li class="flex items-center gap-3 px-3 py-2">
+    <a href="/figure/{{ f.slug }}" class="font-medium text-slate-800 hover:text-slate-600">{{ f.title }}</a>
+    <span class="text-[11px] text-slate-400">{{ f.slug }} · {{ f.handle }}</span>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="text-sm text-slate-500">
+  No figures yet. Create one from the MCP:
+  <code class="text-xs bg-slate-100 px-1 rounded">put(kind='figure', id='mascot', title='Mascot')</code>,
+  then open it here to draw.
+</p>
+{% endif %}
+
+{% endblock %}

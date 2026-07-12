@@ -329,6 +329,20 @@ The master kinds table lives in the `precis-overview` skill.
   `?`/`⚠` + a model-owned `▸` cursor (`meta.cursor` on the ref); nodes
   `pe<id>`, one per project via `plan-of`. Migration `0056_plan_kind.sql`.
   Ships dark — nothing dispatches to it yet.
+- **`figure`** — an interactive **SVG canvas you draw *with* the model**
+  (`handlers/figure.py` + `precis/figure/{svg,turn}.py`, reusing the
+  kind-parameterized `DraftMixin`), a **distinct kind that is never exported**
+  (`corpus_role='none'`). Two model-owned docs — the SVG source (`figure_node`
+  chunk `fn<id>`, `meta.no_index` so raw markup never embeds) + a shared
+  vocabulary (`figure_vocab`, embedded) — plus a `figure_turn` chat log. The
+  draw-with-me turn loop (`figure/turn.py`: state + two lints (compile +
+  out-of-bounds) + vocab + user msg → whole-source rewrite, sanitize, bounded
+  auto-heal) is the **web** editor `/figure` (`precis_web/routes/figure.py`);
+  the canvas renders SVG as a script-safe `<img>`. MCP surface is
+  put/get/edit/delete/link. Migration `0057_figure_kind.sql`; skills
+  `precis-figure-help` + `precis-figure-svg`. Slice 1 = SVG 2D, browser-
+  rendered; **deferred**: PNG/animated raster export, three.js/`scene3d` mode,
+  per-node chunk split, draft-embedding, `read(handle)` reference tool.
 - **`gripe`** — first-class bug tracker; body + comment timeline as chunks
   (`gripe_body`/`gripe_comment`), so they embed + keyword-index automatically.
 - **`alert`** — machine-detected ops/health conditions (spin loops, orphans),

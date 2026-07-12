@@ -1,0 +1,86 @@
+---
+id: precis-figure-help
+title: precis — the figure kind (interactive SVG canvas you draw with the model)
+summary: author an SVG drawing as a slug-addressed chunk-tree, edit it by whole-source rewrite, and draw *with* the model in the /figure web canvas (two shared documents — the SVG source and a shared vocabulary — plus compile + out-of-bounds lints); never exported, browser-rendered
+applies-to: get/put/edit/delete/link (kind='figure')
+status: active
+---
+
+# precis-figure-help — draw SVG figures *with* the model
+
+A `figure` is an interactive **SVG canvas**. It rides the same chunk-tree
+substrate as `draft`/`plan` but is a distinct kind (`corpus_role='none'` —
+**never exported** as a deliverable; its rendered raster is a later slice).
+Slug-addressed; the ref handle is `fg<id>`, the SVG source node is `fn<id>`.
+
+A figure is **two documents you both own**:
+
+- **the SVG source** — one `figure_node` chunk holding the whole
+  `<svg>…</svg>`. Name elements with stable `id=` and `<title>` so you can
+  talk about "the left eye". (Raw markup isn't embedded/searched.)
+- **the shared vocabulary** — one `figure_vocab` chunk: the negotiated
+  ground truth ("green circles are foos", "keep the palette warm"). This
+  **is** embedded + searchable, and it's what keeps a long session coherent.
+
+Chat turns persist as `figure_turn` chunks, so a drawing session is
+resumable and searchable.
+
+## Call sequences
+
+Create a figure (optionally under a project todo, optionally seeded):
+
+    put(kind='figure', id='mascot', title='Mascot')
+    put(kind='figure', id='mascot', title='Mascot', project=<todo-id>,
+        viewbox='0 0 256 256')
+    put(kind='figure', id='mascot', text='<svg …>…</svg>', vocab='green = foo')
+
+Read it (assembled SVG + shared vocabulary + `fn<id>` handle + lints):
+
+    get(kind='figure', id='mascot')
+    get(kind='figure')            # list all figures
+    get(kind='figure', id='fn42') # one source node verbatim
+
+Edit — three independent axes:
+
+    edit(kind='figure', id='mascot', text='<svg …>…</svg>')  # replace source
+    edit(kind='figure', id='mascot', vocab='green circles are foos')
+    edit(kind='figure', id='mascot', viewbox='0 0 512 384')  # the canvas frame
+
+Retire it:
+
+    delete(kind='figure', id='mascot')
+
+Place it in a folder (ADR 0045): `link(kind='figure', id='mascot',
+target='folder:7', rel='parent')`.
+
+## The two mechanical lints (everything else is your job)
+
+Every source write is checked for exactly two things — both pure geometry:
+
+1. **compile** — does the SVG parse as XML, with an `<svg>` root?
+2. **out-of-bounds** — does any measurable shape (rect/circle/ellipse/
+   line/polyline/polygon) spill past the `viewBox`? (Paths, text and groups
+   aren't bounds-checked.)
+
+There is **no** convention checker. "Green circles are foos", symmetry,
+palette — those live in the shared vocabulary and are honoured by *you*
+reading it each turn, not by a linter.
+
+## Safety (the sanitizer will strip these — don't author them)
+
+`<script>`, `<foreignObject>`, `on*` event handlers, and any external or
+`data:` `href`/`xlink:href` are **stripped** on every write (the canvas is
+rendered into the browser as an `<img>`, which is already script-safe; the
+strip is defense-in-depth). Local `#fragment` refs (gradients, `<use>`)
+survive. Name things with `id=`/`<title>`, not XML comments (comments are
+dropped on the sanitize round-trip).
+
+## Drawing with the model (the /figure web canvas)
+
+The interactive draw-with-me loop is the **web** editor (`/figure/<slug>`):
+a canvas on the left (SVG rendered as an `<img>` + a coordinate grid), the
+shared vocabulary + a chat on the right. Each turn the model sees the current
+source, the lints, the vocabulary, and your message, and rewrites the whole
+SVG (a broken reply auto-heals once, else the good source is kept). That loop
+is a web affordance, not an MCP verb — from MCP you drive the same data with
+`put`/`edit`. See `precis-figure-svg` for how to author clean SVG.

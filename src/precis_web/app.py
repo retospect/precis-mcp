@@ -83,6 +83,7 @@ def create_app(
         drafts,
         drive,
         env,
+        figure,
         flags,
         items,
         needs_you,
@@ -116,6 +117,7 @@ def create_app(
     app.include_router(clusters.router)
     app.include_router(structure.router)
     app.include_router(cad.router)
+    app.include_router(figure.router)
     app.include_router(alerts.router)
     app.include_router(agentlogs.router)
     app.include_router(preview.router)

@@ -60,6 +60,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "part",
         "datasheet",
         "plan",
+        "figure",
     }
 )
 
