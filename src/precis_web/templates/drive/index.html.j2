@@ -28,6 +28,17 @@
           <option value="draft">Draft (document)</option>
         </select>
       </div>
+      {# Draft genre: only /drafts/new consumes `doctype`; hidden for cad/structure.
+         Options come from the same _DOC_TYPES source the /drafts page renders. #}
+      <div x-show="kind === 'draft'">
+        <label class="block text-xs font-medium text-slate-600 mb-1">Type</label>
+        <select name="doctype"
+                class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm bg-white">
+          {% for d in doctypes %}
+          <option value="{{ d.value }}"{% if d.default %} selected{% endif %}>{{ d.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
       <div>
         <label class="block text-xs font-medium text-slate-600 mb-1">Title <span class="text-rose-500">*</span></label>
         <input name="title" required autocomplete="off" x-init="$el.focus()"

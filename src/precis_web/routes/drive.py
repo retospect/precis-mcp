@@ -26,6 +26,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, Response
 
 from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
+from precis_web.routes.drafts import _DOC_TYPES
 from precis_web.timefmt import ago as _ago
 
 router = APIRouter(prefix="/drive", tags=["drive"])
@@ -70,6 +71,17 @@ def _artifact_kinds(request: Request) -> list[str]:
     except Exception:
         log.debug("drive: hub artifact-kind introspection failed", exc_info=True)
         return ["draft", "structure", "cad", "todo"]
+
+
+def _doctypes() -> list[dict[str, Any]]:
+    """Draft genres for the "+ New" dropdown's ``doctype`` picker, from the
+    single-source ``_DOC_TYPES`` list the ``/drafts`` page also renders (so
+    adding a genre there lands here too). ``default`` marks the pre-selected
+    option, matching ``/drafts/new``'s ``doctype`` form default."""
+    return [
+        {"value": d["value"], "label": d["label"], "default": d["value"] == "paper"}
+        for d in _DOC_TYPES
+    ]
 
 
 def _folder_tree(store: Any) -> list[dict[str, Any]]:
@@ -217,6 +229,7 @@ async def drive_index(request: Request) -> HTMLResponse:
         "crumbs": [],
         "children": [],
         "unfiled": _unfiled(store, _artifact_kinds(request)),
+        "doctypes": _doctypes(),
     }
     return templates.TemplateResponse(request, "drive/index.html.j2", ctx)
 
@@ -238,6 +251,7 @@ async def drive_folder(request: Request, ref_id: int) -> HTMLResponse:
             "crumbs": [],
             "children": [],
             "unfiled": _unfiled(store, _artifact_kinds(request)),
+            "doctypes": _doctypes(),
             "notice": f"folder #{ref_id} not found (deleted?)",
         }
         return templates.TemplateResponse(request, "drive/index.html.j2", ctx)
@@ -248,6 +262,7 @@ async def drive_folder(request: Request, ref_id: int) -> HTMLResponse:
         "crumbs": _breadcrumb(store, ref_id),
         "children": _children(store, ref_id),
         "unfiled": [],
+        "doctypes": _doctypes(),
     }
     return templates.TemplateResponse(request, "drive/index.html.j2", ctx)
 

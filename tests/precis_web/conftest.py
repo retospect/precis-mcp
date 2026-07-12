@@ -569,8 +569,9 @@ class FakeStore:
         """Canned cross-kind hits for the /items page — one paper + one
         web ref, filtered to the requested kinds. Tests override the raw
         triples via ``self.cross_kind_hits`` and read the applied tag
-        filter via ``self.search_tags``."""
+        filter via ``self.search_tags`` / kind set via ``self.search_kinds``."""
         self.search_tags = _kw.get("tags")
+        self.search_kinds = list(kinds)
         hits = getattr(self, "cross_kind_hits", None)
         if hits is None:
             pref = make_ref(id=10, kind="paper", slug="smith2024", title="A paper")

@@ -38,9 +38,12 @@ def _tag_filter_string(ns: str, value: str) -> str:
 
 
 #: Default kind set when the query doesn't name any — the block-searchable
-#: *source* kinds (ingested documents + cached external answers). Kinds
-#: with no embedded chunks contribute nothing, so an over-broad list is
-#: harmless; the coupled taxonomy audit will formalise this set.
+#: kinds: ingested documents, cached external answers, and the authored /
+#: reflective notes (``memory`` — the reviewer digests and the dream
+#: ``DREAM:*`` speculations, whose ``memory_body`` chunk is embedded like a
+#: source doc). Kinds with no embedded chunks contribute nothing, so an
+#: over-broad list is harmless; the coupled taxonomy audit will formalise
+#: this set.
 _DEFAULT_SOURCE_KINDS: tuple[str, ...] = (
     "paper",
     "patent",
@@ -56,6 +59,7 @@ _DEFAULT_SOURCE_KINDS: tuple[str, ...] = (
     "semanticscholar",
     "oracle",
     "math",
+    "memory",
 )
 
 #: Results per page.

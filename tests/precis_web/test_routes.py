@@ -20,6 +20,20 @@ def test_healthz(client) -> None:
     assert client.get("/healthz").json() == {"status": "ok"}
 
 
+def test_drive_new_dropdown_offers_draft_doctype(client) -> None:
+    """The Drive '+ New' dropdown lets you pick the draft genre (patent /
+    proposal / …), fed from the same ``_DOC_TYPES`` source the /drafts page
+    renders — so a draft born here lands the right ``doctype`` at
+    ``/drafts/new`` instead of silently defaulting to 'paper'."""
+    r = client.get("/drive")
+    assert r.status_code == 200
+    # the doctype select, shown only for draft kind, with genres present.
+    assert 'name="doctype"' in r.text
+    assert "x-show=\"kind === 'draft'\"" in r.text
+    assert "Patent application" in r.text
+    assert "System / manufacturing spec" in r.text
+
+
 def test_pres_editor_routes_registered(client) -> None:
     """The pres slide-deck editor wires four endpoints (reader / pdf /
     bibtex / edit). Guards the app-factory registration + path shapes."""
@@ -398,6 +412,21 @@ def test_items_kind_checkboxes_and_cookie(client) -> None:
     client.get("/items?submitted=1&k=paper", follow_redirects=False)
     resp3 = client.get("/items")
     assert '["paper"]' in resp3.text  # x-data seed reflects the remembered set
+
+
+def test_items_includes_memory_kind(runtime, client) -> None:
+    """Memories (reviewer digests + ``DREAM:*`` dream speculations, stored
+    as the ``memory`` kind with an embedded body chunk) are a default,
+    selectable kind on /items — a fresh visit searches/browses them too."""
+    from precis_web.routes.items import _DEFAULT_SOURCE_KINDS
+
+    assert "memory" in _DEFAULT_SOURCE_KINDS
+    # renders as a checkbox chip (kind_defs seed) on a fresh visit...
+    resp = client.get("/items")
+    assert '"memory"' in resp.text
+    # ...and a query passes it through to the cross-kind search primitive.
+    client.get("/items?q=anything")
+    assert "memory" in runtime.store.search_kinds
 
 
 def test_items_tag_suggest_endpoint(client) -> None:
