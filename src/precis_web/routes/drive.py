@@ -284,6 +284,9 @@ _NEW_STARTERS = {
         },
         f"/structure/{slug}",
     ),
+    # A figure is born with a default empty canvas (no starter source needed);
+    # the operator then draws it in the /figure turn loop.
+    "figure": lambda slug: ("figure", {"id": slug}, f"/figure/{slug}"),
 }
 
 

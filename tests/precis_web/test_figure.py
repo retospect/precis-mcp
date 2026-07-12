@@ -107,3 +107,36 @@ def test_turn_route_rejects_empty(fig_client, runtime_with_store) -> None:
     _seed(runtime_with_store, slug="web_empty")
     r = fig_client.post("/figure/web_empty/turn", data={"message": "   "})
     assert r.status_code == 400
+
+
+# ── creation from the UI (Drive "+ New" + the /figure button) ────────────
+
+
+def test_list_has_new_figure_button(client: TestClient) -> None:
+    r = client.get("/figure")
+    assert r.status_code == 200
+    assert "New figure" in r.text
+    assert 'action="/drive/new"' in r.text  # the DRY create path
+
+
+def test_drive_dropdown_offers_figure(fig_client) -> None:
+    r = fig_client.get("/drive")
+    assert r.status_code == 200
+    assert 'value="figure"' in r.text
+
+
+def test_drive_new_creates_figure_and_redirects(fig_client, runtime_with_store) -> None:
+    from precis.handlers.figure import FigureHandler
+
+    r = fig_client.post(
+        "/drive/new",
+        data={"kind": "figure", "title": "My Sketch"},
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 303)
+    loc = r.headers["location"]
+    assert loc.startswith("/figure/")
+    slug = loc.rsplit("/", 1)[-1]
+    # the figure now really exists with a default canvas
+    body = FigureHandler(hub=runtime_with_store.hub).get(id=slug).body
+    assert "SVG source" in body
