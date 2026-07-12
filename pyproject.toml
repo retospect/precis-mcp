@@ -104,6 +104,18 @@ dependencies = [
     # so it's a direct dep, like numpy/ftfy/watchdog above. (Was in the
     # heavy ``[paper]`` extra, which broke host test collection.)
     "pysbd>=0.3.4",
+    # Retry/backoff decorators (S2 + CrossRef + OpenAlex fetch paths).
+    # Pure-Python, tiny, no compiled deps — BUT applied as ``@retry(...)``
+    # decorators at module top in ``workers/fetch_oa.py``, which
+    # ``cli.main`` imports eagerly (via ``cli.fetch_openalex``) to build
+    # the arg parser. So *any* ``precis`` entrypoint — including the
+    # torch-free ``serve-embeddings`` in its slim venv — imports it at
+    # startup. Gating it behind ``[paper]`` crash-looped the embedder
+    # service cluster-wide (ModuleNotFoundError: tenacity → serve exits
+    # 1 → every node's embedder dead → the embed worker crash-loops).
+    # Same reasoning as ``pysbd`` above: a top-of-module import on an
+    # always-on path is a core dep, not an extra.
+    "tenacity>=8.0",
 ]
 
 [project.urls]
@@ -152,7 +164,10 @@ paper = [
     "rapidfuzz>=3.0",       # title/author fuzzy match in verify_metadata
     "habanero>=2.0",        # CrossRef REST client
     "semanticscholar>=0.8", # Semantic Scholar REST client
-    "tenacity>=8.0",        # retry decorator on the S2 + CrossRef paths
+    # NOTE: ``tenacity`` moved to the core ``dependencies`` block — its
+    # ``@retry`` decorators run at import of ``workers/fetch_oa`` (on the
+    # always-on ``cli.main`` parser-build path), so gating it here broke
+    # the torch-free ``serve-embeddings`` venv. See the core-deps note.
     # NOTE: ``pysbd`` moved to the core ``dependencies`` block — it is a
     # pure-Python ~50 KB rules engine imported at module top by
     # ``utils/sentences`` (verifier + chunker fallback), so gating it

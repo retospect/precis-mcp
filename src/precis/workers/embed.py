@@ -78,10 +78,28 @@ class EmbedHandler(WorkerHandler):
     def name(self) -> str:
         """Human-friendly handler label (``embed:<model>``), derived
         from :attr:`model_name` (and thus equally lazy) unless an
-        explicit label was set."""
+        explicit label was set.
+
+        ``name`` is a **log/label** accessor and MUST NOT raise. It is
+        evaluated all over the runner's error-handling paths —
+        ``run_handler_once``'s ``EmbedderUnavailable`` defer branch and
+        ``run_loop``'s catch-all ``log.exception(..., handler.name)``.
+        Resolving :attr:`model_name` does a live ``GET /model`` round-trip
+        (cached after first success); when the embedder is *down* that
+        round-trip raises ``EmbedderUnavailable``. If that propagated out
+        of the runner's ``except`` block it would escape ``run_loop`` and
+        **crash-loop the whole worker** — exactly the incident this guard
+        prevents (a down embedder must degrade the embed pass, never take
+        down summarize / dispatch / nursery with it). So fall back to a
+        static label until the embedder is reachable; the real
+        ``embed:<model>`` label reappears once ``model_name`` resolves.
+        """
         if self._name_override is not None:
             return self._name_override
-        return f"embed:{self.model_name}"
+        try:
+            return f"embed:{self.model_name}"
+        except EmbedderUnavailable:
+            return "embed:<embedder-unavailable>"
 
     @name.setter
     def name(self, value: str) -> None:

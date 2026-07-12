@@ -156,6 +156,52 @@ class TestRunHandlerOnce:
         assert n == (0,)
         assert len(chunk_ids) == 3
 
+    def test_name_never_raises_when_embedder_down(self):
+        """``EmbedHandler.name`` must degrade, not raise, on a down embedder.
+
+        ``name`` is evaluated all over the runner's error-logging paths.
+        Resolving it does a live ``GET /model`` round-trip which raises
+        ``EmbedderUnavailable`` when the service is down. If that escaped,
+        it would take out ``run_loop`` — the real incident where the
+        caspar / spark / balthazar system workers crash-looped ~118×/h,
+        which stalled ``dispatch`` and left planner todos un-spawned.
+        """
+        from precis.embedder import EmbedderUnavailable
+
+        class _DownEmbedder:
+            @property
+            def model(self) -> str:
+                raise EmbedderUnavailable("all embedder endpoints failed")
+
+        h = EmbedHandler(_DownEmbedder())  # type: ignore[arg-type]
+        # The label must resolve to a static fallback — never raise.
+        assert h.name == "embed:<embedder-unavailable>"
+
+    def test_down_embedder_does_not_escape_run_loop(self, store):
+        """Regression: a fully-down embedder must not crash the worker.
+
+        With the embedder down from boot, ``claim_batch`` raises
+        ``EmbedderUnavailable`` (its ``artifact`` param is ``model_name``,
+        a live ``/model`` round-trip). ``run_loop`` catches it and logs
+        with ``handler.name`` — which *itself* re-hit the dead embedder
+        and re-raised, escaping the loop and exiting the process (status
+        1) → launchd/systemd restart → crash loop. ``run_loop`` must now
+        absorb the batch and return cleanly.
+        """
+        from precis.embedder import EmbedderUnavailable
+
+        seed_chunks(store, ["a", "b", "c"])
+
+        class _FullyDownEmbedder:
+            @property
+            def model(self) -> str:
+                raise EmbedderUnavailable("all embedder endpoints failed")
+
+        h = EmbedHandler(_FullyDownEmbedder())  # type: ignore[arg-type]
+        # Must return, not raise/exit. Before the fix this propagated
+        # EmbedderUnavailable out of run_loop.
+        run_loop([h], store, once=True, idle_seconds=0.0)
+
     def test_failed_chunk_not_re_claimed(self, store):
         _ref_id, [chunk_id] = seed_chunks(store, ["a"])
         h = _CountingEmbedHandler(fail_on={chunk_id})

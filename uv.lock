@@ -2791,6 +2791,7 @@ dependencies = [
     { name = "pylatexenc" },
     { name = "pysbd" },
     { name = "pyyaml" },
+    { name = "tenacity" },
     { name = "watchdog" },
 ]
 
@@ -2815,7 +2816,6 @@ all = [
     { name = "semanticscholar" },
     { name = "sentence-transformers" },
     { name = "sympy" },
-    { name = "tenacity" },
     { name = "trafilatura" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "wolframalpha" },
@@ -2862,7 +2862,6 @@ paper = [
     { name = "pymupdf" },
     { name = "rapidfuzz" },
     { name = "semanticscholar" },
-    { name = "tenacity" },
 ]
 patent = [
     { name = "lxml" },
@@ -2937,7 +2936,7 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'embed'", specifier = ">=3.0" },
     { name = "spglib", marker = "extra == 'dft'", specifier = ">=2.1" },
     { name = "sympy", marker = "extra == 'calc'", specifier = ">=1.12" },
-    { name = "tenacity", marker = "extra == 'paper'", specifier = ">=8.0" },
+    { name = "tenacity", specifier = ">=8.0" },
     { name = "trafilatura", marker = "extra == 'external'", specifier = ">=1.6" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = ">=0.29" },
     { name = "watchdog", specifier = ">=4.0" },
