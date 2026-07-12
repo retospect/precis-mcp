@@ -18,8 +18,9 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
+from precis.store.types import Tag
 from precis.utils.embed_query import embed_query
 from precis_web import draft_eyes, smartdraft
 from precis_web.deps import get_runtime, get_store, templates
@@ -171,3 +172,65 @@ def _needs_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
 
 def _ref_view(ref: Any) -> dict[str, Any]:
     return {"id": ref.id, "title": getattr(ref, "title", None) or f"draft {ref.id}"}
+
+
+def _chunk_tags(store: Any, chunk_id: int) -> list[str]:
+    """The tag values on one chunk (for the write path's echo-back)."""
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT t.value FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id "
+                "WHERE ct.chunk_id = %s ORDER BY t.value",
+                (chunk_id,),
+            ).fetchall()
+    except Exception:
+        return []
+    return [str(r[0]) for r in rows]
+
+
+@router.post("/smartdraft/{ident}/chunk-tag")
+async def chunk_tag(request: Request, ident: str) -> JSONResponse:
+    """Add / remove a **chunk-level** tag (the ``T`` search signal). Body
+    ``{handle: 'dc<id>', add?: str, remove?: str}``. Tags are free-form (OPEN
+    namespace, lowercased). Returns the chunk's current tag values."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad body"}, status_code=400)
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    rh = store.resolve_handle(str(payload.get("handle") or ""))
+    if rh is None or rh.chunk_ord is None or int(rh.ref_id) != ref.id:
+        return JSONResponse({"ok": False, "error": "chunk not found"}, status_code=404)
+    add = str(payload.get("add") or "").strip()
+    remove = str(payload.get("remove") or "").strip()
+    if add:
+        store.add_tag(ref.id, Tag.open(add), pos=rh.chunk_ord)
+    if remove:
+        store.remove_tag(ref.id, Tag.open(remove), pos=rh.chunk_ord)
+    return JSONResponse({"ok": True, "tags": _chunk_tags(store, int(rh.chunk_id))})
+
+
+@router.get("/smartdraft/{ident}/tag-suggest")
+async def tag_suggest(request: Request, ident: str, q: str = "") -> JSONResponse:
+    """Type-ahead: existing tag values on this draft matching ``q`` — so you
+    reuse tags you've already applied rather than re-inventing them."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    query = q.strip()
+    if ref is None or len(query) < 2:
+        return JSONResponse({"tags": []})
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT t.value FROM tags t "
+                "JOIN chunk_tags ct ON ct.tag_id = t.tag_id "
+                "JOIN chunks c ON c.chunk_id = ct.chunk_id "
+                "WHERE c.ref_id = %s AND t.value ILIKE %s ORDER BY t.value LIMIT 10",
+                (ref.id, f"%{query}%"),
+            ).fetchall()
+    except Exception:
+        return JSONResponse({"tags": []})
+    return JSONResponse({"tags": [str(r[0]) for r in rows]})

@@ -273,6 +273,29 @@ def test_focus_carries_a_content_sha_and_is_editable(hub) -> None:
     assert view.focus.editable  # a paragraph is inline-editable
 
 
+def test_chunk_tag_round_trips_and_feeds_the_T_signal(hub) -> None:
+    from precis.store.types import Tag
+
+    store = hub.store
+    ref_id = _seed_draft(store, regimes=[["a"], ["b"]])
+    body = next(c for c in store.reading_order(ref_id) if c.chunk_kind != "heading")
+    dc = handle_registry.format_handle("draft", body.chunk_id, chunk=True)
+    rh = store.resolve_handle(dc)
+    store.add_tag(ref_id, Tag.open("important"), pos=rh.chunk_ord)
+
+    nodes = build_view(store, ref_id).nodes
+    tagged = next(n for n in nodes if n.chunk_id == body.chunk_id)
+    assert "important" in tagged.tags  # loads into the T signal
+    hits = search_chunks(nodes, "important", active={"v", "k", "t"})
+    assert any(h.t and h.node.chunk_id == body.chunk_id for h in hits)
+
+    store.remove_tag(ref_id, Tag.open("important"), pos=rh.chunk_ord)
+    nodes2 = build_view(store, ref_id).nodes
+    assert (
+        "important" not in next(n for n in nodes2 if n.chunk_id == body.chunk_id).tags
+    )
+
+
 def test_build_view_marks_a_pinned_chunk(hub) -> None:
     store = hub.store
     ref_id = _seed_draft(store, regimes=[["alpha"], ["beta"]])

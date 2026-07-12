@@ -143,6 +143,20 @@
               <span class="text-[11px] text-rose-600" x-show="msg" x-text="msg"></span>
             </div>
           </div>
+          {# tag row (the T search signal) — chips + type-ahead add #}
+          <div x-show="!editing" class="mt-2 flex flex-wrap items-center gap-1 border-t border-amber-100 pt-1.5 text-[10px]">
+            <span class="text-slate-400">🏷</span>
+            {% for tag in n.tags %}
+            <span class="inline-flex items-center gap-0.5 rounded bg-teal-100 px-1 text-teal-700">{{ tag }}<button onclick="smartTagRemove('{{ n.dc }}', {{ tag | tojson }})" class="hover:text-rose-600" title="remove tag">&times;</button></span>
+            {% endfor %}
+            <span class="relative" x-data="smartTagInput('{{ n.dc }}')">
+              <input x-model="v" @input.debounce.200ms="suggest()" @keydown.enter.prevent="add()" @keydown.escape="items=[]"
+                     placeholder="+tag" class="w-14 rounded border border-slate-200 px-1 py-0.5 focus:w-28 focus:border-teal-400 focus:outline-none">
+              <div x-show="items.length" x-cloak class="absolute left-0 top-full z-50 mt-0.5 min-w-[6rem] rounded border border-slate-200 bg-white shadow-lg">
+                <template x-for="s in items" :key="s"><button type="button" @click="v = s; add()" class="block w-full whitespace-nowrap px-1.5 py-0.5 text-left text-teal-700 hover:bg-teal-50" x-text="s"></button></template>
+              </div>
+            </span>
+          </div>
         </div>
         {% elif m.mode == 'doc' %}
         {# full-doc mode: every chunk verbatim, plain (focus is the amber box above) #}
@@ -322,6 +336,30 @@ function smartClearPins() {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ op: 'clear' }),
   }).then(() => location.reload()).catch(() => {});
+}
+// Chunk tags (the T search signal). Add/remove reload so the chip + search reflect it.
+function _chunkTag(dc, body) {
+  fetch(`/smartdraft/{{ ident }}/chunk-tag`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({ handle: dc }, body)),
+  }).then(() => location.reload()).catch(() => {});
+}
+function smartTagAdd(dc, tag) { if (tag && tag.trim()) _chunkTag(dc, { add: tag.trim() }); }
+function smartTagRemove(dc, tag) { _chunkTag(dc, { remove: tag }); }
+function smartTagInput(dc) {
+  return {
+    dc, v: '', items: [],
+    async suggest() {
+      const q = this.v.trim();
+      if (q.length < 2) { this.items = []; return; }
+      try {
+        const r = await fetch(`/smartdraft/{{ ident }}/tag-suggest?q=` + encodeURIComponent(q));
+        const d = await r.json();
+        this.items = (d.tags || []).filter((t) => t !== this.v);
+      } catch (e) { this.items = []; }
+    },
+    add() { const t = this.v.trim(); if (t) smartTagAdd(this.dc, t); },
+  };
 }
 
 // Inline text edit of the focus para — saves through the shipped
