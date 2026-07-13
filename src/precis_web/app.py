@@ -59,6 +59,16 @@ def create_app(
     if runtime is not None:
         app.state.runtime = runtime
 
+    # Gzip every response the client accepts (Starlette negotiates + sets
+    # Vary: Accept-Encoding). The reader HTML is highly repetitive — a
+    # 10k-block draft's ~2 MB page compresses ~10× on the wire — and uvicorn
+    # serves it raw with no proxy in front, so this is the single biggest
+    # transfer win and it applies to every page. minimum_size skips tiny bodies
+    # where the gzip header would cost more than it saves.
+    from starlette.middleware.gzip import GZipMiddleware
+
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
+
     register_error_handlers(app)
 
     # Self-hosted front-end assets under static/ (tailwind.css — a prebuilt
