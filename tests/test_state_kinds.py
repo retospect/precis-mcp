@@ -1,4 +1,4 @@
-"""Tests for the slimmer phase-5 state kinds (gripe, flashcard, oracle, conv).
+"""Tests for the slimmer phase-5 state kinds (gripe, oracle, conv).
 
 Heavy lifting (CRUD shape) lives in `_NumericRefHandler`, exercised
 already via `test_memory.py` and `test_todo.py`. These tests verify
@@ -8,14 +8,11 @@ addressing, view paths.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-
 import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.conversation import ConversationHandler
-from precis.handlers.flashcard import FlashcardHandler
 from precis.handlers.gripe import GripeHandler
 from precis.handlers.job import JobHandler
 from precis.handlers.oracle import OracleHandler
@@ -160,58 +157,6 @@ class TestJob:
         handler = JobHandler.__new__(JobHandler)
         with pytest.raises(BadInput, match="fix_gripe requires link"):
             handler.put(job_type="fix_gripe")
-
-
-# ── FlashcardHandler ────────────────────────────────────────────────
-
-
-class TestFlashcard:
-    @pytest.fixture
-    def fc(self, hub: Hub) -> FlashcardHandler:
-        return FlashcardHandler(hub=hub)
-
-    def test_create_and_read(self, fc: FlashcardHandler) -> None:
-        r = fc.put(text="Paris is the capital of France")
-        fc_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
-        out = fc.get(id=fc_id)
-        assert "Paris" in out.body
-        assert "flashcard" in out.body
-
-    def test_due_view_includes_untouched(self, fc: FlashcardHandler) -> None:
-        """Cards without next_review meta count as due (never reviewed)."""
-        fc.put(text="card A")
-        fc.put(text="card B")
-        out = fc.get(id="/due")
-        assert "2 flashcard(s) due" in out.body
-        assert "card A" in out.body
-        assert "card B" in out.body
-
-    def test_due_view_filters_future_review(self, fc: FlashcardHandler) -> None:
-        fc.put(text="card-due")
-        fc.put(text="card-far-future")
-        refs = fc.store.list_refs(kind="flashcard", limit=10)
-        # Set far-future review on the second card.
-        far = (datetime.now(UTC) + timedelta(days=30)).isoformat()
-        far_card = next(r for r in refs if "far-future" in r.title)
-        fc.store.update_ref(far_card.id, meta_patch={"next_review": far})
-
-        out = fc.get(id="/due")
-        assert "card-due" in out.body
-        # The far-future card shouldn't be in either due or upcoming.
-        assert "far-future" not in out.body
-
-    def test_upcoming_within_3_days(self, fc: FlashcardHandler) -> None:
-        fc.put(text="card-soon")
-        ref = fc.store.list_refs(kind="flashcard", limit=10)[0]
-        soon = (datetime.now(UTC) + timedelta(days=2)).isoformat()
-        fc.store.update_ref(ref.id, meta_patch={"next_review": soon})
-        out = fc.get(id="/due")
-        assert "card-soon" in out.body
-        assert "due within 3 days" in out.body
-
-    def test_due_empty(self, fc: FlashcardHandler) -> None:
-        out = fc.get(id="/due")
-        assert "no flashcards due" in out.body
 
 
 # ── OracleHandler — slug-addressed, read-only ────────────────────────

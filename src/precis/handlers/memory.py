@@ -1,7 +1,7 @@
 """MemoryHandler — capture notes, decisions, ideas, questions.
 
 Numeric-id ref kind. Subclasses :class:`NumericRefHandler` — the shared
-CRUD shape lives in one place across memory / todo / gripe / flashcard / conv.
+CRUD shape lives in one place across memory / todo / gripe / anki / conv.
 
 Storage (migration 0050): a memory's **prose lives in a ``memory_body``
 chunk**, and ``refs.title`` holds a short **title** — the header. This is

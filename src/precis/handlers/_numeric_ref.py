@@ -1,7 +1,7 @@
 """Shared base class for numeric-id ref kinds.
 
-Memory was the first instance; phase 5 brings four more (todo, gripe,
-flashcard, conv) plus a couple of slug variants. The CRUD shape is
+Memory was the first instance; more followed (todo, gripe,
+anki, conv) plus a couple of slug variants. The CRUD shape is
 nearly identical for all of them — only the kind name, default tags,
 landing/list views, and a small render hook differ.
 
@@ -22,8 +22,8 @@ Subclass contract:
         _list_view(view)                   — handle path views like '/recent'
 
 The base provides ``get`` / ``search`` / ``put`` exactly as v1's
-MemoryHandler did. Subclasses that need fancier behaviour (e.g. `flashcard`'s
-spaced-repetition scheduling) override the relevant hook.
+MemoryHandler did. Subclasses that need fancier behaviour (e.g. `anki`'s
+cloze-markup handling) override the relevant hook.
 """
 
 from __future__ import annotations
@@ -112,7 +112,7 @@ def _extract_summary(body: str) -> tuple[str, int]:
 
 
 class NumericRefHandler(Handler):
-    """Base class for numeric-id ref kinds (memory, todo, gripe, flashcard, …)."""
+    """Base class for numeric-id ref kinds (memory, todo, gripe, anki, …)."""
 
     spec: ClassVar[KindSpec]
     kind: ClassVar[str]
@@ -132,6 +132,20 @@ class NumericRefHandler(Handler):
     #: ``memory`` for the dreaming capability (see
     #: docs/design/dreaming.md); widen to other note-like kinds later.
     emits_card: ClassVar[bool] = False
+
+    #: Create-time hooks (default: identity / empty). A subclass that stores
+    #: structured state alongside the body — e.g. ``anki`` keeps the Anki note
+    #: shape (notetype/deck/fields) in ``meta`` and embeds a markup-stripped
+    #: card — overrides these instead of reimplementing the atomic ``_create``
+    #: transaction (tags + link + card all land together or roll back).
+    def _initial_meta(self, text: str) -> dict[str, Any]:
+        """Meta JSON stamped on the ref at put-create. Default: empty."""
+        return {}
+
+    def _card_combined_text(self, text: str) -> str:
+        """Text embedded into the ``card_combined`` search chunk. Default:
+        the body verbatim. ``anki`` strips ``{{cN::…}}`` cloze markup here."""
+        return text
 
     #: When True, put-create (and the subclass's ``edit``) resolves every
     #: ``kind:ref`` handle in the body and materialises ``related-to``
@@ -225,10 +239,11 @@ class NumericRefHandler(Handler):
                 return list_resp
             # Enumerate the actual list views this handler supports
             # rather than pointing at a per-kind help skill that may
-            # not exist (e.g. ``precis-flashcard-help``). The MCP
-            # critic flagged the dangling reference as MINOR #5: a
-            # caller who follows the "see precis-flashcard-help"
-            # hint dead-ends because the skill file was never written.
+            # not exist (e.g. a ``precis-<kind>-help`` for a kind that
+            # never got one). The MCP critic flagged the dangling
+            # reference as MINOR #5: a caller who follows a
+            # "see precis-<kind>-help" hint dead-ends because the skill
+            # file was never written.
             # Always spell the supported views inline so the agent has
             # a working recovery path. (Critic MINOR #5.)
             views = self._supported_list_views()
@@ -886,7 +901,7 @@ class NumericRefHandler(Handler):
                 kind=self.kind,
                 slug=None,
                 title=text,
-                meta={},
+                meta=self._initial_meta(text),
                 auto_refresh_days=auto_refresh_days,
                 conn=conn,
             )
@@ -917,7 +932,9 @@ class NumericRefHandler(Handler):
             if self.emits_card:
                 # Emit the embeddable card in the same tx as the ref
                 # insert so the embed worker can vectorize it lazily.
-                self.store.upsert_card_combined(ref.id, text, conn=conn)
+                self.store.upsert_card_combined(
+                    ref.id, self._card_combined_text(text), conn=conn
+                )
             if self.autolink_mentions:
                 self._sync_mention_links(ref.id, text, conn=conn)
         return self._with_first_line_nudge(self._render_create_ack(ref.id), text)
@@ -1338,7 +1355,7 @@ class NumericRefHandler(Handler):
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         """Default single-ref view: id header + body + tag line.
 
-        Subclasses with richer body shape (e.g. flashcard's Q/A pair) override.
+        Subclasses with a richer body shape override.
         """
         out = [f"# {self._sense()} {ref.id}", "", ref.title]
         if tags:
@@ -1364,8 +1381,8 @@ class NumericRefHandler(Handler):
             this stale?" at a glance; a re-tag/edit bumps it back to 0.
 
         Body source is ``ref.title`` for numeric-ref kinds (memory,
-        todo, gripe-body, flashcard-question). Side chunks (gripe comments,
-        flashcard answers) aren't included — they show up on the get= fetch.
+        todo, gripe-body). Side chunks (gripe comments) aren't
+        included — they show up on the get= fetch.
         2026-06-13 redesign per "scan in one glance" SOUL guidance.
         """
         from precis.format import render_agent_table
@@ -1399,8 +1416,8 @@ class NumericRefHandler(Handler):
 
         Default shape: ``created <kind> id=N.`` + TOON Next: trailer
         listing one or two useful follow-ups. Uses ``self.kind`` (the
-        kwarg spelling, e.g. ``flashcard``) — *not* ``self._sense()`` (the
-        prose noun, e.g. ``flashcard``) — so the header matches the
+        kwarg spelling, e.g. ``anki``) — *not* ``self._sense()`` (the
+        prose noun, e.g. ``anki card``) — so the header matches the
         kwarg agents pass on put/tag/link/get. Broad-pass finding #9.
 
         Subclasses override to add kind-specific hints (e.g. todo's
@@ -1440,13 +1457,13 @@ class NumericRefHandler(Handler):
 
         Used by the unsupported-view error path to surface a working
         list of recovery options (the MCP critic flagged a dangling
-        ``see precis-flashcard-help`` hint pointing at a skill file that
+        ``see precis-<kind>-help`` hint pointing at a skill file that
         doesn't exist; enumerating views inline avoids that whole
         class of bug).
 
         Subclasses extending ``_list_view`` should override this and
         include any kind-specific names they handle (todo: ``open``,
-        ``done``, …; flashcard: ``due``). The base class only ships
+        ``done``, …). The base class only ships
         ``recent``.
         """
         return ("recent",)
@@ -1466,7 +1483,7 @@ class NumericRefHandler(Handler):
 
         Default returns the most recent 20 refs in reverse-chronological
         order. Subclasses with richer list semantics (todo's open /
-        blocked / done filters; flashcard's due) override.
+        blocked / done filters) override.
 
         Returning ``None`` means "I don't recognize this view" — the
         base then raises ``Unsupported``.

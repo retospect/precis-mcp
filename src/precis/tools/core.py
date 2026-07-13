@@ -875,7 +875,7 @@ def delete(
 ) -> str:
     """Delete a ref or addressed region.
 
-    Numeric-ref kinds (memory, todo, gripe, flashcard, conv):
+    Numeric-ref kinds (memory, todo, gripe, anki, conv):
     soft-delete the ref (recoverable at SQL layer).
 
     File kinds with selector in `id=` (markdown, plaintext, tex,
@@ -910,7 +910,7 @@ def tag(
     Per-kind closed-prefix gating (summary):
     todo: STATUS+PRIO+LLM+AUDIT. gripe: STATUS+PRIO.
     finding: STATUS+AUDIT. job: STATUS (lifecycle subsets).
-    memory: DREAM (dreaming-worker provenance). flashcard/conv: none.
+    memory: DREAM (dreaming-worker provenance). anki/conv: none.
     paper/patent: SRC+CACHE.
     web/perplexity-research/perplexity-reasoning/websearch/youtube:
     CACHE+WATCH. oracle/skill: none. python/calc/math: tag unsupported.

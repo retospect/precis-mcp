@@ -184,7 +184,7 @@ class Ref:
     ``migrations/0001_initial.sql``). ``slug`` is populated by a
     correlated subquery against ``ref_identifiers`` with
     ``id_kind='cite_key'`` — the convention every slug-addressed kind
-    uses in v2 per ADR 0008. Numeric kinds (memory/todo/gripe/flashcard)
+    uses in v2 per ADR 0008. Numeric kinds (memory/todo/gripe/anki)
     have no ``ref_identifiers`` row so ``slug`` is ``None``.
     """
 
@@ -755,9 +755,9 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # DREAM: — provenance for agent-authored (dreamed) memories
     # (consolidated survivors + speculative inspirations).
     "memory": frozenset({"DREAM"}),
-    # Flashcard doesn't use STATUS (review state lives elsewhere —
-    # EASE/DUE on blocks in a future phase), nor PRIO.
-    "flashcard": frozenset(),
+    # Anki cloze cards carry no closed axes — Anki owns scheduling, so
+    # there is no STATUS / EASE / DUE review state here.
+    "anki": frozenset(),
     # Conversation refs don't carry closed axes — conversations
     # aren't workflow objects. Any status belongs on the associated
     # todo.

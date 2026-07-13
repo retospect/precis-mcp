@@ -363,7 +363,7 @@ _REFS_BROWSABLE_KINDS: tuple[str, ...] = (
     "job",
     "finding",
     "citation",
-    "flashcard",
+    "anki",
     "perplexity-research",
     "perplexity-reasoning",
     "web",

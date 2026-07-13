@@ -58,19 +58,19 @@ put(kind='gripe',
 
 Gripes feed the retrieval-misses channel; one sentence per gripe.
 
-## Stash a flashcard
-## Create a spaced-repetition card
+## Stash an Anki card
+## Create a spaced-repetition cloze card
 ## How do I queue something to review?
 
 ```python
-put(kind='flashcard',
-    text='Q: What does the bare-DOI form of get(kind=paper) do?\nA: Resolves via metadata, fetches the paper.')
-put(kind='flashcard',
-    text='Q: ...\nA: ...',
+put(kind='anki',
+    text='The bare-DOI form of get(kind=paper) resolves via {{c1::metadata}}, then fetches the paper.')
+put(kind='anki',
+    text='RRF fuses {{c1::lexical}} and {{c2::semantic}} search legs.',
     tags=['topic:precis'])
 ```
 
-Card scheduling follows the SM-2 cadence — see `precis-flashcard-help`.
+Cloze cards (`{{cN::…}}`) sync to AnkiWeb; Anki owns scheduling — see `precis-anki-help`.
 
 ## Record a verified citation
 ## Stamp a claim with a source quote

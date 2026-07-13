@@ -101,7 +101,7 @@ agent-facing copy.
 | patent | `pt` | `pk` | | oracle | `or` | — |
 | news | `nw` | `nc` | | finding | `fi` | `fb` |
 | draft | `dr` | `dc` | | citation | `ci` | — |
-| conv | `co` | `cc` | | flashcard | `fc` | — |
+| conv | `co` | `cc` | | anki | `ak` | — |
 | pres | `pr` | `ps` | | todo | `td` | — |
 | markdown | `md` | `mc` | | job | `jo` | `jc` |
 | plaintext | `pl` | `lc` | | alert | `al` | — |

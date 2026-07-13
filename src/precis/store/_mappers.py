@@ -289,7 +289,7 @@ _CHUNKS_COLS_LEN = 14
 # - ``slug`` is sourced via a correlated subquery against
 #   ``ref_identifiers`` with ``id_kind='cite_key'``. Every
 #   slug-addressed kind stores its agent-facing slug there per ADR
-#   0008. Numeric kinds (memory/todo/gripe/flashcard) have no row and slug
+#   0008. Numeric kinds (memory/todo/gripe/anki) have no row and slug
 #   comes back ``NULL``.
 # - ``corpus_id`` is gone — the v1 corpus isolation didn't survive
 #   the v2 redesign (single-corpus deployment).

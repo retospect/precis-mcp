@@ -63,7 +63,7 @@ a prohibited kind still load — the banner flags the mismatch.
 ```
 
 Note-like kinds (merge applies): `memory`, `gripe`,
-`conversation`, `flashcard`, `todo`, `markdown`,
+`conversation`, `anki`, `todo`, `markdown`,
 `plaintext`, `tex`.
 
 Not note-like (no merge): `paper`, `patent`, `web`, `wolfram`,

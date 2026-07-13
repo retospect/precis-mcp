@@ -186,8 +186,8 @@ def test_note_like_kinds_are_flipped() -> None:
     ``note_like=True`` on its ``KindSpec``. Catches an unintentional
     revert.
     """
+    from precis.handlers.anki import AnkiHandler
     from precis.handlers.conversation import ConversationHandler
-    from precis.handlers.flashcard import FlashcardHandler
     from precis.handlers.gripe import GripeHandler
     from precis.handlers.markdown import MarkdownHandler
     from precis.handlers.memory import MemoryHandler
@@ -199,7 +199,7 @@ def test_note_like_kinds_are_flipped() -> None:
         MemoryHandler,
         TodoHandler,
         GripeHandler,
-        FlashcardHandler,
+        AnkiHandler,
         ConversationHandler,
         MarkdownHandler,
         PlaintextHandler,

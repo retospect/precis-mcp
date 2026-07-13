@@ -63,7 +63,7 @@ name/path.
 | `gripe` | `gr9` (int `9` still resolves) | Annoyance / niggle | store |
 | `alert` | `al38260` (int `38260` still resolves) | Machine-detected ops / health condition (spin loop, orphan, stalled recurring). Raised by background passes, deduped + auto-resolved; surfaced by the `/alerts` web tab, **not** semantic search. See `precis-alert-help`. | store |
 | `agentlog` | `ag38312` (int `38312` still resolves) | Run-attribution record — one per agentic run (plan_tick / operator / chat) that touched the corpus. Carries the assembled prompt + `touched` links to every chunk it wrote; walk a suspicious chunk back to its run. GC'd past a retention window; **not** semantic search. See `precis-agentlog-help`. | store |
-| `flashcard` | `fc204` (int `204` still resolves) | Flashcard (SM-2 spaced rep) | store |
+| `anki` | `ak204` (int `204` still resolves) | Spaced-repetition **cloze** card (`{{c1::…}}`) that lives in the corpus and syncs to AnkiWeb. Anki owns scheduling — no SM-2 here. Supersedes the retired `flashcard`. See `precis-anki-help`. | store |
 | `citation` | `ci18` (int `18` still resolves) | Verified claim → source quote | store |
 | `finding` | `fi73` (int `73` still resolves) | Chain-of-evidence head over a citation chase | store |
 | `orcid` | `orcid:0000-0002-1825-0097` | Researcher identity (ORCID): resolves + stores an author node (dossier), links held works + reports missing ones (LLM-gated `enqueue=`), and is the `authored` link hub. See `precis-orcid-help`, ADR 0039. | `ORCID_CLIENT_ID` |
@@ -128,7 +128,7 @@ Currently TOC-capable: `paper`, `skill`. Other kinds pick up the
 grammar as their handlers wire `chunks_for_toc`.
 
 Three inspection views work on the **numeric-ref kinds** (`todo`,
-`memory`, `gripe`, `finding`, `job`, `flashcard`, `citation`, `folder`,
+`memory`, `gripe`, `finding`, `job`, `anki`, `citation`, `folder`,
 `alert`, `agentlog`, `cron`, `message`): `view='links'` (the link
 graph), `view='log'` (the `ref_events` trail), and `view='raw'` (the
 verbatim record — every column **plus the full `meta` JSON**). Reach for

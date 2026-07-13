@@ -93,7 +93,7 @@ LINKIFY_KINDS: frozenset[str] = frozenset(
         "finding",
         "citation",
         "draft",
-        "flashcard",
+        "anki",
         "perplexity-research",
         "perplexity-reasoning",
         "web",

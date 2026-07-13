@@ -1,14 +1,14 @@
 ---
 id: precis-firstline-help
 title: precis — first-line discipline for numeric-ref kinds
-summary: the first line of a memory/todo/gripe/flashcard is its entire scannable surface — lead with the conclusion, per-shape patterns inside
-applies-to: put (kind='memory'/'todo'/'gripe'/'flashcard')
+summary: the first line of a memory/todo/gripe is its entire scannable surface — lead with the conclusion, per-shape patterns inside
+applies-to: put (kind='memory'/'todo'/'gripe')
 status: active
 ---
 
 # precis-firstline-help — write a first line that gets the note *used*
 
-On any numeric-ref kind (`memory`, `todo`, `gripe`, `flashcard`) the
+On any numeric-ref kind (`memory`, `todo`, `gripe`) the
 **header is the entire scannable surface** — it's what shows in
 `/recent` listings, search hits, the grid, and review tiers. Everything
 else is body you only see after you've already decided to open it.
@@ -48,7 +48,7 @@ put(kind='memory',
 ## Per-shape patterns
 
 Pick the shape that fits, then write the header to match (the memory
-shapes go in `title=`; todo/gripe/flashcard in the first body line):
+shapes go in `title=`; todo/gripe in the first body line):
 
 ```
 shape            header pattern
@@ -60,7 +60,6 @@ memory:ref-anchor <source>: <what's there>
 memory:thought   <the thought, first person>
 todo             imperative + the very next physical action (GTD: next step, not the outcome)
 gripe            symptom first, not cause
-flashcard        the question, verbatim
 ```
 
 ## The actionable axis (for anything that points forward)

@@ -179,7 +179,7 @@ axes and suggests the lowercase rewrite.
 | `paper`, `patent` | `SRC`, `CACHE` |
 | `perplexity-research`, `perplexity-reasoning`, `websearch`, `web`, `youtube` | `CACHE`, `WATCH` |
 | `memory` | `DREAM` (dreaming-worker provenance) |
-| `flashcard`, `conv`, `oracle`, `skill` | _none_ — use lowercase open tags or bare flags |
+| `anki`, `conv`, `oracle`, `skill` | _none_ — use lowercase open tags or bare flags |
 
 Free-form kinds (`memory` etc.) express the same semantics with open
 tags:

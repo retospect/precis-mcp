@@ -21,7 +21,7 @@ region.
 delete(kind='memory', id=42)
 delete(kind='todo', id=122)
 delete(kind='gripe', id=9)
-delete(kind='flashcard', id=204)
+delete(kind='anki', id=204)
 delete(kind='citation', id=18)
 ```
 

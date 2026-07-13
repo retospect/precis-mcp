@@ -43,7 +43,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "oracle",
         "finding",
         "citation",
-        "flashcard",
+        "anki",
         "todo",
         "job",
         "alert",

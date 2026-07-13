@@ -42,7 +42,7 @@ or `id=` and hand back text.
   Freerouting; ADR 0042), `folder` (organizational container for
   the above; ADR 0045).
 - **Personal state & knowledge** — `todo` (hierarchical task tree),
-  `memory`, `gripe`, `flashcard` (SM-2 spaced repetition),
+  `memory`, `gripe`, `anki` (spaced-repetition cloze cards → AnkiWeb),
   `citation` (verified claim → source quote), `finding`
   (chain-of-evidence over a citation chase), `job` (offline LLM run,
   child of a `todo`).
@@ -108,7 +108,7 @@ Extras (each enables its kinds; omit any you don't want):
 | `all`        | `embed` + `paper` + `docx` + `tex` + `calc` + `plot` + `external` + `patent` + `web` + `cad-export`. Excludes the heavy `cad-step`, `dft`, `dft-ml`, `pcb` tiers — install those explicitly. | yes |
 
 A bare `pip install precis-mcp` gives you the state kinds (`todo`,
-`memory`, `gripe`, `flashcard`, `conv`, `oracle`, `skill`,
+`memory`, `gripe`, `anki`, `conv`, `oracle`, `skill`,
 `random`) and the `markdown` / `plaintext` / `python` file kinds.
 (The `tex` file kind also rides on `PRECIS_ROOT`, but its `.tex`
 parsing pulls in the `[tex]` extra's `lxml`.)

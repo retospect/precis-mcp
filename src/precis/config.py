@@ -177,7 +177,7 @@ class PrecisConfig(BaseSettings):
     ``put`` for note-like kinds.
 
     A note-like kind opts in via ``KindSpec.note_like=True``
-    (today: memory, gripe, conv, flashcard, todo, markdown,
+    (today: memory, gripe, conv, anki, todo, markdown,
     plaintext, tex). A ``put`` on such a kind has its ``tags=``
     payload union-merged with the parsed default set, preserving
     the caller's explicit-first ordering. The dispatcher emits a

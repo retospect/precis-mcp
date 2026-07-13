@@ -74,14 +74,13 @@ Default pages return a slice of recent refs. On a large corpus this is
 not "all of them" — use `search` for content-driven discovery.
 
 ## Filter a listing by kind-specific view
-## How do I list only open todos / due flashcards / upcoming crons?
+## How do I list only open todos / recent cards / upcoming crons?
 ## What's the `/<filter>` shape in id=?
 
 ```python
 get(kind='todo', id='/open')        # open + doing + blocked
 get(kind='todo', id='/doing')       # by literal STATUS
 get(kind='todo', id='/done')
-get(kind='flashcard', id='/due')    # SM-2: due now or within 3 days
 get(kind='gripe', id='/wontfix')    # STATUS:wontfix retrospect view
 get(kind='memory', id='/sticky')    # sticky:thread ∪ sticky:global
 get(kind='cron', id='/upcoming')    # next-fire-ordered queue

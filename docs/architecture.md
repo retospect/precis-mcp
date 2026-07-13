@@ -49,7 +49,7 @@ catalogue** — the README lists only a representative sample. Broadly:
 - **Authored artifacts**: `draft`, `cad`, `structure`, `pcb`,
   `folder`.
 - **Personal state & knowledge**: `todo`, `memory`, `gripe`,
-  `flashcard`, `citation`, `finding`, `job`.
+  `anki`, `citation`, `finding`, `job`.
 - **Identity, comms & audit**: `orcid`, `cron`, `message`, `alert`,
   `agentlog`, `provenance`.
 - **Tool kinds** (stateless / cache-backed): `calc`, `math`,

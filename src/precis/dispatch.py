@@ -639,6 +639,7 @@ def boot(
     if store is not None:
         from precis.handlers.agentlog import AgentLogHandler
         from precis.handlers.alert import AlertHandler
+        from precis.handlers.anki import AnkiHandler
         from precis.handlers.cad import CadHandler
         from precis.handlers.citation import CitationHandler
         from precis.handlers.conversation import ConversationHandler
@@ -647,7 +648,6 @@ def boot(
         from precis.handlers.draft import DraftHandler
         from precis.handlers.figure import FigureHandler
         from precis.handlers.finding import FindingHandler
-        from precis.handlers.flashcard import FlashcardHandler
         from precis.handlers.folder import FolderHandler
         from precis.handlers.gripe import GripeHandler
         from precis.handlers.job import JobHandler
@@ -675,7 +675,7 @@ def boot(
         _gated(AlertHandler)
         _gated(AgentLogHandler)
         _gated(JobHandler)
-        _gated(FlashcardHandler)
+        _gated(AnkiHandler)
         _gated(CitationHandler)
         _gated(FindingHandler)
         _gated(ConversationHandler)
