@@ -25,7 +25,6 @@ than silently giving up.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from typing import Any, ClassVar
 
@@ -125,7 +124,12 @@ class _PerplexityBase(CacheBackedHandler):
 
     @staticmethod
     def _api_key() -> str:
-        key = (os.environ.get("PERPLEXITY_API_KEY") or "").strip()
+        # Resolves env → vault.reveal → ~/.secrets/pw file (secrets vault,
+        # ADR 0055). Env-override-wins keeps behaviour identical until the
+        # value is moved into the vault and pulled from the environment.
+        from precis import secrets as _secrets
+
+        key = (_secrets.get_secret("PERPLEXITY_API_KEY") or "").strip()
         if not key:
             raise Upstream(
                 "PERPLEXITY_API_KEY not set",

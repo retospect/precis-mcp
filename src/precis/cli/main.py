@@ -46,6 +46,7 @@ from precis.cli import (
     resolve_metadata,
     retire_draft_equations,
     schema_doc,
+    secret,
     serve_embeddings,
     stats,
     stubs,
@@ -91,6 +92,10 @@ def main() -> None:
 
     if args.cmd == "schema-doc":
         schema_doc.run(args)
+        return
+
+    if args.cmd == "secret":
+        secret.run(args)
         return
 
     if args.cmd == "db":
@@ -221,6 +226,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     migrate.add_parser(sub)
     schema_doc.add_parser(sub)
+    secret.add_parser(sub)
     db.add_parser(sub)
     maintenance.add_parser(sub)
     enrich_openalex.add_parser(sub)

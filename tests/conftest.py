@@ -35,6 +35,7 @@ Setup (one-time, as the postgres superuser):
     \\c precis_test
     CREATE EXTENSION vector;
     CREATE EXTENSION btree_gist;
+    CREATE EXTENSION pgcrypto;   -- secrets vault (migration 0059)
     GRANT ALL ON SCHEMA public TO precis_test;
 
 Then export:

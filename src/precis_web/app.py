@@ -92,6 +92,7 @@ def create_app(
         pres,
         preview,
         refs,
+        secrets,
         smartdraft,
         status,
         structure,
@@ -124,6 +125,7 @@ def create_app(
     app.include_router(console.router)
     app.include_router(status.router)
     app.include_router(env.router)
+    app.include_router(secrets.router)
 
     @app.get("/", include_in_schema=False)
     async def _root() -> RedirectResponse:

@@ -19,6 +19,7 @@ Per AGENTS.md: "sorted by number; never delete, only supersede".
 | Identifier scheme | [0036](./0036-universal-handles.md) | **draft/proposed**; one universal handle per record + chunk; supersedes 0006/0008 as the current address form, drops `pub_id`. Lineage: 0002 §id → 0006 → 0008 → 0036 |
 | Derived queue pattern | [0017](./0017-derived-queue-family.md) | extends 0007 (chunk-level → family registry) |
 | Database backend | [0010](./0010-postgres-pgvector-system-of-record.md) | |
+| Secrets management | [0055](./0055-secrets-vault.md) | **proposed**; DB-resident encrypted secrets, key in server config so `pg_dump` is shareable, DB-enforced RBAC (list/mask/reveal), thin Python wrapper. Design: [`docs/design/secrets-vault.md`](../design/secrets-vault.md) |
 | Dev image (Claude Code + UID/GID) | [0011](./0011-claude-in-dev-image.md) | |
 | Model weights in runtime image | [0012](./0012-bake-models-into-runtime-image.md) | cold-build mitigation in [0019](./0019-premodels-build-context.md) |
 | MCP session context | [0013](./0013-mcp-session-context-env-vars.md) | env-var triple |
