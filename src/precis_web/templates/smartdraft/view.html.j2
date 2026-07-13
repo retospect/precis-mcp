@@ -61,7 +61,7 @@
       {# ── search results (ranked list) ── #}
       {% for h in hits %}
       {% set n = h.node %}
-      <a href="{{ slink(to_focus=n.dc) }}"
+      <a href="?focus={{ n.dc }}" data-dc="{{ n.dc }}"
          class="flex items-center gap-1 px-2 py-1 hover:bg-sky-100 {% if n.dc == focus_dc %}bg-sky-100 ring-1 ring-inset ring-sky-400{% else %}bg-sky-50{% endif %}">
         {% for b in [('v', h.v, 'V', 'bg-sky-600'), ('k', h.k, 'K', 'bg-teal-600'), ('t', h.t, 'T', 'bg-amber-600')] %}
           {% if b[1] %}<span title="{{ b[0] }} match{{ '' if b[0] in active_sig else ' (off — not counted)' }}"
@@ -85,13 +85,13 @@
            summary into the title bloated the response to megabytes (and a tooltip
            that long is unreadable). Show the first few + a "…N more". #}
         {% set _peek = row.collapsed_nodes[:8] | map(attribute='summary') | join('\n') %}
-        <a href="{{ qs(first.dc) }}"
+        <a href="?focus={{ first.dc }}" data-dc="{{ first.dc }}"
            title="{{ _peek }}{% if row.collapsed_nodes | length > 8 %}
 … +{{ row.collapsed_nodes | length - 8 }} more{% endif %}"
            class="block px-2 py-0.5 text-slate-300 hover:bg-slate-50 hover:text-slate-500">⋯ {{ row.collapsed_nodes | length }} paras ⋯</a>
         {% else %}
         {% set n = row.node %}
-        <a id="toc-{{ n.dc }}" href="{{ qs(n.dc) }}"
+        <a id="toc-{{ n.dc }}" href="?focus={{ n.dc }}" data-dc="{{ n.dc }}"
            style="padding-left: {{ 0.4 + n.depth * 0.75 }}rem"
            class="flex items-start gap-1 py-0.5 pr-2 hover:bg-slate-50
                   {% if q and n.dc in hit_dcs %}bg-sky-100{% elif n.dc == focus_dc %}bg-amber-50 ring-1 ring-inset ring-amber-400{% elif row.shared %}bg-emerald-50{% elif row.pressure >= 0.4 %}bg-sky-50{% endif %}">
@@ -296,13 +296,21 @@
   // and the search form swap #sd-content instead of a full page navigation.
   const INT = 'a[href^="/smartdraft/' + IDENT + '?"]';
   document.addEventListener('click', (e) => {
-    const a = e.target.closest ? e.target.closest(INT) : null;
+    const a = e.target.closest ? e.target.closest('a') : null;
     if (!a || e.metaKey || e.ctrlKey) return;
     if (!a.closest('#sd-content')) return;   // header links (ids/debug) full-nav
-    e.preventDefault();
-    const href = a.getAttribute('href');
-    history.pushState({}, '', href);
-    swapFrom(href);
+    // Focus-nav rows carry a short data-dc (not a full URL — that bloated the
+    // page ~90 bytes/row over ~2k rows); navTo preserves the current params.
+    const dc = a.getAttribute('data-dc');
+    if (dc) { e.preventDefault(); navTo(dc); return; }
+    // Control links (signal/relevance/view/clear toggles) carry a full slink URL
+    // with the changed param — swap to it in place.
+    if (a.matches(INT)) {
+      e.preventDefault();
+      const href = a.getAttribute('href');
+      history.pushState({}, '', href);
+      swapFrom(href);
+    }
   });
   document.addEventListener('submit', (e) => {
     const f = e.target;
