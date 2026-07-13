@@ -37,11 +37,56 @@ import os
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from precis.utils.claude_oauth import ensure_oauth_token
 
 log = logging.getLogger(__name__)
+
+
+class RefreshOutcome(StrEnum):
+    """Why a :func:`refresh_snapshot` attempt ended — drives auth alerting.
+
+    The quota pass cares about one thing beyond the numbers: can ``claude
+    -p`` authenticate at all? A stale/revoked OAuth token 401s every
+    agentic call cluster-wide (plan_tick, reviewers, dream, figure) but
+    was invisible for a whole day behind an unrelated outage. So the pass
+    classifies the outcome and raises/clears an ``alert`` on the auth axis.
+    """
+
+    #: Snapshot parsed + persisted (or at least a clean 200 came back) —
+    #: auth is healthy.
+    OK = "ok"
+    #: ``claude -p`` returned cleanly but carried no rate_limits payload
+    #: (free-tier / no-Max account). Auth is fine; just no numbers.
+    NO_LIMITS = "no_limits"
+    #: ``claude -p`` failed with an authentication signature (401 /
+    #: "not logged in"). THIS is the pageable condition.
+    AUTH_FAILED = "auth_failed"
+    #: Binary missing, timeout, or a non-auth non-zero exit. Auth state
+    #: unknown — neither raise nor clear (avoids flapping on a blip).
+    UNAVAILABLE = "unavailable"
+
+
+#: Substrings (lower-cased) that mark a ``claude -p`` auth failure in its
+#: stdout/stderr. The CLI reports 401s as a stream-json error event on
+#: stdout ("Invalid authentication credentials") or the classic
+#: "Not logged in · Please run /login" — stderr is usually empty.
+_AUTH_FAILURE_MARKERS: tuple[str, ...] = (
+    "invalid authentication credentials",
+    "not logged in",
+    "please run /login",
+    "failed to authenticate",
+    "authentication_error",
+    "401",
+)
+
+
+def _looks_like_auth_failure(*texts: str) -> bool:
+    """True if any text carries a ``claude -p`` authentication-failure mark."""
+    haystack = " ".join(t for t in texts if t).lower()
+    return any(marker in haystack for marker in _AUTH_FAILURE_MARKERS)
 
 
 #: Scope key used by the singleton row. Future multi-OAuth deployments
@@ -243,13 +288,18 @@ def refresh_snapshot(
     *,
     binary: str | None = None,
     timeout_s: float = 30.0,
-) -> QuotaSnapshot | None:
+) -> tuple[QuotaSnapshot | None, RefreshOutcome]:
     """Shell out to ``claude -p "quota" ...`` and persist the snapshot.
+
+    Returns ``(snapshot, outcome)``. ``snapshot`` is the parsed numbers
+    (``None`` when unavailable); ``outcome`` (:class:`RefreshOutcome`) tells
+    the caller whether ``claude -p`` *authenticated* — the axis the auth
+    alert watches, orthogonal to whether rate-limit numbers came back.
 
     Cost: one 1-token completion. The binding utilisation figure is
     a side-effect of the response headers; the prompt content doesn't
     matter so long as the API actually returns headers (free-tier
-    accounts return nothing — we no-op gracefully).
+    accounts return nothing — we no-op gracefully but auth is still OK).
     """
     cmd_binary = binary or os.environ.get("PRECIS_CLAUDE_BIN", "claude")
     # Bootstrap the OAuth token from ~/.claude_oauth_token so a launchd
@@ -276,20 +326,26 @@ def refresh_snapshot(
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         log.warning("claude_quota: refresh failed (%s)", exc)
-        return None
+        return None, RefreshOutcome.UNAVAILABLE
 
     if res.returncode != 0:
+        auth = _looks_like_auth_failure(res.stdout or "", res.stderr or "")
         log.warning(
-            "claude_quota: claude -p exited %d (stderr=%s)",
+            "claude_quota: claude -p exited %d (auth_failure=%s stderr=%s)",
             res.returncode,
+            auth,
             (res.stderr or "").strip()[:200],
         )
-        return None
+        return None, (
+            RefreshOutcome.AUTH_FAILED if auth else RefreshOutcome.UNAVAILABLE
+        )
 
+    # returncode 0 → claude -p authenticated; auth is healthy from here on
+    # regardless of whether rate_limits parse or the DB persist succeeds.
     snapshot = parse_rate_limits(res.stdout)
     if snapshot is None:
         log.info("claude_quota: response had no rate_limits payload")
-        return None
+        return None, RefreshOutcome.NO_LIMITS
 
     try:
         store.record_claude_quota(
@@ -301,15 +357,16 @@ def refresh_snapshot(
         )
     except Exception:
         log.exception("claude_quota: persist failed")
-        return None
+        return None, RefreshOutcome.OK
 
-    return snapshot
+    return snapshot, RefreshOutcome.OK
 
 
 __all__ = [
     "DEFAULT_SCOPE",
     "REFRESH_INTERVAL_S",
     "QuotaSnapshot",
+    "RefreshOutcome",
     "parse_rate_limits",
     "refresh_snapshot",
 ]

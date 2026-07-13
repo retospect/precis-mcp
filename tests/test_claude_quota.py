@@ -245,3 +245,59 @@ def test_parse_stream_falls_back_to_single_envelope() -> None:
     snap = parse_rate_limits(payload)
     assert snap is not None
     assert snap.windows["five_hour"]["used_percentage"] == 13.4
+
+
+# ── auth-failure classification (2026-07-12 OAuth alert) ──────────────
+
+
+def test_looks_like_auth_failure_detects_signatures() -> None:
+    from precis.utils.claude_quota import _looks_like_auth_failure
+
+    assert _looks_like_auth_failure("API Error: 401 Invalid authentication credentials")
+    assert _looks_like_auth_failure("", "Not logged in · Please run /login")
+    assert _looks_like_auth_failure("Failed to authenticate.")
+    assert not _looks_like_auth_failure("perfectly ordinary rate-limit payload")
+    assert not _looks_like_auth_failure("")
+
+
+class _FakeRes:
+    def __init__(self, rc: int, out: str = "", err: str = "") -> None:
+        self.returncode = rc
+        self.stdout = out
+        self.stderr = err
+
+
+def test_refresh_snapshot_outcomes(monkeypatch) -> None:
+    from precis.utils import claude_quota as cq
+    from precis.utils.claude_quota import RefreshOutcome, refresh_snapshot
+
+    # 401 → AUTH_FAILED (the pageable condition)
+    monkeypatch.setattr(
+        cq.subprocess,
+        "run",
+        lambda *a, **k: _FakeRes(
+            1, "API Error: 401 Invalid authentication credentials"
+        ),
+    )
+    snap, outcome = refresh_snapshot(object())
+    assert snap is None and outcome is RefreshOutcome.AUTH_FAILED
+
+    # non-auth non-zero exit → UNAVAILABLE (don't flap the alert on a blip)
+    monkeypatch.setattr(
+        cq.subprocess, "run", lambda *a, **k: _FakeRes(1, "network glitch")
+    )
+    _snap, outcome = refresh_snapshot(object())
+    assert outcome is RefreshOutcome.UNAVAILABLE
+
+    # clean exit, no rate_limits payload → NO_LIMITS (auth is fine)
+    monkeypatch.setattr(cq.subprocess, "run", lambda *a, **k: _FakeRes(0, "{}"))
+    _snap, outcome = refresh_snapshot(object())
+    assert outcome is RefreshOutcome.NO_LIMITS
+
+    # missing binary → UNAVAILABLE
+    def _missing(*a, **k):
+        raise FileNotFoundError("claude")
+
+    monkeypatch.setattr(cq.subprocess, "run", _missing)
+    _snap, outcome = refresh_snapshot(object())
+    assert outcome is RefreshOutcome.UNAVAILABLE

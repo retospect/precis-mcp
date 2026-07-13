@@ -172,7 +172,13 @@ driver; adding one is a `Reviewer(...)` instance):
   (planner-coroutine slice — moved off system 2026-06-15 so data-host
   workers stop claiming plan_tick/fix_gripe jobs they can't run and
   false-bubbling `child-failed`) and `quota_check`. It skips the
-  embedder load it doesn't need.
+  embedder load it doesn't need. `quota_check` also **watches claude
+  auth**: `claude_quota.refresh_snapshot` returns a `RefreshOutcome`,
+  and a genuine 401 (`AUTH_FAILED`, distinguished from free-tier
+  `NO_LIMITS` / transient `UNAVAILABLE`) raises a **critical**
+  `quota_check:auth` alert (+ one-shot `notify_critical_alert`) so a
+  stale/revoked OAuth token pages instead of silently 401-ing every
+  agentic call for a day; auth recovering auto-resolves it.
 * `dream_agent` keeps its own 15-min cadence via `dream-pass.sh`,
   and `cron-tick` is the fourth daemon. Each heavy pass dedups on its
   tier-tagged memory and load-gates on `PRECIS_LOAD_CEILING` (default
