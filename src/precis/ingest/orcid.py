@@ -19,7 +19,6 @@ JSON. The handler owns all store writes.
 
 from __future__ import annotations
 
-import os
 import re
 import threading
 import time
@@ -108,8 +107,10 @@ _token_cache: dict[str, tuple[str, float]] = {}
 
 
 def _credentials() -> tuple[str, str]:
-    cid = (os.environ.get("ORCID_CLIENT_ID") or "").strip()
-    secret = (os.environ.get("ORCID_CLIENT_SECRET") or "").strip()
+    from precis import secrets as _secrets
+
+    cid = (_secrets.get_secret("ORCID_CLIENT_ID") or "").strip()
+    secret = (_secrets.get_secret("ORCID_CLIENT_SECRET") or "").strip()
     if not cid or not secret:
         raise Upstream(
             "ORCID client credentials are not configured",
@@ -119,10 +120,12 @@ def _credentials() -> tuple[str, str]:
 
 
 def has_credentials() -> bool:
-    """True iff both client-credential env vars are set (boot gate)."""
+    """True iff both client credentials resolve (env or vault) — boot gate."""
+    from precis import secrets as _secrets
+
     return bool(
-        (os.environ.get("ORCID_CLIENT_ID") or "").strip()
-        and (os.environ.get("ORCID_CLIENT_SECRET") or "").strip()
+        (_secrets.get_secret("ORCID_CLIENT_ID") or "").strip()
+        and (_secrets.get_secret("ORCID_CLIENT_SECRET") or "").strip()
     )
 
 

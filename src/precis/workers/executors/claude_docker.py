@@ -438,7 +438,10 @@ def _launch(store: Any, ref_id: int, meta: dict[str, Any], node: str | None) -> 
     if reason is not None:
         _fail(store, ref_id, reason)
         return
-    if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+    from precis import secrets as _secrets
+
+    _oauth = _secrets.get_secret("CLAUDE_CODE_OAUTH_TOKEN")
+    if not _oauth:
         _fail(
             store,
             ref_id,
@@ -446,6 +449,10 @@ def _launch(store: Any, ref_id: int, meta: dict[str, Any], node: str | None) -> 
             "env — the container can't authenticate Claude",
         )
         return
+    # podman passes the token by KEY only (value inherited from this process's
+    # env, never argv). Populate env from the vault when it's not already there
+    # so the key-only inheritance works post-cutover (secrets vault, ADR 0055).
+    os.environ.setdefault("CLAUDE_CODE_OAUTH_TOKEN", _oauth)
 
     wall_seconds = int(params["wall_seconds"])
     image = params.get("image") or _sandbox_run.default_image()

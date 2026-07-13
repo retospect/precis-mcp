@@ -47,10 +47,20 @@ def ensure_oauth_token(env: MutableMapping[str, str]) -> None:
     try:
         token = token_path.read_text().strip()
     except OSError:
-        return
+        token = ""
+    if not token:
+        # Vault fallback (secrets vault, ADR 0055): when the file is absent, a
+        # process that has bound a store (server / worker) can source the token
+        # from the DB. get_secret is env→vault→file, best-effort (never raises).
+        try:
+            from precis import secrets as _secrets
+
+            token = _secrets.get_secret(ENV_VAR) or ""
+        except Exception:
+            token = ""
     if token:
         env[ENV_VAR] = token
-        log.debug("claude_oauth: loaded token from %s", token_path)
+        log.debug("claude_oauth: loaded %s (file or vault)", ENV_VAR)
 
 
 __all__ = ["ENV_VAR", "TOKEN_FILENAME", "ensure_oauth_token"]

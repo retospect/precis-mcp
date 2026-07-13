@@ -179,7 +179,9 @@ def validate_submit(store: Any, *, gripe_id: int, params: dict[str, Any]) -> str
         resolve_repo_for_gripe(store, gripe_id, cfg)
     except ValueError as exc:
         return str(exc)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    from precis import secrets as _secrets
+
+    if not _secrets.get_secret("ANTHROPIC_API_KEY"):
         return (
             "fix_gripe: ANTHROPIC_API_KEY is not set in the precis "
             "container env. The in-container `claude -p --bare` "
@@ -480,6 +482,18 @@ def _restricted_env(cwd: Path) -> dict[str, str]:
         if k in allowed_keys or any(k.startswith(p) for p in allowed_prefixes):
             out[k] = v
     out["PWD"] = str(cwd)
+    # Inject ANTHROPIC_API_KEY from the vault when it isn't in the env (secrets
+    # vault, ADR 0055) so the in-container `claude -p --bare` still authenticates
+    # once the key is pulled from the environment. Best-effort.
+    if "ANTHROPIC_API_KEY" not in out:
+        try:
+            from precis import secrets as _secrets
+
+            tok = _secrets.get_secret("ANTHROPIC_API_KEY")
+            if tok:
+                out["ANTHROPIC_API_KEY"] = tok
+        except Exception:
+            pass
     return out
 
 

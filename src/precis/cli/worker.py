@@ -317,6 +317,12 @@ def run(args: argparse.Namespace) -> None:
 
     dsn = resolve_dsn(args.database_url)
     store = Store.connect(dsn)
+    # Wire the secrets vault: bind the store so passes can vault.reveal(), and
+    # scrub the DSN from env so the agent subprocesses this worker spawns
+    # (plan_tick, sandbox, claude -p) don't inherit it (secrets-vault, ADR 0055).
+    from precis import secrets as _secrets
+
+    _secrets.adopt_process_store(store)
     # Attach the centralised DB log handler now that we have a
     # working DSN. The file handler the worker's parent process
     # already set up stays in place as the bootstrap + fallback

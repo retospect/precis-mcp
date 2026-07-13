@@ -17,6 +17,40 @@ what's still open.
 
 ---
 
+## 🔐 secrets vault — remaining rollout + follow-ups (2026-07-13)
+
+v1 shipped on `main` 5a5de3ac (ADR 0055, migration 0059): encrypted
+`vault.secrets` + `vault.list/mask/reveal/set_secret/delete_secret`, resolver
+`src/precis/secrets.py` (env→vault→file, cached), `precis secret` CLI,
+`/secrets` web editor, DSN scrubbed from env at boot. Ships **dark**
+(env-override-wins). Remaining:
+
+- **Ops — the one bootstrap step to make it live** — `blocked` (needs Reto +
+  `.vault-pass`), Owner: `~/work/cluster`. Add `app.secret_key` to
+  `inventory/group_vars/all/vault.yml`; apply on caspar via `ALTER SYSTEM SET
+  app.secret_key = ...; SELECT pg_reload_conf()` in the postgres role. Until
+  set, `reveal`/`set` fail (resolver degrades to env/file). Then `/go` to
+  deploy the migration + `/secrets` page.
+- **Migrate the remaining call sites** — `feature`, Owner:
+  `handlers/*`, `workers/fetch_oa.py`. Only `PERPLEXITY_API_KEY` moved onto
+  `get_secret` so far. Still raw `os.environ`: `WOLFRAM_APP_ID`, `EPO_OPS_*`,
+  `ORCID_CLIENT_SECRET`, `PRECIS_ELSEVIER_API_KEY`, `PRECIS_WILEY_TDM_TOKEN`,
+  `PRECIS_CORE_API_KEY`, `PRECIS_OPENALEX_CONTENT_KEY`, `SEMANTIC_SCHOLAR_API_KEY`,
+  `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`. Migrate each to
+  `secrets.get_secret` (behaviour-identical under env-override).
+- **`requires_secret` gate** — `feature`, Owner: `protocol.py` / `kind_gate.py`.
+  Kinds gate on `requires_env`; once a secret is vault-only (env pulled in
+  phase D), those kinds would hide. Add a `requires_secret` axis checking the
+  resolver before pulling any secret out of env.
+- **`/secrets` web smoke test** — `polish`, Owner: `tests/`. The route is only
+  covered by app-boot import today; add a FastAPI TestClient test (list renders,
+  set writes, blank submit no-ops).
+- **Deferred by design (ADR 0055)**: per-service roles (`precis_secrets` /
+  `precis_web` / `asa`) + per-name ACL; `pg_notify`-driven cache invalidation
+  (currently a 60s TTL); out-of-process extension broker.
+
+---
+
 ## 🎨 `figure` kind — deferred slices (2026-07-12)
 
 Slice 1 shipped: the `figure` kind (interactive SVG canvas), migration 0057,

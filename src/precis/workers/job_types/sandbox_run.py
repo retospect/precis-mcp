@@ -196,7 +196,9 @@ def validate_submit(
     reason = semantic_rejection(params)
     if reason is not None:
         return reason
-    if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+    from precis import secrets as _secrets
+
+    if not _secrets.get_secret("CLAUDE_CODE_OAUTH_TOKEN"):
         return (
             "sandbox_run: CLAUDE_CODE_OAUTH_TOKEN is not set in the daemon "
             "env. The container authenticates Claude via a dedicated "

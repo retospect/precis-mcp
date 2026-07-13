@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import datetime as _dt
 import logging
-import os
 from typing import Any, ClassVar
 from urllib.parse import quote_plus
 
@@ -117,7 +116,9 @@ class MathHandler(CacheBackedHandler):
     # ── upstream call ─────────────────────────────────────────────────
 
     def _fetch(self, key: str) -> FetchResult:
-        app_id = os.environ.get("WOLFRAM_APP_ID", "").strip()
+        from precis import secrets as _secrets
+
+        app_id = (_secrets.get_secret("WOLFRAM_APP_ID") or "").strip()
         if not app_id:
             # Defense in depth — KindSpec.requires_env already gates this
             # at the registry level, but if a test or operator forces

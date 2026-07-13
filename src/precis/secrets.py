@@ -60,6 +60,18 @@ def bind_store(store: Store | None) -> None:
     invalidate()
 
 
+def adopt_process_store(store: Store) -> None:
+    """Wire a long-lived process to the vault: bind ``store`` as the resolver's
+    store AND scrub ``PRECIS_DATABASE_URL`` from the environment so
+    default-inheriting subprocess spawns (claude -p, plan_tick, shell-outs) do
+    not receive the DSN. Call once per long-lived process after connecting —
+    the server (``build_runtime``) and every ``precis worker`` do. The DSN
+    survives as a parameter on the frozen config + the open pool; no post-boot
+    code re-derives it from env."""
+    bind_store(store)
+    os.environ.pop("PRECIS_DATABASE_URL", None)
+
+
 def invalidate(name: str | None = None) -> None:
     """Drop cached plaintext — one name, or all. Call after a rotation."""
     with _cache_lock:
@@ -180,6 +192,7 @@ def list_secrets(*, store: Store) -> list[dict[str, object]]:
 
 
 __all__ = [
+    "adopt_process_store",
     "bind_store",
     "delete_secret",
     "get_secret",

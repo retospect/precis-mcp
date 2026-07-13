@@ -131,10 +131,11 @@ class PatentHandler(Handler):
         if ops is None or raw_root is None:
             import os
 
+            from precis import secrets as _secrets
             from precis.handlers._patent_ops import OpsClient
 
-            key = os.environ.get("EPO_OPS_CLIENT_KEY")
-            secret = os.environ.get("EPO_OPS_CLIENT_SECRET")
+            key = _secrets.get_secret("EPO_OPS_CLIENT_KEY")
+            secret = _secrets.get_secret("EPO_OPS_CLIENT_SECRET")
             raw = os.environ.get("PRECIS_PATENT_RAW_ROOT")
             if not (key and secret and raw):
                 missing = [e for e in _REQUIRED_ENV if not os.environ.get(e)]

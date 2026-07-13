@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-import os
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -2311,19 +2310,12 @@ def build_runtime(
     embedder: Embedder | None = None
     if config.database_url:
         store = Store.connect(config.database_url)
-        # The DSN (with password) is now held as a process parameter on the
-        # frozen config + the open pool. Scrub it from the environment so
-        # default-inheriting subprocess spawns (claude -p, plan_tick, arbitrary
-        # shell-outs) don't receive it — the secrets-vault trust model rests on
-        # the DSN being a parameter, not an env var (docs/design/secrets-vault.md).
-        # No post-boot code re-derives the DSN from env (load_config() callers
-        # read corpus_dir / owner, never database_url).
-        os.environ.pop("PRECIS_DATABASE_URL", None)
-        # Bind the store so the secrets resolver can vault.reveal() for call
-        # sites that don't thread a store through (staticmethod API-key reads).
+        # Bind the store for the secrets resolver + scrub the DSN from the
+        # environment (parameter, not env) so subprocess spawns don't inherit
+        # it — see docs/design/secrets-vault.md.
         from precis import secrets as _secrets
 
-        _secrets.bind_store(store)
+        _secrets.adopt_process_store(store)
         embedder = make_embedder(
             config.embedder,
             dim=store.embedding_dim(),

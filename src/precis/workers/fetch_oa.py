@@ -82,6 +82,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from precis import secrets as _secrets
 from precis.ingest.fetch_sidecar import write_sidecar
 
 log = logging.getLogger(__name__)
@@ -400,7 +401,7 @@ _ELSEVIER_ARTICLE_BASE = "https://api.elsevier.com/content/article/doi"
 
 def _elsevier_api_key() -> str:
     """Elsevier API key from the env, or '' when unconfigured."""
-    return os.environ.get("PRECIS_ELSEVIER_API_KEY", "").strip()
+    return (_secrets.get_secret("PRECIS_ELSEVIER_API_KEY") or "").strip()
 
 
 def _is_elsevier_doi(doi: str) -> bool:
@@ -425,7 +426,7 @@ _WILEY_TDM_BASE = "https://api.wiley.com/onlinelibrary/tdm/v1/articles"
 
 def _wiley_tdm_token() -> str:
     """Wiley TDM client token from the env, or '' when unconfigured."""
-    return os.environ.get("PRECIS_WILEY_TDM_TOKEN", "").strip()
+    return (_secrets.get_secret("PRECIS_WILEY_TDM_TOKEN") or "").strip()
 
 
 def _is_wiley_doi(doi: str) -> bool:
@@ -448,7 +449,7 @@ _CORE_SEARCH_BASE = "https://api.core.ac.uk/v3/search/works/"
 
 def _core_api_key() -> str:
     """CORE API key from the env, or '' when unconfigured."""
-    return os.environ.get("PRECIS_CORE_API_KEY", "").strip()
+    return (_secrets.get_secret("PRECIS_CORE_API_KEY") or "").strip()
 
 
 # ── OpenAlex Content API (paid, publisher-agnostic full text) ──────
@@ -471,7 +472,7 @@ _OPENALEX_CONTENT_HOST = "content.openalex.org"
 
 def _openalex_content_key() -> str:
     """OpenAlex Content API key from the env, or '' when unconfigured."""
-    return os.environ.get("PRECIS_OPENALEX_CONTENT_KEY", "").strip()
+    return (_secrets.get_secret("PRECIS_OPENALEX_CONTENT_KEY") or "").strip()
 
 
 def _openalex_content_auto() -> bool:
@@ -1704,11 +1705,10 @@ def _query_s2_openaccess(paper_id: str) -> str | None:
     ``openAccessPdf`` field — splitting the fetcher's S2 surface
     keeps the existing metadata-lookup path untouched.
     """
-    import os as _os
 
     from semanticscholar import SemanticScholar
 
-    api_key = _os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
+    api_key = _secrets.get_secret("SEMANTIC_SCHOLAR_API_KEY") or ""
     sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
     paper = sch.get_paper(paper_id, fields=["openAccessPdf"])
     if not paper:
