@@ -29,6 +29,7 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.nursery import (
     DEAD_WORKER_SILENCE_MIN,
+    DISPATCH_STALL_MINUTES,
     LONG_WAIT_DAYS,
     PLAN_TICK_REMINT_24H,
     SPIN_LOOP_EVENTS_24H,
@@ -36,6 +37,7 @@ from precis.workers.nursery import (
     STUCK_DOABLE_HOURS,
     WORKER_RESTART_STORM_1H,
     _detect_dead_workers,
+    _detect_dispatch_stalls,
     _detect_long_waits,
     _detect_orphans,
     _detect_plan_tick_spins,
@@ -828,3 +830,104 @@ def test_record_boot_event_lands_and_is_counted(
     key = f"worker-restart:{host}:precis-worker-agent"
     hits = [f for f in findings if f.fingerprint_key == key]
     assert len(hits) == 1
+
+
+# ── dispatch-stall (planner dark — single agent-profile executor) ──
+
+
+def _mint_inproc_job(
+    store: Store,
+    parent_id: int,
+    *,
+    status: str,
+    age_hours: float = 0.0,
+    lease_until: datetime | None = None,
+    job_type: str = "plan_tick",
+) -> int:
+    """Mint a ``claude_inproc`` job with a ``STATUS`` tag, optional lease, and
+    a backdated ``created_at`` (jobs sit ``queued`` from mint time)."""
+    meta: dict[str, object] = {"job_type": job_type, "executor": "claude_inproc"}
+    if lease_until is not None:
+        meta["lease_until"] = lease_until.isoformat()
+    ref = store.insert_ref(
+        kind="job", slug=None, title=f"{job_type} job", meta=meta, parent_id=parent_id
+    )
+    store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="agent")
+    if age_hours:
+        _backdate_ref(store, ref.id, age_hours)
+    return ref.id
+
+
+# Comfortably past the queued-age threshold.
+_STALL_H = (DISPATCH_STALL_MINUTES + 5) / 60.0
+
+
+def test_dispatch_stall_flags_queued_with_nothing_running(store: Store) -> None:
+    """Old queued claude_inproc jobs + nothing running = the executor stopped
+    claiming (dead/culled/never-started agent worker) → one critical finding."""
+    parent = store.insert_ref(kind="todo", slug=None, title="LLM planner")
+    _mint_inproc_job(store, parent.id, status="queued", age_hours=_STALL_H)
+    _mint_inproc_job(store, parent.id, status="queued", age_hours=_STALL_H)
+
+    findings = _detect_dispatch_stalls(store)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.category == "dispatch-stall"
+    assert f.ref_id is None  # a cluster-wide condition, not per-todo
+    assert f.fingerprint_key == "dispatch-stall"
+    assert "queued" in f.detail
+
+
+def test_dispatch_stall_ignores_fresh_queue(store: Store) -> None:
+    """A just-minted queued job is normal — a healthy executor hasn't had a
+    loop to claim it yet, so it must not alarm."""
+    parent = store.insert_ref(kind="todo", slug=None, title="LLM planner")
+    _mint_inproc_job(store, parent.id, status="queued", age_hours=0.0)
+
+    assert _detect_dispatch_stalls(store) == []
+
+
+def test_dispatch_stall_suppressed_when_executor_running(store: Store) -> None:
+    """An old queued job behind a LIVE running job (unexpired lease) is a
+    healthy backlog, not a dead executor — the 'nothing running' gate."""
+    parent = store.insert_ref(kind="todo", slug=None, title="LLM planner")
+    _mint_inproc_job(store, parent.id, status="queued", age_hours=_STALL_H)
+    _mint_inproc_job(
+        store,
+        parent.id,
+        status="running",
+        lease_until=datetime.now(UTC) + timedelta(minutes=60),
+    )
+
+    assert _detect_dispatch_stalls(store) == []
+
+
+def test_dispatch_stall_fires_when_running_lease_expired(store: Store) -> None:
+    """A running job whose lease has EXPIRED is a dead claim, not a live
+    executor — it must not mask a stalled queue."""
+    parent = store.insert_ref(kind="todo", slug=None, title="LLM planner")
+    _mint_inproc_job(store, parent.id, status="queued", age_hours=_STALL_H)
+    _mint_inproc_job(
+        store,
+        parent.id,
+        status="running",
+        lease_until=datetime.now(UTC) - timedelta(minutes=5),
+    )
+
+    findings = _detect_dispatch_stalls(store)
+    assert len(findings) == 1
+    assert findings[0].category == "dispatch-stall"
+
+
+def test_run_nursery_pass_raises_critical_for_dispatch_stall(store: Store) -> None:
+    """End to end: a dispatch-stall finding becomes an open ``critical`` alert
+    under the ``nursery:dispatch-stall`` source."""
+    parent = store.insert_ref(kind="todo", slug=None, title="LLM planner")
+    _mint_inproc_job(store, parent.id, status="queued", age_hours=_STALL_H)
+
+    run_nursery_pass(store)
+
+    alerts = list_open_alerts(store)
+    mine = [a for a in alerts if a["source"] == "nursery:dispatch-stall"]
+    assert len(mine) == 1
+    assert mine[0]["severity"] == "critical"

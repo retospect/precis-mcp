@@ -31,6 +31,24 @@ finding rows):
 * **spin loops** — any ``(ref_id, source)`` emitting more than
   ``SPIN_LOOP_EVENTS_24H`` ``ref_events`` in 24h (a derived-queue
   worker re-claiming the same ref every pass).
+* **plan-tick spins** — a planner parent minting more than
+  ``PLAN_TICK_REMINT_24H`` ``plan_tick`` jobs in 24h (a coroutine that
+  "succeeds" every tick but never converges).
+
+Worker-health detectors (daemon liveness / work flow, not the todo
+graph) — all ``critical``, so a *new* one pages once via
+:func:`notify_critical_alert`:
+
+* **worker-restart** — a ``(host, process)`` booting more than
+  ``WORKER_RESTART_STORM_1H`` times in 1h (a jetsam/OOM cull loop or a
+  deploy-bounce burst).
+* **dead-worker** — a continuous daemon silent longer than
+  ``DEAD_WORKER_SILENCE_MIN`` while its host is otherwise alive.
+* **dispatch-stall** — ``claude_inproc`` jobs queued past
+  ``DISPATCH_STALL_MINUTES`` with nothing running: the single
+  agent-profile executor (melchior) stopped claiming, so the planner is
+  frozen cluster-wide (gripe 55748). Symptom-level, so it also catches an
+  agent worker that never started (no log rows for dead-worker to age).
 
 Each finding becomes an ``alert`` under ``alert_source =
 nursery:<category>``, deduped on ``fingerprint = "<category>:<ref_id>"``
@@ -104,6 +122,18 @@ DEAD_WORKER_SILENCE_MIN = 10
 #: dream) are excluded — their silence between runs is normal, not a fault.
 WORKER_CONTINUOUS_PROCESSES = ("precis-worker", "precis-worker-agent")
 
+#: A ``claude_inproc`` job (plan_tick / fix_gripe / news / briefing) sitting
+#: ``STATUS:queued`` longer than this while **nothing** is running is a stalled
+#: planner: minting is cluster-wide but *execution* is agent-profile-only
+#: (melchior), so a jetsam-cull / OAuth-401 / never-started agent worker
+#: freezes every minted job with no bubble — the 2026-07 "45 min dark"
+#: incident (gripe 55748). A healthy executor claims within a worker loop
+#: (~seconds), so a multi-minute queued age with zero live claims means the
+#: single executor is gone. Complements ``dead-worker`` (process silence):
+#: this is symptom-level (work not flowing) and so also catches an agent
+#: worker that never started — which has no log rows for dead-worker to age.
+DISPATCH_STALL_MINUTES = 15
+
 #: Per-category alert severity (drives sort + colour on the /alerts
 #: tab, and — for ``critical`` — a one-shot Discord push via
 #: :func:`notify_critical_alert`). Spin loops and stuck claims/recurrings
@@ -121,6 +151,7 @@ _SEVERITY: dict[str, str] = {
     "stalled-recurring": "warn",
     "worker-restart": "critical",
     "dead-worker": "critical",
+    "dispatch-stall": "critical",
 }
 
 
@@ -155,6 +186,7 @@ _DETECTORS: tuple[tuple[str, Callable[[Store], list[Finding]]], ...] = (
     ("stalled-recurring", lambda s: _detect_stalled_recurrings(s)),
     ("worker-restart", lambda s: _detect_worker_restart_storms(s)),
     ("dead-worker", lambda s: _detect_dead_workers(s)),
+    ("dispatch-stall", lambda s: _detect_dispatch_stalls(s)),
 )
 
 
@@ -774,6 +806,88 @@ def _detect_dead_workers(store: Store) -> list[Finding]:
     return out
 
 
+def _detect_dispatch_stalls(store: Store) -> list[Finding]:
+    """The single agent-profile executor stopped claiming — planner dark.
+
+    ``dispatch`` mints ``plan_tick`` (and other ``claude_inproc``) jobs on
+    every node, but only melchior's ``--profile=agent`` worker can *execute*
+    them (it needs the hermes ``~/.claude`` OAuth / MCP state). So the
+    executor is a cluster-wide single point of failure: if it is culled,
+    401s, or never starts, every minted job sits ``STATUS:queued`` forever
+    with no ``child-failed`` bubble, and other nodes' dispatch skips those
+    parents (they already have a live child) — silent freeze (gripe 55748).
+
+    Fire iff **work is waiting and nothing is running**: at least one
+    ``claude_inproc`` job queued past :data:`DISPATCH_STALL_MINUTES` while
+    zero jobs hold a live lease. The "nothing running" gate is what
+    distinguishes a dead executor from a healthy-but-backlogged one — a
+    live executor grinding a long tick shows a running job with an unexpired
+    ``meta.lease_until``, so a deep queue behind it does **not** alarm. A
+    single non-ref-scoped critical alert (one page, not one per stuck job);
+    it auto-resolves the moment the queue drains.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            WITH inproc AS (
+                SELECT j.created_at, j.meta,
+                       (SELECT t.value
+                          FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                         WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
+                         LIMIT 1) AS status
+                  FROM refs j
+                 WHERE j.kind = 'job'
+                   AND j.deleted_at IS NULL
+                   AND j.meta->>'executor' = 'claude_inproc'
+            )
+            SELECT
+                count(*) FILTER (
+                    WHERE status = 'queued'
+                      AND created_at < now() - (%(mins)s || ' minutes')::interval
+                )::int AS n_stalled,
+                min(created_at) FILTER (
+                    WHERE status = 'queued'
+                      AND created_at < now() - (%(mins)s || ' minutes')::interval
+                ) AS oldest,
+                count(*) FILTER (
+                    WHERE status = 'running'
+                      AND (meta->>'lease_until') IS NOT NULL
+                      AND (meta->>'lease_until')::timestamptz > now()
+                )::int AS n_running
+              FROM inproc
+            """,
+            {"mins": DISPATCH_STALL_MINUTES},
+        ).fetchone()
+
+    if row is None:
+        return []
+    n_stalled, oldest, n_running = int(row[0]), row[1], int(row[2])
+    # Work is waiting (queued past threshold) AND nothing is executing.
+    if n_stalled == 0 or n_running > 0:
+        return []
+    oldest_h = _hours_since(oldest)
+    return [
+        Finding(
+            category="dispatch-stall",
+            ref_id=None,
+            fingerprint_key="dispatch-stall",
+            title=f"planner stalled — {n_stalled} job(s) queued, none running",
+            detail=(
+                f"{n_stalled} claude_inproc job(s) stuck STATUS:queued (oldest "
+                f"{oldest_h:.1f}h, > {DISPATCH_STALL_MINUTES}min) with zero live "
+                "claims — the agent-profile executor (melchior) is not claiming: "
+                "dead/culled worker, OAuth-401, or the agent profile never "
+                "started on any node. Minting is cluster-wide but execution is "
+                "melchior-only, so the planner is frozen cluster-wide. Recover: "
+                "check melchior's agent worker (`launchctl kickstart -k "
+                "system/com.precis.worker.agent`) + `claude` OAuth; longer term, "
+                "run the agent profile on a second host or wire local-model "
+                "tool-calling (ADR 0024/0046) so execution isn't single-homed."
+            ),
+        )
+    ]
+
+
 # ── small helpers ─────────────────────────────────────────────────
 
 
@@ -800,6 +914,7 @@ def _days_since(ts: datetime | None) -> float:
 
 
 __all__ = [
+    "DISPATCH_STALL_MINUTES",
     "LONG_WAIT_DAYS",
     "SPIN_LOOP_EVENTS_24H",
     "STALE_CLAIM_HOURS",

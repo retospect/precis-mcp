@@ -128,8 +128,16 @@ driver; adding one is a `Reviewer(...)` instance):
   emitted at `cli/worker.run` startup, the only DB restart signal there
   is) and **dead-worker** (a continuous daemon in
   `WORKER_CONTINUOUS_PROCESSES` silent > `DEAD_WORKER_SILENCE_MIN` (10)
-  min while its host is otherwise alive). These two are the only
-  `critical` categories — a thrashing/dead worker stalls the planner
+  min while its host is otherwise alive) and **dispatch-stall**
+  (`claude_inproc` jobs sitting `STATUS:queued` > `DISPATCH_STALL_MINUTES`
+  (15) with **zero** live-lease jobs running — the single agent-profile
+  executor stopped claiming: culled / OAuth-401 / never-started. Minting is
+  cluster-wide but execution is melchior-only, so this is the "45 min dark"
+  SPOF, gripe 55748. The "nothing running" gate distinguishes a dead
+  executor from a healthy-but-backlogged one; symptom-level, so it also
+  catches an agent worker that never started — which has no log rows for
+  dead-worker to age). These three are the only
+  `critical` categories — a thrashing/dead/stalled worker stalls the planner
   cluster-wide, so on the *first* sighting `raise_alert` (now returning
   `(ref_id, is_new)`) fires a one-shot `notify_critical_alert` — a
   `kind='message'` to `PRECIS_OPS_ALERT_TARGET`
@@ -261,6 +269,33 @@ resumable. This stopped the follow-up "ask & think" path surfacing a
 bare `⚠️ thinking failed: …exited 1:` whenever the agent ran out of
 turns. Genuine errors still raise — now with the `terminal_reason`
 folded into the message, since stream-json errors leave stderr empty.
+
+**LLM independence — the switchable router (`utils/llm/`, ADR 0046).**
+Every routed call goes through `dispatch(LlmRequest)` → a narrow
+`LlmProvider` port (`run(req, *, model) -> LlmResult`) picked from a
+`Transport`-keyed registry. `claude -p` is now just two adapters
+(`ClaudeAgentProvider`/`ClaudePProvider`) among peers — Anthropic is a
+swappable leaf. A `Backend` switch (`PRECIS_LLM_BACKEND`, default
+`anthropic`, **ships dark**) flips cloud work to an **OpenAI-compatible
+OSS backend** (OpenRouter/DeepInfra/remote vLLM at `PRECIS_LLM_BASE_URL`,
+API key from the secrets vault via `get_secret('PRECIS_LLM_API_KEY')`):
+tool-less calls → `OpenAICompatProvider`, tool-using calls →
+`OpenAIToolsProvider`. The latter is the OSS **`tools=` agent loop**
+(`utils/llm/openai_tools.py` engine + `precis_tools.py` bridge): it
+advertises the precis verbs from `TOOL_REGISTRY` as OpenAI function
+schemas and executes each tool call **in-process** via `runtime.dispatch`
+(no MCP socket round-trip), rebuilding ADR 0024's reversed loop behind the
+port. Model ids resolve from the same `PRECIS_MODEL_*` table, so switching
+model is env-only. With the backend unset, behavior is byte-identical to
+`claude -p`. **Unit 4b (call sites folded through the seam) is done**:
+dream, the structural/deep reviewers, cad_propose/cad_discuss/
+structure_propose, the web follow-up (`precis_web/ask`), and the
+`claude_p` judges (chase, good_search triage, figure) all call
+`dispatch(LlmRequest)` now — so `PRECIS_LLM_BACKEND` switches the whole
+agentic + judge surface. (Still direct `claude -p`: `plan_tick` /
+`fix_gripe`, which build the subprocess themselves — a separate
+migration.) Deferred: a `FailoverProvider` ladder (method + model
+failover) over the same port.
 
 ## Discovery layer (F20)
 

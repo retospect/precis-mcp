@@ -25,7 +25,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from precis.utils.claude_p import ClaudePError, call_claude_p
+from precis.utils.llm.router import LlmRequest, Tier, dispatch
 
 if TYPE_CHECKING:
     from precis.workers.chase import _NextHopTarget
@@ -92,12 +92,11 @@ def _verify_support_with_caveats(
         target_chunk_ord=target_chunk_ord,
         target_chunk_text=target_chunk_text[:4000],  # cap context cost
     )
-    try:
-        result = call_claude_p(prompt)
-    except ClaudePError as exc:
-        log.warning("chase: verify hook failed: %s", exc)
+    res = dispatch(LlmRequest(tier=Tier.CLOUD_SMALL, prompt=prompt))
+    if res.error:
+        log.warning("chase: verify hook failed: %s", res.error)
         return None
-    return result.data
+    return res.data
 
 
 _PROMPT_DISAMBIGUATE = """\
@@ -133,12 +132,11 @@ def _disambiguate_candidates(
         chunk_text=chunk_text[:3000],
         candidates_table=table,
     )
-    try:
-        result = call_claude_p(prompt)
-    except ClaudePError as exc:
-        log.warning("chase: disambiguate hook failed: %s", exc)
+    res = dispatch(LlmRequest(tier=Tier.CLOUD_SMALL, prompt=prompt))
+    if res.error:
+        log.warning("chase: disambiguate hook failed: %s", res.error)
         return None
-    pick = result.data.get("pick_index")
+    pick = (res.data or {}).get("pick_index")
     return int(pick) if isinstance(pick, int) else None
 
 
@@ -186,14 +184,14 @@ def _locate_chunk_in_target(
         main_text=proposed[2][:1500],
         alternates_table=alt_table,
     )
-    try:
-        result = call_claude_p(prompt)
-    except ClaudePError as exc:
-        log.warning("chase: locate hook failed: %s", exc)
+    res = dispatch(LlmRequest(tier=Tier.CLOUD_SMALL, prompt=prompt))
+    if res.error:
+        log.warning("chase: locate hook failed: %s", res.error)
         return proposed  # fall back to lexical pick
-    if result.data.get("ok") is True:
+    data = res.data or {}
+    if data.get("ok") is True:
         return proposed
-    alt_ord = result.data.get("alternative_ord")
+    alt_ord = data.get("alternative_ord")
     if alt_ord is None:
         return None  # caller tags dead_chain
     match = next((a for a in alternates if a[1] == int(alt_ord)), None)

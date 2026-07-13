@@ -632,7 +632,7 @@ def _triage_dispatch(ctx: Any, spec: Any) -> None:
     executor (``_finalize_plugin_dispatch``) drives the happy path to
     ``STATUS:succeeded``.
     """
-    from precis.utils.claude_p import ClaudePError, call_claude_p
+    from precis.utils.llm.router import LlmRequest, Tier, dispatch
 
     params = (ctx.meta or {}).get("params") or {}
     q = str(params.get("q") or "").strip()
@@ -653,16 +653,17 @@ def _triage_dispatch(ctx: Any, spec: Any) -> None:
     verdicts: list[dict[str, Any]] | None = None
     last_err = "no parseable verdicts"
     for attempt in (1, 2):
-        try:
-            res = call_claude_p(prompt, model=model)
-        except ClaudePError as exc:
-            last_err = str(exc)
+        # Routed through the LLM seam (ADR 0046 unit 4b): CLOUD_SMALL judge, so
+        # PRECIS_LLM_BACKEND can switch it. Errors fold into res.error.
+        res = dispatch(LlmRequest(tier=Tier.CLOUD_SMALL, prompt=prompt, model=model))
+        if res.error:
+            last_err = res.error
             ctx.append_chunk(
                 "job_event",
-                f"triage attempt {attempt}: judge call failed: {exc}",
+                f"triage attempt {attempt}: judge call failed: {res.error}",
             )
             continue
-        verdicts = _validate_verdicts(res.data, known_handles)
+        verdicts = _validate_verdicts(res.data or {}, known_handles)
         if verdicts is not None:
             break
         last_err = f"malformed verdicts shape: {res.data!r}"[:500]

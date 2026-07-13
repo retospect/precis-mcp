@@ -28,7 +28,7 @@ import os
 from typing import Any
 
 from precis.cad.scene import SceneError, build_design, parse_source, spec_to_source
-from precis.utils.claude_agent import call_claude_agent
+from precis.utils.llm.router import LlmRequest, Tier, dispatch
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -51,9 +51,6 @@ DESCRIPTION = (
     "Turn a natural-language instruction into a proposed CAD design source "
     "(tool-less claude -p; the human applies it separately)."
 )
-
-#: The claude boundary — tests monkeypatch this to run offline.
-AGENT = call_claude_agent
 
 #: The design-language crib shown to the model (kept in sync with cad/scene.py +
 #: cad/dsl.py). Enough to author a valid rewrite without reading the skill.
@@ -154,25 +151,35 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # (plan_tick / fix_gripe = 1800s). Override with PRECIS_CAD_PROPOSE_TIMEOUT_S.
     timeout_s = float(os.environ.get("PRECIS_CAD_PROPOSE_TIMEOUT_S", "1800"))
     ctx.append_chunk("job_event", f"propose: {instruction[:200]}")
+    # Routed through the LLM seam (ADR 0046 unit 4b): tool-less agent call
+    # (mcp_config=None) on CLOUD_SUPER, so PRECIS_LLM_BACKEND can switch it.
+    # The broad except is kept and the folded res.error is checked too.
     try:
-        result = AGENT(
-            prompt,
-            model=model,
-            mcp_config=None,  # tool-less: the agent cannot mutate anything
-            disallowed_tools=("WebFetch", "WebSearch"),
-            output_format="stream-json",
-            timeout_s=timeout_s,
-            extra_args=("--verbose",),
-            log_event=(ctx.store, ctx.ref_id, "cad_propose"),
+        res = dispatch(
+            LlmRequest(
+                tier=Tier.CLOUD_SUPER,
+                prompt=prompt,
+                tools_needed=True,  # the agent wrapper; no MCP tools wired
+                model=model,
+                mcp_config=None,  # tool-less: the agent cannot mutate anything
+                disallowed_tools=("WebFetch", "WebSearch"),
+                output_format="stream-json",
+                timeout_s=timeout_s,
+                extra_args=("--verbose",),
+                log_event=(ctx.store, ctx.ref_id, "cad_propose"),
+            )
         )
     except Exception as exc:
         ctx.record_failure(f"cad_propose: agent failed: {exc}")
         return
+    if res.error:
+        ctx.record_failure(f"cad_propose: agent failed: {res.error}")
+        return
 
     try:
-        proposal = parse_proposal(result.final_text)
+        proposal = parse_proposal(res.text)
     except ValueError as exc:
-        ctx.append_chunk("job_event", f"unparseable reply:\n{result.final_text[:2000]}")
+        ctx.append_chunk("job_event", f"unparseable reply:\n{res.text[:2000]}")
         ctx.record_failure(f"cad_propose: {exc}")
         return
 

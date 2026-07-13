@@ -32,7 +32,7 @@ import os
 from typing import Any
 
 from precis.cad.scene import build_design, spec_to_source
-from precis.utils.claude_agent import call_claude_agent
+from precis.utils.llm.router import LlmRequest, Tier, dispatch
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -55,9 +55,6 @@ DESCRIPTION = (
     "Discuss a CAD design with the engineer (tool-less claude -p, threaded, "
     "read-only) — answers questions about the model, proposes nothing to apply."
 )
-
-#: The claude boundary — tests monkeypatch this to run offline.
-AGENT = call_claude_agent
 
 #: One-line coordinate convention, inlined into the facts so the model reads
 #: where each part actually sits instead of guessing its local zero (the
@@ -245,22 +242,32 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     model = os.environ.get("PRECIS_CAD_DISCUSS_MODEL")
     timeout_s = float(os.environ.get("PRECIS_CAD_DISCUSS_TIMEOUT_S", "1800"))
     ctx.append_chunk("job_event", f"discuss: {instruction[:200]}")
+    # Routed through the LLM seam (ADR 0046 unit 4b): read-only agent call on
+    # CLOUD_SUPER, so PRECIS_LLM_BACKEND can switch it. Broad except kept +
+    # the folded res.error checked.
     try:
-        result = AGENT(
-            prompt,
-            model=model,
-            mcp_config=None,  # read-only: a discussion produces text only
-            disallowed_tools=("WebFetch", "WebSearch"),
-            output_format="stream-json",
-            timeout_s=timeout_s,
-            extra_args=("--verbose",),
-            log_event=(ctx.store, ctx.ref_id, "cad_discuss"),
+        res = dispatch(
+            LlmRequest(
+                tier=Tier.CLOUD_SUPER,
+                prompt=prompt,
+                tools_needed=True,  # the agent wrapper; no MCP tools wired
+                model=model,
+                mcp_config=None,  # read-only: a discussion produces text only
+                disallowed_tools=("WebFetch", "WebSearch"),
+                output_format="stream-json",
+                timeout_s=timeout_s,
+                extra_args=("--verbose",),
+                log_event=(ctx.store, ctx.ref_id, "cad_discuss"),
+            )
         )
     except Exception as exc:
         ctx.record_failure(f"cad_discuss: agent failed: {exc}")
         return
+    if res.error:
+        ctx.record_failure(f"cad_discuss: agent failed: {res.error}")
+        return
 
-    answer = (result.final_text or "").strip()
+    answer = (res.text or "").strip()
     if not answer:
         ctx.record_failure("cad_discuss: empty answer")
         return

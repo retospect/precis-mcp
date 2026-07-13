@@ -27,7 +27,7 @@ from typing import Any
 from precis.structure import apply_ops
 from precis.structure.ops import OpError
 from precis.structure.probe import toc as _toc
-from precis.utils.claude_agent import call_claude_agent
+from precis.utils.llm.router import LlmRequest, Tier, dispatch
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -50,9 +50,6 @@ DESCRIPTION = (
     "Turn a natural-language instruction into proposed structure ops "
     "(tool-less claude -p; the human applies them separately)."
 )
-
-#: The claude boundary — tests monkeypatch this to run offline.
-AGENT = call_claude_agent
 
 #: Op vocabulary shown to the model (kept in sync with structure/ops.py).
 _OP_VOCAB = (
@@ -173,24 +170,34 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     prompt = build_prompt(slug, scene, instruction)
     model = os.environ.get("PRECIS_STRUCTURE_PROPOSE_MODEL")
     ctx.append_chunk("job_event", f"propose: {instruction[:200]}")
+    # Routed through the LLM seam (ADR 0046 unit 4b): tool-less agent call on
+    # CLOUD_SUPER, so PRECIS_LLM_BACKEND can switch it. Broad except kept +
+    # the folded res.error checked.
     try:
-        result = AGENT(
-            prompt,
-            model=model,
-            mcp_config=None,  # tool-less: the agent cannot mutate anything
-            disallowed_tools=("WebFetch", "WebSearch"),
-            output_format="stream-json",
-            extra_args=("--verbose",),
-            log_event=(ctx.store, ctx.ref_id, "structure_propose"),
+        res = dispatch(
+            LlmRequest(
+                tier=Tier.CLOUD_SUPER,
+                prompt=prompt,
+                tools_needed=True,  # the agent wrapper; no MCP tools wired
+                model=model,
+                mcp_config=None,  # tool-less: the agent cannot mutate anything
+                disallowed_tools=("WebFetch", "WebSearch"),
+                output_format="stream-json",
+                extra_args=("--verbose",),
+                log_event=(ctx.store, ctx.ref_id, "structure_propose"),
+            )
         )
     except Exception as exc:
         ctx.record_failure(f"structure_propose: agent failed: {exc}")
         return
+    if res.error:
+        ctx.record_failure(f"structure_propose: agent failed: {res.error}")
+        return
 
     try:
-        proposal = parse_proposal(result.final_text)
+        proposal = parse_proposal(res.text)
     except ValueError as exc:
-        ctx.append_chunk("job_event", f"unparseable reply:\n{result.final_text[:2000]}")
+        ctx.append_chunk("job_event", f"unparseable reply:\n{res.text[:2000]}")
         ctx.record_failure(f"structure_propose: {exc}")
         return
 

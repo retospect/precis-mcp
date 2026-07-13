@@ -111,15 +111,24 @@ class TurnResult:
 
 
 def _default_claude(prompt: str) -> dict[str, Any]:
-    from precis.utils.claude_p import call_claude_p
+    # Routed through the LLM seam (ADR 0046 unit 4b): CLOUD_SUPER (drawing
+    # wants a capable model), so PRECIS_LLM_BACKEND can switch it. A
+    # PRECIS_FIGURE_MODEL pin still wins (None ⇒ the tier default, opus-4.8,
+    # = the old _DEFAULT_MODEL). run_turn catches the raise on failure.
+    from precis.utils.llm.router import LlmRequest, Tier, dispatch
 
-    res = call_claude_p(
-        prompt,
-        model=_DEFAULT_MODEL,
-        max_usd=float(os.environ.get("PRECIS_FIGURE_MAX_USD", "1.0")),
-        timeout_s=float(os.environ.get("PRECIS_FIGURE_TIMEOUT_S", "300")),
+    res = dispatch(
+        LlmRequest(
+            tier=Tier.CLOUD_SUPER,
+            prompt=prompt,
+            model=os.environ.get("PRECIS_FIGURE_MODEL"),
+            max_usd=float(os.environ.get("PRECIS_FIGURE_MAX_USD", "1.0")),
+            timeout_s=float(os.environ.get("PRECIS_FIGURE_TIMEOUT_S", "300")),
+        )
     )
-    return res.data
+    if res.error:
+        raise RuntimeError(res.error)
+    return res.data or {}
 
 
 def _docs(store: _StoreLike, ref_id: int) -> tuple[Any | None, Any | None, Any | None]:

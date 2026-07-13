@@ -54,13 +54,9 @@ from pathlib import Path
 
 from precis.store import Store
 from precis.utils import handle_registry
-from precis.utils.claude_agent import (
-    ClaudeAgentError,
-    call_claude_agent,
-)
 from precis.utils.dream_seed import load_lenses, render_lens_block
 from precis.utils.env import env_flag
-from precis.utils.llm.router import Tier, resolve_model
+from precis.utils.llm.router import LlmRequest, Tier, dispatch, resolve_model
 from precis.utils.load_gate import skip_if_high_load
 from precis.utils.oracle_lens import draw_lens_entry, render_lens_block_from_draw
 from precis.utils.working_set_render import render_working_set
@@ -120,10 +116,16 @@ def run_dream_pass(store: Store) -> BatchResult:
         return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
     prompt = _apply_lens(prompt, store)
     prompt = _apply_fisheye(prompt, store)
-    try:
-        result = call_claude_agent(
-            prompt,
-            model=os.environ.get("PRECIS_DREAM_AGENT_MODEL") or _default_model(),
+    # Routed through the LLM seam (ADR 0046 unit 4b): CLOUD_SUPER + tools,
+    # so ``PRECIS_LLM_BACKEND`` can move the whole dream pass onto an OSS
+    # model. ``model=`` keeps the per-pass ``PRECIS_DREAM_AGENT_MODEL`` pin
+    # (None ⇒ the tier default). Errors fold into ``res.error``.
+    res = dispatch(
+        LlmRequest(
+            tier=Tier.CLOUD_SUPER,
+            prompt=prompt,
+            tools_needed=True,
+            model=os.environ.get("PRECIS_DREAM_AGENT_MODEL"),
             system_prompt=soul_path,
             mcp_config=mcp_path,
             max_turns=_DEFAULT_MAX_TURNS,
@@ -131,21 +133,20 @@ def run_dream_pass(store: Store) -> BatchResult:
             # Dreams don't fan out to the open web — keep them on
             # corpus state. Same as the bash script's flag set.
             disallowed_tools=("WebFetch", "WebSearch"),
-            # Stream-json gets us cost/turns from the result event
-            # (call_claude_agent unwraps the assistant's text from
-            # the ``result`` field so final_text is unchanged).
+            # Stream-json gets us cost/turns from the result event.
             output_format="stream-json",
             extra_args=("--verbose",),
         )
-    except ClaudeAgentError as exc:
-        log.exception("dream_agent: claude agent failed: %s", exc)
+    )
+    if res.error:
+        log.error("dream_agent: claude agent failed: %s", res.error)
         return BatchResult(handler="dream_agent", claimed=1, ok=0, failed=1)
     log.info(
         "dream_agent: dispatch ok cost=$%.4f duration=%.1fs turns=%s final_text_len=%d",
-        result.cost_usd or 0.0,
-        result.duration_s,
-        result.turns_used,
-        len(result.final_text or ""),
+        res.cost_usd or 0.0,
+        res.duration_s or 0.0,
+        res.turns_used,
+        len(res.text or ""),
     )
     _ = store  # reserved for future event-log writes
     return BatchResult(handler="dream_agent", claimed=1, ok=1, failed=0)

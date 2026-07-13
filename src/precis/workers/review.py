@@ -51,11 +51,8 @@ from typing import Any
 
 from precis.store import Store
 from precis.store.types import Tag
-from precis.utils.claude_agent import (
-    ClaudeAgentError,
-    call_claude_agent,
-)
 from precis.utils.env import env_flag
+from precis.utils.llm.router import LlmRequest, Tier, dispatch
 from precis.utils.load_gate import skip_if_high_load
 from precis.utils.prompt import (
     AssemblyContext,
@@ -157,6 +154,11 @@ class Reviewer:
     tier_tag: str
     gate_env: str
     meta_prefix: str
+    #: The capability tier the call routes through (ADR 0046 unit 4b); the
+    #: model resolves from it at dispatch time so ``PRECIS_LLM_BACKEND`` /
+    #: ``PRECIS_MODEL_*`` can switch it. ``model`` is the pre-resolved id
+    #: used only for prompt assembly (token budgeting).
+    tier: Tier
     model: str
     max_turns: int
     timeout_s: float
@@ -192,31 +194,36 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         )
         return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
     prompt = _build_prompt(reviewer, store)
-    try:
-        result = call_claude_agent(
-            prompt,
-            model=os.environ.get(
-                f"PRECIS_{reviewer.name.upper()}_MODEL", reviewer.model
-            ),
+    # Routed through the LLM seam (ADR 0046 unit 4b): the reviewer's tier
+    # resolves the model at dispatch time, so PRECIS_LLM_BACKEND / PRECIS_MODEL_*
+    # can switch it. A per-reviewer PRECIS_<NAME>_MODEL still pins one (None ⇒
+    # tier default, which equals the old reviewer.model). Errors fold into
+    # res.error rather than raising.
+    res = dispatch(
+        LlmRequest(
+            tier=reviewer.tier,
+            prompt=prompt,
+            tools_needed=True,
+            model=os.environ.get(f"PRECIS_{reviewer.name.upper()}_MODEL"),
             mcp_config=_mcp_config_path(),
             max_turns=reviewer.max_turns,
             timeout_s=reviewer.timeout_s,
-            # Stream-json gets us cost/turns from the result event;
-            # call_claude_agent unwraps the digest text from the
-            # ``result`` field so the digest writer sees plain text.
+            # Stream-json gets us cost/turns from the result event; the
+            # digest writer sees the unwrapped plain text.
             output_format="stream-json",
             extra_args=("--verbose",),
         )
-    except ClaudeAgentError as exc:
-        log.exception("review[%s]: claude agent failed: %s", reviewer.name, exc)
+    )
+    if res.error:
+        log.error("review[%s]: claude agent failed: %s", reviewer.name, res.error)
         return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
-    digest_id = _write_digest(store, reviewer, result.final_text, result.cost_usd)
+    digest_id = _write_digest(store, reviewer, res.text, res.cost_usd)
     log.info(
         "review[%s]: wrote digest memory id=%d cost=$%.4f duration=%.1fs",
         reviewer.name,
         digest_id,
-        result.cost_usd or 0.0,
-        result.duration_s,
+        res.cost_usd or 0.0,
+        res.duration_s or 0.0,
     )
     return BatchResult(handler=reviewer.name, claimed=1, ok=1, failed=0)
 

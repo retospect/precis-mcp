@@ -9,15 +9,21 @@ shape, and three rogue subprocess sites. This module is the **seam**
 that a follow-up unit (4b) folds those call sites through; it does not
 rewire them itself.
 
-Three pieces:
+Four pieces:
 
 * :func:`resolve_model` — the single tier→model table. It reads the
   *existing* env vars / defaults so a migrated caller resolves to the
   byte-for-byte model it uses today (ADR 0046 §"Resolver").
-* :func:`select_transport` + :func:`dispatch` — the routing seam. Given
-  a :class:`LlmRequest` (prompt/messages + tier + tools-needed + budget
-  + timeout), pick the transport and *wrap* the existing helper — never
-  reimplement it.
+* :func:`select_transport` — the pure (tier, tools) → transport choice.
+* :class:`LlmProvider` + the adapter classes + :func:`dispatch` — the
+  **port**. Every backend implements one narrow ``run(req, *, model)``
+  method returning a normalized :class:`LlmResult`; :func:`dispatch`
+  just resolves the model, picks the provider from a
+  :data:`Transport`-keyed registry, and calls it. This is the seam that
+  makes the router *switchable*: a new backend (an OpenAI-compatible OSS
+  model, a failover ladder) is a new provider class + a registry row,
+  with **zero caller changes** — the LLM-independence goal. Each adapter
+  *wraps* the existing helper; it never reimplements it.
 * :class:`LlmResult` + the ``result_from_*`` adapters — one normalized
   result shape unifying the JSON-block / stream-json result-event /
   OpenAI-choices outputs.
@@ -29,19 +35,21 @@ tiers on the ``claude_p`` / litellm transports; an ``AGENT`` (tools,
 multi-turn) profile rides ``cloud-mid`` / ``cloud-super`` (and,
 eventually, ``local-big``) on the ``claude_agent`` transport.
 
-**Local-big + MCP tools is deliberately unimplemented here** — the
-:data:`Transport.LOCAL_BIG_TOOLS` branch is the documented extension
-point where the abandoned in-process litellm-with-``tools=`` wire
-(ADR 0024) plugs back in as the next step (ADR 0046 §"Next step").
+**OSS tool-calling lands on** :data:`Transport.OPENAI_TOOLS` — an
+open-source model driving the precis verbs over the OpenAI ``tools=``
+wire (:class:`OpenAIToolsProvider`), the ADR 0024 loop rebuilt behind
+the provider port. It serves the ``LOCAL_BIG`` tier and, when
+``PRECIS_LLM_BACKEND=openai``, the tool-using cloud tiers.
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from precis.utils._claude_subprocess import ClaudeProcessError
 from precis.utils.claude_agent import AgentResult, call_claude_agent
@@ -61,9 +69,9 @@ class Tier(StrEnum):
     * ``LOCAL_SMALL`` — tool-less local completion on the loopback
       litellm proxy (the ``summarizer`` alias). The cheapest rung; the
       per-chunk gloss lives here.
-    * ``LOCAL_BIG`` — a local model *with* MCP tools. **Not yet wired**
-      (see :data:`Transport.LOCAL_BIG_TOOLS` and ADR 0024/0046); the
-      resolver names its model so the seam is ready.
+    * ``LOCAL_BIG`` — a local model *with* tools, over the OpenAI
+      ``tools=`` loop (:data:`Transport.OPENAI_TOOLS`); the resolver
+      names its model (``qwen-heavy``).
     * ``CLOUD_SMALL`` — cloud haiku, tool-less one-shot JSON judgment
       (the chase verifier shape).
     * ``CLOUD_MID`` — cloud sonnet, the mid agentic rung (planner
@@ -90,15 +98,44 @@ class Transport(StrEnum):
       (one-shot, no tools, last-JSON-block parse).
     * ``LITELLM`` — the loopback litellm ``LlmClient`` (OpenAI
       ``/v1/chat/completions``, tool-less local completion).
-    * ``LOCAL_BIG_TOOLS`` — **not implemented**; the extension point for
-      a local model driving MCP tools over the OpenAI ``tools=`` wire
-      (ADR 0024 prototyped-then-reversed; ADR 0046 §"Next step").
+    * ``LITELLM`` — the loopback litellm ``LlmClient`` (OpenAI
+      ``/v1/chat/completions``, tool-less local completion).
+    * ``OPENAI_COMPAT`` — the same OpenAI ``/v1/chat/completions`` wire
+      pointed at a *hosted* OSS backend (OpenRouter / DeepInfra / a
+      remote vLLM), authed with a vault-resolved key. Tool-less (the
+      one-shot / completion path); tool-using calls go to ``OPENAI_TOOLS``.
+    * ``OPENAI_TOOLS`` — an OSS model driving the precis verbs over the
+      OpenAI ``tools=`` wire, in-process (:mod:`precis.utils.llm.openai_tools`
+      + :mod:`precis.utils.llm.precis_tools`). Serves both the ``LOCAL_BIG``
+      tier (a local model + tools) and the ``OPENAI`` backend's tool-using
+      cloud calls — same wire, different base url. Implements the ADR 0024
+      loop that was prototyped-then-reversed onto ``claude`` (ADR 0046
+      §"Next step").
     """
 
     CLAUDE_AGENT = "claude_agent"
     CLAUDE_P = "claude_p"
     LITELLM = "litellm"
-    LOCAL_BIG_TOOLS = "local_big_tools"
+    OPENAI_COMPAT = "openai_compat"
+    OPENAI_TOOLS = "openai_tools"
+
+
+class Backend(StrEnum):
+    """Which vendor family a cloud request is routed to — the switch that
+    delivers LLM independence.
+
+    Resolved once per :func:`dispatch` from ``PRECIS_LLM_BACKEND`` (see
+    :func:`resolve_backend`) and passed into :func:`select_transport`.
+    Default ``ANTHROPIC`` keeps the ``claude -p`` transports, so the
+    OpenAI-compatible path **ships dark** — it engages only when a
+    deployment opts in *and* points ``PRECIS_LLM_BASE_URL`` at a backend.
+    ``OPENAI`` routes tool-less cloud calls to :data:`Transport.OPENAI_COMPAT`
+    and tool-using cloud calls to :data:`Transport.OPENAI_TOOLS` (the
+    in-process ``tools=`` loop).
+    """
+
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
 
 
 # ── the tier → model table (the ONE consolidation point) ───────────────
@@ -147,8 +184,23 @@ def resolve_model(tier: Tier) -> str:
 # ── transport selection ────────────────────────────────────────────────
 
 
-def select_transport(tier: Tier, *, tools_needed: bool) -> Transport:
-    """Pick the transport for ``(tier, tools_needed)`` — a pure function.
+def resolve_backend() -> Backend:
+    """The cloud backend family for this process — the LLM-independence switch.
+
+    Reads ``PRECIS_LLM_BACKEND`` (default ``anthropic``); an unknown value
+    degrades to ``anthropic`` so a typo can't dark a deployment. The
+    OpenAI-compatible path additionally needs ``PRECIS_LLM_BASE_URL`` set
+    (checked at dispatch); with the backend on but no base url, cloud
+    calls fall back to ``claude`` rather than hit a phantom endpoint.
+    """
+    raw = os.environ.get("PRECIS_LLM_BACKEND", Backend.ANTHROPIC).strip().lower()
+    return Backend.OPENAI if raw == Backend.OPENAI else Backend.ANTHROPIC
+
+
+def select_transport(
+    tier: Tier, *, tools_needed: bool, backend: Backend = Backend.ANTHROPIC
+) -> Transport:
+    """Pick the transport for ``(tier, tools_needed, backend)`` — a pure function.
 
     Local tiers route to their local transport regardless of tools
     (``LOCAL_SMALL`` is tool-less by construction; ``LOCAL_BIG`` is the
@@ -156,12 +208,27 @@ def select_transport(tier: Tier, *, tools_needed: bool) -> Transport:
     which mirrors the ``AGENT`` vs ``HELPER``
     :class:`~precis.utils.prompt.model.Profile` split: tools ⇒
     ``claude_agent`` (AGENT), no tools ⇒ ``claude_p`` (HELPER).
+
+    ``backend`` (default ``ANTHROPIC``, so existing callers are unchanged)
+    routes cloud work to the OSS path when ``OPENAI``: tool-less →
+    :data:`Transport.OPENAI_COMPAT`, tool-using → :data:`Transport.OPENAI_TOOLS`
+    (the in-process ``tools=`` loop). Under ``ANTHROPIC`` both stay on the
+    ``claude`` transports. The ``LOCAL_BIG`` tier (a local model + tools)
+    always takes the OSS tools loop.
     """
     if tier is Tier.LOCAL_SMALL:
         return Transport.LITELLM
     if tier is Tier.LOCAL_BIG:
-        return Transport.LOCAL_BIG_TOOLS
-    return Transport.CLAUDE_AGENT if tools_needed else Transport.CLAUDE_P
+        return Transport.OPENAI_TOOLS
+    if tools_needed:
+        return (
+            Transport.OPENAI_TOOLS
+            if backend is Backend.OPENAI
+            else Transport.CLAUDE_AGENT
+        )
+    if backend is Backend.OPENAI:
+        return Transport.OPENAI_COMPAT
+    return Transport.CLAUDE_P
 
 
 def transport_for_profile(profile: Profile, tier: Tier) -> Transport:
@@ -204,6 +271,11 @@ class LlmResult:
       doesn't report one, e.g. the local litellm proxy).
     * ``turns_used`` — agent turn count (``None`` for the one-shot
       transports).
+    * ``duration_s`` — agent wall-clock (``None`` for the one-shot /
+      local transports); read by dream + review telemetry.
+    * ``data`` — the parsed JSON dict for the ``claude_p`` judge path
+      (``None`` otherwise). Preserves the ``ClaudePResult.data`` a judge
+      caller reads without re-parsing ``text``.
     * ``model`` / ``tier`` — what actually ran, for attribution.
     * ``error`` — ``None`` on success; a message on a caught transport
       failure (see :func:`dispatch`).
@@ -215,6 +287,8 @@ class LlmResult:
     model: str
     tier: Tier
     error: str | None = None
+    duration_s: float | None = None
+    data: dict[str, Any] | None = None
 
 
 def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
@@ -225,14 +299,15 @@ def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
         turns_used=res.turns_used,
         model=model,
         tier=tier,
+        duration_s=res.duration_s,
     )
 
 
 def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmResult:
     """Normalize a :class:`~precis.utils.claude_p.ClaudePResult`.
 
-    ``text`` is the raw stdout (the parsed dict stays reachable on the
-    original ``res.data`` for callers that still want it in 4b).
+    ``text`` is the raw stdout; ``data`` carries the parsed JSON dict so a
+    judge caller reads ``LlmResult.data`` exactly as it read ``ClaudePResult.data``.
     """
     return LlmResult(
         text=res.raw_stdout,
@@ -240,6 +315,7 @@ def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmRe
         turns_used=None,
         model=model,
         tier=tier,
+        data=res.data,
     )
 
 
@@ -284,24 +360,42 @@ class LlmRequest:
     mcp_config: str | Path | None = None
     max_turns: int = 20
     output_format: str = "text"
+    disallowed_tools: tuple[str, ...] = field(default_factory=tuple)
+    #: ``(store, ref_id, source)`` for a ``ref_events`` audit row on success
+    #: (the CAD / structure / follow-up paths use it). ``store`` is typed
+    #: loosely to keep this module free of the DB import chain.
+    log_event: tuple[Any, int, str] | None = None
     # Extra CLI flags forwarded to the claude_* transports.
     extra_args: tuple[str, ...] = field(default_factory=tuple)
 
 
-def dispatch(req: LlmRequest) -> LlmResult:
-    """Route ``req`` to the right transport and return a normalized
-    :class:`LlmResult`.
+class LlmProvider(Protocol):
+    """One narrow port every backend implements.
 
-    Wraps the existing helpers — it never reimplements them. A caught
-    :class:`~precis.utils._claude_subprocess.ClaudeProcessError` (or a
-    local-transport ``RuntimeError``) is folded into
-    :attr:`LlmResult.error` rather than raised, so every dispatch path
-    returns one shape. Programming errors (an unwired tier) still raise.
+    A provider takes a resolved ``model`` id and an :class:`LlmRequest`
+    and returns a normalized :class:`LlmResult`, folding transport
+    failures into :attr:`LlmResult.error` rather than raising (a
+    programming error — an unwired path — still raises). The registry in
+    :data:`_PROVIDERS` maps each :class:`Transport` to one implementation;
+    :func:`dispatch` is the only caller. Adding a backend (OpenAI-
+    compatible OSS, a :class:`Transport`-composing failover ladder) is a
+    new class implementing this method plus a registry row — no caller,
+    :func:`dispatch`, or :class:`Tier` change. That is the switchability
+    the LLM-independence goal wants.
     """
-    transport = select_transport(req.tier, tools_needed=req.tools_needed)
-    model = req.model or resolve_model(req.tier)
 
-    if transport is Transport.CLAUDE_AGENT:
+    def run(self, req: LlmRequest, *, model: str) -> LlmResult: ...
+
+
+class ClaudeAgentProvider:
+    """``claude -p`` multi-turn agent (MCP tools, stream-json result).
+
+    Wraps :func:`~precis.utils.claude_agent.call_claude_agent` via the
+    module global so a test that monkeypatches ``router.call_claude_agent``
+    still intercepts it.
+    """
+
+    def run(self, req: LlmRequest, *, model: str) -> LlmResult:
         try:
             res = call_claude_agent(
                 req.prompt,
@@ -312,13 +406,19 @@ def dispatch(req: LlmRequest) -> LlmResult:
                 timeout_s=req.timeout_s,
                 max_usd=req.max_usd,
                 output_format=req.output_format,
+                disallowed_tools=req.disallowed_tools,
                 extra_args=req.extra_args,
+                log_event=req.log_event,
             )
         except ClaudeProcessError as exc:
             return _error_result(exc, model=model, tier=req.tier)
         return result_from_agent(res, model=model, tier=req.tier)
 
-    if transport is Transport.CLAUDE_P:
+
+class ClaudePProvider:
+    """``claude -p`` one-shot JSON judge (no tools, last-JSON-block)."""
+
+    def run(self, req: LlmRequest, *, model: str) -> LlmResult:
         try:
             pres = call_claude_p(
                 req.prompt,
@@ -331,22 +431,188 @@ def dispatch(req: LlmRequest) -> LlmResult:
             return _error_result(exc, model=model, tier=req.tier)
         return result_from_claude_p(pres, model=model, tier=req.tier)
 
-    if transport is Transport.LITELLM:
+
+class LitellmProvider:
+    """Loopback litellm ``LlmClient`` — OpenAI ``/v1/chat/completions``,
+    tool-less local completion."""
+
+    def run(self, req: LlmRequest, *, model: str) -> LlmResult:
         return _dispatch_local(req, model)
 
-    # Transport.LOCAL_BIG_TOOLS — the documented extension point.
-    #
-    # A local model (ADR 0024's ``qwen-heavy``) driving the precis MCP
-    # tools over the OpenAI ``tools=`` wire. ADR 0024 prototyped this
-    # in-process and then reversed it onto the ``claude`` binary; ADR 0046
-    # §"Next step" scopes wiring it back HERE as the follow-up — a local
-    # OpenAI client with ``tools=`` populated from the MCP config plus a
-    # tool-call loop, normalized into :class:`LlmResult` like the rest.
-    # Deliberately unimplemented in this unit.
-    raise NotImplementedError(
-        "local-big + MCP tools is not wired yet — the ADR 0024/0046 "
-        "extension point. Route tool-using work through a cloud tier for now."
+
+class OpenAICompatProvider:
+    """A *hosted* OpenAI-compatible OSS backend — OpenRouter / DeepInfra /
+    a remote vLLM — over the same ``/v1/chat/completions`` wire as the
+    loopback proxy, but at ``PRECIS_LLM_BASE_URL`` and authed with a
+    vault-resolved key (``get_secret('PRECIS_LLM_API_KEY')``).
+
+    Tool-less (the one-shot / completion / JSON-judge path) — the
+    summarize/classify/judge calls. Tool-using calls take
+    :class:`OpenAIToolsProvider`. Model ids come from the same
+    ``resolve_model`` table, so a deployment points ``PRECIS_MODEL_*`` at
+    OSS ids (e.g. ``PRECIS_MODEL_OPUS=deepseek-ai/DeepSeek-V3``).
+    """
+
+    def run(self, req: LlmRequest, *, model: str) -> LlmResult:
+        return _dispatch_openai_compat(req, model)
+
+
+class OpenAIToolsProvider:
+    """An OSS model driving the precis verbs over the OpenAI ``tools=`` wire.
+
+    The ADR 0024 in-process tool loop, rebuilt behind the provider port:
+    :func:`~precis.utils.llm.openai_tools.run_tool_loop` drives a hosted or
+    local OSS backend (``PRECIS_LLM_BASE_URL``, vault key) through a
+    tool-calling conversation, executing each call in-process via
+    ``runtime.dispatch`` — no MCP socket round-trip. Serves both the
+    ``LOCAL_BIG`` tier and the ``OPENAI`` backend's tool-using cloud calls.
+    """
+
+    def run(self, req: LlmRequest, *, model: str) -> LlmResult:
+        return _dispatch_openai_tools(req, model)
+
+
+# The Transport → provider registry: the ONE place a transport binds to a
+# concrete backend. Swap or add a row to reroute without touching callers.
+_PROVIDERS: dict[Transport, LlmProvider] = {
+    Transport.CLAUDE_AGENT: ClaudeAgentProvider(),
+    Transport.CLAUDE_P: ClaudePProvider(),
+    Transport.LITELLM: LitellmProvider(),
+    Transport.OPENAI_COMPAT: OpenAICompatProvider(),
+    Transport.OPENAI_TOOLS: OpenAIToolsProvider(),
+}
+
+# Import-time totality guard: every Transport must have a provider, so
+# adding one without wiring a backend is a load-time failure, not a
+# KeyError at dispatch (mirrors the _TIER_MODEL resolver assert above).
+assert set(_PROVIDERS) == set(Transport), "dispatch: provider registry is not total"
+
+
+def provider_for(transport: Transport) -> LlmProvider:
+    """The provider bound to ``transport`` — the registry accessor a
+    future config layer overrides to reroute a transport."""
+    return _PROVIDERS[transport]
+
+
+# ── failover ladder (composes the port) ────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class Rung:
+    """One failover attempt: a :class:`Transport` + an optional model override.
+
+    ``model=None`` uses the ``model`` :meth:`FailoverProvider.run` was given
+    (the primary, tier-resolved one); a fallback rung pins its own — e.g. the
+    claude safety net pins the tier's compiled-in claude id so a PRECIS_MODEL_*
+    override pointing at an OSS id doesn't leak onto ``claude -p``.
+    """
+
+    transport: Transport
+    model: str | None = None
+    label: str = ""
+
+
+#: A quality gate on an error-free result: return ``True`` to accept, ``False``
+#: to fall through to the next rung. ``None`` (the default) accepts any
+#: error-free result — i.e. failover is transport-error-only.
+AcceptFn = Callable[[LlmResult], bool]
+
+
+class FailoverProvider:
+    """Compose the port over an ordered ladder — the LLM-independence safety net.
+
+    Walk the rungs; return the first result with no :attr:`LlmResult.error`
+    that the ``accept`` gate approves, else the last attempt (carrying its
+    error). Because it *is* a provider, a caller can't tell a ladder from a
+    single model. Failure triggers:
+
+    * **transport down / hard error** — a rung sets ``res.error`` → fall through.
+    * **quality / verdict** — ``accept(res)`` returns ``False`` → fall through
+      (the seam for a judge-gated escalate; unused by the default ladder).
+
+    Cost / turn ceilings live *inside* the underlying providers (``max_usd`` /
+    ``max_turns``), so they bound each rung rather than the ladder.
+    """
+
+    def __init__(self, rungs: list[Rung], *, accept: AcceptFn | None = None) -> None:
+        if not rungs:
+            raise ValueError("FailoverProvider needs at least one rung")
+        self._rungs = tuple(rungs)
+        self._accept = accept
+
+    def run(self, req: LlmRequest, *, model: str) -> LlmResult:
+        last: LlmResult | None = None
+        for rung in self._rungs:
+            last = provider_for(rung.transport).run(req, model=rung.model or model)
+            if last.error is None and (self._accept is None or self._accept(last)):
+                return last
+        assert last is not None  # rungs is non-empty
+        return last
+
+
+def _claude_default(tier: Tier) -> str:
+    """The tier's compiled-in claude model id, ignoring any PRECIS_MODEL_*
+    override — so a claude fallback rung stays on claude even when the override
+    points the primary at an OSS id."""
+    return _TIER_MODEL[tier][1]
+
+
+def _failover_enabled() -> bool:
+    return os.environ.get("PRECIS_LLM_FAILOVER", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _failover_ladder(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
+    """The default OSS→claude ladder: the backend's primary transport, then the
+    claude equivalent as a safety net (only when the primary is an OSS
+    transport — a claude/local primary has nothing to fall back to)."""
+    primary = select_transport(tier, tools_needed=tools_needed, backend=backend)
+    if primary in (Transport.OPENAI_TOOLS, Transport.OPENAI_COMPAT):
+        claude = Transport.CLAUDE_AGENT if tools_needed else Transport.CLAUDE_P
+        return [
+            Rung(primary, label="oss"),
+            Rung(claude, model=_claude_default(tier), label="claude-fallback"),
+        ]
+    return [Rung(primary, label="primary")]
+
+
+def dispatch(req: LlmRequest) -> LlmResult:
+    """Route ``req`` to its provider and return a normalized
+    :class:`LlmResult`.
+
+    Resolve the backend + model, pick the transport (pure), look up the
+    provider, and delegate. Each provider *wraps* the existing helper —
+    never reimplements it — and folds a caught
+    :class:`~precis.utils._claude_subprocess.ClaudeProcessError` (or a
+    local-transport ``RuntimeError``) into :attr:`LlmResult.error` rather
+    than raising, so every dispatch path returns one shape. A programming
+    error (the unwired local-big path) still raises.
+
+    The ``OPENAI`` backend needs ``PRECIS_LLM_BASE_URL``; with the backend
+    on but no base url set, cloud calls fall back to ``claude`` rather than
+    POST to a phantom endpoint — the ships-dark safety net.
+
+    With ``PRECIS_LLM_FAILOVER`` on, an OSS primary is wrapped in a
+    :class:`FailoverProvider` that falls back to ``claude`` on error — so a
+    flipped backend degrades to claude instead of failing. Off by default.
+    """
+    backend = resolve_backend()
+    if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
+        backend = Backend.ANTHROPIC
+    model = req.model or resolve_model(req.tier)
+    if _failover_enabled():
+        ladder = _failover_ladder(
+            req.tier, tools_needed=req.tools_needed, backend=backend
+        )
+        return FailoverProvider(ladder).run(req, model=model)
+    transport = select_transport(
+        req.tier, tools_needed=req.tools_needed, backend=backend
     )
+    return provider_for(transport).run(req, model=model)
 
 
 def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
@@ -378,6 +644,111 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     return result_from_openai(res, model=model, tier=req.tier)
 
 
+def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
+    """Drive a hosted OpenAI-compatible OSS backend (the ``OPENAI`` backend).
+
+    Same OpenAI ``/v1/chat/completions`` client as :func:`_dispatch_local`,
+    but pointed at ``PRECIS_LLM_BASE_URL`` and authed with a vault-resolved
+    key (``get_secret('PRECIS_LLM_API_KEY')`` — env-override-wins, so a key
+    in the environment still works during transition). Imports the
+    summarizer client + the secrets resolver lazily to keep this module out
+    of the worker/DB import chain.
+    """
+    from dataclasses import replace
+
+    from precis.secrets import get_secret
+    from precis.workers.llm_summarize import LlmClient, LlmConfig
+
+    base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
+    api_key = get_secret("PRECIS_LLM_API_KEY") or ""
+    cfg = replace(
+        LlmConfig.from_env(),
+        url=base_url,
+        api_key=api_key,
+        model=model,
+        enabled=True,
+    )
+    messages = req.messages or [{"role": "user", "content": req.prompt}]
+    client = LlmClient(cfg)
+    try:
+        res = client.complete(messages)
+    except (RuntimeError, OSError) as exc:
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=str(exc),
+        )
+    return result_from_openai(res, model=model, tier=req.tier)
+
+
+def _read_system_prompt(sp: str | Path | None) -> str | None:
+    """Resolve an ``LlmRequest.system_prompt`` to inline text for the OSS loop.
+
+    ``claude_agent`` accepts both a file path (dream's soul file) and inline
+    text (plan_tick's assembled prompt). A :class:`~pathlib.Path` is read;
+    a ``str`` is treated as inline text (an unreadable path degrades to
+    ``None`` rather than raising).
+    """
+    if sp is None:
+        return None
+    if isinstance(sp, Path):
+        try:
+            return sp.read_text()
+        except OSError:
+            return None
+    return sp
+
+
+def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
+    """Drive the OSS ``tools=`` agent loop (the ``OPENAI_TOOLS`` transport).
+
+    Assembles a :class:`~precis.utils.llm.openai_tools.ToolChatClient` (hosted
+    or local OSS backend at ``PRECIS_LLM_BASE_URL``, vault key), advertises the
+    precis verbs, and runs :func:`~precis.utils.llm.openai_tools.run_tool_loop`
+    with each tool call executed in-process via ``runtime.dispatch``. The loop
+    already folds transport errors into its result; the outer guard catches a
+    failure to *build* the executor/tools (e.g. an unavailable runtime).
+    Imports the loop + bridge lazily so the router stays DB-free.
+    """
+    from precis.secrets import get_secret
+    from precis.utils.llm.openai_tools import ToolChatClient, run_tool_loop
+    from precis.utils.llm.precis_tools import precis_tool_specs, runtime_executor
+
+    base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
+    api_key = get_secret("PRECIS_LLM_API_KEY") or ""
+    timeout = req.timeout_s if req.timeout_s is not None else 600.0
+    client = ToolChatClient(url=base_url, api_key=api_key, model=model, timeout=timeout)
+    try:
+        result = run_tool_loop(
+            client,
+            prompt=req.prompt,
+            tools=precis_tool_specs(),
+            execute=runtime_executor(),
+            system_prompt=_read_system_prompt(req.system_prompt),
+            max_turns=req.max_turns,
+        )
+    except (RuntimeError, OSError) as exc:
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=str(exc),
+        )
+    return LlmResult(
+        text=result.final_text,
+        cost_usd=None,
+        turns_used=result.turns_used,
+        model=model,
+        tier=req.tier,
+        error=result.error,
+    )
+
+
 def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResult:
     """Fold a transport failure into a normalized error result.
 
@@ -397,12 +768,16 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
 
 __all__ = [
     "AgentResult",
+    "Backend",
     "ClaudePResult",
+    "LlmProvider",
     "LlmRequest",
     "LlmResult",
     "Tier",
     "Transport",
     "dispatch",
+    "provider_for",
+    "resolve_backend",
     "resolve_model",
     "result_from_agent",
     "result_from_claude_p",

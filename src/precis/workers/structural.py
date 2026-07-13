@@ -204,6 +204,7 @@ STRUCTURAL = Reviewer(
     meta_prefix="structural_",
     # Cloud reasoning tier (opus-4.8) via the router; a per-pass
     # ``PRECIS_STRUCTURAL_MODEL`` pin still wins in ``run_review_pass``.
+    tier=Tier.CLOUD_SUPER,
     model=resolve_model(Tier.CLOUD_SUPER),
     max_turns=30,
     timeout_s=900,
@@ -258,9 +259,9 @@ def _build_prompt(store: Store) -> str:
     return _review_build_prompt(STRUCTURAL, store)
 
 
-# After the reviewer refactor, tests patch
-# ``precis.workers.review.call_claude_agent`` (the actual call site)
-# rather than this module — no late re-export needed.
+# The reviewer routes through the LLM seam (ADR 0046 unit 4b), so tests
+# patch ``precis.utils.llm.router.call_claude_agent`` (the wrapper the
+# provider calls) rather than this module — no late re-export needed.
 
 # Silence unused-import lints on the things we re-export for tests
 # but don't reference here.

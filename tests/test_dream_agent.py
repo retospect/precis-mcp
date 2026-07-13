@@ -127,7 +127,7 @@ def test_falls_back_to_packaged_prompt_when_override_missing(
             final_text="dreamed.", cost_usd=0.0, duration_s=1, turns_used=1
         )
 
-    monkeypatch.setattr("precis.workers.dream_agent.call_claude_agent", _fake)
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _fake)
     result = run_dream_pass(store)
     assert result.claimed == 1 and result.ok == 1
     assert "DREAM CYCLE" in captured["prompt"]
@@ -161,7 +161,7 @@ def test_happy_path_dispatches_with_files(
             final_text="dreamed.", cost_usd=0.02, duration_s=10, turns_used=5
         )
 
-    monkeypatch.setattr("precis.workers.dream_agent.call_claude_agent", _fake)
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _fake)
     result = run_dream_pass(store)
     assert result.claimed == 1
     assert result.ok == 1
@@ -189,7 +189,7 @@ def test_pass_counts_failure_on_dispatch_error(
     def _err(*a, **kw):
         raise ClaudeAgentError("bad", stdout="", stderr="model died")
 
-    monkeypatch.setattr("precis.workers.dream_agent.call_claude_agent", _err)
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _err)
     result = run_dream_pass(store)
     assert result.claimed == 1
     assert result.failed == 1

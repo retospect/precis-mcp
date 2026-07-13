@@ -223,6 +223,7 @@ DEEP_REVIEW = Reviewer(
     meta_prefix="deep_review_",
     # Cloud reasoning tier (opus-4.8) via the router; a per-pass
     # ``PRECIS_DEEP_REVIEW_MODEL`` pin still wins in ``run_review_pass``.
+    tier=Tier.CLOUD_SUPER,
     model=resolve_model(Tier.CLOUD_SUPER),
     max_turns=60,
     timeout_s=1800,
@@ -264,9 +265,9 @@ def _build_prompt(store: Store) -> str:
     return _review_build_prompt(DEEP_REVIEW, store)
 
 
-# After the reviewer refactor, tests patch
-# ``precis.workers.review.call_claude_agent`` (the actual call site)
-# rather than this module — no late re-export needed.
+# The reviewer routes through the LLM seam (ADR 0046 unit 4b), so tests
+# patch ``precis.utils.llm.router.call_claude_agent`` (the wrapper the
+# provider calls) rather than this module — no late re-export needed.
 
 _ = (_mcp_config_path,)
 

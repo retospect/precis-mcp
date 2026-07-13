@@ -32,7 +32,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from precis.utils.claude_agent import AgentResult, call_claude_agent
+from precis.utils.claude_agent import AgentResult, ClaudeAgentError
+from precis.utils.llm.router import LlmRequest, Tier, dispatch
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -152,17 +153,33 @@ def generate_answer(prompt: str, *, store: Store, conv_ref_id: int) -> AgentResu
     run on the conv ref's ``ref_events`` for per-host telemetry.
     """
     cfg = _resolve_config()
-    return call_claude_agent(
-        prompt,
-        model=cfg.model,
-        system_prompt=cfg.soul_path,
-        mcp_config=cfg.mcp_path,
-        timeout_s=cfg.timeout_s,
-        # Same as dreams: stay on corpus state, don't fan out to the web.
-        disallowed_tools=("WebFetch", "WebSearch"),
-        output_format="stream-json",
-        extra_args=("--verbose",),
-        log_event=(store, conv_ref_id, "followup"),
+    # Routed through the LLM seam (ADR 0046 unit 4b) so PRECIS_LLM_BACKEND can
+    # switch the follow-up onto an OSS model. The AgentResult-returning /
+    # ClaudeAgentError-raising contract is preserved so the route is untouched:
+    # dispatch folds failures into res.error, which we re-raise.
+    res = dispatch(
+        LlmRequest(
+            tier=Tier.CLOUD_SUPER,
+            prompt=prompt,
+            tools_needed=True,
+            model=cfg.model,
+            system_prompt=cfg.soul_path,
+            mcp_config=cfg.mcp_path,
+            timeout_s=cfg.timeout_s,
+            # Same as dreams: stay on corpus state, don't fan out to the web.
+            disallowed_tools=("WebFetch", "WebSearch"),
+            output_format="stream-json",
+            extra_args=("--verbose",),
+            log_event=(store, conv_ref_id, "followup"),
+        )
+    )
+    if res.error:
+        raise ClaudeAgentError(res.error, stdout=res.text)
+    return AgentResult(
+        final_text=res.text,
+        cost_usd=res.cost_usd,
+        duration_s=res.duration_s or 0.0,
+        turns_used=res.turns_used,
     )
 
 

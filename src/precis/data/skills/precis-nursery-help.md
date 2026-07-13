@@ -35,6 +35,9 @@ Alerts dedup per *condition* instead.
 | `stalled-recurring` | recurring's most recent spawned child has been open >1 h | 1 h floor |
 | `spin-loop` | one `(ref_id, source)` emits >threshold `ref_events` in 24 h | 200 / 24 h |
 | `plan-tick-spin` | a planner parent mints >threshold `plan_tick` jobs in 24 h without converging | 16 / 24 h |
+| `worker-restart` | a `(host, process)` emits >threshold `worker: started` boot rows in 1 h (restart storm) | 8 / 1 h · **critical** |
+| `dead-worker` | a continuous daemon (`precis-worker` / `precis-worker-agent`) silent >threshold while its host is alive | 10 min · **critical** |
+| `dispatch-stall` | `claude_inproc` jobs `STATUS:queued` >threshold with **zero** live-lease jobs running (executor stopped claiming) | 15 min · **critical** |
 
 `orphan` enforces the strategic invariant (knob #6 in the plan).
 `stale-claim` catches workers that died mid-task — the claim's age
@@ -48,6 +51,20 @@ outcome that never clears the claim predicate). The detail names the
 source + last event + rate so triage starts at the worker. The same
 loops are also surfaced on the web Status page's "Background health"
 panel for pull-style monitoring.
+
+The three **worker-health** detectors watch daemon liveness / work
+flow, not the todo graph, and are the only `critical` categories (a
+new one fires the one-shot Discord ping). `worker-restart` and
+`dead-worker` read `worker_logs`; `dispatch-stall` reads the job
+queue. `dispatch-stall` is the planner-SPOF guard: minting runs on
+every node, but a `plan_tick` can only *execute* on melchior's
+agent-profile worker, so if that executor dies / 401s / never starts,
+jobs pile up `STATUS:queued` with no failure bubble and the planner
+goes silently dark. The "nothing running with a live lease" gate is
+what separates a dead executor from a healthy-but-backlogged one, and
+being symptom-level it also catches an agent worker that never
+started (which has no log rows for `dead-worker` to age). These raise
+non-ref-scoped alerts (`ref_id=None` + an explicit `fingerprint_key`).
 
 Recurring subtrees (children of `level:recurring` roots) are
 exempt from the strategic invariant — they're scheduled work, not

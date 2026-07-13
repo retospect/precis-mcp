@@ -147,8 +147,7 @@ def test_dispatch_writes_valid_proposal(seeded, monkeypatch):
         }
     )
     monkeypatch.setattr(
-        sp,
-        "AGENT",
+        "precis.utils.llm.router.call_claude_agent",
         lambda *a, **k: AgentResult(
             final_text=reply, cost_usd=0.01, duration_s=0.1, turns_used=1
         ),
@@ -178,8 +177,7 @@ def test_dispatch_marks_invalid_proposal(seeded, monkeypatch):
         {"ops": [{"op": "vacancy", "atom": "aXe99"}], "rationale": "oops"}
     )
     monkeypatch.setattr(
-        sp,
-        "AGENT",
+        "precis.utils.llm.router.call_claude_agent",
         lambda *a, **k: AgentResult(
             final_text=reply, cost_usd=0.0, duration_s=0.1, turns_used=1
         ),
@@ -198,8 +196,7 @@ def test_dispatch_marks_invalid_proposal(seeded, monkeypatch):
 def test_dispatch_fails_on_unparseable_reply(seeded, monkeypatch):
     store, ref = seeded
     monkeypatch.setattr(
-        sp,
-        "AGENT",
+        "precis.utils.llm.router.call_claude_agent",
         lambda *a, **k: AgentResult(
             final_text="I cannot help", cost_usd=0.0, duration_s=0.1, turns_used=1
         ),

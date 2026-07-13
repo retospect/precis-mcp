@@ -128,7 +128,7 @@ def test_dispatch_writes_valid_proposal(seeded, monkeypatch):
             "rationale": "widen the plate to r30",
         }
     )
-    monkeypatch.setattr(cp, "AGENT", _agent(reply))
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _agent(reply))
     ctx = _FakeCtx(
         store,
         ref.id,
@@ -147,7 +147,7 @@ def test_dispatch_writes_valid_proposal(seeded, monkeypatch):
 def test_dispatch_marks_invalid_proposal(seeded, monkeypatch):
     store, ref = seeded
     reply = json.dumps({"source": "plate frobnicate cyl:r1h1", "rationale": "oops"})
-    monkeypatch.setattr(cp, "AGENT", _agent(reply))
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _agent(reply))
     ctx = _FakeCtx(store, ref.id, {"cad_ref_id": ref.id, "instruction": "break it"})
     cp._dispatch(ctx, cp.SPEC)
     # A parseable-but-unbuildable proposal still succeeds as a job — surfaced as
@@ -159,7 +159,9 @@ def test_dispatch_marks_invalid_proposal(seeded, monkeypatch):
 
 def test_dispatch_fails_on_unparseable_reply(seeded, monkeypatch):
     store, ref = seeded
-    monkeypatch.setattr(cp, "AGENT", _agent("I cannot help"))
+    monkeypatch.setattr(
+        "precis.utils.llm.router.call_claude_agent", _agent("I cannot help")
+    )
     ctx = _FakeCtx(store, ref.id, {"cad_ref_id": ref.id, "instruction": "do a thing"})
     cp._dispatch(ctx, cp.SPEC)
     assert ctx.status is None and ctx.failure is not None

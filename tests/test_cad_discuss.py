@@ -88,7 +88,8 @@ def test_dispatch_writes_prose_answer_grounded_in_facts(seeded, monkeypatch):
     store, ref = seeded
     sink: dict = {}
     monkeypatch.setattr(
-        cd, "AGENT", _agent_capture("The hub and rim don't touch; add a spoke.", sink)
+        "precis.utils.llm.router.call_claude_agent",
+        _agent_capture("The hub and rim don't touch; add a spoke.", sink),
     )
     ctx = _FakeCtx(
         store,
@@ -121,7 +122,9 @@ def test_dispatch_writes_prose_answer_grounded_in_facts(seeded, monkeypatch):
 def test_dispatch_fails_on_empty_answer(seeded, monkeypatch):
     store, ref = seeded
     sink: dict = {}
-    monkeypatch.setattr(cd, "AGENT", _agent_capture("   ", sink))
+    monkeypatch.setattr(
+        "precis.utils.llm.router.call_claude_agent", _agent_capture("   ", sink)
+    )
     ctx = _FakeCtx(store, ref.id, {"cad_ref_id": ref.id, "instruction": "hello?"})
     cd._dispatch(ctx, cd.SPEC)
     assert ctx.status is None and ctx.failure is not None
