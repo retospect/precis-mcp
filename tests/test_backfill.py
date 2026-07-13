@@ -71,6 +71,44 @@ def test_candidate_list_render_empty() -> None:
     assert _render_candidate_list([]).startswith("— candidate sources · none")
 
 
+def _cand(
+    ref_id: int, chunk_id: int, score: float, support: tuple[str, ...]
+) -> Candidate:
+    return Candidate(
+        ref_id=ref_id,
+        ref=NS(kind="paper", title=f"Paper {ref_id}"),
+        chunk_id=chunk_id,
+        chunk_handle=f"pc{chunk_id}",
+        score=score,
+        support=support,
+    )
+
+
+def test_merge_recurrence_ranks_cross_cutting_first() -> None:
+    from precis.backfill.candidates import merge_recurrence
+
+    # §dc1 recalls pa5 (strong) + pa6;  §dc2 recalls pa5 (weaker chunk) + pa7.
+    a = [_cand(5, 10, 0.9, ("dc1",)), _cand(6, 11, 0.5, ("dc1",))]
+    b = [_cand(5, 12, 0.7, ("dc2",)), _cand(7, 13, 0.8, ("dc2",))]
+    out = merge_recurrence([a, b], limit=8)
+    # the recurring source (both sections) ranks first, ahead of a higher-scoring
+    # single-section hit (pa7 @ 0.8) — a cross-cutting gap is the stronger miss.
+    assert [c.ref_id for c in out] == [5, 7, 6]
+    pa5 = out[0]
+    assert pa5.support == ("dc1", "dc2")  # accrued both supporting sections
+    assert pa5.chunk_handle == "pc10"  # kept the best-scoring chunk
+    assert pa5.score == 0.9
+
+
+def test_candidate_list_render_shows_recurrence_and_support() -> None:
+    recurring = _cand(5, 10, 1.0, ("dc1", "dc2"))
+    single = _cand(6, 11, 1.0, ("dc7",))
+    out = _render_candidate_list([recurring, single])
+    assert "○○ " in out  # the recurrence glyph
+    assert "recurs across dc1 dc2" in out
+    assert "supports dc7" in out
+
+
 # ── real-store: Tier-0 dedup ─────────────────────────────────────────
 
 

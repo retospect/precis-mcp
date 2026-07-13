@@ -23,6 +23,7 @@ from precis.backfill.candidates import (
     Candidate,
     draft_cited_ref_ids,
     find_candidates,
+    merge_recurrence,
 )
 from precis.backfill.citation_lens import (
     find_citation_candidates,
@@ -40,6 +41,7 @@ __all__ = [
     "find_candidates",
     "find_citation_candidates",
     "materialize_citation_edges",
+    "merge_recurrence",
     "recall_embedder",
     "render_backfill",
 ]

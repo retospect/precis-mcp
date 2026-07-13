@@ -610,12 +610,25 @@ writer's context, the more discipline the prose needs.*
    and degrades to frequency order on a tiny doc where every term spans the run
    (the honest v1 preserved on small inputs). Tests: `tests/test_section_keywords.py`
    (`test_ctfidf_suppresses_doc_generic_terms` + the four slice-2 cases, all
-   still green). **Still ahead in this slice:** real-section paper TOCs (gated on
-   the "verify ingest section structure" backlog probe — keyword-cluster fallback
-   holds until then), `search`-verb filter promotion (also a standalone backlog
-   item), and the multi-focus recurrence overlay + internal-consistency findings
-   (needs per-target candidate attribution, which `find_candidates` flattens
-   today).
+   still green). **— multi-focus recurrence overlay DONE**
+   (`backfill/candidates.py`): with more than one target, the text lens now runs
+   *per section* (each programs its own recall) and the hits merge **by source
+   ref** (`merge_recurrence`, pure/unit-tested) — every candidate carries which
+   section(s) surfaced it (`Candidate.support`, the field slice-1 reserved) and a
+   source recalled across several sections **ranks first**: a cross-cutting gap is
+   the stronger omission than a higher-scoring single-section hit. Surfaced in the
+   render as `○○ · recurs across <a> <b>` (vs `○ · supports <a>`) in both the
+   candidate list and the folded-in `_backfill_marks` (`_support_overlay`). A
+   single target stays one sweep attributed to it; the doc-level citation lens
+   carries no per-section support (bare `○`). Tests:
+   `test_merge_recurrence_ranks_cross_cutting_first`,
+   `test_candidate_list_render_shows_recurrence_and_support`. **Still ahead in
+   this slice:** real-section paper TOCs (gated on the "verify ingest section
+   structure" backlog probe — keyword-cluster fallback holds until then), the
+   `search`-verb filter promotion (also a standalone backlog item), and
+   **internal-consistency findings** (deferred — flagging contradictory claims
+   across sections is a model-authored *finding*, not a deterministic roll-up;
+   it belongs with the slice-7 review pass, not the recall layer).
 6. **Beyond papers — other source kinds + provenance tiering.** Slices 1–5
    assume `kind='paper'`. But `patent`, `memory`, `datasheet`, `web`, `cfp`
    are searchable/viewable too and bring **angles a paper won't** — a patent

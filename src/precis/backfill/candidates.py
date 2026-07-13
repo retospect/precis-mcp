@@ -130,6 +130,84 @@ def seed_from_targets(
     return keywords[:_MAX_KEYWORD_LEGS], seed_text
 
 
+def _text_lens(
+    store: Any,
+    embedder: Any,
+    target_chunks: list[Any],
+    *,
+    kind: str,
+    exclude_ref_ids: set[int] | None,
+    per_paper: int,
+    limit: int,
+    support: tuple[str, ...],
+) -> list[Candidate]:
+    """One text-lens sweep for ``target_chunks`` — the section(s) program their
+    own recall (keywords + embedded text → RRF hybrid search over ``kind='paper'``,
+    Tier-0-excluded). Every hit is stamped with ``support`` (the target handle(s)
+    this sweep speaks for) so the caller can see which section surfaced it."""
+    keywords, seed_text = seed_from_targets(store, target_chunks, kind=kind)
+    q_texts = keywords or ([seed_text[:400]] if seed_text else [])
+    query_vecs: list[list[float]] = []
+    if seed_text:
+        vec = embed_query(embedder, seed_text)
+        if vec:
+            query_vecs.append(vec)
+    if not (q_texts or query_vecs):
+        return []
+    hits = store.search_blocks_multi(
+        q_texts=q_texts,
+        query_vecs=query_vecs,
+        mode="hybrid",
+        kind="paper",
+        per_paper=per_paper,
+        exclude_ref_ids=sorted(exclude_ref_ids) if exclude_ref_ids else None,
+        limit=limit,
+    )
+    out: list[Candidate] = []
+    for block, ref, score in hits:
+        rkind = getattr(ref, "kind", "paper") or "paper"
+        handle = handle_registry.format_handle(rkind, int(block.id), chunk=True)
+        out.append(
+            Candidate(
+                ref_id=int(ref.id),
+                ref=ref,
+                chunk_id=int(block.id),
+                chunk_handle=handle,
+                score=float(score),
+                support=support,
+            )
+        )
+    return out
+
+
+def _union_support(a: tuple[str, ...], b: tuple[str, ...]) -> tuple[str, ...]:
+    """Order-preserving union of two support tuples (document-order target
+    handles; de-duplicated)."""
+    return tuple(dict.fromkeys((*a, *b)))
+
+
+def merge_recurrence(
+    per_target: list[list[Candidate]], *, limit: int
+) -> list[Candidate]:
+    """Union per-target text-lens results **by source ref** into the recurrence
+    overlay: a paper several sections independently recall keeps its best-scoring
+    chunk and accrues every supporting target handle, and **cross-cutting gaps
+    rank first** — a source missed in three sections is a stronger omission than
+    one missed in one. Pure (no store), so the ranking is unit-testable."""
+    merged: dict[int, Candidate] = {}
+    for cands in per_target:
+        for cand in cands:
+            prev = merged.get(cand.ref_id)
+            if prev is None:
+                merged[cand.ref_id] = cand
+                continue
+            support = _union_support(prev.support, cand.support)
+            keep = cand if cand.score > prev.score else prev
+            merged[cand.ref_id] = replace(keep, support=support)
+    out = sorted(merged.values(), key=lambda c: (len(c.support), c.score), reverse=True)
+    return out[:limit]
+
+
 def find_candidates(
     store: Any,
     embedder: Any,
@@ -148,38 +226,40 @@ def find_candidates(
     so a dismissed paper stops resurfacing without seeding its own neighbourhood).
     ``per_paper=1`` spreads the pool across papers (breadth, not depth). Degrades
     to lexical-only when the embedder is down, and the citation lens self-disables
-    on any failure — the text lens always carries the workspace."""
-    keywords, seed_text = seed_from_targets(store, target_chunks, kind=kind)
-    q_texts = keywords or ([seed_text[:400]] if seed_text else [])
-    query_vecs: list[list[float]] = []
-    if seed_text:
-        vec = embed_query(embedder, seed_text)
-        if vec:
-            query_vecs.append(vec)
+    on any failure — the text lens always carries the workspace.
 
-    out: list[Candidate] = []
-    if q_texts or query_vecs:
-        hits = store.search_blocks_multi(
-            q_texts=q_texts,
-            query_vecs=query_vecs,
-            mode="hybrid",
-            kind="paper",
-            per_paper=per_paper,
-            exclude_ref_ids=sorted(exclude_ref_ids) if exclude_ref_ids else None,
-            limit=limit,
-        )
-        for block, ref, score in hits:
-            rkind = getattr(ref, "kind", "paper") or "paper"
-            handle = handle_registry.format_handle(rkind, int(block.id), chunk=True)
-            out.append(
-                Candidate(
-                    ref_id=int(ref.id),
-                    ref=ref,
-                    chunk_id=int(block.id),
-                    chunk_handle=handle,
-                    score=float(score),
-                )
+    **Multi-focus recurrence overlay:** with more than one target the text lens
+    runs *per section* (each programs its own recall) and the hits merge by source
+    ref (:func:`merge_recurrence`), so every candidate carries which section(s)
+    surfaced it and a source recalled across several sections ranks first. A
+    single target is one sweep whose hits are attributed to it."""
+    if len(target_chunks) > 1:
+        per_target = [
+            _text_lens(
+                store,
+                embedder,
+                [tc],
+                kind=kind,
+                exclude_ref_ids=exclude_ref_ids,
+                per_paper=per_paper,
+                limit=limit,
+                support=(tc.dc,),
             )
+            for tc in target_chunks
+        ]
+        out = merge_recurrence(per_target, limit=limit)
+    else:
+        support = (target_chunks[0].dc,) if target_chunks else ()
+        out = _text_lens(
+            store,
+            embedder,
+            target_chunks,
+            kind=kind,
+            exclude_ref_ids=exclude_ref_ids,
+            per_paper=per_paper,
+            limit=limit,
+            support=support,
+        )
 
     _merge_citation_lens(
         store, out, citation_seed_ref_ids, exclude_ref_ids or set(), limit

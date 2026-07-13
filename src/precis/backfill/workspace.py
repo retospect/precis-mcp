@@ -155,13 +155,28 @@ def _render_candidate_list(candidates: list[Candidate]) -> str:
         )
     lines = [
         f"— candidate sources · not yet cited · {len(candidates)} "
-        "(○ = a gap to weigh; verbatim above) —"
+        "(○ = a gap to weigh; ○○ = recurs across sections; verbatim above) —"
     ]
     for cand in candidates:
         lens = "+".join(cand.lenses)
         title = cand.title[:90] or "(untitled)"
-        lines.append(f"  ○ {cand.paper_handle} {cand.chunk_handle} · {lens} · {title}")
+        glyph, where = _support_overlay(cand.support)
+        lines.append(
+            f"  {glyph} {cand.paper_handle} {cand.chunk_handle} · {lens}{where} · {title}"
+        )
     return "\n".join(lines)
+
+
+def _support_overlay(support: tuple[str, ...]) -> tuple[str, str]:
+    """``(glyph, where)`` for a candidate's target attribution: ``○○`` + ``·
+    recurs across <a> <b>`` when several sections recalled it (a cross-cutting
+    gap), ``○`` + ``· supports <a>`` for a single section, ``○`` + ``""`` when
+    unattributed (e.g. the doc-level citation lens)."""
+    if len(support) > 1:
+        return "○○", " · recurs across " + " ".join(support)
+    if support:
+        return "○", " · supports " + support[0]
+    return "○", ""
 
 
 def _backfill_marks(
@@ -196,7 +211,8 @@ def _backfill_marks(
             back = "  ".join(f"← {s}" for s in sections)
             marks[handle] = f"★ cited  {back}"
     for cand in candidates:
-        marks[cand.chunk_handle] = f"○ candidate · {'+'.join(cand.lenses)}"
+        glyph, where = _support_overlay(cand.support)
+        marks[cand.chunk_handle] = f"{glyph} candidate · {'+'.join(cand.lenses)}{where}"
     return marks
 
 
