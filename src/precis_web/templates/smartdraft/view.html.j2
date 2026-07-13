@@ -81,8 +81,13 @@
       {% for row in view.toc %}
         {% if row.collapsed_nodes %}
         {% set first = row.collapsed_nodes[0] %}
+        {# cap the hover-list: a run can be thousands of chunks and dumping every
+           summary into the title bloated the response to megabytes (and a tooltip
+           that long is unreadable). Show the first few + a "…N more". #}
+        {% set _peek = row.collapsed_nodes[:8] | map(attribute='summary') | join('\n') %}
         <a href="{{ qs(first.dc) }}"
-           title="{{ row.collapsed_nodes | map(attribute='summary') | join('\n') }}"
+           title="{{ _peek }}{% if row.collapsed_nodes | length > 8 %}
+… +{{ row.collapsed_nodes | length - 8 }} more{% endif %}"
            class="block px-2 py-0.5 text-slate-300 hover:bg-slate-50 hover:text-slate-500">⋯ {{ row.collapsed_nodes | length }} paras ⋯</a>
         {% else %}
         {% set n = row.node %}
