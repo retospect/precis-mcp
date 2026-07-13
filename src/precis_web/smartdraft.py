@@ -331,6 +331,66 @@ class TocRow:
 
 
 @dataclass(slots=True)
+class OutlineSection:
+    """A node in the heading-outline tree — a heading plus the fisheye TOC rows
+    that fall *directly* under it (kept body chunks + collapsed runs, before the
+    first sub-heading) and its child sections. Rendered as a foldable
+    ``<details>`` (CSS-only, no JS). ``open`` is the server-decided fold state:
+    the focus's ancestor path (and any search-hit's path) ships open, the rest
+    ship folded. ``heading=None`` is the synthetic root for any body that
+    precedes the first heading."""
+
+    heading: ChunkNode | None
+    body: list[TocRow] = field(default_factory=list)
+    children: list[OutlineSection] = field(default_factory=list)
+    open: bool = False
+
+
+def build_outline(
+    toc_rows: list[TocRow], *, reveal_dcs: set[str] | None = None
+) -> list[OutlineSection]:
+    """Fold the flat fisheye TOC (headings + kept body + collapsed runs, in
+    reading order) into a heading tree, nesting by ``depth``. Cheap — a single
+    stack walk over the already-built rows, no DB. Sections on the path to any
+    ``reveal_dcs`` (the focus + search hits) are opened; roots open by default
+    when nothing is revealed. The heading tree is clean by construction (a
+    heading's parent is always another heading — verified in prod), so depth is
+    a faithful nesting key."""
+    reveal_dcs = reveal_dcs or set()
+    roots: list[OutlineSection] = []
+    stack: list[OutlineSection] = []
+
+    def open_path() -> None:
+        for s in stack:
+            s.open = True
+
+    for row in toc_rows:
+        n = row.node
+        if n is not None and n.is_heading:
+            sec = OutlineSection(heading=n)
+            while stack and (
+                stack[-1].heading is None or stack[-1].heading.depth >= n.depth
+            ):
+                stack.pop()
+            (stack[-1].children if stack else roots).append(sec)
+            stack.append(sec)
+            if n.dc in reveal_dcs:
+                open_path()
+        else:
+            if not stack:  # body before the first heading — synthetic root
+                stack.append(OutlineSection(heading=None))
+                roots.append(stack[-1])
+            stack[-1].body.append(row)
+            if n is not None and n.dc in reveal_dcs:
+                open_path()
+
+    if not reveal_dcs:  # no focus/hits to reveal → show the top level
+        for r in roots:
+            r.open = True
+    return roots
+
+
+@dataclass(slots=True)
 class MidRow:
     """A middle-pane row. ``mode`` grades the fidelity by distance to focus:
     ``full`` (focus) · ``tail``/``head`` (±1 verbatim, truncated toward the
@@ -347,6 +407,9 @@ class SmartView:
     ref_id: int
     focus: ChunkNode | None
     toc: list[TocRow] = field(default_factory=list)
+    #: The heading-outline tree (foldable ``<details>`` in the reader) built from
+    #: ``toc`` — the left pane's fisheye-mode backbone.
+    outline: list[OutlineSection] = field(default_factory=list)
     middle: list[MidRow] = field(default_factory=list)
     elsewhere: list[ChunkNode] = field(default_factory=list)
     #: ``[dc, depth]`` per chunk in reading order — the keyboard nav sequence.
@@ -467,6 +530,10 @@ def assemble_view(
         keep_dcs=keep_dcs,
         budget=_TOC_BUDGET,
     )
+    # Fold the flat TOC into the foldable heading-outline tree. Reveal (open) the
+    # focus's section path + any search hit's path so what matters is unfolded.
+    reveal = {nodes[fi].dc} | (keep_dcs or set())
+    outline = build_outline(toc, reveal_dcs=reveal)
 
     middle: list[MidRow] = []
     if not relevance:
@@ -518,6 +585,7 @@ def assemble_view(
         ref_id=ref_id,
         focus=nodes[fi],
         toc=toc,
+        outline=outline,
         middle=middle,
         elsewhere=elsewhere,
         order=[[n.dc, n.depth] for n in nodes],
