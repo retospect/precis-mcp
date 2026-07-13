@@ -19,23 +19,44 @@
   <a href="?focus={{ first.dc }}" data-dc="{{ first.dc }}"
      title="{{ _peek }}{% if row.collapsed_nodes|length > 8 %}
 … +{{ row.collapsed_nodes|length - 8 }} more{% endif %}"
-     class="block px-2 py-0.5 text-slate-300 hover:bg-slate-50 hover:text-slate-500">⋯ {{ row.collapsed_nodes|length }} paras ⋯</a>
+     class="sd-collapse">⋯ {{ row.collapsed_nodes|length }} paras ⋯</a>
 {%- else -%}
   {% set n = row.node %}
   <a id="toc-{{ n.dc }}" href="?focus={{ n.dc }}" data-dc="{{ n.dc }}"
      style="padding-left: {{ 0.4 + n.depth * 0.6 }}rem"
-     class="flex items-start gap-1 py-0.5 pr-2 hover:bg-slate-50 {% if q and n.dc in hit_dcs %}bg-sky-100{% elif n.dc == focus_dc %}bg-amber-50 ring-1 ring-inset ring-amber-400{% elif row.shared %}bg-emerald-50{% elif row.pressure >= 0.4 %}bg-sky-50{% endif %}">
-    <span class="min-w-0 flex-1 truncate text-slate-600">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }}</span> {% endif %}<span class="text-slate-400">·</span> {{ n.summary }}</span>
-    <span class="shrink-0 text-[10px]">{%- if row.shared %}<span title="shares a keyword with the focus">🔑</span>{% endif -%}{%- if n.pinned %}📌{% endif -%}{%- if n.locked %}🔒{% endif -%}</span>
+     class="sd-row{% if q and n.dc in hit_dcs %} sd-hit{% elif n.dc == focus_dc %} sd-focus{% elif row.shared %} sd-shared{% elif row.pressure >= 0.4 %} sd-hot{% endif %}">
+    <span class="sd-btext">{% if debug %}<span class="sd-dc">{{ n.dc }}</span> {% endif %}· {{ n.summary }}</span>
+    <span class="sd-badge">{%- if row.shared %}<span title="shares a keyword with the focus">🔑</span>{% endif -%}{%- if n.pinned %}📌{% endif -%}{%- if n.locked %}🔒{% endif -%}</span>
   </a>
 {%- endif -%}
 {% endmacro %}
 
 <style>
+  /* Named classes for the high-count outline/TOC rows — each replaces ~350
+     chars of repeated Tailwind utilities, so a 1897-heading draft's response
+     drops from megabytes of class attributes to a few named hooks. Colours are
+     the Tailwind slate/sky/amber/emerald values these rows used verbatim. */
   details.sd-sec > summary.sd-sum { list-style: none; cursor: pointer; }
   details.sd-sec > summary.sd-sum::-webkit-details-marker { display: none; }
-  details.sd-sec > summary.sd-sum .sd-tw { transition: transform .1s; }
+  .sd-sum, .sd-row { display: flex; align-items: flex-start; gap: .25rem;
+    padding-top: .125rem; padding-bottom: .125rem; padding-right: .5rem; }
+  .sd-sum:hover, .sd-row:hover { background: #f8fafc; }          /* slate-50 */
+  .sd-focus { background: #fffbeb; box-shadow: inset 0 0 0 1px #fbbf24; } /* amber-50 + ring-400 */
+  .sd-hit { background: #e0f2fe; }                               /* sky-100 */
+  .sd-shared { background: #ecfdf5; }                            /* emerald-50 */
+  .sd-hot { background: #f0f9ff; }                               /* sky-50 */
+  .sd-tw { flex-shrink: 0; margin-top: .125rem; width: .5rem; font-size: 9px;
+    color: #94a3b8; transition: transform .1s; }
   details.sd-sec[open] > summary.sd-sum .sd-tw { transform: rotate(90deg); }
+  .sd-htext, .sd-btext { min-width: 0; flex: 1 1 0%; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .sd-htext { font-weight: 600; color: #1e293b; }               /* slate-800 */
+  .sd-htext:hover { color: #0369a1; }                           /* sky-700 */
+  .sd-btext { color: #475569; }                                 /* slate-600 */
+  .sd-collapse { display: block; padding: .125rem .5rem; color: #cbd5e1; }
+  .sd-collapse:hover { background: #f8fafc; color: #64748b; }
+  .sd-badge { flex-shrink: 0; font-size: 10px; }
+  .sd-dc { font-family: ui-monospace, monospace; font-size: 9px; color: #0ea5e9; }
 </style>
 
 <div class="mb-2 flex items-center justify-between">
@@ -113,11 +134,11 @@
         <details {% if sec.open %}open{% endif %} class="sd-sec">
           <summary id="toc-{{ sec.heading.dc }}"
              style="padding-left: {{ 0.2 + sec.heading.depth * 0.6 }}rem"
-             class="sd-sum flex items-start gap-1 py-0.5 pr-2 hover:bg-slate-50 {% if sec.heading.dc == focus_dc %}bg-amber-50 ring-1 ring-inset ring-amber-400{% elif q and sec.heading.dc in hit_dcs %}bg-sky-100{% endif %}">
-            <span class="sd-tw shrink-0 mt-0.5 w-2 text-[9px] text-slate-400">{% if sec.children or sec.body %}▸{% endif %}</span>
+             class="sd-sum{% if sec.heading.dc == focus_dc %} sd-focus{% elif q and sec.heading.dc in hit_dcs %} sd-hit{% endif %}">
+            <span class="sd-tw">{% if sec.children or sec.body %}▸{% endif %}</span>
             <a data-dc="{{ sec.heading.dc }}" href="?focus={{ sec.heading.dc }}"
-               class="min-w-0 flex-1 truncate font-semibold text-slate-800 hover:text-sky-700">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ sec.heading.dc }}</span> {% endif %}{{ sec.heading.summary }}</a>
-            {%- if sec.heading.pinned %}<span class="shrink-0 text-[10px]">📌</span>{% endif -%}
+               class="sd-htext">{% if debug %}<span class="sd-dc">{{ sec.heading.dc }}</span> {% endif %}{{ sec.heading.summary }}</a>
+            {%- if sec.heading.pinned %}<span class="sd-badge">📌</span>{% endif -%}
           </summary>
           {% for row in sec.body %}{{ toc_body_row(row, hit_dcs) }}{% endfor %}
           {% if sec.children %}{{ loop(sec.children) }}{% endif %}
