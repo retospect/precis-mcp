@@ -375,3 +375,54 @@ def test_planner_plain_todo_has_no_reviewer_blocks(hub: Hub) -> None:
     prompts = build_planner_prompts(hub.store, ref_id=todo.id, model="opus")
     assert "Reviewer mode" not in prompts.user
     assert "## Section under review" not in prompts.user
+
+
+# ── source-backfill coroutine (slice 4) ─────────────────────────────
+
+
+def test_has_backfill_predicate(draft: DraftHandler, hub: Hub) -> None:
+    methods_h = _draft_with_section(draft, hub, "bf1")
+    # explicit targets
+    run = hub.store.insert_ref(kind="todo", slug=None, title="backfill methods")
+    hub.store.stamp_ref_meta(run.id, {"backfill": {"targets": [methods_h]}})
+    assert P.has_backfill(_ctx(hub.store, run.id)) is True
+    assert P._backfill_targets(_ctx(hub.store, run.id)) == [methods_h]
+
+    # bare marker falls back to the anchor
+    run2 = hub.store.insert_ref(kind="todo", slug=None, title="backfill anchored")
+    hub.store.stamp_ref_meta(run2.id, {"backfill": True, "anchor": methods_h})
+    assert P.has_backfill(_ctx(hub.store, run2.id)) is True
+    assert P._backfill_targets(_ctx(hub.store, run2.id)) == [methods_h]
+
+    # plain todo is not a backfill run
+    plain = hub.store.insert_ref(kind="todo", slug=None, title="plain")
+    assert P.has_backfill(_ctx(hub.store, plain.id)) is False
+
+
+def test_planner_backfill_todo_gets_workspace_and_instructions(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    methods_h = _draft_with_section(draft, hub, "bf2")
+    run = hub.store.insert_ref(kind="todo", slug=None, title="backfill methods")
+    hub.store.stamp_ref_meta(run.id, {"backfill": {"targets": [methods_h]}})
+
+    prompts = build_planner_prompts(hub.store, ref_id=run.id, model="opus")
+    # the backfill task framing + the three actions
+    assert "Source backfill — weave the sources you missed" in prompts.user
+    assert "DISMISSED_SOURCE" in prompts.user  # the dismiss command
+    assert "candidate sources" in prompts.user  # the recall workspace rendered
+    assert "grounding" in prompts.user  # the ✓/⚠ coverage line
+    # the target section's prose rides along so the model can weave into it
+    assert "We synthesized the catalyst at 80C." in prompts.user
+    # the cached contract is untouched (shared cache prefix preserved)
+    assert "Planner contract" in prompts.system
+
+
+def test_planner_plain_todo_has_no_backfill_block(hub: Hub) -> None:
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    todo = hub.store.insert_ref(kind="todo", slug=None, title="just do it")
+    prompts = build_planner_prompts(hub.store, ref_id=todo.id, model="opus")
+    assert "Source backfill — weave" not in prompts.user

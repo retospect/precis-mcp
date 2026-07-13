@@ -85,6 +85,47 @@ def has_review(ctx: AssemblyContext) -> bool:
     return _review_kind(ctx) is not None
 
 
+def _backfill_targets(ctx: AssemblyContext) -> list[str]:
+    """The draft chunk handles this source-backfill tick works on, memoised.
+
+    A source-backfill tick's todo carries ``meta.backfill`` — either a shape
+    ``{"targets": ["dc12", "dc34"]}`` naming the sections to backfill, or a bare
+    truthy marker, in which case we fall back to the tick's ``meta.anchor`` (the
+    single anchored section). Returns ``[]`` when the tick is not a backfill run
+    (or names no resolvable target). Cached under ``extras['backfill_targets']``
+    so the predicate and the builder share one query."""
+    if "backfill_targets" in ctx.extras:
+        return ctx.extras["backfill_targets"]  # type: ignore[no-any-return]
+    targets: list[str] = []
+    if ctx.store is not None:
+        with ctx.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta->'backfill', meta->>'anchor' FROM refs WHERE ref_id = %s",
+                (ctx.ref_id,),
+            ).fetchone()
+        spec = row[0] if row else None
+        anchor = ((row[1] if row else None) or "").lstrip("¶").strip() or None
+        if spec is not None:
+            if isinstance(spec, dict):
+                raw = spec.get("targets") or []
+                targets = [str(t).strip() for t in raw if str(t).strip()]
+            if not targets and anchor:
+                targets = [anchor]
+    ctx.extras["backfill_targets"] = targets
+    return targets
+
+
+def has_backfill(ctx: AssemblyContext) -> bool:
+    """True when this tick is a source-backfill run (``meta.backfill`` set with a
+    resolvable target).
+
+    Gates the ``backfill`` block — the recall workspace (uncited-but-relevant
+    corpus sources for the target sections) plus the weave/dismiss/request
+    instructions. Like reviewer-mode, it specialises a generic ``plan_tick`` in
+    the variable layer; no separate job_type."""
+    return bool(_backfill_targets(ctx))
+
+
 #: The named-predicate registry. ``applies_when`` strings resolve here;
 #: an unknown name is a programming error (caught by the totality test),
 #: not a silent always-true.
@@ -92,6 +133,7 @@ PREDICATES: dict[str, Callable[[AssemblyContext], bool]] = {
     "has_anchor": has_anchor,
     "has_styled_anchor": has_styled_anchor,
     "has_review": has_review,
+    "has_backfill": has_backfill,
 }
 
 
@@ -111,6 +153,7 @@ __all__ = [
     "PREDICATES",
     "evaluate",
     "has_anchor",
+    "has_backfill",
     "has_review",
     "has_styled_anchor",
 ]

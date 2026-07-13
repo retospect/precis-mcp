@@ -217,18 +217,51 @@ class DraftHandler(Handler):
     # ── get ──────────────────────────────────────────────────────────
 
     def get(  # type: ignore[override]
-        self, *, id: str | int | None = None, view: str | None = None, **_kw: Any
+        self,
+        *,
+        id: str | int | None = None,
+        view: str | None = None,
+        extent: str | None = None,
+        targets: list[str] | None = None,
+        **_kw: Any,
     ) -> Response:
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
         s = str(id).strip()
         if _is_draft_chunk_addr(s):
+            # ADR 0051 eye — render this node at a focus extent
+            # (kwd|summary|verbatim|fisheye|fisheye+1hop). Exposes the composer
+            # a single node at a time; ``view='backfill'`` composes many.
+            if extent is not None:
+                from precis.utils.eye_render import render_eye
+
+                try:
+                    return Response(body=render_eye(self.store, s, extent))
+                except ValueError as e:
+                    raise BadInput(
+                        str(e),
+                        next="extent= ∈ kwd|summary|verbatim|fisheye|fisheye+1hop",
+                    ) from e
+            if view == "backfill":  # source-backfill workspace for this section
+                from precis.backfill import render_backfill
+
+                return Response(
+                    body=render_backfill(
+                        self.store, self.embedder, [s, *(targets or [])]
+                    )
+                )
             if view == "toc":  # TOC of the subtree under this heading
                 return self._render_toc(root_handle=s)
             if view == "wordcount":  # word counts for this heading's subtree
                 return self._render_wordcount(root_handle=s)
             return self._render_chunk(s)
         ref = resolve_live_slug_ref(self.store, kind="draft", id=s)
+        if view == "backfill":
+            raise BadInput(
+                "source-backfill targets a section, not a whole draft",
+                next="point it at a section handle: "
+                "get(kind='draft', id='dc123', view='backfill')",
+            )
         if view == "toc":
             return self._render_toc(ref=ref)
         if view == "wordcount":

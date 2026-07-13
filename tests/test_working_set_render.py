@@ -93,6 +93,29 @@ def test_large_gap_collapses_to_marker(hub: Hub, plan: PlanHandler) -> None:
     assert "n2 body unique" not in out  # genuinely omitted, not shown
 
 
+def test_collapse_marker_rolls_up_keywords(hub: Hub, plan: PlanHandler) -> None:
+    # verbatim eyes on n0 and n5 collapse n1..n4; when those chunks carry
+    # keywords the marker says *what* it hides, not just a bare count.
+    from precis.workers.chunk_keywords import write_chunk_keywords
+
+    store = hub.store
+    h = _flat_doc(hub, plan, "kw", ["n0", "n1", "n2", "n3", "n4", "n5"])
+    with store.pool.connection() as conn:
+        for name in ("n1", "n2", "n3", "n4"):
+            ch = store.get_draft_chunk(h[name], kind="plan")
+            write_chunk_keywords(
+                conn,
+                ch.chunk_id,
+                keywords=[{"short": "garnet", "long": "garnet"}],
+                embedder_name="test",
+            )
+    ws = WorkingSet()
+    ws.focus(h["n0"], "verbatim")
+    ws.focus(h["n5"], "verbatim")
+    out = render_working_set(store, ws)
+    assert "⋯ 4 more · garnet ⋯" in out  # self-describing collapse, not bare
+
+
 def test_cursor_document_leads(hub: Hub, plan: PlanHandler) -> None:
     ha = _flat_doc(hub, plan, "aaa", ["x"])
     hb = _flat_doc(hub, plan, "bbb", ["y"])

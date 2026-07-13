@@ -34,6 +34,7 @@ from precis.utils.fisheye import (
     _summary_text,
 )
 from precis.utils.refeye import _RING_CAP, collect_ring, render_ring_groups
+from precis.utils.section_keywords import rollup_label
 from precis.workers.working_set import Extent, WorkingSet
 
 #: Bridge a gap of at most this many undemanded chunks between two demanded
@@ -115,7 +116,14 @@ def _render_doc(
         if e <= Extent.NONE:
             continue
         if prev_i is not None and i - prev_i > 1:
-            lines.append(f"  ⋯ {i - prev_i - 1} more ⋯")
+            # Self-describing collapse (no bare counts): roll the skipped run's
+            # keywords into the marker so a gap says *what* it hides, not just
+            # how much. Falls back to the bare count when the run has none.
+            label = rollup_label(views, chunks[prev_i + 1 : i], top_k=4)
+            gap = i - prev_i - 1
+            lines.append(
+                f"  ⋯ {gap} more · {label} ⋯" if label else f"  ⋯ {gap} more ⋯"
+            )
         prev_i = i
         indent = "  " * c.depth
         mark = "▸ " if c.dc == cursor else ""
@@ -128,11 +136,25 @@ def _render_doc(
     return "\n".join(lines)
 
 
-def render_working_set(store: Any, ws: WorkingSet, *, cap: int = _RING_CAP) -> str:
+def render_working_set(
+    store: Any,
+    ws: WorkingSet,
+    *,
+    cap: int = _RING_CAP,
+    marks: dict[str, str] | None = None,
+) -> str:
     """Render the whole working set as **one** deduplicated context: each
     document rendered once from the merged demand map (eyes on the same doc
     share it), with the cursor's document first and a single merged reference
-    ring for all ``fisheye+1hop`` eyes."""
+    ring for all ``fisheye+1hop`` eyes.
+
+    ``marks`` (handle → prefix line) folds an out-of-band *role* into the render
+    of a **flat** (non-tree) eye — source-backfill uses it to stamp a source
+    paper eye ``★ cited  ← <citing section>`` or a recall hit ``○ candidate``,
+    so the working set is self-describing without cross-referencing the appended
+    lists. It never touches the tree docs (the draft under construction is not a
+    source), so with ``marks=None`` the output is byte-identical to before.
+    """
     docs: dict[int, dict[str, Any]] = {}
     ring_merged: dict[str, dict[int, str]] = {}
     flat_eyes: list[tuple[str, Any]] = []  # non-tree eyes (memory/paper/…)
@@ -194,7 +216,9 @@ def render_working_set(store: Any, ws: WorkingSet, *, cap: int = _RING_CAP) -> s
             block = f"({handle}: unrenderable)"
         if block.strip():
             mark = "▸ " if handle == cursor else ""
-            blocks.append(f"{mark}{block}")
+            role = marks.get(handle) if marks else None
+            block = f"{role}\n{mark}{block}" if role else f"{mark}{block}"
+            blocks.append(block)
 
     out = "\n\n".join(blocks)
 

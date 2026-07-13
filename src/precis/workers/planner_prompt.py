@@ -1426,6 +1426,15 @@ def _m_section_style(ctx: AssemblyContext) -> str:
     return _render_section_style(ctx.store, ctx.ref_id)
 
 
+def _m_backfill(ctx: AssemblyContext) -> str:
+    """Inject the source-backfill workspace + instructions (gated on
+    ``has_backfill``). The target handles were resolved + memoised by the
+    predicate into ``extras['backfill_targets']``."""
+    assert ctx.store is not None
+    targets = ctx.extras.get("backfill_targets") or []
+    return _render_backfill_workspace(ctx.store, list(targets))
+
+
 def _m_workspace(ctx: AssemblyContext) -> str:
     assert ctx.store is not None
     return _render_workspace_status(ctx.store, ctx.ref_id)
@@ -1492,6 +1501,90 @@ def _m_review_section(ctx: AssemblyContext) -> str:
     return section_review_block(ctx.store, anchor)
 
 
+def _render_backfill_workspace(store: Store, targets: list[str]) -> str:
+    """The source-backfill tick block (slice 4): the recall workspace for the
+    target section(s) — what they already cite (``★``), the uncited-but-relevant
+    corpus sources recall found (``○`` candidates), and the ✓/⚠ grounding line —
+    followed by the weave / dismiss / request instructions.
+
+    This is the *recall* mirror of the citation verifier: the verifier asks "is
+    what I cited true?" (precision); backfill asks "did I miss anything?"
+    (recall). A candidate is only worth weaving if it genuinely supports a real
+    claim — the pass must not force-fit a citation.
+
+    Additive + fallback-safe: any resolution/render failure degrades to ``""`` so
+    a malformed marker can never break the planner prompt. No-op on no targets."""
+    if not targets:
+        return ""
+    from precis.backfill.workspace import recall_embedder, render_backfill
+    from precis.utils import handle_registry
+
+    parsed = handle_registry.parse(targets[0])
+    kind = parsed[0] if parsed else "draft"
+    try:
+        # The semantic recall leg lights up when a remote embedder is configured
+        # (PRECIS_EMBEDDER_URL); otherwise recall degrades to its lexical +
+        # citation-graph legs (still real candidates) — never pulling torch into
+        # the agent worker.
+        workspace = render_backfill(store, recall_embedder(store), targets, kind=kind)
+    except Exception:
+        log.debug("planner backfill render failed for %r", targets, exc_info=True)
+        return ""
+    if not workspace.strip():
+        return ""
+
+    # Resolve the draft the dismissal ledger lives on, so the instruction can
+    # name the exact tag command (the ledger is a ref-level tag on the draft).
+    draft_ident = "<draft>"
+    try:
+        first = store.get_draft_chunk(targets[0], kind=kind)
+        if first is not None:
+            draft = store.get_ref(kind=kind, id=int(first.ref_id))
+            draft_ident = str(draft.slug) if draft and draft.slug else str(first.ref_id)
+    except Exception:
+        pass
+
+    instructions = (
+        "## Source backfill — weave the sources you missed\n\n"
+        "This tick is a **source-backfill** pass over the section(s) below: find "
+        "corpus sources this text *should* cite but doesn't, and integrate them. "
+        "It is the **recall** mirror of the citation verifier (which checks that "
+        "what you cited is true) — here you ask *did I miss anything?* The "
+        "workspace that follows shows each target section, the papers it already "
+        "cites (marked `★ cited`), the ✓/⚠ grounding line (where the section is "
+        "well-sourced vs under-sourced), and the uncited-but-relevant sources "
+        "recall surfaced (marked `○ candidate`, listed under *candidate sources*). "
+        "The `○` candidates are the product — work each one:\n\n"
+        "1. **Weave it** — if the candidate genuinely supports a claim the "
+        "section makes (open it with `get(id='pc<id>')` and confirm it before you "
+        "trust it), integrate it: edit the draft prose to state/support the claim "
+        "and cite the specific chunk by its handle `[pc<id>]` (see the Draft + "
+        "citation guidance above). Write for the human reader — a real sentence "
+        "that earns the citation, never a bare handle bolted onto an unchanged "
+        "line.\n"
+        "2. **Dismiss it** — if it is *not* actually relevant (off-topic, "
+        "redundant with what you cite, or it doesn't support the claim), record "
+        "the rejection so recall never resurfaces it:\n\n"
+        f"       tag(kind='{kind}', id='{draft_ident}', "
+        "add=['DISMISSED_SOURCE:<paper_ref_id>'])\n\n"
+        "   where `<paper_ref_id>` is the number in the candidate's `pa<id>` "
+        "handle. Dismiss **every** candidate you reject — an un-dismissed reject "
+        "comes back on the next run and the pass never converges.\n"
+        "3. **Request it** — if the source you actually need is *not* in the "
+        "corpus, request it via the `paper_ingested` wait-leaf flow described "
+        "above; never invent or guess a citation.\n\n"
+        "**Converge.** When every `○` candidate has been either woven in or "
+        "dismissed, tag yourself `STATUS:done`. Do not re-open the same "
+        "candidates tick after tick — a paper you keep neither citing nor "
+        "dismissing is a paper to dismiss.\n\n"
+        "Treat non-paper sources appropriately: a `memory`/note is your own "
+        "thinking (a lead, never a citation), a `patent`/`datasheet` supports "
+        "existence/priority/spec (not scientific consensus). Weave only what the "
+        "claim honestly needs.\n"
+    )
+    return f"{instructions}\n{workspace}"
+
+
 #: Cached layer — one stable cache prefix across every planner tick.
 _CACHED_MODULES: list[Module] = [
     Module(id="persona", layer=Layer.CACHED, build=_m_persona),
@@ -1536,6 +1629,12 @@ _VARIABLE_MODULES: list[Module] = [
         layer=Layer.VARIABLE,
         build=_m_review_section,
         applies_when="has_review",
+    ),
+    Module(
+        id="backfill",
+        layer=Layer.VARIABLE,
+        build=_m_backfill,
+        applies_when="has_backfill",
     ),
     Module(id="section-style", layer=Layer.VARIABLE, build=_m_section_style),
     Module(id="workspace", layer=Layer.VARIABLE, build=_m_workspace),
