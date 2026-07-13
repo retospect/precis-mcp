@@ -22,6 +22,7 @@ from precis.backfill.candidates import (
     find_candidates,
 )
 from precis.backfill.dismissed import dismissed_ref_ids
+from precis.backfill.provenance import tier_tag
 from precis.utils import handle_registry
 from precis.utils.working_set_render import render_working_set
 from precis.workers.working_set import Provenance, WorkingSet
@@ -161,8 +162,10 @@ def _render_candidate_list(candidates: list[Candidate]) -> str:
         lens = "+".join(cand.lenses)
         title = cand.title[:90] or "(untitled)"
         glyph, where = _support_overlay(cand.support)
+        tier = tier_tag(getattr(cand.ref, "kind", None))
         lines.append(
-            f"  {glyph} {cand.paper_handle} {cand.chunk_handle} · {lens}{where} · {title}"
+            f"  {glyph} {cand.paper_handle} {cand.chunk_handle} · {tier} · "
+            f"{lens}{where} · {title}"
         )
     return "\n".join(lines)
 
@@ -212,7 +215,10 @@ def _backfill_marks(
             marks[handle] = f"★ cited  {back}"
     for cand in candidates:
         glyph, where = _support_overlay(cand.support)
-        marks[cand.chunk_handle] = f"{glyph} candidate · {'+'.join(cand.lenses)}{where}"
+        tier = tier_tag(getattr(cand.ref, "kind", None))
+        marks[cand.chunk_handle] = (
+            f"{glyph} candidate · {tier} · {'+'.join(cand.lenses)}{where}"
+        )
     return marks
 
 

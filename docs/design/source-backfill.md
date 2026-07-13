@@ -654,6 +654,28 @@ writer's context, the more discipline the prose needs.*
    tier is a small research task — venue norms differ.) Belongs after the
    paper flow is proven so the tiering has a solid baseline to contrast
    against.
+
+   **— v1 DONE** (`src/precis/backfill/provenance.py`; `tests/test_provenance.py`).
+   A `Tier` ladder (`PEER_REVIEWED` w=1.0 / `PRIOR_ART` w=0.7 / `LEAD` w=0.4),
+   `tier_for(kind)` (unknown/own-authored → `LEAD`, the conservative
+   "never silently evidence" default), and `tier_tag` → `[peer-reviewed]` /
+   `[prior-art]` / `[own-note]`. The recall sweep now scopes across
+   `SOURCE_KINDS = (paper, cfp, patent, datasheet)` via `search_blocks_multi(kinds=)`
+   (the store already supported the multi-kind arg), each hit's score is
+   **down-weighted by `tier_for(kind).weight`** in `_text_lens` so a peer-reviewed
+   paper outranks an equally-matched prior-art datasheet, the render carries the
+   `[tier]` tag on every candidate (list + `_backfill_marks`), and the planner
+   instructions grow a **provenance-tier admonition generated from the tier ladder**
+   (`planner_prompt._render_backfill_workspace`, so the prompt can't drift from the
+   tags). Tag form (not glyph) chosen so it composes with the slice-5 recurrence
+   glyph (`○`/`○○`) instead of overloading `○`. **Deferred (the `LEAD` tier +
+   `web`):** `memory` and `web` are tiered but held out of the default sweep —
+   `memory` has **no chunk handle** (`format_handle('memory', …, chunk=True)`
+   raises) and `web` isn't in the handle registry at all, so a candidate can't be
+   opened as a `pc`-style chunk eye. Surfacing own-notes-as-leads needs a
+   **ref-level-candidate path** (address the source by its ref handle `me<id>` and
+   render it as a flat eye) — a clean, self-contained follow-up; the tier + weight
+   + admonition machinery is already in place for it.
 7. **The stateful edit→extend→review loop (carried-forward working set).**
    Slice 4 makes *a* tick integrate; this makes the working set **persist and
    grow across ticks** rather than rebuild each time — the natural rhythm:

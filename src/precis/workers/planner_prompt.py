@@ -1544,6 +1544,12 @@ def _render_backfill_workspace(store: Store, targets: list[str]) -> str:
     except Exception:
         pass
 
+    # Provenance-tier admonition, generated from the tier ladder so the prompt
+    # can never drift from how candidates are actually tagged/ranked (slice 6).
+    from precis.backfill.provenance import TIERS
+
+    tier_admonition = "\n".join(f"   - `[{t.tag}]` — {t.admonition}" for t in TIERS)
+
     instructions = (
         "## Source backfill — weave the sources you missed\n\n"
         "This tick is a **source-backfill** pass over the section(s) below: find "
@@ -1577,10 +1583,13 @@ def _render_backfill_workspace(store: Store, targets: list[str]) -> str:
         "dismissed, tag yourself `STATUS:done`. Do not re-open the same "
         "candidates tick after tick — a paper you keep neither citing nor "
         "dismissing is a paper to dismiss.\n\n"
-        "Treat non-paper sources appropriately: a `memory`/note is your own "
-        "thinking (a lead, never a citation), a `patent`/`datasheet` supports "
-        "existence/priority/spec (not scientific consensus). Weave only what the "
-        "claim honestly needs.\n"
+        "**Provenance tiers.** Every candidate is tagged with the kind of source "
+        "it is — these are *not* interchangeable evidence, so respect the tag "
+        "when you decide whether (and how) to cite it:\n\n"
+        f"{tier_admonition}\n\n"
+        "Recall already down-ranks lower tiers; weave only what the claim "
+        "honestly needs, and never let a `[prior-art]` or `[own-note]` hit stand "
+        "in for the peer-reviewed source a scientific claim actually requires.\n"
     )
     return f"{instructions}\n{workspace}"
 

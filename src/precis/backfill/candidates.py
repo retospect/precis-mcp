@@ -1,12 +1,14 @@
 """Recall — surface the uncited-but-relevant corpus sources for a target.
 
-Slice 1 ships the deterministic **text lens**: seed the multi-query search from
-a target section's own keywords (lexical legs) + its embedded text (semantic
-leg) — the section *programs its own recall* — scope to ``kind='paper'``, and
+The deterministic **text lens**: seed the multi-query search from a target
+section's own keywords (lexical legs) + its embedded text (semantic leg) — the
+section *programs its own recall* — scope it across the source kinds (paper /
+cfp / patent / datasheet, :data:`~precis.backfill.provenance.SOURCE_KINDS`), and
 exclude everything the draft already cites (**Tier-0 dedup**). Returns ranked
-:class:`Candidate` chunks, best first. No LLM: HyDE ``answers=`` and the Tier-1
-relevance cull are model-authored layers for a later slice; here the RRF fused
-score is the ranker.
+:class:`Candidate` chunks, best first, each score down-weighted by its source's
+**provenance tier** so peer-reviewed evidence outranks an equally-matched
+prior-art spec. No LLM: HyDE ``answers=`` and the Tier-1 relevance cull are
+model-authored layers for a later slice; here the RRF fused score is the ranker.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
+from precis.backfill.provenance import SOURCE_KINDS, tier_for
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.mentions import resolve_link_targets
@@ -136,15 +139,18 @@ def _text_lens(
     target_chunks: list[Any],
     *,
     kind: str,
+    kinds: tuple[str, ...],
     exclude_ref_ids: set[int] | None,
     per_paper: int,
     limit: int,
     support: tuple[str, ...],
 ) -> list[Candidate]:
     """One text-lens sweep for ``target_chunks`` — the section(s) program their
-    own recall (keywords + embedded text → RRF hybrid search over ``kind='paper'``,
+    own recall (keywords + embedded text → RRF hybrid search over ``kinds``,
     Tier-0-excluded). Every hit is stamped with ``support`` (the target handle(s)
-    this sweep speaks for) so the caller can see which section surfaced it."""
+    this sweep speaks for) so the caller can see which section surfaced it, and its
+    score is **down-weighted by the source's provenance tier** (:func:`tier_for`)
+    so a peer-reviewed paper outranks an equally-matched prior-art datasheet."""
     keywords, seed_text = seed_from_targets(store, target_chunks, kind=kind)
     q_texts = keywords or ([seed_text[:400]] if seed_text else [])
     query_vecs: list[list[float]] = []
@@ -158,7 +164,7 @@ def _text_lens(
         q_texts=q_texts,
         query_vecs=query_vecs,
         mode="hybrid",
-        kind="paper",
+        kinds=list(kinds),
         per_paper=per_paper,
         exclude_ref_ids=sorted(exclude_ref_ids) if exclude_ref_ids else None,
         limit=limit,
@@ -173,7 +179,7 @@ def _text_lens(
                 ref=ref,
                 chunk_id=int(block.id),
                 chunk_handle=handle,
-                score=float(score),
+                score=float(score) * tier_for(rkind).weight,
                 support=support,
             )
         )
@@ -214,6 +220,7 @@ def find_candidates(
     target_chunks: list[Any],
     *,
     kind: str = "draft",
+    kinds: tuple[str, ...] | None = None,
     exclude_ref_ids: set[int] | None = None,
     citation_seed_ref_ids: set[int] | None = None,
     per_paper: int = 1,
@@ -228,11 +235,19 @@ def find_candidates(
     to lexical-only when the embedder is down, and the citation lens self-disables
     on any failure — the text lens always carries the workspace.
 
+    **Beyond papers + provenance tiering:** ``kinds`` (default
+    :data:`~precis.backfill.provenance.SOURCE_KINDS` — paper/cfp/patent/datasheet)
+    scopes the recall sweep across source kinds, and each hit's score is
+    down-weighted by its provenance tier so a peer-reviewed paper outranks an
+    equally-matched prior-art datasheet (the tier tag + skill admonition ride
+    downstream in the render).
+
     **Multi-focus recurrence overlay:** with more than one target the text lens
     runs *per section* (each programs its own recall) and the hits merge by source
     ref (:func:`merge_recurrence`), so every candidate carries which section(s)
     surfaced it and a source recalled across several sections ranks first. A
     single target is one sweep whose hits are attributed to it."""
+    kinds = kinds or SOURCE_KINDS
     if len(target_chunks) > 1:
         per_target = [
             _text_lens(
@@ -240,6 +255,7 @@ def find_candidates(
                 embedder,
                 [tc],
                 kind=kind,
+                kinds=kinds,
                 exclude_ref_ids=exclude_ref_ids,
                 per_paper=per_paper,
                 limit=limit,
@@ -255,6 +271,7 @@ def find_candidates(
             embedder,
             target_chunks,
             kind=kind,
+            kinds=kinds,
             exclude_ref_ids=exclude_ref_ids,
             per_paper=per_paper,
             limit=limit,

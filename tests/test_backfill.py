@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from types import SimpleNamespace as NS
+from typing import Any
 
 import pytest
 
@@ -107,6 +108,55 @@ def test_candidate_list_render_shows_recurrence_and_support() -> None:
     assert "○○ " in out  # the recurrence glyph
     assert "recurs across dc1 dc2" in out
     assert "supports dc7" in out
+
+
+def test_candidate_list_render_shows_provenance_tier() -> None:
+    paper = Candidate(
+        ref_id=5,
+        ref=NS(kind="paper", title="Peer paper"),
+        chunk_id=10,
+        chunk_handle="pc10",
+        score=1.0,
+    )
+    sheet = Candidate(
+        ref_id=6,
+        ref=NS(kind="datasheet", title="Part spec"),
+        chunk_id=11,
+        chunk_handle="dk11",
+        score=1.0,
+    )
+    out = _render_candidate_list([paper, sheet])
+    assert "[peer-reviewed]" in out  # the paper's tier
+    assert "[prior-art]" in out  # the datasheet's tier
+
+
+def test_find_candidates_broadens_kinds_and_weights_by_tier(
+    hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.backfill.candidates import find_candidates
+    from precis.backfill.provenance import PRIOR_ART, SOURCE_KINDS
+
+    store = hub.store
+    sec, _cited_id, _cand_id = _doc_with_citation(store, plan)
+    tc = store.get_draft_chunk(sec, kind="plan")
+
+    captured: dict[str, object] = {}
+
+    def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
+        captured.update(kw)
+        block = NS(id=777)
+        ref = NS(id=42, kind="datasheet", title="A datasheet")
+        return [(block, ref, 1.0)]
+
+    monkeypatch.setattr(store, "search_blocks_multi", fake_search)
+
+    out = find_candidates(store, None, [tc], kind="plan", limit=5)
+    # the sweep scopes across the source kinds, not a hard-coded 'paper'
+    assert captured["kinds"] == list(SOURCE_KINDS)
+    assert len(out) == 1
+    assert out[0].chunk_handle == "dk777"  # datasheet chunk handle
+    # the prior-art tier down-weights the score vs a peer-reviewed 1.0 hit
+    assert out[0].score == 1.0 * PRIOR_ART.weight
 
 
 # ── real-store: Tier-0 dedup ─────────────────────────────────────────
@@ -246,4 +296,5 @@ def test_backfill_marks_stamp_cited_and_candidate(hub: Hub, plan: PlanHandler) -
     cited_handle = handle_registry.format_handle("paper", cited_id)
     assert marks[cited_handle].startswith("★ cited")
     assert f"← {sec}" in marks[cited_handle]
-    assert marks["pc999"] == "○ candidate · text"
+    # a paper candidate carries its provenance tier (peer-reviewed) in the mark
+    assert marks["pc999"] == "○ candidate · [peer-reviewed] · text"
