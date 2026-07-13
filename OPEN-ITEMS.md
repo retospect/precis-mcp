@@ -17,37 +17,55 @@ what's still open.
 
 ---
 
-## 🔐 secrets vault — remaining rollout + follow-ups (2026-07-13)
+## 🔐 secrets vault — SHIPPED + fully cut over (2026-07-13)
 
-v1 shipped on `main` 5a5de3ac (ADR 0055, migration 0059): encrypted
+ADR 0055 / migration 0059. **DONE, deployed, validated on prod.** Encrypted
 `vault.secrets` + `vault.list/mask/reveal/set_secret/delete_secret`, resolver
-`src/precis/secrets.py` (env→vault→file, cached), `precis secret` CLI,
-`/secrets` web editor, DSN scrubbed from env at boot. Ships **dark**
-(env-override-wins). Remaining:
+`src/precis/secrets.py` (env→vault→file, cached), `precis secret` CLI, `/secrets`
+web editor (in the Ops nav), `requires_secret` kind gate, DSN scrubbed from
+subprocess env at boot. Every precis/asa leaf secret (13) migrated to the DB
+vault and **removed from ansible-vault + env** — the DB vault is the exclusive
+source; ansible-vault is down to postgres bootstrap + non-precis infra. feynman
++ quest retired in the same pass (redundant / dormant).
 
-- **Ops — the one bootstrap step to make it live** — `blocked` (needs Reto +
-  `.vault-pass`), Owner: `~/work/cluster`. Add `app.secret_key` to
-  `inventory/group_vars/all/vault.yml`; apply on caspar via `ALTER SYSTEM SET
-  app.secret_key = ...; SELECT pg_reload_conf()` in the postgres role. Until
-  set, `reveal`/`set` fail (resolver degrades to env/file). Then `/go` to
-  deploy the migration + `/secrets` page.
-- **Migrate the remaining call sites** — `feature`, Owner:
-  `handlers/*`, `workers/fetch_oa.py`. Only `PERPLEXITY_API_KEY` moved onto
-  `get_secret` so far. Still raw `os.environ`: `WOLFRAM_APP_ID`, `EPO_OPS_*`,
-  `ORCID_CLIENT_SECRET`, `PRECIS_ELSEVIER_API_KEY`, `PRECIS_WILEY_TDM_TOKEN`,
-  `PRECIS_CORE_API_KEY`, `PRECIS_OPENALEX_CONTENT_KEY`, `SEMANTIC_SCHOLAR_API_KEY`,
-  `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`. Migrate each to
-  `secrets.get_secret` (behaviour-identical under env-override).
-- **`requires_secret` gate** — `feature`, Owner: `protocol.py` / `kind_gate.py`.
-  Kinds gate on `requires_env`; once a secret is vault-only (env pulled in
-  phase D), those kinds would hide. Add a `requires_secret` axis checking the
-  resolver before pulling any secret out of env.
-- **`/secrets` web smoke test** — `polish`, Owner: `tests/`. The route is only
-  covered by app-boot import today; add a FastAPI TestClient test (list renders,
-  set writes, blank submit no-ops).
-- **Deferred by design (ADR 0055)**: per-service roles (`precis_secrets` /
+Remaining (small):
+- **`/secrets` web smoke test** — `polish`, Owner: `tests/`. FastAPI TestClient
+  test (list renders, set writes, blank submit no-ops). The route is only
+  covered by app-boot import today.
+- **Left in env by design**: `PRECIS_UNPAYWALL_EMAIL` (a mailto, not a
+  credential); the litellm/openclaw ansible-vault secrets stay until those tools
+  retire — sweep with the litellm teardown.
+- **Deferred by design (ADR 0055)**: per-service DB roles (`precis_secrets` /
   `precis_web` / `asa`) + per-name ACL; `pg_notify`-driven cache invalidation
   (currently a 60s TTL); out-of-process extension broker.
+
+### Feynman gleanings (from the retirement review — feynman itself is gone)
+- **(Medium) Cheap/local-model research tier** — precis's agent/research surfaces
+  (asa, reviewers, planner, `perplexity-research` @ ~$0.50/call) all run cloud
+  Claude with no cheap pre-filter. Add a local-model tier (ADR-0046 router
+  `Tier.LOCAL_*`) feeding the existing search/research kinds for broad fan-out /
+  low-stakes triage before paid escalation. NB feynman's substrate (litellm) is
+  retiring, so it needs a fresh local-serving decision. NOT a standalone agent.
+- **(Low) "Corpus before paid web" cost-ordering line** — `precis-research-help`
+  frames the corpus as the substrate but never states "exhaust free corpus search
+  before spending on `perplexity-research`." One line in that skill + asa's SOUL.
+  The only nuance in feynman's `cluster-library.md` precis lacks.
+
+### Cluster residuals surfaced during the secrets pass (ops, `~/work/cluster`)
+- **balthazar `/opt/mcps` wiped every /go** — **FIXED** (`redeploy-precis.yml`
+  step 3 no longer targets `scheduler`, and scopes the delete to `/opt/mcps/venv`;
+  root cause db84485). Venvs restored; rss_ingest reveals S2 from the vault.
+- **daily_briefing references a dead `cluster` DB** — pre-existing;
+  `roles/daily_briefing` runs `psql -d cluster` (renamed to openclaw / retired),
+  which fails the play. Non-fatal (tables already exist) but should be repointed
+  at `precis_prod` or removed.
+- **extract_watch uv-cache perm error on balthazar** — `~deploy/.cache/uv` has a
+  root-owned `.git` blocking `uv pip install`; chown/clear it.
+- **Orphan sweep from the feynman/quest retirement** — the installed venvs / npm
+  bits still on the nodes (`/opt/mcps/quest`, `/opt/mcps/extract`, the
+  `@companion-ai/feynman` npm global on melchior), quest's `papers` DB schema,
+  and now-unused `quest_*` / `feynman` group_vars. All harmless orphans; sweep in
+  a dedicated teardown pass alongside the litellm retirement.
 
 ---
 
