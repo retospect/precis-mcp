@@ -110,6 +110,37 @@ def test_relevance_on_collapses_quiet_runs_but_keeps_the_heading() -> None:
     assert kept_idx == sorted(kept_idx)
 
 
+def test_budget_caps_soft_keeps_but_never_headings_or_status() -> None:
+    # 300 chunks that ALL share the focus keyword (would each be a soft keep) —
+    # the budget caps the rendered rows to top-N by pressure, collapsing the
+    # rest, while a heading and a pinned chunk are hard keeps that survive.
+    nodes = [_node(0, ["hd"], kind="heading")]
+    nodes += [_node(i, ["alpha"]) for i in range(1, 300)]
+    nodes.append(_node(400, ["zzz"], pinned=True))  # far, unrelated, but pinned
+    pres = pressures(nodes, 1)
+    rows = _left_toc(
+        nodes, pres, relevance=True, shared_idx=set(range(1, 300)), budget=20
+    )
+    kept = [r.node for r in rows if r.node]
+    soft_kept = [n for n in kept if not n.is_heading and not n.has_status]
+    # budget enforced (+ a small slack for lone-quiet boundary chunks that the
+    # collapse rule shows individually rather than as a size-1 run).
+    assert len(soft_kept) <= 24
+    assert len(kept) < 60  # a far cry from 300 — the fisheye actually collapsed
+    assert any(n.is_heading for n in kept)  # heading survives
+    assert any(n.pinned for n in kept)  # pinned survives, uncapped
+    assert any(r.collapsed_nodes for r in rows)  # the overflow collapsed
+
+
+def test_no_budget_is_the_unbounded_default() -> None:
+    # Default (budget=None) keeps every soft match — the small-draft behaviour.
+    nodes = [_node(i, ["alpha"]) for i in range(6)]
+    rows = _left_toc(
+        nodes, pressures(nodes, 0), relevance=True, shared_idx=set(range(6))
+    )
+    assert all(r.node is not None for r in rows)  # nothing collapsed
+
+
 def test_a_lone_quiet_chunk_is_shown_not_collapsed() -> None:
     # focus at idx0; idx1 is relevant (kept), idx2 is a single quiet chunk
     # between two kept chunks — collapsing it to "⋯ 1 para ⋯" saves nothing.

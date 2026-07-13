@@ -52,6 +52,14 @@ _NEIGHBOR_CAP = 400
 #: How many high-pressure *non-neighbour* chunks to surface as "relevant
 #: elsewhere" under the middle window.
 _ELSEWHERE_K = 4
+#: The fisheye's keep budget — the max number of *soft* keeps (keyword-shared /
+#: above-threshold) rendered as TOC rows; the rest collapse into ``⋯ n ⋯`` runs.
+#: Headings, status (pin/lock), and search hits are *hard* keeps and never count
+#: against it. Without this, a large draft whose focus shares a common keyword
+#: kept thousands of rows — defeating the fisheye and bloating the page to
+#: megabytes. This makes the render O(budget), not O(N). (The module's stated
+#: principle: "fidelity ∝ priority, capped by a budget" — this is the cap.)
+_TOC_BUDGET = 160
 
 #: RRF fusion constant (standard ~60) + per-signal weights. A tag is
 #: human-curated attention, so it outweighs the machine literal signals.
@@ -355,15 +363,32 @@ def _left_toc(
     relevance: bool,
     shared_idx: set[int] | None = None,
     keep_dcs: set[str] | None = None,
+    budget: int | None = None,
 ) -> list[TocRow]:
     """The fisheye TOC. ``relevance=False`` → the plain full outline (every
     chunk). ``relevance=True`` → keep headings + status + **keyword-shared** +
     high-pressure chunks; collapse quiet-irrelevant runs to a ``⋯ n ⋯`` marker
     (order never reshuffles — only expand/collapse tracks the focus).
     ``keep_dcs`` (search hits) are always kept — the in-TOC search view shows
-    every match, uncollapsed."""
+    every match, uncollapsed. ``budget`` caps the *soft* keeps (shared /
+    above-threshold) to the top-N by pressure so the TOC is O(budget), not O(N),
+    on a huge draft; headings / status / hits are hard keeps, uncapped."""
     shared_idx = shared_idx or set()
     keep_dcs = keep_dcs or set()
+    # Under a budget, pre-select which soft keeps survive: the highest-pressure
+    # `budget` of the shared/above-threshold candidates. The rest collapse.
+    soft_ok: set[int] | None = None
+    if relevance and budget is not None:
+        cands = [
+            n.idx
+            for n in nodes
+            if not n.is_heading
+            and not n.has_status
+            and n.dc not in keep_dcs
+            and (n.idx in shared_idx or pres.get(n.idx, 0.0) >= _KEEP_THRESHOLD)
+        ]
+        cands.sort(key=lambda i: pres.get(i, 0.0), reverse=True)
+        soft_ok = set(cands[:budget])
     rows: list[TocRow] = []
     run: list[ChunkNode] = []
 
@@ -379,14 +404,11 @@ def _left_toc(
 
     for n in nodes:
         is_shared = n.idx in shared_idx
-        keep = (
-            not relevance
-            or n.is_heading
-            or n.has_status
-            or is_shared
-            or n.dc in keep_dcs
-            or pres.get(n.idx, 0.0) >= _KEEP_THRESHOLD
-        )
+        if soft_ok is not None:
+            soft = n.idx in soft_ok
+        else:
+            soft = is_shared or pres.get(n.idx, 0.0) >= _KEEP_THRESHOLD
+        keep = not relevance or n.is_heading or n.has_status or n.dc in keep_dcs or soft
         if keep:
             flush()
             rows.append(TocRow(node=n, pressure=pres.get(n.idx, 0.0), shared=is_shared))
@@ -438,7 +460,12 @@ def assemble_view(
         else set()
     )
     toc = _left_toc(
-        nodes, pres, relevance=relevance, shared_idx=shared_idx, keep_dcs=keep_dcs
+        nodes,
+        pres,
+        relevance=relevance,
+        shared_idx=shared_idx,
+        keep_dcs=keep_dcs,
+        budget=_TOC_BUDGET,
     )
 
     middle: list[MidRow] = []
