@@ -210,6 +210,10 @@ async def chunk_tag(request: Request, ident: str) -> JSONResponse:
         store.add_tag(ref.id, Tag.open(add), pos=rh.chunk_ord)
     if remove:
         store.remove_tag(ref.id, Tag.open(remove), pos=rh.chunk_ord)
+    # Tag edits don't mint a new chunk_id, so bust the base-node cache directly
+    # (a text edit self-invalidates via the content version) — the T signal +
+    # the chip row then reflect it on the very next render.
+    smartdraft.invalidate(ref.id)
     return JSONResponse({"ok": True, "tags": _chunk_tags(store, int(rh.chunk_id))})
 
 

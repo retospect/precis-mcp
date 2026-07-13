@@ -305,3 +305,44 @@ def test_build_view_marks_a_pinned_chunk(hub) -> None:
     view = build_view(store, ref_id, marks={"pens": [pin_dc], "eyes": {}})
     pinned = [r.node for r in view.toc if r.node and r.node.pinned]
     assert any(n.dc == pin_dc for n in pinned)
+
+
+def test_base_nodes_are_cached_but_marks_are_a_fresh_overlay(hub) -> None:
+    # The base nodes are cached across navigations (same draft, unchanged
+    # content) — a repeat build returns the SAME list objects — while pin/lock
+    # marks are re-applied per request, so a different mark set doesn't leak.
+    from precis_web import smartdraft as sd
+
+    store = hub.store
+    ref_id = _seed_draft(store, regimes=[["alpha"], ["beta"]])
+    sd.invalidate(ref_id)  # start clean
+    n1 = sd.build_nodes(store, ref_id)
+    n2 = sd.build_nodes(store, ref_id)
+    assert n1 is n2  # cache hit: not rebuilt
+
+    body = next(c for c in store.reading_order(ref_id) if c.chunk_kind != "heading")
+    pin_dc = handle_registry.format_handle("draft", body.chunk_id, chunk=True)
+    pinned = sd.build_nodes(store, ref_id, marks={"pens": [pin_dc], "eyes": {}})
+    assert any(n.pinned for n in pinned)
+    # a subsequent build with NO marks clears the overlay (no stale pin)
+    cleared = sd.build_nodes(store, ref_id)
+    assert not any(n.pinned for n in cleared)
+
+
+def test_content_edit_invalidates_the_node_cache(hub) -> None:
+    # A body edit mints a new chunk_id, so the content version changes and the
+    # cache rebuilds — the reader never serves stale text.
+    from precis_web import smartdraft as sd
+
+    store = hub.store
+    ref_id = _seed_draft(store, regimes=[["alpha"], ["beta"]])
+    first = sd.build_nodes(store, ref_id)
+    store.add_chunks(
+        ref_id=ref_id,
+        chunk_kind="paragraph",
+        text="a wholly new chunk",
+        at={"last": True},
+    )
+    second = sd.build_nodes(store, ref_id)
+    assert second is not first  # version changed → rebuilt
+    assert any("wholly new chunk" in (n.text or "") for n in second)

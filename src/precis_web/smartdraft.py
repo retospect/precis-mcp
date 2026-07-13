@@ -28,6 +28,7 @@ working reader — dark by construction.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -124,12 +125,92 @@ def _trunc_tail(text: str, cap: int) -> str:
     return t if len(t) <= cap else "…" + t[-(cap - 1) :].lstrip()
 
 
+# ── base-node cache ──────────────────────────────────────────────────────
+# Building the nodes is 4 serial DB round-trips (reading-order + blocks + views
+# + tags) plus an O(N) construction — ~0.35s on a 9.8k-chunk draft, and it's
+# *identical* across navigations within the same draft (only the focus, a query
+# param, changes). So cache the base nodes (pins/locks NOT baked in — those are
+# a cheap per-request overlay) keyed by ref_id, invalidated by a cheap content
+# version (chunk count + max id, which changes on any DELETE+INSERT body edit)
+# with a TTL backstop for out-of-band drift (worker re-summarize/keyword). This
+# is what makes click-around instant: the first focus pays the build, the rest
+# read the cache + re-run only the ~7ms assemble_view.
+#: {ref_id: (monotonic_stamp, version_token, base_nodes)}
+_NODE_CACHE: dict[int, tuple[float, str, list[ChunkNode]]] = {}
+#: Rebuild after this many seconds regardless of version — heals drift a worker
+#: made without minting a new chunk_id (summary/keyword rewrites, tag edits from
+#: outside the smartdraft write path, which calls :func:`invalidate` directly).
+_NODE_TTL = 45.0
+
+
+def _cache_version(store: Any, ref_id: int) -> str | None:
+    """A cheap content token for a draft — ``chunks:max(chunk_id):tags`` over its
+    live chunks. Body edits DELETE+INSERT (a new chunk_id) so the first two
+    change on any text edit; the ``chunk_tags`` count changes on any tag add /
+    remove — so the token self-invalidates for tag writes from *any* source (the
+    smartdraft route, the MCP ``tag`` verb, a worker), not just the route that
+    calls :func:`invalidate`. One round-trip. Returns ``None`` if the store can't
+    answer (a FakeStore in tests, a pool-less handle) — the caller then skips the
+    cache entirely, preserving the pre-cache always-rebuild behaviour exactly."""
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT "
+                " (SELECT count(*) FROM chunks WHERE ref_id = %s AND retired_at IS NULL), "
+                " (SELECT coalesce(max(chunk_id), 0) FROM chunks "
+                "    WHERE ref_id = %s AND retired_at IS NULL), "
+                " (SELECT count(*) FROM chunk_tags ct JOIN chunks c "
+                "    ON c.chunk_id = ct.chunk_id WHERE c.ref_id = %s)",
+                (ref_id, ref_id, ref_id),
+            ).fetchone()
+    except Exception:
+        return None
+    return f"{row[0]}:{row[1]}:{row[2]}" if row else None
+
+
+def invalidate(ref_id: int) -> None:
+    """Drop a draft's cached base nodes — call from any smartdraft write path
+    (tag add/remove) so the change shows on the very next render, not after the
+    TTL. Body-text edits self-invalidate via :func:`_cache_version`."""
+    _NODE_CACHE.pop(ref_id, None)
+
+
+def _apply_marks(nodes: list[ChunkNode], marks: dict[str, Any] | None) -> None:
+    """Stamp pin/lock status onto (cached) nodes from ``marks`` — a cheap
+    per-request overlay so marks needn't invalidate the cache. Sets *both* flags
+    on *every* node each call (clearing a prior request's overlay), so a shared
+    cached list stays consistent. Safe because the reader route runs the build →
+    render span synchronously (no ``await`` yields inside it)."""
+    pins = set((marks or {}).get("pens") or []) | set((marks or {}).get("eyes") or {})
+    locked = set((marks or {}).get("locks") or [])
+    for n in nodes:
+        n.pinned = n.dc in pins
+        n.locked = n.dc in locked
+
+
 def build_nodes(
     store: Any, ref_id: int, *, marks: dict[str, Any] | None = None
 ) -> list[ChunkNode]:
-    """Assemble the draft's chunks into `ChunkNode`s — one join over
-    reading-order (structure) + `list_blocks_for_ref` (keywords + embedding) +
-    `block_views` (llm summary). ``marks`` stamps pin/lock status."""
+    """Assemble the draft's chunks into `ChunkNode`s (cached per draft; see
+    :data:`_NODE_CACHE`). ``marks`` stamps pin/lock status as a per-request
+    overlay on top of the cached base."""
+    ver = _cache_version(store, ref_id)
+    now = time.monotonic()
+    ent = _NODE_CACHE.get(ref_id)
+    if ver is not None and ent and ent[1] == ver and now - ent[0] < _NODE_TTL:
+        nodes = ent[2]
+    else:
+        nodes = _build_nodes_uncached(store, ref_id)
+        if ver is not None:
+            _NODE_CACHE[ref_id] = (now, ver, nodes)
+    _apply_marks(nodes, marks)
+    return nodes
+
+
+def _build_nodes_uncached(store: Any, ref_id: int) -> list[ChunkNode]:
+    """The actual build — one join over reading-order (structure) +
+    `list_blocks_for_ref` (keywords) + `block_views` (llm summary) + chunk tags.
+    Pins/locks are left False; :func:`_apply_marks` overlays them per request."""
     chunks = store.reading_order(ref_id)
     # NB: do NOT load embeddings here — for a 10k-chunk draft that fetches ~10M
     # floats and (with a python cosine) blocks the page for seconds. Semantic is
@@ -137,9 +218,6 @@ def build_nodes(
     blocks = {b.id: b for b in store.list_blocks_for_ref(ref_id)}
     views = store.block_views(ref_id)
     tag_map = _load_chunk_tags(store, ref_id)
-    pins = set((marks or {}).get("pens") or [])
-    eyes = set((marks or {}).get("eyes") or {})
-    locked = set((marks or {}).get("locks") or [])  # forward-compat; unused v1
     nodes: list[ChunkNode] = []
     for i, c in enumerate(chunks):
         b = blocks.get(c.chunk_id)
@@ -159,8 +237,6 @@ def build_nodes(
                 keywords=kws,
                 sha=content_sha(c.text or ""),
                 tags=tag_map.get(c.chunk_id, []),
-                pinned=(c.dc in pins or c.dc in eyes),
-                locked=(c.dc in locked),
             )
         )
     return nodes
