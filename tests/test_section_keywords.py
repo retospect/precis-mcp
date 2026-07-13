@@ -47,3 +47,23 @@ def test_missing_and_blank_chunks_contribute_nothing() -> None:
 def test_top_k_truncates() -> None:
     views = _views(a="one, two, three, four, five")
     assert rollup_keywords(views, _chunks("a"), top_k=3) == ["one", "two", "three"]
+
+
+def test_ctfidf_suppresses_doc_generic_terms() -> None:
+    # "battery" is in every chunk of the doc (ambient/generic); "coulometry"
+    # only in the Methods run. Under raw frequency the two tie (tf=2) and the
+    # first-listed "battery" would win; c-TF-IDF lifts the run-distinctive term.
+    views = _views(
+        m1="battery, coulometry",
+        m2="battery, coulometry",
+        r1="battery, capacity",
+        r2="battery, cycling",
+        d="battery",
+    )
+    # the run is just the two Methods chunks; the doc (views) is all five.
+    assert rollup_keywords(views, _chunks("m1", "m2"), top_k=1) == ["coulometry"]
+    # and with more room the distinctive term still leads the ambient one
+    assert rollup_keywords(views, _chunks("m1", "m2"), top_k=2) == [
+        "coulometry",
+        "battery",
+    ]

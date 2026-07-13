@@ -599,7 +599,23 @@ writer's context, the more discipline the prose needs.*
    that mints the marked todo).
 5. **Upgrades.** c-TF-IDF section labels; real-section paper TOCs; the
    `search`-verb filter promotion; multi-focus recurrence overlay + internal
-   consistency findings.
+   consistency findings. **— c-TF-IDF DONE** (`utils/section_keywords.py`):
+   the collapsed-run/section label now ranks by `tf(term, run) × idf(term, doc)`
+   (sklearn-smoothed `idf = ln((1+N)/(1+df)) + 1`) instead of raw cross-chunk
+   frequency, so a run's label is what *distinguishes* it from the rest of the
+   document, not the doc's ambient vocabulary — sibling sections stop rolling up
+   to the same bag. No new query: the composer already hands `rollup_label` the
+   **whole-doc** `block_views`, so document-frequency is a free by-product; the
+   smoothing keeps idf strictly positive (a run with terms never labels empty)
+   and degrades to frequency order on a tiny doc where every term spans the run
+   (the honest v1 preserved on small inputs). Tests: `tests/test_section_keywords.py`
+   (`test_ctfidf_suppresses_doc_generic_terms` + the four slice-2 cases, all
+   still green). **Still ahead in this slice:** real-section paper TOCs (gated on
+   the "verify ingest section structure" backlog probe — keyword-cluster fallback
+   holds until then), `search`-verb filter promotion (also a standalone backlog
+   item), and the multi-focus recurrence overlay + internal-consistency findings
+   (needs per-target candidate attribution, which `find_candidates` flattens
+   today).
 6. **Beyond papers — other source kinds + provenance tiering.** Slices 1–5
    assume `kind='paper'`. But `patent`, `memory`, `datasheet`, `web`, `cfp`
    are searchable/viewable too and bring **angles a paper won't** — a patent
