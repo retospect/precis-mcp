@@ -88,6 +88,24 @@ Bodies are immutable (like all numeric-ref kinds): to reword a card,
 `delete(kind='anki', id=204)` then `put` the new wording. Deleting a card
 removes it from the corpus.
 
+## Sync to AnkiWeb
+
+Authoring a card stores it in precis; the **`precis anki-sync`** tick (a cron on
+the one designated runner, gated `PRECIS_ANKI_ENABLED`) pushes precis-authored
+cloze cards to your AnkiWeb account by a stable per-ref guid (re-sync *updates*,
+never duplicates) and reads each card's decay stats (`interval/ease/reps/lapses/
+due`) back into `meta.anki_stats`. The sync is account-safe: it will download to
+resolve a divergence but **refuses any full upload** that would overwrite AnkiWeb.
+
+## Fix a card with `precis-fix`
+
+To have precis improve a card, in **Anki** add the tag **`precis-fix`** to it and
+write what's wrong in a note field (e.g. `Back Extra`) — "answer should be left
+ventricle", "too wordy", "add the year". On the next `precis anki-sync --fix`, an
+LLM rewrites the card from your comment, writes it back, and retags it
+`precis-fixed`. precis only ever edits a card **you tagged** — untagged cards are
+never touched. Works on text notetypes (cloze/basic).
+
 ## What this is NOT
 
 - **No image occlusion / structured notetypes** — cloze only for now. The note

@@ -24,6 +24,7 @@ import sys
 
 from precis.cli import (
     add,
+    anki_sync,
     cron,
     db,
     draft,
@@ -84,6 +85,10 @@ def main() -> None:
 
     if args.cmd == "serve-embeddings":
         serve_embeddings.run(args)
+        return
+
+    if args.cmd == "anki-sync":
+        anki_sync.run(args)
         return
 
     if args.cmd == "migrate":
@@ -223,6 +228,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("serve", help="Run the MCP server (stdio).")
     serve_embeddings.add_parser(sub)
+    anki_sync.add_parser(sub)
 
     migrate.add_parser(sub)
     schema_doc.add_parser(sub)

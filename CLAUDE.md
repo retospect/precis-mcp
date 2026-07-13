@@ -358,13 +358,19 @@ The master kinds table lives in the `precis-overview` skill.
 - **`gripe`** — first-class bug tracker; body + comment timeline as chunks
   (`gripe_body`/`gripe_comment`), so they embed + keyword-index automatically.
 - **`anki`** — spaced-repetition **cloze** cards (`{{c1::…}}`) that live in the
-  corpus and (slice 2) sync to AnkiWeb. Numeric-ref `handlers/anki.py`; body is
-  cloze markup, `meta` carries the generic Anki note shape (`notetype`/`deck`/
-  `fields`, optional terse `Back Extra` after a lone `---`), emits a
-  markup-stripped `card_combined` chunk so cards embed + search. **Anki owns
-  scheduling — no SM-2.** Supersedes and retires `flashcard` (handle prefix
-  `fc`→`ak`). Migration 0060; design `docs/design/anki-integration.md`; skill
-  `precis-anki-help`.
+  corpus and sync to AnkiWeb. Numeric-ref `handlers/anki.py`; body is cloze
+  markup, `meta` carries the generic Anki note shape (`notetype`/`deck`/`fields`,
+  optional terse `Back Extra` after a lone `---`), emits a markup-stripped
+  `card_combined` chunk so cards embed + search. **Anki owns scheduling — no
+  SM-2.** Supersedes and retires `flashcard` (handle prefix `fc`→`ak`; migration
+  0060). **Headless AnkiWeb sync** (`src/precis/anki/`, `precis anki-sync`, gated
+  `PRECIS_ANKI_ENABLED`, `anki` wheel lazy-imported/ansible-installed): precis is
+  the Anki client holding one `.anki2` mirror; add-only-own-notes by stable guid,
+  guard allows FULL_DOWNLOAD but **refuses FULL_UPLOAD**, reads decay stats back
+  into `meta.anki_stats`. **precis-fix** (`anki/fix.py`, `--fix`): tag a card
+  `precis-fix` in Anki + a comment → LLM rewrites it → written back (per-card
+  opt-in widening of own-notes-only). Foreign-card read-only PG projection = slice
+  3, next. Design `docs/design/anki-integration.md`; skill `precis-anki-help`.
 - **`alert`** — machine-detected ops/health conditions (spin loops, orphans),
   raised via `precis.alerts.raise_alert` (fingerprint upsert + auto-resolve),
   read via `AlertHandler`/`/alerts`. **Not embedded.** Skill: `precis-alert-help`.

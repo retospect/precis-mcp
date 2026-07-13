@@ -216,6 +216,32 @@ class PrecisConfig(BaseSettings):
     Set via ``PRECIS_KINDS_DISABLED`` in the env.
     """
 
+    # ── Anki sync (slice 2) ────────────────────────────────────────────
+    anki_enabled: bool = False
+    """Gate the headless AnkiWeb sync (`precis anki-sync`). Default-off, so the
+    slice merges dark; enable only on the single designated sync runner (the Mac
+    `precis-infra` stack), where ansible has `pip install`-ed the `anki` wheel.
+    Set via ``PRECIS_ANKI_ENABLED``."""
+
+    anki_user: str | None = None
+    """AnkiWeb login email for the sync. A per-runner secret. ``PRECIS_ANKI_USER``."""
+
+    anki_password: str | None = None
+    """AnkiWeb password for the sync. A per-runner secret. ``PRECIS_ANKI_PASSWORD``."""
+
+    anki_mirror_dir: str | None = None
+    """Directory holding the single authoritative `.anki2` mirror. Must be
+    stable across runs and unique to the one sync runner (two mirrors syncing
+    one account would manufacture a full-sync conflict). ``PRECIS_ANKI_MIRROR_DIR``."""
+
+    anki_deck: str = "Precis"
+    """The deck precis-authored cards land in. ``PRECIS_ANKI_DECK``."""
+
+    anki_fix_enabled: bool = False
+    """Run the precis-fix pass on each sync — LLM-rewrite cards the user tagged
+    `precis-fix` in Anki (editing that one foreign card is opt-in per the tag).
+    Also toggled per-run by `precis anki-sync --fix`. ``PRECIS_ANKI_FIX_ENABLED``."""
+
 
 def load_config() -> PrecisConfig:
     return PrecisConfig()

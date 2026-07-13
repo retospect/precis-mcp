@@ -216,6 +216,67 @@ pure read — incapable of corruption. This is the slice that makes precis adapt
 Ship incrementally, but design slice 2's read-back to capture **every** card's
 stats from the start — it's free once syncing, and slice 3 needs the data waiting.
 
+## Slice 2 — build status (2026-07-13)
+
+**Core BUILT** on `worktree-anki-sync` (not yet shipped), proven end-to-end
+against Reto's real AnkiWeb account first (7168 notes; Cloze=4772, Image
+Occlusion Enhanced=1901 — the untouchable foreign types):
+
+- `src/precis/anki/notes.py` — pure conventions (guid `precis:<ref_id>`, deck
+  `Precis`, `precis::managed` tag, ref→spec, stats aggregation).
+- `src/precis/anki/sync.py` — engine (lazy-imports `anki`): `upsert_notes`
+  (add-only-own-notes by deterministic guid), `read_precis_stats`,
+  `read_all_cards` (pure read of ANY notetype — the accessibility + precis-fix
+  substrate), and `sync_tick` (the guard: allow FULL_DOWNLOAD, **refuse
+  FULL_UPLOAD**).
+- `precis anki-sync` CLI (`cli/anki_sync.py`) — single-runner pg advisory lock,
+  reads `anki` refs → upsert → guarded sync → writes `meta.anki_stats` back.
+  Gated `PRECIS_ANKI_ENABLED`; `anki` wheel lazy-imported (ansible installs it
+  on the one runner; NOT a locked dep). Config: `PRECIS_ANKI_{ENABLED,USER,
+  PASSWORD,MIRROR_DIR,DECK}`.
+- Tests: `tests/test_anki_sync.py` — 6 pure (always) + 5 local-collection
+  (`importorskip('anki')`, no network).
+
+Proven pylib idioms (from live probes): `sync_login(u,p,None)` → hkey;
+`sync_collection(auth,False).required` (NO_CHANGES/NORMAL/FULL_SYNC/FULL_DOWNLOAD/
+FULL_UPLOAD) + `new_endpoint` + `server_media_usn`; bootstrap =
+`close_for_full_sync()` → `full_upload_or_download(upload=False)` →
+`reopen(after_full_sync=True)`. `anki` 26.05 arm64 wheel, `pip install anki`
+(prebuilt, no Rust toolchain).
+
+## Accessibility of foreign clozes — OPEN FORK
+
+precis-authored clozes are PG-authoritative (born as `anki` refs). The question
+is the **foreign** cards (your 4772 hand-made Cloze notes + others):
+- **(A) read-only PG projection** — ingest foreign cards as `readonly`/`foreign`
+  `anki` refs each sync (embedded + searchable). Unlocks unified semantic search
+  + the retention-aware knowledge-model. The mirror/AnkiWeb stays the *source of
+  truth*; PG holds a derived, disposable, re-syncable index (DRY in spirit, like
+  paper chunks vs the PDF on disk). `read_all_cards` already provides the read.
+- **(B) mirror-only** — never copy foreign cards to PG; query the `.anki2` live
+  when needed. DRYest + always fresh, but no semantic search / knowledge-model
+  over them.
+**(A) CONFIRMED** (Reto, 2026-07-13) — it's the slice-3 north star and the
+projection is read-only so it can't corrupt. Built as **slice 3, next** (the
+`read_all_cards` read already exists; slice 3 adds the PG upsert-by-guid +
+soft-delete lifecycle + embedding).
+
+## precis-fix — the human→LLM→card feedback loop (slice 2.5, requested 2026-07-13)
+
+Tag a card **`precis-fix`** *inside Anki* (phone/desktop) and write what's wrong
+in a note field (comment). The sync tick then: `read_all_cards(col, tag=
+'precis-fix')` → an LLM reads the card fields + the comment + notetype and
+rewrites it → precis writes the fix **back to that foreign card's text fields** →
+swaps `precis-fix`→`precis-fixed` (and appends a one-line "fixed: <what>" note) →
+syncs up. This is a **deliberate, per-card widening** of own-notes-only: the tag
+IS the user's explicit consent to edit that one foreign card, so the corruption
+floor holds (precis still never touches an *un-tagged* foreign note). Targets
+text-bearing notetypes (cloze/basic); can't fix an occlusion image, only its
+text. **BUILT** (`src/precis/anki/fix.py`: `find_fix_requests` / `propose_fix`
+(claude_p) / `apply_fix` / `run_fix_pass`; integrated into `sync_tick(fix=True)`,
+run after download & before push so fixes ride the sync up; `precis anki-sync
+--fix` / `PRECIS_ANKI_FIX_ENABLED`). Tests: `tests/test_anki_fix.py`.
+
 ## Decisions log
 
 - **New `anki` kind, retire `flashcard`** (not "add an exporter to flashcard").
