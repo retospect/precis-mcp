@@ -1427,12 +1427,16 @@ def _m_section_style(ctx: AssemblyContext) -> str:
 
 
 def _m_backfill(ctx: AssemblyContext) -> str:
-    """Inject the source-backfill workspace + instructions (gated on
-    ``has_backfill``). The target handles were resolved + memoised by the
-    predicate into ``extras['backfill_targets']``."""
+    """Inject the source-backfill workspace + phase-specific instructions (gated
+    on ``has_backfill``). The target handles were resolved + memoised by the
+    predicate into ``extras['backfill_targets']``; the run's phase (find/review,
+    slice 7) is read from its ``BACKFILL_PHASE`` tag."""
     assert ctx.store is not None
     targets = ctx.extras.get("backfill_targets") or []
-    return _render_backfill_workspace(ctx.store, list(targets))
+    phase = _backfill_phase(ctx.store, ctx.ref_id)
+    return _render_backfill_workspace(
+        ctx.store, list(targets), run_ref_id=ctx.ref_id, phase=phase
+    )
 
 
 def _m_workspace(ctx: AssemblyContext) -> str:
@@ -1501,11 +1505,126 @@ def _m_review_section(ctx: AssemblyContext) -> str:
     return section_review_block(ctx.store, anchor)
 
 
-def _render_backfill_workspace(store: Store, targets: list[str]) -> str:
-    """The source-backfill tick block (slice 4): the recall workspace for the
-    target section(s) — what they already cite (``★``), the uncited-but-relevant
-    corpus sources recall found (``○`` candidates), and the ✓/⚠ grounding line —
-    followed by the weave / dismiss / request instructions.
+#: Closed-tag prefix for the backfill run's phase (slice 7). One
+#: ``BACKFILL_PHASE:<phase>`` tag on the run todo; absence = ``find``. Upper-case
+#: per the ``tags_namespace_check`` constraint (namespace = upper(namespace)).
+_BACKFILL_PHASE_NS = "BACKFILL_PHASE"
+PHASE_FIND = "find"
+PHASE_REVIEW = "review"
+
+
+def _backfill_phase(store: Store, ref_id: int) -> str:
+    """The backfill run's phase, read from a ``BACKFILL_PHASE:<phase>`` tag on the
+    run todo (default :data:`PHASE_FIND`). Progression is **monotonic**: find →
+    review → done (``STATUS:done``); a review that turns up a genuinely new gap may
+    tag back to ``find`` for one more pass. Any unknown value degrades to ``find``
+    (the safe, work-producing phase). Fallback-safe: a read failure → ``find``."""
+    try:
+        for tag in store.tags_for(ref_id):
+            if getattr(tag, "prefix", None) == _BACKFILL_PHASE_NS:
+                return PHASE_REVIEW if tag.value == PHASE_REVIEW else PHASE_FIND
+    except Exception:
+        log.debug("backfill phase read failed for %s", ref_id, exc_info=True)
+    return PHASE_FIND
+
+
+def _backfill_find_instructions(kind: str, draft_ident: str, run_ref_id: int) -> str:
+    """The **find** phase (slice 4 + slice 7 transition): weave / dismiss / request
+    each ``○`` candidate, then advance to *review* rather than finishing — so the
+    next tick re-reads the woven prose with its sources still open."""
+    from precis.backfill.provenance import TIERS
+
+    tier_admonition = "\n".join(f"   - `[{t.tag}]` — {t.admonition}" for t in TIERS)
+    return (
+        "## Source backfill — weave the sources you missed\n\n"
+        "This tick is the **find** phase of a source-backfill pass over the "
+        "section(s) below: find corpus sources this text *should* cite but "
+        "doesn't, and integrate them. It is the **recall** mirror of the citation "
+        "verifier (which checks that what you cited is true) — here you ask *did I "
+        "miss anything?* The workspace that follows shows each target section, the "
+        "papers it already cites (marked `★ cited`), the ✓/⚠ grounding line (where "
+        "the section is well-sourced vs under-sourced), and the uncited-but-"
+        "relevant sources recall surfaced (marked `○ candidate`, listed under "
+        "*candidate sources*). The `○` candidates are the product — work each "
+        "one:\n\n"
+        "1. **Weave it** — if the candidate genuinely supports a claim the "
+        "section makes (open it with `get(id='pc<id>')` and confirm it before you "
+        "trust it), integrate it: edit the draft prose to state/support the claim "
+        "and cite the specific chunk by its handle `[pc<id>]` (see the Draft + "
+        "citation guidance above). Write for the human reader — a real sentence "
+        "that earns the citation, never a bare handle bolted onto an unchanged "
+        "line.\n"
+        "2. **Dismiss it** — if it is *not* actually relevant (off-topic, "
+        "redundant with what you cite, or it doesn't support the claim), record "
+        "the rejection so recall never resurfaces it:\n\n"
+        f"       tag(kind='{kind}', id='{draft_ident}', "
+        "add=['DISMISSED_SOURCE:<paper_ref_id>'])\n\n"
+        "   where `<paper_ref_id>` is the number in the candidate's `pa<id>` "
+        "handle. Dismiss **every** candidate you reject — an un-dismissed reject "
+        "comes back on the next run and the pass never converges.\n"
+        "3. **Request it** — if the source you actually need is *not* in the "
+        "corpus, request it via the `paper_ingested` wait-leaf flow described "
+        "above; never invent or guess a citation.\n\n"
+        "**Advance to review — don't stop at weaving.** When every `○` candidate "
+        "has been woven in or dismissed, do **not** tag `STATUS:done` yet — enter "
+        "the *review* phase so the next tick re-reads what you wrote with these "
+        "sources still open and checks the weave landed:\n\n"
+        f"       tag(kind='todo', id='{run_ref_id}', add=['BACKFILL_PHASE:review'])\n\n"
+        "Do not re-open the same candidates tick after tick — a paper you keep "
+        "neither citing nor dismissing is a paper to dismiss.\n\n"
+        "**Provenance tiers.** Every candidate is tagged with the kind of source "
+        "it is — these are *not* interchangeable evidence, so respect the tag "
+        "when you decide whether (and how) to cite it:\n\n"
+        f"{tier_admonition}\n\n"
+        "Recall already down-ranks lower tiers; weave only what the claim "
+        "honestly needs, and never let a `[prior-art]` or `[own-note]` hit stand "
+        "in for the peer-reviewed source a scientific claim actually requires.\n"
+    )
+
+
+def _backfill_review_instructions(run_ref_id: int) -> str:
+    """The **review** phase (slice 7): judge whether the weave *landed*, with the
+    sources still open in the same window — a review pass distinct from the
+    citation verifier (accurate / well-sourced / reads standalone, not "is a quote
+    byte-true"). Converges on a clean read; may reopen ``find`` for a real gap."""
+    return (
+        "## Source backfill — REVIEW what you wove\n\n"
+        "This tick is the **review** phase of source-backfill on the section(s) "
+        "below. In the find phase you wove in the sources recall surfaced; now "
+        "judge whether the weave *landed*. This is a **review**, not the citation "
+        "verifier — you are not checking a quote is byte-true, you are checking "
+        "the integration reads and holds. Reviewing your new prose *with its "
+        "sources still open above* is the whole point: check each claim against "
+        "its source in the same window.\n\n"
+        "1. **Claim ↔ source.** For each citation you added, re-read the claim "
+        "against the source (its chunk is open above; re-open with "
+        "`get(id='pc<id>')` if needed) — does the source actually support what the "
+        "sentence asserts, or did the weave overreach? Tighten the prose to what "
+        "the source bears.\n"
+        "2. **Cold-read test.** Read each new sentence as a context-poor human who "
+        "cannot resolve `[pc<id>]`: does it still carry its point? Where a citation "
+        "is load-bearing, name the finding in the sentence (integral — 'Kumar et "
+        "al. report…') so the reader learns *whose* result it is without chasing "
+        "the handle.\n"
+        "3. **Coverage.** Re-check the ✓/⚠ grounding line and fix any ⚠ you now "
+        "can.\n\n"
+        "Revise the prose directly with `edit(id='dc<id>')`. **Converge:** when "
+        "the section reads clean and every claim is faithfully sourced, tag "
+        "`STATUS:done`. If review turns up a *genuinely new* missing source, "
+        "reopen recall for one more pass (never both, only for a real gap — the "
+        "phase is monotonic and ping-ponging spins the loop):\n\n"
+        f"       tag(kind='todo', id='{run_ref_id}', add=['BACKFILL_PHASE:find'])\n"
+    )
+
+
+def _render_backfill_workspace(
+    store: Store, targets: list[str], *, run_ref_id: int, phase: str = PHASE_FIND
+) -> str:
+    """The source-backfill tick block: the recall workspace for the target
+    section(s) — what they already cite (``★``), the uncited-but-relevant corpus
+    sources recall found (``○`` candidates), and the ✓/⚠ grounding line — prefixed
+    by **phase-specific** instructions (slice 7). ``find`` weaves/dismisses and
+    advances to review; ``review`` judges the weave in-context and converges.
 
     This is the *recall* mirror of the citation verifier: the verifier asks "is
     what I cited true?" (precision); backfill asks "did I miss anything?"
@@ -1533,64 +1652,22 @@ def _render_backfill_workspace(store: Store, targets: list[str]) -> str:
     if not workspace.strip():
         return ""
 
-    # Resolve the draft the dismissal ledger lives on, so the instruction can
-    # name the exact tag command (the ledger is a ref-level tag on the draft).
-    draft_ident = "<draft>"
-    try:
-        first = store.get_draft_chunk(targets[0], kind=kind)
-        if first is not None:
-            draft = store.get_ref(kind=kind, id=int(first.ref_id))
-            draft_ident = str(draft.slug) if draft and draft.slug else str(first.ref_id)
-    except Exception:
-        pass
-
-    # Provenance-tier admonition, generated from the tier ladder so the prompt
-    # can never drift from how candidates are actually tagged/ranked (slice 6).
-    from precis.backfill.provenance import TIERS
-
-    tier_admonition = "\n".join(f"   - `[{t.tag}]` — {t.admonition}" for t in TIERS)
-
-    instructions = (
-        "## Source backfill — weave the sources you missed\n\n"
-        "This tick is a **source-backfill** pass over the section(s) below: find "
-        "corpus sources this text *should* cite but doesn't, and integrate them. "
-        "It is the **recall** mirror of the citation verifier (which checks that "
-        "what you cited is true) — here you ask *did I miss anything?* The "
-        "workspace that follows shows each target section, the papers it already "
-        "cites (marked `★ cited`), the ✓/⚠ grounding line (where the section is "
-        "well-sourced vs under-sourced), and the uncited-but-relevant sources "
-        "recall surfaced (marked `○ candidate`, listed under *candidate sources*). "
-        "The `○` candidates are the product — work each one:\n\n"
-        "1. **Weave it** — if the candidate genuinely supports a claim the "
-        "section makes (open it with `get(id='pc<id>')` and confirm it before you "
-        "trust it), integrate it: edit the draft prose to state/support the claim "
-        "and cite the specific chunk by its handle `[pc<id>]` (see the Draft + "
-        "citation guidance above). Write for the human reader — a real sentence "
-        "that earns the citation, never a bare handle bolted onto an unchanged "
-        "line.\n"
-        "2. **Dismiss it** — if it is *not* actually relevant (off-topic, "
-        "redundant with what you cite, or it doesn't support the claim), record "
-        "the rejection so recall never resurfaces it:\n\n"
-        f"       tag(kind='{kind}', id='{draft_ident}', "
-        "add=['DISMISSED_SOURCE:<paper_ref_id>'])\n\n"
-        "   where `<paper_ref_id>` is the number in the candidate's `pa<id>` "
-        "handle. Dismiss **every** candidate you reject — an un-dismissed reject "
-        "comes back on the next run and the pass never converges.\n"
-        "3. **Request it** — if the source you actually need is *not* in the "
-        "corpus, request it via the `paper_ingested` wait-leaf flow described "
-        "above; never invent or guess a citation.\n\n"
-        "**Converge.** When every `○` candidate has been either woven in or "
-        "dismissed, tag yourself `STATUS:done`. Do not re-open the same "
-        "candidates tick after tick — a paper you keep neither citing nor "
-        "dismissing is a paper to dismiss.\n\n"
-        "**Provenance tiers.** Every candidate is tagged with the kind of source "
-        "it is — these are *not* interchangeable evidence, so respect the tag "
-        "when you decide whether (and how) to cite it:\n\n"
-        f"{tier_admonition}\n\n"
-        "Recall already down-ranks lower tiers; weave only what the claim "
-        "honestly needs, and never let a `[prior-art]` or `[own-note]` hit stand "
-        "in for the peer-reviewed source a scientific claim actually requires.\n"
-    )
+    if phase == PHASE_REVIEW:
+        instructions = _backfill_review_instructions(run_ref_id)
+    else:
+        # Resolve the draft the dismissal ledger lives on, so the instruction can
+        # name the exact tag command (the ledger is a ref-level tag on the draft).
+        draft_ident = "<draft>"
+        try:
+            first = store.get_draft_chunk(targets[0], kind=kind)
+            if first is not None:
+                draft = store.get_ref(kind=kind, id=int(first.ref_id))
+                draft_ident = (
+                    str(draft.slug) if draft and draft.slug else str(first.ref_id)
+                )
+        except Exception:
+            pass
+        instructions = _backfill_find_instructions(kind, draft_ident, run_ref_id)
     return f"{instructions}\n{workspace}"
 
 

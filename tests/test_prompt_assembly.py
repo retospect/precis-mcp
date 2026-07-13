@@ -416,6 +416,9 @@ def test_planner_backfill_todo_gets_workspace_and_instructions(
     assert "grounding" in prompts.user  # the ✓/⚠ coverage line
     # the target section's prose rides along so the model can weave into it
     assert "We synthesized the catalyst at 80C." in prompts.user
+    # slice 7: the default (find) phase routes to review, not straight to done
+    assert "BACKFILL_PHASE:review" in prompts.user
+    assert f"id='{run.id}'" in prompts.user  # the run todo is named for the tag
     # the cached contract is untouched (shared cache prefix preserved)
     assert "Planner contract" in prompts.system
 
@@ -426,3 +429,47 @@ def test_planner_plain_todo_has_no_backfill_block(hub: Hub) -> None:
     todo = hub.store.insert_ref(kind="todo", slug=None, title="just do it")
     prompts = build_planner_prompts(hub.store, ref_id=todo.id, model="opus")
     assert "Source backfill — weave" not in prompts.user
+
+
+def test_backfill_phase_helper(draft: DraftHandler, hub: Hub) -> None:
+    from precis.store.types import Tag
+    from precis.workers.planner_prompt import (
+        PHASE_FIND,
+        PHASE_REVIEW,
+        _backfill_phase,
+    )
+
+    methods_h = _draft_with_section(draft, hub, "bfp")
+    run = hub.store.insert_ref(kind="todo", slug=None, title="backfill methods")
+    hub.store.stamp_ref_meta(run.id, {"backfill": {"targets": [methods_h]}})
+    # default (no phase tag) → find
+    assert _backfill_phase(hub.store, run.id) == PHASE_FIND
+    # tagging BACKFILL_PHASE:review advances the run
+    hub.store.add_tag(run.id, Tag.closed("BACKFILL_PHASE", "review"))
+    assert _backfill_phase(hub.store, run.id) == PHASE_REVIEW
+
+
+def test_planner_backfill_review_phase_instructions(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    from precis.store.types import Tag
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    methods_h = _draft_with_section(draft, hub, "bfr")
+    run = hub.store.insert_ref(kind="todo", slug=None, title="backfill methods")
+    hub.store.stamp_ref_meta(run.id, {"backfill": {"targets": [methods_h]}})
+    hub.store.add_tag(run.id, Tag.closed("BACKFILL_PHASE", "review"))
+
+    prompts = build_planner_prompts(hub.store, ref_id=run.id, model="opus")
+    # the review-phase framing replaces the weave framing
+    assert "Source backfill — REVIEW what you wove" in prompts.user
+    assert "Source backfill — weave the sources you missed" not in prompts.user
+    # the review dimensions: claim↔source, cold-read, coverage
+    assert "Claim ↔ source" in prompts.user
+    assert "Cold-read test" in prompts.user
+    # the workspace (sources still open) rides along for in-context review
+    assert "grounding" in prompts.user
+    assert "We synthesized the catalyst at 80C." in prompts.user
+    # convergence: clean review → done; a real gap reopens find
+    assert "STATUS:done" in prompts.user
+    assert "BACKFILL_PHASE:find" in prompts.user

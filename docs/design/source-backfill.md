@@ -705,6 +705,32 @@ writer's context, the more discipline the prose needs.*
      (skill + instructions) stays cached**; only the **variable working-set
      block** is the cache-break. So the churn is one block, not the whole
      prompt — the price of a living workspace.
+
+   **— v1 DONE** (the phase machine + review-in-context; `planner_prompt.py`
+   `_backfill_phase` / `_backfill_find_instructions` / `_backfill_review_instructions`;
+   `tests/test_prompt_assembly.py`). A `BACKFILL_PHASE:<phase>` closed tag on the
+   run todo (absent = `find`) drives **monotonic find → review → done**: the find
+   phase weaves/dismisses and, instead of tagging `STATUS:done`, advances with
+   `tag(kind='todo', id='<run>', add=['BACKFILL_PHASE:review'])`; the review phase
+   renders a distinct **review checklist** — claim↔source (re-read each added
+   citation against its still-open source), the **cold-read test** (does the new
+   sentence carry for a context-poor human without resolving `[pc<id>]`), and
+   coverage (fix remaining ⚠) — converging on `STATUS:done`, or reopening `find`
+   for a *genuinely new* gap (ping-pong caught by the plan-tick-spin detector). The
+   review is a review pass, **distinct from the citation verifier** — "did the weave
+   land?", not "is a quote byte-true?". No executor change: the payoff — **review
+   with sources still open** — falls out of the tick rebuilding the workspace from
+   the (now-mutated) draft, since chunks are DELETE+INSERT on edit so the next
+   tick's `reading_order` already carries the new prose (the design's own note). The
+   review-phase persona stays inline (the checklist *is* the stance) rather than
+   swapping the `precis-draft-reviewer` skill in. **Deferred (enhancement, not a
+   blocker):** the §15 **eye-curation-delta snapshot** — persisting which candidate
+   eyes the model manually re-focused across ticks. The `WorkingSet.to_meta_patch`
+   / `from_json` serialization exists but is **latent** (nothing in the `plan_tick`
+   executor reads/writes it today); wiring it would let manual curation (not just
+   the draft's own state) carry forward. The draft-rebuild path covers the prose
+   and citation state — the dominant signal — so the snapshot is a refinement, and
+   it's the one place slice 7 genuinely needs new executor plumbing.
 8. **The structural layer — document-graph rollup + heading-intent notes.**
    Slices 1–7 are all *local* (find/write/review a spot); this is *global
    structure* — "does the whole thing hang together." Two separable parts:
