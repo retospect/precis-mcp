@@ -209,7 +209,8 @@ def test_missing_app_id_raises_upstream(
 
 
 def test_kind_spec_declares_env_requirement() -> None:
-    assert MathHandler.spec.requires_env == ("WOLFRAM_APP_ID",)
+    # WOLFRAM_APP_ID now resolves through the secrets vault (ADR 0055).
+    assert MathHandler.spec.requires_secret == ("WOLFRAM_APP_ID",)
 
 
 def test_kind_hidden_when_env_missing(monkeypatch: pytest.MonkeyPatch) -> None:

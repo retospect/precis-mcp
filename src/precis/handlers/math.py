@@ -76,7 +76,7 @@ class MathHandler(CacheBackedHandler):
         is_numeric=False,
         id_required=True,
         role="system",
-        requires_env=("WOLFRAM_APP_ID",),
+        requires_secret=("WOLFRAM_APP_ID",),
     )
 
     provider: ClassVar[str] = "wolfram"

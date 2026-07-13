@@ -207,7 +207,7 @@ class OrcidHandler(Handler):
         supports_link=True,
         is_numeric=False,
         id_required=False,
-        requires_env=("ORCID_CLIENT_ID", "ORCID_CLIENT_SECRET"),
+        requires_secret=("ORCID_CLIENT_ID", "ORCID_CLIENT_SECRET"),
     )
 
     provider: ClassVar[str] = "orcid"

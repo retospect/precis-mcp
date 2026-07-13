@@ -107,10 +107,22 @@ class KindSpec:
     modes: tuple[str, ...] = ()  # supported mode= values for put
 
     requires_env: tuple[str, ...] = ()  # all must be set or kind is hidden
+    #: Secrets that must resolve (env → DB vault → file, ADR 0055) or the kind
+    #: is hidden. Use this instead of ``requires_env`` for credentials that live
+    #: in the secrets vault, so the kind stays available after the env var is
+    #: pulled and the value lives only in the DB.
+    requires_secret: tuple[str, ...] = ()
 
     def is_available(self) -> bool:
-        """True iff every required env var is set with a non-empty value."""
-        return all(os.environ.get(v) for v in self.requires_env)
+        """True iff every required env var is set and every required secret
+        resolves (env / vault / file)."""
+        if not all(os.environ.get(v) for v in self.requires_env):
+            return False
+        if self.requires_secret:
+            from precis import secrets as _secrets
+
+            return all(_secrets.is_available(n) for n in self.requires_secret)
+        return True
 
     def supports(self, verb: Verb) -> bool:
         return getattr(self, f"supports_{verb}")

@@ -408,7 +408,7 @@ def test_patent_handler_raises_init_error_when_envs_missing() -> None:
             "PRECIS_PATENT_RAW_ROOT",
         ):
             os.environ.pop(env, None)
-        with pytest.raises(InitError, match="patent: missing env vars"):
+        with pytest.raises(InitError, match="patent: missing"):
             PatentHandler(hub=hub)
 
 
@@ -445,3 +445,25 @@ def test_patent_handler_test_path_unaffected_by_env() -> None:
         )
         assert h.ops is not None  # constructed without env
         assert h.raw_root == Path("/tmp/patent-raw")
+
+
+def test_requires_secret_gates_on_resolver(monkeypatch) -> None:
+    """A kind gated on ``requires_secret`` is hidden when the secret resolves
+    nowhere (env/vault/file) and loads once it resolves — the vault-aware
+    parallel of ``requires_env`` (ADR 0055)."""
+    from precis import secrets as _secrets
+    from precis.kind_gate import gate
+    from precis.protocol import KindSpec
+
+    _secrets.bind_store(None)
+    _secrets.invalidate()
+    monkeypatch.delenv("VAULT_ONLY_SECRET", raising=False)
+    spec = KindSpec(
+        kind="x", title="X", description="d", requires_secret=("VAULT_ONLY_SECRET",)
+    )
+    verdict = gate(spec, disabled=frozenset())
+    assert verdict.loaded is False
+    assert "missing secret VAULT_ONLY_SECRET" in (verdict.reason or "")
+
+    monkeypatch.setenv("VAULT_ONLY_SECRET", "resolved")
+    assert gate(spec, disabled=frozenset()).loaded is True

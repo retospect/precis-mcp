@@ -64,11 +64,13 @@ _SUPPORTED_VIEWS: tuple[str, ...] = (
     "bibtex",
 )
 
-_REQUIRED_ENV: tuple[str, ...] = (
+# EPO credentials resolve through the secrets vault (ADR 0055); the raw-root is
+# a filesystem path that stays a plain env var.
+_REQUIRED_SECRETS: tuple[str, ...] = (
     "EPO_OPS_CLIENT_KEY",
     "EPO_OPS_CLIENT_SECRET",
-    "PRECIS_PATENT_RAW_ROOT",
 )
+_REQUIRED_ENV: tuple[str, ...] = ("PRECIS_PATENT_RAW_ROOT",)
 
 # Conservative cap on local list views so the agent's context
 # isn't blown by a large patent corpus.
@@ -108,6 +110,7 @@ class PatentHandler(Handler):
         role="corpus",
         views=_SUPPORTED_VIEWS,
         requires_env=_REQUIRED_ENV,
+        requires_secret=_REQUIRED_SECRETS,
     )
 
     def __init__(
@@ -138,8 +141,10 @@ class PatentHandler(Handler):
             secret = _secrets.get_secret("EPO_OPS_CLIENT_SECRET")
             raw = os.environ.get("PRECIS_PATENT_RAW_ROOT")
             if not (key and secret and raw):
-                missing = [e for e in _REQUIRED_ENV if not os.environ.get(e)]
-                raise InitError("patent: missing env vars " + ", ".join(missing))
+                missing = [e for e in _REQUIRED_ENV if not os.environ.get(e)] + [
+                    s for s in _REQUIRED_SECRETS if not _secrets.is_available(s)
+                ]
+                raise InitError("patent: missing " + ", ".join(missing))
             if ops is None:
                 ops = OpsClient(
                     key=key,

@@ -152,6 +152,22 @@ def gate(
             loaded=False,
             reason="missing " + ", ".join(missing),
         )
+    # requires_secret resolves through the secrets vault (env → vault.reveal →
+    # file, ADR 0055), so a kind gated on a secret stays available once the env
+    # var is pulled and the value lives only in the DB vault. Checked lazily so
+    # kind_gate keeps no hard dependency on the resolver / store.
+    if spec.requires_secret:
+        from precis import secrets as _secrets
+
+        missing_secrets = [
+            name for name in spec.requires_secret if not _secrets.is_available(name)
+        ]
+        if missing_secrets:
+            return Loadability(
+                kind=spec.kind,
+                loaded=False,
+                reason="missing secret " + ", ".join(missing_secrets),
+            )
     return Loadability(kind=spec.kind, loaded=True)
 
 

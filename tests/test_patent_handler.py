@@ -428,8 +428,10 @@ class TestSpec:
         assert PatentHandler.spec.supports_put is False
 
     def test_spec_requires_three_env_vars(self) -> None:
-        assert set(PatentHandler.spec.requires_env) == {
+        # EPO credentials resolve through the secrets vault (ADR 0055); the
+        # raw-root stays a plain env var.
+        assert set(PatentHandler.spec.requires_secret) == {
             "EPO_OPS_CLIENT_KEY",
             "EPO_OPS_CLIENT_SECRET",
-            "PRECIS_PATENT_RAW_ROOT",
         }
+        assert set(PatentHandler.spec.requires_env) == {"PRECIS_PATENT_RAW_ROOT"}
