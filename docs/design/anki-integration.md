@@ -256,10 +256,15 @@ is the **foreign** cards (your 4772 hand-made Cloze notes + others):
 - **(B) mirror-only** — never copy foreign cards to PG; query the `.anki2` live
   when needed. DRYest + always fresh, but no semantic search / knowledge-model
   over them.
-**(A) CONFIRMED** (Reto, 2026-07-13) — it's the slice-3 north star and the
-projection is read-only so it can't corrupt. Built as **slice 3, next** (the
-`read_all_cards` read already exists; slice 3 adds the PG upsert-by-guid +
-soft-delete lifecycle + embedding).
+**(A) CONFIRMED + BUILT** (2026-07-13, `src/precis/anki/project.py`). Each sync
+(`--project` / `PRECIS_ANKI_PROJECT_ENABLED`) reads the whole mirror and upserts
+foreign cards (any notetype) as **read-only** `anki` refs (`meta.source=
+anki-foreign`, `readonly`, `anki-foreign` flag), emitting a plain-text (HTML +
+cloze stripped) `card_combined` chunk so they embed + search. Idempotent + cheap:
+a per-card `content_sha` re-embeds only *changed* cards; vanished guids are
+soft-deleted; precis-authored notes (`precis:<id>`) are skipped (already
+authoritative). Read-only derived index — can't corrupt the account. Tests:
+`tests/test_anki_project.py`.
 
 ## precis-fix — the human→LLM→card feedback loop (slice 2.5, requested 2026-07-13)
 

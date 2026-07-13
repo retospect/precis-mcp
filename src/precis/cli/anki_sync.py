@@ -46,6 +46,11 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Also run the precis-fix pass (LLM-rewrite `precis-fix`-tagged cards).",
     )
+    p.add_argument(
+        "--project",
+        action="store_true",
+        help="Also project ALL Anki cards into PG as read-only refs (searchable).",
+    )
 
 
 def run(args: argparse.Namespace) -> None:
@@ -106,6 +111,7 @@ def run(args: argparse.Namespace) -> None:
                     specs=specs,
                     deck=cfg.anki_deck,
                     fix=args.fix or cfg.anki_fix_enabled,
+                    project=args.project or cfg.anki_project_enabled,
                 )
             except AnkiNotInstalled as e:
                 print(f"anki-sync: {e}", file=sys.stderr)
@@ -121,6 +127,11 @@ def run(args: argparse.Namespace) -> None:
                     meta_patch={"anki_stats": st, "anki": {"last_synced": now}},
                 )
             print(f"anki-sync: {result.summary()}")
+            if result.all_cards is not None:
+                from precis.anki.project import project_cards
+
+                proj = project_cards(store, result.all_cards)
+                print(f"anki-sync: {proj.summary()}")
             if result.aborted:
                 sys.exit(1)
         finally:

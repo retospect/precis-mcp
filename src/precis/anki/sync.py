@@ -64,6 +64,7 @@ class SyncResult:
     stats_written: int = 0
     fix_requested: int = 0
     fix_applied: int = 0
+    all_cards: list[ForeignCard] | None = None  # populated when project=True
     aborted: str | None = None
 
     def summary(self) -> str:
@@ -189,6 +190,7 @@ def sync_tick(
     endpoint: str | None = None,
     fix: bool = False,
     fix_model: str | None = None,
+    project: bool = False,
 ) -> tuple[SyncResult, dict[int, dict[str, Any]]]:
     """One full tick against AnkiWeb. Account-safe by construction: a required
     full sync is resolved by *downloading* (only our regenerable mirror is at
@@ -241,6 +243,10 @@ def sync_tick(
 
         stats = read_precis_stats(col)
         result.stats_written = len(stats)
+        if project:
+            # Read the whole collection off the mirror for the read-only PG
+            # projection (the CLI, which holds the store, does the upsert).
+            result.all_cards = read_all_cards(col)
         return result, stats
     finally:
         col.close()

@@ -242,6 +242,12 @@ class PrecisConfig(BaseSettings):
     `precis-fix` in Anki (editing that one foreign card is opt-in per the tag).
     Also toggled per-run by `precis anki-sync --fix`. ``PRECIS_ANKI_FIX_ENABLED``."""
 
+    anki_project_enabled: bool = False
+    """Project ALL Anki cards (incl. foreign, any notetype) into PG as read-only
+    `anki` refs each sync, so the whole collection is searchable + feeds the
+    knowledge-model. Read-only derived index — can't corrupt the account. Also
+    toggled by `precis anki-sync --project`. ``PRECIS_ANKI_PROJECT_ENABLED``."""
+
 
 def load_config() -> PrecisConfig:
     return PrecisConfig()

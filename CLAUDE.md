@@ -369,8 +369,12 @@ The master kinds table lives in the `precis-overview` skill.
   guard allows FULL_DOWNLOAD but **refuses FULL_UPLOAD**, reads decay stats back
   into `meta.anki_stats`. **precis-fix** (`anki/fix.py`, `--fix`): tag a card
   `precis-fix` in Anki + a comment → LLM rewrites it → written back (per-card
-  opt-in widening of own-notes-only). Foreign-card read-only PG projection = slice
-  3, next. Design `docs/design/anki-integration.md`; skill `precis-anki-help`.
+  opt-in widening of own-notes-only). **Foreign-card read-only PG projection**
+  (`anki/project.py`, `--project`): every Anki card (any notetype) mirrored into
+  PG as a read-only `anki` ref (`meta.source=anki-foreign`), content-hash-gated so
+  only changed cards re-embed, vanished ones soft-deleted — the whole collection
+  searchable + feeding the knowledge-model, can't corrupt the account. Design
+  `docs/design/anki-integration.md`; skill `precis-anki-help`.
 - **`alert`** — machine-detected ops/health conditions (spin loops, orphans),
   raised via `precis.alerts.raise_alert` (fingerprint upsert + auto-resolve),
   read via `AlertHandler`/`/alerts`. **Not embedded.** Skill: `precis-alert-help`.

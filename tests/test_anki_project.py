@@ -1,0 +1,124 @@
+"""Tests for the read-only foreign-card PG projection (slice 3).
+
+`project_cards` takes plain `ForeignCard`s + a real store — no `anki` wheel, no
+network — so these run in the gate. Uses unique guids per test so the shared
+`precis_test` DB doesn't cross-contaminate.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+from precis.anki.project import (
+    FOREIGN_SOURCE,
+    content_sha,
+    project_cards,
+    searchable_text,
+    title_for,
+)
+from precis.anki.sync import ForeignCard
+
+
+def _card(guid, fields, *, notetype="Cloze", deck="geo", note_id=1, ref_id=None):
+    return ForeignCard(
+        note_id=note_id,
+        guid=guid,
+        notetype=notetype,
+        deck=deck,
+        tags=[],
+        fields=fields,
+        ref_id=ref_id,
+    )
+
+
+def _uid() -> str:
+    return f"g-{uuid.uuid4().hex[:12]}"
+
+
+class TestPure:
+    def test_plain_strips_html_and_cloze(self) -> None:
+        assert (
+            searchable_text({"Text": "The <b>{{c1::heart}}</b> pumps&nbsp;blood."})
+            == "The heart pumps blood."
+        )
+
+    def test_title_first_nonempty(self) -> None:
+        assert title_for({"Front": "", "Back": "answer"}) == "answer"
+        assert title_for({"a": "<div></div>"}) == "(empty card)"
+
+    def test_content_sha_stable_and_sensitive(self) -> None:
+        a = content_sha({"Text": "x"}, "Cloze")
+        assert a == content_sha({"Text": "x"}, "Cloze")
+        assert a != content_sha({"Text": "y"}, "Cloze")
+        assert a != content_sha({"Text": "x"}, "Basic")
+
+
+class TestProjection:
+    def test_insert_creates_readonly_ref_with_card(self, store) -> None:
+        guid = _uid()
+        res = project_cards(
+            store, [_card(guid, {"Front": "Q?", "Back": "A!"}, notetype="Basic")]
+        )
+        assert res.inserted == 1
+        idx = _lookup(store, guid)
+        assert idx is not None
+        ref = store.get_ref(kind="anki", id=idx)
+        assert ref.meta["source"] == FOREIGN_SOURCE
+        assert ref.meta["readonly"] is True
+        assert ref.meta["notetype"] == "Basic"
+        assert ref.meta["anki"]["guid"] == guid
+        # searchable card_combined chunk emitted
+        with store.pool.connection() as conn:
+            card = conn.execute(
+                "select text from chunks where ref_id=%s and ord=-1", (idx,)
+            ).fetchone()
+        assert card is not None and "A!" in card[0]
+
+    def test_reproject_unchanged_is_noop(self, store) -> None:
+        guid = _uid()
+        card = _card(guid, {"Text": "The {{c1::x}} y."})
+        project_cards(store, [card])
+        res = project_cards(store, [card])  # identical content
+        assert res.unchanged == 1 and res.updated == 0 and res.inserted == 0
+
+    def test_reproject_changed_updates(self, store) -> None:
+        guid = _uid()
+        project_cards(store, [_card(guid, {"Text": "old {{c1::a}}"})])
+        res = project_cards(store, [_card(guid, {"Text": "new {{c1::b}}"})])
+        assert res.updated == 1
+        idx = _lookup(store, guid)
+        assert (
+            store.get_ref(kind="anki", id=idx).meta["fields"]["Text"] == "new {{c1::b}}"
+        )
+
+    def test_vanished_card_soft_deleted(self, store) -> None:
+        keep, drop = _uid(), _uid()
+        project_cards(
+            store,
+            [_card(keep, {"Text": "{{c1::k}}"}), _card(drop, {"Text": "{{c1::d}}"})],
+        )
+        drop_id = _lookup(store, drop)
+        # next sync: only `keep` present → `drop` disappears from the mirror
+        project_cards(store, [_card(keep, {"Text": "{{c1::k}}"})])
+        assert _lookup(store, drop) is None  # soft-deleted (not in live index)
+        # confirm the row is actually soft-deleted, not hard-deleted
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "select deleted_at from refs where ref_id=%s", (drop_id,)
+            ).fetchone()
+        assert row[0] is not None
+
+    def test_precis_owned_card_skipped(self, store) -> None:
+        # a precis-authored note carries guid `precis:<id>` → never re-projected
+        res = project_cards(store, [_card("precis:123", {"Text": "{{c1::mine}}"})])
+        assert res.skipped_own == 1 and res.inserted == 0
+
+
+def _lookup(store, guid) -> int | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "select ref_id from refs where kind='anki' and deleted_at is null "
+            "and meta->'anki'->>'guid' = %s",
+            (guid,),
+        ).fetchone()
+    return row[0] if row else None
