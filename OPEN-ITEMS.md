@@ -17,6 +17,41 @@ what's still open.
 
 ---
 
+## 🩹 Residuals — asa storeless-precis incident (2026-07-14)
+
+The 2026-07-14 investigation ("asa can't file gripes") root-caused a
+double-build in `precis serve` (fixed in `8b07c0ad`; the boot build scrubs
+`PRECIS_DATABASE_URL`, so `tools/core` lazily built a *second*, storeless
+runtime that served every MCP tool call). Fixes shipped: the runtime-share
+(`8b07c0ad`), the boot-time connect retry (`4c47a652`), asa's health-check
+that detects a degraded precis (asa-bot `2727054`), and the asa deploy
+ssh-agent fix (cluster `d86f8c6`). Left open:
+
+- **`build_runtime` is storeless-after-scrub by construction** — `open` /
+  `polish` / owner `runtime.py` + `secrets.py`. `adopt_process_store` deletes
+  `PRECIS_DATABASE_URL` from `os.environ`, so *any* in-process
+  `build_runtime()` after boot comes up storeless. We fixed the one caller
+  (`tools/core` in serve) by sharing the runtime, but the trap remains for
+  future callers. Harden: have `build_runtime` fall back to the adopted
+  process store's DSN when the env var is gone, or defer the scrub until
+  after all in-process builds. Finder: Opus session.
+- **conv capture silently stopped 2026-06-27** — `open` / investigate /
+  owner `asa-bot capture_shim` + `precis handlers/conv`. No `kind='conv'`
+  rows in prod since 2026-06-27 despite `POST /capture` returning 200 and
+  no `capture-fallback.jsonl` on disk. Very likely the same storeless-precis
+  root cause (capture routed through the degraded tool runtime) — **verify
+  after the next asa Discord turn** now that `8b07c0ad` is deployed; if still
+  broken, trace the shim's precis write path (200 despite no persisted row).
+  Finder: Opus session.
+- **asa venv can't `import precis`** — `open` / `polish` / owner `asa_bot`
+  ansible role. `_attach_db_log_handler` throws `ModuleNotFoundError: No
+  module named 'precis'` at every asa boot ("continuing without DB logs"),
+  so asa never lands in `worker_logs` and `precis logs --process asa-bot` is
+  empty — which made this incident harder to see. Fix: install `precis` into
+  `/opt/asa/venv` (or vendor the `db_log_handler`). Finder: Opus session.
+
+---
+
 ## 🔐 secrets vault — SHIPPED + fully cut over (2026-07-13)
 
 ADR 0055 / migration 0059. **DONE, deployed, validated on prod.** Encrypted
