@@ -135,6 +135,15 @@ Repository = "https://github.com/retospect/precis-mcp"
 # tools/list advertises it (MCP critic CRITICAL). ``[all]`` includes
 # ``embed`` so the single-process install keeps working.
 embed = ["sentence-transformers>=3.0"]
+# asa — the Discord bridge that runs Asa as a Claude Code agent backed by
+# precis (folded in from the standalone asa-bot repo). A sibling package
+# (`src/asa_bot`) + the `asa-bot` entry point, like `precis_web` + `precis
+# web`. Deliberately NOT in `[all]`: asa is an operational daemon, not a
+# precis capability, and its only extra deps are discord.py + aiohttp
+# (psycopg + pyyaml are already core). asa keeps talking to `precis serve`
+# over stdio at runtime — the merge shares the code, not the process
+# boundary. Install target: `precis-mcp[asa]` on the asa host (melchior).
+asa = ["discord.py>=2.4", "aiohttp>=3.9"]
 # Paper ingest — PDF → layout (marker-pdf) → chunks + metadata
 # lookup (CrossRef / Semantic Scholar). The full pipeline lives in
 # :mod:`precis.ingest` as of the v7 rewrite (was previously farmed out
@@ -246,6 +255,7 @@ all = ["precis-mcp[embed,paper,docx,tex,calc,plot,external,patent,edgar,web,cad-
 
 [project.scripts]
 precis = "precis.cli:main"
+asa-bot = "asa_bot.__main__:main"
 
 # V2 drops entry-point handler discovery in favour of an in-tree
 # `BUILTINS` registry list. No `precis.file_types` / `precis.schemes`
@@ -270,7 +280,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under
