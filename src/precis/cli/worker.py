@@ -323,6 +323,12 @@ def run(args: argparse.Namespace) -> None:
     from precis import secrets as _secrets
 
     _secrets.adopt_process_store(store)
+    # Bind the same store for the full LLM interaction log (route_log, migration
+    # 0061) so every dispatch() call this worker makes is captured. Best-effort;
+    # dark until bound.
+    from precis import route_log as _route_log
+
+    _route_log.bind_store(store)
     # Attach the centralised DB log handler now that we have a
     # working DSN. The file handler the worker's parent process
     # already set up stays in place as the bootstrap + fallback

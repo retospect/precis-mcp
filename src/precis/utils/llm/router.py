@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -99,8 +100,6 @@ class Transport(StrEnum):
       (multi-turn, MCP tools, stream-json result event).
     * ``CLAUDE_P`` — :func:`precis.utils.claude_p.call_claude_p`
       (one-shot, no tools, last-JSON-block parse).
-    * ``LITELLM`` — the loopback litellm ``LlmClient`` (OpenAI
-      ``/v1/chat/completions``, tool-less local completion).
     * ``LITELLM`` — the loopback litellm ``LlmClient`` (OpenAI
       ``/v1/chat/completions``, tool-less local completion).
     * ``OPENAI_COMPAT`` — the same OpenAI ``/v1/chat/completions`` wire
@@ -358,6 +357,10 @@ class LlmRequest:
     model: str | None = None
     max_usd: float | None = None
     timeout_s: float | None = None
+    #: Caller label ("dream", "review:structural", "chase:verify", ...) — the
+    #: categorical feature the route-log keys on and the future per-source
+    #: switchover knob. Free-form; empty when a caller hasn't set one yet.
+    source: str = ""
     # claude_agent pass-through knobs (ignored by the other transports).
     system_prompt: str | Path | None = None
     mcp_config: str | Path | None = None
@@ -636,11 +639,95 @@ def dispatch(req: LlmRequest) -> LlmResult:
         ladder = _failover_ladder(
             req.tier, tools_needed=req.tools_needed, backend=backend
         )
-        return FailoverProvider(ladder).run(req, model=model)
-    transport = select_transport(
-        req.tier, tools_needed=req.tools_needed, backend=backend
+        transport = ladder[0].transport
+        provider: LlmProvider = FailoverProvider(ladder)
+    else:
+        transport = select_transport(
+            req.tier, tools_needed=req.tools_needed, backend=backend
+        )
+        provider = provider_for(transport)
+    started = time.monotonic()
+    result = provider.run(req, model=model)
+    _record_dispatch(
+        req,
+        result,
+        transport=transport,
+        duration_ms=int((time.monotonic() - started) * 1000),
     )
-    return provider_for(transport).run(req, model=model)
+    return result
+
+
+def _route_features(req: LlmRequest) -> dict[str, Any]:
+    """Cheap, deterministic code features for the route-log (the categorizer's
+    first layer). No model call — just what's readable off the request."""
+    prompt_chars = len(req.prompt or "")
+    if req.messages:
+        prompt_chars += sum(len(str(m.get("content", ""))) for m in req.messages)
+    return {
+        "prompt_chars": prompt_chars,
+        "tier": req.tier.value,
+        "tools_needed": req.tools_needed,
+        "source": req.source or None,
+        "has_system": bool(req.system_prompt),
+        "has_mcp": bool(req.mcp_config),
+    }
+
+
+def _serialize_request(req: LlmRequest) -> str:
+    """The full logical request, JSON-serialized — everything we send, so a
+    later slice can replay it on another model. ``system_prompt`` is resolved
+    to its text (a ``Path`` is read)."""
+    import json
+
+    return json.dumps(
+        {
+            "source": req.source,
+            "tier": req.tier.value,
+            "model": req.model,
+            "tools_needed": req.tools_needed,
+            "system_prompt": _read_system_prompt(req.system_prompt),
+            "prompt": req.prompt,
+            "messages": req.messages,
+            "mcp_config": str(req.mcp_config) if req.mcp_config else None,
+            "max_turns": req.max_turns,
+            "max_usd": req.max_usd,
+            "output_format": req.output_format,
+            "disallowed_tools": list(req.disallowed_tools),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _record_dispatch(
+    req: LlmRequest, result: LlmResult, *, transport: Transport, duration_ms: int
+) -> None:
+    """Best-effort: record the full call to the route-log. Dark (no-op) unless a
+    store is bound at boot; any failure is swallowed so it can't break dispatch."""
+    from precis import route_log
+
+    if not route_log.enabled():
+        return
+    try:
+        route_log.record_call(
+            route_log.LlmCallRecord(
+                source=req.source or None,
+                tier=req.tier.value,
+                transport=transport.value,
+                model=result.model,
+                tools_needed=req.tools_needed,
+                request_text=_serialize_request(req),
+                response_text=result.text or "",
+                cost_usd=result.cost_usd,
+                turns_used=result.turns_used,
+                duration_ms=duration_ms,
+                errored=result.error is not None,
+                error=result.error,
+                data_parsed=result.data is not None,
+                features=_route_features(req),
+            )
+        )
+    except Exception:
+        log.debug("route_log: dispatch record failed", exc_info=True)
 
 
 def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:

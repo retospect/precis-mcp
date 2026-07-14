@@ -2366,6 +2366,11 @@ def build_runtime(
         from precis import secrets as _secrets
 
         _secrets.adopt_process_store(store)
+        # Bind the same store for the full LLM interaction log (route_log,
+        # migration 0061). Best-effort; dark until bound.
+        from precis import route_log as _route_log
+
+        _route_log.bind_store(store)
         embedder = make_embedder(
             config.embedder,
             dim=store.embedding_dim(),
