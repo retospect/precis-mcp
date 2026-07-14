@@ -9,9 +9,11 @@ from typing import Any
 from precis.draft.narrate import (
     apply_lexicon,
     load_personal_lexicon,
+    markdown_segments,
     render_narration,
     resolve_lexicon,
     speakable,
+    speakable_markdown,
 )
 
 
@@ -150,3 +152,43 @@ def test_lexicon_applied_during_render():
         lexicon={"precis": "pray-see"},
     )
     assert segs[0].text == "pray-see rocks"
+
+
+# --- markdown prose path (the news-briefing producer, not draft chunks) ---
+
+
+def test_speakable_markdown_strips_links_urls_and_markers():
+    # A markdown link reads as its anchor text; the URL is dropped.
+    assert speakable_markdown("[Fed holds rates](https://x.com/a)") == "Fed holds rates"
+    # Heading + list markers gone; bare URL dropped.
+    assert speakable_markdown("## United States") == "United States"
+    assert speakable_markdown("- a bullet point") == "a bullet point"
+    # bare URL dropped, whitespace collapsed by speakable()
+    assert speakable_markdown("see https://example.com/x now") == "see now"
+
+
+def test_markdown_segments_splits_blocks_and_flags_headings():
+    text = (
+        "## Top stories\n\n"
+        "[Rates held](https://x/a) steady today.\n\n"
+        "- [Chip deal](https://x/b) closes.\n\n"
+        "## United States\n\n"
+        "**Worth watching**: the vote."
+    )
+    segs = markdown_segments(text, voice="af_heart", lang="en-us")
+    kinds = [s.kind for s in segs]
+    assert kinds == ["heading", "para", "para", "heading", "para"]
+    assert segs[0].text == "Top stories"
+    assert segs[1].text == "Rates held steady today."
+    assert segs[2].text == "Chip deal closes."
+    assert segs[4].text == "Worth watching: the vote."
+    # Single voice throughout (no per-chunk meta on prose).
+    assert all(s.voice == "af_heart" and s.lang == "en-us" for s in segs)
+
+
+def test_markdown_segments_applies_lexicon_and_drops_empties():
+    text = "## precis\n\n\n\nplain"
+    segs = markdown_segments(
+        text, voice="af_heart", lang="en-us", lexicon={"precis": "pray-see"}
+    )
+    assert [s.text for s in segs] == ["pray-see", "plain"]

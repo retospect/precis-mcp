@@ -29,23 +29,42 @@ the voice-draft producer are LIVE.
    the reference: `precis draft audio <slug> [--voice/--lang/--speed/--publish]`
    → narration layer (`precis.draft.narrate`) → Kokoro → m4a → `publish_episode`.
 
-## Wiring a NEW producer (e.g. the news briefing)
+## The news-briefing producer (BUILT — the first automatic producer)
 
-The briefing is **plain text**, not a draft, so you don't want the draft
-narration layer. The path is:
+**Done** — `precis.workers.briefing_audio.run_briefing_audio`. It's the
+reference for a *prose* (non-draft) producer, and shows the decoupling every
+TTS producer needs.
 
-1. Get the briefing text (the daily-news pass already produces it for Discord).
-2. **Synthesize.** Split into a few segments (paragraphs) and call
-   `KokoroSynth().synthesize(seg, voice="af_heart", lang="en-us")` per segment;
-   concatenate the float32 arrays with short silence gaps; `soundfile.write` a
-   WAV. (Recommended: add a tiny `precis.export.audio.synthesize_text(text,
-   synth, out_wav)` helper so producers don't re-roll the concat — the
-   draft path's stitching in `export_audio` is the template; factor the
-   segment-loop out.)
-3. **WAV → m4a:** `ffmpeg -y -i x.wav -c:a aac -b:a 96k x.m4a`.
-4. **Publish:** `audio_feed.publish_episode(PODCAST_DIR, "x.m4a",
-   episode_id=f"news-{YYYYMMDD}", title=…, description=…, published_at=now,
-   duration_seconds=…, source="news")` — or shell `precis podcast add`.
+- **Decoupled from the briefing *job*.** The news briefing runs in-process on
+  the **agent** worker (melchior, `claude_inproc`) and persists a dated
+  `briefing-<date>` `news` ref. TTS lives only on the `[tts]` host (spark), so
+  the audio can't ride that job. Instead a separate pass on the TTS host reads
+  the persisted ref and narrates it. **This is the pattern for any producer
+  whose content is made where TTS isn't.**
+- **Self-scheduling, no new cron.** It's a worker ref-pass
+  (`--only briefing_audio`, gated `PRECIS_BRIEFING_AUDIO_ENABLED`, default-OFF)
+  that fires off the *existence* of an un-narrated briefing — the system worker
+  already loops on spark, so enabling the flag there is the whole install.
+- **The path** (reusable pieces):
+  1. Find the latest `briefing`-tagged `news` ref with no `meta.audio_episode_id`.
+  2. Reconstruct its markdown from body chunks → `narrate.markdown_segments`
+     (link → anchor text, headings → longer pause, URLs/markup dropped, lexicon
+     applied). *Prose path*, distinct from the draft `render_narration`.
+  3. `export.audio.synthesize_text(segments, wav, synth=KokoroSynth())` — the
+     shared stitch loop (factored out of `export_audio`).
+  4. `ffmpeg` WAV → m4a (falls back to publishing the WAV if ffmpeg is absent).
+  5. `audio_feed.publish_episode(PODCAST_DIR, m4a, episode_id=f"news-{date}",
+     …, source="news")`, then stamp `meta.audio_episode_id` on the ref
+     (idempotency — a re-tick or a second TTS host can't double-publish).
+- **Deploy:** on spark's **system** worker set `PRECIS_BRIEFING_AUDIO_ENABLED=1`
+  + `PRECIS_PODCAST_DIR=/nas/botshome/podcast` (+ the Kokoro model env it already
+  has). Manual smoke: `PRECIS_PODCAST_DIR=… precis worker --only briefing_audio
+  --once`. A dry render (no publish/marker) is `run_briefing_audio(publish=False)`.
+
+**Wiring the *next* producer** (a knowledge brief, "read me this paper"): copy
+`briefing_audio` — build segments (`markdown_segments` for prose, or per-chunk
+for a draft) → `synthesize_text` → m4a → `publish_episode`. Decouple TTS onto the
+`[tts]` host exactly as above whenever content is produced elsewhere.
 
 ## Where it runs (the TTS host = spark)
 
@@ -71,7 +90,12 @@ reach the tailnet. Phone must have Tailscale connected.
 ## Not-yet-done (see OPEN-ITEMS)
 
 - **LaTeX → speech** for math-heavy drafts (`math_speech` mode).
-- **Pronunciation lexicon** is a *code hook* only (`render_narration(lexicon=…)`
-  honors a dict) — no storage/authoring/skill yet. Home: a `pronunciation`
-  attribute on the term registry (ADR 0052) + a personal lexicon + a skill.
-- `synthesize_text` helper for non-draft producers (factor out of `export_audio`).
+- **Term/glossary pronunciation** — the personal + per-draft lexicon shipped
+  (`narrate.resolve_lexicon`, skill `precis-audio-help`); still missing is a
+  `pronunciation` attribute on the term registry (ADR 0052) and an inline
+  per-occurrence override for homographs.
+
+**Shipped since first draft:** the two-level pronunciation lexicon
+(`resolve_lexicon`, personal `PRECIS_LEXICON_FILE` + per-draft
+`meta.pronunciation`); `export.audio.synthesize_text` (the factored stitch loop
+for non-draft producers); and the **news-briefing audio producer** above.

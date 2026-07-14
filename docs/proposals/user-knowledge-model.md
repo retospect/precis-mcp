@@ -1,9 +1,23 @@
 # Proposal — user-knowledge model (`concept` kind) + morning audio brief
 
-Status: **proposal** (2026-07-14 design session). Core shape + decisions #1–#3
-settled; #4 (feed privacy), the confidence-collapse weights, and entity-linking
-remain — see *Decisions*. Evolves the card-centric "knowledge model (north star)"
-in `docs/design/anki-integration.md` into a **concept-centric** model.
+> **⚠️ SUPERSEDED (2026-07-14) — see `docs/design/reading-prep-loop.md`.** This
+> proposal ran in parallel with the reading-prep-loop track and reached the same
+> headline conclusions: a first-class `concept` kind (shipped, migration 0063),
+> anki-as-renderer, typed graph edges, Kokoro TTS, and a morning audio brief on
+> the podcast feed (all built or being built there). Since that design is
+> **further along and has code**, it is the design-of-record; this file is kept
+> for history only — do **not** implement against it. The **one** contribution
+> that didn't converge — confidence as a *scalar* (shipped) vs an *event-sourced
+> vector* (this doc's argument, §*Confidence model*) — was folded into
+> reading-prep-loop.md's *Mastery as a field* section as an explicit open
+> decision, to be resolved when that slice is built. The audio-brief delivery is
+> shipped and documented in `docs/design/audio-feed.md`.
+
+Status: ~~**proposal**~~ **retired/superseded** (2026-07-14 design session). Core
+shape + decisions #1–#3 settled; #4 (feed privacy), the confidence-collapse
+weights, and entity-linking remain — see *Decisions*. Evolves the card-centric
+"knowledge model (north star)" in `docs/design/anki-integration.md` into a
+**concept-centric** model.
 
 ## Motivation
 

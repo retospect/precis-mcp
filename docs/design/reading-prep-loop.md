@@ -436,6 +436,25 @@ mastery. `state` is thresholded from it. **Propagation along `prerequisite`
 edges** (mastering a concept bumps confidence in its prereqs; weakness flows to
 dependents) is a refinement layered on once the base field is flowing.
 
+> **Open decision — scalar vs event-sourced vector (fold-in from the retired
+> `docs/proposals/user-knowledge-model.md`, 2026-07-14).** The concept `meta`
+> currently carries a **scalar** `mastery` float (+ `mastery_updated_at`),
+> mutated in place. The retired proposal argued instead for an **event-sourced
+> vector**: an append-only evidence timeline as the source of truth (immutable
+> events — "card ak42 passed ease 2.3", "used in conv X", "read citing paper
+> Y"), with a small typed **axis projection** (exposure / retention / fluency)
+> materialized over it and a scalar display-confidence computed on read. Two
+> arguments for the vector: (a) the axes call for *opposite* precis behavior —
+> retained-but-never-used (explain the application) vs used-but-decaying (just
+> refresh) vs seen-once-never-tested (explain from scratch) — which a scalar
+> can't tell apart; (b) an axis invented later recomputes over the *full*
+> history, not just data collected after it existed. Cost: more storage +
+> per-read projection vs a single mutable float. **This is unresolved and lands
+> when this slice is built** — the scalar is the shipped default, the vector is
+> the richer option; decide with real anki data in hand. Either way keep it
+> "storage-liberal, action-conservative": log liberally, let only a few axes
+> gate explain-vs-assume.
+
 ### Embedding-native routing (the payoff)
 
 - **Reading-readiness as a number** — a paper's glossary terms → nearest concept

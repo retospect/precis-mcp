@@ -56,6 +56,17 @@ documents — which is why the personal layer exists.
 Not-yet: pronunciation on term/glossary entries; inline per-occurrence override
 for homographs; LaTeX→speech. See `docs/design/audio-feed.md` + OPEN-ITEMS.
 
+## Automatic producers
+
+Drafts aren't the only thing that narrates. The **news briefing** publishes a
+daily audio episode automatically: a worker pass (`briefing_audio`) on the TTS
+host reads the persisted `briefing-<date>` ref, narrates its markdown (via
+`narrate.markdown_segments` — the prose path, links→anchor text, headings pause),
+and publishes to the same feed with `source="news"`. Enabled with
+`PRECIS_BRIEFING_AUDIO_ENABLED=1` on spark; idempotent per briefing. Non-draft
+producers reuse `export.audio.synthesize_text` (the shared stitch loop). Design +
+how to add the next producer: `docs/design/audio-feed.md`.
+
 ## Consume
 
 Subscribe **on-device** over Tailscale — Apple Podcasts *Add a Show by URL* or

@@ -45,6 +45,14 @@ _LATEX_BREAK = re.compile(r"\\\\")
 _CARET = re.compile(r"[\^](?=\w)")
 _WS = re.compile(r"\s+")
 
+# Markdown prose (the news-briefing producer path, not draft chunks): a link
+# ``[text](url)`` reads as its anchor text; bare URLs and heading/list markers
+# are dropped for the ear.
+_MD_LINK = re.compile(r"\[([^\]]+)\]\((?:[^)]*)\)")
+_BARE_URL = re.compile(r"https?://\S+")
+_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
+_BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+", re.MULTILINE)
+
 
 @dataclass(frozen=True, slots=True)
 class NarrationSegment:
@@ -73,6 +81,46 @@ def speakable(text: str) -> str:
     t = _LATEX_BREAK.sub(" ", t)
     t = _CARET.sub("", t)
     return _WS.sub(" ", t).strip()
+
+
+def speakable_markdown(text: str) -> str:
+    """Clean a *markdown* block for the ear: resolve links to their anchor text,
+    drop bare URLs, strip heading/list markers, then run the draft
+    :func:`speakable` cleanup (emphasis / code / handles / math). The prose path
+    for non-draft producers — the news briefing is markdown, not draft chunks."""
+    t = _MD_LINK.sub(r"\1", text)
+    t = _BARE_URL.sub("", t)
+    t = _HEADING.sub("", t)
+    t = _BULLET.sub("", t)
+    return speakable(t)
+
+
+def markdown_segments(
+    text: str,
+    *,
+    voice: str,
+    lang: str,
+    lexicon: dict[str, str] | None = None,
+) -> list[NarrationSegment]:
+    """Split markdown prose into speakable narration segments — one per block.
+
+    Blocks split on blank lines; a block whose first line is a heading (``#``)
+    becomes a ``heading`` segment (longer leading pause), the rest ``para``.
+    Markup is stripped via :func:`speakable_markdown` and the lexicon applied;
+    empty blocks drop out. Single-voice (no per-chunk meta, unlike a draft) —
+    the news-briefing producer renders through this."""
+    segments: list[NarrationSegment] = []
+    for raw in re.split(r"\n\s*\n", text.strip()):
+        block = raw.strip()
+        if not block:
+            continue
+        kind = "heading" if block.lstrip().startswith("#") else "para"
+        spoken = apply_lexicon(speakable_markdown(block), lexicon)
+        if spoken:
+            segments.append(
+                NarrationSegment(text=spoken, voice=voice, lang=lang, kind=kind)
+            )
+    return segments
 
 
 def apply_lexicon(text: str, lexicon: dict[str, str] | None) -> str:

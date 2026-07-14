@@ -1442,3 +1442,11 @@ equations). Upgrade: a `math_speech ∈ {skip, brief, full}` mode.
 
 Slots into `speakable()`; default stays `brief` so equation-dense sections
 don't become unlistenable. Finder: Opus session (2026-07-14).
+
+> **Context (shipped 2026-07-14):** the **news-briefing audio producer** landed —
+> `workers/briefing_audio.py` narrates the daily `briefing-<date>` ref to the
+> podcast feed (gated `PRECIS_BRIEFING_AUDIO_ENABLED`, TTS-host-only, idempotent
+> via `meta.audio_episode_id`), plus the reusable `export.audio.synthesize_text`
+> stitch helper and `narrate.markdown_segments` prose path. The **first automatic
+> producer** on the audio pipe. See `docs/design/audio-feed.md`. Only the
+> LaTeX→speech upgrade above remains open in this area.

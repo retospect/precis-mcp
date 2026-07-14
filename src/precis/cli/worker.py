@@ -207,6 +207,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "classify",
             "paper_glossary",
             "backlog_groom",
+            "briefing_audio",
         ),
         default=None,
         help="Restrict to one handler kind. Overrides --profile when "
@@ -778,6 +779,44 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_paper_glossary_pass)
+
+        # briefing_audio — narrate the morning news briefing onto the podcast
+        # feed (the first automatic audio producer, docs/design/audio-feed.md).
+        # Default-OFF (PRECIS_BRIEFING_AUDIO_ENABLED=1 or --only briefing_audio)
+        # and TTS-host-only: it needs the `[tts]` extra + Kokoro model files +
+        # ffmpeg + a PRECIS_PODCAST_DIR, all of which live on spark. Decoupled
+        # from the briefing *job* (which runs on the agent worker, no TTS): this
+        # pass reads the persisted `briefing-<date>` ref and self-schedules off
+        # its existence, idempotent via a `meta.audio_episode_id` marker. See
+        # workers/briefing_audio.py.
+        if _pass_enabled("briefing_audio") or os.environ.get(
+            "PRECIS_BRIEFING_AUDIO_ENABLED"
+        ):
+            from precis.workers.runner import BatchResult as _BaBatchResult
+
+            _ba_podcast_dir = os.environ.get("PRECIS_PODCAST_DIR")
+            _ba_voice = os.environ.get("PRECIS_BRIEFING_AUDIO_VOICE") or "af_heart"
+            _ba_lang = os.environ.get("PRECIS_BRIEFING_AUDIO_LANG") or "en-us"
+
+            def _briefing_audio_pass(batch_size: int) -> _BaBatchResult:
+                from precis.tts.kokoro import KokoroSynth
+                from precis.workers.briefing_audio import run_briefing_audio
+
+                r = run_briefing_audio(
+                    store,
+                    synth=KokoroSynth(),
+                    podcast_dir=_ba_podcast_dir,
+                    voice=_ba_voice,
+                    lang=_ba_lang,
+                )
+                return _BaBatchResult(
+                    handler="briefing_audio",
+                    claimed=1 if r["published"] else 0,
+                    ok=1 if r["published"] else 0,
+                    failed=0,
+                )
+
+            ref_passes.append(_briefing_audio_pass)
 
         # Backlog groomer (default-OFF; PRECIS_BACKLOG_GROOM_ENABLED=1 or
         # --only backlog_groom): promote open gripes into dispatchable
