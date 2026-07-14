@@ -1417,3 +1417,28 @@ Tier-2 escalation / ref-axis runner / table heuristic; pruned the
 Recently-retired graveyard + done CI item — both in git; snoozed Dependabot
 #44 transformers RCE until 2026-07-18, blocked by marker-pdf's
 transformers<5 cap)_
+
+---
+
+## 🔊 LaTeX → speech for voice drafts
+
+`open` / `feature` / owner `precis/draft/narrate.py` (+ maybe a node SRE step).
+The voice-draft narration layer currently **skips math** — `speakable()`
+replaces `$$…$$` with a spoken "equation" cue and drops inline `$…$`. Fine for
+prose-heavy drafts, weak for math-heavy ones (a graphene report is wall-to-wall
+equations). Upgrade: a `math_speech ∈ {skip, brief, full}` mode.
+
+- **Accessibility-grade** = MathSpeak/ClearSpeak via the **Speech Rule Engine**
+  (SRE, the MathJax/JAWS/NVDA engine) over MathML. precis already ships
+  `latex2mathml` (docx extra) so **LaTeX → MathML is in hand**; the missing step
+  is MathML → speech (SRE is JS → a `node` shell-out, like the cad-tessellation
+  parity check).
+- **Pure-Python heuristic** (my lean for v1) — `^`→"to the power of",
+  `\frac`→"over", greek letters, operators. Covers inline/simple math, no node,
+  imperfect on hairy display math (which `brief` mode still elides).
+- **Per-equation author override** — the pronunciation-lexicon pattern extended
+  to math: an authored spoken form ("read as: the Arrhenius rate law") for the
+  equations that matter. Out-of-band, abbrev-class.
+
+Slots into `speakable()`; default stays `brief` so equation-dense sections
+don't become unlistenable. Finder: Opus session (2026-07-14).

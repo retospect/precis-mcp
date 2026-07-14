@@ -46,9 +46,11 @@ def export_audio(
     lexicon: dict[str, str] | None = None,
     pause_s: float = 0.45,
     heading_pause_s: float = 0.9,
+    max_segments: int | None = None,
 ) -> AudioResult:
     """Render ``ref`` (a draft) to a WAV at ``target_path``. Raises
-    ``ValueError`` if the draft has nothing speakable."""
+    ``ValueError`` if the draft has nothing speakable. ``max_segments`` caps
+    the narration (a cheap preview of a long draft)."""
     import numpy as np
     import soundfile as sf
 
@@ -62,6 +64,8 @@ def export_audio(
         default_lang=default_lang,
         lexicon=lexicon,
     )
+    if max_segments is not None:
+        segments = segments[:max_segments]
     if not segments:
         raise ValueError(f"draft {getattr(ref, 'id', '?')} has nothing to narrate")
 

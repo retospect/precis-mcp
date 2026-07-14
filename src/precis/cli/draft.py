@@ -97,6 +97,38 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="Override PRECIS_DATABASE_URL.",
     )
 
+    au = dsub.add_parser(
+        "audio",
+        help="Narrate a draft to audio (Kokoro TTS) — the voice-draft export.",
+        description=(
+            "Render a draft to an m4a via the narration layer + Kokoro. Per-"
+            "chunk meta.voice/lang route each segment to its narrator. Needs "
+            "the [tts] extra + PRECIS_KOKORO_MODEL/VOICES + ffmpeg on this "
+            "host. --publish drops it on the private podcast feed."
+        ),
+    )
+    au.add_argument("slug", help="Draft slug or numeric ref id.")
+    au.add_argument(
+        "--out", default=None, help="Output .m4a. Default: ./export/<slug>.m4a."
+    )
+    au.add_argument(
+        "--voice", default="af_heart", help="Default voice (chunk meta overrides)."
+    )
+    au.add_argument("--lang", default="en-us", help="Default language.")
+    au.add_argument("--speed", type=float, default=1.0, help="Speaking rate (0.5–2.0).")
+    au.add_argument(
+        "--max-segments", type=int, default=None, help="Cap segments (preview)."
+    )
+    au.add_argument(
+        "--publish", action="store_true", help="Publish to the podcast feed."
+    )
+    au.add_argument(
+        "--podcast-dir", default=None, help="Feed dir (else PRECIS_PODCAST_DIR)."
+    )
+    au.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
 
 def run(args: argparse.Namespace) -> None:
     if args.draft_cmd == "export":
@@ -105,8 +137,91 @@ def run(args: argparse.Namespace) -> None:
     if args.draft_cmd == "papers":
         _run_papers(args)
         return
+    if args.draft_cmd == "audio":
+        _run_audio(args)
+        return
     print(f"draft: unknown subcommand {args.draft_cmd!r}", file=sys.stderr)
     sys.exit(2)
+
+
+def _run_audio(args: argparse.Namespace) -> None:
+    import os
+    import subprocess
+    import tempfile
+    from datetime import UTC, datetime
+
+    from precis import audio_feed
+    from precis.export.audio import export_audio
+    from precis.tts.kokoro import KokoroSynth
+
+    dsn = resolve_dsn(args.database_url)
+    store = Store.connect(dsn)
+    try:
+        key: int | str = int(args.slug) if str(args.slug).isdigit() else args.slug
+        ref = store.get_ref(kind="draft", id=key)
+        if ref is None:
+            print(f"draft audio: no draft {args.slug!r}", file=sys.stderr)
+            sys.exit(2)
+        out = (
+            Path(args.out) if args.out else Path("export") / f"{ref.slug or ref.id}.m4a"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        synth = KokoroSynth(speed=args.speed)
+        with tempfile.TemporaryDirectory() as td:
+            wav = Path(td) / "narration.wav"
+            res = export_audio(
+                store,
+                ref,
+                target_path=wav,
+                synth=synth,
+                default_voice=args.voice,
+                default_lang=args.lang,
+                max_segments=args.max_segments,
+            )
+            # WAV → m4a (AAC) for the podcast enclosure.
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(wav),
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "96k",
+                    str(out),
+                ],
+                check=True,
+            )
+        print(
+            f"draft audio: {res.segments} segments, {res.duration_s:.0f}s → {out}",
+            file=sys.stderr,
+        )
+        if args.publish:
+            pdir = args.podcast_dir or os.environ.get("PRECIS_PODCAST_DIR")
+            if not pdir:
+                print(
+                    "draft audio: --publish needs --podcast-dir or PRECIS_PODCAST_DIR",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            now = datetime.now(tz=UTC)
+            title = (ref.title or str(ref.slug or ref.id)).splitlines()[0][:80]
+            ep = audio_feed.publish_episode(
+                pdir,
+                out,
+                episode_id=f"draft-{ref.id}-{now.strftime('%Y%m%d%H%M%S')}",
+                title=f"📄 {title}",
+                description=f"Narrated draft '{title}' ({res.segments} segments).",
+                published_at=now,
+                duration_seconds=int(res.duration_s),
+                source="draft",
+            )
+            print(f"draft audio: published episode {ep.id}", file=sys.stderr)
+    finally:
+        store.close()
 
 
 def _run_export(args: argparse.Namespace) -> None:
