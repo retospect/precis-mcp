@@ -57,3 +57,33 @@ def test_call_claude_p_does_not_clobber_existing_env_token(tmp_path, monkeypatch
     claude_p.call_claude_p("draw something. reply JSON {}")
 
     assert captured["env"][ENV_VAR] == "sk-ant-oat01-FROMENV"
+
+
+# ── prefer_oauth_over_api_key: OAuth (subscription) wins over the billed key ──
+
+from precis.utils.claude_oauth import (
+    API_KEY_VAR,
+    prefer_oauth_over_api_key,
+)
+
+
+def test_prefer_oauth_scrubs_api_key_when_token_present() -> None:
+    # Both present → OAuth mode, and the API key is removed so the CLI can't
+    # pick the per-token-billed path.
+    env = {ENV_VAR: "oauth-tok", API_KEY_VAR: "sk-ant-xxx", "KEEP": "y"}
+    assert prefer_oauth_over_api_key(env) == "oauth"
+    assert API_KEY_VAR not in env
+    assert env[ENV_VAR] == "oauth-tok" and env["KEEP"] == "y"
+
+
+def test_prefer_oauth_keeps_api_key_when_no_token() -> None:
+    # No OAuth token → the billed fallback stays, and the mode flags it so the
+    # caller can warn.
+    env = {API_KEY_VAR: "sk-ant-xxx"}
+    assert prefer_oauth_over_api_key(env) == "api_key"
+    assert env[API_KEY_VAR] == "sk-ant-xxx"
+
+
+def test_prefer_oauth_none_when_neither() -> None:
+    env: dict[str, str] = {}
+    assert prefer_oauth_over_api_key(env) == "none"

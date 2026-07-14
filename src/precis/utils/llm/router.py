@@ -44,6 +44,7 @@ the provider port. It serves the ``LOCAL_BIG`` tier and, when
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -57,6 +58,8 @@ from precis.utils.claude_p import ClaudePResult, call_claude_p
 
 if TYPE_CHECKING:
     from precis.utils.prompt.model import Profile
+
+log = logging.getLogger(__name__)
 
 
 class Tier(StrEnum):
@@ -542,10 +545,35 @@ class FailoverProvider:
 
     def run(self, req: LlmRequest, *, model: str) -> LlmResult:
         last: LlmResult | None = None
-        for rung in self._rungs:
+        for i, rung in enumerate(self._rungs):
             last = provider_for(rung.transport).run(req, model=rung.model or model)
-            if last.error is None and (self._accept is None or self._accept(last)):
+            accepted = last.error is None and (
+                self._accept is None or self._accept(last)
+            )
+            if accepted:
+                if i > 0:
+                    # A fallback rung ran — warn: the primary failed and this
+                    # rung costs (e.g. the claude safety net). Visible in
+                    # worker_logs / the /status panel so a failover storm during
+                    # an OSS eval is noticed rather than silently billed.
+                    log.warning(
+                        "llm-failover: fell back to rung %d (%s, model=%s) after "
+                        "%d failed rung(s) — the fallback runs and costs; check "
+                        "the primary backend.",
+                        i,
+                        rung.label or rung.transport.value,
+                        rung.model or model,
+                        i,
+                    )
                 return last
+            if last.error is not None:
+                log.warning(
+                    "llm-failover: rung %d (%s, model=%s) failed: %s",
+                    i,
+                    rung.label or rung.transport.value,
+                    rung.model or model,
+                    last.error,
+                )
         assert last is not None  # rungs is non-empty
         return last
 

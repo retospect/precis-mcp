@@ -50,7 +50,7 @@ from precis.utils._claude_subprocess import (
     resolve_binary,
     run_claude,
 )
-from precis.utils.claude_oauth import ensure_oauth_token
+from precis.utils.claude_oauth import ensure_oauth_token, prefer_oauth_over_api_key
 
 log = logging.getLogger(__name__)
 
@@ -163,6 +163,13 @@ def call_claude_p(
     # already in the env (plist var / interactive shell / test) wins.
     proc_env = dict(os.environ)
     ensure_oauth_token(proc_env)
+    # Prefer OAuth (subscription) over ANTHROPIC_API_KEY (billed per token);
+    # call_claude_p has no ``bare`` mode, so it always prefers the token.
+    if prefer_oauth_over_api_key(proc_env) == "api_key":
+        log.warning(
+            "claude_p: no OAuth token — auth is falling back to "
+            "ANTHROPIC_API_KEY, billed per token. Install ~/.claude_oauth_token."
+        )
 
     log.debug("claude_p: invoking model=%s max_usd=%.4f", model, max_usd)
     res = run_claude(

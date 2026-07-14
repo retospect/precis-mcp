@@ -699,3 +699,50 @@ def test_dispatch_failover_flag_falls_back_to_claude(
     assert out.text == "claude saved it"
     assert out.error is None
     assert calls["model"] == "claude-opus-4-8"  # claude fallback, not the OSS id
+
+
+# ── FailoverProvider warns when a fallback rung runs (cost visibility) ──
+
+
+def test_failover_warns_on_fallback(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    primary = _FakeProv(_err("oss down"))
+    fallback = _FakeProv(_ok("claude saved it"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, primary)
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, fallback)
+
+    prov = FailoverProvider(
+        [
+            Rung(Transport.OPENAI_TOOLS, label="oss"),
+            Rung(Transport.CLAUDE_AGENT, label="claude-fallback"),
+        ]
+    )
+    with caplog.at_level(logging.WARNING, logger="precis.utils.llm.router"):
+        out = prov.run(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x"), model="m")
+
+    assert out.text == "claude saved it"
+    msgs = " ".join(r.getMessage() for r in caplog.records)
+    assert "llm-failover" in msgs
+    assert "oss" in msgs and "failed: oss down" in msgs  # the failed primary
+    assert "fell back to rung 1" in msgs  # the fallback firing
+
+
+def test_failover_no_warning_when_primary_succeeds(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    primary = _FakeProv(_ok("fine"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, primary)
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.CLAUDE_AGENT, _FakeProv(_ok("unused"))
+    )
+    prov = FailoverProvider(
+        [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT)]
+    )
+    with caplog.at_level(logging.WARNING, logger="precis.utils.llm.router"):
+        prov.run(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x"), model="m")
+    assert not [r for r in caplog.records if "llm-failover" in r.getMessage()]

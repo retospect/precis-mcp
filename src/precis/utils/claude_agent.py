@@ -59,7 +59,7 @@ from precis.utils._claude_subprocess import (
     run_claude,
     to_str,
 )
-from precis.utils.claude_oauth import ensure_oauth_token
+from precis.utils.claude_oauth import ensure_oauth_token, prefer_oauth_over_api_key
 from precis.utils.friction_reflect import append_friction_footer
 
 if TYPE_CHECKING:
@@ -285,6 +285,17 @@ def call_claude_agent(
     # incident). Load the file ourselves when the var is missing.
     proc_env = dict(os.environ)
     ensure_oauth_token(proc_env)
+    if not bare:
+        # Prefer the OAuth token (Max subscription) over ANTHROPIC_API_KEY
+        # (per-token API billing): scrub the key when a token is present so the
+        # CLI can't pick the billed path. ``bare`` deliberately keeps the key
+        # (container auth). Warn when we're forced onto the billed fallback.
+        if prefer_oauth_over_api_key(proc_env) == "api_key":
+            log.warning(
+                "claude_agent: no OAuth token (CLAUDE_CODE_OAUTH_TOKEN) — auth "
+                "is falling back to ANTHROPIC_API_KEY, billed per token at API "
+                "rates. Install ~/.claude_oauth_token to use the subscription."
+            )
 
     started = time.monotonic()
     # ``stdin_devnull`` because Claude Code 2.1.x reads stdin in
