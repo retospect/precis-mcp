@@ -2274,6 +2274,55 @@ class PrecisRuntime:
     _render_error = render_error
 
 
+def _connect_store_or_raise(dsn: str, retry_seconds: float) -> Any:
+    """Connect the store, retrying a transient DB outage for a bounded window.
+
+    ``Store.connect`` itself fails fast (the pool ``open_timeout`` bounds each
+    attempt to ≈10s), so a DB that is genuinely down raises promptly. But a
+    node reboot leaves the DB briefly unreachable while the MCP subprocess is
+    already coming up; a single attempt would crash and the parent would
+    respawn into the same window. Retrying for ``retry_seconds`` rides that out
+    without a tight crash loop. If the window elapses we **raise** — a crash
+    the parent can respawn — rather than returning ``None`` and letting the
+    server come up storeless (the failure mode this exists to prevent). See
+    ``PrecisConfig.db_connect_retry_seconds``.
+    """
+    import time
+
+    from precis.store import Store
+
+    deadline = time.monotonic() + max(0.0, retry_seconds)
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            store = Store.connect(dsn)
+            if attempt > 1:
+                log.warning("store connected on attempt %d", attempt)
+            return store
+        except Exception as exc:
+            if time.monotonic() >= deadline:
+                log.error(
+                    "store connect failed after %d attempt(s) / %.0fs budget "
+                    "(%s: %s) — crashing so the supervisor respawns rather "
+                    "than serving a storeless surface",
+                    attempt,
+                    retry_seconds,
+                    type(exc).__name__,
+                    exc,
+                )
+                raise
+            log.warning(
+                "store connect attempt %d failed (%s: %s); retrying within "
+                "%.0fs budget",
+                attempt,
+                type(exc).__name__,
+                exc,
+                retry_seconds,
+            )
+            time.sleep(2.0)
+
+
 def build_runtime(
     config: PrecisConfig | None = None,
 ) -> PrecisRuntime:
@@ -2301,7 +2350,6 @@ def build_runtime(
     from precis.config import load_config
     from precis.dispatch import boot
     from precis.embedder import Embedder, make_embedder
-    from precis.store import Store
 
     if config is None:
         config = load_config()
@@ -2309,7 +2357,9 @@ def build_runtime(
     store: Store | None = None
     embedder: Embedder | None = None
     if config.database_url:
-        store = Store.connect(config.database_url)
+        store = _connect_store_or_raise(
+            config.database_url, config.db_connect_retry_seconds
+        )
         # Bind the store for the secrets resolver + scrub the DSN from the
         # environment (parameter, not env) so subprocess spawns don't inherit
         # it — see docs/design/secrets-vault.md.

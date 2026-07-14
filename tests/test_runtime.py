@@ -158,6 +158,76 @@ def test_build_runtime_honors_embedder_config(fresh_db: str) -> None:
             os.environ["PRECIS_EMBEDDER"] = original_emb
 
 
+# ── boot-time store connect: ride out a transient outage, then crash ──
+#
+# Regression for the 2026-07-14 asa incident: a `precis serve` spawned
+# during a node reboot (DB briefly unreachable) must NOT come up
+# storeless — it should retry within a bounded budget and, if the DB is
+# still down, raise so the parent respawns rather than serving a
+# memory/gripe-less surface. See PrecisConfig.db_connect_retry_seconds.
+
+
+def test_connect_store_retries_then_succeeds(monkeypatch) -> None:
+    import precis.store as store_mod
+    from precis.runtime import _connect_store_or_raise
+
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    calls = {"n": 0}
+    sentinel = object()
+
+    def flaky_connect(dsn):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ConnectionError("Network is unreachable")
+        return sentinel
+
+    monkeypatch.setattr(store_mod.Store, "connect", staticmethod(flaky_connect))
+    got = _connect_store_or_raise("postgresql://x", retry_seconds=30.0)
+    assert got is sentinel
+    assert calls["n"] == 3
+
+
+def test_connect_store_raises_after_budget(monkeypatch) -> None:
+    import precis.store as store_mod
+    from precis.runtime import _connect_store_or_raise
+
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    # monotonic jumps past the deadline after the first failure so the
+    # budget is exhausted immediately (no real waiting in the test).
+    ticks = iter([0.0, 100.0, 100.0, 100.0, 100.0])
+    monkeypatch.setattr("time.monotonic", lambda: next(ticks))
+
+    def always_fail(dsn):
+        raise ConnectionError("Network is unreachable")
+
+    monkeypatch.setattr(store_mod.Store, "connect", staticmethod(always_fail))
+    import pytest
+
+    with pytest.raises(ConnectionError):
+        _connect_store_or_raise("postgresql://x", retry_seconds=30.0)
+
+
+def test_connect_store_zero_budget_fails_fast(monkeypatch) -> None:
+    import precis.store as store_mod
+    from precis.runtime import _connect_store_or_raise
+
+    slept = {"n": 0}
+    monkeypatch.setattr("time.sleep", lambda _s: slept.__setitem__("n", slept["n"] + 1))
+    calls = {"n": 0}
+
+    def always_fail(dsn):
+        calls["n"] += 1
+        raise ConnectionError("Network is unreachable")
+
+    monkeypatch.setattr(store_mod.Store, "connect", staticmethod(always_fail))
+    import pytest
+
+    with pytest.raises(ConnectionError):
+        _connect_store_or_raise("postgresql://x", retry_seconds=0.0)
+    assert calls["n"] == 1  # single attempt, no retry
+    assert slept["n"] == 0  # never slept
+
+
 def _migrations_dir():
     from pathlib import Path
 

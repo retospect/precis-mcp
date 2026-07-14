@@ -29,6 +29,27 @@ class PrecisConfig(BaseSettings):
     database_url: str | None = None  # required from phase 2 onward
     default_corpus: str = "default"
 
+    db_connect_retry_seconds: float = 30.0
+    """Boot-time budget for connecting the store before giving up.
+
+    When ``database_url`` is set but the DB is unreachable at boot — the
+    classic case is a long-lived MCP subprocess spawned during a node
+    reboot, before the DB node / tailscale is up — :func:`build_runtime`
+    retries the connection for up to this many seconds, then **raises**
+    (crashing the process) rather than silently coming up storeless.
+
+    Coming up storeless is the worse failure: the server answers the MCP
+    handshake but reports ``unknown kind`` for every DB-backed kind, and a
+    liveness-only supervisor never restarts it (the 2026-07-14 asa
+    incident — a degraded ``precis serve`` served asa a memory/gripe-less
+    context for hours). Crashing instead lets the parent respawn until the
+    DB is back. The window rides out the boot-race without churning on a
+    tight crash loop (each ``Store.connect`` attempt itself blocks up to
+    the pool ``open_timeout`` ≈ 10s). Set via
+    ``PRECIS_DB_CONNECT_RETRY_SECONDS``; ``0`` disables the retry (fail on
+    the first attempt).
+    """
+
     owner: str = "owner"
     """Canonical username for the human running this instance.
 
