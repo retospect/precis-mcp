@@ -72,12 +72,15 @@ _TIER_BY_KIND: dict[str, Tier] = {
     "memory": LEAD,
 }
 
-#: Kinds the recall sweep searches by default — the citeable evidence kinds, each
-#: with a chunk handle the workspace can open (``pc``/``qc``/``pk``/``dk``). The
-#: ``lead`` tier (``memory``) and ``web`` are tiered above but lack a chunk handle
-#: today, so they're held out of the default sweep; a ref-level-candidate path is
-#: the enabling follow-up (design: slice 6, deferred sub-part).
-SOURCE_KINDS: tuple[str, ...] = ("paper", "cfp", "patent", "datasheet")
+#: Kinds the recall sweep searches by default. The citeable evidence kinds each
+#: expose a **chunk** handle the workspace opens at the chunk (``pc``/``qc``/``pk``/
+#: ``dk``). ``memory`` (the ``lead`` tier) has **no** chunk handle, so it rides as a
+#: **ref-level** candidate — addressed + rendered by its ``me<id>`` record handle as
+#: a flat note eye (a lead to chase, never a citation; the ``[own-note]`` admonition
+#: keeps the model honest). ``web`` stays out: it has no record handle *either*, so
+#: there is nothing to open it under yet — its enabling follow-up is a web record
+#: code in the handle registry.
+SOURCE_KINDS: tuple[str, ...] = ("paper", "cfp", "patent", "datasheet", "memory")
 
 
 def tier_for(kind: str | None) -> Tier:

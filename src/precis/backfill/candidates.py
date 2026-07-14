@@ -38,12 +38,20 @@ _SEED_TEXT_CAP = 2000
 
 @dataclass(frozen=True, slots=True)
 class Candidate:
-    """One uncited-but-relevant hit — a paper chunk the recall sweep surfaced.
+    """One uncited-but-relevant hit the recall sweep surfaced.
 
-    ``chunk_handle`` is the ``pc<id>`` to open; ``paper_handle`` the ``pa<id>``
-    of its ref. ``lenses`` records which lens(es) found it (lens-agreement =
-    confidence). ``support`` names the target handles it could support — filled
-    by the caller once claim-mapping exists (slice 2+); empty in slice 1."""
+    Two shapes, distinguished by :attr:`is_ref_level`:
+
+    * **chunk-level** (the norm — ``paper``/``cfp``/``patent``/``datasheet``):
+      ``chunk_handle`` is the ``pc<id>``/``qc<id>``/``pk<id>``/``dk<id>`` to open,
+      ``paper_handle`` the ``pa<id>`` of its ref.
+    * **ref-level** (a *lead* — ``memory``, which has **no** chunk handle):
+      ``chunk_handle`` is ``""``; the candidate is addressed + rendered by its
+      ``me<id>`` record handle (``paper_handle``) as a flat note eye. Its
+      ``chunk_id`` still records the matched block for provenance.
+
+    ``lenses`` records which lens(es) found it (lens-agreement = confidence).
+    ``support`` names the target handles it could support (the recurrence overlay)."""
 
     ref_id: int
     ref: Any
@@ -61,6 +69,18 @@ class Candidate:
     def paper_handle(self) -> str:
         kind = getattr(self.ref, "kind", "paper") or "paper"
         return handle_registry.try_format(kind, self.ref_id) or f"{kind}:{self.ref_id}"
+
+    @property
+    def is_ref_level(self) -> bool:
+        """A lead with no chunk handle (e.g. ``memory``) — opened + marked at the
+        ref (``me<id>`` flat eye), not by a ``pc<id>`` chunk eye."""
+        return not self.chunk_handle
+
+    @property
+    def eye_handle(self) -> str:
+        """The handle the workspace opens + marks this candidate under: its chunk
+        handle when chunk-addressable, else its ref handle (a lead)."""
+        return self.chunk_handle or self.paper_handle
 
 
 def _subtree_chunks(chunks: list[Any], target: Any) -> list[Any]:
@@ -172,7 +192,11 @@ def _text_lens(
     out: list[Candidate] = []
     for block, ref, score in hits:
         rkind = getattr(ref, "kind", "paper") or "paper"
-        handle = handle_registry.format_handle(rkind, int(block.id), chunk=True)
+        # A chunk handle when the kind exposes one; ``""`` for a handle-less kind
+        # (``memory`` — the lead tier), which then rides as a ref-level candidate
+        # (addressed by ``me<id>``). ``try_format`` keeps a new handle-less source
+        # kind from crashing the whole sweep the way ``format_handle`` would.
+        handle = handle_registry.try_format(rkind, int(block.id), chunk=True) or ""
         out.append(
             Candidate(
                 ref_id=int(ref.id),

@@ -679,14 +679,24 @@ writer's context, the more discipline the prose needs.*
    instructions grow a **provenance-tier admonition generated from the tier ladder**
    (`planner_prompt._render_backfill_workspace`, so the prompt can't drift from the
    tags). Tag form (not glyph) chosen so it composes with the slice-5 recurrence
-   glyph (`○`/`○○`) instead of overloading `○`. **Deferred (the `LEAD` tier +
-   `web`):** `memory` and `web` are tiered but held out of the default sweep —
-   `memory` has **no chunk handle** (`format_handle('memory', …, chunk=True)`
-   raises) and `web` isn't in the handle registry at all, so a candidate can't be
-   opened as a `pc`-style chunk eye. Surfacing own-notes-as-leads needs a
-   **ref-level-candidate path** (address the source by its ref handle `me<id>` and
-   render it as a flat eye) — a clean, self-contained follow-up; the tier + weight
-   + admonition machinery is already in place for it.
+   glyph (`○`/`○○`) instead of overloading `○`.
+
+   **— LEAD tier DONE** (`memory` as a ref-level lead): the missing piece was the
+   **ref-level-candidate path**, now built. `memory` has no chunk handle, so
+   `_text_lens` formats via `try_format(…, chunk=True)` (→ `""` for a handle-less
+   kind, instead of `format_handle` *raising* and crashing the whole sweep) and the
+   hit rides as a **ref-level `Candidate`** (`is_ref_level` / `eye_handle` — the
+   chunk handle when present, else the `me<id>` record handle). `assemble` opens a
+   lead as a **flat `summary` note eye** addressed by `me<id>` (not a `verbatim`
+   chunk eye — `eye_render` already routes `memory` through `_render_note_eye`), and
+   the candidate list + `_backfill_marks` key off `eye_handle`, tagging it
+   `[own-note]`. `memory` is now in `SOURCE_KINDS`; the LEAD weight (0.4) keeps a
+   topically-dense own-note from crowding out real evidence, and the standing
+   `[own-note]` admonition ("a lead, never a citation") already rides in the find
+   instructions. **Still deferred — `web`:** it has **no record handle either**
+   (not in the handle registry at all), so there is nothing to open a web candidate
+   under; its enabling follow-up is a `web` record code, at which point it drops
+   into the same ref-level path.
 7. **The stateful edit→extend→review loop (carried-forward working set).**
    Slice 4 makes *a* tick integrate; this makes the working set **persist and
    grow across ticks** rather than rebuild each time — the natural rhythm:

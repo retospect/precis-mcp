@@ -159,6 +159,82 @@ def test_find_candidates_broadens_kinds_and_weights_by_tier(
     assert out[0].score == 1.0 * PRIOR_ART.weight
 
 
+def test_candidate_ref_level_lead_shape() -> None:
+    """A memory hit has no chunk handle — it is a ref-level *lead*, addressed +
+    rendered by its ``me<id>`` record handle, tagged ``[own-note]``."""
+    lead = Candidate(
+        ref_id=7,
+        ref=NS(kind="memory", title="my own synthesis of the transport data"),
+        chunk_id=555,
+        chunk_handle="",  # memory exposes no chunk handle
+        score=0.4,
+    )
+    assert lead.is_ref_level
+    assert lead.paper_handle == "me7"
+    assert lead.eye_handle == "me7"  # opened + marked under the ref handle
+    out = _render_candidate_list([lead])
+    assert "me7" in out  # addressed at ref level
+    assert "[own-note]" in out  # the lead tier
+    assert "me7  ·" not in out  # no empty chunk-handle artifact / double space
+
+
+def test_find_candidates_surfaces_memory_as_ref_level_lead(
+    hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sweep now spans ``memory`` (the lead tier). A memory hit does not crash
+    the handle formatter — it becomes a ref-level candidate, its score down-weighted
+    by the LEAD tier so a real paper always outranks a topically-dense own-note."""
+    from precis.backfill.candidates import find_candidates
+    from precis.backfill.provenance import LEAD
+
+    store = hub.store
+    sec, _cited, _cand = _doc_with_citation(store, plan)
+    tc = store.get_draft_chunk(sec, kind="plan")
+
+    def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
+        block = NS(id=555)
+        ref = NS(id=7, kind="memory", title="my own synthesis")
+        return [(block, ref, 1.0)]
+
+    monkeypatch.setattr(store, "search_blocks_multi", fake_search)
+
+    out = find_candidates(store, None, [tc], kind="plan", limit=5)
+    assert len(out) == 1
+    lead = out[0]
+    assert lead.is_ref_level and lead.chunk_handle == ""
+    assert lead.paper_handle == "me7"  # addressed at ref level, not by a chunk
+    assert lead.score == 1.0 * LEAD.weight  # down-weighted (0.4)
+
+
+def test_assemble_focuses_memory_lead_as_flat_ref_eye(
+    hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ref-level lead opens as a flat ``summary`` note eye addressed by ``me<id>``
+    (not a ``verbatim`` chunk eye), and the whole workspace renders without the
+    handle-less kind blowing up the composer."""
+    store = hub.store
+    sec, _cited_id, _cand_id = _doc_with_citation(store, plan)
+    note = store.insert_ref(kind="memory", slug=None, title="my synthesis").id
+    lead = Candidate(
+        ref_id=note,
+        ref=store.fetch_refs_by_ids([note])[note],
+        chunk_id=999,
+        chunk_handle="",
+        score=0.4,
+    )
+    monkeypatch.setattr(wsmod, "find_candidates", lambda *a, **k: [lead])
+
+    ws, cands, _cited = assemble(store, hub.embedder, [sec], kind="plan")
+    eye = ws.get(f"me{note}")
+    assert eye is not None  # opened at ref level, addressed by me<id>
+    assert eye.extent.label == "summary"  # flat note eye, not verbatim chunk
+
+    # end-to-end render surfaces the lead + its tier and does not raise
+    rendered = wsmod.render_backfill(store, hub.embedder, [sec], kind="plan")
+    assert f"me{note}" in rendered
+    assert "[own-note]" in rendered
+
+
 # ── real-store: Tier-0 dedup ─────────────────────────────────────────
 
 
