@@ -180,6 +180,11 @@ class NumericRefHandler(Handler):
         if hub.store is None:
             raise InitError(f"{self.kind}: store required")
         self.store = hub.store
+        # Stash the hub so ad-hoc-constructed handlers (e.g.
+        # ``JobHandler(hub=hub)`` minted inside another handler, never
+        # ``_register_with``-ed) can still reach hub services — the job
+        # parent-kind check consults registered specs for can_own_jobs.
+        self.hub = hub
 
     # Convenience: callers / tests sometimes use `handler.sense` to
     # build messages — keep it cheap.
@@ -810,7 +815,7 @@ class NumericRefHandler(Handler):
         except (NotFound, BadInput) as exc:
             target_err = exc
         try:
-            relation = validate_relation(rel)
+            relation = validate_relation(rel, store=self.store)
         except BadInput as exc:
             rel_err = exc
         if target_err is not None and rel_err is not None:
@@ -878,7 +883,7 @@ class NumericRefHandler(Handler):
         # ref in the corpus. The parser hits the DB but doesn't
         # mutate; the insert + link both happen below.
         target = parse_link_target(link, store=self.store) if link is not None else None
-        relation = validate_relation(rel)
+        relation = validate_relation(rel, store=self.store)
 
         # Pre-validate every tag *before* we touch the DB. The MCP
         # critic flagged a state-drift bug: a put-create that failed

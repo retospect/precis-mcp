@@ -93,6 +93,34 @@ class LinksMixin:
     pool: ConnectionPool
     soft_delete_ref: Any  # provided by RefsMixin (used by merge_refs)
 
+    def valid_relations(self, *, refresh: bool = False) -> frozenset[str]:
+        """All relation slugs registered in the ``relations`` table.
+
+        ``links.relation`` has an FK to ``relations(slug)``, so this
+        table is the authoritative link vocabulary: a plugin kind seeds
+        its own relations here in its migration (as it must for the FK).
+        The handler-layer pre-flight check
+        (:func:`precis.handlers._link_tag_ops.validate_relation`)
+        consults this set so a plugin relation is accepted without a
+        core edit to the ``Relation`` literal — the literal stays the
+        static typo-safety hint for the built-ins.
+
+        Cached for the process lifetime: the vocabulary is static once
+        migrations have run. ``refresh=True`` re-reads — used on a
+        validation *miss* so a relation registered mid-process (a test,
+        or a plugin migrated after the store opened) is still picked up
+        before the caller rejects. The cache lives in ``__dict__`` (via
+        ``getattr``) rather than a class annotation so a dataclass
+        ``Store`` doesn't turn it into a field.
+        """
+        cached = getattr(self, "_valid_relations_cache", None)
+        if cached is None or refresh:
+            with self.pool.connection() as c:
+                rows = c.execute("SELECT slug FROM relations").fetchall()
+            cached = frozenset(str(r[0]) for r in rows)
+            self._valid_relations_cache = cached
+        return cached
+
     def add_link(
         self,
         *,

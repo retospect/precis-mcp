@@ -103,6 +103,14 @@ class KindSpec:
     #: content).
     note_like: bool = False
 
+    #: Compute-lane opt-in (ADR 0044). When True, a ``kind='job'`` may
+    #: parent on a ref of this kind — the artifact owns its derived,
+    #: cache-fillable build job (relax / route / compile / a catpath
+    #: pathway run). Lets a *plugin* kind join the compute lane without a
+    #: core edit to ``JOB_PARENT_KINDS`` (the built-in owners —
+    #: structure/cad/draft — predate this flag and stay in that set).
+    can_own_jobs: bool = False
+
     views: tuple[str, ...] = ()  # supported view= values
     modes: tuple[str, ...] = ()  # supported mode= values for put
 

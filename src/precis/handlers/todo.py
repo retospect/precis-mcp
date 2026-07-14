@@ -625,7 +625,7 @@ class TodoHandler(NumericRefHandler):
                 next=f"put(kind={self.kind!r}, text='your content')",
             )
         target = parse_link_target(link, store=self.store) if link is not None else None
-        relation = validate_relation(rel)
+        relation = validate_relation(rel, store=self.store)
 
         all_tag_strs: list[str] = list(self.default_tags_on_create)
         if tags:

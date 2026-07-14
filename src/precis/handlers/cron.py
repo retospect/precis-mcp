@@ -398,7 +398,7 @@ class CronHandler(NumericRefHandler):
                     "link='memory:42', rel='derived-from')"
                 ),
             )
-        relation = validate_relation(rel)
+        relation = validate_relation(rel, store=self.store)
 
         text_str = str(text).strip()
         with self.store.tx() as conn:

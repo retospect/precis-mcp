@@ -219,7 +219,7 @@ class MessageHandler(NumericRefHandler):
                     "link='conv:discord/...', rel='derived-from')"
                 ),
             )
-        relation = validate_relation(rel)
+        relation = validate_relation(rel, store=self.store)
 
         text_str = str(text)
         with self.store.tx() as conn:

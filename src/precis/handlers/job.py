@@ -100,6 +100,25 @@ class JobHandler(NumericRefHandler):
     # No default tag: the queued state is set after validation in put.
     default_tags_on_create: ClassVar[tuple[str, ...]] = ()
 
+    def _plugin_owner_kinds(self) -> frozenset[str]:
+        """Kinds that opted into owning compute-lane jobs via
+        ``KindSpec.can_own_jobs`` (ADR 0044 plugin extension). Lets a
+        plugin kind (e.g. catpath's ``pathway``) own its derived build
+        job without a core edit to :data:`JOB_PARENT_KINDS`. Empty when
+        the hub isn't reachable (defensive — falls back to built-ins)."""
+        hub = getattr(self, "hub", None)
+        if hub is None:
+            return frozenset()
+        out: set[str] = set()
+        for k in getattr(hub, "kinds", ()) or ():
+            try:
+                spec = hub.handler_for(k).spec
+            except Exception:
+                continue
+            if getattr(spec, "can_own_jobs", False):
+                out.add(k)
+        return frozenset(out)
+
     # ── put: validated submit ───────────────────────────────────────
 
     def put(  # type: ignore[override]
@@ -282,7 +301,10 @@ class JobHandler(NumericRefHandler):
         # NotFound/BadInput shape as the todo-tree guard for missing /
         # soft-deleted parents.
         _, parent_kind = todo_guards.check_job_parent_exists(
-            self.store, parent_int, allowed_kinds=_JOB_PARENT_KINDS_WITH_COORDINATOR
+            self.store,
+            parent_int,
+            allowed_kinds=_JOB_PARENT_KINDS_WITH_COORDINATOR
+            | self._plugin_owner_kinds(),
         )
         if parent_kind == "job":
             with self.store.pool.connection() as conn:

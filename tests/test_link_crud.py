@@ -365,6 +365,49 @@ class TestRelationsVocabularyMatchesSchema:
             )
 
 
+class TestPluginRelationVocabulary:
+    """A *plugin* kind seeds its own relation via its migration; the
+    handler-layer ``validate_relation`` must accept it — read from the
+    live ``relations`` table — without it living in the ``Relation``
+    literal (which stays the built-in typo-safety hint)."""
+
+    def test_valid_relations_matches_table(self, store: Store) -> None:
+        with store.pool.connection() as conn:
+            rows = conn.execute("SELECT slug FROM relations").fetchall()
+        assert store.valid_relations() == frozenset(r[0] for r in rows)
+
+    def test_plugin_relation_accepted_after_seed(self, store: Store) -> None:
+        from precis.handlers._link_tag_ops import validate_relation
+
+        slug = "test-plugin-consumes"
+        # Not in the literal and not yet seeded → rejected (and the
+        # miss re-reads, so the cache reflects "absent" too).
+        with pytest.raises(BadInput, match="unknown relation"):
+            validate_relation(slug, store=store)
+        try:
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "INSERT INTO relations (slug, is_symmetric, description) "
+                    "VALUES (%s, FALSE, %s) ON CONFLICT (slug) DO NOTHING",
+                    (slug, "test-only plugin relation"),
+                )
+            # Seeded after the vocab was first cached → the refresh-on-
+            # miss path picks it up rather than falsely rejecting.
+            assert validate_relation(slug, store=store) == slug
+        finally:
+            with store.pool.connection() as conn:
+                conn.execute("DELETE FROM relations WHERE slug = %s", (slug,))
+            store.valid_relations(refresh=True)
+
+    def test_store_free_validation_only_sees_builtins(self) -> None:
+        from precis.handlers._link_tag_ops import validate_relation
+
+        # No store handle → only the built-in literal is consulted.
+        assert validate_relation("cites") == "cites"
+        with pytest.raises(BadInput, match="unknown relation"):
+            validate_relation("test-plugin-consumes")
+
+
 # ── handler: link/unlink/rel on put ────────────────────────────────
 
 
