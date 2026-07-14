@@ -88,6 +88,44 @@ def apply_lexicon(text: str, lexicon: dict[str, str] | None) -> str:
     return text
 
 
+def load_personal_lexicon(path: str | None = None) -> dict[str, str]:
+    """The cross-draft pronunciation base — ``{surface: respelling}`` JSON at
+    ``PRECIS_LEXICON_FILE`` (or ``path``). Words you say the same in *every*
+    draft (your name, "precis", "arXiv") live here so you teach them once.
+    Empty + forgiving: unset / missing / malformed → ``{}``."""
+    import json
+    import os
+    from pathlib import Path
+
+    p = path or os.environ.get("PRECIS_LEXICON_FILE")
+    if not p:
+        return {}
+    try:
+        data = json.loads(Path(p).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def resolve_lexicon(
+    ref: Any, *, personal: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Merge the two-level pronunciation lexicon for a draft.
+
+    Personal (cross-draft base) UNDER the draft's own overrides — ``ref.meta``
+    ``pronunciation`` dict, per-document like abbrevs but a dedicated free
+    lexicon (so it covers names/words that aren't glossary terms). Per-draft
+    wins on a clash.
+    """
+    merged: dict[str, str] = dict(personal or {})
+    draft_lex = (getattr(ref, "meta", None) or {}).get("pronunciation")
+    if isinstance(draft_lex, dict):
+        merged.update({str(k): str(v) for k, v in draft_lex.items()})
+    return merged
+
+
 def render_narration(
     store: Any,
     ref: Any,

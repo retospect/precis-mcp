@@ -222,4 +222,5 @@ get(kind='skill', id='precis-toc-help')      # TOC navigation, sub-range zoom
 get(kind='skill', id='precis-random-help')   # random corpus pick
 get(kind='skill', id='precis-folder-help')   # folders, placement, folder= search scope
 get(kind='skill', id='precis-gripe-help')    # hit a bug / tool friction? file a gripe (search existing first)
+get(kind='skill', id='precis-audio-help')    # narrate a draft to audio: voice score + pronunciation lexicon
 ```

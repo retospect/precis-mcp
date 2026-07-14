@@ -6,7 +6,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from precis.draft.narrate import apply_lexicon, render_narration, speakable
+from precis.draft.narrate import (
+    apply_lexicon,
+    load_personal_lexicon,
+    render_narration,
+    resolve_lexicon,
+    speakable,
+)
+
+
+class _RefMeta:
+    def __init__(self, meta: dict[str, Any]) -> None:
+        self.meta = meta
 
 
 @dataclass
@@ -62,6 +73,36 @@ def test_lexicon_respells_whole_words_case_insensitive():
 
 def test_lexicon_none_is_noop():
     assert apply_lexicon("hello", None) == "hello"
+
+
+# ── two-level lexicon (personal base + per-draft override) ───────────
+
+
+def test_resolve_lexicon_merges_draft_over_personal():
+    ref = _RefMeta({"pronunciation": {"precis": "PRAY-see", "boxel": "box-ell"}})
+    personal = {"precis": "pree-sis", "arXiv": "archive"}
+    merged = resolve_lexicon(ref, personal=personal)
+    assert merged["precis"] == "PRAY-see"  # draft wins over personal
+    assert merged["arXiv"] == "archive"  # personal carries through
+    assert merged["boxel"] == "box-ell"  # draft-only entry
+
+
+def test_resolve_lexicon_handles_missing_and_bad_meta():
+    assert resolve_lexicon(_RefMeta({}), personal={"a": "b"}) == {"a": "b"}
+    assert resolve_lexicon(_RefMeta({"pronunciation": "oops"}), personal={}) == {}
+    assert resolve_lexicon(_RefMeta({}), personal=None) == {}
+
+
+def test_load_personal_lexicon(tmp_path, monkeypatch):
+    monkeypatch.delenv("PRECIS_LEXICON_FILE", raising=False)
+    assert load_personal_lexicon() == {}  # unset
+    f = tmp_path / "lex.json"
+    f.write_text('{"precis": "pray-see"}', encoding="utf-8")
+    assert load_personal_lexicon(str(f)) == {"precis": "pray-see"}
+    assert load_personal_lexicon(str(tmp_path / "nope.json")) == {}  # missing
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json", encoding="utf-8")
+    assert load_personal_lexicon(str(bad)) == {}  # malformed
 
 
 # ── render_narration() ───────────────────────────────────────────────

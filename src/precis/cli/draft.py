@@ -151,6 +151,7 @@ def _run_audio(args: argparse.Namespace) -> None:
     from datetime import UTC, datetime
 
     from precis import audio_feed
+    from precis.draft.narrate import load_personal_lexicon, resolve_lexicon
     from precis.export.audio import export_audio
     from precis.tts.kokoro import KokoroSynth
 
@@ -162,6 +163,9 @@ def _run_audio(args: argparse.Namespace) -> None:
         if ref is None:
             print(f"draft audio: no draft {args.slug!r}", file=sys.stderr)
             sys.exit(2)
+        # Two-level pronunciation lexicon: personal base (PRECIS_LEXICON_FILE)
+        # under the draft's own meta.pronunciation overrides.
+        lexicon = resolve_lexicon(ref, personal=load_personal_lexicon())
         out = (
             Path(args.out) if args.out else Path("export") / f"{ref.slug or ref.id}.m4a"
         )
@@ -176,6 +180,7 @@ def _run_audio(args: argparse.Namespace) -> None:
                 synth=synth,
                 default_voice=args.voice,
                 default_lang=args.lang,
+                lexicon=lexicon,
                 max_segments=args.max_segments,
             )
             # WAV → m4a (AAC) for the podcast enclosure.
