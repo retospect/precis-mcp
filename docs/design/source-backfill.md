@@ -809,9 +809,21 @@ writer's context, the more discipline the prose needs.*
    (presence marker). It is the structural memory that stops a many-tick /
    many-agent edit from losing the plot.
 
-   **Substrate — no new kind, no migration.** A `memory` ref, tagged
-   `heading-intent:hard|soft` (hard = structural commitment; soft = revisable
-   intent), **linked to the heading chunk** (a `heading-intent` link relation).
+   **Substrate — no new kind, no migration** (`backfill/heading_intent.py`,
+   slice 8b.1 **DONE**; `tests/test_heading_intent.py`). A `memory` ref carrying
+   `meta.anchor = '<heading handle>'` (the precise heading, reusing the
+   change-request anchor convention `_render_anchor_context` already reads) and
+   `meta.heading_intent = 'hard' | 'soft'` (hard = structural commitment; soft =
+   revisable intent). *Stored in `meta`, not a closed tag or a link relation* — a
+   `heading-intent` link would need a `relations`-table seed **migration** (`links.
+   relation` is an FK), and `meta` makes the upsert / hard↔soft flip a plain
+   overwrite with no closed-prefix swap. `set_intent` upserts (one note per
+   heading), `intents_for` / `intents_for_draft` read (the deterministic surfacing
+   channel), `retire_intent` + `prune_dangling` retire. **Known limitation:** the
+   anchor is a `dc<id>` chunk handle, so a heading *rename* (DELETE+INSERT → new
+   chunk_id) orphans the intent — `prune_dangling` reaps orphans, but *following* an
+   intent through a rename needs stable per-node ids (the plumbing 8a wants) and is
+   deferred; editing content *under* a heading leaves the intent attached.
    Because it is `memory` it embeds → searchable + **recallable for free**
    (surfaces as a `○ [own-note]` LEAD in a topically-adjacent section's sweep — a
    slice-6 bonus). **Never exported**: it is a *separate linked ref, not a draft
@@ -864,10 +876,12 @@ writer's context, the more discipline the prose needs.*
        existing structural reviewer), not new infrastructure.
 
    **Build order (sub-slices):**
-   - **8b.1** — substrate + form/retire: the `heading-intent:hard|soft` tag + the
-     `heading-intent` link relation; put/edit/link/delete conventions (no
-     migration; `guard_exportable` already blocks export). Skill: form/retire
-     rules + hard-vs-soft.
+   - **8b.1** — substrate + form/retire. **DONE** (`backfill/heading_intent.py`):
+     `set_intent` (upsert, one per heading, body in a `memory_body` chunk so it
+     embeds), `intents_for` / `intents_for_draft` (read), `retire_intent` +
+     `prune_dangling` (the hygiene heal). `meta.anchor` + `meta.heading_intent`, no
+     migration; `guard_exportable` already blocks export (asserted). The
+     model-facing form *skill* text lands with 8b.2 (where the render surfaces it).
    - **8b.2** — the writer render module (breadcrumb-up + siblings-across), gated
      into `planner_prompt` as a peer of `_render_glossary`. Skill: "read the
      boundary; if it fits a sibling's intent better, put it there / hand off."

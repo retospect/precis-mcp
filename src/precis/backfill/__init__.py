@@ -34,23 +34,37 @@ from precis.backfill.dismissed import (
     dismissed_ref_ids,
     resolve_source_ref_id,
 )
+from precis.backfill.heading_intent import (
+    Intent,
+    intents_for,
+    intents_for_draft,
+    prune_dangling,
+    retire_intent,
+    set_intent,
+)
 from precis.backfill.provenance import SOURCE_KINDS, tier_for, tier_tag
 from precis.backfill.workspace import assemble, recall_embedder, render_backfill
 
 __all__ = [
     "SOURCE_KINDS",
     "Candidate",
+    "Intent",
     "assemble",
     "dismiss_source",
     "dismissed_ref_ids",
     "draft_cited_ref_ids",
     "find_candidates",
     "find_citation_candidates",
+    "intents_for",
+    "intents_for_draft",
     "materialize_citation_edges",
     "merge_recurrence",
+    "prune_dangling",
     "recall_embedder",
     "render_backfill",
     "resolve_source_ref_id",
+    "retire_intent",
+    "set_intent",
     "tier_for",
     "tier_tag",
 ]
