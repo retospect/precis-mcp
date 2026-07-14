@@ -146,15 +146,17 @@ def test_section_intents_breadcrumb_and_siblings(hub: Hub, plan: PlanHandler) ->
     # Section C is left intentionally without an intent.
 
     ctx = section_intents(store, para)
-    assert [i.heading_handle for i in ctx.breadcrumb] == [root, a]  # root → enclosing
-    assert ctx.breadcrumb[-1].hard is True  # A is a hard commitment
-    assert {i.heading_handle for i in ctx.siblings} == {
-        b
-    }  # B only; C has none, A excluded
+    assert [r.handle for r in ctx.breadcrumb] == [root, a]  # root → enclosing
+    # each rung is labelled by its heading TITLE (position from the hierarchy),
+    # not the bare handle — the whole point of the breadcrumb.
+    assert [r.title for r in ctx.breadcrumb] == ["Root", "Section A"]
+    assert ctx.breadcrumb[-1].intent.hard is True  # A is a hard commitment
+    assert {r.handle for r in ctx.siblings} == {b}  # B only; C has none, A excluded
+    assert {r.title for r in ctx.siblings} == {"Section B"}
     assert bool(ctx) is True
 
     # anchoring directly at a heading gives the same section context
-    assert [i.heading_handle for i in section_intents(store, a).breadcrumb] == [root, a]
+    assert [r.handle for r in section_intents(store, a).breadcrumb] == [root, a]
 
 
 def test_planner_prompt_renders_section_intent_when_anchored(
@@ -173,6 +175,7 @@ def test_planner_prompt_renders_section_intent_when_anchored(
 
     prompts = build_planner_prompts(store, ref_id=todo.id, model="opus")
     assert "## Section intent" in prompts.user
+    assert "Methods" in prompts.user  # keyed off the heading title, not the handle
     assert "make the result reproducible" in prompts.user
     assert "do NOT transcribe" in prompts.user  # the guidance caveat
 

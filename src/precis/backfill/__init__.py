@@ -37,6 +37,7 @@ from precis.backfill.dismissed import (
 from precis.backfill.heading_intent import (
     Intent,
     IntentContext,
+    Rung,
     intents_for,
     intents_for_draft,
     prune_dangling,
@@ -52,6 +53,7 @@ __all__ = [
     "Candidate",
     "Intent",
     "IntentContext",
+    "Rung",
     "assemble",
     "dismiss_source",
     "dismissed_ref_ids",

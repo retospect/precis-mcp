@@ -975,7 +975,7 @@ def _render_heading_intent(store: Store, anchor_handle: str) -> str:
     No-op when the tick has no anchor or the section carries no intents anywhere in
     its breadcrumb/siblings. Fallback-safe: any resolution failure degrades to ``""``
     so it can never break the planner prompt."""
-    from precis.backfill.heading_intent import Intent, section_intents
+    from precis.backfill.heading_intent import Rung, section_intents
 
     try:
         ctx = section_intents(store, anchor_handle)
@@ -985,13 +985,17 @@ def _render_heading_intent(store: Store, anchor_handle: str) -> str:
     if not ctx:
         return ""
 
-    def _line(intent: Intent, *, cursor: bool = False) -> str:
-        text = " ".join((intent.text or "").split())
+    def _line(rung: Rung, *, cursor: bool = False) -> str:
+        # Key the line off the heading *title* (the position the hierarchy already
+        # carries), not the bare handle; the intent adds the purpose the title
+        # doesn't spell out.
+        title = " ".join((rung.title or rung.handle).split()) or rung.handle
+        text = " ".join((rung.intent.text or "").split())
         if len(text) > 160:
             text = text[:160].rstrip() + "…"
-        strength = "hard" if intent.hard else "soft"
+        strength = "hard" if rung.intent.hard else "soft"
         marker = "▸ " if cursor else "  "
-        return f"{marker}{intent.heading_handle} · {strength} · {text}"
+        return f"{marker}{title} · {strength} · {text}"
 
     parts = [
         "## Section intent (guidance — shapes what you write; do NOT transcribe "

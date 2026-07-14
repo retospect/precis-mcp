@@ -884,7 +884,10 @@ writer's context, the more discipline the prose needs.*
      model-facing form *skill* text lands with 8b.2 (where the render surfaces it).
    - **8b.2** — the writer render module. **DONE**: `heading_intent.section_intents`
      resolves an anchor's **breadcrumb** (root heading → enclosing heading) +
-     **sibling** intents (deriving draft/plan kind from the handle); the
+     **sibling** intents (deriving draft/plan kind from the handle). Each rung is a
+     `Rung(handle, title, intent)` **keyed off the heading title** (the position the
+     hierarchy already carries — the bare `pe5` handle is illegible); the block adds
+     *purpose*, since the tree render already carries position. The
      `planner_prompt` module `_render_heading_intent` / `_m_heading_intent` renders
      the "## Section intent" block, gated `has_anchor` (a peer of `_m_anchor` /
      `_m_doc_context`), self-gating to `""` when the section carries no intents. The

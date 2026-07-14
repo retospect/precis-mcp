@@ -186,16 +186,29 @@ def intents_for_draft(
 
 
 @dataclass(frozen=True)
+class Rung:
+    """One heading in the hierarchical prompt: its ``title`` (the position, which the
+    authoring hierarchy already carries — this is what the writer needs to read the
+    chain, not the bare ``pe5`` handle) and its ``intent`` (the purpose the title
+    doesn't spell out). ``handle`` is kept for addressing / the cursor marker."""
+
+    handle: str
+    title: str
+    intent: Intent
+
+
+@dataclass(frozen=True)
 class IntentContext:
     """The heading-intent context around a worked chunk — the writer's hierarchical
-    prompt. ``breadcrumb`` is the chain of intents from the **root** heading down to
-    the chunk's **enclosing** heading (the *why am I here*); ``siblings`` is the
-    intents on the enclosing heading's sibling headings (the placement boundary:
-    *what belongs elsewhere, not here*). Each may be empty (only headings that
-    actually carry an intent appear)."""
+    prompt. ``breadcrumb`` is the chain of intent-bearing headings from the **root**
+    down to the chunk's **enclosing** heading (the *why am I here*), each labelled by
+    its heading title; ``siblings`` is the enclosing heading's sibling-heading intents
+    (the placement boundary: *what belongs elsewhere, not here*). Only headings that
+    carry an intent appear — bare position is already legible from the titles in the
+    surrounding tree render, so this block adds *purpose*, not a duplicate outline."""
 
-    breadcrumb: list[Intent]
-    siblings: list[Intent]
+    breadcrumb: list[Rung]
+    siblings: list[Rung]
 
     def __bool__(self) -> bool:
         return bool(self.breadcrumb or self.siblings)
@@ -251,9 +264,17 @@ def section_intents(store: Any, anchor_handle: str) -> IntentContext:
     intents = intents_for(
         store, [c.dc for c in breadcrumb_chunks] + [c.dc for c in sibling_chunks]
     )
-    breadcrumb = [intents[c.dc] for c in breadcrumb_chunks if c.dc in intents]
-    siblings = [intents[c.dc] for c in sibling_chunks if c.dc in intents]
-    return IntentContext(breadcrumb, siblings)
+
+    def _rungs(hchunks: list[Any]) -> list[Rung]:
+        # Label each rung by the heading's own title (the position the hierarchy
+        # already carries — `c.text` is the heading text), not the bare handle.
+        return [
+            Rung(handle=c.dc, title=(c.text or "").strip(), intent=intents[c.dc])
+            for c in hchunks
+            if c.dc in intents
+        ]
+
+    return IntentContext(_rungs(breadcrumb_chunks), _rungs(sibling_chunks))
 
 
 def retire_intent(store: Any, ref_id: int, *, conn: Any = None) -> None:
