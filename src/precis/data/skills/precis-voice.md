@@ -133,7 +133,13 @@ the private feed. Delivery + on-device playback are already solved — see
 
 ## See also
 
+This skill is the **craft** (how to write speakable prose + the standing
+profiles). For the **mechanism** — audio as a cross-cutting export layer, the
+`precis draft audio` CLI, per-chunk `meta.voice`/`meta.lang`, and the two-level
+pronunciation lexicon — see `precis-audio-help`.
+
 ```python
-get(kind='skill', id='precis-cloze')     # authoring recall cards (the active complement)
-get(kind='skill', id='precis-overview')  # kinds + skills index
+get(kind='skill', id='precis-audio-help')  # the mechanism: narrate a draft, lexicon, feed
+get(kind='skill', id='precis-cloze')       # authoring recall cards (the active complement)
+get(kind='skill', id='precis-overview')    # kinds + skills index
 ```
