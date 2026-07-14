@@ -257,6 +257,14 @@ def _init_runtime() -> PrecisRuntime:
     if _runtime is not None:
         return _runtime
     _runtime = build_runtime()
+    # Share this store-bearing runtime with the tool-dispatch path. Without
+    # this, the verb funcs lazily build a SECOND runtime — but build_runtime
+    # above already scrubbed PRECIS_DATABASE_URL from the env (secrets
+    # vault), so that second build comes up storeless and every DB kind
+    # reports "unknown kind". See precis.tools.core.set_runtime.
+    from precis.tools import core as _tools_core
+
+    _tools_core.set_runtime(_runtime)
     _wire_modalities(_runtime)
     _apply_instructions(mcp, _runtime)
     atexit.register(_shutdown_runtime)

@@ -48,6 +48,23 @@ _ToolReturn = Any  # documents runtime: str on success, CallToolResult on error.
 _runtime = None
 
 
+def set_runtime(runtime) -> None:
+    """Inject a pre-built runtime so the verb funcs reuse it.
+
+    ``precis serve`` builds a store-bearing runtime at boot; that build
+    calls ``secrets.adopt_process_store`` which **scrubs
+    ``PRECIS_DATABASE_URL`` from ``os.environ``** (so spawned subprocesses
+    don't inherit the DSN). If the tool-dispatch path then lazily built
+    its *own* runtime via ``_get_runtime`` → ``build_runtime()``, that
+    second build would read the now-scrubbed env, get no ``database_url``,
+    and come up **storeless** — every DB kind reports ``unknown kind`` even
+    though the server's own runtime is fully connected. The MCP server
+    calls this at boot so both paths share the one store-bearing runtime.
+    """
+    global _runtime
+    _runtime = runtime
+
+
 def _monotonic() -> float:
     """Late-binding monotonic; lazy import so test stubs don't break boot."""
     import time as _t
