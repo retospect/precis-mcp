@@ -752,37 +752,167 @@ writer's context, the more discipline the prose needs.*
    the draft's own state) carry forward. The draft-rebuild path covers the prose
    and citation state — the dominant signal — so the snapshot is a refinement, and
    it's the one place slice 7 genuinely needs new executor plumbing.
-8. **The structural layer — document-graph rollup + heading-intent notes.**
+8. **The structural layer — heading-intent notes + document-graph rollup.**
    Slices 1–7 are all *local* (find/write/review a spot); this is *global
-   structure* — "does the whole thing hang together." Two separable parts:
+   structure* — "does the whole thing hang together." The 2026-07-14 design
+   session substantially revised the shape below; the load-bearing decisions
+   come first because they *shrink* the build.
 
-   **8a — visibility-scoped link/document-graph rollup.** Per section, roll up
-   *all* its links and summarize where they go — `§2 → 3 links to §1.2 · 5 to
-   pa1234 · …` — at a granularity that **follows the target's visibility**
-   (this is the elegant rule): a link resolves to the *coarsest visible
-   ancestor* of its target. If §2 and §3 are both collapsed, `2→3` and `3→2`
-   show as a **section-level aggregate** ("N links between §2 and §3"), not
-   which paragraph; if the target para is **open**, the link points **right at
-   it**. Same for papers: those we **hold and are pointed at** get named, the
-   rest **summarized** ("30 links → 8 other papers") with an optional
-   long-tail cutoff. Deterministic (fact layer) — it's a roll-up of existing
-   `links_for` edges + a visibility-aware target resolver. This is the missing
-   "how do the parts interconnect" view the local fisheye can't give.
+   ### Design decisions (2026-07-14)
 
-   **8b — heading-intent notes (the cohesive story).** Maintain a note *on each
-   heading*: **what is supposed to be under it, and why it exists** — a
-   *teleological* tree: the book exists *because* X; this section supports
-   *that* part of the book; this chapter supports *xyz* of the section. These
-   are `memory` refs with a `heading-intent:hard|soft` tag (hard = a structural
-   commitment; soft = a revisable intent), **linked to the heading chunk**.
-   Shown with the heading as the document renders (open heading → the note;
-   collapsed → its presence). The **planner seeds** them when it scaffolds
-   structure; a **skill admonition keeps them current** (update the intent when
-   the section's job changes — anti-drift). They are the **structural memory**
-   that stops a many-tick / many-agent edit process from losing the plot: an
-   agent editing §5 that can *see* "§5 exists to support §2's argument" won't
-   drift the way one editing blind does. The counterpart, at document scale, to
-   the working set's local context and the reader-asymmetry rule's discipline.
+   1. **Two stances, never one merged prompt.** Local writing/weaving and global
+      graph-refactoring are distinct *cognitive stances* — mixing them in one
+      prompt risks the model doing the concrete-closeable thing (the local weave)
+      and treating the rest as decoration (the real reason to separate, *not*
+      tokens — the token cost is small). Reviewer-mode is the precedent: a
+      distinct `meta` marker + gated variable-layer modules, composed by
+      **sequence + spawning**, never superimposed.
+   2. **Widen the window; don't build a message bus.** For a section
+      *neighbourhood* (co-present siblings) placement is decided **directly** in a
+      multi-focus working set — the composer already renders a spread-focus
+      sibling set. The cross-section "consider-note" hand-off bus was solving
+      *context-poverty about the neighbour*, which a wider window dissolves.
+      Reserve hand-off notes for the **out-of-window seam only** (whole-book
+      scale, cross-session, not-yet-written sections) — deferred until scale
+      forces it.
+   3. **Context-fitting machinery dissolves; durable state persists.** The test
+      for every piece: does it exist to *fit* context (→ prefer the wider window)
+      or to *outlive* it (→ keep the note)? Heading-intent is durable state (it
+      must survive across ticks / agents / sessions that share no window) → keep.
+      Consider-notes are context-fitting → demote to overflow.
+   4. **Propagate through the substrate, not messages (stigmergy).** A discovery
+      reaches other sections by being *deposited* in shared substrate — a
+      citation, an ingested paper, a **glossary term**, a materialised citation
+      edge. Every section's recall + render reads the substrate, so a deposit
+      **broadcasts to all sections with no addressing**, self-cleaning, already
+      built. Push an addressed note only for the *residue* the substrate can't
+      carry (a tacit cross-section *connection* with no term / source to deposit).
+   5. **Precision is the propagation guarantee.** A precise term is a strong
+      retrieval key; vague language is exactly what makes recall miss (the problem
+      backfill exists to solve). So: *make it precise (a term / citation / intent)
+      and rediscovery is reliable and automatic; leave it tacit and it is lost.*
+      The act of making it precise **is** the act of propagating it. Consequence:
+      **vocabulary propagation is already solved** by the glossary / term registry
+      (`chunk_kind='term'`, `defined_terms`) + `_render_glossary` — define a term
+      once and it is injected into every tick's prompt *and* auto-linked draft-wide
+      by the reader/export. Slice 8b adds only a one-line skill discipline, no
+      machinery.
+
+   ### 8b — heading-intent notes (build this first)
+
+   A durable teleological note on each heading — **what belongs under it and why
+   it exists** (the book exists *because* X; this section supports *that* part;
+   this chapter supports *xyz* of the section). It serves three readers at once:
+   the **writer** (a *hierarchical prompt* — the intent breadcrumb root→…→leaf
+   shapes what the leaf writes, the per-heading analogue of the `Workspace.brief`
+   cascade), the **structural stance** (the coherence map), and the **reader**
+   (presence marker). It is the structural memory that stops a many-tick /
+   many-agent edit from losing the plot.
+
+   **Substrate — no new kind, no migration.** A `memory` ref, tagged
+   `heading-intent:hard|soft` (hard = structural commitment; soft = revisable
+   intent), **linked to the heading chunk** (a `heading-intent` link relation).
+   Because it is `memory` it embeds → searchable + **recallable for free**
+   (surfaces as a `○ [own-note]` LEAD in a topically-adjacent section's sweep — a
+   slice-6 bonus). **Never exported**: it is a *separate linked ref, not a draft
+   chunk*, so it physically cannot enter the export chunk stream; `memory` is
+   non-exported anyway (`guard_exportable`). Rendered as *keyed meta* — a labelled
+   "## Section intent (guidance — do NOT transcribe into prose)" block, always
+   outside the sacred-content quotes (the reader-asymmetry boundary).
+
+   **Surfacing — two channels (keep them distinct).**
+   - *Deterministic (render / link-following)* — a new assembly module surfaces,
+     for the worked heading: the **intent breadcrumb up** (root→…→this heading) +
+     the **sibling intents across** (the placement boundary: "belongs here because
+     it does *not* belong in that neighbour"). Peer of `_render_glossary` /
+     `_render_project_brief` in `planner_prompt`. This is the reliable channel —
+     attached notes always show up; you never gamble on rediscovering your own.
+   - *Semantic (recall)* — an unattached, topically-relevant intent/note surfaces
+     in the section's `find_candidates` sweep as a LEAD candidate (works today
+     post slice-6). Best-effort, precision-dependent (decision 5).
+
+   **Placement is the wide-window path, not a bus.** A section edit **opens its
+   sibling subtree** into the working set (multi-focus, existing composer) so
+   placement is decided with the siblings co-present. Sibling *intents* (cheap) →
+   sibling *content* (wider) is **one extent dial** the crunch governor already
+   manages. No message passing for in-window neighbours.
+
+   **Lifecycle — the form & retire skills (convergence guarantees).**
+   - *Form:* the planner **seeds** intent at scaffold time (hard/soft); a writer
+     **coins a glossary term** the moment it pins down precise vocab (the
+     propagation act of decision 5); a writer **updates a soft intent** on new
+     info; a **hard-intent change is a flagged structural event**, not a silent
+     rewrite.
+   - *Retire:* intents **persist**, but retire when their heading is
+     deleted/merged (a dangling intent). Soft intents are *rewritten*, not
+     retired.
+
+   **The "deal with your unresolved memories" trigger — existing machinery, two
+   scales.**
+   - *Local — no explicit trigger.* Notes are link-attached, so they **render**
+     when their section is worked; dealing with them is inline (a future
+     consider-note would merge into that section's find-phase candidate list and
+     drain like any candidate). The trigger *is* working the section, which
+     dispatch already does.
+   - *Global hygiene — scheduled:*
+     - **nursery / SQL heal** (deterministic): retire intent notes dangling off a
+       soft-deleted heading chunk — same shape as `paper_hygiene` link-repointing.
+     - **`structural` reviewer** (opus, 6h; `workers/review.py` `Reviewer`): judge
+       **hard-intent drift** (prose no longer matches the section's stated job) +
+       flag overdue accumulation → raise a finding or mint a structural-stance
+       tick. Adding it is one `Reviewer(...)` instance (or an extension of the
+       existing structural reviewer), not new infrastructure.
+
+   **Build order (sub-slices):**
+   - **8b.1** — substrate + form/retire: the `heading-intent:hard|soft` tag + the
+     `heading-intent` link relation; put/edit/link/delete conventions (no
+     migration; `guard_exportable` already blocks export). Skill: form/retire
+     rules + hard-vs-soft.
+   - **8b.2** — the writer render module (breadcrumb-up + siblings-across), gated
+     into `planner_prompt` as a peer of `_render_glossary`. Skill: "read the
+     boundary; if it fits a sibling's intent better, put it there / hand off."
+   - **8b.3** — the one-line **glossary-discipline** skill addition (vocab =
+     deposit a term; leans entirely on existing machinery).
+   - **8b.4** — the global trigger: nursery heal (dangling intents) + a
+     `structural`-tier intent-drift check.
+
+   ### 8a — visibility-scoped link/document-graph rollup (the structural map, deferred)
+
+   Per section, roll up *all* its links and summarise where they go — `§2 → 3
+   links to §1.2 · 5 to pa1234 · …` — at a granularity that **follows the target's
+   visibility** (the elegant rule): a link resolves to the *coarsest visible
+   ancestor* of its target. If §2 and §3 are both collapsed, `2↔3` shows as a
+   **section-level aggregate** ("N links between §2 and §3"); if the target para is
+   **open**, the link points **right at it**. Papers we hold and are pointed at get
+   named, the rest summarised ("30 links → 8 other papers") with an optional
+   long-tail cutoff. Deterministic (fact layer) — a roll-up of existing `links_for`
+   edges + a visibility-aware target resolver. It is the **structural stance's map**
+   (the "how do the parts interconnect" view the local fisheye can't give), so it
+   lands *after* 8b (its grounding). **Needs new store plumbing:** chunk-level link
+   edges (`Link` exposes only int `src_pos`/`dst_pos` and hides the chunk-id
+   columns, while a draft chunk's `pos` is a *str*) + a coarsest-visible-ancestor
+   resolver that reads the composer's assembled visibility map. Because the rollup
+   is a **function of the assembled view's visibility**, it is a *post-assembly
+   overlay* in the composer layer (general — reusable by reader / planner / general
+   eye-mode), not a detached eye.
+
+   ### Deferred beyond 8a/8b (explicit)
+
+   - **The structural stance itself** — the tick that *consumes* 8a+8b to refactor
+     (move sections, fix/add cross-links, realign intent). Its own `meta` marker
+     (e.g. `meta.restructure`) + gated modules, mirroring reviewer-mode. After 8a.
+   - **Consider-note hand-off bus** — the **out-of-window seam** only (whole-book /
+     cross-session / not-yet-written targets). A heading-anchored inbox of notes
+     (tagged `consider-inclusion`, carrying a `pc<id>`/`pa<id>` handle) that
+     surface when the target section is worked and **drain to empty** (weave →
+     citation, or dismiss → dismissed-source edge). Critical scoping catch:
+     already-present auto-close is **section-scoped, not draft-wide** (recall's
+     Tier-0 dedup is draft-wide — reusing it here would swallow legitimate
+     cross-section placements, since a paper cited in §3a can still belong in §3c).
+     Send is **intent-targeted, content-blind** (target the sibling whose intent
+     matches; let the receiver — which is context-rich about itself — dedup),
+     idempotent-by-handle (duplicate sends fold into a recurrence signal). Build
+     when scale actually forces it.
 
 ## Backlog items (file separately)
 
