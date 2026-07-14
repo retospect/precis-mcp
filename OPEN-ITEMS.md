@@ -25,7 +25,10 @@ double-build in `precis serve` (fixed in `8b07c0ad`; the boot build scrubs
 runtime that served every MCP tool call). Fixes shipped: the runtime-share
 (`8b07c0ad`), the boot-time connect retry (`4c47a652`), asa's health-check
 that detects a degraded precis (asa-bot `2727054`), and the asa deploy
-ssh-agent fix (cluster `d86f8c6`). Left open:
+ssh-agent fix (cluster `d86f8c6`). asa-bot was also **folded into this
+monorepo** as a sibling package (`src/asa_bot`, `[asa]` extra, `asa-bot`
+entry point — `12cc38d0` + `f7de0f14`; cutover deployed, asa runs
+`precis-mcp[asa]` self-contained on its own venv). Status:
 
 - **`build_runtime` is storeless-after-scrub by construction** — `open` /
   `polish` / owner `runtime.py` + `secrets.py`. `adopt_process_store` deletes
@@ -40,15 +43,13 @@ ssh-agent fix (cluster `d86f8c6`). Left open:
   rows in prod since 2026-06-27 despite `POST /capture` returning 200 and
   no `capture-fallback.jsonl` on disk. Very likely the same storeless-precis
   root cause (capture routed through the degraded tool runtime) — **verify
-  after the next asa Discord turn** now that `8b07c0ad` is deployed; if still
-  broken, trace the shim's precis write path (200 despite no persisted row).
-  Finder: Opus session.
-- **asa venv can't `import precis`** — `open` / `polish` / owner `asa_bot`
-  ansible role. `_attach_db_log_handler` throws `ModuleNotFoundError: No
-  module named 'precis'` at every asa boot ("continuing without DB logs"),
-  so asa never lands in `worker_logs` and `precis logs --process asa-bot` is
-  empty — which made this incident harder to see. Fix: install `precis` into
-  `/opt/asa/venv` (or vendor the `db_log_handler`). Finder: Opus session.
+  after the next asa Discord turn** now that the double-build fix + the
+  monorepo cutover are deployed; if still broken, trace the shim's precis
+  write path (200 despite no persisted row). Finder: Opus session.
+- **asa venv can't `import precis`** — ✅ **DONE** (fixed by the monorepo
+  merge: asa now installs `precis-mcp[asa]`, so `precis.utils.db_log_handler`
+  imports cleanly — verified asa-bot rows landing in `worker_logs`
+  2026-07-14). No longer a residual.
 
 ---
 
