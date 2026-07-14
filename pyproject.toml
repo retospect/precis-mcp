@@ -144,6 +144,12 @@ embed = ["sentence-transformers>=3.0"]
 # over stdio at runtime — the merge shares the code, not the process
 # boundary. Install target: `precis-mcp[asa]` on the asa host (melchior).
 asa = ["discord.py>=2.4", "aiohttp>=3.9"]
+# tts — local text-to-speech for the audio-export renderer (voice drafts +
+# the morning brief). Kokoro (per-language native voices, Apache) via
+# kokoro-onnx; soundfile for WAV I/O; numpy rides along. Heavy + host-specific
+# (installed on the inference node with the model files), so it's opt-in and
+# the engine import is lazy — non-tts builds never load it.
+tts = ["kokoro-onnx>=0.4", "soundfile>=0.12"]
 # Paper ingest — PDF → layout (marker-pdf) → chunks + metadata
 # lookup (CrossRef / Semantic Scholar). The full pipeline lives in
 # :mod:`precis.ingest` as of the v7 rewrite (was previously farmed out
