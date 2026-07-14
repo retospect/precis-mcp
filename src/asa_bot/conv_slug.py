@@ -4,7 +4,7 @@ Slug shape:
     discord/<guild_id>/<channel_id>/<thread_or_root_id>
     discord/dm/<user_id>                                   (direct messages)
 
-Stable across hermes restarts (no UUIDs, no DB lookup). One conv
+Stable across daemon restarts (no UUIDs, no DB lookup). One conv
 ref per Discord thread; channel-root chats collapse to a slug where
 thread_id == channel_id.
 """

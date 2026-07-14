@@ -21,6 +21,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from asa_bot.config import PreambleConfig
@@ -84,6 +85,7 @@ async def build(
     _ = tool_hints
     sections = [
         soul.strip(),
+        _render_operator_prefs(cfg),
         _render_stickies(stickies_blob, now, cfg.expiry_warn_within_days),
         _render_inner_life(inner_state, inner_thoughts, dreams),
         _render_user_note(user_note, author_handle),
@@ -99,6 +101,32 @@ async def build(
         _render_recent(recent),
     ]
     return "\n\n".join(s for s in sections if s).rstrip() + "\n"
+
+
+# ── operator preferences (config-driven, deployment-specific) ───────
+
+
+def _render_operator_prefs(cfg: PreambleConfig) -> str:
+    """Inject operator-supplied preferences into the system prompt.
+
+    Keeps deployment-specific detail (operator name, timezone, tone, house
+    rules) out of the source: the operator sets ``preamble.operator_prefs``
+    (inline text) or ``preamble.operator_prefs_path`` (a file) in config.
+    The file wins when both are set. Empty → no block.
+    """
+    text = ""
+    path = (cfg.operator_prefs_path or "").strip()
+    if path:
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except OSError as e:
+            log.warning("operator_prefs_path unreadable (%s): %s", path, e)
+    if not text.strip():
+        text = cfg.operator_prefs or ""
+    text = text.strip()
+    if not text:
+        return ""
+    return f"## Operator preferences\n\n{text}"
 
 
 # ── fetchers ──────────────────────────────────────────────────────

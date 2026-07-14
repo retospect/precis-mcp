@@ -86,27 +86,33 @@ async def invoke(
         system_prompt,
         user_message,
     ]
-    # DEBUG: dump the full prompt for inspection. Last turn wins;
-    # overwritten on each invocation. Remove this block once we've
-    # confirmed the preamble is shaped as expected.
-    try:
-        from datetime import UTC, datetime
-        from pathlib import Path
+    # DEBUG: opt-in dump of the full prompt for inspection. Off unless
+    # ``ASA_PROMPT_DUMP`` names a file path; last turn wins (overwritten each
+    # invocation). Kept env-gated so no host-specific path lives in source.
+    dump_target = os.environ.get("ASA_PROMPT_DUMP")
+    if dump_target:
+        try:
+            from datetime import UTC, datetime
+            from pathlib import Path
 
-        dump_path = Path("/Users/hermes/claudebot/last-turn-prompt.txt")
-        dump_path.write_text(
-            f"=== timestamp: {datetime.now(tz=UTC).isoformat()} ===\n"
-            f"=== conv_slug: {conv_slug} ===\n"
-            f"=== cmd argv (system_prompt + user_message redacted): "
-            f"{[a if i not in (cmd.index(cfg.system_prompt_flag) + 1, len(cmd) - 1) else f'<{len(a)} chars>' for i, a in enumerate(cmd)]} ===\n\n"
-            f"=== SYSTEM PROMPT ({len(system_prompt)} chars) ===\n"
-            f"{system_prompt}\n\n"
-            f"=== USER MESSAGE ({len(user_message)} chars) ===\n"
-            f"{user_message}\n",
-            encoding="utf-8",
-        )
-    except Exception:
-        log.exception("debug prompt dump failed; continuing")
+            redacted = {cmd.index(cfg.system_prompt_flag) + 1, len(cmd) - 1}
+            argv_repr = [
+                a if i not in redacted else f"<{len(a)} chars>"
+                for i, a in enumerate(cmd)
+            ]
+            Path(dump_target).write_text(
+                f"=== timestamp: {datetime.now(tz=UTC).isoformat()} ===\n"
+                f"=== conv_slug: {conv_slug} ===\n"
+                f"=== cmd argv (system_prompt + user_message redacted): "
+                f"{argv_repr} ===\n\n"
+                f"=== SYSTEM PROMPT ({len(system_prompt)} chars) ===\n"
+                f"{system_prompt}\n\n"
+                f"=== USER MESSAGE ({len(user_message)} chars) ===\n"
+                f"{user_message}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            log.exception("debug prompt dump failed; continuing")
     env = dict(os.environ)
     env.update(cfg.env)
     # Bootstrap the long-lived OAuth token from ~/.claude_oauth_token so the

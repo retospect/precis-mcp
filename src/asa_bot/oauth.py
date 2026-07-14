@@ -1,7 +1,7 @@
 """Bootstrap the long-lived Claude Code OAuth token into a subprocess env.
 
-asa_bot runs as a launchd daemon (``com.asa.bot``, user ``hermes``) and
-spawns a fresh ``claude -p`` per Discord turn. launchd runs no shell hook,
+asa_bot runs as a launchd daemon (typically under a dedicated service
+user) and spawns a fresh ``claude -p`` per Discord turn. launchd runs no shell hook,
 so that subprocess never sees the ``CLAUDE_CODE_OAUTH_TOKEN`` an interactive
 shell would export from ``~/.claude_oauth_token``. Without it, ``claude -p``
 falls back to the interactive keychain credentials

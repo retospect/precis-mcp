@@ -24,12 +24,12 @@ class LLMConfig:
 
     command: list[str] = dataclasses.field(
         default_factory=lambda: [
-            "/opt/homebrew/bin/claude",
+            "claude",  # resolved on PATH; override in config for a pinned binary
             "-p",
             "--max-turns",
             "100",
             "--model",
-            "claude-opus-4-7",
+            "claude-opus-4-8",
             "--output-format",
             "stream-json",
             "--include-partial-messages",
@@ -37,15 +37,20 @@ class LLMConfig:
     )
     system_prompt_flag: str = "--append-system-prompt"
     mcp_config_flag: str = "--mcp-config"
-    mcp_config_path: str = "/Users/hermes/.claude/mcp.json"
-    cwd: str = "/Users/hermes/claudebot"
+    mcp_config_path: str = dataclasses.field(
+        default_factory=lambda: str(Path.home() / ".claude" / "mcp.json")
+    )
+    # Working directory for the spawned ``claude -p`` (its file workspace).
+    cwd: str = dataclasses.field(default_factory=lambda: str(Path.home()))
     turn_timeout_seconds: int = 300
     env: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class DiscordConfig:
-    token_file: str = "/Users/hermes/.secrets/asa-discord-token"
+    token_file: str = dataclasses.field(
+        default_factory=lambda: str(Path.home() / ".asa" / "discord-token")
+    )
     token_env: str = "ASA_DISCORD_TOKEN"
     # Only respond to messages in these channel ids (empty = all).
     allowed_channels: tuple[str, ...] = ()
@@ -61,7 +66,10 @@ class PrecisConfig:
     """How asa_bot talks to precis."""
 
     command: list[str] = dataclasses.field(
-        default_factory=lambda: ["/opt/mcps/venv/bin/precis", "serve"]
+        # Resolved on PATH — after the monorepo merge the ``precis`` entry
+        # point ships in the same venv as ``asa-bot``. Override in config for
+        # a pinned interpreter/venv.
+        default_factory=lambda: ["precis", "serve"]
     )
     database_url: str = ""
     #: Separate DSN for the LISTEN/NOTIFY connection. LISTEN does not survive
@@ -77,8 +85,19 @@ class PrecisConfig:
 class PreambleConfig:
     """Per-turn preamble construction budget + sources."""
 
-    soul_path: str = "/Users/hermes/.asa/SOUL.md"
-    tool_hints_path: str = "/Users/hermes/.asa/TOOL_HINTS.md"
+    soul_path: str = dataclasses.field(
+        default_factory=lambda: str(Path.home() / ".asa" / "SOUL.md")
+    )
+    tool_hints_path: str = dataclasses.field(
+        default_factory=lambda: str(Path.home() / ".asa" / "TOOL_HINTS.md")
+    )
+    #: Operator-supplied preferences injected verbatim into the system prompt
+    #: as an "## Operator preferences" block (name/timezone/style/etc.). Kept
+    #: out of code so no deployment-specific detail lives in the source: set
+    #: ``preamble.operator_prefs`` in config.yaml, or point
+    #: ``operator_prefs_path`` at a file (the file wins when both are set).
+    operator_prefs: str = ""
+    operator_prefs_path: str = ""
     recent_turns: int = 5
     digest_turns: int = 20
     sticky_max_thread: int = 5
@@ -93,7 +112,9 @@ class CaptureConfig:
     listen_host: str = "127.0.0.1"
     listen_port: int = 9876
     # Fallback JSONL when the precis MCP is down at capture time.
-    fallback_jsonl: str = "/Users/hermes/claudebot/capture-fallback.jsonl"
+    fallback_jsonl: str = dataclasses.field(
+        default_factory=lambda: str(Path.home() / ".asa" / "capture-fallback.jsonl")
+    )
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -113,7 +134,6 @@ class Config:
         if env_path:
             candidates.append(env_path)
         candidates.append(str(Path.home() / ".asa" / "config.yaml"))
-        candidates.append("/Users/hermes/.asa/config.yaml")
 
         data: dict[str, Any] = {}
         for c in candidates:
