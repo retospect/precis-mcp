@@ -52,6 +52,26 @@ class TestPureHelpers:
         ref = SimpleNamespace(id=1, title="x", meta={"notetype": "Basic"})
         assert spec_from_ref(ref) is None
 
+    def test_spec_from_ref_skips_foreign_projection(self) -> None:
+        # Regression (2026-07 incident): a read-only projection of a hand-made
+        # card must NEVER be pushed back to Anki (that duplicated the account).
+        foreign = SimpleNamespace(
+            id=1,
+            title="x {{c1::y}}",
+            meta={
+                "notetype": "Cloze",
+                "source": "anki-foreign",
+                "fields": {"Text": "x {{c1::y}}"},
+            },
+        )
+        assert spec_from_ref(foreign) is None
+        readonly = SimpleNamespace(
+            id=2,
+            title="x {{c1::y}}",
+            meta={"notetype": "Cloze", "readonly": True, "fields": {"Text": "x"}},
+        )
+        assert spec_from_ref(readonly) is None
+
     def test_spec_from_ref_falls_back_to_title(self) -> None:
         ref = SimpleNamespace(id=2, title="Body {{c1::x}}", meta={})
         spec = spec_from_ref(ref)

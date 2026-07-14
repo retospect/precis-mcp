@@ -133,6 +133,30 @@ class TestProjection:
             store.get_ref(kind="anki", id=idx).meta["anki_stats"]["lapses_total"] == 3
         )
 
+    def test_stats_writeback_does_not_clobber_guid_or_dedup(self, store) -> None:
+        """Regression for the 2026-07 incident: the sync's stats write-back must
+        patch FLAT keys (`anki_synced_at`), never nested `{"anki": {...}}` — a
+        shallow jsonb `||` merge would replace meta.anki, wiping the guid the
+        projection dedups on, so re-projection would create a duplicate ref."""
+        guid = _uid()
+        project_cards(store, [_card(guid, {"Text": "{{c1::x}}"})])
+        idx = _lookup(store, guid)
+        # simulate the CLI stats write-back (the FIXED flat shape)
+        store.update_ref(
+            idx,
+            meta_patch={
+                "anki_stats": {"lapses_total": 2},
+                "anki_synced_at": "2026-07-14",
+            },
+        )
+        meta = store.get_ref(kind="anki", id=idx).meta
+        assert meta["anki"]["guid"] == guid  # guid survived the write-back
+        assert meta["anki_synced_at"] == "2026-07-14"
+        # re-projection still dedups — no duplicate ref
+        res = project_cards(store, [_card(guid, {"Text": "{{c1::x}}"})])
+        assert res.inserted == 0 and res.unchanged == 1
+        assert _lookup(store, guid) == idx  # same ref, no dupe
+
     def test_stats_refresh_without_reembed(self, store) -> None:
         # same content, new stats → 'unchanged' (no card re-emit) but stats updated
         guid = _uid()

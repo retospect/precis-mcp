@@ -303,6 +303,29 @@ Driven by "asa seems confused" + Reto's card-authoring scheme:
   "author spaced-rep cards" sequence (search-first → put). Fixes asa's gap: no
   toolpath authoring path + thin craft guidance.
 
+## Incident 2026-07-14 — sync duplicated the account (fixed)
+
+The enabled sync tick pushed **85,932 junk notes** to Reto's live AnkiWeb (~220k
+cards) and created 93,102 dup PG refs. Two interlocking bugs:
+
+1. **The push list included read-only projections.** `spec_from_ref` built the
+   "cards to push" from *all* `anki` refs, including `source='anki-foreign'`
+   projections of the user's own cards → pushed them back as new notes.
+2. **The stats write-back clobbered `meta.anki`.** The CLI patched
+   `meta_patch={"anki": {"last_synced": now}}`; `meta ||` is a **shallow** merge,
+   so it *replaced* the whole `meta.anki` object, wiping the `guid`/`content_sha`
+   the projection dedups on → next tick couldn't match the card → inserted a dup
+   ref → which (bug 1) got pushed → ~13× compounding.
+
+Fixes: (1) `spec_from_ref` returns None for `anki-foreign`/`readonly` refs —
+**only authored cards ever go up**; (2) the write-back uses a **flat**
+`anki_synced_at` key, never nested under `anki`. Regression tests:
+`test_spec_from_ref_skips_foreign_projection`,
+`test_stats_writeback_does_not_clobber_guid_or_dedup`. Cleanup: account restored
+from backup; melchior mirror + daemon removed; all 93,102 junk refs soft-deleted.
+Re-enable only after a manual verify shows 0 cards pushed. NB: `last_synced` in
+the storage-shape block above is now the flat `meta.anki_synced_at`.
+
 ## Decisions log
 
 - **New `anki` kind, retire `flashcard`** (not "add an exporter to flashcard").

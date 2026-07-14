@@ -58,9 +58,17 @@ class AnkiCardSpec:
 
 
 def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
-    """Build a card spec from a precis `anki` Ref. Returns None for a non-cloze
-    notetype (slice 2 only syncs Cloze) so callers can filter it out."""
+    """Build a card spec for pushing a precis-*authored* card to Anki. Returns
+    None (filtered out) for:
+
+    - a **read-only projection** of a hand-made card (`meta.source ==
+      'anki-foreign'` / `meta.readonly`) — pushing these back to Anki creates
+      duplicates of the user's own cards (the 2026-07 incident). ONLY authored
+      cards go up.
+    - a non-cloze notetype (slice 2 only syncs Cloze)."""
     meta = ref.meta or {}
+    if meta.get("source") == "anki-foreign" or meta.get("readonly"):
+        return None
     if meta.get("notetype", "Cloze") != "Cloze":
         return None
     fields_meta = meta.get("fields") or {}

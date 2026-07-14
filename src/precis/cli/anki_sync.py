@@ -122,9 +122,13 @@ def run(args: argparse.Namespace) -> None:
 
             now = datetime.now(UTC).isoformat()
             for ref_id, st in stats.items():
+                # FLAT keys — `meta_patch` is a shallow jsonb `||` merge, so a
+                # nested `{"anki": {...}}` would REPLACE the whole meta.anki
+                # object (wiping guid/content_sha the projection dedups on — the
+                # 2026-07 incident). Patch top-level keys only.
                 store.update_ref(
                     ref_id,
-                    meta_patch={"anki_stats": st, "anki": {"last_synced": now}},
+                    meta_patch={"anki_stats": st, "anki_synced_at": now},
                 )
             print(f"anki-sync: {result.summary()}")
             if result.all_cards is not None:
