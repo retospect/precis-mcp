@@ -233,6 +233,40 @@ def _recent_ref_ids(store: Store, kind: str, limit: int) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
+def _draft_cite_eye_count() -> int:
+    """How many draft-cited papers to draw into the fisheye (0 disables).
+
+    Env ``PRECIS_DREAM_DRAFT_CITE_EYES`` (default 2)."""
+    try:
+        return max(0, int(os.environ.get("PRECIS_DREAM_DRAFT_CITE_EYES", "2")))
+    except ValueError:
+        return 2
+
+
+def _recent_draft_cited_paper_ids(store: Store, limit: int) -> list[int]:
+    """Papers cited by the most-recently-touched live drafts.
+
+    The draft handler auto-materialises ``cites`` edges from ``[pc<id>]``
+    handles in the prose, so this rides an existing graph — no new plumbing.
+    Feeding these into the dream fisheye lets a wandering re-read of the draft
+    you are *actively* writing spot a paragraph that drifted from its own cited
+    evidence (``docs/design/dreaming.md`` names exactly this as the payoff).
+    Ordered by the most-recent citing draft; deleted papers excluded."""
+    if limit <= 0:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT l.dst_ref_id FROM refs d "
+            "JOIN links l ON l.src_ref_id = d.ref_id AND l.relation = 'cites' "
+            "JOIN refs p ON p.ref_id = l.dst_ref_id AND p.deleted_at IS NULL "
+            "WHERE d.kind = 'draft' AND d.deleted_at IS NULL "
+            "GROUP BY l.dst_ref_id "
+            "ORDER BY max(d.updated_at) DESC LIMIT %s",
+            (limit,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 def _draw_dream_eyes(store: Store) -> WorkingSet:
     """Place a kind-diverse set of fresh eyes for this cycle."""
     ws = WorkingSet()
@@ -243,6 +277,16 @@ def _draw_dream_eyes(store: Store) -> WorkingSet:
                 extent,
                 provenance=Provenance.INFERRED,  # an auto-lens the system offered
             )
+    # Papers cited by recently-active drafts — the draft's own evidence rides
+    # along so the dreamer can catch drift/contradiction against a cited source.
+    # (A cited paper already drawn by the recency pass collapses — eyes is a
+    # dict keyed by handle.)
+    for rid in _recent_draft_cited_paper_ids(store, _draft_cite_eye_count()):
+        ws.focus(
+            handle_registry.format_handle("paper", rid),
+            "summary",
+            provenance=Provenance.INFERRED,
+        )
     return ws
 
 
@@ -266,8 +310,10 @@ def _apply_fisheye(prompt: str, store: Store) -> str:
         return prompt
     return (
         f"{prompt}\n\n## Fresh material to dream over (fisheye)\n\n"
-        "A kind-diverse draw of recent memories, papers and patents — look for "
-        "connections across them.\n\n" + block
+        "A kind-diverse draw of recent memories, papers and patents — plus "
+        "papers your active drafts cite (watch for drift or contradiction "
+        "between a draft and its evidence). Look for connections across them."
+        "\n\n" + block
     )
 
 
