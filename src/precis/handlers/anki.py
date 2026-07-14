@@ -36,6 +36,7 @@ from typing import Any, ClassVar
 from precis.errors import BadInput
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
+from precis.response import Response
 
 #: A cloze deletion: ``{{c1::answer}}`` or ``{{c1::answer::hint}}``. The answer
 #: capture is non-greedy and the ``::hint`` tail optional, so the stripped form
@@ -47,6 +48,20 @@ _EXTRA_SEP_RE = re.compile(r"\n[ \t]*---[ \t]*\n")
 
 _DECK = "Precis"
 _NOTETYPE = "Cloze"
+
+#: A ``deck-<topic>`` tag files the card under the ``Precis::<topic>`` sub-deck
+#: (Anki auto-creates it on sync). No deck tag → the base ``Precis`` deck. The
+#: topic is a slug; keeps model-authored cards under one namespace, away from
+#: hand-made decks. Only the first deck- tag wins.
+_DECK_TAG_RE = re.compile(r"^deck-([a-z0-9][a-z0-9-]*)$", re.IGNORECASE)
+
+
+def _deck_from_tags(tags: list[str]) -> str:
+    for t in tags:
+        m = _DECK_TAG_RE.match(t.strip())
+        if m:
+            return f"{_DECK}::{m.group(1).lower()}"
+    return _DECK
 
 
 def _split_extra(text: str) -> tuple[str, str]:
@@ -109,12 +124,16 @@ class AnkiHandler(NumericRefHandler):
             )
         return cloze_text
 
-    def _initial_meta(self, text: str) -> dict[str, Any]:
+    def _initial_meta(self, text: str, tags: list[str]) -> dict[str, Any]:
         cloze_text, extra = _split_extra(text)
         fields: dict[str, str] = {"Text": cloze_text}
         if extra:
             fields["Back Extra"] = extra
-        return {"notetype": _NOTETYPE, "deck": _DECK, "fields": fields}
+        return {
+            "notetype": _NOTETYPE,
+            "deck": _deck_from_tags(tags),
+            "fields": fields,
+        }
 
     def _card_combined_text(self, text: str) -> str:
         cloze_text, extra = _split_extra(text)
@@ -127,3 +146,55 @@ class AnkiHandler(NumericRefHandler):
         if text is not None and text.strip():
             self._validate_cloze(text)
         return super()._create(text=text, **kw)
+
+    # ── list views ─────────────────────────────────────────────────────
+
+    def _supported_list_views(self) -> tuple[str, ...]:
+        return ("recent", "leeches")
+
+    def _list_view(self, view: str) -> Response | None:
+        if view == "leeches":
+            return self._render_leeches()
+        return super()._list_view(view)
+
+    def _render_leeches(self, limit: int = 40) -> Response:
+        """Cards with bad recall — high lapses or collapsed ease — across the
+        whole synced collection (authored + projected). The retention loop's
+        entry point: fix the cloze (tag it `precis-fix` in Anki) or study more.
+
+        Stats come from `meta.anki_stats`, refreshed each sync. A card is a
+        *leech* at ≥4 lapses or ease ≤ 2.0 (dropped below Anki's 250% default)."""
+        sql = """
+            SELECT ref_id, title,
+                   (meta->'anki_stats'->>'lapses_total')::int   AS lapses,
+                   (meta->'anki_stats'->>'ease_min')::float      AS ease,
+                   (meta->'anki_stats'->>'reps_total')::int      AS reps
+            FROM refs
+            WHERE kind = 'anki' AND deleted_at IS NULL
+              AND meta ? 'anki_stats'
+              AND ( (meta->'anki_stats'->>'lapses_total')::int >= 4
+                 OR (meta->'anki_stats'->>'ease_min')::float <= 2.0 )
+            ORDER BY (meta->'anki_stats'->>'lapses_total')::int DESC NULLS LAST,
+                     (meta->'anki_stats'->>'ease_min')::float ASC NULLS LAST
+            LIMIT %s
+        """
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(sql, (limit,)).fetchall()
+        if not rows:
+            return Response(
+                body=(
+                    "no bad-recall anki cards yet — needs review history from a "
+                    "sync (get(kind='anki', id='/recent') to browse instead)"
+                )
+            )
+        lines = [
+            f"# {len(rows)} bad-recall card(s) — fix the cloze "
+            "(tag `precis-fix` in Anki) or study more"
+        ]
+        for ref_id, title, lapses, ease, reps in rows:
+            preview = (title[:70] + "…") if len(title) > 70 else title
+            lines.append(
+                f"  ak{ref_id:<7} lapses={lapses or 0} ease={ease if ease is not None else '?'} "
+                f"reps={reps or 0}  {preview}"
+            )
+        return Response(body="\n".join(lines))

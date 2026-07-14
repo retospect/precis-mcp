@@ -138,8 +138,10 @@ class NumericRefHandler(Handler):
     #: shape (notetype/deck/fields) in ``meta`` and embeds a markup-stripped
     #: card — overrides these instead of reimplementing the atomic ``_create``
     #: transaction (tags + link + card all land together or roll back).
-    def _initial_meta(self, text: str) -> dict[str, Any]:
-        """Meta JSON stamped on the ref at put-create. Default: empty."""
+    def _initial_meta(self, text: str, tags: list[str]) -> dict[str, Any]:
+        """Meta JSON stamped on the ref at put-create. Default: empty. ``tags``
+        is the full create-time tag set (defaults + caller's) so a subclass can
+        derive meta from a tag — e.g. ``anki`` reads a ``deck-<topic>`` tag."""
         return {}
 
     def _card_combined_text(self, text: str) -> str:
@@ -901,7 +903,7 @@ class NumericRefHandler(Handler):
                 kind=self.kind,
                 slug=None,
                 title=text,
-                meta=self._initial_meta(text),
+                meta=self._initial_meta(text, all_tag_strs),
                 auto_refresh_days=auto_refresh_days,
                 conn=conn,
             )

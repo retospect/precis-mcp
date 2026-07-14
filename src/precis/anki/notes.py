@@ -54,6 +54,7 @@ class AnkiCardSpec:
 
     ref_id: int
     fields: dict[str, str]  # e.g. {"Text": "<cloze markup>", "Back Extra": "…"}
+    deck: str = PRECIS_DECK  # meta.deck; a `Precis::<topic>` sub-deck or Precis
 
 
 def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
@@ -68,7 +69,7 @@ def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
     extra = fields_meta.get("Back Extra")
     if extra:
         out["Back Extra"] = extra
-    return AnkiCardSpec(ref_id=ref.id, fields=out)
+    return AnkiCardSpec(ref_id=ref.id, fields=out, deck=meta.get("deck") or PRECIS_DECK)
 
 
 def aggregate_stats(

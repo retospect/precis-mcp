@@ -282,6 +282,27 @@ text. **BUILT** (`src/precis/anki/fix.py`: `find_fix_requests` / `propose_fix`
 run after download & before push so fixes ride the sync up; `precis anki-sync
 --fix` / `PRECIS_ANKI_FIX_ENABLED`). Tests: `tests/test_anki_fix.py`.
 
+## Slice 4 — authoring craft, decks, retention finder (2026-07-14)
+
+Driven by "asa seems confused" + Reto's card-authoring scheme:
+- **Per-card decks** — a `deck-<topic>` create-tag files an authored card under
+  the `Precis::<topic>` sub-deck (Anki auto-creates it); no tag → `Precis`. The
+  `_initial_meta` hook now takes the tag set; `AnkiCardSpec.deck` + `upsert_notes`
+  use it per note. Keeps authored cards namespaced, away from hand-made decks.
+- **Stats on foreign cards** — `read_all_cards` now aggregates each note's
+  per-card stats; the projection stores `meta.anki_stats` and **refreshes it even
+  when content is unchanged** (a cheap meta-only patch, no re-embed) so recall is
+  current for free.
+- **Leech-finder** — `get(kind='anki', id='/leeches')` lists bad-recall cards
+  (lapses ≥ 4 or ease ≤ 2.0) worst-first, across authored + projected. The
+  retention loop's entry point: fix the cloze (tag `precis-fix`) or study more.
+- **Skills** — new `precis-cloze` (the craft: dedup-first, one-cluster-per-card,
+  educational-priority cN ordering, hint types, terse-for-comprehension, deck
+  naming, a language-learning worked example). `precis-anki-help` gains
+  discoverable search/leech headings + deck tag; `precis-toolpath-help` gains an
+  "author spaced-rep cards" sequence (search-first → put). Fixes asa's gap: no
+  toolpath authoring path + thin craft guidance.
+
 ## Decisions log
 
 - **New `anki` kind, retire `flashcard`** (not "add an exporter to flashcard").

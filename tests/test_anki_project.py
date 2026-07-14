@@ -19,7 +19,9 @@ from precis.anki.project import (
 from precis.anki.sync import ForeignCard
 
 
-def _card(guid, fields, *, notetype="Cloze", deck="geo", note_id=1, ref_id=None):
+def _card(
+    guid, fields, *, notetype="Cloze", deck="geo", note_id=1, ref_id=None, stats=None
+):
     return ForeignCard(
         note_id=note_id,
         guid=guid,
@@ -28,6 +30,7 @@ def _card(guid, fields, *, notetype="Cloze", deck="geo", note_id=1, ref_id=None)
         tags=[],
         fields=fields,
         ref_id=ref_id,
+        stats=stats,
     )
 
 
@@ -112,6 +115,38 @@ class TestProjection:
         # a precis-authored note carries guid `precis:<id>` → never re-projected
         res = project_cards(store, [_card("precis:123", {"Text": "{{c1::mine}}"})])
         assert res.skipped_own == 1 and res.inserted == 0
+
+    def test_projection_stores_stats(self, store) -> None:
+        guid = _uid()
+        project_cards(
+            store,
+            [
+                _card(
+                    guid,
+                    {"Text": "{{c1::x}}"},
+                    stats={"lapses_total": 3, "ease_min": 2.1},
+                )
+            ],
+        )
+        idx = _lookup(store, guid)
+        assert (
+            store.get_ref(kind="anki", id=idx).meta["anki_stats"]["lapses_total"] == 3
+        )
+
+    def test_stats_refresh_without_reembed(self, store) -> None:
+        # same content, new stats → 'unchanged' (no card re-emit) but stats updated
+        guid = _uid()
+        project_cards(
+            store, [_card(guid, {"Text": "{{c1::x}}"}, stats={"lapses_total": 1})]
+        )
+        res = project_cards(
+            store, [_card(guid, {"Text": "{{c1::x}}"}, stats={"lapses_total": 5})]
+        )
+        assert res.unchanged == 1 and res.updated == 0
+        idx = _lookup(store, guid)
+        assert (
+            store.get_ref(kind="anki", id=idx).meta["anki_stats"]["lapses_total"] == 5
+        )
 
 
 def _lookup(store, guid) -> int | None:

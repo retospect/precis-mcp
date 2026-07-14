@@ -100,9 +100,15 @@ def project_cards(store: Any, cards: list[Any]) -> ProjectResult:
             continue
         seen.add(c.guid)
         sha = content_sha(c.fields, c.notetype)
+        stats = c.stats or {}
         prior = existing.get(c.guid)
         if prior is not None and prior[1] == sha:
-            res.unchanged += 1  # cheap: no re-embed
+            # Content unchanged → refresh only the recall stats (they move on
+            # every review). A cheap meta-only patch — NO card_combined re-emit,
+            # so no re-embed. Keeps the leech-finder current for free.
+            if stats:
+                store.update_ref(prior[0], meta_patch={"anki_stats": stats})
+            res.unchanged += 1
             continue
 
         meta = {
@@ -111,6 +117,7 @@ def project_cards(store: Any, cards: list[Any]) -> ProjectResult:
             "notetype": c.notetype,
             "deck": c.deck,
             "fields": c.fields,
+            "anki_stats": stats,
             "anki": {"guid": c.guid, "note_id": c.note_id, "content_sha": sha},
         }
         text = searchable_text(c.fields)

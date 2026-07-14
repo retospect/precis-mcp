@@ -94,7 +94,6 @@ def upsert_notes(
     cloze = col.models.by_name("Cloze")
     if cloze is None:
         raise AnkiSyncError("stock Cloze notetype missing from the collection")
-    did = col.decks.id(deck)
     pushed = updated = 0
     for spec in specs:
         guid = guid_for(spec.ref_id)
@@ -116,7 +115,8 @@ def upsert_notes(
                 if name in note.keys():  # noqa: SIM118 (anki Note, not a dict)
                     note[name] = val
             note.tags = [precis_tag(spec.ref_id), MANAGED_TAG]
-            col.add_note(note, did)
+            # decks.id() creates the (sub-)deck if absent — `Precis::chinese`.
+            col.add_note(note, col.decks.id(spec.deck or deck))
             pushed += 1
     return pushed, updated
 
@@ -141,7 +141,9 @@ def read_precis_stats(col: Any) -> dict[int, dict[str, Any]]:
 @dataclass
 class ForeignCard:
     """A note read from the mirror (any notetype) — for accessibility + the
-    precis-fix loop. `ref_id` is set only for precis-owned notes."""
+    precis-fix loop. `ref_id` is set only for precis-owned notes. `stats` is the
+    aggregated recall signal (interval/ease/reps/lapses/due) so the projection
+    can carry it and the leech-finder can surface bad-recall cards."""
 
     note_id: int
     guid: str
@@ -150,12 +152,14 @@ class ForeignCard:
     tags: list[str]
     fields: dict[str, str]
     ref_id: int | None = None
+    stats: dict[str, Any] | None = None
 
 
 def read_all_cards(col: Any, *, tag: str | None = None) -> list[ForeignCard]:
     """Read every note (or those carrying ``tag``) off the mirror — pure read,
-    so it can never corrupt. Powers 'keep clozes accessible in precis' and the
-    precis-fix loop (tag=`precis-fix`)."""
+    so it can never corrupt. Powers 'keep clozes accessible in precis', the
+    precis-fix loop (tag=`precis-fix`), and the retention model (each note's
+    per-card stats aggregated for the leech-finder)."""
     out: list[ForeignCard] = []
     nids = col.find_notes(f"tag:{tag}") if tag else col.find_notes("")
     for nid in nids:
@@ -163,6 +167,7 @@ def read_all_cards(col: Any, *, tag: str | None = None) -> list[ForeignCard]:
         nt = note.note_type()
         cards = note.cards()
         deck_name = col.decks.name(cards[0].did) if cards else ""
+        rows = [(c.ivl, c.factor, c.reps, c.lapses, c.due, c.queue) for c in cards]
         out.append(
             ForeignCard(
                 note_id=int(nid),
@@ -172,6 +177,7 @@ def read_all_cards(col: Any, *, tag: str | None = None) -> list[ForeignCard]:
                 tags=list(note.tags),
                 fields={k: note[k] for k in note.keys()},  # noqa: SIM118 (anki Note)
                 ref_id=ref_id_from_guid(note.guid),
+                stats=aggregate_stats(rows),
             )
         )
     return out

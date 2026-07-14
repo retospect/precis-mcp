@@ -102,6 +102,8 @@ Paid tools cache automatically (`precis-cache`).
 | PCB netlist + placement | `kind='pcb'` + `kind='part'` / `kind='datasheet'` | `precis-pcb-help` |
 | Organize artifacts | `kind='folder'` + `link(rel='parent')`; `search(folder=...)` | `precis-folder-help` |
 | Verified claim → source | `kind='citation'` / `kind='finding'` | `precis-citation-help`, `precis-finding-help` |
+| Spaced-repetition cards (Anki) | **`search(kind='anki', q=…)` first (dedup)** → `put(kind='anki', text='… {{cN::…}} …', tags=['deck-<topic>'])` → syncs to AnkiWeb | `precis-cloze` (craft), `precis-anki-help` (ref) |
+| Cards I keep forgetting | `get(kind='anki', id='/leeches')` → fix the cloze (tag `precis-fix` in Anki) or study more | `precis-anki-help` |
 
 ## See also
 

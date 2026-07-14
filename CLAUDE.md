@@ -407,9 +407,13 @@ The master kinds table lives in the `precis-overview` skill.
   opt-in widening of own-notes-only). **Foreign-card read-only PG projection**
   (`anki/project.py`, `--project`): every Anki card (any notetype) mirrored into
   PG as a read-only `anki` ref (`meta.source=anki-foreign`), content-hash-gated so
-  only changed cards re-embed, vanished ones soft-deleted — the whole collection
-  searchable + feeding the knowledge-model, can't corrupt the account. Design
-  `docs/design/anki-integration.md`; skill `precis-anki-help`.
+  only changed cards re-embed (stats refreshed cheaply each sync), vanished ones
+  soft-deleted — the whole collection searchable + feeding the knowledge-model,
+  can't corrupt the account. **Per-card decks** (`deck-<topic>` tag →
+  `Precis::<topic>` sub-deck). **Leech-finder** `get(kind='anki', id='/leeches')`
+  surfaces bad-recall cards (high lapses / collapsed ease from `meta.anki_stats`)
+  → fix-cloze-or-study. Design `docs/design/anki-integration.md`; skills
+  `precis-anki-help` (ref) + `precis-cloze` (authoring craft).
 - **`alert`** — machine-detected ops/health conditions (spin loops, orphans),
   raised via `precis.alerts.raise_alert` (fingerprint upsert + auto-resolve),
   read via `AlertHandler`/`/alerts`. **Not embedded.** Skill: `precis-alert-help`.

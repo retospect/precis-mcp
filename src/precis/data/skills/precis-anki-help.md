@@ -29,6 +29,8 @@ put(kind='anki',
 ```
 
 Every card needs **at least one** `{{cN::…}}` deletion, or the put is rejected.
+For *how to write good cards* (dedup-first, cN ordering, hints, deck naming), see
+**`precis-cloze`** — this skill is the reference; that one is the craft.
 
 ### Cloze syntax
 
@@ -64,6 +66,9 @@ get(kind='anki', id=204)          # one card — body + note meta
 ```
 
 ## Search across cards
+## What anki cards do I have?
+## Find anki cards about X
+## Search my Anki collection
 ## Check whether I already made a card about X
 
 ```python
@@ -71,11 +76,37 @@ search(kind='anki', q='capital of france')
 search(kind='anki', q='citric acid cycle', tags=['topic:cell-bio'])
 ```
 
-The search card is the cloze sentence with markup stripped, so `{{c1::capital}}`
-matches a query for *capital*. Cards also surface in cross-kind search — handy
-for checking you haven't already carded an idea before writing a note.
+Your **whole** Anki collection is searchable here — cards you authored in precis
+*and* every card you made in Anki (they're projected in as read-only refs). The
+search card is the cloze sentence with markup stripped, so `{{c1::capital}}`
+matches a query for *capital*. **Search before you create** — it's how you avoid
+duplicates (see `precis-cloze`).
+
+## Which cards do I keep forgetting?
+## Find bad-recall cards / leeches
+## What should I fix or restudy?
+
+```python
+get(kind='anki', id='/leeches')   # high-lapse / collapsed-ease cards, worst first
+```
+
+Reads the recall stats (`meta.anki_stats`, refreshed each sync) across the whole
+collection. For each bad-recall card you then decide: **fix the cloze** (tag it
+`precis-fix` in Anki — the LLM rewrites it) or **study it more**.
 
 ## Tag or link a card
+## File a card under a deck
+
+Tag `deck-<topic>` to file an authored card under the `Precis::<topic>` sub-deck
+(no tag → the base `Precis` deck):
+
+```python
+put(kind='anki', text='The {{c1::heart}} pumps blood.', tags=['deck-anatomy'])
+tag(kind='anki', id=204, add=['topic:cell-bio'])
+link(kind='anki', id=204, target='paper:alberts2015molecular~12', rel='derived-from')
+```
+
+## Edit or remove a card
 
 ```python
 tag(kind='anki', id=204, add=['topic:cell-bio'])
@@ -117,6 +148,7 @@ never touched. Works on text notetypes (cloze/basic).
 ## See also
 
 ```python
+get(kind='skill', id='precis-cloze')        # HOW to write good cards (the craft)
 get(kind='skill', id='precis-overview')     # verbs and kinds
 get(kind='skill', id='precis-memory-help')  # prose notes that aren't recall targets
 get(kind='skill', id='precis-tags')         # tag axis conventions

@@ -141,6 +141,21 @@ class TestUpsert:
         assert pushed == 2
         assert len(col.find_notes("deck:Precis")) == 2
 
+    def test_upsert_uses_per_card_subdeck(self, col) -> None:
+        from precis.anki.notes import AnkiCardSpec
+        from precis.anki.sync import upsert_notes
+
+        upsert_notes(
+            col,
+            [
+                AnkiCardSpec(
+                    ref_id=7, fields={"Text": "{{c1::x}}"}, deck="Precis::chinese"
+                )
+            ],
+        )
+        # Anki auto-creates the sub-deck; the note lands in it, not bare Precis.
+        assert len(col.find_notes("deck:Precis::chinese")) == 1
+
 
 class TestReadBack:
     def test_read_precis_stats_shape(self, col) -> None:
