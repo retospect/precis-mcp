@@ -158,6 +158,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         res = dispatch(
             LlmRequest(
                 tier=Tier.CLOUD_SUPER,
+                source="cad_propose",
                 prompt=prompt,
                 tools_needed=True,  # the agent wrapper; no MCP tools wired
                 model=model,

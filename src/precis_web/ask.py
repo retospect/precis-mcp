@@ -160,6 +160,7 @@ def generate_answer(prompt: str, *, store: Store, conv_ref_id: int) -> AgentResu
     res = dispatch(
         LlmRequest(
             tier=Tier.CLOUD_SUPER,
+            source="followup",
             prompt=prompt,
             tools_needed=True,
             model=cfg.model,

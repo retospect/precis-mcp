@@ -123,6 +123,7 @@ def run_dream_pass(store: Store) -> BatchResult:
     res = dispatch(
         LlmRequest(
             tier=Tier.CLOUD_SUPER,
+            source="dream",
             prompt=prompt,
             tools_needed=True,
             model=os.environ.get("PRECIS_DREAM_AGENT_MODEL"),

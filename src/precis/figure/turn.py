@@ -120,6 +120,7 @@ def _default_claude(prompt: str) -> dict[str, Any]:
     res = dispatch(
         LlmRequest(
             tier=Tier.CLOUD_SUPER,
+            source="figure",
             prompt=prompt,
             model=os.environ.get("PRECIS_FIGURE_MODEL"),
             max_usd=float(os.environ.get("PRECIS_FIGURE_MAX_USD", "1.0")),

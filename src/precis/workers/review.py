@@ -202,6 +202,7 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
     res = dispatch(
         LlmRequest(
             tier=reviewer.tier,
+            source=f"review:{reviewer.name}",
             prompt=prompt,
             tools_needed=True,
             model=os.environ.get(f"PRECIS_{reviewer.name.upper()}_MODEL"),

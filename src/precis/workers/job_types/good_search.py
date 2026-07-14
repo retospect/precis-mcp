@@ -655,7 +655,14 @@ def _triage_dispatch(ctx: Any, spec: Any) -> None:
     for attempt in (1, 2):
         # Routed through the LLM seam (ADR 0046 unit 4b): CLOUD_SMALL judge, so
         # PRECIS_LLM_BACKEND can switch it. Errors fold into res.error.
-        res = dispatch(LlmRequest(tier=Tier.CLOUD_SMALL, prompt=prompt, model=model))
+        res = dispatch(
+            LlmRequest(
+                tier=Tier.CLOUD_SMALL,
+                prompt=prompt,
+                model=model,
+                source="good_search:triage",
+            )
+        )
         if res.error:
             last_err = res.error
             ctx.append_chunk(
