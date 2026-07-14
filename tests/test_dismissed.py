@@ -120,4 +120,40 @@ def test_dismissal_by_chunk_handle_resolves_to_owning_ref(
     # ``sec`` is a chunk handle (``pe<id>`` here; ``pc<id>`` in prod) — it resolves
     # to the ref that owns the chunk, not the chunk id.
     assert resolve_source_ref_id(store, sec) == draft_ref_id
-    assert resolve_source_ref_id(store, "not-a-handle") is None
+    assert resolve_source_ref_id(store, "definitely not a handle") is None
+
+
+def test_resolve_recovers_kind_id_and_slug_forms(hub: Hub) -> None:
+    """The recovery ladder is exhaustive: bare int / handle / ``kind:id`` canonical
+    link-target form / ``cite_key`` slug all resolve to the same source ref, so a
+    dismissal sticks no matter which form the model reached for."""
+    store = hub.store
+    paper = store.insert_ref(kind="paper", slug="wang2020", title="Wang 2020").id
+    assert resolve_source_ref_id(store, paper) == paper  # bare int
+    assert resolve_source_ref_id(store, f"pa{paper}") == paper  # record handle
+    assert resolve_source_ref_id(store, f"paper:{paper}") == paper  # kind:id form
+    assert resolve_source_ref_id(store, "wang2020") == paper  # cite_key slug
+
+
+def test_unresolvable_dismissal_is_loud_and_dropped(
+    hub: Hub, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A ledger value that survives *every* recovery path is a real problem (the
+    dismissal silently never happens, resurfacing the candidate forever), so the
+    drop is loud — a warning naming the ref + the offending value — not silent. It
+    is not raised: one bad tag must not blow up the workspace-render read path."""
+    import logging
+
+    store = hub.store
+    draft = store.insert_ref(kind="todo", slug=None, title="proj").id
+    good = store.insert_ref(kind="paper", slug="kumar", title="Kumar 2021").id
+    store.add_tag(draft, Tag.closed(DISMISS_NS, str(good)))
+    store.add_tag(draft, Tag.closed(DISMISS_NS, "garbage-99"))  # resolves to nothing
+
+    with caplog.at_level(logging.WARNING, logger="precis.backfill.dismissed"):
+        got = dismissed_ref_ids(store, draft)
+
+    assert got == {good}  # the good one still lands; the junk one is dropped
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("garbage-99" in r.getMessage() for r in warnings)
+    assert any(str(draft) in r.getMessage() for r in warnings)

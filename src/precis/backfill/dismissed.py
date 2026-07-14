@@ -18,14 +18,50 @@ still explored while a rejected hit stays gone.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from precis.store.types import Tag
+
+log = logging.getLogger(__name__)
 
 #: Closed-tag prefix for the ledger — one ``DISMISSED_SOURCE:<ref_id>`` per
 #: dismissed paper, on the draft ref. Upper-case to satisfy the schema's
 #: ``tags_namespace_check`` (namespace = upper(namespace)).
 DISMISS_NS = "DISMISSED_SOURCE"
+
+
+def _ref_id_for_chunk(store: Any, chunk_id: int) -> int | None:
+    """The owning ref of a body chunk, or ``None``. A light single-row lookup."""
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT ref_id FROM chunks WHERE chunk_id = %s", (chunk_id,)
+            ).fetchone()
+        return int(row[0]) if row else None
+    except Exception:
+        return None
+
+
+def _ref_id_for_cite_key(store: Any, slug: str) -> int | None:
+    """The ref a ``cite_key`` slug names (``wang2020``), or ``None``. Best-effort:
+    a live paper-family ref carrying that identifier."""
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT ri.ref_id
+                  FROM ref_identifiers ri
+                  JOIN refs r ON r.ref_id = ri.ref_id
+                 WHERE ri.id_kind = 'cite_key' AND ri.id_value = %s
+                   AND r.deleted_at IS NULL
+                 LIMIT 1
+                """,
+                (slug,),
+            ).fetchone()
+        return int(row[0]) if row else None
+    except Exception:
+        return None
 
 
 def resolve_source_ref_id(store: Any, value: Any) -> int | None:
@@ -35,43 +71,45 @@ def resolve_source_ref_id(store: Any, value: Any) -> int | None:
     The find-phase instruction shows the model a candidate line carrying *both*
     the record handle ``pa<id>`` and the chunk handle ``pc<id>``, and asks it to
     dismiss "the number in the ``pa<id>`` handle". In practice a model pastes
-    whatever is in front of it — the bare number, the whole ``pa889`` handle, or
-    even the ``pc7710`` chunk handle. The old ledger accepted **only** a bare
-    integer, so a handle-form paste was silently dropped: the dismissal never
-    stuck, the candidate resurfaced every run, and the pass never converged
-    (exactly the non-convergence the ledger exists to prevent). This resolver is
-    that convergence-critical tolerance — it accepts:
+    whatever is in front of it. The old ledger accepted **only** a bare integer,
+    so a handle-form paste was silently dropped: the dismissal never stuck, the
+    candidate resurfaced every run, and the pass never converged (exactly the
+    non-convergence the ledger exists to prevent). This resolver is that
+    convergence-critical tolerance — it tries, most-reliable first, every form a
+    dismissal is plausibly written as:
 
-    * a bare ref-id (``889`` / ``"889"``);
-    * a **record** handle (``pa889`` — the pk *is* the ref_id);
-    * a **chunk** handle (``pc7710`` — resolved chunk→owning-ref via the store).
+    1. a bare ref-id (``889`` / ``"889"``);
+    2. a **record** handle (``pa889`` — the pk *is* the ref_id);
+    3. a **chunk** handle (``pc7710`` — resolved chunk→owning-ref via the store);
+    4. the ``kind:id`` canonical link-target form (``paper:889``);
+    5. a ``cite_key`` **slug** (``wang2020``).
 
-    Returns ``None`` for anything it cannot resolve (a genuinely malformed value
-    is skipped, not guessed)."""
+    Returns ``None`` only when *all* of those fail — a genuinely malformed value
+    is skipped, not guessed. Callers on the read path make that drop **loud**
+    (see :func:`dismissed_ref_ids`); the write path (:func:`dismiss_source`)
+    raises, since a caller minting a dismissal can react synchronously."""
     if isinstance(value, int):
         return value
     v = str(value).strip()
     if not v:
         return None
+    # (1) bare ref-id
     if v.lstrip("-").isdigit():
         return int(v)
     from precis.utils import handle_registry
 
+    # (2)/(3) a 2-char handle — record (pk == ref_id) or chunk (→ owning ref)
     parsed = handle_registry.parse(v)
-    if parsed is None:
-        return None
-    _kind, is_chunk, pk = parsed
-    if not is_chunk:
-        return pk  # record handle: the primary key IS the ref_id
-    # chunk handle (pc<id>/pk<id>/…) → its owning ref, via a light lookup
-    try:
-        with store.pool.connection() as conn:
-            row = conn.execute(
-                "SELECT ref_id FROM chunks WHERE chunk_id = %s", (pk,)
-            ).fetchone()
-        return int(row[0]) if row else None
-    except Exception:
-        return None
+    if parsed is not None:
+        _kind, is_chunk, pk = parsed
+        return _ref_id_for_chunk(store, pk) if is_chunk else pk
+    # (4) kind:id canonical link-target form (paper:889) — id is the ref_id
+    if ":" in v:
+        head, _, tail = v.rpartition(":")
+        if head.isalpha() and tail.strip().isdigit():
+            return int(tail.strip())
+    # (5) a cite_key slug (wang2020) — the last, query-backed recovery
+    return _ref_id_for_cite_key(store, v)
 
 
 def dismiss_source(
@@ -111,8 +149,14 @@ def dismissed_ref_ids(store: Any, draft_ref_id: int) -> set[int]:
     """The paper ref_ids dismissed for this draft — the ledger read back into the
     Tier-0 exclude set. Each tag value is resolved robustly
     (:func:`resolve_source_ref_id`), so a model that dismissed by handle
-    (``pa889``/``pc7710``) rather than the bare number still suppresses the
-    candidate. A value that resolves to nothing is skipped, not guessed."""
+    (``pa889``/``pc7710``), ``kind:id``, or a slug still suppresses the candidate.
+
+    A value that survives *every* recovery path is a real problem — someone
+    intended to dismiss a source and it isn't happening, which resurfaces the
+    candidate forever — so the drop is made **loud** (a warning naming the ref +
+    the offending value) rather than silent. It is not raised: this is the
+    workspace-render read path, and one malformed ledger tag must not blow up the
+    whole backfill tick."""
     out: set[int] = set()
     for tag in store.tags_for(draft_ref_id):
         if getattr(tag, "prefix", None) != DISMISS_NS:
@@ -120,4 +164,12 @@ def dismissed_ref_ids(store: Any, draft_ref_id: int) -> set[int]:
         rid = resolve_source_ref_id(store, tag.value)
         if rid is not None:
             out.add(rid)
+        else:
+            log.warning(
+                "backfill: unresolvable DISMISSED_SOURCE value %r on ref %s — "
+                "dismissal dropped (candidate will resurface); re-dismiss by its "
+                "pa<id>/pc<id> handle or bare ref-id",
+                tag.value,
+                draft_ref_id,
+            )
     return out
