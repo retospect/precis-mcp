@@ -99,6 +99,7 @@ def create_app(
         needs_you,
         papers,
         papers_needed,
+        podcast,
         pres,
         preview,
         refs,
@@ -118,6 +119,7 @@ def create_app(
     app.include_router(pres.router)
     app.include_router(datasheets.router)
     app.include_router(papers_needed.router)
+    app.include_router(podcast.router)
     app.include_router(flags.router)
     app.include_router(items.router)
     app.include_router(drafts.router)

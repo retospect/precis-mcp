@@ -52,6 +52,17 @@ class WebConfig:
     #: ``"reto"``). See ``docs/design/user-identity-and-ask-routing.md``.
     owner: str = "owner"
     auth_token: str | None = None
+    #: Directory holding published podcast episodes (audio + JSON sidecars).
+    #: ``None`` → the ``/podcast`` feed is empty/disabled. Set via
+    #: ``PRECIS_PODCAST_DIR``. See :mod:`precis_web.podcast`.
+    podcast_dir: Path | None = None
+    #: Public origin for podcast enclosure URLs, e.g.
+    #: ``https://melchior.<tailnet>.ts.net``. Podcast apps need *absolute*
+    #: URLs reachable from the phone, so behind Tailscale-serve (which
+    #: proxies https→loopback) this must be set explicitly; when unset the
+    #: feed falls back to the request origin (fine for same-host testing).
+    #: Set via ``PRECIS_PODCAST_BASE_URL``.
+    podcast_base_url: str | None = None
 
     @property
     def corpus_dirs(self) -> tuple[Path, ...]:
@@ -103,4 +114,10 @@ class WebConfig:
             source=os.environ.get("PRECIS_SOURCE", DEFAULT_SOURCE),
             owner=os.environ.get("PRECIS_OWNER", "owner"),
             auth_token=os.environ.get("PRECIS_WEB_AUTH_TOKEN") or None,
+            podcast_dir=(
+                Path(pd).expanduser()
+                if (pd := os.environ.get("PRECIS_PODCAST_DIR"))
+                else None
+            ),
+            podcast_base_url=os.environ.get("PRECIS_PODCAST_BASE_URL") or None,
         )

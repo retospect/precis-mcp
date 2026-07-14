@@ -40,6 +40,7 @@ from precis.cli import (
     migrate_refs,
     patent,
     perplexity,
+    podcast,
     provenance,
     reconcile,
     repl,
@@ -135,6 +136,10 @@ def main() -> None:
 
     if args.cmd == "resolve-metadata":
         resolve_metadata.run(args)
+        return
+
+    if args.cmd == "podcast":
+        podcast.run(args)
         return
 
     if args.cmd == "gripes":
@@ -242,6 +247,7 @@ def _build_parser() -> argparse.ArgumentParser:
     reconcile.add_parser(sub)
     retire_draft_equations.add_parser(sub)
     resolve_metadata.add_parser(sub)
+    podcast.add_parser(sub)
     gripe.add_parser(sub)
     add.add_parser(sub)
     watch.add_parser(sub)
