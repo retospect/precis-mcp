@@ -516,6 +516,7 @@ the README lists only a sample). Cross-refs: `precis-tasks-help`,
 | Ingest pipeline                  | `src/precis/ingest/{marker,pipeline,text_chunker,db_writer}.py` |
 | Worker code                      | `src/precis/workers/` (`embed`, `summarize`, `llm_summarize`, `chunk_keywords`, `chase`, `fetch_oa`, `dispatch`, `sweeper`, `nursery`, `review`, `runner`) |
 | Web UI                           | `src/precis_web/` |
+| Discord bridge (asa)             | `src/asa_bot/` — a sibling package like `precis_web`; the `asa-bot` entry point + `[asa]` extra (discord.py). Talks to `precis serve` over stdio; deployed as `precis-mcp[asa]` (folded in from the standalone asa-bot repo 2026-07-14). |
 | SSRF guard                       | `src/precis/utils/safe_fetch.py` |
 
 ## Conventions that bite
