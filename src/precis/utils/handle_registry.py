@@ -75,6 +75,7 @@ KIND_CODES: dict[str, str] = {
     "finding": "fi",
     "citation": "ci",
     "anki": "ak",
+    "concept": "cn",
     # operational
     "todo": "td",
     "job": "jo",

@@ -296,6 +296,11 @@ _TEMPLATE_KINDS: tuple[tuple[str, str, str], ...] = (
         "Anki cloze card.  id = integer ref id.",
     ),
     (
+        "concept",
+        "precis://concept/{id}",
+        "Knowledge-graph concept node.  id = integer ref id.",
+    ),
+    (
         "conv",
         "precis://conv/{id}",
         "Conversation.  id = slug.",

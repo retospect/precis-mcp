@@ -88,6 +88,7 @@ _REF_PASS_PRIORITY: dict[str, int] = {
     "_gp_fetch_pass": 30,
     "_llm_summarize_pass": 30,
     "_classify_pass": 30,
+    "_paper_glossary_pass": 30,
     "_structural_pass": 30,
     "_deep_review_pass": 30,
     "_dream_agent_pass": 30,
@@ -204,6 +205,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "briefing",
             "llm_summarize",
             "classify",
+            "paper_glossary",
             "backlog_groom",
         ),
         default=None,
@@ -736,6 +738,46 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_classify_pass)
+
+        # paper_glossary — per-paper inferred reading glossary (reading-prep
+        # loop, slice 1). Harvests Schwartz-Hearst abbreviations + undefined
+        # acronyms + KeyBERT keywords and makes ONE LLM call to cluster+define
+        # them into an embeddable `card_glossary` chunk (ord=-1000). Derived /
+        # idempotent / reversible; NO account writes. Default-OFF
+        # (PRECIS_PAPER_GLOSSARY_ENABLED=1 or --only paper_glossary): a
+        # corpus-wide backfill is a deliberate, node-targeted batch, like
+        # classify. Model defaults to the cheap `summarizer` alias. See
+        # workers/paper_glossary.py + docs/design/reading-prep-loop.md.
+        if _pass_enabled("paper_glossary") or os.environ.get(
+            "PRECIS_PAPER_GLOSSARY_ENABLED"
+        ):
+            import dataclasses as _pg_dc
+
+            from precis.workers.runner import BatchResult as _PgBatchResult
+
+            _pg_cfg = _pg_dc.replace(
+                LlmConfig.from_env(),
+                enabled=True,
+                model=os.environ.get("PRECIS_PAPER_GLOSSARY_MODEL") or "summarizer",
+            )
+            _pg_client = LlmClient(_pg_cfg)
+
+            def _paper_glossary_pass(batch_size: int) -> _PgBatchResult:
+                from precis.workers.paper_glossary import run_paper_glossary_pass
+
+                r = run_paper_glossary_pass(
+                    store,
+                    client=_pg_client,
+                    batch_size=min(batch_size, 8),
+                )
+                return _PgBatchResult(
+                    handler="paper_glossary",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_paper_glossary_pass)
 
         # Backlog groomer (default-OFF; PRECIS_BACKLOG_GROOM_ENABLED=1 or
         # --only backlog_groom): promote open gripes into dispatchable

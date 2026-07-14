@@ -111,6 +111,21 @@ Relation = Literal[
     # sync with the `relations` seed in 0056_plan_kind.sql.
     "plan-of",
     "has-plan",
+    # Concept graph — migration 0063 (reading-prep loop, docs/design/
+    # reading-prep-loop.md; supersedes decision 7's objectives-as-todos).
+    # Concepts (kind='concept') form a personal knowledge graph.
+    # `has-prerequisite` (Y has-prerequisite X ⇒ learn X before Y) is the
+    # learning DAG, inverse `prerequisite-of` (X prerequisite-of Y).
+    # `analogy-of` / `contrasts-with` are SYMMETRIC semantic edges (no inverse,
+    # like `related-to`). `represents` binds a concept to each card that renders
+    # it, inverse `represented-by`. Keep in sync with the `relations` seed in
+    # 0063_concept_kind.sql.
+    "has-prerequisite",
+    "prerequisite-of",
+    "analogy-of",
+    "contrasts-with",
+    "represents",
+    "represented-by",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -168,6 +183,12 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "has-datasheet": "datasheet-of",
     "plan-of": "has-plan",
     "has-plan": "plan-of",
+    # Concept graph (0062). `analogy-of` / `contrasts-with` are symmetric →
+    # deliberately NOT here (like `related-to`; direction='both' surfaces them).
+    "has-prerequisite": "prerequisite-of",
+    "prerequisite-of": "has-prerequisite",
+    "represents": "represented-by",
+    "represented-by": "represents",
 }
 
 

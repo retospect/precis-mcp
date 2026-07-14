@@ -414,6 +414,26 @@ The master kinds table lives in the `precis-overview` skill.
   surfaces bad-recall cards (high lapses / collapsed ease from `meta.anki_stats`)
   → fix-cloze-or-study. Design `docs/design/anki-integration.md`; skills
   `precis-anki-help` (ref) + `precis-cloze` (authoring craft).
+- **`concept` + the reading-prep loop** — an adaptive, activity-driven study
+  system that preps the human on what the corpus is working on (design-of-record
+  `docs/design/reading-prep-loop.md`, **ships dark, in progress**). The spine is
+  a bespoke **concept graph**: `kind='concept'` (numeric-ref `handlers/concept.py`,
+  handle `cn`, migration 0063) is a node in the learner's knowledge graph — a term
+  with a continuous **mastery** field + derived state + an embeddable
+  `card_combined` definition (so a concept *is* a vector), and typed edges
+  `has-prerequisite`/`prerequisite-of` (the learning DAG), `analogy-of`,
+  `contrasts-with`, `represents`. Node model + promotion live in
+  `src/precis/reading/` (`concepts.py`, `promote.py`). Slices built:
+  **(1)** `paper_glossary` worker (`workers/paper_glossary.py`, default-OFF
+  `PRECIS_PAPER_GLOSSARY_ENABLED`) — a per-paper inferred glossary as a
+  `card_glossary` (ord=-1000) derived chunk; **(2a/b/c)** concept kind + graph
+  relations + promotion (`reading/promote.py`: glossary terms → concept nodes,
+  corpus-wide **name-anchored dedup** via `meta.norm_name`, cohort membership in
+  `meta.cohorts`, `derived-from`→paper provenance). Remaining: graph-edge
+  inference, mastery-from-Anki, embedding routing (reading-readiness /
+  shortest-path / **daily review-path walk**), booklet, cards-as-representations,
+  briefing+audio. **Anki is a renderer, not the brain** — the concept graph is the
+  source of truth; leaf cards sync down.
 - **`alert`** — machine-detected ops/health conditions (spin loops, orphans),
   raised via `precis.alerts.raise_alert` (fingerprint upsert + auto-resolve),
   read via `AlertHandler`/`/alerts`. **Not embedded.** Skill: `precis-alert-help`.

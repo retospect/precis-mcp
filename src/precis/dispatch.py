@@ -642,6 +642,7 @@ def boot(
         from precis.handlers.anki import AnkiHandler
         from precis.handlers.cad import CadHandler
         from precis.handlers.citation import CitationHandler
+        from precis.handlers.concept import ConceptHandler
         from precis.handlers.conversation import ConversationHandler
         from precis.handlers.cron import CronHandler
         from precis.handlers.datasheet import DatasheetHandler
@@ -676,6 +677,7 @@ def boot(
         _gated(AgentLogHandler)
         _gated(JobHandler)
         _gated(AnkiHandler)
+        _gated(ConceptHandler)
         _gated(CitationHandler)
         _gated(FindingHandler)
         _gated(ConversationHandler)
