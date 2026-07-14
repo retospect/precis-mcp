@@ -448,6 +448,16 @@ def test_backfill_phase_helper(draft: DraftHandler, hub: Hub) -> None:
     hub.store.add_tag(run.id, Tag.closed("BACKFILL_PHASE", "review"))
     assert _backfill_phase(hub.store, run.id) == PHASE_REVIEW
 
+    # a near-miss value (case / "reviewing") still enters review — a trivial typo
+    # must not silently drop the run back to find and re-do the whole weave.
+    run2 = hub.store.insert_ref(kind="todo", slug=None, title="backfill methods 2")
+    hub.store.add_tag(run2.id, Tag.closed("BACKFILL_PHASE", "Reviewing"))
+    assert _backfill_phase(hub.store, run2.id) == PHASE_REVIEW
+    # an unrelated value degrades to the safe, work-producing find phase
+    run3 = hub.store.insert_ref(kind="todo", slug=None, title="backfill methods 3")
+    hub.store.add_tag(run3.id, Tag.closed("BACKFILL_PHASE", "whatever"))
+    assert _backfill_phase(hub.store, run3.id) == PHASE_FIND
+
 
 def test_planner_backfill_review_phase_instructions(
     draft: DraftHandler, hub: Hub

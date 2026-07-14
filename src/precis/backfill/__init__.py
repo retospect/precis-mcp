@@ -29,7 +29,11 @@ from precis.backfill.citation_lens import (
     find_citation_candidates,
     materialize_citation_edges,
 )
-from precis.backfill.dismissed import dismiss_source, dismissed_ref_ids
+from precis.backfill.dismissed import (
+    dismiss_source,
+    dismissed_ref_ids,
+    resolve_source_ref_id,
+)
 from precis.backfill.provenance import SOURCE_KINDS, tier_for, tier_tag
 from precis.backfill.workspace import assemble, recall_embedder, render_backfill
 
@@ -46,6 +50,7 @@ __all__ = [
     "merge_recurrence",
     "recall_embedder",
     "render_backfill",
+    "resolve_source_ref_id",
     "tier_for",
     "tier_tag",
 ]

@@ -578,8 +578,14 @@ writer's context, the more discipline the prose needs.*
    - **weave** — cite the supporting chunk by handle `[pc<id>]` (the existing
      planner contract already documents cite-by-handle + writing for the human
      reader);
-   - **dismiss** — `tag(kind, id=<draft>, add=['DISMISSED_SOURCE:<ref>'])`, read
-     back by `dismissed_ref_ids` into the next run's exclude set;
+   - **dismiss** — `tag(kind, id=<draft>, add=['DISMISSED_SOURCE:<candidate>'])`,
+     read back by `dismissed_ref_ids` into the next run's exclude set. The ledger
+     value is **handle-tolerant** (`resolve_source_ref_id`): the model may paste
+     the bare ref-id `889`, the record handle `pa889`, or the chunk handle
+     `pc7710` — all resolve to the source ref. This closes the
+     convergence footgun where a handle-form paste was silently dropped (the
+     old number-only readback) so the dismissal never stuck and the candidate
+     resurfaced every run;
    - **request** — the existing `paper_ingested` wait-leaf flow the contract
      spells out.
    The plan-tick-spin detector guards convergence; the `paper_ingested`

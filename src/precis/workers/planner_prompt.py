@@ -1512,17 +1512,28 @@ _BACKFILL_PHASE_NS = "BACKFILL_PHASE"
 PHASE_FIND = "find"
 PHASE_REVIEW = "review"
 
+#: Values (case-insensitive) that count as the *review* phase. A model advancing
+#: the phase pastes a hand-authored tag value; accepting the near-misses ("review"
+#: / "reviewing" / "rev") keeps a trivial typo from silently dropping the run back
+#: to *find* and re-doing the whole weave.
+_REVIEW_PHASE_ALIASES: frozenset[str] = frozenset(
+    {"review", "reviewing", "reviewed", "rev", "r"}
+)
+
 
 def _backfill_phase(store: Store, ref_id: int) -> str:
     """The backfill run's phase, read from a ``BACKFILL_PHASE:<phase>`` tag on the
     run todo (default :data:`PHASE_FIND`). Progression is **monotonic**: find →
     review → done (``STATUS:done``); a review that turns up a genuinely new gap may
-    tag back to ``find`` for one more pass. Any unknown value degrades to ``find``
-    (the safe, work-producing phase). Fallback-safe: a read failure → ``find``."""
+    tag back to ``find`` for one more pass. The value is matched case-insensitively
+    against :data:`_REVIEW_PHASE_ALIASES` so a near-miss ("Review"/"reviewing")
+    still enters review; any other value degrades to ``find`` (the safe,
+    work-producing phase). Fallback-safe: a read failure → ``find``."""
     try:
         for tag in store.tags_for(ref_id):
             if getattr(tag, "prefix", None) == _BACKFILL_PHASE_NS:
-                return PHASE_REVIEW if tag.value == PHASE_REVIEW else PHASE_FIND
+                val = (tag.value or "").strip().lower()
+                return PHASE_REVIEW if val in _REVIEW_PHASE_ALIASES else PHASE_FIND
     except Exception:
         log.debug("backfill phase read failed for %s", ref_id, exc_info=True)
     return PHASE_FIND
@@ -1558,10 +1569,12 @@ def _backfill_find_instructions(kind: str, draft_ident: str, run_ref_id: int) ->
         "redundant with what you cite, or it doesn't support the claim), record "
         "the rejection so recall never resurfaces it:\n\n"
         f"       tag(kind='{kind}', id='{draft_ident}', "
-        "add=['DISMISSED_SOURCE:<paper_ref_id>'])\n\n"
-        "   where `<paper_ref_id>` is the number in the candidate's `pa<id>` "
-        "handle. Dismiss **every** candidate you reject — an un-dismissed reject "
-        "comes back on the next run and the pass never converges.\n"
+        "add=['DISMISSED_SOURCE:<candidate>'])\n\n"
+        "   where `<candidate>` is the candidate's `pa<id>` handle pasted verbatim "
+        "(e.g. `DISMISSED_SOURCE:pa889` — the bare number `889` or the `pc<id>` "
+        "chunk handle also work; the ledger resolves any of them). Dismiss "
+        "**every** candidate you reject — an un-dismissed reject comes back on the "
+        "next run and the pass never converges.\n"
         "3. **Request it** — if the source you actually need is *not* in the "
         "corpus, request it via the `paper_ingested` wait-leaf flow described "
         "above; never invent or guess a citation.\n\n"
