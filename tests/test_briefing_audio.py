@@ -21,7 +21,7 @@ pytest.importorskip("soundfile")
 import numpy as np
 
 from precis import audio_feed
-from precis.workers.briefing_audio import run_briefing_audio
+from precis.workers.briefing_audio import has_pending_briefing, run_briefing_audio
 
 _NOW = datetime(2026, 7, 14, 6, 0, tzinfo=UTC)
 
@@ -150,3 +150,13 @@ def test_no_briefing_is_a_clean_noop(tmp_path):
     store.ref = None  # type: ignore[assignment]
     r = run_briefing_audio(store, synth=_FakeSynth(), podcast_dir=tmp_path, now=_NOW)
     assert r["published"] is False and r["reason"] == "no-unnarrated-briefing"
+
+
+def test_has_pending_briefing_gates_on_marker_and_presence():
+    # The cheap gate the worker checks before building the (heavy) synth.
+    store = _store()
+    assert has_pending_briefing(store, now=_NOW) is True
+    store.ref.meta["audio_episode_id"] = "news-2026-07-14"  # narrated
+    assert has_pending_briefing(store, now=_NOW) is False
+    store.ref = None  # nothing at all
+    assert has_pending_briefing(store, now=_NOW) is False

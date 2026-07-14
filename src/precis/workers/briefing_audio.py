@@ -53,6 +53,21 @@ def _latest_unnarrated_briefing(store: Any, *, max_age_hours: int, now: datetime
     return store.get_ref(kind="news", id=int(row[0]))
 
 
+def has_pending_briefing(
+    store: Any, *, now: datetime | None = None, max_age_hours: int = _MAX_AGE_HOURS
+) -> bool:
+    """Cheap existence check — is there an un-narrated briefing to work on?
+
+    The worker gates on this **before** constructing the (heavy, model-loading)
+    Kokoro synth, so an idle tick — the overwhelming majority, since a briefing
+    lands once a day — costs one indexed SQL and never touches the TTS model."""
+    now = now or datetime.now(UTC)
+    return (
+        _latest_unnarrated_briefing(store, max_age_hours=max_age_hours, now=now)
+        is not None
+    )
+
+
 def _briefing_text(store: Any, ref_id: int) -> str:
     """Reconstruct the briefing markdown from its body chunks (``ord >= 0``, so
     the embeddable ``card_*`` variants at negative ord are excluded), in order."""
@@ -193,4 +208,4 @@ def run_briefing_audio(
     }
 
 
-__all__ = ["run_briefing_audio"]
+__all__ = ["has_pending_briefing", "run_briefing_audio"]

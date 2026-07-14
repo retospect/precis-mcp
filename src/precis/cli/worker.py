@@ -799,8 +799,18 @@ def run(args: argparse.Namespace) -> None:
             _ba_lang = os.environ.get("PRECIS_BRIEFING_AUDIO_LANG") or "en-us"
 
             def _briefing_audio_pass(batch_size: int) -> _BaBatchResult:
+                from precis.workers.briefing_audio import (
+                    has_pending_briefing,
+                    run_briefing_audio,
+                )
+
+                # Gate the heavy Kokoro model load behind a cheap existence
+                # check: an idle tick (the norm — one briefing/day) never
+                # constructs the synth.
+                if not has_pending_briefing(store):
+                    return _BaBatchResult("briefing_audio", 0, 0, 0)
+
                 from precis.tts.kokoro import KokoroSynth
-                from precis.workers.briefing_audio import run_briefing_audio
 
                 r = run_briefing_audio(
                     store,
