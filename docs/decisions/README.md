@@ -20,6 +20,7 @@ Per AGENTS.md: "sorted by number; never delete, only supersede".
 | Derived queue pattern | [0017](./0017-derived-queue-family.md) | extends 0007 (chunk-level → family registry) |
 | Database backend | [0010](./0010-postgres-pgvector-system-of-record.md) | |
 | Secrets management | [0055](./0055-secrets-vault.md) | **proposed**; DB-resident encrypted secrets, key in server config so `pg_dump` is shareable, DB-enforced RBAC (list/mask/reveal), thin Python wrapper. Design: [`docs/design/secrets-vault.md`](../design/secrets-vault.md) |
+| Chemistry / protein tool-packs | [0056](./0056-chemistry-tool-packs-plugin-route-kind.md) | **proposed (2026-07-14)**; external chem/protein compute (retrosynthesis, AlphaFold, sequence design) folds into precis as **plugin tool-packs**, not broker MCP servers — each tool = a **kind** (legible IR) + a **`job_type`** on the 0044 derived-job lane. One canonical `route` kind, engines normalize to it via LinChemIn at ingest; `protein`/`sequence` are siblings. Two enabling core seams **shipped+deployed** (`c13281e1`): `KindSpec.can_own_jobs` + open relation vocabulary (`validate_relation(store=…)` reads the live `relations` table so plugins seed their own relations, no core edit to the closed literal). Engines run on Linux nodes (Macs orchestrate); GPU-native-in-process (AlphaFold/DFT) vs portable-CPU-container (build-on-demand podman, weights from NAS, no tarball store/registry). Shareable (plugin+Dockerfiles+compose) in precis-mcp, fleet-private (inventory+topology+secrets) in `~/work/cluster`. Known gap: gripe 160213 (read-time inverse rewrite). Design: [`docs/design/chem-tools-integration.md`](../design/chem-tools-integration.md) |
 | Dev image (Claude Code + UID/GID) | [0011](./0011-claude-in-dev-image.md) | |
 | Model weights in runtime image | [0012](./0012-bake-models-into-runtime-image.md) | cold-build mitigation in [0019](./0019-premodels-build-context.md) |
 | MCP session context | [0013](./0013-mcp-session-context-env-vars.md) | env-var triple |
@@ -70,6 +71,10 @@ Per AGENTS.md: "sorted by number; never delete, only supersede".
 0052  ┄┄→  0054            # shadow-registry-beside-the-draft precedent
 0043  ──→  0053            # external DFT catalyst libraries import as structure designs + run-cube rows
 0044  ──→  0053            # a derivative of an imported config re-uses the derived-job compute lane
+0044  ──→  0056            # chem/protein engines run on the derived-job compute lane (route/protein/sequence jobs)
+0043  ┄┄→  0056            # keystone-IR discipline generalized: a route is the retrosynthesis IR (cf. 0041/0042)
+0041  ┄┄→  0056            # own-a-legible-IR-rent-the-kernel precedent → canonical route kind, engines swappable
+
 0007  ──┐
         ├──→  0018  ──→  F20 (CLAUDE.md, not an ADR)
 0017  ──┘                # discovery layer — superseded post-ADR
