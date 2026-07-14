@@ -17,6 +17,7 @@ import argparse
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from precis.cli._common import resolve_dsn
 
@@ -54,8 +55,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
-    from precis.anki.notes import spec_from_ref
-    from precis.anki.sync import AnkiNotInstalled, AnkiSyncError, sync_tick
     from precis.config import load_config
     from precis.runtime import build_runtime
 
@@ -73,6 +72,19 @@ def run(args: argparse.Namespace) -> None:
     if store is None:
         print("anki-sync: no database configured.", file=sys.stderr)
         sys.exit(2)
+    # Close the pool on every exit path (incl. sys.exit). Otherwise the psycopg
+    # ConnectionPool is finalized at interpreter shutdown, where Python 3.14
+    # raises PythonFinalizationError ("cannot join thread at interpreter
+    # shutdown") — the daemon then exits non-zero even though the sync succeeded.
+    try:
+        _run_sync(args, cfg, store)
+    finally:
+        store.pool.close()
+
+
+def _run_sync(args: argparse.Namespace, cfg: Any, store: Any) -> None:
+    from precis.anki.notes import spec_from_ref
+    from precis.anki.sync import AnkiNotInstalled, AnkiSyncError, sync_tick
 
     refs = store.list_refs(kind="anki", limit=args.limit)
     specs = [s for s in (spec_from_ref(r) for r in refs) if s is not None]
