@@ -36,10 +36,12 @@ from precis.backfill.dismissed import (
 )
 from precis.backfill.heading_intent import (
     Intent,
+    IntentContext,
     intents_for,
     intents_for_draft,
     prune_dangling,
     retire_intent,
+    section_intents,
     set_intent,
 )
 from precis.backfill.provenance import SOURCE_KINDS, tier_for, tier_tag
@@ -49,6 +51,7 @@ __all__ = [
     "SOURCE_KINDS",
     "Candidate",
     "Intent",
+    "IntentContext",
     "assemble",
     "dismiss_source",
     "dismissed_ref_ids",
@@ -64,6 +67,7 @@ __all__ = [
     "render_backfill",
     "resolve_source_ref_id",
     "retire_intent",
+    "section_intents",
     "set_intent",
     "tier_for",
     "tier_tag",

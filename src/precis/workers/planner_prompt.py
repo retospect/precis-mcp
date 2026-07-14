@@ -961,6 +961,65 @@ def _render_anchor_context(store: Store, ref_id: int) -> str:
     return "\n".join(parts)
 
 
+def _render_heading_intent(store: Store, anchor_handle: str) -> str:
+    """Surface the **heading-intent** context for an anchored draft tick (slice
+    8b.2): the *breadcrumb up* (why this section exists, root→here) and the *sibling
+    intents across* (the placement boundary — what belongs elsewhere). It is the
+    writer's **hierarchical prompt** — a leaf that can see "this section exists to
+    support §2's argument" writes to that purpose instead of drifting.
+
+    The notes are model-owned **guidance, not document content**: rendered as keyed
+    meta with an explicit do-not-transcribe caveat (the reader-asymmetry boundary),
+    and they never export (a separate ``memory`` ref, not a draft chunk).
+
+    No-op when the tick has no anchor or the section carries no intents anywhere in
+    its breadcrumb/siblings. Fallback-safe: any resolution failure degrades to ``""``
+    so it can never break the planner prompt."""
+    from precis.backfill.heading_intent import Intent, section_intents
+
+    try:
+        ctx = section_intents(store, anchor_handle)
+    except Exception:
+        log.debug("heading-intent render failed for %r", anchor_handle, exc_info=True)
+        return ""
+    if not ctx:
+        return ""
+
+    def _line(intent: Intent, *, cursor: bool = False) -> str:
+        text = " ".join((intent.text or "").split())
+        if len(text) > 160:
+            text = text[:160].rstrip() + "…"
+        strength = "hard" if intent.hard else "soft"
+        marker = "▸ " if cursor else "  "
+        return f"{marker}{intent.heading_handle} · {strength} · {text}"
+
+    parts = [
+        "## Section intent (guidance — shapes what you write; do NOT transcribe "
+        "into the prose)",
+    ]
+    if ctx.breadcrumb:
+        parts.append("")
+        parts.append("Why this section exists (root → here):")
+        last = len(ctx.breadcrumb) - 1
+        parts.extend(
+            _line(intent, cursor=(i == last)) for i, intent in enumerate(ctx.breadcrumb)
+        )
+    if ctx.siblings:
+        parts.append("")
+        parts.append(
+            "Sibling sections (the boundary — a thing belongs *there*, not here, "
+            "when it fits their job better):"
+        )
+        parts.extend(_line(intent) for intent in ctx.siblings)
+    parts.append(
+        "\nKeep it current: if new information changes what THIS section is *for*, "
+        "update its intent. A **soft** intent evolves freely; changing a **hard** "
+        "intent is a structural decision — flag it, don't silently rewrite. If a "
+        "discovery belongs under a sibling, record it there, not here."
+    )
+    return "\n".join(parts)
+
+
 def _render_section_style(store: Store, ref_id: int) -> str:
     """Inject the section-style skill for the chunk this tick is anchored to
     (ADR 0037/0038).
@@ -1329,6 +1388,17 @@ def _m_doc_context(ctx: AssemblyContext) -> str:
     if not anchor:
         return ""
     return doc_context_table(ctx.store, anchor)
+
+
+def _m_heading_intent(ctx: AssemblyContext) -> str:
+    """The heading-intent hierarchical prompt for an anchored draft tick (slice
+    8b.2). Gated on ``has_anchor``, which memoises the resolved handle in
+    ``extras``; self-gates to ``""`` when the section carries no intents."""
+    assert ctx.store is not None
+    anchor = ctx.extras.get("anchor")
+    if not anchor:
+        return ""
+    return _render_heading_intent(ctx.store, str(anchor))
 
 
 def _planner_fisheye_enabled() -> bool:
@@ -1711,6 +1781,12 @@ _VARIABLE_MODULES: list[Module] = [
     Module(id="glossary", layer=Layer.VARIABLE, build=_m_glossary),
     Module(id="body", layer=Layer.VARIABLE, build=_m_body),
     Module(id="anchor", layer=Layer.VARIABLE, build=_m_anchor),
+    Module(
+        id="heading-intent",
+        layer=Layer.VARIABLE,
+        build=_m_heading_intent,
+        applies_when="has_anchor",
+    ),
     Module(
         id="doc_context",
         layer=Layer.VARIABLE,

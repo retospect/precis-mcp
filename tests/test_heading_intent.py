@@ -111,6 +111,83 @@ def test_prune_dangling_reaps_orphans_only(hub: Hub, plan: PlanHandler) -> None:
     assert intents_for(store, [h]) != {}  # the live one is untouched
 
 
+def _by_text(store: Any, draft_ref: int, text: str) -> str:
+    for c in store.reading_order(draft_ref, kind="plan"):
+        if (c.text or "").strip() == text:
+            return c.dc
+    raise AssertionError(f"no chunk with text {text!r}")
+
+
+def test_section_intents_breadcrumb_and_siblings(hub: Hub, plan: PlanHandler) -> None:
+    """The writer's hierarchical prompt: an anchor resolves to its enclosing
+    heading's breadcrumb (root → here) plus the *sibling* headings' intents (the
+    placement boundary). Headings with no intent are omitted; the enclosing heading
+    is not double-counted as its own sibling."""
+    from precis.backfill.heading_intent import section_intents, set_intent
+
+    store = hub.store
+    proj = store.insert_ref(kind="todo", slug=None, title="proj").id
+    plan.put(id="p", title="Doc", project=proj)
+    root = _pe(
+        plan.put(id="p", chunk_kind="heading", text="Root", at={"last": True}).body
+    )
+    draft = store.get_draft_chunk(root, kind="plan").ref_id
+    plan.put(id="p", chunk_kind="heading", text="Section A", at={"into": root})
+    plan.put(id="p", chunk_kind="heading", text="Section B", at={"into": root})
+    plan.put(id="p", chunk_kind="heading", text="Section C", at={"into": root})
+    a = _by_text(store, draft, "Section A")
+    b = _by_text(store, draft, "Section B")
+    plan.put(id="p", chunk_kind="paragraph", text="the para", at={"into": a})
+    para = _by_text(store, draft, "the para")
+
+    set_intent(store, root, "The document argues X.")
+    set_intent(store, a, "A establishes the baseline.", hard=True)
+    set_intent(store, b, "B covers the alternative.")
+    # Section C is left intentionally without an intent.
+
+    ctx = section_intents(store, para)
+    assert [i.heading_handle for i in ctx.breadcrumb] == [root, a]  # root → enclosing
+    assert ctx.breadcrumb[-1].hard is True  # A is a hard commitment
+    assert {i.heading_handle for i in ctx.siblings} == {
+        b
+    }  # B only; C has none, A excluded
+    assert bool(ctx) is True
+
+    # anchoring directly at a heading gives the same section context
+    assert [i.heading_handle for i in section_intents(store, a).breadcrumb] == [root, a]
+
+
+def test_planner_prompt_renders_section_intent_when_anchored(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """8b.2 wiring: an anchored draft tick gets the hierarchical prompt — the
+    "## Section intent" block with the intent text and the do-not-transcribe
+    guidance caveat."""
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    store = hub.store
+    _draft, h = _doc_with_heading(store, plan, title="Methods")
+    set_intent(store, h, "Methods exists to make the result reproducible.", hard=True)
+    todo = store.insert_ref(kind="todo", slug=None, title="edit methods")
+    store.stamp_ref_meta(todo.id, {"anchor": h})
+
+    prompts = build_planner_prompts(store, ref_id=todo.id, model="opus")
+    assert "## Section intent" in prompts.user
+    assert "make the result reproducible" in prompts.user
+    assert "do NOT transcribe" in prompts.user  # the guidance caveat
+
+
+def test_planner_prompt_no_section_intent_without_anchor(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    store = hub.store
+    todo = store.insert_ref(kind="todo", slug=None, title="plain todo")
+    prompts = build_planner_prompts(store, ref_id=todo.id, model="opus")
+    assert "## Section intent" not in prompts.user
+
+
 def test_intent_note_is_not_exportable(hub: Hub, plan: PlanHandler) -> None:
     """Belt to the anchor-not-a-chunk suspenders: a heading-intent memory is
     rejected by the export guard, so it can never leave as a document."""

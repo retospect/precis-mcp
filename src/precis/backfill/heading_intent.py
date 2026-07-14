@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from precis.store.types import BlockInsert
+from precis.utils import handle_registry
 
 #: ``meta.heading_intent`` values.
 HARD = "hard"
@@ -182,6 +183,77 @@ def intents_for_draft(
     chunks = store.reading_order(draft_ref_id, kind=kind)
     handles = [c.dc for c in chunks if getattr(c, "chunk_kind", None) == "heading"]
     return intents_for(store, handles)
+
+
+@dataclass(frozen=True)
+class IntentContext:
+    """The heading-intent context around a worked chunk — the writer's hierarchical
+    prompt. ``breadcrumb`` is the chain of intents from the **root** heading down to
+    the chunk's **enclosing** heading (the *why am I here*); ``siblings`` is the
+    intents on the enclosing heading's sibling headings (the placement boundary:
+    *what belongs elsewhere, not here*). Each may be empty (only headings that
+    actually carry an intent appear)."""
+
+    breadcrumb: list[Intent]
+    siblings: list[Intent]
+
+    def __bool__(self) -> bool:
+        return bool(self.breadcrumb or self.siblings)
+
+
+def _kind_of(handle: str) -> str | None:
+    parsed = handle_registry.parse(handle)
+    return parsed[0] if parsed else None
+
+
+def section_intents(store: Any, anchor_handle: str) -> IntentContext:
+    """Resolve the intent context around ``anchor_handle`` (a draft/plan chunk):
+    the breadcrumb of intents (root heading → the chunk's enclosing heading) and the
+    sibling-heading intents. The chunk's kind is derived from its own handle
+    (``dc``→draft, ``pe``→plan), so the caller need not pass it. Empty on an
+    unresolvable handle — never raises."""
+    kind = _kind_of(anchor_handle)
+    if kind is None:
+        return IntentContext([], [])
+    chunk = store.get_draft_chunk(anchor_handle, kind=kind)
+    if chunk is None:
+        return IntentContext([], [])
+    chunks = store.reading_order(chunk.ref_id, kind=kind)
+    by_id = {c.chunk_id: c for c in chunks}
+
+    def _walk_up_headings(start: Any) -> list[Any]:
+        """Heading ancestors from ``start`` up to the root (nearest first)."""
+        chain: list[Any] = []
+        cur: Any = start
+        seen: set[int] = set()
+        while cur is not None and cur.chunk_id not in seen:
+            if getattr(cur, "chunk_kind", None) == "heading":
+                chain.append(cur)
+            seen.add(cur.chunk_id)
+            pid = getattr(cur, "parent_chunk_id", None)
+            cur = by_id.get(pid) if pid is not None else None
+        return chain
+
+    heading_chain = _walk_up_headings(chunk)
+    if not heading_chain:
+        return IntentContext([], [])
+    head = heading_chain[0]  # the enclosing heading (nearest)
+    breadcrumb_chunks = list(reversed(heading_chain))  # root → enclosing
+
+    sibling_chunks = [
+        c
+        for c in chunks
+        if getattr(c, "chunk_kind", None) == "heading"
+        and getattr(c, "parent_chunk_id", None) == head.parent_chunk_id
+        and c.chunk_id != head.chunk_id
+    ]
+
+    intents = intents_for(
+        store, [c.dc for c in breadcrumb_chunks] + [c.dc for c in sibling_chunks]
+    )
+    breadcrumb = [intents[c.dc] for c in breadcrumb_chunks if c.dc in intents]
+    siblings = [intents[c.dc] for c in sibling_chunks if c.dc in intents]
+    return IntentContext(breadcrumb, siblings)
 
 
 def retire_intent(store: Any, ref_id: int, *, conn: Any = None) -> None:

@@ -882,9 +882,18 @@ writer's context, the more discipline the prose needs.*
      `prune_dangling` (the hygiene heal). `meta.anchor` + `meta.heading_intent`, no
      migration; `guard_exportable` already blocks export (asserted). The
      model-facing form *skill* text lands with 8b.2 (where the render surfaces it).
-   - **8b.2** — the writer render module (breadcrumb-up + siblings-across), gated
-     into `planner_prompt` as a peer of `_render_glossary`. Skill: "read the
-     boundary; if it fits a sibling's intent better, put it there / hand off."
+   - **8b.2** — the writer render module. **DONE**: `heading_intent.section_intents`
+     resolves an anchor's **breadcrumb** (root heading → enclosing heading) +
+     **sibling** intents (deriving draft/plan kind from the handle); the
+     `planner_prompt` module `_render_heading_intent` / `_m_heading_intent` renders
+     the "## Section intent" block, gated `has_anchor` (a peer of `_m_anchor` /
+     `_m_doc_context`), self-gating to `""` when the section carries no intents. The
+     form/retire **skill text rides inline** in the block (guidance-not-content
+     caveat + "soft evolves freely, a hard change is a structural event; if it fits
+     a sibling, record it there") rather than a separate skill file — matching how
+     the backfill find/review instructions are generated. **Deferred:** firing on a
+     backfill tick that has `targets` but no `meta.anchor` (currently `has_anchor`
+     only), and initial section-authoring ticks (no anchor yet).
    - **8b.3** — the one-line **glossary-discipline** skill addition (vocab =
      deposit a term; leans entirely on existing machinery).
    - **8b.4** — the global trigger: nursery heal (dangling intents) + a
