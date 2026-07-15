@@ -71,14 +71,32 @@ class SvgError(ValueError):
 class LintFinding:
     """One mechanically-detected problem with a figure's source.
 
-    ``kind`` is ``'compile'`` (unparseable) or ``'bounds'`` (a shape spills
-    past the viewBox). ``node`` is the offending element's ``id`` (or its
-    tag when it has none); empty for a whole-document compile failure.
+    ``kind`` is ``'compile'`` (unparseable), ``'bounds'`` (a shape spills
+    past the viewBox), or ``'binding'`` (an element→chunk binding names an
+    ``id`` that no element in the source carries — ADR 0057 drift). ``node``
+    is the offending element's ``id`` (or its tag when it has none); empty
+    for a whole-document compile failure.
     """
 
     kind: str
     node: str
     message: str
+
+
+@dataclass(frozen=True, slots=True)
+class Element:
+    """A named element of a figure — the anchor a chunk binding attaches to.
+
+    ``id`` is the stable source ``id=`` (the join key for a ``depicts``
+    binding, ADR 0057); ``tag`` the local tag name; ``coords`` a compact
+    human/model-readable geometry string (``x40 y60 w80 h20`` for a rect,
+    ``cx120 cy70 r8`` for a circle, a bbox for a polygon, or ``""`` for a
+    shape whose geometry isn't cheaply measurable — path/text/group).
+    """
+
+    id: str
+    tag: str
+    coords: str
 
 
 def _localname(tag: str) -> str:
@@ -290,6 +308,61 @@ def lint_svg(
                 )
             )
     return findings
+
+
+def elements(svg: str) -> list[Element]:
+    """Every element carrying a stable ``id=`` — the bindable anchors of the
+    figure (ADR 0057). Returns ``[]`` on an unparseable document (the caller
+    already compile-checks). Order is document order."""
+    try:
+        root = _parse(svg)
+    except SvgError:
+        return []
+    out: list[Element] = []
+    for el in root.iter():
+        eid = el.get("id")
+        if eid:
+            out.append(Element(id=eid, tag=_localname(el.tag), coords=_coords_str(el)))
+    return out
+
+
+def lint_bindings(svg: str, bound_ids: set[str]) -> list[LintFinding]:
+    """A ``'binding'`` finding for each bound element id absent from the
+    source — the dangling-binding drift check (ADR 0057). Empty when every
+    binding still resolves to a live element (or nothing is bound)."""
+    if not bound_ids:
+        return []
+    present = {e.id for e in elements(svg)}
+    return [
+        LintFinding(
+            "binding",
+            eid,
+            f"binding references element id {eid!r}, but the source has no "
+            f"element with that id (renamed or removed?)",
+        )
+        for eid in sorted(bound_ids)
+        if eid not in present
+    ]
+
+
+def _coords_str(el: ET.Element) -> str:
+    """A compact geometry string for :class:`Element` — authored attribute
+    values per shape, a bbox for polys, ``""`` when not measurable."""
+    name = _localname(el.tag)
+    g = el.get
+    if name == "rect":
+        return f"x{g('x', '0')} y{g('y', '0')} w{g('width', '0')} h{g('height', '0')}"
+    if name == "circle":
+        return f"cx{g('cx', '0')} cy{g('cy', '0')} r{g('r', '0')}"
+    if name == "ellipse":
+        return f"cx{g('cx', '0')} cy{g('cy', '0')} rx{g('rx', '0')} ry{g('ry', '0')}"
+    if name == "line":
+        return f"{g('x1', '0')},{g('y1', '0')}→{g('x2', '0')},{g('y2', '0')}"
+    bbox = _shape_bbox(el)
+    if bbox is not None:
+        x0, y0, x1, y1 = bbox
+        return f"bbox {_num(x0)},{_num(y0)}…{_num(x1)},{_num(y1)}"
+    return ""
 
 
 def _fget(el: ET.Element, attr: str, default: float = 0.0) -> float:

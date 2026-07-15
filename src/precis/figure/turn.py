@@ -32,14 +32,16 @@ import json
 import logging
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Protocol
 
+from precis.figure.context import render_diagram_context
 from precis.figure.svg import (
     DEFAULT_VIEWBOX,
     SvgError,
+    lint_bindings,
     lint_svg,
     parse_error,
     read_viewbox,
@@ -55,7 +57,11 @@ _JSON_CONTRACT = (
     'or omit/empty to leave the drawing unchanged>", "vocab": "<the updated '
     'shared vocabulary — high-level, for the human — or omit if unchanged>", '
     '"notes": "<the updated implementation notes — your private design log — '
-    'or omit if unchanged>"}.'
+    'or omit if unchanged>", "links": [{"element": "<a stable id= in your '
+    'svg>", "target": "<a chunk handle: dc… draft / pc… paper / me… memory>", '
+    '"relation": "depicts"}] (the COMPLETE desired set of element→chunk '
+    "bindings — this replaces the current set; omit the key entirely to leave "
+    "bindings unchanged)}."
 )
 
 #: Drawing wants a capable model; haiku (call_claude_p's default) is too weak.
@@ -67,6 +73,11 @@ class _StoreLike(Protocol):
     def edit_text(self, handle: str, text: str, *, kind: str = ...) -> Any: ...
     def add_chunks(self, **kw: Any) -> list[Any]: ...
     def stamp_ref_meta(self, ref_id: int, patch: dict[str, Any]) -> Any: ...
+    def element_bindings(self, node_chunk_id: int) -> list[dict[str, Any]]: ...
+    def set_element_bindings(
+        self, *, node_chunk_id: int, desired: list[dict[str, Any]], set_by: str = ...
+    ) -> dict[str, int]: ...
+    def universal_chunk(self, handle: str) -> dict[str, Any] | None: ...
 
 
 #: A turn model call: takes the built prompt, returns the parsed JSON dict.
@@ -108,6 +119,9 @@ class TurnResult:
     healed: bool  # did an auto-heal retry run?
     vocab: str = ""  # the shared vocabulary after the turn (for pane reload)
     notes: str = ""  # the implementation notes after the turn (for pane reload)
+    bindings: list[dict[str, Any]] = field(
+        default_factory=list
+    )  # element→chunk bindings after the turn (for the chips)
 
 
 def _default_claude(prompt: str) -> dict[str, Any]:
@@ -168,12 +182,16 @@ def build_prompt(
     findings: list[Any],
     viewbox: tuple[float, float, float, float],
     skills: str = "",
+    context: str = "",
 ) -> str:
     """Assemble the turn prompt. Pure — tested for carrying each part.
 
     The pinned skill (``skills``) carries the full guidance; the inline block
     below is the guaranteed floor (the admonishment + safety + JSON contract)
-    so the prompt still steers even if the skill fails to load.
+    so the prompt still steers even if the skill fails to load. ``context``
+    is the element→chunk prepared context (ADR 0057), inserted after the
+    source so the model edits with the linked chunk bodies in hand; empty
+    when nothing is bound.
     """
     x, y, w, h = viewbox
     lint_block = (
@@ -210,6 +228,8 @@ def build_prompt(
         f"{notes or '(empty — record ids / structure / conventions here)'}"
     )
     parts.append(f"## Current SVG source\n{svg}")
+    if context.strip():
+        parts.append(context.strip())
     parts.append(f"## Lints on the current source\n{lint_block}")
     parts.append(f"## The human says\n{message}")
     parts.append(_JSON_CONTRACT)
@@ -232,7 +252,16 @@ def run_turn(
     vocab = vocab_chunk.text if vocab_chunk is not None else ""
     notes = notes_chunk.text if notes_chunk is not None else ""
     viewbox = _viewbox(ref, current_svg)
-    findings = lint_svg(current_svg, viewbox) if current_svg else []
+
+    # Element→chunk bindings (ADR 0057): the prepared context + the
+    # dangling-binding lint both key off the source chunk's id.
+    node_chunk_id = source_chunk.chunk_id if source_chunk is not None else None
+    context = (
+        render_diagram_context(store, node_chunk_id, current_svg)
+        if node_chunk_id is not None
+        else ""
+    )
+    findings = _all_findings(store, node_chunk_id, current_svg, viewbox)
 
     prompt = build_prompt(
         message=message,
@@ -242,9 +271,12 @@ def run_turn(
         findings=findings,
         viewbox=viewbox,
         skills=skills_text,
+        context=context,
     )
 
-    reply, new_svg, new_vocab, new_notes, healed = _ask_with_heal(call, prompt)
+    reply, new_svg, new_vocab, new_notes, new_links, healed = _ask_with_heal(
+        call, prompt
+    )
 
     changed = False
     final_svg = current_svg
@@ -253,7 +285,7 @@ def run_turn(
         if source_chunk is not None:
             store.edit_text(source_chunk.handle, new_svg, kind="figure")
         else:
-            store.add_chunks(
+            created = store.add_chunks(
                 ref_id=ref.id,
                 chunk_kind="figure_node",
                 text=new_svg,
@@ -261,11 +293,18 @@ def run_turn(
                 split=False,
                 kind="figure",
             )
+            if created:
+                node_chunk_id = created[0].chunk_id  # bind against the new source
         final_svg = new_svg
         changed = True
         vb = read_viewbox(new_svg)
         if vb is not None:
             store.stamp_ref_meta(ref.id, {"viewbox": list(vb)})
+
+    # Reconcile bindings to the model's declared set (the whole `links` array
+    # replaces the current set); omitting `links` leaves them untouched.
+    if new_links is not None and node_chunk_id is not None:
+        store.set_element_bindings(node_chunk_id=node_chunk_id, desired=new_links)
 
     final_vocab = _persist_doc(
         store, ref.id, vocab_chunk, "figure_vocab", new_vocab, vocab, index=True
@@ -275,7 +314,10 @@ def run_turn(
     )
 
     _persist_turn(store, ref.id, message, reply)
-    final_findings = lint_svg(final_svg, viewbox) if final_svg else []
+    final_findings = _all_findings(store, node_chunk_id, final_svg, viewbox)
+    final_bindings = (
+        store.element_bindings(node_chunk_id) if node_chunk_id is not None else []
+    )
     return TurnResult(
         reply=reply,
         svg=final_svg,
@@ -284,7 +326,25 @@ def run_turn(
         healed=healed,
         vocab=final_vocab,
         notes=final_notes,
+        bindings=final_bindings,
     )
+
+
+def _all_findings(
+    store: _StoreLike,
+    node_chunk_id: int | None,
+    svg: str,
+    viewbox: tuple[float, float, float, float],
+) -> list[Any]:
+    """The full lint set for a figure: compile + out-of-bounds (svg.py) plus
+    the dangling-binding check (ADR 0057). Empty on an empty source."""
+    if not svg:
+        return []
+    findings = lint_svg(svg, viewbox)
+    if node_chunk_id is not None:
+        bound = {b["element"] for b in store.element_bindings(node_chunk_id)}
+        findings = findings + lint_bindings(svg, bound)
+    return findings
 
 
 def _persist_doc(
@@ -319,25 +379,29 @@ def _persist_doc(
 def _ask_with_heal(
     call: ClaudeFn,
     prompt: str,
-) -> tuple[str, str | None, str | None, str | None, bool]:
-    """Call the model; auto-heal one compile failure. Returns
-    ``(reply, sanitized_svg_or_None, vocab_or_None, notes_or_None, healed)``.
+) -> tuple[str, str | None, str | None, str | None, list[dict[str, Any]] | None, bool]:
+    """Call the model; auto-heal one compile failure. Returns ``(reply,
+    sanitized_svg_or_None, vocab_or_None, notes_or_None, links_or_None,
+    healed)``.
 
     ``sanitized_svg`` is ``None`` when the model changed nothing OR never
     produced compilable SVG (the caller keeps the old source either way — a
-    broken reply must not overwrite good work)."""
+    broken reply must not overwrite good work). ``links`` is ``None`` when the
+    key is absent (bindings untouched) or an explicit list (the full desired
+    binding set, ADR 0057)."""
     data = _safe_call(call, prompt)
     reply = str(data.get("reply") or "").strip()
     vocab_out = _str_or_none(data.get("vocab"))
     notes_out = _str_or_none(data.get("notes"))
+    links_out = _links_or_none(data.get("links"))
 
     raw_svg = data.get("svg")
     if not isinstance(raw_svg, str) or not raw_svg.strip():
-        return reply, None, vocab_out, notes_out, False  # chat-only turn
+        return reply, None, vocab_out, notes_out, links_out, False  # chat-only
 
     ok = _clean_if_valid(raw_svg)
     if ok is not None:
-        return reply, ok, vocab_out, notes_out, False
+        return reply, ok, vocab_out, notes_out, links_out, False
 
     # One bounded auto-heal: re-prompt with the parse error.
     err = parse_error(raw_svg) or "the SVG did not parse"
@@ -349,18 +413,30 @@ def _ask_with_heal(
     reply2 = str(data2.get("reply") or reply).strip()
     vocab_out2 = _str_or_none(data2.get("vocab")) or vocab_out
     notes_out2 = _str_or_none(data2.get("notes")) or notes_out
+    links_out2 = _links_or_none(data2.get("links"))
+    if links_out2 is None:
+        links_out2 = links_out
     raw2 = data2.get("svg")
     if isinstance(raw2, str) and raw2.strip():
         ok2 = _clean_if_valid(raw2)
         if ok2 is not None:
-            return reply2, ok2, vocab_out2, notes_out2, True
+            return reply2, ok2, vocab_out2, notes_out2, links_out2, True
     # Still broken — keep the old source, surface nothing new to storage.
     log.warning("figure turn: model SVG failed to compile after auto-heal")
-    return reply2, None, vocab_out2, notes_out2, True
+    return reply2, None, vocab_out2, notes_out2, links_out2, True
 
 
 def _str_or_none(v: Any) -> str | None:
     return v if isinstance(v, str) else None
+
+
+def _links_or_none(v: Any) -> list[dict[str, Any]] | None:
+    """A model ``links`` value → a clean list of binding specs, or ``None``
+    (key absent / wrong type ⇒ leave bindings untouched). An explicit empty
+    list is preserved (it clears all bindings)."""
+    if not isinstance(v, list):
+        return None
+    return [item for item in v if isinstance(item, dict)]
 
 
 def _safe_call(call: ClaudeFn, prompt: str) -> dict[str, Any]:

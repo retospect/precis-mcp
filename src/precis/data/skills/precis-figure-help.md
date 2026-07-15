@@ -72,6 +72,22 @@ There is **no** convention checker. "Green circles are foos", symmetry,
 palette — those live in the shared vocabulary and are honoured by *you*
 reading it each turn, not by a linter.
 
+## Bind elements to the chunks they depict (ADR 0057)
+
+An element (by its stable `id=`) can be **bound to the chunk it depicts** — a
+`dc…` draft chunk, a `pc…` paper chunk, a `me…` memory — so the diagram joins
+the knowledge graph and the model edits with the linked source in hand.
+
+- `link(kind='figure', id='<slug>', element='<id>', target='<dc…/pc…/me…>')`
+  binds an element; `mode='remove'` unbinds it. The binding is a chunk-level
+  `depicts` link (the element id lives in the link's meta, **not** in the
+  SVG) — reverse-queryable, and drift is caught by a `[binding]` lint when an
+  element id no longer exists in the source.
+- `get(kind='figure', id='<slug>')` lists the bindings (`## Bindings`).
+- In the /figure turn loop the model both **sees** the prepared context
+  (each element + its geometry + the linked chunk body) and **edits** the
+  bindings via the reply's `links` field. See `precis-figure-svg`.
+
 ## Safety (the sanitizer will strip these — don't author them)
 
 `<script>`, `<foreignObject>`, `on*` event handlers, and any external or

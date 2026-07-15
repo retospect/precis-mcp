@@ -131,6 +131,7 @@ class DraftMixin:
     tx: Any
     insert_ref: Any
     add_link: Any
+    resolve_handle: Any
 
     # -- low-level inserts ---------------------------------------------------
 
@@ -558,6 +559,246 @@ class DraftMixin:
                 }
             )
         return out
+
+    # ---- element→chunk bindings (ADR 0057) ------------------------------
+    #
+    # A diagram (figure / mermaid) element is bound to the chunk it depicts
+    # via a chunk-level ``depicts`` link from the diagram's SOURCE chunk to
+    # the target chunk/ref. The element's stable source ``id=`` is the join
+    # key; it lives in ``links.meta.elements`` (a set), NOT a column — the
+    # links UNIQUE key is (src, dst, relation), so ONE row per edge carries
+    # every element that anchors it. Kind-agnostic: any chunk that owns a
+    # stable-id'd source can bind.
+
+    @staticmethod
+    def _binding_handle(kind: str, ref_id: int, chunk_id: int | None) -> str:
+        """Canonical universal handle for a bind target — a chunk handle
+        (``dc42``/``pc10``) when chunk-level, else the record handle
+        (``me5``). Falls back to ``kind:id`` for a kind with no handle code."""
+        try:
+            if chunk_id is not None:
+                return handle_registry.format_handle(kind, int(chunk_id), chunk=True)
+            return handle_registry.format_handle(kind, int(ref_id))
+        except Exception:
+            return f"{kind}:{chunk_id if chunk_id is not None else ref_id}"
+
+    def _ref_of_chunk(self, conn: psycopg.Connection, chunk_id: int) -> int:
+        row = conn.execute(
+            "SELECT ref_id FROM chunks WHERE chunk_id = %s AND retired_at IS NULL",
+            (chunk_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFound(f"no live source chunk {chunk_id} to bind from")
+        return int(row[0])
+
+    def bind_element(
+        self,
+        *,
+        node_chunk_id: int,
+        element: str,
+        target: str,
+        relation: str = "depicts",
+        set_by: str = "agent",
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Bind diagram element ``element`` (a stable source id) to ``target``
+        (a universal handle — a ``dc…`` draft chunk, ``pc…`` paper chunk, a
+        ``me…`` memory record, …). Idempotent: the element is merged into the
+        edge's ``meta.elements`` set, one link row per (source, target,
+        relation)."""
+        element = element.strip()
+        if not element:
+            raise BadInput("an element id is required to bind")
+
+        def _do(c: psycopg.Connection) -> None:
+            src_ref = self._ref_of_chunk(c, node_chunk_id)
+            rh = self.resolve_handle(target, conn=c)
+            if rh is None:
+                raise BadInput(
+                    f"cannot resolve bind target {target!r}",
+                    next="pass a live universal handle (dc…/pc…/me…/pa…)",
+                )
+            dst_ref, dst_chunk = rh.ref_id, rh.chunk_id
+            if src_ref == dst_ref and node_chunk_id == (dst_chunk or -1):
+                raise BadInput("an element cannot depict its own source chunk")
+            row = c.execute(
+                "SELECT link_id, meta FROM links "
+                "WHERE src_ref_id = %s AND src_chunk_id = %s "
+                "  AND dst_ref_id = %s AND dst_chunk_id IS NOT DISTINCT FROM %s "
+                "  AND relation = %s",
+                (src_ref, node_chunk_id, dst_ref, dst_chunk, relation),
+            ).fetchone()
+            if row is not None:
+                link_id, meta = int(row[0]), (row[1] or {})
+                elems = list(dict.fromkeys([*(meta.get("elements") or []), element]))
+                c.execute(
+                    "UPDATE links SET meta = jsonb_set(meta, '{elements}', %s) "
+                    "WHERE link_id = %s",
+                    (Jsonb(elems), link_id),
+                )
+            else:
+                c.execute(
+                    "INSERT INTO links "
+                    "  (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, "
+                    "   relation, set_by, meta) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (
+                        src_ref,
+                        node_chunk_id,
+                        dst_ref,
+                        dst_chunk,
+                        relation,
+                        set_by,
+                        Jsonb({"elements": [element]}),
+                    ),
+                )
+
+        if conn is not None:
+            _do(conn)
+        else:
+            with self.pool.connection() as c:
+                _do(c)
+
+    def unbind_element(
+        self,
+        *,
+        node_chunk_id: int,
+        element: str,
+        target: str | None = None,
+        relation: str = "depicts",
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Remove ``element`` from the node's bindings. With ``target`` given,
+        only that edge; otherwise every ``relation`` edge of the node. A row
+        whose element set empties is deleted. Returns the number of edges
+        touched."""
+        element = element.strip()
+
+        def _do(c: psycopg.Connection) -> int:
+            src_ref = self._ref_of_chunk(c, node_chunk_id)
+            filt = "src_ref_id = %s AND src_chunk_id = %s AND relation = %s"
+            params: list[Any] = [src_ref, node_chunk_id, relation]
+            if target is not None:
+                rh = self.resolve_handle(target, conn=c)
+                if rh is None:
+                    raise BadInput(f"cannot resolve unbind target {target!r}")
+                filt += " AND dst_ref_id = %s AND dst_chunk_id IS NOT DISTINCT FROM %s"
+                params += [rh.ref_id, rh.chunk_id]
+            rows = c.execute(
+                f"SELECT link_id, meta FROM links WHERE {filt}", params
+            ).fetchall()
+            touched = 0
+            for link_id, meta in rows:
+                elems = list((meta or {}).get("elements") or [])
+                if element not in elems:
+                    continue
+                touched += 1
+                elems = [e for e in elems if e != element]
+                if elems:
+                    c.execute(
+                        "UPDATE links SET meta = jsonb_set(meta, '{elements}', %s) "
+                        "WHERE link_id = %s",
+                        (Jsonb(elems), int(link_id)),
+                    )
+                else:
+                    c.execute("DELETE FROM links WHERE link_id = %s", (int(link_id),))
+            return touched
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def element_bindings(self, node_chunk_id: int) -> list[dict[str, Any]]:
+        """Every element→target binding anchored on diagram source chunk
+        ``node_chunk_id`` — one entry per (element, target), exploding
+        ``meta.elements``. Each: ``{element, relation, kind, ident, handle,
+        chunk_id, title}``. Drives the prepared-context assembler (slice 2)."""
+        sql = """
+            SELECT l.meta, l.relation, o.ref_id, o.kind, l.dst_chunk_id,
+                   (SELECT ri.id_value FROM ref_identifiers ri
+                     WHERE ri.ref_id = o.ref_id AND ri.id_kind = 'cite_key'
+                     LIMIT 1) AS slug,
+                   o.title
+              FROM links l
+              JOIN refs o ON o.ref_id = l.dst_ref_id
+             WHERE l.src_chunk_id = %s AND l.relation = 'depicts'
+               AND o.deleted_at IS NULL
+             ORDER BY l.created_at
+        """
+        out: list[dict[str, Any]] = []
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (node_chunk_id,)).fetchall()
+        for meta, relation, oid, kind, dst_chunk, slug, title in rows:
+            handle = self._binding_handle(
+                str(kind), int(oid), int(dst_chunk) if dst_chunk is not None else None
+            )
+            for element in (meta or {}).get("elements") or []:
+                out.append(
+                    {
+                        "element": element,
+                        "relation": relation,
+                        "kind": kind,
+                        "ident": slug or str(oid),
+                        "handle": handle,
+                        "chunk_id": int(dst_chunk) if dst_chunk is not None else None,
+                        "title": (title or "").split("\n", 1)[0][:80],
+                    }
+                )
+        return out
+
+    def set_element_bindings(
+        self,
+        *,
+        node_chunk_id: int,
+        desired: list[dict[str, Any]],
+        set_by: str = "agent",
+    ) -> dict[str, int]:
+        """Reconcile the full binding set of a diagram source chunk to
+        ``desired`` — a list of ``{element, target, relation?}`` (the turn
+        loop's ``links`` array). Adds the missing, removes the absent;
+        unresolvable targets are skipped (a bad handle never fails the whole
+        turn). Returns ``{'added': n, 'removed': m}``. An empty ``desired``
+        clears all bindings; the caller leaves bindings untouched by not
+        calling this (e.g. when the turn omits ``links``)."""
+        have: set[tuple[str, str, str]] = {
+            (b["element"], b["handle"], b["relation"])
+            for b in self.element_bindings(node_chunk_id)
+        }
+        want: set[tuple[str, str, str]] = set()
+        added = removed = 0
+        with self.pool.connection() as conn:
+            for spec in desired:
+                element = str(spec.get("element", "")).strip()
+                target = str(spec.get("target", "")).strip()
+                relation = str(spec.get("relation") or "depicts").strip()
+                if not element or not target:
+                    continue
+                rh = self.resolve_handle(target, conn=conn)
+                if rh is None:
+                    continue  # skip unresolvable — don't fail the turn
+                canon = self._binding_handle(rh.kind, rh.ref_id, rh.chunk_id)
+                want.add((element, canon, relation))
+            for element, canon, relation in want - have:
+                self.bind_element(
+                    node_chunk_id=node_chunk_id,
+                    element=element,
+                    target=canon,
+                    relation=relation,
+                    set_by=set_by,
+                    conn=conn,
+                )
+                added += 1
+            for element, canon, relation in have - want:
+                self.unbind_element(
+                    node_chunk_id=node_chunk_id,
+                    element=element,
+                    target=canon,
+                    relation=relation,
+                    conn=conn,
+                )
+                removed += 1
+        return {"added": added, "removed": removed}
 
     def live_paper_cites(self, handles: set[str], slugs: set[str]) -> set[str]:
         """Citation tokens that resolve to a **live paper we hold** — the

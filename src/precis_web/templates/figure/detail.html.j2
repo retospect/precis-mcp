@@ -34,6 +34,15 @@
       <div class="text-amber-700">⚠ [{{ f.kind }}] {{ f.message }}</div>
       {% endfor %}
     </div>
+    {# ── element → chunk bindings (ADR 0057) ── #}
+    <div id="fig-bindings" class="mt-2 flex flex-wrap gap-1 text-[11px]{% if not bindings %} hidden{% endif %}">
+      {% for b in bindings %}
+      <span class="inline-flex items-center gap-1 rounded bg-sky-50 border border-sky-200 px-1.5 py-0.5 text-sky-800"
+            title="{{ b.title }}">
+        <span class="font-mono">{{ b.element }}</span>→<span class="font-mono">{{ b.handle }}</span>
+      </span>
+      {% endfor %}
+    </div>
   </div>
 
   {# ── right: docs (two tabs) + chat ── #}
@@ -81,6 +90,7 @@
   const vocab = document.getElementById('fig-vocab');
   const notes = document.getElementById('fig-notes');
   const lints = document.getElementById('fig-lints');
+  const binds = document.getElementById('fig-bindings');
   const tabVocab = document.getElementById('fig-tab-vocab');
   const tabNotes = document.getElementById('fig-tab-notes');
 
@@ -142,6 +152,20 @@
           div.textContent = '⚠ [' + f.kind + '] ' + f.message;
           lints.appendChild(div);
         });
+        // Refresh the element→chunk binding chips (ADR 0057).
+        if (Array.isArray(d.bindings)) {
+          binds.innerHTML = '';
+          binds.classList.toggle('hidden', d.bindings.length === 0);
+          d.bindings.forEach((b) => {
+            const span = document.createElement('span');
+            span.className = 'inline-flex items-center gap-1 rounded bg-sky-50 border border-sky-200 px-1.5 py-0.5 text-sky-800';
+            span.title = b.title || '';
+            const e = document.createElement('span'); e.className = 'font-mono'; e.textContent = b.element;
+            const h = document.createElement('span'); h.className = 'font-mono'; h.textContent = b.handle;
+            span.appendChild(e); span.append('→'); span.appendChild(h);
+            binds.appendChild(span);
+          });
+        }
       })
       .catch((err) => { pending.textContent = 'request failed: ' + err; })
       .finally(() => { send.disabled = false; toBottom(); msg.focus(); });

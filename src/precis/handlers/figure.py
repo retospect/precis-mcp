@@ -27,6 +27,7 @@ from precis.figure.svg import (
     DEFAULT_VIEWBOX,
     SvgError,
     default_svg,
+    lint_bindings,
     lint_svg,
     parse_error,
     read_viewbox,
@@ -296,7 +297,7 @@ class FigureHandler(Handler):
         self.store.soft_delete_ref(ref.id)
         return Response(body=f"retired figure {ref.slug}")
 
-    # ── link: folder placement only (ADR 0045, mirror plan) ──────────
+    # ── link: folder placement (ADR 0045) + element→chunk binding (0057) ──
 
     def link(  # type: ignore[override]
         self,
@@ -305,9 +306,15 @@ class FigureHandler(Handler):
         target: str | None = None,
         mode: str = "add",
         rel: str | None = None,
+        element: str | None = None,
         **_kw: Any,
     ) -> Response:
         from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
+
+        # Element→chunk binding (ADR 0057): element= names a stable id in the
+        # SVG source; target= the chunk it depicts. mode='remove' unbinds.
+        if element is not None:
+            return self._link_element(id=id, element=element, target=target, mode=mode)
 
         if rel == RESERVED_PARENT_REL:
             ref = resolve_live_slug_ref(self.store, kind="figure", id=str(id).strip())
@@ -315,8 +322,44 @@ class FigureHandler(Handler):
                 self.store, kind="figure", ref=ref, target=target, mode=mode
             )
         raise BadInput(
-            "figure link supports only rel='parent' (folder placement)",
-            next="link(kind='figure', id='<slug>', target='folder:N', rel='parent')",
+            "figure link supports rel='parent' (folder placement) or "
+            "element=<id> + target=<chunk handle> (bind an element to the "
+            "chunk it depicts, ADR 0057)",
+            next="link(kind='figure', id='<slug>', element='hook', target='dc42')",
+        )
+
+    def _link_element(
+        self, *, id: str | int, element: str, target: str | None, mode: str
+    ) -> Response:
+        """Bind (or unbind) an SVG element to the chunk it depicts."""
+        ref = self._resolve_any(id)
+        source, _v, _n = self._docs(ref.id)
+        if source is None:
+            raise BadInput(
+                f"figure {ref.slug} has no SVG source yet — nothing to bind to",
+                next=f"edit(kind='figure', id='{ref.slug}', text='<svg>…')",
+            )
+        if mode == "remove":
+            n = self.store.unbind_element(
+                node_chunk_id=source.chunk_id, element=element, target=target
+            )
+            return Response(
+                body=f"unbound element {element!r} on {ref.slug} ({n} edge(s))"
+            )
+        if not target or not str(target).strip():
+            raise BadInput(
+                "binding an element needs target= (the chunk handle it depicts)",
+                next="link(kind='figure', id='<slug>', element='hook', target='dc42')",
+            )
+        self.store.bind_element(
+            node_chunk_id=source.chunk_id,
+            element=element,
+            target=str(target).strip(),
+            relation="depicts",
+        )
+        return Response(
+            body=f"bound element {element!r} → {str(target).strip()} "
+            f"(depicts) on {ref.slug}"
         )
 
     # ── helpers ──────────────────────────────────────────────────────
@@ -397,7 +440,12 @@ class FigureHandler(Handler):
         )
         svg = source.text if source is not None else ""
         box = _parse_viewbox((ref.meta or {}).get("viewbox")) or read_viewbox(svg)
+        bindings = (
+            self.store.element_bindings(source.chunk_id) if source is not None else []
+        )
         findings = lint_svg(svg, box) if svg else []
+        if svg and bindings:
+            findings = findings + lint_bindings(svg, {b["element"] for b in bindings})
         node_h = source.dc if source is not None else "—"
 
         lines = [f"# {ref.title}  ({slug}) — figure [svg], {turns} turn(s)"]
@@ -408,6 +456,13 @@ class FigureHandler(Handler):
             lines.append("\n## Shared vocabulary\n" + vocab_chunk.text.strip())
         if notes_chunk is not None and notes_chunk.text.strip():
             lines.append("\n## Implementation notes\n" + notes_chunk.text.strip())
+        if bindings:
+            lines.append("\n## Bindings (element → chunk it depicts)")
+            for b in bindings:
+                title = f"  {b['title']}" if b.get("title") else ""
+                lines.append(
+                    f"- {b['element']} → {b['handle']} ({b['relation']}){title}"
+                )
         lines.append("\n## SVG source\n" + (svg or "(empty)"))
         if findings:
             lines.append("\n## Lints")

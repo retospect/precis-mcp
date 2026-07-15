@@ -75,6 +75,15 @@ def _docs(store: Any, ref_id: int) -> tuple[str, str, str, list[str]]:
     return svg or default_svg(), vocab, notes, turns
 
 
+def _bindings(store: Any, ref_id: int) -> list[dict[str, Any]]:
+    """Element→chunk bindings of a figure's source node (ADR 0057), for the
+    chips row. Empty when the figure has no source yet or nothing is bound."""
+    for c in store.reading_order(ref_id, kind="figure"):
+        if c.chunk_kind == "figure_node":
+            return store.element_bindings(c.chunk_id)
+    return []
+
+
 @router.get("/figure", response_class=HTMLResponse)
 async def figure_list(request: Request) -> HTMLResponse:
     store = get_store(request)
@@ -124,6 +133,7 @@ async def figure_detail(request: Request, slug: str) -> HTMLResponse:
         "vb_w": _num(box[2]),
         "vb_h": _num(box[3]),
         "findings": [{"kind": f.kind, "message": f.message} for f in findings],
+        "bindings": _bindings(store, ref.id),
     }
     return templates.TemplateResponse(request, "figure/detail.html.j2", ctx)
 
@@ -170,6 +180,15 @@ async def figure_turn(
             "findings": [
                 {"kind": f.kind, "node": f.node, "message": f.message}
                 for f in result.findings
+            ],
+            "bindings": [
+                {
+                    "element": b["element"],
+                    "handle": b["handle"],
+                    "relation": b["relation"],
+                    "title": b.get("title", ""),
+                }
+                for b in result.bindings
             ],
         }
     )

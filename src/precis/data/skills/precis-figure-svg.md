@@ -66,6 +66,30 @@ left" and have it mean something. Prefer a `<g id="…">` per conceptual part
 (the face, an arm, the legend). Do **not** rely on XML comments to label
 things — comments are stripped on the sanitize round-trip. Use `<title>`.
 
+## Bind elements to the chunks they depict (the `links` field)
+
+An element can be **bound to the chunk it depicts** — a `dc…` draft chunk, a
+`pc…` paper chunk, a `me…` memory. This is how the drawing joins the corpus:
+when you edit, the prepared context shows you each bound element *next to the
+linked source text*, so you can draw the deck hook faithfully from its
+description instead of guessing.
+
+- The element's stable **`id=` is the anchor** (one more reason to name
+  things). The binding itself lives in the graph, not the markup — you do
+  **not** add any attribute to the SVG.
+- Declare bindings in your turn reply's **`links`** field: a list of
+  `{"element": "<an id= in your svg>", "target": "<dc…/pc…/me… handle>",
+  "relation": "depicts"}`. The list is the **complete desired set** — it
+  replaces the current bindings. **Omit `links` entirely** to leave them
+  unchanged; send `[]` to clear them all.
+- When the prepared context (`## Diagram elements ↔ linked context`) shows a
+  binding marked **dangling** (or a `[binding]` lint fires), an element id in
+  a binding no longer exists in your SVG — either restore the `id=`, or drop
+  that entry from `links`.
+
+Keep each bound element's geometry faithful to the linked source; that
+faithfulness is the whole point of the binding.
+
 ## Keep shapes measurable and in-bounds
 
 The out-of-bounds lint can only measure **rect, circle, ellipse, line,
