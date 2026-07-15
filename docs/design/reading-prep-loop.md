@@ -511,6 +511,76 @@ Risk note: mastery + routing are the research-y pieces; the kind + graph + dedup
 are composition of existing substrates (embeddings, the `relations` table, chunk
 provenance, the Anki stats already flowing). Ship each slice dark.
 
+## Concept quality — v2 extraction (the plan)
+
+The v1 glossary (shipped, validated on 5 prod papers → 44 concepts) produced
+noisy nodes — `Dedication`, `new trends`, `extensively examined`. That's an
+*item*-quality symptom of a missing *plan*: with no definition of "what earns a
+node," the extractor accepted everything and was fed statistical KeyBERT
+keywords (themselves noise). Reto's criteria (2026-07-15) fix the plan, and the
+item quality follows:
+
+- **Selection — author-defined terms only.** A node must be a term the paper
+  *defines or introduces*: spelled-out abbreviations (Schwartz-Hearst), coined
+  terms, named methods/materials/phenomena. Generic phrases and section words
+  are never "defined," so this excludes them *by construction*. **Drop raw
+  KeyBERT keywords as a candidate source** — they are the noise.
+- **Granularity — named things + key relationships.** Not only term-nouns but
+  the important relationships/mechanisms among them — which become the concept
+  **graph edges**. So extraction and edge-inference (slice 3) **unify**.
+- **Selectivity — scale to the paper.** Count proportional to how much the paper
+  actually introduces: a few for a focused paper, many for a survey. No fixed cap.
+- **Source + enrichment — author-defined, then grounded context.** For each
+  selected term, run **1–2 local corpus searches** (how is it used across the
+  held corpus? which neighbours?) and **optionally a perplexity lookup**
+  (external background / common usage), and fold that into a rich, correct
+  definition — not just the paper's one-line mention. A **skill** documents this.
+- **Calibration — the user's likely knowledge graph.** A concept is worth a node
+  only if it's *new to the user*, not merely present in the paper. Skip/flag
+  terms the user likely already knows.
+
+### The extraction pipeline (v2)
+
+1. **Select** author-defined terms (Schwartz-Hearst + an LLM "what does THIS
+   paper introduce/define?" grounded in title/abstract/intro), scaled to the paper.
+2. **Calibrate** against the user's knowledge graph — drop the likely-known.
+3. **Enrich** each survivor: local `search` + optional `perplexity` → a grounded
+   definition + context.
+4. **Relate** — extract the key relationships among the survivors → graph edges.
+5. **Write** clean concept nodes + edges + provenance.
+
+### Calibration — modelling "what the user likely knows"
+
+The user's knowledge graph is approximated by: existing concept nodes (esp.
+*mastered*), terms in the user's **own drafts/writing** (wrote it ⇒ knows it),
+well-reviewed anki cards, and **corpus prevalence** (a term pervasive across the
+held corpus is likely familiar). **v1 proxy**: existing-concept dedup (have it)
++ own-writing / anki presence + a prevalence heuristic. **Full version** needs
+the mastery field (slice 4): the *frontier* = needed-by-paper **minus**
+known-by-user.
+
+### The concept-craft skill
+
+A skill (agent-facing, e.g. `precis-concept-craft`) documents how to author a
+well-grounded concept: author-defined selection, local-search + perplexity
+enrichment, relationship extraction, knowledge-calibration. Editing the skill
+tunes the extraction — the same craft/reference split as `precis-cloze`.
+
+### Implementation + sequencing
+
+1. **Write the concept-craft skill** — the criteria as the agent-facing plan.
+2. **Build extraction v2** (supersede the v1 keyword glossary; rewrite
+   `paper_glossary` or a new pass): select → calibrate → enrich → relate → write.
+   Bump `GLOSSARY_VERSION` (lazy re-derive). Wire local `search` + `perplexity`,
+   **cost-gated** by scale-to-paper + calibration (skip known) — still a trickle.
+3. **Re-validate on the same 5 papers** — compare node quality side-by-side.
+4. **Then enable corpus-wide** (B) — now producing *clean* nodes.
+5. **Then the meditation** walks a clean cohort.
+
+Cost note: enrichment adds per-term `search` + `perplexity`, but selectivity +
+calibration keep the term count low, so it stays a bounded trickle. Quality gates
+enablement: **do not turn the pass on corpus-wide until v2 nodes read clean.**
+
 ## Implementation plan — concrete build steps
 
 Grounded against the codebase (three probes, 2026-07-14). **Headline: almost
