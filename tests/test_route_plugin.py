@@ -37,11 +37,16 @@ from precis_chem.engine import (
 )
 from precis_chem.ir import RouteGraph, RouteStep, cache_key, normalize_smiles
 from precis_chem.jobs import RETROSYNTH_SPEC, run_retrosynth
+from precis_chem.normalize import ROUTE_FILE, parse_syngraph
 from precis_chem.route import RouteHandler
 
 _CHEM_MIGRATION = (
     Path(precis_chem.__file__).parent / "migrations" / "0001_route_kind.sql"
 )
+
+#: A real ``route.json`` captured from an actual LinChemIn 3.2.0 translate +
+#: routes_descriptors run (2-step aspirin route) — the slice-2 contract.
+_ROUTE_FIXTURE = Path(__file__).parent / "fixtures" / "chem" / "aspirin_route.json"
 
 
 @pytest.fixture
@@ -438,6 +443,237 @@ def test_container_dispatch_missing_node_fails(
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
     assert ctx.status != "succeeded"
     assert ctx.failure is not None and "route node" in ctx.failure
+
+
+# ─────────────────────── LinChemIn normalize (slice 2) ───────────────────────
+
+
+def _route_json(*, solved: bool = True, metrics: bool = True) -> str:
+    """A minimal precis-canonical ``route.json`` (what the container shim emits).
+
+    2-step: aspirin ⇐ Ac2O + salicylic acid; salicylic acid ⇐ phenol + CO2."""
+    doc: dict[str, Any] = {
+        "schema_version": 1,
+        "engine": "aizynth",
+        "engine_version": "4.3.2",
+        "target": "CC(=O)Oc1ccccc1C(=O)O",
+        "solved": solved,
+        "steps": [
+            {
+                "id": 1,
+                "product": "CC(=O)Oc1ccccc1C(=O)O",
+                "reactants": ["CC(=O)OC(C)=O", "O=C(O)c1ccccc1O"],
+                "reaction_smiles": "CC(=O)OC(C)=O.O=C(O)c1ccccc1O>>CC(=O)Oc1ccccc1C(=O)O",
+                "template_id": "tmpl-acyl-42",
+                "confidence": 0.81,
+                "conditions": "1.2 O-acylation",
+                "in_stock": False,
+            },
+            {
+                "id": 2,
+                "product": "O=C(O)c1ccccc1O",
+                "reactants": ["Oc1ccccc1", "O=C=O"],
+                "reaction_smiles": "O=C=O.Oc1ccccc1>>O=C(O)c1ccccc1O",
+                "template_id": "tmpl-kolbe-7",
+                "confidence": 0.44,
+                "conditions": "3.1 Carboxylation",
+                "in_stock": True,
+            },
+        ],
+        "metrics": (
+            {"nr_steps": 2, "longest_seq": 2, "nr_branches": 0, "cdscore": 0.33}
+            if metrics
+            else {}
+        ),
+        "score": 0.33 if metrics else None,
+        "provenance": {"engine": "aizynth", "normalizer": "linchemin", "n_routes": 1},
+    }
+    return json.dumps(doc)
+
+
+def test_parse_syngraph_reads_route_json() -> None:
+    g = parse_syngraph(_route_json(), target="CC(=O)Oc1ccccc1C(=O)O")
+    assert g.engine == "aizynth" and g.solved and len(g.steps) == 2
+    # Target-first ordering is authoritative (the shim emits it).
+    assert g.steps[0].product == "CC(=O)Oc1ccccc1C(=O)O"
+    assert g.steps[1].product == "O=C(O)c1ccccc1O"
+    s1 = g.steps[0]
+    assert s1.reactants == ["CC(=O)OC(C)=O", "O=C(O)c1ccccc1O"]
+    assert s1.template_id == "tmpl-acyl-42" and s1.confidence == 0.81
+    assert s1.conditions == "1.2 O-acylation"
+    # route.json's reaction_smiles maps onto the IR's reaction string field.
+    assert s1.reaction_smarts == "CC(=O)OC(C)=O.O=C(O)c1ccccc1O>>CC(=O)Oc1ccccc1C(=O)O"
+    # Route-level descriptors flow through — the scoring substrate.
+    assert g.metrics["nr_steps"] == 2 and g.metrics["cdscore"] == 0.33
+    assert g.score == 0.33
+    assert g.provenance["normalizer"] == "linchemin"
+    assert g.provenance["route_schema"] == 1
+
+
+def test_parse_syngraph_on_real_linchemin_fixture() -> None:
+    """The captured real LinChemIn output parses into a coherent RouteGraph."""
+    g = parse_syngraph(_ROUTE_FIXTURE.read_text())
+    assert g.engine == "aizynth" and g.solved and len(g.steps) == 2
+    assert g.steps[0].product == "CC(=O)Oc1ccccc1C(=O)O"  # target-first
+    # LinChemIn descriptors are present (nr_steps/longest_seq/convergence/…).
+    assert g.metrics.get("nr_steps") == 2
+    assert "convergence" in g.metrics and "cdscore" in g.metrics
+    # And the whole thing renders without error, showing the metrics line.
+    rendered = g.render()
+    assert "metrics:" in rendered and "nr_steps=2" in rendered
+
+
+def test_route_graph_metrics_json_roundtrip() -> None:
+    g = RouteGraph(
+        target="CCO",
+        engine="aizynth",
+        engine_version="4.3.2",
+        steps=[RouteStep(id=1, product="CCO", reactants=["C", "O"], in_stock=True)],
+        solved=True,
+        metrics={"nr_steps": 1, "cdscore": 0.5},
+    )
+    again = RouteGraph.from_json(g.to_json())
+    assert again == g and again.metrics == {"nr_steps": 1, "cdscore": 0.5}
+
+
+def test_metrics_render_and_view(route_store: Store) -> None:
+    """get(view='metrics') renders route descriptors; a stub route says none."""
+    h = RouteHandler(hub=Hub(store=route_store))
+    # Land a normalized route directly (bypass the container).
+    ref = route_store.insert_ref(
+        kind="route", slug="asp", title="asp", meta={"target": "CC(=O)Oc1ccccc1C(=O)O"}
+    )
+    g = parse_syngraph(_route_json())
+    from precis_chem.persist import apply_route_result
+
+    apply_route_result(route_store, ref.id, g, cache_key="retrosynth:abc")
+
+    metrics_view = h.get(id="asp", view="metrics").body
+    assert "route metrics" in metrics_view and "nr_steps" in metrics_view
+    assert "cdscore" in metrics_view
+
+    # A stub route (no normalizer) reports the absence, doesn't error.
+    h.put(id="stubby", target="CCO", engine="stub")
+    stub_metrics = h.get(id="stubby", view="metrics").body
+    assert "no route-level descriptors" in stub_metrics
+
+    with pytest.raises(Exception, match="unknown route view"):
+        h.get(id="asp", view="bogus")
+
+
+def test_container_prefers_route_json_over_trees(
+    route_store: Store, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the container drops both route.json and trees.json, the dispatch
+    reads the normalized route.json (metrics present)."""
+    out_dir = tmp_path / "out"
+    (tmp_path / "in").mkdir()
+    out_dir.mkdir()
+
+    def _runner(argv: list[str], *, node: str, timeout: Any = None) -> tuple[int, str]:
+        (out_dir / "trees.json").write_text(_aizynth_trees(solved=True))
+        (out_dir / ROUTE_FILE).write_text(_route_json())
+        return 0, "ok"
+
+    monkeypatch.setattr(
+        chem_jobs, "STAGER", lambda rid: (str(tmp_path / "in"), str(out_dir))
+    )
+    monkeypatch.setattr(chem_jobs, "RUNNER", _runner)
+
+    ref = route_store.insert_ref(
+        kind="route",
+        slug="both",
+        title="both",
+        meta={"target": "CC(=O)Oc1ccccc1C(=O)O"},
+    )
+    params = {
+        "route_ref_id": ref.id,
+        "target": "CC(=O)Oc1ccccc1C(=O)O",
+        "engine": "aizynth",
+        "engine_version": "aizynth-container",
+        "cache_key": "retrosynth:both",
+        "target_node": "spark",
+    }
+    chem_jobs._dispatch(_FakeCtx(store=route_store, params=params), RETROSYNTH_SPEC)
+    route = (route_store.get_ref(kind="route", id="both").meta or {}).get("route") or {}
+    # route.json's 2-step normalized plan (not trees.json's 1-step) won.
+    assert len(route["steps"]) == 2
+    assert route["metrics"]["nr_steps"] == 2
+
+
+def test_container_falls_back_to_trees_when_no_route_json(
+    route_store: Store, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Older image / normalizer skipped ⇒ only trees.json ⇒ bespoke parser."""
+    out_dir = tmp_path / "out"
+    (tmp_path / "in").mkdir()
+    out_dir.mkdir()
+
+    def _runner(argv: list[str], *, node: str, timeout: Any = None) -> tuple[int, str]:
+        (out_dir / "trees.json").write_text(_aizynth_trees(solved=True))
+        return 0, "ok"
+
+    monkeypatch.setattr(
+        chem_jobs, "STAGER", lambda rid: (str(tmp_path / "in"), str(out_dir))
+    )
+    monkeypatch.setattr(chem_jobs, "RUNNER", _runner)
+
+    ref = route_store.insert_ref(
+        kind="route", slug="treesonly", title="treesonly", meta={"target": "CCO"}
+    )
+    params = {
+        "route_ref_id": ref.id,
+        "target": "CCO",
+        "engine": "aizynth",
+        "engine_version": "aizynth-container",
+        "cache_key": "retrosynth:trees",
+        "target_node": "spark",
+    }
+    ctx = _FakeCtx(store=route_store, params=params)
+    chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
+    assert ctx.status == "succeeded"
+    route = (route_store.get_ref(kind="route", id="treesonly").meta or {}).get(
+        "route"
+    ) or {}
+    assert route["steps"][0]["product"] == "CCO"  # trees.json parsed
+
+
+def test_container_bad_route_json_falls_back_to_trees(
+    route_store: Store, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A garbled route.json is not fatal — the dispatch falls back to trees.json."""
+    out_dir = tmp_path / "out"
+    (tmp_path / "in").mkdir()
+    out_dir.mkdir()
+
+    def _runner(argv: list[str], *, node: str, timeout: Any = None) -> tuple[int, str]:
+        (out_dir / "trees.json").write_text(_aizynth_trees(solved=True))
+        (out_dir / ROUTE_FILE).write_text("{ this is not valid json ")
+        return 0, "ok"
+
+    monkeypatch.setattr(
+        chem_jobs, "STAGER", lambda rid: (str(tmp_path / "in"), str(out_dir))
+    )
+    monkeypatch.setattr(chem_jobs, "RUNNER", _runner)
+
+    ref = route_store.insert_ref(
+        kind="route", slug="badjson", title="badjson", meta={"target": "CCO"}
+    )
+    params = {
+        "route_ref_id": ref.id,
+        "target": "CCO",
+        "engine": "aizynth",
+        "engine_version": "aizynth-container",
+        "cache_key": "retrosynth:bad",
+        "target_node": "spark",
+    }
+    ctx = _FakeCtx(store=route_store, params=params)
+    chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
+    assert ctx.status == "succeeded" and ctx.failure is None
+    route = (route_store.get_ref(kind="route", id="badjson").meta or {}).get(
+        "route"
+    ) or {}
+    assert route["steps"][0]["product"] == "CCO"  # trees.json fallback won
 
 
 # ─────────────────────────── dark-ship gate ───────────────────────────

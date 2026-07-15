@@ -88,6 +88,12 @@ class RouteGraph:
     solved: bool = False
     #: Overall route score in [0, 1] (engine-defined) when known.
     score: float | None = None
+    #: Route-level descriptors — the LinChemIn ``routes_descriptors`` row
+    #: (``nr_steps``/``nr_branches``/``branchedness``/``longest_seq``/
+    #: ``convergence``/``cdscore``/``simplified_atom_effectiveness``, …). Empty
+    #: for a stub/legacy route (no normalizer ran). Surfaced via
+    #: ``get(kind='route', view='metrics')`` — the substrate for our own scoring.
+    metrics: dict[str, Any] = field(default_factory=dict)
     #: Free-form engine provenance (image digest, model version, stock set, …).
     provenance: dict[str, Any] = field(default_factory=dict)
 
@@ -101,6 +107,7 @@ class RouteGraph:
             "solved": self.solved,
             "score": self.score,
             "steps": [s.to_json() for s in self.steps],
+            "metrics": self.metrics,
             "provenance": self.provenance,
         }
 
@@ -113,6 +120,7 @@ class RouteGraph:
             steps=[RouteStep.from_json(s) for s in d.get("steps", [])],
             solved=bool(d.get("solved", False)),
             score=d.get("score"),
+            metrics=dict(d.get("metrics", {})),
             provenance=dict(d.get("provenance", {})),
         )
 
@@ -138,7 +146,50 @@ class RouteGraph:
             lines.append(f"{s.id}. {s.product} ⇐ {precursors}{conf}{tmpl}{leaf}")
             if s.conditions:
                 lines.append(f"   conditions: {s.conditions}")
+        if self.metrics:
+            lines += ["", self._metrics_line()]
         return "\n".join(lines)
+
+    #: Descriptor keys rendered first, in this order, when present (the rest
+    #: follow alphabetically). Keeps the human-facing summary stable across
+    #: LinChemIn versions that add/drop columns.
+    _METRIC_ORDER = (
+        "nr_steps",
+        "longest_seq",
+        "nr_branches",
+        "branchedness",
+        "convergence",
+        "cdscore",
+    )
+
+    def _ordered_metrics(self) -> list[tuple[str, Any]]:
+        keys = [k for k in self._METRIC_ORDER if k in self.metrics]
+        keys += sorted(k for k in self.metrics if k not in self._METRIC_ORDER)
+        return [(k, self.metrics[k]) for k in keys]
+
+    def _fmt_metric(self, v: Any) -> str:
+        if isinstance(v, float):
+            return f"{v:g}"
+        return str(v)
+
+    def _metrics_line(self) -> str:
+        return "metrics: " + " · ".join(
+            f"{k}={self._fmt_metric(v)}" for k, v in self._ordered_metrics()
+        )
+
+    def metrics_render(self) -> str:
+        """The ``view='metrics'`` render — route descriptors as a table, the
+        substrate for our own scoring. Empty ⇒ no normalizer ran (stub/legacy)."""
+        head = f"# route metrics → {self.target}\nengine: {self.engine} ({self.engine_version})"
+        if not self.metrics:
+            return (
+                head
+                + "\n\n(no route-level descriptors — engine ran without the LinChemIn normalizer)"
+            )
+        rows = "\n".join(
+            f"  {k:<30} {self._fmt_metric(v)}" for k, v in self._ordered_metrics()
+        )
+        return f"{head}\n\n{rows}"
 
     def card_text(self) -> str:
         """Plain text embedded into the ``card_combined`` search chunk — the

@@ -20,10 +20,27 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && pip install --no-cache-dir "aizynthfinder==${AIZYNTH_VERSION}"
 
+# LinChemIn (route normalizer, ADR 0056 slice 2) in its OWN venv: linchemin and
+# aizynthfinder both pin rdkit, so isolating linchemin removes a resolver
+# conflict at build time. The shim calls this venv's python for az_to_route.py.
+# `packaging` is a missing transitive dep of linchemin; add it explicitly.
+# `linchemin_configure` writes $HOME/linchemin/settings.yaml — linchemin's
+# dynaconf REFUSES to import `facade` without it (AttributeError: CONSTRUCTORS).
+# The container runs as root at run time, so HOME=/root matches the build.
+ARG LINCHEMIN_VERSION=3.2.0
+ENV LINCHEMIN_VENV=/opt/linchemin-venv
+RUN python -m venv "${LINCHEMIN_VENV}" \
+ && "${LINCHEMIN_VENV}/bin/pip" install --no-cache-dir \
+      "linchemin==${LINCHEMIN_VERSION}" packaging \
+ && HOME=/root "${LINCHEMIN_VENV}/bin/linchemin_configure"
+
 # Config lives with the mounted models (node-deploy concern), not in the image.
 ENV PRECIS_AIZYNTH_CONFIG=/models/config.yml
+# The engine version string stamped into route.json (kept in sync with the pin).
+ENV PRECIS_AIZYNTH_VERSION=${AIZYNTH_VERSION}
 
 COPY precis-aizynth-run /usr/local/bin/precis-aizynth-run
+COPY az_to_route.py /usr/local/lib/az_to_route.py
 RUN chmod +x /usr/local/bin/precis-aizynth-run
 
 # The shim cd's here and writes trees.json into the bind-mounted /work/out.

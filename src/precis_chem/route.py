@@ -266,7 +266,11 @@ class RouteHandler(Handler):
 
     # ── get ──────────────────────────────────────────────────────────
     def get(  # type: ignore[override]
-        self, *, id: str | int | None = None, **_kw: Any
+        self,
+        *,
+        id: str | int | None = None,
+        view: str | None = None,
+        **_kw: Any,
     ) -> Response:
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
@@ -283,7 +287,18 @@ class RouteHandler(Handler):
                 f"target: {target}\nengine: {meta.get('engine', '?')}\n\n"
                 "(no route yet — the compute job hasn't landed; poll again)"
             )
-        return Response(body=RouteGraph.from_json(blob).render())
+        graph = RouteGraph.from_json(blob)
+        v = (view or "").strip().lower()
+        if v in ("metrics", "descriptors", "score"):
+            # Route-level descriptors — the scoring substrate (slice 2). Only the
+            # LinChemIn-normalized path populates them; a stub/legacy route says so.
+            return Response(body=graph.metrics_render())
+        if v and v not in ("route", "graph", "tree"):
+            raise BadInput(
+                f"unknown route view {view!r}",
+                next="view='metrics' (route descriptors) | omit for the route graph",
+            )
+        return Response(body=graph.render())
 
     # ── delete ────────────────────────────────────────────────────────
     def delete(  # type: ignore[override]

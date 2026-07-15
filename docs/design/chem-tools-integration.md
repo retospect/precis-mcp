@@ -229,7 +229,17 @@ machine-specific glue.
    flipping `PRECIS_CHEM_ENABLED`. Until then the stub inline path is the only
    live engine.
 2. **LinChemIn normalization at route-ingest** — enforce the one-IR
-   contract before adding a second engine.
+   contract before adding a second engine. **Slice 2 — BUILT (precis side +
+   container; live-run needs the image rebuilt).** LinChemIn runs **inside** the
+   aizynth container (its own isolated venv, so its rdkit pin can't fight
+   aizynth's): the shim's `az_to_route.py` translates `trees.json`
+   (`az_retro`) → SynGraph, extracts engine-agnostic steps + `routes_descriptors`
+   metrics, enriches per-step from the raw tree, and emits a precis-canonical
+   `route.json`. Precis-side `precis_chem.normalize.parse_syngraph` reads that
+   clean JSON (dependency-free); `_run_container` **prefers `route.json`, falls
+   back to `trees.json`**. `RouteGraph.metrics` + `get(view='metrics')` surface
+   the descriptors — the scoring substrate. Gate-green (real-LinChemIn fixture).
+   **Remaining:** rebuild the image on the node (`aizynth_build_image=true`).
 3. **ASKCOS** behind the *same* `route` kind + `job_type` (likely the
    heavier container path) — proves "two engines, one IR."
 4. **AlphaFold** as a `protein` kind, in-process on spark (GPU-native),
@@ -258,9 +268,10 @@ machine-specific glue.
 
 ## 10. Slice 2 — LinChemIn normalization at route-ingest (full spec)
 
-> Status: **specced, not built.** Slice 1b's `parse_aizynth_trees` is a bespoke
-> walk of AiZynth's `ReactionTree` dict; this slice replaces per-engine parsers
-> with one normalizer so the second engine (ASKCOS, slice 3) reuses it unchanged.
+> Status: **BUILT** (precis side + container; live-run needs the image rebuilt).
+> Slice 1b's `parse_aizynth_trees` stays as the fallback; the normalized
+> `route.json` path is now primary, so the second engine (ASKCOS, slice 3) reuses
+> `parse_syngraph` unchanged. See **"As built"** below for the resolved specifics.
 
 **Why.** "One canonical `route` kind" only holds if every engine's output maps to
 the *same* IR. A bespoke parser per engine (AiZynth's `ReactionTree`, ASKCOS's
@@ -304,24 +315,40 @@ natural home, exactly as Marker runs inside the paper-ingest sandbox.)
    This is the user's "own scoring" hook: route scoring becomes a **view over
    stored descriptors**, never a synchronous engine call.
 
-**Open questions — resolve at execution (verify from linchemin source, same
-discipline that pinned `ReactionTree.to_dict` for 1b):**
-- the exact **SynGraph JSON schema** (node/edge shape) `parse_syngraph` walks;
-- the exact **facade call signature** + whether translate and descriptors are one
-  call or two;
-- the **linchemin version** to pin in the image;
-- whether descriptors need the **stock/config** (buyable set) — if so, reuse the
-  mounted `/models` config.
+**As built (open questions resolved against LinChemIn 3.2.0 by introspection).**
+- **Facade signature:** `facade(functionality: str, routes: list, **kwargs) ->
+  (result, meta)` — `routes` is positional. Translate + descriptors are **two
+  calls**: `facade("translate", trees, input_format="az_retro",
+  output_format="syngraph")` → `([BipartiteSynGraph], meta)` (the format string is
+  **`az_retro`**, not `az`); `facade("routes_descriptors", [syngraph])` →
+  `(DataFrame, meta)`, one row per route with columns `nr_steps`, `nr_branches`,
+  `branchedness`, `longest_seq`, `convergence`, `cdscore`,
+  `simplified_atom_effectiveness` (+ `branching_factor`).
+- **Config gotcha:** linchemin's dynaconf **refuses to import `facade`** until
+  `$HOME/linchemin/settings.yaml` exists — the Dockerfile runs `linchemin_configure`
+  at build (HOME=/root, matching the container's runtime user). `packaging` is a
+  missing transitive dep; pinned explicitly. **linchemin==3.2.0.**
+- **rdkit conflict:** aizynthfinder and linchemin both pin rdkit, so linchemin
+  lives in an **isolated venv** (`/opt/linchemin-venv`); the shim calls that
+  python. No stock/config needed for descriptors (they're graph-structural).
+- **route.json is precis-canonical, not raw SynGraph.** The shim owns the
+  linchemin-specific code and emits a clean `{schema_version, target, engine,
+  engine_version, solved, steps[], metrics{}, score, provenance}` — so
+  `parse_syngraph` stays dependency-free and the *same* JSON serves every engine.
+  Steps come from an **engine-agnostic** SynGraph walk (CE nodes →
+  `get_products()`/`get_reactants()`, target-first BFS from `get_roots()`);
+  per-step AiZynth-only fields (confidence, buyable `in_stock`, reaction class,
+  template) are enriched from the raw `trees.json` in the shim. Slice-3 ASKCOS
+  swaps `input_format="askcos"` + its own enrichment; the extractor + precis-side
+  reader are untouched.
 
-**Test plan (mirror 1b — fixture-based, gate-green without a cluster):**
-- `parse_syngraph` against a captured SynGraph JSON fixture → `RouteGraph` with
-  steps + metrics;
-- `_run_container` round-trip with a stubbed `RUNNER` that writes a `route.json`
-  fixture → dispatch parses via `parse_syngraph` → route written back with
-  metrics;
-- a `view='metrics'` render test;
-- **capture a real SynGraph fixture from the deployed aizynth container** (once
-  live) to ground the schema before finalizing `parse_syngraph`.
+**Tests (built, gate-green without a cluster; `tests/test_route_plugin.py`):**
+`parse_syngraph` against a **real captured LinChemIn `route.json` fixture**
+(`tests/fixtures/chem/aspirin_route.json`) + a hand-built case (field mapping,
+`reaction_smiles`→IR); the `metrics` JSON round-trip; `get(view='metrics')` (and
+a stub route reporting no descriptors); and three `_run_container` paths — prefers
+`route.json`, falls back to `trees.json`, and falls back on a **garbled**
+`route.json`.
 
 **Sequencing.** Slice 2 lands **before** ASKCOS (slice 3): once `parse_syngraph`
 exists, ASKCOS reuses it unchanged — its container's normalize step just passes

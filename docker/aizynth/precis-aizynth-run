@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# precis-aizynth-run — the wrapper image entrypoint (ADR 0056 slice 1b).
+# precis-aizynth-run — the wrapper image entrypoint (ADR 0056 slice 1b/2).
 #
-# Runs AiZynthFinder's aizynthcli for ONE target SMILES and leaves the
-# top-ranked routes in /work/out/trees.json, which the `retrosynth` job
-# dispatch (precis_chem.jobs._run_container) parses into the route IR.
+# Runs AiZynthFinder's aizynthcli for ONE target SMILES → /work/out/trees.json,
+# then (slice 2) normalizes it to /work/out/route.json via LinChemIn. The
+# `retrosynth` job dispatch (precis_chem.jobs._run_container) prefers route.json
+# (engine-agnostic + route descriptors) and falls back to trees.json.
 #
 #   precis-aizynth-run "<SMILES>"
 #
@@ -14,6 +15,7 @@ set -euo pipefail
 
 SMILES="${1:?usage: precis-aizynth-run '<SMILES>'}"
 CONFIG="${PRECIS_AIZYNTH_CONFIG:-/models/config.yml}"
+LINCHEMIN_VENV="${LINCHEMIN_VENV:-/opt/linchemin-venv}"
 
 if [[ ! -f "$CONFIG" ]]; then
   echo "precis-aizynth-run: config not found at $CONFIG (mount /models)" >&2
@@ -22,6 +24,14 @@ fi
 
 # aizynthcli writes trees.json into the current dir for a single SMILES; the
 # image WORKDIR is /work/out (bind-mounted), so it lands where the dispatch
-# reads it.
+# reads it. This MUST succeed (set -e).
 cd /work/out
-exec aizynthcli --config "$CONFIG" --smiles "$SMILES"
+aizynthcli --config "$CONFIG" --smiles "$SMILES"
+
+# Normalize trees.json → route.json (slice 2). Best-effort: az_to_route.py
+# always exits 0, and a missing route.json just means the dispatch reads
+# trees.json instead — so a normalizer hiccup never fails a good plan.
+if [[ -f /work/out/trees.json && -x "${LINCHEMIN_VENV}/bin/python" ]]; then
+  "${LINCHEMIN_VENV}/bin/python" /usr/local/lib/az_to_route.py \
+    /work/out/trees.json /work/out/route.json "${PRECIS_AIZYNTH_VERSION:-aizynth}" || true
+fi

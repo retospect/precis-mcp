@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "engine": "aizynth",
+  "engine_version": "4.3.2",
+  "target": "CC(=O)Oc1ccccc1C(=O)O",
+  "solved": true,
+  "steps": [
+    {
+      "product": "CC(=O)Oc1ccccc1C(=O)O",
+      "reactants": [
+        "CC(=O)OC(C)=O",
+        "O=C(O)c1ccccc1O"
+      ],
+      "reaction_smiles": "CC(=O)OC(C)=O.O=C(O)c1ccccc1O>>CC(=O)Oc1ccccc1C(=O)O",
+      "template_id": "tmpl-acyl-42",
+      "id": 1,
+      "confidence": 0.81,
+      "conditions": "1.2 O-acylation",
+      "in_stock": false
+    },
+    {
+      "product": "O=C(O)c1ccccc1O",
+      "reactants": [
+        "Oc1ccccc1",
+        "O=C=O"
+      ],
+      "reaction_smiles": "O=C=O.Oc1ccccc1>>O=C(O)c1ccccc1O",
+      "template_id": "tmpl-kolbe-7",
+      "id": 2,
+      "confidence": 0.44,
+      "conditions": "3.1 Carboxylation",
+      "in_stock": true
+    }
+  ],
+  "metrics": {
+    "nr_branches": 0.0,
+    "branchedness": 0.0,
+    "longest_seq": 2.0,
+    "nr_steps": 2.0,
+    "convergence": 1.0,
+    "branching_factor": 1.0,
+    "cdscore": 0.33,
+    "simplified_atom_effectiveness": 0.76
+  },
+  "score": 0.33,
+  "provenance": {
+    "engine": "aizynth",
+    "normalizer": "linchemin",
+    "n_routes": 1
+  }
+}

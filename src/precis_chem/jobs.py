@@ -31,6 +31,7 @@ from precis.workers.job_types import JobTypeSpec
 from precis_chem.aizynth import TREES_FILE, build_aizynth_argv, parse_aizynth_trees
 from precis_chem.engine import DEFAULT_MAX_STEPS, resolve_engine
 from precis_chem.ir import RouteGraph
+from precis_chem.normalize import ROUTE_FILE, parse_syngraph
 from precis_chem.persist import apply_route_result
 
 log = logging.getLogger(__name__)
@@ -157,12 +158,30 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
         return None
     ctx.append_chunk("job_event", f"container rc={rc}\n{output[-2000:]}")
 
+    # Prefer the LinChemIn-normalized route.json (slice 2, engine-agnostic + route
+    # descriptors); fall back to the engine's native trees.json when the shim
+    # skipped normalization (older image / normalizer error). Either produces the
+    # same RouteGraph.
+    route = Path(out_dir) / ROUTE_FILE
     trees = Path(out_dir) / TREES_FILE
-    if rc != 0 or not trees.exists():
+    if rc != 0 or not (route.exists() or trees.exists()):
         ctx.record_failure(
-            f"retrosynth: container rc={rc}, no {TREES_FILE} — see the log event"
+            f"retrosynth: container rc={rc}, no {ROUTE_FILE}/{TREES_FILE} — see the log event"
         )
         return None
+    if route.exists():
+        try:
+            return parse_syngraph(
+                route.read_text(), target=smiles, engine_version=engine.version
+            )
+        except Exception as exc:
+            # A garbled route.json still lets us fall back to trees.json below.
+            log.warning(
+                "retrosynth: bad %s, trying %s", ROUTE_FILE, TREES_FILE, exc_info=True
+            )
+            ctx.append_chunk(
+                "job_event", f"bad {ROUTE_FILE} ({exc}); falling back to {TREES_FILE}"
+            )
     try:
         return parse_aizynth_trees(
             trees.read_text(), target=smiles, engine_version=engine.version
