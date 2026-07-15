@@ -26,6 +26,16 @@ def _configure_connection(conn: Connection) -> None:
     introspection SELECT to be safe.
     """
     try:
+        # Pin every session to UTC, regardless of the server's default
+        # ``TimeZone``. Homebrew initdb bakes the host-detected zone
+        # (e.g. ``GB`` on the cluster Macs) into the base config; that
+        # both renders timestamps in local/DST time and makes psycopg
+        # emit "unknown PostgreSQL timezone: 'GB'; will use UTC" because
+        # it can't map the alias to a Python zoneinfo. Precis is UTC
+        # throughout, so make the session say so explicitly — this holds
+        # even against a dev/test/freshly-initdb'd DB whose server
+        # default has not (yet) been overridden to UTC.
+        conn.execute("SET TIME ZONE 'UTC'")
         has_vector = conn.execute(
             "SELECT 1 FROM pg_type WHERE typname = 'vector' LIMIT 1"
         ).fetchone()
