@@ -42,16 +42,14 @@ RUN pip install --no-cache-dir \
       "precis-mcp[tts] @ git+https://github.com/retospect/precis-mcp@${PRECIS_REF}" \
       "misaki[zh,ja]"
 
-# Warm the G2P dictionaries INTO the image so the container needs no network at
-# run: pyopenjtalk fetches its ~23 MB openjtalk dict on first use (Japanese uses
-# this backend, not the 500 MB-unidic cutlet default), and jieba builds its zh
-# prefix dict. Without this the first zh/ja render would hit the network.
-RUN python - <<'PY'
-from misaki import ja, zh
-zh.ZHG2P()("你好")
-ja.JAG2P(version="pyopenjtalk")("こんにちは")
-print("misaki zh/ja dictionaries warmed")
-PY
+# Bake the G2P dictionaries INTO the image so a render needs no network: the ja
+# call downloads pyopenjtalk's ~23 MB openjtalk dict (Japanese uses this backend,
+# not the 500 MB-unidic cutlet default); the zh call builds jieba's prefix dict.
+# Single-line RUNs (not a heredoc — the legacy builder we build under, with
+# DOCKER_BUILDKIT=0, does NOT execute RUN heredocs, so a heredoc warmup silently
+# no-ops and the dict re-downloads on every render).
+RUN python -c "from misaki import zh; zh.ZHG2P()('你好世界')"
+RUN python -c "from misaki import ja; ja.JAG2P(version='pyopenjtalk')('こんにちは世界')"
 
 # Bake the model files in (self-contained image). --retry + --connect-timeout so
 # a stalled GitHub CDN connection fails fast + retries instead of hanging.

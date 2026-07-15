@@ -54,13 +54,16 @@ def render_via_container(
     speed: float = 1.0,
     container_cmd: str = "podman",
     scratch_dir: str | Path | None = None,
+    timeout: float | None = 600,
     run: Callable[..., Any] = subprocess.run,
 ) -> dict[str, Any]:
     """Render ``segments`` to ``out_m4a`` via a one-shot ``podman run`` of the
     precis-tts image. Stages ``segments.json`` in a scratch ``in/`` dir, mounts it
     read-only + an ``out/`` dir, and copies the produced ``out.m4a`` to
-    ``out_m4a``. ``run`` is injectable for tests. Raises on a non-zero run or a
-    missing output."""
+    ``out_m4a``. ``run`` is injectable for tests. ``timeout`` bounds the container
+    (a hung render — e.g. a stalled model/dict fetch — must not block the worker
+    tick forever; on expiry ``subprocess.TimeoutExpired`` propagates and the
+    caller backs the job off). Raises on a non-zero run or a missing output."""
     payload = {
         "segments": [
             {"text": s.text, "voice": s.voice, "lang": s.lang, "kind": s.kind}
@@ -90,6 +93,7 @@ def render_via_container(
                 image,
             ],
             check=True,
+            timeout=timeout,
         )
         produced = outdir / "out.m4a"
         if not produced.is_file():
@@ -113,6 +117,7 @@ def render_episode(
     speed: float = 1.0,
     scratch_dir: str | Path | None = None,
     container_cmd: str = "podman",
+    timeout: float | None = 600,
     encode: Callable[[Path, Path], None] = _ffmpeg_m4a,
     run: Callable[..., Any] = subprocess.run,
 ) -> dict[str, Any]:
@@ -132,6 +137,7 @@ def render_episode(
             speed=speed,
             container_cmd=container_cmd,
             scratch_dir=scratch_dir,
+            timeout=timeout,
             run=run,
         )
     if synth is None:

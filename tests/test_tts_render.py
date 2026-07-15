@@ -41,6 +41,18 @@ def test_render_episode_dispatches_to_container(tmp_path):
     assert out.is_file() and result["segments"] == 2
 
 
+def test_render_via_container_bounds_the_run_with_a_timeout(tmp_path):
+    captured = {}
+
+    def _run(cmd, **kw):
+        captured.update(kw)
+        outdir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
+        (outdir / "out.m4a").write_bytes(b"x")
+
+    render_via_container(_SEGS, tmp_path / "e.m4a", image="x", timeout=42, run=_run)
+    assert captured.get("timeout") == 42  # a hung render can't block forever
+
+
 def test_render_episode_no_backend_raises(tmp_path):
     with pytest.raises(RuntimeError, match="no TTS backend"):
         render_episode(_SEGS, tmp_path / "ep.m4a")
