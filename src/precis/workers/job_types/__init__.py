@@ -132,6 +132,20 @@ def _load_briefing() -> JobTypeSpec:
     return briefing.SPEC
 
 
+def _load_reading_brief() -> JobTypeSpec:
+    # Deterministic morning reading-brief cast producer (coordinator executor).
+    from precis.workers.job_types import reading_brief
+
+    return reading_brief.SPEC
+
+
+def _load_meditation() -> JobTypeSpec:
+    # Deterministic evening nidra cast producer (coordinator executor).
+    from precis.workers.job_types import meditation
+
+    return meditation.SPEC
+
+
 def _load_struct_relax() -> JobTypeSpec:
     # Energy-rung relax on the GPU node via ssh_node; sinks to the §23.16
     # run-cube (ADR 0043 §23.12). Runs via plugin dispatch.
@@ -336,6 +350,12 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "briefing":
         _REGISTRY["briefing"] = _load_briefing()
         return _REGISTRY["briefing"]
+    if name == "reading_brief":
+        _REGISTRY["reading_brief"] = _load_reading_brief()
+        return _REGISTRY["reading_brief"]
+    if name == "meditation":
+        _REGISTRY["meditation"] = _load_meditation()
+        return _REGISTRY["meditation"]
     if name == "struct_relax":
         _REGISTRY["struct_relax"] = _load_struct_relax()
         return _REGISTRY["struct_relax"]
@@ -375,6 +395,8 @@ def known_job_types() -> list[str]:
         "draft_export",
         "news_poll",
         "briefing",
+        "reading_brief",
+        "meditation",
         "struct_relax",
         "structure_propose",
         "cad_propose",

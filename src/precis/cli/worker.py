@@ -847,6 +847,56 @@ def run(args: argparse.Namespace) -> None:
 
                 ref_passes.append(_briefing_audio_pass)
 
+        # cast_audio — narrate the daily *casts* (morning reading-brief + evening
+        # nidra) onto the podcast feed (docs/design/reading-prep-loop.md §Audio).
+        # Same substrate as briefing_audio: TTS-host-only (spark), container-first,
+        # self-scheduling off an un-narrated cast draft, idempotent via
+        # meta.audio_episode_id. Default-OFF (PRECIS_CAST_AUDIO_ENABLED=1 or
+        # --only cast_audio) + needs PRECIS_TTS_IMAGE. See workers/cast_audio.py.
+        if _pass_enabled("cast_audio") or os.environ.get("PRECIS_CAST_AUDIO_ENABLED"):
+            from precis.workers.runner import BatchResult as _CaBatchResult
+
+            _ca_image = os.environ.get("PRECIS_TTS_IMAGE")
+            _ca_cmd = os.environ.get("PRECIS_TTS_CONTAINER_CMD") or "podman"
+            _ca_podcast_dir = os.environ.get("PRECIS_PODCAST_DIR")
+            _ca_lang = os.environ.get("PRECIS_CAST_AUDIO_LANG") or "en-us"
+            _ca_scratch = os.environ.get("PRECIS_TTS_SCRATCH")
+
+            if not _ca_image:
+                log.warning(
+                    "cast_audio enabled but PRECIS_TTS_IMAGE unset — skipping "
+                    "(needs the precis-tts container image)"
+                )
+            else:
+
+                def _cast_audio_pass(batch_size: int) -> _CaBatchResult:
+                    from precis.workers.cast_audio import (
+                        has_pending_cast,
+                        run_cast_audio,
+                    )
+
+                    # Cheap existence check first — an idle tick never launches a
+                    # container.
+                    if not has_pending_cast(store):
+                        return _CaBatchResult("cast_audio", 0, 0, 0)
+
+                    r = run_cast_audio(
+                        store,
+                        image=_ca_image,
+                        podcast_dir=_ca_podcast_dir,
+                        default_lang=_ca_lang,
+                        container_cmd=_ca_cmd,
+                        scratch_dir=_ca_scratch,
+                    )
+                    return _CaBatchResult(
+                        handler="cast_audio",
+                        claimed=1 if r["published"] else 0,
+                        ok=1 if r["published"] else 0,
+                        failed=0 if r["published"] else 1,
+                    )
+
+                ref_passes.append(_cast_audio_pass)
+
         # Backlog groomer (default-OFF; PRECIS_BACKLOG_GROOM_ENABLED=1 or
         # --only backlog_groom): promote open gripes into dispatchable
         # ``fix_gripe`` todos so the autonomous fixer substrate acts on the

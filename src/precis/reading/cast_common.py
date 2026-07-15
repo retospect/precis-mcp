@@ -1,0 +1,180 @@
+"""cast_common — shared substrate for the audio *casts* (morning brief + nidra).
+
+A **cast** is a daily audio episode composed as a ``draft`` and narrated onto the
+shipped podcast feed (docs/design/audio-feed.md). Two standing casts ride the same
+produce → narrate → publish spine, differing only by a **voice profile**:
+
+- ``reading`` — the morning situational-awareness brief (voice ``bm_george``).
+- ``nidra``   — the evening conceptual-walk meditation (voice ``af_nicole``).
+
+This module holds what both producers, the audio pass, and the CLI share:
+
+* :data:`CAST_PROFILES` — the per-cast profile table (voice · rate · model ·
+  target length · cron · slugs · title).
+* the word-budget arithmetic — target minutes ↔ words ↔ ``max_tokens`` via a
+  per-voice speaking rate (we never *guess* minutes: the synth reports exact
+  duration, but word count is the only lever we have *before* the expensive TTS).
+* :func:`create_cast_draft` — the **standalone dated-draft** creator, idempotent
+  per ``(cast, date)``. Deliberately NOT ``Store.create_draft``: that binds a
+  draft 1:1 to a project and raises on the second draft under the same relation,
+  which a *daily* cast would trip on day two.
+* :func:`voice_skill_preamble` — loads the ``precis-voice`` craft skill to prepend
+  to the compose prompt (degrades to ``""`` when unavailable).
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class CastProfile:
+    """One standing cast's profile — the knobs that differ between casts."""
+
+    cast: str  # id: "reading" | "nidra"
+    voice: str  # kokoro voice for the whole cast (per-chunk meta.voice can override)
+    wpm: int  # speaking rate — target_minutes → word budget
+    model: str  # litellm alias for the compose call
+    target_minutes: int
+    cron: str  # daily schedule for the recurring watch
+    job_type: str  # the compose job_type that produces this cast
+    slug_prefix: str  # dated-draft slug + episode-id stem
+    title: str  # episode/draft title (date appended)
+    source: str = "reading"  # publish_episode producer tag
+
+
+CAST_PROFILES: dict[str, CastProfile] = {
+    "reading": CastProfile(
+        cast="reading",
+        voice="bm_george",
+        wpm=150,
+        model="claude-opus",
+        target_minutes=15,
+        cron="0 6 * * *",
+        job_type="reading_brief",
+        slug_prefix="cast-reading",
+        title="\U0001f305 Morning brief",  # 🌅
+    ),
+    "nidra": CastProfile(
+        cast="nidra",
+        voice="af_nicole",
+        wpm=110,
+        model="summarizer",
+        target_minutes=45,
+        cron="0 21 * * *",
+        job_type="meditation",
+        slug_prefix="cast-nidra",
+        title="\U0001f319 Evening meditation",  # 🌙
+    ),
+}
+
+#: A single-completion word ceiling; above this a producer composes in segments
+#: (multiple LLM calls concatenated) rather than one over-long generation.
+SINGLE_CALL_WORD_CEILING = 2500
+#: Rough tokens-per-word for sizing ``max_tokens`` on a compose call.
+_TOKENS_PER_WORD = 1.4
+
+
+def word_budget(profile: CastProfile, *, target_minutes: int | None = None) -> int:
+    """Target spoken word count = minutes × the voice's words-per-minute rate."""
+    minutes = target_minutes if target_minutes is not None else profile.target_minutes
+    return max(1, int(minutes * profile.wpm))
+
+
+def compose_max_tokens(
+    profile: CastProfile, *, target_minutes: int | None = None
+) -> int:
+    """A generous ``max_tokens`` for a single-call compose at this length."""
+    return int(word_budget(profile, target_minutes=target_minutes) * _TOKENS_PER_WORD)
+
+
+def voice_skill_preamble() -> str:
+    """The ``precis-voice`` craft skill body, or ``""`` when unavailable.
+
+    Prepended to a producer's compose system prompt so the model writes for the
+    ear (relationships not formulas, expanded abbreviations, no slashes, …).
+    Best-effort — a missing skill degrades to no preamble, never an error.
+    """
+    try:
+        from precis.handlers.skill import _load_skill
+
+        return _load_skill("precis-voice") or ""
+    except Exception:  # pragma: no cover - skill loading is best-effort
+        log.debug("cast_common: precis-voice skill unavailable", exc_info=True)
+        return ""
+
+
+def cast_slug(profile: CastProfile, date_tag: str) -> str:
+    """The deterministic per-day draft slug (also the episode-id stem)."""
+    return f"{profile.slug_prefix}-{date_tag}"
+
+
+def find_cast_draft(store: Any, profile: CastProfile, date_tag: str) -> Any | None:
+    """The existing cast draft for ``(cast, date)``, or ``None``."""
+    return store.get_ref(kind="draft", id=cast_slug(profile, date_tag))
+
+
+def create_cast_draft(
+    store: Any,
+    *,
+    profile: CastProfile,
+    date_tag: str,
+    slug: str | None = None,
+    title: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> tuple[Any, bool]:
+    """Create (or find) the standalone dated cast draft. Returns ``(ref, created)``.
+
+    Idempotent on the ``<slug_prefix>-<date>`` slug (or an explicit ``slug``
+    override): a second call for the same key returns the existing ref with
+    ``created=False`` and writes nothing — so a re-fired schedule or a manual
+    re-run never duplicates. Call it *after* the compose succeeds (the producer
+    adds the body chunks itself), so a mid-compose failure never leaves an empty
+    draft that would poison the guard.
+
+    The draft is **standalone** (no ``draft-of`` project binding) on purpose: a
+    project owns exactly one draft per relation (``_draft_ops.create_draft`` raises
+    otherwise), which a *daily* cast would trip on day two. ``slug`` lets a caller
+    key on something other than the date (used by tests + manual one-offs).
+    """
+    draft_slug = slug or cast_slug(profile, date_tag)
+    existing = store.get_ref(kind="draft", id=draft_slug)
+    if existing is not None:
+        return existing, False
+    full_title = title or f"{profile.title} — {date_tag}"
+    draft_meta: dict[str, Any] = {
+        "cast": profile.cast,
+        "voice": profile.voice,
+        "date": date_tag,
+        **(meta or {}),
+    }
+    ref = store.insert_ref(
+        kind="draft",
+        slug=draft_slug,
+        title=full_title,
+        meta=draft_meta,
+    )
+    # The ``cite_key`` identifier is inserted ON CONFLICT DO NOTHING, so under a
+    # race another ref may already own the slug — leaving ``ref`` an orphan the
+    # audio pass would never find. Resolve by slug and adopt the canonical owner.
+    canonical = store.get_ref(kind="draft", id=draft_slug)
+    if canonical is not None and int(canonical.id) != int(ref.id):
+        return canonical, False
+    return ref, True
+
+
+__all__ = [
+    "CAST_PROFILES",
+    "SINGLE_CALL_WORD_CEILING",
+    "CastProfile",
+    "cast_slug",
+    "compose_max_tokens",
+    "create_cast_draft",
+    "find_cast_draft",
+    "voice_skill_preamble",
+    "word_budget",
+]

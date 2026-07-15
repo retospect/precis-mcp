@@ -91,6 +91,30 @@ and publishes to the same feed with `source="news"`. Enabled with
 producers reuse `export.audio.synthesize_text` (the shared stitch loop). Design +
 how to add the next producer: `docs/design/audio-feed.md`.
 
+### Daily casts — morning brief + evening nidra
+
+Two standing **casts** publish daily, each a `draft` composed then narrated
+through the same path — two voice profiles over one spine:
+
+- **`reading`** — the morning situational-awareness brief (voice `bm_george`,
+  ~15 min). Producer `reading.briefing_cast.build_reading_briefing` unions lanes:
+  the news wire (today's `briefing-<date>`, consumed not re-derived), overnight
+  system activity, recall (Anki leeches + new concepts), and — as they land —
+  reading (booklet) + quest activity.
+- **`nidra`** — the evening concept-graph meditation (voice `af_nicole`, ~45 min).
+  Producer `reading.meditation.build_meditation`, a segmented long-form walk.
+
+Both persist a standalone dated `draft` marked `meta.cast` (+ `meta.voice`); the
+`cast_audio` pass on spark (`PRECIS_CAST_AUDIO_ENABLED=1` + `PRECIS_TTS_IMAGE`)
+narrates any un-narrated cast draft via `render_narration` → `render_episode` →
+the feed (`source="reading"`), idempotent on `meta.audio_episode_id`. Compose runs
+as the `reading_brief` / `meditation` coordinator job_types on a daily
+`level:recurring` watch (any system node — not melchior-pinned).
+
+    precis cast run reading            # compose today's morning-brief draft now
+    precis cast run nidra --publish    # compose + narrate + publish (on spark)
+    precis cast schedule --now         # install the daily watches + cast both now
+
 ## Consume
 
 Subscribe **on-device** over Tailscale — Apple Podcasts *Add a Show by URL* or

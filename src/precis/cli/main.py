@@ -25,6 +25,7 @@ import sys
 from precis.cli import (
     add,
     anki_sync,
+    cast,
     cron,
     db,
     draft,
@@ -210,6 +211,10 @@ def main() -> None:
         cron.run(args)
         return
 
+    if args.cmd == "cast":
+        cast.run(args)
+        return
+
     parser.error(f"unknown command: {args.cmd!r}")
 
 
@@ -263,6 +268,7 @@ def _build_parser() -> argparse.ArgumentParser:
     repl.add_parser(sub)
     web.add_parser(sub)
     cron.add_parser(sub)
+    cast.add_parser(sub)
     heartbeat.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")

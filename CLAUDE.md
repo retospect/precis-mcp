@@ -194,6 +194,20 @@ driver; adding one is a `Reviewer(...)` instance):
 
 **Notable passes:**
 
+* `cast_audio` — the daily audio **casts** (docs/design/reading-prep-loop.md
+  §Audio). Two standing casts ride one produce→narrate→publish spine, two voice
+  profiles: **`reading`** (morning situational-awareness brief, `bm_george`,
+  ~15 min — `reading/briefing_cast.py` unions news/activity/recall lanes, each
+  degrade-to-empty) and **`nidra`** (evening concept-graph meditation,
+  `af_nicole`, ~45 min segmented walk — `reading/meditation.py`). Producers
+  persist a standalone dated `draft` marked `meta.cast`; `workers/cast_audio.py`
+  (spark, default-OFF `PRECIS_CAST_AUDIO_ENABLED` + `PRECIS_TTS_IMAGE`) narrates
+  any un-narrated cast draft via `render_narration` → `render_episode` →
+  `publish_episode(source="reading")`, idempotent on `meta.audio_episode_id`
+  (sibling to `briefing_audio`). Compose is the `reading_brief`/`meditation`
+  **coordinator** job_types (any system node, dodging the melchior `claude_inproc`
+  SPOF) on daily `level:recurring` watches. CLI: `precis cast run <reading|nidra>
+  [--publish]` + `precis cast schedule [--now]`. Skill: `precis-audio-help`.
 * `llm_summarize` — model-authored two-part summary (gist + a
   sentence of detail) into `chunk_summaries` under
   `summarizer='llm-v1'`, distinct from the lexical `rake-lemma` row

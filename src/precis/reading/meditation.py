@@ -17,12 +17,28 @@ runs where Kokoro is installed (spark).
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
+
+from precis.reading.cast_common import (
+    CAST_PROFILES,
+    SINGLE_CALL_WORD_CEILING,
+    cast_slug,
+    create_cast_draft,
+    word_budget,
+)
 
 log = logging.getLogger(__name__)
 
 MEDITATION_VOICE = "af_nicole"  # the evening voice (per Reto)
-_DEFAULT_MAX_CONCEPTS = 14  # a meditation is a gentle handful, not the whole graph
+_DEFAULT_MAX_CONCEPTS = (
+    14  # a short meditation is a gentle handful, not the whole graph
+)
+#: Below this many concepts a long walk can't be stretched meaningfully, so we
+#: fall back to a single-call compose regardless of the target length.
+_SEGMENT_MIN_CONCEPTS = 8
+#: Concepts per segment call when composing a long walk.
+_CONCEPTS_PER_SEGMENT = 6
 _WALK_RELATIONS = ("has-prerequisite", "analogy-of", "contrasts-with")
 
 #: The nidra narration contract. Kept terse; the craft detail is the
@@ -129,6 +145,81 @@ def compose_script(
     return (getattr(out, "text", "") or "").strip()
 
 
+def _compose_long(
+    ordered: list[tuple[str, str]],
+    *,
+    client: Any,
+    anchors: list[str] | None = None,
+    skill_preamble: str = "",
+) -> str:
+    """Segmented long-form walk → the full nidra script (plain paragraphs).
+
+    A 45-minute nidra is ~5000 words — past a single completion's clean ceiling —
+    so compose it in pieces: induction (one call) → walk sections over concept
+    batches (one call each, fed the tail of the prior passage for continuity) →
+    tapering coda (one call), concatenated. Keeps each generation short enough to
+    stay coherent while the whole cast runs long."""
+    system = (
+        f"{skill_preamble}\n\n{_NIDRA_SYS}".strip() if skill_preamble else _NIDRA_SYS
+    )
+
+    def _call(user: str) -> str:
+        out = client.complete(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
+        )
+        return (getattr(out, "text", "") or "").strip()
+
+    parts: list[str] = []
+
+    induction = _call(
+        "Write ONLY the opening induction of a long evening meditation: a slow "
+        "settling — a few breaths, the day setting down, the body growing heavy "
+        "and still. Several soft paragraphs. Do not begin the walk of ideas yet."
+    )
+    if induction:
+        parts.append(induction)
+
+    batches = [
+        ordered[i : i + _CONCEPTS_PER_SEGMENT]
+        for i in range(0, len(ordered), _CONCEPTS_PER_SEGMENT)
+    ]
+    for batch in batches:
+        lines = [
+            "Continue the gentle walk. Drift softly through these ideas in order, "
+            "each described in plain words and how it relates to the one before:"
+        ]
+        for nm, df in batch:
+            lines.append(f"- {nm}: {df}" if df else f"- {nm}")
+        tail = parts[-1][-400:] if parts else ""
+        if tail:
+            lines.append(
+                f"\nThe previous passage ended: …{tail}\nFlow on from there — no "
+                "restart, no fresh induction, no coda yet."
+            )
+        section = _call("\n".join(lines))
+        if section:
+            parts.append(section)
+
+    anchor_line = (
+        "Softly return to these familiar motifs as you close: "
+        + ", ".join(anchors)
+        + ". "
+        if anchors
+        else ""
+    )
+    coda = _call(
+        anchor_line + "Write ONLY the tapering coda now: sentences shorten, the "
+        "words soften and fade as the listener drifts toward sleep. No new ideas."
+    )
+    if coda:
+        parts.append(coda)
+
+    return "\n\n".join(p for p in parts if p).strip()
+
+
 def ensure_reading_project(store: Any) -> int:
     """Find-or-create the strategic todo that owns reading-prep casts (so cast
     drafts have a `draft-of` home). Marked by ``meta.reading_prep_root``."""
@@ -151,36 +242,89 @@ def ensure_reading_project(store: Any) -> int:
 def build_meditation(
     store: Any,
     *,
-    client: Any,
-    name: str,
+    client: Any | None = None,
+    name: str | None = None,
     cohort: str | None = None,
-    max_concepts: int = _DEFAULT_MAX_CONCEPTS,
+    max_concepts: int | None = None,
+    target_minutes: int | None = None,
     anchors: list[str] | None = None,
     skill_preamble: str = "",
+    now: datetime | None = None,
+    date_tag: str | None = None,
 ) -> int | None:
-    """Compose the evening meditation and store it as a `draft`. Returns the draft
-    ref id, or ``None`` if there aren't at least two concepts to walk or the model
-    returned nothing. The draft narrates with `af_nicole` (set at render time)."""
+    """Compose the evening meditation and store it as a standalone dated `draft`.
+
+    Returns the draft ref id, or ``None`` if there aren't at least two concepts to
+    walk or the model returned nothing. The draft narrates with `af_nicole` (from
+    ``meta.voice``, honoured at render time).
+
+    Idempotent per day: once today's ``cast-nidra-<date>`` draft exists a second
+    call returns it without re-composing. ``name`` overrides the slug (tests /
+    manual one-offs). ``target_minutes`` (default 45) scales both the number of
+    concepts walked and whether the script is composed in one call or in segments.
+    """
+    profile = CAST_PROFILES["nidra"]
+    target = target_minutes if target_minutes is not None else profile.target_minutes
+    if max_concepts is None:
+        # Scale the walk with the target length (~1 concept per 1.5 min), floored
+        # at the short-walk default so a brief nidra still has a handful.
+        max_concepts = max(_DEFAULT_MAX_CONCEPTS, (target * 2) // 3)
+
+    now = now or datetime.now(UTC)
+    date_tag = date_tag or now.date().isoformat()
+    slug = name or cast_slug(profile, date_tag)
+    existing = store.get_ref(kind="draft", id=slug)
+    if existing is not None:
+        log.info("meditation: %s already composed (ref %s)", slug, existing.id)
+        return int(existing.id)
+
     concepts, adjacency = _load(store, cohort, max_concepts)
     if len(concepts) < 2:
         log.info("meditation: only %d concept(s) — nothing to walk", len(concepts))
         return None
     order = _walk_order([c[0] for c in concepts], adjacency)
     by_id = {c[0]: (c[1], c[2]) for c in concepts}
-    script = compose_script(
-        [by_id[i] for i in order],
-        client=client,
-        anchors=anchors,
-        skill_preamble=skill_preamble,
-    )
+    ordered = [by_id[i] for i in order]
+
+    if client is None:
+        # No injected client (the production path) — build one from the nidra
+        # profile. Tests always inject a fake client, so this branch stays out of
+        # unit runs and off the cheap MCP import graph.
+        import os
+        from dataclasses import replace
+
+        from precis.reading.cast_common import compose_max_tokens
+        from precis.workers.llm_summarize import LlmClient, LlmConfig
+
+        model = os.environ.get("PRECIS_MEDITATION_MODEL") or profile.model
+        client = LlmClient(
+            replace(
+                LlmConfig.from_env(),
+                model=model,
+                max_tokens=compose_max_tokens(profile, target_minutes=target),
+            )
+        )
+
+    budget = word_budget(profile, target_minutes=target)
+    if budget > SINGLE_CALL_WORD_CEILING and len(concepts) >= _SEGMENT_MIN_CONCEPTS:
+        script = _compose_long(
+            ordered, client=client, anchors=anchors, skill_preamble=skill_preamble
+        )
+    else:
+        script = compose_script(
+            ordered, client=client, anchors=anchors, skill_preamble=skill_preamble
+        )
     if not script:
         log.warning("meditation: model returned no script")
         return None
-    ref, _title = store.create_draft(
-        name=name,
-        title="Evening meditation",
-        project_ref_id=ensure_reading_project(store),
-        meta={"cast": "nidra", "voice": MEDITATION_VOICE, "cohort": cohort},
+
+    ref, _created = create_cast_draft(
+        store,
+        profile=profile,
+        date_tag=date_tag,
+        slug=slug,
+        title=f"Evening meditation — {date_tag}",
+        meta={"cohort": cohort},
     )
     store.add_chunks(ref_id=ref.id, chunk_kind="paragraph", text=script, split=True)
     return int(ref.id)

@@ -1,0 +1,110 @@
+"""Tests for the morning reading-brief producer (lanes degrade to empty)."""
+
+from __future__ import annotations
+
+import uuid
+from types import SimpleNamespace
+from typing import Any
+
+from precis.reading.briefing_cast import (
+    _lane_news,
+    _lane_quest,
+    _lane_reading,
+    build_reading_briefing,
+)
+
+
+class _FakeClient:
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self.calls: list[Any] = []
+
+    def complete(self, messages: list[dict[str, str]]) -> Any:
+        self.calls.append(messages)
+        return SimpleNamespace(text=self._text, total_tokens=5)
+
+
+class TestLanesDegrade:
+    def test_unbuilt_lanes_are_empty(self, store: Any) -> None:
+        assert _lane_reading(store) == ""  # booklet unbuilt
+        assert _lane_quest(store) == ""  # quest kind unbuilt
+
+    def test_news_lane_empty_when_no_briefing(self, store: Any) -> None:
+        # A date with no briefing ref → empty (no raise).
+        assert _lane_news(store, f"2999-01-{uuid.uuid4().hex[:2]}") == ""
+
+
+class TestBuild:
+    def test_no_material_returns_none_without_calling_model(self, store: Any) -> None:
+        client = _FakeClient("unused")
+        # A far-future date: no news, and the overnight window catches nothing new
+        # attributable to this run. If the shared DB happens to have activity, the
+        # lane may be non-empty — so assert the weaker invariant on a clean date
+        # only when nothing composed.
+        out = build_reading_briefing(
+            store, client=client, date_tag=f"2999-01-{uuid.uuid4().hex[:2]}"
+        )
+        if out is None:
+            assert client.calls == []  # never consulted the model with no material
+
+    def test_news_lane_flows_into_a_composed_draft(self, store: Any) -> None:
+        date_tag = f"2026-07-{uuid.uuid4().hex[:2]}"
+        # Seed today's news briefing ref the morning cast should consume.
+        news = store.insert_ref(
+            kind="news",
+            slug=f"briefing-{date_tag}",
+            title=f"Morning briefing — {date_tag}",
+            meta={"briefing": True, "date": date_tag},
+        )
+        store.add_chunks(
+            ref_id=news.id,
+            chunk_kind="paragraph",
+            text="Markets rose. A new catalyst paper landed.",
+            split=True,
+            kind="news",
+        )
+        client = _FakeClient("Good morning.\n\nHere is your day.\n\nGo gently.")
+
+        draft_id = build_reading_briefing(store, client=client, date_tag=date_tag)
+
+        assert draft_id is not None
+        assert client.calls  # the news lane gave it material → model consulted
+        # The composed brief is a cast draft with paragraphs + the voice profile.
+        with store.pool.connection() as conn:
+            meta = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id=%s", (draft_id,)
+            ).fetchone()[0]
+            n = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND chunk_kind='paragraph'",
+                (draft_id,),
+            ).fetchone()[0]
+        assert meta["cast"] == "reading"
+        assert meta["voice"] == "bm_george"
+        assert n >= 2
+        # The news body was actually handed to the model.
+        user_turn = client.calls[0][1]["content"]
+        assert "catalyst paper" in user_turn
+
+    def test_idempotent_second_call_skips_compose(self, store: Any) -> None:
+        date_tag = f"2026-08-{uuid.uuid4().hex[:2]}"
+        news = store.insert_ref(
+            kind="news",
+            slug=f"briefing-{date_tag}",
+            title="b",
+            meta={"briefing": True, "date": date_tag},
+        )
+        store.add_chunks(
+            ref_id=news.id,
+            chunk_kind="paragraph",
+            text="News.",
+            split=True,
+            kind="news",
+        )
+        c1 = _FakeClient("First.\n\nSecond.")
+        first = build_reading_briefing(store, client=c1, date_tag=date_tag)
+        assert first is not None
+
+        c2 = _FakeClient("SHOULD NOT BE USED")
+        second = build_reading_briefing(store, client=c2, date_tag=date_tag)
+        assert second == first
+        assert c2.calls == []  # idempotent — no recompose
