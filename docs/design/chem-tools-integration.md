@@ -210,6 +210,15 @@ machine-specific glue.
 1. **`route` kind + AiZynthFinder**, `job_type='retrosynth'`, containerized
    (wrapper `FROM upstream@digest`) on a Linux node. Prove the compute-lane
    round-trip + content-addressed cache — the structure/DFT loop, for chem.
+   **Slice 1a — BUILT** (the `precis_chem` plugin: `route` kind + `retrosynth`
+   job + the route-graph IR + a deterministic in-process `stub` engine + the
+   content-addressed cache + the requester-blocking wire, all dark behind
+   `PRECIS_CHEM_ENABLED`, gate-green without a cluster). **Slice 1b — TODO**:
+   the real AiZynthFinder container — the `docker/` wrapper `FROM upstream@digest`,
+   the `retrosynth` dispatch building the `podman run` argv (the `struct_relax`
+   pattern) + parsing the container `result.json`, the per-node build, and
+   `PRECIS_CHEM_ROUTE_NODE` on a Linux node. The seam is pinned by
+   `precis_chem.engine.AiZynthEngine` (its `plan` raises until 1b).
 2. **LinChemIn normalization at route-ingest** — enforce the one-IR
    contract before adding a second engine.
 3. **ASKCOS** behind the *same* `route` kind + `job_type` (likely the
