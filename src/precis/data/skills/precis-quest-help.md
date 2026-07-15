@@ -50,6 +50,25 @@ tag(kind='quest', id=7, add=['STATUS:abandoned'])  # renounced
 quest — completing it would delete the "% done" axis as the wrong
 measure. Progress is a **ledger of deeds**, not a percentage.
 
+## Priority — how hard it steers
+
+A quest's **striving weight** is its priority, set with a `PRIO:` tag
+(synced to the canonical `prio` column, 1 = hottest … 10):
+
+```python
+tag(kind='quest', id=7, add=['PRIO:urgent'])   # prio 1 → weight 1.0
+put(kind='quest', text='…', tags=['PRIO:high'])  # at birth → prio 3 → 0.8
+```
+
+Only **active** quests exert pull. From slice 2 this weight flows *down*
+the `serves` DAG (max-aggregation on overlap, light decay per quest→quest
+ladder hop) into three places work is chosen: the todo **rotation** (a
+project serving a hot quest surfaces sooner in the doable view), paper
+**acquisition** (a stub serving an active quest jumps the fetch queue),
+and **reading** (daily concepts bias toward quest-servers). It's a
+**no-op until you link real work to an active quest** — reweight, don't
+mint.
+
 ## Put work in a quest's service
 
 Any node — a project/todo, a concept, a paper, a draft, a structure, or
@@ -119,10 +138,10 @@ foot.
 
 ## Roadmap (what's live vs. coming)
 
-Slice 1 (**live**) is read-only structure: the kind, the `serves`
-relation, the logbook, the tree rollup. It does **not** steer yet.
-Coming: **reweighting** (priority flows down the `serves` DAG into
-rotation / reading / dream — slice 2), **gap surfacing** (slice 3), and
-the **autonomous research loop** (local grind + frontier steering,
-materials as `structure` servers — slice 4). Design of record:
-`docs/proposals/quest-layer.md`.
+Slices 1–2 are **live**: the kind + `serves` + logbook + tree rollup
+(slice 1), and **reweighting** (slice 2) — priority flows down the
+`serves` DAG into the todo rotation, paper acquisition, and reading
+(a no-op until you link work to an active quest). Coming: **gap
+surfacing** (slice 3) and the **autonomous research loop** (local grind
++ frontier steering, materials as `structure` servers — slice 4). Design
+of record: `docs/proposals/quest-layer.md`.

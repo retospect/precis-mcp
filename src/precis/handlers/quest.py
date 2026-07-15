@@ -75,6 +75,37 @@ _LIFECYCLE: frozenset[str] = frozenset({"active", "dormant", "abandoned"})
 _BY_VALUES: frozenset[str] = frozenset({"human", "agent", "dream"})
 _DEFAULT_BY = "human"
 
+#: ``PRIO:`` tag → the canonical ``refs.prio`` column (1..10, lower = hotter) —
+#: the same striving-weight scale the todo tree rotates on and slice 2's
+#: reweighting reads (:mod:`precis.quest.reweight`). Mirrors the todo handler's
+#: back-compat map so a quest's priority is a real column, not a decorative tag.
+_PRIO_TAG_TO_INT: dict[str, int] = {
+    "PRIO:urgent": 1,
+    "PRIO:high": 3,
+    "PRIO:normal": 5,
+    "PRIO:low": 8,
+}
+
+
+def _split_prio(tags: list[str] | None) -> tuple[list[str] | None, int | None]:
+    """Pull the last ``PRIO:`` tag out of ``tags`` and translate it to an int.
+
+    Returns ``(tags_without_prio, prio_or_none)`` — the ``PRIO:`` alias is
+    stripped so it never lands as a redundant closed-tag row alongside the
+    column write. Unknown ``PRIO:`` values pass through untouched so the strict
+    validator surfaces the typo with its options list."""
+    if not tags:
+        return tags, None
+    out: list[str] = []
+    found: int | None = None
+    for t in tags:
+        if t in _PRIO_TAG_TO_INT:
+            found = _PRIO_TAG_TO_INT[t]
+            continue
+        out.append(t)
+    return (out if out else None), found
+
+
 #: Recursion guard for the tree rollup — a striving DAG can ladder deep and
 #: diamond (a concept serving two routes that both serve one quest); a visited
 #: set kills cycles, this caps the depth of sub-quest expansion.
@@ -124,6 +155,34 @@ class QuestHandler(NumericRefHandler):
     #: vector — the substrate for the alignment floor + reading calibration.
     emits_card: ClassVar[bool] = True
 
+    #: Ref id of the most recent create, captured in ``_render_create_ack`` so
+    #: the ``_create`` override can apply a create-time ``PRIO:`` to the column
+    #: after the base transaction commits (the base insert doesn't take prio).
+    _last_created_id: int | None = None
+
+    # ── create: sync a create-time PRIO: into the prio column ────────
+
+    def _create(  # type: ignore[override]
+        self,
+        *,
+        text: str | None,
+        tags: list[str] | None,
+        link: str | None,
+        rel: str | None = None,
+        auto_refresh_days: int | None = None,
+    ) -> Response:
+        tags, prio_from_tag = _split_prio(tags)
+        resp = super()._create(
+            text=text,
+            tags=tags,
+            link=link,
+            rel=rel,
+            auto_refresh_days=auto_refresh_days,
+        )
+        if prio_from_tag is not None and self._last_created_id is not None:
+            self.store.set_prio(self._last_created_id, prio_from_tag)
+        return resp
+
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
@@ -160,6 +219,28 @@ class QuestHandler(NumericRefHandler):
                         options=sorted(_LIFECYCLE),
                         next="STATUS: is one of active / dormant / abandoned",
                     )
+        # ``PRIO:`` → the canonical prio column (the striving weight slice 2's
+        # reweighting reads), stripped from the tag set like todo does. A bare
+        # ``PRIO:*`` in remove clears the column.
+        add, prio_from_tag = _split_prio(add)
+        clear_prio = False
+        if remove:
+            kept = [t for t in remove if t not in _PRIO_TAG_TO_INT]
+            clear_prio = len(kept) != len(remove)
+            remove = kept or None
+        if prio_from_tag is not None or clear_prio:
+            ref_id = self._coerce_id(id)
+            self._resolve_live_ref(ref_id)
+            self.store.set_prio(ref_id, None if clear_prio else prio_from_tag)
+            if not add and not remove:
+                # Only a prio write happened — the base tag() would reject an
+                # otherwise-empty call.
+                return Response(
+                    body=(
+                        f"set prio={None if clear_prio else prio_from_tag} "
+                        f"on {self._sense()} id={ref_id}"
+                    )
+                )
         return super().tag(id=id, add=add, remove=remove, **_kw)
 
     # ── put: create or append a logbook entry ───────────────────────
@@ -321,8 +402,10 @@ class QuestHandler(NumericRefHandler):
         meta = ref.meta or {}
         lines = [f"# quest {ref.id}: {ref.title.splitlines()[0]}"]
         lines.append(f"striving: {status}")
-        if meta.get("priority") is not None:
-            lines.append(f"priority: {meta['priority']}")
+        if ref.prio is not None:
+            # The canonical striving weight (prio 1=hottest…10; slice 2's
+            # reweighting flows this down the serves DAG). Set via PRIO: tag.
+            lines.append(f"priority: {ref.prio}")
         if meta.get("horizon"):
             lines.append(f"horizon: {meta['horizon']}")
         if tags:
@@ -368,8 +451,7 @@ class QuestHandler(NumericRefHandler):
         indent = "  " * depth
         tags = self.store.tags_for(ref.id)
         status = _status_of(tags) or "active"
-        meta = ref.meta or {}
-        prio = f" prio={meta['priority']}" if meta.get("priority") is not None else ""
+        prio = f" prio={ref.prio}" if ref.prio is not None else ""
         handle = handle_registry.try_format(self.kind, ref.id) or f"quest:{ref.id}"
         lines = [f"{indent}◆ {handle} [{status}]{prio} {ref.title.splitlines()[0]}"]
 
@@ -444,6 +526,9 @@ class QuestHandler(NumericRefHandler):
         return "\n".join(lines)
 
     def _render_create_ack(self, ref_id: int) -> Response:
+        # Capture the id so the ``_create`` override can apply a create-time
+        # ``PRIO:`` to the prio column after the base transaction commits.
+        self._last_created_id = ref_id
         handle = handle_registry.try_format(self.kind, ref_id) or f"id={ref_id}"
         body = f"created quest {handle} (STATUS:active)."
         body += render_next_section(

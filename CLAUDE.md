@@ -462,9 +462,17 @@ The master kinds table lives in the `precis-overview` skill.
   entries `note·observation·hypothesis·result·decision·dead-end·milestone·
   reflection·cost` + `by`; a `milestone` is a deed, `cost` feeds the **tote** =
   a query over the dated log, no separate cost store), and a dossier `draft`
-  (arrives with the loop, slice 4). Coming: reweighting (priority down the
-  `serves` DAG, slice 2), gap surfacing (3), the autonomous research loop
-  (local grind + frontier steering, materials as `structure` servers, 4). Skill:
+  (arrives with the loop, slice 4). **Slice 2 (reweighting) live**
+  (`src/precis/quest/reweight.py`): priority flows down the `serves` DAG
+  (max-agg, `STRIVING_DECAY` per quest→quest ladder hop; only **active** quests
+  pull; canonical priority = `refs.prio`, set via a `PRIO:` tag synced in the
+  handler) into three sinks — **rotation** (`_fetch_doable`/`render_roots`
+  discount a strategic's picks by served weight), **acquisition** (`fetch_oa`
+  claim tiers a quest-serving stub ahead), **reading**
+  (`build_meditation(bias_active_quests=)`, dark until reading-prep slice 3). A
+  **no-op until quests + servers exist**, so it's live without a flag. Coming:
+  gap surfacing (slice 3), the autonomous research loop (local grind + frontier
+  steering, materials as `structure` servers, slice 4). Skill:
   `precis-quest-help`.
 - **`alert`** — machine-detected ops/health conditions (spin loops, orphans),
   raised via `precis.alerts.raise_alert` (fingerprint upsert + auto-resolve),

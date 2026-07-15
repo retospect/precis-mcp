@@ -283,13 +283,24 @@ def render_roots(store: Store) -> Response:
 
     picks = _picks_7d_by_strategic(store)
     active_ids = _active_strategic_ids(store)
+    # Quest reweighting (slice 2): discount a strategic's picks by the striving
+    # weight it serves, so the "next pick" tilts toward hot-quest work. No-op
+    # (empty map) when nothing is active.
+    from precis.quest.reweight import server_weights_for_active_quests
+
+    strat_weights = server_weights_for_active_quests(store)
     lines = [f"# {len(rows)} strategic root{'' if len(rows) == 1 else 's'}"]
     lines.append("")
-    # Pick the lowest-picks active strategic; tie broken by ref_id
-    # (the plan's deterministic rule).
+    # Pick the lowest reweighted-picks active strategic; tie broken by ref_id.
     next_pick: int | None = None
     if active_ids:
-        ordered = sorted(active_ids, key=lambda i: (picks.get(i, 0), i))
+        ordered = sorted(
+            active_ids,
+            key=lambda i: (
+                (picks.get(i, 0) + 1) / (1 + strat_weights.get(i, 0.0)),
+                i,
+            ),
+        )
         next_pick = ordered[0]
     for ref_id, title, status in rows:
         ref_id = int(ref_id)
@@ -970,6 +981,16 @@ def _fetch_doable(
     limit: int,
 ) -> list[dict[str, Any]]:
     """Return doable leaves (with ancestry chain) ordered per the plan."""
+    # Quest reweighting (slice 2): a strategic root that `serves` an active
+    # quest gets its 7-day pick count discounted by the striving weight, so it
+    # surfaces earlier in the least-picked-first rotation. No-op when no quest
+    # is active (empty map → COALESCE(sv.w,0)=0 → identical ordering).
+    from precis.quest.reweight import server_weights_for_active_quests
+
+    strat_weights = server_weights_for_active_quests(store)
+    weight_sids = list(strat_weights)
+    weight_vals = [strat_weights[s] for s in weight_sids]
+
     under_clause = ""
     under_params: tuple[Any, ...] = ()
     if under is not None:
@@ -1031,6 +1052,10 @@ def _fetch_doable(
                    JOIN tags t ON t.tag_id = rt.tag_id
                   WHERE t.namespace = 'STATUS' AND t.value = 'paused'
              )
+          ),
+          sv(strategic_id, w) AS (
+            -- quest striving weight per strategic root (slice 2 reweighting).
+            SELECT s, w FROM unnest(%s::bigint[], %s::float8[]) AS x(s, w)
           )
         SELECT
           r.ref_id, r.title, COALESCE(st.strategic_id, 0) AS strategic_id,
@@ -1039,6 +1064,7 @@ def _fetch_doable(
           FROM refs r
           LEFT JOIN subtree st ON st.ref_id = r.ref_id
           LEFT JOIN picks p ON p.strategic_id = st.strategic_id
+          LEFT JOIN sv ON sv.strategic_id = st.strategic_id
          WHERE r.kind = 'todo' AND r.deleted_at IS NULL
            AND COALESCE(
                  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
@@ -1087,11 +1113,15 @@ def _fetch_doable(
                   AND t.value = 'level:recurring'
            )
            {under_clause}
-         ORDER BY prio ASC, picks_7d ASC, r.ref_id ASC
+         ORDER BY prio ASC,
+                  ((picks_7d + 1) / (1 + COALESCE(sv.w, 0))) ASC,
+                  r.ref_id ASC
          LIMIT %s
     """
     with store.pool.connection() as conn:
-        rows = conn.execute(sql, under_params + (limit,)).fetchall()
+        rows = conn.execute(
+            sql, (weight_sids, weight_vals) + under_params + (limit,)
+        ).fetchall()
     out: list[dict[str, Any]] = []
     for ref_id, title, _strategic_id, _picks, _prio in rows:
         chain = _ancestor_chain(store, int(ref_id))

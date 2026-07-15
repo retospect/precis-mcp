@@ -57,10 +57,26 @@ _NIDRA_SYS = (
 
 
 def _load(
-    store: Any, cohort: str | None, limit: int
+    store: Any,
+    cohort: str | None,
+    limit: int,
+    *,
+    bias_active_quests: bool = False,
 ) -> tuple[list[tuple[int, str, str]], dict[int, set[int]]]:
     """``(concepts, adjacency)`` for the walk. Cohort-scoped when given, else the
-    most recent concepts. Adjacency unions every graph edge among them."""
+    most recent concepts. Adjacency unions every graph edge among them.
+
+    Quest reweighting (slice 2): with ``bias_active_quests``, concepts that
+    ``serve`` an active quest are pulled into the selection (even if outside the
+    ordinal window) and sorted to the front by striving weight, so the reading
+    opens on what serves the striving. No-op when no quest is active."""
+    # Computed before the conn block so the reweight primitive's own connection
+    # doesn't nest inside ours.
+    quest_weight: dict[int, float] = {}
+    if bias_active_quests:
+        from precis.quest.reweight import server_weights_for_active_quests
+
+        quest_weight = server_weights_for_active_quests(store, server_kind="concept")
     with store.pool.connection() as conn:
         if cohort:
             rows = conn.execute(
@@ -77,6 +93,22 @@ def _load(
                 (limit,),
             ).fetchall()
         concepts = [(int(r[0]), r[1] or "", r[2] or "") for r in rows]
+        if quest_weight:
+            # Pull in quest-serving concepts missing from the ordinal window,
+            # then stable-sort so the highest-weight strivers lead; trim to
+            # limit. Stable sort keeps unrelated concepts in their prior order.
+            have = {c[0] for c in concepts}
+            missing = [q for q in quest_weight if q not in have]
+            if missing:
+                extra = conn.execute(
+                    "SELECT ref_id, meta->>'name', meta->>'definition' FROM refs "
+                    "WHERE kind='concept' AND deleted_at IS NULL "
+                    "AND ref_id = ANY(%s)",
+                    (missing,),
+                ).fetchall()
+                concepts += [(int(r[0]), r[1] or "", r[2] or "") for r in extra]
+            concepts.sort(key=lambda c: -quest_weight.get(c[0], 0.0))
+            concepts = concepts[:limit]
         ids = [c[0] for c in concepts]
         adjacency: dict[int, set[int]] = {i: set() for i in ids}
         if len(ids) >= 2:
@@ -249,6 +281,7 @@ def build_meditation(
     target_minutes: int | None = None,
     anchors: list[str] | None = None,
     skill_preamble: str = "",
+    bias_active_quests: bool = False,
     now: datetime | None = None,
     date_tag: str | None = None,
 ) -> int | None:
@@ -262,6 +295,10 @@ def build_meditation(
     call returns it without re-composing. ``name`` overrides the slug (tests /
     manual one-offs). ``target_minutes`` (default 45) scales both the number of
     concepts walked and whether the script is composed in one call or in segments.
+
+    ``bias_active_quests`` (quest layer slice 2) biases the concept selection
+    toward those serving active quests — a no-op until quests + serving concepts
+    exist.
     """
     profile = CAST_PROFILES["nidra"]
     target = target_minutes if target_minutes is not None else profile.target_minutes
@@ -278,7 +315,9 @@ def build_meditation(
         log.info("meditation: %s already composed (ref %s)", slug, existing.id)
         return int(existing.id)
 
-    concepts, adjacency = _load(store, cohort, max_concepts)
+    concepts, adjacency = _load(
+        store, cohort, max_concepts, bias_active_quests=bias_active_quests
+    )
     if len(concepts) < 2:
         log.info("meditation: only %d concept(s) — nothing to walk", len(concepts))
         return None

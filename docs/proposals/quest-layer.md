@@ -1,14 +1,17 @@
 # Quest layer — the striving above the work (proposal)
 
-> **Status: model closed; slice 1 built (read-only structure).** Captures the
-> design conversation of 2026-07-15 (Reto + session). The aim-layer that sits
-> above projects/streams/concepts and gives the system **direction**: a legible
-> answer to "what are we striving toward, and is this work/knowledge actually in
-> its service?" **Slice 1 landed** — the `quest` kind (`handlers/quest.py`,
-> handle `qu`, migration 0065), the `serves` relation, the append-only logbook,
-> and the `view='tree'` rollup. It does **not** steer yet (reweighting is slice
-> 2). Skill: `precis-quest-help`. Related: `docs/design/reading-prep-loop.md`
-> (the concept graph, which this consumes).
+> **Status: model closed; slices 1–2 built.** Captures the design conversation
+> of 2026-07-15 (Reto + session). The aim-layer that sits above projects/streams/
+> concepts and gives the system **direction**: a legible answer to "what are we
+> striving toward, and is this work/knowledge actually in its service?"
+> **Slice 1** — the `quest` kind (`handlers/quest.py`, handle `qu`, migration
+> 0065), the `serves` relation, the append-only logbook, the `view='tree'`
+> rollup. **Slice 2 (reweighting)** — priority flows down the `serves` DAG into
+> three sinks (`src/precis/quest/reweight.py`): rotation (the doable view +
+> next-pick), acquisition (the OA fetch backlog), reading (meditation concept
+> selection, quest-ready). A **no-op until quests + `serves` edges exist**, so it
+> ships live safely. Skill: `precis-quest-help`. Related:
+> `docs/design/reading-prep-loop.md` (the concept graph, which this consumes).
 
 ## What a quest *is*
 
@@ -235,13 +238,23 @@ project/todos · relax+pathway jobs   project/todos · papers · fold/seq jobs
 
 ## Slice ladder
 
-1. **Read-only structure** — `quest` kind + the `serves` m2m relation + the
-   rollup `view='tree'` (servers by kind + deed ledger). **Link the existing
-   projects up to 3–4 quests** derived from `docs/mission.md` + the real research
-   programs (NO→NH₃ catalyst, …). Read-only, so the model is inspectable before
-   anything steers.
-2. **Reweighting** — priority-as-a-field into rotation / reading / dream. *This is
-   where it starts giving direction.*
+1. **Read-only structure** *(built)* — `quest` kind + the `serves` m2m relation
+   + the rollup `view='tree'` (servers by kind + deed ledger). **Link the
+   existing projects up to 3–4 quests** derived from `docs/mission.md` + the real
+   research programs (NO→NH₃ catalyst, …). Read-only, so the model is inspectable
+   before anything steers.
+2. **Reweighting** *(built — `src/precis/quest/reweight.py`)* — priority-as-a-
+   field down the `serves` DAG (max-aggregation, `DECAY` per ladder hop; only
+   **active** quests pull) into three sinks. **Rotation**: the doable view /
+   next-pick discounts a strategic's 7-day picks by the striving weight it serves
+   (`(picks+1)/(1+w)`). **Acquisition**: a paper stub serving an active quest
+   jumps the OA fetch backlog. **Reading**: `build_meditation(bias_active_quests=)`
+   biases concept selection toward quest-servers (dark until the daily-release
+   cron, slice 3 of reading-prep). Priority is the canonical `refs.prio` column,
+   set on a quest via a `PRIO:` tag. A **no-op until quests + servers exist**, so
+   it's live on the hot path without a flag. *This is where it starts giving
+   direction.* (Deferred: the dream's own nomination *prompt* — the dream is
+   gated off, so tilting `fetch_oa` covers the live acquisition half.)
 3. **Gaps** — surface what's thin: a striving with little support, a served
    concept stuck at low mastery, a claim with no supporting paper, a hypothesis
    with no experiment-job. Gaps *are* the exploration queue.

@@ -260,6 +260,25 @@ def claim_stubs_to_fetch(
                  WHERE e.ref_id = r.ref_id
                    AND e.source LIKE 'fetcher:%%'
           ) fe ON TRUE
+          -- Quest reweighting (slice 2): a stub that `serves` an active quest
+          -- jumps the fetch queue, weighted by that quest's striving weight
+          -- ((11 - prio)/10, matching quest.reweight.base_weight). Uses the
+          -- served quest's own prio directly — the quest→quest ladder is a
+          -- rotation-side refinement, not needed to order acquisitions. NULL
+          -- (serves no active quest) → 0, so the ordering is unchanged when no
+          -- quest is active.
+          LEFT JOIN LATERAL (
+                SELECT max((11 - COALESCE(q.prio, 5)) / 10.0) AS qw
+                  FROM links l
+                  JOIN refs q ON q.ref_id = l.dst_ref_id
+                  JOIN ref_tags rt ON rt.ref_id = q.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE l.src_ref_id = r.ref_id
+                   AND l.relation = 'serves'
+                   AND q.kind = 'quest'
+                   AND q.deleted_at IS NULL
+                   AND t.namespace = 'STATUS' AND t.value = 'active'
+          ) qb ON TRUE
          WHERE r.kind = 'paper'
            AND r.pdf_sha256 IS NULL
            AND r.deleted_at IS NULL
@@ -280,7 +299,11 @@ def claim_stubs_to_fetch(
            )
          -- jsonb_exists(...) not the `?` operator: `?` collides with the
          -- param placeholder scan in a parameterised query.
-         ORDER BY jsonb_exists(r.meta, 'oa_requeued') DESC, r.ref_id DESC
+         -- Quest striving weight (slice 2) tiers between the re-queue signal
+         -- and newest-first: a stub serving a hot active quest jumps ahead.
+         ORDER BY jsonb_exists(r.meta, 'oa_requeued') DESC,
+                  COALESCE(qb.qw, 0) DESC,
+                  r.ref_id DESC
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
