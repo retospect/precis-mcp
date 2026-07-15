@@ -307,7 +307,7 @@ def export_docx(
 
 
 def _render_figure(doc: Any, store: Any, chunk: Any, ctx: _Ctx) -> None:
-    """Embed a figure image + its caption (ADR 0057 slice 4). Raster blobs
+    """Embed a figure image + its caption (ADR 0058 slice 4). Raster blobs
     embed directly; an SVG (blob-SVG or a linked canvas) arrives pre-rasterised
     to PNG via ``figure_export_asset`` (docx can't consume SVG). An asset-less
     figure degrades to a caption-only paragraph + a warning."""

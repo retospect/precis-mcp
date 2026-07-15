@@ -319,7 +319,7 @@ class FakeStore:
         # empty Discussion state.
         return []
 
-    # Figure medium resolver (ADR 0057) — safe defaults; DraftFakeStore
+    # Figure medium resolver (ADR 0058) — safe defaults; DraftFakeStore
     # overrides for its blob-backed figure fixtures.
     def has_chunk_blob(self, chunk_id) -> bool:
         return False

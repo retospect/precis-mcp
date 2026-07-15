@@ -151,7 +151,7 @@ def test_drive_new_creates_figure_and_redirects(fig_client, runtime_with_store) 
     assert "SVG source" in body
 
 
-# ── draw-from-a-draft-figure (ADR 0057, the canvas medium) ───────────────
+# ── draw-from-a-draft-figure (ADR 0058, the canvas medium) ───────────────
 
 
 def _draft_with_placeholder(store):

@@ -74,7 +74,7 @@ class ClearanceSummary:
 def draft_figure_clearance(store: Any, ref_id: int) -> ClearanceSummary:
     """Walk a draft's figure chunks and roll up their clearance.
 
-    Clearance is ``origin × medium`` (ADR 0057): the per-figure verdict comes
+    Clearance is ``origin × medium`` (ADR 0058): the per-figure verdict comes
     from the source resolver, so an **asset-less** figure (no blob, no canvas,
     no recipe) counts as *uncleared* ("no image yet") instead of silently
     shipping — while a real blob / drawn canvas stays cleared per its origin.

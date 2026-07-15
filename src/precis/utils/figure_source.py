@@ -1,4 +1,4 @@
-"""Figure source resolver — the medium axis (ADR 0057).
+"""Figure source resolver — the medium axis (ADR 0058).
 
 A draft figure chunk (``chunk_kind='figure'``) is described by two orthogonal
 axes:
@@ -14,7 +14,7 @@ figure chunk it resolves the medium and returns a :class:`FigureSource` — a
 uniform ``(render, clearance, edit)`` contract the reader and the clearance
 gate both call, so adding a medium is one branch here and nothing downstream.
 
-Slice 1 (ADR 0057 §7) wires the ``canvas`` medium: a figure that is *ours* and
+Slice 1 (ADR 0058 §7) wires the ``canvas`` medium: a figure that is *ours* and
 editable is backed by a live ``kind='figure'`` SVG canvas, referenced **by
 link** (``has-figure``, chunk→ref) rather than a static blob. The reader
 renders that canvas inline via the figure kind's script-safe
@@ -118,7 +118,7 @@ def _svg_to_png(svg: str) -> bytes | None:
 
 
 def figure_export_asset(store: Any, chunk: Any) -> tuple[bytes, str] | None:
-    """``(bytes, ext)`` for embedding a figure in an export (ADR 0057 §7,
+    """``(bytes, ext)`` for embedding a figure in an export (ADR 0058 §7,
     slice 4), or ``None`` when the figure has no usable asset.
 
     Raster blobs pass through as-is; an SVG — whether a ``blob``-SVG (already
@@ -149,7 +149,7 @@ def figure_export_asset(store: Any, chunk: Any) -> tuple[bytes, str] | None:
 def resolve_figure_source(store: Any, chunk: Any) -> FigureSource:
     """Resolve a draft figure chunk to its :class:`FigureSource`.
 
-    Resolution order (ADR 0057 §5): a ``has-figure`` link wins (``canvas``);
+    Resolution order (ADR 0058 §5): a ``has-figure`` link wins (``canvas``);
     else a render recipe / ``own_graph`` (``graph``, which still owns a blob);
     else a blob (``blob``); else nothing (``none`` — the placeholder that kills
     the broken-image glyph). ``origin`` never selects the medium — it only

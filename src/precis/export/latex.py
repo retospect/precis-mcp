@@ -143,7 +143,7 @@ class RenderResult:
     acronyms: dict[str, str] = field(default_factory=dict)  # short → long
     acronym_keys: dict[str, str] = field(default_factory=dict)  # short → gls key
     warnings: list[str] = field(default_factory=list)
-    #: figure assets to materialise beside main.tex — (relpath, bytes). ADR 0057
+    #: figure assets to materialise beside main.tex — (relpath, bytes). ADR 0058
     #: slice 4: raster blobs pass through, SVG/canvas figures rasterise to PNG.
     figures: list[tuple[str, bytes]] = field(default_factory=list)
 
@@ -614,7 +614,7 @@ def render_body(store: Any, ref: Any) -> RenderResult:
 
 def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
     """Render a ``chunk_kind='figure'`` chunk as a LaTeX ``figure`` float
-    (ADR 0057 slice 4). The image asset is resolved to bytes+ext and recorded
+    (ADR 0058 slice 4). The image asset is resolved to bytes+ext and recorded
     on ``ctx.figures`` for the caller to write under ``pics/``; the caption is
     the chunk text. An asset-less figure (should be caught by the clearance
     gate first) emits a visible placeholder + a warning rather than vanishing."""
@@ -939,7 +939,7 @@ def export_draft(
         appendix=appendix_tex,
     )
 
-    # Materialise figure images beside main.tex (ADR 0057 slice 4) — the body
+    # Materialise figure images beside main.tex (ADR 0058 slice 4) — the body
     # references them as pics/<dc>.<ext> via \includegraphics.
     if rendered.figures:
         pics_dir = target_dir / "pics"

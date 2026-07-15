@@ -104,7 +104,7 @@ _PLACEHOLDER_PNG = base64.b64decode(
 
 
 def _looks_like_svg(raw: bytes) -> bool:
-    """True for SVG bytes (ADR 0057 §6, the ``blob``-SVG medium). SVG is
+    """True for SVG bytes (ADR 0058 §6, the ``blob``-SVG medium). SVG is
     text/XML, not magic-byte sniffable, so peek at the leading window: a
     ``<svg`` root, or an XML prolog followed by an ``<svg`` element."""
     head = raw.lstrip()
@@ -118,7 +118,7 @@ def _looks_like_svg(raw: bytes) -> bool:
 
 def _sniff_mime(raw: bytes) -> str:
     """Best-effort image mime from magic bytes; WEBP needs the RIFF check;
-    SVG is sniffed from its XML markup (ADR 0057 §6)."""
+    SVG is sniffed from its XML markup (ADR 0058 §6)."""
     for sig, mime in _MAGIC_MIME:
         if raw.startswith(sig):
             return mime
@@ -131,7 +131,7 @@ def _sniff_mime(raw: bytes) -> str:
 
 def _sanitize_svg_bytes(raw: bytes) -> bytes:
     """Compile-check + sanitize SVG figure bytes before they land in
-    ``chunk_blobs`` (ADR 0057 §6 — SVG is a trust boundary: it can carry
+    ``chunk_blobs`` (ADR 0058 §6 — SVG is a trust boundary: it can carry
     ``<script>`` / ``on*`` handlers / ``javascript:`` hrefs). Reuses the figure
     kind's sanitizer so the rule is single-sourced. Raises ``BadInput`` on
     non-UTF-8 or unparseable markup."""
@@ -836,7 +836,7 @@ class DraftHandler(Handler):
             ) from exc
         if not raw:
             raise BadInput("image= decoded to empty bytes")
-        # ADR 0057 §6 — an SVG blob (sniffed, or an explicit image/svg+xml from
+        # ADR 0058 §6 — an SVG blob (sniffed, or an explicit image/svg+xml from
         # a web upload) is sanitized at rest: strip script / on* / javascript:
         # so a pasted or reused SVG can't smuggle active content.
         resolved_mime = (mime or _sniff_mime(raw)).split(";", 1)[0].strip()

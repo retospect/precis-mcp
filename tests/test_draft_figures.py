@@ -302,7 +302,7 @@ def test_edit_bad_origin_rejected(draft: DraftHandler, hub: Hub) -> None:
         draft.edit(id=f"¶{fig.handle}", origin="bogus")
 
 
-# ── blob-SVG figures (ADR 0057 §6 — sniff + sanitize at rest) ─────────────
+# ── blob-SVG figures (ADR 0058 §6 — sniff + sanitize at rest) ─────────────
 
 _SVG_HOSTILE = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'

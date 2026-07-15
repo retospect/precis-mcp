@@ -4,7 +4,7 @@
 * Date: 2026-06-22 (resolved 2026-06-22)
 * Refines: [0034 — figure assets, data supplements, permission provenance](0034-figure-assets-and-permission-provenance.md) (fills in its deferred *render step*, §3, and generalizes `figure_data`/`figure_code`)
 * Continues: [0033 — draft chunks as an editable document](0033-draft-chunks-editable-document.md)
-* Extended by: [0057 — figure medium axis + the source resolver](0057-figure-medium-axis-and-source-resolver.md) (the graph recipe becomes the `graph` medium, one of blob / canvas / graph behind the figure-source resolver)
+* Extended by: [0058 — figure medium axis + the source resolver](0058-figure-medium-axis-and-source-resolver.md) (the graph recipe becomes the `graph` medium, one of blob / canvas / graph behind the figure-source resolver)
 * Related: [0007 — derived queue, no blocking jobs](0007-derived-queue-no-block-jobs.md) · [0017 — derived queue family](0017-derived-queue-family.md)
 
 ## Context

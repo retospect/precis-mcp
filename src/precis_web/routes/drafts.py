@@ -718,7 +718,7 @@ def _build_rows(
         first_line = ((c.text or "").splitlines() or [""])[0][:140]
         is_figure = c.chunk_kind == "figure"
         fig = (getattr(c, "meta", None) or {}).get("figure", {}) if is_figure else {}
-        # ADR 0057 — resolve the figure's medium (blob / canvas / graph / none)
+        # ADR 0058 — resolve the figure's medium (blob / canvas / graph / none)
         # to a render spec, so the template stops assuming a blob <img>.
         fsrc = resolve_figure_source(store, c) if is_figure else None
         # Data table (ADR 0035 §1): render the canonical meta.table as a real
@@ -777,7 +777,7 @@ def _build_rows(
                 "is_figure": is_figure,
                 # figure provenance for the origin chip + clearance badge
                 "figure_origin": fig.get("origin") if is_figure else None,
-                # clearance is now medium-aware (ADR 0057): an asset-less
+                # clearance is now medium-aware (ADR 0058): an asset-less
                 # figure reads uncleared, a drawn canvas cleared.
                 "figure_cleared": fsrc.cleared if fsrc else None,
                 "figure_permission": fig.get("permission") if is_figure else None,
@@ -2886,7 +2886,7 @@ async def edit_figure_permission(
 
 @router.post("/drafts/{ident}/figure/{handle}/draw")
 async def create_figure_drawing(request: Request, ident: str, handle: str) -> Response:
-    """Turn an asset-less figure into an editable SVG canvas (ADR 0057, the
+    """Turn an asset-less figure into an editable SVG canvas (ADR 0058, the
     ``canvas`` medium): mint a ``kind='figure'`` seeded from the caption,
     parented on the draft's project, wire the ``has-figure`` link (chunk→ref),
     and drop the user into the ``/figure`` editor. Idempotent — a figure that

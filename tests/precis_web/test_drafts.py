@@ -205,7 +205,7 @@ class DraftFakeStore(FakeStore):
         return None
 
     def has_chunk_blob(self, chunk_id) -> bool:
-        # Both fixture figures are real blob-backed images (ADR 0057 medium
+        # Both fixture figures are real blob-backed images (ADR 0058 medium
         # resolver): FIGFIG (original) + FIGTPF (third-party granted).
         return any(
             c.chunk_id == chunk_id and c.chunk_kind == "figure" for c in self._chunks

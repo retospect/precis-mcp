@@ -1335,7 +1335,7 @@ class DraftMixin:
 
     def has_chunk_blob(self, chunk_id: int) -> bool:
         """Cheap existence check for a chunk's blob — ``SELECT 1``, never
-        de-TOASTs the bytes. The figure-source resolver (ADR 0057) calls this
+        de-TOASTs the bytes. The figure-source resolver (ADR 0058) calls this
         for every figure at reader render time, so it must not pull megabytes."""
         with self.pool.connection() as conn:
             row = conn.execute(
@@ -1485,7 +1485,7 @@ class DraftMixin:
 
     def link_figure_canvas(self, figure_chunk_id: int, canvas_ref_id: int) -> None:
         """Wire a draft figure chunk → a ``kind='figure'`` canvas via a
-        ``has-figure`` link (ADR 0057, the ``canvas`` medium). Chunk→ref edge:
+        ``has-figure`` link (ADR 0058, the ``canvas`` medium). Chunk→ref edge:
         the source is the figure *chunk*, the target the whole figure *ref*.
         Idempotent (``add_link`` dedups on the endpoint tuple)."""
         with self.tx() as conn:
@@ -1506,7 +1506,7 @@ class DraftMixin:
 
     def figure_canvas_ref(self, figure_chunk_id: int) -> int | None:
         """The live ``kind='figure'`` canvas ref linked from this figure chunk
-        via ``has-figure`` (ADR 0057), or ``None``. Joins ``refs`` so a
+        via ``has-figure`` (ADR 0058), or ``None``. Joins ``refs`` so a
         soft-deleted canvas reads as absent (the figure falls back to blob /
         placeholder)."""
         with self.pool.connection() as conn:

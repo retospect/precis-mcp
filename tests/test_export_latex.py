@@ -431,7 +431,7 @@ def test_export_draft_end_to_end(hub, tmp_path) -> None:
 
 def test_export_draft_embeds_raster_figure(hub, tmp_path) -> None:
     """A raster figure emits a \\includegraphics float and materialises the
-    image under pics/ beside main.tex (ADR 0057 slice 4)."""
+    image under pics/ beside main.tex (ADR 0058 slice 4)."""
     from precis.handlers.draft import DraftHandler
 
     store = hub.store

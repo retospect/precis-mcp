@@ -266,7 +266,7 @@ edits use `edit(kind='draft', id='dc<id>', origin='third_party',
 permission={…})` — caption and image bytes stay put.
 
 A figure's **medium** — *how the pixels are produced* — is separate from its
-`origin` (ADR 0057). A figure can be a static **blob** (the `image=` upload
+`origin` (ADR 0058). A figure can be a static **blob** (the `image=` upload
 above), a data-driven **graph** (`own_graph` + a render recipe), or **our own
 editable SVG canvas** — a `kind='figure'` drawing linked to the figure chunk by
 a `has-figure` edge. In the **web reader**, a figure with *no image yet* renders
@@ -277,7 +277,7 @@ inline with an **"✎ open in /figure"** affordance. Clearance is medium-aware �
 figure with no blob and no drawn canvas counts as **uncleared** ("no image
 yet"), so an empty placeholder no longer reports "cleared to ship".
 
-**Export** materialises figures into the PDF and Word output (ADR 0057 slice
+**Export** materialises figures into the PDF and Word output (ADR 0058 slice
 4): a raster blob embeds directly, and an SVG — a blob-SVG or a linked canvas —
 rasterises to PNG (via the bundled `resvg`), so `\includegraphics` (LaTeX) and
 `add_picture` (docx) both carry the drawing. An image-less, canvas-less figure

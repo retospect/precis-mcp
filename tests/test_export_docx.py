@@ -146,7 +146,7 @@ def test_docx_embeds_figure_image(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
     """A canvas figure rasterises to PNG and embeds as an inline image + an
-    italic caption paragraph (ADR 0057 slice 4). Uses a canvas (SVG→PNG via
+    italic caption paragraph (ADR 0058 slice 4). Uses a canvas (SVG→PNG via
     resvg) so the embedded raster is one python-docx accepts."""
     pytest.importorskip("resvg_py")
     from precis.handlers.figure import FigureHandler

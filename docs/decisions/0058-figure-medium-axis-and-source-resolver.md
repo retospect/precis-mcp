@@ -1,4 +1,4 @@
-# 0057 — Figure medium axis + the source resolver (blob / canvas / graph)
+# 0058 — Figure medium axis + the source resolver (blob / canvas / graph)
 
 * Status: **Proposed** (design-of-record; build sequenced in §7, not yet implemented)
 * Date: 2026-07-15
