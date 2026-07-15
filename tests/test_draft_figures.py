@@ -8,7 +8,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
-from precis.handlers.draft import DraftHandler
+from precis.handlers.draft import DraftHandler, _sniff_mime
 from precis.store.store import Store
 
 # A real 1×1 PNG, so the Pillow dimension probe (best-effort) has something
@@ -300,3 +300,66 @@ def test_edit_bad_origin_rejected(draft: DraftHandler, hub: Hub) -> None:
     fig = _figures(hub, "nt")[0]
     with pytest.raises(BadInput, match="origin="):
         draft.edit(id=f"¶{fig.handle}", origin="bogus")
+
+
+# ── blob-SVG figures (ADR 0057 §6 — sniff + sanitize at rest) ─────────────
+
+_SVG_HOSTILE = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+    "<script>alert(1)</script>"
+    '<rect width="10" height="10" onload="steal()"/></svg>'
+)
+_SVG_HOSTILE_B64 = base64.b64encode(_SVG_HOSTILE.encode()).decode()
+
+
+def test_sniff_mime_detects_svg() -> None:
+    assert _sniff_mime(b"<svg xmlns='...'><rect/></svg>") == "image/svg+xml"
+    assert _sniff_mime(b"<?xml version='1.0'?>\n<svg><rect/></svg>") == "image/svg+xml"
+    assert _sniff_mime(b"\x89PNG\r\n\x1a\n") == "image/png"
+    assert _sniff_mime(b"just some text") == "application/octet-stream"
+
+
+def test_put_svg_figure_sniffed_and_sanitized(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    # no explicit mime → sniffed as SVG.
+    draft.put(
+        id="nt",
+        chunk_kind="figure",
+        text="Fig 1.",
+        image=_SVG_HOSTILE_B64,
+        origin="original",
+    )
+    fig = _figures(hub, "nt")[0]
+    data, mime = hub.store.get_chunk_blob(fig.handle)
+    assert mime == "image/svg+xml"
+    text = data.decode()
+    assert "<script" not in text.lower()  # active content stripped
+    assert "onload" not in text.lower()
+    assert "<rect" in text.lower()  # the drawing survives
+
+
+def test_put_svg_figure_explicit_mime_still_sanitized(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    draft.put(
+        id="nt",
+        chunk_kind="figure",
+        text="Fig.",
+        image=_SVG_HOSTILE_B64,
+        origin="original",
+        mime="image/svg+xml; charset=utf-8",
+    )
+    fig = _figures(hub, "nt")[0]
+    data, mime = hub.store.get_chunk_blob(fig.handle)
+    assert mime == "image/svg+xml"  # charset param normalised off
+    assert "<script" not in data.decode().lower()
+
+
+def test_put_malformed_svg_rejected(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    broken = base64.b64encode(b"<svg><rect></svg>").decode()  # unclosed rect
+    with pytest.raises(BadInput, match="SVG"):
+        draft.put(
+            id="nt", chunk_kind="figure", text="c", image=broken, origin="original"
+        )

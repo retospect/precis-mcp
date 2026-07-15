@@ -103,14 +103,51 @@ _PLACEHOLDER_PNG = base64.b64decode(
 )
 
 
+def _looks_like_svg(raw: bytes) -> bool:
+    """True for SVG bytes (ADR 0057 §6, the ``blob``-SVG medium). SVG is
+    text/XML, not magic-byte sniffable, so peek at the leading window: a
+    ``<svg`` root, or an XML prolog followed by an ``<svg`` element."""
+    head = raw.lstrip()
+    if head[:3] == b"\xef\xbb\xbf":  # UTF-8 BOM
+        head = head[3:].lstrip()
+    low = head[:256].lower()
+    return low.startswith(b"<svg") or (
+        low.startswith(b"<?xml") and b"<svg" in raw[:4096].lower()
+    )
+
+
 def _sniff_mime(raw: bytes) -> str:
-    """Best-effort image mime from magic bytes; WEBP needs the RIFF check."""
+    """Best-effort image mime from magic bytes; WEBP needs the RIFF check;
+    SVG is sniffed from its XML markup (ADR 0057 §6)."""
     for sig, mime in _MAGIC_MIME:
         if raw.startswith(sig):
             return mime
     if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
         return "image/webp"
+    if _looks_like_svg(raw):
+        return "image/svg+xml"
     return "application/octet-stream"
+
+
+def _sanitize_svg_bytes(raw: bytes) -> bytes:
+    """Compile-check + sanitize SVG figure bytes before they land in
+    ``chunk_blobs`` (ADR 0057 §6 — SVG is a trust boundary: it can carry
+    ``<script>`` / ``on*`` handlers / ``javascript:`` hrefs). Reuses the figure
+    kind's sanitizer so the rule is single-sourced. Raises ``BadInput`` on
+    non-UTF-8 or unparseable markup."""
+    from precis.figure.svg import SvgError, parse_error, sanitize_svg
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BadInput("an SVG figure must be UTF-8 text") from exc
+    err = parse_error(text)
+    if err is not None:
+        raise BadInput(f"invalid SVG figure: {err}")
+    try:
+        return sanitize_svg(text).encode("utf-8")
+    except SvgError as exc:  # pragma: no cover — parse_error already guards
+        raise BadInput(f"invalid SVG figure: {exc}") from exc
 
 
 def _coerce_word_target(raw: dict[str, Any]) -> tuple[int, int] | None:
@@ -799,6 +836,12 @@ class DraftHandler(Handler):
             ) from exc
         if not raw:
             raise BadInput("image= decoded to empty bytes")
+        # ADR 0057 §6 — an SVG blob (sniffed, or an explicit image/svg+xml from
+        # a web upload) is sanitized at rest: strip script / on* / javascript:
+        # so a pasted or reused SVG can't smuggle active content.
+        resolved_mime = (mime or _sniff_mime(raw)).split(";", 1)[0].strip()
+        if resolved_mime == "image/svg+xml":
+            raw = _sanitize_svg_bytes(raw)
         fig_meta: dict[str, Any] = {}
         if org == "third_party":
             if not permission:
@@ -815,7 +858,7 @@ class DraftHandler(Handler):
             caption=str(caption),
             origin=org,
             image=raw,
-            mime=(mime or _sniff_mime(raw)),
+            mime=resolved_mime,
             at=at,
             figure_meta=fig_meta,
         )

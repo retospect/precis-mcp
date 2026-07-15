@@ -222,8 +222,12 @@ just a mime-list append.
 2. **Mermaid under `canvas`** (its own branch off this ADR): `meta.render =
    "mermaid"`, a compile-to-sanitized-SVG step, a Mermaid mode in `/figure`.
    TikZ/dot follow the same shape. **No medium/enum/consumer change.**
-3. **`blob`-SVG**: sniff `<svg`/`<?xml` → `image/svg+xml`, sanitize, serve
-   script-safe. Closes the static-SVG-as-bitmap gap.
+3. **`blob`-SVG** — ✅ **landed**. `_sniff_mime` detects `<svg`/`<?xml` →
+   `image/svg+xml`; `_add_figure` sanitizes SVG bytes at rest via the figure
+   kind's `sanitize_svg` (strips `<script>`/`on*`/`javascript:`) on both the
+   agent `put` and the web multipart upload (single chokepoint), normalising
+   the mime and rejecting unparseable markup. Served script-safe as before
+   (`<img src=/drafts/blob/…>`). Closes the static-SVG-as-bitmap gap.
 4. **Export**: `FigureSource.export_asset()` — rasterize/vector-embed a canvas
    or compiled diagram into the PDF/docx; the `graph`/`blob` export paths are
    0034 §5 / 0035.
