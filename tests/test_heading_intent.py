@@ -191,6 +191,34 @@ def test_planner_prompt_no_section_intent_without_anchor(
     assert "## Section intent" not in prompts.user
 
 
+def test_sweeper_intent_prune_throttles_when_marker_fresh(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """The sweeper piggy-back is throttled by a fresh ``app_state`` marker so the
+    per-minute, cluster-wide sweep doesn't rescan every intent each cycle. With the
+    marker fresh, the pass no-ops and leaves a would-be-reaped orphan alone. (The
+    reap path itself is covered by ``test_prune_dangling_reaps_orphans_only``; this
+    verifies only the throttle gate, without racing the global marker — nothing else
+    writes it.)"""
+    from datetime import UTC, datetime
+
+    from precis.workers.sweeper import (
+        _INTENT_PRUNE_STATE_KEY,
+        _prune_dangling_intents,
+    )
+
+    store = hub.store
+    dead = set_intent(store, "pe888888", "orphan for throttle test")  # never resolves
+    store.set_setting(_INTENT_PRUNE_STATE_KEY, datetime.now(UTC).isoformat())  # fresh
+
+    assert _prune_dangling_intents(store) == 0  # throttled → did not run
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT deleted_at FROM refs WHERE ref_id = %s", (dead,)
+        ).fetchone()
+    assert row[0] is None  # orphan untouched because the pass was throttled
+
+
 def test_intent_note_is_not_exportable(hub: Hub, plan: PlanHandler) -> None:
     """Belt to the anchor-not-a-chunk suspenders: a heading-intent memory is
     rejected by the export guard, so it can never leave as a document."""

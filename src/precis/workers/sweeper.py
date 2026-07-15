@@ -58,7 +58,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from precis.handlers._job_bubble import bubble_job_failure
 from precis.store import Store
@@ -283,6 +283,47 @@ def _agentlog_retention_days() -> int:
         return RETENTION_DAYS
 
 
+#: app_state marker + refresh window for the heading-intent prune piggy-back
+#: (source-backfill slice 8b.4). Throttled to once per this window; between runs
+#: the sweeper does one cheap ``app_state`` read.
+_INTENT_PRUNE_STATE_KEY = "heading_intent_prune:last_run"
+
+
+def _intent_prune_refresh_hours() -> float:
+    raw = os.environ.get("PRECIS_HEADING_INTENT_PRUNE_HOURS")
+    try:
+        return max(0.1, float(raw)) if raw else 6.0
+    except ValueError:
+        return 6.0
+
+
+def _prune_dangling_intents(store: Store) -> int:
+    """Throttled piggy-back: retire heading-intent notes whose anchored heading no
+    longer resolves (the rename/delete orphan case — a heading edit is DELETE+INSERT,
+    so its ``dc<id>`` anchor goes dead). The deterministic hygiene heal for slice 8b,
+    same shape as ``paper_hygiene`` repointing links off soft-deleted refs.
+
+    Gated to once per ``PRECIS_HEADING_INTENT_PRUNE_HOURS`` (default 6) via an
+    ``app_state`` marker so the per-minute, cluster-wide sweep doesn't rescan every
+    intent each cycle. The shared marker plus the idempotent soft-delete serialise it
+    across nodes without a lock — a rare double-run just reaps the same orphans
+    twice, harmlessly. Returns the number retired (0 when throttled)."""
+    last = store.get_setting(_INTENT_PRUNE_STATE_KEY)
+    if last:
+        try:
+            if datetime.now(UTC) - datetime.fromisoformat(last) < timedelta(
+                hours=_intent_prune_refresh_hours()
+            ):
+                return 0
+        except ValueError:
+            pass  # unparseable marker → treat as due
+    from precis.backfill.heading_intent import prune_dangling
+
+    retired = prune_dangling(store)
+    store.set_setting(_INTENT_PRUNE_STATE_KEY, datetime.now(UTC).isoformat())
+    return len(retired)
+
+
 def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     """Detect orphans, lock-and-transition each, return BatchResult.
 
@@ -322,6 +363,12 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
             "sweeper: re-opened %d transient-failed llm-v1 summary row(s) "
             "for re-summarization",
             reopened_sum,
+        )
+    pruned_intents = _prune_dangling_intents(store)
+    if pruned_intents:
+        log.info(
+            "sweeper: retired %d dangling heading-intent note(s) (anchor heading gone)",
+            pruned_intents,
         )
     threshold_hours = _stuck_job_hours()
     candidates = _enumerate_orphans(store, threshold_hours, limit=limit)

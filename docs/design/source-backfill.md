@@ -897,10 +897,25 @@ writer's context, the more discipline the prose needs.*
      the backfill find/review instructions are generated. **Deferred:** firing on a
      backfill tick that has `targets` but no `meta.anchor` (currently `has_anchor`
      only), and initial section-authoring ticks (no anchor yet).
-   - **8b.3** — the one-line **glossary-discipline** skill addition (vocab =
-     deposit a term; leans entirely on existing machinery).
-   - **8b.4** — the global trigger: nursery heal (dangling intents) + a
-     `structural`-tier intent-drift check.
+   - **8b.3** — the **glossary-discipline** prompt addition. **DONE**: a
+     "Precise terms propagate — coin them" paragraph in the planner contract's
+     Prose-style section (`_PLANNER_CONTRACT`, the always-on cached layer): when you
+     pin down a precise term, *define it in the glossary* (existing `chunk_kind='term'`
+     machinery) — the glossary is injected into every section's prompt and auto-linked
+     draft-wide, so one definition keeps the whole draft consistent, and a precise term
+     is a strong search key that lifts recall everywhere. Depositing in the shared
+     vocabulary is how a discovery reaches other sections without hand-carrying it
+     (decision 5). Zero new machinery.
+   - **8b.4** — the global trigger. **Deterministic heal DONE**: `prune_dangling`
+     wired into the `sweeper` as a throttled piggy-back (`_prune_dangling_intents`,
+     once per `PRECIS_HEADING_INTENT_PRUNE_HOURS` default 6 via an `app_state`
+     marker; shared marker + idempotent soft-delete serialise it cluster-wide with no
+     lock) — retires intents whose anchored heading no longer resolves (the
+     rename/delete orphan case), the `paper_hygiene`-shaped hygiene heal.
+     **Deferred — the `structural`-reviewer hard-intent-drift check**: judging
+     whether a section's prose has drifted from its hard intent is a real LLM feature
+     (a new context-builder read + prompt on `workers/review.py`'s `Reviewer`), and
+     deserves its own slice with its own tests rather than a rushed bolt-on.
 
    ### 8a — visibility-scoped link/document-graph rollup (the structural map, deferred)
 

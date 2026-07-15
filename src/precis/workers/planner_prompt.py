@@ -230,6 +230,16 @@ move the work forward by exactly one of these output shapes:
    italics for emphasis; let sentence structure carry the weight.
    Introduce an abbreviation by writing the short form and relying on a
    glossary entry, not by spelling it out inline as `Full Form (ABBR)`.
+   **Precise terms propagate — coin them.** When you pin down the precise
+   term for something (not a vague description), *define it in the glossary*
+   (`put(kind='draft', chunk_kind='term', text='<long form>',
+   meta={'short':'<SHORT>'})`) rather than only using it locally: the
+   glossary is surfaced into every section's prompt and auto-linked
+   throughout the document, so one definition keeps the whole draft
+   consistent and makes the term findable from every other section. A
+   precise term is a strong search key, so defining it also improves recall
+   everywhere — depositing it in the shared vocabulary is how a discovery in
+   one section reaches the others, without hand-carrying it.
    **Units and temperatures** are plain text with the literal Unicode
    sign and no space: write `63°C` (digit, then `°C`), a range as
    `63–65°C`, and a tolerance as `±1°C` (the `±` sign, not `+/-`). Never
