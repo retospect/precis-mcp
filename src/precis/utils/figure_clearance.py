@@ -72,23 +72,32 @@ class ClearanceSummary:
 
 
 def draft_figure_clearance(store: Any, ref_id: int) -> ClearanceSummary:
-    """Walk a draft's figure chunks and roll up their clearance."""
+    """Walk a draft's figure chunks and roll up their clearance.
+
+    Clearance is ``origin × medium`` (ADR 0057): the per-figure verdict comes
+    from the source resolver, so an **asset-less** figure (no blob, no canvas,
+    no recipe) counts as *uncleared* ("no image yet") instead of silently
+    shipping — while a real blob / drawn canvas stays cleared per its origin.
+    """
+    # Lazy import breaks the cycle: figure_source imports figure_status here.
+    from precis.utils.figure_source import resolve_figure_source
+
     uncleared: list[FigureClear] = []
     total = 0
     for c in store.reading_order(ref_id):
         if c.chunk_kind != "figure":
             continue
         total += 1
-        fig = (c.meta or {}).get("figure", {})
-        cleared, reason = figure_status(fig)
-        if not cleared:
+        src = resolve_figure_source(store, c)
+        if not src.cleared:
+            fig = (c.meta or {}).get("figure", {})
             uncleared.append(
                 FigureClear(
                     dc=handle_registry.format_handle("draft", c.chunk_id, chunk=True),
                     caption=(c.text or "").splitlines()[0] if c.text else "",
                     origin=fig.get("origin"),
                     cleared=False,
-                    reason=reason,
+                    reason=src.reason,
                 )
             )
     return ClearanceSummary(total=total, uncleared=uncleared)

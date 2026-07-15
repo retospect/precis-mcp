@@ -1092,6 +1092,17 @@ class DraftMixin:
             return None
         return bytes(row[0]), row[1]
 
+    def has_chunk_blob(self, chunk_id: int) -> bool:
+        """Cheap existence check for a chunk's blob — ``SELECT 1``, never
+        de-TOASTs the bytes. The figure-source resolver (ADR 0057) calls this
+        for every figure at reader render time, so it must not pull megabytes."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM chunk_blobs WHERE chunk_id = %s",
+                (chunk_id,),
+            ).fetchone()
+        return row is not None
+
     def upsert_chunk_blob(
         self,
         chunk_id: int,
@@ -1230,6 +1241,46 @@ class DraftMixin:
                 )
                 n += 1
             return n
+
+    def link_figure_canvas(self, figure_chunk_id: int, canvas_ref_id: int) -> None:
+        """Wire a draft figure chunk → a ``kind='figure'`` canvas via a
+        ``has-figure`` link (ADR 0057, the ``canvas`` medium). Chunk→ref edge:
+        the source is the figure *chunk*, the target the whole figure *ref*.
+        Idempotent (``add_link`` dedups on the endpoint tuple)."""
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT ref_id, ord FROM chunks WHERE chunk_id = %s",
+                (figure_chunk_id,),
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"no chunk {figure_chunk_id}")
+            fig_ref, fig_ord = int(row[0]), int(row[1])
+            self.add_link(
+                src_ref_id=fig_ref,
+                src_pos=fig_ord,
+                dst_ref_id=canvas_ref_id,  # ref-level dst (dst_pos=None)
+                relation="has-figure",
+                conn=conn,
+            )
+
+    def figure_canvas_ref(self, figure_chunk_id: int) -> int | None:
+        """The live ``kind='figure'`` canvas ref linked from this figure chunk
+        via ``has-figure`` (ADR 0057), or ``None``. Joins ``refs`` so a
+        soft-deleted canvas reads as absent (the figure falls back to blob /
+        placeholder)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                """SELECT l.dst_ref_id
+                     FROM links l
+                     JOIN refs r ON r.ref_id = l.dst_ref_id
+                    WHERE l.src_chunk_id = %s
+                      AND l.relation = 'has-figure'
+                      AND r.kind = 'figure'
+                      AND r.deleted_at IS NULL
+                    LIMIT 1""",
+                (figure_chunk_id,),
+            ).fetchone()
+        return int(row[0]) if row is not None else None
 
     def set_figure_provenance(
         self,

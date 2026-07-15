@@ -265,9 +265,22 @@ figure without base64. The clearance badge under a rendered figure is
 edits use `edit(kind='draft', id='dc<id>', origin='third_party',
 permission={…})` — caption and image bytes stay put.
 
+A figure's **medium** — *how the pixels are produced* — is separate from its
+`origin` (ADR 0057). A figure can be a static **blob** (the `image=` upload
+above), a data-driven **graph** (`own_graph` + a render recipe), or **our own
+editable SVG canvas** — a `kind='figure'` drawing linked to the figure chunk by
+a `has-figure` edge. In the **web reader**, a figure with *no image yet* renders
+a **"create drawing"** placeholder (not a broken image): clicking it mints a
+`kind='figure'` canvas seeded from the caption, links it, and opens the
+`/figure` draw-with-the-model editor; a canvas-backed figure renders its SVG
+inline with an **"✎ open in /figure"** affordance. Clearance is medium-aware — a
+figure with no blob and no drawn canvas counts as **uncleared** ("no image
+yet"), so an empty placeholder no longer reports "cleared to ship".
+
 > Graph regeneration (the plot's data + code as `figure_code` /
 > `figure_data` chunks linked `derived-from`) and the export step that
-> writes images out to `pics/` are later phases.
+> writes images out to `pics/` (including rasterising a canvas SVG) are
+> later phases.
 
 ## Data / table chunks
 

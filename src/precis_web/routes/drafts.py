@@ -92,7 +92,8 @@ from precis.utils.authors import (
     to_author_dicts,
 )
 from precis.utils.embed_query import embed_query
-from precis.utils.figure_clearance import draft_figure_clearance, figure_status
+from precis.utils.figure_clearance import draft_figure_clearance
+from precis.utils.figure_source import resolve_figure_source
 from precis.utils.table_data import Scalar, table_payload
 from precis_web import draft_eyes
 from precis_web.deps import (
@@ -717,6 +718,9 @@ def _build_rows(
         first_line = ((c.text or "").splitlines() or [""])[0][:140]
         is_figure = c.chunk_kind == "figure"
         fig = (getattr(c, "meta", None) or {}).get("figure", {}) if is_figure else {}
+        # ADR 0057 — resolve the figure's medium (blob / canvas / graph / none)
+        # to a render spec, so the template stops assuming a blob <img>.
+        fsrc = resolve_figure_source(store, c) if is_figure else None
         # Data table (ADR 0035 §1): render the canonical meta.table as a real
         # <table>, not the derived pipe markdown. ``table_payload`` falls back
         # to parsing the GFM text for any table chunk lacking meta.table.
@@ -773,9 +777,13 @@ def _build_rows(
                 "is_figure": is_figure,
                 # figure provenance for the origin chip + clearance badge
                 "figure_origin": fig.get("origin") if is_figure else None,
-                "figure_cleared": _figure_cleared(fig) if is_figure else None,
+                # clearance is now medium-aware (ADR 0057): an asset-less
+                # figure reads uncleared, a drawn canvas cleared.
+                "figure_cleared": fsrc.cleared if fsrc else None,
                 "figure_permission": fig.get("permission") if is_figure else None,
-                "blob_url": f"/drafts/blob/{c.handle}" if is_figure else None,
+                # medium + render spec drive the figure branch of _row.html.j2.
+                "figure_medium": fsrc.medium if fsrc else None,
+                "figure_render": fsrc.render if fsrc else None,
                 "ancestors": anc.get(c.handle, []),
                 "abbrevs": abbrevs,
                 # render-policy part numerals for the compact linkifier
@@ -909,12 +917,6 @@ def _skeleton(store: Any, ref: Any) -> list[dict[str, Any]]:
             }
         )
     return out
-
-
-def _figure_cleared(fig: dict[str, Any]) -> bool:
-    """Per-figure clearance for the reader badge — the shared ADR 0034 §4
-    rule (third-party needs a granted, unexpired permission)."""
-    return figure_status(fig)[0]
 
 
 def _ref_view(ref: Any) -> dict[str, Any]:
@@ -2880,6 +2882,52 @@ async def edit_figure_permission(
     return await redirect_or_error(
         request, "edit", args, redirect=back, error_title="Edit permission error"
     )
+
+
+@router.post("/drafts/{ident}/figure/{handle}/draw")
+async def create_figure_drawing(request: Request, ident: str, handle: str) -> Response:
+    """Turn an asset-less figure into an editable SVG canvas (ADR 0057, the
+    ``canvas`` medium): mint a ``kind='figure'`` seeded from the caption,
+    parented on the draft's project, wire the ``has-figure`` link (chunk→ref),
+    and drop the user into the ``/figure`` editor. Idempotent — a figure that
+    already has a linked canvas just redirects into it."""
+    store = get_store(request)
+    runtime = get_runtime(request)
+    back = f"/drafts/{ident}#c-{handle}"
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return RedirectResponse(url=back, status_code=303)
+    chunk = store.get_draft_chunk(handle)
+    if chunk is None or chunk.chunk_kind != "figure":
+        return RedirectResponse(url=back, status_code=303)
+
+    # Already drawn-with: jump straight into the existing canvas.
+    existing = store.figure_canvas_ref(chunk.chunk_id)
+    if existing is not None:
+        cref = store.get_ref(kind="figure", id=existing)
+        if cref is not None and cref.slug:
+            return RedirectResponse(url=f"/figure/{cref.slug}", status_code=303)
+
+    caption = ((chunk.text or "").splitlines() or ["Figure"])[0].strip() or "Figure"
+    # Deterministic, unique, slug-safe: the draft ident + the chunk's dc handle.
+    slug = f"{ident}-{chunk.dc}".lower()
+    args: dict[str, Any] = {"kind": "figure", "id": slug, "title": caption[:120]}
+    project = _project_id(store, ref.id)
+    if project is not None:
+        args["project"] = project
+
+    # Mint the canvas. If the slug already exists (a prior half-done attempt),
+    # adopt it rather than failing — the link below is what actually matters.
+    runtime.dispatch_with_status("put", args)
+    canvas = store.get_ref(kind="figure", id=slug)
+    if canvas is None:
+        # Genuine failure (not a pre-existing slug) — surface it as the reader
+        # error banner would for any other verb.
+        return await redirect_or_error(
+            request, "put", args, redirect=back, error_title="Create drawing error"
+        )
+    store.link_figure_canvas(chunk.chunk_id, canvas.id)
+    return RedirectResponse(url=f"/figure/{slug}", status_code=303)
 
 
 @router.post("/drafts/{ident}/todo/{todo_id}/delete")

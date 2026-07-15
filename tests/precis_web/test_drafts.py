@@ -204,6 +204,13 @@ class DraftFakeStore(FakeStore):
             return (b"\x89PNG\r\n\x1a\n", "image/png")
         return None
 
+    def has_chunk_blob(self, chunk_id) -> bool:
+        # Both fixture figures are real blob-backed images (ADR 0057 medium
+        # resolver): FIGFIG (original) + FIGTPF (third-party granted).
+        return any(
+            c.chunk_id == chunk_id and c.chunk_kind == "figure" for c in self._chunks
+        )
+
     def links_for(self, ref_id, *, direction="both", relation=None):
         out = [ln for ln in self._links if relation is None or ln.relation == relation]
         if direction == "out":

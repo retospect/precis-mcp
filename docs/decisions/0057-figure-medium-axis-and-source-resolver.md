@@ -207,13 +207,18 @@ just a mime-list append.
 
 ## Phasing (slices)
 
-1. **`canvas` medium, end-to-end** (this branch's target): the `FigureSource`
-   seam + `medium` discriminator; reader renders a linked canvas inline (reuse
-   the figure kind's script-safe SVG) with **"✎ open in /figure"** and a
-   **"create drawing"** CTA on an asset-less figure (mints a `kind='figure'`
-   seeded from the caption, wires the `has-figure` link, drops into `/figure`);
-   the asset-less → not-cleared clearance fix. Retires the broken-image glyph
-   and the false "cleared to ship".
+1. **`canvas` medium, end-to-end** — ✅ **landed**. The `FigureSource` resolver
+   (`src/precis/utils/figure_source.py`, resolving to `blob`/`canvas`/`graph`/
+   `none`); `figure_clearance` routed through it (asset-less → uncleared "no
+   image yet", drawn canvas → cleared); the reader renders a linked canvas
+   inline via `/figure/{slug}/source.svg` with **"✎ open in /figure"** and a
+   **"create drawing"** placeholder on an asset-less figure; the route
+   `POST /drafts/{ident}/figure/{handle}/draw` mints a `kind='figure'` seeded
+   from the caption (parented on the draft's project), wires the `has-figure`
+   link (`Store.link_figure_canvas` / `figure_canvas_ref`, `has_chunk_blob`),
+   and drops into `/figure`. Retired the broken-image glyph and the false
+   "cleared to ship". `medium` is **derived**, not yet stored (open decision 2
+   deferred — derivation covers every current case).
 2. **Mermaid under `canvas`** (its own branch off this ADR): `meta.render =
    "mermaid"`, a compile-to-sanitized-SVG step, a Mermaid mode in `/figure`.
    TikZ/dot follow the same shape. **No medium/enum/consumer change.**

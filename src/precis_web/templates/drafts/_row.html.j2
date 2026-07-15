@@ -101,11 +101,38 @@
       </div>
     </div>
     {% elif r.is_figure %}
-    {# ADR 0034 — figure: image payload from /drafts/blob, caption as the
-       face, plus an origin chip + clearance badge. #}
+    {# ADR 0034/0057 — figure: the medium (blob / canvas / graph / none) picks
+       the render. `blob`/`graph` → an <img>; `canvas` → the linked figure
+       kind's script-safe source.svg inline + "open in /figure"; `none` → a
+       "drawing pending" placeholder (no more broken-image glyph). #}
+    {% set rn = r.figure_render %}
     <figure class="rounded-md border border-slate-200 bg-white p-2">
-      <img src="{{ r.blob_url }}" alt="{{ r.text }}" loading="lazy"
+      {% if rn and rn.mode == 'placeholder' %}
+      {# No asset yet — offer to draw it in /figure. #}
+      <form method="post" action="/drafts/{{ ref.ident }}/figure/{{ r.handle }}/draw"
+            class="flex flex-col items-center justify-center gap-2 rounded border border-dashed
+                   border-slate-300 bg-slate-50 py-8 text-center">
+        <div class="text-3xl text-slate-300 select-none">✎</div>
+        <div class="text-sm text-slate-500">no image yet</div>
+        <button class="rounded bg-sky-600 px-3 py-1 text-xs font-medium text-white hover:bg-sky-700"
+                title="create an editable SVG figure and draw it with the model">
+          create drawing
+        </button>
+      </form>
+      {% elif rn and rn.mode == 'canvas' %}
+      {# Our editable SVG canvas — rendered inline via the figure kind's
+         sanitized source.svg; click through to draw. #}
+      <a href="{{ rn.open_url }}" class="group relative block"
+         title="open in the /figure editor">
+        <img src="{{ rn.url }}" alt="{{ r.text }}" loading="lazy"
+             class="max-h-96 w-auto max-w-full rounded" />
+        <span class="absolute right-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px]
+                     text-white opacity-0 group-hover:opacity-100">✎ open in /figure</span>
+      </a>
+      {% else %}
+      <img src="{{ rn.url if rn else '' }}" alt="{{ r.text }}" loading="lazy"
            class="max-h-96 w-auto max-w-full rounded" />
+      {% endif %}
       <figcaption class="mt-1.5 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</figcaption>
       {% set p = r.figure_permission or {} %}
       <div class="mt-1 flex items-center gap-1.5">

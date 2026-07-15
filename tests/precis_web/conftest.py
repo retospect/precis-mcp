@@ -319,6 +319,14 @@ class FakeStore:
         # empty Discussion state.
         return []
 
+    # Figure medium resolver (ADR 0057) — safe defaults; DraftFakeStore
+    # overrides for its blob-backed figure fixtures.
+    def has_chunk_blob(self, chunk_id) -> bool:
+        return False
+
+    def figure_canvas_ref(self, chunk_id):
+        return None
+
     def get_ref(self, *, kind: str, id):
         for r in (
             self.todos
