@@ -622,6 +622,8 @@ class DraftHandler(Handler):
         regen: dict[str, Any] | None = None,
         render: str | None = None,
         plots: list[str] | None = None,
+        voice: str | None = None,
+        lang: str | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None or not str(id).strip():
@@ -675,6 +677,22 @@ class DraftHandler(Handler):
                     next="put(kind='draft', id='nanotrans', chunk_kind='paragraph', text='…', at={'after': 'dc<chunk_id>'})",
                 )
             kind = chunk_kind or "paragraph"
+            # Per-chunk narration routing (audio export): which Kokoro voice +
+            # language phonemizer speaks this chunk. Validated against the voice
+            # catalogue so a typo fails loudly; merged into the chunk meta the
+            # narration layer reads. Enables mixed-voice / multilingual drafts
+            # (a French epigraph, a Mandarin drill) — set them per chunk.
+            if voice is not None or lang is not None:
+                from precis.tts import voices as _voices
+
+                try:
+                    _v, _lg = _voices.resolve(voice, lang)
+                except ValueError as exc:
+                    raise BadInput(
+                        str(exc),
+                        next="voices: get(kind='skill', id='precis-audio-help')",
+                    ) from exc
+                meta = {**(meta or {}), "voice": _v, "lang": _lg}
             # A registry ``term`` leaf (glossary / parts / components, ADR
             # 0052) is stamped with its ``meta.registry`` family, gets its
             # insert-callout frozen if the policy is ``assign="insert"``, and
@@ -925,6 +943,8 @@ class DraftHandler(Handler):
         caption: str | None = None,
         regen: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
+        voice: str | None = None,
+        lang: str | None = None,
         dry_run: bool | str = False,
         **_kw: Any,
     ) -> Response:
@@ -1008,6 +1028,8 @@ class DraftHandler(Handler):
             or move is not None
             or table is not None
             or regen is not None
+            or voice is not None
+            or lang is not None
             or _base.chunk_kind == "table"
         ):
             _reject_dry_run("structural")
@@ -1037,6 +1059,21 @@ class DraftHandler(Handler):
             if list_kind == "normal":
                 return Response(body=f"dissolved list {dc} → normal text")
             return Response(body=f"set list {dc} → {list_kind}")
+        if voice is not None or lang is not None:
+            # Set this chunk's narration routing (audio export): which Kokoro
+            # voice + language phonemizer speaks it. Validated against the voice
+            # catalogue; metadata-only (no re-embed), so it patches in place.
+            from precis.tts import voices as _voices
+
+            try:
+                _v, _lg = _voices.resolve(voice, lang)
+            except ValueError as exc:
+                raise BadInput(
+                    str(exc),
+                    next="voices: get(kind='skill', id='precis-audio-help')",
+                ) from exc
+            self.store.patch_chunk_meta(handle, {"voice": _v, "lang": _lg})
+            return Response(body=f"set narration on {_base.dc}: voice={_v} lang={_lg}")
         if meta is not None:
             # Patch a registry ``term`` leaf's attribute bag / hover surfaces
             # in place (ADR 0052): manufacturer / mpn / url / ordering, and the

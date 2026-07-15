@@ -25,12 +25,36 @@ is currently spoken as "equation" (LaTeX→speech is backlogged).
 
 ## The voice score — who says each part
 
-Per-chunk **`meta.voice`** / **`meta.lang`** override the `--voice`/`--lang`
-defaults, so a draft narrates in mixed voices / languages: a paragraph in
-`af_heart` (US), a quoted passage in `bf_emma` (UK, `en-gb`), a French epigraph
-in `ff_siwis` (`fr`). Set them on the chunk's meta; nothing new to author in the
-prose. Voices: `af_*`/`am_*` (US female/male), `bf_*`/`bm_*` (UK), plus other
-languages. `--speed` (0.5–2.0) is the one native prosody knob.
+Each chunk carries **`meta.voice`** / **`meta.lang`** (overriding the
+`--voice`/`--lang` defaults), so a draft narrates in mixed voices / languages: an
+`af_heart` (US) body, a `bf_emma` (UK) quote, a `ff_siwis` French epigraph, a
+`zf_xiaoxiao` Mandarin drill. **Set them per chunk** — first-class, validated:
+
+    put(kind='draft', id='mydraft', chunk_kind='paragraph', text='你好世界',
+        voice='zf_xiaoxiao', lang='cmn', at={'after': 'dc12'})
+    edit(kind='draft', id='dc12', voice='ff_siwis', lang='fr-fr')   # retrofit an existing chunk
+
+Give `voice` and/or `lang`; the other is inferred (a voice knows its language; a
+language has a default voice). A typo fails loudly with a catalogue hint — they
+must agree (an Italian voice can't speak French text). `--speed` (0.5–2.0) is the
+one native prosody knob.
+
+### The catalogue (Kokoro v1.0, 54 voices)
+
+| lang code | voices (examples) | notes |
+|---|---|---|
+| `en-us` | `af_heart` (default), `am_michael`, `af_nova`, … (20) | |
+| `en-gb` | `bf_emma`, `bm_george`, … (8) | |
+| `fr-fr` | `ff_siwis` | **only one** French voice |
+| `it` | `if_sara`, `im_nicola` | |
+| `es` | `ef_dora`, `em_alex` | |
+| `pt-br` | `pf_dora`, `pm_alex` | |
+| `hi` | `hf_alpha`, `hm_omega` | |
+| `cmn` | `zf_xiaoxiao`, `zm_yunxi`, … (8) | Chinese is **`cmn`**, not `zh` |
+| `ja` | `jf_alpha`, `jm_kumo`, … (5) | |
+
+**German is not available** in Kokoro v1.0. **cn/jp** phonemize but want the
+misaki G2P for good output (a synth-side upgrade) — test by ear.
 
 ## Pronunciation lexicon — how special words sound
 
