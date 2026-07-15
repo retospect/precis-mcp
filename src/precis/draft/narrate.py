@@ -38,10 +38,13 @@ _CODE = re.compile(r"`([^`]+)`")
 _BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _ITALIC = re.compile(r"(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\w)")
 _SUBSUP = re.compile(r"</?su[bp]>")
-# Stray LaTeX artifacts that leak into prose: ``\\`` line-breaks and bare
-# ``^`` / ``_`` sup/sub carets (``sp^2`` → ``sp2``), which otherwise read as
-# "backslash backslash" / "caret". Math proper is already dropped above.
-_LATEX_BREAK = re.compile(r"\\\\")
+# Stray backslashes that leak into prose — a LaTeX line-break ``\\``, a
+# control-space ``\ ``, an escaped char (``\%`` / ``\_``), or a leaked macro
+# (``\gamma``) — are voiced by the TTS as the *word* "backslash". Drop any run
+# of them (→ a space, so line-breaks still separate words). Runs after math, so
+# real equations aren't touched. Plus bare ``^`` sup/sub carets (``sp^2`` →
+# ``sp2``), which otherwise read as "caret".
+_BACKSLASH = re.compile(r"\\+")
 _CARET = re.compile(r"[\^](?=\w)")
 _WS = re.compile(r"\s+")
 
@@ -78,7 +81,7 @@ def speakable(text: str) -> str:
     t = _BOLD.sub(r"\1", t)
     t = _ITALIC.sub(r"\1", t)
     t = _SUBSUP.sub("", t)
-    t = _LATEX_BREAK.sub(" ", t)
+    t = _BACKSLASH.sub(" ", t)
     t = _CARET.sub("", t)
     return _WS.sub(" ", t).strip()
 

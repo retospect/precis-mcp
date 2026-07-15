@@ -62,6 +62,15 @@ def test_speakable_strips_latex_artifacts():
     assert speakable(r"Nanotubes\\ to sp^2 carbon") == "Nanotubes to sp2 carbon"
 
 
+def test_speakable_strips_lone_backslashes():
+    # A single stray backslash (control-space, escaped char, leaked macro) is
+    # otherwise voiced as the word "backslash" (the boxel-review report).
+    assert speakable(r"generated \ to") == "generated to"
+    assert speakable(r"the \gamma factor") == "the gamma factor"
+    assert speakable(r"about 50\% done") == "about 50 % done"
+    assert "\\" not in speakable(r"a \ b \\ c \x")
+
+
 # ── lexicon ──────────────────────────────────────────────────────────
 
 
