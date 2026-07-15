@@ -318,6 +318,12 @@ class Link:
     set_by: ActorSlug
     meta: dict[str, Any]
     created_at: datetime
+    #: Raw chunk-id endpoints (``None`` for a ref-level edge). ``src_pos`` /
+    #: ``dst_pos`` above carry the *ord* (a per-ref position); these carry the
+    #: identity that maps into the reading-order tree — the address the
+    #: link-rollup overlay (source-backfill 8a) walks up to a visible ancestor.
+    src_chunk_id: int | None = None
+    dst_chunk_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

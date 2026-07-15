@@ -78,7 +78,9 @@ _LINK_SELECT_PROJ = (
     "l.relation, "
     "l.set_by, "
     "l.meta, "
-    "l.created_at"
+    "l.created_at, "
+    "l.src_chunk_id, "
+    "l.dst_chunk_id"
 )
 _LINK_SELECT_FROM = (
     "FROM links l "

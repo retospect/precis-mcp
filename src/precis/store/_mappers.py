@@ -408,7 +408,7 @@ def _row_to_ref(row: tuple) -> Ref:
 def _row_to_link(row: tuple) -> Link:
     """Map a v2 links row tuple in the order:
     (id, src_ref_id, src_pos, dst_ref_id, dst_pos,
-     relation, set_by, meta, created_at)
+     relation, set_by, meta, created_at, src_chunk_id, dst_chunk_id)
 
     v2 schema uses ``links.link_id`` (aliased to id in the SELECT)
     and ``src_chunk_id``/``dst_chunk_id`` FKs. The link queries
@@ -416,7 +416,11 @@ def _row_to_link(row: tuple) -> Link:
     historical ``pos`` field). When the chunk_id is NULL (ref-level
     link), the LEFT JOIN yields NULL for ord, which arrives here as
     ``None`` directly — no -1 sentinel translation needed (v2
-    dropped the sentinel in favour of NULL).
+    dropped the sentinel in favour of NULL). The raw chunk-id
+    endpoints ride along (``src_chunk_id``/``dst_chunk_id``) so a
+    caller can map an edge into the reading-order tree, not just the
+    ord — the link-rollup overlay (source-backfill 8a) needs the
+    identity to walk up to a visible ancestor.
     """
     return Link(
         id=row[0],
@@ -428,6 +432,8 @@ def _row_to_link(row: tuple) -> Link:
         set_by=row[6],
         meta=row[7] or {},
         created_at=row[8],
+        src_chunk_id=row[9],
+        dst_chunk_id=row[10],
     )
 
 

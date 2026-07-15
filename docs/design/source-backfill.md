@@ -937,6 +937,32 @@ writer's context, the more discipline the prose needs.*
    overlay* in the composer layer (general — reusable by reader / planner / general
    eye-mode), not a detached eye.
 
+   **Sub-slices (deterministic; no migration — the chunk-id columns already exist):**
+
+   - **8a.1** — **the enabling store plumbing. DONE**: `Link` now carries the raw
+     `src_chunk_id` / `dst_chunk_id` endpoints (`store/types.py`) alongside the
+     ord-based `src_pos` / `dst_pos`, projected straight off `links l` (no new join —
+     they're columns on `l`) via the shared `_LINK_SELECT_PROJ` + `_row_to_link`
+     (`store/_links_ops.py`, `store/_mappers.py`). Both `links_for` and `get_link`
+     benefit; nothing else constructs a `Link`. This closes the exact gap
+     `refeye.py:149` punted on ("Chunk-id scoping of inbound edges is a refinement —
+     `links_for` projects pos, not chunk_id") — that refinement is now a free
+     follow-on. Test: `tests/test_link_crud.py::test_link_exposes_chunk_id_endpoints`
+     (chunk-id endpoints resolve to the chunks at those ords; ref-level edge → both
+     `None`).
+   - **8a.2** — **the pure resolver + aggregation** (`backfill/link_rollup.py`, no
+     DB, unit-tested against a hand-built tree + demand map):
+     `coarsest_visible_ancestor(chunk_id, *, tree, demand) -> str | None` walks
+     `DraftChunk.parent_chunk_id` up until a node with `demand > NONE`; `rollup_edges`
+     groups edges by (visible-src-ancestor, resolved-dst) and counts — held papers
+     named, the tail bucketed with a long-tail cutoff.
+   - **8a.3** — **the composer overlay + wiring**: `render_link_rollup(store, ref_id,
+     chunks, demand, views)` in `working_set_render.py` (a "— section link map —"
+     block mirroring `render_ring_groups`), threaded in where `render_working_set`
+     already holds the computed `demand`, **behind a gate** so the default path stays
+     byte-identical (the discipline 8b held to). Planner module `_m_link_rollup`
+     (`applies_when` the structural marker) surfaces it in the tick.
+
    ### Deferred beyond 8a/8b (explicit)
 
    - **The structural stance itself** — the tick that *consumes* 8a+8b to refactor

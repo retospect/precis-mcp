@@ -271,6 +271,43 @@ class TestStoreLinkCRUD:
         assert len(cites_only) == 1
         assert cites_only[0].relation == "cites"
 
+    def test_link_exposes_chunk_id_endpoints(self, store: Store) -> None:
+        """source-backfill 8a: ``links_for`` carries the raw chunk-id
+        endpoints alongside the ord-based ``*_pos`` so a caller can map an
+        edge into the reading-order tree (walk up to a visible ancestor),
+        not just its ordinal. A ref-level edge leaves both ``None``."""
+
+        def _chunk_id_at(ref_id: int, ord_: int) -> int:
+            with store.pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = %s",
+                    (ref_id, ord_),
+                ).fetchone()
+            assert row is not None
+            return int(row[0])
+
+        paper = _seed_paper_with_blocks(store, n_blocks=10)
+        store.add_link(
+            src_ref_id=paper,
+            src_pos=5,
+            dst_ref_id=paper,
+            dst_pos=7,
+            relation="see-also",
+        )
+        (link,) = store.links_for(paper, direction="out")
+        # the chunk-id endpoints resolve to the chunks at those ords …
+        assert link.src_chunk_id == _chunk_id_at(paper, 5)
+        assert link.dst_chunk_id == _chunk_id_at(paper, 7)
+        # … and travel together with the ord projection, not instead of it.
+        assert link.src_pos == 5 and link.dst_pos == 7
+
+        # a ref-level edge (no pos on either side) has NULL chunk ids.
+        m = _seed_memory(store)
+        store.add_link(src_ref_id=m, dst_ref_id=paper, relation="related-to")
+        (ref_level,) = store.links_for(m, direction="out")
+        assert ref_level.src_chunk_id is None
+        assert ref_level.dst_chunk_id is None
+
 
 # ── merge_refs: the duplicate-paper resolver primitive ─────────────
 
