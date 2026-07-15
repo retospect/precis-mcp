@@ -205,9 +205,12 @@ driver; adding one is a `Reviewer(...)` instance):
   any un-narrated cast draft via `render_narration` → `render_episode` →
   `publish_episode(source="reading")`, idempotent on `meta.audio_episode_id`
   (sibling to `briefing_audio`). Compose is the `reading_brief`/`meditation`
-  **coordinator** job_types (any system node, dodging the melchior `claude_inproc`
-  SPOF) on daily `level:recurring` watches. CLI: `precis cast run <reading|nidra>
-  [--publish]` + `precis cast schedule [--now]`. Skill: `precis-audio-help`.
+  **`claude_inproc`** job_types (melchior — both casts compose with `claude-opus`
+  via the melchior-loopback litellm proxy, same host as the news briefing) on daily
+  `level:recurring` watches; **TTS is the separate downstream spark pass**, so the
+  nice-model compose and the container narration never block each other. CLI:
+  `precis cast run <reading|nidra> [--publish]` + `precis cast schedule [--now]`.
+  Skill: `precis-audio-help`.
 * `llm_summarize` — model-authored two-part summary (gist + a
   sentence of detail) into `chunk_summaries` under
   `summarizer='llm-v1'`, distinct from the lexical `rake-lemma` row

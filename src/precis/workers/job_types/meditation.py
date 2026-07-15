@@ -1,12 +1,14 @@
 """``meditation`` job_type — compose the evening nidra cast (a draft).
 
 The evening sibling of :mod:`precis.workers.job_types.reading_brief`. Deterministic
-in-process producer under the **coordinator** executor (any system-profile node).
-Driven by a ``level:recurring`` todo (``meta.schedule={'cron':'0 21 * * *'}``,
-``meta.executor='coordinator'``, ``meta.job_type='meditation'``). Calls
+in-process producer under ``claude_inproc`` (melchior), so the ~45-min segmented
+walk is composed by a **nice model** (``claude-opus`` via the melchior-loopback
+litellm proxy). Driven by a ``level:recurring`` todo
+(``meta.schedule={'cron':'0 21 * * *'}``, ``meta.executor='claude_inproc'``,
+``meta.job_type='meditation'``). Calls
 :func:`precis.reading.meditation.build_meditation`, which walks the concept graph
-into a standalone dated ``draft`` (voice ``af_nicole``, ~45-min segmented walk);
-the ``cast_audio`` pass on spark narrates it onto the feed. Returns ``Done``.
+into a standalone dated ``draft`` (voice ``af_nicole``); the ``cast_audio`` pass on
+spark narrates it onto the feed as a separate downstream step.
 """
 
 from __future__ import annotations
@@ -14,7 +16,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from precis.workers.executors._yield import Done
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -36,8 +37,8 @@ _PARAMS_SCHEMA: dict[str, Any] = {
 }
 
 
-def _dispatch(ctx: Any, spec: Any) -> Any:
-    """Coordinator dispatcher: compose today's nidra draft."""
+def _dispatch(ctx: Any, spec: Any) -> None:
+    """Plugin dispatcher invoked by ``claude_inproc`` for a claimed job."""
     from precis.reading.meditation import build_meditation
 
     params = (ctx.meta or {}).get("params") or {}
@@ -51,14 +52,18 @@ def _dispatch(ctx: Any, spec: Any) -> Any:
         draft_id = build_meditation(ctx.store, **kwargs)
     except Exception as exc:
         log.warning("meditation job: pass raised", exc_info=True)
-        return Done(summary=f"meditation: pass raised: {exc}", success=False)
+        ctx.record_failure(f"meditation: pass raised: {exc}")
+        return
 
     if draft_id is None:
-        return Done(summary="meditation: too few concepts to walk — nothing composed")
-    return Done(
-        summary=f"meditation: composed evening nidra draft ref {draft_id}",
-        summary_meta={"draft_ref_id": draft_id},
+        ctx.append_chunk(
+            "job_summary", "meditation: too few concepts to walk — nothing composed"
+        )
+        return
+    ctx.append_chunk(
+        "job_summary", f"meditation: composed evening nidra draft ref {draft_id}"
     )
+    ctx.set_meta(draft_ref_id=draft_id)
 
 
 def _run(*_a: Any, **_k: Any) -> Any:
@@ -68,7 +73,7 @@ def _run(*_a: Any, **_k: Any) -> Any:
 SPEC = JobTypeSpec(
     name="meditation",
     params_schema=_PARAMS_SCHEMA,
-    compatible_executors=frozenset({"coordinator"}),
+    compatible_executors=frozenset({"claude_inproc"}),
     requires=frozenset(),  # deterministic in-process — no executor capabilities
     description="Compose the evening nidra meditation cast as a dated draft.",
     run=_run,
