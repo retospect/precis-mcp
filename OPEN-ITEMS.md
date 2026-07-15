@@ -191,6 +191,58 @@ extensions**, not bugs — ordered roughly by value:
   declared in the vocab) to a mechanical lint. Most conventions stay the
   model's job (held via the vocab), never a general "convention linter".
 
+## 🖇️ `mermaid` kind + diagram chunk-binding (ADR 0057) — SHIPPED, un-darking pending (2026-07-15)
+
+All five slices of ADR 0057 are on `main` (design-of-record
+[`docs/design/diagram-editing-and-chunk-binding.md`](docs/design/diagram-editing-and-chunk-binding.md)):
+element→chunk `depicts` bindings (migration 0064), the rich figure editing
+environment, the shared `DiagramLang` core + `DiagramHandler` base
+(figure/mermaid are two instances at every layer), the `mermaid` kind via
+pure-Python `mermaidx` (migration 0066), and the `diagram_propose` autonomous
+tick. **The `mermaid` kind ships dark and is NOT yet live.** Remaining:
+
+- **Un-dark mermaid — make it a first-class kind** — `feature`, Owner:
+  `pyproject.toml` + `dispatch.py` + `~/work/cluster/roles/`. Today two gates:
+  the `[mermaid]` extra (the `mermaidx` engine dep) **and**
+  `PRECIS_MERMAID_ENABLED` (kind registration). To ship it properly like
+  `figure` (which has neither): **(1)** add `mermaid` to the `[all]` extra
+  (so the dev/CI gate image bakes `mermaidx` and the mermaid tests stop being
+  `importorskip`-skipped — real coverage of the mermaidx compile path);
+  **(2)** add `mermaid` to the cluster install specs that need the engine —
+  `roles/precis_web` (`precis-mcp[web,docx,pcb,external]` → `…,mermaid]`, the
+  `/mermaid` render host) and `roles/precis_worker`
+  (`precis-mcp[paper,patent,external]` → `…,mermaid]`, the `diagram_propose`
+  tick host); **(3)** drop the `PRECIS_MERMAID_ENABLED` gate and register
+  `MermaidHandler` unconditionally in `dispatch.py` (or default it on) — a
+  peer capability doesn't need a dark flag. Then `/go` / redeploy. Decide
+  whether to keep an env kill-switch (figure has none; lean: remove).
+  **Wheels are pure (no compiler): `quickjs-ng` + `resvg-py` cover
+  macOS-arm64 + manylinux/musllinux, `resvg-py` is already pulled by
+  `[docx]`.** Finder: Opus session.
+- **Full mermaid source grammar** — `feature`, Owner: `mermaid/mermaid.py`.
+  Node extraction is a pragmatic source scan (good for flowchart/graph,
+  reasonable for sequence/state, not a faithful mermaid grammar). The real
+  mermaid parser lives in the `mermaidx` engine; a future option is to extract
+  node ids from the *rendered* SVG (authoritative) instead of the scan.
+- **Rich cross-kind seed rendering in `diagram_propose`** — `feature`, Owner:
+  `workers/job_types/diagram_propose.py`. `compose_message` inlines chunk-handle
+  seed *text*; a ref-handle seed (another `figure`, a `cad` cross-section) is
+  only listed as a titled reference. Render richer per-kind seed content (e.g.
+  a figure's SVG source, a cad analysis) so "here's another view + a cross
+  section" fully lands in the turn.
+- **Self-directed drawer (slice-5 upgrade)** — `feature`, design not yet
+  committed (a proposal `docs/proposals/diagram-propose-loop.md` was sketched in
+  a parallel session's notes but never landed — write it before building). The
+  built tick is the *precursor* (human passes `seeds:[handle]`, one single-shot
+  turn). The upgrade makes the drawer FIND+BIND its own sources via a
+  three-layer context (owning-draft collapsed tree + fisheye retrieval + open
+  agentic search) and a tool-using turn loop. **Reconcile with the shipped
+  precursor before building** (layer on top, or supersede). Motivated by the
+  deck-hook incident (a figure drawn wrong from a title alone).
+- **`wip/backlog-docs` branch (primary repo)** — `polish`, Owner: git. The
+  2026-07-15 main-fix preserved one local-only commit (`e5643873 docs(backlog)`)
+  on branch `wip/backlog-docs` in the primary checkout. Ship it or drop it.
+
 ## 🔵 Turn-as-job routing + context DSL — WIP design (2026-07-07)
 
 - **Status**: `deferred` (design captured, not sliced) —
