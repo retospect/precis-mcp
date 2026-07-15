@@ -27,10 +27,12 @@ ARG KOKORO_MODEL_URL=https://github.com/thewh1teagle/kokoro-onnx/releases/downlo
 ARG KOKORO_VOICES_URL=https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
 
 # espeak-ng: non-zh/ja phonemizer; ffmpeg: encode; tini: reap the child;
-# git+curl: pip-from-git + model download. misaki's JP/ZH dicts are pip wheels
-# (fugashi/unidic-lite/jieba) — no apt.
+# git+curl: pip-from-git + model download. build-essential+cmake: pyopenjtalk
+# (misaki[ja]'s Japanese G2P) + mojimoji are C/C++ extensions built from sdist
+# (no aarch64 wheels), so they need a compiler + cmake at install time.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends espeak-ng ffmpeg tini git curl \
+ && apt-get install -y --no-install-recommends \
+      espeak-ng ffmpeg tini git curl build-essential cmake \
  && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
