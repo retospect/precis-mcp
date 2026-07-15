@@ -30,8 +30,11 @@ ARG KOKORO_VOICES_URL=https://github.com/thewh1teagle/kokoro-onnx/releases/downl
 # git+curl: pip-from-git + model download. build-essential+cmake: pyopenjtalk
 # (misaki[ja]'s Japanese G2P) + mojimoji are C/C++ extensions built from sdist
 # (no aarch64 wheels), so they need a compiler + cmake at install time.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+# Timeouts + retries so spark's flaky external link can't hang a fetch forever
+# (a stalled apt connection wedged the build for an hour with no timeout).
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update \
+ && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y \
+      --no-install-recommends \
       espeak-ng ffmpeg tini git curl build-essential cmake \
  && rm -rf /var/lib/apt/lists/*
 
@@ -50,10 +53,13 @@ ja.JAG2P(version="pyopenjtalk")("こんにちは")
 print("misaki zh/ja dictionaries warmed")
 PY
 
-# Bake the model files in (self-contained image).
+# Bake the model files in (self-contained image). --retry + --connect-timeout so
+# a stalled GitHub CDN connection fails fast + retries instead of hanging.
 RUN mkdir -p /models \
- && curl -fsSL "$KOKORO_MODEL_URL"  -o /models/kokoro-v1.0.onnx \
- && curl -fsSL "$KOKORO_VOICES_URL" -o /models/voices-v1.0.bin
+ && curl -fsSL --connect-timeout 30 --retry 5 --retry-delay 5 --retry-connrefused \
+      "$KOKORO_MODEL_URL"  -o /models/kokoro-v1.0.onnx \
+ && curl -fsSL --connect-timeout 30 --retry 5 --retry-delay 5 --retry-connrefused \
+      "$KOKORO_VOICES_URL" -o /models/voices-v1.0.bin
 ENV PRECIS_KOKORO_MODEL=/models/kokoro-v1.0.onnx \
     PRECIS_KOKORO_VOICES=/models/voices-v1.0.bin
 
