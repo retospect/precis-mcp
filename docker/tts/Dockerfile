@@ -33,6 +33,17 @@ RUN pip install --no-cache-dir \
       "precis-mcp[tts] @ git+https://github.com/retospect/precis-mcp@${PRECIS_REF}" \
       "misaki[zh,ja]"
 
+# Warm the G2P dictionaries INTO the image so the container needs no network at
+# run: pyopenjtalk fetches its ~23 MB openjtalk dict on first use (Japanese uses
+# this backend, not the 500 MB-unidic cutlet default), and jieba builds its zh
+# prefix dict. Without this the first zh/ja render would hit the network.
+RUN python - <<'PY'
+from misaki import ja, zh
+zh.ZHG2P()("你好")
+ja.JAG2P(version="pyopenjtalk")("こんにちは")
+print("misaki zh/ja dictionaries warmed")
+PY
+
 # Bake the model files in (self-contained image).
 RUN mkdir -p /models \
  && curl -fsSL "$KOKORO_MODEL_URL"  -o /models/kokoro-v1.0.onnx \

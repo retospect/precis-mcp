@@ -106,10 +106,29 @@ def _store() -> _Store:
     return _Store(_Ref(42, {"briefing": True, "date": "2026-07-14"}, _NOW), _BRIEF)
 
 
+def _fake_encode(wav, out):
+    """Stand in for the ffmpeg WAV→m4a step (keep the test toolchain-free)."""
+    import shutil
+
+    shutil.copyfile(wav, out)
+
+
+def _fake_podman(cmd, **kwargs):
+    """A fake `podman run precis-tts` — parse the -v out mount and drop a
+    render there, so the container path exercises staging + copy-back + publish
+    without a real container."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    outdir = next(_Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
+    (outdir / "out.m4a").write_bytes(b"fake-m4a")
+    (outdir / "result.json").write_text(_json.dumps({"segments": 4, "duration_s": 7.5}))
+
+
 def test_publishes_episode_and_stamps_marker(tmp_path):
     store, synth = _store(), _FakeSynth()
     r = run_briefing_audio(
-        store, synth=synth, podcast_dir=tmp_path, now=_NOW, encode=None
+        store, synth=synth, podcast_dir=tmp_path, now=_NOW, encode=_fake_encode
     )
     assert r["published"] is True and r["episode_id"] == "news-2026-07-14"
     assert r["ref_id"] == 42 and r["segments"] == 4
@@ -123,11 +142,47 @@ def test_publishes_episode_and_stamps_marker(tmp_path):
     assert store.ref.meta["audio_episode_id"] == "news-2026-07-14"
 
 
+def test_publishes_via_container_backend(tmp_path):
+    # image= set → the podman path (worker has no [tts]); fake podman drops a
+    # render, which we copy back + publish + mark.
+    store = _store()
+    r = run_briefing_audio(
+        store,
+        image="precis-tts:test",
+        podcast_dir=tmp_path,
+        now=_NOW,
+        run=_fake_podman,
+    )
+    assert r["published"] is True and r["episode_id"] == "news-2026-07-14"
+    assert r["segments"] == 4 and r["duration_s"] == 7.5  # from the container result
+    eps = audio_feed.list_episodes(tmp_path)
+    assert len(eps) == 1 and eps[0].id == "news-2026-07-14"
+    assert store.ref.meta["audio_episode_id"] == "news-2026-07-14"
+
+
+def test_render_failure_backs_off(tmp_path):
+    # A failing backend stamps audio_failed_at (not audio_episode_id) so the pass
+    # doesn't spin a container every tick.
+    store = _store()
+
+    def _boom(cmd, **kw):
+        raise RuntimeError("podman exploded")
+
+    r = run_briefing_audio(
+        store, image="precis-tts:test", podcast_dir=tmp_path, now=_NOW, run=_boom
+    )
+    assert r["published"] is False and r["reason"].startswith("render-failed")
+    assert "audio_episode_id" not in store.ref.meta
+    assert "audio_failed_at" in store.ref.meta  # backoff marker set
+
+
 def test_second_run_is_idempotent(tmp_path):
     store, synth = _store(), _FakeSynth()
-    run_briefing_audio(store, synth=synth, podcast_dir=tmp_path, now=_NOW, encode=None)
+    run_briefing_audio(
+        store, synth=synth, podcast_dir=tmp_path, now=_NOW, encode=_fake_encode
+    )
     again = run_briefing_audio(
-        store, synth=_FakeSynth(), podcast_dir=tmp_path, now=_NOW, encode=None
+        store, synth=_FakeSynth(), podcast_dir=tmp_path, now=_NOW, encode=_fake_encode
     )
     assert again["published"] is False and again["reason"] == "no-unnarrated-briefing"
     assert len(audio_feed.list_episodes(tmp_path)) == 1  # no double-publish
@@ -136,7 +191,12 @@ def test_second_run_is_idempotent(tmp_path):
 def test_dry_run_renders_without_publishing_or_marking(tmp_path):
     store, synth = _store(), _FakeSynth()
     r = run_briefing_audio(
-        store, synth=synth, podcast_dir=tmp_path, now=_NOW, encode=None, publish=False
+        store,
+        synth=synth,
+        podcast_dir=tmp_path,
+        now=_NOW,
+        encode=_fake_encode,
+        publish=False,
     )
     assert r["published"] is False and r["reason"] == "dry-run" and r["segments"] == 4
     assert audio_feed.list_episodes(tmp_path) == []  # nothing published

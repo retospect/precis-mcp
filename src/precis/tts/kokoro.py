@@ -24,10 +24,13 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 #: Languages whose Kokoro voices want the misaki G2P (espeak phonemes mismatch
-#: the training set). Keyed by our espeak lang code -> misaki submodule + class.
-_MISAKI_LANGS: dict[str, tuple[str, str]] = {
-    "cmn": ("zh", "ZHG2P"),
-    "ja": ("ja", "JAG2P"),
+#: the training set). Keyed by our espeak lang code -> (misaki submodule, class,
+#: init kwargs). Japanese uses the ``pyopenjtalk`` backend, which ships its own
+#: dictionary (~23 MB, baked in the image) — the default ``cutlet`` backend needs
+#: a ~500 MB unidic download and errors ("Failed initializing MeCab") without it.
+_MISAKI_LANGS: dict[str, tuple[str, str, dict[str, Any]]] = {
+    "cmn": ("zh", "ZHG2P", {}),
+    "ja": ("ja", "JAG2P", {"version": "pyopenjtalk"}),
 }
 
 
@@ -65,12 +68,12 @@ class KokoroSynth:
         if lang in self._g2p:
             return self._g2p[lang]
         g2p: Any | None = None
-        submod, cls = _MISAKI_LANGS[lang]
+        submod, cls, kwargs = _MISAKI_LANGS[lang]
         try:
             import importlib
 
             mod = importlib.import_module(f"misaki.{submod}")
-            g2p = getattr(mod, cls)()
+            g2p = getattr(mod, cls)(**kwargs)
         except Exception as exc:  # misaki absent or dict missing — fall back
             log.info(
                 "misaki %s unavailable (%s); using espeak for %s", submod, exc, lang

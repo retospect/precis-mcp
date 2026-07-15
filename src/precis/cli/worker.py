@@ -801,39 +801,51 @@ def run(args: argparse.Namespace) -> None:
         ):
             from precis.workers.runner import BatchResult as _BaBatchResult
 
+            _ba_image = os.environ.get("PRECIS_TTS_IMAGE")
+            _ba_cmd = os.environ.get("PRECIS_TTS_CONTAINER_CMD") or "podman"
             _ba_podcast_dir = os.environ.get("PRECIS_PODCAST_DIR")
             _ba_voice = os.environ.get("PRECIS_BRIEFING_AUDIO_VOICE") or "af_heart"
             _ba_lang = os.environ.get("PRECIS_BRIEFING_AUDIO_LANG") or "en-us"
+            _ba_scratch = os.environ.get("PRECIS_TTS_SCRATCH")
 
-            def _briefing_audio_pass(batch_size: int) -> _BaBatchResult:
-                from precis.workers.briefing_audio import (
-                    has_pending_briefing,
-                    run_briefing_audio,
+            if not _ba_image:
+                # TTS runs in the precis-tts container (this worker venv has no
+                # [tts] extra), so without an image there's no backend — don't
+                # register a pass that would just fail every tick.
+                log.warning(
+                    "briefing_audio enabled but PRECIS_TTS_IMAGE unset — skipping "
+                    "(needs the precis-tts container image)"
                 )
+            else:
 
-                # Gate the heavy Kokoro model load behind a cheap existence
-                # check: an idle tick (the norm — one briefing/day) never
-                # constructs the synth.
-                if not has_pending_briefing(store):
-                    return _BaBatchResult("briefing_audio", 0, 0, 0)
+                def _briefing_audio_pass(batch_size: int) -> _BaBatchResult:
+                    from precis.workers.briefing_audio import (
+                        has_pending_briefing,
+                        run_briefing_audio,
+                    )
 
-                from precis.tts.kokoro import KokoroSynth
+                    # Cheap existence check first — an idle tick (one briefing a
+                    # day) never launches a container.
+                    if not has_pending_briefing(store):
+                        return _BaBatchResult("briefing_audio", 0, 0, 0)
 
-                r = run_briefing_audio(
-                    store,
-                    synth=KokoroSynth(),
-                    podcast_dir=_ba_podcast_dir,
-                    voice=_ba_voice,
-                    lang=_ba_lang,
-                )
-                return _BaBatchResult(
-                    handler="briefing_audio",
-                    claimed=1 if r["published"] else 0,
-                    ok=1 if r["published"] else 0,
-                    failed=0,
-                )
+                    r = run_briefing_audio(
+                        store,
+                        image=_ba_image,
+                        podcast_dir=_ba_podcast_dir,
+                        voice=_ba_voice,
+                        lang=_ba_lang,
+                        container_cmd=_ba_cmd,
+                        scratch_dir=_ba_scratch,
+                    )
+                    return _BaBatchResult(
+                        handler="briefing_audio",
+                        claimed=1 if r["published"] else 0,
+                        ok=1 if r["published"] else 0,
+                        failed=0 if r["published"] else 1,
+                    )
 
-            ref_passes.append(_briefing_audio_pass)
+                ref_passes.append(_briefing_audio_pass)
 
         # Backlog groomer (default-OFF; PRECIS_BACKLOG_GROOM_ENABLED=1 or
         # --only backlog_groom): promote open gripes into dispatchable
