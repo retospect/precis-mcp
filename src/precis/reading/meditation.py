@@ -37,8 +37,9 @@ _DEFAULT_MAX_CONCEPTS = (
 #: Below this many concepts a long walk can't be stretched meaningfully, so we
 #: fall back to a single-call compose regardless of the target length.
 _SEGMENT_MIN_CONCEPTS = 8
-#: Concepts per segment call when composing a long walk.
-_CONCEPTS_PER_SEGMENT = 6
+#: Concepts per segment call when composing a long walk. Smaller = more segments,
+#: each dwelling longer on fewer ideas (a slower, fuller nidra at the target length).
+_CONCEPTS_PER_SEGMENT = 4
 _WALK_RELATIONS = ("has-prerequisite", "analogy-of", "contrasts-with")
 
 #: The nidra narration contract. Kept terse; the craft detail is the
@@ -181,6 +182,7 @@ def _compose_long(
     ordered: list[tuple[str, str]],
     *,
     client: Any,
+    target_words: int,
     anchors: list[str] | None = None,
     skill_preamble: str = "",
 ) -> str:
@@ -189,8 +191,14 @@ def _compose_long(
     A 45-minute nidra is ~5000 words — past a single completion's clean ceiling —
     so compose it in pieces: induction (one call) → walk sections over concept
     batches (one call each, fed the tail of the prior passage for continuity) →
-    tapering coda (one call), concatenated. Keeps each generation short enough to
-    stay coherent while the whole cast runs long."""
+    tapering coda (one call), concatenated.
+
+    ``target_words`` (from the profile's minutes × words-per-minute) is what makes
+    the cast hit its target length: it is split across the calls and each prompt
+    asks for that many words, so the whole nidra runs to the intended duration.
+    Without a per-segment target the model writes short and the cast lands far
+    under the target (the 2026-07-15 nidra came out ~18 min against a 45-min
+    budget precisely because the budget wasn't threaded into the prompts)."""
     system = (
         f"{skill_preamble}\n\n{_NIDRA_SYS}".strip() if skill_preamble else _NIDRA_SYS
     )
@@ -204,24 +212,32 @@ def _compose_long(
         )
         return (getattr(out, "text", "") or "").strip()
 
-    parts: list[str] = []
-
-    induction = _call(
-        "Write ONLY the opening induction of a long evening meditation: a slow "
-        "settling — a few breaths, the day setting down, the body growing heavy "
-        "and still. Several soft paragraphs. Do not begin the walk of ideas yet."
-    )
-    if induction:
-        parts.append(induction)
-
     batches = [
         ordered[i : i + _CONCEPTS_PER_SEGMENT]
         for i in range(0, len(ordered), _CONCEPTS_PER_SEGMENT)
     ]
+    # Split the word budget across every call (induction + each walk batch + coda);
+    # the model under-writes an open-ended "write a passage", so give it a number.
+    n_calls = len(batches) + 2
+    per_call = max(150, target_words // n_calls)
+
+    parts: list[str] = []
+
+    induction = _call(
+        f"Write ONLY the opening induction of a long evening meditation: a slow "
+        f"settling — a few breaths, the day setting down, the body growing heavy "
+        f"and still. Unhurried, dwelling, roughly {per_call} words (do not go "
+        f"shorter). Do not begin the walk of ideas yet."
+    )
+    if induction:
+        parts.append(induction)
+
     for batch in batches:
         lines = [
             "Continue the gentle walk. Drift softly through these ideas in order, "
-            "each described in plain words and how it relates to the one before:"
+            "each described in plain words and how it relates to the one before. "
+            f"Dwell slowly — roughly {per_call} words for this passage (do not go "
+            "shorter); linger on each image before moving on:"
         ]
         for nm, df in batch:
             lines.append(f"- {nm}: {df}" if df else f"- {nm}")
@@ -243,8 +259,9 @@ def _compose_long(
         else ""
     )
     coda = _call(
-        anchor_line + "Write ONLY the tapering coda now: sentences shorten, the "
-        "words soften and fade as the listener drifts toward sleep. No new ideas."
+        anchor_line + f"Write ONLY the tapering coda now, roughly {per_call} words: "
+        "sentences shorten, the words soften and fade as the listener drifts toward "
+        "sleep. No new ideas."
     )
     if coda:
         parts.append(coda)
@@ -347,7 +364,11 @@ def build_meditation(
     budget = word_budget(profile, target_minutes=target)
     if budget > SINGLE_CALL_WORD_CEILING and len(concepts) >= _SEGMENT_MIN_CONCEPTS:
         script = _compose_long(
-            ordered, client=client, anchors=anchors, skill_preamble=skill_preamble
+            ordered,
+            client=client,
+            target_words=budget,
+            anchors=anchors,
+            skill_preamble=skill_preamble,
         )
     else:
         script = compose_script(
