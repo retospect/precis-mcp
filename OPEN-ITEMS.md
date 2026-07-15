@@ -17,6 +17,55 @@ what's still open.
 
 ---
 
+## 🧪 chem-tools (ADR 0056) — remaining slices + live-verification (2026-07-15)
+
+The `route` retrosynthesis kind (precis-chem plugin) ships **dark** behind
+`PRECIS_CHEM_ENABLED`. Slices 1–3 are built; slice 1 is live on spark (aizynth).
+Design-of-record: `docs/design/chem-tools-integration.md`. Backlog:
+
+- **Deploy slice 2 (LinChemIn normalize).** · *feature* · Rebuild the aizynth
+  image on spark so the shim emits `route.json` (metrics + engine-agnostic
+  steps): `cd ~/work/cluster && ansible-playbook playbooks/43-aizynth.yml`. Until
+  then the live aizynth engine uses the slice-1b `trees.json` fallback (no
+  descriptors). Also run `scripts/deploy` for the precis-side `parse_syngraph` /
+  `view='metrics'` code. Owner: `~/work/cluster/roles/aizynth`, `docker/aizynth`.
+
+- **ASKCOS (slice 3) live-verification.** · *feature* · Slice 3 is built +
+  gate-tested with stubs, but **inert in prod** (needs a running ASKCOS v2 + the
+  normalizer image). To go live: (1) stand up an ASKCOS v2 deployment, set
+  `PRECIS_ASKCOS_URL`; (2) a `roles/normalizer` play to build the
+  `precis-normalizer` image on the route node (mirrors `roles/aizynth`);
+  (3) **verify the Tree-Builder request/response schema against the instance's
+  `/docs`** — the one unverified surface, localized + flagged in
+  `src/precis_chem/askcos.py` (endpoint `/api/tree-search/mcts/call-sync-without-token`,
+  fields `smiles`/`max_depth`/`max_branching`/`expansion_time` → `result.paths`).
+  Owner: `src/precis_chem/askcos.py`, `docker/normalizer`, `~/work/cluster`.
+
+- **Slice 4 — `protein` kind (folding).** · *feature, blocked-on-decision* · The
+  design says AlphaFold is "already installed on spark" but **it is not in the
+  cluster repo** (no fold/protein role). Needs a **folding-engine decision**
+  first (they differ hugely in weights/licensing/GPU): AlphaFold3 (heavy,
+  restrictive weights) vs **ColabFold** vs **Boltz-2** (newer, lighter,
+  permissive — likely the pragmatic pick). Then: a `protein` kind (in-process
+  GPU engine on spark, reusing the job substrate) converging with `structure`
+  via `Scene.from_ase`, + an install role. Do NOT build blind — confirm the
+  engine + whether spark already runs one.
+
+- **Slice 5 — `sequence` kind (design).** · *feature* · ProteinMPNN / RFdiffusion
+  as another `job_type`, GPU on spark. Sibling of slice 4; same "decide the
+  engine + install role" caveat.
+
+- **Slice 6 — ChemCrow / agentic.** · *feature* · Not a tool but a **planner
+  coroutine** (`plan_tick`) / dream that calls the narrow verbs. Augmentation,
+  not foundation — lands last. Fully groundable (reuses existing planner infra).
+
+- **Plugin-relation read-time inverse (gripe 160213).** · *polish* ·
+  `Store.links_for`'s inverse rewrite is Python-`_INVERSE_RELATIONS`-bound, so
+  asymmetric plugin relations don't auto-mirror; slice-1 relations must stay
+  symmetric. Fix: source inverses from DB `relations.inverse_slug`.
+
+---
+
 ## 🩹 Residuals — asa storeless-precis incident (2026-07-14)
 
 The 2026-07-14 investigation ("asa can't file gripes") root-caused a

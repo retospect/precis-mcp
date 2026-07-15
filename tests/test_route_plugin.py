@@ -29,9 +29,17 @@ from precis_chem.aizynth import (
     build_aizynth_argv,
     parse_aizynth_trees,
 )
+from precis_chem.askcos import (
+    TREE_SEARCH_PATH,
+    build_treebuilder_request,
+    extract_paths,
+)
 from precis_chem.engine import (
+    ASKCOS_ENDPOINT_ENV,
     DEFAULT_ENGINE,
+    TRANSPORT_SERVICE,
     AiZynthEngine,
+    AskcosEngine,
     StubEngine,
     resolve_engine,
 )
@@ -674,6 +682,148 @@ def test_container_bad_route_json_falls_back_to_trees(
         "route"
     ) or {}
     assert route["steps"][0]["product"] == "CCO"  # trees.json fallback won
+
+
+# ─────────────────────────── ASKCOS service (slice 3) ───────────────────────────
+
+
+def test_resolve_askcos_engine() -> None:
+    az = resolve_engine("askcos")
+    assert isinstance(az, AskcosEngine)
+    assert az.transport == TRANSPORT_SERVICE
+    assert az.input_format == "askcosv2"  # LinChemIn translate format
+    assert az.is_container is False
+    with pytest.raises(NotImplementedError, match="service engine"):
+        az.plan("CCO")
+
+
+def test_askcos_endpoint_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(ASKCOS_ENDPOINT_ENV, raising=False)
+    assert AskcosEngine().endpoint is None
+    monkeypatch.setenv(ASKCOS_ENDPOINT_ENV, "http://askcos.internal:9100")
+    assert AskcosEngine().endpoint == "http://askcos.internal:9100"
+
+
+def test_build_treebuilder_request() -> None:
+    req = build_treebuilder_request("CCO", max_steps=5, expansion_time_s=30)
+    assert req["smiles"] == "CCO"
+    assert req["max_depth"] == 5 and req["expansion_time"] == 30
+    assert "max_branching" in req
+    assert TREE_SEARCH_PATH.startswith("/api/tree-search/mcts")
+
+
+def test_extract_paths_defensive() -> None:
+    # Documented envelope.
+    assert extract_paths({"result": {"paths": [{"a": 1}, {"b": 2}]}}) == [
+        {"a": 1},
+        {"b": 2},
+    ]
+    # Bare list + top-level key + result-as-list.
+    assert extract_paths([{"a": 1}]) == [{"a": 1}]
+    assert extract_paths({"paths": [{"x": 1}]}) == [{"x": 1}]
+    assert extract_paths({"result": [{"y": 1}]}) == [{"y": 1}]
+    # Nothing solved.
+    assert extract_paths({"result": {"paths": []}}) == []
+    assert extract_paths({"stats": {}}) == []
+    assert extract_paths(None) == []
+
+
+def test_service_dispatch_round_trip(
+    route_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The askcos service path — stubbed SERVICE_CALLER + NORMALIZER — POSTs,
+    normalizes, and writes back without a cluster or a running ASKCOS."""
+    monkeypatch.setenv(ASKCOS_ENDPOINT_ENV, "http://askcos.internal:9100")
+
+    seen: dict[str, Any] = {}
+
+    def _caller(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        seen["url"] = url
+        seen["payload"] = payload
+        # A minimal askcosv2-ish response envelope with one path.
+        return {"result": {"paths": [{"smiles": "CCO", "children": []}]}}
+
+    def _normalizer(**kw: Any) -> str:
+        seen["normalizer_kw"] = kw
+        return _route_json()  # a valid precis-canonical route.json
+
+    monkeypatch.setattr(chem_jobs, "SERVICE_CALLER", _caller)
+    monkeypatch.setattr(chem_jobs, "NORMALIZER", _normalizer)
+
+    ref = route_store.insert_ref(
+        kind="route", slug="viaservice", title="viaservice", meta={"target": "CCO"}
+    )
+    params = {
+        "route_ref_id": ref.id,
+        "target": "CCO",
+        "engine": "askcos",
+        "engine_version": "askcos-v2",
+        "cache_key": "retrosynth:svc",
+        "target_node": "spark",  # runs the normalizer container
+    }
+    ctx = _FakeCtx(store=route_store, params=params)
+    chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
+
+    assert ctx.status == "succeeded" and ctx.failure is None
+    # POSTed to the tree-search endpoint with the target.
+    assert seen["url"].endswith(TREE_SEARCH_PATH)
+    assert seen["payload"]["smiles"] == "CCO"
+    # Normalizer invoked with the askcosv2 input_format.
+    assert seen["normalizer_kw"]["input_format"] == "askcosv2"
+    landed = route_store.get_ref(kind="route", id="viaservice")
+    route = (landed.meta or {}).get("route") or {}
+    assert route["metrics"]["nr_steps"] == 2  # from the normalized route.json
+
+
+def test_service_dispatch_no_endpoint_fails(
+    route_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(ASKCOS_ENDPOINT_ENV, raising=False)
+    ref = route_store.insert_ref(
+        kind="route", slug="noep", title="noep", meta={"target": "CCO"}
+    )
+    params = {
+        "route_ref_id": ref.id,
+        "target": "CCO",
+        "engine": "askcos",
+        "engine_version": "askcos-v2",
+        "cache_key": "retrosynth:noep",
+        "target_node": "spark",
+    }
+    ctx = _FakeCtx(store=route_store, params=params)
+    chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
+    assert ctx.status != "succeeded"
+    assert ctx.failure is not None and "PRECIS_ASKCOS_URL" in ctx.failure
+
+
+def test_service_dispatch_no_paths_is_unsolved(
+    route_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ASKCOS returning no paths is a legitimate unsolved result, not a failure."""
+    monkeypatch.setenv(ASKCOS_ENDPOINT_ENV, "http://askcos.internal:9100")
+    monkeypatch.setattr(
+        chem_jobs, "SERVICE_CALLER", lambda url, payload: {"result": {"paths": []}}
+    )
+    ref = route_store.insert_ref(
+        kind="route", slug="nopath", title="nopath", meta={"target": "CCO"}
+    )
+    params = {
+        "route_ref_id": ref.id,
+        "target": "CCO",
+        "engine": "askcos",
+        "engine_version": "askcos-v2",
+        "cache_key": "retrosynth:nopath",
+        "target_node": "spark",
+    }
+    ctx = _FakeCtx(store=route_store, params=params)
+    chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
+    assert ctx.status == "succeeded"  # unsolved, but not an error
+    landed = route_store.get_ref(kind="route", id="nopath")
+    meta = landed.meta or {}
+    assert (
+        meta.get("status") == "unsolved"
+        or (meta.get("route") or {}).get("solved") is False
+    )
 
 
 # ─────────────────────────── dark-ship gate ───────────────────────────

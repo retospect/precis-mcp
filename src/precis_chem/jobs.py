@@ -6,13 +6,20 @@ runs off the request path. It reuses the ``ssh_node`` executor — the same
 one ``struct_relax`` uses to run a container on a pinned node — routed by
 ``params.target_node`` (``PRECIS_CHEM_ROUTE_NODE``).
 
-An in-process engine (``stub``) runs inside the dispatch and writes the route
-back. A container engine (``aizynth``) is run through the ``RUNNER``/``STAGER``
-hooks below — the dispatch stages the target, ssh's a ``podman run`` to the
-route node, and parses the container's ``trees.json`` into the same IR (the
-``struct_relax`` container pattern). The hooks are the single cluster/NFS
-boundary, so tests stub them to run the whole orchestration + write-back
-without a cluster.
+The dispatch branches on the engine's **transport** (ADR 0056 §4):
+
+* **inprocess** (``stub``) — runs inside the dispatch, writes the route back.
+* **container** (``aizynth``) — run through the ``RUNNER``/``STAGER`` hooks: the
+  dispatch stages the target, ssh's a ``podman run`` to the route node, and
+  reads the shim-normalized ``route.json`` (falling back to the engine's native
+  output) into the same IR (the ``struct_relax`` container pattern).
+* **service** (``askcos``) — POST the target to a running deployment's REST API
+  (the ``SERVICE_CALLER`` hook), then normalize the returned paths to
+  ``route.json`` with the standalone LinChemIn normalizer container (the
+  ``NORMALIZER`` hook) → the *same* :func:`parse_syngraph`.
+
+All the cluster/NFS/network boundaries are hooks, so tests stub them to run the
+whole orchestration + write-back without a cluster.
 
 Registered via the ``precis.job_types`` entry-point group (see the plugin
 entry points in ``pyproject.toml``); ``get_job_type('retrosynth')`` resolves
@@ -21,6 +28,7 @@ it once precis-mcp is installed.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -28,7 +36,11 @@ from pathlib import Path
 from typing import Any
 
 from precis.workers.job_types import JobTypeSpec
-from precis_chem.aizynth import TREES_FILE, build_aizynth_argv, parse_aizynth_trees
+from precis_chem.askcos import (
+    TREE_SEARCH_PATH,
+    build_treebuilder_request,
+    extract_paths,
+)
 from precis_chem.engine import DEFAULT_MAX_STEPS, resolve_engine
 from precis_chem.ir import RouteGraph
 from precis_chem.normalize import ROUTE_FILE, parse_syngraph
@@ -36,11 +48,16 @@ from precis_chem.persist import apply_route_result
 
 log = logging.getLogger(__name__)
 
-# ── container contract (mirrors struct_relax) ────────────────────────────
+# ── container / service contract (mirrors struct_relax) ───────────────────
 _NODE = os.environ.get("PRECIS_CHEM_ROUTE_NODE", "")
 _CONTAINER_CMD = os.environ.get("PRECIS_CHEM_CONTAINER_CMD", "podman")
 #: The shared scratch root the claiming worker + the route node both see.
 _NFS_ROOT = os.environ.get("PRECIS_CHEM_NFS_ROOT", "/shared")
+#: Raw planner output staged for the normalizer container (service transport).
+RAW_FILE = "raw.json"
+#: HTTP timeout for a synchronous ASKCOS tree search (its MCTS wall-clock plus
+#: slack — the endpoint blocks until the search completes).
+_SERVICE_TIMEOUT_S = int(os.environ.get("PRECIS_CHEM_SERVICE_TIMEOUT_S", "600"))
 
 
 def _default_stager(ref_id: int, *, nfs_root: str = _NFS_ROOT) -> tuple[str, str]:
@@ -66,10 +83,98 @@ def _default_runner(
     return proc.returncode, proc.stdout + proc.stderr
 
 
+def _default_service_caller(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """POST ``payload`` to a service engine's REST endpoint; return parsed JSON.
+
+    The URL is **operator-configured trusted infra** (``PRECIS_ASKCOS_URL`` —
+    like the DB DSN / LLM base URL), not an agent-supplied URL, so it is exempt
+    from the ``safe_fetch`` SSRF guard (whose block-list would reject the
+    private cluster IP the service lives on). Tests swap :data:`SERVICE_CALLER`.
+    """
+    import httpx
+
+    resp = httpx.post(url, json=payload, timeout=_SERVICE_TIMEOUT_S)
+    resp.raise_for_status()
+    return resp.json()  # type: ignore[no-any-return]
+
+
+def _build_normalizer_argv(
+    *,
+    ref_id: int,
+    in_dir: str,
+    out_dir: str,
+    input_format: str,
+    engine: str,
+    engine_version: str,
+    image: str,
+    container_cmd: str,
+) -> list[str]:
+    """The ``run`` argv for the standalone LinChemIn normalizer container —
+    raw planner paths in (``/work/in/raw.json``) → ``route.json`` out."""
+    return [
+        container_cmd,
+        "run",
+        "--rm",
+        "--name",
+        f"precis-normalize-{ref_id}",
+        "-v",
+        f"{in_dir}:/work/in:ro",
+        "-v",
+        f"{out_dir}:/work/out",
+        image,
+        "python",
+        "/usr/local/lib/to_route.py",
+        "--input-format",
+        input_format,
+        f"/work/in/{RAW_FILE}",
+        f"/work/out/{ROUTE_FILE}",
+        engine,
+        engine_version,
+    ]
+
+
+def _default_normalizer(
+    *,
+    raw_json: str,
+    input_format: str,
+    engine: str,
+    engine_version: str,
+    node: str,
+    ref_id: int,
+    image: str,
+) -> str | None:
+    """Normalize a service engine's raw paths → ``route.json`` **text**.
+
+    Stages ``raw.json`` onto the shared tree, runs the ``precis-normalizer``
+    container (LinChemIn) on the route node via :data:`RUNNER`, and returns the
+    emitted ``route.json`` text (``None`` on any failure). Tests swap
+    :data:`NORMALIZER` for a stub that returns a canned ``route.json``."""
+    in_dir, out_dir = STAGER(ref_id)
+    Path(in_dir, RAW_FILE).write_text(raw_json)
+    argv = _build_normalizer_argv(
+        ref_id=ref_id,
+        in_dir=in_dir,
+        out_dir=out_dir,
+        input_format=input_format,
+        engine=engine,
+        engine_version=engine_version,
+        image=image,
+        container_cmd=_CONTAINER_CMD,
+    )
+    rc, _output = RUNNER(argv, node=node)
+    route = Path(out_dir) / ROUTE_FILE
+    if rc != 0 or not route.exists():
+        return None
+    return route.read_text()
+
+
 #: Overridable hooks (tests monkeypatch these). Runner = cluster boundary,
-#: stager = NFS boundary — same seam as ``struct_relax``.
+#: stager = NFS boundary (same seam as ``struct_relax``); service caller =
+#: network boundary; normalizer = the standalone LinChemIn container.
 RUNNER = _default_runner
 STAGER = _default_stager
+SERVICE_CALLER = _default_service_caller
+NORMALIZER = _default_normalizer
 
 _PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -118,13 +223,14 @@ def run_retrosynth(params: dict[str, Any]) -> RouteGraph:
 
 
 def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph | None:
-    """Run a container engine (AiZynth) on the route node + parse its output.
+    """Run a container engine on the route node + parse its output.
 
-    Stages the target SMILES to the shared scratch dir, ssh's the ``podman
-    run`` to the node via :data:`RUNNER`, and parses ``trees.json`` from the
-    bound out-dir into a :class:`RouteGraph`. Records the failure and returns
-    ``None`` on any error (bad node, rc≠0, missing/garbled output) so the job
-    bubbles cleanly instead of crashing the worker. Mirrors
+    Engine-driven (not aizynth-specific): stages the target, ssh's the
+    ``engine.run_argv`` container to the node via :data:`RUNNER`, and reads the
+    shim-normalized ``route.json`` (slice 2, engine-agnostic) — falling back to
+    the engine's native output (``engine.native_output`` +
+    ``engine.native_parser``) when the shim skipped normalization. Records the
+    failure + returns ``None`` on any error so the job bubbles cleanly. Mirrors
     ``struct_relax._dispatch``'s container half.
     """
     ref_id = int(params["route_ref_id"])
@@ -139,12 +245,11 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
 
     in_dir, out_dir = STAGER(ref_id)
     Path(in_dir, "target.smi").write_text(smiles)
-    argv = build_aizynth_argv(
+    argv = engine.run_argv(
         ref_id=ref_id,
         in_dir=in_dir,
         out_dir=out_dir,
         smiles=smiles,
-        image=engine.image,
         container_cmd=_CONTAINER_CMD,
         models_dir=os.environ.get("PRECIS_CHEM_MODELS_DIR") or None,
     )
@@ -158,15 +263,13 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
         return None
     ctx.append_chunk("job_event", f"container rc={rc}\n{output[-2000:]}")
 
-    # Prefer the LinChemIn-normalized route.json (slice 2, engine-agnostic + route
-    # descriptors); fall back to the engine's native trees.json when the shim
-    # skipped normalization (older image / normalizer error). Either produces the
-    # same RouteGraph.
+    native_name = getattr(engine, "native_output", None)
     route = Path(out_dir) / ROUTE_FILE
-    trees = Path(out_dir) / TREES_FILE
-    if rc != 0 or not (route.exists() or trees.exists()):
+    native = Path(out_dir) / native_name if native_name else None
+    if rc != 0 or not (route.exists() or (native and native.exists())):
+        want = ROUTE_FILE + (f"/{native_name}" if native_name else "")
         ctx.record_failure(
-            f"retrosynth: container rc={rc}, no {ROUTE_FILE}/{TREES_FILE} — see the log event"
+            f"retrosynth: container rc={rc}, no {want} — see the log event"
         )
         return None
     if route.exists():
@@ -175,19 +278,94 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
                 route.read_text(), target=smiles, engine_version=engine.version
             )
         except Exception as exc:
-            # A garbled route.json still lets us fall back to trees.json below.
-            log.warning(
-                "retrosynth: bad %s, trying %s", ROUTE_FILE, TREES_FILE, exc_info=True
-            )
+            # A garbled route.json still lets us fall back to the native output.
+            log.warning("retrosynth: bad %s, trying native", ROUTE_FILE, exc_info=True)
             ctx.append_chunk(
-                "job_event", f"bad {ROUTE_FILE} ({exc}); falling back to {TREES_FILE}"
+                "job_event", f"bad {ROUTE_FILE} ({exc}); falling back to {native_name}"
             )
+    if native is not None and native.exists() and hasattr(engine, "native_parser"):
+        try:
+            return engine.native_parser(
+                native.read_text(), target=smiles, engine_version=engine.version
+            )
+        except Exception as exc:
+            ctx.record_failure(f"retrosynth: malformed {native_name}: {exc}")
+            return None
+    ctx.record_failure(f"retrosynth: no readable {ROUTE_FILE} and no native parser")
+    return None
+
+
+def _run_service(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph | None:
+    """Run a service engine (ASKCOS) over its REST API + normalize the result.
+
+    POSTs the target to the deployment's Tree-Builder endpoint (the
+    :data:`SERVICE_CALLER` hook), extracts the returned paths, and normalizes
+    them to ``route.json`` with the standalone LinChemIn container (the
+    :data:`NORMALIZER` hook) → the same :func:`parse_syngraph`. Records the
+    failure + returns ``None`` on any error so the job bubbles cleanly.
+    """
+    ref_id = int(params["route_ref_id"])
+    smiles = str(params["target"])
+    node = str(params.get("target_node") or _NODE)
+    endpoint = getattr(engine, "endpoint", None)
+    if not endpoint:
+        ctx.record_failure(
+            "retrosynth: service engine needs an endpoint — set PRECIS_ASKCOS_URL "
+            "to a running ASKCOS v2 deployment"
+        )
+        return None
+    if not node:
+        ctx.record_failure(
+            "retrosynth: service engine needs a route node to run the normalizer "
+            "container — set PRECIS_CHEM_ROUTE_NODE"
+        )
+        return None
+
+    max_steps = int(params.get("max_steps") or DEFAULT_MAX_STEPS)
+    url = endpoint.rstrip("/") + TREE_SEARCH_PATH
+    payload = build_treebuilder_request(smiles, max_steps=max_steps)
+    ctx.append_chunk("job_event", f"route[{engine.name}] POST {url}")
     try:
-        return parse_aizynth_trees(
-            trees.read_text(), target=smiles, engine_version=engine.version
+        response = SERVICE_CALLER(url, payload)
+    except Exception as exc:
+        log.warning("retrosynth: service call raised", exc_info=True)
+        ctx.record_failure(f"retrosynth: ASKCOS call failed: {exc}")
+        return None
+
+    paths = extract_paths(response)
+    ctx.append_chunk("job_event", f"ASKCOS returned {len(paths)} path(s)")
+    if not paths:
+        # No route found — a legitimate unsolved result, not an error.
+        return RouteGraph(
+            target=smiles,
+            engine=engine.name,
+            engine_version=engine.version,
+            steps=[],
+            solved=False,
+            provenance={"engine": engine.name, "n_routes": 0},
+        )
+
+    try:
+        route_text = NORMALIZER(
+            raw_json=json.dumps(paths),
+            input_format=engine.input_format,
+            engine=engine.name,
+            engine_version=engine.version,
+            node=node,
+            ref_id=ref_id,
+            image=engine.image,
         )
     except Exception as exc:
-        ctx.record_failure(f"retrosynth: malformed {TREES_FILE}: {exc}")
+        log.warning("retrosynth: normalizer raised", exc_info=True)
+        ctx.record_failure(f"retrosynth: normalizer failed: {exc}")
+        return None
+    if not route_text:
+        ctx.record_failure("retrosynth: normalizer produced no route.json")
+        return None
+    try:
+        return parse_syngraph(route_text, target=smiles, engine_version=engine.version)
+    except Exception as exc:
+        ctx.record_failure(f"retrosynth: malformed normalized {ROUTE_FILE}: {exc}")
         return None
 
 
@@ -208,8 +386,13 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
 
     engine = resolve_engine(params.get("engine"))
-    if getattr(engine, "is_container", False):
+    transport = getattr(engine, "transport", "inprocess")
+    if transport == "container":
         graph = _run_container(ctx, params, engine)
+        if graph is None:
+            return  # failure already recorded
+    elif transport == "service":
+        graph = _run_service(ctx, params, engine)
         if graph is None:
             return  # failure already recorded
     else:

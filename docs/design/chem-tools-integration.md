@@ -240,8 +240,23 @@ machine-specific glue.
    back to `trees.json`**. `RouteGraph.metrics` + `get(view='metrics')` surface
    the descriptors — the scoring substrate. Gate-green (real-LinChemIn fixture).
    **Remaining:** rebuild the image on the node (`aizynth_build_image=true`).
-3. **ASKCOS** behind the *same* `route` kind + `job_type` (likely the
-   heavier container path) — proves "two engines, one IR."
+3. **ASKCOS** behind the *same* `route` kind + `job_type` — proves "two
+   engines, one IR." **Slice 3 — BUILT (precis side; live-run needs an ASKCOS
+   deployment).** ASKCOS v2 is a multi-service platform with a Tree-Builder REST
+   API (not a CLI), so the engine seam grew a **third transport** (`engine.py`:
+   `inprocess`/`container`/`service`, `is_container` back-compat). The dispatch
+   branches on it: `_run_service` (`jobs.py`) POSTs the target to the deployment
+   (`SERVICE_CALLER` hook, endpoint `PRECIS_ASKCOS_URL` — trusted operator infra,
+   SSRF-exempt), extracts the `paths` (`askcos.py`, defensive), and normalizes
+   them with a **standalone LinChemIn container** (`docker/normalizer`,
+   `--input-format askcosv2`; a service engine has no image to bundle the
+   normalizer in) → the *same* `parse_syngraph`. `AiZynthEngine.run_argv`/
+   `native_parser` generalized `_run_container` off aizynth specifics.
+   **Verified:** the generic normalizer round-trips real LinChemIn output
+   (`az_retro`); service dispatch is gate-tested with stubbed `SERVICE_CALLER`/
+   `NORMALIZER`. **Remaining (live):** stand up ASKCOS v2, set `PRECIS_ASKCOS_URL`,
+   build the normalizer image, and **verify the Tree-Builder request/response
+   schema against the instance's `/docs`** (flagged in `askcos.py`).
 4. **AlphaFold** as a `protein` kind, in-process on spark (GPU-native),
    reusing the job substrate; converges with `structure` via `Scene`.
 5. **Sequence design** (`sequence` kind; ProteinMPNN/RFdiffusion) — another
