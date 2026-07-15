@@ -88,29 +88,33 @@ class StubEngine:
 
 
 class AiZynthEngine:
-    """AiZynthFinder adapter — slice-1b container placeholder (ADR 0056 §8).
+    """AiZynthFinder adapter — container engine (ADR 0056 slice 1b).
 
-    AiZynth runs in a ``FROM upstream@digest`` container built on the compute
-    node; it is **not** run in-process (containerizing keeps the heavy
-    rdkit/aizynth env + model files off the always-on workers). :meth:`plan`
-    therefore raises: the ``retrosynth`` job's dispatch builds the podman
-    argv from :attr:`image` and parses the container's ``result.json`` into a
-    :class:`RouteGraph`. Wiring that argv + the wrapper Dockerfile + the
-    node build is slice 1b (filed) — this class pins the seam.
+    AiZynth runs in a wrapper container built on the compute node
+    (``docker/aizynth``); it is **not** run in-process (containerizing keeps
+    the heavy rdkit/aizynth env + model files off the always-on workers). So
+    :meth:`plan` raises — the ``retrosynth`` job routes container engines to
+    ``precis_chem.jobs._run_container``, which builds the ``podman run`` argv
+    (:func:`precis_chem.aizynth.build_aizynth_argv` from :attr:`image`) and
+    parses the container's ``trees.json``
+    (:func:`precis_chem.aizynth.parse_aizynth_trees`). The remaining live-run
+    wiring is a node-deploy concern (per-node ``podman build`` +
+    ``PRECIS_CHEM_ROUTE_NODE`` + the NAS models mount).
     """
 
     name = "aizynth"
     version = "aizynth-container"
     is_container = True
-    #: Wrapper image tag (built per-node, ``FROM upstream@digest``). The job
-    #: dispatch reads this; real digest pinning is slice 1b.
+    #: Wrapper image tag (built per-node from ``docker/aizynth``). The job
+    #: dispatch reads this; pin a digest at deploy for reproducible provenance.
     image = "precis-aizynth:latest"
 
     def plan(self, target: str, *, max_steps: int = DEFAULT_MAX_STEPS) -> RouteGraph:
         raise NotImplementedError(
             "aizynth is a container engine: the retrosynth job runs it via "
-            "`podman run` on the route node (slice 1b), not in-process. Set "
-            "PRECIS_CHEM_ROUTE_NODE + build the wrapper image to enable it."
+            "`podman run` on the route node (precis_chem.jobs._run_container), "
+            "not in-process. Set PRECIS_CHEM_ROUTE_NODE + build the wrapper "
+            "image (docker/aizynth) to enable it."
         )
 
 

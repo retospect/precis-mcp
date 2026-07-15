@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# precis-aizynth-run — the wrapper image entrypoint (ADR 0056 slice 1b).
+#
+# Runs AiZynthFinder's aizynthcli for ONE target SMILES and leaves the
+# top-ranked routes in /work/out/trees.json, which the `retrosynth` job
+# dispatch (precis_chem.jobs._run_container) parses into the route IR.
+#
+#   precis-aizynth-run "<SMILES>"
+#
+# The config (policy + stock model paths) is $PRECIS_AIZYNTH_CONFIG, which
+# lives under the read-only /models mount (weights come from the NAS, not the
+# image — ADR 0056 §5).
+set -euo pipefail
+
+SMILES="${1:?usage: precis-aizynth-run '<SMILES>'}"
+CONFIG="${PRECIS_AIZYNTH_CONFIG:-/models/config.yml}"
+
+if [[ ! -f "$CONFIG" ]]; then
+  echo "precis-aizynth-run: config not found at $CONFIG (mount /models)" >&2
+  exit 2
+fi
+
+# aizynthcli writes trees.json into the current dir for a single SMILES; the
+# image WORKDIR is /work/out (bind-mounted), so it lands where the dispatch
+# reads it.
+cd /work/out
+exec aizynthcli --config "$CONFIG" --smiles "$SMILES"

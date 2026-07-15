@@ -13,6 +13,7 @@ point at test time).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,11 @@ from precis.dispatch import Hub, _try
 from precis.store import Store
 from precis.workers import job_types as jt
 from precis_chem import jobs as chem_jobs
+from precis_chem.aizynth import (
+    CONTAINER_MODELS,
+    build_aizynth_argv,
+    parse_aizynth_trees,
+)
 from precis_chem.engine import (
     DEFAULT_ENGINE,
     AiZynthEngine,
@@ -288,6 +294,150 @@ def test_worker_dispatch_records_failure_on_container_engine(
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
     assert ctx.status != "succeeded"
     assert ctx.failure is not None and "container engine" in ctx.failure
+
+
+# ─────────────────────────── AiZynth (slice 1b) ───────────────────────────
+
+
+def _aizynth_trees(*, solved: bool = True) -> str:
+    """A realistic aizynthcli `trees.json` — one route, CCO ⇐ CC=O + [H][H]
+    (a ReactionTree dict: mol → reaction → mols)."""
+    leaf_stock = solved
+    return json.dumps(
+        [
+            {
+                "type": "mol",
+                "smiles": "CCO",
+                "in_stock": False,
+                "children": [
+                    {
+                        "type": "reaction",
+                        "smiles": "[CH3:1][CH:2]=O.[H][H]>>[CH3:1][CH2:2]O",
+                        "metadata": {
+                            "template": "tmpl-42",
+                            "classification": "reduction",
+                            "policy_probability": 0.9,
+                        },
+                        "children": [
+                            {"type": "mol", "smiles": "CC=O", "in_stock": leaf_stock},
+                            {"type": "mol", "smiles": "[H][H]", "in_stock": leaf_stock},
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+
+
+def test_parse_aizynth_trees_solved() -> None:
+    g = parse_aizynth_trees(_aizynth_trees(solved=True), target="CCO")
+    assert g.engine == "aizynth" and g.target == "CCO" and g.solved
+    assert len(g.steps) == 1
+    step = g.steps[0]
+    assert step.product == "CCO"
+    assert step.reactants == ["CC=O", "[H][H]"]
+    assert step.template_id == "tmpl-42"
+    assert step.conditions == "reduction"
+    assert step.confidence == 0.9
+    assert step.in_stock is True  # both precursors buyable
+
+
+def test_parse_aizynth_trees_unsolved() -> None:
+    g = parse_aizynth_trees(_aizynth_trees(solved=False), target="CCO")
+    assert g.solved is False  # a leaf is not in stock
+
+
+def test_parse_aizynth_trees_empty_is_unsolved() -> None:
+    g = parse_aizynth_trees("[]", target="CCO")
+    assert g.steps == [] and g.solved is False
+    assert g.provenance["n_routes"] == 0
+
+
+def test_build_aizynth_argv() -> None:
+    argv = build_aizynth_argv(
+        ref_id=7, in_dir="/s/in", out_dir="/s/out", smiles="CCO", image="img:sha"
+    )
+    assert argv[:5] == ["podman", "run", "--rm", "--name", "precis-route-7"]
+    assert "img:sha" in argv and argv[-2:] == ["precis-aizynth-run", "CCO"]
+    assert "/s/in:/work/in:ro" in argv and "/s/out:/work/out" in argv
+    # No models mount unless asked.
+    assert CONTAINER_MODELS not in " ".join(argv)
+    argv2 = build_aizynth_argv(
+        ref_id=7,
+        in_dir="/s/in",
+        out_dir="/s/out",
+        smiles="CCO",
+        image="img",
+        models_dir="/nas/models",
+    )
+    assert f"/nas/models:{CONTAINER_MODELS}:ro" in argv2
+
+
+def test_container_dispatch_round_trip(
+    route_store: Store, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The aizynth container path — stubbed RUNNER/STAGER — plans + writes back
+    without a cluster (the struct_relax hook seam)."""
+    in_dir = tmp_path / "in"
+    out_dir = tmp_path / "out"
+    in_dir.mkdir()
+    out_dir.mkdir()
+
+    def _stager(ref_id: int) -> tuple[str, str]:
+        return str(in_dir), str(out_dir)
+
+    def _runner(argv: list[str], *, node: str, timeout: Any = None) -> tuple[int, str]:
+        # Simulate the container: drop trees.json into the bound out-dir.
+        (out_dir / "trees.json").write_text(_aizynth_trees(solved=True))
+        return 0, "aizynthcli ok"
+
+    monkeypatch.setattr(chem_jobs, "STAGER", _stager)
+    monkeypatch.setattr(chem_jobs, "RUNNER", _runner)
+
+    ref = route_store.insert_ref(
+        kind="route", slug="viacontainer", title="viacontainer", meta={"target": "CCO"}
+    )
+    key = cache_key(target="CCO", engine="aizynth", engine_version="aizynth-container")
+    params = {
+        "route_ref_id": ref.id,
+        "target": "CCO",
+        "engine": "aizynth",
+        "engine_version": "aizynth-container",
+        "cache_key": key,
+        "target_node": "spark",
+    }
+    ctx = _FakeCtx(store=route_store, params=params)
+    chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
+
+    assert ctx.status == "succeeded" and ctx.failure is None
+    landed = route_store.get_ref(kind="route", id="viacontainer")
+    route = (landed.meta or {}).get("route") or {}
+    assert (
+        route.get("engine") == "aizynth"
+        and (landed.meta or {}).get("status") == "solved"
+    )
+    assert route["steps"][0]["product"] == "CCO"
+
+
+def test_container_dispatch_missing_node_fails(
+    route_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(chem_jobs, "_NODE", "")
+    ref = route_store.insert_ref(
+        kind="route", slug="nonode", title="nonode", meta={"target": "CCO"}
+    )
+    params = {
+        "route_ref_id": ref.id,
+        "target": "CCO",
+        "engine": "aizynth",
+        "engine_version": "aizynth-container",
+        "cache_key": "retrosynth:abc",
+        # no target_node
+    }
+    ctx = _FakeCtx(store=route_store, params=params)
+    chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
+    assert ctx.status != "succeeded"
+    assert ctx.failure is not None and "route node" in ctx.failure
 
 
 # ─────────────────────────── dark-ship gate ───────────────────────────

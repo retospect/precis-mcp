@@ -213,12 +213,21 @@ machine-specific glue.
    **Slice 1a — BUILT** (the `precis_chem` plugin: `route` kind + `retrosynth`
    job + the route-graph IR + a deterministic in-process `stub` engine + the
    content-addressed cache + the requester-blocking wire, all dark behind
-   `PRECIS_CHEM_ENABLED`, gate-green without a cluster). **Slice 1b — TODO**:
-   the real AiZynthFinder container — the `docker/` wrapper `FROM upstream@digest`,
-   the `retrosynth` dispatch building the `podman run` argv (the `struct_relax`
-   pattern) + parsing the container `result.json`, the per-node build, and
-   `PRECIS_CHEM_ROUTE_NODE` on a Linux node. The seam is pinned by
-   `precis_chem.engine.AiZynthEngine` (its `plan` raises until 1b).
+   `PRECIS_CHEM_ENABLED`, gate-green without a cluster). **Slice 1b — BUILT
+   (precis side; live-run needs a node).** The AiZynth container path:
+   `precis_chem.aizynth` (`parse_aizynth_trees` — the `ReactionTree.to_dict`
+   mol/reaction walk → `RouteGraph`; `build_aizynth_argv` — the `podman run`
+   command line), the `retrosynth` dispatch's `_run_container` branch (stage
+   target → `RUNNER`/`STAGER` hooks → parse `trees.json`, the `struct_relax`
+   seam, gate-tested with a stubbed runner), and the wrapper `docker/aizynth/`
+   (`Dockerfile` `FROM python:3.11-slim` + `pip aizynthfinder`, the
+   `precis-aizynth-run` shim → `aizynthcli --config --smiles` → `trees.json`).
+   Image = code; the policy/stock **models mount from the NAS at `/models`**,
+   not baked. **Remaining (cluster / `~/work/cluster`):** per-node `podman build
+   docker/aizynth`, a `config.yml` + model files on the NAS,
+   `PRECIS_CHEM_ROUTE_NODE` (+ `PRECIS_CHEM_MODELS_DIR`) on a Linux node, and
+   flipping `PRECIS_CHEM_ENABLED`. Until then the stub inline path is the only
+   live engine.
 2. **LinChemIn normalization at route-ingest** — enforce the one-IR
    contract before adding a second engine.
 3. **ASKCOS** behind the *same* `route` kind + `job_type` (likely the
