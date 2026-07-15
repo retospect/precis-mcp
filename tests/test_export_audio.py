@@ -85,3 +85,28 @@ def test_empty_draft_raises(tmp_path, monkeypatch):
     store = _Store([_Chunk("figure", "just a figure")])
     with pytest.raises(ValueError):
         export_audio(store, _Ref(), target_path=tmp_path / "x.wav", synth=_FakeSynth())
+
+
+def test_stitch_resamples_mixed_sample_rates():
+    """Mixing engines (a lang->engine router for native zh/ja) yields segments at
+    different sample rates; the stitch resamples up to the max before concat so
+    nothing is pitch-shifted. A single-engine (uniform-SR) track resamples none."""
+    from precis.draft.narrate import NarrationSegment
+    from precis.export.audio import _stitch
+
+    class _MixedSynth:
+        # en at 24 kHz (Kokoro), a "zh" segment at 44.1 kHz (a heavier engine).
+        def synthesize(self, text, *, voice, lang):
+            sr = 44100 if lang == "cmn" else 24000
+            return np.ones(sr, dtype=np.float32), sr  # 1.0s each
+
+        # keep the type checker happy re: the Synthesizer protocol
+
+    segs = [
+        NarrationSegment("hello", "af_heart", "en-us", "para"),
+        NarrationSegment("你好", "zf_xiaoxiao", "cmn", "para"),
+    ]
+    audio, sr = _stitch(segs, _MixedSynth(), pause_s=0.0, heading_pause_s=0.0)
+    assert sr == 44100  # resampled up to the higher rate
+    # both segments now at 44.1k → ~1s each = ~2s total (± rounding)
+    assert abs(len(audio) - 2 * 44100) <= 4
