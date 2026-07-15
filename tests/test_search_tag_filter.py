@@ -314,7 +314,7 @@ class TestMemorySearchTags:
 
         h = TodoHandler(hub=Hub(store=store))
         with pytest.raises(BadInput, match="invalid STATUS value"):
-            h.search(q="x", tags=["STATUS:active"])  # 'active' not in vocab
+            h.search(q="x", tags=["STATUS:bogus"])  # 'bogus' not in vocab
 
 
 # ── perf hygiene: ref-level filter doesn't match block-tagged rows ──

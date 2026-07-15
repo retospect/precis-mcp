@@ -1,11 +1,14 @@
 # Quest layer — the striving above the work (proposal)
 
-> **Status: proposal / model — closed.** Captures the design conversation of
-> 2026-07-15 (Reto + session). The aim-layer that sits above projects/streams/
-> concepts and gives the system **direction**: a legible answer to "what are we
-> striving toward, and is this work/knowledge actually in its service?" Not built
-> (first slice is read-only). Related: `docs/design/reading-prep-loop.md` (the
-> concept graph, which this consumes).
+> **Status: model closed; slice 1 built (read-only structure).** Captures the
+> design conversation of 2026-07-15 (Reto + session). The aim-layer that sits
+> above projects/streams/concepts and gives the system **direction**: a legible
+> answer to "what are we striving toward, and is this work/knowledge actually in
+> its service?" **Slice 1 landed** — the `quest` kind (`handlers/quest.py`,
+> handle `qu`, migration 0065), the `serves` relation, the append-only logbook,
+> and the `view='tree'` rollup. It does **not** steer yet (reweighting is slice
+> 2). Skill: `precis-quest-help`. Related: `docs/design/reading-prep-loop.md`
+> (the concept graph, which this consumes).
 
 ## What a quest *is*
 

@@ -301,6 +301,11 @@ _TEMPLATE_KINDS: tuple[tuple[str, str, str], ...] = (
         "Knowledge-graph concept node.  id = integer ref id.",
     ),
     (
+        "quest",
+        "precis://quest/{id}",
+        "Quest — a perpetual striving.  id = integer ref id.",
+    ),
+    (
         "conv",
         "precis://conv/{id}",
         "Conversation.  id = slug.",

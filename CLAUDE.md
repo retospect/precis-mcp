@@ -434,6 +434,24 @@ The master kinds table lives in the `precis-overview` skill.
   shortest-path / **daily review-path walk**), booklet, cards-as-representations,
   briefing+audio. **Anki is a renderer, not the brain** — the concept graph is the
   source of truth; leaf cards sync down.
+- **`quest`** — the striving above the work (design-of-record
+  `docs/proposals/quest-layer.md`; slice 1 **live, read-only, does not steer
+  yet**). A quest is a **perpetual, unachievable striving** (the medieval Grail
+  sense) — the **only** new aim-kind (numeric-ref `handlers/quest.py`, handle
+  `qu`, migration 0065, `emits_card` so it *is* a vector, `corpus_role='none'`).
+  Never `done`: lifecycle `active|dormant|abandoned`, enforced in the handler's
+  `tag()` (STATUS is a shared union axis, so the value-subset is guarded per-kind).
+  Achievable work stays ordinary todos/projects marked `serves` → the quest — a
+  **DAG of strivings** above the todo tree, walked by `view='tree'` (servers by
+  kind + sub-quest recursion + deed ledger). Two records: an **append-only
+  `quest_log` logbook** (the gripe body+comment pattern — WORM, dated, typed
+  entries `note·observation·hypothesis·result·decision·dead-end·milestone·
+  reflection·cost` + `by`; a `milestone` is a deed, `cost` feeds the **tote** =
+  a query over the dated log, no separate cost store), and a dossier `draft`
+  (arrives with the loop, slice 4). Coming: reweighting (priority down the
+  `serves` DAG, slice 2), gap surfacing (3), the autonomous research loop
+  (local grind + frontier steering, materials as `structure` servers, 4). Skill:
+  `precis-quest-help`.
 - **`alert`** — machine-detected ops/health conditions (spin loops, orphans),
   raised via `precis.alerts.raise_alert` (fingerprint upsert + auto-resolve),
   read via `AlertHandler`/`/alerts`. **Not embedded.** Skill: `precis-alert-help`.

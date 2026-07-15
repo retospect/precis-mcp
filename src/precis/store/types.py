@@ -126,6 +126,14 @@ Relation = Literal[
     "contrasts-with",
     "represents",
     "represented-by",
+    # Quest layer — migration 0065 (docs/proposals/quest-layer.md). `serves`
+    # binds any work/knowledge node (project/todo/concept/paper/job/draft/
+    # structure/sub-quest) to the quest it is in the service of — a DAG of
+    # strivings above the ordinary todo tree of deeds. Asymmetric, `served-by`
+    # inverse, auto-mirrored. Keep in sync with the `relations` seed in
+    # 0065_quest_kind.sql.
+    "serves",
+    "served-by",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -189,6 +197,11 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "prerequisite-of": "has-prerequisite",
     "represents": "represented-by",
     "represented-by": "represents",
+    # Quest layer (0065). `serves` / `served-by` auto-mirror so a quest's
+    # inbound-service graph (`links_for(quest, relation='served-by')`) is
+    # reachable without the caller flipping direction.
+    "serves": "served-by",
+    "served-by": "serves",
 }
 
 
@@ -661,6 +674,13 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "waiting_time",
             "waiting_ask_user",
             "waiting_manual_kick",
+            # quest lifecycle (migration 0065 / docs/proposals/quest-layer.md).
+            # A quest is a perpetual striving — it has NO `done`. `active` (we
+            # strive) → `dormant` (set aside, may reawaken) → `abandoned`
+            # (renounced). Only these three are meaningful on kind='quest'.
+            "active",
+            "dormant",
+            "abandoned",
         }
     ),
     "PRIO": frozenset({"low", "normal", "high", "urgent"}),
@@ -774,6 +794,11 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # ``finding`` is unlisted (unrestricted), so it accepts AUDIT too.
     "todo": frozenset({"STATUS", "PRIO", "LLM", "AUDIT"}),
     "gripe": frozenset({"STATUS", "PRIO"}),
+    # Quest — the striving above the work (migration 0065). STATUS carries the
+    # perpetual lifecycle (active/dormant/abandoned — never `done`); PRIO is the
+    # striving weight that (from slice 2) flows down the `serves` DAG as the
+    # reweighting field. No other closed axes.
+    "quest": frozenset({"STATUS", "PRIO"}),
     # Job state machine — STATUS only. PRIO not used (jobs run on
     # demand; if you want one prioritised, just submit it later).
     "job": frozenset({"STATUS"}),

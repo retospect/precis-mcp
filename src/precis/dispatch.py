@@ -660,6 +660,7 @@ def boot(
         from precis.handlers.pcb import PcbHandler
         from precis.handlers.plan import PlanHandler
         from precis.handlers.presentation import PresentationHandler
+        from precis.handlers.quest import QuestHandler
         from precis.handlers.random import RandomHandler
         from precis.handlers.skill import SkillHandler
         from precis.handlers.structure import StructureHandler
@@ -678,6 +679,7 @@ def boot(
         _gated(JobHandler)
         _gated(AnkiHandler)
         _gated(ConceptHandler)
+        _gated(QuestHandler)
         _gated(CitationHandler)
         _gated(FindingHandler)
         _gated(ConversationHandler)

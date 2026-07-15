@@ -720,6 +720,13 @@ def put(
     identifier: str | None = None,
     year: int | None = None,
     reason: str | None = None,
+    # quest logbook (see precis-quest-help): append a dated WORM entry —
+    # put(kind='quest', id=N, text='…', entry='hypothesis'[, by='agent', cost=…]).
+    # entry= is the type (note/observation/hypothesis/result/decision/dead-end/
+    # milestone/reflection/cost — a milestone is a deed); cost= feeds the tote.
+    entry: str | None = None,
+    by: str | None = None,
+    cost: float | None = None,
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
@@ -787,6 +794,9 @@ def put(
             "identifier": identifier,
             "year": year,
             "reason": reason,
+            "entry": entry,
+            "by": by,
+            "cost": cost,
         },
     )
 

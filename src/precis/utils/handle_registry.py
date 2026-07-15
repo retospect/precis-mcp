@@ -76,6 +76,9 @@ KIND_CODES: dict[str, str] = {
     "citation": "ci",
     "anki": "ak",
     "concept": "cn",
+    # the striving above the work (quest layer, migration 0065) — perpetual,
+    # never exported. Record ``qu`` / logbook chunk ``ql`` below.
+    "quest": "qu",
     # operational
     "todo": "td",
     "job": "jo",
@@ -136,6 +139,8 @@ CHUNK_CODES: dict[str, str] = {
     # figure source nodes (``fn<id>``) — a figure's addressable SVG
     # elements/groups; disjoint from draft's ``dc``.
     "figure": "fn",
+    # quest logbook entries (``ql<id>``) — the append-only WORM ledger rows.
+    "quest": "ql",
 }
 
 # Reverse map (code -> (kind, is_chunk)).
