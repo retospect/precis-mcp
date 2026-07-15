@@ -424,8 +424,13 @@ The master kinds table lives in the `precis-overview` skill.
   delete/link) + web `/mermaid` (`precis_web/routes/mermaid.py`, renders
   server-side through figure's `sanitize_svg`). Ships **dark** behind
   `PRECIS_MERMAID_ENABLED`; migration `0066_mermaid_kind.sql`; skills
-  `precis-mermaid-help` + `precis-mermaid`. Deferred: the `diagram_propose`
-  tick (slice 5), a full mermaid source grammar (node extraction is a scan).
+  `precis-mermaid-help` + `precis-mermaid`. **Autonomous tick:** the
+  `diagram_propose` job_type (`workers/job_types/diagram_propose.py`, ADR 0057
+  slice 5) runs **one** figure/mermaid turn against the model from an
+  instruction + seed chunk handles — mutating the diagram in place + reconciling
+  bindings, owned by the diagram (compute lane; figure/mermaid set
+  `KindSpec.can_own_jobs`). Deferred: a full mermaid source grammar (node
+  extraction is a scan), rich cross-kind seed rendering.
 - **`gripe`** — first-class bug tracker; body + comment timeline as chunks
   (`gripe_body`/`gripe_comment`), so they embed + keyword-index automatically.
 - **`anki`** — spaced-repetition **cloze** cards (`{{c1::…}}`) that live in the

@@ -310,11 +310,18 @@ SVG-bounds):
    Skills `precis-mermaid-help` + `precis-mermaid`. Tests `tests/test_mermaid.py`
    (+ `tests/precis_web/test_mermaid.py`), mermaidx-backed compile guarded by
    `importorskip` so the gate stays green without the extra.
-5. **Tick executor.** A `diagram_propose` job_type on the derived-job lane
-   (ADR 0044) so a todo/project can dispatch "build/verify this diagram from
-   these seeds", assembling the seed-context the way `plan_tick` does. Turns
-   scenarios A and B into an autonomous loop rather than a hand-driven web
-   turn.
+5. **Tick executor. — BUILT.** `diagram_propose` job_type
+   (`workers/job_types/diagram_propose.py`) on the derived-job lane: params
+   `{kind: figure|mermaid, ref_id, instruction, seeds:[handle]}`; the dispatcher
+   resolves the diagram, composes a seed-augmented message (`compose_message`
+   inlines seed chunk bodies), and runs **one turn** of the shared loop via the
+   figure/mermaid shim — which *mutates the diagram in place* and reconciles the
+   node→chunk bindings (unlike `cad_propose`, the turn loop is the apply
+   mechanism), then writes a `job_result`/`job_summary`. Owned by the diagram
+   artifact (compute lane) — `figure`/`mermaid` opt in via `KindSpec.can_own_jobs`.
+   Registered in the job-type registry; the model call degrades to chat-only on
+   failure. Tests `tests/test_diagram_propose.py`. Scenarios A (build-from-seeds)
+   and B (verify) are now an autonomous, dispatchable tick.
 
 Slice 2 is the high-value core and stands alone; mermaid (3–4) and the
 autonomous tick (5) are separable follow-ons.

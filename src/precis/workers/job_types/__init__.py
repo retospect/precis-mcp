@@ -170,6 +170,14 @@ def _load_cad_propose() -> JobTypeSpec:
     return cad_propose.SPEC
 
 
+def _load_diagram_propose() -> JobTypeSpec:
+    # One figure/mermaid draw-with-me turn against the model — builds/verifies
+    # the diagram from seeds and reconciles node→chunk bindings (ADR 0057).
+    from precis.workers.job_types import diagram_propose
+
+    return diagram_propose.SPEC
+
+
 def _load_cad_discuss() -> JobTypeSpec:
     # LLM discusses a CAD design (tool-less claude, threaded, read-only) under
     # claude_inproc — answers questions, proposes nothing. Runs via dispatch.
@@ -365,6 +373,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "cad_propose":
         _REGISTRY["cad_propose"] = _load_cad_propose()
         return _REGISTRY["cad_propose"]
+    if name == "diagram_propose":
+        _REGISTRY["diagram_propose"] = _load_diagram_propose()
+        return _REGISTRY["diagram_propose"]
     if name == "cad_discuss":
         _REGISTRY["cad_discuss"] = _load_cad_discuss()
         return _REGISTRY["cad_discuss"]
@@ -400,6 +411,7 @@ def known_job_types() -> list[str]:
         "struct_relax",
         "structure_propose",
         "cad_propose",
+        "diagram_propose",
         "cad_discuss",
         "sandbox_run",
         "good_search",
