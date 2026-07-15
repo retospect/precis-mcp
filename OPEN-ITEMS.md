@@ -17,6 +17,92 @@ what's still open.
 
 ---
 
+## 🗺️ Quest layer (design-of-record `docs/proposals/quest-layer.md`)
+
+The aim-layer above projects/streams/concepts. Slices 1 (read-only
+structure — `quest` kind + `serves` + logbook + tree rollup, main
+`2ce51f5f`) and 2 (reweighting — priority down the `serves` DAG into
+rotation/acquisition/reading, `src/precis/quest/reweight.py`, main
+`8a61716f`) are **shipped, not deployed**. Skill `precis-quest-help`;
+tests `tests/test_quest.py` + `tests/test_quest_reweight.py`.
+
+**Operational — do these to make the shipped slices actually steer:**
+
+- **Deploy slices 1+2 to the cluster** — `open` / `feature` / owner
+  `/go` → `scripts/deploy`. Both ship dark *behaviourally* (a no-op until
+  a quest exists), so deploy is low-risk. Finder: Opus session.
+- **Link 3–4 mission quests to real projects** — `open` / `feature` /
+  owner prod-data (MCP `put(kind='quest')` + `link(rel='serves')`). Derive
+  the strivings from `docs/mission.md` + the live research programs (NO→NH₃
+  catalyst, …) and link the existing project todos to them. **A prod-data
+  step — do it after deploy** so the `quest` kind is live. Until this lands,
+  the reweighting is a no-op in prod (nothing serves anything). This is the
+  last slice-1 deliverable. Finder: Opus session.
+
+**Slice 3 — gaps** (`feature`, owner new `src/precis/quest/`): surface
+what's thin so the striving exposes its own exploration queue — a quest
+with little support, a served `concept` stuck at low mastery, a claim with
+no supporting paper, a `hypothesis` logbook entry with no experiment-job.
+Gaps *are* the exploration queue. Not started.
+
+**Slice 4 — the autonomous research loop** (`feature`, the big one): the
+continuous slow-burn program — local "free" models grind (propose
+candidates + interpret sim results), the frontier model escalates on a
+*signal* (enough evidence / stalled frontier / surprise) to review + set
+the next line of inquiry. Evidence-triggered (not timed), compute via the
+existing catpath `pathway` + `structure` DFT-relax derived-job lane,
+materials as `structure` servers (failed = `ruled-out`-tagged, Pareto
+frontier = the rubric objective). Emergent bursty scheduling (threads block
+on hour-long sims), quests competing via an EWMA bandit under a weekly
+proportional budget metered against the tote. The dossier `draft` (the
+living understanding synthesis, `dossier-of` the quest) arrives here as the
+loop's rolling context. Not started.
+
+**Deferred within slice 2 (reweighting):**
+
+- **Dream nomination-*prompt* tilt** — `deferred` / `feature` / owner
+  `workers/dream_agent.py` + `data/prompts/dream-prompt.md`. Inject active-
+  quest context so the dream *reasons* about which papers/threads to
+  nominate (fisheye eye-draw boost + a "## Active quests & their needs"
+  prompt block). Deferred because the dream agent is **gated off in prod**
+  (`PRECIS_DREAM_AGENT` unset); tilting the *live* `fetch_oa` backlog (done)
+  covers the acquisition half that actually runs. Wire when the dream is
+  turned on. Finder: Opus session.
+
+**Open questions from the proposal (resolve as the steering rungs land):**
+
+- **Cost & credit attribution under overlap** *(slice 4, the sharp one)* —
+  priority *pulls* by max, but a sim serving two quests burned one sum of
+  GPU; attributing it fully to both double-counts the weekly budget. Pull =
+  max; cost/credit need a conservation rule (split, or shared pool). Does a
+  shared breakthrough boost both quests' EWMA? (Likely yes for credit, no
+  for cost.)
+- **"Promise" is the softest bid term** *(slice 4)* — the EWMA bid is
+  `priority × momentum × promise`; *promise* (expected remaining
+  improvement) needs a concrete proxy (frontier-improvement rate, result
+  variance, untried-candidates-near-front).
+- **Prose rubric → machine-measurable objective** *(slice 4)* — turning a
+  quest's success criteria into a computed score vector the loop optimises.
+  Realistic path: frontier model judges qualitatively first; hard numbers
+  as sim outputs get parsed.
+- **The proposer is the crux and least-specified** *(slice 4)* — the loop is
+  only as good as "propose the next candidate"; needs grounding (dossier +
+  literature + frontier neighbours) with the frontier model seeding
+  directions.
+- **Sub-quest vs achievable-goal boundary** *(craft)* — rule of thumb
+  captured in `precis-quest-help` (open-ended "best/a …" → quest;
+  completable deliverable → a project that `serves`). Revisit if authors
+  keep getting it wrong.
+
+**Standing leans (decided-enough, easy to flip):** dossier = a `draft` the
+quest owns (arrives with the loop, slice 4); alignment judge =
+embedding-proximity floor + a dream re-review that scores stale/low-cosine
+`serves` edges, human override wins (cadence/storage → slice 3). Health
+(momentum + alignment) is not yet computed on the `view='tree'` rollup —
+slice 3.
+
+---
+
 ## 🧪 chem-tools (ADR 0056) — remaining slices + live-verification (2026-07-15)
 
 The `route` retrosynthesis kind (precis-chem plugin) ships **dark** behind
