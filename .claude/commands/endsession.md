@@ -16,7 +16,7 @@ Live state at invocation:
 - Branch + status:
   !`git -c color.ui=never status -sb`
 - Commits this branch is ahead of main:
-  !`git -c color.ui=never log --oneline origin/main..HEAD 2>/dev/null || git -c color.ui=never log --oneline main..HEAD`
+  !`git -c color.ui=never log --oneline origin/main..HEAD 2>/dev/null || git -c color.ui=never log --oneline main..HEAD 2>/dev/null || echo "(can't compute ahead-of-main — neither origin/main nor main resolves)"`
 
 Optional ship message from the user: `$ARGUMENTS`
 
