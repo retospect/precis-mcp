@@ -28,7 +28,25 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from typing import Any
+
+from precis.diagram.lang import Element, LintFinding
+
+__all__ = [
+    "DEFAULT_VIEWBOX",
+    "SVG_LANG",
+    "Element",
+    "LintFinding",
+    "SvgError",
+    "SvgLang",
+    "default_svg",
+    "elements",
+    "lint_bindings",
+    "lint_svg",
+    "parse_error",
+    "read_viewbox",
+    "sanitize_svg",
+]
 
 SVG_NS = "http://www.w3.org/2000/svg"
 XLINK_NS = "http://www.w3.org/1999/xlink"
@@ -67,36 +85,10 @@ class SvgError(ValueError):
     """Raised when a string cannot be parsed as SVG/XML."""
 
 
-@dataclass(frozen=True, slots=True)
-class LintFinding:
-    """One mechanically-detected problem with a figure's source.
-
-    ``kind`` is ``'compile'`` (unparseable), ``'bounds'`` (a shape spills
-    past the viewBox), or ``'binding'`` (an element→chunk binding names an
-    ``id`` that no element in the source carries — ADR 0057 drift). ``node``
-    is the offending element's ``id`` (or its tag when it has none); empty
-    for a whole-document compile failure.
-    """
-
-    kind: str
-    node: str
-    message: str
-
-
-@dataclass(frozen=True, slots=True)
-class Element:
-    """A named element of a figure — the anchor a chunk binding attaches to.
-
-    ``id`` is the stable source ``id=`` (the join key for a ``depicts``
-    binding, ADR 0057); ``tag`` the local tag name; ``coords`` a compact
-    human/model-readable geometry string (``x40 y60 w80 h20`` for a rect,
-    ``cx120 cy70 r8`` for a circle, a bbox for a polygon, or ``""`` for a
-    shape whose geometry isn't cheaply measurable — path/text/group).
-    """
-
-    id: str
-    tag: str
-    coords: str
+# ``LintFinding`` and ``Element`` are the shared diagram value types — they
+# live in ``precis.diagram.lang`` and are imported/re-exported above so the
+# long-standing ``from precis.figure.svg import LintFinding, Element`` keeps
+# working (this module is the SVG *instance* of the diagram core, ADR 0057).
 
 
 def _localname(tag: str) -> str:
@@ -410,3 +402,106 @@ def _points_bbox(raw: str) -> tuple[float, float, float, float] | None:
     xs = nums[0::2]
     ys = nums[1::2]
     return (min(xs), min(ys), max(xs), max(ys))
+
+
+# ── the SVG instance of the diagram core (ADR 0057, slice 3) ──────────────
+#
+# ``SvgLang`` binds the pure SVG mechanics above (+ the SVG-specific prompt
+# fragments) to the ``DiagramLang`` port, so the generic draw-with-me loop in
+# ``precis.diagram.turn`` drives an SVG figure. ``precis.figure.turn`` /
+# ``precis.figure.context`` are thin shims over the generic core carrying this
+# instance. ``mermaid`` will add a second instance beside this one.
+
+_SVG_FLOOR = (
+    "You are drawing an SVG figure WITH a human. You maintain three "
+    "things: the SVG source; the shared VOCABULARY (high-level and "
+    "human-facing — what the drawing is); and your private implementation "
+    "NOTES (element ids, structure, conventions). Every turn: update the "
+    "vocabulary and keep it high-level and concise (move any low-level "
+    "detail into notes), keep notes accurate for consistent edits, and "
+    "keep your chat reply short — the detail lives in the docs, not the "
+    "chat. Edit by rewriting the whole <svg>; name elements with stable "
+    "id= and <title>. Safety: no <script>/<foreignObject>/event handlers/"
+    "external or data href (all stripped). Keep shapes inside the viewBox. "
+    "Figures are static by default; only when the human asks for motion, "
+    "you may animate declaratively with SMIL (<animate>, "
+    "<animateTransform>, <animateMotion>, <set>) or a <style> with CSS "
+    "@keyframes — both are preserved and animate natively in the browser."
+)
+
+#: The model reply is a single JSON object with these keys.
+_SVG_JSON_CONTRACT = (
+    'Reply with ONE JSON object and nothing else: {"reply": "<a SHORT chat '
+    'message to the human>", "svg": "<the COMPLETE new <svg>…</svg> source, '
+    'or omit/empty to leave the drawing unchanged>", "vocab": "<the updated '
+    'shared vocabulary — high-level, for the human — or omit if unchanged>", '
+    '"notes": "<the updated implementation notes — your private design log — '
+    'or omit if unchanged>", "links": [{"element": "<a stable id= in your '
+    'svg>", "target": "<a chunk handle: dc… draft / pc… paper / me… memory>", '
+    '"relation": "depicts"}] (the COMPLETE desired set of element→chunk '
+    "bindings — this replaces the current set; omit the key entirely to leave "
+    "bindings unchanged)}."
+)
+
+
+class SvgLang:
+    """The SVG :class:`~precis.diagram.lang.DiagramLang` — delegates the source
+    mechanics to this module's functions and carries the SVG prompt strings."""
+
+    kind = "figure"
+    source_kind = "figure_node"
+    vocab_kind = "figure_vocab"
+    notes_kind = "figure_notes"
+    turn_kind = "figure_turn"
+    skill_name = "precis-figure-svg"
+    source_key = "svg"
+    bounds_meta_key = "viewbox"
+
+    def parse_error(self, source: str) -> str | None:
+        return parse_error(source)
+
+    def sanitize(self, source: str) -> str:
+        return sanitize_svg(source)
+
+    def lint(self, source: str, bounds: Any) -> list[LintFinding]:
+        return lint_svg(source, bounds)
+
+    def elements(self, source: str) -> list[Element]:
+        return elements(source)
+
+    def lint_bindings(self, source: str, bound_ids: set[str]) -> list[LintFinding]:
+        return lint_bindings(source, bound_ids)
+
+    def default_source(self, bounds: Any) -> str:
+        return default_svg(bounds if bounds is not None else DEFAULT_VIEWBOX)
+
+    def read_bounds(self, source: str) -> Any | None:
+        return read_viewbox(source)
+
+    def default_bounds(self) -> Any:
+        return DEFAULT_VIEWBOX
+
+    def bounds_from_meta(self, raw: Any) -> Any | None:
+        if isinstance(raw, (list, tuple)) and len(raw) == 4:
+            try:
+                return (float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3]))
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def bounds_to_meta(self, bounds: Any) -> Any:
+        return list(bounds)
+
+    def floor_guidance(self) -> str:
+        return _SVG_FLOOR
+
+    def canvas_section(self, bounds: Any) -> str:
+        x, y, w, h = bounds
+        return f"## Canvas\nviewBox = {x} {y} {w} {h}"
+
+    def json_contract(self) -> str:
+        return _SVG_JSON_CONTRACT
+
+
+#: The singleton SVG language instance the figure shims bind.
+SVG_LANG = SvgLang()

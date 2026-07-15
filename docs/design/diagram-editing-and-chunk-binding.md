@@ -284,9 +284,18 @@ SVG-bounds):
    (the `links` field) + `precis-figure-help` updated. Tests:
    `tests/test_figure_bindings.py`. **This slice delivers the rich figure
    editing environment** and stands without mermaid.
-3. **Factor the shared diagram core.** Pull turn/binding/context/lints into
-   `src/precis/diagram/` behind `DiagramLang`; make `figure` the SVG instance.
-   Pure refactor, parity-tested; no behavior change.
+3. **Factor the shared diagram core. — BUILT.** `src/precis/diagram/`:
+   `lang.py` (the `DiagramLang` port + the shared `LintFinding`/`Element`
+   value types), `turn.py` (the generic draw-with-me loop + `build_prompt` +
+   `TurnResult`, all taking `lang`), `context.py` (the generic
+   `render_diagram_context`). `figure/svg.py` gains `SvgLang`/`SVG_LANG` (the
+   SVG instance — delegates to its own functions + carries the SVG prompt
+   strings) and re-exports the value types; `figure/turn.py` +
+   `figure/context.py` are thin shims binding `SVG_LANG` (so the handler,
+   route, and every test are untouched). The parity guard is the full existing
+   figure suite passing unchanged *through* the core; `tests/test_diagram_core.py`
+   adds a throwaway non-SVG `_ToyLang` proving the core is language-generic (no
+   SVG leaks). Pure refactor, no behavior change.
 4. **Mermaid kind.** Migration `0065` — register `mermaid` + chunk kinds
    `mermaid_node` (no_index) / `mermaid_vocab` / `mermaid_notes` (no_index) /
    `mermaid_turn`, handle `mm<ref>` / `mn<node>`, relations `mermaid-of` /
