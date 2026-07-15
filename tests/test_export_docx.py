@@ -142,6 +142,54 @@ def test_repeated_citation_does_not_corrupt(
     assert "Wu 2022 study" in text  # one resolved entry
 
 
+def test_docx_embeds_figure_image(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A canvas figure rasterises to PNG and embeds as an inline image + an
+    italic caption paragraph (ADR 0057 slice 4). Uses a canvas (SVG→PNG via
+    resvg) so the embedded raster is one python-docx accepts."""
+    pytest.importorskip("resvg_py")
+    from precis.handlers.figure import FigureHandler
+
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="d1", title="T", project=pid)
+    ref = hub.store.get_ref(kind="draft", id="d1")
+    title_h = hub.store.reading_order(ref.id)[0].handle
+    # a caption-only figure chunk (no blob) backed by a canvas.
+    fig = hub.store.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="figure",
+        text="Fig 1. A widget.",
+        at={"after": title_h},
+        split=False,
+    )[0]
+    FigureHandler(hub=hub).put(
+        id="fig1",
+        title="Widget",
+        text=(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60">'
+            '<rect x="5" y="5" width="90" height="50" fill="none" stroke="black"/>'
+            "</svg>"
+        ),
+    )
+    canvas = hub.store.get_ref(kind="figure", id="fig1")
+    hub.store.link_figure_canvas(fig.chunk_id, canvas.id)
+
+    out = tmp_path / "d1.docx"
+    export_docx(hub.store, ref, target_path=out)
+
+    doc = docx.Document(str(out))
+    assert len(doc.inline_shapes) == 1  # the rasterised canvas embedded
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Fig 1. A widget." in text  # caption
+
+
 def test_glossary_section(draft: DraftHandler, hub: Hub, tmp_path: Path) -> None:
     _seed_paper(hub.store, "miller2020", "A study of MOFs", 2020)
     ref = _make_draft(draft, hub)

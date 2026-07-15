@@ -143,6 +143,9 @@ class RenderResult:
     acronyms: dict[str, str] = field(default_factory=dict)  # short → long
     acronym_keys: dict[str, str] = field(default_factory=dict)  # short → gls key
     warnings: list[str] = field(default_factory=list)
+    #: figure assets to materialise beside main.tex — (relpath, bytes). ADR 0057
+    #: slice 4: raster blobs pass through, SVG/canvas figures rasterise to PNG.
+    figures: list[tuple[str, bytes]] = field(default_factory=list)
 
 
 @dataclass
@@ -307,6 +310,7 @@ class _Ctx:
     cited: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     seen_acr: set[str] = field(default_factory=set)  # glossary keys already emitted
+    figures: list[tuple[str, bytes]] = field(default_factory=list)  # (relpath, bytes)
 
 
 def _render_gap(text: str, ctx: _Ctx) -> str:
@@ -577,7 +581,9 @@ def render_body(store: Any, ref: Any) -> RenderResult:
             lines.extend(_render_table(c, ctx, label))
             lines.append("")
             continue
-        if c.chunk_kind == "heading":
+        if c.chunk_kind == "figure":
+            lines.extend(_render_figure(c, ctx, label))
+        elif c.chunk_kind == "heading":
             cmd = _SECTION_CMD[min(c.depth, len(_SECTION_CMD) - 1)]
             title = _render_inline(c.text or "", ctx)
             lines.append(f"\\{cmd}{{{title}}}{label}")
@@ -602,7 +608,40 @@ def render_body(store: Any, ref: Any) -> RenderResult:
         acronyms=abbrevs,
         acronym_keys=ctx.keymap,
         warnings=ctx.warnings,
+        figures=ctx.figures,
     )
+
+
+def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
+    """Render a ``chunk_kind='figure'`` chunk as a LaTeX ``figure`` float
+    (ADR 0057 slice 4). The image asset is resolved to bytes+ext and recorded
+    on ``ctx.figures`` for the caller to write under ``pics/``; the caption is
+    the chunk text. An asset-less figure (should be caught by the clearance
+    gate first) emits a visible placeholder + a warning rather than vanishing."""
+    from precis.utils.figure_source import figure_export_asset
+
+    caption = _render_inline(c.text or "", ctx)
+    asset = figure_export_asset(ctx.store, c)
+    if asset is None:
+        ctx.warnings.append(f"figure {c.dc} has no exportable image — placeholder used")
+        return [
+            "\\begin{figure}[htbp]",
+            "\\centering",
+            "\\fbox{\\emph{[figure image pending]}}",
+            f"\\caption{{{caption}}}{label}",
+            "\\end{figure}",
+        ]
+    data, ext = asset
+    relpath = f"pics/{c.dc}.{ext}"
+    ctx.figures.append((relpath, data))
+    return [
+        "\\begin{figure}[htbp]",
+        "\\centering",
+        f"\\includegraphics[width=\\linewidth,height=0.42\\textheight,"
+        f"keepaspectratio]{{{relpath}}}",
+        f"\\caption{{{caption}}}{label}",
+        "\\end{figure}",
+    ]
 
 
 def build_acronyms(
@@ -899,6 +938,14 @@ def export_draft(
         acronyms=acronyms_tex,
         appendix=appendix_tex,
     )
+
+    # Materialise figure images beside main.tex (ADR 0057 slice 4) — the body
+    # references them as pics/<dc>.<ext> via \includegraphics.
+    if rendered.figures:
+        pics_dir = target_dir / "pics"
+        pics_dir.mkdir(parents=True, exist_ok=True)
+        for relpath, data in rendered.figures:
+            (target_dir / relpath).write_bytes(data)
 
     main_path = target_dir / "main.tex"
     bib_path = target_dir / "refs.bib"

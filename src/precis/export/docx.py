@@ -276,6 +276,9 @@ def export_docx(
         if kind == "table":
             _render_table(doc, c, ctx)
             continue
+        if kind == "figure":
+            _render_figure(doc, store, c, ctx)
+            continue
         # paragraph (default)
         p = doc.add_paragraph()
         _render_inline(c.text, ctx, p)
@@ -298,6 +301,38 @@ def export_docx(
     return DocxResult(
         path=target_path, cited_slugs=list(ctx.cited), warnings=ctx.warnings
     )
+
+
+# ── figure rendering ──────────────────────────────────────────────
+
+
+def _render_figure(doc: Any, store: Any, chunk: Any, ctx: _Ctx) -> None:
+    """Embed a figure image + its caption (ADR 0057 slice 4). Raster blobs
+    embed directly; an SVG (blob-SVG or a linked canvas) arrives pre-rasterised
+    to PNG via ``figure_export_asset`` (docx can't consume SVG). An asset-less
+    figure degrades to a caption-only paragraph + a warning."""
+    from io import BytesIO
+
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Inches
+
+    from precis.utils.figure_source import figure_export_asset
+
+    asset = figure_export_asset(store, chunk)
+    if asset is None:
+        ctx.warnings.append(f"figure {chunk.dc} has no exportable image — caption only")
+    else:
+        data, _ext = asset
+        try:
+            doc.add_picture(BytesIO(data), width=Inches(5.5))
+            doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        except Exception as exc:  # pragma: no cover — pillow/format edge
+            ctx.warnings.append(f"figure {chunk.dc} could not embed: {exc}")
+    cap = doc.add_paragraph()
+    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _render_inline(chunk.text or "", ctx, cap)
+    for r in cap.runs:
+        r.italic = True
 
 
 # ── table rendering ───────────────────────────────────────────────

@@ -277,10 +277,14 @@ inline with an **"✎ open in /figure"** affordance. Clearance is medium-aware �
 figure with no blob and no drawn canvas counts as **uncleared** ("no image
 yet"), so an empty placeholder no longer reports "cleared to ship".
 
+**Export** materialises figures into the PDF and Word output (ADR 0057 slice
+4): a raster blob embeds directly, and an SVG — a blob-SVG or a linked canvas —
+rasterises to PNG (via the bundled `resvg`), so `\includegraphics` (LaTeX) and
+`add_picture` (docx) both carry the drawing. An image-less, canvas-less figure
+is caught by the clearance gate before export.
+
 > Graph regeneration (the plot's data + code as `figure_code` /
-> `figure_data` chunks linked `derived-from`) and the export step that
-> writes images out to `pics/` (including rasterising a canvas SVG) are
-> later phases.
+> `figure_data` chunks linked `derived-from`) is a later phase.
 
 ## Data / table chunks
 

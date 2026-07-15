@@ -84,6 +84,68 @@ def _canvas_source(store: Any, canvas_ref_id: int) -> str | None:
     return None
 
 
+#: mime → file extension for a raster figure blob embedded verbatim in export.
+_EXT_BY_MIME: dict[str, str] = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/tiff": "tiff",
+    "image/bmp": "bmp",
+}
+
+#: Rasterise SVG at this zoom so a print embed isn't blurry (viewBox px × N).
+_SVG_EXPORT_ZOOM = 3.0
+
+
+def _svg_to_png(svg: str) -> bytes | None:
+    """Rasterise (sanitized) SVG source to PNG bytes via ``resvg`` — a
+    self-contained Rust wheel, no system cairo. ``None`` if ``resvg`` is absent
+    (export degrades: the figure is skipped with a warning) or the render
+    fails. A white background so a transparent canvas prints as white."""
+    try:
+        import resvg_py
+    except ImportError:  # pragma: no cover — resvg is a declared dep
+        return None
+    try:
+        return bytes(
+            resvg_py.svg_to_bytes(
+                svg_string=svg, zoom=_SVG_EXPORT_ZOOM, background="#ffffff"
+            )
+        )
+    except Exception:
+        return None
+
+
+def figure_export_asset(store: Any, chunk: Any) -> tuple[bytes, str] | None:
+    """``(bytes, ext)`` for embedding a figure in an export (ADR 0057 §7,
+    slice 4), or ``None`` when the figure has no usable asset.
+
+    Raster blobs pass through as-is; an SVG — whether a ``blob``-SVG (already
+    sanitized at ingest, slice 3) or a linked **canvas** (sanitized at write) —
+    rasterises to PNG so it embeds in both LaTeX (``\\includegraphics``) and
+    docx (``add_picture``), neither of which consumes raw SVG."""
+    canvas_ref_id = store.figure_canvas_ref(chunk.chunk_id)
+    if canvas_ref_id is not None:
+        svg = _canvas_source(store, canvas_ref_id)
+        if not _svg_has_content(svg):
+            return None
+        assert svg is not None
+        png = _svg_to_png(svg)
+        return (png, "png") if png is not None else None
+
+    blob = store.get_chunk_blob(chunk.handle)
+    if blob is not None:
+        data, mime = blob
+        mime = (mime or "").split(";", 1)[0].strip()
+        if mime == "image/svg+xml":
+            png = _svg_to_png(data.decode("utf-8", "replace"))
+            return (png, "png") if png is not None else None
+        return data, _EXT_BY_MIME.get(mime, "png")
+
+    return None
+
+
 def resolve_figure_source(store: Any, chunk: Any) -> FigureSource:
     """Resolve a draft figure chunk to its :class:`FigureSource`.
 

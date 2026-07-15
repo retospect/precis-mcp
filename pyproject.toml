@@ -192,10 +192,12 @@ paper = [
     # so the ingest image is heavy regardless; serve / worker, which omit
     # both ``paper`` and ``embed``, are the ones that go torch-free.
 ]
-# DOCX file handler.
-docx = ["python-docx>=1.1", "lxml>=5.0", "latex2mathml>=3.77"]
-# LaTeX file handler.
-tex = ["lxml>=5.0"]
+# DOCX file handler. ``resvg-py`` rasterises SVG/canvas figures to PNG for
+# ``add_picture`` (ADR 0057 slice 4) — a self-contained Rust wheel, no cairo.
+docx = ["python-docx>=1.1", "lxml>=5.0", "latex2mathml>=3.77", "resvg-py>=0.1"]
+# LaTeX file handler. ``resvg-py`` rasterises SVG/canvas figures to PNG for
+# ``\includegraphics`` (ADR 0057 slice 4).
+tex = ["lxml>=5.0", "resvg-py>=0.1"]
 # Local calculator (sympy).
 calc = ["sympy>=1.12"]
 # DFT / atomistic structures (ADR 0043). ASE for CIF I/O + symmetry (spglib).

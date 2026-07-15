@@ -228,9 +228,16 @@ just a mime-list append.
    agent `put` and the web multipart upload (single chokepoint), normalising
    the mime and rejecting unparseable markup. Served script-safe as before
    (`<img src=/drafts/blob/…>`). Closes the static-SVG-as-bitmap gap.
-4. **Export**: `FigureSource.export_asset()` — rasterize/vector-embed a canvas
-   or compiled diagram into the PDF/docx; the `graph`/`blob` export paths are
-   0034 §5 / 0035.
+4. **Export** — ✅ **landed**. `figure_export_asset(store, chunk) -> (bytes,
+   ext)` in `figure_source.py`: raster blobs pass through, an SVG (blob-SVG or
+   a linked canvas) rasterises to PNG via **`resvg-py`** (a self-contained Rust
+   wheel — no system cairo; added to the `tex`/`docx` extras). Wired into both
+   export paths: `latex.py` emits a `figure` float `\includegraphics{pics/<dc>.<ext>}`
+   and materialises the asset under `target_dir/pics/`; `docx.py` embeds via
+   `add_picture` + an italic caption. An asset-less figure degrades to a
+   visible placeholder + a warning (the clearance gate should catch it first).
+   This closes ADR 0034 §5's long-deferred figure-export step for the raster
+   and SVG/canvas cases in one seam.
 
 ## 8 — Motivating bug (Deck Hook)
 

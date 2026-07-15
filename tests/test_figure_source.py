@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import base64
 
+import pytest
+
 from precis.dispatch import Hub
 from precis.handlers.figure import FigureHandler
 from precis.store.store import Store
 from precis.utils.figure_clearance import draft_figure_clearance
-from precis.utils.figure_source import resolve_figure_source
+from precis.utils.figure_source import figure_export_asset, resolve_figure_source
 
 # A real 1×1 PNG (the Pillow dimension probe has something valid to parse).
 _PNG = base64.b64decode(
@@ -163,3 +165,62 @@ def test_clearance_counts_assetless_figures(store: Store, hub: Hub) -> None:
     summary2 = draft_figure_clearance(store, ref.id)
     assert summary2.total == 2
     assert len(summary2.uncleared) == 1
+
+
+# ── export asset (ADR 0057 slice 4) ──────────────────────────────────────
+
+_PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+
+def test_export_asset_raster_passthrough(store: Store) -> None:
+    ref, title = _draft(store)
+    fig = store.add_figure(
+        ref_id=ref.id,
+        caption="c",
+        origin="original",
+        image=_PNG,
+        mime="image/png",
+        at={"after": title.handle},
+    )
+    assert figure_export_asset(store, fig) == (_PNG, "png")
+
+
+def test_export_asset_none_for_placeholder(store: Store) -> None:
+    ref, title = _draft(store)
+    fig = _placeholder_figure(store, ref.id, title.handle)
+    assert figure_export_asset(store, fig) is None
+
+
+def test_export_asset_canvas_rasterises_to_png(store: Store, hub: Hub) -> None:
+    pytest.importorskip("resvg_py")
+    ref, title = _draft(store)
+    fig = _placeholder_figure(store, ref.id, title.handle)
+    FigureHandler(hub=hub).put(id="c1", title="F", text=_DRAWN)
+    canvas = store.get_ref(kind="figure", id="c1")
+    store.link_figure_canvas(fig.chunk_id, canvas.id)
+
+    asset = figure_export_asset(store, fig)
+    assert asset is not None
+    data, ext = asset
+    assert ext == "png" and data[:8] == _PNG_SIG
+
+
+def test_export_asset_svg_blob_rasterises(store: Store) -> None:
+    pytest.importorskip("resvg_py")
+    ref, title = _draft(store)
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+        b'<rect width="10" height="10"/></svg>'
+    )
+    fig = store.add_figure(
+        ref_id=ref.id,
+        caption="c",
+        origin="original",
+        image=svg,
+        mime="image/svg+xml",
+        at={"after": title.handle},
+    )
+    asset = figure_export_asset(store, fig)
+    assert asset is not None
+    data, ext = asset
+    assert ext == "png" and data[:8] == _PNG_SIG

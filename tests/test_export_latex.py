@@ -7,6 +7,7 @@ the ``hub`` fixture.
 
 from __future__ import annotations
 
+import base64
 import re
 import sys
 from pathlib import Path
@@ -14,6 +15,13 @@ from pathlib import Path
 import pytest
 
 from precis.export import latex
+
+# A real 1×1 PNG for figure-embed tests (a valid raster blob).
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
+    "C0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+_PNG_B64 = base64.b64encode(_PNG).decode()
 
 # The compile tests drive a ``#!/bin/sh`` stub through ``shutil.which`` +
 # ``subprocess.run``. On Windows ``shutil.which`` won't treat an
@@ -419,6 +427,35 @@ def test_export_draft_end_to_end(hub, tmp_path) -> None:
     assert r"\printglossaries" in main and r"\printbibliography" in main
     # the Glossary heading + term chunk are NOT rendered as body sections
     assert r"\section{Glossary}" not in main
+
+
+def test_export_draft_embeds_raster_figure(hub, tmp_path) -> None:
+    """A raster figure emits a \\includegraphics float and materialises the
+    image under pics/ beside main.tex (ADR 0057 slice 4)."""
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    draft = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    draft.put(id="nt", title="T", project=proj)
+    ref = store.get_ref(kind="draft", id="nt")
+    title_h = store.reading_order(ref.id)[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="figure",
+        text="Fig 1. A widget.",
+        image=_PNG_B64,
+        origin="original",
+        at={"after": f"¶{title_h}"},
+    )
+
+    out = tmp_path / "out"
+    result = latex.export_draft(store, ref, target_dir=out)
+    main = result.main_tex.read_text()
+    assert r"\includegraphics" in main and "pics/" in main
+    assert r"\caption{Fig 1. A widget.}" in main
+    pics = list((out / "pics").glob("*.png"))
+    assert len(pics) == 1 and pics[0].read_bytes() == _PNG
 
 
 def test_export_draft_include_sources_bundles_appendix(hub, tmp_path, monkeypatch):
