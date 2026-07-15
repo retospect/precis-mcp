@@ -17,6 +17,53 @@ what's still open.
 
 ---
 
+## 🎧 Daily audio casts — follow-ups (2026-07-15)
+
+Shipped this session: the daily **reading-brief** (morning, `bm_george`) +
+**nidra** (evening, `af_nicole`) audio casts. Both **compose with `claude-opus`
+on `claude_inproc`/melchior** (where the litellm proxy lives); **TTS is the
+separate downstream `cast_audio` pass on spark** (container Kokoro → the podcast
+feed). Watches installed in prod (6am brief, 9pm nidra) and the whole loop was
+proven autonomous end-to-end. Key files: `reading/{cast_common,briefing_cast,
+meditation}.py`, `workers/cast_audio.py`, `workers/job_types/{reading_brief,
+meditation}.py`, `cli/cast.py`. Skill: `precis-audio-help`.
+
+- **Cast length calibration — verify + tune.** *(polish, open — fix deployed,
+  unverified.)* The 2026-07-15 nidra rendered **~18 min vs a 45-min budget**;
+  `_compose_long` asked opus for open-ended passages with no length target, so it
+  under-wrote. Fixed in `ae37657a` (the word budget is now split across the
+  segmented calls and each prompt asks for ~N words; `_CONCEPTS_PER_SEGMENT`
+  6→4). **Not yet measured** — opus may still under-write the per-segment target;
+  measure tomorrow's nidra and, if short, raise the target or add an
+  over-provision factor. **The morning brief** also came out **~4 min vs its
+  15-min target**: the single-call compose has *no* length floor and is
+  content-bound (thin lanes → short brief). Decide: enforce a floor on the brief
+  vs accept content-driven length. `wpm=110` is measured-accurate — leave it.
+  Owner: `reading/{meditation,briefing_cast}.py` + `cast_common.word_budget`.
+  Test: none yet.
+- **Wire the quest lane into the morning brief** *(feature, open; also todo
+  td161129).* `briefing_cast._lane_quest` is a degrade-to-empty stub; quest
+  slice-1 landed on main (quest kind + `serves` + `quest_log` logbook), so the
+  lane can now surface per-active-quest momentum + recent deeds (milestone /
+  dead-end entries). The nidra could also bias its concept walk toward
+  active-quest concepts (`build_meditation(bias_active_quests=)`, quest slice-2,
+  dark until reading-prep slice 3). Owner: `reading/briefing_cast.py`.
+- **Booklet (reading) lane** *(feature, blocked on reading-prep slice 2).*
+  `briefing_cast._lane_reading` is a stub; lights up when the weekly booklet
+  synthesis exists.
+- **Test-artifact cleanup** *(polish, open).* Prod holds test cast drafts
+  (`cast-nidra-test-546c21`, the suppressed opustest 161197) and the Qwen test
+  episode `nidra-test-546c21` is still on the feed. Remove when convenient.
+- **Cast-draft corpus hygiene** *(polish, open).* Daily cast drafts (`kind=
+  'draft'`, `meta.cast`) accumulate and are embedded + searchable like any draft.
+  Consider `meta.no_index` and/or a retention GC (as `agentlog` has) so daily
+  narration scripts don't pollute the corpus over time.
+- **gripe 161169 — RESOLVED** (`edc99a1d`): compose couldn't reach an LLM on a
+  data node (litellm is melchior-loopback-only); fixed by moving compose to
+  `claude_inproc`/melchior with `claude-opus`. Recorded here for the trail.
+
+---
+
 ## 🗺️ Quest layer (design-of-record `docs/proposals/quest-layer.md`)
 
 The aim-layer above projects/streams/concepts. Slices 1 (read-only
