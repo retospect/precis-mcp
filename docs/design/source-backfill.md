@@ -964,12 +964,22 @@ writer's context, the more discipline the prose needs.*
      section (overflow → tail). Visibility is `demand > NONE`, so `Extent` (the
      IntEnum) and bare-int fixtures agree. Titles/handle formatting are 8a.3's job —
      this layer emits `chunk_id` / `ref_id` ints only.
-   - **8a.3** — **the composer overlay + wiring**: `render_link_rollup(store, ref_id,
-     chunks, demand, views)` in `working_set_render.py` (a "— section link map —"
-     block mirroring `render_ring_groups`), threaded in where `render_working_set`
-     already holds the computed `demand`, **behind a gate** so the default path stays
-     byte-identical (the discipline 8b held to). Planner module `_m_link_rollup`
-     (`applies_when` the structural marker) surfaces it in the tick.
+   - **8a.3** — **the composer overlay + gate. DONE**
+     (`working_set_render.render_link_rollup` + a `link_map: bool = False` param on
+     `render_working_set`, `tests/test_link_rollup_render.py`): the overlay builds
+     `parent_of` / `by_id` from `reading_order`, pulls this doc's outbound
+     `links_for` edges (skipping the structural `parent` relation), runs the 8a.2
+     rollup against the **already-assembled** `demand` the doc loop holds, and emits a
+     `— section link map (visibility-scoped) —` block — each visible source section
+     named by heading title, in-doc targets by `.dc` handle, cross-refs by record
+     handle (`pa1234`), the per-section overflow as `… N more → M refs`. Sections
+     render in document order. **Gated off by default → byte-identical** (a live
+     regression test asserts `default == link_map=False` with links present); a
+     backfill-internal cycle is dodged with a function-local import. **The planner
+     module + structural marker move to the deferred structural stance** (below) —
+     the overlay is the reusable primitive; the tick that *consumes* it (with its
+     `meta.restructure` gate) is the deferred stance's job, per this section's own
+     layering. **8a is complete.**
 
    ### Deferred beyond 8a/8b (explicit)
 

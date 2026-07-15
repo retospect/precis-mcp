@@ -136,12 +136,121 @@ def _render_doc(
     return "\n".join(lines)
 
 
+#: Link relations that are structure, not a citation/reference edge — excluded
+#: from the link-map rollup so it stays a "where do my references go" view.
+_ROLLUP_SKIP_RELATIONS = frozenset({"parent"})
+
+
+def _rollup_node_label(by_id: dict[int, Any], chunk_id: int) -> str:
+    """A section address for the link map: the ``.dc`` handle, plus the heading
+    title when the visible node is a heading (so a section reads ``pe7
+    "Methods"``, not a bare handle)."""
+    c = by_id.get(chunk_id)
+    if c is None:
+        return f"?{chunk_id}"
+    title = ""
+    if getattr(c, "chunk_kind", None) == "heading":
+        title = (c.text or "").strip().splitlines()[0] if c.text else ""
+    if title:
+        if len(title) > 48:
+            title = title[:47] + "…"
+        return f'{c.dc} "{title}"'
+    return c.dc
+
+
+def render_link_rollup(
+    store: Any,
+    ref_id: int,
+    chunks: list[Any],
+    demand: dict[int, Extent],
+    views: dict[str, dict[str, str]],
+) -> str:
+    """The visibility-scoped link map for one document (source-backfill 8a).
+
+    Rolls this doc's outbound links up to where the reader *sees* each endpoint
+    (``coarsest_visible_ancestor``), grouped per visible source section: a link
+    into an open target points right at it; into a collapsed section it
+    aggregates to that section; refs we point at are named by handle
+    (``pa1234`` / …); the per-section overflow folds into a ``… N more`` tail.
+    A **post-assembly overlay** — a pure function of the assembled ``demand`` —
+    so it is byte-inert unless a caller opts in (``render_working_set(...,
+    link_map=True)``). Returns ``""`` when there is nothing to say.
+    """
+    # Lazy import: backfill/__init__ pulls workspace → this module, so a
+    # top-level import would cycle. The overlay is opt-in (dark), so a
+    # function-local import costs nothing on the default path.
+    from precis.backfill.link_rollup import ChunkEdge, rollup_edges
+
+    by_id = {c.chunk_id: c for c in chunks}
+    parent_of: dict[int, int | None] = {c.chunk_id: c.parent_chunk_id for c in chunks}
+    order_index = {c.chunk_id: i for i, c in enumerate(chunks)}
+    edges = [
+        ChunkEdge(
+            src_chunk_id=lk.src_chunk_id,
+            dst_chunk_id=lk.dst_chunk_id,
+            dst_ref_id=lk.dst_ref_id,
+            relation=lk.relation,
+        )
+        for lk in store.links_for(ref_id, direction="out")
+        if lk.relation not in _ROLLUP_SKIP_RELATIONS
+    ]
+    if not edges:
+        return ""
+    # Everything we point at is in-corpus (a link is an FK); name up to the
+    # per-section cutoff, the rest fold into that section's tail.
+    held = {e.dst_ref_id for e in edges}
+    rollup = rollup_edges(
+        edges,
+        this_ref_id=ref_id,
+        parent_of=parent_of,
+        demand=demand,
+        held_ref_ids=held,
+    )
+    if not rollup:
+        return ""
+
+    ref_ids = {n.dst_ref for n in rollup.named if n.dst_ref is not None}
+    refs = store.fetch_refs_by_ids(list(ref_ids)) if ref_ids else {}
+
+    def _ref_label(rid: int) -> str:
+        kind = getattr(refs.get(rid), "kind", None)
+        return (kind and handle_registry.try_format(kind, rid)) or f"ref#{rid}"
+
+    tail_by_src = {t.src: t for t in rollup.tail}
+    named_by_src: dict[int, list[Any]] = {}
+    for n in rollup.named:
+        named_by_src.setdefault(n.src, []).append(n)
+
+    lines: list[str] = []
+    for src in sorted(
+        set(named_by_src) | set(tail_by_src), key=lambda s: order_index.get(s, 1 << 30)
+    ):
+        parts = [
+            f"{n.count}× "
+            + (
+                _rollup_node_label(by_id, n.dst_chunk)
+                if n.dst_chunk is not None
+                else _ref_label(n.dst_ref)
+            )
+            for n in named_by_src.get(src, [])
+        ]
+        tail = tail_by_src.get(src)
+        if tail:
+            parts.append(f"… {tail.links} more → {tail.targets} refs")
+        if parts:
+            lines.append(f"{_rollup_node_label(by_id, src)} → " + " · ".join(parts))
+    if not lines:
+        return ""
+    return "— section link map (visibility-scoped) —\n" + "\n".join(lines)
+
+
 def render_working_set(
     store: Any,
     ws: WorkingSet,
     *,
     cap: int = _RING_CAP,
     marks: dict[str, str] | None = None,
+    link_map: bool = False,
 ) -> str:
     """Render the whole working set as **one** deduplicated context: each
     document rendered once from the merged demand map (eyes on the same doc
@@ -154,6 +263,12 @@ def render_working_set(
     so the working set is self-describing without cross-referencing the appended
     lists. It never touches the tree docs (the draft under construction is not a
     source), so with ``marks=None`` the output is byte-identical to before.
+
+    ``link_map`` (source-backfill 8a, default off → byte-identical) appends a
+    per-tree-doc **section link map**: this doc's outbound links rolled up to
+    where the reader *sees* each endpoint against the assembled visibility (the
+    structural stance's "how do the parts interconnect" view the local fisheye
+    can't give). A post-assembly overlay — see :func:`render_link_rollup`.
     """
     docs: dict[int, dict[str, Any]] = {}
     ring_merged: dict[str, dict[int, str]] = {}
@@ -206,6 +321,10 @@ def render_working_set(
         views = store.block_views(ref_id)
         ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
         blocks.append(_render_doc(ref, d["chunks"], d["demand"], cursor, views))
+        if link_map:
+            lm = render_link_rollup(store, ref_id, d["chunks"], d["demand"], views)
+            if lm:
+                blocks.append(lm)
 
     # Non-tree eyes (memory link-graph, paper/web doc, …) render standalone via
     # the per-kind dispatcher; a bad one degrades to a marker, never the whole set.
