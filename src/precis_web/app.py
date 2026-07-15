@@ -96,6 +96,7 @@ def create_app(
         figure,
         flags,
         items,
+        mermaid,
         needs_you,
         papers,
         papers_needed,
@@ -131,6 +132,7 @@ def create_app(
     app.include_router(structure.router)
     app.include_router(cad.router)
     app.include_router(figure.router)
+    app.include_router(mermaid.router)
     app.include_router(alerts.router)
     app.include_router(agentlogs.router)
     app.include_router(preview.router)

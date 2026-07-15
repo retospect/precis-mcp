@@ -404,6 +404,28 @@ The master kinds table lives in the `precis-overview` skill.
   `precis-figure-help` + `precis-figure-svg`. Slice 1 = SVG 2D, browser-
   rendered; **deferred**: PNG/animated raster export, three.js/`scene3d` mode,
   per-node chunk split, draft-embedding, `read(handle)` reference tool.
+  Since ADR 0057 `figure` is the **SVG instance** of a shared **diagram core**
+  (`src/precis/diagram/` — the `DiagramLang` port + the generic turn loop /
+  context assembler; `figure/turn.py`+`context.py` are thin shims), and its
+  elements **bind to the chunks they depict** (see `mermaid` below).
+- **`mermaid`** — a **mermaid diagram you draw *with* the model** (flowchart /
+  sequence / state / class …), the **second instance** of the diagram core
+  beside `figure` (ADR 0057, slice 4): same draw-with-me turn loop, three docs
+  (`mermaid_node`/`mermaid_vocab`/`mermaid_notes` + `mermaid_turn`), same
+  handle scheme (`mm<ref>`/`mn<chunk>`), never exported (`corpus_role='none'`).
+  Validation / SVG render / PNG-PDF export are **pure-Python via `mermaidx`**
+  (`src/precis/mermaid/mermaid.py::MERMAID_LANG` — the real mermaid.js in an
+  embedded QuickJS + resvg; **no Node, no Chromium, no container**), lazy-
+  imported behind the `[mermaid]` extra. **Element→chunk bindings (ADR 0057):**
+  a node (by its stable id) binds to the `dc…`/`pc…`/`me…` chunk it depicts via
+  a chunk-level `depicts` link (element id in `links.meta.elements`); the turn
+  prepared-context lists each node + topology + the linked chunk body, and a
+  `[binding]` lint catches drift. MCP `handlers/mermaid.py` (put/get/edit/
+  delete/link) + web `/mermaid` (`precis_web/routes/mermaid.py`, renders
+  server-side through figure's `sanitize_svg`). Ships **dark** behind
+  `PRECIS_MERMAID_ENABLED`; migration `0066_mermaid_kind.sql`; skills
+  `precis-mermaid-help` + `precis-mermaid`. Deferred: the `diagram_propose`
+  tick (slice 5), a full mermaid source grammar (node extraction is a scan).
 - **`gripe`** — first-class bug tracker; body + comment timeline as chunks
   (`gripe_body`/`gripe_comment`), so they embed + keyword-index automatically.
 - **`anki`** — spaced-repetition **cloze** cards (`{{c1::…}}`) that live in the

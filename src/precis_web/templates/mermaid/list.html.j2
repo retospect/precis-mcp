@@ -1,0 +1,36 @@
+{% extends "base.html.j2" %}
+{% block title %}Mermaid{% endblock %}
+{% block content %}
+
+<div class="mb-4 flex items-center gap-3">
+  <h1 class="text-lg font-semibold">Mermaid diagrams</h1>
+  <span class="text-xs text-slate-400">diagrams you draw with the model</span>
+  <form method="post" action="/drive/new" class="ml-auto flex items-center gap-2">
+    <input type="hidden" name="kind" value="mermaid">
+    <input name="title" required autocomplete="off" placeholder="new diagram title…"
+           class="rounded border border-slate-300 px-2 py-1 text-sm">
+    <button type="submit"
+            class="rounded bg-emerald-600 px-3 py-1 text-sm font-medium text-white hover:bg-emerald-700">
+      + New diagram
+    </button>
+  </form>
+</div>
+
+{% if diagrams %}
+<ul class="divide-y divide-slate-100 rounded border border-slate-200 bg-white">
+  {% for d in diagrams %}
+  <li class="flex items-center gap-3 px-3 py-2">
+    <a href="/mermaid/{{ d.slug }}" class="font-medium text-slate-800 hover:text-slate-600">{{ d.title }}</a>
+    <span class="text-[11px] text-slate-400">{{ d.slug }} · {{ d.handle }}</span>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="text-sm text-slate-500">
+  No mermaid diagrams yet. Create one from the MCP:
+  <code class="text-xs bg-slate-100 px-1 rounded">put(kind='mermaid', id='flow', title='Pipeline')</code>,
+  then open it here to draw.
+</p>
+{% endif %}
+
+{% endblock %}

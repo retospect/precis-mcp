@@ -106,6 +106,10 @@ KIND_CODES: dict[str, str] = {
     # interactive SVG canvas (the figure/sketch kind) — chunk-tree sibling of
     # the draft, never exported. Record ``fg`` / chunk ``fn`` below.
     "figure": "fg",
+    # mermaid diagram (ADR 0057, slice 4) — second instance of the diagram
+    # core, chunk-tree sibling of the figure, never exported. Record ``mm`` /
+    # chunk ``mn`` below.
+    "mermaid": "mm",
 }
 
 # --- chunk codes (kinds that expose addressable body chunks) --------------
@@ -139,6 +143,9 @@ CHUNK_CODES: dict[str, str] = {
     # figure source nodes (``fn<id>``) — a figure's addressable SVG
     # elements/groups; disjoint from draft's ``dc``.
     "figure": "fn",
+    # mermaid source nodes (``mn<id>``) — a mermaid diagram's addressable
+    # source chunk; disjoint from figure's ``fn`` (ADR 0057, slice 4).
+    "mermaid": "mn",
     # quest logbook entries (``ql<id>``) — the append-only WORM ledger rows.
     "quest": "ql",
 }

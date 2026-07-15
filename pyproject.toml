@@ -269,6 +269,15 @@ edgar = ["httpx>=0.27"]
 # (slice 2) — and lands here when that slice does. Kept out of `[all]` (heavy,
 # host-specific, and unused until a node actually runs an engine).
 chem = ["rdkit>=2023.9"]
+# mermaid — the `mermaid` diagram kind (ADR 0057). Pure-Python and
+# self-contained: `mermaidx` runs the real mermaid.js in an embedded QuickJS
+# engine and rasterizes with resvg — no Node, no Chromium, no container. The
+# engine is lazy-imported (only `MermaidLang.parse_error`/`render` touch it)
+# and the kind ships dark behind `PRECIS_MERMAID_ENABLED`, so non-mermaid
+# builds never load it. Kept out of `[all]` until the dev/CI image bakes it —
+# the mermaid tests `pytest.importorskip('mermaidx')`, so the gate stays green
+# without it (mirrors the `anki` dark-extra pattern).
+mermaid = ["mermaidx>=0.8"]
 all = ["precis-mcp[embed,paper,docx,tex,calc,plot,external,patent,edgar,web,cad-export]"]
 
 [project.scripts]

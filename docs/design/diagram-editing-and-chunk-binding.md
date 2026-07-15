@@ -296,14 +296,20 @@ SVG-bounds):
    figure suite passing unchanged *through* the core; `tests/test_diagram_core.py`
    adds a throwaway non-SVG `_ToyLang` proving the core is language-generic (no
    SVG leaks). Pure refactor, no behavior change.
-4. **Mermaid kind.** Migration `0065` — register `mermaid` + chunk kinds
-   `mermaid_node` (no_index) / `mermaid_vocab` / `mermaid_notes` (no_index) /
-   `mermaid_turn`, handle `mm<ref>` / `mn<node>`, relations `mermaid-of` /
-   `has-mermaid`. The mermaid `DiagramLang` via `mermaidx` (`[mermaid]` extra,
-   lazy, `PRECIS_MERMAID_ENABLED`). Handler mirroring `FigureHandler`; web
-   route `/mermaid/<slug>` rendering server-side SVG through figure's
-   sanitizer. Skills `precis-mermaid-help` + `precis-mermaid` (pinned prompt).
-   Ships dark.
+4. **Mermaid kind. — BUILT.** Migration `0066` (kind + `mermaid_node`/
+   `mermaid_vocab`/`mermaid_notes`/`mermaid_turn` + `mermaid-of`/`has-mermaid`);
+   handle codes `mm`/`mn`. `src/precis/mermaid/mermaid.py::MERMAID_LANG` — the
+   second `DiagramLang`: validate/render/export via **pure-Python `mermaidx`**
+   (embedded QuickJS + resvg, lazy-imported behind the `[mermaid]` extra), node
+   extraction a source scan (works without the engine), `click` stripped, no
+   bounds (topology as coords). `handlers/mermaid.py` (put/get/edit/delete/link
+   + node binding); `mermaid/turn.py` shim; web `/mermaid`
+   (`precis_web/routes/mermaid.py` + templates) rendering server-side SVG
+   through figure's `sanitize_svg`, degrading to source text when the engine is
+   absent. Dispatch registration env-gated `PRECIS_MERMAID_ENABLED` (dark).
+   Skills `precis-mermaid-help` + `precis-mermaid`. Tests `tests/test_mermaid.py`
+   (+ `tests/precis_web/test_mermaid.py`), mermaidx-backed compile guarded by
+   `importorskip` so the gate stays green without the extra.
 5. **Tick executor.** A `diagram_propose` job_type on the derived-job lane
    (ADR 0044) so a todo/project can dispatch "build/verify this diagram from
    these seeds", assembling the seed-context the way `plan_tick` does. Turns
@@ -318,7 +324,7 @@ autonomous tick (5) are separable follow-ons.
 - `0064` — `INSERT INTO relations` for `depicts` / `depicted-in`
   (chunk-level). No new tables/columns — the `links.src_chunk_id` /
   `dst_chunk_id` / `meta` columns already exist.
-- `0065` — register the `mermaid` kind + its chunk kinds + `mermaid-of` /
+- `0066` — register the `mermaid` kind + its chunk kinds + `mermaid-of` /
   `has-mermaid` relations, mirroring `0057`/`0058` (figure). Additive; reuses
   the `chunks` / `chunk_events` substrate.
 

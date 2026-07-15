@@ -1,0 +1,158 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ title }} — Mermaid{% endblock %}
+{% block content %}
+
+<div class="mb-4 flex items-center gap-3">
+  <a href="/mermaid" class="text-xs text-slate-400 hover:text-slate-600">← Mermaid</a>
+  <h1 class="text-lg font-semibold">{{ title }}</h1>
+  <span class="text-xs text-slate-400">{{ slug }}</span>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  {# ── left: rendered diagram + source + lints + bindings ── #}
+  <div>
+    <div class="rounded border border-slate-200 bg-white p-2 min-h-[12rem] overflow-auto">
+      <div id="mm-canvas">{{ svg | safe }}</div>
+      {% if not svg %}
+      <pre id="mm-canvas-fallback" class="text-xs text-slate-600 whitespace-pre-wrap">{{ source }}</pre>
+      {% endif %}
+    </div>
+    <details class="mt-2">
+      <summary class="text-[11px] text-slate-400 cursor-pointer">source</summary>
+      <pre id="mm-source" class="mt-1 text-xs bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap">{{ source }}</pre>
+    </details>
+    <div id="mm-lints" class="mt-2 space-y-1 text-[11px]">
+      {% for f in findings %}
+      <div class="text-amber-700">⚠ [{{ f.kind }}] {{ f.message }}</div>
+      {% endfor %}
+    </div>
+    {# ── node → chunk bindings (ADR 0057) ── #}
+    <div id="mm-bindings" class="mt-2 flex flex-wrap gap-1 text-[11px]{% if not bindings %} hidden{% endif %}">
+      {% for b in bindings %}
+      <span class="inline-flex items-center gap-1 rounded bg-sky-50 border border-sky-200 px-1.5 py-0.5 text-sky-800"
+            title="{{ b.title }}">
+        <span class="font-mono">{{ b.element }}</span>→<span class="font-mono">{{ b.handle }}</span>
+      </span>
+      {% endfor %}
+    </div>
+  </div>
+
+  {# ── right: docs (two tabs) + chat ── #}
+  <div class="flex flex-col gap-4">
+    <div>
+      <div class="flex items-center gap-1 mb-1">
+        <button id="mm-tab-vocab" type="button"
+                class="px-2 py-0.5 rounded text-xs font-semibold text-slate-700 bg-slate-100">Shared vocabulary</button>
+        <button id="mm-tab-notes" type="button"
+                class="px-2 py-0.5 rounded text-xs text-slate-500 hover:bg-slate-50">Implementation notes</button>
+        <span class="ml-auto text-[10px] text-slate-400">vocab is for you · notes are the model's</span>
+      </div>
+      <pre id="mm-vocab" class="text-xs bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap max-h-40 overflow-y-auto">{{ vocab or '(empty — the model will describe what the diagram is)' }}</pre>
+      <pre id="mm-notes" class="hidden text-xs bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap max-h-40 overflow-y-auto">{{ notes or "(empty — the model records node ids / structure here)" }}</pre>
+    </div>
+
+    <div class="flex-1 min-h-0">
+      <h2 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Chat</h2>
+      <div id="mm-chat" class="space-y-2 text-xs max-h-96 overflow-y-auto pr-1">
+        {% for t in turns %}
+        <pre class="bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap">{{ t }}</pre>
+        {% endfor %}
+      </div>
+      <form id="mm-form" class="flex gap-2 mt-2" data-slug="{{ slug }}">
+        <input id="mm-msg" name="message" autocomplete="off" placeholder="tell the model what to draw…"
+               class="flex-1 rounded border border-slate-300 px-3 py-1.5 text-sm">
+        <button id="mm-send" class="rounded bg-slate-700 text-white px-3 py-1.5 text-sm hover:bg-slate-600">Send ▸</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const form = document.getElementById('mm-form');
+  const slug = form.dataset.slug;
+  const msg = document.getElementById('mm-msg');
+  const chat = document.getElementById('mm-chat');
+  const send = document.getElementById('mm-send');
+  const canvas = document.getElementById('mm-canvas');
+  const source = document.getElementById('mm-source');
+  const vocab = document.getElementById('mm-vocab');
+  const notes = document.getElementById('mm-notes');
+  const lints = document.getElementById('mm-lints');
+  const binds = document.getElementById('mm-bindings');
+  const tabVocab = document.getElementById('mm-tab-vocab');
+  const tabNotes = document.getElementById('mm-tab-notes');
+
+  const ON = 'px-2 py-0.5 rounded text-xs font-semibold text-slate-700 bg-slate-100';
+  const OFF = 'px-2 py-0.5 rounded text-xs text-slate-500 hover:bg-slate-50';
+  function showTab(which) {
+    const v = which === 'vocab';
+    vocab.classList.toggle('hidden', !v);
+    notes.classList.toggle('hidden', v);
+    tabVocab.className = v ? ON : OFF;
+    tabNotes.className = v ? OFF : ON;
+  }
+  tabVocab.addEventListener('click', () => showTab('vocab'));
+  tabNotes.addEventListener('click', () => showTab('notes'));
+
+  function toBottom() { chat.scrollTop = chat.scrollHeight; }
+  function bubble(text, cls) {
+    const pre = document.createElement('pre');
+    pre.className = 'border rounded p-2 whitespace-pre-wrap ' + cls;
+    pre.textContent = text;
+    chat.appendChild(pre);
+    toBottom();
+    return pre;
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    const text = msg.value.trim();
+    if (!text) return;
+    bubble('user: ' + text, 'bg-white border-slate-200');
+    const pending = bubble('…thinking', 'bg-slate-50 border-slate-200 text-slate-400');
+    msg.value = '';
+    send.disabled = true;
+
+    const body = new URLSearchParams();
+    body.set('message', text);
+    fetch('/mermaid/' + encodeURIComponent(slug) + '/turn', { method: 'POST', body })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.error) { pending.textContent = 'error: ' + d.error; return; }
+        pending.textContent = 'assistant: ' + (d.reply || '(no reply)');
+        pending.className = 'border rounded p-2 whitespace-pre-wrap bg-slate-50 border-slate-200';
+        // Inline the server-rendered + sanitized SVG (sanitize is the trust boundary).
+        if (d.changed && d.svg) canvas.innerHTML = d.svg;
+        if (d.changed && typeof d.source === 'string') source.textContent = d.source;
+        if (typeof d.vocab === 'string' && d.vocab.trim()) vocab.textContent = d.vocab;
+        if (typeof d.notes === 'string' && d.notes.trim()) notes.textContent = d.notes;
+        lints.innerHTML = '';
+        (d.findings || []).forEach((f) => {
+          const div = document.createElement('div');
+          div.className = 'text-amber-700';
+          div.textContent = '⚠ [' + f.kind + '] ' + f.message;
+          lints.appendChild(div);
+        });
+        if (Array.isArray(d.bindings)) {
+          binds.innerHTML = '';
+          binds.classList.toggle('hidden', d.bindings.length === 0);
+          d.bindings.forEach((b) => {
+            const span = document.createElement('span');
+            span.className = 'inline-flex items-center gap-1 rounded bg-sky-50 border border-sky-200 px-1.5 py-0.5 text-sky-800';
+            span.title = b.title || '';
+            const e = document.createElement('span'); e.className = 'font-mono'; e.textContent = b.element;
+            const h = document.createElement('span'); h.className = 'font-mono'; h.textContent = b.handle;
+            span.appendChild(e); span.append('→'); span.appendChild(h);
+            binds.appendChild(span);
+          });
+        }
+      })
+      .catch((err) => { pending.textContent = 'request failed: ' + err; })
+      .finally(() => { send.disabled = false; toBottom(); msg.focus(); });
+  });
+
+  toBottom();
+})();
+</script>
+{% endblock %}
