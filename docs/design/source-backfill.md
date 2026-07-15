@@ -950,12 +950,20 @@ writer's context, the more discipline the prose needs.*
      follow-on. Test: `tests/test_link_crud.py::test_link_exposes_chunk_id_endpoints`
      (chunk-id endpoints resolve to the chunks at those ords; ref-level edge → both
      `None`).
-   - **8a.2** — **the pure resolver + aggregation** (`backfill/link_rollup.py`, no
-     DB, unit-tested against a hand-built tree + demand map):
-     `coarsest_visible_ancestor(chunk_id, *, tree, demand) -> str | None` walks
-     `DraftChunk.parent_chunk_id` up until a node with `demand > NONE`; `rollup_edges`
-     groups edges by (visible-src-ancestor, resolved-dst) and counts — held papers
-     named, the tail bucketed with a long-tail cutoff.
+   - **8a.2** — **the pure resolver + aggregation. DONE** (`backfill/link_rollup.py`,
+     store-free — plain `int` maps, unit-tested against a hand-built tree + demand,
+     `tests/test_link_rollup.py`): `coarsest_visible_ancestor(chunk_id, *, parent_of,
+     demand)` walks `parent_of` up and returns the **first visible node** (self →
+     the link points right at an open target; a collapsed para under an open section
+     → the section; a fully-collapsed branch → the root it rolls up under; a
+     cross-doc chunk-id not in the tree → `None`, resolved to a ref by the caller).
+     `rollup_edges(edges, *, this_ref_id, parent_of, demand, held_ref_ids, top_k=8)`
+     → `LinkRollup(named, tail)`: in-doc targets named by visible ancestor (self-loops
+     after collapse dropped), cross-ref targets named if **held** else folded into a
+     per-section `TailBucket(links, targets)`; `top_k` bounds the named list per
+     section (overflow → tail). Visibility is `demand > NONE`, so `Extent` (the
+     IntEnum) and bare-int fixtures agree. Titles/handle formatting are 8a.3's job —
+     this layer emits `chunk_id` / `ref_id` ints only.
    - **8a.3** — **the composer overlay + wiring**: `render_link_rollup(store, ref_id,
      chunks, demand, views)` in `working_set_render.py` (a "— section link map —"
      block mirroring `render_ring_groups`), threaded in where `render_working_set`
