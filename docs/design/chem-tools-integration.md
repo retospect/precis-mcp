@@ -256,6 +256,77 @@ machine-specific glue.
   until it is. Wire it once if you want uniform containerization.
 * **Registry vs build-on-demand** — revisit if the compute fleet grows.
 
+## 10. Slice 2 — LinChemIn normalization at route-ingest (full spec)
+
+> Status: **specced, not built.** Slice 1b's `parse_aizynth_trees` is a bespoke
+> walk of AiZynth's `ReactionTree` dict; this slice replaces per-engine parsers
+> with one normalizer so the second engine (ASKCOS, slice 3) reuses it unchanged.
+
+**Why.** "One canonical `route` kind" only holds if every engine's output maps to
+the *same* IR. A bespoke parser per engine (AiZynth's `ReactionTree`, ASKCOS's
+JSON, IBM RXN, …) quietly breaks that. **LinChemIn is the normalizer** — the
+route analogue of Marker at paper-ingest: raw engine output → one data model
+(SynGraph) → our `RouteGraph`. Enforced in **one place**, so "swap the engine,
+keep the schema" is a fact, not a hope.
+
+**What LinChemIn is.** Open-source Python toolkit (`linchemin`, the SynGraph data
+model; docs `linchemin.readthedocs.io`). Its **facade** exposes high-level ops:
+`translate` (engine format → SynGraph → other formats) and route **descriptors**
+(`compute_descriptors`: `nr_steps`, `nr_branches`, branchingness, convergence,
+longest-sequence, …). Input formats cover `az` (AiZynthFinder), `askcos`,
+`ibmrxn`, `mit`. SynGraph is the working/serializable format.
+
+**Decision — normalize INSIDE the engine container, emit SynGraph.** The engine
+image already carries rdkit; LinChemIn needs rdkit too. So add `linchemin` to
+each wrapper image and normalize there — the container emits an **already-
+normalized** SynGraph JSON (+ descriptors), never raw engine JSON. This keeps
+rdkit/linchemin off the always-on precis workers, and collapses the precis-side
+parser to **one** engine-agnostic function. (Rejected alternative: normalize
+precis-side behind `[chem]` — drags rdkit onto the worker; the container is the
+natural home, exactly as Marker runs inside the paper-ingest sandbox.)
+
+**Concrete changes.**
+1. `docker/aizynth/Dockerfile` — `pip install linchemin` alongside aizynthfinder.
+2. `docker/aizynth/precis-aizynth-run` — after `aizynthcli … → trees.json`, run a
+   normalize step (LinChemIn `facade('translate', input_format='az',
+   output_format='syngraph')` + descriptors) and write `route.json` (SynGraph +
+   metrics) into `/work/out`. Keep `trees.json` too (raw provenance).
+3. **New `src/precis_chem/normalize.py`** — `parse_syngraph(content) → RouteGraph`,
+   the single normalizer: walk the SynGraph reaction graph into `RouteStep`s and
+   fold descriptors into `RouteGraph` (see 5). Supersedes
+   `aizynth.parse_aizynth_trees` (keep the latter as a fallback for a raw
+   `trees.json` when `route.json` is absent — belt-and-suspenders during rollout).
+4. `jobs._run_container` — read `route.json` via `parse_syngraph` (add
+   `NORMALIZE_FILE = "route.json"`); fall back to `trees.json` +
+   `parse_aizynth_trees` when it's missing.
+5. `ir.RouteGraph` — add optional `metrics: dict` (the descriptors). `render()`
+   surfaces them; **`get(kind='route', id=…, view='metrics')`** exposes them.
+   This is the user's "own scoring" hook: route scoring becomes a **view over
+   stored descriptors**, never a synchronous engine call.
+
+**Open questions — resolve at execution (verify from linchemin source, same
+discipline that pinned `ReactionTree.to_dict` for 1b):**
+- the exact **SynGraph JSON schema** (node/edge shape) `parse_syngraph` walks;
+- the exact **facade call signature** + whether translate and descriptors are one
+  call or two;
+- the **linchemin version** to pin in the image;
+- whether descriptors need the **stock/config** (buyable set) — if so, reuse the
+  mounted `/models` config.
+
+**Test plan (mirror 1b — fixture-based, gate-green without a cluster):**
+- `parse_syngraph` against a captured SynGraph JSON fixture → `RouteGraph` with
+  steps + metrics;
+- `_run_container` round-trip with a stubbed `RUNNER` that writes a `route.json`
+  fixture → dispatch parses via `parse_syngraph` → route written back with
+  metrics;
+- a `view='metrics'` render test;
+- **capture a real SynGraph fixture from the deployed aizynth container** (once
+  live) to ground the schema before finalizing `parse_syngraph`.
+
+**Sequencing.** Slice 2 lands **before** ASKCOS (slice 3): once `parse_syngraph`
+exists, ASKCOS reuses it unchanged — its container's normalize step just passes
+`input_format='askcos'`. No new precis-side parser, ever again.
+
 ## Decisions log
 
 * **precis is the facade; no broker/per-engine MCP servers.** Each tool =
