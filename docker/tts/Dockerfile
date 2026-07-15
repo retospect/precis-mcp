@@ -16,7 +16,11 @@
 # Build:  podman build -t precis-tts:<sha> --build-arg PRECIS_REF=<sha> docker/tts
 # Run  :  podman run --rm -v <scratch>/in:/work/in:ro -v <scratch>/out:/work/out \
 #           precis-tts        # reads /work/in/segments.json -> /work/out/out.m4a
-FROM python:3.12-slim-bookworm
+#
+# Base is 3.11 (not 3.12): precis-mcp needs only >=3.11, and 3.11-slim is already
+# cached on the compute node (shared with docker/aizynth), so the build skips the
+# flaky spark→Docker Hub pull entirely.
+FROM python:3.11-slim-bookworm
 
 ARG PRECIS_REF=main
 ARG KOKORO_MODEL_URL=https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
