@@ -756,10 +756,17 @@ def run(args: argparse.Namespace) -> None:
 
             from precis.workers.runner import BatchResult as _PgBatchResult
 
+            # A glossary is a multi-term JSON object, far larger than the
+            # 220-token 2-part summary LlmConfig defaults to — that budget
+            # truncates the JSON mid-object so it never parses (every paper
+            # "fails"). Give it room; env-overridable.
             _pg_cfg = _pg_dc.replace(
                 LlmConfig.from_env(),
                 enabled=True,
                 model=os.environ.get("PRECIS_PAPER_GLOSSARY_MODEL") or "summarizer",
+                max_tokens=int(
+                    os.environ.get("PRECIS_PAPER_GLOSSARY_MAX_TOKENS") or 2000
+                ),
             )
             _pg_client = LlmClient(_pg_cfg)
 
