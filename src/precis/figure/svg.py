@@ -456,6 +456,12 @@ class SvgLang:
     skill_name = "precis-figure-svg"
     source_key = "svg"
     bounds_meta_key = "viewbox"
+    ref_prefix = "fg"
+    node_prefix = "fn"
+    project_relation = "figure-of"
+    medium = "SVG"
+    render_value = "svg"
+    element_noun = "element"
 
     def parse_error(self, source: str) -> str | None:
         return parse_error(source)

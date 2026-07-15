@@ -70,6 +70,19 @@ class DiagramLang(Protocol):
     #: The ``ref.meta`` key the bounds are mirrored onto.
     bounds_meta_key: str  # e.g. "viewbox"
 
+    # -- handler config (the kind's handle scheme + display nouns) ---------
+    #: Record / source-node handle codes — ``"fg"`` / ``"fn"`` for figure.
+    ref_prefix: str
+    node_prefix: str
+    #: The many-per-project relation — ``"figure-of"``.
+    project_relation: str
+    #: Display noun for the source language — ``"SVG"`` (``## {medium} source``).
+    medium: str
+    #: The ``ref.meta['render']`` value + the get() header tag — ``"svg"``.
+    render_value: str
+    #: What one bindable thing is called — ``"element"`` (figure) / ``"node"``.
+    element_noun: str
+
     # -- source mechanics --------------------------------------------------
     def parse_error(self, source: str) -> str | None:
         """``None`` if the source compiles, else a one-line reason."""

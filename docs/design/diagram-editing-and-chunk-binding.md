@@ -310,6 +310,15 @@ SVG-bounds):
    Skills `precis-mermaid-help` + `precis-mermaid`. Tests `tests/test_mermaid.py`
    (+ `tests/precis_web/test_mermaid.py`), mermaidx-backed compile guarded by
    `importorskip` so the gate stays green without the extra.
+   **Handler factored (post-4):** the get/put/edit/delete/link CRUD lives once
+   in `src/precis/diagram/handler.py::DiagramHandler` (generic over `DiagramLang`
+   — the lang gained 6 handler-config attrs: `ref_prefix`/`node_prefix`/
+   `project_relation`/`medium`/`render_value`/`element_noun`; bounds/viewBox axis
+   gated on `default_bounds() is not None`). `FigureHandler`/`MermaidHandler` are
+   now ~50-line subclasses (LANG + spec), so ~700 lines of near-dup CRUD
+   collapsed to one base — figure/mermaid are two instances at *every* layer
+   (turn loop, context, and now the handler), not copies. Parity guard: the
+   figure + mermaid handler suites pass unchanged.
 5. **Tick executor. — BUILT.** `diagram_propose` job_type
    (`workers/job_types/diagram_propose.py`) on the derived-job lane: params
    `{kind: figure|mermaid, ref_id, instruction, seeds:[handle]}`; the dispatcher

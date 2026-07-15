@@ -290,6 +290,12 @@ class MermaidLang:
     skill_name = "precis-mermaid"
     source_key = "mermaid"
     bounds_meta_key = "mermaid_layout"  # unused — read_bounds is always None
+    ref_prefix = "mm"
+    node_prefix = "mn"
+    project_relation = "mermaid-of"
+    medium = "Mermaid"
+    render_value = "mermaid"
+    element_noun = "node"
 
     def parse_error(self, source: str) -> str | None:
         return compile_error(source)

@@ -38,6 +38,12 @@ class _ToyLang:
     skill_name = "precis-toy"
     source_key = "src"
     bounds_meta_key = "frame"
+    ref_prefix = "ty"
+    node_prefix = "tn"
+    project_relation = "toy-of"
+    medium = "Toy"
+    render_value = "toy"
+    element_noun = "node"
 
     def parse_error(self, source: str) -> str | None:
         return None
