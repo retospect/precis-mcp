@@ -17,6 +17,53 @@ what's still open.
 
 ---
 
+## 🔴 High-priority backlog (2026-07-16)
+
+Two items filed hi-prio during the web-UI bug-bash session (main `9cd0989b`).
+
+- **Consolidate `kind='cron'` and `level:recurring` at the design level**
+  *(feature, open, **high** — owner: `handlers/cron.py` + the todo-tree
+  recurring spawner + `precis_web/routes/refs.py`).* There are **two**
+  unrelated "scheduled thing" concepts and it confuses everyone (it confused
+  the operator this session): `kind='cron'` (a scheduled wakeup, `cron-tick`
+  CLI, migration 0010) vs. `level:recurring` **todos** ("Watches" with
+  `meta.schedule` cron/`every:` shorthand — the daily audio casts, the
+  dreamings, card-forge all ride these). They have separate storage, separate
+  UIs, and separate mental models, yet a user reasonably expects "my crons" to
+  mean the recurring watches. `/refs?kinds=cron` shows empty (zero `kind='cron'`
+  refs in prod) while the *actual* recurring schedules live under `todo`,
+  invisible to that filter. **Decide the design:** either (a) fold `cron` into
+  the recurring-todo umbrella (one scheduling substrate, `cron` becomes a thin
+  todo shape or is retired), or (b) keep both but give them one consolidated
+  surface (a `/schedules` view unioning `kind='cron'` + `level:recurring`
+  todos, and cross-reference in the `precis-recurring-help` / `precis-cron-help`
+  skills so an agent isn't nudged to the wrong one). Prefer (a) if the two
+  really are the same concept wearing two hats. *Test*: a view/route test that
+  a single surface lists both a `cron` ref and a `level:recurring` todo.
+
+- **Permanently kill the worktree edit-path trap** *(tooling, open, **high** —
+  owner: `.claude/settings.json` PreToolUse hook + `.claude/hooks/`).* When a
+  session runs in a linked worktree (`.claude/worktrees/<name>/`), an absolute
+  `file_path` into the **main** checkout root
+  (`…/precis-mcp/src/…`) silently edits the *wrong* tree — the Edit/Write
+  "succeeds" but the change never reaches the worktree the gate/ship tests
+  (Bash's cwd is the worktree, so relative paths there are fine; only the
+  file-tool absolute paths mis-target). It bit this session (all source edits
+  landed in main; had to be relocated) despite an existing *memory* about it —
+  discipline alone doesn't hold. **Fix:** a `PreToolUse` hook on `Edit|Write`
+  (and optionally `Read`) that, when `git rev-parse --show-toplevel` (the
+  worktree root) differs from the main root (`dirname $(git rev-parse
+  --git-common-dir)`), **denies** any absolute `file_path` that starts with the
+  main root but not the worktree root *and* whose worktree-relative twin exists
+  — with a message giving the corrected worktree path. Turns a silent
+  mis-write into an immediate, self-correcting error. Must allow genuinely
+  external roots (`~/work/cluster`, the scratchpad, `~/.claude`). *Test*: hook
+  unit test — main-root path in a worktree session → deny; worktree path,
+  external path, and non-worktree session → allow. See the
+  `worktree_edit_path_trap` memory for the failure mode.
+
+---
+
 ## 📜 Patent freedom-to-operate authoring loop — first live run (2026-07-16)
 
 Shipped + **deployed** this session (main `147a984f`, all four cluster nodes):
