@@ -133,6 +133,20 @@ _STATE_DECL = re.compile(r'^state\s+(?:"[^"]*"\s+as\s+)?([A-Za-z][\w-]*)')
 #: A mindmap node with an explicit id before a shape opener (``root((Idea))``).
 _MINDMAP_ID = re.compile(r"([A-Za-z][\w-]*)\s*(?:\(\(|\[|\(|\{\{|\)\)|\))")
 
+#: classDiagram directive leaders (space-terminated: each takes an argument, so
+#: a class literally named ``Note`` / ``Link`` / ``Style`` in a *relation* line
+#: is not swallowed — relations are matched before this skip).
+_CLASS_DIRECTIVES = (
+    "direction ",
+    "namespace ",
+    "note ",
+    "click ",
+    "style ",
+    "cssclass ",
+    "callback ",
+    "link ",
+)
+
 #: requirement / element block leaders (their first token names the node).
 _REQ_BLOCK = (
     "requirement",
@@ -297,25 +311,15 @@ def _class_nodes(source: str) -> list[Element]:
             depth += line.count("{") - line.count("}")
             continue
         low = line.lower()
-        if low.startswith(
-            (
-                "classdiagram",
-                "direction",
-                "namespace",
-                "note",
-                "click",
-                "style",
-                "cssclass",
-                "callback",
-                "link ",
-            )
-        ):
+        if low.startswith("classdiagram"):
             continue
         if low.startswith("class "):
             if m := _ID.match(line[len("class ") :].strip()):
                 see(m.group(1), "class")
             depth += line.count("{") - line.count("}")
             continue
+        # a relation line is handled first, so a class NAMED like a directive
+        # keyword (`Note <|-- X`, `Link --> Y`) is still bound.
         body = re.sub(r'"[^"]*"', " ", line).split(":", 1)[
             0
         ]  # drop cardinality + label
@@ -329,7 +333,12 @@ def _class_nodes(source: str) -> list[Element]:
                 see(nid, "class")
             for a, b in pairwise(ids):
                 edge(a, b)
-        elif ":" in line and (m := _ID.match(line)):  # `Foo : +int age` shorthand
+            continue
+        # non-relation directive lines carry no node (a bare `note "x: y"` would
+        # otherwise be misread as a `Foo : member` shorthand below).
+        if low.startswith(_CLASS_DIRECTIVES):
+            continue
+        if ":" in line and (m := _ID.match(line)):  # `Foo : +int age` shorthand
             see(m.group(1), "class")
     return build()
 
@@ -406,9 +415,13 @@ def _state_nodes(source: str) -> list[Element]:
         if not line or line.startswith("%%"):
             continue
         low = line.lower()
-        if low.startswith(("statediagram", "direction", "note", "}")):
+        # space-terminated so a state NAMED `State1` / `Direction` / `Notebook`
+        # on a transition line falls through to the transition scan below.
+        if low.startswith("statediagram") or low.startswith(("direction ", "note ")):
             continue
-        if low.startswith("state"):
+        if low == "}" or low.startswith("} "):
+            continue
+        if low.startswith("state ") or low in ("state", "state{"):
             if m := _STATE_DECL.match(line):
                 see(m.group(1), "state")
             continue

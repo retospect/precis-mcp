@@ -155,6 +155,26 @@ def test_extract_state_nodes_excludes_pseudostates() -> None:
     assert set(els["Moving"].coords.lstrip("→").split(",")) == {"Crash"}
 
 
+def test_state_name_starting_with_keyword_keeps_its_transition() -> None:
+    # `State1` starts with "state" but is a transition, not a `state Foo` decl —
+    # its out-edge must survive (regression: the decl branch used to swallow it)
+    els = {e.id: e for e in LANG.elements("stateDiagram-v2\n  State1 --> Idle")}
+    assert set(els) == {"State1", "Idle"}
+    assert els["State1"].coords == "→Idle"
+
+
+def test_class_named_like_a_directive_still_binds() -> None:
+    # a class NAMED `Note` / `Link` (mermaid directive keywords) in a relation
+    src = "classDiagram\n  Note <|-- Footnote\n  Link --> Anchor"
+    els = {e.id: e for e in LANG.elements(src)}
+    assert set(els) == {"Note", "Footnote", "Link", "Anchor"}
+    assert els["Link"].coords == "→Anchor"
+    # but real directive lines carry no node
+    assert "note" not in {
+        e.id for e in LANG.elements('classDiagram\n  class A\n  note "a: b"')
+    }
+
+
 def test_extract_mindmap_ids_by_indentation_tree() -> None:
     els = {e.id: e for e in LANG.elements(_MINDMAP)}
     # explicit id (`root`, `id1`) where given, slug of the text otherwise
