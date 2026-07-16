@@ -279,11 +279,13 @@ was proofread.
    rendered as structure, needs claim-dependency parsing) and the
    **interactive web claims view** (same working set feeds both).
 
-**Remaining connective wiring (follow-ups):** (a) auto-invoke
-`refresh_claims_digest(store, todo, draft)` for a patent claims tick — a
-gated hook in the `plan_tick` executor before prompt assembly; (b) the
-docx export mirror; (c) a plan-outline injection module; (d) slice 7. The
-libraries are built and unit-tested; these are integration points.
+**Connective wiring:** (a) **done** — the `plan_tick` executor auto-invokes
+`refresh_claims_digest` for a patent tick with a bound draft before prompt
+assembly (`_refresh_patent_claims_digest`, best-effort); (b) **done** — the
+docx export mirror (`export/docx.py`: patent-mode in-text cites +
+References suppression, doc_type auto-detected from the draft's cascaded
+workspace). *Remaining:* (c) a plan-outline injection module (today the
+agent reads the plan via `get`); (d) slice 7.
 
 ## Decisions locked in discussion (2026-07-16)
 

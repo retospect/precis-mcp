@@ -150,6 +150,11 @@ def run(
     timeout_s = int(params.get("timeout_s", 1800))
     started = time.monotonic()
 
+    # Patent tick: refresh the freedom-to-operate claims digest onto this
+    # tick's ``meta.working_set`` before the prompt is built, so the planner
+    # injects the prior-art claims the tick must design around. Best-effort.
+    _refresh_patent_claims_digest(store, parent_ref_id)
+
     prompts = build_planner_prompts(store, ref_id=parent_ref_id, model=model)
 
     # Resolve the claude binary + MCP config from env. These are part
@@ -327,6 +332,31 @@ def run(
         stderr=proc.stderr,
         duration_s=duration,
     )
+
+
+def _refresh_patent_claims_digest(store: Any, parent_ref_id: int) -> None:
+    """For a **patent** tick with a bound draft, stamp the freedom-to-operate
+    claims digest onto the tick's ``meta.working_set`` so the planner injects
+    the prior-art claims (``docs/design/patent-authoring-loop.md``). Discovers
+    the draft's linked prior-art patents and writes one eye per claim chunk.
+    Best-effort — a digest failure must never sink a tick."""
+    try:
+        ws = _load_parent_workspace(store, parent_ref_id)
+        if ws is None or ws.doc_type != "patent":
+            return
+        from precis.workers.planner_prompt import bound_draft
+
+        resolved = bound_draft(store, parent_ref_id)
+        if not resolved:
+            return
+        draft = store.get_ref(kind="draft", id=resolved[0])
+        if draft is None:
+            return
+        from precis.workers.patent_digest import refresh_claims_digest
+
+        refresh_claims_digest(store, parent_ref_id, draft.id)
+    except Exception:  # pragma: no cover — enhancement, never fatal
+        log.warning("plan_tick: patent claims-digest refresh failed", exc_info=True)
 
 
 def _load_parent_workspace(store: Any, parent_ref_id: int):

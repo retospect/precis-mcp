@@ -26,8 +26,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from precis.export._patent_cite import format_patent_citation, paper_inline_citation
 from precis.export.latex import (
     _COMBINED,
+    _PATENT_DOC_TYPE,
     _bibtex_authors,
     datasheet_pub_label,
     preprocess_draft_inline,
@@ -35,6 +37,7 @@ from precis.export.latex import (
 from precis.utils import handle_registry
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
+from precis.utils.workspace import Workspace
 
 #: chunk depth → Word heading level (1..4); deeper collapses to 4.
 _MAX_HEADING_LEVEL = 4
@@ -108,6 +111,11 @@ class _Ctx:
     last_cite: str | None = None  # paper of the immediately-preceding mark
     endnote: bool = False  # emit EndNote CWYW fields instead of plain [n]
     resolved: dict[str, dict[str, Any]] = field(default_factory=dict)  # slug→record
+    doc_type: str = ""  # meta.workspace.doc_type; "patent" → in-text, no refs
+
+    @property
+    def patent_mode(self) -> bool:
+        return self.doc_type == _PATENT_DOC_TYPE
 
     def cite_number(self, slug: str) -> int:
         """1-based reference number for a slug (stable insertion order)."""
@@ -188,7 +196,12 @@ def _render_byline(doc: Any, byline: dict[str, Any]) -> None:
 
 
 def export_docx(
-    store: Any, ref: Any, *, target_path: Path, citations: str = "plain"
+    store: Any,
+    ref: Any,
+    *,
+    target_path: Path,
+    citations: str = "plain",
+    doc_type: str | None = None,
 ) -> DocxResult:
     """Render a draft into ``target_path`` as a ``.docx``. Returns the
     path plus the cited slugs and any resolution warnings.
@@ -207,6 +220,9 @@ def export_docx(
 
     guard_exportable(ref)
     target_path = Path(target_path)
+    if doc_type is None:
+        ws = Workspace.from_meta(getattr(ref, "meta", None))
+        doc_type = ws.doc_type if ws else ""
     chunks = store.reading_order(ref.id)
     handles = {c.handle for c in chunks}
     ctx = _Ctx(
@@ -214,6 +230,7 @@ def export_docx(
         known_handles=handles,
         abbrevs=store.defined_abbrevs(ref.id),
         endnote=(citations == "endnote"),
+        doc_type=doc_type,
     )
 
     doc = Document()
@@ -288,7 +305,9 @@ def export_docx(
     # it — only emit it when the draft defines no terms of its own.
     if not terms:
         _append_acronyms(doc, ctx)
-    _append_references(doc, ctx)
+    if not ctx.patent_mode:
+        # A patent specification cites prior art in-text — no References list.
+        _append_references(doc, ctx)
     if ctx.endnote and ctx.cited:
         from precis.export.endnote import install_document_vars
 
@@ -552,6 +571,9 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> 
     if parsed is not None:
         kind, is_chunk, _pk = parsed
         if kind in ("paper", "patent"):
+            if ctx.patent_mode:
+                _inline_source_cite(tgt, kind, surface, ctx, paragraph)
+                return
             hit = _handle_cite_key(tgt, ctx)
             if hit:
                 slug, chunk_id = hit
@@ -580,6 +602,33 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> 
         return
 
 
+def _inline_source_cite(
+    tgt: str, kind: str, surface: str | None, ctx: _Ctx, paragraph: Any
+) -> None:
+    """Patent-spec mode: render a prior-art reference **in-text** (no ``[n]``
+    marker / no References section). A display-link's authored text wins
+    (WYSIWYG); otherwise a patent formats to its citation string and a paper
+    to a light ``(Author, Year)``. See ``docs/design/patent-authoring-loop.md``."""
+    ctx.last_cite = None
+    if surface:
+        paragraph.add_run(surface)
+        return
+    hit = _handle_cite_key(tgt, ctx)
+    if not hit:
+        return
+    slug = hit[0]
+    ref = ctx.store.get_ref(kind=kind, id=slug) if ctx.store is not None else None
+    if ref is None:
+        paragraph.add_run(slug)
+        return
+    text = (
+        format_patent_citation(getattr(ref, "meta", None), slug)
+        if kind == "patent"
+        else paper_inline_citation(ref)
+    )
+    paragraph.add_run(text)
+
+
 def _cite(slug: str, ctx: _Ctx, paragraph: Any, chunk_id: int | None = None) -> None:
     """Emit a numbered citation marker — a superscript ``[n]`` keyed on the
     **paper**. The numbered **References** section at the document end
@@ -596,6 +645,14 @@ def _cite(slug: str, ctx: _Ctx, paragraph: Any, chunk_id: int | None = None) -> 
     ``chunk_id`` (set for a ``pc<id>`` chunk citation) is the specific cited
     passage — carried into the EndNote field's traveling note."""
     slug = slug.split("~", 1)[0]  # the paper, not the cited chunk
+    if ctx.patent_mode:
+        # A patent specification has no References section — cite in-text.
+        ctx.last_cite = None
+        ref = (
+            ctx.store.get_ref(kind="paper", id=slug) if ctx.store is not None else None
+        )
+        paragraph.add_run(paper_inline_citation(ref) if ref is not None else slug)
+        return
     n = ctx.cite_number(slug)  # registers the paper (idempotent)
     if ctx.last_cite == slug:
         return  # consecutive cite to the same paper — one mark for the run
