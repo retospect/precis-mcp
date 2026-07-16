@@ -43,6 +43,7 @@ from precis.cli import (
     perplexity,
     podcast,
     provenance,
+    quest,
     reconcile,
     repl,
     resolve,
@@ -215,6 +216,10 @@ def main() -> None:
         cast.run(args)
         return
 
+    if args.cmd == "quest":
+        quest.run(args)
+        return
+
     parser.error(f"unknown command: {args.cmd!r}")
 
 
@@ -269,6 +274,7 @@ def _build_parser() -> argparse.ArgumentParser:
     web.add_parser(sub)
     cron.add_parser(sub)
     cast.add_parser(sub)
+    quest.add_parser(sub)
     heartbeat.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")

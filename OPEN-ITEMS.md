@@ -70,16 +70,19 @@ The aim-layer above projects/streams/concepts. Slices 1 (read-only
 structure — `quest` kind + `serves` + logbook + tree rollup, main
 `2ce51f5f`), 2 (reweighting — priority down the `serves` DAG into
 rotation/acquisition/reading, `src/precis/quest/reweight.py`, main
-`8a61716f`), and 3 (gaps + health — `src/precis/quest/gaps.py`,
-`view='gaps'`/`id='/gaps'`) are **shipped, not deployed**. Skill
-`precis-quest-help`; tests `tests/test_quest.py` +
-`tests/test_quest_reweight.py` + `tests/test_quest_gaps.py`.
+`8a61716f`), 3 (gaps + health — `src/precis/quest/gaps.py`,
+`view='gaps'`/`id='/gaps'`), and the **4a skeleton** (dossier + research
+tick — `src/precis/quest/tick.py`, migration 0067) are **shipped, not
+deployed**. Skill `precis-quest-help`; tests `tests/test_quest.py` +
+`tests/test_quest_reweight.py` + `tests/test_quest_gaps.py` +
+`tests/test_quest_tick.py`.
 
 **Operational — do these to make the shipped slices actually steer:**
 
-- **Deploy slices 1+2+3 to the cluster** — `open` / `feature` / owner
+- **Deploy slices 1+2+3+4a to the cluster** — `open` / `feature` / owner
   `/go` → `scripts/deploy`. All ship dark *behaviourally* (a no-op until
-  a quest exists), so deploy is low-risk. Finder: Opus session.
+  a quest exists; the tick is manual-only until 4d), so deploy is low-risk.
+  Migration 0067 auto-applies on deploy. Finder: Opus session.
 - **Link 3–4 mission quests to real projects** — `open` / `feature` /
   owner prod-data (MCP `put(kind='quest')` + `link(rel='serves')`). Derive
   the strivings from `docs/mission.md` + the live research programs (NO→NH₃
@@ -104,18 +107,37 @@ deferred to slice 4; "no-supporting-paper for a specific claim" is
 approximated here as quest-level no-literature (no per-claim `citation`
 grounding check yet).
 
-**Slice 4 — the autonomous research loop** (`feature`, the big one): the
-continuous slow-burn program — local "free" models grind (propose
-candidates + interpret sim results), the frontier model escalates on a
-*signal* (enough evidence / stalled frontier / surprise) to review + set
-the next line of inquiry. Evidence-triggered (not timed), compute via the
-existing catpath `pathway` + `structure` DFT-relax derived-job lane,
-materials as `structure` servers (failed = `ruled-out`-tagged, Pareto
-frontier = the rubric objective). Emergent bursty scheduling (threads block
-on hour-long sims), quests competing via an EWMA bandit under a weekly
-proportional budget metered against the tote. The dossier `draft` (the
-living understanding synthesis, `dossier-of` the quest) arrives here as the
-loop's rolling context. Not started.
+**Slice 4 — the autonomous research loop** (`feature`, the big one), built
+as five dark rungs:
+
+- **4a — dossier + tick skeleton** — **BUILT + shipped** (not deployed).
+  `dossier-of` relation (migration 0067) + a `draft` the quest owns (the
+  rolling context, `view='dossier'`); `src/precis/quest/tick.py`
+  `run_quest_tick` = one in-process **structured** step through the ADR-0046
+  seam that reads the rolling context (statement + dossier + slice-3 gaps +
+  momentum + logbook tail) and returns logbook entries + a whole-rewritten
+  dossier. Logbook write unified into `src/precis/quest/logbook.py` (shared
+  with the handler). CLI `precis quest tick|dossier|gaps`. Dark: nothing
+  auto-mints a tick (that's 4d); `PRECIS_QUEST_LOOP_ENABLED` gates the future
+  auto-dispatcher. Tests `tests/test_quest_tick.py`.
+- **4b — compute dispatch + proposer + Pareto frontier** — *not started.* The
+  tick mints a derived catpath `pathway` / `structure` DFT-relax sim
+  (content-addressed, `serves` + `requested` links), reads measures into
+  `result`/`cost` logbook entries, `ruled-out`-tags failures; **the proposer**
+  (the crux) grounds candidates in the dossier + frontier neighbours; a Pareto
+  frontier over the objective vector (= the rubric).
+- **4c — the local↔frontier cascade** — *not started.* Escalate to the
+  frontier model on a *signal* (enough evidence / stalled frontier / surprise)
+  to review + rewrite the dossier + set the next line; the `promise` proxy gets
+  a concrete definition here.
+- **4d — the allocator** — *not started.* A dispatcher picks which active quest
+  ticks when a compute slot frees (EWMA bandit over priority × momentum ×
+  promise + exploration), under a weekly proportional budget metered against
+  the tote; a stalled quest cools to `dormant`. Gates on
+  `PRECIS_QUEST_LOOP_ENABLED`. Resolves the cost/credit-under-overlap rule.
+- **4e — ceiling awareness** — *not started.* A strong in-silico candidate
+  *graduates* to "needs a real-world experiment" — a slice-3 gap for a
+  human/lab, not pretended-closed.
 
 **Deferred within slice 2 (reweighting):**
 

@@ -121,6 +121,7 @@ The append path takes only `text`/`entry`/`by`/`cost`; use `tag()` /
 get(kind='quest', id=7)               # statement + logbook timeline + tote
 get(kind='quest', id=7, view='tree')  # rollup: servers + deed ledger + health + gaps
 get(kind='quest', id=7, view='gaps')  # just this quest's exploration queue
+get(kind='quest', id=7, view='dossier')  # the living research synthesis (slice 4)
 get(kind='quest', id='/active')       # every active striving
 get(kind='quest', id='/gaps')         # gaps across ALL active quests
 ```
@@ -150,6 +151,35 @@ with two read-time, mechanical reads (no `% done`):
 every active quest, hottest first. All degrade to empty until quests +
 servers exist.
 
+## The dossier + a research tick (slice 4a)
+
+A quest keeps *two* records. The **logbook** is episodic (what happened,
+when — WORM). The **dossier** is semantic: a `draft` the quest owns
+(`dossier-of`), the *living synthesis* — current understanding, best
+leads, what's ruled out, open questions — **rewritten each cycle**. It
+doubles as the loop's rolling context.
+
+```python
+get(kind='quest', id=7, view='dossier')   # read the synthesis
+```
+
+A **research tick** is one bounded step of the (future) autonomous loop:
+it reads the quest's rolling context (statement + dossier + gaps +
+momentum + logbook tail), does one increment of reasoning, appends 1–4
+logbook entries, and rewrites the dossier. Run one by hand:
+
+```
+precis quest tick 7            # one tick against quest 7
+precis quest tick 7 --dry-run  # print the assembled context, no LLM call
+precis quest dossier 7         # print the dossier
+```
+
+The autonomous *scheduling* of ticks (which quest advances when compute
+frees) and *compute dispatch* (minting `structure`/`pathway` sims) are
+later rungs — a tick today only reads state and writes the logbook +
+dossier. Dark by default (`PRECIS_QUEST_LOOP_ENABLED` gates the future
+auto-dispatcher; the manual CLI runs regardless).
+
 ## What this is *not*
 
 - **Not a todo.** A todo is completable and has a parent tree; a quest is
@@ -161,11 +191,16 @@ servers exist.
 
 ## Roadmap (what's live vs. coming)
 
-Slices 1–3 are **live**: the kind + `serves` + logbook + tree rollup
-(slice 1); **reweighting** (slice 2) — priority flows down the `serves`
-DAG into the todo rotation, paper acquisition, and reading (a no-op until
-you link work to an active quest); and **gaps + health** (slice 3) — the
-striving surfaces its own exploration queue + a momentum/alignment read
-(`view='gaps'`, `id='/gaps'`). Coming: the **autonomous research loop**
-(local grind + frontier steering, materials as `structure` servers —
-slice 4). Design of record: `docs/proposals/quest-layer.md`.
+Slices 1–3 + the **4a skeleton** are **live**: the kind + `serves` +
+logbook + tree rollup (slice 1); **reweighting** (slice 2) — priority
+flows down the `serves` DAG into the todo rotation, paper acquisition, and
+reading (a no-op until you link work to an active quest); **gaps + health**
+(slice 3) — the striving surfaces its own exploration queue + a
+momentum/alignment read (`view='gaps'`, `id='/gaps'`); and the **research
+tick + dossier** (slice 4a) — one bounded reasoning step reads the rolling
+context and rewrites the dossier (`precis quest tick`). Coming: the rest of
+the **autonomous research loop** — compute dispatch (minting
+`structure`/`pathway` sims + reading their measures, 4b), the
+local↔frontier cascade (4c), and the scheduler that decides which quest
+advances when compute frees (4d). Design of record:
+`docs/proposals/quest-layer.md`.

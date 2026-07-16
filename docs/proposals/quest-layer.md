@@ -1,6 +1,6 @@
 # Quest layer — the striving above the work (proposal)
 
-> **Status: model closed; slices 1–3 built.** Captures the design conversation
+> **Status: model closed; slices 1–3 + the 4a skeleton built.** Captures the design conversation
 > of 2026-07-15 (Reto + session). The aim-layer that sits above projects/streams/
 > concepts and gives the system **direction**: a legible answer to "what are we
 > striving toward, and is this work/knowledge actually in its service?"
@@ -271,9 +271,29 @@ project/todos · relax+pathway jobs   project/todos · papers · fold/seq jobs
    (corpus-wide). Read-time + mechanical, a **no-op until servers exist**. Gaps
    *are* the exploration queue the slice-4 loop consumes.
 4. **Active quest-planner** — the continuous slow-burn research loop (see *The
-   autonomous research loop* above): local grind + frontier steering,
-   evidence-triggered, materials as `structure` servers, quests competing for
-   scarce attention. The self-driving research program.
+   autonomous research loop* above), built as five dark rungs:
+   - **4a — dossier + tick skeleton** *(built — `src/precis/quest/tick.py` +
+     `dossier.py`)*. The `dossier-of` relation (migration 0067) + a `draft` the
+     quest owns (the rolling context); a single in-process **structured** step
+     routed through the ADR-0046 seam that reads the rolling context (statement
+     + dossier + slice-3 gaps + momentum + logbook tail) and returns logbook
+     entries + a whole-rewritten dossier. No compute, no scheduling yet — dark,
+     driven only by `precis quest tick <id>`. The logbook write is unified
+     (`src/precis/quest/logbook.py`, shared with the handler).
+   - **4b — compute dispatch + proposer + Pareto frontier**. The tick mints a
+     derived `structure`/`pathway` sim (content-addressed, `serves` + `requested`
+     links), reads measures back into `result`/`cost` logbook entries, tags
+     failures `ruled-out`; the **proposer** grounds candidates in the dossier +
+     frontier neighbours; a Pareto frontier over the objective vector.
+   - **4c — the local↔frontier cascade**. Escalate to the frontier model on a
+     signal (enough new evidence / stalled frontier / surprise) to review +
+     rewrite the dossier + set the next line; `promise` proxy defined.
+   - **4d — the allocator**. A dispatcher picks which active quest ticks when a
+     compute slot frees (EWMA bandit over priority × momentum × promise +
+     exploration), under a weekly proportional budget metered against the tote;
+     a stalled quest cools to `dormant`. Gates on `PRECIS_QUEST_LOOP_ENABLED`.
+   - **4e — ceiling awareness**. A strong in-silico candidate *graduates* to
+     "needs a real-world experiment" — a slice-3 gap surfaced for a human/lab.
 
 ## Open questions (resolve as the steering rungs land)
 

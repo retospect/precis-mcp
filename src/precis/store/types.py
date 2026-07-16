@@ -134,6 +134,13 @@ Relation = Literal[
     # 0065_quest_kind.sql.
     "serves",
     "served-by",
+    # Quest DOSSIER — migration 0067 (quest layer, slice 4a). `dossier-of`
+    # binds a `draft` 1:1 to the quest whose living research synthesis it is
+    # (the loop's rolling context), like a project's `draft-of`. Asymmetric,
+    # `has-dossier` inverse, auto-mirrored. Keep in sync with the `relations`
+    # seed in 0067_dossier_relation.sql.
+    "dossier-of",
+    "has-dossier",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -202,6 +209,8 @@ _INVERSE_RELATIONS: dict[str, str] = {
     # reachable without the caller flipping direction.
     "serves": "served-by",
     "served-by": "serves",
+    "dossier-of": "has-dossier",
+    "has-dossier": "dossier-of",
 }
 
 

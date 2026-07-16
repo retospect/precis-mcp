@@ -42,43 +42,33 @@ from typing import Any, ClassVar
 from precis.errors import BadInput
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
+from precis.quest.logbook import (
+    BY_VALUES as _BY_VALUES,
+)
+from precis.quest.logbook import (
+    DEFAULT_BY as _DEFAULT_BY,
+)
+from precis.quest.logbook import (
+    DEFAULT_ENTRY as _DEFAULT_ENTRY,
+)
+from precis.quest.logbook import (
+    ENTRY_TYPES as _ENTRY_TYPES,
+)
+from precis.quest.logbook import (
+    LOG_KIND as _LOG_KIND,
+)
+from precis.quest.logbook import append_entry as _append_logbook_entry
 from precis.response import Response
 from precis.store import Ref, Tag
-from precis.store.types import Block, BlockInsert
+from precis.store.types import Block
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
-
-#: The append-only logbook chunk_kind (seeded by migration 0065).
-_LOG_KIND = "quest_log"
-
-#: Lightly-typed logbook entry vocabulary (docs/proposals/quest-layer.md). A
-#: ``milestone`` is a deed; a ``cost`` entry (or any entry with ``meta.cost``)
-#: feeds the tote; a ``dead-end`` records what failed so the system stops
-#: re-treading it; an un-answered ``hypothesis`` is a gap (slice 3).
-_ENTRY_TYPES: frozenset[str] = frozenset(
-    {
-        "note",
-        "observation",
-        "hypothesis",
-        "result",
-        "decision",
-        "dead-end",
-        "milestone",
-        "reflection",
-        "cost",
-    }
-)
-_DEFAULT_ENTRY = "note"
 
 #: The perpetual lifecycle. A quest is a striving with NO achieved state — it
 #: never completes (docs/proposals/quest-layer.md). STATUS is a shared union
 #: axis, so the value-subset is enforced here in the handler, not at the tag
 #: parser (which only gates *which* axes a kind may carry).
 _LIFECYCLE: frozenset[str] = frozenset({"active", "dormant", "abandoned"})
-
-#: Who authored a logbook entry.
-_BY_VALUES: frozenset[str] = frozenset({"human", "agent", "dream"})
-_DEFAULT_BY = "human"
 
 #: ``PRIO:`` tag → the canonical ``refs.prio`` column (1..10, lower = hotter) —
 #: the same striving-weight scale the todo tree rotates on and slice 2's
@@ -137,7 +127,8 @@ class QuestHandler(NumericRefHandler):
             "put(id=N, text=…, entry='hypothesis'); mark serving work with "
             "link(target='quest:N', rel='serves'). view='tree' rolls up the "
             "servers + deed ledger + health + gaps; view='gaps' (per quest) or "
-            "id='/gaps' (all active quests) surfaces the exploration queue. "
+            "id='/gaps' (all active quests) surfaces the exploration queue; "
+            "view='dossier' shows the quest's living research synthesis. "
             "See docs/proposals/quest-layer.md."
         ),
         supports_get=True,
@@ -346,27 +337,16 @@ class QuestHandler(NumericRefHandler):
             )
         ref_id = self._coerce_id(id)
         ref = self._resolve_live_ref(ref_id)
-        # Next pos = current chunk count. list_blocks_for_ref excludes the
-        # synthetic card (ord=-1), so the first logbook entry lands at pos=0.
-        next_pos = len(self.store.list_blocks_for_ref(ref.id))
-        entry_meta: dict[str, Any] = {
-            "chunk_kind": _LOG_KIND,
-            "entry_type": entry_type,
-            "by": by_who,
-        }
-        if cost is not None:
-            entry_meta["cost"] = float(cost)
-        with self.store.tx() as conn:
-            self.store.insert_blocks(
-                ref.id,
-                [BlockInsert(pos=next_pos, text=text, meta=entry_meta)],
-                conn=conn,
-            )
+        # Shared append path (precis.quest.logbook) — the same insert the
+        # autonomous quest_tick writes through, so there is one logbook writer.
+        entry_no = _append_logbook_entry(
+            self.store, ref.id, text=text, entry_type=entry_type, by=by_who, cost=cost
+        )
         deed = " (a deed)" if entry_type == "milestone" else ""
         return Response(
             body=(
                 f"logged {entry_type} on {self._sense()} id={ref.id}{deed} "
-                f"(entry {next_pos + 1})"
+                f"(entry {entry_no})"
             )
         )
 
@@ -391,7 +371,24 @@ class QuestHandler(NumericRefHandler):
         if view == "gaps" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
             return Response(body=self._render_gaps_only(ref))
+        if view == "dossier" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
+            return Response(body=self._render_dossier(ref))
         return super().get(id=id, view=view, q=q, **_kw)
+
+    def _render_dossier(self, ref: Ref) -> str:
+        """`view='dossier'` — the quest's living research synthesis (slice 4)."""
+        from precis.quest import dossier as dossier_mod
+
+        did, _handle, text = dossier_mod.read_dossier(self.store, ref.id)
+        head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
+        if did is None:
+            return (
+                f"# dossier — quest {ref.id}: {head}\n\n"
+                "(no dossier yet — a quest tick creates + fills it)"
+            )
+        dh = handle_registry.try_format("draft", did) or f"draft:{did}"
+        return f"# dossier {dh} — quest {ref.id}: {head}\n\n{text}"
 
     # ── rendering ────────────────────────────────────────────────────
 
