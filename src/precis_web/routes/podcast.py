@@ -1,7 +1,10 @@
 """Private podcast feed routes — the "pipe audio to the phone" surface.
 
 - ``GET /podcast/feed.xml`` — RSS 2.0 over the episodes in ``podcast_dir``.
-- ``GET /podcast/audio/{episode_id}`` — stream one episode's audio enclosure.
+- ``GET /podcast/audio/{name}`` — stream one episode's audio enclosure. ``name``
+  is the audio filename (``news-2026-07-16.mp3``) that the feed points at; the
+  bare episode id (no extension) still resolves, for URLs cached before the
+  extension landed.
 
 Content-agnostic: any producer drops an episode via
 :func:`precis_web.podcast.publish_episode`; these routes just render + serve.
@@ -44,15 +47,16 @@ def feed(request: Request, cfg: WebConfig = Depends(get_web_config)) -> Response
     )
 
 
-@router.get("/podcast/audio/{episode_id}")
-def audio(episode_id: str, cfg: WebConfig = Depends(get_web_config)) -> FileResponse:
+@router.get("/podcast/audio/{name}")
+def audio(name: str, cfg: WebConfig = Depends(get_web_config)) -> FileResponse:
     if not cfg.podcast_dir:
         raise HTTPException(status_code=404, detail="no podcast configured")
     # Resolve strictly inside podcast_dir — reject traversal / escapes, the
-    # same discipline the file kinds use.
+    # same discipline the file kinds use. Match the audio filename (what the
+    # feed points at now) or the bare episode id (older cached URLs).
     root = cfg.podcast_dir.resolve()
     for ep in podcast.list_episodes(root):
-        if ep.id == episode_id:
+        if name in (ep.audio_file, ep.id):
             target = (root / ep.audio_file).resolve()
             if not target.is_relative_to(root) or not target.is_file():
                 raise HTTPException(status_code=404, detail="episode audio missing")

@@ -101,7 +101,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "audio",
         help="Narrate a draft to audio (Kokoro TTS) — the voice-draft export.",
         description=(
-            "Render a draft to an m4a via the narration layer + Kokoro. Per-"
+            "Render a draft to an mp3 via the narration layer + Kokoro. Per-"
             "chunk meta.voice/lang route each segment to its narrator. Needs "
             "the [tts] extra + PRECIS_KOKORO_MODEL/VOICES + ffmpeg on this "
             "host. --publish drops it on the private podcast feed."
@@ -109,7 +109,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     au.add_argument("slug", help="Draft slug or numeric ref id.")
     au.add_argument(
-        "--out", default=None, help="Output .m4a. Default: ./export/<slug>.m4a."
+        "--out", default=None, help="Output .mp3. Default: ./export/<slug>.mp3."
     )
     au.add_argument(
         "--voice", default="af_heart", help="Default voice (chunk meta overrides)."
@@ -146,7 +146,6 @@ def run(args: argparse.Namespace) -> None:
 
 def _run_audio(args: argparse.Namespace) -> None:
     import os
-    import subprocess
     import tempfile
     from datetime import UTC, datetime
 
@@ -167,7 +166,7 @@ def _run_audio(args: argparse.Namespace) -> None:
         # under the draft's own meta.pronunciation overrides.
         lexicon = resolve_lexicon(ref, personal=load_personal_lexicon())
         out = (
-            Path(args.out) if args.out else Path("export") / f"{ref.slug or ref.id}.m4a"
+            Path(args.out) if args.out else Path("export") / f"{ref.slug or ref.id}.mp3"
         )
         out.parent.mkdir(parents=True, exist_ok=True)
         synth = KokoroSynth(speed=args.speed)
@@ -183,23 +182,10 @@ def _run_audio(args: argparse.Namespace) -> None:
                 lexicon=lexicon,
                 max_segments=args.max_segments,
             )
-            # WAV → m4a (AAC) for the podcast enclosure.
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel",
-                    "error",
-                    "-i",
-                    str(wav),
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "96k",
-                    str(out),
-                ],
-                check=True,
-            )
+            # WAV → mp3 for the podcast enclosure (the one shared encode).
+            from precis.tts.encode import encode_mp3
+
+            encode_mp3(wav, out)
         print(
             f"draft audio: {res.segments} segments, {res.duration_s:.0f}s → {out}",
             file=sys.stderr,

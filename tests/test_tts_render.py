@@ -24,21 +24,37 @@ def _fake_podman(cmd, **kwargs):
     # the worker staged the voice-score for the container to read
     payload = json.loads((indir / "segments.json").read_text())
     assert [s["lang"] for s in payload["segments"]] == ["en-us", "cmn"]
-    (outdir / "out.m4a").write_bytes(b"m4a-bytes")
+    (outdir / "out.mp3").write_bytes(b"mp3-bytes")
     (outdir / "result.json").write_text(json.dumps({"segments": 2, "duration_s": 3.2}))
 
 
 def test_render_via_container_stages_runs_and_copies(tmp_path):
-    out = tmp_path / "ep.m4a"
+    out = tmp_path / "ep.mp3"
     result = render_via_container(_SEGS, out, image="precis-tts:test", run=_fake_podman)
-    assert out.read_bytes() == b"m4a-bytes"
-    assert result == {"segments": 2, "duration_s": 3.2}
+    assert out.read_bytes() == b"mp3-bytes"
+    assert result == {"segments": 2, "duration_s": 3.2, "audio_path": str(out)}
+
+
+def test_render_via_container_tolerates_legacy_m4a_image(tmp_path):
+    # An older, un-rebuilt precis-tts image still writes out.m4a. The read-back
+    # must publish it as m4a (matching bytes/mime) rather than dark-holing it.
+    def _old_image(cmd, **kw):
+        outdir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
+        (outdir / "out.m4a").write_bytes(b"m4a-bytes")
+
+    out = tmp_path / "ep.mp3"  # caller asked for mp3
+    result = render_via_container(_SEGS, out, image="x", run=_old_image)
+    written = Path(result["audio_path"])
+    assert written == tmp_path / "ep.m4a"  # suffix follows what was produced
+    assert written.read_bytes() == b"m4a-bytes"
+    assert not out.exists()
 
 
 def test_render_episode_dispatches_to_container(tmp_path):
-    out = tmp_path / "ep.m4a"
+    out = tmp_path / "ep.mp3"
     result = render_episode(_SEGS, out, image="precis-tts:test", run=_fake_podman)
     assert out.is_file() and result["segments"] == 2
+    assert result["audio_path"] == str(out)
 
 
 def test_render_via_container_bounds_the_run_with_a_timeout(tmp_path):
@@ -47,23 +63,23 @@ def test_render_via_container_bounds_the_run_with_a_timeout(tmp_path):
     def _run(cmd, **kw):
         captured.update(kw)
         outdir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
-        (outdir / "out.m4a").write_bytes(b"x")
+        (outdir / "out.mp3").write_bytes(b"x")
 
-    render_via_container(_SEGS, tmp_path / "e.m4a", image="x", timeout=42, run=_run)
+    render_via_container(_SEGS, tmp_path / "e.mp3", image="x", timeout=42, run=_run)
     assert captured.get("timeout") == 42  # a hung render can't block forever
 
 
 def test_render_episode_no_backend_raises(tmp_path):
     with pytest.raises(RuntimeError, match="no TTS backend"):
-        render_episode(_SEGS, tmp_path / "ep.m4a")
+        render_episode(_SEGS, tmp_path / "ep.mp3")
 
 
 def test_render_via_container_missing_output_raises(tmp_path):
     def _noop(cmd, **kw):  # container "succeeds" but writes nothing
         return None
 
-    with pytest.raises(RuntimeError, match="no out.m4a"):
-        render_via_container(_SEGS, tmp_path / "ep.m4a", image="x", run=_noop)
+    with pytest.raises(RuntimeError, match="no out.mp3"):
+        render_via_container(_SEGS, tmp_path / "ep.mp3", image="x", run=_noop)
 
 
 def test_render_episode_in_process(tmp_path):

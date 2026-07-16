@@ -12,8 +12,9 @@ mount. The precis worker never needs the `[tts]` extra — it shells out.
 - **misaki[zh,ja]** — the G2P Kokoro's Mandarin/Japanese voices were *trained on*
   (espeak phonemes mismatch → rough zh/ja). `KokoroSynth` routes `lang ∈ {cmn,ja}`
   through misaki (`is_phonemes=True`) and falls back to espeak if misaki is absent.
-- **espeak-ng** — phonemizer for the other languages. **ffmpeg** — the one m4a
-  encode after stitching.
+- **espeak-ng** — phonemizer for the other languages. **ffmpeg** — the one mp3
+  encode after stitching (mp3 plays everywhere, incl. Apple/iOS, so a shared
+  enclosure just works).
 - **Baked model files** (~330 MB) — self-contained, no NAS mount at run (the
   chosen trade vs aizynth's NAS-mounted models).
 
@@ -29,7 +30,7 @@ with the same sha (the digest is the natural cache key, per the aizynth pattern)
     podman run --rm \
       -v <scratch>/in:/work/in:ro -v <scratch>/out:/work/out \
       precis-tts:<sha>
-    # reads /work/in/segments.json -> writes /work/out/out.m4a (+ result.json)
+    # reads /work/in/segments.json -> writes /work/out/out.mp3 (+ result.json)
 
 `segments.json` is the voice-score the worker builds with `render_narration`
 (draft) or `markdown_segments` (briefing):
@@ -48,7 +49,7 @@ Because the shim is self-contained, you can hear misaki quality directly:
                  {"text":"こんにちは、これはテストです。","voice":"jf_alpha","lang":"ja","kind":"para"}]}
     EOF
     podman run --rm -v /tmp/tts/in:/work/in:ro -v /tmp/tts/out:/work/out precis-tts:<sha>
-    # play /tmp/tts/out/out.m4a
+    # play /tmp/tts/out/out.mp3
 
 ## Mix-and-match (future)
 
@@ -61,9 +62,9 @@ sidecars) and register them per-lang.
 
 ## Remaining wiring (not yet built)
 
-1. **precis-side driver** — a `render_via_container(segments, out_m4a, *, image,
+1. **precis-side driver** — a `render_via_container(segments, out_audio, *, image,
    scratch)` that writes `segments.json`, runs `podman run precis-tts`, returns
-   the m4a; then wire `briefing_audio` / `precis draft audio` to prefer it when
+   the audio; then wire `briefing_audio` / `precis draft audio` to prefer it when
    `PRECIS_TTS_IMAGE` is set (else the in-process `KokoroSynth`).
 2. **`roles/tts`** (cluster) — clone of `roles/aizynth`: assert Linux, ensure
    podman, build the image on spark (flag-gated), worker env drop-in

@@ -147,11 +147,11 @@ def narrate_cast_ref(
     render_kw: dict[str, Any] = {} if encode is None else {"encode": encode}
 
     with tempfile.TemporaryDirectory() as td:
-        m4a = Path(td) / f"{episode_id}.m4a"
+        out_path = Path(td) / f"{episode_id}.mp3"
         try:
             result = render_episode(
                 segments,
-                m4a,
+                out_path,
                 image=image,
                 synth=synth,
                 speed=speed,
@@ -185,7 +185,7 @@ def narrate_cast_ref(
         assert podcast_dir is not None  # do_publish ⇒ set (narrows for mypy)
         audio_feed.publish_episode(
             podcast_dir,
-            m4a,
+            result.get("audio_path", out_path),
             episode_id=episode_id,
             title=title,
             description=f"{cast} cast for {date_tag} ({seg_n} sections).",

@@ -146,11 +146,11 @@ def run_briefing_audio(
     date_tag = str((ref.meta or {}).get("date") or now.date().isoformat())
     render_kw: dict[str, Any] = {} if encode is None else {"encode": encode}
     with tempfile.TemporaryDirectory() as td:
-        m4a = Path(td) / f"briefing-{date_tag}.m4a"
+        out_path = Path(td) / f"briefing-{date_tag}.mp3"
         try:
             result = render_episode(
                 segments,
-                m4a,
+                out_path,
                 image=image,
                 synth=synth,
                 speed=speed,
@@ -185,7 +185,7 @@ def run_briefing_audio(
         episode_id = f"news-{date_tag}"
         audio_feed.publish_episode(
             podcast_dir,
-            m4a,
+            result.get("audio_path", out_path),
             episode_id=episode_id,
             title=f"🗞 Morning briefing — {date_tag}",
             description=f"Narrated news briefing for {date_tag} ({seg_n} sections).",

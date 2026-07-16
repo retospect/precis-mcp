@@ -62,6 +62,7 @@ def test_build_rss_shape_and_absolute_enclosures(tmp_path):
         episode_id="e1",
         title="Brief & <friends>",  # exercises XML escaping
         when=datetime(2026, 7, 14, 8, 0, tzinfo=UTC),
+        ext=".mp3",
     )
     xml = audio_feed.build_rss(
         [ep], base_url="https://host.tailnet.ts.net/", channel=audio_feed.ChannelMeta()
@@ -70,9 +71,11 @@ def test_build_rss_shape_and_absolute_enclosures(tmp_path):
     assert '<rss version="2.0"' in xml
     assert "<enclosure " in xml
     # Absolute enclosure URL under the configured base (trailing slash trimmed).
-    assert 'url="https://host.tailnet.ts.net/podcast/audio/e1"' in xml
+    # The URL carries the audio filename + extension so it shares unambiguously.
+    assert 'url="https://host.tailnet.ts.net/podcast/audio/e1.mp3"' in xml
     assert f'length="{ep.bytes}"' in xml
-    assert 'type="audio/mp4"' in xml
+    assert 'type="audio/mpeg"' in xml
+    # The guid stays the bare id, so the extension in the URL never re-adds it.
     assert '<guid isPermaLink="false">e1</guid>' in xml
     # XML-escaped, not raw.
     assert "Brief &amp; &lt;friends&gt;" in xml

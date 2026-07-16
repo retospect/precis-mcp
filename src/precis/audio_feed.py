@@ -168,9 +168,12 @@ def build_rss(
     """Render RSS 2.0 (with iTunes tags) for the episodes.
 
     ``base_url`` is the public origin (e.g. ``https://host.tailnet.ts.net``);
-    enclosure URLs are ``<base_url><audio_path_prefix>/<id>``. Podcast apps
+    enclosure URLs are ``<base_url><audio_path_prefix>/<audio_file>`` — the
+    filename carries its extension (``…/news-2026-07-16.mp3``) so a shared link
+    or a saved file is unambiguously an mp3 to browsers + podcast apps. Apps
     need *absolute* URLs, so the base must be the reachable origin, not
-    loopback — see ``PRECIS_PODCAST_BASE_URL``.
+    loopback — see ``PRECIS_PODCAST_BASE_URL``. The ``<guid>`` stays the bare
+    episode id, so extension/URL changes never re-add already-seen episodes.
     """
     ch = channel or ChannelMeta()
     base = base_url.rstrip("/")
@@ -190,7 +193,7 @@ def build_rss(
         'type="application/rss+xml"/>',
     ]
     for ep in episodes:
-        enclosure_url = f"{base}{audio_path_prefix}/{ep.id}"
+        enclosure_url = f"{base}{audio_path_prefix}/{ep.audio_file}"
         lines.append("<item>")
         lines.append(f"<title>{escape(ep.title)}</title>")
         lines.append(f"<description>{escape(ep.description)}</description>")

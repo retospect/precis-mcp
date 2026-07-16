@@ -107,7 +107,7 @@ def _store() -> _Store:
 
 
 def _fake_encode(wav, out):
-    """Stand in for the ffmpeg WAV→m4a step (keep the test toolchain-free)."""
+    """Stand in for the ffmpeg WAV→mp3 step (keep the test toolchain-free)."""
     import shutil
 
     shutil.copyfile(wav, out)
@@ -121,7 +121,7 @@ def _fake_podman(cmd, **kwargs):
     from pathlib import Path as _Path
 
     outdir = next(_Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
-    (outdir / "out.m4a").write_bytes(b"fake-m4a")
+    (outdir / "out.mp3").write_bytes(b"fake-mp3")
     (outdir / "result.json").write_text(_json.dumps({"segments": 4, "duration_s": 7.5}))
 
 

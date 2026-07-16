@@ -4,13 +4,14 @@ container.
 
 Reads a ``segments.json`` (the voice-score the precis worker built with
 ``render_narration`` / ``markdown_segments``), synthesizes each segment (misaki-
-routed for zh/ja), stitches into one track, and encodes to m4a **once** at the
-end. The precis worker stages the input + reads the output over a bind mount, so
-it never needs the ``[tts]`` extra itself.
+routed for zh/ja), stitches into one track, and encodes to mp3 **once** at the
+end. mp3 is the one format that plays everywhere (incl. Apple/iOS), so a shared
+enclosure just works. The precis worker stages the input + reads the output over
+a bind mount, so it never needs the ``[tts]`` extra itself.
 
   in : /work/in/segments.json
        {"segments": [{"text","voice","lang","kind"}, ...], "speed": 1.0}
-  out: /work/out/out.m4a   (+ /work/out/result.json with {segments, duration_s})
+  out: /work/out/out.mp3   (+ /work/out/result.json with {segments, duration_s})
 
 Dependency-light: reuses ``precis.export.audio.synthesize_text`` (the shared
 stitch loop) + ``precis.tts.kokoro.KokoroSynth``.
@@ -20,19 +21,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="render a voice-score to m4a")
+    ap = argparse.ArgumentParser(description="render a voice-score to mp3")
     ap.add_argument("--in", dest="inp", default="/work/in/segments.json")
-    ap.add_argument("--out", dest="out", default="/work/out/out.m4a")
+    ap.add_argument("--out", dest="out", default="/work/out/out.mp3")
     args = ap.parse_args()
 
     from precis.draft.narrate import NarrationSegment
     from precis.export.audio import synthesize_text
+    from precis.tts.encode import encode_mp3
     from precis.tts.kokoro import KokoroSynth
 
     data = json.loads(Path(args.inp).read_text(encoding="utf-8"))
@@ -55,22 +56,7 @@ def main() -> int:
     wav = out.with_suffix(".wav")
     synth = KokoroSynth(speed=float(data.get("speed", 1.0)))
     res = synthesize_text(segs, wav, synth=synth)
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-loglevel",
-            "error",
-            "-i",
-            str(wav),
-            "-c:a",
-            "aac",
-            "-b:a",
-            "96k",
-            str(out),
-        ],
-        check=True,
-    )
+    encode_mp3(wav, out)  # the one shared WAV→mp3 encode (precis.tts.encode)
     wav.unlink(missing_ok=True)
     result = {"segments": res.segments, "duration_s": round(res.duration_s, 2)}
     (out.parent / "result.json").write_text(json.dumps(result), encoding="utf-8")
