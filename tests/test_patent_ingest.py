@@ -255,6 +255,123 @@ class TestIngestIdempotency:
         assert len(fake_ops.calls) == first_call_count
 
 
+class TestForceReingest:
+    """``force=True`` re-fetches OPS and swaps an existing ref's blocks in
+    place, so patents ingested before the ``patent_block`` marker existed
+    get re-marked (the claim-marking backfill,
+    docs/design/patent-authoring-loop.md)."""
+
+    def test_force_refetches_and_replaces_blocks(
+        self, store: Store, fake_ops: FakeOpsClient, raw_root: Path
+    ) -> None:
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        first = ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=fake_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+        )
+        calls_after_first = len(fake_ops.calls)
+
+        second = ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=fake_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+            force=True,
+        )
+        # Same ref (kept), but a fresh fetch happened and blocks were
+        # replaced (not appended): still 7, not 14.
+        assert second.ref_id == first.ref_id
+        assert second.inserted is False
+        assert len(fake_ops.calls) > calls_after_first  # OPS was hit again
+        assert store.count_blocks(first.ref_id) == 7
+        assert second.block_count == 7
+
+    def test_force_stamps_markers_on_previously_unmarked_ref(
+        self, store: Store, fake_ops: FakeOpsClient, raw_root: Path
+    ) -> None:
+        # Simulate a pre-slice-1 ref: ingest, then strip the markers from
+        # its chunks (as the old ingest path would have left them).
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        result = ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=fake_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET meta = '{}'::jsonb WHERE ref_id = %s",
+                (result.ref_id,),
+            )
+        # Confirm they're unmarked now.
+        blocks = store.list_blocks_for_ref(result.ref_id)
+        assert all(not (b.meta or {}).get("patent_block") for b in blocks)
+
+        ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=fake_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+            force=True,
+        )
+        kinds = [
+            (b.meta or {}).get("patent_block")
+            for b in store.list_blocks_for_ref(result.ref_id)
+        ]
+        assert kinds == ["description"] * 4 + ["claim"] * 3
+
+    def test_force_on_stub_fills_claims_and_clears_awaiting_tag(
+        self,
+        store: Store,
+        biblio_xml: bytes,
+        description_xml: bytes,
+        claims_xml: bytes,
+        raw_root: Path,
+    ) -> None:
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        # First ingest: biblio only → 0 blocks, awaiting-fulltext tag.
+        stub_ops = FakeOpsClient(biblio={"ep1234567b1": biblio_xml})
+        stub = ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=stub_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+        )
+        assert stub.block_count == 0
+        tag_values = {
+            t.value for t in store.tags_for(stub.ref_id) if t.namespace == "open"
+        }
+        assert "awaiting-fulltext" in tag_values
+
+        # Force-reingest now that OPS serves the full text.
+        full_ops = FakeOpsClient(
+            biblio={"ep1234567b1": biblio_xml},
+            description={"ep1234567b1": description_xml},
+            claims={"ep1234567b1": claims_xml},
+        )
+        again = ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=full_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+            force=True,
+        )
+        assert again.block_count == 7
+        ref = store.get_ref(kind="patent", id="ep1234567b1")
+        assert ref is not None
+        assert ref.meta.get("has_claims") is True
+        cleared = {t.value for t in store.tags_for(ref.id) if t.namespace == "open"}
+        assert "awaiting-fulltext" not in cleared
+
+
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------

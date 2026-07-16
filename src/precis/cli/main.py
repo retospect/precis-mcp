@@ -312,6 +312,7 @@ _JOB_DISPATCH: dict[str, tuple[object, str]] = {
     "run-patent-watches": (patent, "run_runner"),
     "sweep-patent-fulltext": (patent, "run_fulltext_sweep_cli"),
     "fetch-google-patents": (patent, "run_gp_fetch_cli"),
+    "reingest-patents": (patent, "run_reingest_cli"),
     "check-provenance": (provenance, "run"),
     "sync-retraction-watch": (provenance, "run_sync"),
 }

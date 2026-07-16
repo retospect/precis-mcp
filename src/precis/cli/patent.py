@@ -214,6 +214,48 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     )
     gp.add_argument("--database-url", default=None)
 
+    # ── reingest-patents ────────────────────────────────────────────────
+    ri = sub.add_parser(
+        "reingest-patents",
+        help=(
+            "Force-reingest already-ingested patents so their claim blocks "
+            "carry the patent_block markers the freedom-to-operate digest "
+            "reads. Re-fetches OPS XML, re-parses, and swaps each ref's "
+            "blocks in place (id/links/tags preserved). Operator backfill."
+        ),
+    )
+    ri.add_argument(
+        "--slug",
+        action="append",
+        default=None,
+        dest="slugs",
+        help=(
+            "Restrict to this DOCDB slug (repeatable). Default: every "
+            "epo_ops patent, oldest-first."
+        ),
+    )
+    ri.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max patents to re-ingest this pass (oldest-first). Default: all.",
+    )
+    ri.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List what would be refetched; fetch nothing, mutate nothing.",
+    )
+    ri.add_argument(
+        "--fair-use-limit-gb",
+        type=float,
+        default=None,
+        help=(
+            "Override the rolling 7-day fair-use cap (default 3 GiB, "
+            "or PRECIS_PATENT_FAIR_USE_LIMIT_GB env var)."
+        ),
+    )
+    ri.add_argument("--database-url", default=None)
+
 
 # ---------------------------------------------------------------------------
 # watch-patents
@@ -551,12 +593,105 @@ def run_gp_fetch_cli(args: argparse.Namespace) -> None:
         store.close()
 
 
+# ---------------------------------------------------------------------------
+# reingest-patents
+# ---------------------------------------------------------------------------
+
+
+def run_reingest_cli(args: argparse.Namespace) -> None:
+    """Implements ``precis jobs reingest-patents`` — force-reingest
+    existing patents so their claim blocks carry the slice-1
+    ``patent_block`` markers the freedom-to-operate digest reads
+    (docs/design/patent-authoring-loop.md).
+    """
+    from pathlib import Path
+
+    from precis.config import load_config
+    from precis.embedder import make_embedder
+    from precis.handlers._patent_ops import OpsClient
+    from precis.jobs.patent_reingest import run_reingest_pass
+    from precis.jobs.patent_watch import DEFAULT_FAIR_USE_LIMIT_GB
+    from precis.store import Store
+
+    epo_key = os.environ.get("EPO_OPS_CLIENT_KEY")
+    epo_secret = os.environ.get("EPO_OPS_CLIENT_SECRET")
+    raw_root_str = os.environ.get("PRECIS_PATENT_RAW_ROOT")
+    if not (epo_key and epo_secret and raw_root_str):
+        print(
+            "reingest-patents: EPO_OPS_CLIENT_KEY, "
+            "EPO_OPS_CLIENT_SECRET, and PRECIS_PATENT_RAW_ROOT must all "
+            "be set",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    cfg = load_config()
+    dsn = resolve_dsn(args.database_url, cfg=cfg)
+    store = Store.connect(dsn)
+    try:
+        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        ops = OpsClient(
+            key=epo_key,
+            secret=epo_secret,
+            user_agent=os.environ.get("EPO_OPS_USER_AGENT"),
+        )
+
+        fair_use_limit_gb = args.fair_use_limit_gb
+        if fair_use_limit_gb is None:
+            env_lim = os.environ.get("PRECIS_PATENT_FAIR_USE_LIMIT_GB")
+            fair_use_limit_gb = float(env_lim) if env_lim else DEFAULT_FAIR_USE_LIMIT_GB
+
+        summary = run_reingest_pass(
+            store=store,
+            ops=ops,
+            embedder=embedder,
+            raw_root=Path(raw_root_str).expanduser(),
+            only_slugs=args.slugs,
+            limit=args.limit,
+            dry_run=args.dry_run,
+            fair_use_limit_gb=fair_use_limit_gb,
+        )
+
+        if summary.paused_global:
+            gb = summary.fair_use_bytes_before / (1024**3)
+            print(
+                f"reingest-patents: paused - rolling 7d fair-use "
+                f"{gb:.2f} GiB ≥ limit {fair_use_limit_gb:.2f} GiB"
+            )
+            return
+        if not summary.outcomes:
+            print("reingest-patents: no patents to re-ingest")
+            return
+
+        ok = failed = 0
+        for o in summary.outcomes:
+            if o.error is not None:
+                failed += 1
+                print(f"  fail  {o.slug}  - {o.error}")
+                continue
+            if o.skipped_dry_run:
+                print(f"  dry   {o.slug}  ({o.blocks_before} blocks now)")
+                continue
+            ok += 1
+            print(
+                f"  ok    {o.slug}  blocks {o.blocks_before}→{o.blocks_after}"
+                f"  (+{o.bytes_fetched} B)"
+            )
+        if args.dry_run:
+            print(f"-- dry-run: {len(summary.outcomes)} patents would re-ingest")
+        else:
+            print(f"-- re-ingested ok={ok} failed={failed}")
+    finally:
+        store.close()
+
+
 __all__ = [
     "_parse_interval",
     "add_parsers",
     "run_fulltext_sweep_cli",
     "run_gp_fetch_cli",
     "run_list",
+    "run_reingest_cli",
     "run_runner",
     "run_watch",
 ]

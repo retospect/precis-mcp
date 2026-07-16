@@ -142,11 +142,13 @@ def ingest_patent(
     embedder: Embedder | None,
     raw_root: Path,
     corpus_slug: str = "default",
+    force: bool = False,
 ) -> PatentIngestResult:
     """Fetch a patent from OPS, store it, embed it, return the result.
 
     Idempotent on the patent's slug: if the ref already exists, the
-    method short-circuits without any OPS call.
+    method short-circuits without any OPS call — **unless** ``force`` is
+    set.
 
     Args:
         docdb:        Either the canonical lowercased slug or a
@@ -164,6 +166,19 @@ def ingest_patent(
                       (``$PRECIS_PATENT_RAW_ROOT``).
         corpus_slug:  Corpus to insert the ref into. ``"default"``
                       matches the rest of the kinds.
+        force:        Re-fetch and **re-ingest an existing** patent —
+                      re-run OPS + ``parse_patent`` and DELETE+re-INSERT
+                      the ref's blocks (``insert_blocks(replace=True)``)
+                      so they carry the current block metadata, notably
+                      the slice-1 ``patent_block`` claim markers the
+                      freedom-to-operate digest reads
+                      (docs/design/patent-authoring-loop.md). Used by the
+                      claim-marking backfill (``precis jobs
+                      reingest-patents``) to re-mark patents ingested
+                      before the marker existed. The ref itself is kept
+                      (id, links, tags preserved); only its meta + blocks
+                      are refreshed. No-op for a slug that doesn't exist
+                      yet — it ingests fresh, same as ``force=False``.
 
     Raises:
         NotFound: OPS reports no such publication. No state mutated.
@@ -171,9 +186,12 @@ def ingest_patent(
     parsed_id = docdb if isinstance(docdb, DocDbId) else parse_docdb_id(docdb)
     slug = parsed_id.slug
 
-    # Idempotency check — return early if we've already ingested this one.
+    # Idempotency check — return early if we've already ingested this one,
+    # unless the caller asked to re-ingest (``force``), in which case we
+    # keep the ref but refresh its meta + blocks below.
     existing = store.get_ref(kind="patent", id=slug)
-    if existing is not None:
+    reingest = existing is not None and force
+    if existing is not None and not force:
         return PatentIngestResult(
             ref_id=existing.id,
             slug=slug,
@@ -288,14 +306,24 @@ def ingest_patent(
     )
 
     with store.tx() as conn:
-        ref = store.insert_ref(
-            kind="patent",
-            slug=slug,
-            title=parsed.title,
-            provider="epo_ops",
-            meta=meta,
-            conn=conn,
-        )
+        if reingest:
+            # Keep the existing ref (id / links / history); refresh its
+            # meta and swap its blocks in place. ``stamp_ref_meta`` is a
+            # shallow merge, so freshly-served full text flips the stale
+            # ``has_claims=false`` from an old stub-ingest to true.
+            assert existing is not None  # narrowed by ``reingest``
+            ref_id = existing.id
+            store.stamp_ref_meta(ref_id, meta, conn=conn)
+        else:
+            ref = store.insert_ref(
+                kind="patent",
+                slug=slug,
+                title=parsed.title,
+                provider="epo_ops",
+                meta=meta,
+                conn=conn,
+            )
+            ref_id = ref.id
         if block_seeds:
             inserts = [
                 BlockInsert(
@@ -308,11 +336,30 @@ def ingest_patent(
                 )
                 for i, b in enumerate(block_seeds)
             ]
-            store.insert_blocks(ref.id, inserts, conn=conn)
+            # ``replace=True`` on a re-ingest DELETEs the ref's existing
+            # chunks first (cascading to embeddings/summaries/tags) so the
+            # embed / keyword / classify workers re-derive over the newly
+            # marked blocks — an in-place marker patch would leave stale
+            # derived rows (AGENTS.md "don't mutate body chunks").
+            store.insert_blocks(ref_id, inserts, replace=reingest, conn=conn)
 
     # Auto-tags. Lowercase open prefixes — see
     # store/types.py::Tag.open() for the storage rule.
-    _apply_auto_tags(store, ref.id, parsed, parsed_id)
+    _apply_auto_tags(store, ref_id, parsed, parsed_id)
+
+    # On a re-ingest that now has full text, clear the awaiting/unavailable
+    # full-text tags left by an earlier stub ingest — the retry loop is
+    # done for this patent.
+    if reingest and not fulltext_missing:
+        for tag_str in (AWAITING_FULLTEXT_TAG, FULLTEXT_UNAVAILABLE_TAG):
+            try:
+                store.remove_tag(ref_id, Tag.open(tag_str))
+            except Exception:  # pragma: no cover — best-effort cleanup
+                log.warning(
+                    "patent reingest: failed to clear %s tag on %s",
+                    tag_str,
+                    slug,
+                )
 
     # Queue an automatic full-text retry if either endpoint 404'd.
     # The sweep job (``precis.jobs.patent_fulltext_sweep``) picks
@@ -321,7 +368,7 @@ def ingest_patent(
     if fulltext_missing:
         try:
             store.add_tag(
-                ref.id,
+                ref_id,
                 Tag.open(AWAITING_FULLTEXT_TAG),
                 set_by="system",
             )
@@ -335,11 +382,11 @@ def ingest_patent(
             )
 
     return PatentIngestResult(
-        ref_id=ref.id,
+        ref_id=ref_id,
         slug=slug,
         docdb=parsed_id,
         block_count=len(block_seeds),
-        inserted=True,
+        inserted=not reingest,
         bytes_fetched=bytes_fetched,
     )
 
