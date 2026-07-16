@@ -633,3 +633,72 @@ def test_invalid_pilcrow_ref_flagged_not_anchored() -> None:
     # a real handle still resolves to a live anchor
     ok = str(linkify_refs("see [¶1asdf1]", compact=True))
     assert "/c/1asdf1" in ok
+
+
+# ── TOON / TSV tabular rendering (linkify_toon) ──────────────────────
+
+
+def test_toon_next_block_renders_as_table() -> None:
+    """A ``Next:`` TOON block (braced header + tab-separated rows) renders
+    as an aligned HTML table with a ``<thead>``; the prose above stays a
+    whitespace-preserved, non-table block."""
+    from precis_web.linkify import linkify_toon
+
+    body = (
+        "A proverb.\n\nNext:\n"
+        "{if you want to\texecute this call}\n"
+        "consult again (random pick)\tget(id='or50948')\n"
+        "see all 39 entries\tget(id='or50948/index')"
+    )
+    out = str(linkify_toon(body))
+    assert "<table" in out
+    assert "<thead>" in out
+    assert ">if you want to</th>" in out
+    assert ">execute this call</th>" in out
+    # two body rows, four data cells
+    assert out.count("<tr>") == 3  # header row + 2 body rows
+    # cell content is HTML-escaped (no raw quote breaking the attribute)
+    assert "get(id=&#x27;or50948&#x27;)" in out
+    # prose preserved outside the table
+    assert "A proverb." in out
+    assert "whitespace-pre-wrap" in out
+
+
+def test_toon_lone_tab_line_stays_prose() -> None:
+    """A single incidental tab-bearing line (no braced header) is left as
+    prose — the guard keeps a stray tab from becoming a one-row table."""
+    from precis_web.linkify import linkify_toon
+
+    out = str(linkify_toon("a line\twith one tab and nothing else"))
+    assert "<table" not in out
+    assert "a line" in out
+
+
+def test_toon_headerless_multiline_tsv_renders_as_table() -> None:
+    """Two+ consecutive tab lines with no ``{...}`` header still tabularise
+    (a plain TSV share) — but with no ``<thead>``."""
+    from precis_web.linkify import linkify_toon
+
+    out = str(linkify_toon("a\t1\nb\t2\nc\t3"))
+    assert "<table" in out
+    assert "<thead>" not in out
+    assert out.count("<tr>") == 3
+
+
+def test_toon_ref_handles_in_cells_are_linkified() -> None:
+    """A ``kind:ref`` handle inside a table cell stays a clickable anchor."""
+    from precis_web.linkify import linkify_toon
+
+    out = str(linkify_toon("see this\tpaper:acheson26\nand that\tmemory:6184"))
+    assert 'href="/r/paper/acheson26"' in out
+    assert 'href="/r/memory/6184"' in out
+
+
+def test_toon_ragged_rows_padded() -> None:
+    """A row with fewer cells than the header is padded so the table stays
+    rectangular."""
+    from precis_web.linkify import linkify_toon
+
+    out = str(linkify_toon("{a\tb\tc}\nx\ty"))
+    # header has 3 cols; the single body row is padded to 3 <td>s
+    assert out.count("<td") == 3

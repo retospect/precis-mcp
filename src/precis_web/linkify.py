@@ -836,4 +836,140 @@ def render_markdown(value: str) -> Markup:
     return Markup(_md_inline(escape(str(value))))
 
 
-__all__ = ["linkify_refs", "popover_chip", "render_markdown"]
+# ── TOON / TSV tabular rendering ─────────────────────────────────────
+#
+# Handler ``get`` output is plain text, but a lot of it is *tabular*:
+# every ``Next:`` hint block is a TOON table (tab-separated rows, the
+# header wrapped in ``{...}`` — see ``precis.format.toon``), and the
+# oracle kind is used as a general tab-delimited text share. Inside a
+# ``<pre>`` those tabs land on fixed 8-col tab-stops, so the columns
+# don't line up and the tabularity is invisible. ``linkify_toon`` splits
+# the body into prose runs (linkified + whitespace-preserved as before)
+# and tab-separated runs (rendered as aligned HTML ``<table>``s), so a
+# shared table reads as a table on the web.
+
+_TOON_TAB = "\t"
+
+
+def _toon_header_cells(cells: list[str]) -> list[str] | None:
+    """If ``cells`` is a TOON braced header (``{col1<TAB>col2}``), return
+    the de-braced column names; else ``None``.
+
+    The braces are visible markers on the first cell's open and the last
+    cell's close (``precis.format.toon._braced_header``), so we peel one
+    ``{`` off the front and one ``}`` off the back.
+    """
+    if not cells:
+        return None
+    first, last = cells[0], cells[-1]
+    if not (first.startswith("{") and last.endswith("}")):
+        return None
+    out = list(cells)
+    out[0] = out[0][1:]
+    out[-1] = out[-1][:-1]
+    return out
+
+
+_TOON_TD = (
+    "border border-slate-200 px-2 py-1 align-top text-slate-700 "
+    "whitespace-pre-wrap break-words"
+)
+_TOON_TH = (
+    "border border-slate-200 bg-slate-50 px-2 py-1 text-left "
+    "font-semibold text-slate-600 whitespace-pre-wrap break-words"
+)
+
+
+def _render_toon_table(
+    run: list[str],
+    footnotes: dict[tuple[str, str, str | None], int] | None,
+) -> str:
+    """Render a run of tab-separated lines as an aligned HTML table.
+
+    Cell text is linkified (so ``kind:ref`` handles inside a cell stay
+    clickable) via the same escaping pass the surrounding prose uses; a
+    braced first row becomes a ``<thead>`` header.
+    """
+    rows = [line.split(_TOON_TAB) for line in run]
+    header = _toon_header_cells(rows[0])
+    if header is not None:
+        rows = rows[1:]
+    ncols = max((len(r) for r in rows), default=0)
+    if header is not None:
+        ncols = max(ncols, len(header))
+
+    def _cell(text: str, cls: str) -> str:
+        return f'<td class="{cls}">{_linkify_prose(text, footnotes)}</td>'
+
+    parts: list[str] = ['<table class="my-2 border-collapse text-xs font-sans">']
+    if header is not None:
+        cells = header + [""] * (ncols - len(header))
+        head = "".join(
+            f'<th class="{_TOON_TH}">{_linkify_prose(c, footnotes)}</th>' for c in cells
+        )
+        parts.append(f"<thead><tr>{head}</tr></thead>")
+    parts.append("<tbody>")
+    for row in rows:
+        padded = row + [""] * (ncols - len(row))
+        tds = "".join(_cell(c, _TOON_TD) for c in padded)
+        parts.append(f"<tr>{tds}</tr>")
+    parts.append("</tbody></table>")
+    return "".join(parts)
+
+
+def linkify_toon(
+    value: str,
+    footnotes: dict[tuple[str, str, str | None], int] | None = None,
+) -> Markup:
+    """Linkify a plain-text body, rendering tab-separated runs as tables.
+
+    A drop-in replacement for ``linkify_refs`` on ref-detail bodies. Runs
+    of consecutive lines that each contain a tab are rendered as an
+    aligned ``<table>`` (a TOON ``{...}`` header row becomes a ``<thead>``);
+    everything else is linkified prose in a ``whitespace-pre-wrap`` block,
+    exactly as before. A lone tab-bearing line with no ``{...}`` header is
+    left as prose — the guard keeps an incidental tab from becoming a
+    one-row table.
+
+    Returns :class:`markupsafe.Markup` (safe HTML — cells + prose are
+    escaped by :func:`_linkify_prose`).
+    """
+    if not value:
+        return Markup("")
+    lines = str(value).split("\n")
+    out: list[str] = []
+    prose: list[str] = []
+
+    def _flush_prose() -> None:
+        if not prose:
+            return
+        html = _linkify_prose("\n".join(prose), footnotes)
+        out.append(f'<div class="whitespace-pre-wrap">{html}</div>')
+        prose.clear()
+
+    i, n = 0, len(lines)
+    while i < n:
+        if _TOON_TAB in lines[i]:
+            run: list[str] = []
+            while i < n and _TOON_TAB in lines[i]:
+                run.append(lines[i])
+                i += 1
+            has_header = _toon_header_cells(run[0].split(_TOON_TAB)) is not None
+            if has_header or len(run) >= 2:
+                _flush_prose()
+                out.append(_render_toon_table(run, footnotes))
+            else:
+                prose.extend(run)
+        else:
+            prose.append(lines[i])
+            i += 1
+    _flush_prose()
+    return Markup("".join(out))
+
+
+__all__ = [
+    "linkify_refs",
+    "linkify_toon",
+    "popover_chip",
+    "render_markdown",
+]

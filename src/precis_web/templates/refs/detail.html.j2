@@ -54,7 +54,12 @@
 {% if is_error %}
 <div class="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 whitespace-pre-wrap">{{ body | linkify_refs }}</div>
 {% else %}
-<pre class="rounded-lg border border-slate-200 bg-white p-4 text-xs whitespace-pre-wrap text-slate-700 overflow-x-auto">{{ body | linkify_refs(footnotes) }}</pre>
+{# Tab-separated runs (TOON ``Next:`` blocks, tab-delimited oracle shares)
+   render as aligned tables via ``linkify_toon``; prose stays whitespace-
+   preserved + linkified. The container is a plain div (each segment
+   carries its own whitespace handling) rather than a <pre>, whose fixed
+   tab-stops made the columns invisible. #}
+<div class="rounded-lg border border-slate-200 bg-white p-4 text-xs text-slate-700 overflow-x-auto space-y-1">{{ body | linkify_toon(footnotes) }}</div>
 {% endif %}
 
 {# Job actions strip — a job is a thing you unstick (retry → re-mint) or
