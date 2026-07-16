@@ -55,6 +55,27 @@ def add_parser(subparsers: Any) -> None:
     f.add_argument("id", type=int, help="Quest ref id.")
     f.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    r = qsub.add_parser(
+        "run", help="Allocator: pick the best active quest + tick it once."
+    )
+    r.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        help="Weekly compute budget (overrides PRECIS_QUEST_WEEKLY_BUDGET).",
+    )
+    r.add_argument(
+        "--force",
+        action="store_true",
+        help="Run even if PRECIS_QUEST_LOOP_ENABLED is unset.",
+    )
+    r.add_argument(
+        "--no-compute",
+        action="store_true",
+        help="Reason only; do not dispatch sims for the picked quest.",
+    )
+    r.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
 
 def _cmd_tick(store: Store, args: argparse.Namespace) -> None:
     from precis.quest.tick import build_tick_prompt, run_quest_tick
@@ -83,6 +104,30 @@ def _cmd_tick(store: Store, args: argparse.Namespace) -> None:
     if outcome.cost_usd:
         msg += f", ${outcome.cost_usd:.4f}"
     print(f"{msg} ({outcome.note})")
+
+
+def _cmd_run(store: Store, args: argparse.Namespace) -> None:
+    from precis.quest.allocator import run_allocator_pass
+
+    summary = run_allocator_pass(
+        store,
+        enabled=True if args.force else None,
+        total_budget=args.budget,
+        compute=not args.no_compute,
+    )
+    if not summary["enabled"]:
+        print(
+            "quest run: PRECIS_QUEST_LOOP_ENABLED is unset — the autonomous loop "
+            "is dark. Pass --force to run one step anyway."
+        )
+        return
+    if summary["picked"] is None:
+        print(f"quest run: cooled {summary['cooled']}, no quest eligible to tick")
+        return
+    print(
+        f"quest run: cooled {summary['cooled']}, picked quest {summary['picked']} "
+        f"(score {summary['score']}) → tick {summary['status']}"
+    )
 
 
 def _cmd_frontier(store: Store, args: argparse.Namespace) -> None:
@@ -121,3 +166,5 @@ def run(args: argparse.Namespace) -> None:
         _cmd_gaps(store, args)
     elif args.quest_cmd == "frontier":
         _cmd_frontier(store, args)
+    elif args.quest_cmd == "run":
+        _cmd_run(store, args)

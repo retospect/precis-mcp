@@ -71,13 +71,14 @@ structure — `quest` kind + `serves` + logbook + tree rollup, main
 `2ce51f5f`), 2 (reweighting — priority down the `serves` DAG into
 rotation/acquisition/reading, `src/precis/quest/reweight.py`, main
 `8a61716f`), 3 (gaps + health — `src/precis/quest/gaps.py`,
-`view='gaps'`/`id='/gaps'`), and rungs **4a–4c** (dossier + research tick —
+`view='gaps'`/`id='/gaps'`), and rungs **4a–4d** (dossier + research tick —
 `tick.py`/`dossier.py`, migration 0067; compute dispatch + Pareto frontier —
-`compute.py`/`frontier.py`; local↔frontier cascade — `cascade.py`) are
-**shipped, not deployed**. Skill `precis-quest-help`; tests `tests/test_quest.py`
-+ `tests/test_quest_reweight.py` + `tests/test_quest_gaps.py` +
-`tests/test_quest_tick.py` + `tests/test_quest_compute.py` +
-`tests/test_quest_cascade.py`.
+`compute.py`/`frontier.py`; local↔frontier cascade — `cascade.py`; allocator —
+`allocator.py`) are **shipped, not deployed**. Skill `precis-quest-help`; tests
+`tests/test_quest.py` + `tests/test_quest_reweight.py` +
+`tests/test_quest_gaps.py` + `tests/test_quest_tick.py` +
+`tests/test_quest_compute.py` + `tests/test_quest_cascade.py` +
+`tests/test_quest_allocator.py`.
 
 **Operational — do these to make the shipped slices actually steer:**
 
@@ -152,11 +153,17 @@ as five dark rungs:
   Tests `tests/test_quest_cascade.py`. *Residual:* "surprise" isn't a distinct
   signal (folded into new-evidence/improvement); rubric→objective still the
   energy-default.
-- **4d — the allocator** — *not started.* A dispatcher picks which active quest
-  ticks when a compute slot frees (EWMA bandit over priority × momentum ×
-  promise + exploration), under a weekly proportional budget metered against
-  the tote; a stalled quest cools to `dormant`. Gates on
-  `PRECIS_QUEST_LOOP_ENABLED`. Resolves the cost/credit-under-overlap rule.
+- **4d — the allocator** — **BUILT + shipped** (not deployed).
+  `src/precis/quest/allocator.py`. `pick_next_quest` ranks active quests by an
+  EWMA bandit (`base_weight × momentum × (1+promise)` + `exploration/(picks+1)`);
+  `run_allocator_pass` (gated `PRECIS_QUEST_LOOP_ENABLED`, agent-profile worker
+  pass in `cli/worker.py` + `precis quest run [--force] [--budget N]`) cools the
+  cold + picks + ticks (compute=True) + folds the EWMA. Weekly proportional
+  budget (`PRECIS_QUEST_WEEKLY_BUDGET`, unset=uncapped) vs `weekly_spend`
+  (7-day tote); `cool_stalled` → `dormant` + `reflection`. Cost/credit-overlap
+  (Q1) resolved by construction (candidates content-addressed per quest → billed
+  once). Tests `tests/test_quest_allocator.py`. **THIS is the dark→live switch:
+  set `PRECIS_QUEST_LOOP_ENABLED` on the melchior agent worker to run the loop.**
 - **4e — ceiling awareness** — *not started.* A strong in-silico candidate
   *graduates* to "needs a real-world experiment" — a slice-3 gap for a
   human/lab, not pretended-closed.

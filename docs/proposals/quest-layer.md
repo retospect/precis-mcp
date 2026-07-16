@@ -1,6 +1,6 @@
 # Quest layer — the striving above the work (proposal)
 
-> **Status: model closed; slices 1–3 + rungs 4a–4c built.** Captures the design conversation
+> **Status: model closed; slices 1–3 + rungs 4a–4d built.** Captures the design conversation
 > of 2026-07-15 (Reto + session). The aim-layer that sits above projects/streams/
 > concepts and gives the system **direction**: a legible answer to "what are we
 > striving toward, and is this work/knowledge actually in its service?"
@@ -306,10 +306,19 @@ project/todos · relax+pathway jobs   project/todos · papers · fold/seq jobs
      `update_cascade_state` maintains the counters + the **promise** proxy
      (frontier-improvement rate = objective gained / recent compute cost) that
      rung 4d reads. `run_quest_tick(review=None|True|False)`.
-   - **4d — the allocator**. A dispatcher picks which active quest ticks when a
-     compute slot frees (EWMA bandit over priority × momentum × promise +
-     exploration), under a weekly proportional budget metered against the tote;
-     a stalled quest cools to `dormant`. Gates on `PRECIS_QUEST_LOOP_ENABLED`.
+   - **4d — the allocator** *(built — `src/precis/quest/allocator.py`)*. When a
+     slot frees, `pick_next_quest` ranks the active quests by an **EWMA bandit**
+     — `EWMA(base_weight × momentum × (1 + promise)) + exploration/(picks+1)` —
+     and ticks the winner. A **weekly proportional budget**
+     (`PRECIS_QUEST_WEEKLY_BUDGET`, unset = uncapped) meters each quest's
+     share ∝ priority against the tote (`weekly_spend` = 7-day `cost` entries);
+     over-share quests are skipped. `cool_stalled` sets a cold quest (no promise,
+     no frontier improvement in `COOL_AFTER_TICKS`) to `dormant` with a
+     `reflection`. `run_allocator_pass` gates on `PRECIS_QUEST_LOOP_ENABLED`
+     (agent-profile worker pass + `precis quest run`). **Cost/credit under
+     overlap (open Q1)** is resolved by construction: candidates are
+     content-addressed *per quest*, so a sim is owned by one quest and billed
+     once. **This is the switch that turns the loop from dark to live.**
    - **4e — ceiling awareness**. A strong in-silico candidate *graduates* to
      "needs a real-world experiment" — a slice-3 gap surfaced for a human/lab.
 

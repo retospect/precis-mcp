@@ -1,0 +1,132 @@
+"""Tests for the quest allocator — which striving ticks next (slice 4d).
+
+Covers the raw bandit score (priority × momentum × promise), the pick (highest
+eligible score), the weekly proportional budget (over-budget quests skipped),
+self-cooling of a cold quest to dormant, and the gated allocator pass (dark
+unless enabled; picks + ticks + folds the EWMA). The tick is monkeypatched so no
+live model runs. Runs against real PG (the ``store`` fixture).
+"""
+
+from __future__ import annotations
+
+import re
+from types import SimpleNamespace
+from typing import Any
+
+from precis.dispatch import Hub
+from precis.handlers.quest import QuestHandler
+from precis.quest import allocator as alloc
+from precis.quest.logbook import append_entry
+
+
+def _mk_quest(store: Any, text: str, *, prio: str | None = None) -> int:
+    h = QuestHandler(hub=Hub(store=store))
+    tags = [prio] if prio else None
+    resp = h.put(text=text, tags=tags)
+    m = re.search(r"\bqu(\d+)\b", resp.body)
+    assert m is not None, resp.body
+    return int(m.group(1))
+
+
+# ── scoring ───────────────────────────────────────────────────────────
+
+
+class TestScoring:
+    def test_hotter_priority_scores_higher(self, store: Any) -> None:
+        hot = _mk_quest(store, "Urgent", prio="PRIO:urgent")  # prio 1
+        cold = _mk_quest(store, "Low", prio="PRIO:low")  # prio 8
+        assert alloc.raw_score(store, hot) > alloc.raw_score(store, cold)
+
+    def test_pick_selects_highest(self, store: Any) -> None:
+        _cold = _mk_quest(store, "Low", prio="PRIO:low")
+        hot = _mk_quest(store, "Urgent", prio="PRIO:urgent")
+        pick = alloc.pick_next_quest(store)
+        assert pick is not None and pick.quest_id == hot
+
+    def test_dormant_quests_are_not_picked(self, store: Any) -> None:
+        h = QuestHandler(hub=Hub(store=store))
+        active = _mk_quest(store, "Active", prio="PRIO:normal")
+        dorm = _mk_quest(store, "Dormant", prio="PRIO:urgent")
+        h.tag(id=dorm, add=["STATUS:dormant"])
+        pick = alloc.pick_next_quest(store)
+        assert pick is not None and pick.quest_id == active
+
+
+# ── weekly budget ─────────────────────────────────────────────────────
+
+
+class TestBudget:
+    def test_over_budget_quest_is_skipped(self, store: Any) -> None:
+        a = _mk_quest(store, "A", prio="PRIO:normal")
+        b = _mk_quest(store, "B", prio="PRIO:normal")
+        # equal priority → equal shares; total 10 → 5 each. A spends 6.
+        append_entry(store, a, text="sim", entry_type="result", by="agent", cost=6.0)
+        pick = alloc.pick_next_quest(store, total_budget=10.0)
+        assert pick is not None and pick.quest_id == b
+
+    def test_no_budget_means_no_cap(self, store: Any) -> None:
+        a = _mk_quest(store, "A", prio="PRIO:urgent")
+        append_entry(store, a, text="sim", entry_type="result", by="agent", cost=999.0)
+        assert alloc.over_budget(store, a, [a], total_budget=None) is False
+
+    def test_weekly_spend_sums_costs(self, store: Any) -> None:
+        a = _mk_quest(store, "A")
+        append_entry(store, a, text="x", entry_type="result", by="agent", cost=1.5)
+        append_entry(store, a, text="y", entry_type="cost", by="agent", cost=2.0)
+        assert abs(alloc.weekly_spend(store, a) - 3.5) < 1e-9
+
+
+# ── self-cooling ──────────────────────────────────────────────────────
+
+
+class TestCooling:
+    def test_cold_quest_cools_to_dormant(self, store: Any) -> None:
+        q = _mk_quest(store, "A cold striving", prio="PRIO:normal")
+        alloc._merge_meta(
+            store,
+            q,
+            {
+                "tick_count": alloc.COOL_AFTER_TICKS + 1,
+                "ticks_since_frontier_improve": alloc.COOL_AFTER_TICKS + 1,
+                "promise": 0.0,
+            },
+        )
+        cooled = alloc.cool_stalled(store)
+        assert q in cooled
+        assert "STATUS:dormant" in [str(t) for t in store.tags_for(q)]
+        logs = [b for b in store.list_blocks_for_ref(q) if b.chunk_kind == "quest_log"]
+        assert any((b.meta or {}).get("entry_type") == "reflection" for b in logs)
+
+    def test_fresh_quest_not_cooled(self, store: Any) -> None:
+        q = _mk_quest(store, "A fresh striving")
+        assert alloc.cool_stalled(store) == []
+        assert "STATUS:active" in [str(t) for t in store.tags_for(q)]
+
+
+# ── the gated pass ────────────────────────────────────────────────────
+
+
+class TestAllocatorPass:
+    def test_disabled_by_default(self, store: Any) -> None:
+        _mk_quest(store, "A striving")
+        out = alloc.run_allocator_pass(store, enabled=False)
+        assert out["enabled"] is False and out["picked"] is None
+
+    def test_enabled_picks_and_ticks_and_folds_ewma(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        from precis.quest import tick as tick_mod
+
+        calls: list[int] = []
+
+        def _fake_tick(_store: Any, qid: int, **_kw: Any) -> Any:
+            calls.append(qid)
+            return SimpleNamespace(status="succeeded", quest_id=qid)
+
+        monkeypatch.setattr(tick_mod, "run_quest_tick", _fake_tick)
+        q = _mk_quest(store, "A striving", prio="PRIO:urgent")
+        out = alloc.run_allocator_pass(store, enabled=True)
+        assert out["picked"] == q and out["status"] == "succeeded"
+        assert calls == [q]
+        meta = store.get_ref(kind="quest", id=q).meta
+        assert meta["picks"] == 1 and "ewma_score" in meta

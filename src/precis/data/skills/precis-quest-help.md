@@ -207,17 +207,16 @@ CLI runs regardless).
 
 ## Roadmap (what's live vs. coming)
 
-Slices 1–3 + rungs **4a–4c** are **live**: the kind + `serves` + logbook +
-tree rollup (slice 1); **reweighting** (slice 2) — priority flows down the
-`serves` DAG into the todo rotation, paper acquisition, and reading (a no-op
-until you link work to an active quest); **gaps + health** (slice 3) — the
-striving surfaces its own exploration queue + a momentum/alignment read
-(`view='gaps'`, `id='/gaps'`); the **research tick + dossier** (slice 4a); the
-**compute dispatch + Pareto frontier** (slice 4b) — proposals become candidate
-`structure` sims, harvested + ranked (`precis quest tick --compute`,
-`view='frontier'`); and the **local↔frontier cascade** (slice 4c) — a tick runs
-cheap+local by default and *escalates to a frontier review* on a signal (enough
-new results / a stall), which sets strategic directions and maintains the
-`promise` proxy. Coming: the scheduler that decides which active quest advances
-when compute frees (4d) + graduation of a strong candidate to a real experiment
-(4e). Design of record: `docs/proposals/quest-layer.md`.
+Slices 1–3 + rungs **4a–4d** are **live**: the kind + `serves` + logbook +
+tree rollup (slice 1); **reweighting** (slice 2); **gaps + health** (slice 3,
+`view='gaps'`, `id='/gaps'`); the **research tick + dossier** (slice 4a); the
+**compute dispatch + Pareto frontier** (slice 4b, `precis quest tick --compute`,
+`view='frontier'`); the **local↔frontier cascade** (slice 4c) — a tick runs
+cheap+local and *escalates to a frontier review* on a signal; and the
+**allocator** (slice 4d) — `precis quest run` picks the highest-scoring active
+quest by an EWMA bandit (priority × momentum × promise + exploration) under a
+weekly budget, ticks it, and cools cold quests to `dormant`. The autonomous loop
+runs on the melchior agent worker **only when `PRECIS_QUEST_LOOP_ENABLED` is
+set** (dark by default); `precis quest run --force` runs one step by hand.
+Coming: graduation of a strong in-silico candidate to a real experiment (4e).
+Design of record: `docs/proposals/quest-layer.md`.
