@@ -1,6 +1,6 @@
 # Quest layer — the striving above the work (proposal)
 
-> **Status: model closed; slices 1–3 + rungs 4a–4d built.** Captures the design conversation
+> **Status: model closed; ALL slices built (1–3 + rungs 4a–4e).** Captures the design conversation
 > of 2026-07-15 (Reto + session). The aim-layer that sits above projects/streams/
 > concepts and gives the system **direction**: a legible answer to "what are we
 > striving toward, and is this work/knowledge actually in its service?"
@@ -319,8 +319,13 @@ project/todos · relax+pathway jobs   project/todos · papers · fold/seq jobs
      overlap (open Q1)** is resolved by construction: candidates are
      content-addressed *per quest*, so a sim is owned by one quest and billed
      once. **This is the switch that turns the loop from dark to live.**
-   - **4e — ceiling awareness**. A strong in-silico candidate *graduates* to
-     "needs a real-world experiment" — a slice-3 gap surfaced for a human/lab.
+   - **4e — ceiling awareness** *(built — `src/precis/quest/graduate.py`)*. A
+     quest declares its ceiling in `meta.graduation` (`{key, sense, threshold}`);
+     a frontier candidate that crosses it **graduates** — tagged
+     `needs-experiment`, logged as a `milestone` (a deed), and surfaced by the
+     slice-3 gaps as a `needs-experiment` item + a ★ in `view='frontier'`. The
+     loop can't close it; it's a call to a human / lab. No rule → nothing
+     graduates (dark until a quest opts in).
 
 ## Open questions (resolve as the steering rungs land)
 

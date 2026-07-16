@@ -81,6 +81,7 @@ class QuestTickOutcome:
     sims_dispatched: int = 0
     results_harvested: int = 0
     ruled_out: int = 0
+    graduated: int = 0  # rung 4e — candidates that crossed the ceiling
     # Cascade (rung 4c).
     escalated: bool = False
     mode: str = "local"  # "local" | "frontier-review"
@@ -410,7 +411,7 @@ def run_quest_tick(
             )
             added += 1
 
-    created = dispatched = harvested = ruled = 0
+    created = dispatched = harvested = ruled = graduated = 0
     if compute:
         from precis.quest.compute import run_compute_step
 
@@ -419,11 +420,12 @@ def run_quest_tick(
         dispatched = step.sims_dispatched
         harvested = step.results_harvested
         ruled = step.ruled_out
+        graduated = step.graduated
 
     # Advance the cascade counters + recompute `promise` (rung 4d reads it).
     cascade_mod.update_cascade_state(store, quest_id, reviewed=is_review)
 
-    did_work = added or rewritten or created or harvested or ruled
+    did_work = added or rewritten or created or harvested or ruled or graduated
     note = (
         (f"frontier-review ({reason})" if is_review else "ok") if did_work else "no-op"
     )
@@ -439,6 +441,7 @@ def run_quest_tick(
         sims_dispatched=dispatched,
         results_harvested=harvested,
         ruled_out=ruled,
+        graduated=graduated,
         escalated=is_review,
         mode="frontier-review" if is_review else "local",
     )

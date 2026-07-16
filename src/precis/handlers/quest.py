@@ -391,7 +391,11 @@ class QuestHandler(NumericRefHandler):
 
         def _fmt(c: frontier_mod.Candidate) -> str:
             ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
-            return f"  {c.handle} {c.name} — {ms or '(no measures)'}"
+            graduated = any(
+                str(t) == "needs-experiment" for t in self.store.tags_for(c.ref_id)
+            )
+            star = " ★ needs-experiment" if graduated else ""
+            return f"  {c.handle} {c.name} — {ms or '(no measures)'}{star}"
 
         if not (fr.frontier or fr.dominated or fr.unevaluated):
             lines.append("no candidate structures serve this quest yet.")

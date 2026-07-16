@@ -188,6 +188,25 @@ def quest_gaps(
             )
         )
 
+    # 5. Graduated candidates — a strong in-silico result that has crossed the
+    #    quest's ceiling and now needs a real-world experiment (slice 4e). The
+    #    loop can't close this; it's a call to a human / lab.
+    for r in live:
+        if r.kind != "structure":
+            continue
+        if any(str(t) == "needs-experiment" for t in store.tags_for(r.id)):
+            title = (r.title or "").splitlines()[0] if r.title else ""
+            gaps.append(
+                Gap(
+                    kind="needs-experiment",
+                    detail=(
+                        "graduated candidate needs a real-world experiment — "
+                        f"{title[:60]}"
+                    ),
+                    handle=_handle("structure", r.id),
+                )
+            )
+
     return gaps
 
 

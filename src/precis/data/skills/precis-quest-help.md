@@ -215,8 +215,12 @@ tree rollup (slice 1); **reweighting** (slice 2); **gaps + health** (slice 3,
 cheap+local and *escalates to a frontier review* on a signal; and the
 **allocator** (slice 4d) — `precis quest run` picks the highest-scoring active
 quest by an EWMA bandit (priority × momentum × promise + exploration) under a
-weekly budget, ticks it, and cools cold quests to `dormant`. The autonomous loop
-runs on the melchior agent worker **only when `PRECIS_QUEST_LOOP_ENABLED` is
-set** (dark by default); `precis quest run --force` runs one step by hand.
-Coming: graduation of a strong in-silico candidate to a real experiment (4e).
-Design of record: `docs/proposals/quest-layer.md`.
+weekly budget, ticks it, and cools cold quests to `dormant`; and **graduation**
+(slice 4e) — a candidate that crosses the quest's declared ceiling
+(`meta.graduation = {key, sense, threshold}`) is tagged `needs-experiment`,
+logged as a `milestone` deed, and surfaced as a `needs-experiment` gap (★ in
+`view='frontier'`) — the in-silico ceiling, a call to a human/lab. The whole
+autonomous loop runs on the melchior agent worker **only when
+`PRECIS_QUEST_LOOP_ENABLED` is set** (dark by default); `precis quest run
+--force` runs one step by hand. The quest layer is complete. Design of record:
+`docs/proposals/quest-layer.md`.

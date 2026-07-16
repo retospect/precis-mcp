@@ -99,7 +99,8 @@ def _cmd_tick(store: Store, args: argparse.Namespace) -> None:
         msg += (
             f", {outcome.candidates_created} candidate(s), "
             f"{outcome.sims_dispatched} sim(s), "
-            f"{outcome.results_harvested} result(s), {outcome.ruled_out} ruled-out"
+            f"{outcome.results_harvested} result(s), {outcome.ruled_out} ruled-out, "
+            f"{outcome.graduated} graduated"
         )
     if outcome.cost_usd:
         msg += f", ${outcome.cost_usd:.4f}"

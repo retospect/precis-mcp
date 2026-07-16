@@ -71,14 +71,13 @@ structure — `quest` kind + `serves` + logbook + tree rollup, main
 `2ce51f5f`), 2 (reweighting — priority down the `serves` DAG into
 rotation/acquisition/reading, `src/precis/quest/reweight.py`, main
 `8a61716f`), 3 (gaps + health — `src/precis/quest/gaps.py`,
-`view='gaps'`/`id='/gaps'`), and rungs **4a–4d** (dossier + research tick —
+`view='gaps'`/`id='/gaps'`), and **all of slice 4** (rungs 4a–4e: dossier + research tick —
 `tick.py`/`dossier.py`, migration 0067; compute dispatch + Pareto frontier —
 `compute.py`/`frontier.py`; local↔frontier cascade — `cascade.py`; allocator —
-`allocator.py`) are **shipped, not deployed**. Skill `precis-quest-help`; tests
-`tests/test_quest.py` + `tests/test_quest_reweight.py` +
-`tests/test_quest_gaps.py` + `tests/test_quest_tick.py` +
-`tests/test_quest_compute.py` + `tests/test_quest_cascade.py` +
-`tests/test_quest_allocator.py`.
+`allocator.py`; graduation — `graduate.py`) are **shipped, not deployed**. Skill
+`precis-quest-help`; tests `tests/test_quest*.py` (7 files). **The whole quest
+layer is built — the only steps left are operational (deploy + link real
+quests + flip `PRECIS_QUEST_LOOP_ENABLED`).**
 
 **Operational — do these to make the shipped slices actually steer:**
 
@@ -164,9 +163,13 @@ as five dark rungs:
   (Q1) resolved by construction (candidates content-addressed per quest → billed
   once). Tests `tests/test_quest_allocator.py`. **THIS is the dark→live switch:
   set `PRECIS_QUEST_LOOP_ENABLED` on the melchior agent worker to run the loop.**
-- **4e — ceiling awareness** — *not started.* A strong in-silico candidate
-  *graduates* to "needs a real-world experiment" — a slice-3 gap for a
-  human/lab, not pretended-closed.
+- **4e — ceiling awareness** — **BUILT + shipped** (not deployed).
+  `src/precis/quest/graduate.py`. A quest declares its ceiling in
+  `meta.graduation` (`{key, sense, threshold}`); `graduate_frontier` tags a
+  frontier candidate that crosses it `needs-experiment` + logs a `milestone`
+  (deed), idempotently. Slice-3 gaps surface it as a `needs-experiment` item; a
+  ★ marks it in `view='frontier'`. Wired into `run_compute_step`. No rule →
+  no-op (dark until a quest opts in). Tests `tests/test_quest_graduate.py`.
 
 **Deferred within slice 2 (reweighting):**
 

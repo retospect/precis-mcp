@@ -45,6 +45,7 @@ class ComputeStep:
     results_harvested: int
     ruled_out: int
     notes: list[str]
+    graduated: int = 0
 
 
 def _canonical_spec(spec: dict[str, Any]) -> str:
@@ -253,12 +254,22 @@ def run_compute_step(
 
     harvest = harvest_measures(store, quest_id, by=by)
     notes.extend(harvest.notes)
+
+    # Graduate any frontier candidate that has crossed the quest's ceiling
+    # (slice 4e) — a deed + a real-world-experiment gap for a human.
+    from precis.quest.graduate import graduate_frontier
+
+    graduated = graduate_frontier(store, quest_id, by=by)
+    if graduated:
+        notes.append(f"graduated {len(graduated)} candidate(s) → needs-experiment")
+
     return ComputeStep(
         candidates_created=created,
         sims_dispatched=dispatched,
         results_harvested=harvest.results_harvested,
         ruled_out=harvest.ruled_out,
         notes=notes,
+        graduated=len(graduated),
     )
 
 
