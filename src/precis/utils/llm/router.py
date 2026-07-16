@@ -281,6 +281,12 @@ class LlmResult:
     * ``model`` / ``tier`` — what actually ran, for attribution.
     * ``error`` — ``None`` on success; a message on a caught transport
       failure (see :func:`dispatch`).
+    * ``paused`` — ``True`` when ``error`` is a *window-scoped breaker trip*
+      (the daily/hourly dollar cap or the claude-OAuth quota snapshot), not a
+      genuine transport failure. A pinned pass reads this to **skip** (a no-op
+      that clears when the window rolls off) instead of recording a failure and
+      re-attempting every cycle — the spin that flooded the FAILED-PASSES panel
+      with 100k+ structural "failures" while the budget was capped.
     """
 
     text: str
@@ -291,6 +297,7 @@ class LlmResult:
     error: str | None = None
     duration_s: float | None = None
     data: dict[str, Any] | None = None
+    paused: bool = False
 
 
 def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
@@ -680,6 +687,9 @@ def dispatch(req: LlmRequest) -> LlmResult:
 
     trip = _breaker.gate_tier(req.tier, transport=transport.value)
     if trip is not None:
+        # A breaker trip is a window-scoped *pause*, not a failure — flag it so a
+        # pinned pass skips (and re-runs when the window clears) rather than
+        # spinning: record-failed → re-claim → re-trip every worker cycle.
         return LlmResult(
             text="",
             cost_usd=None,
@@ -687,6 +697,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
             model=model,
             tier=req.tier,
             error=trip,
+            paused=True,
         )
     # Window admission (llm-catalog slice 2): refuse a doomed (context, model)
     # pairing loudly — with the numbers — after the budget gate, before spending

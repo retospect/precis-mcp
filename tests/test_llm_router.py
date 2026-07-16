@@ -349,6 +349,27 @@ def test_dispatch_folds_transport_error(monkeypatch: pytest.MonkeyPatch) -> None
     assert out.cost_usd is None
 
 
+def test_dispatch_breaker_trip_is_flagged_paused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A breaker trip folds into the normalized result with paused=True so a
+    # pinned pass can skip (window-scoped pause) rather than record a failure.
+    def _boom(*a: object, **kw: object) -> AgentResult:
+        raise AssertionError("provider must not run when the breaker trips")
+
+    monkeypatch.setattr(router, "call_claude_agent", _boom)
+    monkeypatch.setattr(
+        "precis.budget.breaker.gate_tier",
+        lambda *a, **kw: "budget: daily cap $20.00 reached ($85.06 spent) — paused",
+    )
+
+    out = dispatch(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
+
+    assert out.paused is True
+    assert out.error is not None and "daily cap" in out.error
+    assert out.text == ""
+
+
 def test_dispatch_explicit_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 

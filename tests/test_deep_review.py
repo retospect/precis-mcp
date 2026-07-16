@@ -195,3 +195,38 @@ def test_pass_records_failure_on_llm_error(
             """,
         ).fetchone()
     assert n is not None and int(n[0]) == 0
+
+
+def test_pass_skips_on_breaker_pause(
+    handler: TodoHandler,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A window-scoped budget/quota trip is a pause, not a failure: the reviewer
+    # skips (claimed/ok/failed all 0, no digest, model never invoked) so a capped
+    # budget doesn't spin failures onto the FAILED-PASSES panel.
+    monkeypatch.setenv("PRECIS_DEEP_REVIEW", "1")
+    handler.put(text="Strategic C", tags=["level:strategic"])
+
+    monkeypatch.setattr(
+        "precis.budget.breaker.gate_tier",
+        lambda *a, **kw: "budget: daily cap $20.00 reached ($85.06 spent) — paused",
+    )
+
+    def _boom(*a, **kw):
+        raise AssertionError("model must not be called while paused")
+
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _boom)
+    result = run_deep_review_pass(store)
+    assert result.claimed == 0 and result.ok == 0 and result.failed == 0
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            """
+            SELECT count(*) FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'memory' AND r.deleted_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'tier:deep'
+            """,
+        ).fetchone()
+    assert n is not None and int(n[0]) == 0

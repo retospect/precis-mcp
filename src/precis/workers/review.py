@@ -216,6 +216,17 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         )
     )
     if res.error:
+        if res.paused:
+            # Window-scoped breaker trip (dollar cap / claude-OAuth quota), not a
+            # failure. Skip silently — the breaker already raised the one-shot
+            # budget/quota alert on the trip transition, and the digest is not
+            # deduped, so we re-attempt for free once the window rolls off. This
+            # is the fix for the 106k structural "failures" the capped budget
+            # spun onto the FAILED-PASSES panel.
+            log.debug(
+                "review[%s]: paused by breaker; skipping (%s)", reviewer.name, res.error
+            )
+            return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
         log.error("review[%s]: claude agent failed: %s", reviewer.name, res.error)
         return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
     digest_id = _write_digest(store, reviewer, res.text, res.cost_usd)

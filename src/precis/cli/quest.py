@@ -123,6 +123,13 @@ def _cmd_run(store: Store, args: argparse.Namespace) -> None:
         )
         return
     if summary["picked"] is None:
+        if summary.get("status") == "paused":
+            print(
+                f"quest run: cooled {summary['cooled']}, a quest was eligible but "
+                "the budget breaker is paused (dollar cap / claude-OAuth quota) — "
+                "skipped; retries when the window rolls off"
+            )
+            return
         print(f"quest run: cooled {summary['cooled']}, no quest eligible to tick")
         return
     print(

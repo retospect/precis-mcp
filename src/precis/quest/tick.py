@@ -70,7 +70,7 @@ def quest_loop_enabled() -> bool:
 @dataclass(frozen=True)
 class QuestTickOutcome:
     quest_id: int
-    status: str  # "succeeded" | "failed"
+    status: str  # "succeeded" | "failed" | "paused"
     logbook_added: int
     dossier_rewritten: bool
     cost_usd: float | None
@@ -347,6 +347,14 @@ def run_quest_tick(
     res = disp(LlmRequest(tier=resolved_tier, prompt=prompt, source="quest_tick"))
     cost = getattr(res, "cost_usd", None)
     if getattr(res, "error", None):
+        # A window-scoped breaker trip (dollar cap / claude-OAuth quota) is a
+        # pause, not a failure: report "paused" so the allocator skips it (no
+        # pick recorded, no panel "failed") and re-picks once the window clears —
+        # instead of burning a tick + a FAILED-PASSES row every worker cycle.
+        if getattr(res, "paused", False):
+            return QuestTickOutcome(
+                quest_id, "paused", 0, False, cost, f"paused: {res.error}"
+            )
         return QuestTickOutcome(
             quest_id, "failed", 0, False, cost, f"llm error: {res.error}"
         )

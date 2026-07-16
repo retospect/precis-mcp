@@ -130,3 +130,23 @@ class TestAllocatorPass:
         assert calls == [q]
         meta = store.get_ref(kind="quest", id=q).meta
         assert meta["picks"] == 1 and "ewma_score" in meta
+
+    def test_breaker_pause_skips_without_recording_pick(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # A paused tick (window-scoped breaker trip) must not burn the pick:
+        # picked=None (so the dispatch pass reports a skip, not a failure) and
+        # no picks/EWMA bump (so a capped window doesn't prematurely cool it).
+        from precis.quest import tick as tick_mod
+
+        def _paused_tick(_store: Any, qid: int, **_kw: Any) -> Any:
+            return SimpleNamespace(
+                status="paused", quest_id=qid, note="paused: budget cap reached"
+            )
+
+        monkeypatch.setattr(tick_mod, "run_quest_tick", _paused_tick)
+        q = _mk_quest(store, "A striving", prio="PRIO:urgent")
+        out = alloc.run_allocator_pass(store, enabled=True)
+        assert out["picked"] is None and out["status"] == "paused"
+        meta = store.get_ref(kind="quest", id=q).meta
+        assert "picks" not in meta and "ewma_score" not in meta

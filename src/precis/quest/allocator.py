@@ -32,6 +32,7 @@ dark; ``precis quest run`` invokes it manually.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -43,6 +44,8 @@ from precis.quest.logbook import LOG_KIND, append_entry
 
 if TYPE_CHECKING:
     from precis.store import Store
+
+log = logging.getLogger(__name__)
 
 #: EWMA smoothing on the raw bandit score (higher = more reactive).
 EWMA_ALPHA = float(os.environ.get("PRECIS_QUEST_EWMA_ALPHA", "0.3"))
@@ -242,6 +245,22 @@ def run_allocator_pass(
     from precis.quest import tick as tick_mod
 
     outcome = tick_mod.run_quest_tick(store, pick.quest_id, compute=compute)
+    if outcome.status == "paused":
+        # Window-scoped breaker pause, not a real tick. Don't burn the pick
+        # (no EWMA/pick bump → no premature cooling) and report a skip so the
+        # dispatch pass leaves the FAILED-PASSES panel clean. Surface the reason
+        # the tick would otherwise discard, so a capped window is observable.
+        log.info(
+            "quest allocator: quest %d paused by breaker; skipping (%s)",
+            pick.quest_id,
+            outcome.note,
+        )
+        return {
+            "enabled": True,
+            "cooled": len(cooled),
+            "picked": None,
+            "status": "paused",
+        }
     _record_pick(store, pick.quest_id, pick.raw)
     return {
         "enabled": True,

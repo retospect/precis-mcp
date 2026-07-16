@@ -40,11 +40,14 @@ def _fake_dispatch(
     text: str = "",
     error: str | None = None,
     cost: float | None = 0.01,
+    paused: bool = False,
 ) -> Any:
     """A stand-in for router.dispatch returning a canned LlmResult-shaped obj."""
 
     def _d(_req: Any) -> Any:
-        return SimpleNamespace(data=payload, text=text, error=error, cost_usd=cost)
+        return SimpleNamespace(
+            data=payload, text=text, error=error, cost_usd=cost, paused=paused
+        )
 
     return _d
 
@@ -140,6 +143,22 @@ class TestQuestTick:
         out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(None, error="boom"))
         assert out.status == "failed" and "boom" in out.note
         # nothing written
+        assert not [
+            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+        ]
+
+    def test_breaker_pause_is_not_a_failure(self, store: Any) -> None:
+        # A window-scoped breaker trip (paused=True) is a pause, not a failure:
+        # status is "paused" and nothing is written to the logbook.
+        qid = _mk_quest(store, "A striving")
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(
+                None, error="budget: daily cap reached", paused=True
+            ),
+        )
+        assert out.status == "paused" and "paused" in out.note
         assert not [
             b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
         ]
