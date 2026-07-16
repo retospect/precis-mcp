@@ -68,13 +68,20 @@ plan-ledger injection + claim-family grouping are all on main. Design-of-record:
   (`ingest_patent` no longer clobbers a ref another source populated when OPS
   yields no blocks). 20 true stubs remain OPS-dark (correctly still
   awaiting-fulltext). Shipped `710c9a98` + `67a07618`, deployed.
-- **Split OPS multi-claim blobs into per-claim marks** *(polish, open.)* For the
-  15 EP/WO/US patents, `parse_patent` returns the OPS claims XML as one text when
-  the claims aren't discrete `<claim>` elements, so the FTO digest shows a single
-  ~30 KB verbatim blob per patent (all claims visible, but not per-claim
-  addressable, and every one flagged "independent"). Split the blob on claim
-  numbering + run `classify_claim` per claim so the 15 match the google patents'
-  per-claim granularity. Owner: `handlers/_patent_xml.py` (claim extraction).
+- **Split OPS multi-claim blobs into per-claim marks — DONE (2026-07-16).** OPS
+  returns claims as arbitrary `<claim-text>` fragments (a single `<claim>` often
+  holds the whole claims section, one claim spanning several fragments), so
+  `_extract_claims` collapsed a 20-claim patent into one ~30 KB verbatim blob.
+  Fixed with `_split_claim_run` (`handlers/_patent_xml.py`): split each block on
+  the **sequential claim number** (monotonic 1,2,3,…, uppercase-follow lookahead,
+  cross-reference/`Figure N.`/`claim N` preceder guard, section-header strip) —
+  never re-splitting claims OPS already delivered as proper per-claim `<claim>`
+  elements (the fixture path). Validated on live OPS (wo2021081641a1 → 42 claims,
+  ep4207001a1 → 15, wo2025165890a1 → 30) then re-ingested the 15 in prod: **259
+  per-claim OPS blocks** (29 independent / 230 dependent), each with
+  `classify_claim`-derived structure (e.g. "any preceding claim" → depends on all
+  earlier). The FTO digest now spans **~80 patents per-claim** (259 OPS + 858
+  google `patent_claim` chunks). Shipped `a03fe2c5`, deployed.
 - **Slice 7 — visual claim tree-eye + interactive web claims view** *(feature,
   deferred.)* The FTO digest today is a `working_set` (reader eyes) injected into
   the planner prompt — text, not a rendered tree. A full visual claim-family tree
