@@ -73,6 +73,13 @@ class Workspace:
     # first-class field rather than an ``extra`` key so it round-trips
     # explicitly and shows up in the projects dashboard.
     brief: str = ""
+    # Document genre (the shipped "+ New draft" picker value): ``patent`` |
+    # ``paper`` | ``proposal`` | ``report`` | ``review`` | ``manufacturing``
+    # | ``article`` | "". A first-class field (not an ``extra`` key) because
+    # both the planner (genre-specific writing loop) and export (genre
+    # citation/bibliography conventions) branch on it — see
+    # ``docs/design/patent-authoring-loop.md``. Empty = the neutral default.
+    doc_type: str = ""
     # Forward-compatible storage for extra workspace metadata
     # (e.g., author, title, build_command overrides).
     extra: dict[str, Any] = field(default_factory=dict)
@@ -101,7 +108,7 @@ class Workspace:
         ws = meta.get("workspace")
         if not ws or not isinstance(ws, dict):
             return None
-        known = {"path", "format", "entrypoint", "style", "brief"}
+        known = {"path", "format", "entrypoint", "style", "brief", "doc_type"}
         extra = {k: v for k, v in ws.items() if k not in known}
         try:
             return cls(
@@ -110,6 +117,7 @@ class Workspace:
                 entrypoint=str(ws.get("entrypoint", "main.tex")),
                 style=str(ws.get("style", "")),
                 brief=str(ws.get("brief", "")),
+                doc_type=str(ws.get("doc_type", "")),
                 extra=extra,
             )
         except (KeyError, ValueError) as exc:
@@ -127,6 +135,8 @@ class Workspace:
             out["style"] = self.style
         if self.brief:
             out["brief"] = self.brief
+        if self.doc_type:
+            out["doc_type"] = self.doc_type
         out.update(self.extra)
         return out
 

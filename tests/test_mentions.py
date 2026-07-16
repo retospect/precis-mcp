@@ -9,6 +9,8 @@ by the DB-backed tests in ``test_memory.py``.
 
 from __future__ import annotations
 
+import re
+
 from precis.utils import mentions
 
 # ---------------------------------------------------------------------------
@@ -63,18 +65,20 @@ class _FakeRef:
 
 
 class _FakeStore:
-    """Minimal store double: numeric id lookup + cite_key / pub_id → ref_id."""
+    """Minimal store double: numeric id lookup + cite_key → ref_id, plus the
+    patent DOCDB-slug regex path (``patent_slugs`` maps a stored patent
+    ``cite_key`` / DOCDB slug → ref_id)."""
 
     def __init__(
         self,
         refs: dict[int, _FakeRef],
         cite_keys: dict[str, int],
-        pub_ids: dict[str, int] | None = None,
+        patent_slugs: dict[str, int] | None = None,
     ) -> None:
         self._refs = refs
         self._cite = cite_keys
-        # Keyed upper-case: the pub_id resolver matches case-insensitively.
-        self._pub = {k.upper(): v for k, v in (pub_ids or {}).items()}
+        # A patent is addressed by its lowercased DOCDB slug (its cite_key).
+        self._patent = {k.lower(): v for k, v in (patent_slugs or {}).items()}
         self.pool = self  # resolve_handle_ref does `store.pool.connection()`
 
     # -- cite_key lookup path ------------------------------------------
@@ -92,10 +96,20 @@ class _FakeStore:
 
     def execute(self, _sql: str, params: tuple):
         ident = params[0]
-        # Route on the SQL: the patent path filters id_kind='pub_id' with a
-        # case-insensitive upper() compare; the legacy path is cite_key/pub_id.
-        if "upper(id_value)" in _sql:
-            store_rid = self._pub.get(str(ident).upper())
+        # Route on the SQL: the patent path joins ``r.kind = 'patent'`` and
+        # POSIX-regex-matches the DOCDB slug; the legacy path is cite_key.
+        if "r.kind = 'patent'" in _sql:
+            store_rid = None
+            for slug in sorted(self._patent):  # deterministic: lowest slug
+                rid = self._patent[slug]
+                ref = self._refs.get(rid)
+                if ref is None or getattr(ref, "deleted_at", None) is not None:
+                    continue
+                if getattr(ref, "kind", None) != "patent":
+                    continue
+                if re.match(str(ident), slug):
+                    store_rid = rid
+                    break
         else:
             store_rid = self._cite.get(ident)
 
@@ -159,21 +173,34 @@ def test_resolve_dedups_repeated_target() -> None:
 
 
 def test_bracketed_patent_pubnum_links_case_insensitively() -> None:
-    # Memory cites the public number lower-cased; the pub_id row is upper.
+    # Memory cites the public number lower-cased; the stored DOCDB slug is
+    # matched case-insensitively.
     store = _FakeStore(
         refs={70: _FakeRef(70, kind="patent")},
         cite_keys={},
-        pub_ids={"US9927397B1": 70},
+        patent_slugs={"us9927397b1": 70},
     )
-    targets = mentions.resolve_link_targets(store, "see [us9927397b1] for the method")
+    targets = mentions.resolve_link_targets(store, "see [US9927397B1] for the method")
     assert [(t.dst_ref_id, t.dst_pos) for t in targets] == [(70, None)]
+
+
+def test_bracketed_pubnum_without_kind_code_matches_slug() -> None:
+    # A citation writes the bare number (no kind code); the stored slug
+    # carries the grant suffix. ``[US2943737]`` → ``us2943737a``.
+    store = _FakeStore(
+        refs={71: _FakeRef(71, kind="patent")},
+        cite_keys={},
+        patent_slugs={"us2943737a": 71},
+    )
+    targets = mentions.resolve_link_targets(store, "as in [US2943737], the oil…")
+    assert [(t.dst_ref_id, t.dst_pos) for t in targets] == [(71, None)]
 
 
 def test_bracketed_pubnum_dedups_across_case() -> None:
     store = _FakeStore(
         refs={70: _FakeRef(70, kind="patent")},
         cite_keys={},
-        pub_ids={"US9927397B1": 70},
+        patent_slugs={"us9927397b1": 70},
     )
     # Two mentions in different case resolve to the same patent → one edge.
     targets = mentions.resolve_link_targets(
@@ -183,29 +210,29 @@ def test_bracketed_pubnum_dedups_across_case() -> None:
 
 
 def test_unknown_bracketed_pubnum_stays_literal() -> None:
-    # No pub_id row → no link (the over-fire gate). Prose like [US0000]
+    # No patent row → no link (the over-fire gate). Prose like [US0000]
     # must not spuriously link.
-    store = _FakeStore(refs={}, cite_keys={}, pub_ids={})
+    store = _FakeStore(refs={}, cite_keys={}, patent_slugs={})
     assert mentions.resolve_link_targets(store, "the [US0000] filing") == []
 
 
 def test_bracketed_pubnum_on_non_patent_kind_is_dropped() -> None:
-    # A same-shaped pub_id belonging to another kind must not masquerade
-    # as a patent link.
+    # A same-shaped slug belonging to another kind must not masquerade
+    # as a patent link (the SQL join filters r.kind = 'patent').
     store = _FakeStore(
         refs={70: _FakeRef(70, kind="finding")},
         cite_keys={},
-        pub_ids={"US9927397B1": 70},
+        patent_slugs={"us9927397b1": 70},
     )
     assert mentions.resolve_link_targets(store, "[us9927397b1]") == []
 
 
 def test_unbracketed_pubnum_never_links() -> None:
     # Only the bracketed form is a link intent; bare prose stays literal
-    # even when the pub_id exists (avoids over-firing on `US1234` text).
+    # even when the patent exists (avoids over-firing on `US1234` text).
     store = _FakeStore(
         refs={70: _FakeRef(70, kind="patent")},
         cite_keys={},
-        pub_ids={"US9927397B1": 70},
+        patent_slugs={"us9927397b1": 70},
     )
     assert mentions.resolve_link_targets(store, "US9927397B1 was granted") == []

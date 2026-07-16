@@ -594,6 +594,46 @@ def _render_project_brief(store: Store, ref_id: int) -> str:
     return f"## Project context ({slug})\n\n{brief}"
 
 
+def _render_patent_authoring(store: Store, ref_id: int) -> str:
+    """The patent-authoring loop block (gated by ``is_patent``).
+
+    A patent is written *against the prior art*, so this leads the tick with
+    the freedom-to-operate loop: sweep prior art → ingest → sync register →
+    claim around what is already claimed → log the scoping decisions. The
+    prior-art claims themselves arrive via the tick's working set (the
+    ``patent_digest`` claims digest stamped on ``meta.working_set``); this
+    block is the *methodology* that reads them. See
+    ``docs/design/patent-authoring-loop.md`` and the ``patent-*`` skills."""
+    return (
+        "## Patent authoring — write against the prior art\n\n"
+        "You are drafting a **patent**. Do not write in a vacuum; each tick:\n\n"
+        "1. **Sweep prior art.** Derive queries from the current description "
+        "and run `search(kind='patent', source='remote', q='…')` — it returns "
+        "EPO OPS hits you do not already hold. For each *material* hit, "
+        "`get(kind='patent', id='<docdb-id>')` to ingest it (synchronous). "
+        "Keep pulls bounded (a few per tick — each `get` persists a real "
+        "patent); say what you ingested in your summary.\n"
+        "2. **Sync the register.** Revise the description so its terminology "
+        "matches the patents you pulled — a patent should read like the "
+        "field's patents. Skills: `get(kind='skill', id='patent-description')`, "
+        "`patent-prior-art`.\n"
+        "3. **Claim against freedom to operate.** Before claiming a scope, "
+        "check the prior-art **claims** (your working set below shows them, "
+        "independent claims verbatim): *if a scope is already claimed, you "
+        "cannot claim it* — design around it. Reference a prior-art patent by "
+        "its patent-chunk handle `[pk…]` (**not** `[pc…]`, which is a paper). "
+        "Skill: `get(kind='skill', id='patent-claim')`.\n"
+        "4. **Keep the scoping ledger.** Maintain a `plan` for this project as "
+        "a freedom-to-operate record. **Read it first** "
+        "(`get(kind='plan', id='<project-slug>')`) so you do not re-propose "
+        "scope already ruled out. When you decline or narrow a claim because a "
+        "specific prior-art claim blocks it, log the decision pointing at that "
+        "claim: `put(kind='plan', id='<slug>', text='considered X; narrowed "
+        "because [pk…~n] already claims it', status='done')`. This ledger is "
+        "internal reasoning — it never exports.\n"
+    )
+
+
 def _render_seeds(store: Store, ref_id: int) -> str:
     """Surface the human's seed reading-list for this project.
 
@@ -1364,6 +1404,11 @@ def _m_project(ctx: AssemblyContext) -> str:
     return _render_project_brief(ctx.store, ctx.ref_id)
 
 
+def _m_patent(ctx: AssemblyContext) -> str:
+    assert ctx.store is not None
+    return _render_patent_authoring(ctx.store, ctx.ref_id)
+
+
 def _m_draft(ctx: AssemblyContext) -> str:
     assert ctx.store is not None
     return _render_draft_identity(ctx.store, ctx.ref_id)
@@ -1783,6 +1828,12 @@ _VARIABLE_MODULES: list[Module] = [
     Module(id="identity", layer=Layer.VARIABLE, build=_m_identity),
     Module(id="ancestry", layer=Layer.VARIABLE, build=_m_ancestry),
     Module(id="project", layer=Layer.VARIABLE, build=_m_project),
+    Module(
+        id="patent",
+        layer=Layer.VARIABLE,
+        build=_m_patent,
+        applies_when="is_patent",
+    ),
     Module(id="requirements", layer=Layer.VARIABLE, build=_m_requirements),
     Module(id="seeds", layer=Layer.VARIABLE, build=_m_seeds),
     Module(id="draft", layer=Layer.VARIABLE, build=_m_draft),

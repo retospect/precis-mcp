@@ -85,6 +85,31 @@ def has_review(ctx: AssemblyContext) -> bool:
     return _review_kind(ctx) is not None
 
 
+def is_patent(ctx: AssemblyContext) -> bool:
+    """True when this tick writes a patent (``meta.workspace.doc_type ==
+    'patent'``, cascaded onto the todo).
+
+    Gates the patent-authoring block: the prior-art sweep→ingest loop, the
+    freedom-to-operate claims view, and the scoping-decision ledger
+    convention (docs/design/patent-authoring-loop.md). Specialises a generic
+    ``plan_tick`` in the variable layer — no separate job_type (like
+    reviewer / backfill mode). Memoised under ``extras['is_patent']``."""
+    if "is_patent" in ctx.extras:
+        return ctx.extras["is_patent"]  # type: ignore[no-any-return]
+    result = False
+    if ctx.store is not None:
+        from precis.utils.workspace import Workspace
+
+        with ctx.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s", (ctx.ref_id,)
+            ).fetchone()
+        ws = Workspace.from_meta(row[0]) if row else None
+        result = ws is not None and ws.doc_type == "patent"
+    ctx.extras["is_patent"] = result
+    return result
+
+
 def _backfill_targets(ctx: AssemblyContext) -> list[str]:
     """The draft chunk handles this source-backfill tick works on, memoised.
 
@@ -134,6 +159,7 @@ PREDICATES: dict[str, Callable[[AssemblyContext], bool]] = {
     "has_styled_anchor": has_styled_anchor,
     "has_review": has_review,
     "has_backfill": has_backfill,
+    "is_patent": is_patent,
 }
 
 
@@ -156,4 +182,5 @@ __all__ = [
     "has_backfill",
     "has_review",
     "has_styled_anchor",
+    "is_patent",
 ]

@@ -304,36 +304,45 @@ def resolve_handle_target(store: Any, token: str) -> LinkTarget | None:
 def resolve_patent_pubnum(store: Any, token: str) -> LinkTarget | None:
     """A patent public number (``US9927397B1``) → its patent ``LinkTarget``.
 
-    Looks the token up in ``ref_identifiers`` under ``id_kind='pub_id'``
-    (case-insensitively — memories cite it lower-cased), and emits a link
-    only when the row resolves to a **live patent** ref. The kind guard
-    keeps a same-shaped ``pub_id`` on another kind from being mistaken for
-    a patent, and the DB hit is the over-fire gate: an unknown bracketed
-    ``[US0000]`` finds no row and stays literal (gripe #48807). ``None``
-    on no row / soft-deleted / non-patent, so the caller drops it.
+    A patent is addressed by its **DOCDB slug** — the lowercased
+    publication number, stored as its ``ref_identifiers`` ``cite_key``
+    (e.g. ``us9927397b1``); patents carry **no** ``pub_id`` row (that
+    id_kind belongs to papers/findings), so an earlier ``pub_id`` lookup
+    matched nothing. We match the normalised token against the patent
+    ``cite_key`` instead, tolerating a **missing kind code** — a citation
+    usually writes the bare number (``US2943737``) while the stored slug
+    carries the grant/publication kind suffix (``us2943737a``). The regex
+    ``^<tok>([a-z][0-9]?)?$`` anchors so ``us2943737`` matches
+    ``us2943737a`` / ``us2943737b1`` but never a longer *number*
+    (``us29437371``). Emits a link only when a **live patent** matches;
+    ``None`` otherwise, so prose like ``[US0000]`` stays literal
+    (gripe #48807). When both an application (A) and a grant (B) publish
+    under the same number and the token omits the kind code, the match is
+    deterministic (lowest DOCDB slug) — cite with the kind code to pin one.
     """
-    val = token.strip()
+    # The token comes from ``PATENT_PUBNUM_PATTERN`` (letters + digits
+    # only, no separators), so lowercasing is the whole normalisation and
+    # the value is regex-safe without escaping.
+    val = token.strip().lower()
     if not val:
         return None
     try:
         with store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT ref_id FROM ref_identifiers "
-                "WHERE id_kind = 'pub_id' AND upper(id_value) = upper(%s) LIMIT 1",
-                (val,),
+                "SELECT r.ref_id FROM refs r "
+                "JOIN ref_identifiers ri "
+                "  ON ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
+                "WHERE r.kind = 'patent' AND r.deleted_at IS NULL "
+                "  AND lower(ri.id_value) ~ %s "
+                "ORDER BY lower(ri.id_value) LIMIT 1",
+                ("^" + val + "([a-z][0-9]?)?$",),
             ).fetchone()
     except Exception:
-        log.debug("mentions: pub_id lookup failed for %r", val, exc_info=True)
+        log.debug("mentions: patent cite_key lookup failed for %r", val, exc_info=True)
         return None
     if row is None:
         return None
-    rid = int(row[0])
-    ref = store.fetch_refs_by_ids([rid]).get(rid)
-    if ref is None or getattr(ref, "deleted_at", None) is not None:
-        return None
-    if getattr(ref, "kind", None) != "patent":
-        return None
-    return LinkTarget(rid, None)
+    return LinkTarget(int(row[0]), None)
 
 
 def _patent_pubnum_tokens(body: str) -> list[str]:

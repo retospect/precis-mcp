@@ -31,9 +31,14 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from precis.embedder import Embedder
 from precis.errors import NotFound
+from precis.handlers._patent_claims import (
+    DESCRIPTION_BLOCK_META,
+    claim_block_meta,
+)
 from precis.handlers._patent_ops import (
     OpsClientProto,
     OpsNotFound,
@@ -222,8 +227,14 @@ def ingest_patent(
 
     # Build block payloads. Description first (pos 0..N1), claims
     # after (pos N1+1..N2). Each gets density-classified; embeddings
-    # are filled below if an embedder is configured.
+    # are filled below if an embedder is configured. Each block also
+    # carries a ``chunks.meta`` marker (``patent_block`` = description |
+    # claim) so ``view='claims'`` can retrieve claims on their own and
+    # the freedom-to-operate loop can address a single prior-art claim
+    # (docs/design/patent-authoring-loop.md). Claim blocks additionally
+    # record the derived independent/dependent structure.
     block_seeds: list[ParsedBlock] = []
+    block_metas: list[dict[str, Any]] = []
     for txt in parsed.description_paragraphs:
         block_seeds.append(
             ParsedBlock(
@@ -232,7 +243,8 @@ def ingest_patent(
                 density=classify_density(txt),
             )
         )
-    for txt in parsed.claim_texts:
+        block_metas.append(dict(DESCRIPTION_BLOCK_META))
+    for claim_idx, txt in enumerate(parsed.claim_texts):
         block_seeds.append(
             ParsedBlock(
                 text=txt,
@@ -240,6 +252,7 @@ def ingest_patent(
                 density=classify_density(txt),
             )
         )
+        block_metas.append(claim_block_meta(txt, claim_idx + 1))
 
     # Embeddings are populated lazily by the embed:bge-m3 worker
     # (ADR 0007 / AGENTS.md ingest-guarantees). Patent ingest used
@@ -291,6 +304,7 @@ def ingest_patent(
                     embedding=b.embedding,
                     density=b.density,
                     token_count=len(b.text.split()),
+                    meta=dict(block_metas[i]),
                 )
                 for i, b in enumerate(block_seeds)
             ]

@@ -539,14 +539,24 @@ class PatentHandler(Handler):
             blocks = self.store.list_blocks_for_ref(ref.id)
             if not blocks:
                 return Response(body=f"no body blocks stored for {slug}")
-            # Phase 1: dump every body block under whichever section
-            # the caller asked for. A future cut should split
-            # description vs claims by block density / position
-            # (description in the early third, claims in the last);
-            # for now the pure dump matches what the ingester labels.
+            want = "claim" if view == "claims" else "description"
+            # Blocks ingested since slice 1 carry a ``patent_block`` meta
+            # marker (docs/design/patent-authoring-loop.md); filter to the
+            # requested section, and prefix each claim with its number +
+            # independent/dependent structure. Patents ingested before the
+            # marker have none — fall back to the historical full dump so
+            # they still render (a re-get re-ingests with markers).
+            marked = [b for b in blocks if (b.meta or {}).get("patent_block")]
+            selected = (
+                [b for b in blocks if (b.meta or {}).get("patent_block") == want]
+                if marked
+                else blocks
+            )
             section = "Description" if view == "description" else "Claims"
             lines = [f"# {handle} - {section}"]
-            for b in blocks:
+            for b in selected:
+                if want == "claim" and marked:
+                    lines.append(_claim_header(b.meta or {}))
                 lines.append(b.text)
                 lines.append("")
             return Response(body="\n".join(lines).rstrip())
@@ -753,6 +763,23 @@ def _ops_hit_to_search_hit(hit: OpsHit) -> SearchHit:
         extra_lines=extras,
         dedupe_key=f"patent:{hit.docdb_id}",
     )
+
+
+def _claim_header(meta: dict[str, Any]) -> str:
+    """A one-line structural header for a claim block in the ``claims``
+    view: its number and whether it is independent or which earlier
+    claim(s) it depends on (from the ``patent_block`` marker, slice 1)."""
+    number = meta.get("claim_number")
+    if meta.get("claim_independent"):
+        shape = "independent"
+    else:
+        deps = meta.get("depends_on") or []
+        shape = (
+            "depends on claim " + ", ".join(str(d) for d in deps)
+            if deps
+            else "dependent"
+        )
+    return f"**Claim {number}** ({shape}):"
 
 
 def _format_biblio(ref: Ref, meta: dict[str, Any]) -> str:

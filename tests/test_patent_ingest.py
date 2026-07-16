@@ -133,6 +133,51 @@ class TestIngestFirstCall:
         endpoints = {call[0] for call in fake_ops.calls}
         assert endpoints == {"biblio", "description", "claims"}
 
+
+class TestClaimMarking:
+    """Slice 1: each block carries a ``patent_block`` meta marker, and
+    claim blocks record their independent/dependent structure
+    (docs/design/patent-authoring-loop.md)."""
+
+    def _ingest(self, store: Store, fake_ops: FakeOpsClient, raw_root: Path) -> object:
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=fake_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+        )
+        ref = store.get_ref(kind="patent", id="ep1234567b1")
+        assert ref is not None
+        return ref
+
+    def test_blocks_are_marked_description_then_claims(
+        self, store: Store, fake_ops: FakeOpsClient, raw_root: Path
+    ) -> None:
+        ref = self._ingest(store, fake_ops, raw_root)
+        blocks = store.list_blocks_for_ref(ref.id)  # type: ignore[attr-defined]
+        kinds = [(b.meta or {}).get("patent_block") for b in blocks]
+        # 4 description paragraphs first, then 3 claims.
+        assert kinds == ["description"] * 4 + ["claim"] * 3
+
+    def test_claim_structure_recorded(
+        self, store: Store, fake_ops: FakeOpsClient, raw_root: Path
+    ) -> None:
+        ref = self._ingest(store, fake_ops, raw_root)
+        claims = [
+            b.meta
+            for b in store.list_blocks_for_ref(ref.id)  # type: ignore[attr-defined]
+            if (b.meta or {}).get("patent_block") == "claim"
+        ]
+        # Claim 1 independent; claims 2 and 3 each depend on claim 1.
+        assert [c["claim_number"] for c in claims] == [1, 2, 3]
+        assert claims[0]["claim_independent"] is True
+        assert claims[0]["depends_on"] == []
+        assert claims[1]["claim_independent"] is False
+        assert claims[1]["depends_on"] == [1]
+        assert claims[2]["depends_on"] == [1]
+
     def test_auto_tags_applied(
         self,
         store: Store,

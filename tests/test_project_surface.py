@@ -41,6 +41,21 @@ def test_project_tag_for_path_empty_is_none() -> None:
     assert project_tag_for_path("/") is None
 
 
+def test_workspace_doc_type_round_trips() -> None:
+    # doc_type is a first-class field (planner + export branch on it).
+    ws = Workspace(
+        path="projects/frypat", format="tex", entrypoint="main.tex", doc_type="patent"
+    )
+    assert ws.to_meta()["doc_type"] == "patent"
+    back = Workspace.from_meta({"workspace": ws.to_meta()})
+    assert back is not None
+    assert back.doc_type == "patent"
+    # Absent → empty default, and not emitted.
+    plain = Workspace(path="p", format="tex", entrypoint="main.tex")
+    assert plain.doc_type == ""
+    assert "doc_type" not in plain.to_meta()
+
+
 def test_workspace_project_tag_property() -> None:
     ws = Workspace(path="projects/demo", format="tex", entrypoint="main.tex")
     assert ws.project_tag == "project:demo"

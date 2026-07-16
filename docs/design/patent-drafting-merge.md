@@ -255,7 +255,11 @@ phase leaves the gate green.
    not gated behind the render/numbering work.
 5. *(expansion)* **`patent-prior-art` fetch path** — `[[pc…]]` to patent
    chunks; inline find + fetch on the MCP path; deferred read subtask;
-   IDS view.
+   IDS view. The *active* form of this — the iterative prior-art
+   sweep→ingest loop, the freedom-to-operate claims view, and the
+   scoping-decision ledger — is the **dynamic authoring loop** in
+   [`patent-authoring-loop.md`](patent-authoring-loop.md), which builds
+   on this genre.
 6. *(expansion)* **Patent export conventions** — claim set, drawings
    description, references/IDS in each `render[target]`.
 

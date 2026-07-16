@@ -34,6 +34,13 @@ First `get` for an unknown DOCDB id fetches from OPS, persists, embeds,
 and renders. From then on it's local — `search` lists it (with its
 `pt<id>` handle), and `~chunk` selectors work.
 
+`view='claims'` returns only the claim blocks, each prefixed with its
+number and whether it is **independent** or which earlier claim(s) it
+**depends on** (`view='description'` returns only the description). This
+is the freedom-to-operate reading — the independent claims define the
+scope a new application must design around. (Patents ingested before this
+split render their full body under either view until re-fetched.)
+
 Patent ids only accept the `~` chunk separator. Pass `view=` as a
 kwarg; there is no `slug/view` path form.
 

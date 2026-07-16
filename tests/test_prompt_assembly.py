@@ -483,3 +483,42 @@ def test_planner_backfill_review_phase_instructions(
     # convergence: clean review → done; a real gap reopens find
     assert "STATUS:done" in prompts.user
     assert "BACKFILL_PHASE:find" in prompts.user
+
+
+def test_is_patent_predicate(hub: Hub) -> None:
+    from precis.utils.workspace import Workspace
+
+    ws = Workspace(
+        path="projects/pat", format="tex", entrypoint="main.tex", doc_type="patent"
+    )
+    run = hub.store.insert_ref(kind="todo", slug=None, title="patent tick")
+    hub.store.stamp_ref_meta(run.id, {"workspace": ws.to_meta()})
+    assert P.is_patent(_ctx(hub.store, run.id)) is True
+
+    # A non-patent genre and a plain todo are both False.
+    ws2 = Workspace(
+        path="projects/pap", format="tex", entrypoint="main.tex", doc_type="paper"
+    )
+    run2 = hub.store.insert_ref(kind="todo", slug=None, title="paper tick")
+    hub.store.stamp_ref_meta(run2.id, {"workspace": ws2.to_meta()})
+    assert P.is_patent(_ctx(hub.store, run2.id)) is False
+
+    plain = hub.store.insert_ref(kind="todo", slug=None, title="plain")
+    assert P.is_patent(_ctx(hub.store, plain.id)) is False
+
+
+def test_patent_authoring_block_gated_and_content(hub: Hub) -> None:
+    from precis.utils.workspace import Workspace
+    from precis.workers.planner_prompt import _m_patent
+
+    ws = Workspace(
+        path="projects/pat", format="tex", entrypoint="main.tex", doc_type="patent"
+    )
+    run = hub.store.insert_ref(kind="todo", slug=None, title="patent tick")
+    hub.store.stamp_ref_meta(run.id, {"workspace": ws.to_meta()})
+    block = _m_patent(_ctx(hub.store, run.id))
+    assert "Patent authoring" in block
+    assert "source='remote'" in block  # prior-art sweep
+    assert "[pk…]" in block  # patent handle, not [pc…]
+    assert "freedom to operate" in block.lower()
+    assert "plan" in block.lower()  # scoping ledger

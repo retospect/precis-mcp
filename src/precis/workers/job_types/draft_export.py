@@ -84,6 +84,22 @@ def _resolve_out_dir(ctx: Any, slug: str) -> tuple[Path, bool]:
     return _export_root() / slug, False
 
 
+def _resolve_doc_type(ctx: Any) -> str:
+    """The project workspace's ``doc_type`` (e.g. ``patent``) for this export
+    job, via the job → parent-project walk (same as ``_resolve_out_dir``).
+    ``""`` when there is no workspace — the neutral export genre."""
+    from precis.utils.workspace import Workspace
+
+    try:
+        job = ctx.store.get_ref(kind="job", id=ctx.ref_id)
+        parent_id = getattr(job, "parent_id", None)
+        project = ctx.store.get_ref(kind="todo", id=parent_id) if parent_id else None
+        ws = Workspace.from_meta(getattr(project, "meta", None)) if project else None
+        return ws.doc_type if ws else ""
+    except Exception:  # pragma: no cover — genre is a nicety, never fatal
+        return ""
+
+
 def _dispatch(ctx: Any, spec: Any) -> None:
     """Plugin dispatcher invoked by ``claude_inproc`` for a claimed job.
     ``ctx`` is a :class:`~precis.workers.executors._context.DispatchContext`."""
@@ -122,7 +138,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     ctx.append_chunk("job_event", f"exporting draft {slug!r} → {out_dir} [{where}]")
     try:
         result = export_draft(
-            ctx.store, ref, target_dir=out_dir, include_sources=include_sources
+            ctx.store,
+            ref,
+            target_dir=out_dir,
+            include_sources=include_sources,
+            doc_type=_resolve_doc_type(ctx),
         )
     except Exception as exc:
         log.warning("draft_export: render failed for %s", slug, exc_info=True)

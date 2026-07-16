@@ -435,3 +435,22 @@ class TestSpec:
             "EPO_OPS_CLIENT_SECRET",
         }
         assert set(PatentHandler.spec.requires_env) == {"PRECIS_PATENT_RAW_ROOT"}
+
+
+class TestClaimsView:
+    """Slice 1: view='claims' filters to claim blocks and prefixes each
+    with its independent/dependent structure; view='description' excludes
+    claims (docs/design/patent-authoring-loop.md)."""
+
+    def test_claims_view_filters_and_labels(self, handler: PatentHandler) -> None:
+        handler.get(id="EP1234567B1")  # ingest
+        body = handler.get(id="ep1234567b1", view="claims").body
+        assert "**Claim 1** (independent):" in body
+        assert "**Claim 2** (depends on claim 1):" in body
+        assert "**Claim 3** (depends on claim 1):" in body
+        assert "photocatalytic system" in body.lower()  # claim 1 recited
+
+    def test_description_view_excludes_claims(self, handler: PatentHandler) -> None:
+        handler.get(id="EP1234567B1")
+        body = handler.get(id="ep1234567b1", view="description").body
+        assert "**Claim" not in body

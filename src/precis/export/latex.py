@@ -36,9 +36,15 @@ from typing import Any
 
 from pylatexenc.latexencode import UnicodeToLatexEncoder
 
+from precis.export._patent_cite import format_patent_citation, paper_inline_citation
 from precis.utils import handle_registry, mentions
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
+from precis.utils.workspace import Workspace
+
+#: ``meta.workspace.doc_type`` value that switches export into patent-spec
+#: mode: prior-art rendered in-text, no ``\cite`` / no bibliography.
+_PATENT_DOC_TYPE = "patent"
 
 #: Translate non-ASCII glyphs to LaTeX commands. ``non_ascii_only`` leaves
 #: ASCII (including the backslash escapes we emit) untouched, so it's safe
@@ -311,6 +317,11 @@ class _Ctx:
     warnings: list[str] = field(default_factory=list)
     seen_acr: set[str] = field(default_factory=set)  # glossary keys already emitted
     figures: list[tuple[str, bytes]] = field(default_factory=list)  # (relpath, bytes)
+    doc_type: str = ""  # meta.workspace.doc_type; "patent" → in-text cites, no bib
+
+    @property
+    def patent_mode(self) -> bool:
+        return self.doc_type == _PATENT_DOC_TYPE
 
 
 def _render_gap(text: str, ctx: _Ctx) -> str:
@@ -428,6 +439,8 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
     if parsed is not None:
         kind, is_chunk, _pk = parsed
         if kind in ("paper", "patent"):
+            if ctx.patent_mode:
+                return _inline_source_cite(tgt, kind, surface, ctx)
             slug = _handle_cite_key(tgt, ctx)
             return _cite(slug, ctx) if slug else ""
         if kind == "finding":
@@ -456,11 +469,47 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
     return ""  # other authoring targets — provenance only
 
 
+def _inline_source_cite(tgt: str, kind: str, surface: str | None, ctx: _Ctx) -> str:
+    """Patent-spec mode: render a prior-art reference **in-text** (no
+    ``\\cite`` / no bibliography). A display-link's authored text wins
+    (WYSIWYG — what you proofread is what compiles); otherwise a patent
+    formats to its citation string ("U.S. Patent No. …") and a paper to a
+    light ``(Author, Year)``."""
+    if surface:
+        return _encode_unicode(_latex_escape(surface))
+    slug = _handle_cite_key(tgt, ctx)
+    if not slug or ctx.store is None:
+        return ""
+    ref = ctx.store.get_ref(kind=kind, id=slug)
+    if ref is None:
+        return _encode_unicode(_latex_escape(slug))
+    if kind == "patent":
+        text = format_patent_citation(getattr(ref, "meta", None), slug)
+    else:
+        text = paper_inline_citation(ref)
+    return _encode_unicode(_latex_escape(text))
+
+
+def _inline_paper_by_slug(slug: str, ctx: _Ctx) -> str:
+    """Patent-spec mode for a bare paper cite (``§slug`` / ``paper:slug`` /
+    a raw cite_key) that arrives without a handle: resolve the slug and
+    render its in-text ``(Author, Year)`` instead of ``\\cite``."""
+    if ctx.store is None:
+        return _encode_unicode(_latex_escape(slug))
+    ref = ctx.store.get_ref(kind="paper", id=slug)
+    text = paper_inline_citation(ref) if ref is not None else slug
+    return _encode_unicode(_latex_escape(text))
+
+
 def _cite(slug: str, ctx: _Ctx) -> str:
     # Cite the PAPER, not the chunk: ``a~3`` / ``a~9`` → one \cite{a} and
     # one bib entry (biblatex collapses repeated cites; build_bib resolves
     # the bare slug).
     slug = slug.split("~", 1)[0]
+    if ctx.patent_mode:
+        # A patent specification has no bibliography — every source is
+        # cited in the running text.
+        return _inline_paper_by_slug(slug, ctx)
     if slug not in ctx.cited:
         ctx.cited.append(slug)
     return f"\\cite{{{slug}}}"
@@ -538,8 +587,11 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
 _SECTION_CMD = ["section", "subsection", "subsubsection", "paragraph"]
 
 
-def render_body(store: Any, ref: Any) -> RenderResult:
-    """Render the whole draft body to LaTeX (no preamble/title chrome)."""
+def render_body(store: Any, ref: Any, *, doc_type: str = "") -> RenderResult:
+    """Render the whole draft body to LaTeX (no preamble/title chrome).
+
+    ``doc_type='patent'`` renders prior-art references in-text (no
+    ``\\cite`` / no bibliography) — see ``docs/design/patent-authoring-loop.md``."""
     chunks = store.reading_order(ref.id)
     abbrevs: dict[str, str] = store.defined_abbrevs(ref.id)
     ctx = _Ctx(
@@ -547,6 +599,7 @@ def render_body(store: Any, ref: Any) -> RenderResult:
         known_handles={c.dc for c in chunks},
         store=store,
         legacy_to_dc={c.handle: c.dc for c in chunks},
+        doc_type=doc_type,
     )
     lines: list[str] = []
     # Open list environments (migration 0037): ulist→itemize, olist→
@@ -851,7 +904,13 @@ def build_source_appendix(bundle: Any, warnings: list[str]) -> str:
 
 
 def assemble_document(
-    *, title: str, author_block: str, body: str, acronyms: str, appendix: str = ""
+    *,
+    title: str,
+    author_block: str,
+    body: str,
+    acronyms: str,
+    appendix: str = "",
+    doc_type: str = "",
 ) -> str:
     """Assemble the full ``main.tex`` around the checked-in preamble.
 
@@ -859,13 +918,19 @@ def assemble_document(
     lines from :func:`build_author_block` (already escaped). ``appendix`` is
     an optional pre-rendered block (e.g. the ``pdfpages`` referenced-sources
     appendix) placed after the bibliography.
+
+    ``doc_type='patent'`` suppresses the bibliography (``\\addbibresource`` /
+    ``\\printbibliography``) — a patent specification cites prior art in the
+    running text, not in a reference list.
     """
+    patent_mode = doc_type == _PATENT_DOC_TYPE
     parts = [
         _template_text("preamble.tex").rstrip(),
         "",
-        "\\addbibresource{refs.bib}",
-        "\\makeglossaries",
     ]
+    if not patent_mode:
+        parts.append("\\addbibresource{refs.bib}")
+    parts.append("\\makeglossaries")
     if acronyms:
         parts += ["", "% ── acronyms (auto-generated from defined terms) ──", acronyms]
     parts += [
@@ -880,8 +945,9 @@ def assemble_document(
         body.rstrip(),
         "",
         "\\printglossaries",
-        "\\printbibliography",
     ]
+    if not patent_mode:
+        parts.append("\\printbibliography")
     if appendix:
         parts += ["", appendix]
     parts += ["\\end{document}", ""]
@@ -889,7 +955,12 @@ def assemble_document(
 
 
 def export_draft(
-    store: Any, ref: Any, *, target_dir: Path, include_sources: bool = False
+    store: Any,
+    ref: Any,
+    *,
+    target_dir: Path,
+    include_sources: bool = False,
+    doc_type: str | None = None,
 ) -> ExportResult:
     """Render a draft into a compilable LaTeX project under
     ``target_dir``: ``main.tex`` + ``refs.bib`` + a copy of the
@@ -906,9 +977,21 @@ def export_draft(
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    rendered = render_body(store, ref)
+    # doc_type drives the citation genre. Caller may pass it (the export
+    # worker already loads the project Workspace); otherwise fall back to
+    # the draft ref's own cascaded ``meta.workspace.doc_type``.
+    if doc_type is None:
+        ws = Workspace.from_meta(getattr(ref, "meta", None))
+        doc_type = ws.doc_type if ws else ""
+    patent_mode = doc_type == _PATENT_DOC_TYPE
+
+    rendered = render_body(store, ref, doc_type=doc_type)
     acronyms_tex = build_acronyms(rendered.acronyms, rendered.acronym_keys)
-    bib_text = build_bib(store, rendered.cited_slugs, rendered.warnings)
+    # A patent specification has no bibliography — everything is cited
+    # in-text, so ``cited_slugs`` stays empty and refs.bib is a stub.
+    bib_text = (
+        "" if patent_mode else build_bib(store, rendered.cited_slugs, rendered.warnings)
+    )
     title = (ref.title or ref.slug or "Untitled").split("\n", 1)[0]
     fallback = str((ref.meta or {}).get("author") or "precis")
     author_block = build_author_block(getattr(ref, "authors", None), fallback=fallback)
@@ -937,6 +1020,7 @@ def export_draft(
         body=rendered.body,
         acronyms=acronyms_tex,
         appendix=appendix_tex,
+        doc_type=doc_type,
     )
 
     # Materialise figure images beside main.tex (ADR 0058 slice 4) — the body
