@@ -57,12 +57,16 @@ def _merge_meta(store: Store, ref_id: int, patch: dict[str, Any]) -> None:
         )
 
 
-def _n_results(store: Store, quest_id: int) -> int:
+def _n_entries(store: Store, quest_id: int, entry_type: str) -> int:
     return sum(
         1
         for b in store.list_blocks_for_ref(quest_id)
-        if b.chunk_kind == LOG_KIND and (b.meta or {}).get("entry_type") == "result"
+        if b.chunk_kind == LOG_KIND and (b.meta or {}).get("entry_type") == entry_type
     )
+
+
+def _n_results(store: Store, quest_id: int) -> int:
+    return _n_entries(store, quest_id, "result")
 
 
 def _has_candidates(store: Store, quest_id: int) -> bool:
@@ -133,12 +137,30 @@ def update_cascade_state(store: Store, quest_id: int, *, reviewed: bool) -> floa
     promise = 0.0
     patch: dict[str, Any] = {"tick_count": tick_count}
 
+    # A milestone deed is the progress marker a reasoning-only quest has
+    # instead of a compute frontier — track how many we've seen so a new one
+    # this tick can reset the stall clock below.
+    n_milestones = _n_entries(store, quest_id, "milestone")
+    made_deed = n_milestones > int(meta.get("milestones_seen", 0) or 0)
+    patch["milestones_seen"] = n_milestones
+
     if curr_best is not None:
         patch["frontier_best"] = curr_best
         if isinstance(prev_best, (int, float)) and curr_best < float(prev_best):
             improvement = float(prev_best) - curr_best
             cost = _recent_cost(store, quest_id)
             promise = improvement / cost if cost > 0 else improvement
+            patch["ticks_since_frontier_improve"] = 0
+        else:
+            patch["ticks_since_frontier_improve"] = (
+                int(meta.get("ticks_since_frontier_improve", 0) or 0) + 1
+            )
+    else:
+        # No compute frontier (a reasoning-only quest): its energy stall clock
+        # would never advance, so `cool_stalled` could never catch a spin. Judge
+        # progress by deeds instead — a milestone resets the clock; otherwise it
+        # climbs, so a quest that ticks forever without landing one self-cools.
+        if made_deed:
             patch["ticks_since_frontier_improve"] = 0
         else:
             patch["ticks_since_frontier_improve"] = (

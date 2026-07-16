@@ -99,6 +99,12 @@ def raw_score(store: Store, quest_id: int) -> float:
     return base * momentum * (1.0 + promise)
 
 
+def _pick_count(store: Store, quest_id: int) -> int:
+    """How many times the allocator has picked this quest (0 = never ticked)."""
+    ref = store.get_ref(kind="quest", id=quest_id)
+    return int((ref.meta or {}).get("picks", 0) or 0) if ref else 0
+
+
 def pick_score(store: Store, quest_id: int) -> float:
     """The EWMA-smoothed score + a decaying exploration bonus, for ranking."""
     ref = store.get_ref(kind="quest", id=quest_id)
@@ -170,7 +176,17 @@ def pick_next_quest(store: Store, *, total_budget: float | None = None) -> Pick 
     ]
     if not eligible:
         return None
-    best = max(eligible, key=lambda q: pick_score(store, q))
+    # Cold-start: bootstrap every never-ticked striving before the smoothed
+    # bandit narrows, so a quest cannot be starved by another's accumulated
+    # EWMA (the "exploration, not starvation" contract in the module header).
+    # A converged-on spinner locks its EWMA far above the ~0.15 exploration
+    # bonus, which alone could never surface an untried quest — so untried
+    # go first, hottest raw score among them leading.
+    untried = [q for q in eligible if _pick_count(store, q) == 0]
+    if untried:
+        best = max(untried, key=lambda q: raw_score(store, q))
+    else:
+        best = max(eligible, key=lambda q: pick_score(store, q))
     return Pick(
         quest_id=best, score=pick_score(store, best), raw=raw_score(store, best)
     )

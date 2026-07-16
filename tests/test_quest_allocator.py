@@ -43,6 +43,33 @@ class TestScoring:
         pick = alloc.pick_next_quest(store)
         assert pick is not None and pick.quest_id == hot
 
+    def test_untried_quest_bootstraps_over_hot_spinner(self, store: Any) -> None:
+        # A converged-on quest with a high EWMA + many picks must not starve a
+        # never-ticked one: the exploration bonus alone can't overcome a locked
+        # EWMA, so untried quests are bootstrapped first (cold-start fix).
+        spinner = _mk_quest(store, "Hot spinner", prio="PRIO:urgent")  # hottest
+        alloc._merge_meta(store, spinner, {"picks": 500, "ewma_score": 0.9})
+        cold = _mk_quest(store, "Never ticked", prio="PRIO:low")  # coldest prio
+        pick = alloc.pick_next_quest(store)
+        assert pick is not None and pick.quest_id == cold
+
+    def test_hottest_untried_leads_among_untried(self, store: Any) -> None:
+        _cold = _mk_quest(store, "Low", prio="PRIO:low")
+        hot = _mk_quest(store, "Urgent", prio="PRIO:urgent")
+        # both untried → the hotter raw score bootstraps first
+        pick = alloc.pick_next_quest(store)
+        assert pick is not None and pick.quest_id == hot
+
+    def test_bandit_resumes_once_all_tried(self, store: Any) -> None:
+        # With every quest picked at least once, ranking falls back to the
+        # smoothed bandit — the higher EWMA wins.
+        a = _mk_quest(store, "A", prio="PRIO:normal")
+        b = _mk_quest(store, "B", prio="PRIO:normal")
+        alloc._merge_meta(store, a, {"picks": 3, "ewma_score": 0.2})
+        alloc._merge_meta(store, b, {"picks": 3, "ewma_score": 0.8})
+        pick = alloc.pick_next_quest(store)
+        assert pick is not None and pick.quest_id == b
+
     def test_dormant_quests_are_not_picked(self, store: Any) -> None:
         h = QuestHandler(hub=Hub(store=store))
         active = _mk_quest(store, "Active", prio="PRIO:normal")

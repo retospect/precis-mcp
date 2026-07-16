@@ -134,6 +134,32 @@ class TestCascadeState:
         assert abs(promise - 2.0) < 1e-9  # (20-10 improvement) / 5 cost
         assert abs(cascade_mod.quest_promise(store, qid) - 2.0) < 1e-9
 
+    def test_reasoning_quest_stall_clock_climbs(self, store: Any) -> None:
+        # A quest with no compute frontier used to leave `ticks_since_
+        # frontier_improve` untouched, so `cool_stalled` could never catch a
+        # spin. Now each frontier-less tick advances it.
+        qid = _mk_quest(store, "A reasoning striving")
+        for _ in range(3):
+            cascade_mod.update_cascade_state(store, qid, reviewed=False)
+        meta = store.get_ref(kind="quest", id=qid).meta
+        assert meta["ticks_since_frontier_improve"] == 3
+
+    def test_milestone_resets_reasoning_stall_clock(self, store: Any) -> None:
+        qid = _mk_quest(store, "A reasoning striving")
+        cascade_mod.update_cascade_state(store, qid, reviewed=False)
+        cascade_mod.update_cascade_state(store, qid, reviewed=False)
+        assert (
+            store.get_ref(kind="quest", id=qid).meta["ticks_since_frontier_improve"]
+            == 2
+        )
+        # a deed lands → the next tick resets the stall clock to zero
+        append_entry(store, qid, text="shipped", entry_type="milestone", by="agent")
+        cascade_mod.update_cascade_state(store, qid, reviewed=False)
+        assert (
+            store.get_ref(kind="quest", id=qid).meta["ticks_since_frontier_improve"]
+            == 0
+        )
+
 
 # ── tick integration ──────────────────────────────────────────────────
 
