@@ -355,12 +355,19 @@ autonomous tick (5) are separable follow-ons.
 - Update `precis-figure-help` + `precis-figure-svg` for the new bindings
   affordance (elements can be bound to chunks; the prepared context).
 
-## Deploy prerequisites
+## Deploy — un-darked (2026-07-16)
 
-- `[mermaid]` extra installed on the web host(s) and the agent-profile node
-  (melchior) — `mermaidx` + transitive wheels, no compiler.
-- `PRECIS_MERMAID_ENABLED=1` where the kind should be live (mirrors the
-  chem/route `PRECIS_CHEM_ENABLED` un-darking).
+The `mermaid` kind is **first-class**: registered unconditionally in
+`dispatch.py` (no env gate — the `PRECIS_MERMAID_ENABLED` flag was removed),
+and `mermaid` added to the `[all]` extra. The engine ships via the `[mermaid]`
+extra on the hosts that need it — the cluster install specs
+(`~/work/cluster/roles/`) carry it: `mcps` (`[patent,mermaid]`, the MCP serve
+host), `precis_web` (`[web,docx,pcb,external,mermaid]`, the `/mermaid` render
+host), and `precis_worker` (`[paper,patent,external,mermaid]`, the
+`diagram_propose` tick host). A host without the extra still advertises the
+kind and degrades validation/render gracefully (accept-as-authored). Wheels are
+pure — `quickjs-ng` + `resvg-py` cover macOS-arm64 + manylinux/musllinux, no
+compiler; `resvg-py` is already pulled by `[docx]`.
 
 ## Rejected alternatives
 

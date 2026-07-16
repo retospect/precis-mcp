@@ -12,8 +12,9 @@ A `mermaid` is a diagram you draw **with** the model (flowchart, sequence,
 state, class, …). It is the second instance of the shared diagram core beside
 `figure`: the same draw-with-me turn loop, the same node→chunk bindings — only
 the language is mermaid text instead of SVG. Never exported
-(`corpus_role='none'`); addressed by `mm<ref>` / `mn<chunk>`. Ships dark behind
-`PRECIS_MERMAID_ENABLED`. Authoring craft: `precis-mermaid`.
+(`corpus_role='none'`); addressed by `mm<ref>` / `mn<chunk>`. A first-class kind
+(the `[mermaid]` extra provides the render/validate engine). Authoring craft:
+`precis-mermaid`.
 
 ## The documents
 

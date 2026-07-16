@@ -425,8 +425,10 @@ The master kinds table lives in the `precis-overview` skill.
   prepared-context lists each node + topology + the linked chunk body, and a
   `[binding]` lint catches drift. MCP `handlers/mermaid.py` (put/get/edit/
   delete/link) + web `/mermaid` (`precis_web/routes/mermaid.py`, renders
-  server-side through figure's `sanitize_svg`). Ships **dark** behind
-  `PRECIS_MERMAID_ENABLED`; migration `0066_mermaid_kind.sql`; skills
+  server-side through figure's `sanitize_svg`). A **first-class kind**
+  (registered like `figure`, no env gate); the `[mermaid]` extra provides the
+  engine and is installed on the serve / web / worker hosts (a build without it
+  degrades validation/render gracefully). Migration `0066_mermaid_kind.sql`; skills
   `precis-mermaid-help` + `precis-mermaid`. **Autonomous tick:** the
   `diagram_propose` job_type (`workers/job_types/diagram_propose.py`, ADR 0057
   slice 5) runs **one** figure/mermaid turn against the model from an

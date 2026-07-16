@@ -278,7 +278,7 @@ chem = ["rdkit>=2023.9"]
 # the mermaid tests `pytest.importorskip('mermaidx')`, so the gate stays green
 # without it (mirrors the `anki` dark-extra pattern).
 mermaid = ["mermaidx>=0.8"]
-all = ["precis-mcp[embed,paper,docx,tex,calc,plot,external,patent,edgar,web,cad-export]"]
+all = ["precis-mcp[embed,paper,docx,tex,calc,plot,external,patent,edgar,web,cad-export,mermaid]"]
 
 [project.scripts]
 precis = "precis.cli:main"

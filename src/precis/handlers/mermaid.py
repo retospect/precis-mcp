@@ -5,8 +5,8 @@ The mermaid instance of the shared diagram core: a slug-addressed ref on the
 exported (``corpus_role='none'``). The whole MCP surface lives in
 :class:`precis.diagram.handler.DiagramHandler`; this class sets ``LANG =
 MERMAID_LANG`` (the mermaidx-backed source mechanics + the mermaid handle
-scheme, auto-layout so no viewBox axis) and its ``KindSpec``. Ships dark behind
-``PRECIS_MERMAID_ENABLED``.
+scheme, auto-layout so no viewBox axis) and its ``KindSpec``. A first-class
+kind (registered like ``figure``); the ``[mermaid]`` extra provides the engine.
 """
 
 from __future__ import annotations

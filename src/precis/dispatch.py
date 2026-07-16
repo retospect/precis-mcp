@@ -653,6 +653,7 @@ def boot(
         from precis.handlers.gripe import GripeHandler
         from precis.handlers.job import JobHandler
         from precis.handlers.memory import MemoryHandler
+        from precis.handlers.mermaid import MermaidHandler
         from precis.handlers.message import MessageHandler
         from precis.handlers.oracle import OracleHandler
         from precis.handlers.paper import PaperHandler
@@ -689,16 +690,12 @@ def boot(
         _gated(DraftHandler)
         _gated(PlanHandler)
         _gated(FigureHandler)
-        # mermaid — second instance of the diagram core (ADR 0057, slice 4).
-        # Ships dark: only registered when PRECIS_MERMAID_ENABLED is set, and
-        # its mermaidx engine is lazy-imported, so a default build neither
-        # advertises the kind nor loads the dependency.
-        import os as _os
-
-        if _os.environ.get("PRECIS_MERMAID_ENABLED"):
-            from precis.handlers.mermaid import MermaidHandler
-
-            _gated(MermaidHandler)
+        # mermaid — the second instance of the diagram core (ADR 0057). A
+        # first-class kind (like figure): registered unconditionally; its
+        # mermaidx engine is lazy-imported, so a build without the [mermaid]
+        # extra still advertises the kind and degrades validation/render
+        # gracefully (accept-as-authored) rather than hiding it.
+        _gated(MermaidHandler)
         _gated(CadHandler)
         _gated(StructureHandler)
         _gated(PcbHandler)
