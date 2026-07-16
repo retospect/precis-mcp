@@ -546,9 +546,11 @@ source; ansible-vault is down to postgres bootstrap + non-precis infra. feynman
 + quest retired in the same pass (redundant / dormant).
 
 Remaining (small):
-- **`/secrets` web smoke test** — `polish`, Owner: `tests/`. FastAPI TestClient
-  test (list renders, set writes, blank submit no-ops). The route is only
-  covered by app-boot import today.
+- **`/secrets` web smoke test** — ✅ **DONE** (2026-07-16). FastAPI TestClient
+  test (`tests/precis_web/test_secrets.py`): inventory renders, blank submit
+  no-ops, named submit + delete redirect 303 through the vault write path
+  (added a no-op `commit`/`rollback` to the shared fake conn). Was previously
+  covered only by app-boot import.
 - **Left in env by design**: `PRECIS_UNPAYWALL_EMAIL` (a mailto, not a
   credential); the litellm/openclaw ansible-vault secrets stay until those tools
   retire — sweep with the litellm teardown.

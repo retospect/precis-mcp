@@ -58,6 +58,12 @@ class _FakeConn:
     def execute(self, sql: str, params: Any = None) -> _FakeCursor:
         return _FakeCursor([])
 
+    def commit(self) -> None:  # write paths (e.g. vault set/delete) commit
+        return None
+
+    def rollback(self) -> None:
+        return None
+
 
 class _FakePool:
     @contextmanager

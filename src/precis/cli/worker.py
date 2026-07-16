@@ -35,6 +35,7 @@ from precis.cli._common import (
 from precis.embedder import make_embedder
 from precis.format import serialize
 from precis.store import Store
+from precis.utils.env import env_flag
 from precis.workers import (
     EmbedHandler,
     RakeLemmaHandler,
@@ -672,9 +673,7 @@ def run(args: argparse.Namespace) -> None:
         # explicit `--only job_claude_docker`, mirroring classify. So a
         # deploy of this slice changes nothing until a human enables it
         # on a box with podman + a dedicated CLAUDE_CODE_OAUTH_TOKEN.
-        if _pass_enabled("job_claude_docker") or os.environ.get(
-            "PRECIS_SANDBOX_ENABLED"
-        ):
+        if _pass_enabled("job_claude_docker") or env_flag("PRECIS_SANDBOX_ENABLED"):
             from precis.workers.executors.claude_docker import (
                 run_claude_docker_pass,
             )
@@ -750,7 +749,7 @@ def run(args: argparse.Namespace) -> None:
         # Forces model=`summarizer` (PRECIS_SUMMARIZE_MODEL=qwen returns
         # empty — it's a thinking model). See workers/classify.py +
         # scripts/classify/EVAL_RESULTS.md.
-        if _pass_enabled("classify") or os.environ.get("PRECIS_CLASSIFY_ENABLED"):
+        if _pass_enabled("classify") or env_flag("PRECIS_CLASSIFY_ENABLED"):
             import dataclasses as _dc
 
             from precis.workers.runner import BatchResult as _ClsBatchResult
@@ -786,9 +785,7 @@ def run(args: argparse.Namespace) -> None:
         # the litellm teardown). Default-OFF (PRECIS_LLM_RECONCILE_ENABLED /
         # --only llm_reconcile); a single cheap app_state read until the catalog
         # has cards. Corpus-wide single-runner (app_state cadence + xact lock).
-        if _pass_enabled("llm_reconcile") or os.environ.get(
-            "PRECIS_LLM_RECONCILE_ENABLED"
-        ):
+        if _pass_enabled("llm_reconcile") or env_flag("PRECIS_LLM_RECONCILE_ENABLED"):
             from precis.workers.runner import BatchResult as _LlmRecBatchResult
 
             def _llm_reconcile_pass(batch_size: int) -> _LlmRecBatchResult:
@@ -807,9 +804,7 @@ def run(args: argparse.Namespace) -> None:
         # corpus-wide backfill is a deliberate, node-targeted batch, like
         # classify. Model defaults to the cheap `summarizer` alias. See
         # workers/paper_glossary.py + docs/design/reading-prep-loop.md.
-        if _pass_enabled("paper_glossary") or os.environ.get(
-            "PRECIS_PAPER_GLOSSARY_ENABLED"
-        ):
+        if _pass_enabled("paper_glossary") or env_flag("PRECIS_PAPER_GLOSSARY_ENABLED"):
             import dataclasses as _pg_dc
 
             from precis.workers.runner import BatchResult as _PgBatchResult
@@ -854,9 +849,7 @@ def run(args: argparse.Namespace) -> None:
         # pass reads the persisted `briefing-<date>` ref and self-schedules off
         # its existence, idempotent via a `meta.audio_episode_id` marker. See
         # workers/briefing_audio.py.
-        if _pass_enabled("briefing_audio") or os.environ.get(
-            "PRECIS_BRIEFING_AUDIO_ENABLED"
-        ):
+        if _pass_enabled("briefing_audio") or env_flag("PRECIS_BRIEFING_AUDIO_ENABLED"):
             from precis.workers.runner import BatchResult as _BaBatchResult
 
             _ba_image = os.environ.get("PRECIS_TTS_IMAGE")
@@ -911,7 +904,7 @@ def run(args: argparse.Namespace) -> None:
         # self-scheduling off an un-narrated cast draft, idempotent via
         # meta.audio_episode_id. Default-OFF (PRECIS_CAST_AUDIO_ENABLED=1 or
         # --only cast_audio) + needs PRECIS_TTS_IMAGE. See workers/cast_audio.py.
-        if _pass_enabled("cast_audio") or os.environ.get("PRECIS_CAST_AUDIO_ENABLED"):
+        if _pass_enabled("cast_audio") or env_flag("PRECIS_CAST_AUDIO_ENABLED"):
             from precis.workers.runner import BatchResult as _CaBatchResult
 
             _ca_image = os.environ.get("PRECIS_TTS_IMAGE")
@@ -960,9 +953,7 @@ def run(args: argparse.Namespace) -> None:
         # ``fix_gripe`` todos so the autonomous fixer substrate acts on the
         # bug backlog. Off by default because enabling it starts handing
         # repo bugs to claude_inproc — a deliberate flip, like classify.
-        if _pass_enabled("backlog_groom") or os.environ.get(
-            "PRECIS_BACKLOG_GROOM_ENABLED"
-        ):
+        if _pass_enabled("backlog_groom") or env_flag("PRECIS_BACKLOG_GROOM_ENABLED"):
             from precis.workers.runner import BatchResult as _GroomBatchResult
 
             def _backlog_groom_pass(batch_size: int) -> _GroomBatchResult:
