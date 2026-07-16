@@ -100,10 +100,9 @@ Apply the ADR 0030 test (does the new thing have a distinct *lifecycle*,
 notes with links. Reuse `memory` with the existing `kind:` open-tag
 sub-kind mechanism:
 
-- `kind:lemma` — a stated premise ("`pc893` claims X, and I judge it
-  trustable"). When the lemma is *one empirical claim from one source*,
-  prefer a `finding` instead (it gets the chase + `verifier_confidence`
-  for free); `kind:lemma` on a memory is for the judgment/composite case.
+- `kind:lemma` — a **derived or composite** premise: a conclusion of an
+  inference, or a sourceless interpretive claim. The *internal node* of
+  the graph.
 - `kind:inference` — a reasoning step: premises in, one conclusion out,
   tagged with the operator (§3).
 - The **conclusion** of an inference, once reusable, is just another
@@ -112,6 +111,33 @@ sub-kind mechanism:
 
 Revisit a dedicated `argument`/`lemma` kind only if a node grows bespoke
 fields or validation that don't fit `memory.meta` (named in §Rejected).
+
+### 1.1 Lemma vs finding: no merge — one boundary the code already draws.
+
+A lemma comes in **two roles, not two flavours of one kind**:
+
+- **Grounded lemma = `finding`.** The *leaf* where the argument touches
+  the literature: a claim pinned to a single corpus source, with the
+  chase worker, dedup identity, and `tracing→established` lifecycle. If
+  it has one `cited_in`, it **is** a finding — never a `kind:lemma`
+  memory.
+- **Derived/composite lemma = `memory` tagged `kind:lemma`.** The
+  *internal node*: a conclusion (no single source) or a sourceless
+  judgment.
+
+The routing test is one question — *does it have a single corpus
+source?* — and **`finding.put` already enforces it**: a sourceless
+`put(kind='finding')` is refused today with *"If this is your own
+synthesis with no single source, it is NOT a finding — record a memory
+instead"* (`handlers/finding.py`). A conclusion `Z` of `X ∧ Y → Z` is
+exactly that sourceless synthesis, so it *cannot* be a finding by the
+existing rule. The boundary needs no new code; it is the finding
+handler's existing write-time guard, reused. `finding` keeps its chase
+lifecycle (0030 kind test); merging would overload it with argument
+semantics it does not need (it is also used standalone for citation
+chasing). A derived lemma that later acquires a primary source
+*graduates* to a finding via `derived-from`/supersede — a path, not a
+merge.
 
 ### 2. Add two relations to the closed vocabulary: `entails` and `qualifies`.
 
@@ -137,8 +163,11 @@ The relation vocabulary is a **behavioral contract, not a label**: code
 branches on the relation (`blocks` → todo filter, `supersedes` →
 soft-delete, `retracts` → the ripple, `entails`/`qualifies` → the
 argument view). A relation the system does not know cannot drive
-behavior; it is `related-to` with extra characters. And auto-mirroring
-(`cites`↔`cited-by`) *requires* the system to know the inverse pair.
+behavior; it is `related-to` with extra characters. And the **read-time
+inverse rewrite** (`links_for` answering a `cited-by` query against
+stored `cites` rows via `_INVERSE_RELATIONS` — edges are stored one row
+per pair, *not* mirrored at write time) *requires* the system to know
+the inverse pair.
 Generic author-minted labels are therefore **rejected** — they would
 re-import the prod folksonomy drift ADR 0047 was written to kill (52%
 singleton OPEN tags; `supports`/`support`/`backs`/`evidence-for` all
@@ -162,28 +191,60 @@ assertions**. precis does **not** verify validity. The value is
 provenance, reuse, and invalidation — *not* automated deduction. (See
 §Rejected: proof checker.)
 
-### 4. Trust is a recorded judgment, not a computed scalar.
+### 4. Trust = the absence of a concern edge. No `TRUST:` axis in v1.
 
-A lemma's trust lives as a closed tag axis **`TRUST:`** on the
-lemma/finding (`TRUST:high` | `TRUST:medium` | `TRUST:low` |
-`TRUST:retracted`), asserted by the author/model. It is a *judgment
-about the source*, orthogonal to `entails`. It is **not** auto-derived
-from venue or citation count. Retraction status, however, *does* flow
-structurally: an inbound `retracts` / `raises-concern-about` edge on the
-cited paper is the machine-readable trigger for §5.
+An asserted `high|medium|low` ordinal is unbacked and drift-prone — the
+same theatre §Rejected warns about for a *computed* scalar, merely moved
+to a human. So **v1 ships no `TRUST:` tag axis at all.** A source is
+trusted **by default** (peer-reviewed, unretracted); the only signal
+that matters is *distrust*, and distrust always carries a **reason**:
 
-### 5. Invalidation propagation — a view first, a worker later.
+- a structural `retracts` / `raises-concern-about` edge on the paper
+  (machine-checkable, the §5 trigger), or
+- a `kind:caveat` node (§7).
 
-- **v1 (this slice): a read.** `get(kind='memory', id=<inference>,
-  view='argument')` renders the proof tree (premises → rule →
-  conclusion, begat-style like `finding`) **and flags any leaf whose
-  cited source now carries a `retracts`/`raises-concern-about` inbound
-  edge**, or any premise tagged `TRUST:retracted`. Also a corpus-wide
-  report: "arguments resting on now-retracted sources."
-- **phase 2 (not this slice): a worker** that walks `entailed-by`
-  transitively on a new retraction edge and tags downstream nodes
-  `STALE:retracted-premise` so the staleness is queryable, not just
-  visible on demand.
+Both carry content a bare ordinal lacks. Trust is therefore *derived*
+(absence of concern edges + any inherited caveats), surfaced by the
+`view='argument'` walk, never a tag on the node. An ordinal is revisited
+only on a concrete ranking need (§Risks R3).
+
+### 5. Invalidation propagation — push on the retraction edge, pull everywhere else.
+
+The walk is **kind-scoped**: it traverses only `finding` / `kind:lemma`
+/ `kind:inference` nodes, so `derived-from` reused for chase/summary
+provenance is never mistaken for a premise edge (this is why no
+`premise-of` relation is needed — §Risks R2). A premise is simply a
+`derived-from` edge *into a `kind:inference` node*.
+
+Two triggers, covering both event orderings, **both in v1**:
+
+- **Write-time push (link hook).** When a `retracts` /
+  `raises-concern-about` edge is created, a bounded kind-scoped walk of
+  `entailed-by` tags existing downstream inferences
+  `STALE:retracted-premise`. A link-handler hook, not a background
+  sweep. Catches arguments that already rest on the now-dead source.
+- **Read-time pull (the view).** `get(kind='memory', id=<inference>,
+  view='argument')` renders the proof tree (begat-style like `finding`)
+  and flags any leaf whose cited source carries an inbound
+  `retracts`/`raises-concern-about` edge. Backstop for arguments built
+  *after* the retraction. Plus a corpus report: "arguments resting on
+  now-retracted sources" (exhaustive SQL walk).
+
+The `STALE:retracted-premise` marker is a **system-set axis**
+(`tag_prefixes.writable_by='system'`, alongside `SRC`/`CACHE`/`DENSITY`
+in `_SYSTEM_WRITABLE_PREFIXES` — *not* `DREAM:`, which is agent-written),
+so the tag verb refuses author add/remove. It is **derived, recomputed
+not toggled**: every
+retraction-edge add *or* remove reruns the bounded walk and sets/clears
+the flag to match reachability, so removing the last retracting edge
+clears it while a second still-reaching retraction keeps it. It is
+**advisory** (surfaced + queryable), never a blocking `STATUS:`
+transition, and transitive by construction (the walk rides the
+inference→conclusion→next chain).
+
+**Deferred (phase 2):** a periodic reconciliation sweep, and *push* for
+caveats (a new `qualifies` edge rippling downstream). Caveats are
+pull-only in v1 — surfaced by the view, not pushed (§7, §Risks R4).
 
 ### 6. The shadow graph never publishes.
 
@@ -218,9 +279,16 @@ a clean claim that was never clean. The formal name is Toulmin's
   `meta.warrant` prose). precis **never auto-decides** whether a caveat
   still bites downstream — that is the defeasible-logic tar pit
   (§Rejected).
-- **No edge-scoped discharge in v1.** A dedicated `addresses` relation
-  that retires a caveat in one argument but not another is a named
-  phase-2 refinement, not a launch requirement.
+- **Edge-scoped discharge is phase 2, shape decided.** A caveat
+  neutralised in one argument but not another is a *(inference, caveat)*
+  property, so an inference records the caveats it addresses in
+  **`meta.addresses` (a list of caveat handles)** — edge-scoped by
+  construction, **no global 'addressed' tag** (would wrongly clear it
+  everywhere) and **no third relation** (meta, not vocab; the view
+  already reads the inference `meta`). The view then renders "addressed
+  here (see warrant)" vs "inherited — confirm." Promote to a typed
+  `addresses`/`addressed-by` relation only if reverse-query ("all
+  inferences discharging C") ever becomes load-bearing — it is not now.
 
 ### 8. Division of labor: the LLM reads, the code remembers.
 
@@ -276,8 +344,14 @@ linter (flags every mismatch so you cannot miss one), not an oracle.
   tar pit as the proof checker. Caveats propagate by *display*; the LLM
   adjudicates each time (§7).
 - **Load-bearing `premise-of`** distinct from provenance `derived-from`.
-  Deferred, not rejected: for v1 the inference node reifying the
-  conjunction suffices. A named future refinement.
+  Not needed: kind-scoping the walk (premise = `derived-from` into a
+  `kind:inference` node) disambiguates structurally (§5, §Risks R2).
+  Revisit only to rank premises *within* one inference — a far-future
+  refinement, not a contract change.
+- **An asserted `TRUST:` ordinal** (`high|medium|low`). Cut from v1: the
+  same unbacked-theatre failure as the computed scalar, moved to a
+  human. Trust is the absence of concern edges; distrust is a
+  `raises-concern-about` edge or a caveat, both carrying a reason (§4).
 - **Shipping only as prose discipline / skills (no relation, no view).**
   Rejected: without the typed edges and the propagation walk the graph
   is unqueryable and retraction-ripple + caveat-inheritance — the whole
@@ -287,23 +361,61 @@ linter (flags every mismatch so you cannot miss one), not an oracle.
 
 ## Consequences
 
-- **Contract**: `precis-relations` gains `entails`/`entailed-by` and
-  `qualifies`/`qualified-by` (two mirrored pairs). One closed-axis tag
-  prefix `TRUST:` is added (validated by the tag verb). Relations stay
-  closed; open nuance rides in edge `meta` (§2.1). No schema migration
-  (`memory.meta` + tags + links cover it).
+- **Contract**: adding the two relation pairs is a **three-place sync** —
+  the `Relation` Literal (`store/types.py`), the `_INVERSE_RELATIONS`
+  map, and a **new forward migration** seeding the `relations` rows (the
+  established per-pair pattern, e.g. `0054_datasheet_of_relation.sql`).
+  One **new *system-set* tag axis `STALE:`** (author-facing `TRUST:`
+  stays cut — §4): register in `_CLOSED_VOCAB` +
+  `_KIND_ALLOWED_AXES['memory']` + `_SYSTEM_WRITABLE_PREFIXES`, with a
+  `tag_prefixes.writable_by='system'` seed in the same migration. So
+  **v1 does need one migration** (relations + `STALE:` seed);
+  `memory.meta` / `meta.addresses` are the only migration-free parts.
+  Relations stay closed; open nuance rides in edge `meta` (§2.1).
 - **Surface**: `memory` gains `view='argument'` (proof tree + inherited
-  caveats + stale-premise flags); a corpus report surfaces
-  retraction-tainted arguments. Skills: new `precis-argument-help`, plus
-  `precis-relations` and `precis-memory-help` updates (sketched in the
-  design doc).
+  caveats + stale-premise flags), a link-write hook on
+  `retracts`/`raises-concern-about` (kind-scoped push tagging
+  `STALE:retracted-premise`), and a corpus report. Skills: new
+  `precis-argument-help`, plus `precis-relations` and
+  `precis-memory-help` updates (sketched in the design doc).
 - **Code / skill split (§8)**: discipline + the `kind:lemma`/
   `:inference`/`:caveat` sub-kinds are skill-only (open tags, zero
-  code); the two relations, the `TRUST:` axis, `view='argument'`, and
-  the propagation walk are the small bounded code core (no migration).
-- **Feeds 0051**: the blackboard converges over this graph — forked
-  threads deposit lemmas, `contradicts` edges mark the open conflicts a
-  convergence turn must resolve.
+  code); the two relations, the `STALE:` axis, `view='argument'`, the
+  retraction push hook, and the kind-scoped walk are the bounded code
+  core, gated on **one migration** (relations + `STALE:` seed).
+- **Feeds 0051 (0051 *pulls*)**: 0054's contract ends at recording
+  `contradicts` edges between lemmas (a *reused* relation) plus an "open
+  conflicts in this argument graph" report entry. The blackboard, when
+  built, queries that surface and decides what to raise — surfacing is
+  an attention/TTL concern only 0051 can judge. **No blackboard-specific
+  hook in 0054** (pushing would hard-wire the argument graph into the
+  turn-taking layer); same producer/consumer seam as 0053's §10
+  comparison board. The blackboard adds zero to 0054's build.
 - **Does not make a single argument "smarter."** It makes arguments
   **auditable, reusable, and self-invalidating** across turns, personas,
   and drafts — the actual win.
+
+## Risks resolved before build
+
+- **R1 — adoption.** Sparse & opt-in: grounded lemmas come free from
+  `finding`s; an inference node is created **only at a genuinely
+  contestable step**, not per sentence (finding-style spin discipline).
+  Auto-extraction is a **phase-2, propose-not-commit** investigation.
+  *Acceptance signal:* graph still empty after N real drafts ⇒ the
+  feature failed — measured, not assumed.
+- **R2 — `derived-from` double duty.** Resolved by kind-scoping the walk
+  (§5); no `premise-of`, contract stays at two relations.
+- **R3 — `TRUST:` theatre.** Resolved by cutting the axis (§4); trust is
+  structural (absence of concern edges) + caveats. Removes a build step.
+- **R4 — pull-only ceiling.** Resolved for the high-value retraction
+  case by the v1 write-time push hook + read-time backstop (§5). A
+  background sweep and caveat-push stay phase 2.
+- **R5 — `STALE:` mechanics.** System-set axis
+  (`writable_by='system'`, like `SRC`/`CACHE`/`DENSITY`), not
+  author-tunable; derived/recomputed on every retraction-edge add *or*
+  remove; advisory, non-blocking; transitive by construction (§5).
+- **R6 — edge-scoped caveat discharge.** Phase 2; shape fixed as
+  `meta.addresses` on the inference (no global tag, no third relation)
+  (§7).
+- **R7 — blackboard hook.** 0051 *pulls*; 0054 exposes the `contradicts`
+  edge + an open-conflicts report and adds no hook (Consequences).

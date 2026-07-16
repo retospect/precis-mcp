@@ -1,7 +1,8 @@
 # 0053 — Ingesting external DFT catalyst libraries into the `structure` kind
 
 - **Status**: proposed (2026-07-09) · design conversation captured, not
-  yet sliced. This ADR records the *decisions*; the source-survey +
+  yet sliced. Orchestration (§11) + the persistent lens (§10) were folded
+  in 2026-07-10. This ADR records the *decisions*; the source-survey +
   ETL-pattern exploration belongs in a
   [`docs/design/`](../design/) plan when the first slice is scoped.
 - **Deciders**: Reto + agent
@@ -27,7 +28,14 @@
   - [ADR 0051 — turn-taking & blackboard convergence](./0051-turn-taking-persona-threads-and-blackboard-convergence.md)
     — the blackboard the §10 comparison board instantiates for the
     structure domain: N forked design threads converging on one shared
-    observer watchlist.
+    observer watchlist; the persistent §10 lens is its observer axis made
+    durable.
+  - [ADR 0048 — autonomous backlog execution](./0048-autonomous-backlog-execution.md)
+    — the agent-edits-a-repo-then-rerun loop that makes the §11 Snakemake
+    pipeline's rules LLM-editable **without** a DB rule store.
+  - [ADR 0054 — argument graph](./0054-argument-graph-lemmas-inferences-reasoning-shadow.md)
+    — the `memory` sub-kind precedent (`kind:lemma`/`kind:inference`) the
+    persistent §10 `lens` follows (`kind:lens`).
 
 ## Context
 
@@ -344,6 +352,93 @@ variant each converge on one board.
   cube's OLAP slice, never all loaded. This is the §10 memory-vs-PG
   boundary ("one structure → memory; across structures → PG") widened to a
   small *set* of live structures.
+- **A persistent *lens* — the observer set made durable and portable (a
+  `memory` sub-kind).** An **eye** (ADR 0043 §6.6/§6.8) is persisted *per
+  structure*, keyed by atom label. The board's rows are already the
+  *portable* form — keyed by role/site/pattern that resolves per design
+  (above). Naming and **saving that set of portable observers** makes the
+  comparison reusable: apply the same lens to tomorrow's imported batch
+  without rebuilding it by hand. By the 0030 kind-test this is **not a new
+  kind** — a saved lens has no distinct corpus role, namespace, or
+  citation semantics — but a **`memory` sub-kind** (`kind:lens`): a small
+  record whose `meta` holds the ordered portable-observer specs, linked to
+  the designs/board it applies to and resolved per column at read time
+  (the treatment ADR 0054 gives lemmas/inferences). The symmetry: an
+  **eye** is a per-structure observer; a **lens** is a cross-structure,
+  reusable *set* of them — the durable form of the 0051 blackboard's
+  observer axis, a cousin of the 0052 structured registry.
+
+### 11. Orchestration: precis is the tracker, the ADR 0044 job lane is the executor, the fine DAG is Snakemake-in-a-job.
+
+The derive loop (§3), the batch mirror (§3), and the ensemble analysis
+(§10 — feature-build → tensor → PCA over N configs) all raise one
+question: *what runs the multi-step, parameter-driven pipeline, and where
+do its dependency rules live?* The temptation is to grow a dependency
+graph + invalidation inside precis — which is **reinventing `make` in the
+database**. We refuse that, and its mirror (bolting an external
+orchestrator on as a core dep). The resolution is a **two-level split of
+orchestration**, each matched to the right tool.
+
+- **Coarse — the precis job lane owns lifecycle *verbs*.** *hydrate a
+  config*, *derive a variant*, *relax `emt`/`ml`/`dft`*, *import a Pd
+  split*, *run-analysis*. Each is one **content-addressed, idempotent unit
+  carrying provenance** (§5), dispatched to a host by the ADR 0044 lane
+  (parented on its subject). precis already models this level; it needs
+  nothing new.
+- **Fine — a real workflow engine owns the *DAG inside a step*.** The
+  (observer × design) analysis is a classic scientific batch: pattern
+  rules, many artifacts, "a changed parameter rebuilds only the affected
+  subgraph." That is exactly what **Snakemake** (Python; DAG-from-rules;
+  wildcard pattern rules; incremental rebuild; cluster executors) is for.
+  precis does **not** learn file-level dependency tracking.
+
+**The granularity contract** (the rule of thumb, stated so the job lane
+never drifts): *if it needs incremental, file-level rebuild over many
+artifacts, it belongs to the workflow engine; if it is a
+content-addressed idempotent lifecycle step with provenance, it is a
+precis job.* The job lane must never grow an mtime/hash DAG.
+
+**Snakemake-in-a-job is the seam.** One coarse `run-analysis` job
+**wraps one Snakemake invocation** on the 0044 executor host; precis sees
+a single success/fail + a report, never the internal DAG. This answers
+each practical worry cleanly:
+
+- **A host-side extra, not a precis-core dependency.** Snakemake + ASE +
+  scikit-learn live in a new **`[pipeline]` extra on the executor host** —
+  where the compute already lives — exactly the torch-free-server /
+  `[dft-ml]`-on-the-GPU-node split. The MCP server never imports
+  Snakemake.
+- **Slurm stays Snakemake's concern.** When the executor host is a
+  cluster, `snakemake --executor slurm` schedules the fine DAG; **precis
+  never learns Slurm** — it dispatches one job to a host (0044), and that
+  host's Snakemake talks to the scheduler. The same separation as ADR
+  0048 keeping repo-dev CI out of precis dispatch.
+- **The last rule writes back through `structure_import` / the run-cube.**
+  precis stays the system of record (§6); Snakemake's `.snakemake/`
+  provenance is host-local scratch. Feature-build and PCA are just rules
+  that **populate the §10 cube** the board reads.
+- **Resumability is Snakemake's, at the right grain.** A re-run re-enters
+  the DAG and rebuilds only the incomplete/stale targets — the "bounded,
+  resumable" property §3 asks of the batch job, provided by the engine
+  rather than hand-rolled cursor logic (which survives only for the
+  *download* stride).
+
+**Execution rules are code in a repo, edited by the agent — not data in
+the DB.** This is the deliberate resolution of the "I want the rules
+manipulable" pull. A Snakefile *is* Python — its logic is code, not data —
+so making it LLM-editable is the **ADR 0048 fixer loop**, not a
+rule-store: the agent patches the Snakefile + params in a **git pipeline
+repo**, a human reviews the diff, Snakemake re-runs. precis stores only a
+**pointer to the pipeline (repo + version) and a params fingerprint** (the
+§4 mechanism), so a cube row's **staleness relative to the current rules
+is queryable** — the reproducibility/provenance benefit of "rules in the
+DB" *without* a second source of truth or a Makefile/CWL generator to
+maintain.
+
+This keeps precis firmly on the **tracker** side of the proven
+"workflow-engine + experiment-tracker" separation (Snakemake/Nextflow +
+MLflow/W&B): the engine decides *what runs and when*; precis remembers
+*what exists, how it links, and what the outcome was* (§5/§6).
 
 ## Consequences
 
@@ -373,9 +468,26 @@ variant each converge on one board.
   rung ever spends compute on a hard failure; the write path grows an
   auto-`validate` echo (net-new — it was opt-in `view='validate'`).
 - **A comparison board promotes the cross-experiment tier** (§10) — the
-  0043 §6.8 cross-experiment cursor tier (was *vision*) becomes a concrete
-  (observer × design) pivot over a bounded in-memory working set, backed
-  by the §12-D cube; it is the 0051 blackboard for structure design.
+  0043 §6.8 cross-experiment observer tier (was *vision*) becomes a
+  concrete (observer × design) pivot over a bounded in-memory working set,
+  backed by the §12-D cube; it is the 0051 blackboard for structure
+  design.
+- **A persistent `lens` (`memory` sub-kind) makes an observer set
+  reusable** across batches (§10) — the durable, portable form of the
+  board rows / 0051 observer axis, following the 0054 memory-sub-kind
+  precedent.
+- **Orchestration is a two-level split** (§11) — precis jobs own coarse
+  lifecycle verbs; Snakemake owns the fine DAG inside `run-analysis`; the
+  job lane never grows file-level dependency tracking.
+- **A new host-side `[pipeline]` extra** (Snakemake + scikit-learn) on the
+  executor host (§11) — never a precis-core dep; the MCP server stays
+  engine/torch-free, exactly like `[dft-ml]`.
+- **The ensemble analysis writes back to the run-cube** (§10/§11) —
+  feature-build + PCA are Snakemake rules that populate the board's cube
+  via `structure_import`; precis stays the system of record.
+- **Pipeline rules live in a git repo, agent-edited** (§11, ADR 0048) —
+  precis records a pipeline pointer + params fingerprint so cube-row
+  staleness is queryable, *without* a DB rule store.
 
 ## Sequencing
 
@@ -394,6 +506,11 @@ variant each converge on one board.
    to the existing ADR 0044 `ml`/`dft` dispatch; `diff`-vs-baseline.
 5. **MLIP fine-tuning** (§7) — a separate plan; the import schema already
    captures forces for it.
+6. **The ensemble analysis pipeline** (§10/§11) — a `run-analysis` job
+   wrapping a Snakemake pipeline (feature-build → tensor → PCA) on the
+   `[pipeline]`-extra host, writing projections back to the cube; plus the
+   persistent `lens` (`memory` sub-kind) that keys the board. Its own
+   `docs/design/` plan.
 
 ## Out of scope (v1)
 
@@ -439,3 +556,18 @@ variant each converge on one board.
   needs the heavy `[dft-ml]`/GPU path; the derive loop's common case
   (a Pd-family variant) gets a torch-free ASE-EMT rung instead (§8), and
   only escalates to `ml`/DFT when the fidelity is worth it.
+- **Reinventing `make` inside the database** — a dependency graph +
+  invalidation in precis duplicates what the derived queue (0007) plus a
+  workflow engine already do; the two-level split (§11) keeps DAG
+  scheduling out of the job lane.
+- **An external orchestrator (Snakemake / Nextflow / Airflow / Slurm) as a
+  precis-*core* dependency** — the engine is a host-side `[pipeline]`
+  extra where the compute lives; the MCP server never imports it (§11).
+- **Storing execution rules as DB data + a Makefile/CWL generator** — two
+  sources of truth and a compile step for what an agent-edited
+  Snakefile-in-a-repo (0048) plus a params fingerprint (§4) already give;
+  a Snakefile's logic is code, not data (§11).
+- **A new `lens` / `observer-set` top-level kind** — a saved observer set
+  has no distinct corpus role, namespace, or citation semantics; it is a
+  `memory` sub-kind (`kind:lens`), per the 0030 test and the 0054
+  precedent (§10).
