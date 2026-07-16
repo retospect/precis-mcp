@@ -16,6 +16,29 @@ the language is mermaid text instead of SVG. Never exported
 (the `[mermaid]` extra provides the render/validate engine). Authoring craft:
 `precis-mermaid`.
 
+## Diagram types (what the engine renders)
+
+Each supported type has its own discoverable skill (search by intent —
+"org chart", "sequence diagram", "database schema" — surfaces the right one):
+
+| Type | Say | Skill |
+|---|---|---|
+| flowchart | flow chart, process, decision tree, org chart, workflow | `precis-mermaid-flowchart` |
+| sequence | interaction, message flow, call flow | `precis-mermaid-sequence` |
+| class | UML, object model, type hierarchy, inheritance | `precis-mermaid-class` |
+| state | state machine, FSM, lifecycle, status flow | `precis-mermaid-state` |
+| ER | entity-relationship, database schema, data model | `precis-mermaid-er` |
+| journey | user/customer journey, experience map | `precis-mermaid-journey` |
+| quadrant | 2×2, prioritization matrix, effort-impact | `precis-mermaid-quadrant` |
+| requirement | requirements, traceability, verification matrix | `precis-mermaid-requirement` |
+| gitGraph | git branching, commit history, branch flow | `precis-mermaid-gitgraph` |
+| timeline | chronology, history, roadmap of events | `precis-mermaid-timeline` |
+| xychart | bar chart, line chart, plot, graph of values | `precis-mermaid-xychart` |
+| mindmap | mind map, concept map, idea tree, brainstorm | `precis-mermaid-mindmap` |
+
+**Not renderable yet** (in-process engine gap): gantt, pie, sankey, C4,
+block — see `precis-mermaid-unsupported` for what to use instead.
+
 ## The documents
 
 - **source** — the mermaid text (a `mermaid_node` chunk, `mn<id>`; not embedded).

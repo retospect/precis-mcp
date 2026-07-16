@@ -362,6 +362,24 @@ worker venvs). Remaining follow-ups:
   **Wheels are pure (no compiler): `quickjs-ng` + `resvg-py` cover
   macOS-arm64 + manylinux/musllinux, `resvg-py` is already pulled by
   `[docx]`.** Finder: Opus session.
+- **`~~Intent-discovery skills~~` — DONE (2026-07-16).** Added a
+  `precis-mermaid-<type>` skill family (flowchart, sequence, class, state, er,
+  journey, quadrant, requirement, gitgraph, timeline, xychart, mindmap) so an
+  intent like "org chart" / "database schema" / "sequence diagram" routes to
+  `mermaid` via `search(kind='skill', q=…)`. Each is terse and defers CRUD to
+  `precis-mermaid-help` / craft to `precis-mermaid`. One combined
+  `precis-mermaid-unsupported` redirect skill covers the engine gaps below.
+- **Engine gaps — gantt / pie / sankey / C4 / block don't render** — `bug`,
+  Owner: `mermaid/mermaid.py` + `[mermaid]` extra. The in-process QuickJS engine
+  lacks browser globals, so these mermaid types validate-fail: **gantt**
+  (`offsetWidth`), **pie** (`structuredClone` undefined), **sankey-beta**
+  (`not a function`), **C4Context** (`screen` undefined), **block-beta**
+  (`circular reference`). Fix path: bump `mermaidx` when upstream ships a fuller
+  QuickJS shim, evaluate `termaid`, or polyfill the missing globals
+  (`structuredClone`/`screen` are cheap; `offsetWidth`/DOM layout for gantt is
+  hard). Until then `precis-mermaid-unsupported` steers the model to renderable
+  alternatives (timeline / xychart / draft table) so it doesn't try+fail.
+  Finder: Opus session (2026-07-16 diagram-type sweep).
 - **Full mermaid source grammar** — `feature`, Owner: `mermaid/mermaid.py`.
   Node extraction is a pragmatic source scan (good for flowchart/graph,
   reasonable for sequence/state, not a faithful mermaid grammar). The real
