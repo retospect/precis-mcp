@@ -84,6 +84,8 @@ from tenacity import (
 )
 
 from precis import secrets as _secrets
+from precis.alerts import raise_alert as _raise_alert
+from precis.alerts import resolve_stale_alerts as _resolve_alerts
 from precis.ingest.fetch_sidecar import write_sidecar
 
 log = logging.getLogger(__name__)
@@ -113,6 +115,15 @@ _SOURCE_ARXIV_SOURCE = "fetcher:arxiv_source"
 # as ``cost_usd`` on the ``fetch_ok`` event so the paid spend is auditable in
 # ``ref_events`` alongside the free legs (which record None).
 _OPENALEX_CONTENT_COST_USD = 0.01
+
+# OpenAlex charges the ``content`` endpoint type 100 credits per fetch (their
+# published ``credit_costs`` table). We use this to translate the operator's
+# "keep enough runway for N paid fetches" floor into a raw-credit threshold.
+_OPENALEX_CONTENT_CREDIT_COST = 100
+
+# Default low-balance floor: raise the alert once fewer than this many paid
+# content fetches' worth of daily credits remain. 20 × 100 credits = 2000.
+_OPENALEX_MIN_FETCHES_DEFAULT = 20
 
 # Browser-ish UA for hosts that Cloudflare-gate non-browser agents
 # (CORE's API + many institutional repositories answer the default
@@ -493,13 +504,24 @@ def _core_api_key() -> str:
 # free to obtain) and billed per file (~$0.01), so it is the last leg and only
 # pays when OpenAlex reports content actually cached (``has_content``).
 #
-# Two safety gates: the credential (silent no-op without it, like Elsevier/
-# Wiley/CORE) **and** ``PRECIS_OPENALEX_CONTENT_AUTO`` for the automatic
-# cascade — default OFF so merging the leg can't silently spend across a
-# thousand-stub backlog. The manual one-shot (``precis fetch-openalex``) calls
-# the leg directly, bypassing the auto gate, for deliberate one-at-a-time pulls.
+# One safety gate: the credential itself (silent no-op without it, like
+# Elsevier/Wiley/CORE). The key is deliberate spend intent — configuring it on
+# the single fetch host opts that host into the paid last-resort leg. (The old
+# second gate, ``PRECIS_OPENALEX_CONTENT_AUTO``, was dropped 2026-07-16: it
+# only ever bit on the one ``PRECIS_OA_FETCH=1`` host anyway, so it was
+# redundant friction over the key.) A low-balance nursery alert
+# (:func:`check_openalex_balance`) is the runway warning that replaces it. The
+# manual one-shot (``precis fetch-openalex``) still calls the leg directly.
 
 _OPENALEX_CONTENT_HOST = "content.openalex.org"
+
+#: OpenAlex account rate-limit / credits endpoint. Keyed; reports the daily
+#: ``credits_remaining`` for the account (content fetch = 100 credits each).
+_OPENALEX_RATE_LIMIT_URL = "https://api.openalex.org/rate-limit"
+
+#: Alert source + stable fingerprint for the low-balance condition.
+_OPENALEX_BALANCE_SOURCE = "fetch_oa:openalex_balance"
+_OPENALEX_BALANCE_FINGERPRINT = "openalex-content-credits-low"
 
 
 def _openalex_content_key() -> str:
@@ -507,17 +529,83 @@ def _openalex_content_key() -> str:
     return (_secrets.get_secret("PRECIS_OPENALEX_CONTENT_KEY") or "").strip()
 
 
-def _openalex_content_auto() -> bool:
-    """Whether the paid OpenAlex-content leg runs in the *automatic* cascade.
+def _openalex_min_credits() -> int:
+    """Raise the low-balance alert below this many daily content credits.
 
-    Default OFF: the credential alone must not auto-spend on every stub. Flip
-    ``PRECIS_OPENALEX_CONTENT_AUTO=1`` once a budget is intended.
+    Configurable via ``PRECIS_OPENALEX_MIN_CREDITS`` (raw credits); the default
+    is ``_OPENALEX_MIN_FETCHES_DEFAULT`` paid fetches' worth (20 × 100 = 2000),
+    so the alert fires while there's still runway to acquire papers, not only
+    once the account is fully dry.
     """
-    return os.environ.get("PRECIS_OPENALEX_CONTENT_AUTO", "0").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    raw = os.environ.get("PRECIS_OPENALEX_MIN_CREDITS", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            log.warning(
+                "fetch_oa: ignoring non-integer PRECIS_OPENALEX_MIN_CREDITS=%r",
+                raw,
+            )
+    return _OPENALEX_MIN_FETCHES_DEFAULT * _OPENALEX_CONTENT_CREDIT_COST
+
+
+def _query_openalex_credits_remaining(api_key: str) -> int | None:
+    """Return the account's daily ``credits_remaining`` from OpenAlex, or None.
+
+    Hits the keyed ``/rate-limit`` endpoint. ``None`` on any failure or a
+    missing/malformed number — the caller treats that as "can't read a balance"
+    and clears rather than raises a spurious alert.
+    """
+    with httpx.Client(timeout=_API_TIMEOUT_S) as client:
+        resp = client.get(_OPENALEX_RATE_LIMIT_URL, params={"api_key": api_key})
+        resp.raise_for_status()
+        data = resp.json()
+    rl = data.get("rate_limit") or {}
+    raw = rl.get("credits_remaining")
+    return int(raw) if isinstance(raw, (int, float)) else None
+
+
+def check_openalex_balance(store: Any, *, api_key: str) -> int | None:
+    """Poll OpenAlex's ``credits_remaining`` and raise/clear the low-balance alert.
+
+    Called once per fetch pass on the paid host (best-effort — never raises).
+    Returns the observed ``credits_remaining`` (``None`` when the poll failed or
+    the endpoint gave no number). When the balance is at or below
+    :func:`_openalex_min_credits` a deduped ``warn`` alert is raised (source
+    ``fetch_oa:openalex_balance``); when it recovers — or the poll can't read a
+    balance — the alert auto-resolves, mirroring the nursery detector pattern.
+    """
+    if not api_key:
+        return None
+    remaining: int | None = None
+    try:
+        remaining = _query_openalex_credits_remaining(api_key)
+    except Exception as exc:  # best-effort telemetry, never break the pass
+        log.warning("fetch_oa: OpenAlex balance poll failed: %s", str(exc)[:200])
+
+    floor = _openalex_min_credits()
+    if remaining is not None and remaining <= floor:
+        fetches_left = remaining // _OPENALEX_CONTENT_CREDIT_COST
+        _raise_alert(
+            store,
+            source=_OPENALEX_BALANCE_SOURCE,
+            fingerprint=_OPENALEX_BALANCE_FINGERPRINT,
+            title=(
+                f"OpenAlex content credits low: {remaining} left "
+                f"(~{fetches_left} paid fetches)"
+            ),
+            detail=(
+                f"credits_remaining={remaining} ≤ floor={floor}; each paid "
+                f"content fetch costs {_OPENALEX_CONTENT_CREDIT_COST} credits. "
+                "Top up at https://openalex.org/users or the paid last-resort "
+                "leg will start returning fetch_failed / 429."
+            ),
+            severity="warn",
+        )
+        return remaining
+    # Healthy, or unreadable — clear any open alert (empty live set).
+    _resolve_alerts(store, source=_OPENALEX_BALANCE_SOURCE, live_fingerprints=[])
+    return remaining
 
 
 # ── Per-stub logic ─────────────────────────────────────────────────
@@ -1282,6 +1370,11 @@ def run_oa_fetch_pass(
     if not stubs:
         return {"claimed": 0, "ok": 0, "failed": 0}
 
+    # Once per working pass, check the paid leg's runway and raise/clear the
+    # low-balance alert. Best-effort — a failed poll never blocks the fetch.
+    if openalex_content_key:
+        check_openalex_balance(store, api_key=openalex_content_key)
+
     ok = 0
     failed = 0
     for stub in stubs:
@@ -1553,9 +1646,9 @@ def _run_cascade(
     10. ``s2``       — Semantic Scholar openAccessPdf, last resort (free).
     11. ``openalex_content`` — paid OpenAlex cache (PDF/TEI), publisher-
         agnostic; clears the MDPI-Akamai / Cloudflare 403 wall. Gated by
-        ``PRECIS_OPENALEX_CONTENT_KEY`` **and** ``PRECIS_OPENALEX_CONTENT_AUTO``
-        so it only runs when opted in, and last so it only spends after every
-        free leg fails.
+        ``PRECIS_OPENALEX_CONTENT_KEY`` alone (the key is the spend opt-in), and
+        last so it only spends after every free leg fails. A low-balance alert
+        (:func:`check_openalex_balance`) warns before the runway runs out.
     """
     providers: list[tuple[str, Any]] = [
         (_SOURCE_PUBLISHER, lambda: _try_publisher(stub, inbox_dir=inbox_dir)),
@@ -1606,9 +1699,10 @@ def _run_cascade(
     providers.append((_SOURCE_ARXIV, lambda: _try_arxiv(stub, inbox_dir=inbox_dir)))
     providers.append((_SOURCE_S2, lambda: _try_s2(stub, inbox_dir=inbox_dir)))
     # Paid, publisher-agnostic full text — LAST, so we only spend after every
-    # free leg has failed, and only when the operator opted the auto-cascade in
-    # (the credential alone must not auto-bill a thousand-stub backlog).
-    if openalex_content_key and _openalex_content_auto():
+    # free leg has failed. The credential itself is the opt-in (configuring the
+    # key on the fetch host is the budget decision); the low-balance alert warns
+    # before the runway runs out.
+    if openalex_content_key:
         providers.append(
             (
                 _SOURCE_OPENALEX_CONTENT,

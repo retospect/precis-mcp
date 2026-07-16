@@ -14,10 +14,10 @@ Dry-run by default; ``--apply`` writes the ``auto`` verdicts. Network-bound
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
 from precis.cli._common import resolve_dsn
+from precis.secrets import get_secret
 
 
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -80,8 +80,8 @@ def run(args: argparse.Namespace) -> None:
 
     apply = args.apply
     mode = "APPLY" if apply else "DRY-RUN"
-    mailto = os.environ.get("ACATOME_CROSSREF_MAILTO", "")
-    s2_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
+    mailto = get_secret("ACATOME_CROSSREF_MAILTO", store=store) or ""
+    s2_key = get_secret("SEMANTIC_SCHOLAR_API_KEY", store=store) or ""
     print(f"resolve-metadata [{mode}]: limit={args.limit}", file=sys.stderr)
 
     if not s2_key:

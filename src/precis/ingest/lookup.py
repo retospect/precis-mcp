@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -19,6 +18,7 @@ from precis.ingest.pdf_sidecar import (
 )
 from precis.ingest.semantic_scholar import get_paper_by_id, lookup_s2
 from precis.ingest.verify_metadata import verify_metadata
+from precis.secrets import get_secret
 
 log = logging.getLogger(__name__)
 
@@ -38,8 +38,8 @@ def lookup(pdf_path: str) -> dict[str, Any]:
     pdf_meta = extract_pdf_meta(pdf_path)
     doi = pdf_meta.get("doi")
 
-    mailto = os.environ.get("ACATOME_CROSSREF_MAILTO", "")
-    s2_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
+    mailto = get_secret("ACATOME_CROSSREF_MAILTO") or ""
+    s2_key = get_secret("SEMANTIC_SCHOLAR_API_KEY") or ""
 
     # Try DOI → CrossRef
     if doi:

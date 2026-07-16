@@ -33,7 +33,6 @@ that timescale.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from typing import Any, ClassVar
 
@@ -334,7 +333,9 @@ class SemanticScholarHandler(CacheBackedHandler):
         rate-limit / auth / transport handling lives in one place.
         """
         httpx = require_httpx()
-        api_key = (os.environ.get("SEMANTIC_SCHOLAR_API_KEY") or "").strip()
+        from precis.secrets import get_secret
+
+        api_key = (get_secret("SEMANTIC_SCHOLAR_API_KEY") or "").strip()
         headers: dict[str, str] = {}
         if api_key:
             headers["x-api-key"] = api_key

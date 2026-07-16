@@ -60,7 +60,7 @@ LaunchDaemon; spark uses systemd units):
 "yes" daemon above. It carries, identically on every host unless noted:
 `PRECIS_SUMMARIZE_MODEL=qwen`, `PRECIS_FREEROUTING_JAR`,
 `PRECIS_PATENT_RAW_ROOT`, `PRECIS_UNPAYWALL_EMAIL` (vault),
-`PRECIS_OPENALEX_CONTENT_AUTO=1`, `PRECIS_WATCH_INBOX`,
+`PRECIS_OPENALEX_MIN_CREDITS=2000`, `PRECIS_WATCH_INBOX`,
 `PRECIS_CORPUS_DIR`, `PRECIS_OPS_ALERT_TARGET` (a Discord channel), and
 two **host-pinned to melchior**: `PRECIS_GP_FETCH` / `PRECIS_OA_FETCH`
 (`1` on melchior, `0` elsewhere). API-key secrets were removed from env
@@ -88,7 +88,7 @@ values are from the cluster scan.
 | `PRECIS_CAST_AUDIO_ENABLED` | Podcast cast TTS pass | off | `1` on spark | ✅ Correct. |
 | `PRECIS_OA_FETCH` | Unpaywall/OA fetch leg | `0` | `1` on **melchior** only | ✅ Correct — single fetcher avoids the shared-inbox race (CLAUDE.md, gripe history). |
 | `PRECIS_GP_FETCH` | Google-Patents fetch leg | `0` | `1` on melchior only | ✅ Correct — same single-fetcher rationale. |
-| `PRECIS_OPENALEX_CONTENT_AUTO` | Auto-use OpenAlex content endpoint | `0` | `1` (all shared-env hosts) | ⚠️ Only "bites" where `PRECIS_OA_FETCH=1` (melchior). Harmless elsewhere but set cluster-wide for no effect — could pin to melchior for clarity. |
+| `PRECIS_OPENALEX_MIN_CREDITS` | Low-balance alert floor for the paid OpenAlex leg (raw daily credits; content fetch = 100) | `2000` | `2000` (shared env) | ✅ Replaces the dropped `PRECIS_OPENALEX_CONTENT_AUTO` gate (2026-07-16). The `PRECIS_OPENALEX_CONTENT_KEY` (vault) is now the sole spend opt-in; this floor drives the `fetch_oa:openalex_balance` alert. |
 | `PRECIS_CLASSIFY_ENABLED` | Chunk-tag classify pass | off | **not set** anywhere | ⚠️ Intentionally dark (CLAUDE.md: default-OFF). Fine — but if you want it live, enable as a trickle on one node like `PRECIS_SUMMARIZE_LLM`. |
 | `PRECIS_PAPER_GLOSSARY_ENABLED` | Per-paper glossary pass | off | **not set** | ⚠️ Dark by design (slice built, not activated). OK. |
 | `PRECIS_SANDBOX_ENABLED` | Register the `sandbox_run` executor pass | off | **not set** anywhere | 🔶 Note: the `code-sandbox` **container** is deployed on balthazar+spark (inventory group), but the *precis pass* that dispatches to it is gated by this env var, which is unset everywhere ⇒ `sandbox_run` never registers. If sandbox execution is meant to be live, set `PRECIS_SANDBOX_ENABLED=1` on the sandbox hosts. Currently dark end-to-end. |
@@ -326,9 +326,12 @@ gates off). Items worth a decision, ranked:
 4. **Sandbox** is dark end-to-end (container deployed, pass gate off);
    activating slice 1 gives build-only runs with no harvest — park it
    until slice 2 unless you need build containers now.
-5. **`PRECIS_OPENALEX_CONTENT_AUTO=1` cluster-wide** only bites on
-   melchior (the fetcher); harmless but could be melchior-pinned for
-   clarity.
+5. **Paid OpenAlex leg** — the `PRECIS_OPENALEX_CONTENT_KEY` (vault) is
+   the sole spend opt-in as of 2026-07-16; the old
+   `PRECIS_OPENALEX_CONTENT_AUTO` second gate was dropped. Runway is
+   guarded by the `fetch_oa:openalex_balance` low-balance alert
+   (`PRECIS_OPENALEX_MIN_CREDITS` floor). Only bites on melchior (the
+   fetcher).
 
 **Not issues** (resolved during review): the fixer/backlog-groom runs
 **locally on `hephaestus` (Reto's laptop)**, outside the cluster ansible

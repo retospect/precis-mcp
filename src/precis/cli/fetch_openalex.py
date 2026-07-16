@@ -8,8 +8,10 @@ publisher), so this downloads the PDF straight into the watch inbox, where
 
 Paid (~$0.01/file); needs ``PRECIS_OPENALEX_CONTENT_KEY`` (free to obtain at
 https://openalex.org/users, then fund a balance). This is the deliberate
-operator path — the automatic cascade leg is separately opt-in
-(``PRECIS_OPENALEX_CONTENT_AUTO``) so the routine worker can't silently spend.
+operator path; the routine ``fetch_oa`` cascade runs the same leg automatically
+once the key is configured on the fetch host (the key IS the opt-in as of
+2026-07-16 — the old ``PRECIS_OPENALEX_CONTENT_AUTO`` second gate was dropped in
+favour of a low-balance alert on ``credits_remaining``).
 
 Usage::
 

@@ -11,7 +11,6 @@ ref's cite_key (``Ref.slug``) and the ``precis watch`` shard layout
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 from typing import Any
 
@@ -802,8 +801,9 @@ async def triage_lookup(
         )
 
     from precis.ingest.lookup import lookup_title
+    from precis.secrets import get_secret
 
-    result = lookup_title(query, s2_key=os.environ.get("SEMANTIC_SCHOLAR_API_KEY", ""))
+    result = lookup_title(query, s2_key=get_secret("SEMANTIC_SCHOLAR_API_KEY") or "")
     if not result or not result.get("title"):
         return _render_detail(
             request,

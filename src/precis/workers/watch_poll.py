@@ -34,7 +34,6 @@ on-the-fly embedding of external abstracts.
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Callable
 from typing import Any
 
@@ -71,7 +70,9 @@ def run_watch_pass(
     keyless but rate-limited).
     """
     if api_key is None:
-        api_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "").strip()
+        from precis.secrets import get_secret
+
+        api_key = (get_secret("SEMANTIC_SCHOLAR_API_KEY") or "").strip()
     fetch = fetch_cited_by or _default_fetch_cited_by(api_key)
 
     claimed = 0

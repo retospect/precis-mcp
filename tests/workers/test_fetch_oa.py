@@ -29,6 +29,7 @@ from typing import Any
 import httpx
 import pytest
 
+from precis.alerts import list_open_alerts
 from precis.ingest.fetch_sidecar import read_sidecar
 from precis.store import Store
 from precis.utils.safe_fetch import SsrfBlocked
@@ -48,9 +49,12 @@ from precis.workers.fetch_oa import (
     _try_s2,
     _try_unpaywall,
     _try_wiley,
+    check_openalex_balance,
     claim_stubs_to_fetch,
     run_oa_fetch_pass,
 )
+
+_BALANCE_SOURCE = fetch_oa._OPENALEX_BALANCE_SOURCE
 
 # ---------------------------------------------------------------------------
 # Seeding helpers
@@ -1026,11 +1030,18 @@ class TestTryOpenalexContent:
         # ...but never the recorded payload.
         assert "SECRET" not in str(out.payload)
 
-    def test_auto_gate_off_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("PRECIS_OPENALEX_CONTENT_AUTO", raising=False)
-        assert fetch_oa._openalex_content_auto() is False
-        monkeypatch.setenv("PRECIS_OPENALEX_CONTENT_AUTO", "1")
-        assert fetch_oa._openalex_content_auto() is True
+    def test_min_credits_default_and_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The CONTENT_AUTO second gate was dropped 2026-07-16 — the key alone
+        # opts in. Its replacement runway guard is the low-balance floor.
+        monkeypatch.delenv("PRECIS_OPENALEX_MIN_CREDITS", raising=False)
+        assert fetch_oa._openalex_min_credits() == 2000  # 20 fetches × 100
+        monkeypatch.setenv("PRECIS_OPENALEX_MIN_CREDITS", "750")
+        assert fetch_oa._openalex_min_credits() == 750
+        # A non-integer value is ignored (falls back to the default).
+        monkeypatch.setenv("PRECIS_OPENALEX_MIN_CREDITS", "nope")
+        assert fetch_oa._openalex_min_credits() == 2000
 
 
 class TestQueryOpenalexContentUrls:
@@ -1433,3 +1444,78 @@ class TestRunCascade:
         )
         result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
         assert result == {"claimed": 1, "ok": 1, "failed": 0}
+
+
+class TestOpenAlexBalanceAlert:
+    """The low-balance nursery alert that replaced the CONTENT_AUTO gate."""
+
+    def _open_balance_alerts(self, store: Store) -> list[dict[str, Any]]:
+        return [a for a in list_open_alerts(store) if a["source"] == _BALANCE_SOURCE]
+
+    def test_no_key_is_noop(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Without a key the poll never runs and no alert is raised.
+        called = False
+
+        def _spy(api_key: str) -> int | None:
+            nonlocal called
+            called = True
+            return 0
+
+        monkeypatch.setattr(fetch_oa, "_query_openalex_credits_remaining", _spy)
+        assert check_openalex_balance(store, api_key="") is None
+        assert called is False
+        assert self._open_balance_alerts(store) == []
+
+    def test_low_balance_raises_alert(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 500 credits < the 2000-credit default floor → warn alert.
+        monkeypatch.delenv("PRECIS_OPENALEX_MIN_CREDITS", raising=False)
+        monkeypatch.setattr(
+            fetch_oa, "_query_openalex_credits_remaining", lambda k: 500
+        )
+        assert check_openalex_balance(store, api_key="k") == 500
+        open_alerts = self._open_balance_alerts(store)
+        assert len(open_alerts) == 1
+        assert "500" in open_alerts[0]["title"]
+
+    def test_healthy_balance_resolves_prior_alert(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("PRECIS_OPENALEX_MIN_CREDITS", raising=False)
+        # First a low reading raises it...
+        monkeypatch.setattr(
+            fetch_oa, "_query_openalex_credits_remaining", lambda k: 100
+        )
+        check_openalex_balance(store, api_key="k")
+        assert len(self._open_balance_alerts(store)) == 1
+        # ...then a healthy reading auto-resolves it.
+        monkeypatch.setattr(
+            fetch_oa, "_query_openalex_credits_remaining", lambda k: 50_000
+        )
+        assert check_openalex_balance(store, api_key="k") == 50_000
+        assert self._open_balance_alerts(store) == []
+
+    def test_poll_failure_does_not_raise_and_clears(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A failed poll returns None and must not raise a spurious low alert.
+        def _boom(api_key: str) -> int | None:
+            raise RuntimeError("openalex down")
+
+        monkeypatch.setattr(fetch_oa, "_query_openalex_credits_remaining", _boom)
+        assert check_openalex_balance(store, api_key="k") is None
+        assert self._open_balance_alerts(store) == []
+
+    def test_min_credits_env_override(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With a lower floor, the same 500-credit reading is healthy.
+        monkeypatch.setenv("PRECIS_OPENALEX_MIN_CREDITS", "100")
+        monkeypatch.setattr(
+            fetch_oa, "_query_openalex_credits_remaining", lambda k: 500
+        )
+        assert check_openalex_balance(store, api_key="k") == 500
+        assert self._open_balance_alerts(store) == []

@@ -380,24 +380,27 @@ def run_runner(args: argparse.Namespace) -> None:
     )
     from precis.store import Store
 
-    # Env vars must be set; without them OPS calls would fail
-    # immediately with auth errors.
-    epo_key = os.environ.get("EPO_OPS_CLIENT_KEY")
-    epo_secret = os.environ.get("EPO_OPS_CLIENT_SECRET")
-    raw_root_str = os.environ.get("PRECIS_PATENT_RAW_ROOT")
-    if not (epo_key and epo_secret and raw_root_str):
-        print(
-            "run-patent-watches: EPO_OPS_CLIENT_KEY, "
-            "EPO_OPS_CLIENT_SECRET, and PRECIS_PATENT_RAW_ROOT must all "
-            "be set",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
     cfg = load_config()
     dsn = resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
     try:
+        # EPO creds live in the secrets vault now (ADR 0055); resolve them
+        # through get_secret (env → vault → file) with the connected store so
+        # the vault leg is reachable. Without them OPS calls would fail
+        # immediately with auth errors, so validate before doing any work.
+        from precis.secrets import get_secret
+
+        epo_key = get_secret("EPO_OPS_CLIENT_KEY", store=store)
+        epo_secret = get_secret("EPO_OPS_CLIENT_SECRET", store=store)
+        raw_root_str = os.environ.get("PRECIS_PATENT_RAW_ROOT")
+        if not (epo_key and epo_secret and raw_root_str):
+            print(
+                "run-patent-watches: EPO_OPS_CLIENT_KEY, "
+                "EPO_OPS_CLIENT_SECRET, and PRECIS_PATENT_RAW_ROOT must all "
+                "be set",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
         ops = OpsClient(
             key=epo_key,
@@ -472,24 +475,27 @@ def run_fulltext_sweep_cli(args: argparse.Namespace) -> None:
     from precis.jobs.patent_watch import DEFAULT_FAIR_USE_LIMIT_GB
     from precis.store import Store
 
-    # Env vars must be set; without them OPS calls would fail
-    # immediately with auth errors.
-    epo_key = os.environ.get("EPO_OPS_CLIENT_KEY")
-    epo_secret = os.environ.get("EPO_OPS_CLIENT_SECRET")
-    raw_root_str = os.environ.get("PRECIS_PATENT_RAW_ROOT")
-    if not (epo_key and epo_secret and raw_root_str):
-        print(
-            "sweep-patent-fulltext: EPO_OPS_CLIENT_KEY, "
-            "EPO_OPS_CLIENT_SECRET, and PRECIS_PATENT_RAW_ROOT must all "
-            "be set",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
     cfg = load_config()
     dsn = resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
     try:
+        # EPO creds live in the secrets vault now (ADR 0055); resolve them
+        # through get_secret (env → vault → file) with the connected store so
+        # the vault leg is reachable. Without them OPS calls would fail
+        # immediately with auth errors, so validate before doing any work.
+        from precis.secrets import get_secret
+
+        epo_key = get_secret("EPO_OPS_CLIENT_KEY", store=store)
+        epo_secret = get_secret("EPO_OPS_CLIENT_SECRET", store=store)
+        raw_root_str = os.environ.get("PRECIS_PATENT_RAW_ROOT")
+        if not (epo_key and epo_secret and raw_root_str):
+            print(
+                "sweep-patent-fulltext: EPO_OPS_CLIENT_KEY, "
+                "EPO_OPS_CLIENT_SECRET, and PRECIS_PATENT_RAW_ROOT must all "
+                "be set",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
         ops = OpsClient(
             key=epo_key,
@@ -613,22 +619,27 @@ def run_reingest_cli(args: argparse.Namespace) -> None:
     from precis.jobs.patent_watch import DEFAULT_FAIR_USE_LIMIT_GB
     from precis.store import Store
 
-    epo_key = os.environ.get("EPO_OPS_CLIENT_KEY")
-    epo_secret = os.environ.get("EPO_OPS_CLIENT_SECRET")
-    raw_root_str = os.environ.get("PRECIS_PATENT_RAW_ROOT")
-    if not (epo_key and epo_secret and raw_root_str):
-        print(
-            "reingest-patents: EPO_OPS_CLIENT_KEY, "
-            "EPO_OPS_CLIENT_SECRET, and PRECIS_PATENT_RAW_ROOT must all "
-            "be set",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
     cfg = load_config()
     dsn = resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
     try:
+        # EPO creds live in the secrets vault now (ADR 0055); resolve them
+        # through get_secret (env → vault → file) with the connected store so
+        # the vault leg is reachable. Without them OPS calls would fail
+        # immediately with auth errors, so validate before doing any work.
+        from precis.secrets import get_secret
+
+        epo_key = get_secret("EPO_OPS_CLIENT_KEY", store=store)
+        epo_secret = get_secret("EPO_OPS_CLIENT_SECRET", store=store)
+        raw_root_str = os.environ.get("PRECIS_PATENT_RAW_ROOT")
+        if not (epo_key and epo_secret and raw_root_str):
+            print(
+                "reingest-patents: EPO_OPS_CLIENT_KEY, "
+                "EPO_OPS_CLIENT_SECRET, and PRECIS_PATENT_RAW_ROOT must all "
+                "be set",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
         ops = OpsClient(
             key=epo_key,

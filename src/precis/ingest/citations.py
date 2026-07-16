@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from semanticscholar import SemanticScholar
@@ -23,7 +22,10 @@ def citations(paper_id: str, api_key: str = "") -> dict[str, list[dict[str, Any]
     Returns:
         Dict with 'references' and 'cited_by' lists.
     """
-    api_key = api_key or os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
+    if not api_key:
+        from precis.secrets import get_secret
+
+        api_key = get_secret("SEMANTIC_SCHOLAR_API_KEY") or ""
     sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
 
     # Normalize acatome paper_id prefixes
