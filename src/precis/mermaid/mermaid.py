@@ -117,17 +117,71 @@ _EDGE_OP = re.compile(r"<?[-.=]{2,}[->xo]?|--[xo]|[ox]--[ox]")
 #: A sequence-diagram message arrow (``->>``, ``-->>``, ``-x``, ``-)`` …).
 _SEQ_ARROW = re.compile(r"--?>>?|--?[)x]|<<-?-?>>")
 _ID = re.compile(r"([A-Za-z][\w-]*)")
+#: A UML class relation connector (``<|--``, ``*--``, ``o--``, ``-->``, ``..>``,
+#: ``..|>``, plain ``--`` / ``..``) — flanked by optional arrowheads.
+_CLASS_REL = re.compile(r"(?:<\||<|\*|o)?[-.]{2,}(?:\|>|>|\*|o)?")
+#: An ER relation: ``ENTITY ||--o{ ENTITY`` (two cardinality glyphs each side of
+#: ``--`` identifying / ``..`` non-identifying), captured whole for both ends.
+_ER_REL = re.compile(
+    r"^([A-Za-z][\w-]*)\s+[|}o{]{2}(?:--|\.\.)[|}o{]{2}\s+([A-Za-z][\w-]*)"
+)
+#: A requirement-diagram relation ``src - <verb> -> dst`` and its reverse.
+_REQ_REL = re.compile(r"^([A-Za-z][\w-]*)\s*-\s*\w+\s*->\s*([A-Za-z][\w-]*)")
+_REQ_REL_REV = re.compile(r"^([A-Za-z][\w-]*)\s*<-\s*\w+\s*-\s*([A-Za-z][\w-]*)")
+#: A state declaration ``state Foo`` / ``state "desc" as Foo`` / ``state Foo {``.
+_STATE_DECL = re.compile(r'^state\s+(?:"[^"]*"\s+as\s+)?([A-Za-z][\w-]*)')
+#: A mindmap node with an explicit id before a shape opener (``root((Idea))``).
+_MINDMAP_ID = re.compile(r"([A-Za-z][\w-]*)\s*(?:\(\(|\[|\(|\{\{|\)\)|\))")
+
+#: requirement / element block leaders (their first token names the node).
+_REQ_BLOCK = (
+    "requirement",
+    "functionalrequirement",
+    "performancerequirement",
+    "interfacerequirement",
+    "physicalrequirement",
+    "designconstraint",
+    "element",
+)
+#: First-token → diagram-kind dispatch for :func:`_diagram_kind`. ``"data"`` is
+#: the family of data-series diagrams (journey / timeline / xychart / quadrant)
+#: and the engine-unsupported ones (gantt / pie / sankey / c4 / block): they
+#: carry no stable, bindable node ids, so extraction returns ``[]`` rather than
+#: misparsing their data rows as nodes.
+_KIND_PREFIXES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("sequence", ("sequencediagram",)),
+    ("class", ("classdiagram",)),
+    ("er", ("erdiagram",)),
+    ("requirement", ("requirementdiagram",)),
+    ("state", ("statediagram",)),
+    ("mindmap", ("mindmap",)),
+    ("gitgraph", ("gitgraph",)),
+    (
+        "data",
+        (
+            "journey",
+            "timeline",
+            "xychart",
+            "quadrant",
+            "gantt",
+            "pie",
+            "sankey",
+            "c4",
+            "block",
+        ),
+    ),
+)
 
 
 def elements(source: str) -> list[Element]:
-    """Every bindable node id in the source, in first-seen order. Handles
-    flowchart/graph well and sequence/state/other reasonably; not a full
-    mermaid grammar (documented in the skill). ``coords`` is a node's
-    out-neighbours (topology), or ``""``."""
-    kind = _diagram_kind(source)
-    if kind == "sequence":
-        return _sequence_nodes(source)
-    return _graph_nodes(source)
+    """Every bindable node id in the source, in first-seen order. A pragmatic
+    per-grammar source scan (not a full mermaid parser) covering every node-
+    bearing diagram type — flowchart/graph, sequence, class, ER, requirement,
+    state and mindmap; gitGraph yields its branches + tagged commits. Data-
+    series diagrams (journey / timeline / xychart / quadrant) and the engine-
+    unsupported types have no bindable node ids and return ``[]``. ``coords`` is
+    a node's out-neighbours (topology), or ``""``."""
+    return _EXTRACTORS.get(_diagram_kind(source), _graph_nodes)(source)
 
 
 def _diagram_kind(source: str) -> str:
@@ -135,10 +189,38 @@ def _diagram_kind(source: str) -> str:
         s = ln.strip().lower()
         if not s or s.startswith("%%"):
             continue
-        if s.startswith("sequencediagram"):
-            return "sequence"
+        for kind, prefixes in _KIND_PREFIXES:
+            if s.startswith(prefixes):
+                return kind
         return "graph"
     return "graph"
+
+
+def _registrar() -> tuple[Any, Any, Any]:
+    """A tiny ordered node collector shared by the per-grammar extractors:
+    ``see(id, tag)`` registers a node (first tag wins over the ``"node"``
+    default, a later specific tag upgrades it), ``edge(a, b)`` records a
+    directed out-edge, ``build()`` returns the ``Element`` list."""
+    order: list[str] = []
+    tags: dict[str, str] = {}
+    edges: dict[str, list[str]] = {}
+
+    def see(nid: str, tag: str = "node") -> None:
+        if nid not in tags:
+            order.append(nid)
+            tags[nid] = tag
+            edges[nid] = []
+        elif tag != "node":
+            tags[nid] = tag
+
+    def edge(a: str, b: str) -> None:
+        if a in edges and b != a and b not in edges[a]:
+            edges[a].append(b)
+
+    def build() -> list[Element]:
+        return [Element(id=n, tag=tags[n], coords=_topology(edges[n])) for n in order]
+
+    return see, edge, build
 
 
 def _graph_nodes(source: str) -> list[Element]:
@@ -199,6 +281,209 @@ def _sequence_nodes(source: str) -> list[Element]:
                 if m := _ID.match(e):
                     see(m.group(1))
     return [Element(id=n, tag="participant", coords="") for n in order]
+
+
+def _class_nodes(source: str) -> list[Element]:
+    """UML class ids: ``class Foo`` declarations, relation endpoints
+    (``Animal <|-- Dog``) and ``Foo : +member`` shorthand. Members inside a
+    ``{ … }`` body are attributes, not nodes."""
+    see, edge, build = _registrar()
+    depth = 0
+    for raw in source.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("%%"):
+            continue
+        if depth > 0:  # inside a class body — attribute lines, not nodes
+            depth += line.count("{") - line.count("}")
+            continue
+        low = line.lower()
+        if low.startswith(
+            (
+                "classdiagram",
+                "direction",
+                "namespace",
+                "note",
+                "click",
+                "style",
+                "cssclass",
+                "callback",
+                "link ",
+            )
+        ):
+            continue
+        if low.startswith("class "):
+            if m := _ID.match(line[len("class ") :].strip()):
+                see(m.group(1), "class")
+            depth += line.count("{") - line.count("}")
+            continue
+        body = re.sub(r'"[^"]*"', " ", line).split(":", 1)[
+            0
+        ]  # drop cardinality + label
+        if _CLASS_REL.search(body):
+            ids = [
+                m.group(1)
+                for p in _CLASS_REL.split(body)
+                if (m := _ID.match(p.strip()))
+            ]
+            for nid in ids:
+                see(nid, "class")
+            for a, b in pairwise(ids):
+                edge(a, b)
+        elif ":" in line and (m := _ID.match(line)):  # `Foo : +int age` shorthand
+            see(m.group(1), "class")
+    return build()
+
+
+def _er_nodes(source: str) -> list[Element]:
+    """ER entity ids: relation endpoints across cardinality operators
+    (``CUSTOMER ||--o{ ORDER``) and ``ENTITY { … }`` attribute blocks."""
+    see, edge, build = _registrar()
+    depth = 0
+    for raw in source.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("%%"):
+            continue
+        if depth > 0:  # inside an entity's attribute block
+            depth += line.count("{") - line.count("}")
+            continue
+        low = line.lower()
+        if low.startswith("erdiagram"):
+            continue
+        if line.endswith("{"):  # `ENTITY {` attribute-block opener
+            if m := _ID.match(line[:-1].strip()):
+                see(m.group(1), "entity")
+            depth += 1
+            continue
+        if m := _ER_REL.match(line.split(":", 1)[0]):
+            see(m.group(1), "entity")
+            see(m.group(2), "entity")
+            edge(m.group(1), m.group(2))
+    return build()
+
+
+def _requirement_nodes(source: str) -> list[Element]:
+    """Requirement / element ids: block headers (``requirement foo {``,
+    ``element bar {``) and relation endpoints (``bar - satisfies -> foo``)."""
+    see, edge, build = _registrar()
+    depth = 0
+    for raw in source.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("%%"):
+            continue
+        if depth > 0:  # inside a requirement/element attribute block
+            depth += line.count("{") - line.count("}")
+            continue
+        low = line.lower()
+        if low.startswith(("requirementdiagram", "direction")):
+            continue
+        first, _, rest = line.partition(" ")
+        if first.lower() in _REQ_BLOCK and rest.strip():
+            if m := _ID.match(rest.strip()):
+                see(
+                    m.group(1),
+                    "element" if first.lower() == "element" else "requirement",
+                )
+            depth += line.count("{") - line.count("}")
+            continue
+        if m := _REQ_REL.match(line):
+            see(m.group(1))
+            see(m.group(2))
+            edge(m.group(1), m.group(2))
+        elif m := _REQ_REL_REV.match(line):
+            see(m.group(1))
+            see(m.group(2))
+            edge(m.group(2), m.group(1))
+    return build()
+
+
+def _state_nodes(source: str) -> list[Element]:
+    """State ids: ``state Foo`` / ``state "d" as Foo`` / ``state Foo {``
+    declarations and transition endpoints (``A --> B : label``). The ``[*]``
+    start/end pseudo-states are intentionally not bindable."""
+    see, edge, build = _registrar()
+    for raw in source.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("%%"):
+            continue
+        low = line.lower()
+        if low.startswith(("statediagram", "direction", "note", "}")):
+            continue
+        if low.startswith("state"):
+            if m := _STATE_DECL.match(line):
+                see(m.group(1), "state")
+            continue
+        body = _delabel(line).split(":", 1)[0]
+        ids = [m.group(1) for p in _EDGE_OP.split(body) if (m := _ID.match(p.strip()))]
+        for nid in ids:  # `[*]` fails _ID (leading `[`) → excluded
+            see(nid, "state")
+        for a, b in pairwise(ids):
+            edge(a, b)
+    return build()
+
+
+def _mindmap_nodes(source: str) -> list[Element]:
+    """Mindmap ids by indentation tree: an explicit id before a shape
+    (``root((Idea))``) when present, else a slug of the node text. Best-effort
+    — a bare node's id follows its text, so renaming the text renames the id."""
+    see, edge, build = _registrar()
+    stack: list[tuple[int, str]] = []
+    for raw in source.splitlines():
+        text = raw.strip()
+        if not text or text.startswith(("%%", "::icon", ":::")):
+            continue
+        if text.lower().startswith("mindmap"):
+            continue
+        nid = _mindmap_id(text)
+        if not nid:
+            continue
+        see(nid, "mindmap")
+        indent = len(raw) - len(raw.lstrip())
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        if stack:
+            edge(stack[-1][1], nid)
+        stack.append((indent, nid))
+    return build()
+
+
+def _mindmap_id(text: str) -> str:
+    if m := _MINDMAP_ID.match(text):
+        return m.group(1)
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-").lower()
+    return slug[:40]
+
+
+def _gitgraph_nodes(source: str) -> list[Element]:
+    """gitGraph ids: declared branches (``branch develop``) and commits given an
+    explicit ``id: "…"``. Merge/checkout only reference existing branches."""
+    see, _edge, build = _registrar()
+    for raw in source.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("%%"):
+            continue
+        head, _, rest = line.partition(" ")
+        low = head.lower().rstrip(":")
+        if low == "branch" and rest.strip():
+            if m := _ID.match(rest.strip()):
+                see(m.group(1), "branch")
+        elif low in ("commit", "cherry-pick"):
+            if cm := re.search(r'id:\s*"([^"]+)"', line):
+                see(cm.group(1), "commit")
+    return build()
+
+
+#: Diagram-kind → node extractor. ``"data"`` diagrams have no bindable node ids.
+_EXTRACTORS = {
+    "graph": _graph_nodes,
+    "sequence": _sequence_nodes,
+    "class": _class_nodes,
+    "er": _er_nodes,
+    "requirement": _requirement_nodes,
+    "state": _state_nodes,
+    "mindmap": _mindmap_nodes,
+    "gitgraph": _gitgraph_nodes,
+    "data": lambda _source: [],
+}
 
 
 def _is_skip(line: str) -> bool:

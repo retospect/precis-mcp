@@ -391,11 +391,27 @@ worker venvs). Remaining follow-ups:
   hard). Until then `precis-mermaid-unsupported` steers the model to renderable
   alternatives (timeline / xychart / draft table) so it doesn't try+fail.
   Finder: Opus session (2026-07-16 diagram-type sweep).
-- **Full mermaid source grammar** — `feature`, Owner: `mermaid/mermaid.py`.
-  Node extraction is a pragmatic source scan (good for flowchart/graph,
-  reasonable for sequence/state, not a faithful mermaid grammar). The real
-  mermaid parser lives in the `mermaidx` engine; a future option is to extract
-  node ids from the *rendered* SVG (authoritative) instead of the scan.
+- **Bind on every node-bearing diagram type** — `feature`, Owner:
+  `mermaid/mermaid.py`. ✅ DONE (Opus session 2026-07-16). `_diagram_kind()` now
+  dispatches per-grammar extractors — flowchart/graph, sequence, class (decls +
+  UML relations + `Foo : member`), ER (cardinality-op relations + attribute
+  blocks), requirement (`requirement`/`element` blocks + `- verb ->` relations),
+  state (`state` decls + transitions, `[*]` pseudo-states excluded), mindmap
+  (indentation tree, explicit id or text-slug), gitGraph (branches + `id:`-tagged
+  commits). Data-series types (journey / timeline / xychart / quadrant) and the
+  engine-unsupported ones return `[]` (no stable node ids) instead of misparsing
+  data rows. So `link(element=…)` + `lint_bindings()` no longer false-positive
+  off-flowchart. Tests in `tests/test_mermaid.py` (pure extraction always runs;
+  render-validated per type under `importorskip`).
+  - Residual (deferred, not chased): the scan is still a pragmatic per-grammar
+    approximation, not a faithful mermaid parser. Considered + rejected for now
+    the "extract ids from the *rendered* SVG (authoritative)" option — it needs
+    the `mermaidx` engine, but `elements()`/`lint_bindings()` must work on the
+    dark gate where the engine is absent, so the source scan stays the primary.
+    An SVG cross-check where the engine *is* present is a possible future
+    refinement, not a gap. Mindmap ids for bare (id-less) text nodes are a
+    text-slug, so renaming the text renames the id — acceptable (a rename
+    breaking a binding is what the lint is for).
 - **Rich cross-kind seed rendering in `diagram_propose`** — `feature`, Owner:
   `workers/job_types/diagram_propose.py`. `compose_message` inlines chunk-handle
   seed *text*; a ref-handle seed (another `figure`, a `cad` cross-section) is

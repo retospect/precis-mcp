@@ -62,6 +62,159 @@ def test_dangling_binding_lint() -> None:
     assert LANG.lint_bindings(_FLOW, {"intake", "ship"}) == []
 
 
+# ── per-grammar node extraction (task 4: bind on every node-bearing type) ──
+
+_CLASS = """classDiagram
+  class Animal {
+    +String name
+    +eat()
+  }
+  Animal <|-- Dog
+  Animal <|-- Cat
+  Dog --> Bone : chews
+  Customer "1" --> "*" Ticket : raises
+  Vehicle : +int wheels"""
+
+_ER = """erDiagram
+  CUSTOMER ||--o{ ORDER : places
+  ORDER ||--|{ LINE-ITEM : contains
+  CUSTOMER {
+    string name
+    string custId
+  }
+  PRODUCT }o--o{ ORDER : in"""
+
+_REQ = """requirementDiagram
+  requirement test_req {
+    id: 1
+    text: the test text.
+    risk: high
+    verifymethod: test
+  }
+  element test_entity {
+    type: simulation
+  }
+  test_entity - satisfies -> test_req"""
+
+_STATE = """stateDiagram-v2
+  [*] --> Still
+  Still --> Moving : go
+  Moving --> Crash
+  Crash --> [*]
+  state Fork {
+    [*] --> State2
+  }
+  state "Named desc" as NS"""
+
+_MINDMAP = """mindmap
+  root((Big idea))
+    Origins
+      Long history
+    id1[Research]"""
+
+_GIT = """gitGraph
+  commit id: "Alpha"
+  branch develop
+  commit id: "Beta"
+  checkout main
+  merge develop
+  cherry-pick id: "Beta\""""
+
+
+def test_extract_class_nodes_declarations_relations_and_shorthand() -> None:
+    els = {e.id: e for e in LANG.elements(_CLASS)}
+    # a declared class, both relation endpoints, and the `Foo : member` form
+    assert set(els) == {"Animal", "Dog", "Cat", "Bone", "Customer", "Ticket", "Vehicle"}
+    assert all(e.tag == "class" for e in els.values())
+    assert set(els["Animal"].coords.lstrip("→").split(",")) == {"Dog", "Cat"}
+    # `"1" --> "*"` cardinality labels are stripped, not read as ids
+    assert els["Customer"].coords == "→Ticket"
+
+
+def test_extract_er_entities_across_cardinality_ops() -> None:
+    els = {e.id: e for e in LANG.elements(_ER)}
+    assert set(els) == {"CUSTOMER", "ORDER", "LINE-ITEM", "PRODUCT"}  # hyphen id kept
+    assert all(e.tag == "entity" for e in els.values())
+    assert els["CUSTOMER"].coords == "→ORDER"
+    assert els["ORDER"].coords == "→LINE-ITEM"
+
+
+def test_extract_requirement_nodes_and_relation_direction() -> None:
+    els = {e.id: e for e in LANG.elements(_REQ)}
+    assert set(els) == {"test_req", "test_entity"}
+    assert els["test_req"].tag == "requirement"
+    assert els["test_entity"].tag == "element"
+    assert els["test_entity"].coords == "→test_req"  # `entity - satisfies -> req`
+
+
+def test_extract_state_nodes_excludes_pseudostates() -> None:
+    ids = {e.id for e in LANG.elements(_STATE)}
+    assert ids == {"Still", "Moving", "Crash", "Fork", "State2", "NS"}
+    assert "[*]" not in ids  # start/end pseudo-states are never bindable
+    els = {e.id: e for e in LANG.elements(_STATE)}
+    assert set(els["Moving"].coords.lstrip("→").split(",")) == {"Crash"}
+
+
+def test_extract_mindmap_ids_by_indentation_tree() -> None:
+    els = {e.id: e for e in LANG.elements(_MINDMAP)}
+    # explicit id (`root`, `id1`) where given, slug of the text otherwise
+    assert set(els) == {"root", "origins", "long-history", "id1"}
+    assert set(els["root"].coords.lstrip("→").split(",")) == {"origins", "id1"}
+    assert els["origins"].coords == "→long-history"
+
+
+def test_extract_gitgraph_branches_and_tagged_commits() -> None:
+    els = {e.id: e for e in LANG.elements(_GIT)}
+    assert set(els) == {"Alpha", "develop", "Beta"}  # branch + id:-tagged commits
+    assert els["develop"].tag == "branch"
+    assert els["Alpha"].tag == "commit"
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "journey\n  title Flow\n  section Discover\n    Land: 4: User",
+        "timeline\n  title History\n  2021 : launch\n  2022 : growth",
+        'xychart-beta\n  title "Sales"\n  x-axis [jan, feb]\n  bar [5, 6]',
+        "quadrantChart\n  title Reach\n  x-axis Low --> High\n  A: [0.3, 0.6]",
+    ],
+)
+def test_data_series_diagrams_have_no_bindable_nodes(src: str) -> None:
+    # journey/timeline/xychart/quadrant carry data rows, not stable node ids —
+    # returning [] keeps lint_bindings from false-positiving on them
+    assert LANG.elements(src) == []
+
+
+def test_lint_bindings_now_clean_on_non_flowchart_types() -> None:
+    # the bug task 4 fixes: these ids used to be invisible → false dangling
+    assert LANG.lint_bindings(_CLASS, {"Animal", "Ticket"}) == []
+    assert LANG.lint_bindings(_ER, {"CUSTOMER", "LINE-ITEM"}) == []
+    assert LANG.lint_bindings(_STATE, {"Moving", "Fork"}) == []
+    assert [f.node for f in LANG.lint_bindings(_ER, {"ORDER", "ghost"})] == ["ghost"]
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        _ER,
+        _REQ,
+        _STATE,
+        _MINDMAP,
+        _GIT,
+        # classDiagram renders, but quoted cardinality trips a QuickJS gap
+        # (structuredClone) — exercise the plain form here; extraction of the
+        # cardinality form is covered purely above.
+        "classDiagram\n  Animal <|-- Dog\n  Dog --> Bone : chews",
+    ],
+)
+def test_extraction_targets_render_valid_sources(src: str) -> None:
+    pytest.importorskip("mermaidx")
+    assert (
+        LANG.parse_error(src) is None
+    )  # the sample is real mermaid the engine renders
+    assert LANG.elements(src)  # and we pull at least one bindable node from it
+
+
 def test_compile_valid_and_invalid() -> None:
     pytest.importorskip("mermaidx")
     assert LANG.parse_error(_FLOW) is None
