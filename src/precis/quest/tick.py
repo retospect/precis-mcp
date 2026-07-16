@@ -12,13 +12,16 @@ two things:
 * a **rewritten dossier** — the living synthesis (current understanding, best
   leads, what's ruled out, open questions), whole-replaced in place.
 
-No compute is dispatched yet (that is rung 4b — the tick learns to mint
-``structure``/``pathway`` sims and read their measures). No autonomous
-scheduling yet (rung 4d — a dispatcher picks which quest ticks when a slot
-frees). So this rung is **dark**: nothing mints a tick automatically; it runs
-only from ``precis quest tick <id>`` or an explicit caller. The
-``PRECIS_QUEST_LOOP_ENABLED`` flag (:func:`quest_loop_enabled`) is defined here
-for the future autonomous dispatcher to gate on.
+With ``compute=True`` (rung 4b) the tick also materialises the model's
+**proposals** into candidate `structure` servers, dispatches their relax sims
+(the derived compute lane), and harvests finished results back into the logbook
+(:mod:`precis.quest.compute`); off by default so the tick stays a pure reasoning
+step unless a caller opts in. No autonomous scheduling yet (rung 4d — a
+dispatcher picks which quest ticks when a slot frees). So this rung is **dark**:
+nothing mints a tick automatically; it runs only from ``precis quest tick <id>``
+or an explicit caller. The ``PRECIS_QUEST_LOOP_ENABLED`` flag
+(:func:`quest_loop_enabled`) is defined here for the future autonomous
+dispatcher to gate on.
 
 The single model call is injectable (``dispatch_fn``) so the tick is
 deterministically unit-testable without a live model.
@@ -72,6 +75,12 @@ class QuestTickOutcome:
     dossier_rewritten: bool
     cost_usd: float | None
     note: str
+    # Compute (rung 4b) — all 0 when the tick runs without compute.
+    proposals: int = 0
+    candidates_created: int = 0
+    sims_dispatched: int = 0
+    results_harvested: int = 0
+    ruled_out: int = 0
 
 
 # ── context assembly ──────────────────────────────────────────────────
@@ -174,12 +183,25 @@ Respond with EXACTLY ONE JSON object and nothing else:
     {{"entry_type": "<one of: {entry_types}>", "text": "<one concise entry>"}}
   ],
   "dossier_markdown": "<the FULL rewritten dossier in markdown: current \
-understanding, best leads so far, what's ruled out, open questions>"
+understanding, best leads so far, what's ruled out, open questions>",
+  "proposals": [
+    {{"name": "<candidate material>", "rationale": "<why test it>",
+      "structure": {{"cell": {{"a": 8.4, "b": 8.4, "c": 24.0, \
+"pbc": [true, true, false]}},
+        "ops": [{{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}}]}}}}
+  ]
 }}
 
 Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
 state, a `decision` on direction, or a `dead-end` to stop re-treading are the \
-most useful. Keep the dossier tight."""
+most useful. Keep the dossier tight.
+
+`proposals` (0–3) are candidate materials to simulate — each an atomistic \
+`structure` (a periodic `cell` + `add_atom` ops with fractional coords). Only \
+propose a candidate you can express as a concrete structure and that is NOT \
+already ruled out; omit `structure` if you cannot, and it will be recorded as a \
+lead but not simulated. Propose nothing if the next step is analysis, not a new \
+material."""
 
 
 # ── model call + parsing ──────────────────────────────────────────────
@@ -239,11 +261,16 @@ def run_quest_tick(
     tier: Any = None,
     dispatch_fn: Callable[[Any], Any] | None = None,
     by: str = "agent",
+    compute: bool = False,
 ) -> QuestTickOutcome:
     """Run one structured research step against ``quest_id``.
 
     ``dispatch_fn`` is injectable (defaults to the real router ``dispatch``) so
-    the tick is unit-testable with a canned ``LlmResult``.
+    the tick is unit-testable with a canned ``LlmResult``. ``compute=True`` (rung
+    4b) materialises the model's proposals into candidate `structure` servers,
+    dispatches their relax sims (the derived compute lane), and harvests any
+    finished results into the logbook — off by default so the tick stays a pure
+    reasoning step unless a caller opts in.
     """
     qref = store.get_ref(kind="quest", id=quest_id)
     if qref is None or qref.deleted_at is not None:
@@ -289,8 +316,49 @@ def run_quest_tick(
         dossier_mod.rewrite_dossier(store, quest_id, md)
         rewritten = True
 
-    note = "ok" if (added or rewritten) else "no-op (empty output)"
-    return QuestTickOutcome(quest_id, "succeeded", added, rewritten, cost, note)
+    # Proposals — log each candidate as a hypothesis (WORM), then optionally
+    # materialise + dispatch them as `structure` sims (rung 4b).
+    proposals = [p for p in (payload.get("proposals") or []) if isinstance(p, dict)]
+    for p in proposals:
+        name = str(p.get("name") or "").strip()
+        if not name:
+            continue
+        rationale = str(p.get("rationale") or "").strip()
+        buildable = " [buildable]" if isinstance(p.get("structure"), dict) else ""
+        append_entry(
+            store,
+            quest_id,
+            text=f"candidate: {name}{buildable} — {rationale}"[:400],
+            entry_type="hypothesis",
+            by=by,
+        )
+        added += 1
+
+    created = dispatched = harvested = ruled = 0
+    if compute:
+        from precis.quest.compute import run_compute_step
+
+        step = run_compute_step(store, quest_id, proposals, by=by)
+        created = step.candidates_created
+        dispatched = step.sims_dispatched
+        harvested = step.results_harvested
+        ruled = step.ruled_out
+
+    did_work = added or rewritten or created or harvested or ruled
+    note = "ok" if did_work else "no-op (empty output)"
+    return QuestTickOutcome(
+        quest_id,
+        "succeeded",
+        added,
+        rewritten,
+        cost,
+        note,
+        proposals=len(proposals),
+        candidates_created=created,
+        sims_dispatched=dispatched,
+        results_harvested=harvested,
+        ruled_out=ruled,
+    )
 
 
 __all__ = [

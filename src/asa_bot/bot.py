@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import io
 import logging
 import time
 from datetime import UTC, datetime
@@ -305,7 +306,7 @@ class AsaBot(discord.Client):
         # If the body is large, upload as attachment so we don't spam.
         if len(body) >= self._cfg.discord.attachment_threshold_chars:
             buf = body.encode("utf-8")
-            file = discord.File(fp=_BytesProxy(buf), filename="asa-reply.md")
+            file = discord.File(fp=io.BytesIO(buf), filename="asa-reply.md")
             preface = chunks[0][:1800] + (
                 "\n\n*(full reply attached)*" if len(body) > 1800 else ""
             )
@@ -584,24 +585,6 @@ def _extract_message_body(rendering: str) -> str:
         if line.strip():
             body_lines.append(line)
     return "\n".join(body_lines).strip()
-
-
-class _BytesProxy:
-    """discord.py expects a file-like; this wraps a bytes blob."""
-
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-        self._pos = 0
-
-    def read(self, n: int = -1) -> bytes:
-        if n < 0:
-            n = len(self._data) - self._pos
-        chunk = self._data[self._pos : self._pos + n]
-        self._pos += len(chunk)
-        return chunk
-
-    def close(self) -> None:
-        pass
 
 
 def _read_or_empty(path: str) -> str:

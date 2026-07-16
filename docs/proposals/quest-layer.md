@@ -1,6 +1,6 @@
 # Quest layer — the striving above the work (proposal)
 
-> **Status: model closed; slices 1–3 + the 4a skeleton built.** Captures the design conversation
+> **Status: model closed; slices 1–3 + rungs 4a–4b built.** Captures the design conversation
 > of 2026-07-15 (Reto + session). The aim-layer that sits above projects/streams/
 > concepts and gives the system **direction**: a legible answer to "what are we
 > striving toward, and is this work/knowledge actually in its service?"
@@ -280,11 +280,21 @@ project/todos · relax+pathway jobs   project/todos · papers · fold/seq jobs
      entries + a whole-rewritten dossier. No compute, no scheduling yet — dark,
      driven only by `precis quest tick <id>`. The logbook write is unified
      (`src/precis/quest/logbook.py`, shared with the handler).
-   - **4b — compute dispatch + proposer + Pareto frontier**. The tick mints a
-     derived `structure`/`pathway` sim (content-addressed, `serves` + `requested`
-     links), reads measures back into `result`/`cost` logbook entries, tags
-     failures `ruled-out`; the **proposer** grounds candidates in the dossier +
-     frontier neighbours; a Pareto frontier over the objective vector.
+   - **4b — compute dispatch + proposer + Pareto frontier** *(built —
+     `src/precis/quest/compute.py` + `frontier.py`)*. The tick's structured
+     output gains **proposals**; each candidate carrying an atomistic
+     `structure` spec becomes a `structure` that `serves` the quest
+     (content-addressed, `candidate`-tagged), and — with `compute=True` — its
+     relax dispatches on the GPU node via the derived compute lane (no
+     `requested_by`, since a quest never closes). A harvest reads converged runs
+     into `result`+`cost` logbook entries (idempotent) and `ruled-out`-tags a
+     candidate whose relax job failed. `quest_frontier` computes the Pareto set
+     over the candidates' measures against the objective vector (default:
+     minimise energy; `meta.rubric_objectives` override — the rubric→objective
+     open question, deferred). `view='frontier'` + `precis quest tick --compute`.
+     The **proposer** is the tick's model grounded in the dossier + `ruled-out`
+     set (frontier-seeded directions arrive with 4c). *Structure `pathway` is
+     not a target here — the catpath plugin isn't in-tree; `structure` is.*
    - **4c — the local↔frontier cascade**. Escalate to the frontier model on a
      signal (enough new evidence / stalled frontier / surprise) to review +
      rewrite the dossier + set the next line; `promise` proxy defined.

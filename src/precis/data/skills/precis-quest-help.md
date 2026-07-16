@@ -122,6 +122,7 @@ get(kind='quest', id=7)               # statement + logbook timeline + tote
 get(kind='quest', id=7, view='tree')  # rollup: servers + deed ledger + health + gaps
 get(kind='quest', id=7, view='gaps')  # just this quest's exploration queue
 get(kind='quest', id=7, view='dossier')  # the living research synthesis (slice 4)
+get(kind='quest', id=7, view='frontier') # Pareto frontier of candidate materials
 get(kind='quest', id='/active')       # every active striving
 get(kind='quest', id='/gaps')         # gaps across ALL active quests
 ```
@@ -166,19 +167,34 @@ get(kind='quest', id=7, view='dossier')   # read the synthesis
 A **research tick** is one bounded step of the (future) autonomous loop:
 it reads the quest's rolling context (statement + dossier + gaps +
 momentum + logbook tail), does one increment of reasoning, appends 1–4
-logbook entries, and rewrites the dossier. Run one by hand:
+logbook entries, rewrites the dossier, and may **propose candidate
+materials**. Run one by hand:
 
 ```
-precis quest tick 7            # one tick against quest 7
+precis quest tick 7            # one reasoning tick against quest 7
 precis quest tick 7 --dry-run  # print the assembled context, no LLM call
+precis quest tick 7 --compute  # ALSO simulate proposed candidates (GPU relax)
 precis quest dossier 7         # print the dossier
+precis quest frontier 7        # the Pareto frontier of candidate materials
 ```
+
+**Compute (slice 4b).** With `--compute`, each proposal that carries a
+concrete atomistic `structure` (a periodic cell + atoms) becomes a
+`structure` that `serves` the quest (the graph *is* the memory of
+explored space), content-addressed so re-proposing a material is a cache
+hit. Its relax is dispatched on the GPU node (the derived compute lane);
+a later tick **harvests** the result into a `result` logbook entry (with
+an energy + step-count cost that feeds the tote). A candidate whose relax
+fails is `ruled-out:`-tagged so the proposer never re-treads it. The
+converged candidates form a **Pareto frontier** over the quest's
+objective vector (default: minimise energy; override via
+`meta.rubric_objectives`), shown by `view='frontier'`.
 
 The autonomous *scheduling* of ticks (which quest advances when compute
-frees) and *compute dispatch* (minting `structure`/`pathway` sims) are
-later rungs — a tick today only reads state and writes the logbook +
-dossier. Dark by default (`PRECIS_QUEST_LOOP_ENABLED` gates the future
-auto-dispatcher; the manual CLI runs regardless).
+frees) is a later rung. Dark by default: nothing mints a tick
+automatically, and compute is off unless you pass `--compute`
+(`PRECIS_QUEST_LOOP_ENABLED` gates the future auto-dispatcher; the manual
+CLI runs regardless).
 
 ## What this is *not*
 
@@ -191,16 +207,16 @@ auto-dispatcher; the manual CLI runs regardless).
 
 ## Roadmap (what's live vs. coming)
 
-Slices 1–3 + the **4a skeleton** are **live**: the kind + `serves` +
-logbook + tree rollup (slice 1); **reweighting** (slice 2) — priority
-flows down the `serves` DAG into the todo rotation, paper acquisition, and
-reading (a no-op until you link work to an active quest); **gaps + health**
-(slice 3) — the striving surfaces its own exploration queue + a
-momentum/alignment read (`view='gaps'`, `id='/gaps'`); and the **research
-tick + dossier** (slice 4a) — one bounded reasoning step reads the rolling
-context and rewrites the dossier (`precis quest tick`). Coming: the rest of
-the **autonomous research loop** — compute dispatch (minting
-`structure`/`pathway` sims + reading their measures, 4b), the
-local↔frontier cascade (4c), and the scheduler that decides which quest
-advances when compute frees (4d). Design of record:
+Slices 1–3 + rungs **4a–4b** are **live**: the kind + `serves` + logbook +
+tree rollup (slice 1); **reweighting** (slice 2) — priority flows down the
+`serves` DAG into the todo rotation, paper acquisition, and reading (a no-op
+until you link work to an active quest); **gaps + health** (slice 3) — the
+striving surfaces its own exploration queue + a momentum/alignment read
+(`view='gaps'`, `id='/gaps'`); the **research tick + dossier** (slice 4a) — one
+bounded reasoning step reads the rolling context and rewrites the dossier; and
+**compute dispatch + Pareto frontier** (slice 4b) — proposals become candidate
+`structure` sims, harvested into the logbook and ranked on a frontier
+(`precis quest tick --compute`, `view='frontier'`). Coming: the local↔frontier
+cascade (frontier-model escalation on a signal, 4c) and the scheduler that
+decides which quest advances when compute frees (4d). Design of record:
 `docs/proposals/quest-layer.md`.

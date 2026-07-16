@@ -71,18 +71,21 @@ structure — `quest` kind + `serves` + logbook + tree rollup, main
 `2ce51f5f`), 2 (reweighting — priority down the `serves` DAG into
 rotation/acquisition/reading, `src/precis/quest/reweight.py`, main
 `8a61716f`), 3 (gaps + health — `src/precis/quest/gaps.py`,
-`view='gaps'`/`id='/gaps'`), and the **4a skeleton** (dossier + research
-tick — `src/precis/quest/tick.py`, migration 0067) are **shipped, not
-deployed**. Skill `precis-quest-help`; tests `tests/test_quest.py` +
+`view='gaps'`/`id='/gaps'`), and rungs **4a–4b** (dossier + research tick —
+`tick.py`/`dossier.py`, migration 0067; compute dispatch + Pareto frontier —
+`compute.py`/`frontier.py`) are **shipped, not deployed**. Skill
+`precis-quest-help`; tests `tests/test_quest.py` +
 `tests/test_quest_reweight.py` + `tests/test_quest_gaps.py` +
-`tests/test_quest_tick.py`.
+`tests/test_quest_tick.py` + `tests/test_quest_compute.py`.
 
 **Operational — do these to make the shipped slices actually steer:**
 
-- **Deploy slices 1+2+3+4a to the cluster** — `open` / `feature` / owner
-  `/go` → `scripts/deploy`. All ship dark *behaviourally* (a no-op until
-  a quest exists; the tick is manual-only until 4d), so deploy is low-risk.
-  Migration 0067 auto-applies on deploy. Finder: Opus session.
+- **Deploy slices 1+2+3+4a+4b to the cluster** — `open` / `feature` / owner
+  `/go` → `scripts/deploy`. All ship dark *behaviourally* (a no-op until a quest
+  exists; the tick is manual-only until 4d, and compute is `--compute`-opt-in),
+  so deploy is low-risk. Migration 0067 auto-applies on deploy. NB real relax
+  needs the `struct_relax` GPU lane live on spark to actually run — otherwise a
+  dispatched sim just queues. Finder: Opus session.
 - **Link 3–4 mission quests to real projects** — `open` / `feature` /
   owner prod-data (MCP `put(kind='quest')` + `link(rel='serves')`). Derive
   the strivings from `docs/mission.md` + the live research programs (NO→NH₃
@@ -120,12 +123,22 @@ as five dark rungs:
   with the handler). CLI `precis quest tick|dossier|gaps`. Dark: nothing
   auto-mints a tick (that's 4d); `PRECIS_QUEST_LOOP_ENABLED` gates the future
   auto-dispatcher. Tests `tests/test_quest_tick.py`.
-- **4b — compute dispatch + proposer + Pareto frontier** — *not started.* The
-  tick mints a derived catpath `pathway` / `structure` DFT-relax sim
-  (content-addressed, `serves` + `requested` links), reads measures into
-  `result`/`cost` logbook entries, `ruled-out`-tags failures; **the proposer**
-  (the crux) grounds candidates in the dossier + frontier neighbours; a Pareto
-  frontier over the objective vector (= the rubric).
+- **4b — compute dispatch + proposer + Pareto frontier** — **BUILT + shipped**
+  (not deployed). `src/precis/quest/compute.py` + `frontier.py`. The tick emits
+  **proposals**; a candidate carrying an atomistic `structure` spec becomes a
+  content-addressed `structure` that `serves` the quest (`candidate`-tagged),
+  and — with `compute=True` (`precis quest tick --compute`) — its relax
+  dispatches on the GPU node via the derived lane (NO `requested_by`, since a
+  quest never closes). Harvest reads converged runs → `result`+`cost` entries
+  (idempotent via `meta.quest_harvested_upto`); a failed relax job →
+  `ruled-out:relax-failed` tag + `dead-end` entry. `quest_frontier` = Pareto
+  over candidate measures (default minimise energy; `meta.rubric_objectives`
+  override), `view='frontier'`. Real relax is a defensive wrapper (degrades on
+  error) monkeypatched in tests. Tests `tests/test_quest_compute.py`.
+  *Residuals:* the **proposer** is just the tick's model grounded in the dossier
+  — frontier-seeded *directions* land in 4c; turning a prose rubric into the
+  objective vector is still the `energy`-default + meta override (open Q3);
+  `pathway` isn't a target (catpath plugin not in-tree).
 - **4c — the local↔frontier cascade** — *not started.* Escalate to the
   frontier model on a *signal* (enough evidence / stalled frontier / surprise)
   to review + rewrite the dossier + set the next line; the `promise` proxy gets

@@ -128,7 +128,8 @@ class QuestHandler(NumericRefHandler):
             "link(target='quest:N', rel='serves'). view='tree' rolls up the "
             "servers + deed ledger + health + gaps; view='gaps' (per quest) or "
             "id='/gaps' (all active quests) surfaces the exploration queue; "
-            "view='dossier' shows the quest's living research synthesis. "
+            "view='dossier' shows the living research synthesis; view='frontier' "
+            "the Pareto frontier of candidate materials. "
             "See docs/proposals/quest-layer.md."
         ),
         supports_get=True,
@@ -374,7 +375,36 @@ class QuestHandler(NumericRefHandler):
         if view == "dossier" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
             return Response(body=self._render_dossier(ref))
+        if view == "frontier" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
+            return Response(body=self._render_frontier(ref))
         return super().get(id=id, view=view, q=q, **_kw)
+
+    def _render_frontier(self, ref: Ref) -> str:
+        """`view='frontier'` — the Pareto frontier of candidate materials."""
+        from precis.quest import frontier as frontier_mod
+
+        fr = frontier_mod.quest_frontier(self.store, ref.id)
+        head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
+        objs = " · ".join(f"{k} ({s})" for k, s in fr.objectives)
+        lines = [f"# frontier — quest {ref.id}: {head}", f"objective: {objs}", ""]
+
+        def _fmt(c: frontier_mod.Candidate) -> str:
+            ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
+            return f"  {c.handle} {c.name} — {ms or '(no measures)'}"
+
+        if not (fr.frontier or fr.dominated or fr.unevaluated):
+            lines.append("no candidate structures serve this quest yet.")
+            return "\n".join(lines)
+        lines.append(f"── Pareto frontier ({len(fr.frontier)}) — current best ──")
+        lines += [_fmt(c) for c in fr.frontier] or ["  (none converged yet)"]
+        if fr.dominated:
+            lines += ["", f"── dominated ({len(fr.dominated)}) — explored + beaten ──"]
+            lines += [_fmt(c) for c in fr.dominated]
+        if fr.unevaluated:
+            lines += ["", f"── awaiting a sim ({len(fr.unevaluated)}) ──"]
+            lines += [f"  {c.handle} {c.name}" for c in fr.unevaluated]
+        return "\n".join(lines)
 
     def _render_dossier(self, ref: Ref) -> str:
         """`view='dossier'` — the quest's living research synthesis (slice 4)."""

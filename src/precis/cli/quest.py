@@ -35,6 +35,12 @@ def add_parser(subparsers: Any) -> None:
         default=None,
         help="LLM tier (e.g. cloud-small, local-small, cloud-super).",
     )
+    t.add_argument(
+        "--compute",
+        action="store_true",
+        help="Materialise proposals into structure candidates + dispatch relax "
+        "sims (the GPU compute lane). Off by default.",
+    )
     t.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     d = qsub.add_parser("dossier", help="Print a quest's dossier.")
@@ -44,6 +50,10 @@ def add_parser(subparsers: Any) -> None:
     g = qsub.add_parser("gaps", help="Print a quest's gaps + health.")
     g.add_argument("id", type=int, help="Quest ref id.")
     g.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+    f = qsub.add_parser("frontier", help="Print a quest's Pareto frontier.")
+    f.add_argument("id", type=int, help="Quest ref id.")
+    f.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
 
 def _cmd_tick(store: Store, args: argparse.Namespace) -> None:
@@ -57,15 +67,30 @@ def _cmd_tick(store: Store, args: argparse.Namespace) -> None:
         print(build_tick_prompt(store, qref))
         return
 
-    outcome = run_quest_tick(store, args.id, tier=args.tier)
-    print(
+    outcome = run_quest_tick(store, args.id, tier=args.tier, compute=args.compute)
+    msg = (
         f"quest {outcome.quest_id}: tick {outcome.status} — "
         f"{outcome.logbook_added} logbook entr"
         f"{'y' if outcome.logbook_added == 1 else 'ies'}, "
         f"dossier {'rewritten' if outcome.dossier_rewritten else 'unchanged'}"
-        f"{f', ${outcome.cost_usd:.4f}' if outcome.cost_usd else ''} "
-        f"({outcome.note})"
     )
+    if args.compute:
+        msg += (
+            f", {outcome.candidates_created} candidate(s), "
+            f"{outcome.sims_dispatched} sim(s), "
+            f"{outcome.results_harvested} result(s), {outcome.ruled_out} ruled-out"
+        )
+    if outcome.cost_usd:
+        msg += f", ${outcome.cost_usd:.4f}"
+    print(f"{msg} ({outcome.note})")
+
+
+def _cmd_frontier(store: Store, args: argparse.Namespace) -> None:
+    from precis.dispatch import Hub
+    from precis.handlers.quest import QuestHandler
+
+    h = QuestHandler(hub=Hub(store=store))
+    print(h.get(id=args.id, view="frontier").body)
 
 
 def _cmd_dossier(store: Store, args: argparse.Namespace) -> None:
@@ -94,3 +119,5 @@ def run(args: argparse.Namespace) -> None:
         _cmd_dossier(store, args)
     elif args.quest_cmd == "gaps":
         _cmd_gaps(store, args)
+    elif args.quest_cmd == "frontier":
+        _cmd_frontier(store, args)
