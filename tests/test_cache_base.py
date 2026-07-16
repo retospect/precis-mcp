@@ -72,6 +72,37 @@ class _FakeCacheKindAsMath(_FakeCacheKind):
     )
 
 
+class _FakeSlugAddressedKind(_FakeCacheKind):
+    """Mimics the perplexity / websearch shape: a ``<model>:<query>``
+    canonical key plus an **idempotent** slug (``slug_from_text``, no hash
+    suffix). Addressing an existing entry by its slug — exactly what the
+    web detail page does via ``get(kind, id=ref.slug)`` — therefore
+    round-trips to the same slug, which is what exposes the "re-fetch on a
+    plain read" regression this fixture guards against.
+    """
+
+    spec: ClassVar[KindSpec] = KindSpec(
+        kind="math",
+        title="Fake slug-addressed",
+        description="Test-only.",
+        supports_get=True,
+    )
+
+    model: ClassVar[str] = "fake-model"
+
+    def _canonical_key(self, query: str) -> str:
+        q = (query or "").strip()
+        if not q:
+            raise BadInput("needs a query")
+        return f"{self.model}:{q}"
+
+    def _slug_for(self, key: str) -> str:
+        from precis.utils.slug import slug_from_text
+
+        _, _, q = key.partition(":")
+        return slug_from_text(q, max_len=60) or "fake-query"
+
+
 @pytest.fixture
 def handler(hub: Hub) -> _FakeCacheKindAsMath:
     return _FakeCacheKindAsMath(hub=hub)
@@ -614,3 +645,47 @@ class TestDedupeOverlapJoin:
         # Below the floor → 0.
         tiny = "q" * (_MIN_SEAM_OVERLAP - 1)
         assert _seam_overlap("PRE" + tiny, tiny + "POST") == 0
+
+
+# ── web-detail slug read must not re-fetch (Bug: perplexity/websearch) ──
+
+
+class TestNoFetchServesCache:
+    """The read-only detail page passes ``no_fetch=True`` so rendering an
+    existing entry serves the stored body and never re-runs the paid
+    upstream fetch (a $0.50 deep-research call / a billed Sonar query on
+    every page view). Addressing by slug — the shape the web
+    ``/refs/<kind>/<id>`` page dispatches — reliably misses the request-
+    hash for query-keyed kinds, which is exactly where the re-fetch used
+    to happen."""
+
+    def test_no_fetch_by_slug_serves_cache(self, hub: Hub) -> None:
+        h = _FakeSlugAddressedKind(hub=hub)
+        # First call populates the cache (one upstream fetch).
+        h.get(q="What is CRISPR")
+        assert len(h.fetch_calls) == 1
+        # Re-address by slug with no_fetch, as the web detail page does.
+        resp = h.get(id="what-is-crispr", no_fetch=True)
+        assert len(h.fetch_calls) == 1  # served from cache, not re-fetched
+        assert "the fake-model:What is CRISPR answer" in resp.body
+        assert "cached" in (resp.cost or "")  # rendered as a hit
+
+    def test_no_fetch_uncached_raises_not_found_without_spending(
+        self, hub: Hub
+    ) -> None:
+        from precis.errors import NotFound
+
+        h = _FakeSlugAddressedKind(hub=hub)
+        # Nothing cached yet — a read-only view must not fetch; it reports
+        # "not cached" rather than silently spending.
+        with pytest.raises(NotFound):
+            h.get(id="never-fetched", no_fetch=True)
+        assert h.fetch_calls == []
+
+    def test_refresh_by_slug_still_refetches(self, hub: Hub) -> None:
+        h = _FakeSlugAddressedKind(hub=hub)
+        h.get(q="What is CRISPR")
+        assert len(h.fetch_calls) == 1
+        # An explicit refresh must still bypass the cache and re-fetch.
+        h.get(id="what-is-crispr", refresh=True)
+        assert len(h.fetch_calls) == 2

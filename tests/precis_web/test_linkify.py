@@ -7,7 +7,7 @@ filter's output (``/preview/...``, ``/r/...``) are exercised in
 
 from __future__ import annotations
 
-from precis_web.linkify import linkify_refs
+from precis_web.linkify import linkify_refs, render_cloze
 
 
 def test_no_refs_passes_through_unchanged() -> None:
@@ -702,3 +702,34 @@ def test_toon_ragged_rows_padded() -> None:
     out = str(linkify_toon("{a\tb\tc}\nx\ty"))
     # header has 3 cols; the single body row is padded to 3 <td>s
     assert out.count("<td") == 3
+
+
+# ── render_cloze: Anki cloze bodies render as highlighted deletions ─────
+
+
+def test_render_cloze_highlights_deletion_and_hides_braces() -> None:
+    out = str(render_cloze("Paris is the {{c1::capital}} of France."))
+    # The raw double-brace markup never reaches the reader.
+    assert "{{" not in out and "}}" not in out
+    # The answer text is shown, styled as a deletion, tagged with its index.
+    assert "capital" in out
+    assert "<span" in out
+    assert "c1" in out
+
+
+def test_render_cloze_carries_hint_on_hover() -> None:
+    out = str(render_cloze("The capital is {{c1::Paris::a French city}}."))
+    assert "Paris" in out
+    assert "a French city" in out  # hint surfaced (in the title=)
+    assert "::" not in out  # the hint separator is consumed, not printed
+
+
+def test_render_cloze_escapes_untrusted_text() -> None:
+    out = str(render_cloze("<script>alert(1)</script> {{c1::x}}"))
+    # Surrounding prose is escaped — no live element injected.
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
+
+
+def test_render_cloze_no_deletion_is_plain_escaped_text() -> None:
+    assert str(render_cloze("no cloze here <b>")) == "no cloze here &lt;b&gt;"

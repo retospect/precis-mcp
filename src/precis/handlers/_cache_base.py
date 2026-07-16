@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.embedder import EmbedderUnavailable
-from precis.errors import BadInput, Upstream
+from precis.errors import BadInput, NotFound, Upstream
 from precis.handlers._link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
@@ -312,6 +312,7 @@ class CacheBackedHandler(Handler):
         mode: str | None = None,
         ttl_days: int | None = None,
         refresh: bool = False,
+        no_fetch: bool = False,
         **_kw: Any,
     ) -> Response:
         # Bare get / "/" / "/recent" → listing of the most recent refs.
@@ -390,6 +391,11 @@ class CacheBackedHandler(Handler):
                     )
                     if cached is not None:
                         ref, cache = cached
+                        if no_fetch:
+                            # Read-only view (web detail page): serve the
+                            # stored body — fresh or stale — never fetch.
+                            self._apply_tag_ops_if_any(ref.id, tags, untags)
+                            return self._render(ref, cache, hit=True)
                         if force_refresh:
                             recovered = self._recover_key(ref, cache)
                             if recovered is None:
@@ -424,6 +430,39 @@ class CacheBackedHandler(Handler):
             ref, cache = cached
             self._apply_tag_ops_if_any(ref.id, tags, untags)
             return self._render(ref, cache, hit=True)
+
+        # Read-only path — the web detail page renders an existing entry
+        # and must NEVER trigger a paid fetch. A slug passed as id= (the
+        # web dispatches get(kind, id=ref.slug)) canonicalises to a key
+        # whose hash misses — for query-addressed kinds like perplexity /
+        # websearch the slug is a valid "query", so the miss falls through
+        # to a re-fetch, re-running a ~$0.50 deep-research call (2–10 min)
+        # or re-billing Sonar on every page view. With ``no_fetch`` we
+        # serve whatever is cached (by hash or slug, stale or fresh — a
+        # read is not a refresh) and report a clean "not cached yet" when
+        # nothing exists, instead of spending. Serving by slug here is
+        # safe precisely because we never fetch: for a multi-variant kind
+        # (youtube caches per language under one video-id slug) a read
+        # just shows the stored variant rather than mis-triggering a
+        # fetch of a different one.
+        if no_fetch:
+            entry = cached
+            if entry is None:
+                entry = self.store.get_cache_entry_by_slug(
+                    kind=self.spec.kind, slug=self._slug_for(key)
+                )
+            if entry is not None:
+                ref, cache = entry
+                self._apply_tag_ops_if_any(ref.id, tags, untags)
+                return self._render(ref, cache, hit=True)
+            raise NotFound(
+                f"{self.spec.kind} {(id if isinstance(id, str) else q)!r} "
+                "is not cached yet",
+                next=(
+                    f"get(kind={self.spec.kind!r}, id='<query>') to fetch it "
+                    "(paid — not a read-only view)"
+                ),
+            )
 
         # Miss, stale, or refresh — call upstream. If a cached row
         # exists for this slug or hash, refresh it in place so any

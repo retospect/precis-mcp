@@ -62,10 +62,18 @@ def _make_jinja_env() -> jinja2.Environment:
     # Inline ``kind:ref`` → hover-preview anchor + click-through.
     # Applied via ``{{ value | linkify_refs }}`` on prose surfaces
     # (dashboard rows, ref detail pages, asks list, console output).
-    from precis_web.linkify import linkify_refs, linkify_toon, render_markdown
+    from precis_web.linkify import (
+        linkify_refs,
+        linkify_toon,
+        render_cloze,
+        render_markdown,
+    )
     from precis_web.timefmt import abs_ts, ago
 
     env.filters["linkify_refs"] = linkify_refs
+    # Anki cloze bodies ({{c1::answer::hint}}) render as highlighted
+    # deletions instead of raw markup on the ref detail page.
+    env.filters["render_cloze"] = render_cloze
     # Like linkify_refs, but renders tab-separated runs (TOON ``Next:``
     # blocks, tab-delimited oracle shares) as aligned HTML tables so the
     # tabularity is visible instead of collapsing on <pre> tab-stops.

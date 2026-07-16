@@ -33,13 +33,27 @@
   </fieldset>
 </form>
 
-{% if not by_kind %}
+{% if not by_kind and not by_kind_md %}
 <p class="text-sm text-slate-500">
   No refs match{% if q %} <code>{{ q }}</code>{% endif %}.
   {% if not q and selected %}Try broadening the kinds or check <strong>all kinds</strong>.{% endif %}
 </p>
 {% else %}
 <div class="space-y-4">
+  {# Handler-searched kinds (skill / tag) have no refs rows — their
+     search verb returns markdown, rendered verbatim with ref handles
+     linkified. #}
+  {% for kind, md in by_kind_md.items() %}
+  <section class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+    <header class="flex items-center justify-between px-3 py-2 bg-slate-50 border-b border-slate-200">
+      <h2 class="text-sm font-semibold text-slate-700">
+        <span class="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">{{ kind }}</span>
+      </h2>
+      <span class="text-xs text-slate-400">search result</span>
+    </header>
+    <div class="px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap overflow-x-auto">{{ md | linkify_refs }}</div>
+  </section>
+  {% endfor %}
   {% for kind, rows in by_kind.items() %}
   <section class="rounded-lg border border-slate-200 bg-white overflow-hidden">
     <header class="flex items-center justify-between px-3 py-2 bg-slate-50 border-b border-slate-200">

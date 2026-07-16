@@ -967,9 +967,46 @@ def linkify_toon(
     return Markup("".join(out))
 
 
+#: A cloze deletion with the cN index + answer + optional ``::hint`` split
+#: out for display. Mirrors ``precis.handlers.anki._CLOZE_RE`` (which drops
+#: the index + hint); here we keep them to render the card legibly.
+_CLOZE_DISPLAY_RE = re.compile(r"\{\{c(\d+)::(.+?)(?:::(.+?))?\}\}", re.DOTALL)
+
+
+def render_cloze(text: str) -> Markup:
+    """Render an Anki cloze body legibly instead of printing raw markup.
+
+    ``{{c1::answer::hint}}`` → the *answer*, styled as a highlighted
+    deletion with the cloze index as a small superscript and the hint (if
+    any) on hover. Everything outside a deletion is HTML-escaped verbatim
+    (the same untrusted-text contract as :func:`linkify_refs`), so a card
+    body can't inject markup. Text with no cloze deletion renders as plain
+    escaped prose — a safe no-op.
+    """
+    out: list[str] = []
+    pos = 0
+    for m in _CLOZE_DISPLAY_RE.finditer(text or ""):
+        out.append(escape(text[pos : m.start()]))
+        idx, answer, hint = m.group(1), m.group(2), m.group(3)
+        title = f"cloze c{escape(idx)}"
+        if hint:
+            title += f" · hint: {escape(hint)}"
+        out.append(
+            f'<span class="rounded bg-amber-100 text-amber-900 px-1 '
+            f'border-b border-dotted border-amber-400" title="{title}">'
+            f"{escape(answer)}"
+            f'<sup class="text-[0.6em] text-amber-500 ml-0.5">c{escape(idx)}</sup>'
+            f"</span>"
+        )
+        pos = m.end()
+    out.append(escape(text[pos:] if text else ""))
+    return Markup("".join(out))
+
+
 __all__ = [
     "linkify_refs",
     "linkify_toon",
     "popover_chip",
+    "render_cloze",
     "render_markdown",
 ]

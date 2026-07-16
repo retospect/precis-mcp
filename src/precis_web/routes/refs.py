@@ -442,6 +442,54 @@ _REFS_BROWSABLE_KINDS: tuple[str, ...] = (
 
 _PER_KIND_LIMIT = 20  # cap rows per kind so 19-kind search stays readable
 
+#: Cache-backed kinds (``CacheBackedHandler`` subclasses) whose ``get``
+#: verb *fetches on a miss* — a paid, slow upstream call for the paid
+#: tiers. The read-only detail page must pass ``no_fetch=True`` so
+#: rendering an existing ref serves the stored body instead of silently
+#: re-running the fetch (a ~$0.50 / 2–10 min perplexity-research call, a
+#: billed Sonar query) on every page view. Keep in sync with the
+#: ``CacheBackedHandler`` subclasses.
+_CACHE_BACKED_KINDS: frozenset[str] = frozenset(
+    {
+        "math",
+        "news",
+        "orcid",
+        "perplexity-reasoning",
+        "perplexity-research",
+        "semanticscholar",
+        "web",
+        "websearch",
+        "wikipedia",
+        "youtube",
+    }
+)
+
+#: Kinds whose refs do **not** live in the ``refs`` table, so the
+#: consolidated browser can't reach them through ``list_refs`` /
+#: ``search_refs_lexical`` (both return nothing — confirmed in prod:
+#: zero rows for either kind). They ARE searchable through their own
+#: ``search`` verb — ``skill`` over the on-disk skill files, ``tag``
+#: over the tag vocabulary — so the consolidated view dispatches that
+#: verb and renders its markdown result instead of a row grid.
+#: ``cron`` is deliberately absent: crons ARE stored as refs (it just
+#: has no rows until one is scheduled), so the plain DB path serves it
+#: correctly (empty when none exist).
+_HANDLER_SEARCHED_KINDS: frozenset[str] = frozenset({"skill", "tag"})
+
+#: Browsable kinds that can only ever render empty in the consolidated
+#: view: ``random`` mints on demand and ``provenance`` is a report over
+#: other refs — neither has ``refs`` rows *or* a ``search`` verb. They
+#: stay in ``_REFS_BROWSABLE_KINDS`` (detail routes may still target
+#: them) but are dropped from the browser's checkboxes so the page never
+#: offers a control that returns nothing by construction.
+_CONSOLIDATED_HIDDEN_KINDS: frozenset[str] = frozenset({"random", "provenance"})
+
+#: The kinds the consolidated browser offers as checkboxes / searches:
+#: every browsable kind minus the always-empty ones.
+_CONSOLIDATED_KINDS: tuple[str, ...] = tuple(
+    k for k in _REFS_BROWSABLE_KINDS if k not in _CONSOLIDATED_HIDDEN_KINDS
+)
+
 
 # ---- References extraction (MVP for #188) ---------------------------
 #
@@ -589,15 +637,15 @@ async def consolidated(
     view is the casual "I half-remember something" surface.
     """
     if all:
-        selected: list[str] = list(_REFS_BROWSABLE_KINDS)
+        selected: list[str] = list(_CONSOLIDATED_KINDS)
     elif kinds:
         # Tolerate trailing commas / whitespace / unknown kinds.
         requested = {k.strip() for k in kinds.split(",") if k.strip()}
-        selected = [k for k in _REFS_BROWSABLE_KINDS if k in requested]
+        selected = [k for k in _CONSOLIDATED_KINDS if k in requested]
         # Preserve the operator's ordering for kinds we didn't recognise
         # so a future-added kind shows up when its checkbox is added.
         for k in requested:
-            if k not in selected and k not in _REFS_BROWSABLE_KINDS:
+            if k not in selected and k not in _CONSOLIDATED_KINDS:
                 selected.append(k)
     else:
         selected = list(_DEFAULT_REFS_KINDS)
@@ -605,7 +653,28 @@ async def consolidated(
     store = get_store(request)
     query = (q or "").strip()
     by_kind: dict[str, list[dict[str, object]]] = {}
+    #: Handler-searched kinds (skill / tag) have no ``refs`` rows, so
+    #: they contribute a rendered-markdown block from their own ``search``
+    #: verb rather than a row grid.
+    by_kind_md: dict[str, str] = {}
     for kind in selected:
+        if kind in _HANDLER_SEARCHED_KINDS:
+            # No refs rows to list — dispatch the kind's own search verb
+            # (skill files / tag vocabulary) and render its markdown.
+            # An empty query lists where the verb supports it (the skill
+            # index); a verb that requires q= on empty input just yields
+            # an error we skip, so the section drops out cleanly.
+            args: dict[str, Any] = {"kind": kind, "page_size": _PER_KIND_LIMIT}
+            if query:
+                args["q"] = query
+            try:
+                body, is_error = await await_dispatch(request, "search", args)
+            except Exception:
+                continue
+            if is_error or not (body or "").strip():
+                continue
+            by_kind_md[kind] = body
+            continue
         try:
             if query:
                 hits = store.search_refs_lexical(
@@ -641,9 +710,10 @@ async def consolidated(
             "active_tab": "refs",
             "q": query,
             "selected": set(selected),
-            "all_browsable": list(_REFS_BROWSABLE_KINDS),
+            "all_browsable": list(_CONSOLIDATED_KINDS),
             "default_kinds": list(_DEFAULT_REFS_KINDS),
             "by_kind": by_kind,
+            "by_kind_md": by_kind_md,
             "all_lit": bool(all),
             "total": sum(len(v) for v in by_kind.values()),
         },
@@ -772,7 +842,15 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
     # Slug kinds (oracle/patent/pres) address get() by slug; numeric
     # kinds (memory/gripe) by id. Prefer the slug when present.
     addr: str | int = ref.slug if ref.slug else ref.id
-    body, is_error = await await_dispatch(request, "get", {"kind": kind, "id": addr})
+    get_args: dict[str, Any] = {"kind": kind, "id": addr}
+    # This detail page is a read-only view. For cache-backed kinds a plain
+    # get() re-fetches on a cache miss — and addressing by slug reliably
+    # misses for query-keyed kinds (perplexity/websearch), so a page view
+    # would re-run the paid upstream call. no_fetch=True serves the stored
+    # body and never spends.
+    if kind in _CACHE_BACKED_KINDS:
+        get_args["no_fetch"] = True
+    body, is_error = await await_dispatch(request, "get", get_args)
 
     # Disabled-but-cached fallback: when the handler is currently
     # registered-but-disabled (math without WOLFRAM_APP_ID, web without

@@ -121,6 +121,9 @@ class YouTubeHandler(CacheBackedHandler):
         # thread pool).
         token = _LANG_PREF.set(tuple(_parse_languages(languages or "")))
         try:
+            # Forward ``**_kw`` so base-class controls (``no_fetch`` for the
+            # read-only web detail page, ``refresh`` / ``ttl_days``) reach
+            # ``CacheBackedHandler.get`` instead of being silently dropped.
             return super().get(
                 id=id,
                 q=q,
@@ -128,6 +131,7 @@ class YouTubeHandler(CacheBackedHandler):
                 tags=tags,
                 untags=untags,
                 mode=mode,
+                **_kw,
             )
         finally:
             _LANG_PREF.reset(token)

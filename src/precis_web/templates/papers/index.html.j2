@@ -1,8 +1,11 @@
 {% extends "base.html.j2" %}
-{% block title %}Papers{% endblock %}
+{% block title %}{{ list_title or "Papers" }}{% endblock %}
 {% block content %}
-<h1 class="text-lg font-semibold mb-3">Papers</h1>
-<form method="get" action="/papers" class="mb-4 flex flex-wrap items-center gap-2">
+{# Reused by /cfp (calls for proposal). The route passes list_title /
+   list_kind so the heading, form target, and empty-state name the right
+   kind instead of hardcoding "Papers". #}
+<h1 class="text-lg font-semibold mb-3">{{ list_title or "Papers" }}</h1>
+<form method="get" action="/{{ list_kind or 'papers' }}" class="mb-4 flex flex-wrap items-center gap-2">
   <input name="q" value="{{ q }}" placeholder="Search the corpus…"
          class="w-80 rounded-md border border-slate-300 px-3 py-2 text-sm" />
   <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-2">Search</button>
@@ -26,11 +29,11 @@
            onchange="this.form.submit()" class="rounded border-slate-300" />
     ingested (has chunks)
   </label>
-  {% if q or has_pdf or has_chunks %}<a href="/papers" class="text-sm text-slate-500 underline">clear</a>{% endif %}
+  {% if q or has_pdf or has_chunks %}<a href="/{{ list_kind or 'papers' }}" class="text-sm text-slate-500 underline">clear</a>{% endif %}
 </form>
 
 {% if not papers %}
-  <p class="text-sm text-slate-500">No papers{% if q %} match “{{ q }}”{% endif %}.</p>
+  <p class="text-sm text-slate-500">No {{ (list_title or "papers") | lower }}{% if q %} match “{{ q }}”{% endif %}.</p>
 {% else %}
 <ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white overflow-visible">
   {% for p in papers %}
