@@ -136,20 +136,20 @@ class MarkupInput:
     Markup-first ingest (docs/design/markup-first-ingest.md): the body
     chunks come from ``markup_path`` via
     :func:`precis.ingest.pipeline.extract_paper_from_markup` — **Marker
-    is never run**. ``companion_pdf``, when present, is attached as the
-    printable (``pdf_sha256`` / role / pages) only.
+    is never run**.
 
-    On a :class:`precis.ingest.markup.MarkupParseError` the ingest falls
-    back to Marker OCR on ``companion_pdf`` if one exists, else the ref
-    is left for the next PDF-only fetch pass — markup-first must never
-    lose a paper we could have OCR'd.
+    On a :class:`precis.ingest.markup.MarkupParseError` the markup ref is
+    left claimable and returns ``None``; recovery is by the companion PDF,
+    which the OA fetcher drops as its *own* inbox trigger (the PDF cascade
+    runs unconditionally after the markup cascade) and which folds into the
+    same stub via the shared sidecar ``ref_id`` — so a markup that won't
+    parse is still OCR'd, without this input carrying the printable. See
+    :func:`precis.workers.fetch_oa._run_markup_cascade`.
     """
 
     markup_path: Path
     #: One of :data:`precis.ingest.markup.MARKUP_FORMATS`.
     fmt: str
-    #: Printable PDF fetched alongside the markup, attached without OCR.
-    companion_pdf: Path | None = None
     #: Provenance URL of the markup, stamped into ``refs.meta``.
     source_url: str | None = None
     #: Same semantics as :class:`PdfInput.extra_tags`.
@@ -714,10 +714,13 @@ def _ingest_markup(
 ) -> IngestResult | None:
     """Run the markup producer and write / fold the resulting paper.
 
-    On a :class:`~precis.ingest.markup.MarkupParseError`, falls back to
-    Marker OCR on ``companion_pdf`` when one exists (re-dispatching a
-    :class:`PdfInput`), else logs and returns ``None`` so the ref stays
-    claimable for the next PDF-only fetch pass.
+    On a :class:`~precis.ingest.markup.MarkupParseError`, logs and returns
+    ``None`` so the ref stays claimable. Recovery is out-of-band: the OA
+    fetcher drops the companion PDF as its own inbox trigger (the PDF
+    cascade runs unconditionally after the markup cascade), which folds
+    into the same stub via the shared sidecar ``ref_id`` and OCRs the body
+    — so a markup that won't parse is still recovered, without this path
+    re-dispatching a PDF itself.
     """
     from precis.ingest.markup import MarkupParseError
     from precis.ingest.pipeline import extract_paper_from_markup
@@ -726,30 +729,12 @@ def _ingest_markup(
         paper = extract_paper_from_markup(
             input.markup_path,
             fmt=input.fmt,
-            pdf_path=input.companion_pdf,
             source_url=input.source_url,
         )
     except MarkupParseError as exc:
-        if input.companion_pdf is not None and Path(input.companion_pdf).is_file():
-            log.warning(
-                "precis_add (markup): %s parse failed (%s); falling back to "
-                "Marker OCR on %s",
-                input.fmt,
-                exc,
-                input.companion_pdf.name,
-            )
-            return precis_add(
-                PdfInput(
-                    pdf_path=input.companion_pdf,
-                    extra_tags=input.extra_tags,
-                    as_kind=input.as_kind,
-                    fold_ref_id=input.fold_ref_id,
-                ),
-                store=store,
-            )
         log.error(
-            "precis_add (markup): %s parse failed (%s) and no companion PDF "
-            "for %s; leaving ref for the next PDF-only pass",
+            "precis_add (markup): %s parse failed (%s) for %s; leaving ref "
+            "claimable — the companion PDF trigger recovers it out-of-band",
             input.fmt,
             exc,
             input.markup_path.name,

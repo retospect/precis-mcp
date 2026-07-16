@@ -215,6 +215,35 @@ def test_parse_arxiv_html_no_url_leaves_arxiv_id_none() -> None:
     assert ext.arxiv_id is None
 
 
+# arXiv HTML comes off the network (arxiv.org/html/<id>); the parser is
+# hardened with ``no_network`` + bounded tree the same way the XML path is
+# (gripe 161850 #4). A hostile document must neither expand an entity bomb
+# nor be able to drive an external fetch.
+_ARXIV_HTML_BOMB = b"""<!DOCTYPE html [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+]>
+<html><body><article class="ltx_document">
+ <h1 class="ltx_title ltx_title_document">Bomb</h1>
+ <section class="ltx_section"><h2 class="ltx_title">S</h2>
+  <p class="ltx_p">payload &lol3; end</p></section>
+ <ul class="ltx_biblist"><li>ref</li></ul>
+</article></body></html>"""
+
+
+def test_parse_arxiv_html_does_not_expand_entity_bomb() -> None:
+    # The billion-laughs DTD must not expand — the hardened parser leaves
+    # custom entities unresolved, so the body stays tiny (no exponential
+    # blowup) and the good structure still parses.
+    ext = parse_arxiv_html(_ARXIV_HTML_BOMB)
+    assert ext.title == "Bomb"
+    body_text = "".join(b["text"] for b in ext.blocks if b["type"] != "references")
+    # 10^3 "lol" would be 3000+ chars if expanded; unresolved it is absent.
+    assert "lollollol" not in body_text
+    assert len(body_text) < 200
+
+
 # ---------------------------------------------------------------------------
 # LaTeX flatten-and-chunk
 # ---------------------------------------------------------------------------
@@ -391,9 +420,10 @@ def test_extract_paper_from_markup_arxiv_html_no_doi(tmp_path: Path) -> None:
 def test_extract_paper_from_markup_no_identity_raises_parse_error(
     tmp_path: Path,
 ) -> None:
-    # Regression: an id-less markup (no DOI, no arXiv id in the URL, no
-    # companion PDF) raises MarkupParseError — which _ingest_markup catches to
-    # fall back to OCR — NOT a bare ValueError that would crash the worker.
+    # Regression: an id-less markup (no DOI, no arXiv id in the URL) raises
+    # MarkupParseError — which _ingest_markup catches to leave the ref
+    # claimable for out-of-band companion-PDF recovery — NOT a bare
+    # ValueError that would crash the worker.
     pytest.importorskip("habanero")
     from precis.ingest.pipeline import extract_paper_from_markup
 

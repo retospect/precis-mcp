@@ -454,12 +454,20 @@ def parse_arxiv_html(
     except ImportError as exc:  # pragma: no cover - lxml is a dep
         raise MarkupParseError(f"lxml not available: {exc}", fmt="arxiv_html") from exc
 
+    # Harden the parser the same way the XML path is (``_parse_xml``): the
+    # bytes come off the network (arxiv.org/html/<id>), so refuse to fetch
+    # any external DTD/entity (``no_network``) and cap tree growth
+    # (``huge_tree=False``, the default, pinned here for intent) so a hostile
+    # or malformed document can't drive an SSRF or an unbounded-tree blowup.
+    parser = lxml_html.HTMLParser(no_network=True, huge_tree=False)
     try:
-        root = lxml_html.fromstring(html_bytes)
+        root = lxml_html.fromstring(html_bytes, parser=parser)
     except Exception as exc:
         raise MarkupParseError(
             f"arXiv HTML: unparseable ({exc})", fmt="arxiv_html"
         ) from exc
+    if root is None:
+        raise MarkupParseError("arXiv HTML: empty document", fmt="arxiv_html")
 
     ext = MarkupExtraction(source_format="arxiv_html", source_url=source_url)
     ext.arxiv_id = _arxiv_id_from_url(source_url)

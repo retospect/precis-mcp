@@ -454,8 +454,14 @@ def extract_paper_from_markup(
     ``refs.meta`` records ``source_format`` (and ``markup_source_url``
     when known) so the good path is auditable.
 
+    ``pdf_path`` is an optional printable to attach; the watcher path
+    leaves it ``None`` (the companion PDF arrives as its own inbox trigger
+    and folds in via the shared sidecar ``ref_id``), but a direct caller
+    may pass one to attach without OCR.
+
     Raises :class:`precis.ingest.markup.MarkupParseError` on a parse
-    failure; the caller falls back to Marker OCR on the companion PDF.
+    failure; the caller (:func:`precis.ingest.add._ingest_markup`) then
+    leaves the ref claimable for out-of-band companion-PDF recovery.
     """
     # Lazy import: markup only needs lxml, but keep pipeline importable
     # on installs without the tex/docx extras.

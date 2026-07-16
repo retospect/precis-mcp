@@ -670,7 +670,6 @@ def process_pdf(
         input_ = MarkupInput(
             markup_path=pdf,
             fmt=fmt,
-            companion_pdf=None,
             extra_tags=routing.extra_tags,
             as_kind=as_kind,
             fold_ref_id=fold_ref_id,
