@@ -324,7 +324,7 @@ extensions**, not bugs — ordered roughly by value:
   declared in the vocab) to a mechanical lint. Most conventions stay the
   model's job (held via the vocab), never a general "convention linter".
 
-## 🖇️ `mermaid` kind + diagram chunk-binding (ADR 0057) — SHIPPED, un-darking pending (2026-07-15)
+## 🖇️ `mermaid` kind + diagram chunk-binding (ADR 0057) — SHIPPED + LIVE (2026-07-16)
 
 All five slices of ADR 0057 are on `main` (design-of-record
 [`docs/design/diagram-editing-and-chunk-binding.md`](docs/design/diagram-editing-and-chunk-binding.md)):
@@ -332,23 +332,21 @@ element→chunk `depicts` bindings (migration 0064), the rich figure editing
 environment, the shared `DiagramLang` core + `DiagramHandler` base
 (figure/mermaid are two instances at every layer), the `mermaid` kind via
 pure-Python `mermaidx` (migration 0066), and the `diagram_propose` autonomous
-tick. **The `mermaid` kind ships dark and is NOT yet live.** Remaining:
+tick. **The `mermaid` kind is un-darked and LIVE** (deployed 2026-07-16,
+main `c7ac23db` + cluster `2f1d2f3`; `mermaidx 0.8.3` verified on the serve +
+worker venvs). Remaining follow-ups:
 
-- **Un-dark mermaid — make it a first-class kind** — `feature`, Owner:
-  `pyproject.toml` + `dispatch.py` + `~/work/cluster/roles/`. Today two gates:
-  the `[mermaid]` extra (the `mermaidx` engine dep) **and**
-  `PRECIS_MERMAID_ENABLED` (kind registration). To ship it properly like
-  `figure` (which has neither): **(1)** add `mermaid` to the `[all]` extra
-  (so the dev/CI gate image bakes `mermaidx` and the mermaid tests stop being
-  `importorskip`-skipped — real coverage of the mermaidx compile path);
-  **(2)** add `mermaid` to the cluster install specs that need the engine —
-  `roles/precis_web` (`precis-mcp[web,docx,pcb,external]` → `…,mermaid]`, the
-  `/mermaid` render host) and `roles/precis_worker`
-  (`precis-mcp[paper,patent,external]` → `…,mermaid]`, the `diagram_propose`
-  tick host); **(3)** drop the `PRECIS_MERMAID_ENABLED` gate and register
-  `MermaidHandler` unconditionally in `dispatch.py` (or default it on) — a
-  peer capability doesn't need a dark flag. Then `/go` / redeploy. Decide
-  whether to keep an env kill-switch (figure has none; lean: remove).
+- **`~~Un-dark mermaid~~` — DONE (2026-07-16).** Dropped the
+  `PRECIS_MERMAID_ENABLED` gate (register `MermaidHandler` unconditionally like
+  `figure`), added `mermaid` to `[all]` + relocked, and added the `[mermaid]`
+  extra to the cluster install specs (`roles/mcps` `[patent,mermaid]`,
+  `roles/precis_web` `[…,mermaid]`, `roles/precis_worker` `[…,mermaid]`).
+  Deployed via `scripts/deploy`. **Residual polish:** the dev/CI gate image
+  hasn't been rebuilt, so the mermaid tests still `importorskip('mermaidx')`
+  in the gate — rebuild the `precis-mcp:dev` image (`uv sync --all-extras` now
+  pulls `mermaidx`) so the compile-path tests run for real. Also consider a
+  `websearch`-style env kill-switch if a fleet-wide off-switch is ever wanted
+  (lean: no — figure has none).
   **Wheels are pure (no compiler): `quickjs-ng` + `resvg-py` cover
   macOS-arm64 + manylinux/musllinux, `resvg-py` is already pulled by
   `[docx]`.** Finder: Opus session.
