@@ -30,17 +30,22 @@ from precis_web.deps import await_dispatch, get_store, redirect_or_error, templa
 router = APIRouter(prefix="/asks", tags=["asks"])
 
 
-def _ask_value(tag_value: str) -> str:
-    """Strip the ``ask-user:`` prefix from a tag.
+def _ask_value(store: Any, ref_id: int, tag_value: str) -> str:
+    """Turn an ``ask-user`` tag into the human question text.
 
-    Returns the bare question text, or ``""`` for the prefix-less
-    ``ask-user`` form — an "any human will do" marker with no inline
-    question.
+    Strips the ``ask-user:`` prefix, then routes the value through
+    ``store.resolve_ask_question`` so a ``see-chunk-N`` overflow redirect
+    (the form the tag takes when the question exceeds the 80-char tag cap)
+    de-references to the real prose in the ``tag_overflow`` chunk — the
+    reader must show the actual request, not the opaque ``see-chunk-0``
+    slug (this is the draft-reader behaviour, mirrored here). Returns
+    ``""`` for the prefix-less ``ask-user`` form — an "any human will do"
+    marker with no inline question.
     """
     prefix = "ask-user:"
-    if tag_value.startswith(prefix):
-        return tag_value[len(prefix) :]
-    return ""
+    if not tag_value.startswith(prefix):
+        return ""
+    return store.resolve_ask_question(ref_id, tag_value[len(prefix) :])
 
 
 def _load_asks(
@@ -84,7 +89,9 @@ def _load_asks(
     out: list[dict[str, Any]] = []
     for ref_id, title, created_at, ask_tags in rows:
         raw_tags = [str(t) for t in (ask_tags or [])]
-        questions = [q for q in (_ask_value(t) for t in raw_tags) if q]
+        questions = [
+            q for q in (_ask_value(store, int(ref_id), t) for t in raw_tags) if q
+        ]
         out.append(
             {
                 "id": int(ref_id),

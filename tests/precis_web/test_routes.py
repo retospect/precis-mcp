@@ -3483,11 +3483,24 @@ def test_nav_badge_counts_on_every_page(client) -> None:
 def test_ask_value_strips_prefix() -> None:
     from precis_web.routes.asks import _ask_value
 
-    assert _ask_value("ask-user:hello") == "hello"
-    assert _ask_value("ask-user") == ""
-    assert _ask_value("other") == ""
+    class _Store:
+        """Stand-in whose resolve_ask_question mirrors the real store: it
+        echoes a literal value and de-references a ``see-chunk-N`` handle."""
+
+        def resolve_ask_question(self, ref_id: int, value: str) -> str:
+            if value == "see-chunk-0":
+                return "the real overflow question"
+            return value
+
+    s = _Store()
+    assert _ask_value(s, 1, "ask-user:hello") == "hello"
+    assert _ask_value(s, 1, "ask-user") == ""
+    assert _ask_value(s, 1, "other") == ""
     # The removed asking-reto alias is no longer stripped.
-    assert _ask_value("asking-reto:foo") == ""
+    assert _ask_value(s, 1, "asking-reto:foo") == ""
+    # A see-chunk-N overflow redirect resolves to the real prose, not the
+    # opaque slug — the bug this fix closes (td160777).
+    assert _ask_value(s, 1, "ask-user:see-chunk-0") == "the real overflow question"
 
 
 def test_answer_dispatches_edit_then_tag_remove(client, runtime) -> None:
