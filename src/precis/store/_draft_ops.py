@@ -1523,6 +1523,31 @@ class DraftMixin:
             ).fetchone()
         return int(row[0]) if row is not None else None
 
+    def figure_owning_draft(self, canvas_ref_id: int) -> tuple[int, int] | None:
+        """The ``(draft_ref_id, anchor_chunk_id)`` that owns this figure canvas
+        via the reverse ``has-figure`` edge (ADR 0058), or ``None``.
+
+        The inverse of :meth:`figure_canvas_ref`: given a ``kind='figure'``
+        canvas ref, find the live draft **chunk** whose caption drew it. Used by
+        the diagram-propose loop (``precis.diagram.doc_context``) to open the
+        owning document as Layer-1 context. Joins ``refs`` so a soft-deleted
+        draft reads as absent (a free-standing figure gets no document context).
+        """
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                """SELECT l.src_ref_id, l.src_chunk_id
+                     FROM links l
+                     JOIN refs r ON r.ref_id = l.src_ref_id
+                    WHERE l.dst_ref_id = %s
+                      AND l.relation = 'has-figure'
+                      AND r.kind = 'draft'
+                      AND r.deleted_at IS NULL
+                      AND l.src_chunk_id IS NOT NULL
+                    LIMIT 1""",
+                (canvas_ref_id,),
+            ).fetchone()
+        return (int(row[0]), int(row[1])) if row is not None else None
+
     def set_figure_provenance(
         self,
         handle: str,

@@ -24,6 +24,15 @@ _SVG = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_agentic_env(monkeypatch):
+    """Each test owns its L3 gate: default to single-shot by clearing both the
+    override and the MCP-config auto-trigger, so a CI env that happens to set
+    ``PRECIS_MCP_CONFIG`` can't silently flip the dispatch tests to agentic."""
+    monkeypatch.delenv("PRECIS_DIAGRAM_AGENTIC", raising=False)
+    monkeypatch.delenv("PRECIS_MCP_CONFIG", raising=False)
+
+
 class _FakeCtx:
     def __init__(self, store, ref_id, params):
         self.store = store
@@ -165,3 +174,66 @@ def test_dispatch_rejects_bad_kind(store, monkeypatch) -> None:
     ctx = _FakeCtx(store, 1, {"kind": "banana", "ref_id": 1, "instruction": "x"})
     dp._dispatch(ctx, dp.SPEC)
     assert ctx.failure is not None and "unsupported kind" in ctx.failure
+
+
+# ── the L3 agentic gate ────────────────────────────────────────────────────
+
+
+def test_agentic_gate_off_by_default() -> None:
+    # env cleared by the autouse fixture: no MCP config, no override → single-shot
+    assert dp._agentic_enabled() is False
+
+
+def test_agentic_gate_explicit_override(monkeypatch) -> None:
+    monkeypatch.setenv("PRECIS_DIAGRAM_AGENTIC", "1")
+    assert dp._agentic_enabled() is True
+    monkeypatch.setenv("PRECIS_DIAGRAM_AGENTIC", "0")
+    assert dp._agentic_enabled() is False
+
+
+def test_agentic_gate_auto_on_mcp_config(monkeypatch, tmp_path) -> None:
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{}")
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
+    assert dp._agentic_enabled() is True
+    # override still wins over the auto-trigger
+    monkeypatch.setenv("PRECIS_DIAGRAM_AGENTIC", "0")
+    assert dp._agentic_enabled() is False
+
+
+def test_dispatch_agentic_runs_tool_using_fn(
+    store, figure_and_seed, monkeypatch
+) -> None:
+    """With the gate on, the turn is driven by the agentic drawer: the seam sees
+    ``tools_needed=True`` and the outcome is recorded as agentic."""
+    ref, h = figure_and_seed
+    reply = {
+        "reply": "drew it with tools",
+        "svg": _SVG,
+        "links": [{"element": "hook", "target": h, "relation": "depicts"}],
+    }
+    captured: dict = {}
+
+    def _fake_dispatch(req):
+        captured["tools_needed"] = req.tools_needed
+        captured["source"] = req.source
+        return SimpleNamespace(error=None, data=reply, text=json.dumps(reply))
+
+    monkeypatch.setenv("PRECIS_DIAGRAM_AGENTIC", "1")
+    monkeypatch.setattr("precis.utils.llm.router.dispatch", _fake_dispatch)
+
+    ctx = _FakeCtx(
+        store,
+        ref.id,
+        {"kind": "figure", "ref_id": ref.id, "instruction": "draw the deck hook"},
+    )
+    dp._dispatch(ctx, dp.SPEC)
+
+    assert ctx.status == "succeeded" and ctx.failure is None
+    assert captured["tools_needed"] is True
+    assert captured["source"] == "diagram_propose:figure"
+    assert ctx.meta_set.get("agentic") is True
+    assert any("[agentic]" in text for kind, text in ctx.chunks if kind == "job_event")
+    result = ctx.result_chunk()
+    assert result is not None and result["changed"] is True
+    assert result["reply"] == "drew it with tools"

@@ -20,15 +20,25 @@ The two driving scenarios (design doc §"How a tick builds it"):
   against the linked sources (already in the turn's prepared context) and fixes
   drift.
 
-The model call is the turn loop's own (the figure/mermaid shim's ``_default_claude``
-→ the ADR 0046 LLM router), so ``PRECIS_LLM_BACKEND`` switches it; a model
-failure degrades to a chat-only turn (the loop's ``_safe_call``), never a crash.
+The model call is injected into the turn loop's ``claude_fn`` seam. By default
+this tick runs the **agentic** drawer (:func:`precis.diagram.agent.build_agentic_claude_fn`
+— a tool-using ``claude -p`` session that ``search``/``get``s the corpus and
+reaches external craft sources *before* it draws, then returns the loop's reply
+JSON), so a figure commissioned by a document finds and binds its own sources
+instead of relying on the (still-supported, optional) seed handles. It gates on
+``PRECIS_MCP_CONFIG`` being present — where the precis MCP tools are unreachable
+it degrades to the single-shot web fn (``_default_claude``) — and honours an
+explicit ``PRECIS_DIAGRAM_AGENTIC=0/1`` override. Either way the call routes
+through the ADR 0046 LLM router, so ``PRECIS_LLM_BACKEND`` switches it and a
+model failure degrades to a chat-only turn (the loop's ``_safe_call``), never a
+crash.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from precis.workers.job_types import JobTypeSpec
@@ -100,13 +110,42 @@ def _resolve_ref(store: Any, handle: str) -> str | None:
     return f"{rh.kind}:{rh.public_id}"
 
 
-def _run_turn(kind: str, store: Any, ref: Any, message: str) -> Any:
-    """Dispatch to the right turn shim (each supplies the real model call)."""
+def _agentic_enabled() -> bool:
+    """Whether this tick should run the **agentic** drawer (L3 — a tool-using
+    ``claude -p`` session that reads/binds its own sources) rather than the
+    single-shot web fn.
+
+    ``PRECIS_DIAGRAM_AGENTIC`` is an explicit override (``1``/``0``); unset, it
+    auto-enables whenever ``PRECIS_MCP_CONFIG`` names an existing file, since the
+    agentic fn is only useful when the precis MCP tools are actually reachable.
+    So it lights up wherever the agent-profile worker runs (which sets
+    ``PRECIS_MCP_CONFIG``) and stays dark — degrading to single-shot — elsewhere.
+    """
+    raw = os.environ.get("PRECIS_DIAGRAM_AGENTIC")
+    if raw is not None and raw.strip() != "":
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    from precis.diagram.agent import _mcp_config_path
+
+    return _mcp_config_path() is not None
+
+
+def _run_turn(
+    kind: str, store: Any, ref: Any, message: str, *, agentic: bool = False
+) -> Any:
+    """Dispatch to the right turn shim. When ``agentic``, inject the tool-using
+    drawer (:func:`precis.diagram.agent.build_agentic_claude_fn`) so the turn
+    can ``search``/``get`` the corpus and reach external craft sources before it
+    draws; otherwise the shim's single-shot ``_default_claude`` runs."""
     if kind == "figure":
         from precis.figure.turn import run_turn
     else:
         from precis.mermaid.turn import run_turn
-    return run_turn(store, ref, message)
+    claude_fn = None
+    if agentic:
+        from precis.diagram.agent import build_agentic_claude_fn
+
+        claude_fn = build_agentic_claude_fn(source=f"diagram_propose:{kind}")
+    return run_turn(store, ref, message, claude_fn=claude_fn)
 
 
 def _dispatch(ctx: Any, spec: Any) -> None:
@@ -135,14 +174,17 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
 
     message = compose_message(ctx.store, instruction, seeds)
+    agentic = _agentic_enabled()
     ctx.append_chunk(
         "job_event",
         f"diagram_propose[{kind}] {getattr(ref, 'slug', ref_id)}: "
-        f"{instruction[:200]}" + (f" (+{len(seeds)} seed(s))" if seeds else ""),
+        f"{instruction[:200]}"
+        + (f" (+{len(seeds)} seed(s))" if seeds else "")
+        + (" [agentic]" if agentic else ""),
     )
 
     try:
-        result = _run_turn(kind, ctx.store, ref, message)
+        result = _run_turn(kind, ctx.store, ref, message, agentic=agentic)
     except Exception as exc:  # the turn loop degrades internally; this is belt
         ctx.record_failure(f"diagram_propose: turn failed: {exc}")
         return
@@ -169,7 +211,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         f"{verb} {kind} {getattr(ref, 'slug', ref_id)}: {result.reply[:200]} "
         f"({len(out['bindings'])} binding(s), {len(findings)} lint(s))",
     )
-    ctx.set_meta(changed=result.changed, findings=len(findings))
+    ctx.set_meta(changed=result.changed, findings=len(findings), agentic=agentic)
     ctx.set_status("succeeded")
 
 

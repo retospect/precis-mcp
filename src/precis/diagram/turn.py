@@ -125,6 +125,7 @@ def build_prompt(
     bounds: Any,
     skills: str = "",
     context: str = "",
+    document_context: str = "",
 ) -> str:
     """Assemble the turn prompt. Pure — tested for carrying each part.
 
@@ -132,7 +133,10 @@ def build_prompt(
     floor (the admonishment + safety + JSON contract) still steers even if the
     skill fails to load. ``context`` is the element→chunk prepared context
     (ADR 0057), inserted after the source so the model edits with the linked
-    chunk bodies in hand; empty when nothing is bound.
+    chunk bodies in hand; empty when nothing is bound. ``document_context`` is
+    the owning-document Layer-1/Layer-2 block (the diagram-propose design): the
+    draft this figure lives in, collapsed, with the instruction's paragraphs
+    fisheyed — empty for a free-standing figure.
     """
     lint_block = (
         "\n".join(f"- [{f.kind}] {f.message}" for f in findings)
@@ -153,6 +157,8 @@ def build_prompt(
         f"{notes or '(empty — record ids / structure / conventions here)'}"
     )
     parts.append(f"## Current source\n{source}")
+    if document_context.strip():
+        parts.append(document_context.strip())
     if context.strip():
         parts.append(context.strip())
     parts.append(f"## Lints on the current source\n{lint_block}")
@@ -186,6 +192,7 @@ def run_turn(
         if node_chunk_id is not None
         else ""
     )
+    document_context = _document_context(store, ref, message)
     findings = _all_findings(lang, store, node_chunk_id, current, bounds)
 
     prompt = build_prompt(
@@ -198,6 +205,7 @@ def run_turn(
         bounds=bounds,
         skills=skills_text,
         context=context,
+        document_context=document_context,
     )
 
     reply, new_src, new_vocab, new_notes, new_links, healed = _ask_with_heal(
@@ -256,6 +264,22 @@ def run_turn(
         notes=final_notes,
         bindings=final_bindings,
     )
+
+
+def _document_context(store: Any, ref: Any, message: str) -> str:
+    """The owning-document Layer-1/Layer-2 context for this diagram, or ``""``.
+
+    Fully defensive — a free-standing figure, a store without the reverse
+    ``has-figure`` resolver, or any assembly error all degrade to no document
+    context, so the loop (and every fake-store test) behaves exactly as before.
+    """
+    try:
+        from precis.diagram.doc_context import document_context_for
+
+        return document_context_for(store, ref.id, message)
+    except Exception:  # pragma: no cover — never let context break a turn
+        log.debug("diagram turn: document context unavailable", exc_info=True)
+        return ""
 
 
 def _all_findings(
