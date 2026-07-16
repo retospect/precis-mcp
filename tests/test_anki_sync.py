@@ -200,3 +200,41 @@ class TestReadBack:
         # tag filter finds it by the per-ref tag, misses a bogus one
         assert len(read_all_cards(col, tag=precis_tag(5))) == 1
         assert len(read_all_cards(col, tag="precis-fix")) == 0
+
+
+class TestRetire:
+    def test_remove_notes_for_refs_deletes_only_own_guids(self, col) -> None:
+        from precis.anki.sync import remove_notes_for_refs, upsert_notes
+
+        upsert_notes(
+            col,
+            _specs(
+                (7, {"Text": "keep {{c1::me}}"}),
+                (8, {"Text": "retire {{c1::me}}"}),
+            ),
+        )
+        removed = remove_notes_for_refs(col, [8, 999])  # 999 was never pushed
+        assert removed == 1
+        remaining = [col.get_note(n).guid for n in col.find_notes("")]
+        assert remaining == [guid_for(7)]
+
+    def test_retired_ref_ids_excludes_foreign_projections(self, store) -> None:
+        from precis.cli.anki_sync import _retired_ref_ids
+
+        authored = store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="{{c1::x}}",
+            meta={"notetype": "Cloze", "fields": {"Text": "{{c1::x}}"}},
+        )
+        foreign = store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="foreign",
+            meta={"source": "anki-foreign", "readonly": True},
+        )
+        store.soft_delete_ref(authored.id)
+        store.soft_delete_ref(foreign.id)
+        ids = _retired_ref_ids(store)
+        assert int(authored.id) in ids
+        assert int(foreign.id) not in ids

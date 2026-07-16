@@ -228,7 +228,17 @@ driver; adding one is a `Reviewer(...)` instance):
   `level:recurring` watches; **TTS is the separate downstream spark pass**, so the
   nice-model compose and the container narration never block each other. CLI:
   `precis cast run <reading|nidra> [--publish]` + `precis cast schedule [--now]`.
-  Skill: `precis-audio-help`.
+  Skill: `precis-audio-help`. A third daily watch rides the same installer:
+  **`card_forge`** (05:30, before the brief) — the morning card work
+  (`reading/cards.py`): mastery-from-Anki refresh (`reading/mastery.py`:
+  `represents`-linked cards' `anki_stats` → concept `meta.mastery`/`state`),
+  the retire / teach-prereq / escalate / rewrite ladder over ≥4-day leech cards
+  (**observe-first** — `PRECIS_CARD_FORGE_AUTONOMY=report` default, `act` to
+  apply; a retired ref's Anki note is removed own-guid-only by the sync tick),
+  then minting `PRECIS_READING_CARDS_PER_DAY` (5) concepts' worth of new cloze
+  cards (`represents`-linked, riding `precis anki-sync`). The brief's recall
+  lane reports forged cards + escalated concepts; the nidra walk orders by
+  mastery (`prefer_mastered=True`) — the evening drift through what you know.
 * `llm_summarize` — model-authored two-part summary (gist + a
   sentence of detail) into `chunk_summaries` under
   `summarizer='llm-v1'`, distinct from the lexical `rake-lemma` row

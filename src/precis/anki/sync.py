@@ -61,6 +61,7 @@ class SyncResult:
     bootstrapped: bool = False
     pushed: int = 0
     updated: int = 0
+    removed: int = 0
     stats_written: int = 0
     fix_requested: int = 0
     fix_applied: int = 0
@@ -71,13 +72,14 @@ class SyncResult:
         if self.aborted:
             return f"ABORTED: {self.aborted}"
         boot = " (bootstrap download)" if self.bootstrapped else ""
+        rem = f", {self.removed} retired" if self.removed else ""
         fix = (
             f", {self.fix_applied}/{self.fix_requested} precis-fix"
             if self.fix_requested
             else ""
         )
         return (
-            f"synced{boot}: {self.pushed} new, {self.updated} updated, "
+            f"synced{boot}: {self.pushed} new, {self.updated} updated{rem}, "
             f"{self.stats_written} stat rows read back{fix}"
         )
 
@@ -119,6 +121,21 @@ def upsert_notes(
             col.add_note(note, col.decks.id(spec.deck or deck))
             pushed += 1
     return pushed, updated
+
+
+def remove_notes_for_refs(col: Any, ref_ids: list[int]) -> int:
+    """Delete our notes for retired (soft-deleted) precis refs. Returns how many
+    notes were removed. Own-notes-only by construction: lookups go through the
+    deterministic ``precis:<ref_id>`` guid, so a foreign note is unreachable —
+    the same floor `upsert_notes` holds. Guids absent from the mirror are
+    silently skipped (never pushed, or already gone)."""
+    removed = 0
+    for rid in ref_ids:
+        nids = col.db.list("select id from notes where guid = ?", guid_for(rid))
+        if nids:
+            col.remove_notes(nids)
+            removed += len(nids)
+    return removed
 
 
 def read_precis_stats(col: Any) -> dict[int, dict[str, Any]]:
@@ -197,6 +214,7 @@ def sync_tick(
     fix: bool = False,
     fix_model: str | None = None,
     project: bool = False,
+    retire_ref_ids: list[int] | None = None,
 ) -> tuple[SyncResult, dict[int, dict[str, Any]]]:
     """One full tick against AnkiWeb. Account-safe by construction: a required
     full sync is resolved by *downloading* (only our regenerable mirror is at
@@ -204,7 +222,11 @@ def sync_tick(
 
     When ``fix`` is set, runs the precis-fix pass (LLM rewrites of cards the user
     tagged `precis-fix` in Anki) after the download and before the push, so the
-    fixes ride the same sync up."""
+    fixes ride the same sync up.
+
+    ``retire_ref_ids`` are soft-deleted authored refs (the card_forge
+    retire/rewrite path) whose notes are removed from the mirror before the push
+    — own-guid lookups only, so foreign notes stay unreachable."""
     Collection, sp = _import_anki()
     CR = sp.SyncCollectionResponse.ChangesRequired
     col = Collection(mirror_path)
@@ -235,6 +257,9 @@ def sync_tick(
             fix_res = run_fix_pass(col, model=fix_model)
             result.fix_requested = fix_res.requested
             result.fix_applied = fix_res.fixed
+
+        if retire_ref_ids:
+            result.removed = remove_notes_for_refs(col, retire_ref_ids)
 
         result.pushed, result.updated = upsert_notes(col, specs, deck)
 

@@ -491,21 +491,43 @@ Supersedes the todo-based plan below (slices 2–5 there) for everything after t
 glossary.
 
 1. ✅ **Glossary** (slice 1, shipped-dark) — the raw feed.
-2. **`concept` kind + promotion** — migration (kind + `prerequisite`/`analogy-of`/
+2. ✅ **`concept` kind + promotion** — migration (kind + `prerequisite`/`analogy-of`/
    `contrasts-with` relations); numeric-ref handler with an embeddable
    `card_combined`; promote glossary terms → concept nodes, **deduped
    corpus-wide by name+embedding**; `derived-from` provenance; `reading:<slug>`
    cohort tag. *The substrate.*
-3. **Graph edges** — LLM+embedding inference of `prerequisite` / `analogy-of` /
-   `contrasts-with` among cohort concepts. *The DAG.*
-4. **Mastery field** — aggregate `anki_stats` → continuous per-concept mastery +
-   decay; card↔concept `represents` links; state derivation. (Propagation later.)
+3. ✅ **Graph edges** — LLM+embedding inference of `prerequisite` / `analogy-of` /
+   `contrasts-with` among cohort concepts (`reading/graph.py`). *The DAG.*
+4. ✅ **Mastery field** — BUILT (`reading/mastery.py`, scalar v1 per the open
+   decision above): `represents`-linked cards' `anki_stats` fold into a
+   continuous `meta.mastery` (interval-saturating strength, leech-capped,
+   mean over cards) + derived `state` (`mastered` ≥ `PRECIS_MASTERY_THRESHOLD`,
+   default 0.7). Runs as step 0 of the daily `card_forge` job. (Prereq-edge
+   propagation still later.)
 5. **Routing** — reading-readiness (frontier distance), shortest-path curriculum,
-   the daily review walk.
+   the daily review walk. *(The nidra's mastered-drift ordering is a first
+   sliver: `build_meditation(prefer_mastered=True)` walks highest-mastery
+   concepts — the evening drift through what you know.)*
 6. **Booklet** — a *traversal over the concept graph* rendered to a `draft`.
-7. **Cards as representations** — minted from concepts (deduped), deck per
-   cluster, pushed to Anki as the render target.
+7. ✅ **Cards as representations + the adaptive re-munge** — BUILT as the
+   **`card_forge`** morning job (`reading/cards.py` + `workers/job_types/
+   card_forge.py`, watch @ 05:30 before the 06:00 brief, installed by `precis
+   cast schedule`). Mint: up to `PRECIS_READING_CARDS_PER_DAY` (5) cardless
+   concepts/day get 1–3 model-authored cloze cards (`precis-cloze` craft),
+   `represents`-linked, deck `Precis::<cohort>`; they ride `precis anki-sync`
+   up. Rework: a card older than `PRECIS_CARD_REWORK_MIN_DAYS` (4 — Reto's
+   "3-4 days") still leeching gets the diagnosis ladder — concept mastered →
+   **retire** (soft-delete; the sync tick now *removes own-guid notes* for
+   retired refs, resolving the deletion-propagation open question for authored
+   cards), unlearned prereq → **teach-prereq**, streak ≥
+   `PRECIS_CARD_REWORK_STREAK_CAP` (3) → **escalate** (`meta.escalated_at`,
+   surfaced in the brief's recall lane), else **rewrite** (delete+put, curve
+   resets per decision 2). **Observe-first per decision 3**:
+   `PRECIS_CARD_FORGE_AUTONOMY=report` (default) logs every decision in the
+   job summary without writing; `=act` applies.
 8. **Briefing + audio** — graph-aware (today's path + readiness + due/weak).
+   *(Partial: the brief's recall lane reports cards forged this morning +
+   escalated concepts.)*
 
 Risk note: mastery + routing are the research-y pieces; the kind + graph + dedup
 are composition of existing substrates (embeddings, the `relations` table, chunk

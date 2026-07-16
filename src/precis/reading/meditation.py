@@ -63,9 +63,16 @@ def _load(
     limit: int,
     *,
     bias_active_quests: bool = False,
+    prefer_mastered: bool = False,
 ) -> tuple[list[tuple[int, str, str]], dict[int, set[int]]]:
     """``(concepts, adjacency)`` for the walk. Cohort-scoped when given, else the
     most recent concepts. Adjacency unions every graph edge among them.
+
+    ``prefer_mastered`` (the evening drift): order by ``meta.mastery``
+    descending, so the walk moves through what the listener *knows* — familiar
+    ideas at the day's end, exposure not testing. Degrades to the recency order
+    while mastery data is sparse (all-zero mastery ties fall back to the same
+    ``ref_id`` ordering).
 
     Quest reweighting (slice 2): with ``bias_active_quests``, concepts that
     ``serve`` an active quest are pulled into the selection (even if outside the
@@ -78,19 +85,22 @@ def _load(
         from precis.quest.reweight import server_weights_for_active_quests
 
         quest_weight = server_weights_for_active_quests(store, server_kind="concept")
+    mastery_order = "(COALESCE(meta->>'mastery','0'))::float DESC, "
     with store.pool.connection() as conn:
         if cohort:
+            order = (mastery_order if prefer_mastered else "") + "ref_id"
             rows = conn.execute(
                 "SELECT ref_id, meta->>'name', meta->>'definition' FROM refs "
                 "WHERE kind='concept' AND deleted_at IS NULL "
-                "AND jsonb_exists(meta->'cohorts', %s) ORDER BY ref_id LIMIT %s",
+                f"AND jsonb_exists(meta->'cohorts', %s) ORDER BY {order} LIMIT %s",
                 (cohort, limit),
             ).fetchall()
         else:
+            order = (mastery_order if prefer_mastered else "") + "ref_id DESC"
             rows = conn.execute(
                 "SELECT ref_id, meta->>'name', meta->>'definition' FROM refs "
                 "WHERE kind='concept' AND deleted_at IS NULL "
-                "ORDER BY ref_id DESC LIMIT %s",
+                f"ORDER BY {order} LIMIT %s",
                 (limit,),
             ).fetchall()
         concepts = [(int(r[0]), r[1] or "", r[2] or "") for r in rows]
@@ -299,6 +309,7 @@ def build_meditation(
     anchors: list[str] | None = None,
     skill_preamble: str = "",
     bias_active_quests: bool = False,
+    prefer_mastered: bool = True,
     now: datetime | None = None,
     date_tag: str | None = None,
 ) -> int | None:
@@ -316,6 +327,11 @@ def build_meditation(
     ``bias_active_quests`` (quest layer slice 2) biases the concept selection
     toward those serving active quests — a no-op until quests + serving concepts
     exist.
+
+    ``prefer_mastered`` (default on) makes the evening walk a drift through the
+    listener's *mastered* concepts — highest ``meta.mastery`` first, the
+    complement to the morning's retrieval practice. A no-op until the mastery
+    pass (`reading/mastery.py`) has data to write.
     """
     profile = CAST_PROFILES["nidra"]
     target = target_minutes if target_minutes is not None else profile.target_minutes
@@ -333,7 +349,11 @@ def build_meditation(
         return int(existing.id)
 
     concepts, adjacency = _load(
-        store, cohort, max_concepts, bias_active_quests=bias_active_quests
+        store,
+        cohort,
+        max_concepts,
+        bias_active_quests=bias_active_quests,
+        prefer_mastered=prefer_mastered,
     )
     if len(concepts) < 2:
         log.info("meditation: only %d concept(s) — nothing to walk", len(concepts))

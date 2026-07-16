@@ -124,9 +124,15 @@ def _cmd_run(store: Store, args: argparse.Namespace) -> None:
         _publish(store, draft_id, speed=args.speed)
 
 
+#: The morning card pass fires before the 06:00 reading brief so today's new /
+#: reworked cards exist when the brief's recall lane composes.
+_CARD_FORGE_CRON = "30 5 * * *"
+
+
 def install_cast_watches(store: Store) -> list[int]:
-    """Idempotently install the two ``level:recurring`` cast watches under the
-    Watches umbrella. Returns the ref ids (existing or freshly created).
+    """Idempotently install the daily reading-loop watches under the Watches
+    umbrella — the two casts plus the 05:30 ``card_forge`` morning card pass.
+    Returns the ref ids (existing or freshly created).
 
     Authors the recurring todos directly (no booted hub needed from a CLI),
     mirroring ``ensure_watches_root``: an ``insert_ref`` + the ``level:recurring``
@@ -174,6 +180,33 @@ def install_cast_watches(store: Store) -> list[int]:
         print(
             f"cast {cast}: scheduled @ '{profile.cron}' → job_type {profile.job_type}"
         )
+
+    # The morning card pass — not a cast (no draft, no narration), but part of
+    # the same daily loop, so it installs alongside the cast watches.
+    existing = _find_cast_watch(store, "card_forge")
+    if existing is not None:
+        out.append(existing)
+        print(f"card_forge: watch already installed (ref {existing})")
+        return out
+    sched = validate_schedule({"cron": _CARD_FORGE_CRON})
+    ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="Cast watch: card_forge (\U0001f0cf morning card work)",
+        meta={
+            "schedule": {"cron": sched.cron, "backfill_missed": sched.backfill_missed},
+            "executor": "claude_inproc",
+            "job_type": "card_forge",
+            "params": {},
+            "cast_watch": "card_forge",
+        },
+        prio=2,
+        parent_id=watches,
+    )
+    store.add_tag(ref.id, Tag.open("level:recurring"), set_by="system")
+    store.add_tag(ref.id, Tag.closed("STATUS", "open"), set_by="system")
+    out.append(int(ref.id))
+    print(f"card_forge: scheduled @ '{_CARD_FORGE_CRON}' → job_type card_forge")
     return out
 
 

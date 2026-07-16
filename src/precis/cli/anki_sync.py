@@ -52,6 +52,14 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Also project ALL Anki cards into PG as read-only refs (searchable).",
     )
+    p.add_argument(
+        "--no-retire",
+        action="store_true",
+        help=(
+            "Do not remove notes for soft-deleted precis cards from the mirror "
+            "(retirement is on by default; own-guid notes only)."
+        ),
+    )
 
 
 def run(args: argparse.Namespace) -> None:
@@ -82,15 +90,35 @@ def run(args: argparse.Namespace) -> None:
         store.pool.close()
 
 
+def _retired_ref_ids(store: Any, *, window_days: int = 90) -> list[int]:
+    """Recently soft-deleted *authored* cards (the card_forge retire/rewrite
+    path, or a manual delete) whose Anki notes should be removed. Foreign
+    projections are excluded — they were never pushed under a precis guid, and
+    the 2026-07 incident soft-deleted ~93k of them (no point shipping that list
+    to the mirror every tick)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind='anki' AND deleted_at IS NOT NULL "
+            "AND deleted_at >= now() - make_interval(days => %s) "
+            "AND COALESCE(meta->>'source','') != 'anki-foreign'",
+            (window_days,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 def _run_sync(args: argparse.Namespace, cfg: Any, store: Any) -> None:
     from precis.anki.notes import spec_from_ref
     from precis.anki.sync import AnkiNotInstalled, AnkiSyncError, sync_tick
 
     refs = store.list_refs(kind="anki", limit=args.limit)
     specs = [s for s in (spec_from_ref(r) for r in refs) if s is not None]
+    retire_ids = [] if args.no_retire else _retired_ref_ids(store)
 
     if args.dry_run:
-        print(f"anki-sync [DRY-RUN]: {len(specs)} cloze card(s) would sync.")
+        print(
+            f"anki-sync [DRY-RUN]: {len(specs)} cloze card(s) would sync, "
+            f"{len(retire_ids)} retired ref(s) would be removed from the mirror."
+        )
         return
 
     if not cfg.anki_user or not cfg.anki_password:
@@ -124,6 +152,7 @@ def _run_sync(args: argparse.Namespace, cfg: Any, store: Any) -> None:
                     deck=cfg.anki_deck,
                     fix=args.fix or cfg.anki_fix_enabled,
                     project=args.project or cfg.anki_project_enabled,
+                    retire_ref_ids=retire_ids,
                 )
             except AnkiNotInstalled as e:
                 print(f"anki-sync: {e}", file=sys.stderr)

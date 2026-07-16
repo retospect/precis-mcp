@@ -359,9 +359,13 @@ the storage-shape block above is now the flat `meta.anki_synced_at`.
   and pin a version matching AnkiWeb's current min sync version.
 - **Auth flow.** `sync_login(email, password) → hkey`, hkey caching, endpoint
   discovery, re-login on 403 — unspecified. Creds live as a Mac-local secret.
-- **Deletion propagation.** When a precis `anki` ref is (soft-)deleted, does the
-  tick delete the Anki note too, or leave it? Default lean: leave it (safer;
-  precis stops owning it) — but decide explicitly.
+- **Deletion propagation — DECIDED (2026-07-16): propagate, own-guid-only.**
+  The card_forge retire/rewrite loop needs retired cards to actually leave the
+  phone, so the tick removes notes whose precis ref was soft-deleted
+  (`sync.remove_notes_for_refs` — lookups via the deterministic
+  `precis:<ref_id>` guid, so foreign notes stay structurally unreachable;
+  foreign projections are excluded from the retire list). `--no-retire` opts
+  out. Window: refs deleted in the last 90 days.
 - **Tick trigger + prod coupling.** What fires the tick (cron on the Mac stack /
   after an authoring batch / a worker pass)? The Mac stack reads `anki` refs from
   **prod** and holds the mirror **locally** — that split is the single-runner, and

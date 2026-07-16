@@ -146,6 +146,13 @@ def _load_meditation() -> JobTypeSpec:
     return meditation.SPEC
 
 
+def _load_card_forge() -> JobTypeSpec:
+    # Deterministic morning card pass (mastery refresh + rework + mint).
+    from precis.workers.job_types import card_forge
+
+    return card_forge.SPEC
+
+
 def _load_struct_relax() -> JobTypeSpec:
     # Energy-rung relax on the GPU node via ssh_node; sinks to the §23.16
     # run-cube (ADR 0043 §23.12). Runs via plugin dispatch.
@@ -364,6 +371,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "meditation":
         _REGISTRY["meditation"] = _load_meditation()
         return _REGISTRY["meditation"]
+    if name == "card_forge":
+        _REGISTRY["card_forge"] = _load_card_forge()
+        return _REGISTRY["card_forge"]
     if name == "struct_relax":
         _REGISTRY["struct_relax"] = _load_struct_relax()
         return _REGISTRY["struct_relax"]
@@ -408,6 +418,7 @@ def known_job_types() -> list[str]:
         "briefing",
         "reading_brief",
         "meditation",
+        "card_forge",
         "struct_relax",
         "structure_propose",
         "cad_propose",

@@ -195,6 +195,34 @@ def _lane_recall(store: Any, *, cutoff: datetime) -> str:
     except Exception:  # pragma: no cover - anki_stats may be absent
         log.debug("reading brief: anki leech lane unavailable", exc_info=True)
 
+    # This morning's card work (the card_forge pass runs at 05:30, before us):
+    # fresh cards to expect on the phone + concepts escalated to the human.
+    try:
+        with store.pool.connection() as conn:
+            minted = conn.execute(
+                "SELECT COUNT(*) FROM refs "
+                "WHERE kind='anki' AND deleted_at IS NULL "
+                "AND meta->>'authored_by' = 'card_forge' AND created_at >= %s",
+                (cutoff,),
+            ).fetchone()
+            escalated = conn.execute(
+                "SELECT meta->>'name' FROM refs "
+                "WHERE kind='concept' AND deleted_at IS NULL "
+                "AND (meta->>'escalated_at')::timestamptz >= %s "
+                "ORDER BY meta->>'escalated_at' DESC LIMIT %s",
+                (cutoff, _LANE_ITEM_CAP),
+            ).fetchall()
+        n_minted = int(minted[0] or 0) if minted else 0
+        if n_minted:
+            parts.append(f"{n_minted} fresh card(s) were forged for you this morning")
+        stuck = [r[0] for r in escalated if r[0]]
+        if stuck:
+            parts.append(
+                "These concepts need you, not another card: " + "; ".join(stuck)
+            )
+    except Exception:  # pragma: no cover - card_forge may not have run yet
+        log.debug("reading brief: card_forge lane unavailable", exc_info=True)
+
     # Concepts newly promoted since the cutoff.
     try:
         with store.pool.connection() as conn:

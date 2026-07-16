@@ -137,6 +137,27 @@ LLM rewrites the card from your comment, writes it back, and retags it
 `precis-fixed`. precis only ever edits a card **you tagged** — untagged cards are
 never touched. Works on text notetypes (cloze/basic).
 
+## The daily card forge (autonomous)
+
+Every morning at 05:30 (before the reading brief) the **`card_forge`** job runs
+the reading-prep card loop — installed by `precis cast schedule`:
+
+1. **Mastery refresh** — each `concept`'s `represents`-linked cards' `anki_stats`
+   fold into `meta.mastery` (0..1) + `state` (`mastered` ≥ 0.7 by default).
+2. **Rework** — a forge-authored card ≥ `PRECIS_CARD_REWORK_MIN_DAYS` (4) days
+   old that is still a leech gets a graph-informed decision: concept mastered →
+   **retire** the card; unlearned prerequisite → **teach that first**; too many
+   rewrites → **escalate** to you (surfaced in the morning brief); otherwise
+   **rewrite** (new card, curve resets — the old one wasn't working anyway).
+   Observe-first: with `PRECIS_CARD_FORGE_AUTONOMY=report` (default) it only
+   logs what it *would* do; set `act` to let it write.
+3. **Mint** — up to `PRECIS_READING_CARDS_PER_DAY` (5) cardless concepts get
+   1–3 fresh cloze cards each, linked `concept —represents→ card`, deck
+   `Precis::<cohort>`, riding the next `anki-sync` to your phone.
+
+Retired (soft-deleted) precis-authored cards are removed from the Anki mirror on
+the next sync — own-guid lookups only, so your hand-made cards are unreachable.
+
 ## What this is NOT
 
 - **No image occlusion / structured notetypes** — cloze only for now. The note

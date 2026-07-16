@@ -30,7 +30,7 @@ class _FakeCtx:
 
 
 def test_specs_registered_on_claude_inproc() -> None:
-    for name in ("reading_brief", "meditation"):
+    for name in ("reading_brief", "meditation", "card_forge"):
         spec = get_job_type(name)
         assert spec is not None
         assert spec.compatible_executors == frozenset({"claude_inproc"})
@@ -86,3 +86,40 @@ class TestMeditationDispatch:
         md_jt._dispatch(ctx, md_jt.SPEC)
         assert seen == {"cohort": "waves", "target_minutes": 30}
         assert ctx.metas["draft_ref_id"] == 7
+
+
+class TestCardForgeDispatch:
+    def test_passes_params_and_reports(self, monkeypatch: Any) -> None:
+        import precis.reading.cards as cards
+        from precis.reading.cards import CardDecision, ForgeReport
+        from precis.workers.job_types import card_forge as cf_jt
+
+        seen: dict[str, Any] = {}
+
+        def fake_run(store: Any, **k: Any) -> ForgeReport:
+            seen.update(k)
+            return ForgeReport(
+                minted=[(11, [21, 22])],
+                decisions=[CardDecision(31, 11, "rewrite", "wording at fault")],
+            )
+
+        monkeypatch.setattr(cards, "run_card_forge", fake_run)
+        ctx = _FakeCtx(meta={"params": {"cohort": "waves", "per_day": 3}})
+        cf_jt._dispatch(ctx, cf_jt.SPEC)
+        assert seen == {"cohort": "waves", "per_day": 3}
+        assert ctx.failure is None
+        assert ctx.metas == {"minted_concepts": 1, "rework_decisions": 1}
+        summary = ctx.chunks[0][1]
+        assert "ak21" in summary and "would rewrite ak31" in summary
+
+    def test_raise_records_failure(self, monkeypatch: Any) -> None:
+        import precis.reading.cards as cards
+        from precis.workers.job_types import card_forge as cf_jt
+
+        def boom(store: Any, **k: Any) -> Any:
+            raise RuntimeError("forge cold")
+
+        monkeypatch.setattr(cards, "run_card_forge", boom)
+        ctx = _FakeCtx()
+        cf_jt._dispatch(ctx, cf_jt.SPEC)
+        assert ctx.failure is not None and "forge cold" in ctx.failure

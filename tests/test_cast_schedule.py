@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from precis.cli.cast import install_cast_watches
+from precis.cli.cast import _CARD_FORGE_CRON, install_cast_watches
 from precis.reading.cast_common import CAST_PROFILES
 from precis.workers.schedule.seed import ensure_watches_root
 
@@ -15,15 +15,20 @@ def test_install_is_idempotent_and_well_formed(store: Any) -> None:
     assert ids1 == ids2  # second call creates nothing new
 
     watches = ensure_watches_root(store)
-    for cast, ref_id in zip(("reading", "nidra"), ids1, strict=True):
-        profile = CAST_PROFILES[cast]
+    for cast, ref_id in zip(("reading", "nidra", "card_forge"), ids1, strict=True):
+        expect_cron = (
+            CAST_PROFILES[cast].cron if cast in CAST_PROFILES else _CARD_FORGE_CRON
+        )
+        expect_job = (
+            CAST_PROFILES[cast].job_type if cast in CAST_PROFILES else "card_forge"
+        )
         ref = store.get_ref(kind="todo", id=ref_id)
         assert ref is not None
         assert ref.parent_id == watches  # lands under the Watches umbrella
-        assert ref.meta["schedule"]["cron"] == profile.cron
+        assert ref.meta["schedule"]["cron"] == expect_cron
         assert ref.meta["schedule"]["backfill_missed"] is False
         assert ref.meta["executor"] == "claude_inproc"  # opus compose on melchior
-        assert ref.meta["job_type"] == profile.job_type
+        assert ref.meta["job_type"] == expect_job
         assert ref.meta["cast_watch"] == cast
 
         tags = {str(t) for t in store.tags_for(ref_id)}
@@ -34,7 +39,7 @@ def test_install_is_idempotent_and_well_formed(store: Any) -> None:
 def test_exactly_one_watch_per_cast(store: Any) -> None:
     install_cast_watches(store)
     install_cast_watches(store)
-    for cast in ("reading", "nidra"):
+    for cast in ("reading", "nidra", "card_forge"):
         with store.pool.connection() as conn:
             n = conn.execute(
                 "SELECT count(*) FROM refs WHERE kind='todo' AND deleted_at IS NULL "

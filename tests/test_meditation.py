@@ -101,3 +101,28 @@ class TestBuild:
 
         assert build_meditation(store, client=client, name=f"e-{u}", cohort=co) is None
         assert client.calls == []  # never called the model — nothing to walk
+
+
+class TestMasteredDrift:
+    def test_prefer_mastered_orders_by_mastery(self, store: Any) -> None:
+        """The evening drift moves through what the listener knows: highest
+        mastery first, ties falling back to the recency order."""
+        import uuid
+
+        from precis.reading.meditation import _load
+        from precis.reading.promote import create_concept
+
+        u = uuid.uuid4().hex[:8]
+        co = f"drift-{u}"
+        low = create_concept(store, name=f"low-{u}", definition="new", cohort=co)
+        high = create_concept(store, name=f"high-{u}", definition="known", cohort=co)
+        mid = create_concept(store, name=f"mid-{u}", definition="warm", cohort=co)
+        store.update_ref(high, meta_patch={"mastery": 0.9, "state": "mastered"})
+        store.update_ref(mid, meta_patch={"mastery": 0.4, "state": "active"})
+
+        concepts, _adj = _load(store, co, 10, prefer_mastered=True)
+        assert [c[0] for c in concepts] == [high, mid, low]
+
+        # Without the drift the cohort keeps its plain ref_id order.
+        concepts, _adj = _load(store, co, 10, prefer_mastered=False)
+        assert [c[0] for c in concepts] == [low, high, mid]
