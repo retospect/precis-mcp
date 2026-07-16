@@ -258,3 +258,28 @@ detail, not a design fork.
 4. **Cap defaults.** `$20/day` + `$5/hr` are placeholders — set the real
    numbers from a week of observed spend on the read-only meter (slice 2)
    before the breaker (slice 3) goes live.
+
+**Resolved (2026-07-16) — the OAuth-vs-money split (the "right" gate).**
+The first live run exposed a category error: in this deployment *every* model
+call is `claude-opus-4-8` over the `claude -p` **OAuth subscription**
+(`claude_agent`/`claude_p` transports), so the `total_cost_usd` the CLI reports
+is an API-list-price **notional** figure — those calls don't spend money, they
+draw down the account's rate-limit **quota** (five_hour / seven_day …). Gating
+that lane on a dollar cap paused ~$77/day of useful dream/review work against a
+$20 cap while the subscription sat at `five_hour: allowed`. The fix splits the
+breaker by what a call actually spends (`budget.breaker.gate_tier(transport=…)`):
+
+* **Real money** — OpenRouter/OpenAI-compat + paid fetches → the dollar meter,
+  which now **excludes** `meter.OAUTH_TRANSPORTS` from its `llm_call_log` sum
+  (open question #1 sharpened: notional rows are out of the money SUM).
+* **Claude subscription** — gated on the quota snapshot
+  (`budget.quota.evaluate`, reading `claude_quota_snapshot`): pause only when a
+  window is `rejected` (or ≥ `PRECIS_QUOTA_CEILING_PCT`, default 100, when the
+  CLI reports `used_percentage`), auto-clearing on window reset. Its own
+  `budget:quota` critical alert mirrors the dollar one.
+
+A web **resume override** (`/budget` → "Resume paid work now",
+`budget.resume_until` in `app_settings`) lifts a *soft* trip (dollar cap or the
+quota ceiling) for N hours so the operator can unstick the factory; a genuine
+Anthropic rejection still 429s at the provider. This makes cap-default tuning
+(#4) matter only for the real-money lane; the claude lane self-bounds on quota.

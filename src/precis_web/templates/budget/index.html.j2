@@ -3,16 +3,34 @@
 {% block content %}
 <h1 class="text-lg font-semibold mb-1">Budget</h1>
 <p class="text-sm text-slate-500 mb-5 max-w-2xl">
-  Rolling spend across the whole runtime — router LLMs (<code>llm_call_log</code>)
-  and paid fetches (<code>cache_state</code>) — against the circuit-breaker caps.
-  Over a cap, all new <strong>paid</strong> work is refused (every non-free tier,
-  cheap and expensive alike); only free local work keeps flowing. Caps auto-clear
-  as the window rolls off.
+  Two rails, by what a call actually spends. <strong>Real dollars</strong> —
+  OpenRouter/OSS LLMs and paid fetches — meter against the caps below. The
+  <strong>claude subscription</strong> (the <code>claude -p</code> OAuth lane)
+  spends rate-limit <em>quota</em>, not money, so it is gated on the quota
+  snapshot, not a dollar figure. Only free local work is never gated; everything
+  auto-clears as its window rolls off.
 </p>
+
+{% if resume_active %}
+<div class="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800 flex items-center justify-between gap-3">
+  <span>Resume override <strong>active</strong> until
+    {{ resume_until.strftime('%H:%M UTC') if resume_until else '—' }} — soft trips
+    are bypassed (a hard Anthropic rejection still fails).</span>
+  <form method="post" action="/budget/resume/clear">
+    <button class="text-xs text-amber-700 underline hover:text-rose-600">cancel</button>
+  </form>
+</div>
+{% endif %}
 
 {% if budget.get('tripped') %}
 <div class="mb-5 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">
-  A cap is reached — paid autonomous work is paused until spend rolls off the window.
+  A dollar cap is reached — paid work (real-money transports) is paused until spend rolls off the window.
+</div>
+{% endif %}
+
+{% if quota and quota.paused %}
+<div class="mb-5 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">
+  {{ quota.pause_reason }}
 </div>
 {% endif %}
 
@@ -42,8 +60,53 @@
 </p>
 {% endif %}
 
+<div class="rounded-lg border border-slate-200 bg-white p-4 max-w-2xl mb-6">
+  <div class="flex items-baseline justify-between mb-3">
+    <div class="text-xs uppercase tracking-wide text-slate-400">Claude subscription (OAuth quota)</div>
+    <div class="text-[11px] text-slate-400">
+      {% if quota and quota.ts %}snapshot {{ quota.ts.strftime('%m-%d %H:%M UTC') }}{% else %}no snapshot{% endif %}
+    </div>
+  </div>
+  {% if quota and quota.windows %}
+  <ul class="text-sm divide-y divide-slate-100">
+    {% for w in quota.windows %}
+    <li class="py-1 flex items-center justify-between gap-2">
+      <span class="font-mono text-slate-600">{{ w.name }}</span>
+      <span class="flex items-center gap-2 shrink-0">
+        {% if w.used is not none %}<span class="text-slate-500">{{ '%.0f'|format(w.used) }}%</span>{% endif %}
+        <span class="rounded px-1.5 py-0.5 text-[11px]
+          {% if w.status in ('allowed','allowed_warning','ok') %}bg-emerald-50 text-emerald-700
+          {% elif w.status in ('rejected','blocked','exhausted') %}bg-rose-50 text-rose-700
+          {% else %}bg-slate-100 text-slate-500{% endif %}">{{ w.status }}</span>
+        {% if w.resets_at %}<span class="text-[11px] text-slate-400">resets {{ w.resets_at[11:16] }}Z</span>{% endif %}
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="text-sm text-slate-400">No quota snapshot yet — the <code>quota_check</code> pass writes one on the agent worker.</p>
+  {% endif %}
+  <div class="flex items-center gap-2 pt-3 mt-2 border-t border-slate-100">
+    <form method="post" action="/budget/resume" class="flex items-center gap-2">
+      <button type="submit"
+              class="rounded bg-amber-600 text-white text-xs px-3 py-1 hover:bg-amber-700 transition">
+        Resume paid work now
+      </button>
+      <input type="number" step="0.5" min="0.25" name="hours" placeholder="{{ 5 }}"
+             class="w-16 rounded border border-slate-200 px-2 py-1 text-xs font-mono
+                    focus:border-amber-400 focus:outline-none" />
+      <span class="text-[11px] text-slate-400">hours (default 5)</span>
+    </form>
+  </div>
+  <p class="text-[11px] text-slate-400 mt-2">
+    Lifts a <em>soft</em> pause (dollar cap or a <code>used_percentage</code> ceiling) so the
+    factory resumes without waiting for the window. A genuine Anthropic rate-limit rejection
+    can't be overridden — those calls will 429 until the window resets.
+  </p>
+</div>
+
 <div class="rounded-lg border border-slate-200 bg-white p-4 max-w-lg mb-6">
-  <div class="text-xs uppercase tracking-wide text-slate-400 mb-3">Caps</div>
+  <div class="text-xs uppercase tracking-wide text-slate-400 mb-3">Caps (real-money transports)</div>
   <form method="post" action="/budget/set" class="space-y-3">
     <div class="flex items-center gap-3">
       <label class="w-28 text-sm text-slate-600">Hourly ($)</label>

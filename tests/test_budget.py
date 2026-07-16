@@ -72,6 +72,7 @@ def _reset_budget_state(monkeypatch: pytest.MonkeyPatch) -> None:
         "PRECIS_BUDGET_HOURLY_USD",
         "PRECIS_BUDGET_DAILY_USD",
         "PRECIS_BUDGET_CHEAP_MAX_USD",
+        "PRECIS_QUOTA_CEILING_PCT",
     ):
         monkeypatch.delenv(var, raising=False)
     meter.bind_store(None)
@@ -522,3 +523,216 @@ def test_budget_tote_empty_without_store(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(meter, "current_status", lambda store, use_cache=False: None)
     assert status_mod._budget_tote(_ToteStore()) == {}
+
+
+# ── transport-split gating: meter excludes notional OAuth $ ──────────────
+
+from datetime import UTC, datetime
+
+from precis.budget import quota as quota_mod
+from precis.budget import settings as budget_settings
+from precis.budget.meter import OAUTH_TRANSPORTS
+
+
+def test_oauth_transports_are_the_claude_lane() -> None:
+    assert OAUTH_TRANSPORTS == ("claude_agent", "claude_p")
+
+
+def test_spent_usd_excludes_oauth_transports_in_sql() -> None:
+    """The dollar meter must exclude the notional claude rows so the cap
+    reflects real money (query carries the transport exclusion + params)."""
+    captured: dict[str, object] = {}
+
+    class _CapConn:
+        def __enter__(self) -> _CapConn:
+            return self
+
+        def __exit__(self, *a: object) -> Literal[False]:
+            return False
+
+        def execute(self, sql: str, params: object = None) -> _Cursor:
+            if "llm_call_log" in sql:
+                captured["sql"] = sql
+                captured["params"] = params
+            return _Cursor((0.0,))
+
+    class _CapPool:
+        def connection(self) -> _CapConn:
+            return _CapConn()
+
+    class _CapStore:
+        pool = _CapPool()
+
+    meter.spent_usd(cast("Store", _CapStore()), since_seconds=3600)
+    assert "transport" in str(captured["sql"])
+    assert cast("tuple", captured["params"])[1] == list(OAUTH_TRANSPORTS)
+
+
+# ── claude-OAuth quota gate ──────────────────────────────────────────────
+
+
+class _SqlConn:
+    def __init__(self, llm: float, fetch: float, settings: dict[str, str]) -> None:
+        self._llm, self._fetch, self._settings = llm, fetch, settings
+
+    def __enter__(self) -> _SqlConn:
+        return self
+
+    def __exit__(self, *a: object) -> Literal[False]:
+        return False
+
+    def execute(self, sql: str, params: object = None) -> _Cursor:
+        if "llm_call_log" in sql:
+            return _Cursor((self._llm,))
+        if "cache_state" in sql:
+            return _Cursor((self._fetch,))
+        if "app_settings" in sql:
+            key = cast("tuple", params)[0] if params else None
+            val = self._settings.get(cast("str", key))
+            return _Cursor((val,) if val is not None else None)  # type: ignore[arg-type]
+        return _Cursor(None)  # type: ignore[arg-type]
+
+
+class _SqlPool:
+    def __init__(self, llm: float, fetch: float, settings: dict[str, str]) -> None:
+        self._conn = _SqlConn(llm, fetch, settings)
+
+    def connection(self) -> _SqlConn:
+        return self._conn
+
+
+class SqlStore:
+    """Fake store that answers the dollar sums, ``app_settings`` reads, and the
+    claude quota snapshot — enough to drive the whole breaker."""
+
+    _NO_SNAPSHOT = "__none__"
+
+    def __init__(
+        self,
+        *,
+        llm: float = 0.0,
+        fetch: float = 0.0,
+        settings: dict[str, str] | None = None,
+        windows: object = _NO_SNAPSHOT,
+    ) -> None:
+        self.pool = _SqlPool(llm, fetch, settings or {})
+        self._windows = windows
+
+    def read_claude_quota(self, scope: str = "unified") -> object:
+        from precis.store._claude_quota_ops import ClaudeQuotaRow
+
+        if self._windows == self._NO_SNAPSHOT:
+            return None
+        return ClaudeQuotaRow(
+            scope="unified",
+            ts=datetime(2026, 7, 16, tzinfo=UTC),
+            data={"windows": self._windows},
+        )
+
+
+def test_quota_gate_allowed_passes() -> None:
+    store = SqlStore(windows={"five_hour": {"status": "allowed"}})
+    assert quota_mod.evaluate(cast("Store", store)) is None
+
+
+def test_quota_gate_rejected_pauses() -> None:
+    store = SqlStore(
+        windows={
+            "five_hour": {
+                "status": "rejected",
+                "resets_at": "2026-07-17T00:00:00+00:00",
+            }
+        }
+    )
+    pause = quota_mod.evaluate(cast("Store", store))
+    assert pause is not None
+    assert pause.window == "five_hour"
+    assert "quota" in pause.reason
+
+
+def test_quota_gate_over_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_QUOTA_CEILING_PCT", "90")
+    store = SqlStore(
+        windows={"seven_day": {"status": "allowed", "used_percentage": 95}}
+    )
+    pause = quota_mod.evaluate(cast("Store", store))
+    assert pause is not None
+    assert pause.window == "seven_day"
+
+
+def test_quota_gate_under_ceiling_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_QUOTA_CEILING_PCT", "90")
+    store = SqlStore(
+        windows={"seven_day": {"status": "allowed", "used_percentage": 50}}
+    )
+    assert quota_mod.evaluate(cast("Store", store)) is None
+
+
+def test_quota_gate_dark_without_snapshot() -> None:
+    assert quota_mod.evaluate(cast("Store", SqlStore())) is None
+    assert quota_mod.evaluate(None) is None
+
+
+# ── gate_tier is transport-aware ─────────────────────────────────────────
+
+
+def test_gate_tier_claude_transport_uses_quota_not_dollars() -> None:
+    # Dollars wildly over cap, but the claude lane is gated on quota (allowed).
+    store = SqlStore(llm=999.0, windows={"five_hour": {"status": "allowed"}})
+    assert (
+        breaker_mod.gate_tier(
+            Tier.CLOUD_SUPER, transport="claude_agent", store=cast("Store", store)
+        )
+        is None
+    )
+
+
+def test_gate_tier_claude_transport_rejected_pauses() -> None:
+    store = SqlStore(windows={"five_hour": {"status": "rejected"}})
+    reason = breaker_mod.gate_tier(
+        Tier.CLOUD_SUPER, transport="claude_agent", store=cast("Store", store)
+    )
+    assert reason is not None
+    assert "quota" in reason
+
+
+def test_gate_tier_metered_transport_uses_dollars() -> None:
+    store = SqlStore(llm=25.0)  # over both caps
+    reason = breaker_mod.gate_tier(
+        Tier.CLOUD_SUPER, transport="openai_tools", store=cast("Store", store)
+    )
+    assert reason is not None
+    assert "cap" in reason
+
+
+def test_gate_tier_resume_override_bypasses_dollars() -> None:
+    store = SqlStore(
+        llm=25.0,
+        settings={budget_settings.RESUME_UNTIL_KEY: "2999-01-01T00:00:00+00:00"},
+    )
+    assert (
+        breaker_mod.gate_tier(
+            Tier.CLOUD_SUPER, transport="openai_tools", store=cast("Store", store)
+        )
+        is None
+    )
+
+
+def test_gate_tier_resume_override_bypasses_quota() -> None:
+    store = SqlStore(
+        windows={"five_hour": {"status": "rejected"}},
+        settings={budget_settings.RESUME_UNTIL_KEY: "2999-01-01T00:00:00+00:00"},
+    )
+    assert (
+        breaker_mod.gate_tier(
+            Tier.CLOUD_SUPER, transport="claude_agent", store=cast("Store", store)
+        )
+        is None
+    )
+
+
+def test_resume_active_expired_is_inactive() -> None:
+    store = SqlStore(
+        settings={budget_settings.RESUME_UNTIL_KEY: "2000-01-01T00:00:00+00:00"}
+    )
+    assert budget_settings.resume_active(cast("Store", store)) is False

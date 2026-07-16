@@ -43,6 +43,21 @@ def test_budget_page_renders(client: TestClient) -> None:
     # Default caps surface (env defaults: $5 / $20).
     assert "Hourly" in r.text
     assert "24h" in r.text
+    # The claude-OAuth quota lane + resume control render even with no snapshot.
+    assert "Claude subscription" in r.text
+    assert 'action="/budget/resume"' in r.text
+
+
+def test_budget_resume_redirects(client: TestClient) -> None:
+    r = client.post("/budget/resume", data={"hours": "2"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/budget"
+
+
+def test_budget_resume_clear_redirects(client: TestClient) -> None:
+    r = client.post("/budget/resume/clear", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/budget"
 
 
 def test_budget_set_redirects(client: TestClient) -> None:
@@ -73,6 +88,18 @@ def test_settings_roundtrip_pg(store: Any) -> None:
     assert budget_settings.get_float(store, budget_settings.DAILY_KEY) == 9.5
     budget_settings.clear_setting(store, budget_settings.DAILY_KEY)
     assert budget_settings.get_float(store, budget_settings.DAILY_KEY) is None
+
+
+def test_resume_override_roundtrip_pg(store: Any) -> None:
+    assert budget_settings.resume_active(store) is False
+    from datetime import UTC, datetime, timedelta
+
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    budget_settings.set_setting(store, budget_settings.RESUME_UNTIL_KEY, future)
+    assert budget_settings.resume_active(store) is True
+    assert budget_settings.get_resume_until(store) is not None
+    budget_settings.clear_setting(store, budget_settings.RESUME_UNTIL_KEY)
+    assert budget_settings.resume_active(store) is False
 
 
 def test_meter_db_override_pg(store: Any) -> None:

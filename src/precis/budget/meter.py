@@ -41,6 +41,15 @@ _STORE: Store | None = None
 DEFAULT_HOURLY_USD = 5.0
 DEFAULT_DAILY_USD = 20.0
 
+#: Transports whose ``llm_call_log.cost_usd`` is **notional**, not real money.
+#: The ``claude -p`` OAuth path reports an API-list-price-equivalent dollar
+#: figure, but that spend draws down the account's rate-limit *quota*, not a
+#: metered balance — so it is excluded from the dollar meter (which must
+#: reflect real money) and gated on the quota snapshot instead
+#: (:mod:`precis.budget.quota`). Keep in sync with the ``claude`` transports in
+#: :class:`precis.utils.llm.router.Transport`.
+OAUTH_TRANSPORTS: tuple[str, ...] = ("claude_agent", "claude_p")
+
 #: How long a computed :class:`BudgetStatus` is reused before re-querying.
 #: Bounds per-dispatch DB overhead; short enough that a trip is seen promptly.
 _CACHE_TTL_S = 15.0
@@ -104,17 +113,22 @@ class BudgetStatus:
 
 
 def spent_usd(store: Store, *, since_seconds: int) -> float:
-    """Total recorded USD spend over the trailing ``since_seconds`` window.
+    """Total recorded **real-money** USD spend over the trailing window.
 
     Union of ``llm_call_log`` (router LLMs) and ``cache_state`` (paid fetches);
-    ``ref_events`` is excluded to avoid double-counting agentic calls.
+    ``ref_events`` is excluded to avoid double-counting agentic calls, and the
+    notional :data:`OAUTH_TRANSPORTS` rows (claude subscription, priced but not
+    billed) are excluded so the dollar cap reflects money actually spent. A
+    ``NULL``-transport row is kept (unknown → counted, conservative for a
+    catastrophe rail).
     """
     interval = f"{int(since_seconds)} seconds"
     with store.pool.connection() as conn:
         llm = conn.execute(
             "SELECT COALESCE(sum(cost_usd), 0)::float FROM llm_call_log "
-            "WHERE cost_usd IS NOT NULL AND ts > now() - %s::interval",
-            (interval,),
+            "WHERE cost_usd IS NOT NULL AND ts > now() - %s::interval "
+            "AND (transport IS NULL OR transport <> ALL(%s))",
+            (interval, list(OAUTH_TRANSPORTS)),
         ).fetchone()
         fetch = conn.execute(
             "SELECT COALESCE(sum(cost_usd), 0)::float FROM cache_state "
@@ -179,6 +193,7 @@ def current_status(
 __all__ = [
     "DEFAULT_DAILY_USD",
     "DEFAULT_HOURLY_USD",
+    "OAUTH_TRANSPORTS",
     "BudgetStatus",
     "bind_store",
     "current_status",

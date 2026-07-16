@@ -37,22 +37,42 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _ALERT_SOURCE = "budget"
+_ALERT_SOURCE_QUOTA = "budget:quota"
 
 _alert_lock = threading.Lock()
 #: Last tripped window we alerted on (``'hourly'`` / ``'daily'`` / ``None``),
 #: so we only touch the alert store on a state *transition*.
 _last_window: str | None = None
+#: Same, for the claude-OAuth quota gate (the window name, or ``None``).
+_last_quota_window: str | None = None
 
 
-def gate_tier(tier: Tier, *, store: Store | None = None) -> str | None:
+def gate_tier(
+    tier: Tier,
+    *,
+    transport: str | None = None,
+    store: Store | None = None,
+) -> str | None:
     """Gate an LLM dispatch. ``None`` to allow; a reason string to refuse.
 
-    Any *paid* tier (non-``free`` band) is subject to the cap; free local
-    tiers pass untouched.
+    Free local tiers always pass. A *paid* tier is gated on the resource it
+    actually spends, keyed by ``transport``:
+
+    * the ``claude -p`` OAuth transports (:data:`meter.OAUTH_TRANSPORTS`) spend
+      *subscription quota*, not money — gated on the quota snapshot
+      (:mod:`precis.budget.quota`);
+    * every other paid transport (OpenRouter / OpenAI-compatible, paid fetches)
+      spends real dollars — gated on the rolling dollar meter.
+
+    ``transport=None`` (legacy callers, tests) falls back to the dollar gate,
+    preserving the pre-split behaviour.
     """
     if not is_paid(tier):
         return None
-    return _gate(store, label="paid model call")
+    st = store if store is not None else meter.active_store()
+    if transport in meter.OAUTH_TRANSPORTS:
+        return _gate_quota(st)
+    return _gate(st, label="paid model call")
 
 
 def gate_paid(
@@ -68,13 +88,27 @@ def gate_paid(
     return _gate(store, label="paid fetch")
 
 
+def _resume_active(store: Store | None) -> bool:
+    """True when the operator's "resume now" override is live (bypass a soft
+    trip). Best-effort \u2014 an unreadable setting reads as *not* active."""
+    from precis.budget import settings
+
+    try:
+        return settings.resume_active(store)
+    except Exception:
+        log.debug("budget breaker: resume-override read failed", exc_info=True)
+        return False
+
+
 def _gate(store: Store | None, *, label: str) -> str | None:
     st = store if store is not None else meter.active_store()
     status = meter.current_status(st)
-    _sync_alert(st, status)
-    if status is None or not status.tripped:
+    window = status.tripped_window if status is not None else None
+    if window is not None and _resume_active(st):
+        window = None  # operator override \u2014 resume paid work now
+    _sync_alert(st, window, status)
+    if window is None or status is None:
         return None
-    window = status.tripped_window
     if window == "hourly":
         spent, cap = status.hourly_spent, status.hourly_cap
     else:
@@ -86,7 +120,21 @@ def _gate(store: Store | None, *, label: str) -> str | None:
     )
 
 
-def _sync_alert(store: Store | None, status: BudgetStatus | None) -> None:
+def _gate_quota(store: Store | None) -> str | None:
+    """Gate the claude-OAuth lane on the subscription quota snapshot."""
+    from precis.budget import quota
+
+    pause = quota.evaluate(store)
+    window = pause.window if pause is not None else None
+    if window is not None and _resume_active(store):
+        window, pause = None, None  # operator override
+    _sync_quota_alert(store, window, pause)
+    return pause.reason if pause is not None else None
+
+
+def _sync_alert(
+    store: Store | None, window: str | None, status: BudgetStatus | None
+) -> None:
     """Raise / resolve the budget alert on a tripped-state transition.
 
     Best-effort: never raises. Touches the store only when the tripped window
@@ -94,7 +142,6 @@ def _sync_alert(store: Store | None, status: BudgetStatus | None) -> None:
     """
     if store is None:
         return
-    window = status.tripped_window if status is not None else None
     global _last_window
     with _alert_lock:
         if window == _last_window:
@@ -105,6 +152,56 @@ def _sync_alert(store: Store | None, status: BudgetStatus | None) -> None:
         _apply_alert(store, window, prior, status)
     except Exception:
         log.debug("budget breaker: alert sync failed", exc_info=True)
+
+
+def _sync_quota_alert(store: Store | None, window: str | None, pause: object) -> None:
+    """Raise / resolve the claude-quota alert on a transition (mirrors
+    :func:`_sync_alert`)."""
+    if store is None:
+        return
+    global _last_quota_window
+    with _alert_lock:
+        if window == _last_quota_window:
+            return
+        _last_quota_window = window
+    try:
+        _apply_quota_alert(store, window, pause)
+    except Exception:
+        log.debug("budget breaker: quota alert sync failed", exc_info=True)
+
+
+def _apply_quota_alert(store: Store, window: str | None, pause: object) -> None:
+    from precis.alerts import (
+        notify_critical_alert,
+        raise_alert,
+        resolve_stale_alerts,
+    )
+
+    if window is None:
+        resolve_stale_alerts(store, source=_ALERT_SOURCE_QUOTA, live_fingerprints=set())
+        return
+    reason = getattr(pause, "reason", "") or ""
+    fingerprint = f"quota-{window}"
+    title = f"[budget] claude subscription quota reached ({window})"
+    detail = (
+        reason
+        or f"Paid claude work is paused: the {window} rate-limit window is "
+        "exhausted. Free local work still runs; auto-clears on window reset, "
+        "or resume now on /budget."
+    )
+    _ref, is_new = raise_alert(
+        store,
+        source=_ALERT_SOURCE_QUOTA,
+        fingerprint=fingerprint,
+        title=title,
+        detail=detail,
+        severity="critical",
+    )
+    resolve_stale_alerts(
+        store, source=_ALERT_SOURCE_QUOTA, live_fingerprints={fingerprint}
+    )
+    if is_new:
+        notify_critical_alert(store, title, detail, fingerprint=fingerprint)
 
 
 def _apply_alert(
@@ -146,10 +243,11 @@ def _apply_alert(
 
 
 def _reset_alert_state() -> None:
-    """Test hook: forget the last-alerted window."""
-    global _last_window
+    """Test hook: forget the last-alerted windows."""
+    global _last_window, _last_quota_window
     with _alert_lock:
         _last_window = None
+        _last_quota_window = None
 
 
 __all__: list[str] = ["gate_paid", "gate_tier"]

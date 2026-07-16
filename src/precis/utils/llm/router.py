@@ -659,21 +659,9 @@ def dispatch(req: LlmRequest) -> LlmResult:
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
     model = req.model or resolve_model(req.tier)
-    # Global spend circuit breaker: refuse a *new paid* call once a cap is
-    # tripped (only free local tiers pass; dark when no store is bound). Folds
-    # into the normalized error result so callers degrade gracefully.
-    from precis.budget import breaker as _breaker
-
-    trip = _breaker.gate_tier(req.tier)
-    if trip is not None:
-        return LlmResult(
-            text="",
-            cost_usd=None,
-            turns_used=None,
-            model=model,
-            tier=req.tier,
-            error=trip,
-        )
+    # Resolve the transport *before* the breaker, so the gate can key on the
+    # resource actually spent: the claude-OAuth transports draw subscription
+    # quota (gated on the snapshot), everything else paid spends real dollars.
     if _failover_enabled():
         ladder = _failover_ladder(
             req.tier, tools_needed=req.tools_needed, backend=backend
@@ -685,6 +673,21 @@ def dispatch(req: LlmRequest) -> LlmResult:
             req.tier, tools_needed=req.tools_needed, backend=backend
         )
         provider = provider_for(transport)
+    # Global circuit breaker: refuse a *new paid* call once its resource is
+    # exhausted (only free local tiers pass; dark when no store is bound).
+    # Folds into the normalized error result so callers degrade gracefully.
+    from precis.budget import breaker as _breaker
+
+    trip = _breaker.gate_tier(req.tier, transport=transport.value)
+    if trip is not None:
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=trip,
+        )
     started = time.monotonic()
     result = provider.run(req, model=model)
     _record_dispatch(
