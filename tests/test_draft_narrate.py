@@ -14,7 +14,9 @@ from precis.draft.narrate import (
     resolve_lexicon,
     speakable,
     speakable_markdown,
+    split_by_script,
 )
+from precis.tts.voices import lang_for_voice
 
 
 class _RefMeta:
@@ -201,3 +203,131 @@ def test_markdown_segments_applies_lexicon_and_drops_empties():
         text, voice="af_heart", lang="en-us", lexicon={"precis": "pray-see"}
     )
     assert [s.text for s in segs] == ["pray-see", "plain"]
+
+
+# ── mixed-script narration (the "unknown Japanese character" fix) ─────
+
+
+def test_split_by_script_noop_for_pure_latin():
+    # Pure English is a single unchanged base span — byte-identical to today.
+    out = split_by_script("the cat sleeps", base_voice="af_heart", base_lang="en-us")
+    assert out == [("the cat sleeps", "af_heart", "en-us")]
+
+
+def test_split_by_script_routes_kana_to_japanese():
+    # Kana inside an English span → its own ja segment (jf_alpha); the English
+    # keeps the base voice. This is the fix: espeak-en never sees the kana.
+    out = split_by_script(
+        "the word for cat is 猫 in Japanese",
+        base_voice="af_heart",
+        base_lang="en-us",
+    )
+    # Han-only 猫 with the default cjk_lang=ja → ja.
+    assert ("猫", "jf_alpha", "ja") in out
+    assert out[0] == ("the word for cat is", "af_heart", "en-us")
+    assert all(lang in {"en-us", "ja"} for _t, _v, lang in out)
+
+
+def test_split_by_script_kana_is_japanese_even_with_chinese_default():
+    # A kana run is unambiguously Japanese regardless of the CJK-lang default.
+    out = split_by_script(
+        "say ねこ now",
+        base_voice="af_heart",
+        base_lang="en-us",
+        cjk_voice="zf_xiaoxiao",
+        cjk_lang="cmn",
+    )
+    assert ("ねこ", "jf_alpha", "ja") in out
+
+
+def test_split_by_script_han_only_follows_cjk_default():
+    # Han-only (no kana) routes to the configured default — Chinese here.
+    out = split_by_script(
+        "the character 猫 means cat",
+        base_voice="af_heart",
+        base_lang="en-us",
+        cjk_voice="zf_xiaoxiao",
+        cjk_lang="cmn",
+    )
+    assert ("猫", "zf_xiaoxiao", "cmn") in out
+
+
+def test_split_by_script_lang_only_derives_matching_voice():
+    # Regression: a chunk sets only cjk_lang='cmn' (no cjk_voice). The voice
+    # must be derived from the lang (zf_xiaoxiao), NOT the Japanese default —
+    # else Han spans get a Japanese voice tagged Chinese (garbage / synth fail).
+    out = split_by_script(
+        "the character 猫 means cat",
+        base_voice="af_heart",
+        base_lang="en-us",
+        cjk_lang="cmn",
+    )
+    assert ("猫", "zf_xiaoxiao", "cmn") in out
+    # Every CJK span's voice speaks its tagged language (the invariant).
+    for _t, v, ln in out:
+        if ln != "en-us":
+            assert lang_for_voice(v) == ln
+
+
+def test_split_by_script_voice_only_derives_matching_lang():
+    # Symmetric: only cjk_voice set → lang derived from the voice, not the
+    # Japanese default lang.
+    out = split_by_script(
+        "the character 猫 means cat",
+        base_voice="af_heart",
+        base_lang="en-us",
+        cjk_voice="zf_xiaoxiao",
+    )
+    assert ("猫", "zf_xiaoxiao", "cmn") in out
+
+
+def test_split_by_script_reconciles_mismatched_pair():
+    # An incoherent explicit pair (a Japanese voice tagged Chinese) is
+    # reconciled so voice and lang agree — lang wins, its default voice
+    # replaces the mismatch, rather than emitting a garbage pair.
+    out = split_by_script(
+        "the character 猫 means cat",
+        base_voice="af_heart",
+        base_lang="en-us",
+        cjk_voice="jf_alpha",
+        cjk_lang="cmn",
+    )
+    han = [(t, v, ln) for t, v, ln in out if ln == "cmn"]
+    assert han and all(lang_for_voice(v) == "cmn" for _t, v, _ln in han)
+
+
+def test_render_narration_lang_only_meta_derives_voice():
+    # End-to-end: a Chinese draft chunk sets only meta.cjk_lang='cmn'.
+    store = _Store([_Chunk("paragraph", "hello 世界", {"cjk_lang": "cmn"})])
+    segs = render_narration(
+        store, _Ref(), default_voice="af_heart", default_lang="en-us"
+    )
+    triples = [(s.text, s.voice, s.lang) for s in segs]
+    assert ("世界", "zf_xiaoxiao", "cmn") in triples
+
+
+def test_markdown_segments_splits_mixed_block_natively():
+    # A vocab-drill line: English prompt then the Japanese answer, one block.
+    segs = markdown_segments("cat is ねこ", voice="af_heart", lang="en-us")
+    langs = [(s.text, s.voice, s.lang) for s in segs]
+    assert ("cat is", "af_heart", "en-us") in langs
+    assert ("ねこ", "jf_alpha", "ja") in langs
+
+
+def test_render_narration_splits_mixed_chunk_and_respects_meta_cjk():
+    store = _Store(
+        [
+            _Chunk(
+                "paragraph",
+                "hello 世界",
+                {"cjk_lang": "cmn", "cjk_voice": "zf_xiaoxiao"},
+            ),
+        ]
+    )
+    segs = render_narration(
+        store, _Ref(), default_voice="af_heart", default_lang="en-us"
+    )
+    triples = [(s.text, s.voice, s.lang) for s in segs]
+    assert ("hello", "af_heart", "en-us") in triples
+    # Han-only 世界 follows the chunk's cjk meta override.
+    assert ("世界", "zf_xiaoxiao", "cmn") in triples

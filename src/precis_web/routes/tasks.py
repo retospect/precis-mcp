@@ -33,6 +33,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from precis.errors import NotFound
 from precis.utils.rake import keyword_summary
+from precis.utils.slug import slug_from_text
 from precis.utils.workspace import Workspace
 from precis_web.deps import (
     await_dispatch,
@@ -873,6 +874,30 @@ def _build_rows(store: Any, *, precis_root: Path | None = None) -> list[dict[str
     return rows
 
 
+def _workspace_for(
+    doc_type: str, title: str, *, ref_id: int | None = None
+) -> Workspace | None:
+    """Seed a workspace for a planner root based on doc type and title.
+
+    The path is ``<doc_type>/<slug>`` (with the ref_id appended when
+    available from the start route so parked roots don't collide with
+    an already-created workspace). Defaults to ``format='md'`` except
+    for papers, which seed a ``tex`` workspace.
+    """
+    if not doc_type:
+        doc_type = "draft"
+    slug = slug_from_text(title, max_len=40) or "project"
+    if ref_id is not None:
+        slug = f"{slug}-{ref_id}"
+    path = f"{doc_type}/{slug}"
+    fmt = "tex" if doc_type == "paper" else "md"
+    entrypoint = "main.tex" if fmt == "tex" else "main.md"
+    try:
+        return Workspace(path=path, format=fmt, entrypoint=entrypoint)
+    except ValueError:
+        return None
+
+
 #: Strategic roots rendered per dashboard page. The flattened tree can run
 #: to thousands of rows; rendering them all is what makes the page crawl in
 #: the browser. We paginate by *root* (a whole subtree stays together).
@@ -1078,18 +1103,40 @@ _POPUP_MAX_DEPTH = 4
 async def create_root(
     request: Request,
     text: str = Form(...),
-    level: str = Form("strategic"),
+    description: str = Form(default=""),
+    doc_type: str = Form(default="draft"),
+    start: str = Form(default=""),
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
     focus: int | None = Form(default=None),
     show_jobs: str = Form(default="active"),
 ) -> Response:
-    """Create a top-level (strategic) root."""
-    tags = [f"level:{level}"] if level else None
+    """Create a top-level planner root via the wizard.
+
+    The wizard collects intent before outputting:
+    * ``text`` is the task line (title),
+    * ``description`` becomes the todo body,
+    * ``doc_type`` is stored in ``meta.doc_type`` and seeds the workspace,
+    * ``start=on`` stamps ``LLM:opus`` and a workspace so dispatch begins
+      immediately; ``start`` unset creates a parked root with no executor.
+    """
+    meta: dict[str, Any] = {"doc_type": doc_type}
+    tags = ["level:strategic"]
+    if start == "on":
+        ws = _workspace_for(doc_type, text)
+        if ws is not None:
+            meta["workspace"] = ws.to_meta()
+        tags.append("LLM:opus")
     return await redirect_or_error(
         request,
         "put",
-        {"kind": "todo", "text": text, "tags": tags},
+        {
+            "kind": "todo",
+            "text": text,
+            "body": description or None,
+            "tags": tags,
+            "meta": meta,
+        },
         redirect=_tasks_url(
             require, exclude, focus, show_jobs if show_jobs != "active" else None
         ),
@@ -1259,18 +1306,35 @@ async def start_task(
     focus: int | None = Form(default=None),
     show_jobs: str = Form(default="active"),
 ) -> Response:
-    """Tape-player ▶ START — resume a halted subtree.
+    """Tape-player ▶ START — resume or launch a planner root.
 
-    Removes every ``halt`` / ``halt:<reason>`` marker from the todo and
-    all descendant todos, so ``dispatch`` starts minting ``plan_tick``s
-    again. Owner-sourced (the web process runs as owner), so the
-    halt-remove owner guard in ``check_halt_remove`` passes. A no-op on a
-    subtree that carries no halt marker.
+    For a parked root (one with no ``LLM:*`` tag and no workspace), seed
+    ``meta.workspace`` from ``meta.doc_type`` and stamp ``LLM:opus`` so
+    dispatch begins. Then removes every ``halt`` / ``halt:<reason>``
+    marker from the todo and all descendant todos, so ``dispatch`` starts
+    minting ``plan_tick``s again. Owner-sourced, so the halt-remove owner
+    guard passes.
     """
     store = get_store(request)
     redirect = _tasks_url(
         require, exclude, focus, show_jobs if show_jobs != "active" else None
     )
+    ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
+    if ref is not None and ref.kind == "todo":
+        meta = getattr(ref, "meta", None) or {}
+        if Workspace.from_meta(meta) is None:
+            doc_type = meta.get("doc_type", "draft")
+            ws = _workspace_for(doc_type, ref.title, ref_id=ref_id)
+            if ws is not None:
+                store.update_ref(ref_id, meta_patch={"workspace": ws.to_meta()})
+        tags = store.tags_for(ref_id)
+        if not any(str(t).startswith(("LLM:", "executor:")) for t in tags):
+            body, is_error = await await_dispatch(
+                request, "tag", {"kind": "todo", "id": ref_id, "add": ["LLM:opus"]}
+            )
+            if is_error:
+                return _stop_error(request, body, "Start failed")
+
     rows = _subtree_rows(store, ref_id)
     todo_ids = [r[0] for r in rows if r[1] == "todo"]
     for tid, halts in _halt_tags_for(store, todo_ids).items():

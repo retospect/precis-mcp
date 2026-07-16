@@ -158,6 +158,47 @@ def test_build_runtime_honors_embedder_config(fresh_db: str) -> None:
             os.environ["PRECIS_EMBEDDER"] = original_emb
 
 
+def test_build_runtime_falls_back_to_adopted_dsn_after_env_scrubbed(
+    store, monkeypatch
+) -> None:
+    """A second ``build_runtime()`` after the first scrubbed the env must not
+    come up storeless; it should reuse the DSN captured by the adopted store."""
+    import os
+
+    from precis import runtime as runtime_mod
+    from precis import secrets as secrets_mod
+    from precis.runtime import build_runtime
+
+    monkeypatch.setattr(secrets_mod, "_STORE", None)
+    monkeypatch.setattr(secrets_mod, "_ADOPTED_DSN", None)
+    monkeypatch.setenv("PRECIS_DATABASE_URL", store.dsn)
+    monkeypatch.setenv("PRECIS_EMBEDDER", "mock")
+
+    # First build adopts the store and scrubs PRECIS_DATABASE_URL.
+    rt1 = build_runtime()
+    assert rt1.store is not None
+    assert rt1.store.dsn == store.dsn
+    assert "PRECIS_DATABASE_URL" not in os.environ
+
+    # Second build: env is gone, but the adopted DSN should be recovered.
+    rt2 = build_runtime()
+    assert rt2.store is not None
+    assert rt2.store.dsn == store.dsn
+
+    rt1.store.close()
+    rt2.store.close()
+
+    # The fallback path should also be reachable via a fresh process state:
+    # when build_runtime is called with an explicit config and no database_url,
+    # it still consults the adopted DSN.
+    monkeypatch.setattr(secrets_mod, "_ADOPTED_DSN", store.dsn)
+    monkeypatch.delenv("PRECIS_DATABASE_URL", raising=False)
+    rt3 = build_runtime(runtime_mod.PrecisConfig())
+    assert rt3.store is not None
+    assert rt3.store.dsn == store.dsn
+    rt3.store.close()
+
+
 # ── boot-time store connect: ride out a transient outage, then crash ──
 #
 # Regression for the 2026-07-14 asa incident: a `precis serve` spawned

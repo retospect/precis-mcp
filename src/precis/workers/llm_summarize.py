@@ -248,10 +248,18 @@ class LlmConfig:
 
 @dataclass
 class LlmResult:
-    """A completion plus its token accounting."""
+    """A completion plus its token accounting.
+
+    ``prompt_tokens`` / ``completion_tokens`` carry the OpenAI ``usage`` split
+    so the router can price an OSS/OpenRouter call (which reports tokens, not
+    dollars) via :mod:`precis.budget.pricing`. ``None`` when the backend omits
+    the field.
+    """
 
     text: str
     total_tokens: int | None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
 class LlmClient:
@@ -289,8 +297,13 @@ class LlmClient:
             raise RuntimeError(f"summarizer returned no completion: {body!r}") from exc
         usage = body.get("usage") or {}
         total = usage.get("total_tokens")
+        prompt = usage.get("prompt_tokens")
+        completion = usage.get("completion_tokens")
         return LlmResult(
-            text=str(text), total_tokens=int(total) if total is not None else None
+            text=str(text),
+            total_tokens=int(total) if total is not None else None,
+            prompt_tokens=int(prompt) if prompt is not None else None,
+            completion_tokens=int(completion) if completion is not None else None,
         )
 
 

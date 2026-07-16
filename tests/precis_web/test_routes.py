@@ -209,14 +209,24 @@ def test_papers_needed_pager_preserves_awaiting(client) -> None:
 
 
 def test_papers_needed_shows_flag_buttons(client) -> None:
-    """Each stub row carries the three flag toggle forms, posting to the
-    kind-agnostic /flags/<kind>/<id> route."""
+    """Each stub row carries the three reading-intent flag toggle forms
+    plus the acquisition-provenance group (No UoL / No Scholar /
+    Invalid), both posting to the kind-agnostic /flags/<kind>/<id>
+    route with a group discriminator."""
     resp = client.get("/papers-needed")
     assert resp.status_code == 200
     assert 'action="/flags/paper/90"' in resp.text
+    # Reading-intent group.
     assert "Read later" in resp.text
     assert "Must-read" in resp.text
     assert "Skim" in resp.text
+    # Acquisition-provenance group + its group discriminator.
+    assert "No UoL" in resp.text
+    assert "No Scholar" in resp.text
+    assert "Invalid" in resp.text
+    assert "Book" in resp.text
+    assert '<input type="hidden" name="group" value="acquire" />' in resp.text
+    assert 'id="flags-acquire-paper-90"' in resp.text
 
 
 def test_papers_needed_active_flag_renders_pressed_and_removes(runtime, client) -> None:
@@ -260,6 +270,83 @@ def test_flag_toggle_remove_dispatches_tag(runtime, client) -> None:
         "tag",
         {"kind": "paper", "id": 90, "remove": ["must-read"]},
     ) in runtime.calls
+
+
+def test_flag_toggle_htmx_swaps_button_group_in_place(runtime, client) -> None:
+    """An htmx toggle returns just the re-rendered button group (200, no
+    redirect) so the list stays put — no scroll-to-top. The swapped
+    markup reflects the new active state."""
+    runtime.store.ref_open_values[90] = {"read-later"}
+    resp = client.post(
+        "/flags/paper/90",
+        data={"flag": "read-later", "op": "add", "return_to": "/papers-needed"},
+        headers={"HX-Request": "true"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+    # The group-scoped wrapper htmx swaps in place, and the button markup.
+    assert 'id="flags-reading-paper-90"' in resp.text
+    assert 'action="/flags/paper/90"' in resp.text
+    assert "Read later" in resp.text
+    # The active flag now posts op=remove (toggles off on the next click).
+    assert '<input type="hidden" name="op" value="remove" />' in resp.text
+    assert (
+        "tag",
+        {"kind": "paper", "id": 90, "add": ["read-later"]},
+    ) in runtime.calls
+
+
+def test_flag_toggle_acquire_group_tags_and_reswaps(runtime, client) -> None:
+    """The acquire-provenance group (No UoL / No Scholar / Invalid) tags
+    via the same route, re-rendering only the acquire wrapper so the
+    reading group is untouched."""
+    runtime.store.ref_open_values[90] = {"cant-get-uol"}
+    resp = client.post(
+        "/flags/paper/90",
+        data={
+            "flag": "cant-get-uol",
+            "op": "add",
+            "group": "acquire",
+            "return_to": "/papers-needed",
+        },
+        headers={"HX-Request": "true"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+    assert 'id="flags-acquire-paper-90"' in resp.text
+    assert "No UoL" in resp.text
+    # Only the acquire group came back — no reading-intent buttons.
+    assert "Read later" not in resp.text
+    assert (
+        "tag",
+        {"kind": "paper", "id": 90, "add": ["cant-get-uol"]},
+    ) in runtime.calls
+
+
+def test_flag_toggle_rejects_cross_group_value(runtime, client) -> None:
+    """A value from another group is a no-op redirect — flags can't cross
+    groups (e.g. read-later posted under group=acquire)."""
+    resp = client.post(
+        "/flags/paper/90",
+        data={"flag": "read-later", "op": "add", "group": "acquire"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert runtime.calls == []
+
+
+def test_flag_toggle_htmx_surfaces_handler_error(runtime, client) -> None:
+    """A rejected htmx toggle renders the handler error (400), not a
+    silent 200 swap."""
+    runtime.error_verbs.add("tag")
+    resp = client.post(
+        "/flags/paper/90",
+        data={"flag": "skim", "op": "add"},
+        headers={"HX-Request": "true"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "invalid tag" in resp.text
 
 
 def test_flag_toggle_rejects_unknown_flag(runtime, client) -> None:

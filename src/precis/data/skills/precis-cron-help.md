@@ -137,9 +137,19 @@ put(kind='cron',
 You don't need to know the wakeup mechanics. Just write a good
 payload (what you want to be reminded about) and a sensible time.
 
+## Standing automations (recurring agent behaviours)
+
+A recurring cron whose payload drives Asa to *produce* something on a
+schedule — the morning/evening podcast casts, the news briefing — is a
+**standing automation**. Tag it `automation` (plus a subtype like
+`cast-morning`) so it's discoverable via `get(kind='cron',
+id='/automations')`, separate from one-shot reminders. Editing the cron
+payload edits the behaviour. See `precis-automations`.
+
 ## See also
 
 ```python
+get(kind='skill', id='precis-automations')      # find/edit standing automations
 get(kind='skill', id='precis-overview')         # verbs and kinds
 get(kind='skill', id='precis-message-help')     # proactive sends
 get(kind='skill', id='precis-memory-help')      # sticky memory + TTL

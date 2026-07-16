@@ -22,7 +22,12 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 from starlette.responses import Response
 
-from precis_web.deps import redirect_or_error
+from precis_web.deps import (
+    await_dispatch,
+    get_store,
+    redirect_or_error,
+    templates,
+)
 
 router = APIRouter(prefix="/flags", tags=["flags"])
 
@@ -56,12 +61,59 @@ FLAG_DEFS: tuple[dict[str, str], ...] = (
     },
 )
 
-#: Fast membership set for request validation.
-_FLAG_VALUES: frozenset[str] = frozenset(d["value"] for d in FLAG_DEFS)
+#: Acquisition-attempt provenance for paper stubs we can't auto-fetch —
+#: a second flag axis surfaced on ``/papers-needed``. Same one-click
+#: ``OPEN:<value>`` tag mechanism as the reading-intent flags, but a
+#: distinct group so it doesn't leak onto every generic item list. The
+#: point is a visible record of which manual route was already tried
+#: (so you don't chase the same dead end twice) plus a "this ref is
+#: junk" marker.
+ACQUIRE_FLAG_DEFS: tuple[dict[str, str], ...] = (
+    {
+        "value": "cant-get-uol",
+        "emoji": "📕",
+        "label": "No UoL",
+        "title": "Tried the University Library — couldn't get it",
+    },
+    {
+        "value": "cant-get-scholar",
+        "emoji": "🎓",
+        "label": "No Scholar",
+        "title": "Tried Google Scholar — couldn't get it",
+    },
+    {
+        "value": "invalid-paper",
+        "emoji": "🚫",
+        "label": "Invalid",
+        "title": "Bad reference — not a real / retrievable paper",
+    },
+    {
+        "value": "is-book",
+        "emoji": "📚",
+        "label": "Book",
+        "title": "This is a book, not a paper — sink it to the back",
+    },
+)
 
-#: Ordered list of just the values — the batched
-#: :meth:`Store.ref_tag_values` probe argument for a list view.
-FLAG_VALUE_LIST: list[str] = [d["value"] for d in FLAG_DEFS]
+#: The flag groups, keyed by the ``group`` a button posts. Each group
+#: is an independent toggle set rendered by the shared partial; the
+#: route re-renders exactly the posting group after a toggle. Extend a
+#: group here and its item lists pick the new button up.
+FLAG_GROUPS: dict[str, tuple[dict[str, str], ...]] = {
+    "reading": FLAG_DEFS,
+    "acquire": ACQUIRE_FLAG_DEFS,
+}
+
+#: Fast membership set for request validation (union over all groups).
+_FLAG_VALUES: frozenset[str] = frozenset(
+    d["value"] for defs in FLAG_GROUPS.values() for d in defs
+)
+
+#: Ordered list of every flag value — the batched
+#: :meth:`Store.ref_tag_values` probe argument for a list view. A list
+#: only renders its own group's buttons, so probing the union is a
+#: harmless superset.
+FLAG_VALUE_LIST: list[str] = [d["value"] for defs in FLAG_GROUPS.values() for d in defs]
 
 
 def _safe_local_redirect(return_to: str, fallback: str) -> str:
@@ -82,25 +134,61 @@ async def toggle(
     ref_id: int,
     flag: str = Form(...),
     op: str = Form("add"),
+    group: str = Form("reading"),
     return_to: str = Form("/papers-needed"),
 ) -> Response:
-    """Add or remove one reading-intent flag on a ref, then bounce back.
+    """Add or remove one flag on a ref, then bounce back.
 
-    ``flag`` is validated against :data:`FLAG_DEFS`; ``op`` is
-    ``add`` (default) or ``remove`` — the button sends ``remove`` when
-    the flag is already active so a second click toggles it off.
-    Dispatched through the ``tag`` verb so a rejected mutation renders
-    the handler's own error instead of a silent redirect. Idempotent:
-    re-adding a present tag (or removing an absent one) is a no-op.
+    ``group`` selects the toggle set (:data:`FLAG_GROUPS` — ``reading``
+    default, or ``acquire`` for the paper-stub acquisition-provenance
+    buttons); ``flag`` is validated against *that* group so a value
+    can't cross groups. ``op`` is ``add`` (default) or ``remove`` — the
+    button sends ``remove`` when the flag is already active so a second
+    click toggles it off. Dispatched through the ``tag`` verb so a
+    rejected mutation renders the handler's own error instead of a
+    silent redirect. Idempotent: re-adding a present tag (or removing
+    an absent one) is a no-op.
+
+    htmx requests get just the re-rendered button group back (swapped
+    in place) so the list stays put — no full reload, no scroll-to-top.
+    Non-htmx (no-JS fallback) still 303-redirects back to ``return_to``.
     """
     redirect = _safe_local_redirect(return_to, "/papers-needed")
-    if flag not in _FLAG_VALUES:
+    defs = FLAG_GROUPS.get(group)
+    if defs is None or flag not in {d["value"] for d in defs}:
         return RedirectResponse(url=redirect, status_code=303)
     key = "remove" if op == "remove" else "add"
-    return await redirect_or_error(
+    args = {"kind": kind, "id": ref_id, key: [flag]}
+    if request.headers.get("HX-Request") != "true":
+        return await redirect_or_error(
+            request,
+            "tag",
+            args,
+            redirect=redirect,
+            error_title="Flag error",
+        )
+    # htmx path: dispatch, then swap the fresh button group in place.
+    _body, is_error = await await_dispatch(request, "tag", args)
+    if is_error:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"title": "Flag error", "detail": _body, "status": 400},
+            status_code=400,
+        )
+    store = get_store(request)
+    active = store.ref_tag_values([ref_id], FLAG_NAMESPACE, FLAG_VALUE_LIST).get(
+        ref_id, set()
+    )
+    return templates.TemplateResponse(
         request,
-        "tag",
-        {"kind": kind, "id": ref_id, key: [flag]},
-        redirect=redirect,
-        error_title="Flag error",
+        "_flag_buttons.html.j2",
+        {
+            "flag_defs": defs,
+            "group": group,
+            "active": active,
+            "ref_kind": kind,
+            "ref_id": ref_id,
+            "return_to": return_to,
+        },
     )

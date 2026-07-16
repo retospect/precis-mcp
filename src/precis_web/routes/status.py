@@ -13,6 +13,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -615,6 +616,98 @@ def _claude_usage(store: Any) -> dict[str, Any]:
     }
 
 
+def _tote_state(spent: float, cap: float) -> str:
+    """Bar colour for a spend-vs-cap window: green under, amber near, red over."""
+    if cap <= 0:
+        return "green"
+    if spent >= cap:
+        return "red"
+    return "amber" if spent / cap >= 0.8 else "green"
+
+
+def _budget_tote(store: Any) -> dict[str, Any]:
+    """Whole-runtime rolling spend vs the budget caps, with breakdowns.
+
+    Extends the claude-only :func:`_claude_usage` rollup to the *whole* spend
+    ledger the breaker meters — ``llm_call_log`` (router LLMs) **+**
+    ``cache_state`` (paid fetches) — over the breaker's own hourly + 24h
+    windows, shown against the live caps. Breakdowns (24h) by model and by
+    source/provider make a spike diagnosable at a glance. Read-only mirror of
+    :mod:`precis.budget.meter`; degrades to an empty dict if the tables or the
+    budget module are unavailable.
+    """
+    from precis.budget import meter
+
+    status = meter.current_status(store, use_cache=False)
+    if status is None:
+        return {}
+    with _connect(store) as conn:
+        by_model = conn.execute(
+            "SELECT COALESCE(NULLIF(model, ''), '\u2014') AS label, count(*)::int, "
+            "COALESCE(sum(cost_usd), 0)::float "
+            "FROM llm_call_log "
+            "WHERE cost_usd IS NOT NULL AND ts > now() - interval '24 hours' "
+            "GROUP BY 1 ORDER BY 3 DESC LIMIT 12"
+        ).fetchall()
+        llm_by_source = conn.execute(
+            "SELECT COALESCE(NULLIF(source, ''), '\u2014') AS label, count(*)::int, "
+            "COALESCE(sum(cost_usd), 0)::float "
+            "FROM llm_call_log "
+            "WHERE cost_usd IS NOT NULL AND ts > now() - interval '24 hours' "
+            "GROUP BY 1"
+        ).fetchall()
+        fetch_by_provider = conn.execute(
+            "SELECT COALESCE(NULLIF(provider, ''), '\u2014') AS label, count(*)::int, "
+            "COALESCE(sum(cost_usd), 0)::float "
+            "FROM cache_state "
+            "WHERE cost_usd IS NOT NULL AND cost_usd > 0 "
+            "AND fetched_at > now() - interval '24 hours' "
+            "GROUP BY 1"
+        ).fetchall()
+    # Merge LLM sources + paid-fetch providers into one "by source" ledger.
+    merged: dict[str, dict[str, float]] = {}
+    for r in list(llm_by_source) + list(fetch_by_provider):
+        acc = merged.setdefault(str(r[0]), {"calls": 0.0, "cost": 0.0})
+        acc["calls"] += int(r[1])
+        acc["cost"] += float(r[2])
+    source_items: list[tuple[str, int, float]] = [
+        (k, int(v["calls"]), float(v["cost"])) for k, v in merged.items()
+    ]
+    source_items.sort(key=lambda t: t[2], reverse=True)
+    by_source = [
+        {"label": k, "calls": calls, "cost": cost}
+        for k, calls, cost in source_items[:12]
+    ]
+    windows = [
+        {
+            "label": "Hourly",
+            "spent": status.hourly_spent,
+            "cap": status.hourly_cap,
+            "pct": min(100, round(status.hourly_spent / status.hourly_cap * 100))
+            if status.hourly_cap > 0
+            else 0,
+            "state": _tote_state(status.hourly_spent, status.hourly_cap),
+        },
+        {
+            "label": "24h",
+            "spent": status.daily_spent,
+            "cap": status.daily_cap,
+            "pct": min(100, round(status.daily_spent / status.daily_cap * 100))
+            if status.daily_cap > 0
+            else 0,
+            "state": _tote_state(status.daily_spent, status.daily_cap),
+        },
+    ]
+    return {
+        "windows": windows,
+        "tripped": status.tripped,
+        "by_model": [
+            {"label": r[0], "calls": int(r[1]), "cost": float(r[2])} for r in by_model
+        ],
+        "by_source": by_source,
+    }
+
+
 def _hosts(store: Any) -> list[dict[str, Any]]:
     """Per-host liveness from ``worker_logs``: last-seen + recent errors.
 
@@ -868,6 +961,68 @@ def _background_anomalies(store: Any) -> dict[str, list[dict[str, Any]]]:
     return {"spin_loops": spin_loops, "failed_passes": failed_passes}
 
 
+def _automations(store: Any, limit: int = 20) -> list[dict[str, Any]]:
+    """Standing automations — crons carrying the ``automation`` tag.
+
+    The recurring *agent behaviours* (the morning/evening podcast casts, the
+    news briefing) as opposed to one-shot reminders. For each, surface the
+    schedule (recurrence, next/last fire, fire_count, status) plus the most
+    recent artifact it produced (via a ``derived-into`` link), so the operator
+    can see what runs and what it made. See docs/design/automations-index.md.
+
+    Uses ``store.list_refs(tags=['automation'])`` (namespace-agnostic via
+    build_tag_filter) rather than a hand-rolled tag join. Automations are few,
+    so the per-ref tag/link reads are cheap.
+    """
+    refs = store.list_refs(kind="cron", tags=["automation"], limit=limit)
+    out: list[dict[str, Any]] = []
+    for r in refs:
+        meta = r.meta or {}
+        # Subtype = any open tag other than the marker itself.
+        subtype = ", ".join(
+            t.value
+            for t in store.tags_for(r.id)
+            if t.namespace == "open" and t.value != "automation"
+        )
+        produced: dict[str, Any] | None = None
+        with _connect(store) as conn:
+            prow = conn.execute(
+                "SELECT o.ref_id, o.kind, o.title FROM links l "
+                "JOIN refs o ON o.ref_id = l.dst_ref_id "
+                "WHERE l.src_ref_id = %s AND l.relation = 'derived-into' "
+                "  AND o.deleted_at IS NULL "
+                "ORDER BY l.created_at DESC LIMIT 1",
+                (r.id,),
+            ).fetchone()
+        if prow is not None:
+            produced = {
+                "ref_id": prow[0],
+                "kind": prow[1] or "?",
+                "title": (prow[2] or "").split("\n", 1)[0][:80] or "—",
+            }
+        last_iso = meta.get("last_fired_at")
+        last_dt = None
+        if last_iso:
+            try:
+                last_dt = datetime.fromisoformat(str(last_iso).replace("Z", "+00:00"))
+            except ValueError:
+                last_dt = None
+        out.append(
+            {
+                "ref_id": r.id,
+                "label": subtype or "(untyped)",
+                "payload": (r.title or "").split("\n", 1)[0][:80] or "—",
+                "recurring": meta.get("recurring") or "one-shot",
+                "next_fire": str(meta.get("next_fire_at") or "")[:16],
+                "last_fired": _ago(last_dt) if last_dt is not None else "never",
+                "fire_count": int(meta.get("fire_count") or 0),
+                "status": meta.get("status") or "?",
+                "produced": produced,
+            }
+        )
+    return out
+
+
 def _app_version() -> str:
     """Installed ``precis-mcp`` version, for stale-server detection."""
     from importlib.metadata import PackageNotFoundError, version
@@ -952,6 +1107,7 @@ async def index(request: Request) -> HTMLResponse:
                 "recent_todo_done": _safe(lambda: _recent_todo_done(store)) or [],
                 "recent_passes": _safe(lambda: _recent_passes(store)) or [],
                 "recent_agents": _safe(lambda: _recent_agent_activity(store)) or [],
+                "automations": _safe(lambda: _automations(store)) or [],
                 # NB ``backlog`` is intentionally absent here — it is the
                 # slowest section (full-table ``chunks`` scans) and is
                 # lazy-loaded by the template via ``GET /status/backlog``
@@ -959,6 +1115,7 @@ async def index(request: Request) -> HTMLResponse:
                 # initial page render.
                 "liveness": _safe(lambda: _liveness(store)) or [],
                 "usage": _safe(lambda: _claude_usage(store)) or {},
+                "budget": _safe(lambda: _budget_tote(store)) or {},
                 "quota": _safe(lambda: _claude_quota(store)) or {},
                 "hosts": _safe(lambda: _hosts(store)) or [],
                 "heartbeats": _safe(lambda: _heartbeats(store)) or [],

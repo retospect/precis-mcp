@@ -269,6 +269,25 @@ class PrecisConfig(BaseSettings):
     knowledge-model. Read-only derived index — can't corrupt the account. Also
     toggled by `precis anki-sync --project`. ``PRECIS_ANKI_PROJECT_ENABLED``."""
 
+    # ── Budget guardrails ──────────────────────────────────────────────
+    budget_daily_usd: float = 20.0
+    """Global 24h spend cap (USD) for the circuit breaker. Bounds router LLMs
+    (claude + OpenRouter) and paid fetches (perplexity, …) together. Over the
+    cap, new *expensive* work is refused; cheap/free/interactive still flow.
+    A placeholder — tune from observed spend on the /budget meter before
+    relying on it. ``PRECIS_BUDGET_DAILY_USD``. Read at runtime by
+    :mod:`precis.budget.meter` (which also honours a web-set override)."""
+
+    budget_hourly_usd: float = 5.0
+    """Global hourly spend cap (USD) — catches a tight loop within the day
+    before it eats the daily cap. Same trip behaviour as the daily cap.
+    ``PRECIS_BUDGET_HOURLY_USD``."""
+
+    budget_cheap_max_usd: float = 0.02
+    """Upper bound (USD) of the ``cheap`` cost band; above it a call is
+    ``expensive`` and subject to the breaker. ``PRECIS_BUDGET_CHEAP_MAX_USD``.
+    Read by :mod:`precis.budget.bands`."""
+
 
 def load_config() -> PrecisConfig:
     return PrecisConfig()

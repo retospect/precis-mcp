@@ -84,7 +84,7 @@ def test_first_call_is_a_miss(handler: _FakeCacheKindAsMath) -> None:
     resp = handler.get(q="population of Ireland")
     assert "the population of ireland answer" in resp.body
     assert "- Computed by FakeCorp." in resp.body
-    assert "[cost: ~$0.0020]" in (resp.cost or "")
+    assert "[cost: ~$0.0020 \u00b7 cheap]" in (resp.cost or "")
     assert "cached" not in (resp.cost or "")
     assert handler.fetch_calls == ["population of ireland"]
 
@@ -95,7 +95,7 @@ def test_second_call_hits_cache(handler: _FakeCacheKindAsMath) -> None:
     # Same body
     assert "the population of ireland answer" in resp2.body
     # Cached marker on cost trailer
-    assert resp2.cost == "[cost: ~$0.0020 - cached]"
+    assert resp2.cost == "[cost: ~$0.0020 \u00b7 free - cached]"
     # Upstream still only called once.
     assert handler.fetch_calls == ["population of ireland"]
 

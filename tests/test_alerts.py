@@ -230,11 +230,31 @@ def test_notify_critical_alert_queues_message_when_target_set(
     assert row[3] == "true"
 
 
+def test_notify_critical_alert_prefers_webhook_over_target(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``PRECIS_OPS_ALERT_WEBHOOK`` wins over the legacy
+    ``PRECIS_OPS_ALERT_TARGET`` variable."""
+    from precis.alerts import notify_critical_alert
+
+    monkeypatch.setenv("PRECIS_OPS_ALERT_WEBHOOK", "discord/9/9/9")
+    monkeypatch.setenv("PRECIS_OPS_ALERT_TARGET", "discord/1/2/3")
+    ok = notify_critical_alert(store, "spin", "many ticks")
+    assert ok is True
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'target' FROM refs WHERE kind='message'"
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "discord/9/9/9"
+
+
 def test_notify_critical_alert_is_dark_without_target(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No target configured → no push, no message row (default)."""
     from precis.alerts import notify_critical_alert
 
+    monkeypatch.delenv("PRECIS_OPS_ALERT_WEBHOOK", raising=False)
     monkeypatch.delenv("PRECIS_OPS_ALERT_TARGET", raising=False)
     assert notify_critical_alert(store, "x", "y") is False

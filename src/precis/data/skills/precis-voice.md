@@ -88,6 +88,41 @@ A chunk's `meta.voice` / `meta.lang` overrides the draft default — use it for 
 quoted passage in a second voice, or a foreign phrase in its own language, so the
 engine pronounces it correctly.
 
+## Japanese (and mixed-script) narration
+
+**You can just write Japanese inline.** The narrator splits every block by
+script: a run of kana/kanji is voiced natively by a Japanese voice (`jf_alpha`
+via the misaki engine), while the surrounding English keeps its own voice. You
+do **not** need per-chunk `meta.lang` for this — mixing scripts in one sentence
+("the word for cat is 猫") is enough, and pure-English text is unaffected.
+
+- **Kana (ひらがな / カタカナ) is always Japanese.** Write the reading in kana
+  and it is guaranteed to route to the Japanese voice.
+- **Kanji-only (Han) defaults to Japanese.** If you want Mandarin instead, set
+  the chunk's `meta.cjk_lang='cmn'` / `meta.cjk_voice='zf_xiaoxiao'`.
+- This is the fix for the old "unknown character" symptom — Japanese used to be
+  handed to the English engine, which had no reading for it.
+
+### Vocab drill (call-and-response)
+
+Write each turn as its own short block: the English prompt, then the Japanese
+answer on its own line. The pause between segments is the beat; repeat the turn
+two or three times as you like. Example:
+
+```
+The word for cat.
+
+ねこ。
+
+Again — the word for cat.
+
+ねこ。
+```
+
+Each line becomes its own segment; the ねこ lines are spoken by the Japanese
+voice automatically. Keep the English clean (rules 1–6) and let the script-split
+handle the language switch.
+
 ## The two standing profiles
 
 Both are `draft`s composed as a graph walk (reading-prep loop) and rendered by the

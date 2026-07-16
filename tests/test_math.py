@@ -104,7 +104,7 @@ def test_successful_query_renders_pods(
     # Per-query deep-link with the user's actual query (URL-encoded)
     assert "wolframalpha.com/input?i=population+of+ireland" in resp.body
     # Cost trailer
-    assert "[cost: ~$0.0020]" in (resp.cost or "")
+    assert "[cost: ~$0.0020 \u00b7 cheap]" in (resp.cost or "")
 
 
 def test_second_call_hits_cache(

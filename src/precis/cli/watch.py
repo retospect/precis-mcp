@@ -52,8 +52,14 @@ from watchdog.observers.polling import PollingObserver
 
 from precis.cli._common import resolve_dsn
 from precis.corpus_layout import corpus_pdf_dest
-from precis.ingest.add import IngestResult, PdfInput, PresInput, precis_add
-from precis.ingest.fetch_sidecar import clear_sidecar, read_sidecar
+from precis.ingest.add import (
+    IngestResult,
+    MarkupInput,
+    PdfInput,
+    PresInput,
+    precis_add,
+)
+from precis.ingest.fetch_sidecar import SIDECAR_SUFFIX, clear_sidecar, read_sidecar
 from precis.ingest.pres import kebab_slug
 from precis.store import Store
 
@@ -427,7 +433,7 @@ class _PdfHandler(FileSystemEventHandler):
         if event.is_directory:
             return
         path = Path(str(event.src_path))
-        if not _is_pdf(path):
+        if not _is_ingestable(path):
             return
         if _should_skip(path, self.watch_dir):
             return
@@ -441,7 +447,7 @@ class _PdfHandler(FileSystemEventHandler):
         if not dest:
             return
         path = Path(str(dest))
-        if not _is_pdf(path):
+        if not _is_ingestable(path):
             return
         if _should_skip(path, self.watch_dir):
             return
@@ -474,6 +480,27 @@ class _PdfHandler(FileSystemEventHandler):
             for p in sorted(self.watch_dir.rglob("*.pdf"), key=_size_key)
             if not _should_skip(p, self.watch_dir)
         ]
+
+        # Markup triggers left over across a restart. Enqueued *before*
+        # PDFs (below) so the markup body wins the has_body race for any
+        # co-present bundle, and always through the direct path — markup
+        # ingest is cheap (no Marker), so it doesn't need the subprocess
+        # isolation the PDF backfill uses.
+        markup_candidates = sorted(
+            (
+                p
+                for p in self.watch_dir.rglob("*")
+                if p.is_file() and _is_markup(p) and not _should_skip(p, self.watch_dir)
+            ),
+            key=_size_key,
+        )
+        if markup_candidates:
+            log.info(
+                "precis watch: backfilling %d markup trigger(s)",
+                len(markup_candidates),
+            )
+            for markup in markup_candidates:
+                self._enqueue(markup)
 
         if self.subprocess_batch_size > 0:
             k = self.subprocess_concurrency
@@ -617,8 +644,38 @@ def process_pdf(
     # a sidecar, so the hint is paper/cfp-only.
     sidecar = read_sidecar(pdf)
     fold_ref_id = sidecar.ref_id if sidecar is not None else None
-    input_: PdfInput | PresInput
-    if routing.kind == "pres":
+    input_: PdfInput | PresInput | MarkupInput
+    if _is_markup(pdf):
+        # Markup-first: chunks come from the structured source, no Marker.
+        # The companion PDF (if any) ingests independently through the PDF
+        # path and attaches as the printable via the db_writer has_body
+        # guard; reunification is by DOI or the shared sidecar fold_ref_id,
+        # so no companion-attach / same-stem interlock is needed here.
+        fmt = _infer_markup_fmt(pdf, sidecar)
+        if fmt is None:
+            log.warning(
+                "precis watch: cannot infer markup format for %s; skipping",
+                pdf.name,
+            )
+            return None
+        as_kind = (
+            routing.kind if routing.kind in ("paper", "cfp", "datasheet") else "paper"
+        )
+        log.info(
+            "precis watch: routing %s as markup (fmt=%s, as_kind=%s)",
+            pdf.name,
+            fmt,
+            as_kind,
+        )
+        input_ = MarkupInput(
+            markup_path=pdf,
+            fmt=fmt,
+            companion_pdf=None,
+            extra_tags=routing.extra_tags,
+            as_kind=as_kind,
+            fold_ref_id=fold_ref_id,
+        )
+    elif routing.kind == "pres":
         input_ = PresInput(pdf_path=pdf, extra_tags=routing.extra_tags)
     elif routing.kind == "cfp":
         input_ = PdfInput(
@@ -900,6 +957,57 @@ def _handle_failure(
 def _is_pdf(path: Path) -> bool:
     """True iff the path's suffix is ``.pdf`` (case-insensitive)."""
     return path.suffix.lower() == ".pdf"
+
+
+#: Markup trigger extensions (single-suffix) and the tarball suffixes we
+#: treat as LaTeX e-print bundles. See ``docs/design/markup-first-ingest.md``.
+_MARKUP_SUFFIXES: frozenset[str] = frozenset({".xml", ".tex", ".ltx", ".html", ".htm"})
+_MARKUP_TARBALL_SUFFIXES: tuple[str, ...] = (".tar.gz", ".tgz", ".tar")
+
+
+def _is_markup(path: Path) -> bool:
+    """True iff ``path`` is a structured-markup trigger (XML/HTML/TeX/tarball)."""
+    name = path.name.lower()
+    if name.endswith(SIDECAR_SUFFIX):
+        return False
+    if name.endswith(_MARKUP_TARBALL_SUFFIXES):
+        return True
+    return path.suffix.lower() in _MARKUP_SUFFIXES
+
+
+def _is_ingestable(path: Path) -> bool:
+    """True iff the watcher should treat ``path`` as an ingest trigger.
+
+    Recognizes PDFs and markup files; sidecars (``.precis-fetch.json``)
+    and everything else are ignored.
+    """
+    if path.name.endswith(SIDECAR_SUFFIX):
+        return False
+    return _is_pdf(path) or _is_markup(path)
+
+
+def _infer_markup_fmt(path: Path, sidecar: Any | None) -> str | None:
+    """Resolve the markup format for a trigger file.
+
+    The sidecar's ``source_format`` is authoritative (the fetcher knows
+    exactly which API served the bytes); manual drops fall back to an
+    extension heuristic. Returns ``None`` when the format can't be
+    determined (caller logs + skips).
+    """
+    from precis.ingest.markup import MARKUP_FORMATS
+
+    if sidecar is not None:
+        fmt = getattr(sidecar, "source_format", "pdf")
+        if fmt in MARKUP_FORMATS:
+            return str(fmt)
+    name = path.name.lower()
+    if name.endswith(_MARKUP_TARBALL_SUFFIXES) or name.endswith((".tex", ".ltx")):
+        return "latex"
+    if name.endswith((".html", ".htm")):
+        return "arxiv_html"
+    if name.endswith(".xml"):
+        return "jats"
+    return None
 
 
 def _should_skip(path: Path, watch_dir: Path) -> bool:

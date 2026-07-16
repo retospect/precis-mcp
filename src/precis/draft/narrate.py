@@ -30,6 +30,12 @@ from typing import Any
 # figures/tables/code/glossary that don't read aloud as prose.
 _SKIP_KINDS = frozenset({"ulist", "olist", "figure", "table", "code", "term"})
 
+# Where CJK spans route by default when a block mixes scripts (see
+# ``split_by_script``). ``ja`` / ``jf_alpha`` is the live need (the Japanese
+# reading cast); a Chinese draft overrides via ``meta.cjk_lang='cmn'``.
+_DEFAULT_CJK_VOICE = "jf_alpha"
+_DEFAULT_CJK_LANG = "ja"
+
 # Inline draft handles / citations: [pc12], [[dc4]], [§a~3]. Dropped for the ear.
 _REF = re.compile(r"\[\[[^\]]+\]\]|\[(?:[a-z]{2}\d+[a-z0-9~]*|§[^\]]+)\]")
 _DISPLAY_MATH = re.compile(r"\$\$.+?\$\$", re.DOTALL)
@@ -98,20 +104,141 @@ def speakable_markdown(text: str) -> str:
     return speakable(t)
 
 
+def _is_cjk(ch: str) -> bool:
+    """A char that a Latin/espeak voice cannot read: CJK symbols/punctuation
+    and kana (U+3000–30FF), CJK Han (main + ext-A + compat, and astral ext-B+),
+    and fullwidth/halfwidth forms (U+FF00–FFEF)."""
+    o = ord(ch)
+    return (
+        0x3000 <= o <= 0x30FF
+        or 0x3400 <= o <= 0x9FFF
+        or 0xF900 <= o <= 0xFAFF
+        or 0xFF00 <= o <= 0xFFEF
+        or 0x20000 <= o <= 0x2FA1F
+    )
+
+
+def _has_kana(s: str) -> bool:
+    """True if ``s`` contains hiragana/katakana (U+3040–30FF) — unambiguously
+    Japanese, so the run routes to ``ja`` regardless of the CJK-lang default."""
+    return any(0x3040 <= ord(c) <= 0x30FF for c in s)
+
+
+def _resolve_cjk(voice: Any, lang: Any) -> tuple[str, str]:
+    """Reconcile the per-chunk CJK ``(voice, lang)`` routing pair so the two
+    always agree — a voice must speak the language it is tagged with, else the
+    text is phonemized in one language and spoken by another (garbage / a hard
+    synth failure).
+
+    ``meta.cjk_voice`` / ``meta.cjk_lang`` are independent knobs, so a chunk may
+    set only one. Resolution (values coerced to ``str``; empty / ``None`` →
+    "unset"):
+
+    - neither → the default pair (``ja`` / ``jf_alpha``, the live Japanese cast);
+    - only ``lang`` → that language's default voice (a Chinese draft that sets
+      ``cjk_lang='cmn'`` alone now gets ``zf_xiaoxiao``, not the Japanese
+      default — the bug this fixes);
+    - only ``voice`` → the language that voice speaks;
+    - both, but disagreeing → ``lang`` wins (the explicit routing intent) and its
+      default voice replaces the mismatched one.
+
+    An unknown voice / lang falls back to the default rather than raising — a
+    typo must not fail a whole cast mid-render (the draft handler validates
+    ``voice``/``lang`` on write; this is the render-time backstop).
+    """
+    from precis.tts import voices as _voices
+
+    v = str(voice) if voice else None
+    ln = str(lang) if lang else None
+    if v is None and ln is None:
+        return _DEFAULT_CJK_VOICE, _DEFAULT_CJK_LANG
+    if v is None:
+        assert ln is not None  # narrowed by the guard above
+        return (_voices.default_voice_for_lang(ln) or _DEFAULT_CJK_VOICE), ln
+    if ln is None:
+        return v, (_voices.lang_for_voice(v) or _DEFAULT_CJK_LANG)
+    if _voices.lang_for_voice(v) == ln:
+        return v, ln
+    return (_voices.default_voice_for_lang(ln) or _DEFAULT_CJK_VOICE), ln
+
+
+def split_by_script(
+    text: str,
+    *,
+    base_voice: str,
+    base_lang: str,
+    cjk_voice: str | None = None,
+    cjk_lang: str | None = None,
+) -> list[tuple[str, str, str]]:
+    """Split ``text`` into ``(text, voice, lang)`` spans on CJK boundaries.
+
+    The fix for the "unknown Japanese character" symptom: a Latin (espeak) voice
+    has no reading for kana/kanji, so a Japanese run inside an English block must
+    be handed to a Japanese voice/engine instead. A contiguous CJK run becomes a
+    ``(cjk_voice, cjk_lang)`` span (kana ⇒ ``ja`` unambiguously; Han-only ⇒ the
+    ``cjk_lang`` default); everything else keeps ``(base_voice, base_lang)``.
+    Adjacent same-``(voice, lang)`` spans coalesce.
+
+    Pure single-script text (the overwhelmingly common case — every English
+    briefing / meditation) returns a single unchanged base span, so this is a
+    no-op there and the existing segment output is byte-identical.
+
+    ``cjk_voice`` / ``cjk_lang`` are reconciled through :func:`_resolve_cjk`, so
+    a caller may pass only one (e.g. ``cjk_lang='cmn'``) and get a coherent
+    voice↔lang pair rather than the Japanese default voice mislabelled Chinese.
+    """
+    cjk_voice, cjk_lang = _resolve_cjk(cjk_voice, cjk_lang)
+    if not any(_is_cjk(c) for c in text):
+        return [(text, base_voice, base_lang)]
+
+    runs: list[tuple[bool, list[str]]] = []
+    for ch in text:
+        flag = _is_cjk(ch)
+        if runs and runs[-1][0] == flag:
+            runs[-1][1].append(ch)
+        else:
+            runs.append((flag, [ch]))
+
+    ja_voice = cjk_voice if cjk_lang == "ja" else _DEFAULT_CJK_VOICE
+    spans: list[tuple[str, str, str]] = []
+    for is_cjk, chars in runs:
+        s = "".join(chars).strip()
+        if not s:
+            continue
+        if not is_cjk:
+            spans.append((s, base_voice, base_lang))
+        elif _has_kana(s):
+            spans.append((s, ja_voice, "ja"))
+        else:
+            spans.append((s, cjk_voice, cjk_lang))
+
+    merged: list[tuple[str, str, str]] = []
+    for s, v, ln in spans:
+        if merged and merged[-1][1] == v and merged[-1][2] == ln:
+            merged[-1] = (f"{merged[-1][0]} {s}", v, ln)
+        else:
+            merged.append((s, v, ln))
+    return merged
+
+
 def markdown_segments(
     text: str,
     *,
     voice: str,
     lang: str,
     lexicon: dict[str, str] | None = None,
+    cjk_voice: str | None = None,
+    cjk_lang: str | None = None,
 ) -> list[NarrationSegment]:
     """Split markdown prose into speakable narration segments — one per block.
 
     Blocks split on blank lines; a block whose first line is a heading (``#``)
     becomes a ``heading`` segment (longer leading pause), the rest ``para``.
     Markup is stripped via :func:`speakable_markdown` and the lexicon applied;
-    empty blocks drop out. Single-voice (no per-chunk meta, unlike a draft) —
-    the news-briefing producer renders through this."""
+    empty blocks drop out. Single-voice base (no per-chunk meta, unlike a
+    draft), but a block mixing scripts is split by :func:`split_by_script` so a
+    Japanese span inside an English cast is voiced natively — the news-briefing
+    producer and the Japanese reading cast both render through this."""
     segments: list[NarrationSegment] = []
     for raw in re.split(r"\n\s*\n", text.strip()):
         block = raw.strip()
@@ -119,9 +246,19 @@ def markdown_segments(
             continue
         kind = "heading" if block.lstrip().startswith("#") else "para"
         spoken = apply_lexicon(speakable_markdown(block), lexicon)
-        if spoken:
+        if not spoken:
+            continue
+        for seg_text, seg_voice, seg_lang in split_by_script(
+            spoken,
+            base_voice=voice,
+            base_lang=lang,
+            cjk_voice=cjk_voice,
+            cjk_lang=cjk_lang,
+        ):
             segments.append(
-                NarrationSegment(text=spoken, voice=voice, lang=lang, kind=kind)
+                NarrationSegment(
+                    text=seg_text, voice=seg_voice, lang=seg_lang, kind=kind
+                )
             )
     return segments
 
@@ -199,12 +336,19 @@ def render_narration(
         if not spoken:
             continue
         meta = c.meta or {}
-        segments.append(
-            NarrationSegment(
-                text=spoken,
-                voice=str(meta.get("voice") or default_voice),
-                lang=str(meta.get("lang") or default_lang),
-                kind=c.chunk_kind,
+        for seg_text, seg_voice, seg_lang in split_by_script(
+            spoken,
+            base_voice=str(meta.get("voice") or default_voice),
+            base_lang=str(meta.get("lang") or default_lang),
+            cjk_voice=meta.get("cjk_voice"),
+            cjk_lang=meta.get("cjk_lang"),
+        ):
+            segments.append(
+                NarrationSegment(
+                    text=seg_text,
+                    voice=seg_voice,
+                    lang=seg_lang,
+                    kind=c.chunk_kind,
+                )
             )
-        )
     return segments

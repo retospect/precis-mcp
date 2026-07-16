@@ -244,6 +244,48 @@ Design-of-record: `docs/design/chem-tools-integration.md`. Backlog:
 
 ---
 
+## 💰 Budget guardrails — global spend circuit breaker (2026-07-15)
+
+Design-of-record: [`docs/design/budget-guardrails.md`](docs/design/budget-guardrails.md).
+precis has solid per-*call* caps (`claude_p` $0.10, `claude_agent` $2.00,
+`plan_tick` $5.00) and a full cost ledger (`llm_call_log`, `ref_events.cost_usd`,
+`cache_state.cost_usd`) but **no aggregate ceiling** — a tight loop of cheap
+calls or many workers at once is an unguarded runaway-budget risk. Ship
+lightweight, loose guide rails + a hard backstop, never blocking interactive
+work. Status:
+
+- **Piece A — cost-band affordance** — `open` / `feature` / owner
+  `src/precis/budget/` + `utils/llm/router.py` + `_cache_base.py`. Uniform
+  `free · cheap · expensive` (+ `fast · slow`) words surfaced to the model
+  (decision: `expensive`, not `steep`), paired with a permissive "escalate
+  freely when needful" policy line. No enforcement — pure sense.
+- **Real-cost capture** — `open` / `feature` / owner `utils/llm/router.py`
+  (`result_from_openai`) + `workers/llm_summarize.py` + `handlers/perplexity.py`.
+  The tote must sum the provider's *actual* returned cost, not estimates.
+  Claude already reports true `total_cost_usd`; the OSS/local + OpenRouter path
+  drops `usage` (needs a tokens→$ price table or OpenRouter's `cost` field);
+  perplexity uses a flat ClassVar (needs the response `usage`/`cost`). The
+  per-call `$0.10/$2.00/$5.00` caps are *ceilings*, never the tote's input.
+- **Piece B — global circuit breaker (hourly + daily)** — `open` / `feature` /
+  owner `src/precis/budget/breaker.py` + `router.dispatch` + cache `_fetch` +
+  `/budget` web page. Two web-editable numbers, `PRECIS_BUDGET_HOURLY_USD` +
+  `PRECIS_BUDGET_DAILY_USD`, bounding router LLMs (claude + OpenRouter) **and**
+  paid fetch kinds (perplexity, …) together. On trip: refuse new *expensive*
+  work (graceful `LlmResult.error`), auto-clear as the rolling window ages off,
+  emit an `alert` routed to **Discord** via the existing alert→news channel;
+  cheap/free/interactive always flow. Rolling tote + by-model + by-source
+  breakdowns shown on the status page.
+- **Piece C — quest attribution (later)** — `deferred` / `feature`. Just let
+  `LlmRequest.source` carry a quest id so per-quest spend *views* are a query
+  over the same ledger when the quest layer lands. A global breaker needs zero
+  attribution math — sidesteps the quest-overlap double-count (quest-layer
+  open question #1).
+- **Open decisions remaining** (see design doc): ledger union without
+  double-count (`llm_call_log` vs `ref_events`); per-model price-table source +
+  upkeep; cheap-band threshold; real cap defaults (tune from observed spend).
+
+---
+
 ## 🩹 Residuals — asa storeless-precis incident (2026-07-14)
 
 The 2026-07-14 investigation ("asa can't file gripes") root-caused a
@@ -257,14 +299,11 @@ monorepo** as a sibling package (`src/asa_bot`, `[asa]` extra, `asa-bot`
 entry point — `12cc38d0` + `f7de0f14`; cutover deployed, asa runs
 `precis-mcp[asa]` self-contained on its own venv). Status:
 
-- **`build_runtime` is storeless-after-scrub by construction** — `open` /
-  `polish` / owner `runtime.py` + `secrets.py`. `adopt_process_store` deletes
-  `PRECIS_DATABASE_URL` from `os.environ`, so *any* in-process
-  `build_runtime()` after boot comes up storeless. We fixed the one caller
-  (`tools/core` in serve) by sharing the runtime, but the trap remains for
-  future callers. Harden: have `build_runtime` fall back to the adopted
-  process store's DSN when the env var is gone, or defer the scrub until
-  after all in-process builds. Finder: Opus session.
+- **`build_runtime` is storeless-after-scrub by construction** — `done` /
+  `polish` / owner `runtime.py` + `secrets.py`. `build_runtime()` now falls
+  back to the adopted process store's DSN when `PRECIS_DATABASE_URL` is
+  scrubbed from `os.environ` (`secrets.get_adopted_dsn()`). Test:
+  `test_build_runtime_falls_back_to_adopted_dsn_after_env_scrubbed`.
 - **conv capture silently stopped 2026-06-27** — `open` / investigate /
   owner `asa-bot capture_shim` + `precis handlers/conv`. No `kind='conv'`
   rows in prod since 2026-06-27 despite `POST /capture` returning 200 and
@@ -490,9 +529,13 @@ worker venvs). Remaining follow-ups:
 
 ## 🟠 Planner "new writing task" wizard — don't auto-dispatch on create (2026-07-07)
 
-- **Status**: `open` — **Severity**: `feature` — **Owner**:
-  `precis_web/routes/tasks.py` (create-root form) + `handlers/todo.py`
-  (`TodoHandler.put` LLM-tag auto-stamp, lines ~525–549).
+- **Status**: `done` — **Severity**: `feature` — **Owner**:
+  `precis_web/routes/tasks.py` (create-root form + start route) + `dashboard.html.j2`.
+  **Done**: The new-root form is now a wizard with description, doc-type select, and
+  a "Start now" checkbox. `start` unset creates a parked `level:strategic` root with
+  no `LLM:`/executor tag; `start=on` stamps `LLM:opus` and seeds `meta.workspace`.
+  The `▶ start` button seeds workspace + `LLM:opus` for parked roots.
+  **Test**: `tests/precis_web/test_tasks.py`.
 - **Why**: today a strategic root is born with `LLM:opus` +
   `level:strategic` already attached, so `dispatch` mints a `plan_tick`
   the instant it exists and the planner fans the whole doc into
@@ -1596,10 +1639,10 @@ doesn't ship without a queue policy.**
 **F. Small concrete items found in the dig:**
 - **CORE leg bug** — the 53423 log shows `fetcher:core` tried to download the URL
   `"587670336"` (a bare CORE work-id where a `downloadUrl` was expected) →
-  "refusing non-http(s) URL". `_query_core_pdf_urls` passes the field through
-  unvalidated. Fix: validate it's an http(s) URL, and/or switch CORE to its
-  `fullText` field (bulk-arm-relevant anyway). Owner: `workers/fetch_oa.py`.
-  **STILL OPEN.**
+  "refusing non-http(s) URL". `_query_core_pdf_urls` now validates both
+  `downloadUrl` and `fullText` are http(s) URLs before adding them to the
+  candidate list. Owner: `workers/fetch_oa.py`.
+  **DONE.** Test: `TestQueryCorePdfUrls::test_filters_invalid_urls_and_uses_full_text`.
 
 **G. OpenAlex free-metadata enrichment — WANTED (Reto: "we want that meta").**
 The OpenAlex *work* object is free + keyless (`api.openalex.org/works/doi:<doi>`,
@@ -1780,3 +1823,48 @@ don't become unlistenable. Finder: Opus session (2026-07-14).
 > stitch helper and `narrate.markdown_segments` prose path. The **first automatic
 > producer** on the audio pipe. See `docs/design/audio-feed.md`. Only the
 > LaTeX→speech upgrade above remains open in this area.
+
+
+## 🟠 Architecture review / compaction / footguns (2026-07-15)
+
+**Status**: open · **Severity**: refactor · **Owner**: multiple (see per-item)
+
+Architecture review covering ADR/documentation sprawl, code-structure overload, and operational footguns. This is a cross-cutting backlog; it is intentionally not a single PR. Security was excluded from this review.
+
+### P0 — stop the next incident
+
+- **Harden `build_runtime` against storeless double-build** (`runtime.py`, `secrets.py`). `adopt_process_store` scrubs `PRECIS_DATABASE_URL` from `os.environ`; any later in-process `build_runtime()` falls back to the adopted store’s DSN via `secrets.get_adopted_dsn()`. Reference: residual above (`## 🩹 Residuals`). **DONE.** Test: `test_build_runtime_falls_back_to_adopted_dsn_after_env_scrubbed`.
+- **Schema reconcile must preserve PostgreSQL ACLs** (`scripts/reconcile`, `store/migrate.py`). `migra`-generated diffs do not emit `GRANT`s; new tables end up owned by `deploy` with no `agent_rw`/`agent_ro` grants. Add an ACL diff/re-grant step before marking reconcile done.
+- **Worker + watch restarts are a pair** (`docs/` runbooks, `com.precis.worker`/`com.precis.watch` plists). Restarting only `watch` leaves `worker` stopped and the derived queue backlog grows. **Done**: `scripts/restart-worker-and-watch` restarts both in order with a single command; documented in `docs/runbooks/restart-worker-and-watch.md`.
+- **Set `PRECIS_OPS_ALERT_WEBHOOK` on system-profile workers** (`workers/`, cluster ansible). `notify_critical_alert` now reads `PRECIS_OPS_ALERT_WEBHOOK` and falls back to `PRECIS_OPS_ALERT_TARGET`. **Done** in code; set `PRECIS_OPS_ALERT_WEBHOOK` in the cluster ansible env to page worker-restart/dead-worker alerts.
+
+### P1 — compaction and modularization
+
+- **Compact ADRs with a “Rest in Git” archive** (`docs/decisions/`, `docs/design/`). **Convention established**: `ADR-0058` (`docs/decisions/0058-decision-log-archive-convention.md`) + the `docs/decisions/archive/` scaffold + index wiring define the move-not-delete recipe (filename kept, one-line archive banner as the only sealed-body edit, every referrer updated in the same change; archivable only when a live successor already names the predecessor). **Numbering/grouping corrections found while scoping**: the ADR log only reaches `0058`, not `0064` (the migration numbers, which reach 0065, were conflated) — condensed head ADRs take the next free ADR number; and `0019-second-greenfield` belongs to the migration-baseline chain (superseded by `0031`), **not** the image/embedder chain. **Remaining** (each its own reviewed change, so referrer updates stay auditable): supersede each major chain with one condensed live ADR and move predecessors to `archive/`. Candidate chains: identifier (`0002/0006/0008` → head `0036`), derived queue/job (`0007/0017` → `0044`), image/embedder split (`0004/0009/0012/0019` → heads `0020/0021`), figure/asset model (`0034/0035` → `0057`), keystone kinds (`0041/0042/0043` → `0053/0056`), argument/turn-taking (`0051` ↔ `0054`). Split design-heavy ADR bodies into `docs/design/` where warranted.
+- **Split `runtime.py` into per-concern modules** (`runtime/dispatch.py`, `runtime/search.py`, `runtime/angle.py`, `runtime/hints.py`, `runtime/error.py`). `runtime.py` is 2397 lines; `_dispatch_cross_kind` is 233 lines.
+- **Refactor `paper.py search()` into search strategies** (`handlers/paper.py`). `search()` is 600 lines; extract `BylineSearch`, `FusedBlockSearch`, `GoodSearchCampaign`, and `PaperSearchResultRenderer`.
+- **Extract `EditableFileHandler` from `draft/plaintext/python/markdown/tex` handlers**. The 160+ line `_put_anchored` methods are duplicated and diverging.
+- **Split `store/_blocks_ops.py` and `_draft_ops.py` by concern** (`store/`). Split into SQL builders, search rankers/fusion, and card writers; `_draft_ops.py` alone has 72 functions.
+- **Split `precis_web/routes/drafts.py` into per-concern route modules** (`precis_web/routes/drafts_*.py`). 3078 lines in one route file.
+
+### P2 — quality and discoverability
+
+- **Centralize `PRECIS_` env vars** (`precis/config.py`, `precis/kind_gate.py`). 381 unique `PRECIS_` strings appear in `src/precis`, but `PrecisConfig` only declares 19. Replace ad-hoc `os.environ.get` calls in handlers with `requires_env`/`requires_secret` declarations; change `PrecisConfig.extra` to `forbid` once all envs are registered.
+- **Replace closure-name worker pass priority with an explicit enum** (`cli/worker.py`). `_REF_PASS_PRIORITY` keyed by `*_pass` `__name__` is brittle; a rename silently changes scheduling band. **Done**: bands are now a `PassBand(IntEnum)` (JOB/PLANNER/HEALTH/DEFAULT/BACKGROUND) and an AST-based guard (`test_ref_pass_priority_keys_match_registered_passes`) fails if any table key no longer matches a live `ref_passes.append(_<name>_pass)` site, so a rename can no longer silently re-band a pass.
+- **Tighten broad `except Exception` catches** (`workers/fetch_oa.py`, `runtime.py`, `server.py`, worker loops). 317 broad catches across 141 files; many hide spin loops.
+- **Enforce chunk append-only discipline at runtime** (`store/`, triggers or `ChunkOps`). The rule is convention-only; an in-place `UPDATE chunks.text` leaves embeddings/summaries stale. **Done**: migration `0065` adds a `BEFORE UPDATE` trigger (`chunks_forbid_body_text_update`) that rejects a text-changing UPDATE on a body row (`ord >= 0 AND content_sha IS NULL`), while leaving the two sanctioned in-place paths alone — draft-family chunks (non-NULL `content_sha`, sha-diff cascade) and cards (`ord < 0`, `rewrite_cards` drops their embeddings). DELETE+INSERT stays the way to replace body text. See `docs/design/chunk-append-only-trigger.md`; test `tests/test_chunk_append_only.py`.
+- **Add headless-browser tests for the draft editor** (`tests/`). The inline editor and virtual scroller are not covered by automated tests.
+
+### P3 — type/platform/debt
+
+- **Burn down the five disabled mypy categories one by one** (`pyproject.toml`). ~184 issues across `union-attr`, `index`, `assignment`, `type-var`, `operator`.
+- **Fix Windows `O_DIRECTORY` and Python 3.12 urllib circular import failures** (`tests/`). These legs are currently `continue-on-error` in CI.
+- **Recheck `transformers>=5.3.0` / `marker-pdf` pin** (`pyproject.toml`). Dependabot #44 is snoozed; recheck on the scheduled date.
+- **Re-evaluate `ruff` ignores `RUF012` and `B905`** (`pyproject.toml`). `RUF012` (mutable class defaults) and `B905` (zip without `strict=`) can hide real bugs.
+
+### Related existing items
+
+- `## 🩹 Residuals — asa storeless-precis incident` (build_runtime storeless trap).
+- `## 🟠 Worker liveness + observability` (worker/watch restart / observability).
+- `## 🔵 Platform-specific test bugs` (Windows / macOS 3.12 test failures).
+- `## 🟠 LLM-confusion bugs mined from prod plan_tick transcripts` (plan_tick spin/optimization).

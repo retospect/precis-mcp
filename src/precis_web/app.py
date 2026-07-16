@@ -85,6 +85,7 @@ def create_app(
         agentlogs,
         alerts,
         asks,
+        budget,
         cad,
         cfp,
         clusters,
@@ -138,6 +139,7 @@ def create_app(
     app.include_router(preview.router)
     app.include_router(console.router)
     app.include_router(status.router)
+    app.include_router(budget.router)
     app.include_router(env.router)
     app.include_router(secrets.router)
 

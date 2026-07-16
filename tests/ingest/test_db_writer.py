@@ -21,6 +21,7 @@ from precis.ingest.db_writer import (
     PaperToWrite,
     _next_cite_key,
     probe_existing,
+    register_aliases_and_maybe_upgrade,
     resolve_cite_key,
     write_paper,
 )
@@ -356,6 +357,123 @@ def _seed_ref(store, *, identifiers: dict[str, str]) -> int:
             )
         conn.commit()
         return ref_id
+
+
+def _body_chunks() -> list[ChunkToWrite]:
+    """A card + two body chunks, as the markup producer emits."""
+    return [
+        ChunkToWrite(ord=-1, chunk_kind="card_combined", text="Title\nAuthor (2024)"),
+        ChunkToWrite(ord=0, chunk_kind="paragraph", text="First body paragraph."),
+        ChunkToWrite(ord=1, chunk_kind="paragraph", text="Second body paragraph."),
+    ]
+
+
+class TestAttachOnlyGuard:
+    """register_aliases_and_maybe_upgrade — markup-first attach-only path."""
+
+    def test_pdf_attaches_to_markup_ref_without_duplicating_chunks(self, store):
+        # A markup ingest: body chunks present, pdf_sha256 NULL.
+        markup = PaperToWrite(
+            title="Markup Paper",
+            authors=[{"name": "A, B"}],
+            year=2024,
+            paper_id="mk111111",
+            cite_key_prefix="markup24",
+            doi="10.9/markup",
+            provider="markup",
+            content_hash="e" * 64,
+            chunks=_body_chunks(),
+        )
+        with store.pool.connection() as conn:
+            res = write_paper(markup, conn=conn)
+            conn.commit()
+        ref_id = res.ref_id
+
+        # Later: the companion PDF arrives for the same paper.
+        sha = "f" * 64
+        pdf = PaperToWrite(
+            title="Markup Paper",
+            authors=[{"name": "A, B"}],
+            year=2024,
+            paper_id="mk111111",
+            cite_key_prefix="markup24",
+            doi="10.9/markup",
+            provider="s2",
+            pdf_sha256=sha,
+            content_hash="99" * 32,
+            pdf_storage_path="/corpus/m/markup24.pdf",
+            pdf_page_count=8,
+            pdf_size_bytes=222,
+            pdf_pages_first=1,
+            pdf_pages_last=8,
+            pdf_role="main",
+            # Marker would hand in its own chunks — these must NOT be written.
+            chunks=_body_chunks()
+            + [ChunkToWrite(ord=2, chunk_kind="paragraph", text="X")],
+        )
+        with store.pool.connection() as conn:
+            written = register_aliases_and_maybe_upgrade(ref_id, pdf, conn=conn)
+            conn.commit()
+
+        # Attach-only: no chunks written, pdf promoted.
+        assert written == 0
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT pdf_sha256 FROM refs WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+            body = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id = %s AND ord >= 0",
+                (ref_id,),
+            ).fetchone()
+        assert row is not None and row[0] == sha  # printable attached
+        assert body is not None and body[0] == 2  # original body, no dup
+
+    def test_markup_body_populates_metadata_only_stub(self, store):
+        # A metadata-only stub (no body chunks, pdf_sha256 NULL).
+        stub = PaperToWrite(
+            title="Stub",
+            authors=[{"name": "C, D"}],
+            year=2024,
+            paper_id="st222222",
+            cite_key_prefix="stub24",
+            doi="10.9/stub",
+            provider="crossref",
+            chunks=[
+                ChunkToWrite(ord=-1, chunk_kind="card_combined", text="Stub\nC, D"),
+            ],
+        )
+        with store.pool.connection() as conn:
+            res = write_paper(stub, conn=conn)
+            conn.commit()
+        ref_id = res.ref_id
+
+        # Markup arrives chunks-only (no PDF): body chunks should be written.
+        markup = PaperToWrite(
+            title="Stub",
+            authors=[{"name": "C, D"}],
+            year=2024,
+            paper_id="st222222",
+            cite_key_prefix="stub24",
+            doi="10.9/stub",
+            provider="markup",
+            content_hash="ab" * 32,
+            chunks=_body_chunks(),
+        )
+        with store.pool.connection() as conn:
+            written = register_aliases_and_maybe_upgrade(ref_id, markup, conn=conn)
+            conn.commit()
+
+        assert written == len(_body_chunks())
+        with store.pool.connection() as conn:
+            body = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id = %s AND ord >= 0",
+                (ref_id,),
+            ).fetchone()
+            pdf_sha = conn.execute(
+                "SELECT pdf_sha256 FROM refs WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+        assert body is not None and body[0] == 2  # two body chunks landed
+        assert pdf_sha is not None and pdf_sha[0] is None  # still chunks-only
 
 
 def _make_paper(

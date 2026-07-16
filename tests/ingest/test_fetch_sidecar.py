@@ -81,3 +81,57 @@ def test_clear_is_idempotent(tmp_path: Path) -> None:
     clear_sidecar(pdf)
     assert not sidecar_path(pdf).exists()
     clear_sidecar(pdf)  # no-op, no raise
+
+
+def test_source_format_defaults_to_pdf(tmp_path: Path) -> None:
+    # A PDF-only fetch: source_format defaults to 'pdf', no companion.
+    pdf = tmp_path / "p.pdf"
+    write_sidecar(pdf, ref_id=1, identifiers={"doi": "10.1/p"}, source="fetcher:arxiv")
+    got = read_sidecar(pdf)
+    assert got is not None
+    assert got.source_format == "pdf"
+    assert got.companion_pdf is None
+
+
+def test_markup_source_format_and_companion_roundtrip(tmp_path: Path) -> None:
+    markup = tmp_path / "foo.xml"
+    write_sidecar(
+        markup,
+        ref_id=42,
+        identifiers={"doi": "10.1/foo"},
+        source="fetcher:europepmc_jats",
+        source_format="jats",
+        companion_pdf="foo.pdf",
+    )
+    got = read_sidecar(markup)
+    assert got is not None
+    assert got.source_format == "jats"
+    assert got.companion_pdf == "foo.pdf"
+
+
+def test_unknown_source_format_falls_back_to_pdf(tmp_path: Path) -> None:
+    markup = tmp_path / "q.xml"
+    write_sidecar(
+        markup,
+        ref_id=2,
+        identifiers={"doi": "10.1/q"},
+        source="fetcher:x",
+        source_format="not-a-format",
+    )
+    got = read_sidecar(markup)
+    assert got is not None
+    assert got.source_format == "pdf"
+
+
+def test_legacy_sidecar_without_format_decodes_as_pdf(tmp_path: Path) -> None:
+    # A sidecar written before the markup-first work has neither key.
+    pdf = tmp_path / "legacy.pdf"
+    sidecar_path(pdf).write_text(
+        '{"ref_id": 5, "identifiers": {"doi": "10.1/l"}, "source": "fetcher:s2"}',
+        encoding="utf-8",
+    )
+    got = read_sidecar(pdf)
+    assert got is not None
+    assert got.ref_id == 5
+    assert got.source_format == "pdf"
+    assert got.companion_pdf is None

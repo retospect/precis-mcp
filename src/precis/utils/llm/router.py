@@ -324,12 +324,23 @@ def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmRe
 def result_from_openai(res: _HasText, *, model: str, tier: Tier) -> LlmResult:
     """Normalize a litellm ``LlmClient.complete`` result (OpenAI choices).
 
-    The loopback proxy reports token counts, not a dollar cost, so
-    ``cost_usd`` is ``None``.
+    The OpenAI wire reports *tokens*, not dollars, so we price them via the
+    per-model table in :mod:`precis.budget.pricing` (``cost_usd=None`` for a
+    local / unknown model, which the cost bands read as free). This makes the
+    OSS / OpenRouter spend show up in the tote instead of vanishing. Token
+    counts are read leniently (``getattr``) so a bare ``.text`` fake still
+    normalizes.
     """
+    from precis.budget.pricing import cost_from_tokens
+
+    cost = cost_from_tokens(
+        model,
+        prompt_tokens=getattr(res, "prompt_tokens", None),
+        completion_tokens=getattr(res, "completion_tokens", None),
+    )
     return LlmResult(
         text=res.text,
-        cost_usd=None,
+        cost_usd=cost,
         turns_used=None,
         model=model,
         tier=tier,
@@ -635,6 +646,21 @@ def dispatch(req: LlmRequest) -> LlmResult:
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
     model = req.model or resolve_model(req.tier)
+    # Global spend circuit breaker: refuse a *new expensive* call once a cap
+    # is tripped (cheap/free tiers pass; dark when no store is bound). Folds
+    # into the normalized error result so callers degrade gracefully.
+    from precis.budget import breaker as _breaker
+
+    trip = _breaker.gate_tier(req.tier)
+    if trip is not None:
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=trip,
+        )
     if _failover_enabled():
         ladder = _failover_ladder(
             req.tier, tools_needed=req.tools_needed, backend=backend

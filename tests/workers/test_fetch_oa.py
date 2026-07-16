@@ -779,6 +779,69 @@ class TestTryCore:
         assert out.event == "api_error"
 
 
+class TestQueryCorePdfUrls:
+    """Unit tests for :func:`_query_core_pdf_urls` validation and field choice."""
+
+    def test_filters_invalid_urls_and_uses_full_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.workers.fetch_oa import _query_core_pdf_urls
+
+        class FakeResp:
+            status_code = 200
+
+            def raise_for_status(self) -> None:
+                pass
+
+            def json(self) -> dict[str, Any]:
+                return {
+                    "results": [
+                        {
+                            "doi": "10.1234/example",
+                            "downloadUrl": "https://repo.example/paper.pdf",
+                            "fullText": "https://repo.example/paper.txt",
+                        },
+                        {
+                            "doi": "10.1234/Example",
+                            "downloadUrl": "587670336",
+                            "fullText": "not a url",
+                        },
+                        {
+                            "doi": "10.1234/example",
+                            "downloadUrl": "ftp://bad.example/paper.pdf",
+                            "fullText": "https://repo.example/fulltext.pdf",
+                        },
+                        {
+                            "doi": "10.1234/other",
+                            "downloadUrl": "https://repo.example/other.pdf",
+                            "fullText": None,
+                        },
+                    ]
+                }
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get(self, *args, **kwargs):
+                return FakeResp()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        monkeypatch.setattr(httpx, "Client", FakeClient)
+
+        urls = _query_core_pdf_urls("10.1234/example", api_key="K")
+        assert urls == [
+            "https://repo.example/paper.pdf",
+            "https://repo.example/paper.txt",
+            "https://repo.example/fulltext.pdf",
+        ]
+
+
 # ---------------------------------------------------------------------------
 # _try_crossref / _try_openalex / _try_europepmc — Tier-1 keyless legs
 # ---------------------------------------------------------------------------

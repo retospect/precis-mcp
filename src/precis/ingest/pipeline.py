@@ -25,6 +25,7 @@ when the PDF is added via :func:`extract_paper`.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,8 @@ from precis.ingest.pdf_metadata import DoiProvenance, extract_metadata_from_sour
 from precis.ingest.semantic_scholar import lookup_s2
 from precis.utils.boilerplate import ChunkClass, classify_chunks
 from precis.utils.numerics import extract_numerics
+
+log = logging.getLogger(__name__)
 
 # U+FFFD — Unicode "replacement character." PDFs whose ToUnicode map is
 # incomplete or contradicts the embedded cmap leak FFFD bytes through
@@ -407,6 +410,146 @@ def extract_paper(
 
 
 # ---------------------------------------------------------------------------
+# extract_paper_from_markup — structured full text (JATS / HTML / LaTeX)
+# ---------------------------------------------------------------------------
+
+
+def _pdf_page_count(pdf_bytes: bytes) -> int | None:
+    """Cheap page count for the printable-attach path (no text extraction).
+
+    Returns ``None`` if PyMuPDF is unavailable or the bytes don't open —
+    the caller degrades to leaving ``pdf_page_count`` empty rather than
+    failing the ingest.
+    """
+    try:
+        import fitz
+    except ImportError:  # pragma: no cover - fitz is a paper-extra
+        log.warning("markup: pymupdf (fitz) unavailable; skipping page count")
+        return None
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            return int(doc.page_count)
+    except Exception as exc:
+        log.warning("markup: could not count PDF pages: %s", exc)
+        return None
+
+
+def extract_paper_from_markup(
+    markup_path: Path,
+    *,
+    fmt: str,
+    pdf_path: Path | None = None,
+    source_url: str | None = None,
+) -> PaperToWrite:
+    """Build a :class:`PaperToWrite` from structured markup (no Marker).
+
+    Parses ``markup_path`` per ``fmt`` (``jats`` / ``elsevier_xml`` /
+    ``arxiv_html`` / ``latex``) via :mod:`precis.ingest.markup`, maps the
+    emitted Marker-shaped blocks through the *same* downstream the PDF
+    path uses (:func:`_blocks_to_chunks` → :func:`_retag_references` →
+    :func:`_build_cards`), and, when ``pdf_path`` is given, attaches that
+    PDF as the printable (``pdf_sha256`` / role / size / page count) —
+    **without ever running Marker/OCR**.
+
+    ``refs.meta`` records ``source_format`` (and ``markup_source_url``
+    when known) so the good path is auditable.
+
+    Raises :class:`precis.ingest.markup.MarkupParseError` on a parse
+    failure; the caller falls back to Marker OCR on the companion PDF.
+    """
+    # Lazy import: markup only needs lxml, but keep pipeline importable
+    # on installs without the tex/docx extras.
+    from precis.ingest.markup import parse_markup
+
+    ext = parse_markup(markup_path, fmt=fmt, source_url=source_url)
+
+    doi = normalize_doi(ext.doi) if ext.doi else None
+    arxiv_id = normalize_arxiv(ext.arxiv_id) if ext.arxiv_id else None
+
+    pdf_sha256: str | None = None
+    pdf_size_bytes: int | None = None
+    pdf_page_count: int | None = None
+    pdf_storage_path: str | None = None
+    if pdf_path is not None:
+        pdf_path = Path(pdf_path)
+        if pdf_path.is_file():
+            pdf_bytes = pdf_path.read_bytes()
+            pdf_sha256 = make_pdf_sha256(pdf_bytes)
+            pdf_size_bytes = len(pdf_bytes)
+            pdf_page_count = _pdf_page_count(pdf_bytes)
+            pdf_storage_path = str(pdf_path.resolve())
+        else:
+            log.warning(
+                "markup: companion PDF %s not found; ingesting chunks-only",
+                pdf_path,
+            )
+
+    try:
+        paper_id, pub_id, cite_key_prefix = _resolve_identity(
+            doi=doi,
+            arxiv_id=arxiv_id,
+            pdf_sha256=pdf_sha256,
+            authors=ext.authors,
+            year=ext.year,
+        )
+    except ValueError as exc:
+        # No source identifier at all (no DOI, no arXiv id, no companion
+        # PDF) — e.g. a DOI-less arXiv HTML/LaTeX whose id couldn't be
+        # recovered from the URL, or a manually-dropped markup file. Surface
+        # as a MarkupParseError so ``_ingest_markup`` falls back to OCR on the
+        # companion PDF (or leaves the ref for the next PDF pass) instead of
+        # crashing the fetch/watch worker with an uncaught ValueError.
+        from precis.ingest.markup import MarkupParseError
+
+        raise MarkupParseError(
+            f"no source identifier (doi/arxiv/pdf) for {fmt} markup: {exc}",
+            fmt=fmt,
+        ) from exc
+
+    body_chunks = _blocks_to_chunks(ext.blocks)
+    body_chunks = _retag_references(body_chunks)
+    cards = _build_cards(
+        title=ext.title,
+        authors=ext.authors,
+        abstract=ext.abstract,
+        keywords=ext.keywords,
+    )
+
+    full_text = "\n\n".join(c.text for c in body_chunks)
+    content_hash = make_content_hash(full_text) if full_text else None
+
+    extra: dict[str, Any] = {"source_format": ext.source_format}
+    if ext.source_url:
+        extra["markup_source_url"] = ext.source_url
+    if ext.abstract:
+        extra["abstract"] = ext.abstract
+    if ext.keywords:
+        extra["keywords"] = ext.keywords
+
+    return PaperToWrite(
+        title=ext.title,
+        authors=ext.authors,
+        year=ext.year,
+        kind="paper",
+        provider="markup",
+        set_by="system",
+        paper_id=paper_id,
+        pub_id=pub_id,
+        cite_key_prefix=cite_key_prefix,
+        pdf_sha256=pdf_sha256,
+        content_hash=content_hash,
+        pdf_role="main" if pdf_sha256 else None,
+        pdf_storage_path=pdf_storage_path,
+        pdf_page_count=pdf_page_count,
+        pdf_size_bytes=pdf_size_bytes,
+        doi=doi,
+        arxiv_id=arxiv_id,
+        meta=extra,
+        chunks=cards + body_chunks,
+    )
+
+
+# ---------------------------------------------------------------------------
 # fetch_paper_by_doi — DOI input, no PDF
 # ---------------------------------------------------------------------------
 
@@ -533,6 +676,7 @@ def _paper_from_lookup(
 
 __all__ = [
     "extract_paper",
+    "extract_paper_from_markup",
     "fetch_paper_by_arxiv",
     "fetch_paper_by_doi",
 ]

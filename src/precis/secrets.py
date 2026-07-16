@@ -41,6 +41,11 @@ log = logging.getLogger(__name__)
 #: CLI one-shots and tests pass ``store=`` explicitly or rely on env/file.
 _STORE: Store | None = None
 
+#: DSN captured when ``adopt_process_store`` scrubs ``PRECIS_DATABASE_URL``
+#: from the environment. Lets a later ``build_runtime()`` (e.g. a tool path
+#: that lost the env race) fall back to the already-connected store's DSN.
+_ADOPTED_DSN: str | None = None
+
 #: Short cache so a hot ``get_secret`` doesn't hit the DB every call, while
 #: rotation still propagates within one TTL without LISTEN plumbing. Misses are
 #: never cached, so a freshly-``set`` secret appears immediately.
@@ -69,7 +74,15 @@ def adopt_process_store(store: Store) -> None:
     survives as a parameter on the frozen config + the open pool; no post-boot
     code re-derives it from env."""
     bind_store(store)
+    global _ADOPTED_DSN
+    _ADOPTED_DSN = store.dsn
     os.environ.pop("PRECIS_DATABASE_URL", None)
+
+
+def get_adopted_dsn() -> str | None:
+    """Return the DSN captured by the most recent ``adopt_process_store``,
+    or ``None`` if no store has been adopted in this process."""
+    return _ADOPTED_DSN
 
 
 def invalidate(name: str | None = None) -> None:

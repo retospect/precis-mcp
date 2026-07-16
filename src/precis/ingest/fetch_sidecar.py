@@ -59,9 +59,17 @@ log = logging.getLogger(__name__)
 SIDECAR_SUFFIX = ".precis-fetch.json"
 
 
+#: Recognised chunk-source formats. ``"pdf"`` is the legacy default for
+#: any sidecar written before the markup-first work (and for PDF-only
+#: fetches); the others select the markup producer in the watcher.
+SOURCE_FORMATS: frozenset[str] = frozenset(
+    {"pdf", "jats", "elsevier_xml", "arxiv_html", "latex"}
+)
+
+
 @dataclass(frozen=True)
 class FetchSidecar:
-    """Decoded acquisition manifest for one downloaded PDF."""
+    """Decoded acquisition manifest for one downloaded file."""
 
     ref_id: int
     #: ``id_kind → id_value`` for the stub (doi/arxiv/s2/cite_key). Carried
@@ -70,6 +78,15 @@ class FetchSidecar:
     identifiers: dict[str, str]
     #: The ``fetcher:<provider>`` source that produced the download.
     source: str
+    #: Which producer the trigger file feeds. ``"pdf"`` (default) → the
+    #: Marker pipeline; ``"jats"``/``"elsevier_xml"``/``"arxiv_html"``/
+    #: ``"latex"`` → the markup producer. Back-compat: absent in legacy
+    #: PDF-only sidecars, decoded as ``"pdf"``.
+    source_format: str = "pdf"
+    #: Filename (basename, same dir) of the printable PDF fetched
+    #: alongside a markup trigger, else ``None``. Lets the watcher attach
+    #: the printable without re-deriving it from the markup.
+    companion_pdf: str | None = None
 
 
 def sidecar_path(pdf: Path) -> Path:
@@ -83,20 +100,38 @@ def write_sidecar(
     ref_id: int,
     identifiers: dict[str, str],
     source: str,
+    source_format: str = "pdf",
+    companion_pdf: str | None = None,
 ) -> None:
-    """Atomically write the sidecar next to ``pdf``.
+    """Atomically write the sidecar next to the trigger file ``pdf``.
+
+    ``pdf`` is the *trigger* file the watcher will pick up — the PDF on
+    the legacy path, or the markup file (``.xml`` / ``.tex`` / ``.tar.gz``)
+    on the markup-first path. ``source_format`` selects the producer and
+    ``companion_pdf`` names the printable fetched alongside a markup
+    trigger (basename in the same directory), if any.
 
     Best-effort: a sidecar write failure must never fail the fetch (the
-    PDF is already on disk and ingest degrades to identity re-derivation
+    file is already on disk and ingest degrades to identity re-derivation
     without it). Writes to a temp file in the same directory and
     ``os.replace``\\ s it into place so a watcher polling the inbox never
     reads a half-written manifest.
     """
+    if source_format not in SOURCE_FORMATS:
+        log.warning(
+            "fetch_sidecar: unknown source_format %r for ref_id=%s — "
+            "defaulting to 'pdf'",
+            source_format,
+            ref_id,
+        )
+        source_format = "pdf"
     target = sidecar_path(pdf)
     payload = {
         "ref_id": int(ref_id),
         "identifiers": {k: v for k, v in identifiers.items() if v},
         "source": source,
+        "source_format": source_format,
+        "companion_pdf": companion_pdf,
     }
     tmp = target.with_name(f".{target.name}.tmp")
     try:
@@ -132,10 +167,27 @@ def read_sidecar(pdf: Path) -> FetchSidecar | None:
             str(k): str(v) for k, v in dict(data.get("identifiers", {})).items()
         }
         source = str(data.get("source", ""))
+        # Back-compat: legacy PDF-only sidecars have neither key.
+        source_format = str(data.get("source_format", "pdf")) or "pdf"
+        if source_format not in SOURCE_FORMATS:
+            log.warning(
+                "fetch_sidecar: unknown source_format %r in %s — treating as 'pdf'",
+                source_format,
+                path.name,
+            )
+            source_format = "pdf"
+        companion_raw = data.get("companion_pdf")
+        companion_pdf = str(companion_raw) if companion_raw else None
     except (ValueError, KeyError, TypeError) as exc:
         log.warning("fetch_sidecar: ignoring malformed %s: %s", path.name, exc)
         return None
-    return FetchSidecar(ref_id=ref_id, identifiers=identifiers, source=source)
+    return FetchSidecar(
+        ref_id=ref_id,
+        identifiers=identifiers,
+        source=source,
+        source_format=source_format,
+        companion_pdf=companion_pdf,
+    )
 
 
 def clear_sidecar(pdf: Path) -> None:
@@ -148,6 +200,7 @@ def clear_sidecar(pdf: Path) -> None:
 
 __all__ = [
     "SIDECAR_SUFFIX",
+    "SOURCE_FORMATS",
     "FetchSidecar",
     "clear_sidecar",
     "read_sidecar",

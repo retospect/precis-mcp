@@ -348,3 +348,41 @@ class TestRefPassPriority:
             < order.index("_dispatch_pass")
             < order.index("_sweeper_pass")
         )
+
+    def test_ref_pass_priority_keys_match_registered_passes(self):
+        """Every band-assigned key must name a live ``ref_passes.append``
+        closure. Guards the ``__name__``-keyed table against a silent
+        rename: renaming ``_chase_pass`` without updating the table would
+        drop it from BACKGROUND into DEFAULT and mis-schedule it. Parsing
+        the module AST rather than importing keeps this a pure static
+        check with no worker wiring.
+        """
+        import ast
+        from pathlib import Path
+
+        from precis.cli import worker as worker_mod
+        from precis.cli.worker import _REF_PASS_PRIORITY
+
+        source = Path(worker_mod.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        appended: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "append"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "ref_passes"
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+            ):
+                appended.add(node.args[0].id)
+
+        missing = set(_REF_PASS_PRIORITY) - appended
+        assert not missing, (
+            "priority table keys with no matching ref_passes.append() site "
+            f"(renamed or removed closure?): {sorted(missing)}"
+        )

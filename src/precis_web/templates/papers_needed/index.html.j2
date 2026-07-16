@@ -32,7 +32,7 @@
     {% endif %}
   </p>
 {% else %}
-<div class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+<div class="rounded-lg border border-slate-200 bg-white overflow-x-auto">
   <table class="min-w-full text-sm">
     <thead class="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
       <tr>
@@ -118,7 +118,14 @@
           {% set ref_kind = 'paper' %}
           {% set ref_id = row.id %}
           {% set active = row.flags %}
-          {% include "_flag_buttons.html.j2" with context %}
+          <div class="flex flex-col gap-1">
+            {% with flag_defs = reading_flag_defs, group = 'reading' %}
+              {% include "_flag_buttons.html.j2" %}
+            {% endwith %}
+            {% with flag_defs = acquire_flag_defs, group = 'acquire' %}
+              {% include "_flag_buttons.html.j2" %}
+            {% endwith %}
+          </div>
         </td>
       </tr>
       {% endfor %}

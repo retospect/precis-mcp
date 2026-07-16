@@ -536,6 +536,11 @@ class RefsMixin:
         ASC``) so the longest-waiting stubs — the ones most overdue for
         manual intervention — sort to the top. The tie-break on
         ``ref_id`` keeps the order total and stable across pages.
+        Stubs the operator has marked unreachable via **both** manual
+        routes (``OPEN:cant-get-uol`` **and** ``OPEN:cant-get-scholar``),
+        or flagged a book (``OPEN:is-book``), sink to the back of the
+        list — nothing more to auto-try there, so they shouldn't crowd
+        out still-gettable stubs.
 
         Shared by ``precis stubs`` (CLI) and ``search(view='stubs')``
         (MCP) so both render from one query
@@ -589,6 +594,32 @@ class RefsMixin:
                   FROM ref_events
                  WHERE source LIKE 'fetcher:%%'
                  GROUP BY ref_id
+            ),
+            deprioritized AS (
+                -- Stubs to sink to the back of the backlog, set from
+                -- /papers-needed's acquire flag group. Two reasons:
+                --   * unreachable via BOTH manual routes
+                --     (OPEN:cant-get-uol AND OPEN:cant-get-scholar) —
+                --     a single route tried is not enough (HAVING = 2);
+                --   * flagged a book (OPEN:is-book) — not a paper we
+                --     chase through the OA fetcher at all.
+                -- Either way there's nothing more to auto-try, so they
+                -- shouldn't crowd out still-gettable stubs.
+                SELECT rt.ref_id
+                  FROM ref_tags rt
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE t.namespace = 'OPEN'
+                   AND t.value IN ('cant-get-uol', 'cant-get-scholar')
+                   AND (rt.expires_at IS NULL OR rt.expires_at > now())
+                 GROUP BY rt.ref_id
+                HAVING count(DISTINCT t.value) = 2
+                UNION
+                SELECT rt.ref_id
+                  FROM ref_tags rt
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE t.namespace = 'OPEN'
+                   AND t.value = 'is-book'
+                   AND (rt.expires_at IS NULL OR rt.expires_at > now())
             )
             SELECT s.ref_id, s.cite_key, s.identifier,
                    le.ts, le.source, le.event,
@@ -598,12 +629,15 @@ class RefsMixin:
               FROM stubs s
               LEFT JOIN latest_event le ON le.ref_id = s.ref_id
               LEFT JOIN fetch_stats fs ON fs.ref_id = s.ref_id
+              LEFT JOIN deprioritized dp ON dp.ref_id = s.ref_id
              WHERE
                 CASE WHEN %s::bool THEN
                     (le.ref_id IS NULL
                      OR (le.ts < now() - INTERVAL '24 hours' AND le.event <> 'fetch_ok'))
                 ELSE TRUE END
-             ORDER BY s.created_at ASC, s.ref_id ASC
+             -- Deprioritized stubs (FALSE < TRUE, so ASC) last, then
+             -- oldest-request-first within each bucket.
+             ORDER BY (dp.ref_id IS NOT NULL) ASC, s.created_at ASC, s.ref_id ASC
              LIMIT %s OFFSET %s
         """
         out: list[dict[str, Any]] = []

@@ -196,11 +196,13 @@ class CronHandler(NumericRefHandler):
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        return ("recent", "upcoming")
+        return ("recent", "upcoming", "automations")
 
     def _list_view(self, view: str) -> Response | None:
         if view == "upcoming":
             return self._render_upcoming()
+        if view == "automations":
+            return self._render_automations()
         return super()._list_view(view)
 
     def _render_upcoming(self) -> Response:
@@ -239,6 +241,49 @@ class CronHandler(NumericRefHandler):
             f"# {len(refs_ordered)} upcoming cron"
             f"{'s' if len(refs_ordered) != 1 else ''} "
             "(by next_fire_at)"
+        )
+        return Response(body=f"{header}\n{self._render_hits_table(refs_ordered)}")
+
+    def _render_automations(self) -> Response:
+        """Standing automations — crons carrying the ``automation`` tag.
+
+        The registry of recurring *agent behaviours* (the morning/evening
+        podcast casts, the news briefing) as opposed to one-shot reminders.
+        Marked by an ``automation`` tag (``tag(kind='cron', id=N,
+        add=['automation'])``); sub-typed by a second open tag
+        (``cast-morning`` / ``cast-evening`` / …). Ordered by next_fire_at
+        (soonest first). See ``precis-automations``.
+        """
+        # ``tags=['automation']`` expands to both the OPEN and FLAG namespaces
+        # in build_tag_filter, so the match happens in SQL regardless of which
+        # namespace the tag landed in — no per-ref tags_for round-trip.
+        refs = self.store.list_refs(kind=self.kind, tags=["automation"], limit=500)
+        rows: list[tuple[Any, datetime]] = []
+        for r in refs:
+            iso = (r.meta or {}).get("next_fire_at")
+            try:
+                when = (
+                    datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+                    if iso
+                    else datetime.max.replace(tzinfo=UTC)
+                )
+            except ValueError:
+                when = datetime.max.replace(tzinfo=UTC)
+            rows.append((r, when))
+        if not rows:
+            return Response(
+                body=(
+                    "no automations. mark a standing cron with the automation "
+                    "tag: tag(kind='cron', id=N, add=['automation', "
+                    "'cast-morning']). see get(kind='skill', id='precis-automations')"
+                )
+            )
+        rows.sort(key=lambda pair: pair[1])
+        refs_ordered = [r for r, _ in rows]
+        header = (
+            f"# {len(refs_ordered)} automation"
+            f"{'s' if len(refs_ordered) != 1 else ''} "
+            "(standing crons, by next_fire_at)"
         )
         return Response(body=f"{header}\n{self._render_hits_table(refs_ordered)}")
 

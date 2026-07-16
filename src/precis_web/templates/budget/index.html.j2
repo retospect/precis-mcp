@@ -1,0 +1,114 @@
+{% extends "base.html.j2" %}
+{% block title %}Budget{% endblock %}
+{% block content %}
+<h1 class="text-lg font-semibold mb-1">Budget</h1>
+<p class="text-sm text-slate-500 mb-5 max-w-2xl">
+  Rolling spend across the whole runtime — router LLMs (<code>llm_call_log</code>)
+  and paid fetches (<code>cache_state</code>) — against the circuit-breaker caps.
+  Over a cap, new <strong>expensive</strong> work is refused; cheap, free, and
+  interactive work always flows. Caps auto-clear as the window rolls off.
+</p>
+
+{% if budget.get('tripped') %}
+<div class="mb-5 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">
+  A cap is reached — expensive autonomous work is paused until spend rolls off the window.
+</div>
+{% endif %}
+
+{% if budget.get('windows') %}
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+  {% for w in budget.windows %}
+  <div class="rounded-lg border border-slate-200 bg-white p-4">
+    <div class="flex items-baseline justify-between">
+      <div class="text-xs uppercase tracking-wide text-slate-400">{{ w.label }}</div>
+      <div class="text-sm text-slate-500">
+        <span class="font-semibold text-slate-700">${{ '%.2f'|format(w.spent) }}</span>
+        / ${{ '%.2f'|format(w.cap) }}
+      </div>
+    </div>
+    <div class="mt-2 h-2 w-full rounded-full bg-slate-100 overflow-hidden">
+      <div class="h-2 rounded-full
+        {% if w.state == 'red' %}bg-rose-500{% elif w.state == 'amber' %}bg-amber-500{% else %}bg-emerald-500{% endif %}"
+        style="width: {{ w.pct }}%"></div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-sm text-slate-500 mb-6">
+  No spend meter available — the budget module needs a store bound (it's dark by
+  construction). Caps below still persist for when it is.
+</p>
+{% endif %}
+
+<div class="rounded-lg border border-slate-200 bg-white p-4 max-w-lg mb-6">
+  <div class="text-xs uppercase tracking-wide text-slate-400 mb-3">Caps</div>
+  <form method="post" action="/budget/set" class="space-y-3">
+    <div class="flex items-center gap-3">
+      <label class="w-28 text-sm text-slate-600">Hourly ($)</label>
+      <input type="number" step="0.01" min="0" name="hourly_usd"
+             value="{% if hourly_cap is not none %}{{ '%.2f'|format(hourly_cap) }}{% endif %}"
+             class="flex-1 rounded border border-slate-200 px-2 py-1 text-sm font-mono
+                    focus:border-sky-400 focus:outline-none" />
+      <span class="text-[10px] {% if hourly_custom %}text-sky-500{% else %}text-slate-300{% endif %} w-16">
+        {{ 'custom' if hourly_custom else 'env default' }}
+      </span>
+    </div>
+    <div class="flex items-center gap-3">
+      <label class="w-28 text-sm text-slate-600">24h ($)</label>
+      <input type="number" step="0.01" min="0" name="daily_usd"
+             value="{% if daily_cap is not none %}{{ '%.2f'|format(daily_cap) }}{% endif %}"
+             class="flex-1 rounded border border-slate-200 px-2 py-1 text-sm font-mono
+                    focus:border-sky-400 focus:outline-none" />
+      <span class="text-[10px] {% if daily_custom %}text-sky-500{% else %}text-slate-300{% endif %} w-16">
+        {{ 'custom' if daily_custom else 'env default' }}
+      </span>
+    </div>
+    <div class="flex items-center gap-2 pt-1">
+      <button type="submit"
+              class="rounded bg-sky-600 text-white text-xs px-3 py-1 hover:bg-sky-700 transition">Save caps</button>
+      {% if hourly_custom %}
+      <button type="submit" formaction="/budget/reset" name="key" value="budget.hourly_usd"
+              class="text-xs text-slate-400 hover:text-rose-600 transition">reset hourly</button>
+      {% endif %}
+      {% if daily_custom %}
+      <button type="submit" formaction="/budget/reset" name="key" value="budget.daily_usd"
+              class="text-xs text-slate-400 hover:text-rose-600 transition">reset 24h</button>
+      {% endif %}
+    </div>
+  </form>
+  <p class="text-[11px] text-slate-400 mt-3">
+    A saved value overrides the <code>PRECIS_BUDGET_*</code> env default in the DB;
+    reset reverts to it.
+  </p>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+  <div class="rounded-lg border border-slate-200 bg-white p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">By model (24h)</div>
+    <ul class="text-sm divide-y divide-slate-100">
+      {% for m in budget.get('by_model', []) %}
+      <li class="py-1 flex justify-between gap-2">
+        <span class="font-mono text-slate-600 truncate">{{ m.label }}</span>
+        <span class="text-slate-500 shrink-0">{{ m.calls }} · ${{ '%.4f'|format(m.cost) }}</span>
+      </li>
+      {% else %}
+      <li class="py-1 text-slate-400">no priced calls in the last 24h</li>
+      {% endfor %}
+    </ul>
+  </div>
+  <div class="rounded-lg border border-slate-200 bg-white p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">By source (24h)</div>
+    <ul class="text-sm divide-y divide-slate-100">
+      {% for s in budget.get('by_source', []) %}
+      <li class="py-1 flex justify-between gap-2">
+        <span class="font-mono text-slate-600 truncate">{{ s.label }}</span>
+        <span class="text-slate-500 shrink-0">{{ s.calls }} · ${{ '%.4f'|format(s.cost) }}</span>
+      </li>
+      {% else %}
+      <li class="py-1 text-slate-400">no priced spend in the last 24h</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endblock %}

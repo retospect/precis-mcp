@@ -24,6 +24,7 @@ import logging
 import os
 import signal
 import sys
+from enum import IntEnum
 from typing import TYPE_CHECKING, Literal
 
 from precis.cli._common import (
@@ -65,41 +66,51 @@ if TYPE_CHECKING:
 # (after real work, before the heavy background tail). Applies to both
 # profiles — on the agent worker it also keeps ``job_claude_inproc``
 # (the plan_tick executor) ahead of the multi-minute opus reviewers.
-_REF_PASS_PRIORITY_DEFAULT = 20
-_REF_PASS_PRIORITY: dict[str, int] = {
-    # 0 — job execution: the planner coroutine itself (plan_tick via
-    # job_claude_inproc) plus the other job runners.
-    "_job_claude_inproc_pass": 0,
-    "_job_coordinator_pass": 0,
-    "_job_ssh_node_pass": 0,
-    "_job_claude_docker_pass": 0,
-    "_wake_runner_pass": 0,
-    # 10 — planner lifecycle: unblock, schedule, mint, unstick.
-    "_auto_check_pass": 10,
-    "_schedule_pass": 10,
-    "_dispatch_pass": 10,
-    "_sweeper_pass": 10,
-    # 15 — cheap SQL health.
-    "_nursery_pass": 15,
-    # 20 — DEFAULT band (enrichment / indexing / reconcile / plugins).
-    # 30 — heavy background tail: external fetch + LLM + reviewers.
-    "_chase_pass": 30,
-    "_fetch_pass": 30,
-    "_gp_fetch_pass": 30,
-    "_llm_summarize_pass": 30,
-    "_classify_pass": 30,
-    "_paper_glossary_pass": 30,
-    "_structural_pass": 30,
-    "_deep_review_pass": 30,
-    "_dream_agent_pass": 30,
+#
+# The bands are an explicit :class:`PassBand` enum rather than bare
+# ints so the intent reads at a glance, and every key here is guarded
+# by ``test_ref_pass_priority_keys_match_registered_passes``: it parses
+# this module's AST and fails if a key no longer matches a live
+# ``ref_passes.append(_<name>_pass)`` site — so renaming a band-assigned
+# closure can no longer *silently* drop it into the DEFAULT band.
+
+
+class PassBand(IntEnum):
+    """Scheduling band for a ref-pass; lower runs earlier each cycle."""
+
+    JOB = 0  # job execution: plan_tick coroutine + other job runners
+    PLANNER = 10  # planner lifecycle: unblock, schedule, mint, unstick
+    HEALTH = 15  # cheap SQL health
+    DEFAULT = 20  # enrichment / indexing / reconcile / plugins
+    BACKGROUND = 30  # heavy tail: external fetch + LLM + reviewers
+
+
+_REF_PASS_PRIORITY: dict[str, PassBand] = {
+    "_job_claude_inproc_pass": PassBand.JOB,
+    "_job_coordinator_pass": PassBand.JOB,
+    "_job_ssh_node_pass": PassBand.JOB,
+    "_job_claude_docker_pass": PassBand.JOB,
+    "_wake_runner_pass": PassBand.JOB,
+    "_auto_check_pass": PassBand.PLANNER,
+    "_schedule_pass": PassBand.PLANNER,
+    "_dispatch_pass": PassBand.PLANNER,
+    "_sweeper_pass": PassBand.PLANNER,
+    "_nursery_pass": PassBand.HEALTH,
+    "_chase_pass": PassBand.BACKGROUND,
+    "_fetch_pass": PassBand.BACKGROUND,
+    "_gp_fetch_pass": PassBand.BACKGROUND,
+    "_llm_summarize_pass": PassBand.BACKGROUND,
+    "_classify_pass": PassBand.BACKGROUND,
+    "_paper_glossary_pass": PassBand.BACKGROUND,
+    "_structural_pass": PassBand.BACKGROUND,
+    "_deep_review_pass": PassBand.BACKGROUND,
+    "_dream_agent_pass": PassBand.BACKGROUND,
 }
 
 
-def _ref_pass_priority(fn: RefPass) -> int:
+def _ref_pass_priority(fn: RefPass) -> PassBand:
     """Scheduling band for a ref-pass closure (lower runs earlier)."""
-    return _REF_PASS_PRIORITY.get(
-        getattr(fn, "__name__", ""), _REF_PASS_PRIORITY_DEFAULT
-    )
+    return _REF_PASS_PRIORITY.get(getattr(fn, "__name__", ""), PassBand.DEFAULT)
 
 
 # Column order for ``precis worker --status``. Keeping it in one
@@ -332,6 +343,11 @@ def run(args: argparse.Namespace) -> None:
     from precis import route_log as _route_log
 
     _route_log.bind_store(store)
+    # Bind the same store for the budget circuit breaker's rolling meter, so
+    # this worker's expensive dispatches are gated by the global cap.
+    from precis.budget import bind_store as _bind_budget_store
+
+    _bind_budget_store(store)
     # Attach the centralised DB log handler now that we have a
     # working DSN. The file handler the worker's parent process
     # already set up stays in place as the bootstrap + fallback

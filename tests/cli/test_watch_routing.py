@@ -11,7 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from precis.cli.watch import route_pdf
+from precis.cli.watch import (
+    _infer_markup_fmt,
+    _is_ingestable,
+    _is_markup,
+    _is_pdf,
+    route_pdf,
+)
+from precis.ingest.fetch_sidecar import FetchSidecar
 
 
 @pytest.fixture
@@ -168,3 +175,57 @@ class TestEdgeCases:
         assert "subtype:book" not in r.extra_tags
         assert "topic:book" not in r.extra_tags
         assert "topic:course-2026" in r.extra_tags
+
+
+class TestMarkupRecognition:
+    def test_is_markup_extensions(self):
+        assert _is_markup(Path("a.xml"))
+        assert _is_markup(Path("a.tex"))
+        assert _is_markup(Path("a.ltx"))
+        assert _is_markup(Path("a.html"))
+        assert _is_markup(Path("a.tar.gz"))
+        assert _is_markup(Path("a.tgz"))
+        assert not _is_markup(Path("a.pdf"))
+        # A sidecar (even one named for a markup trigger) is never markup.
+        assert not _is_markup(Path("a.xml.precis-fetch.json"))
+
+    def test_is_ingestable_matrix(self):
+        assert _is_ingestable(Path("a.pdf"))
+        assert _is_ingestable(Path("a.xml"))
+        assert _is_ingestable(Path("a.tar.gz"))
+        assert not _is_ingestable(Path("a.txt"))
+        assert not _is_ingestable(Path("a.pdf.precis-fetch.json"))
+        assert not _is_ingestable(Path("a.xml.precis-fetch.json"))
+
+    def test_is_pdf_still_pdf_only(self):
+        assert _is_pdf(Path("a.pdf"))
+        assert not _is_pdf(Path("a.xml"))
+
+    def test_infer_fmt_from_sidecar_is_authoritative(self):
+        # An .xml whose sidecar says elsevier_xml → elsevier_xml, not jats.
+        sc = FetchSidecar(
+            ref_id=1,
+            identifiers={"doi": "10.1/x"},
+            source="fetcher:elsevier",
+            source_format="elsevier_xml",
+        )
+        assert _infer_markup_fmt(Path("a.xml"), sc) == "elsevier_xml"
+
+    def test_infer_fmt_from_extension_fallback(self):
+        assert _infer_markup_fmt(Path("a.xml"), None) == "jats"
+        assert _infer_markup_fmt(Path("a.tex"), None) == "latex"
+        assert _infer_markup_fmt(Path("a.tar.gz"), None) == "latex"
+        assert _infer_markup_fmt(Path("a.html"), None) == "arxiv_html"
+
+    def test_infer_fmt_pdf_sidecar_falls_through_to_extension(self):
+        # A sidecar marked 'pdf' on a markup file → ignore, use extension.
+        sc = FetchSidecar(
+            ref_id=1,
+            identifiers={},
+            source="fetcher:x",
+            source_format="pdf",
+        )
+        assert _infer_markup_fmt(Path("a.tex"), sc) == "latex"
+
+    def test_infer_fmt_unknown_extension_returns_none(self):
+        assert _infer_markup_fmt(Path("a.bin"), None) is None

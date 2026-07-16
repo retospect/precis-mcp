@@ -72,6 +72,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from psycopg import Connection
@@ -99,6 +100,14 @@ _SOURCE_CORE = "fetcher:core"
 _SOURCE_ARXIV = "fetcher:arxiv"
 _SOURCE_S2 = "fetcher:s2"
 _SOURCE_OPENALEX_CONTENT = "fetcher:openalex_content"
+
+# Markup-first legs (docs/design/markup-first-ingest.md). Run *before*
+# the PDF cascade when PRECIS_FETCH_MARKUP is set, so a structured
+# full-text source is preferred as the chunk source; the PDF cascade
+# still runs afterwards to acquire the printable.
+_SOURCE_EUROPEPMC_JATS = "fetcher:europepmc_jats"
+_SOURCE_ARXIV_HTML = "fetcher:arxiv_html"
+_SOURCE_ARXIV_SOURCE = "fetcher:arxiv_source"
 
 # OpenAlex Content API per-file price (their published ~$0.01/file). Recorded
 # as ``cost_usd`` on the ``fetch_ok`` event so the paid spend is auditable in
@@ -1277,6 +1286,18 @@ def run_oa_fetch_pass(
     failed = 0
     for stub in stubs:
         try:
+            # Markup-first pass (gated by PRECIS_FETCH_MARKUP): try for a
+            # structured full-text source before the PDF cascade. Best-
+            # effort — its failure must never block the PDF fetch, which
+            # runs unconditionally afterwards to acquire the printable.
+            try:
+                _run_markup_cascade(store, stub, inbox_path)
+            except Exception as exc:  # pragma: no cover — defensive
+                log.warning(
+                    "fetch_oa: markup pass errored for ref_id=%s: %s",
+                    stub.ref_id,
+                    exc,
+                )
             _run_cascade(
                 store,
                 stub,
@@ -1297,6 +1318,205 @@ def run_oa_fetch_pass(
             )
             failed += 1
     return {"claimed": len(stubs), "ok": ok, "failed": failed}
+
+
+def _markup_fetch_enabled() -> bool:
+    """Whether the markup-first pass runs. Gated by ``PRECIS_FETCH_MARKUP``.
+
+    Default-off: markup ingest is new; opt in per-host once the stub
+    backlog has been exercised. See docs/design/markup-first-ingest.md.
+    """
+    return os.environ.get("PRECIS_FETCH_MARKUP", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+_MARKUP_ACCEPT = (
+    "application/xml,text/xml,application/jats+xml,text/html,"
+    "application/x-eprint-tar,application/gzip,*/*;q=0.8"
+)
+
+
+def _download_markup(
+    url: str, target: Path, *, extra_headers: dict[str, str] | None = None
+) -> int:
+    """Stream a markup document (XML/HTML/tarball) to ``target``.
+
+    Mirrors :func:`_download_pdf` but without the ``%PDF-`` magic-byte
+    guard — the producer validates structure at ingest and falls back to
+    OCR on a bad parse, so a landing-page here is caught downstream
+    rather than poisoning the corpus. Writes to ``<target>.part`` and
+    renames on success. Returns the byte count; raises on an empty body.
+    """
+    from precis.utils.safe_fetch import safe_stream
+
+    tmp = target.with_suffix(target.suffix + ".part")
+    size = 0
+    headers = {"User-Agent": _user_agent_header(), "Accept": _MARKUP_ACCEPT}
+    if extra_headers:
+        headers.update(extra_headers)
+    with httpx.Client(
+        timeout=_DOWNLOAD_TIMEOUT_S,
+        follow_redirects=False,
+        headers=headers,
+    ) as client:
+        with safe_stream(client, "GET", url) as resp:
+            resp.raise_for_status()
+            with tmp.open("wb") as fh:
+                for chunk in resp.iter_bytes(chunk_size=64 * 1024):
+                    fh.write(chunk)
+                    size += len(chunk)
+    if size == 0:
+        tmp.unlink(missing_ok=True)
+        raise ValueError("empty markup response")
+    tmp.rename(target)
+    return size
+
+
+@dataclass(frozen=True)
+class _MarkupLeg:
+    """One markup-first source: how to build its URL and name its file."""
+
+    source: str
+    fmt: str
+    #: Filename suffix for the downloaded trigger (drives watcher routing).
+    suffix: str
+    #: Returns the fetch URL for ``stub``, or ``None`` to skip this leg.
+    url_for: Callable[[StubRef], str | None]
+
+
+def _europepmc_jats_url(stub: StubRef) -> str | None:
+    if not stub.doi:
+        return None
+    pmcid = _query_europepmc_oa_pmcid(stub.doi)
+    if not pmcid:
+        return None
+    return f"https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML"
+
+
+def _normalize_arxiv_id(raw: str | None) -> str | None:
+    """Validated bare arXiv id (``arxiv:`` prefix stripped), else ``None``.
+
+    Mirrors the guard in :func:`_try_arxiv` so the markup legs accept the
+    same ids the PDF leg does.
+    """
+    if not raw:
+        return None
+    arxiv_id = raw.strip().removeprefix("arxiv:")
+    return arxiv_id if _ARXIV_ID_RE.match(arxiv_id) else None
+
+
+def _arxiv_html_url(stub: StubRef) -> str | None:
+    arxiv_id = _normalize_arxiv_id(stub.arxiv)
+    return f"https://arxiv.org/html/{arxiv_id}" if arxiv_id else None
+
+
+def _arxiv_source_url(stub: StubRef) -> str | None:
+    arxiv_id = _normalize_arxiv_id(stub.arxiv)
+    return f"https://arxiv.org/e-print/{arxiv_id}" if arxiv_id else None
+
+
+#: Markup legs in preference order: JATS (best structure) → arXiv HTML
+#: (LaTeXML, JATS-class) → arXiv source (flatten-and-chunk fallback).
+_MARKUP_LEGS: tuple[_MarkupLeg, ...] = (
+    _MarkupLeg(_SOURCE_EUROPEPMC_JATS, "jats", ".xml", _europepmc_jats_url),
+    _MarkupLeg(_SOURCE_ARXIV_HTML, "arxiv_html", ".html", _arxiv_html_url),
+    _MarkupLeg(_SOURCE_ARXIV_SOURCE, "latex", ".tar.gz", _arxiv_source_url),
+)
+
+
+def _run_markup_cascade(store: Any, stub: StubRef, inbox_dir: Path) -> bool:
+    """Try each markup leg; on first hit drop the trigger + sidecar.
+
+    Returns ``True`` when a markup source landed (so the caller knows the
+    chunk source is structured, though it still runs the PDF cascade for
+    the printable). Each leg records its own ``ref_events`` row. Best-
+    effort: any leg exception logs ``api_error`` and falls through.
+
+    The sidecar carries the stub's ``ref_id`` (the fold target) and the
+    leg's ``source_format`` so the watcher builds a ``MarkupInput``; the
+    companion PDF the PDF cascade drops later folds into the same ref via
+    this same ``ref_id`` and attaches as the printable (see the
+    db_writer attach-only guard).
+    """
+    if not _markup_fetch_enabled():
+        return False
+    log.debug(
+        "fetch_oa markup: trying %d legs for ref_id=%s (doi=%s arxiv=%s)",
+        len(_MARKUP_LEGS),
+        stub.ref_id,
+        stub.doi,
+        stub.arxiv,
+    )
+    for leg in _MARKUP_LEGS:
+        t0 = time.perf_counter()
+        try:
+            url = leg.url_for(stub)
+        except Exception as exc:
+            store.append_event(
+                stub.ref_id,
+                source=leg.source,
+                event="api_error",
+                payload={"error": str(exc)[:200]},
+                duration_ms=_ms(t0),
+            )
+            continue
+        if url is None:
+            continue  # no identifier for this leg — silent skip
+        target = inbox_dir / (_stub_filename(stub) + leg.suffix)
+        try:
+            inbox_dir.mkdir(parents=True, exist_ok=True)
+            size = _download_markup(url, target)
+        except Exception as exc:
+            log.warning(
+                "fetch_oa markup: %s leg failed for ref_id=%s (%s): %s",
+                leg.source,
+                stub.ref_id,
+                url,
+                exc,
+            )
+            store.append_event(
+                stub.ref_id,
+                source=leg.source,
+                event="fetch_failed",
+                payload={"url": url, "error": str(exc)[:200]},
+                duration_ms=_ms(t0),
+            )
+            continue
+        write_sidecar(
+            target,
+            ref_id=stub.ref_id,
+            identifiers={
+                k: v
+                for k, v in {
+                    "doi": stub.doi,
+                    "arxiv": stub.arxiv,
+                    "s2": stub.s2_id,
+                    "cite_key": stub.cite_key,
+                }.items()
+                if v
+            },
+            source=leg.source,
+            source_format=leg.fmt,
+        )
+        store.append_event(
+            stub.ref_id,
+            source=leg.source,
+            event="fetch_ok",
+            payload={"url": url, "bytes": size, "format": leg.fmt},
+            duration_ms=_ms(t0),
+        )
+        log.info(
+            "fetch_oa markup: %s landed for ref_id=%s (%s, %d bytes)",
+            leg.source,
+            stub.ref_id,
+            leg.fmt,
+            size,
+        )
+        return True
+    return False
 
 
 def _run_cascade(
@@ -1543,12 +1763,36 @@ def _query_europepmc_oa_pmcid(doi: str) -> str | None:
     return None
 
 
+def _is_valid_http_url(href: Any) -> bool:
+    """Return ``True`` if ``href`` is a string that looks like a public
+    http(s) URL.
+
+    CORE's ``downloadUrl`` and ``fullText`` fields can contain non-URL
+    values (e.g. a bare work id like ``"587670336"`` or the full text
+    body). Light validation lets the fetcher try only the candidates
+    that have a scheme and a host.
+    """
+    if not isinstance(href, str) or not href.startswith(("http://", "https://")):
+        return False
+    # Reject multi-token values (e.g. full text paragraphs that happen
+    # to start with "http") before parsing.
+    if any(c in href for c in ("\n", "\t", " ")):
+        return False
+    parts = urlsplit(href)
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
 def _query_core_pdf_urls(doi: str, *, api_key: str) -> list[str]:
-    """Return CORE repository ``downloadUrl``s for an exact DOI match.
+    """Return CORE full-text URLs for an exact DOI match.
 
     Only results whose own ``doi`` equals the query DOI are kept (CORE
     fuzzy-matches, so a bare topical hit must not be mistaken for the
     paper). A browser UA dodges CORE's Cloudflare UA gate.
+
+    Looks at both ``downloadUrl`` and ``fullText`` fields and returns
+    only values that are valid http(s) URLs. The earlier bug passed a
+    bare CORE work id (``"587670336"``) as a URL, which the SSRF guard
+    rejected.
     """
     params: dict[str, str | int] = {"q": f'doi:"{doi}"', "limit": 5}
     headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _BROWSER_UA}
@@ -1560,9 +1804,14 @@ def _query_core_pdf_urls(doi: str, *, api_key: str) -> list[str]:
     out: list[str] = []
     for rec in data.get("results") or []:
         rec_doi = (rec.get("doi") or "").lower()
-        href = rec.get("downloadUrl")
-        if rec_doi == want and href and href not in out:
-            out.append(href)
+        if rec_doi != want:
+            continue
+        # Prefer repository downloadUrl, then fullText link (the API
+        # can surface either as the fetchable URL).
+        for key in ("downloadUrl", "fullText"):
+            href = rec.get(key)
+            if _is_valid_http_url(href) and href not in out:
+                out.append(href)
     return out
 
 

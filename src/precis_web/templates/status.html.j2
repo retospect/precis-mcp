@@ -245,6 +245,66 @@
 </section>
 {% endif %}
 
+<!-- Budget tote: whole-runtime rolling spend vs caps (llm_call_log + cache_state). -->
+{% if budget.get('windows') %}
+<section class="mb-6">
+  <div class="flex items-center justify-between mb-2">
+    <h2 class="text-sm font-semibold">Budget
+      {% if budget.get('tripped') %}
+      <span class="ml-2 text-xs font-medium text-rose-600 bg-rose-50 border border-rose-200 rounded px-1.5 py-0.5">cap reached — expensive work paused</span>
+      {% endif %}
+    </h2>
+    <a href="/budget" class="text-xs text-sky-600 hover:text-sky-700">edit caps →</a>
+  </div>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-3">
+    {% for w in budget.windows %}
+    <div class="rounded-lg border border-slate-200 bg-white p-4">
+      <div class="flex items-baseline justify-between">
+        <div class="text-xs uppercase tracking-wide text-slate-400">{{ w.label }}</div>
+        <div class="text-sm text-slate-500">
+          <span class="font-semibold text-slate-700">${{ '%.2f'|format(w.spent) }}</span>
+          / ${{ '%.2f'|format(w.cap) }}
+        </div>
+      </div>
+      <div class="mt-2 h-2 w-full rounded-full bg-slate-100 overflow-hidden">
+        <div class="h-2 rounded-full
+          {% if w.state == 'red' %}bg-rose-500{% elif w.state == 'amber' %}bg-amber-500{% else %}bg-emerald-500{% endif %}"
+          style="width: {{ w.pct }}%"></div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div class="rounded-lg border border-slate-200 bg-white p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">By model (24h)</div>
+      <ul class="text-sm divide-y divide-slate-100">
+        {% for m in budget.get('by_model', []) %}
+        <li class="py-1 flex justify-between gap-2">
+          <span class="font-mono text-slate-600 truncate">{{ m.label }}</span>
+          <span class="text-slate-500 shrink-0">{{ m.calls }} · ${{ '%.4f'|format(m.cost) }}</span>
+        </li>
+        {% else %}
+        <li class="py-1 text-slate-400">no priced calls in the last 24h</li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-white p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">By source (24h)</div>
+      <ul class="text-sm divide-y divide-slate-100">
+        {% for s in budget.get('by_source', []) %}
+        <li class="py-1 flex justify-between gap-2">
+          <span class="font-mono text-slate-600 truncate">{{ s.label }}</span>
+          <span class="text-slate-500 shrink-0">{{ s.calls }} · ${{ '%.4f'|format(s.cost) }}</span>
+        </li>
+        {% else %}
+        <li class="py-1 text-slate-400">no priced spend in the last 24h</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</section>
+{% endif %}
+
 <!-- Claude usage rolled up from ref_events.cost_usd. -->
 <section class="mb-6">
   <h2 class="text-sm font-semibold mb-2">Claude usage</h2>
@@ -407,6 +467,35 @@
     </li>
     {% else %}
     <li class="px-4 py-2 text-sm text-slate-500">no agent fires recorded yet</li>
+    {% endfor %}
+  </ul>
+</section>
+
+{# Standing automations: recurring crons tagged ``automation`` — the
+   morning/evening podcast casts, the news briefing. The cron payload IS
+   the prompt; edit it to change behaviour. See precis-automations. #}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2">Automations
+    <span class="font-normal text-xs text-slate-400">(standing crons — the casts, the briefing)</span>
+  </h2>
+  <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for a in automations %}
+    <li class="px-4 py-2 text-xs flex items-center gap-2 {% if a.status == 'paused' %}bg-amber-50{% endif %}">
+      <span class="font-mono text-violet-700 w-28 shrink-0">{{ a.label }}</span>
+      <span class="text-slate-500 w-28 shrink-0">{{ a.recurring }}</span>
+      <span class="text-slate-700 truncate">{{ a.payload }}</span>
+      {% if a.produced %}
+      <a class="text-sky-700 hover:underline shrink-0 truncate max-w-xs"
+         href="/refs/{{ a.produced.kind }}/{{ a.produced.ref_id }}">→ {{ a.produced.kind }}: {{ a.produced.title }}</a>
+      {% endif %}
+      <span class="ml-auto tabular-nums text-slate-500 shrink-0">
+        {% if a.status == 'paused' %}<span class="text-amber-600">paused</span> · {% endif %}next {{ a.next_fire }} · last {{ a.last_fired }} · fired {{ a.fire_count }}
+      </span>
+    </li>
+    {% else %}
+    <li class="px-4 py-2 text-sm text-slate-500">no automations tagged yet
+      <span class="text-slate-400">— tag a standing cron with <code>automation</code></span>
+    </li>
     {% endfor %}
   </ul>
 </section>

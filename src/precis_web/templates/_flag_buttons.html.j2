@@ -1,18 +1,32 @@
-{# Reading-intent flag toggles — kind-agnostic, reusable across item
-   lists. Caller provides:
-     flag_defs  — the FLAG_DEFS tuple (value/emoji/label/title)
+{# Flag toggles — kind-agnostic, reusable across item lists. Caller
+   provides:
+     flag_defs  — the group's defs tuple (value/emoji/label/title)
+     group      — the flag group name (default 'reading'); scopes the
+                  wrapper id + posts back so the route re-renders the
+                  right group (e.g. 'acquire' on /papers-needed)
      active     — set of currently-active flag values for this ref
      ref_kind   — the ref's kind (e.g. 'paper')
      ref_id     — the ref id
      return_to  — path to bounce back to after the toggle
    Each button POSTs to /flags/<kind>/<id>; an active flag posts op=remove
-   so a second click toggles it off. #}
-<div class="flex items-center gap-1">
+   so a second click toggles it off.
+
+   Progressive enhancement: htmx POSTs the toggle and swaps just this
+   button group in place (outerHTML on the id'd wrapper), so the list
+   stays put — no full reload, no scroll-to-top. The plain
+   method/action attributes remain the no-JS fallback (303 redirect
+   back to return_to). #}
+{% set _group = group | default('reading', true) %}
+<div id="flags-{{ _group }}-{{ ref_kind }}-{{ ref_id }}" class="flex flex-wrap items-center gap-1">
   {% for f in flag_defs %}
     {% set is_active = f.value in active %}
-    <form method="post" action="/flags/{{ ref_kind }}/{{ ref_id }}" class="shrink-0">
+    <form method="post" action="/flags/{{ ref_kind }}/{{ ref_id }}" class="shrink-0"
+          hx-post="/flags/{{ ref_kind }}/{{ ref_id }}"
+          hx-target="#flags-{{ _group }}-{{ ref_kind }}-{{ ref_id }}"
+          hx-swap="outerHTML">
       <input type="hidden" name="flag" value="{{ f.value }}" />
       <input type="hidden" name="op" value="{{ 'remove' if is_active else 'add' }}" />
+      <input type="hidden" name="group" value="{{ _group }}" />
       <input type="hidden" name="return_to" value="{{ return_to }}" />
       <button type="submit"
               title="{{ f.title }}{{ ' — click to clear' if is_active else '' }}"

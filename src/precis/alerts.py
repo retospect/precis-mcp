@@ -277,7 +277,21 @@ def _set_severity_tag(store: Store, ref_id: int, severity: str, *, conn: Any) ->
 #: worker that would otherwise fester unseen for days). Delivery reuses the
 #: asa_bot bot + ``pg_notify('precis.messages')`` path (there are no Discord
 #: webhooks in this deployment — the bridge is a bot), so no new secret.
-OPS_ALERT_TARGET_ENV = "PRECIS_OPS_ALERT_TARGET"
+OPS_ALERT_WEBHOOK_ENV = "PRECIS_OPS_ALERT_WEBHOOK"
+OPS_ALERT_TARGET_ENV = "PRECIS_OPS_ALERT_TARGET"  # legacy alias
+
+
+def _ops_alert_target() -> str:
+    """Return the configured ops-alert target, preferring the webhook env var.
+
+    ``PRECIS_OPS_ALERT_WEBHOOK`` is the canonical variable name; for
+    backwards compatibility we also fall back to ``PRECIS_OPS_ALERT_TARGET``.
+    """
+    import os
+
+    return os.environ.get(OPS_ALERT_WEBHOOK_ENV, "") or os.environ.get(
+        OPS_ALERT_TARGET_ENV, ""
+    )
 
 
 def notify_critical_alert(
@@ -285,9 +299,9 @@ def notify_critical_alert(
 ) -> bool:
     """Best-effort proactive push for a newly-raised critical alert.
 
-    Queues a ``kind='message'`` to the channel in
-    :data:`OPS_ALERT_TARGET_ENV` and fires
-    ``pg_notify('precis.messages', …)`` in the same tx, exactly as
+    Queues a ``kind='message'`` to the channel configured by
+    ``PRECIS_OPS_ALERT_WEBHOOK`` (or the legacy ``PRECIS_OPS_ALERT_TARGET``)
+    and fires ``pg_notify('precis.messages', …)`` in the same tx, exactly as
     ``MessageHandler.put`` / ``briefing._deliver`` do — asa_bot (the one
     process holding a Discord socket) then posts it. Returns ``True`` if a
     push was queued, ``False`` if no target is configured (the default —
@@ -296,11 +310,9 @@ def notify_critical_alert(
     a ``critical`` alert (``raise_alert`` → ``is_new``), so a standing
     condition pages once, not every minute.
     """
-    import os
-
     from precis.store.types import BlockInsert
 
-    target = os.environ.get(OPS_ALERT_TARGET_ENV, "").strip()
+    target = _ops_alert_target().strip()
     if not target:
         return False
     body = f"🚨 {title}"
@@ -338,6 +350,7 @@ def notify_critical_alert(
 
 __all__ = [
     "OPS_ALERT_TARGET_ENV",
+    "OPS_ALERT_WEBHOOK_ENV",
     "SEVERITIES",
     "STATE_OPEN",
     "STATE_RESOLVED",

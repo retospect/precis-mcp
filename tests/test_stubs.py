@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from precis.runtime import PrecisRuntime
 from precis.store import Store
+from precis.store.types import Tag
 
 
 def _stub(
@@ -74,6 +75,11 @@ def _fetch_event(
             "        now() - make_interval(hours => %s))",
             (ref_id, source, event, payload, hours_ago),
         )
+
+
+def _acquire_flag(store: Store, ref_id: int, value: str) -> None:
+    """Set an acquisition-provenance OPEN flag (as /papers-needed does)."""
+    store.add_tag(ref_id, Tag.open(value))
 
 
 # ── store engine: stub_backlog ──────────────────────────────────────
@@ -152,6 +158,39 @@ def test_stub_backlog_limit(store: Store) -> None:
     for i in range(5):
         _stub(store, cite_key=f"p{i}2024", doi=f"10.1/{i}")
     assert len(store.stub_backlog(limit=2)) == 2
+
+
+def test_stub_backlog_ungettable_both_routes_sink_to_back(store: Store) -> None:
+    # A is the oldest request (would normally sort first), but it's been
+    # marked unreachable via BOTH manual routes — so it sinks to the back.
+    a = _stub(store, cite_key="a2024", doi="10.1/a")
+    b = _stub(store, cite_key="b2024", doi="10.1/b")
+    c = _stub(store, cite_key="c2024", doi="10.1/c")
+    _acquire_flag(store, a, "cant-get-uol")
+    _acquire_flag(store, a, "cant-get-scholar")
+    order = [r["ref_id"] for r in store.stub_backlog()]
+    assert order == [b, c, a]
+
+
+def test_stub_backlog_single_route_flag_keeps_position(store: Store) -> None:
+    # Only one route tried (UoL) — not enough to deprioritize; the oldest
+    # stub keeps its front-of-list position.
+    a = _stub(store, cite_key="a2024", doi="10.1/a")
+    b = _stub(store, cite_key="b2024", doi="10.1/b")
+    _acquire_flag(store, a, "cant-get-uol")
+    order = [r["ref_id"] for r in store.stub_backlog()]
+    assert order == [a, b]
+
+
+def test_stub_backlog_is_book_flag_sinks_to_back(store: Store) -> None:
+    # A book isn't a paper we chase through the OA fetcher — flagging it
+    # is-book sinks the oldest stub to the back on its own.
+    a = _stub(store, cite_key="a2024", doi="10.1/a")
+    b = _stub(store, cite_key="b2024", doi="10.1/b")
+    c = _stub(store, cite_key="c2024", doi="10.1/c")
+    _acquire_flag(store, a, "is-book")
+    order = [r["ref_id"] for r in store.stub_backlog()]
+    assert order == [b, c, a]
 
 
 def test_stub_backlog_tolerates_duplicate_same_kind_identifiers(store: Store) -> None:

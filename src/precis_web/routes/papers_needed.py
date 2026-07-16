@@ -39,7 +39,12 @@ from fastapi.responses import HTMLResponse
 
 from precis_web.deps import get_store, templates
 from precis_web.paper_links import doi_url, scholar_url, uol_url
-from precis_web.routes.flags import FLAG_DEFS, FLAG_NAMESPACE, FLAG_VALUE_LIST
+from precis_web.routes.flags import (
+    ACQUIRE_FLAG_DEFS,
+    FLAG_DEFS,
+    FLAG_NAMESPACE,
+    FLAG_VALUE_LIST,
+)
 
 router = APIRouter(prefix="/papers-needed", tags=["papers-needed"])
 
@@ -197,7 +202,8 @@ async def index(
         {
             "active_tab": "papers-needed",
             "rows": display,
-            "flag_defs": FLAG_DEFS,
+            "reading_flag_defs": FLAG_DEFS,
+            "acquire_flag_defs": ACQUIRE_FLAG_DEFS,
             "return_to": return_to,
             "awaiting": awaiting_flag,
             "page": page,

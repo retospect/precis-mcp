@@ -200,6 +200,12 @@ class _PerplexityBase(CacheBackedHandler):
             ) from exc
         body, citations = _format_perplexity_body(data)
         title = _title_for_query(query)
+        # Prefer the provider's *actual* reported cost (newer Sonar returns a
+        # ``usage.cost`` block) over the flat ClassVar estimate, so the budget
+        # tote sums real spend. Fall back to the estimate when absent.
+        usage = data.get("usage") or {}
+        real_cost = _cost_from_usage(usage)
+        cost_usd = real_cost if real_cost is not None else self.cost_per_call_usd
 
         # Block-parse + embed via the shared ingestion pipeline so
         # ``search(kind='perplexity-reasoning', q=...)`` can find content inside the
@@ -212,12 +218,14 @@ class _PerplexityBase(CacheBackedHandler):
         return FetchResult(
             title=title,
             body_blocks=body_blocks,
-            cost_usd=self.cost_per_call_usd,
+            cost_usd=cost_usd,
             meta={
                 "model": self.model,
                 "query": query,
                 "citation_count": len(citations),
                 "citations": citations,
+                "usage": usage or None,
+                "cost_estimated": real_cost is None,
             },
         )
 
@@ -549,6 +557,28 @@ class ResearchHandler(_PerplexityBase):
 # ---------------------------------------------------------------------------
 # Response formatting
 # ---------------------------------------------------------------------------
+
+
+def _cost_from_usage(usage: dict[str, Any]) -> float | None:
+    """Pull the provider's actual USD cost from a Sonar ``usage`` block.
+
+    Newer Sonar responses carry ``usage.cost.total_cost`` (a float, USD). A
+    top-level ``usage.total_cost`` is also accepted. Returns ``None`` when no
+    cost figure is present, so the caller falls back to the ClassVar estimate.
+    """
+    if not isinstance(usage, dict):
+        return None
+    cost_obj = usage.get("cost")
+    candidate: Any = None
+    if isinstance(cost_obj, dict):
+        candidate = cost_obj.get("total_cost")
+    elif isinstance(cost_obj, (int, float)):
+        candidate = cost_obj
+    if candidate is None:
+        candidate = usage.get("total_cost")
+    if isinstance(candidate, (int, float)):
+        return float(candidate)
+    return None
 
 
 def _format_perplexity_body(data: dict[str, Any]) -> tuple[str, list[str]]:

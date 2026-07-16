@@ -427,7 +427,7 @@ class CacheBackedHandler(Handler):
             )
 
         # True miss — fresh ref creation.
-        result = self._fetch(key)
+        result = self._fetch_guarded(key)
         ttl_to_write = ttl_seconds_override if ttl_override_active else self.ttl_seconds
         ref, cache = self.store.put_cache_entry(
             kind=self.spec.kind,
@@ -469,7 +469,7 @@ class CacheBackedHandler(Handler):
         seconds ride in via ``ttl_seconds_override`` (``ttl_override_active``
         distinguishes "asked for forever" from "didn't ask").
         """
-        result = self._fetch(key)
+        result = self._fetch_guarded(key)
         ttl_to_write = ttl_seconds_override if ttl_override_active else self.ttl_seconds
         new_ref, cache = self.store.update_cache_entry(
             ref_id=ref.id,
@@ -561,6 +561,39 @@ class CacheBackedHandler(Handler):
     def _fetch(self, key: str) -> FetchResult:
         """Call the upstream provider. Synchronous. Raises on failure."""
 
+    def _expected_cost_usd(self) -> float:
+        """Best pre-fetch estimate of this call's cost, for the budget gate.
+
+        Reads a subclass ``cost_per_call_usd`` ClassVar when present (perplexity
+        tiers set it); free / unpriced kinds (web, youtube, math) default to
+        ``0.0`` and are never gated.
+        """
+        try:
+            return float(getattr(self, "cost_per_call_usd", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _fetch_guarded(self, key: str) -> FetchResult:
+        """Budget-gate an *expensive* paid fetch, then call ``_fetch``.
+
+        Only fetches whose estimated per-call cost lands in the ``expensive``
+        band are subject to the global cap; cheap / free fetches always run.
+        On a tripped cap this raises a clean :class:`Upstream` so the agent
+        sees why, rather than silently spending.
+        """
+        from precis.budget import breaker
+
+        reason = breaker.gate_paid(self._expected_cost_usd(), store=self.store)
+        if reason is not None:
+            raise Upstream(
+                reason,
+                next=(
+                    "wait for the budget window to roll off, or raise the cap "
+                    "on the /budget page"
+                ),
+            )
+        return self._fetch(key)
+
     # ── default helpers, overridable ──────────────────────────────────
 
     def _is_fresh(self, cache: CacheEntry) -> bool:
@@ -622,16 +655,27 @@ class CacheBackedHandler(Handler):
         return Response(body="\n".join(lines), cost=cost)
 
     def _cost_str(self, cache: CacheEntry, *, hit: bool) -> str:
-        """Format the cost trailer.
+        """Format the cost trailer with a qualitative cost band.
+
+        The band word (``free`` / ``cheap`` / ``expensive``) is the uniform
+        cost affordance (ADR: budget-guardrails Piece A) — a lesser model gets
+        a feel for the lane without doing dollar arithmetic. It's *information
+        + permission*, never prohibition: only the breaker ever refuses.
 
         - free provider, hit/miss: '[cost: free]'
-        - paid provider, miss:     '[cost: ~$X.XXX]'
-        - paid provider, hit:      '[cost: ~$X.XXX — cached]'
+        - paid provider, miss:     '[cost: ~$X.XXXX · cheap]'
+        - paid provider, hit:      '[cost: ~$X.XXXX · cheap — cached]'
         """
+        from precis.budget.bands import Cost, cost_from_usd
+
         if cache.cost_usd is None or cache.cost_usd == 0:
             return "[cost: free]"
+        band = cost_from_usd(cache.cost_usd)
+        # A cache hit re-serves stored bytes for $0 now, so its live band is
+        # free; the stored figure stays for provenance.
+        band_word = Cost.FREE.value if hit else band.value
         suffix = " - cached" if hit else ""
-        return f"[cost: ~${cache.cost_usd:.4f}{suffix}]"
+        return f"[cost: ~${cache.cost_usd:.4f} \u00b7 {band_word}{suffix}]"
 
     # ── /recent listing — shared across cache-backed kinds ─────────────
 

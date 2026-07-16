@@ -254,7 +254,7 @@ class FakeStore:
         }
 
     def _for_kind(self, kind: str | None) -> list[Any]:
-        return {
+        pools = {
             "todo": self.todos,
             "paper": self.papers,
             "memory": self.memories,
@@ -264,7 +264,10 @@ class FakeStore:
             "job": self.jobs,
             "pres": self.press,
             "datasheet": self.datasheets,
-        }.get(kind or "", [])
+        }
+        if kind is None:
+            return [r for pool in pools.values() for r in pool]
+        return pools.get(kind, [])
 
     def list_blocks_for_ref(self, ref_id: int, **kw: Any) -> list[Any]:
         return list(self._conv_blocks.get(ref_id, []))
@@ -443,6 +446,27 @@ class FakeStore:
             + self.datasheets
         }
         return {i: pool[i] for i in ids if i in pool}
+
+    def update_ref(
+        self,
+        ref_id: int,
+        *,
+        title: str | None = None,
+        meta_patch: dict[str, Any] | None = None,
+        conn: Any = None,
+    ) -> Any:
+        """Patch title and/or merge meta keys for a fake ref."""
+        for ref in self._for_kind(None):
+            if ref.id == ref_id:
+                if title is not None:
+                    ref.title = title
+                if meta_patch:
+                    ref.meta = {**(ref.meta or {}), **meta_patch}
+                    self.meta_writes.append((ref_id, dict(meta_patch)))
+                return ref
+        from precis.errors import NotFound
+
+        raise NotFound(f"ref id={ref_id} not found")
 
     def soft_delete_ref(self, ref_id, *, conn=None):
         """Record the soft-delete; raise NotFound on a repeat (mirrors the

@@ -16,9 +16,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from precis.store import Tag
 from precis_web.routes.status import (
     _KEYWORDS_VERSION,
     _LIVENESS_SIGNALS,
+    _automations,
     _background_anomalies,
     _backlog_counts,
     _liveness,
@@ -193,6 +195,51 @@ def test_liveness_runs_every_signal_against_real_pg(store: Any) -> None:
     assert by_label["Morning briefing"]["scheduled"] is True
     # Pipeline stages are informational — never flagged on cadence.
     assert by_label["Chunk extracted"]["scheduled"] is False
+
+
+def test_automations_lists_tagged_crons_with_produced_artifact(store: Any) -> None:
+    """The Automations panel surfaces crons tagged ``automation`` (only), with
+    their subtype, schedule, and the most recent ``derived-into`` artifact.
+
+    A plain (untagged) cron must not appear; the produced-artifact join follows
+    the cron → draft ``derived-into`` edge.
+    """
+    cron = store.insert_ref(
+        kind="cron",
+        slug=None,
+        title="compose the morning cast",
+        meta={
+            "status": "scheduled",
+            "recurring": "daily@06:00",
+            "next_fire_at": "2026-07-17T06:00:00+00:00",
+            "fire_count": 3,
+        },
+    )
+    store.add_tag(cron.id, Tag.open("automation"), set_by="agent")
+    store.add_tag(cron.id, Tag.open("cast-morning"), set_by="agent")
+    # A plain reminder cron — must be excluded.
+    store.insert_ref(
+        kind="cron", slug=None, title="ping me later", meta={"status": "scheduled"}
+    )
+    # The artifact this cron produced.
+    draft = store.insert_ref(
+        kind="draft", slug="morning-cast-ep", title="Morning cast episode"
+    )
+    store.add_link(src_ref_id=cron.id, dst_ref_id=draft.id, relation="derived-into")
+
+    rows = _automations(store)
+    by_id = {r["ref_id"]: r for r in rows}
+
+    assert cron.id in by_id
+    row = by_id[cron.id]
+    assert row["label"] == "cast-morning"
+    assert row["recurring"] == "daily@06:00"
+    assert row["fire_count"] == 3
+    assert row["produced"] is not None
+    assert row["produced"]["ref_id"] == draft.id
+    assert row["produced"]["kind"] == "draft"
+    # The untagged reminder is not an automation.
+    assert all(r["payload"] != "ping me later" for r in rows)
 
 
 def test_liveness_scheduled_signal_clears_when_fresh(store: Any) -> None:

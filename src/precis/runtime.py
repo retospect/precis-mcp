@@ -2354,6 +2354,19 @@ def build_runtime(
     if config is None:
         config = load_config()
 
+    # Guard against the storeless-after-scrub trap: a prior ``build_runtime``
+    # (or worker) called ``adopt_process_store``, which pops
+    # ``PRECIS_DATABASE_URL`` from the environment. If this process later
+    # builds another runtime without an explicit config, recover the DSN from
+    # the secrets module rather than coming up storeless. See OPEN-ITEMS
+    # residual "build_runtime is storeless-after-scrub by construction".
+    if not config.database_url:
+        from precis import secrets as _secrets
+
+        adopted = _secrets.get_adopted_dsn()
+        if adopted:
+            config = config.model_copy(update={"database_url": adopted})
+
     store: Store | None = None
     embedder: Embedder | None = None
     if config.database_url:
@@ -2371,6 +2384,11 @@ def build_runtime(
         from precis import route_log as _route_log
 
         _route_log.bind_store(store)
+        # Bind the same store for the budget circuit breaker's rolling meter.
+        # Best-effort; dark (breaker never trips) until bound.
+        from precis.budget import bind_store as _bind_budget_store
+
+        _bind_budget_store(store)
         embedder = make_embedder(
             config.embedder,
             dim=store.embedding_dim(),

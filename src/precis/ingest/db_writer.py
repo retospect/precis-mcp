@@ -24,6 +24,7 @@ See ``docs/design/b4-precis-add.md`` for the full contract.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,6 +32,8 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.identity import normalize_arxiv, normalize_doi
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Identifier kinds — pinned to the migration's ref_identifiers comment.
@@ -501,17 +504,23 @@ def register_aliases_and_maybe_upgrade(
        ingests probe the same identifiers and short-circuit to the
        same ``ref_id``.
 
-    2. **Stub upgrade (conditional).** When the existing ref has
-       ``pdf_sha256 IS NULL`` — the stub-state predicate per the
-       finding-chase design — *and* this ingest brings PDF bytes, we
-       upgrade the row by setting the canonical ``pdf_sha256``,
-       ``pdf_pages``, ``pdf_role``, and writing the chunks the
-       pipeline extracted. The derived queue (embed / summarize)
-       picks the new chunks up on its next pass; any finding waiting
-       on this stub resumes naturally.
+    2. **Stub upgrade / markup attach (conditional).** Gated on whether
+       the ref already has *body* chunks (``ord >= 0``):
 
-    Returns the number of chunks written (zero on the alias-only
-    path, ``len(paper.chunks)`` on the stub-upgrade path).
+       * **No body** (metadata-only stub) — this ingest brings the body:
+         set the canonical PDF (when it carries one) and write its
+         chunks (PDF-Marker *or* markup). The derived queue picks the new
+         chunks up; any finding waiting on this stub resumes naturally.
+       * **Has body** (markup-ingested ref) and a PDF arrives later —
+         **attach-only**: promote the PDF as the printable, write NO
+         chunks. Body chunks are append-only (AGENTS.md §Don'ts), so the
+         first body-bearing ingest (markup) stays authoritative and a
+         later publisher PDF is a cheap printable attach, not a duplicate
+         Marker run.
+
+    Returns the number of chunks written (zero on the alias-only and
+    attach-only paths, ``len(paper.chunks)`` on the body-populating
+    path).
 
     Caller owns the transaction — this function does not COMMIT.
     """
@@ -551,38 +560,70 @@ def register_aliases_and_maybe_upgrade(
             ("pdf_sha256", alias, existing_ref_id, paper.provider),
         )
 
-    # ── 2. Stub upgrade — only if the ref currently has no canonical PDF.
+    # ── 2. Stub upgrade / markup printable-attach.
+    #
+    # Markup-first ingest (docs/design/markup-first-ingest.md) splits the
+    # historical single case ("stub gets a PDF → set hash + write
+    # chunks") into two, distinguished by whether the ref already has
+    # *body* chunks (``ord >= 0``):
+    #
+    #   * NO body chunks (metadata-only stub) → this ingest brings the
+    #     body: write its chunks (PDF-Marker *or* markup, whichever lands
+    #     first). Promote the PDF too when this ingest carries one.
+    #   * HAS body chunks (markup-ingested ref) and a PDF arrives later →
+    #     **attach-only**: set the canonical PDF, write NO chunks. Body
+    #     chunks are append-only (AGENTS.md §Don'ts); the markup chunks
+    #     stay authoritative and a re-dropped publisher PDF is a cheap
+    #     printable attach, not a duplicate Marker run.
     existing_pdf_row = conn.execute(
         "SELECT pdf_sha256 FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
         (existing_ref_id,),
     ).fetchone()
-    if existing_pdf_row is None or existing_pdf_row[0] is not None:
-        # Either the ref vanished (soft-deleted between probe and now,
-        # rare race) or it already carries a canonical PDF (this
-        # ingest is a multi-hash alias for a known paper). Either
-        # way, no upgrade work — return alias-only count.
+    if existing_pdf_row is None:
+        # Ref vanished (soft-deleted between probe and now, rare race).
+        # Aliases already registered; nothing else to do.
         return 0
-    if not paper.pdf_sha256:
-        # Caller hit a stub but provided no PDF bytes (e.g. a DOI
-        # path landing on a chase-created stub). Aliases registered;
-        # nothing else to do.
+    already_has_pdf = existing_pdf_row[0] is not None
+    has_body = bool(
+        conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM chunks WHERE ref_id = %s AND ord >= 0)",
+            (existing_ref_id,),
+        ).fetchone()[0]
+    )
+
+    # Promote the canonical PDF when this ingest brings bytes and the ref
+    # has none yet (stub upgrade *or* markup-ref printable attach). If the
+    # ref already carries a PDF this ingest is a multi-hash alias — the
+    # alias rows above suffice, no promotion.
+    if paper.pdf_sha256 and not already_has_pdf:
+        pdf_pages: str | None = None
+        if paper.pdf_pages_first is not None and paper.pdf_pages_last is not None:
+            pdf_pages = f"[{paper.pdf_pages_first},{paper.pdf_pages_last}]"
+        conn.execute(
+            "UPDATE refs SET "
+            "  pdf_sha256 = %s, "
+            "  pdf_pages  = COALESCE(%s::int4range, pdf_pages), "
+            "  pdf_role   = COALESCE(%s, pdf_role), "
+            "  updated_at = now() "
+            "WHERE ref_id = %s AND deleted_at IS NULL",
+            (paper.pdf_sha256, pdf_pages, paper.pdf_role, existing_ref_id),
+        )
+
+    # Attach-only guard: never write body chunks onto a ref that already
+    # has them. Only the first body-bearing ingest (markup or Marker)
+    # populates chunks; a later PDF just contributes the printable above.
+    if has_body:
+        log.info(
+            "register_aliases_and_maybe_upgrade: ref_id=%s already has body "
+            "chunks; attach-only (pdf_promoted=%s, no chunks written)",
+            existing_ref_id,
+            bool(paper.pdf_sha256 and not already_has_pdf),
+        )
         return 0
 
-    # Promote the canonical PDF + run the chunk insert. Mirror the
-    # write_paper §3 + §5 code path so the upgraded row looks
-    # identical to one written fresh.
-    pdf_pages: str | None = None
-    if paper.pdf_pages_first is not None and paper.pdf_pages_last is not None:
-        pdf_pages = f"[{paper.pdf_pages_first},{paper.pdf_pages_last}]"
-    conn.execute(
-        "UPDATE refs SET "
-        "  pdf_sha256 = %s, "
-        "  pdf_pages  = COALESCE(%s::int4range, pdf_pages), "
-        "  pdf_role   = COALESCE(%s, pdf_role), "
-        "  updated_at = now() "
-        "WHERE ref_id = %s AND deleted_at IS NULL",
-        (paper.pdf_sha256, pdf_pages, paper.pdf_role, existing_ref_id),
-    )
+    # No body yet — write this ingest's chunks (cards + body). Mirror the
+    # write_paper §5 code path so the upgraded row looks identical to one
+    # written fresh.
     chunk_rows: list[tuple[Any, ...]] = [
         (
             existing_ref_id,
@@ -602,15 +643,38 @@ def register_aliases_and_maybe_upgrade(
     # One round-trip for the whole chunk batch — see write_paper for
     # the same pattern. Stub-upgrade ingests typically hand in
     # 50-300 chunks and used to pay the RTT cost per row.
+    #
+    # ON CONFLICT (ref_id, ord) DO NOTHING: a metadata-only stub created
+    # by ``precis add --doi`` / chase already carries its cards (ord < 0)
+    # from ``_build_cards`` at creation. This ingest's chunk set includes
+    # freshly-derived cards at the same negative ords; without the guard
+    # they collide on ``chunks_ref_id_ord_key``. The stub's existing
+    # cards are equivalent (same metadata), so skipping the dupes and
+    # landing only the new body chunks (ord >= 0, guaranteed absent here
+    # since ``has_body`` is False) is correct and idempotent.
     if chunk_rows:
         with conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO chunks "
                 "(ref_id, set_by, ord, chunk_kind, text, section_path, "
                 " page_first, page_last, token_count, meta, numerics) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (ref_id, ord) DO NOTHING",
                 chunk_rows,
             )
+    n_body = sum(1 for c in paper.chunks if c.ord >= 0)
+    n_cards = len(chunk_rows) - n_body
+    log.info(
+        "register_aliases_and_maybe_upgrade: populated ref_id=%s from provider=%s "
+        "(submitted=%d: %d body + %d cards, cards deduped on conflict; "
+        "pdf_promoted=%s)",
+        existing_ref_id,
+        paper.provider,
+        len(chunk_rows),
+        n_body,
+        n_cards,
+        bool(paper.pdf_sha256 and not already_has_pdf),
+    )
     return len(chunk_rows)
 
 

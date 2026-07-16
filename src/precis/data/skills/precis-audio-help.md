@@ -39,6 +39,14 @@ language has a default voice). A typo fails loudly with a catalogue hint — the
 must agree (an Italian voice can't speak French text). `--speed` (0.5–2.0) is the
 one native prosody knob.
 
+**Mixed scripts split automatically.** You don't need `meta.lang` to voice a
+Japanese word inside an English chunk — the narrator splits each block by
+script (`split_by_script`), routing kana/kanji runs to a Japanese voice
+(`jf_alpha`) and keeping the English on its base voice. Kana ⇒ Japanese always;
+Han-only defaults to Japanese, override with `meta.cjk_lang='cmn'` /
+`meta.cjk_voice='zf_xiaoxiao'` for Mandarin. See `precis-voice` (the vocab-drill
+recipe).
+
 ### The catalogue (Kokoro v1.0, 54 voices)
 
 | lang code | voices (examples) | notes |

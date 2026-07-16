@@ -129,7 +129,39 @@ class PresInput:
     extra_tags: tuple[str, ...] = ()
 
 
-PrecisAddInput = PdfInput | DoiInput | ArxivInput | PresInput
+@dataclass(frozen=True)
+class MarkupInput:
+    """Structured full text (JATS / Elsevier XML / arXiv HTML / LaTeX).
+
+    Markup-first ingest (docs/design/markup-first-ingest.md): the body
+    chunks come from ``markup_path`` via
+    :func:`precis.ingest.pipeline.extract_paper_from_markup` — **Marker
+    is never run**. ``companion_pdf``, when present, is attached as the
+    printable (``pdf_sha256`` / role / pages) only.
+
+    On a :class:`precis.ingest.markup.MarkupParseError` the ingest falls
+    back to Marker OCR on ``companion_pdf`` if one exists, else the ref
+    is left for the next PDF-only fetch pass — markup-first must never
+    lose a paper we could have OCR'd.
+    """
+
+    markup_path: Path
+    #: One of :data:`precis.ingest.markup.MARKUP_FORMATS`.
+    fmt: str
+    #: Printable PDF fetched alongside the markup, attached without OCR.
+    companion_pdf: Path | None = None
+    #: Provenance URL of the markup, stamped into ``refs.meta``.
+    source_url: str | None = None
+    #: Same semantics as :class:`PdfInput.extra_tags`.
+    extra_tags: tuple[str, ...] = ()
+    #: Same semantics as :class:`PdfInput.as_kind`.
+    as_kind: str = "paper"
+    #: Same semantics as :class:`PdfInput.fold_ref_id` — the OA-fetch
+    #: sidecar's authoritative stub target.
+    fold_ref_id: int | None = None
+
+
+PrecisAddInput = PdfInput | DoiInput | ArxivInput | PresInput | MarkupInput
 
 
 @dataclass(frozen=True)
@@ -205,6 +237,9 @@ def precis_add(
     # probe entirely — that's the whole point of the optimisation.
     if isinstance(input, PresInput):
         return _precis_add_pres(input, store=store)
+
+    if isinstance(input, MarkupInput):
+        return _precis_add_markup(input, store=store)
 
     if isinstance(input, PdfInput):
         pdf_sha256 = _compute_pdf_sha256(input.pdf_path)
@@ -624,6 +659,184 @@ def _ingest_pres_pdf(
     )
 
 
+def _compute_markup_sha256(markup_path: Path) -> str | None:
+    """Content hash of the markup bytes — the cross-host claim key.
+
+    Markup ingests have no PDF (the body comes from the markup), so the
+    claim keys on the markup source instead of ``pdf_sha256``. Reuses
+    :func:`make_pdf_sha256` (a plain sha256 over bytes) so ``Claim``'s
+    hex-string key derivation applies unchanged. ``None`` if the bytes
+    can't be read.
+    """
+    try:
+        raw = Path(markup_path).read_bytes()
+    except OSError:
+        return None
+    return make_pdf_sha256(raw)
+
+
+def _precis_add_markup(
+    input: MarkupInput,
+    *,
+    store: Store,
+) -> IngestResult | None:
+    """Top-level dispatch for :class:`MarkupInput`.
+
+    Mirrors the :class:`PdfInput` arm but claims on the **markup**
+    content hash (the chunk source) instead of a PDF hash, then runs the
+    markup producer. Returns ``None`` when another host holds the claim.
+    """
+    markup_sha256 = _compute_markup_sha256(input.markup_path)
+    if markup_sha256 is None:
+        log.warning(
+            "precis_add (markup): %s vanished before hash; skipping",
+            input.markup_path.name,
+        )
+        return None
+
+    if store.dsn is None:
+        return _ingest_markup(input, store=store)
+
+    with Claim(store.dsn, markup_sha256) as claim:
+        if not claim.acquired:
+            log.info(
+                "precis_add (markup): skipping %s — claimed by another host",
+                input.markup_path.name,
+            )
+            return None
+        return _ingest_markup(input, store=store)
+
+
+def _ingest_markup(
+    input: MarkupInput,
+    *,
+    store: Store,
+) -> IngestResult | None:
+    """Run the markup producer and write / fold the resulting paper.
+
+    On a :class:`~precis.ingest.markup.MarkupParseError`, falls back to
+    Marker OCR on ``companion_pdf`` when one exists (re-dispatching a
+    :class:`PdfInput`), else logs and returns ``None`` so the ref stays
+    claimable for the next PDF-only fetch pass.
+    """
+    from precis.ingest.markup import MarkupParseError
+    from precis.ingest.pipeline import extract_paper_from_markup
+
+    try:
+        paper = extract_paper_from_markup(
+            input.markup_path,
+            fmt=input.fmt,
+            pdf_path=input.companion_pdf,
+            source_url=input.source_url,
+        )
+    except MarkupParseError as exc:
+        if input.companion_pdf is not None and Path(input.companion_pdf).is_file():
+            log.warning(
+                "precis_add (markup): %s parse failed (%s); falling back to "
+                "Marker OCR on %s",
+                input.fmt,
+                exc,
+                input.companion_pdf.name,
+            )
+            return precis_add(
+                PdfInput(
+                    pdf_path=input.companion_pdf,
+                    extra_tags=input.extra_tags,
+                    as_kind=input.as_kind,
+                    fold_ref_id=input.fold_ref_id,
+                ),
+                store=store,
+            )
+        log.error(
+            "precis_add (markup): %s parse failed (%s) and no companion PDF "
+            "for %s; leaving ref for the next PDF-only pass",
+            input.fmt,
+            exc,
+            input.markup_path.name,
+        )
+        return None
+
+    if input.as_kind != paper.kind:
+        paper = replace(paper, kind=input.as_kind)
+
+    with store.pool.connection() as conn:
+        existing = probe_existing(
+            paper_id=paper.paper_id,
+            doi=paper.doi,
+            arxiv_id=paper.arxiv_id,
+            s2_id=paper.s2_id,
+            pubmed_id=paper.pubmed_id,
+            openalex_id=paper.openalex_id,
+            pdf_sha256=paper.pdf_sha256,
+            content_hash=paper.content_hash,
+            conn=conn,
+        )
+        if existing is None and input.fold_ref_id is not None:
+            existing = _valid_fold_stub(input.fold_ref_id, kind=paper.kind, conn=conn)
+            if existing is not None:
+                log.info(
+                    "precis_add (markup): folding %s into sidecar stub ref_id=%s",
+                    input.markup_path.name,
+                    existing,
+                )
+        if existing is not None:
+            chunks_written = register_aliases_and_maybe_upgrade(
+                existing, paper, conn=conn
+            )
+            _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=existing,
+                file_stem=input.markup_path.stem,
+                conn=conn,
+            )
+            conn.commit()
+            stored_kind = _lookup_kind(existing, conn=conn)
+            _apply_extra_tags(store, stored_kind, existing, input.extra_tags)
+            log.info(
+                "precis_add (markup): %s hit existing ref_id=%s "
+                "(fmt=%s, chunks_written=%d)",
+                input.markup_path.name,
+                existing,
+                input.fmt,
+                chunks_written,
+            )
+            return _with_kind(
+                _hit_result_from_db(
+                    existing,
+                    conn=conn,
+                    fallback=paper,
+                    chunks_written=chunks_written,
+                ),
+                kind=stored_kind,
+            )
+
+        result = write_paper(paper, conn=conn)
+        conn.commit()
+
+    _apply_extra_tags(store, paper.kind, result.ref_id, input.extra_tags)
+    log.info(
+        "precis_add (markup): wrote new ref_id=%s from %s "
+        "(fmt=%s, chunks=%d, printable=%s)",
+        result.ref_id,
+        input.markup_path.name,
+        input.fmt,
+        result.chunks_written,
+        bool(paper.pdf_sha256),
+    )
+    return IngestResult(
+        ref_id=result.ref_id,
+        inserted=True,
+        paper_id=paper.paper_id,
+        pub_id=paper.pub_id,
+        cite_key=result.cite_key,
+        pdf_sha256=paper.pdf_sha256,
+        content_hash=paper.content_hash,
+        chunks_written=result.chunks_written,
+        identifiers=result.identifiers_written,
+        kind=paper.kind,
+    )
+
+
 def _with_kind(result: IngestResult, *, kind: str) -> IngestResult:
     """Return ``result`` with ``kind`` overridden so the caller
     sees what's actually stored. ``_hit_result_from_db`` defaults
@@ -911,6 +1124,7 @@ __all__ = [
     "ArxivInput",
     "DoiInput",
     "IngestResult",
+    "MarkupInput",
     "PdfInput",
     "PrecisAddInput",
     "PresInput",

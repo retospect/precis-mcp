@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# scripts/restart-worker-and-watch — restart the precis worker + watch daemons.
+#
+# Restarting only `watch` leaves `worker` stopped and the derived queue backlog
+# grows, so this script always restarts both in the right order:
+# worker first, then watch. Uses `launchctl kickstart -k` on the system
+# `com.precis.worker` and `com.precis.watch` services.
+#
+# Usage:
+#   scripts/restart-worker-and-watch
+#   sudo scripts/restart-worker-and-watch   # if the plists are owned by root
+#
+# See: OPEN-ITEMS.md / "Worker + watch restarts are a pair"
+set -euo pipefail
+
+WORKER_LABEL="system/com.precis.worker"
+WATCH_LABEL="system/com.precis.watch"
+
+restart_service() {
+    local label="$1"
+    echo "Restarting ${label}..."
+    if ! launchctl kickstart -k "${label}" 2>/dev/null; then
+        echo "WARN: could not restart ${label} (not loaded? try launchctl bootstrap)" >&2
+        return 1
+    fi
+    echo "Restarted ${label}."
+}
+
+restart_service "${WORKER_LABEL}"
+restart_service "${WATCH_LABEL}"

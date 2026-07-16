@@ -187,12 +187,20 @@
         {{ filter_inputs() }}
         <template x-if="open">
           <span class="flex items-start gap-2">
-            <textarea name="text" required rows="2" placeholder="New strategic root…"
-                      class="rounded-md border-slate-300 text-sm px-2 py-1 border w-56"></textarea>
-            <select name="level" class="rounded-md border-slate-300 text-sm border px-1 py-1">
-              <option value="strategic">strategic</option>
-              <option value="tactical">tactical</option>
+            <input name="text" required type="text" placeholder="New strategic root title…"
+                   class="rounded-md border-slate-300 text-sm px-2 py-1 border w-48" />
+            <textarea name="description" rows="2" placeholder="What are we doing / what's in the doc"
+                      class="rounded-md border-slate-300 text-sm px-2 py-1 border w-48"></textarea>
+            <select name="doc_type" class="rounded-md border-slate-300 text-sm border px-1 py-1">
+              <option value="paper">paper</option>
+              <option value="draft" selected>draft</option>
+              <option value="pres">pres</option>
+              <option value="cfp">cfp</option>
             </select>
+            <label class="flex items-center gap-1 text-sm whitespace-nowrap">
+              <input type="checkbox" name="start" value="on" />
+              Start now
+            </label>
             <button class="rounded-md bg-emerald-600 text-white text-sm px-3 py-1">Add</button>
           </span>
         </template>
