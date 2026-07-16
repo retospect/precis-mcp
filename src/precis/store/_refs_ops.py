@@ -905,6 +905,25 @@ class RefsMixin:
             with self.pool.connection() as c:
                 c.execute(sql, (prio, ref_id))
 
+    def find_ref_by_meta(self, *, kind: str, key: str, value: str) -> Ref | None:
+        """Newest live ref of ``kind`` whose ``meta->>key`` equals ``value``.
+
+        A narrow lookup by a scalar ``meta`` field — the ``llm`` catalog
+        resolves a model slug (``get(kind='llm', id='claude-opus-4-8')``) to its
+        card this way (``key='model_id'``), robust to tag-charset limits that a
+        ``model:<slug>`` tag would hit for hosted-OSS ids (slashes, case). Returns
+        ``None`` when nothing matches.
+        """
+        sql = (
+            f"SELECT {_REFS_COLS_ALIASED} FROM refs r "
+            "WHERE r.kind = %s AND r.deleted_at IS NULL "
+            "AND r.meta->>%s = %s "
+            "ORDER BY r.created_at DESC LIMIT 1"
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, (kind, key, value)).fetchone()
+        return _row_to_ref(row) if row is not None else None
+
     def set_parent(
         self,
         ref_id: int,

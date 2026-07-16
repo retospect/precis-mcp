@@ -35,6 +35,7 @@ from precis.cli import (
     gripe,
     heartbeat,
     ingest,
+    llm,
     logs,
     maintenance,
     migrate,
@@ -220,6 +221,10 @@ def main() -> None:
         quest.run(args)
         return
 
+    if args.cmd == "llm":
+        llm.run(args)
+        return
+
     parser.error(f"unknown command: {args.cmd!r}")
 
 
@@ -275,6 +280,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cron.add_parser(sub)
     cast.add_parser(sub)
     quest.add_parser(sub)
+    llm.add_parser(sub)
     heartbeat.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")

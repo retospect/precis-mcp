@@ -536,6 +536,69 @@ The master kinds table lives in the `precis-overview` skill.
   gap surfacing (slice 3), the autonomous research loop (local grind + frontier
   steering, materials as `structure` servers, slice 4). Skill:
   `precis-quest-help`.
+- **`llm`** — the model catalog (design-of-record `docs/proposals/llm-catalog.md`;
+  slice 1 **live, read-only, ships dark**). Turns model choice from hardcoded
+  constants (`router._TIER_MODEL` + the `LLM:opus|sonnet|haiku` tag) into a
+  first-class kind: a **catalog** of facts + a **ledger** of observations + a
+  **policy** that picks (quest/gripe shape — numeric-ref `handlers/llm.py`, handle
+  `lm`, migration 0071, `emits_card` so a card *is a vector*, `corpus_role='none'`).
+  Identity = one ref per model; `meta` carries `model_id` (the human key
+  `get(kind='llm', id='claude-opus-4-8')` resolves via `store.find_ref_by_meta`),
+  `tier_floor`, `offerings` (operating points — effort/window are axes *within* a
+  card), coarse 1–5 `capability` axes, and provenance. The shared writer
+  `precis.llm_catalog.upsert_card` (idempotent on `model_id`) is used by both the
+  handler and the reconcile pass. **`llm_reconcile`** (`workers/llm_reconcile.py`,
+  the `paper_reconcile` cadence + xact-lock shape, **default-OFF**
+  `PRECIS_LLM_RECONCILE_ENABLED` / `--only llm_reconcile`) refreshes facts from the
+  live OpenRouter feed (`/api/v1/models` — no key) + flags **proxy drift** (a card
+  whose loopback-proxy offering names a model the proxy can't serve — the
+  opus-not-in-proxy 400) via `raise_alert`. Seed + drive: `precis llm
+  seed|reconcile|list`. Empty catalog ⇒ byte-identical to today (`Tier` stays the
+  floor). **Slice 2 (`admit()`) built** (`utils/llm/admit.py`): a pure
+  `est_tokens×(1+headroom) ≤ max_input` fit-check wired into `router.dispatch`
+  after `gate_tier` — refuses a doomed (context, model) pairing *with the numbers*
+  as a normalized `LlmResult.error` (never raised, so a pinned pass backs off, not
+  spins); a deduped `raise_oversize_alert` (source `admit:oversize`) is the
+  pass-level page. Window comes from the offering's `max_input` else the
+  reconciled `facts_openrouter.context_length`; a short-TTL in-process catalog
+  cache keeps the hot path a dict lookup. Ships dark: no store / no card / no
+  known window ⇒ admit is a no-op. Standalone `admit_context` is exported for the
+  context-assembly path (split/trim before forming a request). Still-direct
+  `claude -p` passes (`plan_tick`/`fix_gripe`) bypass dispatch → not yet gated
+  (deferred). **Slice 3 (ledger) built** (`llm_catalog.py`): the WORM **review
+  log** (`llm_review` chunks, the quest-logbook pattern — typed evidence bands
+  `published-benchmark`/`measured-eval`/`observed-telemetry`/`agent-review` with
+  provenance, appended via `put(kind='llm', id=N, text=…, entry=…, by=…)`, read
+  via `view='reviews'`); the **tote** (`llm_tote` rollup over `llm_call_log` per
+  model — calls/cost/error-rate/p50/turns, read via `view='tote'`, a live query
+  not stored); **observed-axis derivation** (`record_observed_axes` — the
+  operational reasoning signal: success rate → a 1–5 `reasoning-convergence`
+  ordinal with `observed-telemetry` provenance); the `measured-eval` write surface
+  (`record_eval`); and `PROVENANCE_TRUST` (observed>measured>published, so bands
+  never blend). CLI: `precis llm tote|observe`. **Deferred:** the full golden-
+  task-from-corpus eval harness (real fix_gripe/needle/summarize runs → ordinals;
+  `record_eval` is the write surface it reports through). **Slice 4 (policy)
+  built** (`utils/llm/policy.py`): `select_offering(store, Requirement) → Selection`
+  — deterministic requirement→model, a **decision-point** call (not the hot path;
+  ranking never runs per-item). Hard-filter (window via `admit`, budget band via
+  `gate_tier`, availability, `supported_parameters` flags) → rank (survivors ≥ the
+  dominant axis's min ordinal, cheapest wins) → a Pareto **`next_better`** rung
+  over (capability↑, cost↓) reusing `quest.frontier.pareto_split`. The invariant:
+  empty catalog / nothing-fits ⇒ `resolve_model(tier_floor)`, **byte-identical to
+  today** — so a call site can route through it before any card exists. The LLM
+  infers the `Requirement` (slice 5); the policy stays deterministic + price-aware.
+  CLI: `precis llm select`. **Deferred:** wiring the deliberative call sites +
+  `plan_tick` through the catalog + the transport-on-card collapse
+  (`LITELLM`+`OPENAI_COMPAT` → one param'd provider) — progressive integration, not
+  the policy core. **Slice 5 (agent surface) built** (`utils/llm/requirement.py`):
+  the **task→requirement judge** — `infer_requirement(task) → Requirement` runs a
+  cheap (`CLOUD_SMALL`) one-shot judge that infers a *capability requirement*
+  (never a model name — the LLM is price/window-blind + self-biased), and
+  `choose_model(store, task)` chains it into `select_offering`. Every field is
+  clamped so a malformed reply can't produce an illegal requirement; the judge is
+  injectable for tests. Plus the agent-facing `precis-llm-help` skill (express a
+  requirement, don't pick a model) and CLI `precis llm choose`. **All 5 slices
+  built + green** (facts → guardrail → ledger → policy → agent surface); ship dark.
 - **`alert`** — machine-detected ops/health conditions (spin loops, orphans),
   raised via `precis.alerts.raise_alert` (fingerprint upsert + auto-resolve),
   read via `AlertHandler`/`/alerts`. **Not embedded.** Skill: `precis-alert-help`.

@@ -688,6 +688,23 @@ def dispatch(req: LlmRequest) -> LlmResult:
             tier=req.tier,
             error=trip,
         )
+    # Window admission (llm-catalog slice 2): refuse a doomed (context, model)
+    # pairing loudly — with the numbers — after the budget gate, before spending
+    # the call, folded into the same normalized-error shape (never raised, so a
+    # pinned-model pass backs off instead of spinning). Ships dark: no store /
+    # no card / no known window ⇒ None, i.e. byte-identical to today.
+    from precis.utils.llm import admit as _admit
+
+    refusal = _admit.check_dispatch(req, model=model, transport=transport)
+    if refusal is not None:
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=refusal,
+        )
     started = time.monotonic()
     result = provider.run(req, model=model)
     _record_dispatch(

@@ -79,6 +79,9 @@ KIND_CODES: dict[str, str] = {
     # the striving above the work (quest layer, migration 0065) — perpetual,
     # never exported. Record ``qu`` / logbook chunk ``ql`` below.
     "quest": "qu",
+    # model catalog (llm-catalog, migration 0071) — one card per model, never
+    # exported. Record ``lm`` / review-log chunk ``lr`` below.
+    "llm": "lm",
     # operational
     "todo": "td",
     "job": "jo",
@@ -148,6 +151,10 @@ CHUNK_CODES: dict[str, str] = {
     "mermaid": "mn",
     # quest logbook entries (``ql<id>``) — the append-only WORM ledger rows.
     "quest": "ql",
+    # llm catalog review-log entries (``lr<id>``) — the append-only, typed,
+    # dated ledger rows (published-benchmark / measured-eval / observed-telemetry
+    # / agent-review); minted from slice 3 (llm-catalog, migration 0071).
+    "llm": "lr",
 }
 
 # Reverse map (code -> (kind, is_chunk)).

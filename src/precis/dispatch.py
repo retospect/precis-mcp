@@ -652,6 +652,7 @@ def boot(
         from precis.handlers.folder import FolderHandler
         from precis.handlers.gripe import GripeHandler
         from precis.handlers.job import JobHandler
+        from precis.handlers.llm import LlmHandler
         from precis.handlers.memory import MemoryHandler
         from precis.handlers.mermaid import MermaidHandler
         from precis.handlers.message import MessageHandler
@@ -681,6 +682,7 @@ def boot(
         _gated(AnkiHandler)
         _gated(ConceptHandler)
         _gated(QuestHandler)
+        _gated(LlmHandler)
         _gated(CitationHandler)
         _gated(FindingHandler)
         _gated(ConversationHandler)

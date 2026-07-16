@@ -210,6 +210,7 @@ _SKILL_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "precis-cache",
             "precis-random-help",
             "precis-gripe-help",
+            "precis-llm-help",
             "precis-toon",
         ),
     ),

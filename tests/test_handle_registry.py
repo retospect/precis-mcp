@@ -46,6 +46,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "anki",
         "concept",
         "quest",
+        "llm",
         "todo",
         "job",
         "alert",

@@ -101,6 +101,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_gp_fetch_pass": PassBand.BACKGROUND,
     "_llm_summarize_pass": PassBand.BACKGROUND,
     "_classify_pass": PassBand.BACKGROUND,
+    "_llm_reconcile_pass": PassBand.BACKGROUND,
     "_paper_glossary_pass": PassBand.BACKGROUND,
     "_structural_pass": PassBand.BACKGROUND,
     "_deep_review_pass": PassBand.BACKGROUND,
@@ -216,6 +217,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "briefing",
             "llm_summarize",
             "classify",
+            "llm_reconcile",
             "paper_glossary",
             "backlog_groom",
             "briefing_audio",
@@ -778,6 +780,23 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_classify_pass)
+
+        # llm_reconcile — keep the llm-catalog model-card facts true against the
+        # live OpenRouter feed + flag proxy drift (llm-catalog slice 1, step 1 of
+        # the litellm teardown). Default-OFF (PRECIS_LLM_RECONCILE_ENABLED /
+        # --only llm_reconcile); a single cheap app_state read until the catalog
+        # has cards. Corpus-wide single-runner (app_state cadence + xact lock).
+        if _pass_enabled("llm_reconcile") or os.environ.get(
+            "PRECIS_LLM_RECONCILE_ENABLED"
+        ):
+            from precis.workers.runner import BatchResult as _LlmRecBatchResult
+
+            def _llm_reconcile_pass(batch_size: int) -> _LlmRecBatchResult:
+                from precis.workers.llm_reconcile import run_llm_reconcile_pass
+
+                return run_llm_reconcile_pass(store)
+
+            ref_passes.append(_llm_reconcile_pass)
 
         # paper_glossary — per-paper inferred reading glossary (reading-prep
         # loop, slice 1). Harvests Schwartz-Hearst abbreviations + undefined
