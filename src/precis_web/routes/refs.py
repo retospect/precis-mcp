@@ -340,6 +340,57 @@ def _job_actions(store: Any, ref: Any, tags: list[Any]) -> dict[str, Any]:
     }
 
 
+def _youtube_meta(store: Any, ref: Any) -> dict[str, Any] | None:
+    """Header context for a ``kind='youtube'`` detail page.
+
+    The watch-page scrape (channel / thumbnail / duration) lands in
+    ``cache_state.meta`` — not ``refs.meta`` — so pull the cache row to
+    surface a clickable **Watch on YouTube** link and the video's
+    thumbnail (a "screenshot") above the transcript body. Returns
+    ``None`` only when the video id can't be recovered (so the template
+    just renders the plain body).
+
+    The thumbnail falls back to the deterministic ``i.ytimg.com`` URL
+    when the og:image scrape didn't populate one, so a thumbnail shows
+    even for a transcript fetched before the scrape existed.
+    """
+    slug = getattr(ref, "slug", None) or ""
+    meta: dict[str, Any] = {}
+    if slug:
+        try:
+            cached = store.get_cache_entry_by_slug(kind="youtube", slug=slug)
+        except Exception:
+            cached = None
+        if cached is not None:
+            meta = cached[1].meta or {}
+    video_id = meta.get("video_id") or slug
+    if not video_id:
+        return None
+
+    duration = ""
+    if meta.get("duration_s"):
+        sec = int(meta["duration_s"])
+        mins, s = divmod(sec, 60)
+        duration = f"{mins}m{s:02d}s"
+    elif meta.get("duration_iso"):
+        duration = str(meta["duration_iso"])
+
+    return {
+        "video_id": video_id,
+        "watch_url": f"https://www.youtube.com/watch?v={video_id}",
+        # Prefer the scraped og:image; fall back to YouTube's stable
+        # per-video thumbnail endpoint so a screenshot always renders.
+        "thumbnail_url": (
+            meta.get("thumbnail_url")
+            or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+        ),
+        "channel_name": meta.get("channel_name") or "",
+        "channel_url": meta.get("channel_url") or "",
+        "duration": duration,
+        "published_at": meta.get("published_at") or "",
+    }
+
+
 #: The kinds the Refs tab pre-checks by default — note-like, browsable,
 #: low-friction. The other checkbox-eligible kinds stay unchecked
 #: unless the operator opts in (via ``?all=1`` or by tickering them
@@ -813,6 +864,10 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
     if kind == "job":
         job_actions = _job_actions(store, ref, raw_tags)
 
+    # YouTube detail pages get a header card with a clickable watch link
+    # and the video thumbnail (a "screenshot") above the transcript.
+    youtube_meta = _youtube_meta(store, ref) if kind == "youtube" else None
+
     return templates.TemplateResponse(
         request,
         "refs/detail.html.j2",
@@ -829,6 +884,7 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
             "body_disabled_notice": body_disabled_notice,
             "references": references,
             "job_actions": job_actions,
+            "youtube_meta": youtube_meta,
             # The generic "Ask & think" Discussion box is a dream-memory
             # affordance; a job wants the actions strip, not an agentic
             # side-thread. Suppress it for jobs.

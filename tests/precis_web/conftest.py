@@ -228,6 +228,28 @@ class FakeStore:
                 },
             ),
         ]
+        # A cached YouTube transcript for the /refs/youtube detail card.
+        # The scraped watch-page meta lives in cache_state.meta (returned
+        # by get_cache_entry_by_slug), not on the ref.
+        self.youtubes = [
+            make_ref(
+                id=52100,
+                kind="youtube",
+                slug="dQw4w9WgXcQ",
+                title="Rick Astley - Never Gonna Give You Up",
+            ),
+        ]
+        #: {(kind, slug): cache_state.meta} for get_cache_entry_by_slug.
+        self.cache_meta_by_slug: dict[tuple[str, str], dict[str, Any]] = {
+            ("youtube", "dQw4w9WgXcQ"): {
+                "video_id": "dQw4w9WgXcQ",
+                "thumbnail_url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+                "channel_name": "Rick Astley",
+                "channel_url": "https://www.youtube.com/@RickAstleyYT",
+                "duration_s": 213,
+                "published_at": "2009-10-25",
+            },
+        }
         self.convs = [
             make_ref(
                 id=40,
@@ -264,10 +286,22 @@ class FakeStore:
             "job": self.jobs,
             "pres": self.press,
             "datasheet": self.datasheets,
+            "youtube": self.youtubes,
         }
         if kind is None:
             return [r for pool in pools.values() for r in pool]
         return pools.get(kind, [])
+
+    def get_cache_entry_by_slug(self, *, kind: str, slug: str):
+        """Return a (ref, cache) pair for a cached slug, cache carrying
+        the scraped ``meta`` dict — enough for the youtube detail card."""
+        meta = self.cache_meta_by_slug.get((kind, slug))
+        if meta is None:
+            return None
+        ref = next((r for r in self._for_kind(kind) if r.slug == slug), None)
+        if ref is None:
+            return None
+        return ref, SimpleNamespace(meta=meta)
 
     def list_blocks_for_ref(self, ref_id: int, **kw: Any) -> list[Any]:
         return list(self._conv_blocks.get(ref_id, []))
@@ -444,6 +478,7 @@ class FakeStore:
             + self.jobs
             + self.press
             + self.datasheets
+            + self.youtubes
         }
         return {i: pool[i] for i in ids if i in pool}
 

@@ -46,6 +46,44 @@
   </form>
 </div>
 
+{# YouTube header card — a clickable watch link + the video thumbnail
+   ("screenshot") so the detail page isn't just a wall of transcript.
+   The thumbnail is itself a link to the video (with a play overlay);
+   the deep-link in the body below stays as the plain-text fallback. #}
+{% if youtube_meta %}
+<div class="mb-4 rounded-lg border border-slate-200 bg-white overflow-hidden sm:flex">
+  <a href="{{ youtube_meta.watch_url }}" target="_blank" rel="noopener"
+     class="relative block shrink-0 sm:w-64 group"
+     title="Watch on YouTube">
+    <img src="{{ youtube_meta.thumbnail_url }}" alt="Video thumbnail"
+         class="w-full h-full object-cover aspect-video bg-slate-100"
+         loading="lazy" referrerpolicy="no-referrer" />
+    <span class="absolute inset-0 flex items-center justify-center">
+      <span class="rounded-full bg-black/60 group-hover:bg-red-600 transition-colors
+                   w-14 h-10 flex items-center justify-center text-white text-xl">▶</span>
+    </span>
+  </a>
+  <div class="p-4 flex flex-col gap-2 min-w-0">
+    <a href="{{ youtube_meta.watch_url }}" target="_blank" rel="noopener"
+       class="inline-flex items-center gap-1.5 self-start rounded-md bg-red-600 text-white
+              text-sm px-3 py-1.5 hover:bg-red-700">
+      ▶ Watch on YouTube ↗
+    </a>
+    <p class="text-xs text-slate-500 space-x-2">
+      {% if youtube_meta.channel_name %}
+        {% if youtube_meta.channel_url %}
+        <a href="{{ youtube_meta.channel_url }}" target="_blank" rel="noopener"
+           class="text-sky-700 hover:underline">{{ youtube_meta.channel_name }}</a>
+        {% else %}<span>{{ youtube_meta.channel_name }}</span>{% endif %}
+      {% endif %}
+      {% if youtube_meta.duration %}<span>· {{ youtube_meta.duration }}</span>{% endif %}
+      {% if youtube_meta.published_at %}<span>· published {{ youtube_meta.published_at }}</span>{% endif %}
+    </p>
+    <p class="text-xs text-slate-400 font-mono break-all">{{ youtube_meta.watch_url }}</p>
+  </div>
+</div>
+{% endif %}
+
 {% if body_disabled_notice %}
 <div class="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
   {{ body_disabled_notice }}
