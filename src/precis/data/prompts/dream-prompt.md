@@ -45,7 +45,7 @@ TITLE DISCIPLINE: write the body first (``text=`` — the full "I notice…" con
   ✅ title="Free-energy bound ≈ [pt913]'s clamp circuit"
      text="I notice [pa812]'s free-energy bound mirrors [pt913]'s clamp circuit, which suggests…"
 
-The body MUST name each source ref inline by the `[handle]` the tool result printed for it, so the connection auto-links and stays traceable (`get(kind='skill', id='precis-addressing-help')` for the form). Vague connections are useless; be specific about what links to what AND name the fact-bearing leg explicitly.
+The body MUST name each source ref inline by the identifier the tool result printed for it, so the connection auto-links and stays traceable (`get(kind='skill', id='precis-addressing-help')` for the form). Corpus refs print a `[handle]` — papers `[pa..]`, patents `[pt..]`, memories `[me..]`. A consulted **search / perplexity / web** answer has no `[handle]`; it prints a `cite as \`kind:id\`` line instead (`websearch:12345`, `perplexity-research:678`, `web:910`) — drop that exact `kind:id` token into the body and it auto-links the same way. Whenever a websearch/perplexity call supplies the fact-bearing leg (as the Urbach-tail one did), cite it by its token so the edge to the search survives. Vague connections are useless; be specific about what links to what AND name the fact-bearing leg explicitly.
 
 DEFINE YOUR ABBREVIATIONS: a memory has no glossary, so spell out each abbreviation on first use in the body — write `AGNR (armchair graphene nanoribbon)`, not a bare `AGNR`. This covers all-caps acronyms and hyphenated compounds (`GNR-FET`).
 

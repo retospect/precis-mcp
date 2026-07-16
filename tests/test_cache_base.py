@@ -249,6 +249,41 @@ def test_multi_block_body_renders_concatenated(store: Store) -> None:
     assert "first paragraph\n\nsecond paragraph" in resp.body
 
 
+# ── cite-as self-pointer (dream memories auto-link consulted searches) ──
+
+
+def test_cite_pointer_gates_on_linkify_kinds() -> None:
+    """A linkable cache-backed kind prints a `kind:id` self-pointer; a kind
+    off the autolinker allowlist prints nothing (no token that won't link)."""
+    from precis.handlers._cache_base import _cite_pointer
+
+    line = _cite_pointer("websearch", 12345)
+    assert line is not None
+    assert "`websearch:12345`" in line
+    # `wikipedia` / `semanticscholar` are query-addressed but NOT in
+    # LINKIFY_KINDS, so no self-pointer (it would dangle).
+    assert _cite_pointer("wikipedia", 999) is None
+
+
+def test_render_self_pointer_actually_autolinks(
+    handler: _FakeCacheKindAsMath,
+) -> None:
+    """The rendered answer surfaces a `kind:id` token, and that exact token —
+    dropped into a note/memory body — resolves through the write-time
+    autolinker. This is the edge a dream memory dropped when it named a
+    websearch in prose but had no printed identifier to cite."""
+    from precis.utils.mentions import resolve_link_targets
+
+    resp = handler.get(q="population of Ireland")
+    refs = handler.store.list_refs(kind="math", provider="wolfram", limit=1)
+    ref_id = refs[0].id
+    assert f"cite as `math:{ref_id}`" in resp.body
+    # The autolinker (which _sync_mention_links runs on every memory write)
+    # resolves the printed token to this exact ref.
+    targets = resolve_link_targets(handler.store, f"the figure came from math:{ref_id}")
+    assert [t.dst_ref_id for t in targets] == [ref_id]
+
+
 # ── tags= on get (gripe:3681 phase 2) ─────────────────────────────────
 
 

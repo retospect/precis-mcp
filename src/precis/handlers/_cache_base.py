@@ -56,6 +56,7 @@ from precis.utils import handle_registry
 from precis.utils.block_ingest import to_block_inserts
 from precis.utils.embed_query import embed_query, query_vec_for
 from precis.utils.md_parse import block_meta, parse_markdown
+from precis.utils.mentions import LINKIFY_KINDS
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -65,6 +66,31 @@ if TYPE_CHECKING:
     from precis.store.types import CacheEntry, Ref
 
 log = logging.getLogger(__name__)
+
+
+def _cite_pointer(kind: str, ref_id: int) -> str | None:
+    """A ``<kind>:<id>`` self-reference token a caller can paste into a
+    note/memory body to auto-link *this exact cached answer*.
+
+    These provider kinds are query-addressed and carry no 2-char handle
+    (``handle_registry`` excludes web/perplexity/etc.), and their slugs
+    contain ``~`` which ``REF_PATTERN`` can't parse as one token — so a
+    caller who *reads* a search/perplexity answer previously had no printed
+    identifier to cite, and a memory resting on it could only mention it in
+    prose (the edge was lost — the reason a dream memory named "a precis
+    websearch" but never linked it). The numeric ``<kind>:<id>`` form does
+    resolve, through the write-time autolinker's numeric path
+    (``mentions.resolve_handle_ref``), for any kind on the
+    :data:`~precis.utils.mentions.LINKIFY_KINDS` allowlist. Kinds off the
+    allowlist (``wikipedia``, ``semanticscholar``) get no line rather than a
+    token that wouldn't link.
+    """
+    if kind not in LINKIFY_KINDS:
+        return None
+    return (
+        f"- cite as `{kind}:{ref_id}` "
+        "— paste into a note/memory to auto-link this answer"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +676,9 @@ class CacheBackedHandler(Handler):
         lines.append(body_text)
         lines.append("")
         lines.append(f"- {self.attribution}")
+        cite = _cite_pointer(self.spec.kind, ref.id)
+        if cite:
+            lines.append(cite)
 
         cost = self._cost_str(cache, hit=hit)
         return Response(body="\n".join(lines), cost=cost)
