@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# scripts/inflight — a live table of every worktree + branch in flight on THIS machine.
+#
+# Everything here is DERIVED from git at call time (never a stored cache), so it
+# cannot drift: worktrees appear/vanish between ships and the table is still
+# correct the instant you run it. The one thing git can't derive — what a
+# random-codenamed worktree is actually *about* — is read from a per-worktree
+# `.claude/purpose` one-liner (gitignored; self-cleaning, dies with the worktree).
+#
+# Columns:
+#   WORKTREE   basename ( * = the one you're in; "main" = the primary checkout )
+#   SESSION    live#<pid>  — a Claude session holds the worktree lock and is alive
+#              dead-lock#<pid> — locked by a pid that is gone (safe to reap)
+#              —           — no lock
+#   DIRTY      count of tracked-modified files (+N = untracked), or "clean"
+#   VS-MAIN    merged        — tip is an ancestor of main (shipped & reset, or ff)
+#              in-main↓B     — all commits already in main via squash; B behind
+#              ↑U↓B          — U commits unique to the branch, B behind main
+#   PURPOSE    .claude/purpose  →  else newest branch-unique commit subject
+#              →  else "(editing <files>…)"  →  else "(no purpose set)"
+#   LAST       relative date + subject of the worktree's HEAD commit
+#
+# The footer lists REMOVABLE candidates (merged + clean + no live session) — it
+# only *reports* them; removal stays a deliberate, confirmed act (a locked live
+# session, uncommitted WIP, or salvageable docs must never be auto-nuked).
+#
+# Usage:
+#   scripts/inflight            # the table
+#   scripts/inflight --for-hook # same, with a one-line intro; always exits 0
+#                               # (wired as a SessionStart hook in .claude/settings.json)
+#
+# See: CLAUDE.md / "Session workflow" (the .claude/purpose protocol).
+set -uo pipefail
+
+FOR_HOOK=0
+[ "${1:-}" = "--for-hook" ] && FOR_HOOK=1
+
+# Not a git repo (or git absent) → say nothing, never block a session start.
+command -v git >/dev/null 2>&1 || exit 0
+git rev-parse --git-dir >/dev/null 2>&1 || exit 0
+
+# Pick the primary branch: prefer main, fall back to master.
+BASE=main
+git show-ref --verify --quiet refs/heads/main || BASE=master
+
+HERE=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+
+trunc() { # trunc <string> <max>
+  local s=$1 n=$2
+  if [ "${#s}" -gt "$n" ]; then printf '%s…' "${s:0:$((n-1))}"; else printf '%s' "$s"; fi
+}
+
+session_field() { # session_field <locked-reason>
+  local locked=$1 pid=""
+  [[ "$locked" =~ pid[[:space:]]+([0-9]+) ]] && pid="${BASH_REMATCH[1]}"
+  if [ -n "$pid" ]; then
+    if kill -0 "$pid" 2>/dev/null; then printf 'live#%s' "$pid"; else printf 'dead-lock#%s' "$pid"; fi
+  elif [ -n "$locked" ]; then printf 'locked'
+  else printf '—'; fi
+}
+
+verdict_field() { # verdict_field <head> <branch>
+  local head=$1 branch=$2
+  [ "$branch" = "$BASE" ] && { printf '—'; return; }
+  if git merge-base --is-ancestor "$head" "$BASE" 2>/dev/null; then printf 'merged'; return; fi
+  local behind unmerged
+  behind=$(git rev-list --count "$head".."$BASE" 2>/dev/null || echo '?')
+  unmerged=$(git cherry "$BASE" "$branch" 2>/dev/null | grep -c '^+')
+  if [ "$unmerged" = 0 ]; then printf 'in-main↓%s' "$behind"; else printf '↑%s↓%s' "$unmerged" "$behind"; fi
+}
+
+purpose_field() { # purpose_field <path> <head> <branch>
+  local path=$1 head=$2 branch=$3 pf line s files
+  pf="$path/.claude/purpose"
+  if [ -s "$pf" ]; then
+    line=$(grep -m1 -v '^[[:space:]]*$' "$pf" 2>/dev/null)
+    [ -n "$line" ] && { trunc "$line" 58; return; }
+  fi
+  if [ "$branch" != "$BASE" ] && ! git merge-base --is-ancestor "$head" "$BASE" 2>/dev/null; then
+    s=$(git log "$BASE".."$branch" --no-merges --format='%s' 2>/dev/null | head -1)
+    [ -n "$s" ] && { trunc "$s" 58; return; }
+  fi
+  files=$(git -C "$path" status --porcelain --untracked-files=no 2>/dev/null \
+            | awk '{print $NF}' | while read -r f; do basename "$f"; done | head -2 | paste -sd, -)
+  [ -n "$files" ] && { trunc "(editing $files…)" 58; return; }
+  [ "$branch" = "$BASE" ] && { printf '—'; return; }
+  printf '(no purpose set)'
+}
+
+ROWS=()          # emitted, |-delimited
+REMOVABLE=()     # names safe to reap (merged + clean + no live session)
+
+emit() { # emit <path> <head> <branch> <locked>
+  local path=$1 head=$2 branch=$3 locked=$4
+  [ -z "$path" ] && return
+  local name sess dirty untr dirtyf verd purp last mark
+  if [ "$branch" = "$BASE" ]; then name=$BASE; else name=$(basename "$path"); fi
+  mark=' '; [ "$path" = "$HERE" ] && mark='*'
+  sess=$(session_field "$locked")
+  dirty=$(git -C "$path" status --porcelain --untracked-files=no 2>/dev/null | grep -c .)
+  untr=$(git -C "$path" ls-files --others --exclude-standard 2>/dev/null | grep -c .)
+  if [ "$dirty" = 0 ] && [ "$untr" = 0 ]; then dirtyf='clean'
+  else
+    dirtyf=''
+    [ "$dirty" != 0 ] && dirtyf="$dirty"
+    [ "$untr" != 0 ] && dirtyf="${dirtyf}+${untr}u"
+  fi
+  verd=$(verdict_field "$head" "$branch")
+  purp=$(purpose_field "$path" "$head" "$branch")
+  last=$(trunc "$(git -C "$path" log -1 --format='%cr — %s' 2>/dev/null)" 46)
+  ROWS+=("${mark}${name}|${sess}|${dirtyf}|${verd}|${purp}|${last}")
+  # removable = merged into main, clean tree, no live session, not the current wt, not main
+  if [ "$verd" = 'merged' ] && [ "$dirtyf" = 'clean' ] \
+     && [[ "$sess" != live#* ]] && [ "$path" != "$HERE" ] && [ "$branch" != "$BASE" ]; then
+    REMOVABLE+=("$name")
+  fi
+}
+
+# Walk the porcelain records (blank-line separated).
+path='' head='' branch='' locked=''
+while IFS= read -r wt_line; do
+  key=${wt_line%% *}; rest=${wt_line#* }
+  [ "$wt_line" = "$key" ] && rest=''   # keyword-only line (e.g. "locked", "detached")
+  case "$key" in
+    worktree) path=$rest ;;
+    HEAD)     head=$rest ;;
+    branch)   branch=${rest#refs/heads/} ;;
+    detached) branch='(detached)' ;;
+    locked)   locked=$rest ;;
+    '')       emit "$path" "$head" "$branch" "$locked"; path='' head='' branch='' locked='' ;;
+  esac
+done < <(git worktree list --porcelain 2>/dev/null)
+emit "$path" "$head" "$branch" "$locked"   # trailing record with no blank after it
+
+# --- render ---------------------------------------------------------------
+if [ "$FOR_HOOK" = 1 ]; then
+  echo "🌳 In-flight worktrees on this machine (scan for overlap with your task;"
+  echo "   once your task is clear, write one line to .claude/purpose):"
+fi
+{
+  printf '%s\n' "WORKTREE|SESSION|DIRTY|VS-${BASE}|PURPOSE|LAST"
+  printf '%s\n' "${ROWS[@]}"
+} | column -t -s '|'
+
+if [ "${#REMOVABLE[@]}" -gt 0 ]; then
+  echo
+  echo "Removable (merged + clean + no live session): ${REMOVABLE[*]}"
+  echo "  → review, then: git worktree remove <name> && git branch -d worktree-<name>"
+fi
+exit 0

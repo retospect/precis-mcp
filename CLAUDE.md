@@ -39,6 +39,24 @@ ship starts at zero divergence — no phantom squash-artifact conflict on
 already-shipped work. NB the merge target is `main`, not `master` — the
 repo has no `master`.
 
+**In-flight worktrees — `scripts/inflight` + `.claude/purpose`.** Many
+Claude sessions run sibling worktrees at once (each on its own
+`worktree-<codename>` branch), so before starting a unit of work, **scan
+for someone already doing it**. `scripts/inflight` prints a live table —
+per worktree: live session (from the worktree lock pid), dirty count,
+merged/ahead-behind vs `main`, PURPOSE, and last commit — all derived from
+git at call time (never a stored cache, so it can't drift). A
+`SessionStart` hook (`.claude/settings.json`) runs it automatically and
+injects the table; **read it and flag overlap with what you're about to
+do.** Git can derive everything *except* what a random-codenamed worktree
+is about, so **once your task is clear, write one line to `.claude/purpose`**
+(gitignored via `.claude/*`; per-worktree, self-cleaning — it dies with
+the worktree, no central registry to conflict or prune). The table's
+footer lists **removable** candidates (merged + clean + no live session);
+it only *reports* — never auto-remove, since a locked live session,
+uncommitted WIP, or salvageable design docs must not be nuked (fluidicsys
+held an un-merged ADR; an ancient branch held salvageable design docs).
+
 ## The todo tree (five slices)
 
 `kind='todo'` is a hierarchical task graph unifying intent,
