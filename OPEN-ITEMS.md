@@ -46,12 +46,35 @@ plan-ledger injection + claim-family grouping are all on main. Design-of-record:
   and the reader shows the same text. Watch for the patent-ingest gate on the
   agent-profile host and the surname-extraction heuristic on any non-comma
   bylines. Owner: end-to-end (web → plan_tick → export). Test: manual first-run.
-- **~101-patent claim-marking backfill** *(polish, deferred — completeness
-  only.)* New ingests self-mark claim blocks (`patent_block`); already-ingested
-  patents predate the marker, so their claims won't appear in the FTO digest
-  until re-swept. A backfill needs the cluster raw-XML/OPS to re-parse claim
-  structure. Not blocking — the loop works on freshly-swept prior art. Owner:
-  `handlers/_patent_ingest.py` + a one-shot backfill pass.
+- **~101-patent claim-marking backfill — DONE (2026-07-16).** All 101
+  already-ingested patents predated the `patent_block` claim marker. Built
+  `ingest_patent(force=True)` + `precis jobs reingest-patents` (oldest-first,
+  dry-run/slug/limit, fair-use-gated) and ran it on melchior as `hermes`
+  (EPO OPS creds + a fresh dogpile cache — the shared `/var/tmp/
+  python-epo-ops-client/cache.dbm` was a Py-3.13 SQLite file the 3.12 venv's
+  `dbm` couldn't read). **101/101 re-ingested, 0 failures, no chunk data loss**
+  (block counts identical). Outcome, once understood: OPS DOCDB serves separate
+  claims full text only for **EP/WO/US** (15 patents → marked, though a
+  multi-claim set collapses to one verbatim blob — a `parse_patent` granularity
+  limit, filed below). The **65 CN/KR/JP** patents' bodies came from the
+  **patents.google.com fallback**, which already stores one chunk per claim as
+  `chunk_kind='patent_claim'` — so the FTO digest was taught to read **both**
+  markers (`workers/patent_digest.py::_claim_eyes`), lighting up **80 patents**
+  for the digest (65 of them per-claim) with no re-fetch. **Regression caught +
+  fixed:** the OPS re-fetch returned empty for the 67 google-sourced patents and
+  clobbered their meta (`has_*=false` + re-added `awaiting-fulltext` + retry) —
+  remediated in prod (restore `has_description=true`, `has_claims` from actual
+  `patent_claim` presence, drop the awaiting tags) and guarded in code
+  (`ingest_patent` no longer clobbers a ref another source populated when OPS
+  yields no blocks). 20 true stubs remain OPS-dark (correctly still
+  awaiting-fulltext). Shipped `710c9a98` + `67a07618`, deployed.
+- **Split OPS multi-claim blobs into per-claim marks** *(polish, open.)* For the
+  15 EP/WO/US patents, `parse_patent` returns the OPS claims XML as one text when
+  the claims aren't discrete `<claim>` elements, so the FTO digest shows a single
+  ~30 KB verbatim blob per patent (all claims visible, but not per-claim
+  addressable, and every one flagged "independent"). Split the blob on claim
+  numbering + run `classify_claim` per claim so the 15 match the google patents'
+  per-claim granularity. Owner: `handlers/_patent_xml.py` (claim extraction).
 - **Slice 7 — visual claim tree-eye + interactive web claims view** *(feature,
   deferred.)* The FTO digest today is a `working_set` (reader eyes) injected into
   the planner prompt — text, not a rendered tree. A full visual claim-family tree
