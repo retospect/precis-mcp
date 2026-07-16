@@ -208,23 +208,25 @@ Design-of-record: `docs/design/chem-tools-integration.md`. Backlog:
   fields `smiles`/`max_depth`/`max_branching`/`expansion_time` → `result.paths`).
   Owner: `src/precis_chem/askcos.py`, `docker/normalizer`, `~/work/cluster`.
 
-- **Slice 4a — `protein` kind (folding).** · *BUILT (precis side), dark* · The
-  `precis_bio` plugin: `protein` kind + `fold` job + `AlphaFold3Engine`
-  (de-novo, **container** transport reusing slice 3's seam), dark behind
-  `PRECIS_BIO_ENABLED`, gate-green (25 tests) without a GPU. Grounded on the
-  **real AF3 v3.0.1 install on spark** (image `alphafold3:ready`, GB10;
-  memory: `alphafold-spark-facts`) — the earlier "not in the cluster repo /
-  decide the engine" caveat is **resolved**: AF3 runs, so the engine is AF3
-  de-novo (ColabFold MSA is a later 4c engine for accuracy).
-- **Slice 4b — folding live-run (deploy).** · *feature, blocked-on-deploy* ·
-  `roles/alphafold` to assert the `alphafold3:ready` image + models
-  (`/home/reto/alphafold3/models`, world-readable) on spark, wire the fold
-  worker env (`PRECIS_FOLD_NODE=spark`, `PRECIS_FOLD_MODELS_DIR`,
-  `PRECIS_FOLD_IMAGE`, `PRECIS_FOLD_XLA_CACHE`), and un-dark. Deploy is in
-  spark's docker group (no sudo). **Verify at first live run** (flagged in
-  `alphafold.py`): output subdir naming, `summary_confidences.json` keys,
-  de-novo accuracy, GB10 mem ceiling for long sequences. Live smoke: fold the
-  insulin A chain.
+- **Slice 4a — `protein` kind (folding).** · *SHIPPED+DEPLOYED (main `f1a293d1`)* ·
+  The `precis_bio` plugin: `protein` kind + `fold` job + `AlphaFold3Engine`
+  (de-novo, **container** transport reusing slice 3's seam), gate-green (25
+  tests). Grounded on the **real AF3 v3.0.1 install on spark** (image
+  `alphafold3:ready`, GB10; memory: `alphafold-spark-facts`).
+- **Slice 4b — folding live-run (deploy).** · *DEPLOYED — protein kind LIVE* ·
+  `roles/alphafold` + `playbooks/46-alphafold.yml` (cluster repo `44f9242`):
+  asserts the image + `af3.bin` weights, GPU passthrough, XLA cache, wires the
+  `PRECIS_FOLD_*` worker env; topology `bio_fold:[spark]` + `bio_plugin:[melchior]`
+  un-darks `PRECIS_BIO_ENABLED` on melchior (verified in the running web daemon).
+  **Live smoke PASSED**: insulin A folded on spark in ~3 min; the deployed
+  `parse_af3_output` read the real output → pLDDT 84.7, all three flagged unknowns
+  (output naming, summary keys, de-novo result) resolved + matching the parser.
+  Rootful dockerd mounts reto's world-readable models even though the deploy shell
+  can't traverse `/home/reto`. **Residual (last mile):** the precis job-dispatch
+  round-trip (put → fold job → spark worker → write-back) wasn't run on prod —
+  proven-by-parts (gate tests + identical live retrosynth `ssh_node` path + the
+  live smoke's engine/parser halves); close it by driving `put(kind='protein',
+  engine='alphafold3')` via a real MCP agent (asa), like chem's route smoke.
 - **Slice 4c — folding accuracy + structure convergence.** · *feature* ·
   `cif → ASE → Scene.from_ase` (ADR 0043) for a 3D viewer / graph probes, + a
   ColabFold MSA-mode engine (de-novo single-seq is lower accuracy).
