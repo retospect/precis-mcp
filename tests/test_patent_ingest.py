@@ -371,6 +371,54 @@ class TestForceReingest:
         cleared = {t.value for t in store.tags_for(ref.id) if t.namespace == "open"}
         assert "awaiting-fulltext" not in cleared
 
+    def test_force_with_empty_ops_does_not_clobber_populated_ref(
+        self,
+        store: Store,
+        fake_ops: FakeOpsClient,
+        raw_root: Path,
+    ) -> None:
+        # A ref populated from another source (e.g. the patents.google.com
+        # fallback for a CN patent OPS won't serve): a force-reingest whose
+        # OPS re-fetch returns no full text must NOT clobber the ref —
+        # neither its blocks nor its ``has_*`` meta, and it must not add the
+        # awaiting-fulltext tag (which would churn the fulltext sweep).
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        first = ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=fake_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+        )
+        assert first.block_count == 7
+        # Simulate the google-sourced truth: full text present in meta.
+        store.stamp_ref_meta(
+            first.ref_id, {"has_description": True, "has_claims": True}
+        )
+
+        # OPS now serves nothing (biblio only) — the CN-patent shape.
+        empty_ops = FakeOpsClient(
+            biblio={"ep1234567b1": (FIXTURES / "ep1234567b1_biblio.xml").read_bytes()}
+        )
+        result = ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=empty_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+            force=True,
+        )
+        assert result.inserted is False
+        # Blocks untouched (still 7), meta not regressed, no awaiting tag.
+        assert store.count_blocks(first.ref_id) == 7
+        ref = store.get_ref(kind="patent", id="ep1234567b1")
+        assert ref is not None
+        assert ref.meta.get("has_description") is True
+        assert ref.meta.get("has_claims") is True
+        assert "fulltext_retry_at" not in ref.meta
+        tags = {t.value for t in store.tags_for(ref.id) if t.namespace == "open"}
+        assert "awaiting-fulltext" not in tags
+
 
 # ---------------------------------------------------------------------------
 # Error handling

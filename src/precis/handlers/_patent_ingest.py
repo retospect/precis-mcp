@@ -305,6 +305,26 @@ def ingest_patent(
         fulltext_retry_count=0 if fulltext_missing else None,
     )
 
+    # Re-ingest guard: never clobber a ref that another source already
+    # populated. OPS DOCDB serves full text mainly for EP/WO/US; a CN/KR/JP
+    # patent's body typically comes from the patents.google.com fallback
+    # (``fetch_google_patents``), and OPS returns *empty* description+claims
+    # for it. Overwriting that ref's meta with ``has_*=false`` +
+    # re-scheduling an awaiting-fulltext retry would falsely mark a
+    # fully-populated patent as missing (and churn the fulltext sweep). So
+    # when a re-ingest produces no blocks, leave the existing ref entirely
+    # as-is. (A *fresh* ingest with no blocks still records the stub —
+    # that's the recent-application-awaiting-indexing case, handled below.)
+    if reingest and not block_seeds:
+        return PatentIngestResult(
+            ref_id=existing.id,  # type: ignore[union-attr]
+            slug=slug,
+            docdb=parsed_id,
+            block_count=store.count_blocks(existing.id),  # type: ignore[union-attr]
+            inserted=False,
+            bytes_fetched=bytes_fetched,
+        )
+
     with store.tx() as conn:
         if reingest:
             # Keep the existing ref (id / links / history); refresh its

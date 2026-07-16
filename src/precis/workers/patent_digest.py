@@ -11,7 +11,12 @@ The view is **comprehensive, not a decaying fisheye**: every prior-art
 **independent** claim renders verbatim (it defines existing legal scope and
 must never be silently dropped); **dependent** claims render at a lower
 extent under budget. Our own claims ride along, verbatim (the set is
-small). Claim chunks are identified by the slice-1 ``patent_block`` marker.
+small). A prior-art claim chunk is recognised under *either* marker the
+store uses — OPS ``meta.patent_block == 'claim'`` (EP/WO/US, from
+``ingest_patent``) or the patents.google.com per-claim ``chunk_kind ==
+'patent_claim'`` (CN/KR/JP, from ``fetch_google_patents``, which OPS DOCDB
+won't serve) — so the view spans the whole cited corpus, not just the OPS
+subset. See :func:`_claim_eyes`.
 """
 
 from __future__ import annotations
@@ -35,23 +40,40 @@ def _claim_eyes(
     dependent_extent: str,
 ) -> list[dict[str, str]]:
     """Claim eyes over ``patent_ref_ids``, in **document order per patent**
-    (slice-1 ``patent_block == 'claim'``) — an independent claim is
-    immediately followed by its dependents, so each claim *family* reads
-    together (the dependency-tree grouping) rather than all independents
-    then all dependents. Extent is tiered by independence: an independent
-    claim verbatim (never dropped), a dependent claim compressed."""
+    — an independent claim is immediately followed by its dependents, so
+    each claim *family* reads together (the dependency-tree grouping)
+    rather than all independents then all dependents.
+
+    A chunk counts as a claim under **either** of the two ways a patent's
+    claims land in the store:
+
+    * **OPS** (``ingest_patent``, EP/WO/US full text) — ``meta.patent_block
+      == 'claim'`` with the derived ``claim_independent`` flag, so extent is
+      tiered (independent verbatim / dependent compressed).
+    * **patents.google.com fallback** (``fetch_google_patents``, the CN/KR/JP
+      body OPS DOCDB won't serve) — one chunk per claim marked
+      ``chunk_kind == 'patent_claim'`` with **no** structure meta. These are
+      already split per-claim, so each is shown verbatim (never silently
+      drop a prior-art claim; we can't cheaply tell independent from
+      dependent without re-deriving, and over-showing is the safe error).
+    """
     eyes: list[dict[str, str]] = []
     for rid in patent_ref_ids:
         for b in store.list_blocks_for_ref(rid):
             meta = getattr(b, "meta", None) or {}
-            if meta.get("patent_block") != "claim":
+            is_ops_claim = meta.get("patent_block") == "claim"
+            is_google_claim = getattr(b, "chunk_kind", None) == "patent_claim"
+            if not (is_ops_claim or is_google_claim):
                 continue
             handle = handle_registry.format_handle("patent", int(b.id), chunk=True)
-            extent = (
-                independent_extent
-                if meta.get("claim_independent")
-                else dependent_extent
-            )
+            if is_ops_claim:
+                extent = (
+                    independent_extent
+                    if meta.get("claim_independent")
+                    else dependent_extent
+                )
+            else:
+                extent = independent_extent  # google per-claim chunk: verbatim
             eyes.append({"handle": handle, "extent": extent})
     return eyes
 

@@ -22,6 +22,7 @@ from precis.workers.patent_digest import (
 class _Block:
     id: int
     meta: dict[str, Any] = field(default_factory=dict)
+    chunk_kind: str = "paragraph"
 
 
 @dataclass
@@ -129,6 +130,32 @@ def test_claim_families_group_in_document_order() -> None:
         {"handle": "pk3", "extent": "verbatim"},
         {"handle": "pk4", "extent": "summary"},
     ]
+
+
+def test_google_sourced_claims_are_recognized_verbatim() -> None:
+    # A CN patent whose body came from patents.google.com: one chunk per
+    # claim, chunk_kind='patent_claim', NO patent_block meta. Each is a
+    # claim eye, verbatim.
+    blocks = [
+        _Block(id=1, chunk_kind="patent_section"),  # description — excluded
+        _Block(id=2, chunk_kind="patent_claim"),  # claim 1
+        _Block(id=3, chunk_kind="patent_claim"),  # claim 2
+    ]
+    ws = build_claims_digest(_FakeStore({70: blocks}), [70])
+    assert ws["eyes"] == [
+        {"handle": "pk2", "extent": "verbatim"},
+        {"handle": "pk3", "extent": "verbatim"},
+    ]
+
+
+def test_ops_and_google_claims_both_counted() -> None:
+    # A ref carrying both marker schemes (an OPS claim + a google claim).
+    blocks = [
+        _Block(id=1, meta={"patent_block": "claim", "claim_independent": True}),
+        _Block(id=2, chunk_kind="patent_claim"),
+    ]
+    ws = build_claims_digest(_FakeStore({70: blocks}), [70])
+    assert [e["handle"] for e in ws["eyes"]] == ["pk1", "pk2"]
 
 
 def test_our_claims_lead_and_are_verbatim() -> None:
