@@ -17,6 +17,48 @@ what's still open.
 
 ---
 
+## 📜 Patent freedom-to-operate authoring loop — first live run (2026-07-16)
+
+Shipped + **deployed** this session (main `147a984f`, all four cluster nodes):
+the full **patent authoring loop** — sweep prior art → ingest patents → iterate
+the description into patent lingo → write claims against a *comprehensive* view
+of others' claims (independents verbatim, dependents grouped under them) →
+record scoping decisions in a `plan` ledger → export USPTO-style with prior art
+cited **in-text, no bibliography** (reader shows the same text, WYSIWYG). Slices
+1–6 + per-authority citations + auto-include-our-claims + the auto-invoke hook +
+plan-ledger injection + claim-family grouping are all on main. Design-of-record:
+[`docs/design/patent-authoring-loop.md`](docs/design/patent-authoring-loop.md)
+(complements `patent-drafting-merge.md`, the static genre). Key files:
+`handlers/_patent_claims.py`, `handlers/_patent_ingest.py`, `handlers/patent.py`,
+`workers/patent_digest.py`, `export/_patent_cite.py`, `export/{latex,docx}.py`,
+`utils/prompt/predicates.py` (`is_patent`/`has_plan`), `workers/planner_prompt.py`.
+
+- **Validate the loop end-to-end on a real draft** *(feature, open — first live
+  run; this is a verification action, not code).* Everything is live and waiting
+  for its first `doc_type=patent` draft. Create one via the web "**+ New draft →
+  Patent application**", give it an `LLM:opus` planner todo, and watch a tick:
+  (1) sweep + **ingest** the prior-art patents it cites (needs
+  `PRECIS_PATENT_RAW_ROOT` + EPO OPS on the executor host — patent ingest is
+  gated); (2) iterate the description toward patent lingo; (3) write claims with
+  the freedom-to-operate `working_set` in view (prior-art independents verbatim,
+  our claims so far verbatim); (4) log a scoping decision to the project `plan`;
+  (5) **export** — confirm prior art renders in-text with no `\printbibliography`
+  and the reader shows the same text. Watch for the patent-ingest gate on the
+  agent-profile host and the surname-extraction heuristic on any non-comma
+  bylines. Owner: end-to-end (web → plan_tick → export). Test: manual first-run.
+- **~101-patent claim-marking backfill** *(polish, deferred — completeness
+  only.)* New ingests self-mark claim blocks (`patent_block`); already-ingested
+  patents predate the marker, so their claims won't appear in the FTO digest
+  until re-swept. A backfill needs the cluster raw-XML/OPS to re-parse claim
+  structure. Not blocking — the loop works on freshly-swept prior art. Owner:
+  `handlers/_patent_ingest.py` + a one-shot backfill pass.
+- **Slice 7 — visual claim tree-eye + interactive web claims view** *(feature,
+  deferred.)* The FTO digest today is a `working_set` (reader eyes) injected into
+  the planner prompt — text, not a rendered tree. A full visual claim-family tree
+  and an interactive `/patent/<slug>` claims browser need new render + route
+  surfaces. Deferred with the *why* recorded in the design doc. Owner:
+  `precis_web/routes/` + a claim-tree renderer.
+
 ## 🎧 Daily audio casts — follow-ups (2026-07-15)
 
 Shipped this session: the daily **reading-brief** (morning, `bm_george`) +
