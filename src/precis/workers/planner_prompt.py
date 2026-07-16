@@ -634,6 +634,36 @@ def _render_patent_authoring(store: Store, ref_id: int) -> str:
     )
 
 
+def _render_plan_ledger(store: Store, plan_ref_id: int, slug: str) -> str:
+    """Inject the project's ``plan`` (ADR 0051 §2b) — its reasoning /
+    decision ledger — so a tick respects recorded decisions without having
+    to fetch it. For a patent this is the freedom-to-operate scoping ledger:
+    what was declined or narrowed, and why (``docs/design/
+    patent-authoring-loop.md``). One line per node, capped for the flow."""
+    try:
+        chunks = store.reading_order(plan_ref_id)
+    except Exception:  # pragma: no cover — no plan / store hiccup
+        return ""
+    entries: list[str] = []
+    for c in chunks:
+        text = (getattr(c, "text", "") or "").strip().replace("\n", " ")
+        if text:
+            entries.append(f"- {text[:240]}")
+    if not entries:
+        return ""
+    return "\n".join(
+        [
+            f"## Project plan — decision ledger ({slug})",
+            "",
+            "Decisions and reasoning recorded for this project — respect them; "
+            "do not re-propose scope already ruled out. Record new decisions "
+            "with `put(kind='plan', …)`.",
+            "",
+            *entries,
+        ]
+    )
+
+
 def _render_seeds(store: Store, ref_id: int) -> str:
     """Surface the human's seed reading-list for this project.
 
@@ -1409,6 +1439,15 @@ def _m_patent(ctx: AssemblyContext) -> str:
     return _render_patent_authoring(ctx.store, ctx.ref_id)
 
 
+def _m_plan(ctx: AssemblyContext) -> str:
+    # The ``has_plan`` predicate memoised the resolved (plan_ref_id, slug).
+    pp = ctx.extras.get("project_plan")
+    if not pp:
+        return ""
+    assert ctx.store is not None
+    return _render_plan_ledger(ctx.store, pp[0], pp[1])
+
+
 def _m_draft(ctx: AssemblyContext) -> str:
     assert ctx.store is not None
     return _render_draft_identity(ctx.store, ctx.ref_id)
@@ -1833,6 +1872,12 @@ _VARIABLE_MODULES: list[Module] = [
         layer=Layer.VARIABLE,
         build=_m_patent,
         applies_when="is_patent",
+    ),
+    Module(
+        id="plan",
+        layer=Layer.VARIABLE,
+        build=_m_plan,
+        applies_when="has_plan",
     ),
     Module(id="requirements", layer=Layer.VARIABLE, build=_m_requirements),
     Module(id="seeds", layer=Layer.VARIABLE, build=_m_seeds),

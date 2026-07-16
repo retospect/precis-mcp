@@ -259,11 +259,14 @@ was proofread.
    (discover the draft's linked prior-art patents + stamp in one call). The
    planner's live fisheye injection renders it. *Remaining: auto-call
    `refresh_claims_digest` from the tick path (below).*
-4. **Scoping-decision ledger. — done (convention):** the patent module
-   instructs the agent to keep a project `plan` — read it before claiming
-   (retention), log each declined/narrowed scope pointing at the blocking
-   `[pk…~n]` claim. *Remaining: a dedicated plan-outline injection module
-   (today the agent reads the plan via `get`).*
+4. **Scoping-decision ledger. — done:** the patent module instructs the
+   agent to keep a project `plan` — log each declined/narrowed scope
+   pointing at the blocking `[pk…~n]` claim — **and** the `has_plan`
+   predicate + `plan` variable module (`_render_plan_ledger`) now
+   auto-inject the project's plan outline into every tick, so recorded
+   decisions are surfaced (retention) without the agent having to fetch
+   them. General to any project with a plan (first live `plan`-kind
+   consumer).
 5. **`doc_type=patent` planner branch. — done:** the `is_patent` predicate
    (`utils/prompt/predicates.py`) + the `patent` variable module
    (`planner_prompt.py::_render_patent_authoring`) lead a patent tick with
@@ -273,19 +276,28 @@ was proofread.
    prior art in-text (display-link surface, else `format_patent_citation` /
    `paper_inline_citation`) and suppresses `build_bib` +
    `\printbibliography` (`export/latex.py`, `export/_patent_cite.py`; worker
-   threads doc_type from the project workspace). *Remaining: the
-   `export/docx.py` mirror; the IDS view stays separate.*
-7. *(later)* **v2 claim-dependency *tree* eye** (independent → dependents
-   rendered as structure, needs claim-dependency parsing) and the
-   **interactive web claims view** (same working set feeds both).
+   threads doc_type from the project workspace). **docx mirror done**
+   (`export/docx.py`, same branch points, doc_type auto-detected). Per-
+   authority citation strings (US / PCT-WO / EP / GB / DE / JP / CN / …).
+   The IDS view stays separate.
+7. **Claim-family grouping — done:** the digest emits each prior-art
+   patent's claims **in document order** (independent claim + its dependents
+   grouped together), independents verbatim / dependents compressed. *Still
+   deferred:* a full visual **tree** render (nested indentation of
+   dependents under their independent — needs a custom render surface beyond
+   the working-set's per-chunk verbatim) and the **interactive web claims
+   view** (same working set feeds both).
 
 **Connective wiring:** (a) **done** — the `plan_tick` executor auto-invokes
 `refresh_claims_digest` for a patent tick with a bound draft before prompt
 assembly (`_refresh_patent_claims_digest`, best-effort); (b) **done** — the
 docx export mirror (`export/docx.py`: patent-mode in-text cites +
 References suppression, doc_type auto-detected from the draft's cascaded
-workspace). *Remaining:* (c) a plan-outline injection module (today the
-agent reads the plan via `get`); (d) slice 7.
+workspace). (c) **done** — the `has_plan` plan-outline injection module.
+(d) slice 7 claim-family grouping **done**; the visual tree render + web
+claims view remain. *Deferred:* backfilling the ~101 already-ingested
+patents with claim markers — needs raw-XML-on-disk (or OPS re-fetch) on the
+cluster, and new prior-art sweeps self-mark, so it is completeness-only.
 
 ## Decisions locked in discussion (2026-07-16)
 

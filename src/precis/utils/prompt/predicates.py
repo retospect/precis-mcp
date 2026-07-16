@@ -151,6 +151,57 @@ def has_backfill(ctx: AssemblyContext) -> bool:
     return bool(_backfill_targets(ctx))
 
 
+def _project_plan(ctx: AssemblyContext) -> tuple[int, str] | None:
+    """The ``(plan_ref_id, slug)`` of the ``plan`` bound to this tick's
+    project subtree (a ``plan-of`` link, ADR 0051 §2b), memoised.
+
+    Walks the ancestry up from ``ref_id`` for a ``plan-of`` edge into the
+    subtree — the same shape as ``planner_prompt.bound_draft`` for the
+    draft. ``None`` when the project has no plan. Cached under
+    ``extras['project_plan']`` so the predicate and the builder share the
+    one query."""
+    if "project_plan" in ctx.extras:
+        return ctx.extras["project_plan"]  # type: ignore[no-any-return]
+    result: tuple[int, str] | None = None
+    if ctx.store is not None:
+        with ctx.store.pool.connection() as conn:
+            row = conn.execute(
+                """
+                WITH RECURSIVE anc AS (
+                    SELECT ref_id, parent_id FROM refs WHERE ref_id = %s
+                    UNION ALL
+                    SELECT r.ref_id, r.parent_id
+                      FROM refs r JOIN anc a ON r.ref_id = a.parent_id
+                )
+                SELECT l.src_ref_id,
+                       (SELECT id_value FROM ref_identifiers ri
+                         WHERE ri.ref_id = l.src_ref_id AND ri.id_kind = 'cite_key'
+                         LIMIT 1) AS slug
+                  FROM links l JOIN refs pl ON pl.ref_id = l.src_ref_id
+                 WHERE l.relation = 'plan-of'
+                   AND l.dst_ref_id IN (SELECT ref_id FROM anc)
+                   AND pl.kind = 'plan' AND pl.deleted_at IS NULL
+                 LIMIT 1
+                """,
+                (ctx.ref_id,),
+            ).fetchone()
+        if row is not None:
+            result = (int(row[0]), str(row[1] or f"pl{row[0]}"))
+    ctx.extras["project_plan"] = result
+    return result
+
+
+def has_plan(ctx: AssemblyContext) -> bool:
+    """True when this tick's project owns a ``plan`` (ADR 0051 §2b) — its
+    reasoning / decision ledger.
+
+    Gates the plan-outline injection block so a tick reads the recorded
+    decisions it must respect — e.g. the patent freedom-to-operate scoping
+    ledger (``docs/design/patent-authoring-loop.md``) — without having to
+    fetch the plan itself."""
+    return _project_plan(ctx) is not None
+
+
 #: The named-predicate registry. ``applies_when`` strings resolve here;
 #: an unknown name is a programming error (caught by the totality test),
 #: not a silent always-true.
@@ -160,6 +211,7 @@ PREDICATES: dict[str, Callable[[AssemblyContext], bool]] = {
     "has_review": has_review,
     "has_backfill": has_backfill,
     "is_patent": is_patent,
+    "has_plan": has_plan,
 }
 
 
@@ -180,6 +232,7 @@ __all__ = [
     "evaluate",
     "has_anchor",
     "has_backfill",
+    "has_plan",
     "has_review",
     "has_styled_anchor",
     "is_patent",

@@ -33,22 +33,27 @@ def _claim_eyes(
     *,
     independent_extent: str,
     dependent_extent: str,
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    """``(independent_eyes, dependent_eyes)`` over the claim chunks of every
-    patent in ``patent_ref_ids`` (slice-1 ``patent_block == 'claim'``)."""
-    independents: list[dict[str, str]] = []
-    dependents: list[dict[str, str]] = []
+) -> list[dict[str, str]]:
+    """Claim eyes over ``patent_ref_ids``, in **document order per patent**
+    (slice-1 ``patent_block == 'claim'``) — an independent claim is
+    immediately followed by its dependents, so each claim *family* reads
+    together (the dependency-tree grouping) rather than all independents
+    then all dependents. Extent is tiered by independence: an independent
+    claim verbatim (never dropped), a dependent claim compressed."""
+    eyes: list[dict[str, str]] = []
     for rid in patent_ref_ids:
         for b in store.list_blocks_for_ref(rid):
             meta = getattr(b, "meta", None) or {}
             if meta.get("patent_block") != "claim":
                 continue
             handle = handle_registry.format_handle("patent", int(b.id), chunk=True)
-            if meta.get("claim_independent"):
-                independents.append({"handle": handle, "extent": independent_extent})
-            else:
-                dependents.append({"handle": handle, "extent": dependent_extent})
-    return independents, dependents
+            extent = (
+                independent_extent
+                if meta.get("claim_independent")
+                else dependent_extent
+            )
+            eyes.append({"handle": handle, "extent": extent})
+    return eyes
 
 
 def build_claims_digest(
@@ -61,15 +66,16 @@ def build_claims_digest(
 ) -> dict[str, Any]:
     """The reader-shape ``working_set`` dict for a freedom-to-operate view.
 
-    Order: our own claims first (the pen list), then every prior-art
-    **independent** claim (verbatim), then dependents (compressed). ``eyes``
-    is deduplicated on handle, first extent wins (so an independent claim
-    is never demoted by a later dependent reference).
+    Order: our own claims first (the pen list, verbatim), then each prior-art
+    patent's claims **in document order** — every independent claim verbatim
+    (never dropped), its dependents compressed and grouped under it. ``eyes``
+    is deduplicated on handle, first extent wins (so an independent claim is
+    never demoted by a later dependent reference).
     """
     ours = [
         {"handle": h, "extent": independent_extent} for h in (our_claim_handles or [])
     ]
-    independents, dependents = _claim_eyes(
+    prior_art = _claim_eyes(
         store,
         patent_ref_ids,
         independent_extent=independent_extent,
@@ -77,7 +83,7 @@ def build_claims_digest(
     )
     eyes: list[dict[str, str]] = []
     seen: set[str] = set()
-    for eye in (*ours, *independents, *dependents):
+    for eye in (*ours, *prior_art):
         if eye["handle"] in seen:
             continue
         seen.add(eye["handle"])

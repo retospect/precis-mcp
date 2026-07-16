@@ -522,3 +522,29 @@ def test_patent_authoring_block_gated_and_content(hub: Hub) -> None:
     assert "[pk…]" in block  # patent handle, not [pc…]
     assert "freedom to operate" in block.lower()
     assert "plan" in block.lower()  # scoping ledger
+
+
+def test_has_plan_and_plan_ledger_block(hub: Hub) -> None:
+    from precis.handlers.plan import PlanHandler
+    from precis.workers.planner_prompt import _m_plan
+
+    proj = hub.store.insert_ref(kind="todo", slug=None, title="Patent project")
+    plan = PlanHandler(hub=hub)
+    plan.put(id="frypat-scoping", title="Scoping", project=proj.id)
+    plan.put(
+        id="frypat-scoping",
+        text="considered claiming the mesh geometry; narrowed because [pk7] claims it",
+        at={"last": True},
+        status="done",
+    )
+    ctx = _ctx(hub.store, proj.id)
+    assert P.has_plan(ctx) is True
+    block = _m_plan(ctx)
+    assert "decision ledger" in block.lower()
+    assert "mesh geometry" in block  # the recorded decision is surfaced
+
+    # A project with no plan → predicate false, block empty.
+    plain = hub.store.insert_ref(kind="todo", slug=None, title="plain")
+    ctx2 = _ctx(hub.store, plain.id)
+    assert P.has_plan(ctx2) is False
+    assert _m_plan(ctx2) == ""

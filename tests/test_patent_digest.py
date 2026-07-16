@@ -101,7 +101,7 @@ def _patent_blocks() -> list[_Block]:
     ]
 
 
-def test_digest_selects_claims_independents_first_verbatim() -> None:
+def test_digest_selects_claims_by_tier_in_document_order() -> None:
     store = _FakeStore({70: _patent_blocks()})
     ws = build_claims_digest(store, [70])
     # Description block excluded; independent claim verbatim, dependent summary.
@@ -110,6 +110,25 @@ def test_digest_selects_claims_independents_first_verbatim() -> None:
         {"handle": "pk12", "extent": "summary"},
     ]
     assert ws["edit_hint"] == []
+
+
+def test_claim_families_group_in_document_order() -> None:
+    # A patent with two claim families: indep 1 + dep 2, then indep 3 + dep 4.
+    blocks = [
+        _Block(id=1, meta={"patent_block": "claim", "claim_independent": True}),
+        _Block(id=2, meta={"patent_block": "claim", "claim_independent": False}),
+        _Block(id=3, meta={"patent_block": "claim", "claim_independent": True}),
+        _Block(id=4, meta={"patent_block": "claim", "claim_independent": False}),
+    ]
+    ws = build_claims_digest(_FakeStore({70: blocks}), [70])
+    # Each independent claim is immediately followed by its dependent —
+    # families stay together (not all-independents-then-all-dependents).
+    assert ws["eyes"] == [
+        {"handle": "pk1", "extent": "verbatim"},
+        {"handle": "pk2", "extent": "summary"},
+        {"handle": "pk3", "extent": "verbatim"},
+        {"handle": "pk4", "extent": "summary"},
+    ]
 
 
 def test_our_claims_lead_and_are_verbatim() -> None:
