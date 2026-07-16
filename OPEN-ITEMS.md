@@ -402,15 +402,34 @@ worker venvs). Remaining follow-ups:
   only listed as a titled reference. Render richer per-kind seed content (e.g.
   a figure's SVG source, a cad analysis) so "here's another view + a cross
   section" fully lands in the turn.
-- **Self-directed drawer (slice-5 upgrade)** — `feature`, design not yet
-  committed (a proposal `docs/proposals/diagram-propose-loop.md` was sketched in
-  a parallel session's notes but never landed — write it before building). The
-  built tick is the *precursor* (human passes `seeds:[handle]`, one single-shot
-  turn). The upgrade makes the drawer FIND+BIND its own sources via a
-  three-layer context (owning-draft collapsed tree + fisheye retrieval + open
-  agentic search) and a tool-using turn loop. **Reconcile with the shipped
-  precursor before building** (layer on top, or supersede). Motivated by the
-  deck-hook incident (a figure drawn wrong from a title alone).
+- **`~~Self-directed drawer (slice-5 upgrade)~~` — SHIPPED (2026-07-16, main
+  `6585223d`).** Design-of-record `docs/proposals/diagram-propose-loop.md`
+  landed; the precursor tick was upgraded in place (supersede, not layer). The
+  drawer now FINDS+BINDS its own sources via a three-layer context — **L1**
+  owning-draft collapsed outline + **L2** entity-seeded fisheye of the
+  instruction's paragraphs (`diagram/doc_context.py`, wired into `run_turn` for
+  figures) + **L3** a tool-using agentic turn (`diagram/agent.py`
+  `build_agentic_claude_fn`, self-gated on `PRECIS_MCP_CONFIG` /
+  `PRECIS_DIAGRAM_AGENTIC`). Seeds kept as optional hints. Motivated by the
+  deck-hook incident (a figure drawn wrong from a title alone). Finder: Opus
+  session. **Remaining follow-ups (deferrals from that build):**
+  - **mermaid L1/L2 auto-context** — `feature`, Owner: `store/_draft_ops.py` +
+    `diagram/doc_context.py`. Figures get L1/L2 for free via the `has-figure`
+    reverse resolver (`figure_owning_draft`); mermaid has no `mermaid`-owning-draft
+    resolver, so a mermaid tick runs seeds + L3 agentic tools only. Add the
+    reverse resolver + route `document_context_for` for mermaid.
+  - **L2 semantic leg** — `feature`, Owner: `diagram/doc_context.py`.
+    `pick_paragraphs` matches deterministically (keywords + verbatim over the
+    owning draft's own chunks, no embedder). Add the semantic retrieval leg
+    (embed the instruction entities, rank the draft's chunks) so L2 catches
+    paraphrase, not just literal term hits. Today the semantic reach is
+    delegated to L3's agentic search.
+  - **MCP `vocab`/`notes`/`element` plumbing on `edit`/`link`** — `bug`, Owner:
+    `handlers/figure.py` (+ MCP tool schemas). The exposed `edit` tool only
+    carries `text=` (strips `vocab=`/`notes=`/`viewbox=`) and `link` lacks
+    `element=`, so an agent can't update a figure's vocab/notes or set an
+    element→chunk binding over MCP — the gap that blocked a live vocab update.
+    Expose the fields on the tool surface. Finder: Opus session.
 - **`wip/backlog-docs` branch (primary repo)** — `polish`, Owner: git. The
   2026-07-15 main-fix preserved one local-only commit (`e5643873 docs(backlog)`)
   on branch `wip/backlog-docs` in the primary checkout. Ship it or drop it.
