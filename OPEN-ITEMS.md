@@ -41,8 +41,10 @@ Two items filed hi-prio during the web-UI bug-bash session (main `9cd0989b`).
   really are the same concept wearing two hats. *Test*: a view/route test that
   a single surface lists both a `cron` ref and a `level:recurring` todo.
 
-- **Permanently kill the worktree edit-path trap** *(tooling, open, **high** —
-  owner: `.claude/settings.json` PreToolUse hook + `.claude/hooks/`).* When a
+- **Permanently kill the worktree edit-path trap** — ✅ **DONE** (2026-07-16,
+  same session) via a `PreToolUse` hook. *(tooling, done, **high** — owner:
+  `scripts/hooks/guard-worktree-path.py` + `.claude/settings.json`; test
+  `tests/test_worktree_path_guard.py`).* When a
   session runs in a linked worktree (`.claude/worktrees/<name>/`), an absolute
   `file_path` into the **main** checkout root
   (`…/precis-mcp/src/…`) silently edits the *wrong* tree — the Edit/Write
