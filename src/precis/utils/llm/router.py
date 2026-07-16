@@ -155,7 +155,7 @@ class Backend(StrEnum):
 # onto the dated pin here (same family — see ADR 0046 §"Resolver").
 _TIER_MODEL: dict[Tier, tuple[str, str]] = {
     Tier.CLOUD_SUPER: ("PRECIS_MODEL_OPUS", "claude-opus-4-8"),
-    Tier.CLOUD_MID: ("PRECIS_MODEL_SONNET", "claude-sonnet-4-6"),
+    Tier.CLOUD_MID: ("PRECIS_MODEL_SONNET", "claude-sonnet-5"),
     Tier.CLOUD_SMALL: ("PRECIS_MODEL_HAIKU", "claude-haiku-4-5-20251001"),
     # The litellm ``summarizer`` alias (``LlmConfig.model`` default), read
     # from ``PRECIS_SUMMARIZE_MODEL`` exactly as ``LlmConfig.from_env``.

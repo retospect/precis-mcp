@@ -423,7 +423,7 @@ def _disable_prose_file_kind(
 #: env-var + default in the router table, so a given ``LLM:opus`` tag binds
 #: to the consolidated cloud reasoning generation (override via the env var):
 #:   opus   → CLOUD_SUPER (``PRECIS_MODEL_OPUS``,  ``claude-opus-4-8``)
-#:   sonnet → CLOUD_MID   (``PRECIS_MODEL_SONNET``, ``claude-sonnet-4-6``)
+#:   sonnet → CLOUD_MID   (``PRECIS_MODEL_SONNET``, ``claude-sonnet-5``)
 #:   haiku  → CLOUD_SMALL (``PRECIS_MODEL_HAIKU``,  ``claude-haiku-4-5-20251001``)
 _TIER_BY_ALIAS: dict[str, Tier] = {
     "opus": Tier.CLOUD_SUPER,

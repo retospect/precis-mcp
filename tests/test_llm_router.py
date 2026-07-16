@@ -45,7 +45,7 @@ from precis.utils.llm.router import (
         # cloud-super default is the consolidated opus-4.8 reasoning tier
         # (reviewers / dream / fix-gripe / generic claude_agent all resolve it).
         (Tier.CLOUD_SUPER, "claude-opus-4-8"),
-        (Tier.CLOUD_MID, "claude-sonnet-4-6"),
+        (Tier.CLOUD_MID, "claude-sonnet-5"),
         (Tier.CLOUD_SMALL, "claude-haiku-4-5-20251001"),
         # local — the litellm summarizer alias (LlmConfig.model default).
         (Tier.LOCAL_SMALL, "summarizer"),
@@ -204,7 +204,7 @@ def test_dispatch_cloud_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert out.duration_s == 1.0  # telemetry preserved through dispatch
     assert out.error is None
     assert calls["prompt"] == "hi"
-    assert calls["model"] == "claude-sonnet-4-6"  # resolved from tier
+    assert calls["model"] == "claude-sonnet-5"  # resolved from tier
 
 
 def test_dispatch_agent_forwards_disallowed_tools_and_log_event(

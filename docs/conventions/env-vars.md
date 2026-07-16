@@ -4,6 +4,11 @@ precis reads a lot of `PRECIS_*` environment variables. To keep that
 surface discoverable and drift-free, every env var falls into exactly
 **one of three tiers**. Pick the right tier when you add a new one.
 
+> This doc is the *how-to-add* rule. For the *what-is-set-where* map —
+> the full catalog of every var, its default, the value deployed to each
+> cluster service, and a correctness assessment — see
+> [`docs/reference/config-variables.md`](../reference/config-variables.md).
+
 ## Tier 1 — core config → `PrecisConfig` (`src/precis/config.py`)
 
 Durable, process-wide settings the server/worker reads at startup:

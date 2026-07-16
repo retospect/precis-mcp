@@ -170,6 +170,15 @@ config:
 | `PRECIS_CORPUS_DIR`           | Corpus root(s) for the `precis web` paper viewer. An `os.pathsep`-separated list is allowed (e.g. `/opt/a/corpus:/opt/b/corpus`); the web tries each `<root>/<letter>/<cite_key>.pdf` in order and serves the first that exists. Point it at the same path the ingest watcher writes to. |
 | `LOG_LEVEL`                   | `DEBUG` / `INFO` / `WARNING` / `ERROR`.          |
 
+This table is the getting-started subset. precis reads ~150 `PRECIS_*`
+variables in all — feature toggles, autonomy modes, budgets, model ids,
+compute-routing, paths, and secrets. For the **exhaustive catalog** —
+every var, its code default, the value deployed to each cluster service,
+and an assessment of whether that state is right — see
+[`docs/reference/config-variables.md`](docs/reference/config-variables.md).
+The policy for *adding* a var (the three-tier scheme) is
+[`docs/conventions/env-vars.md`](docs/conventions/env-vars.md).
+
 ## Design highlights
 
 - **Seven verbs, one `kind=`**. The whole surface is
@@ -336,6 +345,7 @@ high-traffic ones:
 - [`docs/architecture.md`](docs/architecture.md) — the system manual: a narrative overview tying the surface, kinds, storage, todo-tree, and workers together.
 - [`docs/design/schema.md`](docs/design/schema.md) — the **generated** DB schema diagram (Mermaid ER, produced from the live database — can't drift).
 - [`docs/decisions/README.md`](docs/decisions/README.md) — the ADR index (one record per decision; supersession graph). The individual ADRs live in [`docs/decisions/`](docs/decisions/).
+- [`docs/reference/config-variables.md`](docs/reference/config-variables.md) — the full `PRECIS_*` config catalog: every var, its default, the value deployed to each cluster service, and a correctness assessment.
 - [`docs/user-facing/plugin-authoring.md`](docs/user-facing/plugin-authoring.md) — write a third-party handler.
 - [`docs/user-facing/seven-verb-surface-migration.md`](docs/user-facing/seven-verb-surface-migration.md) — verb surface design rationale.
 - [`docs/user-facing/edit-protocol-spec.md`](docs/user-facing/edit-protocol-spec.md) — anchored edits across file kinds.

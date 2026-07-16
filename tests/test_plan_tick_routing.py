@@ -24,7 +24,7 @@ from precis.workers.job_types import plan_tick as pt
 # consolidated cloud-super tier (opus-4.8) after the ADR 0046 bump.
 _LEGACY_DEFAULTS = {
     "opus": "claude-opus-4-8",
-    "sonnet": "claude-sonnet-4-6",
+    "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5-20251001",
 }
 _ALIAS_ENV = {
@@ -148,7 +148,7 @@ def test_run_budget_cap_honours_env_override(
     monkeypatch.setenv("PRECIS_PLAN_TICK_MAX_USD", "9.0")
     cmd = _capture_cmd(monkeypatch, "sonnet")
     assert cmd[cmd.index("--max-budget-usd") + 1] == "9.0"
-    assert cmd[cmd.index("--model") + 1] == "claude-sonnet-4-6"
+    assert cmd[cmd.index("--model") + 1] == "claude-sonnet-5"
 
 
 def test_max_turns_honours_env_override(
