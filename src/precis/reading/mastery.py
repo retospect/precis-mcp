@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from precis.reading.concepts import STATE_ACTIVE, STATE_MASTERED
@@ -46,6 +46,12 @@ LEECH_STRENGTH_CAP = 0.3
 #: The `/leeches` heuristic, mirrored from `handlers/anki.py`.
 LEECH_LAPSES = 4
 LEECH_EASE = 2.0
+#: The proving window (days): how long a card gets to prove itself before the
+#: rework ladder may touch it — and how old a reviewed, healthy card must be
+#: before it counts as *proven* for the recovery reset below. One constant, so
+#: "eligible for rework" and "evidence of recovery" stay the same bar.
+#: Env: ``PRECIS_CARD_REWORK_MIN_DAYS``. (Reto's "3-4 days".)
+DEFAULT_MIN_AGE_DAYS = 4
 
 #: Ignore mastery deltas below this — avoids a per-day update storm rewriting
 #: every concept row for float noise.
@@ -57,6 +63,17 @@ def _env_float(name: str, default: float) -> float:
         return float(os.environ.get(name, "") or default)
     except ValueError:
         return default
+
+
+def is_leech(stats: dict[str, Any] | None) -> bool:
+    """The `/leeches` heuristic over one card's ``anki_stats``."""
+    if not stats:
+        return False
+    lapses = stats.get("lapses_total")
+    ease = stats.get("ease_min")
+    return (isinstance(lapses, int | float) and lapses >= LEECH_LAPSES) or (
+        isinstance(ease, int | float) and ease <= LEECH_EASE
+    )
 
 
 def card_strength(stats: dict[str, Any] | None) -> float:
@@ -71,12 +88,7 @@ def card_strength(stats: dict[str, Any] | None) -> float:
         interval = 0.0
     horizon = _env_float("PRECIS_MASTERY_INTERVAL_DAYS", DEFAULT_MASTERY_INTERVAL_DAYS)
     strength = max(0.0, min(1.0, interval / max(horizon, 1.0)))
-    lapses = stats.get("lapses_total")
-    ease = stats.get("ease_min")
-    is_leech = (isinstance(lapses, int | float) and lapses >= LEECH_LAPSES) or (
-        isinstance(ease, int | float) and ease <= LEECH_EASE
-    )
-    return min(strength, LEECH_STRENGTH_CAP) if is_leech else strength
+    return min(strength, LEECH_STRENGTH_CAP) if is_leech(stats) else strength
 
 
 def concept_mastery(card_stats: list[dict[str, Any] | None]) -> float:
@@ -86,12 +98,15 @@ def concept_mastery(card_stats: list[dict[str, Any] | None]) -> float:
     return sum(card_strength(s) for s in card_stats) / len(card_stats)
 
 
-def _cards_by_concept(store: Any) -> dict[int, list[dict[str, Any] | None]]:
-    """``{concept_ref_id: [anki_stats, …]}`` over live `represents` links,
-    written from either side (concept `represents` card, or card
-    `represented-by` concept)."""
+def _cards_by_concept(
+    store: Any,
+) -> dict[int, list[tuple[dict[str, Any] | None, datetime]]]:
+    """``{concept_ref_id: [(anki_stats, card_created_at), …]}`` over live
+    `represents` links, written from either side (concept `represents` card, or
+    card `represented-by` concept). ``created_at`` feeds the proving-window
+    check in the recovery reset."""
     sql = """
-        SELECT c.ref_id, a.meta->'anki_stats'
+        SELECT c.ref_id, a.meta->'anki_stats', a.created_at
         FROM refs c
         JOIN links l ON (
                  (l.src_ref_id = c.ref_id AND l.relation = 'represents')
@@ -101,21 +116,46 @@ def _cards_by_concept(store: Any) -> dict[int, list[dict[str, Any] | None]]:
         WHERE c.kind = 'concept' AND c.deleted_at IS NULL
           AND a.kind = 'anki' AND a.deleted_at IS NULL
     """
-    out: dict[int, list[dict[str, Any] | None]] = {}
+    out: dict[int, list[tuple[dict[str, Any] | None, datetime]]] = {}
     with store.pool.connection() as conn:
-        for concept_id, stats in conn.execute(sql).fetchall():
-            out.setdefault(int(concept_id), []).append(stats)
+        for concept_id, stats, created_at in conn.execute(sql).fetchall():
+            out.setdefault(int(concept_id), []).append((stats, created_at))
     return out
 
 
+def _has_recovered(
+    cards: list[tuple[dict[str, Any] | None, datetime]],
+    *,
+    now: datetime,
+    min_age_days: float,
+) -> bool:
+    """A concept's card set counts as *recovered* when no live card is a leech
+    AND at least one card is proven — reviewed and past the proving window. The
+    proven requirement is what keeps the streak honest: a fresh rewrite is
+    never a leech *yet*, so mere absence-of-leech the morning after a rewrite
+    would reset the streak and the escalation cap could never engage."""
+    if any(is_leech(s) for s, _ in cards):
+        return False
+    horizon = now - timedelta(days=min_age_days)
+    return any(
+        s is not None and not s.get("unreviewed") and created <= horizon
+        for s, created in cards
+    )
+
+
 def run_mastery_pass(store: Any, *, now: datetime | None = None) -> dict[str, int]:
-    """Recompute mastery + state for every concept that has cards. Returns
-    ``{concepts, updated, mastered}``."""
+    """Recompute mastery + state for every concept that has cards, and run the
+    **recovery reset**: a concept whose cards have proven healthy again gets its
+    ``remunge_streak`` zeroed and ``escalated_at`` cleared, so the rework
+    ladder's escalation is a state, not a life sentence (gripe 161957). Returns
+    ``{concepts, updated, mastered, recovered}``."""
     now = now or datetime.now(UTC)
     threshold = _env_float("PRECIS_MASTERY_THRESHOLD", DEFAULT_MASTERY_THRESHOLD)
+    min_age_days = _env_float("PRECIS_CARD_REWORK_MIN_DAYS", DEFAULT_MIN_AGE_DAYS)
     by_concept = _cards_by_concept(store)
-    updated = mastered = 0
-    for concept_id, stats_list in by_concept.items():
+    updated = mastered = recovered = 0
+    for concept_id, cards in by_concept.items():
+        stats_list = [s for s, _ in cards]
         mastery = round(concept_mastery(stats_list), 3)
         state = STATE_MASTERED if mastery >= threshold else STATE_ACTIVE
         if state == STATE_MASTERED:
@@ -124,32 +164,43 @@ def run_mastery_pass(store: Any, *, now: datetime | None = None) -> dict[str, in
         if ref is None:
             continue
         meta = ref.meta or {}
+        patch: dict[str, Any] = {}
         prev = meta.get("mastery")
         prev_val = float(prev) if isinstance(prev, int | float) else -1.0
-        if abs(prev_val - mastery) < _EPSILON and meta.get("state") == state:
+        if abs(prev_val - mastery) >= _EPSILON or meta.get("state") != state:
+            patch.update(
+                mastery=mastery, mastery_updated_at=now.isoformat(), state=state
+            )
+        if (meta.get("remunge_streak") or meta.get("escalated_at")) and _has_recovered(
+            cards, now=now, min_age_days=min_age_days
+        ):
+            patch.update(remunge_streak=0, escalated_at=None)
+            recovered += 1
+        if not patch:
             continue
-        store.update_ref(
-            concept_id,
-            meta_patch={
-                "mastery": mastery,
-                "mastery_updated_at": now.isoformat(),
-                "state": state,
-            },
-        )
+        store.update_ref(concept_id, meta_patch=patch)
         updated += 1
     log.info(
-        "mastery pass: %d concept(s) with cards, %d updated, %d mastered",
+        "mastery pass: %d concept(s) with cards, %d updated, %d mastered, %d recovered",
         len(by_concept),
         updated,
         mastered,
+        recovered,
     )
-    return {"concepts": len(by_concept), "updated": updated, "mastered": mastered}
+    return {
+        "concepts": len(by_concept),
+        "updated": updated,
+        "mastered": mastered,
+        "recovered": recovered,
+    }
 
 
 __all__ = [
     "DEFAULT_MASTERY_INTERVAL_DAYS",
     "DEFAULT_MASTERY_THRESHOLD",
+    "DEFAULT_MIN_AGE_DAYS",
     "card_strength",
     "concept_mastery",
+    "is_leech",
     "run_mastery_pass",
 ]

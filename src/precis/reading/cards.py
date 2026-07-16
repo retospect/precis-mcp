@@ -45,6 +45,7 @@ from precis.handlers.anki import _CLOZE_RE, _split_extra, _strip_cloze
 from precis.reading.concepts import STATE_ACTIVE, STATE_MASTERED
 from precis.reading.mastery import (
     DEFAULT_MASTERY_THRESHOLD,
+    DEFAULT_MIN_AGE_DAYS,  # the proving window ("3-4 days") — shared with mastery
     LEECH_EASE,
     LEECH_LAPSES,
     _env_float,
@@ -53,7 +54,6 @@ from precis.reading.mastery import (
 log = logging.getLogger(__name__)
 
 DEFAULT_CARDS_PER_DAY = 5  # concepts carded per morning, not cards
-DEFAULT_MIN_AGE_DAYS = 4  # a card gets this long to prove itself ("3-4 days")
 DEFAULT_STREAK_CAP = 3  # rewrites per concept before escalating to the human
 _MAX_CARDS_PER_CONCEPT = 3
 _AUTHORED_BY = "card_forge"

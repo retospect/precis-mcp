@@ -123,6 +123,68 @@ class TestMasteryPass:
         assert ref.meta["state"] == "mastered"
 
 
+class TestRecoveryReset:
+    """gripe 161957: escalation is a state, not a life sentence — a concept
+    whose cards prove healthy again gets streak + escalation cleared."""
+
+    def _escalated(self, store: Any) -> int:
+        cid = _concept(store)
+        store.update_ref(
+            cid,
+            meta_patch={"remunge_streak": 3, "escalated_at": "2026-07-10T05:30:00Z"},
+        )
+        return cid
+
+    def test_proven_healthy_card_resets_streak_and_escalation(self, store: Any) -> None:
+        cid = self._escalated(store)
+        card = _card(store, cid, stats=_STRONG)  # reviewed, no leech
+        _age(store, card, 5)  # past the proving window
+        out = run_mastery_pass(store)
+        assert out["recovered"] >= 1
+        meta = store.get_ref(kind="concept", id=cid).meta
+        assert meta["remunge_streak"] == 0
+        assert meta["escalated_at"] is None
+
+    def test_fresh_rewrite_does_not_reset(self, store: Any) -> None:
+        # The morning after a rewrite the new card isn't a leech *yet* — that
+        # must not clear the streak, or the escalation cap could never engage.
+        cid = self._escalated(store)
+        _card(store, cid, stats={"unreviewed": True})  # brand-new card
+        run_mastery_pass(store)
+        meta = store.get_ref(kind="concept", id=cid).meta
+        assert meta["remunge_streak"] == 3
+        assert meta["escalated_at"]
+
+    def test_lingering_leech_does_not_reset(self, store: Any) -> None:
+        cid = self._escalated(store)
+        good = _card(store, cid, stats=_STRONG)
+        bad = _card(store, cid, stats=_LEECH)
+        _age(store, good, 5)
+        _age(store, bad, 5)
+        run_mastery_pass(store)
+        meta = store.get_ref(kind="concept", id=cid).meta
+        assert meta["remunge_streak"] == 3  # still failing — no fresh budget
+
+    def test_recovered_concept_gets_fresh_rewrite_budget(self, store: Any) -> None:
+        # End-to-end: reset via the mastery pass, then a new leech on the same
+        # concept goes down the rewrite path instead of escalating. The healthy
+        # card is deliberately not strong enough to *master* the concept —
+        # a mastered concept would route the leech to retire, not rewrite.
+        cid = self._escalated(store)
+        good = _card(
+            store, cid, stats={"interval_min": 10, "ease_min": 2.5, "lapses_total": 0}
+        )
+        _age(store, good, 5)
+        run_mastery_pass(store)
+
+        bad = _card(store, cid, stats=_LEECH)
+        _age(store, bad, 5)
+        client = _FakeClient({"text": "A fresh {{c1::angle}}."})
+        report = rework_stale_cards(store, client=client, act=True, streak_cap=3)
+        d = next(d for d in report.decisions if d.card_id == bad)
+        assert d.action == "rewrite" and d.applied
+
+
 class TestAuthorCard:
     def test_writes_ref_link_and_search_card(self, store: Any) -> None:
         cid = _concept(store)

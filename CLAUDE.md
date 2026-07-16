@@ -233,6 +233,8 @@ driver; adding one is a `Reviewer(...)` instance):
   (`reading/cards.py`): mastery-from-Anki refresh (`reading/mastery.py`:
   `represents`-linked cards' `anki_stats` → concept `meta.mastery`/`state`),
   the retire / teach-prereq / escalate / rewrite ladder over ≥4-day leech cards
+  (streak + escalation **auto-reset** once the concept's cards prove healthy —
+  no leech and ≥1 reviewed card past the proving window)
   (**observe-first** — `PRECIS_CARD_FORGE_AUTONOMY=report` default, `act` to
   apply; a retired ref's Anki note is removed own-guid-only by the sync tick),
   then minting `PRECIS_READING_CARDS_PER_DAY` (5) concepts' worth of new cloze

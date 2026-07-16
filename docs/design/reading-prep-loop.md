@@ -524,7 +524,14 @@ glossary.
    surfaced in the brief's recall lane), else **rewrite** (delete+put, curve
    resets per decision 2). **Observe-first per decision 3**:
    `PRECIS_CARD_FORGE_AUTONOMY=report` (default) logs every decision in the
-   job summary without writing; `=act` applies.
+   job summary without writing; `=act` applies. Escalation is a state, not a
+   life sentence: the mastery pass runs a **recovery reset** — once the
+   concept's live cards are leech-free AND at least one is reviewed and past
+   the proving window (`PRECIS_CARD_REWORK_MIN_DAYS`), `remunge_streak` zeroes
+   and `escalated_at` clears, so a later leech gets a fresh rewrite budget.
+   The proven-card requirement is load-bearing: a fresh rewrite is never a
+   leech *yet*, so mere absence-of-leech would reset the streak the morning
+   after every rewrite and the cap could never engage.
 8. **Briefing + audio** — graph-aware (today's path + readiness + due/weak).
    *(Partial: the brief's recall lane reports cards forged this morning +
    escalated concepts.)*
