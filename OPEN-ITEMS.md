@@ -286,18 +286,20 @@ Design-of-record: `docs/design/chem-tools-integration.md`. Backlog:
   generic planner do it).
 
 - **Slice 5 — `sequence` design (LigandMPNN) + 4c fold accuracy (Boltz-2).** ·
-  *setup gated on a PyTorch-CUDA foundation* · Engines chosen (2026-07-16):
-  **Boltz-2** (MIT, PyTorch, hosted MSA — no 2TB DBs) as a new `protein` engine;
-  **LigandMPNN** (MIT, ligand-aware structure→sequence) as the new `sequence`
-  kind + `design` job. **BLOCKER**: spark has **no PyTorch-CUDA** (reto's torch
-  envs are CPU-only; AF3 is JAX). Both need PyTorch-CUDA on the GB10
-  (Blackwell/ARM64). Path: an **NGC PyTorch ARM64 base** (`nvcr.io/nvidia/
-  pytorch:25.xx`, Blackwell+GB10 support) — needs NGC creds + a ~15-20GB pull —
-  then Boltz/LigandMPNN layer `FROM` it (weights from HF, reachable + fast), each
-  with a precis engine adapter + a `roles/*` mirror of `roles/alphafold`. Order:
-  foundation → Boltz-2 (extends the fold seam) → LigandMPNN (new kind + job).
-  (Aside: AF3 itself supports ligand co-folding via SMILES/CCD — reto's
-  `alphafold3_ligand_findings.md` — a separate capability we could also expose.)
+  *foundation PROVEN — ready to build* · Engines chosen (2026-07-16): **Boltz-2**
+  (MIT, PyTorch, hosted MSA — no 2TB DBs) as a new `protein` engine; **LigandMPNN**
+  (MIT, ligand-aware structure→sequence) as the new `sequence` kind + `design`
+  job. **PyTorch-CUDA foundation = SOLVED (no blocker):** stock `pip install torch
+  --index-url https://download.pytorch.org/whl/cu128` gives torch 2.11.0+cu128 with
+  working GPU on the GB10 (`is_available=True`, capability `(12,1)`=sm_121, a real
+  matmul ran) — NO NGC container/creds needed. (The old "AF CUDA fix" was JAX, a
+  separate stack; only CPU torch existed, hence the earlier false blocker.) BUILD
+  PATH: a `torch-cuda` base image (python + pip torch cu128; the wheels bundle the
+  CUDA runtime, so a slim base + `--gpus all` should suffice) → Boltz-2 + LigandMPNN
+  layer `FROM` it (weights from HF, reachable+fast), each = a precis engine adapter
+  + a `roles/*` mirror of `roles/alphafold`. Order: base → Boltz-2 (extends the fold
+  seam) → LigandMPNN (new kind + job). (Aside: AF3 itself supports ligand co-folding
+  via SMILES/CCD — reto's `alphafold3_ligand_findings.md` — a separate capability.)
 
 - **MCP-surface design review — chem/bio kinds.** · *design-review, filed* ·
   Review how `route`/`protein`/`structure`/(future `sequence`) present through the
