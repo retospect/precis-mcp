@@ -427,12 +427,18 @@ worker venvs). Remaining follow-ups:
   `figure`), added `mermaid` to `[all]` + relocked, and added the `[mermaid]`
   extra to the cluster install specs (`roles/mcps` `[patent,mermaid]`,
   `roles/precis_web` `[…,mermaid]`, `roles/precis_worker` `[…,mermaid]`).
-  Deployed via `scripts/deploy`. **Residual polish:** the dev/CI gate image
-  hasn't been rebuilt, so the mermaid tests still `importorskip('mermaidx')`
-  in the gate — rebuild the `precis-mcp:dev` image (`uv sync --all-extras` now
-  pulls `mermaidx`) so the compile-path tests run for real. Also consider a
-  `websearch`-style env kill-switch if a fleet-wide off-switch is ever wanted
-  (lean: no — figure has none).
+  Deployed via `scripts/deploy`. **Render-test coverage (clarified 2026-07-16):**
+  CI (GitHub Actions `check.yml`) runs `uv run --extra all pytest`, and `[all]`
+  includes `mermaid`, so the `importorskip('mermaidx')` compile/render tests
+  **already run for real on every push to main** — the durable gate is covered.
+  The only place they skip is the *local* `scripts/ship` `precis-dev` container,
+  whose cached `precis-mcp:dev` image predates `mermaidx` in the lock. The
+  Dockerfile is already correct (`deps` stage does `uv sync --all-extras`); a
+  forced rebuild would cascade into an expensive model re-bake (`models` is
+  `FROM deps`) for a test-set CI already runs — so leave it to self-heal on the
+  next dep-driven `deps` rebuild rather than forcing it. NOT a coverage gap.
+  Also consider a `websearch`-style env kill-switch if a fleet-wide off-switch
+  is ever wanted (lean: no — figure has none).
   **Wheels are pure (no compiler): `quickjs-ng` + `resvg-py` cover
   macOS-arm64 + manylinux/musllinux, `resvg-py` is already pulled by
   `[docx]`.** Finder: Opus session.
