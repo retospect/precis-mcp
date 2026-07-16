@@ -223,6 +223,75 @@ class TestClaimBoilerplateStrip:
         assert claims == ["1. Foo bar baz."]
 
 
+class TestClaimRunSplitting:
+    """A single ``<claim>`` element often holds the *entire* claims section
+    (OPS ``<claim-text>`` children are arbitrary fragments, not per-claim).
+    The parser splits such a block on the sequential claim number so each
+    claim becomes its own text (docs/design/patent-authoring-loop.md — the
+    FTO digest wants per-claim granularity, not one giant blob)."""
+
+    def _parse(self, body: str) -> list[str]:
+        xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<claims xmlns="http://www.epo.org/exchange" lang="en">'
+            + body.encode("utf-8")
+            + b"</claims>"
+        )
+        return list(parse_patent(claims_xml=xml).claim_texts)
+
+    def test_single_claim_element_blob_splits_per_claim(self) -> None:
+        # One <claim> holding three numbered claims → three claim texts.
+        claims = self._parse(
+            "<claim><claim-text>CLAIMS 1. A molecular computer comprising a "
+            "processor and an array. 2. The computer of claim 1, wherein the "
+            "array is addressable. 3. The computer of claim 1, further "
+            "comprising a controller.</claim-text></claim>"
+        )
+        assert len(claims) == 3
+        assert claims[0].startswith("1. A molecular computer")
+        assert claims[1].startswith("2. The computer of claim 1")
+        assert claims[2].startswith("3. The computer of claim 1")
+        # The "CLAIMS" header before claim 1 is dropped (slice starts at "1.").
+        assert "CLAIMS" not in claims[0]
+
+    def test_fragment_children_concatenate_then_split(self) -> None:
+        # Real OPS shape: one <claim> with several <claim-text> fragments
+        # that straddle claim boundaries mid-sentence.
+        claims = self._parse(
+            "<claim>"
+            "<claim-text>1. A system comprising: an array configured to</claim-text>"
+            "<claim-text>evolve toward a solution. 2. The system of claim 1,</claim-text>"
+            "<claim-text>wherein the array is molecular.</claim-text>"
+            "</claim>"
+        )
+        assert len(claims) == 2
+        assert claims[0].startswith("1. A system comprising")
+        assert "evolve toward a solution" in claims[0]
+        assert claims[1].startswith("2. The system of claim 1")
+        assert "wherein the array is molecular" in claims[1]
+
+    def test_claim_reference_does_not_false_split(self) -> None:
+        # "according to claim 2" is a dependency reference, not a boundary.
+        claims = self._parse(
+            "<claim><claim-text>1. A method comprising step A and step B. "
+            "2. The method according to claim 1. 3. The method according to "
+            "claim 2, wherein B precedes A.</claim-text></claim>"
+        )
+        assert len(claims) == 3
+        assert claims[2].startswith("3. The method according to claim 2")
+
+    def test_single_claim_not_split(self) -> None:
+        # A genuinely single claim (no "2.") passes through intact.
+        claims = self._parse(
+            "<claim><claim-text>1. A composition comprising component A, "
+            "component B, and at least 2. 0 wt% of C.</claim-text></claim>"
+        )
+        assert claims == [
+            "1. A composition comprising component A, component B, "
+            "and at least 2. 0 wt% of C."
+        ]
+
+
 # ---------------------------------------------------------------------------
 # Combined parse
 # ---------------------------------------------------------------------------

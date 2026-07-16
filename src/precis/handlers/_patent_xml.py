@@ -407,15 +407,21 @@ def _extract_claims(root: ET.Element) -> list[str]:
     """Each independent + dependent claim → one string.
 
     OPS structure: ``<claims><claim><claim-text>...</claim-text></claim>...</claims>``.
-    Some variants nest a single ``<claim-text>`` per ``<claim>``;
-    others put multiple. We concatenate per-claim.
+    Some variants nest a single ``<claim-text>`` per ``<claim>``; others
+    put multiple. **The ``<claim-text>`` elements are arbitrary fragments,
+    not per-claim** — in the wild a single ``<claim>`` holds the entire
+    claims section (one claim spans several ``<claim-text>``, or one
+    ``<claim-text>`` holds several claims), so concatenating per ``<claim>``
+    and stopping there collapses a 20-claim patent into one giant block.
+    The reliable per-claim boundary is the sequential claim *number*, so
+    each concatenated block is then split by :func:`_split_claim_run`.
 
     Leading boilerplate is stripped from each claim — OPS inlines the
     page-header ``PATENT ATTORNEY DOCKET NO: ... CLAIMS`` banner into
     the first claim's text on many US / WO filings, which otherwise
     surfaces as a search hit for unrelated queries.
     """
-    out: list[str] = []
+    blocks: list[str] = []
     for claim in _findall(root, "claim"):
         # If this claim contains nested claims (rare), only the top-level claim text.
         texts = [_text(t) for t in _children(claim, "claim-text")]
@@ -424,15 +430,97 @@ def _extract_claims(root: ET.Element) -> list[str]:
             joined = _text(claim)
         joined = _strip_claim_boilerplate(joined.strip())
         if joined:
-            out.append(joined)
-    if out:
-        return out
-    # Fallback: some OPS responses skip the wrapper and put claim-text
-    # children directly under <claims>.
-    for ct in _findall(root, "claim-text"):
-        txt = _strip_claim_boilerplate(_text(ct).strip())
-        if txt:
-            out.append(txt)
+            blocks.append(joined)
+    if not blocks:
+        # Fallback: some OPS responses skip the wrapper and put claim-text
+        # children directly under <claims>.
+        for ct in _findall(root, "claim-text"):
+            txt = _strip_claim_boilerplate(_text(ct).strip())
+            if txt:
+                blocks.append(txt)
+    out: list[str] = []
+    for block in blocks:
+        out.extend(_split_claim_run(block))
+    return out
+
+
+#: A claim boundary inside a concatenated claims block: a claim number at a
+#: token boundary (``12.`` / ``12 .``) followed by whitespace then claim-
+#: opening text (an optional quote/paren then an uppercase letter). The
+#: uppercase-follow lookahead keeps out mid-claim numerals like ``step 2 of``
+#: or ``0.5 mol``; the caller additionally drops a number whose preceding
+#: word is a cross-reference (``claim``, ``figure``, …).
+_CLAIM_BOUNDARY_RE = re.compile(r'(?:(?<=\s)|\A)(\d{1,3})\s*\.\s+(?=["(\[]?[A-Z])')
+
+#: Words that commonly precede a bare ``<n>.`` inside a claim body — a
+#: cross-reference or figure/step callout, never a new-claim boundary.
+_CLAIM_REF_PRECEDERS = frozenset(
+    {
+        "claim",
+        "claims",
+        "figure",
+        "figures",
+        "fig",
+        "figs",
+        "table",
+        "tables",
+        "example",
+        "embodiment",
+        "step",
+        "item",
+        "formula",
+        "phase",
+        "aspect",
+        "paragraph",
+        "section",
+        "no",
+    }
+)
+
+#: The claims-section header OPS leaves before claim 1 (``CLAIMS``, ``What
+#: is claimed is:``, ``We claim:`` …). Stripped before splitting so its
+#: trailing ``claims`` word doesn't get mistaken for a claim-reference
+#: preceder that would reject claim 1's own boundary.
+_CLAIM_SECTION_HEADER_RE = re.compile(
+    r"\A\s*(?:CLAIMS?|WHAT\s+IS\s+CLAIMED(?:\s+IS)?|WE\s+CLAIM|I\s+CLAIM)"
+    r"\s*[:.]?\s+(?=\d)",
+    re.IGNORECASE,
+)
+
+
+def _split_claim_run(text: str) -> list[str]:
+    """Split a block that concatenates a run of numbered claims
+    (``1. … 2. … 3. …``) into one string per claim.
+
+    Accepts only a **monotonic 1, 2, 3, …** sequence (a patent's claims
+    always start at 1 and increment), and ignores a number whose preceding
+    word is a cross-reference (``the method of claim 2``, ``Figure 3.``).
+    Returns the input unchanged (single-item list) when no ``1.``-anchored
+    run of ≥ 2 claims is found — so a genuinely single claim, or claims OPS
+    already delivered as proper per-claim ``<claim>`` elements, pass through
+    intact (never re-split). The claim's own ``N.`` prefix is kept, matching
+    how the google-patents fallback stores its per-claim chunks.
+    """
+    text = _CLAIM_SECTION_HEADER_RE.sub("", text, count=1)
+    starts: list[int] = []
+    expected = 1
+    for m in _CLAIM_BOUNDARY_RE.finditer(text):
+        if int(m.group(1)) != expected:
+            continue
+        window = text[max(0, m.start() - 20) : m.start()]
+        last_word = re.search(r"(\w+)\W*\Z", window)
+        if last_word is not None and last_word.group(1).lower() in _CLAIM_REF_PRECEDERS:
+            continue
+        starts.append(m.start())
+        expected += 1
+    if len(starts) < 2:
+        return [text]
+    out: list[str] = []
+    for i, s in enumerate(starts):
+        e = starts[i + 1] if i + 1 < len(starts) else len(text)
+        piece = text[s:e].strip()
+        if piece:
+            out.append(piece)
     return out
 
 
