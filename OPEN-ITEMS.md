@@ -186,15 +186,26 @@ Design-of-record: `docs/design/chem-tools-integration.md`. Backlog:
   fields `smiles`/`max_depth`/`max_branching`/`expansion_time` → `result.paths`).
   Owner: `src/precis_chem/askcos.py`, `docker/normalizer`, `~/work/cluster`.
 
-- **Slice 4 — `protein` kind (folding).** · *feature, blocked-on-decision* · The
-  design says AlphaFold is "already installed on spark" but **it is not in the
-  cluster repo** (no fold/protein role). Needs a **folding-engine decision**
-  first (they differ hugely in weights/licensing/GPU): AlphaFold3 (heavy,
-  restrictive weights) vs **ColabFold** vs **Boltz-2** (newer, lighter,
-  permissive — likely the pragmatic pick). Then: a `protein` kind (in-process
-  GPU engine on spark, reusing the job substrate) converging with `structure`
-  via `Scene.from_ase`, + an install role. Do NOT build blind — confirm the
-  engine + whether spark already runs one.
+- **Slice 4a — `protein` kind (folding).** · *BUILT (precis side), dark* · The
+  `precis_bio` plugin: `protein` kind + `fold` job + `AlphaFold3Engine`
+  (de-novo, **container** transport reusing slice 3's seam), dark behind
+  `PRECIS_BIO_ENABLED`, gate-green (25 tests) without a GPU. Grounded on the
+  **real AF3 v3.0.1 install on spark** (image `alphafold3:ready`, GB10;
+  memory: `alphafold-spark-facts`) — the earlier "not in the cluster repo /
+  decide the engine" caveat is **resolved**: AF3 runs, so the engine is AF3
+  de-novo (ColabFold MSA is a later 4c engine for accuracy).
+- **Slice 4b — folding live-run (deploy).** · *feature, blocked-on-deploy* ·
+  `roles/alphafold` to assert the `alphafold3:ready` image + models
+  (`/home/reto/alphafold3/models`, world-readable) on spark, wire the fold
+  worker env (`PRECIS_FOLD_NODE=spark`, `PRECIS_FOLD_MODELS_DIR`,
+  `PRECIS_FOLD_IMAGE`, `PRECIS_FOLD_XLA_CACHE`), and un-dark. Deploy is in
+  spark's docker group (no sudo). **Verify at first live run** (flagged in
+  `alphafold.py`): output subdir naming, `summary_confidences.json` keys,
+  de-novo accuracy, GB10 mem ceiling for long sequences. Live smoke: fold the
+  insulin A chain.
+- **Slice 4c — folding accuracy + structure convergence.** · *feature* ·
+  `cif → ASE → Scene.from_ase` (ADR 0043) for a 3D viewer / graph probes, + a
+  ColabFold MSA-mode engine (de-novo single-seq is lower accuracy).
 
 - **Slice 5 — `sequence` kind (design).** · *feature* · ProteinMPNN / RFdiffusion
   as another `job_type`, GPU on spark. Sibling of slice 4; same "decide the

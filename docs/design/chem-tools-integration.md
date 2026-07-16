@@ -257,8 +257,36 @@ machine-specific glue.
    `NORMALIZER`. **Remaining (live):** stand up ASKCOS v2, set `PRECIS_ASKCOS_URL`,
    build the normalizer image, and **verify the Tree-Builder request/response
    schema against the instance's `/docs`** (flagged in `askcos.py`).
-4. **AlphaFold** as a `protein` kind, in-process on spark (GPU-native),
-   reusing the job substrate; converges with `structure` via `Scene`.
+4. **AlphaFold** as a `protein` kind on spark, reusing the job substrate;
+   converges with `structure` via `Scene`.
+   **Slice 4a — BUILT (precis side, gate-green without a GPU).** The
+   `precis_bio` plugin (sibling of `precis_chem`): the `protein` kind
+   (`handlers`→`ProteinHandler`, slug-addressed, `meta.fold` = mmCIF + mean
+   pLDDT + pTM/ipTM + sequence, `card_combined` embeds the sequence) + the
+   `fold` job_type (`can_own_jobs` compute lane) + a `FoldEngine` port with a
+   deterministic in-process `StubFoldEngine` and the `AlphaFold3Engine`
+   (de-novo). Dark behind `PRECIS_BIO_ENABLED`; routed by `PRECIS_FOLD_NODE`.
+   **Refinement over the original "in-process on spark" plan:** AF3 ships as a
+   **container** image (`alphafold3:ready`), not a Python-importable stack, so
+   `fold` reuses slice 3's *container* transport (`RUNNER`/`STAGER` hooks,
+   `docker run` argv, output parser) rather than an in-process call — the
+   always-on workers carry no jax/CUDA. Grounded on the real AF3 v3.0.1 install
+   on spark (input JSON dialect / de-novo invocation / mmCIF+summary output
+   captured from the working `run_alphafold3.sh`). `mean pLDDT` is read from
+   the CIF Cα B-factors by a dependency-free `_atom_site` scan; ptm/iptm from
+   `summary_confidences.json`. Verified: stub inline fold + cache hit; the AF3
+   container path (input staging → argv → parse → write-back) round-trips with
+   a stubbed `RUNNER`; the missing-node / missing-models / no-model failures
+   bubble cleanly. **Slice 4b — remaining (live):** `roles/alphafold` asserts
+   the `alphafold3:ready` image + models present on spark, wires the fold
+   worker env (`PRECIS_FOLD_NODE=spark`, `PRECIS_FOLD_MODELS_DIR`,
+   `PRECIS_FOLD_IMAGE`, an XLA cache mount), and un-darks the kind. **Verify at
+   the first live run** (flagged in `alphafold.py`, best-effort so it degrades
+   rather than crashes): the exact output subdir naming/lowercasing, the
+   `summary_confidences.json` key names, and de-novo accuracy vs MSA. **Slice
+   4c — later:** `structure` convergence (`cif → ASE → Scene.from_ase`,
+   ADR 0043, for a 3D viewer / graph probes) + a ColabFold MSA-mode engine for
+   real accuracy.
 5. **Sequence design** (`sequence` kind; ProteinMPNN/RFdiffusion) — another
    `job_type`, GPU on spark.
 6. **ChemCrow / agentic** last — in precis this is not a tool but a planner

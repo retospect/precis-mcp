@@ -292,14 +292,20 @@ asa-bot = "asa_bot.__main__:main"
 # first-party chem tool-pack, bundled in this repo but loaded as a plugin:
 # the `route` kind, the `retrosynth` job_type, and its migrations
 # (namespace `precis_chem`). It ships dark behind PRECIS_CHEM_ENABLED.
+# `precis_bio` is its protein sibling (slice 4): the `protein` kind, the
+# `fold` job_type (AlphaFold3 on the GPU node), and its migrations
+# (namespace `precis_bio`), dark behind PRECIS_BIO_ENABLED.
 [project.entry-points."precis.handlers"]
 route = "precis_chem.route:RouteHandler"
+protein = "precis_bio.protein:ProteinHandler"
 
 [project.entry-points."precis.job_types"]
 retrosynth = "precis_chem.jobs:RETROSYNTH_SPEC"
+fold = "precis_bio.jobs:FOLD_SPEC"
 
 [project.entry-points."precis.migrations"]
 precis_chem = "precis_chem.migrations"
+precis_bio = "precis_bio.migrations"
 
 [dependency-groups]
 dev = [
@@ -320,7 +326,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/precis_chem"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/precis_chem", "src/precis_bio"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under
