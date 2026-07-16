@@ -28,10 +28,35 @@ class TestFormatPatentCitation:
             == "U.S. Patent Application Publication No. 2015/0101966 A1"
         )
 
-    def test_non_us_falls_back_to_docdb(self) -> None:
+    def test_ep_granted(self) -> None:
         meta = {"country": "ep", "doc_number": "1234567", "kind_code": "B1"}
+        assert format_patent_citation(meta) == "European Patent No. EP 1234567 B1"
+
+    def test_ep_application(self) -> None:
+        meta = {"country": "ep", "doc_number": "1234567", "kind_code": "A1"}
         assert (
-            format_patent_citation(meta, slug="ep1234567b1") == "Patent No. EP1234567B1"
+            format_patent_citation(meta)
+            == "European Patent Application Publication No. EP 1234567 A1"
+        )
+
+    def test_pct_wo_publication(self) -> None:
+        meta = {"country": "wo", "doc_number": "2023123456", "kind_code": "A1"}
+        assert (
+            format_patent_citation(meta)
+            == "PCT International Publication No. WO 2023/123456 A1"
+        )
+
+    def test_chinese_application(self) -> None:
+        meta = {"country": "cn", "doc_number": "101787123", "kind_code": "A"}
+        assert (
+            format_patent_citation(meta)
+            == "Chinese Patent Application Publication No. CN 101787123 A"
+        )
+
+    def test_unknown_authority_falls_back_to_docdb(self) -> None:
+        meta = {"country": "zz", "doc_number": "1234567", "kind_code": "B1"}
+        assert (
+            format_patent_citation(meta, slug="zz1234567b1") == "Patent No. ZZ1234567B1"
         )
 
     def test_empty_meta_is_safe(self) -> None:

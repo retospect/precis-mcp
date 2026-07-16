@@ -315,8 +315,11 @@ agent reads the plan via `get`); (d) slice 7.
    independents only with a count marker)? Must remain legally safe
    (never imply completeness it doesn't have).
 3. **US vs EP claim/citation conventions** — inherited from
-   `patent-drafting-merge.md` §8.4; the in-text citation string and claim
-   register differ. One `doc_type` with a jurisdiction sub-flag, or two?
+   `patent-drafting-merge.md` §8.4. The **citation string** is now
+   per-authority (`export/_patent_cite.py::format_patent_citation` handles
+   US / PCT-WO / EP / GB / DE / JP / CN / … with an authority-name map).
+   Still open: whether the **claim register** (US vs EP drafting style)
+   warrants one `doc_type` with a jurisdiction sub-flag, or two.
 4. **Ledger → issues** — should a "blocked scope" decision optionally
    open an ADR-0037 §3b *issue* to the inventor ("we scoped around
    US…claim 7 — accept the narrowing?") rather than only logging it?

@@ -128,6 +128,28 @@ def related_patent_ref_ids(store: Any, draft_ref_id: int) -> list[int]:
     return [did for did in dst_ids if getattr(refs.get(did), "kind", None) == "patent"]
 
 
+def discover_our_claim_handles(store: Any, draft_ref_id: int) -> list[str]:
+    """The draft's own claim chunks — the leaf chunks under a
+    ``patent-claim``-styled section (ADR 0037) — as ``dc…`` handles, in
+    reading order. These ride the digest verbatim so the claim-writing tick
+    sees *all our claims so far* alongside the prior art."""
+    try:
+        chunks = store.reading_order(draft_ref_id)
+    except Exception:  # pragma: no cover — no draft / store hiccup
+        return []
+    out: list[str] = []
+    for c in chunks:
+        if getattr(c, "chunk_kind", None) == "heading":
+            continue  # the section heading itself is not a claim
+        try:
+            style = store.section_style_for(c.dc)
+        except Exception:  # pragma: no cover — style resolve hiccup
+            style = None
+        if style == "patent-claim":
+            out.append(c.dc)
+    return out
+
+
 def refresh_claims_digest(
     store: Any,
     todo_ref_id: int,
@@ -135,10 +157,13 @@ def refresh_claims_digest(
     *,
     our_claim_handles: list[str] | None = None,
 ) -> dict[str, Any]:
-    """One-call entry for the loop: discover the draft's prior-art patents,
-    build the freedom-to-operate claims digest, and stamp it onto the
-    writing todo's ``meta.working_set``. A no-op-safe empty digest when the
-    draft cites no ingested patents yet."""
+    """One-call entry for the loop: discover the draft's prior-art patents
+    **and its own claims so far**, build the freedom-to-operate claims
+    digest, and stamp it onto the writing todo's ``meta.working_set``. A
+    no-op-safe empty digest when the draft cites no ingested patents yet.
+    ``our_claim_handles`` defaults to auto-discovery; pass ``[]`` to skip."""
+    if our_claim_handles is None:
+        our_claim_handles = discover_our_claim_handles(store, draft_ref_id)
     return stamp_claims_digest(
         store,
         todo_ref_id,

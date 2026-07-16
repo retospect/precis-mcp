@@ -11,6 +11,7 @@ from typing import Any
 
 from precis.workers.patent_digest import (
     build_claims_digest,
+    discover_our_claim_handles,
     refresh_claims_digest,
     related_patent_ref_ids,
     stamp_claims_digest,
@@ -33,6 +34,12 @@ class _Link:
     dst_ref_id: int
 
 
+@dataclass
+class _Chunk:
+    dc: str
+    chunk_kind: str = "paragraph"
+
+
 class _FakeStore:
     def __init__(
         self,
@@ -40,10 +47,14 @@ class _FakeStore:
         *,
         links: dict[int, list[_Link]] | None = None,
         refs: dict[int, _Ref] | None = None,
+        chunks: dict[int, list[_Chunk]] | None = None,
+        styles: dict[str, str] | None = None,
     ) -> None:
         self._blocks = blocks_by_ref
         self._links = links or {}
         self._refs = refs or {}
+        self._chunks = chunks or {}
+        self._styles = styles or {}
         self.stamped: list[tuple[int, dict[str, Any]]] = []
 
     def list_blocks_for_ref(self, ref_id: int) -> list[_Block]:
@@ -57,6 +68,12 @@ class _FakeStore:
 
     def fetch_refs_by_ids(self, ids: list[int]) -> dict[int, _Ref]:
         return {i: self._refs[i] for i in ids if i in self._refs}
+
+    def reading_order(self, ref_id: int) -> list[_Chunk]:
+        return self._chunks.get(ref_id, [])
+
+    def section_style_for(self, handle: str) -> str | None:
+        return self._styles.get(handle)
 
 
 def _patent_blocks() -> list[_Block]:
@@ -153,6 +170,43 @@ def test_refresh_discovers_and_stamps() -> None:
 
 def test_refresh_no_patents_is_empty_but_safe() -> None:
     store = _FakeStore({}, links={500: []}, refs={})
-    ws = refresh_claims_digest(store, 999, 500)
+    ws = refresh_claims_digest(store, 999, 500, our_claim_handles=[])
     assert ws == {"eyes": [], "edit_hint": []}
     assert store.stamped == [(999, {"working_set": ws})]
+
+
+def test_discover_our_claim_handles_finds_claim_section_leaves() -> None:
+    # Draft 500: a claims heading + two claim leaves + a non-claim paragraph.
+    store = _FakeStore(
+        {},
+        chunks={
+            500: [
+                _Chunk("dc10", chunk_kind="heading"),  # the "Claims" heading
+                _Chunk("dc11"),  # claim 1 (under patent-claim)
+                _Chunk("dc12"),  # claim 2 (under patent-claim)
+                _Chunk("dc20"),  # a description paragraph (different section)
+            ]
+        },
+        styles={
+            "dc10": "patent-claim",  # heading itself — excluded (it's a heading)
+            "dc11": "patent-claim",
+            "dc12": "patent-claim",
+            "dc20": "patent-description",
+        },
+    )
+    assert discover_our_claim_handles(store, 500) == ["dc11", "dc12"]
+
+
+def test_refresh_auto_includes_our_claims() -> None:
+    store = _FakeStore(
+        {70: _patent_blocks()},
+        links={500: [_Link(70)]},
+        refs={70: _Ref("patent")},
+        chunks={500: [_Chunk("dc11"), _Chunk("dc12")]},
+        styles={"dc11": "patent-claim", "dc12": "patent-claim"},
+    )
+    ws = refresh_claims_digest(store, 999, 500)  # no explicit our_claim_handles
+    handles = [e["handle"] for e in ws["eyes"]]
+    assert handles[:2] == ["dc11", "dc12"]  # our claims lead, verbatim
+    assert "pk11" in handles  # prior-art claim also present
+    assert ws["edit_hint"] == ["dc11", "dc12"]
