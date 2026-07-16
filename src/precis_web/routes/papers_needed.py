@@ -38,7 +38,13 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from precis_web.deps import get_store, templates
-from precis_web.paper_links import doi_url, scholar_url, uol_url
+from precis_web.paper_links import (
+    arxiv_pdf_url,
+    doi_url,
+    libkey_url,
+    scholar_url,
+    uol_url,
+)
 from precis_web.routes.flags import (
     ACQUIRE_FLAG_DEFS,
     FLAG_DEFS,
@@ -170,6 +176,8 @@ async def index(
                 "identifier_url": doi_url(row["identifier"]),
                 "uol_url": uol_url(row["identifier"]),
                 "scholar_url": scholar_url(row["identifier"]),
+                "libkey_url": libkey_url(row["identifier"]),
+                "arxiv_pdf_url": arxiv_pdf_url(row["identifier"]),
                 "state": row["state"],
                 "last_attempt": row["last_attempt"],
                 "last_event": row["last_event"],

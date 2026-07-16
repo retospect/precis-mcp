@@ -4,6 +4,11 @@
 <div class="flex items-center justify-between mb-3">
   <h1 class="text-lg font-semibold">Papers we need</h1>
   <div class="flex items-center gap-2 text-sm">
+    <button type="button" id="open-all-libkey"
+            class="hidden px-3 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+            title="Open every LibKey full-text link on this page in its own tab, one every ~10–30s (randomized). Allow pop-ups for this site the first time.">
+      Open all downloads ↓
+    </button>
     <a href="/papers-needed"
        class="px-3 py-1 rounded-md {% if not awaiting %}bg-slate-800 text-white{% else %}bg-slate-100 text-slate-700{% endif %}">
       All backlog
@@ -67,8 +72,21 @@
           {% else %}
             <span class="text-slate-500">{{ row.identifier }}</span>
           {% endif %}
-          {% if row.uol_url or row.scholar_url %}
+          {% if row.libkey_url or row.arxiv_pdf_url or row.uol_url or row.scholar_url %}
             <span class="block text-slate-400">
+              {% if row.libkey_url %}
+                <a href="{{ row.libkey_url }}" target="_blank" rel="noopener"
+                   data-download
+                   class="font-medium text-emerald-700 hover:underline"
+                   title="Direct LibKey full-text — download PDF">LibKey ↓</a>
+              {% endif %}
+              {% if row.arxiv_pdf_url %}
+                <a href="{{ row.arxiv_pdf_url }}" target="_blank" rel="noopener"
+                   data-download
+                   class="font-medium text-emerald-700 hover:underline"
+                   title="Direct arXiv PDF (auto-fetch already tries this)">arXiv ↓</a>
+              {% endif %}
+              {% if (row.libkey_url or row.arxiv_pdf_url) and (row.uol_url or row.scholar_url) %}<span class="px-0.5">·</span>{% endif %}
               {% if row.uol_url %}
                 <a href="{{ row.uol_url }}" target="_blank" rel="noopener"
                    class="text-sky-700 hover:underline">UoL</a>
@@ -211,4 +229,57 @@
   </p>
   {% endif %}
 </section>
+
+{# "Open all downloads" — walks every direct-download link on the page
+   (DOI→LibKey, arXiv→PDF) and opens each in its own tab, staggered by a
+   randomized 10–30s so it's gentle (and less bot-like to the publisher)
+   rather than a 100-tab avalanche. Staggered window.open() calls lose
+   the click's user-gesture, so the browser pop-up blocker WILL stop them
+   after the first tab until the user allows pop-ups for this site — the
+   status line says so. Only rows with a direct download carry a
+   data-download link. #}
+<script>
+(function () {
+  const btn = document.getElementById("open-all-libkey");
+  if (!btn) return;
+  const links = Array.from(document.querySelectorAll("a[data-download]"));
+  if (!links.length) return;  // no downloadable rows → leave the button hidden
+
+  // Randomized gap between opens: uniform in [MIN_MS, MAX_MS].
+  const MIN_MS = 10000;
+  const MAX_MS = 30000;
+  const nextGap = () => MIN_MS + Math.floor(Math.random() * (MAX_MS - MIN_MS + 1));
+
+  btn.textContent = "Open all " + links.length + " downloads ↓";
+  btn.classList.remove("hidden");
+
+  let running = false;
+  btn.addEventListener("click", function () {
+    if (running) return;
+    if (!window.confirm("Open " + links.length + " tabs, one every 10–30s?\n" +
+                        "Allow pop-ups for this site if only the first opens.")) {
+      return;
+    }
+    running = true;
+    btn.disabled = true;
+    const urls = links.map((a) => a.href);
+    let i = 0;
+    const step = function () {
+      if (i >= urls.length) {
+        btn.disabled = false;
+        btn.textContent = "Opened " + urls.length + " ✓ — click to repeat";
+        running = false;
+        return;
+      }
+      window.open(urls[i], "_blank", "noopener");
+      i += 1;
+      if (i >= urls.length) { step(); return; }
+      const secs = Math.round(nextGap() / 1000);
+      btn.textContent = "Opened " + i + " / " + urls.length + " · next in " + secs + "s…";
+      window.setTimeout(step, secs * 1000);
+    };
+    step();
+  });
+})();
+</script>
 {% endblock %}

@@ -176,6 +176,24 @@ def test_papers_needed_uol_and_scholar_links(client) -> None:
     assert ">Scholar</a>" in resp.text
 
 
+def test_papers_needed_libkey_direct_link(client) -> None:
+    """Each DOI row gets a direct LibKey full-text link (skipping the
+    Primo search), and the page carries the 'open all downloads' button
+    that walks them. arXiv rows carry no LibKey link (they have a free
+    PDF)."""
+    resp = client.get("/papers-needed")
+    assert resp.status_code == 200
+    # DOI row → direct libkey.io library-scoped link + collectible marker.
+    assert "https://libkey.io/libraries/2545/10.1038/nature01797" in resp.text
+    assert "data-download" in resp.text
+    assert ">LibKey ↓</a>" in resp.text
+    # arXiv row → direct arxiv.org/pdf link, also in the batch.
+    assert "https://arxiv.org/pdf/cond-mat/0410550" in resp.text
+    assert ">arXiv ↓</a>" in resp.text
+    # The batch opener is present (script + button id).
+    assert 'id="open-all-libkey"' in resp.text
+
+
 def test_papers_needed_awaiting_filter(client) -> None:
     resp = client.get("/papers-needed?awaiting=1")
     assert resp.status_code == 200
