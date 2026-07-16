@@ -277,9 +277,13 @@ Design-of-record: `docs/design/chem-tools-integration.md`. Backlog:
   as another `job_type`, GPU on spark. Sibling of slice 4; same "decide the
   engine + install role" caveat.
 
-- **Slice 6 — ChemCrow / agentic.** · *feature* · Not a tool but a **planner
-  coroutine** (`plan_tick`) / dream that calls the narrow verbs. Augmentation,
-  not foundation — lands last. Fully groundable (reuses existing planner infra).
+- **Slice 6 — ChemCrow / agentic.** · *BUILT* · The `precis-lab-help` skill —
+  the composition layer, not a framework: canonical recipes chaining
+  `route`/`protein`/`structure`/`paper` into a research loop, for an interactive
+  agent or an autonomous `plan_tick`. Indexed in `precis-toolpath-help` +
+  `precis-overview`. **Deferred**: a dedicated chem/bio `plan_tick` executor that
+  auto-drives the loop (couples to the planner; the skill already lets the
+  generic planner do it).
 
 - **Plugin-relation read-time inverse (gripe 160213).** · *FIXED* ·
   `Store.inverse_relation` now reads `relations.inverse_slug` from the DB (cached

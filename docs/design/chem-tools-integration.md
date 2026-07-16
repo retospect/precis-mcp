@@ -292,6 +292,17 @@ machine-specific glue.
 6. **ChemCrow / agentic** last — in precis this is not a tool but a planner
    coroutine / dream that calls the narrow verbs. Augmentation, not
    foundation.
+   **Slice 6 — BUILT** (`precis-lab-help` skill): the composition layer, not a
+   new framework. The "tools" already exist as kinds (`route`/`protein`/
+   `structure`/`paper`) driven by the seven verbs; the skill is the canonical
+   **recipes** that chain them into a research loop (plan a synthesis; fold +
+   inspect a target; the design loop), for an interactive agent *or* an
+   autonomous `plan_tick` working an `LLM:*` todo — the compute lands off the
+   tick via the compute lane, so a tick mints then a later tick reads. Indexed
+   in `precis-toolpath-help` (Chemistry/biology section) + `precis-overview`.
+   The heavier follow-on — a *dedicated* chem/bio `plan_tick` executor that
+   auto-drives the loop end-to-end — is deferred (couples to the planner; the
+   skill already lets the generic planner do it).
 
 ## 9. Known limitations / follow-ups
 

@@ -113,6 +113,18 @@ Paid tools cache automatically (`precis-cache`).
 | Spaced-repetition cards (Anki) | **`search(kind='anki', q=…)` first (dedup)** → `put(kind='anki', text='… {{cN::…}} …', tags=['deck-<topic>'])` → syncs to AnkiWeb | `precis-cloze` (craft), `precis-anki-help` (ref) |
 | Cards I keep forgetting | `get(kind='anki', id='/leeches')` → fix the cloze (tag `precis-fix` in Anki) or study more | `precis-anki-help` |
 
+## Chemistry / biology (the in-silico lab)
+
+Compute kinds — the engine runs off the request path (mint → poll), the IR is
+what you read. Plugin kinds (`route`/`protein`), on where the tool-pack is enabled.
+
+| Goal | Toolpath | Depth |
+|---|---|---|
+| Plan a synthesis to a target | `put(kind='route', id='<slug>', target='<SMILES>', engine='aizynth')` → `get(kind='route', id='<slug>')` / `view='metrics'` | `precis-route-help` |
+| Fold a protein from its sequence | `put(kind='protein', id='<slug>', sequence='<AA>', engine='alphafold3')` → `get(kind='protein', id='<slug>')` | `precis-protein-help` |
+| See a fold in 3D | `get(kind='protein', id='<slug>', view='structure')` → `get(kind='structure', id='<slug>-fold')` | `precis-structure-help` |
+| Compose them toward a research goal | search prior art → mint route/fold → read metrics/pLDDT → iterate | `precis-lab-help` |
+
 ## See also
 
 ```python
