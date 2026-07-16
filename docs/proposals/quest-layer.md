@@ -1,6 +1,6 @@
 # Quest layer — the striving above the work (proposal)
 
-> **Status: model closed; slices 1–2 built.** Captures the design conversation
+> **Status: model closed; slices 1–3 built.** Captures the design conversation
 > of 2026-07-15 (Reto + session). The aim-layer that sits above projects/streams/
 > concepts and gives the system **direction**: a legible answer to "what are we
 > striving toward, and is this work/knowledge actually in its service?"
@@ -9,9 +9,13 @@
 > rollup. **Slice 2 (reweighting)** — priority flows down the `serves` DAG into
 > three sinks (`src/precis/quest/reweight.py`): rotation (the doable view +
 > next-pick), acquisition (the OA fetch backlog), reading (meditation concept
-> selection, quest-ready). A **no-op until quests + `serves` edges exist**, so it
-> ships live safely. Skill: `precis-quest-help`. Related:
-> `docs/design/reading-prep-loop.md` (the concept graph, which this consumes).
+> selection, quest-ready). **Slice 3 (gaps + health)** — the striving surfaces
+> its own exploration queue (`src/precis/quest/gaps.py`: thin-support /
+> no-literature / low-mastery / open-hypothesis) plus momentum + an embedding
+> alignment floor on the rollup; `view='gaps'` + `id='/gaps'`. Each is a **no-op
+> until quests + `serves` edges exist**, so they ship live safely. Skill:
+> `precis-quest-help`. Related: `docs/design/reading-prep-loop.md` (the concept
+> graph, which this consumes).
 
 ## What a quest *is*
 
@@ -255,9 +259,17 @@ project/todos · relax+pathway jobs   project/todos · papers · fold/seq jobs
    it's live on the hot path without a flag. *This is where it starts giving
    direction.* (Deferred: the dream's own nomination *prompt* — the dream is
    gated off, so tilting `fetch_oa` covers the live acquisition half.)
-3. **Gaps** — surface what's thin: a striving with little support, a served
-   concept stuck at low mastery, a claim with no supporting paper, a hypothesis
-   with no experiment-job. Gaps *are* the exploration queue.
+3. **Gaps** *(built — `src/precis/quest/gaps.py`)* — the striving surfaces its
+   own exploration queue: **thin-support** (little serves it), **no-literature**
+   (work under way with no `paper` grounding), **low-mastery** (a served
+   `concept` below the mastery floor), **open-hypothesis** (a `hypothesis`
+   logbook entry with no later `result`/`dead-end`). Plus **health** on the tree
+   rollup — *momentum* (recent logbook + server activity, open todos moving, no
+   `child-failed`) and an *alignment floor* (cosine of the quest's card vector
+   vs. each server's; the dream re-review that refines the middle is slice 4).
+   Surfaced in `view='tree'`, `view='gaps'` (per quest), and `id='/gaps'`
+   (corpus-wide). Read-time + mechanical, a **no-op until servers exist**. Gaps
+   *are* the exploration queue the slice-4 loop consumes.
 4. **Active quest-planner** — the continuous slow-burn research loop (see *The
    autonomous research loop* above): local grind + frontier steering,
    evidence-triggered, materials as `structure` servers, quests competing for

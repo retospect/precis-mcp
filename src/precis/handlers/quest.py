@@ -26,8 +26,13 @@ separate cost store). Dead-ends are first-class — recording what failed stops 
 whole system re-treading it.
 
 Slice 1 is **read-only structure**: the kind + the ``serves`` relation + the
-logbook + the ``view='tree'`` rollup. Nothing steers yet (reweighting is slice
-2), so the model is inspectable before anything acts on it.
+logbook + the ``view='tree'`` rollup. Slice 2 (:mod:`precis.quest.reweight`)
+flows priority down the ``serves`` DAG. Slice 3 (:mod:`precis.quest.gaps`) makes
+the striving expose its own **exploration queue** — ``view='tree'`` now also
+rolls up *health* (momentum + an embedding alignment floor) and *gaps* (thin
+support, no literature, low-mastery served concepts, un-answered hypotheses);
+``view='gaps'`` (per quest) and ``id='/gaps'`` (corpus-wide) surface just that
+queue.
 """
 
 from __future__ import annotations
@@ -131,7 +136,9 @@ class QuestHandler(NumericRefHandler):
             "striving statement (+ criteria). Append logbook entries with "
             "put(id=N, text=…, entry='hypothesis'); mark serving work with "
             "link(target='quest:N', rel='serves'). view='tree' rolls up the "
-            "servers + deed ledger. See docs/proposals/quest-layer.md."
+            "servers + deed ledger + health + gaps; view='gaps' (per quest) or "
+            "id='/gaps' (all active quests) surfaces the exploration queue. "
+            "See docs/proposals/quest-layer.md."
         ),
         supports_get=True,
         supports_search=True,
@@ -186,14 +193,17 @@ class QuestHandler(NumericRefHandler):
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        # /recent (base) + the lifecycle shorthands. `active` is the daily
-        # reach ("what are we striving toward?"); dormant/abandoned surface
-        # the set-aside + renounced strivings.
-        return ("recent", "active", "dormant", "abandoned")
+        # /recent (base) + the lifecycle shorthands + /gaps (the corpus-wide
+        # exploration queue). `active` is the daily reach ("what are we striving
+        # toward?"); dormant/abandoned surface the set-aside + renounced
+        # strivings; /gaps rolls up what is thin across every active quest.
+        return ("recent", "active", "dormant", "abandoned", "gaps")
 
     def _list_view(self, view: str) -> Response | None:
         if view in ("active", "dormant", "abandoned"):
             return self._list_by_tags([f"STATUS:{view}"], page_size=20)
+        if view == "gaps":
+            return self._render_gaps_dashboard()
         return super()._list_view(view)
 
     # ── tag: guard the perpetual lifecycle ──────────────────────────
@@ -370,16 +380,17 @@ class QuestHandler(NumericRefHandler):
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
-        # `view='tree'` on a concrete id rolls up the servers + deed ledger.
-        # Path-views (id='/active') and the base views (links/log/raw) fall
-        # through to NumericRefHandler.get unchanged.
-        if (
-            view == "tree"
-            and id is not None
-            and not (isinstance(id, str) and id.startswith("/"))
-        ):
-            ref = self._resolve_live_ref(self._coerce_id(id))
+        # `view='tree'` on a concrete id rolls up the servers + deed ledger +
+        # health + gaps; `view='gaps'` is the focused exploration queue for one
+        # quest. Path-views (id='/active', id='/gaps') and the base views
+        # (links/log/raw) fall through to NumericRefHandler.get unchanged.
+        concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
+        if view == "tree" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
             return Response(body=self._render_tree(ref))
+        if view == "gaps" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
+            return Response(body=self._render_gaps_only(ref))
         return super().get(id=id, view=view, q=q, **_kw)
 
     # ── rendering ────────────────────────────────────────────────────
@@ -463,10 +474,14 @@ class QuestHandler(NumericRefHandler):
         servers = self.store.fetch_refs_by_ids(set(server_ids))
         by_kind: dict[str, list[Ref]] = {}
         sub_quests: list[Ref] = []
+        live_servers: list[Ref] = []
+        _seen: set[int] = set()
         for sid in server_ids:
             s = servers.get(sid)
-            if s is None or s.deleted_at is not None:
+            if s is None or s.deleted_at is not None or sid in _seen:
                 continue
+            _seen.add(sid)
+            live_servers.append(s)
             if s.kind == "quest":
                 sub_quests.append(s)
             else:
@@ -510,6 +525,9 @@ class QuestHandler(NumericRefHandler):
             for b in deeds[-8:]:
                 stamp = b.created_at.date().isoformat() if b.created_at else "?"
                 lines.append(f"  ✦ {stamp}  {b.text.splitlines()[0][:80]}")
+            # Health (momentum + alignment floor) + gaps — the striving's own
+            # exploration queue (slice 3, precis.quest.gaps).
+            lines += self._render_health_and_gaps(ref, live_servers)
             if not server_ids:
                 lines += render_next_section(
                     [
@@ -524,6 +542,100 @@ class QuestHandler(NumericRefHandler):
                     ]
                 )
         return "\n".join(lines)
+
+    # ── slice 3: health (momentum + alignment) + gaps ────────────────
+
+    def _render_health_and_gaps(self, ref: Ref, live_servers: list[Ref]) -> list[str]:
+        """Momentum + alignment-floor + the gap list, for the tree/gaps views."""
+        from precis.quest import gaps as gapmod
+
+        out: list[str] = []
+        health = gapmod.quest_health(self.store, ref.id, servers=live_servers)
+        m = health.momentum
+        out += ["", "── health ──"]
+        momentum = (
+            f"momentum: {m.label} · {m.recent_entries} recent log · "
+            f"{m.recent_server_events} server event"
+            f"{'' if m.recent_server_events == 1 else 's'}/{gapmod.MOMENTUM_WINDOW_DAYS}d"
+        )
+        if m.open_todo_servers:
+            momentum += (
+                f" · {m.open_todo_servers} open todo"
+                f"{'' if m.open_todo_servers == 1 else 's'}"
+            )
+        if m.blocked_todo_servers:
+            momentum += f" · {m.blocked_todo_servers} blocked (child-failed)"
+        out.append(momentum)
+        if health.alignment_checked:
+            if health.alignment_flags:
+                out.append(
+                    f"alignment: {len(health.alignment_flags)} of "
+                    f"{health.alignment_checked} embedded servers drifting off-aim:"
+                )
+                for fl in health.alignment_flags[:6]:
+                    out.append(f"  ~ {fl.handle} cos={fl.cosine:.2f} {fl.title}")
+            else:
+                out.append(
+                    f"alignment: all {health.alignment_checked} embedded servers on-aim"
+                )
+
+        gap_list = gapmod.quest_gaps(self.store, ref.id, servers=live_servers)
+        if gap_list:
+            out += ["", f"── gaps ({len(gap_list)}) — the exploration queue ──"]
+            for g in gap_list:
+                where = f"  [{g.handle}]" if g.handle else ""
+                out.append(f"  ▫ {g.kind}: {g.detail}{where}")
+        return out
+
+    def _render_gaps_only(self, ref: Ref) -> str:
+        """`view='gaps'` on one quest — its health + focused exploration queue."""
+        from precis.quest import gaps as gapmod
+
+        live = gapmod._live_servers(self.store, ref.id)
+        handle = handle_registry.try_format(self.kind, ref.id) or f"quest:{ref.id}"
+        lines = [f"# gaps — {handle}: {ref.title.splitlines()[0]}"]
+        lines += self._render_health_and_gaps(ref, live)
+        if not gapmod.quest_gaps(self.store, ref.id, servers=live):
+            lines += ["", "no gaps — this striving is well-supported."]
+        return "\n".join(lines)
+
+    def _render_gaps_dashboard(self) -> Response:
+        """`id='/gaps'` — the exploration queue across every active quest."""
+        from precis.quest import gaps as gapmod
+
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT r.ref_id FROM refs r "
+                "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+                "JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE r.kind = 'quest' AND r.deleted_at IS NULL "
+                "AND t.namespace = 'STATUS' AND t.value = 'active' "
+                "ORDER BY COALESCE(r.prio, 5) ASC, r.ref_id ASC"
+            ).fetchall()
+        ids = [int(r[0]) for r in rows]
+        if not ids:
+            return Response(body="no active quests — nothing to surface gaps for.")
+        lines = ["# gaps across active quests — the exploration queue", ""]
+        total = 0
+        for qid in ids:
+            ref = self._resolve_live_ref(qid)
+            live = gapmod._live_servers(self.store, qid)
+            gs = gapmod.quest_gaps(self.store, qid, servers=live)
+            m = gapmod.quest_momentum(self.store, qid, servers=live)
+            total += len(gs)
+            handle = handle_registry.try_format("quest", qid) or f"quest:{qid}"
+            plural = "" if len(gs) == 1 else "s"
+            lines.append(
+                f"◆ {handle} [{m.label}] {ref.title.splitlines()[0]} "
+                f"— {len(gs)} gap{plural}"
+            )
+            for g in gs[:4]:
+                where = f"  [{g.handle}]" if g.handle else ""
+                lines.append(f"    ▫ {g.kind}: {g.detail[:80]}{where}")
+        qn = "" if len(ids) == 1 else "s"
+        gn = "" if total == 1 else "s"
+        lines.insert(1, f"{len(ids)} active quest{qn} · {total} gap{gn} total")
+        return Response(body="\n".join(lines))
 
     def _render_create_ack(self, ref_id: int) -> Response:
         # Capture the id so the ``_create`` override can apply a create-time

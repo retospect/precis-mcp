@@ -68,15 +68,17 @@ meditation}.py`, `cli/cast.py`. Skill: `precis-audio-help`.
 
 The aim-layer above projects/streams/concepts. Slices 1 (read-only
 structure — `quest` kind + `serves` + logbook + tree rollup, main
-`2ce51f5f`) and 2 (reweighting — priority down the `serves` DAG into
+`2ce51f5f`), 2 (reweighting — priority down the `serves` DAG into
 rotation/acquisition/reading, `src/precis/quest/reweight.py`, main
-`8a61716f`) are **shipped, not deployed**. Skill `precis-quest-help`;
-tests `tests/test_quest.py` + `tests/test_quest_reweight.py`.
+`8a61716f`), and 3 (gaps + health — `src/precis/quest/gaps.py`,
+`view='gaps'`/`id='/gaps'`) are **shipped, not deployed**. Skill
+`precis-quest-help`; tests `tests/test_quest.py` +
+`tests/test_quest_reweight.py` + `tests/test_quest_gaps.py`.
 
 **Operational — do these to make the shipped slices actually steer:**
 
-- **Deploy slices 1+2 to the cluster** — `open` / `feature` / owner
-  `/go` → `scripts/deploy`. Both ship dark *behaviourally* (a no-op until
+- **Deploy slices 1+2+3 to the cluster** — `open` / `feature` / owner
+  `/go` → `scripts/deploy`. All ship dark *behaviourally* (a no-op until
   a quest exists), so deploy is low-risk. Finder: Opus session.
 - **Link 3–4 mission quests to real projects** — `open` / `feature` /
   owner prod-data (MCP `put(kind='quest')` + `link(rel='serves')`). Derive
@@ -86,11 +88,21 @@ tests `tests/test_quest.py` + `tests/test_quest_reweight.py`.
   the reweighting is a no-op in prod (nothing serves anything). This is the
   last slice-1 deliverable. Finder: Opus session.
 
-**Slice 3 — gaps** (`feature`, owner new `src/precis/quest/`): surface
-what's thin so the striving exposes its own exploration queue — a quest
-with little support, a served `concept` stuck at low mastery, a claim with
-no supporting paper, a `hypothesis` logbook entry with no experiment-job.
-Gaps *are* the exploration queue. Not started.
+**Slice 3 — gaps + health** (`feature`, `src/precis/quest/gaps.py`):
+**BUILT + shipped** (not deployed). The striving exposes its own
+exploration queue — **thin-support** (little serves it), **no-literature**
+(work under way with no `paper` grounding), **low-mastery** (a served
+`concept` below the mastery floor), **open-hypothesis** (a `hypothesis`
+logbook entry with no later `result`/`dead-end`) — plus **health**
+(momentum label + an embedding alignment floor) on the tree rollup.
+Surfaced in `view='tree'`, `view='gaps'` (per quest), `id='/gaps'`
+(corpus-wide). Read-time, mechanical, no-op until servers exist. Tests
+`tests/test_quest_gaps.py`. *Residual for slice 4:* the alignment floor is
+mechanical only — the **dream re-review** that re-scores stale/low-cosine
+`serves` edges + writes a verdict onto each edge (human override wins) is
+deferred to slice 4; "no-supporting-paper for a specific claim" is
+approximated here as quest-level no-literature (no per-claim `citation`
+grounding check yet).
 
 **Slice 4 — the autonomous research loop** (`feature`, the big one): the
 continuous slow-burn program — local "free" models grind (propose
@@ -142,11 +154,11 @@ loop's rolling context. Not started.
   keep getting it wrong.
 
 **Standing leans (decided-enough, easy to flip):** dossier = a `draft` the
-quest owns (arrives with the loop, slice 4); alignment judge =
-embedding-proximity floor + a dream re-review that scores stale/low-cosine
-`serves` edges, human override wins (cadence/storage → slice 3). Health
-(momentum + alignment) is not yet computed on the `view='tree'` rollup —
-slice 3.
+quest owns (arrives with the loop, slice 4); alignment judge = the
+embedding-proximity floor (**built, slice 3**) + a dream re-review that
+scores stale/low-cosine `serves` edges, human override wins (**deferred to
+slice 4** — cadence/storage/verdict-on-edge). Health (momentum + the
+alignment floor) is now computed on the `view='tree'` rollup (slice 3).
 
 ---
 

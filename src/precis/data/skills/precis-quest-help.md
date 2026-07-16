@@ -119,13 +119,36 @@ The append path takes only `text`/`entry`/`by`/`cost`; use `tag()` /
 
 ```python
 get(kind='quest', id=7)               # statement + logbook timeline + tote
-get(kind='quest', id=7, view='tree')  # rollup: servers by kind + sub-quests + deed ledger
+get(kind='quest', id=7, view='tree')  # rollup: servers + deed ledger + health + gaps
+get(kind='quest', id=7, view='gaps')  # just this quest's exploration queue
 get(kind='quest', id='/active')       # every active striving
+get(kind='quest', id='/gaps')         # gaps across ALL active quests
 ```
 
 `view='tree'` is the map: it walks who serves the quest (grouped by
-kind), recurses into sub-quests, and prints the deed ledger + tote at the
-foot.
+kind), recurses into sub-quests, prints the deed ledger + tote, and — from
+slice 3 — a **health** line and a **gaps** list at the foot.
+
+## Health + gaps — the exploration queue (slice 3)
+
+A quest is measured by *striving*, not finishing, so the tree rollup ends
+with two read-time, mechanical reads (no `% done`):
+
+- **health** — *momentum* (`quiet` / `stalled` / `warming` / `active`,
+  from recent logbook entries + recent server activity + open todos
+  moving − any `child-failed` bubble) and an *alignment* floor (cosine
+  proximity between the quest's card vector and each server's — a
+  best-effort "is this still on-aim?" flag; servers not yet embedded are
+  skipped).
+- **gaps** — the exploration queue: **thin-support** (almost nothing
+  serves it), **no-literature** (work under way with no `paper`
+  grounding), **low-mastery** (a served `concept` you don't understand
+  yet), **open-hypothesis** (a `hypothesis` logbook entry with no later
+  `result`/`dead-end`). Gaps *are* where to look next.
+
+`view='gaps'` focuses one quest; `id='/gaps'` rolls the queue up across
+every active quest, hottest first. All degrade to empty until quests +
+servers exist.
 
 ## What this is *not*
 
@@ -138,10 +161,11 @@ foot.
 
 ## Roadmap (what's live vs. coming)
 
-Slices 1–2 are **live**: the kind + `serves` + logbook + tree rollup
-(slice 1), and **reweighting** (slice 2) — priority flows down the
-`serves` DAG into the todo rotation, paper acquisition, and reading
-(a no-op until you link work to an active quest). Coming: **gap
-surfacing** (slice 3) and the **autonomous research loop** (local grind
-+ frontier steering, materials as `structure` servers — slice 4). Design
-of record: `docs/proposals/quest-layer.md`.
+Slices 1–3 are **live**: the kind + `serves` + logbook + tree rollup
+(slice 1); **reweighting** (slice 2) — priority flows down the `serves`
+DAG into the todo rotation, paper acquisition, and reading (a no-op until
+you link work to an active quest); and **gaps + health** (slice 3) — the
+striving surfaces its own exploration queue + a momentum/alignment read
+(`view='gaps'`, `id='/gaps'`). Coming: the **autonomous research loop**
+(local grind + frontier steering, materials as `structure` servers —
+slice 4). Design of record: `docs/proposals/quest-layer.md`.
