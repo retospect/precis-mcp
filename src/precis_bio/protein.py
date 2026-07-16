@@ -287,16 +287,87 @@ class ProteinHandler(Handler):
             )
         fold = ProteinFold.from_json(blob)
         v = (view or "").strip().lower()
-        if v in ("cif", "structure", "mmcif"):
+        if v in ("cif", "mmcif"):
             if not fold.cif.strip():
                 return Response(body=f"# protein '{ref.slug}' — no structure model")
             return Response(body=fold.cif)
+        if v == "structure":
+            return self._converge_structure(ref, fold)
         if v and v not in ("fold", "summary"):
             raise BadInput(
                 f"unknown protein view {view!r}",
-                next="view='cif' (raw mmCIF) | omit for the fold summary",
+                next="view='cif' (raw mmCIF) | view='structure' (3D structure "
+                "projection) | omit for the fold summary",
             )
         return Response(body=fold.render())
+
+    #: Above this atom count the O(N²) covalent-bond detector is skipped (the
+    #: structure viewer then shows an element-coloured atom cloud). A single-
+    #: chain fold is usually under it; a big complex is not.
+    _BOND_DETECT_MAX = 600
+
+    def _converge_structure(self, ref: Any, fold: ProteinFold) -> Response:
+        """Project a fold's mmCIF into a derived ``structure`` ref (ADR 0043) so
+        it renders in the 3D viewer. Content-slugged (``<protein>-fold``) +
+        idempotent — a second call is a cache hit. Links protein↔structure via
+        the ``has-fold-structure`` relation (asymmetric, DB-mirrored inverse).
+        """
+        if not fold.cif.strip():
+            return Response(
+                body=f"# protein '{ref.slug}' — no structure model to project"
+            )
+        slug = f"{ref.slug}-fold"
+        existing = self.store.get_ref(kind="structure", id=slug)
+        if existing is not None:
+            return Response(
+                body=f"# protein '{ref.slug}' → structure '{slug}' (cached)\n\n"
+                f"View in 3D: /structure/{slug} · get(kind='structure', id='{slug}')"
+            )
+
+        from precis_bio.converge import cif_to_scene
+
+        try:
+            scene = cif_to_scene(fold.cif, detect_bonds_max=self._BOND_DETECT_MAX)
+        except ValueError as exc:
+            raise BadInput(f"could not build a structure from the fold: {exc}") from exc
+        natoms = len(scene.atoms)
+        comp = scene.composition()
+        card = f"folded structure of protein {ref.slug}: {natoms} atoms " + " ".join(
+            f"{el}{n}" for el, n in sorted(comp.items())
+        )
+        sref, _created = self.store.structure_save(
+            slug=slug,
+            title=f"{ref.title or ref.slug} (folded structure)",
+            scene=scene,
+            version=1,
+            card_text=card,
+            description=(
+                f"AlphaFold projection of protein '{ref.slug}' "
+                f"(non-periodic, mean pLDDT "
+                f"{fold.plddt_mean:.1f})."
+                if fold.plddt_mean is not None
+                else f"AlphaFold projection of protein '{ref.slug}' (non-periodic)."
+            ),
+        )
+        with self.store.tx() as conn:
+            self.store.add_link(
+                src_ref_id=ref.id,
+                dst_ref_id=sref.id,
+                relation="has-fold-structure",
+                set_by="system",
+                conn=conn,
+            )
+        if scene.bonds:
+            bonds_note = f", {len(scene.bonds)} inferred bonds"
+        elif natoms > self._BOND_DETECT_MAX:
+            bonds_note = " (atoms only — too large for auto-bonds)"
+        else:
+            bonds_note = ""
+        return Response(
+            body=f"# protein '{ref.slug}' → structure '{slug}'\n\n"
+            f"{natoms} atoms{bonds_note}. View in 3D: /structure/{slug}\n"
+            f"get(kind='structure', id='{slug}')"
+        )
 
     # ── delete ────────────────────────────────────────────────────────
     def delete(  # type: ignore[override]

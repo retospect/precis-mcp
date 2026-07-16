@@ -40,7 +40,7 @@ from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput
 from precis.store._mappers import _lookup_chunk_id, _row_to_link
-from precis.store.types import _INVERSE_RELATIONS, ActorSlug, Link, Relation
+from precis.store.types import ActorSlug, Link, Relation
 
 
 def _resolve_chunk_id_for_link(
@@ -122,6 +122,34 @@ class LinksMixin:
             cached = frozenset(str(r[0]) for r in rows)
             self._valid_relations_cache = cached
         return cached
+
+    def inverse_relation(
+        self, relation: str | None, *, refresh: bool = False
+    ) -> str | None:
+        """The inverse slug of ``relation`` from the ``relations`` table, or None.
+
+        The authoritative source (gripe 160213): the ``relations.inverse_slug``
+        column, seeded per-relation in each migration — **including plugin
+        relations**, which the old static ``_INVERSE_RELATIONS`` dict in
+        ``store/types.py`` did not know, so an asymmetric plugin relation never
+        auto-mirrored on the :meth:`links_for` read filter. Cached for the
+        process lifetime exactly like :meth:`valid_relations` (same ``__dict__``
+        pattern, first-call load, ``refresh=True`` to re-read); the vocabulary
+        is static once migrations have run, and plugin migrations run at startup
+        before any link read. Every relation is a key (value ``None`` when it has
+        no inverse), so an inverse-less relation never re-queries.
+        """
+        if relation is None:
+            return None
+        cached = getattr(self, "_inverse_relations_cache", None)
+        if cached is None or refresh:
+            with self.pool.connection() as c:
+                rows = c.execute("SELECT slug, inverse_slug FROM relations").fetchall()
+            cached = {
+                str(r[0]): (str(r[1]) if r[1] is not None else None) for r in rows
+            }
+            self._inverse_relations_cache = cached
+        return cached.get(relation)
 
     def add_link(
         self,
@@ -276,7 +304,10 @@ class LinksMixin:
         ``cites`` — so the rewrite is the only way to surface
         "who cites me?" links).
         """
-        inverse = _INVERSE_RELATIONS.get(relation) if relation is not None else None
+        # Inverse from the DB `relations.inverse_slug` (gripe 160213), so a
+        # plugin relation's inverse mirrors on read too — not just the built-ins
+        # the old static `_INVERSE_RELATIONS` dict knew.
+        inverse = self.inverse_relation(relation)
 
         def _direction_clause(direction_: str) -> tuple[str, list[Any]]:
             if direction_ == "out":

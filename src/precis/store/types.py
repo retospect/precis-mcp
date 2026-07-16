@@ -145,9 +145,16 @@ Relation = Literal[
 ActorSlug = Literal["agent", "user", "system"]
 
 
-# Inverse relations for auto-mirroring at link write time. Mirrored
-# from the ``relations`` seed block in ``migrations/0001_initial.sql``
-# (the ``relations.inverse_slug`` column). Symmetric relations
+# Built-in inverse relations — the static typo-safety reference for the
+# CORE relations, mirrored from the ``relations`` seed block in
+# ``migrations/0001_initial.sql`` (the ``relations.inverse_slug`` column).
+# NOTE (gripe 160213): this dict is NO LONGER the runtime authority for the
+# ``links_for`` inverse rewrite — ``Store.inverse_relation`` reads
+# ``relations.inverse_slug`` from the DB, so PLUGIN relations mirror on read
+# too (this dict never knew them). Kept as the built-in reference (like the
+# ``Relation`` literal) + what a few tests assert against; keep it in sync with
+# the seed for the built-ins, but new plugin relations only need the DB column.
+# Symmetric relations
 # (``related-to``) are NOT in this map — the bidirectional query in
 # :meth:`Store.links_for` (direction='both') already surfaces them
 # from either side, and inserting both directions would just produce

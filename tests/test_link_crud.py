@@ -18,7 +18,7 @@ fiction.
 
 from __future__ import annotations
 
-from typing import get_args
+from typing import cast, get_args
 
 import pytest
 
@@ -443,6 +443,54 @@ class TestPluginRelationVocabulary:
         assert validate_relation("cites") == "cites"
         with pytest.raises(BadInput, match="unknown relation"):
             validate_relation("test-plugin-consumes")
+
+    def test_inverse_relation_from_db(self, store: Store) -> None:
+        """``Store.inverse_relation`` reads ``relations.inverse_slug`` (gripe
+        160213), so it resolves built-ins + returns None for a NULL inverse."""
+        assert store.inverse_relation("cites") == "cited-by"
+        assert store.inverse_relation("cited-by") == "cites"
+        assert store.inverse_relation(None) is None
+        # ``see-also`` is asymmetric with a NULL inverse → no rewrite.
+        assert store.inverse_relation("see-also") is None
+
+    def test_plugin_relation_inverse_rewrite(self, store: Store) -> None:
+        """A plugin asymmetric relation's inverse mirrors on the ``links_for``
+        read filter — the gripe-160213 fix. The old static dict never knew a
+        plugin relation, so ``links_for(dst, relation=<inverse>)`` came back
+        empty; sourcing the inverse from the DB fixes it."""
+        a = _seed_memory(store)
+        b = _seed_memory(store)
+        try:
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "INSERT INTO relations (slug, is_symmetric, inverse_slug) "
+                    "VALUES ('test-fwd', FALSE, 'test-rev'), "
+                    "       ('test-rev', FALSE, 'test-fwd') "
+                    "ON CONFLICT (slug) DO NOTHING"
+                )
+            store.inverse_relation("test-fwd", refresh=True)  # pick up the seed
+            store.add_link(src_ref_id=a, dst_ref_id=b, relation="test-fwd")
+
+            # Direct side: a --test-fwd--> b. (Plugin relations aren't in the
+            # `Relation` typo-safety literal, so cast — they're valid at runtime.)
+            direct = store.links_for(a, relation=cast(Relation, "test-fwd"))
+            assert [l.relation for l in direct] == ["test-fwd"]
+            # Inverse side: querying b for the INVERSE relation surfaces the same
+            # edge (b is the dst of a test-fwd link). This is what was broken.
+            inv = store.links_for(
+                b, relation=cast(Relation, "test-rev"), direction="out"
+            )
+            assert len(inv) == 1 and inv[0].src_ref_id == a and inv[0].dst_ref_id == b
+        finally:
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "DELETE FROM links WHERE relation IN ('test-fwd', 'test-rev')"
+                )
+                conn.execute(
+                    "DELETE FROM relations WHERE slug IN ('test-fwd', 'test-rev')"
+                )
+            store.valid_relations(refresh=True)
+            store.inverse_relation(None, refresh=True)
 
 
 # ── handler: link/unlink/rel on put ────────────────────────────────

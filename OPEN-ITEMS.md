@@ -245,23 +245,33 @@ Design-of-record: `docs/design/chem-tools-integration.md`. Backlog:
   (de-novo, **container** transport reusing slice 3's seam), gate-green (25
   tests). Grounded on the **real AF3 v3.0.1 install on spark** (image
   `alphafold3:ready`, GB10; memory: `alphafold-spark-facts`).
-- **Slice 4b — folding live-run (deploy).** · *DEPLOYED — protein kind LIVE* ·
+- **Slice 4b — folding live-run (deploy).** · *GREEN — end-to-end proven* ·
   `roles/alphafold` + `playbooks/46-alphafold.yml` (cluster repo `44f9242`):
   asserts the image + `af3.bin` weights, GPU passthrough, XLA cache, wires the
   `PRECIS_FOLD_*` worker env; topology `bio_fold:[spark]` + `bio_plugin:[melchior]`
-  un-darks `PRECIS_BIO_ENABLED` on melchior (verified in the running web daemon).
-  **Live smoke PASSED**: insulin A folded on spark in ~3 min; the deployed
-  `parse_af3_output` read the real output → pLDDT 84.7, all three flagged unknowns
-  (output naming, summary keys, de-novo result) resolved + matching the parser.
-  Rootful dockerd mounts reto's world-readable models even though the deploy shell
-  can't traverse `/home/reto`. **Residual (last mile):** the precis job-dispatch
-  round-trip (put → fold job → spark worker → write-back) wasn't run on prod —
-  proven-by-parts (gate tests + identical live retrosynth `ssh_node` path + the
-  live smoke's engine/parser halves); close it by driving `put(kind='protein',
-  engine='alphafold3')` via a real MCP agent (asa), like chem's route smoke.
-- **Slice 4c — folding accuracy + structure convergence.** · *feature* ·
-  `cif → ASE → Scene.from_ase` (ADR 0043) for a 3D viewer / graph probes, + a
-  ColabFold MSA-mode engine (de-novo single-seq is lower accuracy).
+  un-darks `PRECIS_BIO_ENABLED` on melchior. **Full prod dispatch PROVEN**: a real
+  `put(kind='protein', engine='alphafold3')` via the deployed runtime minted fold
+  job 161868 → spark worker claimed + ran AF3 (rc=0) → wrote back → protein 161867
+  folded, pLDDT 84.7, pTM 0.1 (identical to the direct smoke); all three flagged
+  unknowns (output naming, summary keys, de-novo result) resolved. Rootful dockerd
+  mounts reto's world-readable models even though the deploy shell can't traverse
+  `/home/reto`. **Hardening added** (mem-cap, this branch): `PRECIS_FOLD_MEM_LIMIT`
+  → `--memory`/`--memory-swap` on the fold container (role default `96g`), since
+  the GB10's unified CPU+GPU memory means an uncapped XLA spike could starve the
+  worker. Note: drive plugin-kind puts via `runtime.dispatch` (the CLI/`repl` `put`
+  has a curated arg allowlist that rejects `sequence`/`engine`).
+- **Slice 4c — folding accuracy + structure convergence.** · *convergence BUILT* ·
+  (1) **`structure` convergence — DONE**: `get(kind='protein', view='structure')`
+  projects a fold's mmCIF into a non-periodic `structure` ref (`precis_bio/
+  converge.py`, dependency-free `_atom_site` scan — NOT ASE, which is `[dft]`-gated)
+  named `<slug>-fold`, linked via the asymmetric `has-fold-structure` relation, so
+  it renders in the existing `/structure` 3D viewer. Content-slugged + idempotent;
+  bonds inferred for small folds, atom-cloud for large. (2) **ColabFold MSA engine**
+  — *needs-decision*: ColabFold is NOT a docker image and NOT on PATH on spark
+  (unlike AF3); a reto-home conda install can't be run by the `deploy` worker.
+  Clean path = containerize it (`colabfold:ready` image, like AF3) + decide the
+  MSA source (MMseqs2 API vs local DBs). De-novo single-seq is lower accuracy
+  (insulin A pTM 0.1 illustrates it).
 
 - **Slice 5 — `sequence` kind (design).** · *feature* · ProteinMPNN / RFdiffusion
   as another `job_type`, GPU on spark. Sibling of slice 4; same "decide the
@@ -271,10 +281,12 @@ Design-of-record: `docs/design/chem-tools-integration.md`. Backlog:
   coroutine** (`plan_tick`) / dream that calls the narrow verbs. Augmentation,
   not foundation — lands last. Fully groundable (reuses existing planner infra).
 
-- **Plugin-relation read-time inverse (gripe 160213).** · *polish* ·
-  `Store.links_for`'s inverse rewrite is Python-`_INVERSE_RELATIONS`-bound, so
-  asymmetric plugin relations don't auto-mirror; slice-1 relations must stay
-  symmetric. Fix: source inverses from DB `relations.inverse_slug`.
+- **Plugin-relation read-time inverse (gripe 160213).** · *FIXED* ·
+  `Store.inverse_relation` now reads `relations.inverse_slug` from the DB (cached
+  like `valid_relations`), and `links_for` uses it — so an asymmetric plugin
+  relation's inverse mirrors on read. `_INVERSE_RELATIONS` stays as the built-in
+  typo-safety reference only. Proven by `precis_bio`'s `has-fold-structure` /
+  `fold-structure-of` pair (the first asymmetric plugin relation, slice 4c).
 
 ---
 

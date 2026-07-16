@@ -53,7 +53,8 @@ tells you to configure a node).
 ```
 get(kind='protein')                         # list proteins
 get(kind='protein', id='insulin-a')         # the fold summary
-get(kind='protein', id='insulin-a', view='cif')   # the raw mmCIF structure
+get(kind='protein', id='insulin-a', view='cif')        # the raw mmCIF structure
+get(kind='protein', id='insulin-a', view='structure')  # project into the 3D viewer
 ```
 
 The default render is the **fold summary**: residue count, **mean pLDDT** (0–100,
@@ -61,6 +62,14 @@ with a confidence band — very high ≥90 / confident ≥70 / low ≥50 / very 
 **pTM** / **ipTM**, ranking score, and the sequence. `view='cif'` returns the
 predicted structure as mmCIF text (per-atom pLDDT in the B-factor column) for
 download or a viewer.
+
+`view='structure'` **projects the fold into a `structure` ref** (ADR 0043) — a
+non-periodic atom graph named `<slug>-fold`, linked back via `has-fold-structure`
+— so it renders in the shared 3D viewer at `/structure/<slug>-fold` and can be
+probed like any structure. Content-slugged + idempotent (a second call is a
+cache hit). Covalent bonds are inferred for smaller folds; a large complex shows
+an element-coloured atom cloud. The fold IR stays on `meta.fold` — the structure
+is a derived view, not the primary store.
 
 **Reading confidence.** Mean pLDDT is per-residue local confidence; pTM is the
 global fold confidence. De-novo (single-sequence) folds are **less accurate than

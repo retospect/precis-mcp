@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 import precis_bio
 from precis.dispatch import Hub, _try
 from precis.store import Store
+from precis.store.types import Relation
 from precis.workers import job_types as jt
 from precis_bio import jobs as bio_jobs
 from precis_bio.alphafold import (
@@ -31,6 +32,7 @@ from precis_bio.alphafold import (
     build_fold_argv,
     parse_af3_output,
 )
+from precis_bio.converge import BOX_PADDING, cif_to_scene, parse_atom_site
 from precis_bio.engine import (
     FOLD_IMAGE_ENV,
     AlphaFold3Engine,
@@ -48,9 +50,7 @@ from precis_bio.ir import (
 from precis_bio.jobs import FOLD_SPEC, run_fold
 from precis_bio.protein import ProteinHandler
 
-_BIO_MIGRATION = (
-    Path(precis_bio.__file__).parent / "migrations" / "0001_protein_kind.sql"
-)
+_BIO_MIGRATIONS_DIR = Path(precis_bio.__file__).parent / "migrations"
 
 #: A short real sequence (insulin A chain) for the round-trip tests.
 _INSULIN_A = "GIVEQCCTSICSLYQLENYCN"
@@ -58,12 +58,14 @@ _INSULIN_A = "GIVEQCCTSICSLYQLENYCN"
 
 @pytest.fixture
 def protein_store(store: Store, monkeypatch: pytest.MonkeyPatch) -> Store:
-    """The shared test store with the `protein` kind seeded + the dark flag on."""
+    """The shared test store with every precis_bio migration seeded + the dark
+    flag on (the `protein` kind + the has-fold-structure relation)."""
     monkeypatch.setenv("PRECIS_BIO_ENABLED", "1")
-    body = _BIO_MIGRATION.read_text(encoding="utf-8")
-    body = body.replace("BEGIN;", "").replace("COMMIT;", "")
     with store.pool.connection() as c:
-        c.execute(body)
+        for sql in sorted(_BIO_MIGRATIONS_DIR.glob("*.sql")):
+            body = sql.read_text(encoding="utf-8")
+            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
+            c.execute(body)
     return store
 
 
@@ -92,6 +94,7 @@ def _fake_af3_output(
             for c in (
                 "group_PDB",
                 "id",
+                "type_symbol",
                 "label_atom_id",
                 "label_comp_id",
                 "label_asym_id",
@@ -103,8 +106,8 @@ def _fake_af3_output(
             )
         )
         + "\n"
-        + f"ATOM 1 CA GLY A 1 0.000 0.000 0.000 {plddt:.2f}\n"
-        + f"ATOM 2 CA ILE A 2 3.800 0.000 0.000 {plddt:.2f}\n"
+        + f"ATOM 1 C CA GLY A 1 0.000 0.000 0.000 {plddt:.2f}\n"
+        + f"ATOM 2 C CA ILE A 2 3.800 0.000 0.000 {plddt:.2f}\n"
     )
     (sub / f"{name}_model.cif").write_text(cif)
     (sub / f"{name}_summary_confidences.json").write_text(
@@ -227,8 +230,9 @@ def test_build_fold_argv() -> None:
     assert f"/nas/models:{CONTAINER_MODELS}:ro" in argv
     assert "/s/out:/output" in argv
     assert "--norun_data_pipeline" in argv  # de-novo mode
-    # No XLA cache mount unless asked.
+    # No XLA cache mount + no memory cap unless asked.
     assert "/root/.cache/xla_extension" not in " ".join(argv)
+    assert "--memory" not in argv
     argv2 = build_fold_argv(
         ref_id=7,
         in_dir="/s/in",
@@ -236,8 +240,15 @@ def test_build_fold_argv() -> None:
         image="af3",
         models_dir="/m",
         xla_cache_dir="/host/xla",
+        mem_limit="100g",
     )
     assert "/host/xla:/root/.cache/xla_extension" in argv2
+    # Memory cap: --memory + an equal --memory-swap (no swap on top of the cap),
+    # placed before the image so docker parses it as a run flag.
+    assert "--memory" in argv2 and "--memory-swap" in argv2
+    assert argv2[argv2.index("--memory") + 1] == "100g"
+    assert argv2[argv2.index("--memory-swap") + 1] == "100g"
+    assert argv2.index("--memory") < argv2.index("af3")
 
 
 def test_parse_af3_output(tmp_path: Path) -> None:
@@ -532,6 +543,116 @@ def test_container_dispatch_no_model_fails(
     bio_jobs._dispatch(ctx, FOLD_SPEC)
     assert ctx.status != "succeeded"
     assert ctx.failure is not None and "no model mmCIF" in ctx.failure
+
+
+# ─────────────────── structure convergence (slice 4c) ───────────────────
+
+
+def _multi_atom_cif() -> str:
+    """A small realistic mmCIF (4 atoms, mixed elements) for the converger."""
+    header = "data_x\nloop_\n" + "\n".join(
+        "_atom_site." + c
+        for c in (
+            "group_PDB",
+            "id",
+            "type_symbol",
+            "label_atom_id",
+            "Cartn_x",
+            "Cartn_y",
+            "Cartn_z",
+            "B_iso_or_equiv",
+        )
+    )
+    rows = [
+        "ATOM 1 N N 0.000 0.000 0.000 80.0",
+        "ATOM 2 C CA 1.500 0.000 0.000 82.0",
+        "ATOM 3 C C 2.400 1.200 0.000 78.0",
+        "ATOM 4 O O 3.600 1.100 0.000 75.0",
+    ]
+    return header + "\n" + "\n".join(rows) + "\n"
+
+
+def test_parse_atom_site() -> None:
+    atoms = parse_atom_site(_multi_atom_cif())
+    assert len(atoms) == 4
+    assert [a[0] for a in atoms] == ["N", "C", "C", "O"]  # type_symbol → element
+    assert atoms[1] == ("C", 1.5, 0.0, 0.0)
+    assert parse_atom_site("not a cif") == []
+
+
+def test_cif_to_scene_non_periodic() -> None:
+    scene = cif_to_scene(_multi_atom_cif())
+    assert len(scene.atoms) == 4
+    assert scene.cell.pbc == (False, False, False)  # molecule mode
+    # Unique per-element labels: N1, C1, C2, O1.
+    assert set(scene.atoms) == {"N1", "C1", "C2", "O1"}
+    assert scene.label_hi == {"N": 1, "C": 2, "O": 1}
+    # Every atom sits strictly inside the padded box (fractional in (0,1)).
+    for atom in scene.atoms.values():
+        assert all(0.0 < f < 1.0 for f in atom.frac)
+    # Box spans the bbox + 2*padding on each axis (x: 0..3.6 → 3.6 + 30).
+    assert scene.cell.lattice[0][0] == pytest.approx(3.6 + 2 * BOX_PADDING)
+    # No bonds by default (detector gated off).
+    assert scene.bonds == []
+
+
+def test_cif_to_scene_detects_bonds_when_small() -> None:
+    scene = cif_to_scene(_multi_atom_cif(), detect_bonds_max=100)
+    # 4 atoms is under the cap → covalent bonds inferred (backbone N-CA-C-O).
+    assert len(scene.bonds) >= 2
+    assert all(b.provenance == "inferred" for b in scene.bonds)
+
+
+def test_cif_to_scene_empty_raises() -> None:
+    with pytest.raises(ValueError, match="no _atom_site atoms"):
+        cif_to_scene("data_empty\n")
+
+
+def test_view_structure_converges_and_links(protein_store: Store) -> None:
+    """get(view='structure') projects the fold into a structure ref + links it."""
+    h = ProteinHandler(hub=Hub(store=protein_store))
+    h.put(id="insulin-a", sequence=_INSULIN_A, engine="stub")
+
+    resp = h.get(id="insulin-a", view="structure")
+    assert "structure 'insulin-a-fold'" in resp.body
+    assert "/structure/insulin-a-fold" in resp.body
+
+    # A structure ref now exists...
+    sref = protein_store.get_ref(kind="structure", id="insulin-a-fold")
+    assert sref is not None
+    # ...linked from the protein via has-fold-structure (asymmetric plugin
+    # relation — its inverse mirrors via the gripe-160213 DB-sourced rewrite).
+    pref = protein_store.get_ref(kind="protein", id="insulin-a")
+    # (Plugin relations aren't in the `Relation` literal — cast; valid at runtime.)
+    out = protein_store.links_for(
+        pref.id, relation=cast(Relation, "has-fold-structure")
+    )
+    assert any(l.dst_ref_id == sref.id for l in out)
+    # The structure finds the protein back through the inverse.
+    back = protein_store.links_for(
+        sref.id, relation=cast(Relation, "fold-structure-of")
+    )
+    assert any(l.src_ref_id == pref.id for l in back)
+
+    # Second call is a cache hit (no rebuild).
+    assert "cached" in h.get(id="insulin-a", view="structure").body
+
+
+def test_view_structure_no_model(protein_store: Store) -> None:
+    """A protein whose fold has no cif reports it rather than erroring."""
+    ref = protein_store.insert_ref(
+        kind="protein",
+        slug="nomodel",
+        title="nomodel",
+        meta={
+            "sequence": "ACDE",
+            "status": "folded",
+            "fold": {"name": "nomodel", "sequence": "ACDE", "cif": ""},
+        },
+    )
+    assert ref is not None
+    h = ProteinHandler(hub=Hub(store=protein_store))
+    assert "no structure model" in h.get(id="nomodel", view="structure").body
 
 
 # ─────────────────────────── dark-ship gate ───────────────────────────

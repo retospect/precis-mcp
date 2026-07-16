@@ -83,6 +83,7 @@ def build_fold_argv(
     models_dir: str,
     container_cmd: str = "docker",
     xla_cache_dir: str | None = None,
+    mem_limit: str | None = None,
 ) -> list[str]:
     """The ``docker run`` argv for one AF3 de-novo fold (pure, testable).
 
@@ -92,6 +93,14 @@ def build_fold_argv(
     the ~5-10 min recompile. The command line mirrors ``run_alphafold3.sh`` on
     spark verbatim; ``models_dir`` is required (the weights are mounted, never
     baked — ADR 0056 §5).
+
+    ``mem_limit`` (a docker size string like ``"100g"``, from
+    ``PRECIS_FOLD_MEM_LIMIT``) caps the container's memory so an AF3 XLA-compile
+    spike can't exhaust the node — the GB10 is a DGX Spark with **unified**
+    CPU+GPU LPDDR5X, so an uncapped fold can starve the resident worker. Sets
+    ``--memory`` + an equal ``--memory-swap`` (no swap thrashing on top of the
+    cap). ``None`` ⇒ no cap (unchanged default). Cheap insurance; a fold on a
+    21-mer stays well under any sane cap, and the operator sizes it in the role.
     """
     argv = [
         container_cmd,
@@ -101,6 +110,10 @@ def build_fold_argv(
         "all",
         "--name",
         f"precis-fold-{ref_id}",
+    ]
+    if mem_limit:
+        argv += ["--memory", mem_limit, "--memory-swap", mem_limit]
+    argv += [
         "-v",
         f"{Path(in_dir) / INPUT_FILE}:{CONTAINER_INPUT}:ro",
         "-v",

@@ -39,6 +39,9 @@ FOLD_MODELS_ENV = "PRECIS_FOLD_MODELS_DIR"
 FOLD_IMAGE_ENV = "PRECIS_FOLD_IMAGE"
 #: Env naming a persistent host XLA cache dir (skips the ~5-10 min recompile).
 FOLD_XLA_CACHE_ENV = "PRECIS_FOLD_XLA_CACHE"
+#: Env capping the fold container's memory (docker size string, e.g. ``100g``).
+#: Unset ⇒ no cap. Guards the GB10's unified CPU+GPU memory from an XLA spike.
+FOLD_MEM_LIMIT_ENV = "PRECIS_FOLD_MEM_LIMIT"
 
 
 @runtime_checkable
@@ -96,14 +99,16 @@ class StubFoldEngine:
 
 
 def _stub_cif(sequence: str) -> str:
-    """A minimal but real mmCIF the pLDDT scanner can parse (two Cα atoms at a
-    constant B-factor = 50). Deterministic — no chemistry, no coordinates that
-    mean anything; it only exercises the parse + write-back path."""
+    """A minimal but real mmCIF the pLDDT scanner + the structure converger can
+    parse (two Cα atoms at a constant B-factor = 50, ``type_symbol`` C).
+    Deterministic — no chemistry, no coordinates that mean anything; it only
+    exercises the parse + write-back + convergence paths."""
     header = "data_stub\nloop_\n" + "\n".join(
         "_atom_site." + c
         for c in (
             "group_PDB",
             "id",
+            "type_symbol",
             "label_atom_id",
             "label_comp_id",
             "label_asym_id",
@@ -115,7 +120,7 @@ def _stub_cif(sequence: str) -> str:
         )
     )
     rows = [
-        f"ATOM {i + 1} CA ALA A {i + 1} {i * 3.8:.3f} 0.000 0.000 50.00"
+        f"ATOM {i + 1} C CA ALA A {i + 1} {i * 3.8:.3f} 0.000 0.000 50.00"
         for i in range(min(2, max(1, len(sequence))))
     ]
     return header + "\n" + "\n".join(rows) + "\n"
@@ -171,6 +176,7 @@ class AlphaFold3Engine:
             models_dir=models_dir,
             container_cmd=container_cmd,
             xla_cache_dir=os.environ.get(FOLD_XLA_CACHE_ENV) or None,
+            mem_limit=os.environ.get(FOLD_MEM_LIMIT_ENV) or None,
         )
 
     def build_input(
