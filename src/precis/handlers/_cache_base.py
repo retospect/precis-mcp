@@ -574,12 +574,12 @@ class CacheBackedHandler(Handler):
             return 0.0
 
     def _fetch_guarded(self, key: str) -> FetchResult:
-        """Budget-gate an *expensive* paid fetch, then call ``_fetch``.
+        """Budget-gate a *paid* fetch, then call ``_fetch``.
 
-        Only fetches whose estimated per-call cost lands in the ``expensive``
-        band are subject to the global cap; cheap / free fetches always run.
-        On a tripped cap this raises a clean :class:`Upstream` so the agent
-        sees why, rather than silently spending.
+        Any fetch with a non-zero estimated per-call cost is subject to the
+        global cap once it trips; only free fetches always run. On a tripped
+        cap this raises a clean :class:`Upstream` (``_fetch`` is *not* called)
+        so the agent sees why, rather than silently spending.
         """
         from precis.budget import breaker
 

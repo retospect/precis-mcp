@@ -105,8 +105,18 @@ def band_for_tier(tier: Tier) -> Band:
 
 
 def is_expensive(tier: Tier) -> bool:
-    """True when ``tier`` rides the ``expensive`` lane — what the breaker gates."""
+    """True when ``tier`` rides the ``expensive`` lane (the affordance band)."""
     return _TIER_BANDS[tier].cost is Cost.EXPENSIVE
+
+
+def is_paid(tier: Tier) -> bool:
+    """True when ``tier`` costs money — any non-``free`` band.
+
+    This is what the breaker gates: once a spend cap trips, *every* paid tier
+    is refused (cheap ``CLOUD_MID``/``CLOUD_SMALL`` included), not just the
+    expensive lane. Only ``free`` local tiers keep flowing.
+    """
+    return _TIER_BANDS[tier].cost is not Cost.FREE
 
 
 __all__ = [
@@ -117,4 +127,5 @@ __all__ = [
     "band_for_tier",
     "cost_from_usd",
     "is_expensive",
+    "is_paid",
 ]

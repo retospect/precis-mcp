@@ -25,12 +25,14 @@ from __future__ import annotations
 #: inference is priced as free (the ``LOCAL_SMALL`` band is ``free``).
 PRICE_TABLE: dict[str, tuple[float, float]] = {
     # A few common hosted-OSS ids seen behind OpenRouter / DeepInfra. Extend
-    # as a deployment pins concrete PRECIS_MODEL_* ids.
+    # as a deployment pins concrete PRECIS_MODEL_* ids. Local aliases
+    # (``summarizer``, ``qwen-heavy`` → the ``LOCAL_*`` free bands) are
+    # deliberately absent: local inference is priced as free, so listing them
+    # here would contradict their band.
     "deepseek-ai/DeepSeek-V3": (0.27, 1.10),
     "deepseek-ai/DeepSeek-R1": (0.55, 2.19),
     "meta-llama/Llama-3.3-70B-Instruct": (0.23, 0.40),
     "Qwen/Qwen2.5-72B-Instruct": (0.23, 0.40),
-    "qwen-heavy": (0.23, 0.40),
 }
 
 

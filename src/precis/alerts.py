@@ -277,20 +277,29 @@ def _set_severity_tag(store: Store, ref_id: int, severity: str, *, conn: Any) ->
 #: worker that would otherwise fester unseen for days). Delivery reuses the
 #: asa_bot bot + ``pg_notify('precis.messages')`` path (there are no Discord
 #: webhooks in this deployment — the bridge is a bot), so no new secret.
-OPS_ALERT_WEBHOOK_ENV = "PRECIS_OPS_ALERT_WEBHOOK"
-OPS_ALERT_TARGET_ENV = "PRECIS_OPS_ALERT_TARGET"  # legacy alias
+#: The value is a **Discord channel target** — ``discord/<guild>/<channel>`` —
+#: NOT an outbound webhook URL. There are no Discord webhooks in this deployment
+#: (the bridge is the asa_bot bot via ``pg_notify('precis.messages')``), so a
+#: ``https://…`` URL here is silently undeliverable. ``PRECIS_OPS_ALERT_TARGET``
+#: is the canonical, honestly-named variable; ``PRECIS_OPS_ALERT_WEBHOOK`` is a
+#: deprecated alias kept only so an already-deployed env keeps working.
+OPS_ALERT_TARGET_ENV = "PRECIS_OPS_ALERT_TARGET"
+OPS_ALERT_WEBHOOK_ENV = "PRECIS_OPS_ALERT_WEBHOOK"  # deprecated misnomer alias
 
 
 def _ops_alert_target() -> str:
-    """Return the configured ops-alert target, preferring the webhook env var.
+    """Return the configured ops-alert **channel target** (not a webhook URL).
 
-    ``PRECIS_OPS_ALERT_WEBHOOK`` is the canonical variable name; for
-    backwards compatibility we also fall back to ``PRECIS_OPS_ALERT_TARGET``.
+    ``PRECIS_OPS_ALERT_TARGET`` is canonical (the value is a Discord channel
+    ``discord/<guild>/<channel>``); the historical ``PRECIS_OPS_ALERT_WEBHOOK``
+    name is a misnomer — kept as an accepted fallback so a deployment that set
+    it still pages — but it is NOT an outbound webhook and a URL there won't
+    deliver.
     """
     import os
 
-    return os.environ.get(OPS_ALERT_WEBHOOK_ENV, "") or os.environ.get(
-        OPS_ALERT_TARGET_ENV, ""
+    return os.environ.get(OPS_ALERT_TARGET_ENV, "") or os.environ.get(
+        OPS_ALERT_WEBHOOK_ENV, ""
     )
 
 
@@ -299,9 +308,9 @@ def notify_critical_alert(
 ) -> bool:
     """Best-effort proactive push for a newly-raised critical alert.
 
-    Queues a ``kind='message'`` to the channel configured by
-    ``PRECIS_OPS_ALERT_WEBHOOK`` (or the legacy ``PRECIS_OPS_ALERT_TARGET``)
-    and fires ``pg_notify('precis.messages', …)`` in the same tx, exactly as
+    Queues a ``kind='message'`` to the Discord channel configured by
+    ``PRECIS_OPS_ALERT_TARGET`` (or the deprecated ``PRECIS_OPS_ALERT_WEBHOOK``
+    alias) and fires ``pg_notify('precis.messages', …)`` in the same tx, as
     ``MessageHandler.put`` / ``briefing._deliver`` do — asa_bot (the one
     process holding a Discord socket) then posts it. Returns ``True`` if a
     push was queued, ``False`` if no target is configured (the default —

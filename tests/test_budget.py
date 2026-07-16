@@ -159,6 +159,32 @@ def test_result_from_openai_bare_text_fake() -> None:
     out = result_from_openai(_BareText(), model="summarizer", tier=Tier.LOCAL_SMALL)
     assert out.cost_usd is None
     assert out.text == "hello"
+    assert out.data is None
+
+
+def test_result_from_openai_prefers_provider_cost() -> None:
+    # OpenRouter returns a real dollar cost; it wins over the token-table
+    # estimate (gripe 161849 #2).
+    class _WithCost:
+        text = "hi"
+        prompt_tokens = 1_000_000
+        completion_tokens = 1_000_000
+        cost_usd = 0.007
+
+    out = result_from_openai(
+        _WithCost(), model="deepseek-ai/DeepSeek-V3", tier=Tier.CLOUD_MID
+    )
+    assert out.cost_usd == pytest.approx(0.007)
+
+
+def test_result_from_openai_parses_trailing_json_into_data() -> None:
+    # OSS judges (chase verify, good_search triage) read LlmResult.data; parse
+    # the trailing JSON block so they reach claude parity (gripe 159758).
+    class _JudgeText:
+        text = 'Reasoning here.\n{"verdict": "yes", "confidence": 0.9}'
+
+    out = result_from_openai(_JudgeText(), model="summarizer", tier=Tier.LOCAL_BIG)
+    assert out.data == {"verdict": "yes", "confidence": 0.9}
 
 
 # ── meter ──────────────────────────────────────────────────────────────
@@ -192,23 +218,36 @@ def test_current_status_over_hourly_cap() -> None:
 # ── breaker ──────────────────────────────────────────────────────────────
 
 
-def test_gate_tier_cheap_always_passes() -> None:
+def test_is_paid_covers_every_nonfree_tier() -> None:
+    # Only the two local (free-band) tiers are unpaid; every cloud tier is paid.
+    assert bands.is_paid(Tier.LOCAL_SMALL) is False
+    assert bands.is_paid(Tier.LOCAL_BIG) is False
+    assert bands.is_paid(Tier.CLOUD_SMALL) is True
+    assert bands.is_paid(Tier.CLOUD_MID) is True
+    assert bands.is_paid(Tier.CLOUD_SUPER) is True
+
+
+def test_gate_tier_free_local_always_passes() -> None:
     store = cast("Store", FakeStore(llm=999.0, fetch=0.0))  # wildly over cap
-    assert breaker_mod.gate_tier(Tier.CLOUD_SMALL, store=store) is None
+    # Free local tiers keep flowing even while tripped.
     assert breaker_mod.gate_tier(Tier.LOCAL_SMALL, store=store) is None
+    assert breaker_mod.gate_tier(Tier.LOCAL_BIG, store=store) is None
 
 
-def test_gate_tier_expensive_under_cap_passes() -> None:
+def test_gate_tier_paid_cheap_tiers_gated_over_cap() -> None:
+    # The decision: if it costs money, the cap limits it. A tripped cap refuses
+    # the cheap CLOUD_MID (sonnet) / CLOUD_SMALL (haiku) rungs too, not just opus.
+    store = cast("Store", FakeStore(llm=25.0, fetch=0.0))  # over both caps
+    for tier in (Tier.CLOUD_SMALL, Tier.CLOUD_MID, Tier.CLOUD_SUPER):
+        reason = breaker_mod.gate_tier(tier, store=store)
+        assert reason is not None, tier
+        assert "budget" in reason and "/budget" in reason
+
+
+def test_gate_tier_paid_under_cap_passes() -> None:
     store = cast("Store", FakeStore(llm=1.0, fetch=0.0))
     assert breaker_mod.gate_tier(Tier.CLOUD_SUPER, store=store) is None
-
-
-def test_gate_tier_expensive_over_cap_refused() -> None:
-    store = cast("Store", FakeStore(llm=25.0, fetch=0.0))  # over both caps
-    reason = breaker_mod.gate_tier(Tier.CLOUD_SUPER, store=store)
-    assert reason is not None
-    assert "budget" in reason
-    assert "/budget" in reason
+    assert breaker_mod.gate_tier(Tier.CLOUD_SMALL, store=store) is None
 
 
 def test_gate_tier_dark_without_store() -> None:
@@ -216,17 +255,87 @@ def test_gate_tier_dark_without_store() -> None:
     assert breaker_mod.gate_tier(Tier.CLOUD_SUPER) is None
 
 
-def test_gate_paid_cheap_vs_expensive() -> None:
+def test_gate_paid_free_vs_paid_over_cap() -> None:
     store = cast("Store", FakeStore(llm=25.0, fetch=0.0))  # tripped
-    # A cheap fetch estimate is never gated, even while tripped.
-    assert breaker_mod.gate_paid(0.001, store=store) is None
-    # An expensive fetch estimate is refused while tripped.
+    # A free fetch (0 / None estimate) always runs.
+    assert breaker_mod.gate_paid(0.0, store=store) is None
+    assert breaker_mod.gate_paid(None, store=store) is None
+    # Any non-zero fetch cost — cheap or expensive — is refused while tripped.
+    assert breaker_mod.gate_paid(0.001, store=store) is not None
     assert breaker_mod.gate_paid(0.50, store=store) is not None
 
 
-def test_gate_paid_expensive_under_cap_passes() -> None:
+def test_gate_paid_under_cap_passes() -> None:
     store = cast("Store", FakeStore(llm=1.0, fetch=0.0))
     assert breaker_mod.gate_paid(0.50, store=store) is None
+    assert breaker_mod.gate_paid(0.001, store=store) is None
+
+
+# ── enforcement seams (the two spend chokepoints) ────────────────────────
+# The gate helpers above test the *decision*; these test that the two call
+# sites actually short-circuit on a trip (the early-returns gripe 161849 #3
+# flagged as untested — a regression that dropped either would pass otherwise).
+
+
+def test_dispatch_returns_error_llmresult_when_breaker_trips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``router.dispatch`` folds a tripped cap into an error ``LlmResult`` and
+    never runs the provider."""
+    from precis.utils.llm import router
+
+    monkeypatch.setattr(
+        breaker_mod,
+        "gate_tier",
+        lambda tier, **_k: (
+            "budget: daily cap $20.00 reached — paid model call paused. …/budget"
+        ),
+    )
+
+    class _BoomProvider:
+        def run(self, req: object, *, model: str) -> object:
+            raise AssertionError("provider ran despite a tripped cap")
+
+    monkeypatch.setattr(router, "provider_for", lambda transport: _BoomProvider())
+
+    out = router.dispatch(router.LlmRequest(tier=Tier.CLOUD_SUPER, prompt="hi"))
+    assert out.error is not None
+    assert "budget" in out.error
+    assert out.text == ""
+
+
+def test_fetch_guarded_raises_upstream_and_skips_fetch_on_trip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``CacheBackedHandler._fetch_guarded`` raises ``Upstream`` and does NOT
+    call ``_fetch`` once the cap trips."""
+    pytest.importorskip("fastapi")  # handler import chain
+    from precis.budget import breaker as breaker_pkg
+    from precis.errors import Upstream
+    from precis.handlers._cache_base import CacheBackedHandler, FetchResult
+
+    monkeypatch.setattr(
+        breaker_pkg, "gate_paid", lambda cost, *, store=None: "budget: cap reached"
+    )
+
+    calls: list[str] = []
+
+    class _Handler(CacheBackedHandler):
+        cost_per_call_usd = 0.50
+
+        def __init__(self) -> None:  # bypass Hub wiring for the unit
+            self.store = None
+
+        def _canonical_key(self, query: str) -> str:
+            return query
+
+        def _fetch(self, key: str) -> FetchResult:
+            calls.append(key)
+            raise AssertionError("_fetch ran despite a tripped cap")
+
+    with pytest.raises(Upstream):
+        _Handler()._fetch_guarded("some-key")
+    assert calls == []
 
 
 # ── settings (app_settings key/value overrides) ──────────────────────────

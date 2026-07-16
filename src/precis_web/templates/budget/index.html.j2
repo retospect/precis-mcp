@@ -5,13 +5,14 @@
 <p class="text-sm text-slate-500 mb-5 max-w-2xl">
   Rolling spend across the whole runtime — router LLMs (<code>llm_call_log</code>)
   and paid fetches (<code>cache_state</code>) — against the circuit-breaker caps.
-  Over a cap, new <strong>expensive</strong> work is refused; cheap, free, and
-  interactive work always flows. Caps auto-clear as the window rolls off.
+  Over a cap, all new <strong>paid</strong> work is refused (every non-free tier,
+  cheap and expensive alike); only free local work keeps flowing. Caps auto-clear
+  as the window rolls off.
 </p>
 
 {% if budget.get('tripped') %}
 <div class="mb-5 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">
-  A cap is reached — expensive autonomous work is paused until spend rolls off the window.
+  A cap is reached — paid autonomous work is paused until spend rolls off the window.
 </div>
 {% endif %}
 

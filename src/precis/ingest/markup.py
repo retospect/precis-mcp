@@ -928,6 +928,34 @@ def _parse_xml(xml_bytes: bytes, *, fmt: str) -> Any:
     return root
 
 
+def sniff_xml_format(xml_bytes: bytes) -> str | None:
+    """Sniff a manually-dropped ``.xml`` as ``elsevier_xml`` or ``jats``.
+
+    A fetched file carries an authoritative sidecar ``source_format``; a hand-
+    dropped one has only its extension, and every ``.xml`` was being routed to
+    the JATS profile — so a dropped Elsevier full-text XML parsed poorly
+    (gripe 161850). Discriminate on the document element + namespaces: Elsevier
+    wraps its full text in ``<full-text-retrieval-response>`` (the ScienceDirect
+    API shape) and declares ``elsevier.com`` namespaces (``ce:``/``ja:``);
+    JATS's document element is ``<article>`` with no Elsevier namespace.
+
+    Returns ``"elsevier_xml"`` / ``"jats"``, or ``None`` when the bytes don't
+    parse as XML at all (caller then falls back to the extension default).
+    """
+    try:
+        root = _parse_xml(xml_bytes, fmt="jats")
+    except MarkupParseError:
+        return None
+    if _localname(root) == "full-text-retrieval-response":
+        return "elsevier_xml"
+    ns_values = " ".join(
+        v for v in getattr(root, "nsmap", {}).values() if isinstance(v, str)
+    )
+    if "elsevier.com" in ns_values.lower():
+        return "elsevier_xml"
+    return "jats"
+
+
 def _coerce_year(text: str) -> int | None:
     """Parse a 4-digit year out of ``text``; ``None`` if absent."""
     m = re.search(r"\b(1[6-9]\d{2}|20\d{2})\b", text or "")
@@ -992,4 +1020,5 @@ __all__ = [
     "parse_jats",
     "parse_latex",
     "parse_markup",
+    "sniff_xml_format",
 ]

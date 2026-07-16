@@ -104,13 +104,22 @@ def speakable_markdown(text: str) -> str:
     return speakable(t)
 
 
+#: Fullwidth ASCII (U+FF01–FF5E) → ASCII (U+21–7E) is a constant −0xFEE0 shift.
+_FULLWIDTH_ASCII_OFFSET = 0xFEE0
+
+
 def _is_cjk(ch: str) -> bool:
-    """A char that a Latin/espeak voice cannot read: CJK symbols/punctuation
-    and kana (U+3000–30FF), CJK Han (main + ext-A + compat, and astral ext-B+),
-    and fullwidth/halfwidth forms (U+FF00–FFEF)."""
+    """A char that a Latin/espeak voice cannot read: CJK symbols/punctuation,
+    kana + the kana-adjacent scripts in the U+3000–33FF band (Bopomofo,
+    katakana phonetic ext, CJK strokes, enclosed/compat CJK), CJK Han (main +
+    ext-A + compat, and astral ext-B+), and the fullwidth/halfwidth forms —
+    but **not** fullwidth ASCII (U+FF01–FF5E), which is Latin letters / digits /
+    punctuation the base voice reads once folded (see :func:`_fold_fullwidth`)."""
     o = ord(ch)
+    if 0xFF01 <= o <= 0xFF5E:
+        return False  # fullwidth Latin/ASCII — belongs to the base voice
     return (
-        0x3000 <= o <= 0x30FF
+        0x3000 <= o <= 0x33FF
         or 0x3400 <= o <= 0x9FFF
         or 0xF900 <= o <= 0xFAFF
         or 0xFF00 <= o <= 0xFFEF
@@ -119,9 +128,20 @@ def _is_cjk(ch: str) -> bool:
 
 
 def _has_kana(s: str) -> bool:
-    """True if ``s`` contains hiragana/katakana (U+3040–30FF) — unambiguously
-    Japanese, so the run routes to ``ja`` regardless of the CJK-lang default."""
-    return any(0x3040 <= ord(c) <= 0x30FF for c in s)
+    """True if ``s`` contains hiragana/katakana (U+3040–30FF) or the katakana
+    phonetic extensions (U+31F0–31FF, Ainu) — unambiguously Japanese, so the
+    run routes to ``ja`` regardless of the CJK-lang default."""
+    return any(0x3040 <= ord(c) <= 0x30FF or 0x31F0 <= ord(c) <= 0x31FF for c in s)
+
+
+def _fold_fullwidth(s: str) -> str:
+    """Fold fullwidth ASCII (U+FF01–FF5E) to plain ASCII so the base (Latin)
+    voice reads ``ＡＢＣ１２３`` as ``ABC123`` instead of it being handed to a
+    CJK voice and misvoiced."""
+    return "".join(
+        chr(ord(c) - _FULLWIDTH_ASCII_OFFSET) if 0xFF01 <= ord(c) <= 0xFF5E else c
+        for c in s
+    )
 
 
 def _resolve_cjk(voice: Any, lang: Any) -> tuple[str, str]:
@@ -169,6 +189,7 @@ def split_by_script(
     base_lang: str,
     cjk_voice: str | None = None,
     cjk_lang: str | None = None,
+    kana_voice: str | None = None,
 ) -> list[tuple[str, str, str]]:
     """Split ``text`` into ``(text, voice, lang)`` spans on CJK boundaries.
 
@@ -186,10 +207,15 @@ def split_by_script(
     ``cjk_voice`` / ``cjk_lang`` are reconciled through :func:`_resolve_cjk`, so
     a caller may pass only one (e.g. ``cjk_lang='cmn'``) and get a coherent
     voice↔lang pair rather than the Japanese default voice mislabelled Chinese.
+
+    ``kana_voice`` overrides the Japanese voice used for a kana run inside a
+    non-Japanese (e.g. Chinese-default) block; when unset it derives from the
+    voices catalogue's ``ja`` default rather than a hardcoded id. A block that
+    is itself Japanese (``cjk_lang == 'ja'``) uses ``cjk_voice`` throughout.
     """
     cjk_voice, cjk_lang = _resolve_cjk(cjk_voice, cjk_lang)
     if not any(_is_cjk(c) for c in text):
-        return [(text, base_voice, base_lang)]
+        return [(_fold_fullwidth(text), base_voice, base_lang)]
 
     runs: list[tuple[bool, list[str]]] = []
     for ch in text:
@@ -199,14 +225,21 @@ def split_by_script(
         else:
             runs.append((flag, [ch]))
 
-    ja_voice = cjk_voice if cjk_lang == "ja" else _DEFAULT_CJK_VOICE
+    if cjk_lang == "ja":
+        ja_voice = cjk_voice
+    else:
+        from precis.tts import voices as _voices
+
+        ja_voice = (
+            kana_voice or _voices.default_voice_for_lang("ja") or _DEFAULT_CJK_VOICE
+        )
     spans: list[tuple[str, str, str]] = []
     for is_cjk, chars in runs:
         s = "".join(chars).strip()
         if not s:
             continue
         if not is_cjk:
-            spans.append((s, base_voice, base_lang))
+            spans.append((_fold_fullwidth(s), base_voice, base_lang))
         elif _has_kana(s):
             spans.append((s, ja_voice, "ja"))
         else:
@@ -229,6 +262,7 @@ def markdown_segments(
     lexicon: dict[str, str] | None = None,
     cjk_voice: str | None = None,
     cjk_lang: str | None = None,
+    kana_voice: str | None = None,
 ) -> list[NarrationSegment]:
     """Split markdown prose into speakable narration segments — one per block.
 
@@ -254,6 +288,7 @@ def markdown_segments(
             base_lang=lang,
             cjk_voice=cjk_voice,
             cjk_lang=cjk_lang,
+            kana_voice=kana_voice,
         ):
             segments.append(
                 NarrationSegment(
@@ -342,6 +377,7 @@ def render_narration(
             base_lang=str(meta.get("lang") or default_lang),
             cjk_voice=meta.get("cjk_voice"),
             cjk_lang=meta.get("cjk_lang"),
+            kana_voice=meta.get("kana_voice"),
         ):
             segments.append(
                 NarrationSegment(

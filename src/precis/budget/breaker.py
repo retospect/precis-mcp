@@ -1,17 +1,19 @@
-"""The global circuit breaker — refuse *new expensive* work over the cap.
+"""The global circuit breaker — refuse *new paid* work over the cap.
 
 The hard rail. Two gates, one for each spend chokepoint:
 
 * :func:`gate_tier` — called from ``router.dispatch`` before a provider runs.
-  Only ``expensive``-band tiers (opus / ``CLOUD_SUPER``) are gated.
+  Any *paid* tier (non-``free`` band — cheap ``CLOUD_MID``/``CLOUD_SMALL`` as
+  well as expensive ``CLOUD_SUPER``) is gated; if it costs money, the cap
+  limits it. Only free local tiers pass untouched.
 * :func:`gate_paid` — called from the cache-backed ``_fetch`` path before a
-  paid HTTP call. Only fetches whose estimated per-call cost lands in the
-  ``expensive`` band (e.g. ``perplexity-research``) are gated.
+  paid HTTP call. Any fetch with a non-zero estimated cost is gated; only
+  free lookups (cache hits, zero-cost providers) always run.
 
 Both return ``None`` to allow, or a human-readable reason string to refuse.
-Cheap / free / interactive work is never gated. The breaker **auto-clears**:
-it re-reads the rolling meter each time, so once the window ages the spend
-back under the cap, expensive work flows again — no manual reset.
+Free work is never gated. The breaker **auto-clears**: it re-reads the rolling
+meter each time, so once the window ages the spend back under the cap, paid
+work flows again — no manual reset.
 
 Alerts fire on the *transition* into and out of a tripped state (deduped via
 ``precis.alerts``), so a standing trip pages once, not every call, and routes
@@ -25,7 +27,7 @@ import threading
 from typing import TYPE_CHECKING
 
 from precis.budget import meter
-from precis.budget.bands import Cost, cost_from_usd, is_expensive
+from precis.budget.bands import Cost, cost_from_usd, is_paid
 
 if TYPE_CHECKING:
     from precis.budget.meter import BudgetStatus
@@ -45,12 +47,12 @@ _last_window: str | None = None
 def gate_tier(tier: Tier, *, store: Store | None = None) -> str | None:
     """Gate an LLM dispatch. ``None`` to allow; a reason string to refuse.
 
-    Only ``expensive``-band tiers are subject to the cap; everything else
-    passes untouched.
+    Any *paid* tier (non-``free`` band) is subject to the cap; free local
+    tiers pass untouched.
     """
-    if not is_expensive(tier):
+    if not is_paid(tier):
         return None
-    return _gate(store, label="expensive model call")
+    return _gate(store, label="paid model call")
 
 
 def gate_paid(
@@ -58,12 +60,12 @@ def gate_paid(
 ) -> str | None:
     """Gate a paid fetch by its *estimated* per-call cost. ``None`` to allow.
 
-    Only fetches whose estimate lands in the ``expensive`` band are gated;
-    cheap fetches (websearch, most lookups) always run.
+    Any fetch with a non-zero estimated cost is gated once a cap trips; only
+    free lookups (cache hits, zero-cost providers) always run.
     """
-    if cost_from_usd(expected_cost_usd) is not Cost.EXPENSIVE:
+    if cost_from_usd(expected_cost_usd) is Cost.FREE:
         return None
-    return _gate(store, label="expensive paid fetch")
+    return _gate(store, label="paid fetch")
 
 
 def _gate(store: Store | None, *, label: str) -> str | None:
@@ -79,7 +81,7 @@ def _gate(store: Store | None, *, label: str) -> str | None:
         spent, cap = status.daily_spent, status.daily_cap
     return (
         f"budget: {window} cap ${cap:.2f} reached (${spent:.2f} spent) \u2014 "
-        f"{label} paused. Cheap/free work still runs; wait for the window to "
+        f"{label} paused. Free local work still runs; wait for the window to "
         f"roll off or raise the cap on /budget."
     )
 
@@ -124,10 +126,10 @@ def _apply_alert(
     fingerprint = f"cap-{window}"
     title = f"[budget] {window} spend cap reached (${spent:.2f} / ${cap:.2f})"
     detail = (
-        f"Expensive autonomous work is paused: {window} spend ${spent:.2f} "
-        f"has reached the ${cap:.2f} cap. Cheap/free/interactive calls still "
+        f"Paid autonomous work is paused: {window} spend ${spent:.2f} "
+        f"has reached the ${cap:.2f} cap. Only free local calls still "
         f"run. Auto-clears as the window rolls off; raise the cap on /budget "
-        f"to resume expensive work now."
+        f"to resume paid work now."
     )
     _ref, is_new = raise_alert(
         store,

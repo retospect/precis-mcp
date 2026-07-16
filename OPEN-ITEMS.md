@@ -300,6 +300,25 @@ calls or many workers at once is an unguarded runaway-budget risk. Ship
 lightweight, loose guide rails + a hard backstop, never blocking interactive
 work. Status:
 
+> **Devin-merge review residuals — fixed on branch `worktree-robust-sauteeing-volcano`
+> (2026-07-16, unshipped).** Closes gripe **161849** + others from the
+> `e29b18a9` review: (1) the breaker now gates **every paid tier** (any non-`free`
+> band, cheap `CLOUD_MID`/`CLOUD_SMALL` included) — Reto's call, "if it costs
+> money the cap limits it" — via `bands.is_paid` + `breaker.gate_tier`/`gate_paid`
+> (fetches gate on any non-zero estimate); `/budget` UI copy made honest. (2)
+> **Real-cost capture** wired: `LlmClient.complete` reads OpenRouter's
+> `usage.cost`, `result_from_openai` prefers a provider-returned `cost_usd` over
+> the token table, and `qwen-heavy` dropped from `PRICE_TABLE` (it's the free
+> `LOCAL_BIG` band). (3) The two **enforcement seams** now have integration tests
+> (`router.dispatch` → error `LlmResult` on trip; `_fetch_guarded` → `Upstream`,
+> skips `_fetch`). Also this branch: OSS `result_from_openai` parses the trailing
+> JSON block into `LlmResult.data` (gripe 159758) and the tool-less OSS agent
+> path advertises **no** tools when `mcp_config is None` (gripe 159759). Still
+> open below: Piece B's `/budget` web-editable caps + Discord alert are the
+> larger design; the minor "meter fails open on a metering error" note from
+> 161849 is left as-is (defensible). *Perplexity real-cost still uses a flat
+> ClassVar — unchanged here.*
+
 - **Piece A — cost-band affordance** — `open` / `feature` / owner
   `src/precis/budget/` + `utils/llm/router.py` + `_cache_base.py`. Uniform
   `free · cheap · expensive` (+ `fast · slow`) words surfaced to the model

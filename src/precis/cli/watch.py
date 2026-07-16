@@ -994,7 +994,7 @@ def _infer_markup_fmt(path: Path, sidecar: Any | None) -> str | None:
     extension heuristic. Returns ``None`` when the format can't be
     determined (caller logs + skips).
     """
-    from precis.ingest.markup import MARKUP_FORMATS
+    from precis.ingest.markup import MARKUP_FORMATS, sniff_xml_format
 
     if sidecar is not None:
         fmt = getattr(sidecar, "source_format", "pdf")
@@ -1006,7 +1006,13 @@ def _infer_markup_fmt(path: Path, sidecar: Any | None) -> str | None:
     if name.endswith((".html", ".htm")):
         return "arxiv_html"
     if name.endswith(".xml"):
-        return "jats"
+        # A hand-dropped .xml has no authoritative sidecar; sniff the root so an
+        # Elsevier full-text XML isn't force-parsed by the JATS profile.
+        try:
+            sniffed = sniff_xml_format(path.read_bytes())
+        except OSError:
+            sniffed = None
+        return sniffed or "jats"
     return None
 
 

@@ -1088,7 +1088,7 @@ def _try_core(
         return None
     t0 = time.perf_counter()
     try:
-        pdf_urls = _query_core_pdf_urls(stub.doi, api_key=api_key)
+        pdf_urls = _query_core_fulltext_urls(stub.doi, api_key=api_key)
     except Exception as exc:
         return FetchOutcome(
             event="api_error",
@@ -1782,17 +1782,32 @@ def _is_valid_http_url(href: Any) -> bool:
     return parts.scheme in ("http", "https") and bool(parts.netloc)
 
 
-def _query_core_pdf_urls(doi: str, *, api_key: str) -> list[str]:
-    """Return CORE full-text URLs for an exact DOI match.
+#: URL paths whose extension marks them as clearly-not-a-PDF (CORE's
+#: ``fullText`` link can point at a ``.txt``/``.html`` rendering). Skipped so
+#: the cascade doesn't burn a download on bytes the ``%PDF-`` guard will reject.
+_NON_PDF_URL_SUFFIXES = (".txt", ".html", ".htm", ".xml", ".json")
+
+
+def _looks_non_pdf_url(href: str) -> bool:
+    """True when ``href``'s path ends in a clearly non-PDF text extension."""
+    path = urlsplit(href).path.lower()
+    return path.endswith(_NON_PDF_URL_SUFFIXES)
+
+
+def _query_core_fulltext_urls(doi: str, *, api_key: str) -> list[str]:
+    """Return CORE full-text URLs (PDF-preferred) for an exact DOI match.
 
     Only results whose own ``doi`` equals the query DOI are kept (CORE
     fuzzy-matches, so a bare topical hit must not be mistaken for the
     paper). A browser UA dodges CORE's Cloudflare UA gate.
 
-    Looks at both ``downloadUrl`` and ``fullText`` fields and returns
-    only values that are valid http(s) URLs. The earlier bug passed a
-    bare CORE work id (``"587670336"``) as a URL, which the SSRF guard
-    rejected.
+    Looks at the repository ``downloadUrl`` (a PDF bitstream) first, then the
+    ``fullText`` link — but a ``fullText`` URL that clearly renders as
+    ``.txt``/``.html``/… is dropped (:func:`_looks_non_pdf_url`), since the
+    downloader only accepts ``%PDF-`` bytes and would waste the round-trip.
+    Every candidate is validated as a real http(s) URL — the earlier bug passed
+    a bare CORE work id (``"587670336"``), which the SSRF guard rejected. The
+    name reflects the output: full-text links, not guaranteed-PDF ones.
     """
     params: dict[str, str | int] = {"q": f'doi:"{doi}"', "limit": 5}
     headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _BROWSER_UA}
@@ -1806,12 +1821,15 @@ def _query_core_pdf_urls(doi: str, *, api_key: str) -> list[str]:
         rec_doi = (rec.get("doi") or "").lower()
         if rec_doi != want:
             continue
-        # Prefer repository downloadUrl, then fullText link (the API
-        # can surface either as the fetchable URL).
+        # Prefer the repository downloadUrl (a PDF bitstream), then a fullText
+        # link — but skip a fullText URL that clearly isn't a PDF.
         for key in ("downloadUrl", "fullText"):
             href = rec.get(key)
-            if _is_valid_http_url(href) and href not in out:
-                out.append(href)
+            if not _is_valid_http_url(href) or href in out:
+                continue
+            if key == "fullText" and _looks_non_pdf_url(href):
+                continue
+            out.append(href)
     return out
 
 

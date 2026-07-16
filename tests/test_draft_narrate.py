@@ -296,6 +296,51 @@ def test_split_by_script_reconciles_mismatched_pair():
     assert han and all(lang_for_voice(v) == "cmn" for _t, v, _ln in han)
 
 
+def test_split_by_script_kana_voice_overridable_in_chinese_block():
+    # A kana run inside a Chinese-default block used to be forced to the
+    # hardcoded jf_alpha; kana_voice now overrides it (gripe 161851 #1).
+    out = split_by_script(
+        "猫 は ねこ です",
+        base_voice="af_heart",
+        base_lang="en-us",
+        cjk_voice="zf_xiaoxiao",
+        cjk_lang="cmn",
+        kana_voice="jf_nezumi",
+    )
+    assert any(v == "jf_nezumi" and ln == "ja" for _t, v, ln in out)
+    # Han-only spans still follow the Chinese default.
+    assert any(v == "zf_xiaoxiao" and ln == "cmn" for _t, v, ln in out)
+
+
+def test_split_by_script_folds_fullwidth_ascii_to_base_voice():
+    # Fullwidth ASCII (Ａ-Ｚ / ０-９) is Latin — read by the base voice, folded
+    # to ASCII, not handed to a CJK voice (gripe 161851 #1).
+    out = split_by_script(
+        "モデル ＧＰＴ－４ です",
+        base_voice="af_heart",
+        base_lang="en-us",
+        cjk_lang="ja",
+        cjk_voice="jf_alpha",
+    )
+    base = [(t, v, ln) for t, v, ln in out if v == "af_heart"]
+    assert base, out
+    folded = " ".join(t for t, _v, _ln in base)
+    assert "GPT-4" in folded  # ＧＰＴ－４ folded to ASCII
+
+
+def test_split_by_script_routes_bopomofo_to_cjk():
+    # Bopomofo (U+3100–312F) sat in the gap between the old kana and Han ranges
+    # and leaked to the base espeak voice; it now routes to the CJK voice.
+    out = split_by_script(
+        "read ㄅㄆㄇ now",
+        base_voice="af_heart",
+        base_lang="en-us",
+        cjk_voice="zf_xiaoxiao",
+        cjk_lang="cmn",
+    )
+    assert any("ㄅㄆㄇ" in t and ln == "cmn" for t, _v, ln in out)
+
+
 def test_render_narration_lang_only_meta_derives_voice():
     # End-to-end: a Chinese draft chunk sets only meta.cjk_lang='cmn'.
     store = _Store([_Chunk("paragraph", "hello 世界", {"cjk_lang": "cmn"})])

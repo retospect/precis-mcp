@@ -741,7 +741,7 @@ class TestTryCore:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            fetch_oa, "_query_core_pdf_urls", lambda doi, *, api_key: []
+            fetch_oa, "_query_core_fulltext_urls", lambda doi, *, api_key: []
         )
         out = _try_core(_stub(doi="10.1234/x"), inbox_dir=tmp_path, api_key="K")
         assert out is not None
@@ -758,7 +758,7 @@ class TestTryCore:
 
         monkeypatch.setattr(
             fetch_oa,
-            "_query_core_pdf_urls",
+            "_query_core_fulltext_urls",
             lambda doi, *, api_key: ["https://repo.example/bitstream/x.pdf"],
         )
         monkeypatch.setattr(fetch_oa, "_download_pdf", _capture)
@@ -773,19 +773,19 @@ class TestTryCore:
         def _boom(doi: str, *, api_key: str) -> list[str]:
             raise RuntimeError("core down")
 
-        monkeypatch.setattr(fetch_oa, "_query_core_pdf_urls", _boom)
+        monkeypatch.setattr(fetch_oa, "_query_core_fulltext_urls", _boom)
         out = _try_core(_stub(doi="10.1234/x"), inbox_dir=tmp_path, api_key="K")
         assert out is not None
         assert out.event == "api_error"
 
 
 class TestQueryCorePdfUrls:
-    """Unit tests for :func:`_query_core_pdf_urls` validation and field choice."""
+    """Unit tests for :func:`_query_core_fulltext_urls` validation and field choice."""
 
-    def test_filters_invalid_urls_and_uses_full_text(
+    def test_filters_invalid_urls_and_skips_non_pdf_fulltext(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from precis.workers.fetch_oa import _query_core_pdf_urls
+        from precis.workers.fetch_oa import _query_core_fulltext_urls
 
         class FakeResp:
             status_code = 200
@@ -834,10 +834,12 @@ class TestQueryCorePdfUrls:
 
         monkeypatch.setattr(httpx, "Client", FakeClient)
 
-        urls = _query_core_pdf_urls("10.1234/example", api_key="K")
+        urls = _query_core_fulltext_urls("10.1234/example", api_key="K")
+        # The rec-1 fullText ``paper.txt`` is dropped (clearly non-PDF); the
+        # rec-3 fullText ``fulltext.pdf`` is kept (its downloadUrl is an
+        # invalid ftp:// URL). Bare-id / non-URL / wrong-DOI recs are skipped.
         assert urls == [
             "https://repo.example/paper.pdf",
-            "https://repo.example/paper.txt",
             "https://repo.example/fulltext.pdf",
         ]
 
@@ -1155,7 +1157,7 @@ class TestRunCascade:
         )
         monkeypatch.setattr(fetch_oa, "_query_europepmc_oa_pmcid", lambda doi: None)
         monkeypatch.setattr(
-            fetch_oa, "_query_core_pdf_urls", lambda doi, *, api_key: []
+            fetch_oa, "_query_core_fulltext_urls", lambda doi, *, api_key: []
         )
         monkeypatch.setattr(fetch_oa, "_query_s2_openaccess", lambda paper_id: None)
 

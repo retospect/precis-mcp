@@ -324,26 +324,39 @@ def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmRe
 def result_from_openai(res: _HasText, *, model: str, tier: Tier) -> LlmResult:
     """Normalize a litellm ``LlmClient.complete`` result (OpenAI choices).
 
-    The OpenAI wire reports *tokens*, not dollars, so we price them via the
-    per-model table in :mod:`precis.budget.pricing` (``cost_usd=None`` for a
-    local / unknown model, which the cost bands read as free). This makes the
-    OSS / OpenRouter spend show up in the tote instead of vanishing. Token
-    counts are read leniently (``getattr``) so a bare ``.text`` fake still
+    Cost: prefer a provider-returned dollar figure (``res.cost_usd`` — set from
+    OpenRouter's ``usage.cost``); otherwise price the token split via the
+    per-model table in :mod:`precis.budget.pricing` (``None`` for a local /
+    unknown model, which the cost bands read as free). Either way the OSS /
+    OpenRouter spend shows up in the tote instead of vanishing.
+
+    Data: the ``claude_p`` judges (chase verify, good_search triage, figure)
+    route through ``dispatch`` and read ``LlmResult.data``. So parse the
+    trailing JSON block out of the text here too — the same
+    :func:`~precis.utils.claude_p._parse_last_json_block` the claude path uses —
+    so an OSS judge reaches parity instead of silently degrading to its
+    fallback (gripe 159758).
+
+    All fields are read leniently (``getattr``) so a bare ``.text`` fake still
     normalizes.
     """
     from precis.budget.pricing import cost_from_tokens
+    from precis.utils.claude_p import _parse_last_json_block
 
-    cost = cost_from_tokens(
-        model,
-        prompt_tokens=getattr(res, "prompt_tokens", None),
-        completion_tokens=getattr(res, "completion_tokens", None),
-    )
+    cost = getattr(res, "cost_usd", None)
+    if cost is None:
+        cost = cost_from_tokens(
+            model,
+            prompt_tokens=getattr(res, "prompt_tokens", None),
+            completion_tokens=getattr(res, "completion_tokens", None),
+        )
     return LlmResult(
         text=res.text,
         cost_usd=cost,
         turns_used=None,
         model=model,
         tier=tier,
+        data=_parse_last_json_block(res.text),
     )
 
 
@@ -646,8 +659,8 @@ def dispatch(req: LlmRequest) -> LlmResult:
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
     model = req.model or resolve_model(req.tier)
-    # Global spend circuit breaker: refuse a *new expensive* call once a cap
-    # is tripped (cheap/free tiers pass; dark when no store is bound). Folds
+    # Global spend circuit breaker: refuse a *new paid* call once a cap is
+    # tripped (only free local tiers pass; dark when no store is bound). Folds
     # into the normalized error result so callers degrade gracefully.
     from precis.budget import breaker as _breaker
 
@@ -853,6 +866,13 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
     already folds transport errors into its result; the outer guard catches a
     failure to *build* the executor/tools (e.g. an unavailable runtime).
     Imports the loop + bridge lazily so the router stays DB-free.
+
+    A *tool-less* agent call (``req.mcp_config is None`` — cad_propose /
+    cad_discuss / structure_propose route here with ``tools_needed=True`` only
+    to get the agent wrapper's output shape, not tools) runs with an empty
+    tools list, so it stays a plain completion loop and can't call precis verbs
+    on the OSS backend — matching the claude path, where ``mcp_config=None``
+    means no tools advertised (gripe 159759).
     """
     from precis.secrets import get_secret
     from precis.utils.llm.openai_tools import ToolChatClient, run_tool_loop
@@ -862,11 +882,12 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
     api_key = get_secret("PRECIS_LLM_API_KEY") or ""
     timeout = req.timeout_s if req.timeout_s is not None else 600.0
     client = ToolChatClient(url=base_url, api_key=api_key, model=model, timeout=timeout)
+    tool_less = req.mcp_config is None
     try:
         result = run_tool_loop(
             client,
             prompt=req.prompt,
-            tools=precis_tool_specs(),
+            tools=[] if tool_less else precis_tool_specs(),
             execute=runtime_executor(),
             system_prompt=_read_system_prompt(req.system_prompt),
             max_turns=req.max_turns,

@@ -19,6 +19,14 @@ Rule of thumb: **`id=` addresses a name/handle, `q=` searches content.**
 For `get`/`put`/`edit`/`delete`/`tag`/`link`, `kind=` is required; for
 `search`, `kind=` is optional (omit it for cross-kind fan-out).
 
+**Before a native tool, check for a precis kind.** External content that
+precis already fetches + caches goes through a `kind`, never a native library
+or ad-hoc web scrape: a **YouTube** URL → `get(kind='youtube', id=…)` (not
+`youtube_transcript_api`); an arbitrary **web page** → `get(kind='web', …)`;
+**Wikipedia** → `kind='wikipedia'`; a **web search** → `kind='websearch'`.
+When unsure, `search(kind='skill', q='<the thing>')` first — reaching for a
+native tool and only falling back to precis on failure is the slow path.
+
 ## Find things
 
 | Goal | Toolpath | Depth |

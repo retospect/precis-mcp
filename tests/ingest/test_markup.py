@@ -20,9 +20,11 @@ from precis.ingest.markup import (
     MARKUP_FORMATS,
     MarkupParseError,
     parse_arxiv_html,
+    parse_elsevier,
     parse_jats,
     parse_latex,
     parse_markup,
+    sniff_xml_format,
 )
 
 # ---------------------------------------------------------------------------
@@ -75,6 +77,98 @@ def test_parse_jats_section_paths_and_references() -> None:
 def test_parse_jats_no_body_raises() -> None:
     with pytest.raises(MarkupParseError):
         parse_jats(b"<article><front></front></article>")
+
+
+# ---------------------------------------------------------------------------
+# Elsevier full-text XML
+# ---------------------------------------------------------------------------
+
+_ELSEVIER = b"""<?xml version="1.0"?>
+<full-text-retrieval-response
+    xmlns:ce="http://www.elsevier.com/xml/common/dtd"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:prism="http://prismstandard.org/namespaces/basic/2.0/"
+    xmlns:xocs="http://www.elsevier.com/xml/xocs/dtd">
+ <coredata>
+  <dc:title>Elsevier Widgets</dc:title>
+  <prism:doi>10.1016/j.widget.2021.01.001</prism:doi>
+ </coredata>
+ <originalText>
+  <xocs:serial-item>
+   <article>
+    <head>
+     <ce:author><ce:surname>Curie</ce:surname><ce:given-name>Marie</ce:given-name></ce:author>
+     <ce:abstract><ce:para>We study elsevier widgets at scale.</ce:para></ce:abstract>
+    </head>
+    <body>
+     <ce:sections>
+      <ce:section>
+       <ce:section-title>Introduction</ce:section-title>
+       <ce:para>Widgets matter in industry.</ce:para>
+      </ce:section>
+     </ce:sections>
+    </body>
+   </article>
+  </xocs:serial-item>
+ </originalText>
+</full-text-retrieval-response>"""
+
+
+def test_parse_elsevier_metadata_and_body() -> None:
+    ext = parse_elsevier(_ELSEVIER)
+    assert ext.source_format == "elsevier_xml"
+    assert ext.title == "Elsevier Widgets"
+    assert ext.doi == "10.1016/j.widget.2021.01.001"
+    assert ext.authors == [{"name": "Curie, Marie"}]
+    assert "elsevier widgets" in ext.abstract.lower()
+    body = [b for b in ext.blocks if b["type"] == "paragraph"]
+    assert body and "Widgets matter" in body[0]["text"]
+    assert body[0]["section_path"] == ["Introduction"]
+
+
+def test_parse_elsevier_no_body_raises() -> None:
+    with pytest.raises(MarkupParseError):
+        parse_elsevier(
+            b"<full-text-retrieval-response><coredata>"
+            b"<dc:title xmlns:dc='u'>x</dc:title></coredata>"
+            b"</full-text-retrieval-response>"
+        )
+
+
+def test_sniff_xml_format_discriminates_elsevier_from_jats() -> None:
+    # The root element / namespace decides: a hand-dropped Elsevier XML must not
+    # be force-parsed as JATS (gripe 161850).
+    assert sniff_xml_format(_ELSEVIER) == "elsevier_xml"
+    assert sniff_xml_format(_JATS) == "jats"
+    # An Elsevier doc identified purely by its ce: namespace (no wrapper elem).
+    ns_only = (
+        b"<article xmlns:ce='http://www.elsevier.com/xml/common/dtd'><body/></article>"
+    )
+    assert sniff_xml_format(ns_only) == "elsevier_xml"
+    assert sniff_xml_format(b"not xml at all \x00") is None
+
+
+def test_parse_xml_does_not_expand_entities_billion_laughs() -> None:
+    # Untrusted XML: the parser is hardened (resolve_entities=False,
+    # no_network=True), so an internal entity bomb must NOT expand into the
+    # extracted text (gripe 161850 #3). Parsing completes cheaply.
+    bomb = b"""<?xml version="1.0"?>
+<!DOCTYPE article [
+ <!ENTITY lol "lol">
+ <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+ <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+]>
+<article>
+ <front><article-meta><title-group><article-title>Bomb</article-title></title-group>
+ </article-meta></front>
+ <body><sec><title>S</title><p>payload starts &lol3; payload ends</p></sec></body>
+</article>"""
+    ext = parse_jats(bomb)
+    blob = " ".join(b["text"] for b in ext.blocks)
+    # The bomb never expands to its 1000×"lol" payload — the entity is left
+    # unresolved, so no quadratic/exponential blowup reaches the output.
+    assert "lol" * 100 not in blob
+    assert len(blob) < 10_000
 
 
 # ---------------------------------------------------------------------------

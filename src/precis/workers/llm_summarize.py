@@ -253,13 +253,16 @@ class LlmResult:
     ``prompt_tokens`` / ``completion_tokens`` carry the OpenAI ``usage`` split
     so the router can price an OSS/OpenRouter call (which reports tokens, not
     dollars) via :mod:`precis.budget.pricing`. ``None`` when the backend omits
-    the field.
+    the field. ``cost_usd`` carries a provider-returned dollar cost when one is
+    present (OpenRouter reports ``usage.cost``); the router prefers it over the
+    token-table estimate.
     """
 
     text: str
     total_tokens: int | None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    cost_usd: float | None = None
 
 
 class LlmClient:
@@ -299,11 +302,18 @@ class LlmClient:
         total = usage.get("total_tokens")
         prompt = usage.get("prompt_tokens")
         completion = usage.get("completion_tokens")
+        # OpenRouter returns a real dollar cost in ``usage.cost`` (some
+        # deployments at the top level); prefer it over the token-table
+        # estimate. Absent on the loopback proxy / plain OpenAI wire.
+        cost = usage.get("cost")
+        if cost is None:
+            cost = body.get("cost")
         return LlmResult(
             text=str(text),
             total_tokens=int(total) if total is not None else None,
             prompt_tokens=int(prompt) if prompt is not None else None,
             completion_tokens=int(completion) if completion is not None else None,
+            cost_usd=float(cost) if cost is not None else None,
         )
 
 
