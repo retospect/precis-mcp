@@ -1,6 +1,6 @@
 # Quest layer — the striving above the work (proposal)
 
-> **Status: model closed; slices 1–3 + rungs 4a–4b built.** Captures the design conversation
+> **Status: model closed; slices 1–3 + rungs 4a–4c built.** Captures the design conversation
 > of 2026-07-15 (Reto + session). The aim-layer that sits above projects/streams/
 > concepts and gives the system **direction**: a legible answer to "what are we
 > striving toward, and is this work/knowledge actually in its service?"
@@ -295,9 +295,17 @@ project/todos · relax+pathway jobs   project/todos · papers · fold/seq jobs
      The **proposer** is the tick's model grounded in the dossier + `ruled-out`
      set (frontier-seeded directions arrive with 4c). *Structure `pathway` is
      not a target here — the catpath plugin isn't in-tree; `structure` is.*
-   - **4c — the local↔frontier cascade**. Escalate to the frontier model on a
-     signal (enough new evidence / stalled frontier / surprise) to review +
-     rewrite the dossier + set the next line; `promise` proxy defined.
+   - **4c — the local↔frontier cascade** *(built — `src/precis/quest/cascade.py`)*.
+     A tick runs at the **local/cheap** tier by default; the **frontier** tier is
+     the escalation rung, firing on a *signal* (`escalation_signal`):
+     **first-review** (candidates exist, never reviewed), **new-evidence**
+     (≥`FRONTIER_REVIEW_EVERY` new `result` entries since the last review), or
+     **stalled** (`STALL_TICKS` since the frontier last improved). A review runs
+     `CLOUD_SUPER` with a senior-reviewer prompt (the Pareto frontier in-context)
+     that sets strategic **directions** (logged as a `decision` deed).
+     `update_cascade_state` maintains the counters + the **promise** proxy
+     (frontier-improvement rate = objective gained / recent compute cost) that
+     rung 4d reads. `run_quest_tick(review=None|True|False)`.
    - **4d — the allocator**. A dispatcher picks which active quest ticks when a
      compute slot frees (EWMA bandit over priority × momentum × promise +
      exploration), under a weekly proportional budget metered against the tote;

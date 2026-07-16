@@ -81,6 +81,9 @@ class QuestTickOutcome:
     sims_dispatched: int = 0
     results_harvested: int = 0
     ruled_out: int = 0
+    # Cascade (rung 4c).
+    escalated: bool = False
+    mode: str = "local"  # "local" | "frontier-review"
 
 
 # ── context assembly ──────────────────────────────────────────────────
@@ -119,8 +122,32 @@ def _servers_summary(store: Store, quest_id: int) -> list[str]:
     return out
 
 
-def build_tick_prompt(store: Store, quest: Ref) -> str:
-    """Assemble the full rolling-context prompt for one tick."""
+def _frontier_summary(store: Store, quest_id: int) -> str:
+    """A compact rendering of the Pareto frontier for a review prompt."""
+    from precis.quest.frontier import quest_frontier
+
+    fr = quest_frontier(store, quest_id)
+    if not (fr.frontier or fr.dominated or fr.unevaluated):
+        return "(no candidate materials simulated yet)"
+    lines = [f"objective: {' · '.join(f'{k} ({s})' for k, s in fr.objectives)}"]
+    for c in fr.frontier:
+        ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
+        lines.append(f"- FRONTIER {c.handle} {c.name} — {ms}")
+    for c in fr.dominated[:5]:
+        ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
+        lines.append(f"- beaten   {c.handle} {c.name} — {ms}")
+    if fr.unevaluated:
+        lines.append(f"- {len(fr.unevaluated)} awaiting a sim")
+    return "\n".join(lines)
+
+
+def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
+    """Assemble the full rolling-context prompt for one tick.
+
+    ``review=True`` builds the **frontier-review** prompt (rung 4c): the senior
+    model reviews the accumulated evidence + the Pareto frontier and sets the
+    next strategic directions, rather than doing one more local increment.
+    """
     qid = quest.id
     stmt = quest.title or f"quest {qid}"
     prio = quest.prio if quest.prio is not None else "unset"
@@ -132,7 +159,20 @@ def build_tick_prompt(store: Store, quest: Ref) -> str:
     tail = _logbook_tail(store, qid) or ["- (no logbook entries yet)"]
     servers = _servers_summary(store, qid) or ["- (nothing serves this quest yet)"]
 
+    if review:
+        banner = (
+            "## FRONTIER REVIEW — you are the senior reviewer\n"
+            "Enough has accumulated to step back. Review the evidence + the "
+            "Pareto frontier below, decide what it means, rewrite the dossier, "
+            "and set 1–3 strategic **directions** for the next phase (in the "
+            "`directions` field). Rule out what's beaten.\n\n"
+            "### Current Pareto frontier\n" + _frontier_summary(store, qid) + "\n"
+        )
+    else:
+        banner = ""
+
     return _PROMPT_TEMPLATE.format(
+        review_banner=banner,
         statement=stmt,
         prio=prio,
         momentum=momentum.label,
@@ -156,7 +196,7 @@ You are advancing a long-running research programme toward a perpetual striving 
 project. Ground everything in the context below; do not invent results you have \
 no evidence for.
 
-## The striving
+{review_banner}## The striving
 {statement}
 (priority {prio}; momentum: {momentum} — {momentum_detail})
 
@@ -189,7 +229,8 @@ understanding, best leads so far, what's ruled out, open questions>",
       "structure": {{"cell": {{"a": 8.4, "b": 8.4, "c": 24.0, \
 "pbc": [true, true, false]}},
         "ops": [{{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}}]}}}}
-  ]
+  ],
+  "directions": ["<0–3 strategic directions — set these on a frontier review>"]
 }}
 
 Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
@@ -262,27 +303,47 @@ def run_quest_tick(
     dispatch_fn: Callable[[Any], Any] | None = None,
     by: str = "agent",
     compute: bool = False,
+    review: bool | None = None,
 ) -> QuestTickOutcome:
     """Run one structured research step against ``quest_id``.
 
     ``dispatch_fn`` is injectable (defaults to the real router ``dispatch``) so
     the tick is unit-testable with a canned ``LlmResult``. ``compute=True`` (rung
     4b) materialises the model's proposals into candidate `structure` servers,
-    dispatches their relax sims (the derived compute lane), and harvests any
-    finished results into the logbook — off by default so the tick stays a pure
-    reasoning step unless a caller opts in.
+    dispatches their relax sims, and harvests results. ``review`` (rung 4c) forces
+    the tier: ``None`` (default) lets the escalation signal decide — a local tick
+    unless enough evidence / a stall triggers a **frontier review** at the senior
+    tier; ``True``/``False`` overrides it. An explicit ``tier`` wins over both.
     """
+    from precis.quest import cascade as cascade_mod
+    from precis.utils.llm.router import Tier
+
     qref = store.get_ref(kind="quest", id=quest_id)
     if qref is None or qref.deleted_at is not None:
         return QuestTickOutcome(quest_id, "failed", 0, False, None, "quest not found")
 
-    prompt = build_tick_prompt(store, qref)
+    # Cascade: decide local vs. frontier review (unless the caller forces it).
+    signal = cascade_mod.escalation_signal(store, quest_id)
+    is_review = signal.escalate if review is None else review
+    reason = (
+        signal.reason
+        if (review is None and is_review)
+        else ("forced" if is_review else "")
+    )
+    if tier is not None:
+        resolved_tier = _resolve_tier(tier)
+    elif is_review:
+        resolved_tier = Tier.CLOUD_SUPER
+    else:
+        resolved_tier = Tier.CLOUD_SMALL
+
+    prompt = build_tick_prompt(store, qref, review=is_review)
 
     from precis.utils.llm.router import LlmRequest
     from precis.utils.llm.router import dispatch as _dispatch
 
     disp = dispatch_fn if dispatch_fn is not None else _dispatch
-    res = disp(LlmRequest(tier=_resolve_tier(tier), prompt=prompt, source="quest_tick"))
+    res = disp(LlmRequest(tier=resolved_tier, prompt=prompt, source="quest_tick"))
     cost = getattr(res, "cost_usd", None)
     if getattr(res, "error", None):
         return QuestTickOutcome(
@@ -334,6 +395,21 @@ def run_quest_tick(
         )
         added += 1
 
+    # Directions — set on a frontier review; recorded as a `decision` deed.
+    if is_review:
+        directions = [
+            str(d).strip() for d in (payload.get("directions") or []) if str(d).strip()
+        ]
+        if directions:
+            append_entry(
+                store,
+                quest_id,
+                text="frontier review — next directions: " + "; ".join(directions),
+                entry_type="decision",
+                by=by,
+            )
+            added += 1
+
     created = dispatched = harvested = ruled = 0
     if compute:
         from precis.quest.compute import run_compute_step
@@ -344,8 +420,13 @@ def run_quest_tick(
         harvested = step.results_harvested
         ruled = step.ruled_out
 
+    # Advance the cascade counters + recompute `promise` (rung 4d reads it).
+    cascade_mod.update_cascade_state(store, quest_id, reviewed=is_review)
+
     did_work = added or rewritten or created or harvested or ruled
-    note = "ok" if did_work else "no-op (empty output)"
+    note = (
+        (f"frontier-review ({reason})" if is_review else "ok") if did_work else "no-op"
+    )
     return QuestTickOutcome(
         quest_id,
         "succeeded",
@@ -358,6 +439,8 @@ def run_quest_tick(
         sims_dispatched=dispatched,
         results_harvested=harvested,
         ruled_out=ruled,
+        escalated=is_review,
+        mode="frontier-review" if is_review else "local",
     )
 
 

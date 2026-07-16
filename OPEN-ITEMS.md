@@ -71,12 +71,13 @@ structure — `quest` kind + `serves` + logbook + tree rollup, main
 `2ce51f5f`), 2 (reweighting — priority down the `serves` DAG into
 rotation/acquisition/reading, `src/precis/quest/reweight.py`, main
 `8a61716f`), 3 (gaps + health — `src/precis/quest/gaps.py`,
-`view='gaps'`/`id='/gaps'`), and rungs **4a–4b** (dossier + research tick —
+`view='gaps'`/`id='/gaps'`), and rungs **4a–4c** (dossier + research tick —
 `tick.py`/`dossier.py`, migration 0067; compute dispatch + Pareto frontier —
-`compute.py`/`frontier.py`) are **shipped, not deployed**. Skill
-`precis-quest-help`; tests `tests/test_quest.py` +
-`tests/test_quest_reweight.py` + `tests/test_quest_gaps.py` +
-`tests/test_quest_tick.py` + `tests/test_quest_compute.py`.
+`compute.py`/`frontier.py`; local↔frontier cascade — `cascade.py`) are
+**shipped, not deployed**. Skill `precis-quest-help`; tests `tests/test_quest.py`
++ `tests/test_quest_reweight.py` + `tests/test_quest_gaps.py` +
+`tests/test_quest_tick.py` + `tests/test_quest_compute.py` +
+`tests/test_quest_cascade.py`.
 
 **Operational — do these to make the shipped slices actually steer:**
 
@@ -139,10 +140,18 @@ as five dark rungs:
   — frontier-seeded *directions* land in 4c; turning a prose rubric into the
   objective vector is still the `energy`-default + meta override (open Q3);
   `pathway` isn't a target (catpath plugin not in-tree).
-- **4c — the local↔frontier cascade** — *not started.* Escalate to the
-  frontier model on a *signal* (enough evidence / stalled frontier / surprise)
-  to review + rewrite the dossier + set the next line; the `promise` proxy gets
-  a concrete definition here.
+- **4c — the local↔frontier cascade** — **BUILT + shipped** (not deployed).
+  `src/precis/quest/cascade.py`. A tick runs at the local/cheap tier by default;
+  `escalation_signal` fires a **frontier review** (`CLOUD_SUPER`, senior-reviewer
+  prompt with the Pareto frontier in-context, sets `directions` logged as a
+  `decision`) on **first-review** / **new-evidence** (≥`FRONTIER_REVIEW_EVERY`
+  new `result` entries) / **stalled** (`STALL_TICKS` since last improvement).
+  `update_cascade_state` maintains counters + the **promise** proxy
+  (frontier-improvement rate = objective gained / recent cost) for 4d.
+  `run_quest_tick(review=None|True|False)`; outcome carries `escalated`/`mode`.
+  Tests `tests/test_quest_cascade.py`. *Residual:* "surprise" isn't a distinct
+  signal (folded into new-evidence/improvement); rubric→objective still the
+  energy-default.
 - **4d — the allocator** — *not started.* A dispatcher picks which active quest
   ticks when a compute slot frees (EWMA bandit over priority × momentum ×
   promise + exploration), under a weekly proportional budget metered against

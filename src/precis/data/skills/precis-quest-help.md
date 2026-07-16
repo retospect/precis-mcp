@@ -207,16 +207,17 @@ CLI runs regardless).
 
 ## Roadmap (what's live vs. coming)
 
-Slices 1–3 + rungs **4a–4b** are **live**: the kind + `serves` + logbook +
+Slices 1–3 + rungs **4a–4c** are **live**: the kind + `serves` + logbook +
 tree rollup (slice 1); **reweighting** (slice 2) — priority flows down the
 `serves` DAG into the todo rotation, paper acquisition, and reading (a no-op
 until you link work to an active quest); **gaps + health** (slice 3) — the
 striving surfaces its own exploration queue + a momentum/alignment read
-(`view='gaps'`, `id='/gaps'`); the **research tick + dossier** (slice 4a) — one
-bounded reasoning step reads the rolling context and rewrites the dossier; and
+(`view='gaps'`, `id='/gaps'`); the **research tick + dossier** (slice 4a); the
 **compute dispatch + Pareto frontier** (slice 4b) — proposals become candidate
-`structure` sims, harvested into the logbook and ranked on a frontier
-(`precis quest tick --compute`, `view='frontier'`). Coming: the local↔frontier
-cascade (frontier-model escalation on a signal, 4c) and the scheduler that
-decides which quest advances when compute frees (4d). Design of record:
-`docs/proposals/quest-layer.md`.
+`structure` sims, harvested + ranked (`precis quest tick --compute`,
+`view='frontier'`); and the **local↔frontier cascade** (slice 4c) — a tick runs
+cheap+local by default and *escalates to a frontier review* on a signal (enough
+new results / a stall), which sets strategic directions and maintains the
+`promise` proxy. Coming: the scheduler that decides which active quest advances
+when compute frees (4d) + graduation of a strong candidate to a real experiment
+(4e). Design of record: `docs/proposals/quest-layer.md`.
