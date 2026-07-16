@@ -285,6 +285,29 @@ Design-of-record: `docs/design/chem-tools-integration.md`. Backlog:
   auto-drives the loop (couples to the planner; the skill already lets the
   generic planner do it).
 
+- **Slice 5 — `sequence` design (LigandMPNN) + 4c fold accuracy (Boltz-2).** ·
+  *setup gated on a PyTorch-CUDA foundation* · Engines chosen (2026-07-16):
+  **Boltz-2** (MIT, PyTorch, hosted MSA — no 2TB DBs) as a new `protein` engine;
+  **LigandMPNN** (MIT, ligand-aware structure→sequence) as the new `sequence`
+  kind + `design` job. **BLOCKER**: spark has **no PyTorch-CUDA** (reto's torch
+  envs are CPU-only; AF3 is JAX). Both need PyTorch-CUDA on the GB10
+  (Blackwell/ARM64). Path: an **NGC PyTorch ARM64 base** (`nvcr.io/nvidia/
+  pytorch:25.xx`, Blackwell+GB10 support) — needs NGC creds + a ~15-20GB pull —
+  then Boltz/LigandMPNN layer `FROM` it (weights from HF, reachable + fast), each
+  with a precis engine adapter + a `roles/*` mirror of `roles/alphafold`. Order:
+  foundation → Boltz-2 (extends the fold seam) → LigandMPNN (new kind + job).
+  (Aside: AF3 itself supports ligand co-folding via SMILES/CCD — reto's
+  `alphafold3_ligand_findings.md` — a separate capability we could also expose.)
+
+- **MCP-surface design review — chem/bio kinds.** · *design-review, filed* ·
+  Review how `route`/`protein`/`structure`/(future `sequence`) present through the
+  seven verbs as a *coherent* surface: consistent `view=` naming + params across
+  the compute kinds; discovery of dark/plugin kinds by an agent; the **CLI/`repl`
+  `put` arg-allowlist gap** that rejects plugin kwargs (`sequence`/`engine`) so
+  only `runtime.dispatch`/the MCP JSON-RPC can drive a plugin-kind `put` (surfaced
+  during the 4b live smoke); whether the `precis-lab-help` composition layer is
+  the right agent on-ramp. Its own focused pass, not a squeeze-in.
+
 - **Plugin-relation read-time inverse (gripe 160213).** · *FIXED* ·
   `Store.inverse_relation` now reads `relations.inverse_slug` from the DB (cached
   like `valid_relations`), and `links_for` uses it — so an asymmetric plugin
