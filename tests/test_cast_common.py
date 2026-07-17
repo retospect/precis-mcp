@@ -17,7 +17,7 @@ from precis.reading.cast_common import (
 
 class TestBudgets:
     def test_word_budget_is_minutes_times_wpm(self) -> None:
-        assert word_budget(CAST_PROFILES["reading"]) == 15 * 150
+        assert word_budget(CAST_PROFILES["reading"]) == 20 * 150
         assert word_budget(CAST_PROFILES["nidra"]) == 45 * 110
 
     def test_target_minutes_override(self) -> None:

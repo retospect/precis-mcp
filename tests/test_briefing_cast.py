@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
 from precis.reading.briefing_cast import (
+    _DORMANT_NUDGE_KEY,
     _lane_news,
     _lane_quest,
     _lane_reading,
@@ -24,10 +26,60 @@ class _FakeClient:
         return SimpleNamespace(text=self._text, total_tokens=5)
 
 
+class _NudgeStore:
+    """A minimal store exercising only the quest lane's reads/writes: a
+    ``list_refs`` over quest status tags + the ``app_state`` get/set pair.
+    No DB — the decaying-nudge logic is pure over these four calls."""
+
+    def __init__(self, active: list[Any], dormant: list[Any]) -> None:
+        self._active = active
+        self._dormant = dormant
+        self.kv: dict[str, str] = {}
+
+    def list_refs(self, *, kind: str, tags: list[str], limit: int) -> list[Any]:
+        return self._active if tags == ["STATUS:active"] else self._dormant
+
+    def get_setting(self, key: str) -> str | None:
+        return self.kv.get(key)
+
+    def set_setting(self, key: str, value: str) -> None:
+        self.kv[key] = value
+
+
 class TestLanesDegrade:
     def test_unbuilt_lanes_are_empty(self, store: Any) -> None:
         assert _lane_reading(store) == ""  # booklet unbuilt
-        assert _lane_quest(store) == ""  # quest kind unbuilt
+        assert _lane_quest(store, now=datetime.now(UTC)) == ""  # no quests
+
+
+class TestDormantNudgeDecay:
+    def test_nudge_fires_on_a_doubling_cadence_then_resets_when_active(self) -> None:
+        dormant = [SimpleNamespace(id=1, title="Strive for X")]
+        st = _NudgeStore(active=[], dormant=dormant)
+        base = datetime(2026, 7, 17, tzinfo=UTC)
+
+        fired = [
+            d
+            for d in range(20)
+            if _lane_quest(st, now=base + timedelta(days=d)).startswith("DORMANT")
+        ]
+        # Days 0,1,3,7,15 — the quiet window doubles (1 → 2 → 4 → 8) each fire.
+        assert fired == [0, 1, 3, 7, 15]
+
+        # An active quest re-engages the human → the decay cursor resets so a
+        # future dormancy nudges from scratch again.
+        st._active = [SimpleNamespace(id=9, title="Strive live")]
+        _lane_quest(st, now=base + timedelta(days=16))
+        assert st.get_setting(_DORMANT_NUDGE_KEY) == '{"last": null, "fires": 0}'
+
+        st._active = []
+        # First morning after the reset fires immediately (fresh decay).
+        assert _lane_quest(st, now=base + timedelta(days=17)).startswith("DORMANT")
+
+    def test_no_quests_at_all_is_silent(self) -> None:
+        st = _NudgeStore(active=[], dormant=[])
+        assert _lane_quest(st, now=datetime.now(UTC)) == ""
+        assert st.kv == {}  # nothing dormant → no cursor written
 
     def test_news_lane_empty_when_no_briefing(self, store: Any) -> None:
         # A date with no briefing ref → empty (no raise).

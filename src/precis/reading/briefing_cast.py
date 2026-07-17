@@ -1,7 +1,7 @@
 """briefing_cast — the *morning reading-brief* producer (store + LLM → a draft).
 
 The daytime sibling of :func:`precis.reading.meditation.build_meditation`. Composes
-a ~15-minute situational-awareness cast as a ``draft`` (voice ``bm_george``) by
+a ~20-minute situational-awareness cast as a ``draft`` (voice ``bm_george``) by
 unioning several **lanes** of the human's current state, then narrated onto the
 podcast feed by the ``cast_audio`` pass. This module owns only the *content*; it is
 store + LLM only (no TTS, no audio deps) so it unit-tests with a fake client.
@@ -12,12 +12,17 @@ layers land):
 
 - **News** (LIVE) — consume today's ``briefing-<date>`` news ref (already composed
   and shipped to Discord); we speak it, we don't re-derive it.
-- **System activity** (LIVE) — what moved overnight: papers acquired, drafts
-  advanced, findings + open alerts, and "needs-you" / failed-job attention items.
-- **Recall** (PARTIAL) — Anki leeches + concepts newly seen; degrades where the
-  intake loop is unbuilt.
+- **System activity** (LIVE) — what moved overnight: papers acquired (the top few
+  carrying their abstracts so the brief can go deep on claim/method/significance),
+  drafts advanced, findings + open alerts, and "needs-you" / failed-job items.
+- **Recall** (PARTIAL) — Anki leeches (carrying the card body + note so the brief
+  can *teach* the idea, not just restate it) + concepts newly seen; degrades where
+  the intake loop is unbuilt.
 - **Reading** (stub) — the weekly booklet gist; lights up at reading-prep slice 2.
-- **Quest** (stub) — per-quest momentum + deeds; lights up at quest-layer slice 1.
+- **Quest** (LIVE) — per **active** quest: its momentum + latest deed; the brief's
+  closing "on to the quests" report. When nothing is active, a *decaying* nudge
+  about the dormant strivings takes its place (doubling cadence, so it fades
+  rather than nags); silent when there are no quests at all.
 
 See docs/design/reading-prep-loop.md (§The briefing, Slice 5) and
 docs/proposals/quest-layer.md.
@@ -25,11 +30,12 @@ docs/proposals/quest-layer.md.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from precis.reading.cast_common import (
@@ -52,24 +58,68 @@ _LOOKBACK_HOURS = 26
 _LANE_ITEM_CAP = 12
 
 _MORNING_CONTRACT = (
-    "You are composing a spoken MORNING BRIEFING — a ~{minutes}-minute "
+    "You are composing a spoken MORNING BRIEFING — a roughly {minutes}-minute "
     "situational-awareness cast for one person, read aloud in a calm, crisp, "
     "British register (the voice is 'bm_george'). Aim for about {words} words. "
     "\n\n"
     "This is NOT the world news wire — it is THIS person's own state: what the "
     "system did overnight, what they are reading, and what they should recall "
     "today. You are given labelled lanes of raw material below. Weave the "
-    "non-empty ones into a flowing, forward-looking brief in a few short "
-    "paragraphs; open by orienting to the day, group naturally, and END ON A "
-    "SINGLE LIGHT INTENTION for the day. "
-    "\n\n"
+    "non-empty ones into a substantive, well-organised brief of several "
+    "paragraphs. Open by orienting to the day in a sentence or two, then get "
+    "straight into the material.\n\n"
+    "GO DEEP, NOT WIDE — this person is a working scientist, so treat them as "
+    "one and give real substance rather than a breezy tour:\n"
+    "- PAPERS: introduce each one before you dig in — give the listener a handle "
+    "('Here is a paper on …', or by its title / where it comes from) so they know "
+    "which paper you mean. Then say what it actually claims (the core result), "
+    "HOW the work supports that claim (the method, system, or experimental "
+    "approach), and WHY it matters (the gap it fills, what it changes, or the "
+    "open question it bears on). Pull a concrete specific from the abstract — a "
+    "number, a system, a named result — rather than staying general. Cover a few "
+    "papers with real depth rather than listing many by title, and ground every "
+    "statement in the abstract you are given — never invent a finding that isn't "
+    "there.\n"
+    "- RECALL AND FLASHCARDS: for the cards that keep slipping, actually TEACH "
+    "the underlying idea — explain the reasoning behind the answer, connect it "
+    "to adjacent concepts, and where it helps, name the mistake that is easy to "
+    "make. Do not merely restate the card.\n"
+    "- ACTIVITY AND ATTENTION: be concrete about what moved overnight and what "
+    "now needs a decision from the person.\n"
+    "- QUESTS: CLOSE the brief here — 'on to the quests'. If active quests are "
+    "given, report each honestly: whether work is flowing toward it (its "
+    "momentum), the latest deed or that it has gone quiet. Report, don't "
+    "cheerlead; a stalled quest is named as stalled. If instead you are handed "
+    "a DORMANT STRIVINGS nudge (nothing active), deliver it as ONE short, "
+    "low-key prompt to revive or rest one — a single sentence or two, not a "
+    "full report.\n\n"
+    "Structure the brief roughly as: a brief orientation, then the papers, then "
+    "what moved and what needs you, then recall, and finish on the quests.\n\n"
+    "TONE: grounded, specific, and technical-but-plain. NOT inspirational, "
+    "vague, or 'newagey' — no affirmations, no motivational filler. Trust the "
+    "material to carry the brief.\n\n"
     "Write for the EAR: describe relationships in plain words, expand "
     "abbreviations and symbols, never read a URL, a slash, a path, a list "
-    "marker, or a formula. Be energising, not exhaustive — detail is a tap "
-    "away, so summarise and move on rather than enumerating everything. If a "
-    "lane is empty, simply don't mention it. Return plain paragraphs separated "
-    "by blank lines — no headings, no markup, no bullet points."
+    "marker, or a formula aloud. If a lane is empty, simply don't mention it. "
+    "Return plain paragraphs separated by blank lines — no headings, no markup, "
+    "no bullet points."
 )
+
+#: How many overnight papers get the full claim/method/significance treatment
+#: (each carrying its abstract into the compose context); the rest are named.
+_PAPER_DEPTH_CAP = 6
+#: Trim each carried abstract to keep the compose context bounded.
+_PAPER_ABSTRACT_CHARS = 700
+#: How many active quests the closing "on to the quests" report covers.
+_QUEST_DEPTH_CAP = 5
+#: ``app_state`` key holding the decaying-nudge cursor (JSON: last-fired date +
+#: fire count) for the "you have dormant strivings" reminder.
+_DORMANT_NUDGE_KEY = "reading_brief:dormant_nudge"
+#: The nudge fires on a doubling cadence: base × 2**(fires-1) days between
+#: reminders — 1, 2, 4, 8 … — so it fades rather than nags. Capped so it never
+#: goes fully silent.
+_DORMANT_NUDGE_BASE_DAYS = 1
+_DORMANT_NUDGE_MAX_DAYS = 32
 
 
 def _safe_lane(name: str, fn: Callable[[], str]) -> str:
@@ -118,16 +168,55 @@ def _titles(refs: list[Any], cap: int = _LANE_ITEM_CAP) -> list[str]:
     return out
 
 
+def _abstract_snippet(meta: Any, *, limit: int = _PAPER_ABSTRACT_CHARS) -> str:
+    """A JATS-stripped, length-bounded abstract for a paper ref, or ``""``.
+
+    This is the *substance* the depth-first contract needs: the model can only
+    speak to a paper's claim / method / significance if it is handed the
+    abstract, not just the title.
+    """
+    abstract = (meta or {}).get("abstract") if isinstance(meta, dict) else None
+    if not isinstance(abstract, str) or not abstract.strip():
+        return ""
+    try:
+        from precis.handlers._paper_format import _strip_jats
+
+        text = _strip_jats(abstract).strip()
+    except Exception:  # pragma: no cover - formatter import is best-effort
+        text = abstract.strip()
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0].rstrip() + "…"
+    return text
+
+
+def _render_papers(papers: list[Any]) -> str:
+    """The overnight papers, rendered claim-first: the top few carry their
+    abstracts (so the model can go deep), any tail is named for context."""
+    if not papers:
+        return ""
+    lines: list[str] = []
+    for r in papers[:_PAPER_DEPTH_CAP]:
+        title = (getattr(r, "title", "") or "").strip()
+        if not title:
+            continue
+        snippet = _abstract_snippet(getattr(r, "meta", None))
+        lines.append(f"  * {title}" + (f"\n    abstract: {snippet}" if snippet else ""))
+    tail = _titles(papers[_PAPER_DEPTH_CAP:])
+    if tail:
+        lines.append("  * also acquired (titles only): " + "; ".join(tail))
+    if not lines:
+        return ""
+    return f"Papers acquired or updated ({len(papers)}):\n" + "\n".join(lines)
+
+
 def _lane_system_activity(store: Any, *, cutoff: datetime) -> str:
     """What the untiring collaborator did overnight (LIVE)."""
     parts: list[str] = []
 
     papers = store.list_refs(kind="paper", updated_after=cutoff, limit=_LANE_ITEM_CAP)
-    if papers:
-        titles = _titles(papers)
-        parts.append(
-            f"Papers acquired or updated ({len(papers)}): " + "; ".join(titles)
-        )
+    rendered_papers = _render_papers(papers)
+    if rendered_papers:
+        parts.append(rendered_papers)
 
     drafts = [
         r
@@ -175,11 +264,14 @@ def _lane_recall(store: Any, *, cutoff: datetime) -> str:
     """Today's recall surface — Anki leeches + newly-seen concepts (PARTIAL)."""
     parts: list[str] = []
 
-    # Anki leeches: bad-recall cards (high lapses / collapsed ease).
+    # Anki leeches: bad-recall cards (high lapses / collapsed ease). Carry the
+    # card body + any back-extra note so the brief can TEACH the idea (the
+    # depth-first contract), not merely restate the title.
     try:
         with store.pool.connection() as conn:
             leeches = conn.execute(
-                "SELECT title FROM refs "
+                "SELECT title, meta->'fields'->>'Text', "
+                "       meta->'fields'->>'Back Extra' FROM refs "
                 "WHERE kind='anki' AND deleted_at IS NULL "
                 "AND ( (meta->'anki_stats'->>'lapses_total')::int >= 4 "
                 "   OR (meta->'anki_stats'->>'ease_min')::float <= 2.0 ) "
@@ -187,10 +279,23 @@ def _lane_recall(store: Any, *, cutoff: datetime) -> str:
                 "LIMIT %s",
                 (_LANE_ITEM_CAP,),
             ).fetchall()
-        names = [r[0] for r in leeches if r[0]]
-        if names:
+        cards: list[str] = []
+        for title, text, extra in leeches:
+            label = (title or "").strip()
+            body = (text or "").strip()
+            note = (extra or "").strip()
+            if not label and not body:
+                continue
+            entry = f"  * {label or body[:80]}"
+            if body:
+                entry += f"\n    card: {body}"
+            if note:
+                entry += f"\n    note: {note}"
+            cards.append(entry)
+        if cards:
             parts.append(
-                f"{len(names)} card(s) keep slipping (leeches): " + "; ".join(names)
+                f"{len(cards)} card(s) keep slipping (leeches) — teach the idea, "
+                "don't just restate:\n" + "\n".join(cards)
             )
     except Exception:  # pragma: no cover - anki_stats may be absent
         log.debug("reading brief: anki leech lane unavailable", exc_info=True)
@@ -248,13 +353,170 @@ def _lane_reading(store: Any) -> str:
     return ""
 
 
-def _lane_quest(store: Any) -> str:
-    """Per-quest momentum + deeds. Empty until quest-layer slice 1 (the ``quest``
-    kind + ``serves`` graph + logbook) lands — see docs/proposals/quest-layer.md."""
-    return ""
+def _quest_report(store: Any, quest: Any, *, status: str) -> str:
+    """One quest → its striving, lifecycle, momentum, and latest deed (or quiet)."""
+    from precis.quest.gaps import quest_momentum
+    from precis.quest.logbook import LOG_KIND
+
+    statement = ((getattr(quest, "title", "") or "").splitlines() or [""])[0].strip()
+    if not statement:
+        return ""
+    lines = [f"  * [{status}] {statement}"]
+
+    try:
+        m = quest_momentum(store, int(quest.id))
+        lines.append(
+            f"    momentum: {m.label} — {m.recent_entries} log entries, "
+            f"{m.recent_server_events} server events, "
+            f"{m.open_todo_servers} open task(s) this past week"
+        )
+    except Exception:  # pragma: no cover - momentum read is best-effort
+        log.debug("reading brief: quest momentum unavailable", exc_info=True)
+
+    # Latest deed (a milestone) if there is one, else the most recent log line.
+    try:
+        entries = [
+            b
+            for b in store.list_blocks_for_ref(int(quest.id))
+            if b.chunk_kind == LOG_KIND
+        ]
+        deed = next(
+            (
+                b
+                for b in reversed(entries)
+                if (b.meta or {}).get("entry_type") == "milestone"
+            ),
+            None,
+        )
+        latest = deed or (entries[-1] if entries else None)
+        if latest is not None:
+            etype = (latest.meta or {}).get("entry_type", "note")
+            stamp = latest.created_at.date().isoformat() if latest.created_at else "?"
+            first = ((latest.text or "").splitlines() or [""])[0][:200]
+            label = "latest deed" if etype == "milestone" else "latest log"
+            lines.append(f"    {label} [{etype} · {stamp}]: {first}")
+        else:
+            lines.append("    (no logbook entries yet — quiet so far)")
+    except Exception:  # pragma: no cover - logbook read is best-effort
+        log.debug("reading brief: quest logbook unavailable", exc_info=True)
+
+    return "\n".join(lines)
 
 
-def _gather_lanes(store: Any, *, date_tag: str, cutoff: datetime) -> dict[str, str]:
+def _read_nudge_cursor(store: Any) -> tuple[str | None, int]:
+    """The dormant-nudge cursor from ``app_state`` → ``(last_fired_iso, fires)``.
+
+    Degrades to ``(None, 0)`` (fire-now) on any read/parse problem.
+    """
+    try:
+        raw = store.get_setting(_DORMANT_NUDGE_KEY)
+        if not raw:
+            return None, 0
+        state = json.loads(raw)
+        return state.get("last"), int(state.get("fires", 0))
+    except Exception:  # pragma: no cover - malformed marker → fire fresh
+        log.debug("reading brief: dormant-nudge cursor unreadable", exc_info=True)
+        return None, 0
+
+
+def _clear_nudge_cursor(store: Any) -> None:
+    """Reset the decay so the *next* dormancy nudges from scratch. Called the
+    moment a quest is active again (the human re-engaged)."""
+    try:
+        if store.get_setting(_DORMANT_NUDGE_KEY):
+            store.set_setting(
+                _DORMANT_NUDGE_KEY, json.dumps({"last": None, "fires": 0})
+            )
+    except Exception:  # pragma: no cover - best-effort
+        log.debug("reading brief: could not clear dormant-nudge cursor", exc_info=True)
+
+
+def _dormant_nudge(store: Any, dormant: list[Any], *, now: datetime) -> str:
+    """A **decaying** reminder that strivings sit dormant with nothing active.
+
+    Fires on a doubling cadence (1, 2, 4, 8 … days, capped at
+    :data:`_DORMANT_NUDGE_MAX_DAYS`) so it fades instead of nagging every
+    morning. Advances the ``app_state`` cursor only on the mornings it actually
+    fires; returns ``""`` on the quiet mornings in between.
+    """
+    if not dormant:
+        return ""
+    last_iso, fires = _read_nudge_cursor(store)
+    today = now.date()
+    if last_iso:
+        try:
+            last = date.fromisoformat(last_iso)
+        except ValueError:  # pragma: no cover - malformed date → fire now
+            last = None
+        if last is not None:
+            interval = min(
+                _DORMANT_NUDGE_MAX_DAYS,
+                _DORMANT_NUDGE_BASE_DAYS * (2 ** max(0, fires - 1)),
+            )
+            if today < last + timedelta(days=interval):
+                return ""  # still inside the quiet window — stay silent
+    # Fire, and widen the next window.
+    try:
+        store.set_setting(
+            _DORMANT_NUDGE_KEY,
+            json.dumps({"last": today.isoformat(), "fires": fires + 1}),
+        )
+    except Exception:  # pragma: no cover - a failed write just re-nudges tomorrow
+        log.debug(
+            "reading brief: could not advance dormant-nudge cursor", exc_info=True
+        )
+    names = _titles(dormant, cap=_QUEST_DEPTH_CAP)
+    return (
+        f"DORMANT STRIVINGS ({len(dormant)}) — a fading nudge (this reminder "
+        "spaces itself out the longer it's left): no quest is active right now, "
+        "and these are set aside. Worth a beat to decide: revive one, or let it "
+        "rest?\n" + "\n".join(f"  * {t}" for t in names)
+    )
+
+
+def _lane_quest(store: Any, *, now: datetime) -> str:
+    """The brief's closing "on to the quests" report. **Active quests only** get
+    the full momentum + latest-deed treatment; when none is active, a *decaying*
+    nudge about the dormant strivings takes its place (and goes quiet again on the
+    off-cadence mornings). ``abandoned`` quests are never mentioned. LIVE once
+    quests exist; degrades to empty otherwise. See docs/proposals/quest-layer.md."""
+    try:
+        active = store.list_refs(
+            kind="quest", tags=["STATUS:active"], limit=_LANE_ITEM_CAP
+        )
+    except Exception:  # pragma: no cover - quest kind may be unregistered
+        log.debug("reading brief: quest lane unavailable", exc_info=True)
+        return ""
+
+    if active:
+        # The human is engaged — reset the decay so a future dormancy nudges fresh.
+        _clear_nudge_cursor(store)
+        blocks = [
+            r
+            for q in active[:_QUEST_DEPTH_CAP]
+            if (r := _quest_report(store, q, status="active"))
+        ]
+        if not blocks:
+            return ""
+        return (
+            "QUESTS IN FLIGHT (the standing strivings above the day's work):\n"
+            + "\n".join(blocks)
+        )
+
+    # Nothing active → the fading dormant-strivings nudge (empty most mornings).
+    try:
+        dormant = store.list_refs(
+            kind="quest", tags=["STATUS:dormant"], limit=_LANE_ITEM_CAP
+        )
+    except Exception:  # pragma: no cover - quest kind may be unregistered
+        log.debug("reading brief: dormant quest read unavailable", exc_info=True)
+        return ""
+    return _dormant_nudge(store, dormant, now=now)
+
+
+def _gather_lanes(
+    store: Any, *, date_tag: str, cutoff: datetime, now: datetime
+) -> dict[str, str]:
     """All lanes, each degrading to ``""``. Keys preserve reading order."""
     return {
         "news": _safe_lane("news", lambda: _lane_news(store, date_tag)),
@@ -263,7 +525,7 @@ def _gather_lanes(store: Any, *, date_tag: str, cutoff: datetime) -> dict[str, s
         ),
         "reading": _safe_lane("reading", lambda: _lane_reading(store)),
         "recall": _safe_lane("recall", lambda: _lane_recall(store, cutoff=cutoff)),
-        "quest": _safe_lane("quest", lambda: _lane_quest(store)),
+        "quest": _safe_lane("quest", lambda: _lane_quest(store, now=now)),
     }
 
 
@@ -313,7 +575,7 @@ def build_reading_briefing(
         return int(existing.id)
 
     cutoff = now - timedelta(hours=_LOOKBACK_HOURS)
-    lanes = _gather_lanes(store, date_tag=date_tag, cutoff=cutoff)
+    lanes = _gather_lanes(store, date_tag=date_tag, cutoff=cutoff, now=now)
     if not any(lanes.values()):
         log.info("reading brief: no material in any lane — nothing to compose")
         return None
