@@ -136,6 +136,87 @@ def dispatch_relax(
     return f"relax[{fidelity}] dispatched for {ref.slug}"
 
 
+#: Job-meta spellings that carry catpath's rate-limiting barrier (eV). The
+#: `catpath_explore` job exposes a scalar summary so the quest can harvest it
+#: without importing catpath or reading the (plugin-kind) `pathway` ref.
+_CATPATH_BARRIER_KEYS: tuple[str, ...] = ("barrier", "rate_Ea", "rate_ea", "ea")
+_CATPATH_SPAN_KEYS: tuple[str, ...] = ("span",)
+
+
+def _num_measure(v: Any) -> float | None:
+    """A numeric measure, or None (``bool`` is an ``int`` but never a measure)."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    return None
+
+
+def _catpath_measures_from_job(meta: dict[str, Any]) -> dict[str, float]:
+    """Lift the scalar barrier/span from a completed `catpath_explore` job's meta.
+
+    Reads a ``result`` sub-dict if present (the bridge's summary), else the meta
+    top level. The presence of a numeric barrier IS the "done" signal — a
+    still-running job carries none, so it is simply skipped.
+    """
+    src = meta.get("result") if isinstance(meta.get("result"), dict) else meta
+    out: dict[str, float] = {}
+    for k in _CATPATH_BARRIER_KEYS:
+        v = _num_measure(src.get(k))
+        if v is not None:
+            out["barrier"] = v
+            break
+    for k in _CATPATH_SPAN_KEYS:
+        v = _num_measure(src.get(k))
+        if v is not None:
+            out["span"] = v
+            break
+    return out
+
+
+def _fresh_catpath_jobs(
+    store: Store, structure_ref_id: int, upto: int
+) -> list[tuple[int, dict[str, Any]]]:
+    """Completed `catpath_explore` jobs under a candidate, newer than ``upto``.
+
+    Returns ``(job_ref_id, meta)`` oldest-first so harvest is deterministic and
+    the idempotency bookmark advances monotonically.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT j.ref_id, j.meta FROM refs j "
+            "WHERE j.parent_id = %s AND j.kind = 'job' AND j.deleted_at IS NULL "
+            "AND j.meta->>'job_type' = 'catpath_explore' AND j.ref_id > %s "
+            "ORDER BY j.ref_id ASC",
+            (structure_ref_id, upto),
+        ).fetchall()
+    return [(int(r[0]), dict(r[1] or {})) for r in rows]
+
+
+def _link_pathway(store: Store, structure_ref_id: int, pathway_ref_id: int) -> None:
+    """Wire the evaluating `pathway` into the quest graph (idempotent).
+
+    The catpath bridge creates the pathway ref; we link the candidate structure
+    to it so a later by-intermediate view can find the per-path profile.
+    Symmetric ``related-to`` (the relation the bridge already uses, valid on any
+    ref). Defensive: a missing pathway / relation must never break the harvest.
+    """
+    try:
+        existing = store.links_for(
+            structure_ref_id, direction="both", relation="related-to"
+        )
+        if any(pathway_ref_id in (ln.src_ref_id, ln.dst_ref_id) for ln in existing):
+            return
+        store.add_link(
+            src_ref_id=structure_ref_id,
+            dst_ref_id=pathway_ref_id,
+            relation="related-to",
+            set_by="system",
+        )
+    except Exception:
+        pass
+
+
 def _latest_relax_job_status(store: Store, structure_ref_id: int) -> str | None:
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -162,11 +243,17 @@ def _mark_harvested(store: Store, structure_ref_id: int, upto_run_id: int) -> No
 def harvest_measures(store: Store, quest_id: int, *, by: str = "agent") -> ComputeStep:
     """Read finished sims back into the logbook + rule out failures.
 
-    For each candidate `structure` serving the quest: newly-converged relax runs
-    become `result` logbook entries (energy + a step-count cost proxy), tracked
-    idempotently by ``meta.quest_harvested_upto``; a candidate whose latest
-    relax job **failed** gets a one-shot ``ruled-out:relax-failed`` tag + a
-    `dead-end` entry so the proposer stops re-treading it.
+    For each candidate `structure` serving the quest:
+
+    * newly-converged **relax** runs become `result` logbook entries (energy + a
+      step-count cost proxy), tracked idempotently by ``meta.quest_harvested_upto``;
+    * completed **catpath** (`catpath_explore`) jobs contribute the rate-limiting
+      **barrier** (and span): lifted onto the candidate's own ``meta`` (where the
+      generalised frontier reads it), the evaluating pathway linked into the quest
+      graph, logged as a `result`, tracked by ``meta.quest_catpath_harvested_upto``;
+    * a candidate whose latest relax job **failed** gets a one-shot
+      ``ruled-out:relax-failed`` tag + a `dead-end` entry so the proposer stops
+      re-treading it.
     """
     from precis.quest.gaps import _live_servers
     from precis.utils import handle_registry
@@ -199,6 +286,35 @@ def harvest_measures(store: Store, quest_id: int, *, by: str = "agent") -> Compu
             harvested += 1
         if fresh:
             _mark_harvested(store, s.id, max(int(r.get("id", 0)) for r in fresh))
+
+        # Harvest catpath barriers: a completed `catpath_explore` job under this
+        # candidate carries the rate-limiting barrier; lift it onto the
+        # candidate's own meta (where the generalised frontier reads it), link
+        # the evaluating pathway into the quest graph, and log a result entry.
+        cp_upto = int((s.meta or {}).get("quest_catpath_harvested_upto", 0) or 0)
+        cp_jobs = _fresh_catpath_jobs(store, s.id, cp_upto)
+        cp_seen = cp_upto
+        for job_id, jmeta in cp_jobs:
+            cp_seen = max(cp_seen, job_id)
+            measures = _catpath_measures_from_job(jmeta)
+            if not measures:
+                continue  # not finished (no scalar barrier yet)
+            store.stamp_ref_meta(s.id, measures)
+            pathway_ref = jmeta.get("pathway_ref")
+            if isinstance(pathway_ref, int) and not isinstance(pathway_ref, bool):
+                _link_pathway(store, s.id, pathway_ref)
+            b = measures.get("barrier")
+            b_s = f"barrier={b:g} eV" if isinstance(b, (int, float)) else "measured"
+            append_entry(
+                store,
+                quest_id,
+                text=f"catpath result for {handle} ({name}): {b_s}",
+                entry_type="result",
+                by=by,
+            )
+            harvested += 1
+        if cp_seen > cp_upto:
+            store.stamp_ref_meta(s.id, {"quest_catpath_harvested_upto": cp_seen})
 
         # Rule out a candidate whose relax job failed (once).
         already_out = any(str(t).startswith("ruled-out:") for t in store.tags_for(s.id))

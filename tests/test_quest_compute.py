@@ -428,6 +428,87 @@ class TestLeaderboard:
         assert "no candidate structures serve this quest yet" in body
 
 
+# ── catpath harvest: barrier → candidate meta → frontier (Slice 3) ────
+
+
+class TestCatpathHarvest:
+    def _candidate(self, store: Any, qid: int, name: str = "Pd") -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": name, "structure": _SPEC}
+        )
+        assert sid is not None
+        return sid
+
+    def _catpath_job(self, store: Any, sid: int, meta: dict[str, Any]) -> int:
+        return store.insert_ref(
+            kind="job",
+            slug=None,
+            title="catpath_explore",
+            meta={"job_type": "catpath_explore", **meta},
+            parent_id=sid,
+        ).id
+
+    def test_barrier_lands_on_meta_and_logs_result_idempotently(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)
+        self._catpath_job(store, sid, {"result": {"barrier": 0.7, "span": 1.2}})
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta
+        assert meta["barrier"] == 0.7 and meta["span"] == 1.2
+        logs = [
+            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+        ]
+        assert any("barrier=0.7" in b.text for b in logs)
+        # idempotent: the same job is not re-harvested
+        assert compute_mod.harvest_measures(store, qid).results_harvested == 0
+
+    def test_barrier_feeds_the_frontier(self, store: Any) -> None:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        sid = self._candidate(store, qid)
+        # a converged relax makes it evaluable; catpath supplies the barrier
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-10.0,
+        )
+        self._catpath_job(store, sid, {"result": {"barrier": 0.5}})
+        compute_mod.harvest_measures(store, qid)
+        fr = quest_frontier(store, qid)
+        assert [c.ref_id for c in fr.frontier] == [sid]  # ranked on the barrier
+
+    def test_unfinished_job_contributes_nothing(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._catpath_job(store, sid, {})  # no barrier scalar yet → still running
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 0
+        assert "barrier" not in (store.fetch_refs_by_ids({sid})[sid].meta or {})
+
+    def test_pathway_link_created_when_ref_present(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        target = store.insert_ref(
+            kind="job", slug=None, title="pw", meta={}, parent_id=sid
+        ).id
+        self._catpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": target}
+        )
+        compute_mod.harvest_measures(store, qid)
+        links = store.links_for(sid, direction="both", relation="related-to")
+        linked = [ln.dst_ref_id for ln in links] + [ln.src_ref_id for ln in links]
+        assert target in linked
+
+
 # ── tick integration ──────────────────────────────────────────────────
 
 

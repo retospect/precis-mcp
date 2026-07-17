@@ -113,8 +113,11 @@ Verified by reading the live build + the catpath repo (`/Users/reto/work/project
   **RESOLVED (Slice 1, built):** `_candidate_from_structure` now gathers
   arbitrary named measures (all numeric run fields + numeric `structure.meta`
   keys), so a quest ranks on `{barrier, formation_e, …}` via
-  `meta.rubric_objectives`. What's still missing is the *producer* of the
-  barrier measure on the candidate's meta — the harvest extension (Slice 3).
+  `meta.rubric_objectives`. The *producer* is now BUILT too (Slice 3):
+  `harvest_measures` lifts a completed `catpath_explore` job's `barrier`/`span`
+  onto the candidate's meta (idempotent, `meta.quest_catpath_harvested_upto`) +
+  links the evaluating pathway. What remains is the catpath bridge *emitting*
+  that job (`structure_ref` → extxyz → `run_pathway`) and minting the quest.
 - The quest **tick is single-shot** (one LLM call, `tick.py:391`), not an
   agentic tool loop.
 - precis `structure` can *edit* atoms but cannot *build* a slab or add an
@@ -160,7 +163,7 @@ slice is independently shippable.
 | 0 | **Bridge already live — verify, don't build** | ops | catpath is **deployed + live on prod** (4 `pathway` refs, verified 2026-07-17; `can_own_jobs` 8.22 + routed MACE jobs already ran). Only re-confirm `PRECIS_CATPATH_ROUTE_NODE` → the current GPU node and that the deployed bridge matches current precis. Effectively done. |
 | 1 | **Generalise the frontier** | precis-mcp | **DONE** — `_candidate_from_structure` ingests *arbitrary* named measures (run fields + numeric `structure.meta`) + `params` passthrough (§7.2); **by-total leaderboard** `view='leaderboard'` (TOON, §7.3). `TestGeneralizedFrontier` + `TestLeaderboard` green. **by-intermediate view deferred to Slice 3** (needs the candidate↔pathway link + catpath's graph→profile — same DRY block as source-3). |
 | 2 | **catpath structure-input seam + anchor placement** | catpath | **catpath-side DONE** — `Network.prebuilt_slab` + `run_pathway(slab_extxyz=…)` score an injected slab instead of `fcc111`-from-label; `adsorbate_info` transplanted for clean fcc(111). `test_network.py` (3) + `test_precis_runner_slab.py` (3) green. **Pending (Slice 3):** the `catpath_explore` job resolving a precis `structure_ref` → extxyz; the `eye` active-site anchor for edited slabs (§7.5). §7.1. |
-| 3 | **The quest, first light** | precis-mcp (config) + tick | Mint the Pd quest; candidate=`structure`; the agentic **tick tools-loop** (§7.7); `rubric_objectives=[{barrier,min},{formation_e,min}]`; a graduation ceiling. Runs on Slice-2's clean-slab envelope — **proves the whole loop end-to-end on real compute.** Auto-loop stays dark. |
+| 3 | **The quest, first light** | precis-mcp (config) + tick + catpath bridge | **Harvest barrier-lift BUILT** — `harvest_measures` reads a completed `catpath_explore` job → `barrier`/`span` onto candidate meta + pathway link (`TestCatpathHarvest` green). **Remaining:** the catpath bridge emitting the job (`structure_ref`→extxyz→`run_pathway`, + scalar `barrier`/`pathway_ref` in job meta — the contract the harvest reads); mint the Pd quest; the agentic **tick tools-loop** (§7.7); `rubric_objectives=[{barrier,min},{formation_e,min}]` + a graduation ceiling. **Needs reaction R.** Auto-loop stays dark. |
 | 4 | **Structure model-building ops** | precis-mcp | slab-builder op (Miller facet, size, vacuum), adsorbate/molecule add — so the big model can build & edit beyond clean slabs. Unlocks adatom / facet moves. §7.4. |
 | 5 | **Best-site search (optional rigor)** | precis + catpath | Wire catpath's `poses()` ensemble; precis narrows candidates via probes; catpath relaxes each + keeps lowest-energy. Upgrade over the v1 anchor, not a blocker. §7.5. |
 | 6 | **Catalysis-library pull** | precis-mcp | MP / OC20 / curated slab library → `structure` refs as seed designs + reference anchors. §7.6. |
