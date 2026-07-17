@@ -129,7 +129,8 @@ class QuestHandler(NumericRefHandler):
             "servers + deed ledger + health + gaps; view='gaps' (per quest) or "
             "id='/gaps' (all active quests) surfaces the exploration queue; "
             "view='dossier' shows the living research synthesis; view='frontier' "
-            "the Pareto frontier of candidate materials. "
+            "the Pareto frontier of candidate materials (banded); "
+            "view='leaderboard' the same frontier as a TOON design table. "
             "See docs/proposals/quest-layer.md."
         ),
         supports_get=True,
@@ -378,6 +379,9 @@ class QuestHandler(NumericRefHandler):
         if view == "frontier" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
             return Response(body=self._render_frontier(ref))
+        if view == "leaderboard" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
+            return Response(body=self._render_leaderboard(ref))
         return super().get(id=id, view=view, q=q, **_kw)
 
     def _render_frontier(self, ref: Ref) -> str:
@@ -409,6 +413,35 @@ class QuestHandler(NumericRefHandler):
             lines += ["", f"── awaiting a sim ({len(fr.unevaluated)}) ──"]
             lines += [f"  {c.handle} {c.name}" for c in fr.unevaluated]
         return "\n".join(lines)
+
+    def _render_leaderboard(self, ref: Ref) -> str:
+        """`view='leaderboard'` — the by-total design leaderboard as a TOON table.
+
+        One row per candidate design (identity · objective vector · Pareto band ·
+        graduation flag), sorted best-first per band. This is the LLM-legible
+        counterpart of ``view='frontier'`` (which is the banded human summary);
+        both render the same :func:`quest_frontier`, so there is no second
+        ranking to drift.
+        """
+        from precis.format import toon
+        from precis.quest import frontier as frontier_mod
+
+        fr = frontier_mod.quest_frontier(self.store, ref.id)
+        head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
+        objs = " · ".join(f"{k} ({s})" for k, s in fr.objectives)
+        if not (fr.frontier or fr.dominated or fr.unevaluated):
+            return (
+                f"# leaderboard — quest {ref.id}: {head}\nobjective: {objs}\n\n"
+                "no candidate structures serve this quest yet."
+            )
+        graduated = {
+            c.ref_id
+            for c in (*fr.frontier, *fr.dominated, *fr.unevaluated)
+            if any(str(t) == "needs-experiment" for t in self.store.tags_for(c.ref_id))
+        }
+        rows, schema = frontier_mod.leaderboard(fr, graduated=graduated)
+        body = toon.dump(rows, schema=schema)
+        return f"# leaderboard — quest {ref.id}: {head}\nobjective: {objs}\n\n{body}"
 
     def _render_dossier(self, ref: Ref) -> str:
         """`view='dossier'` — the quest's living research synthesis (slice 4)."""

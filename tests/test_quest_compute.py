@@ -17,7 +17,12 @@ from typing import Any
 from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
 from precis.quest import compute as compute_mod
-from precis.quest.frontier import Candidate, pareto_split, quest_frontier
+from precis.quest.frontier import (
+    Candidate,
+    _candidate_from_structure,
+    pareto_split,
+    quest_frontier,
+)
 from precis.quest.tick import run_quest_tick
 
 
@@ -189,6 +194,238 @@ class TestQuestFrontier:
         fr = quest_frontier(store, qid)
         assert [c.ref_id for c in fr.frontier] == [ids[0]]
         assert [c.ref_id for c in fr.dominated] == [ids[1]]
+
+
+# ── generalised frontier: arbitrary named measures (Slice 1) ──────────
+
+
+def _cand(store: Any, sid: int) -> Candidate:
+    ref = store.fetch_refs_by_ids({sid})[sid]
+    return _candidate_from_structure(store, ref)
+
+
+class TestGeneralizedFrontier:
+    """The candidate's measures come from the run *and* ``structure.meta``, so a
+    quest can rank on any named objective (e.g. a catpath ``barrier`` harvested
+    onto the candidate) — not just the four relax columns."""
+
+    def _two_candidates(self, store: Any) -> tuple[int, list[int]]:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        ids = []
+        for i, elem in enumerate(("Fe", "Co")):
+            sid = compute_mod.ensure_candidate(
+                store,
+                qid,
+                {
+                    "name": f"c{i}",
+                    "structure": {
+                        "cell": {"a": 8.4, "b": 8.4, "c": 24.0},
+                        "ops": [
+                            {"op": "add_atom", "element": elem, "frac": [0.0, 0.0, 0.5]}
+                        ],
+                    },
+                },
+            )
+            assert sid is not None
+            ids.append(sid)
+        return qid, ids
+
+    def test_ranks_on_barrier_from_meta_plus_energy_from_run(self, store: Any) -> None:
+        # energy from the relax run, barrier stamped on structure.meta (the way a
+        # harvested catpath result reaches the frontier). c0 wins on BOTH → sole
+        # frontier; c1 dominated.
+        qid, ids = self._two_candidates(store)
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "energy", "sense": "min"},
+                    {"key": "barrier", "sense": "min"},
+                ]
+            },
+        )
+        store.structure_record_run(
+            ids[0],
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-20.0,
+        )
+        store.structure_record_run(
+            ids[1],
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-8.0,
+        )
+        store.stamp_ref_meta(ids[0], {"barrier": 0.5})
+        store.stamp_ref_meta(ids[1], {"barrier": 0.8})
+
+        fr = quest_frontier(store, qid)
+        assert fr.objectives == [("energy", "min"), ("barrier", "min")]
+        assert [c.ref_id for c in fr.frontier] == [ids[0]]
+        assert [c.ref_id for c in fr.dominated] == [ids[1]]
+
+    def test_barrier_tradeoff_puts_both_on_front(self, store: Any) -> None:
+        # c0 lower energy but higher barrier; c1 the reverse → neither dominates.
+        qid, ids = self._two_candidates(store)
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "energy", "sense": "min"},
+                    {"key": "barrier", "sense": "min"},
+                ]
+            },
+        )
+        store.structure_record_run(
+            ids[0],
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-20.0,
+        )
+        store.structure_record_run(
+            ids[1],
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-8.0,
+        )
+        store.stamp_ref_meta(ids[0], {"barrier": 0.9})
+        store.stamp_ref_meta(ids[1], {"barrier": 0.3})
+
+        fr = quest_frontier(store, qid)
+        assert {c.ref_id for c in fr.frontier} == {ids[0], ids[1]}
+        assert not fr.dominated
+
+    def test_missing_declared_objective_stays_unevaluated(self, store: Any) -> None:
+        # A candidate with a converged relax but no barrier is NOT ranked when
+        # the quest declares barrier — a catalyst isn't ranked until it's measured.
+        qid, ids = self._two_candidates(store)
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        store.structure_record_run(
+            ids[0],
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-20.0,
+        )
+        store.stamp_ref_meta(ids[0], {"barrier": 0.5})
+        # ids[1]: relax converged but no barrier stamped
+        store.structure_record_run(
+            ids[1],
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-8.0,
+        )
+        fr = quest_frontier(store, qid)
+        assert [c.ref_id for c in fr.frontier] == [ids[0]]
+        assert ids[1] in [c.ref_id for c in fr.unevaluated]
+
+    def test_meta_measure_does_not_clobber_run_measure(self, store: Any) -> None:
+        # Fill-only: a stray numeric meta key never overrides a real relax measure.
+        qid, ids = self._two_candidates(store)
+        store.structure_record_run(
+            ids[0],
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-20.0,
+        )
+        store.stamp_ref_meta(ids[0], {"energy": 999.0, "barrier": 0.5})
+        c = _cand(store, ids[0])
+        assert c.measures["energy"] == -20.0  # run wins
+        assert c.measures["barrier"] == 0.5  # meta fills the gap
+
+    def test_params_ride_along_but_are_not_measures(self, store: Any) -> None:
+        qid, ids = self._two_candidates(store)
+        store.stamp_ref_meta(ids[0], {"params": {"n_cu": 2, "facet": "111"}})
+        c = _cand(store, ids[0])
+        assert c.params == {"n_cu": 2, "facet": "111"}
+        assert "params" not in c.measures  # the dict itself is never a measure
+
+
+# ── by-total leaderboard view (§7.3) ──────────────────────────────────
+
+
+class TestLeaderboard:
+    def test_rows_ordered_banded_and_flagged(self) -> None:
+        from precis.quest.frontier import FrontierResult, leaderboard
+
+        f1 = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        f2 = Candidate(
+            2, "st2", "B", {"barrier": 0.9, "energy": -25.0}, True
+        )  # tradeoff
+        dom = Candidate(3, "st3", "C", {"barrier": 1.2, "energy": -5.0}, True)
+        une = Candidate(4, "st4", "D", {}, False)
+        fr = FrontierResult(
+            objectives=[("barrier", "min"), ("energy", "min")],
+            frontier=[f2, f1],  # deliberately unsorted input
+            dominated=[dom],
+            unevaluated=[une],
+        )
+        rows, schema = leaderboard(fr, graduated={1})
+        assert schema == ["design", "name", "barrier", "energy", "band", "graduated"]
+        # within the frontier, sorted by the primary objective (barrier, min)
+        assert [r["design"] for r in rows] == ["st1", "st2", "st3", "st4"]
+        assert [r["band"] for r in rows] == [
+            "frontier",
+            "frontier",
+            "dominated",
+            "awaiting",
+        ]
+        assert rows[0]["graduated"] == "★"  # st1 crossed the ceiling
+        assert rows[1]["graduated"] == ""
+        assert rows[3]["barrier"] == "—"  # unevaluated: no measure
+
+    def test_view_leaderboard_renders_toon_table(self, store: Any) -> None:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe slab", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-12.0,
+        )
+        store.stamp_ref_meta(sid, {"barrier": 0.42})
+
+        body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="leaderboard").body
+        assert "leaderboard — quest" in body
+        assert "barrier" in body and "band" in body  # TOON header columns
+        assert "0.42" in body  # the measure cell
+        assert "frontier" in body  # the Pareto band cell
+
+    def test_view_leaderboard_empty_quest(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving with no candidates yet")
+        body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="leaderboard").body
+        assert "no candidate structures serve this quest yet" in body
 
 
 # ── tick integration ──────────────────────────────────────────────────

@@ -38,6 +38,9 @@ class Candidate:
     name: str
     measures: dict[str, float]
     converged: bool
+    #: The candidate's point in the quest's named param space (``meta.params``,
+    #: §7.8). Rides along for a later optimizer advisor; never a ranking measure.
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -116,8 +119,43 @@ def _objectives_for(store: Store, quest_id: int) -> list[tuple[str, str]]:
     return out or list(DEFAULT_OBJECTIVES)
 
 
+#: struct_runs columns that are bookkeeping, not measures — never rank on these
+#: (``converged`` is a bool and ``status``/``fidelity``/``model``/``created_at``
+#: are non-numeric, so ``_numeric`` already filters them; these are the numeric
+#: ones we must exclude by name).
+_RUN_NON_MEASURE: frozenset[str] = frozenset({"id", "ref_id", "on_version"})
+
+
+def _numeric(v: Any) -> float | None:
+    """A measure value, or None. ``bool`` is an ``int`` subclass but never a measure."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    return None
+
+
 def _candidate_from_structure(store: Store, s: Any) -> Candidate:
-    """Build a :class:`Candidate` from a structure ref + its best relax run."""
+    """Build a :class:`Candidate` from a structure ref + its measures.
+
+    Measures are gathered **generically** (not a fixed column list) so the
+    frontier can rank on any named objective a quest declares (barrier,
+    formation-energy, selectivity, …). Two sources:
+
+    1. every numeric field of the best converged ``struct_runs`` row — today
+       ``energy`` / ``max_force`` / ``max_disp`` / ``n_steps``, plus any future
+       run scalar, with no code change here;
+    2. every numeric top-level key of ``structure.meta`` — the escape hatch a
+       synthesis/harvest pass stamps computed measures onto. This is how the
+       reaction **barrier** reaches the frontier: a catpath run over the
+       candidate is harvested onto the candidate's own ``meta`` (Slice 3), so
+       the frontier reads a plain scalar — no catpath import, no graph
+       recompute. Fill-only: a stamped measure never clobbers a real relax
+       measure of the same name.
+
+    ``meta.params`` (the candidate's point in the quest param space, §7.8) rides
+    along for a later optimizer advisor; it is not a measure.
+    """
     from precis.utils import handle_registry
 
     handle = handle_registry.try_format("structure", s.id) or f"structure:{s.id}"
@@ -125,20 +163,81 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     runs = store.structure_runs(s.id)
     # Best = the most recent converged run (structure_runs is newest-first).
     best = next((r for r in runs if r.get("converged")), None)
-    measures: dict[str, float] = {}
     converged = best is not None
+
+    measures: dict[str, float] = {}
     if best is not None:
-        for k in ("energy", "max_force", "max_disp", "n_steps"):
-            v = best.get(k)
-            if isinstance(v, (int, float)):
-                measures[k] = float(v)
+        for k, v in best.items():
+            if k in _RUN_NON_MEASURE:
+                continue
+            fv = _numeric(v)
+            if fv is not None:
+                measures[k] = fv
+
+    meta = getattr(s, "meta", None) or {}
+    for k, v in meta.items():
+        if k == "params":
+            continue
+        fv = _numeric(v)
+        if fv is not None:
+            measures.setdefault(k, fv)  # runs win on collision
+
+    raw_params = meta.get("params")
+    params = dict(raw_params) if isinstance(raw_params, dict) else {}
+
     return Candidate(
         ref_id=s.id,
         handle=handle,
         name=name[:70],
         measures=measures,
         converged=converged,
+        params=params,
     )
+
+
+def leaderboard(
+    fr: FrontierResult, *, graduated: frozenset[int] | set[int] = frozenset()
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Rows + TOON schema for the **by-total** design leaderboard (§7.3).
+
+    One row per candidate design: identity, the objective vector, its Pareto
+    ``band`` (``frontier`` / ``dominated`` / ``awaiting``), and a graduation
+    flag. Ordered frontier → dominated → awaiting, and within each band sorted
+    by the primary objective (best first). Pure over a :class:`FrontierResult`
+    so it is trivially testable; the handler renders it via ``toon.dump``. This
+    is the striving's authoritative leaderboard — catpath's own ``compare`` view
+    is a compute-side diagnostic over sibling pathways, not this.
+    """
+    obj_keys = [k for k, _ in fr.objectives]
+    primary = fr.objectives[0] if fr.objectives else None
+
+    def _sort_key(c: Candidate) -> float:
+        if primary is None:
+            return 0.0
+        key, sense = primary
+        v = c.measures.get(key)
+        if v is None:
+            return float("inf")  # unmeasured sinks to the bottom of its band
+        return v if sense == "min" else -v
+
+    def _rows(cands: list[Candidate], band: str) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for c in sorted(cands, key=_sort_key):
+            row: dict[str, Any] = {"design": c.handle, "name": c.name, "band": band}
+            for key in obj_keys:
+                v = c.measures.get(key)
+                row[key] = f"{v:g}" if isinstance(v, (int, float)) else "—"
+            row["graduated"] = "★" if c.ref_id in graduated else ""
+            out.append(row)
+        return out
+
+    rows = (
+        _rows(fr.frontier, "frontier")
+        + _rows(fr.dominated, "dominated")
+        + _rows(fr.unevaluated, "awaiting")
+    )
+    schema = ["design", "name", *obj_keys, "band", "graduated"]
+    return rows, schema
 
 
 def quest_frontier(
@@ -160,6 +259,7 @@ __all__ = [
     "DEFAULT_OBJECTIVES",
     "Candidate",
     "FrontierResult",
+    "leaderboard",
     "pareto_split",
     "quest_frontier",
 ]
