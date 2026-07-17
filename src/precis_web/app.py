@@ -94,6 +94,7 @@ def create_app(
         drafts,
         drive,
         env,
+        factory,
         figure,
         flags,
         items,
@@ -141,6 +142,7 @@ def create_app(
     app.include_router(status.router)
     app.include_router(budget.router)
     app.include_router(env.router)
+    app.include_router(factory.router)
     app.include_router(secrets.router)
 
     @app.get("/", include_in_schema=False)

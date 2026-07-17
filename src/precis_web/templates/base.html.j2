@@ -75,7 +75,7 @@
           </div>
 
           {# ── Right: ops + global search ── #}
-          {% set ops = [('agentlogs','Agent Logs','/agentlogs'), ('console','Console','/console'), ('budget','Budget','/budget'), ('env','Env','/env'), ('secrets','Secrets','/secrets')] %}
+          {% set ops = [('factory','Factory','/factory'), ('agentlogs','Agent Logs','/agentlogs'), ('console','Console','/console'), ('budget','Budget','/budget'), ('env','Env','/env'), ('secrets','Secrets','/secrets')] %}
           {% set ops_keys = ops | map(attribute=0) | list %}
           <div class="ml-auto flex items-center gap-0.5">
             <a href="/alerts"

@@ -15,8 +15,10 @@ the fetch key and durable identity. The record handle `ed<id>` and chunk
 handles also resolve on input once a filing is held.
 
 The SEC APIs need **no credentials**, only a descriptive `User-Agent`.
-The kind is available only when `PRECIS_EDGAR_USER_AGENT` and
-`PRECIS_EDGAR_RAW_ROOT` are set.
+The kind is **available on every host** — the User-Agent defaults to a
+descriptive repo string (set `PRECIS_EDGAR_USER_AGENT` to add a contact
+email) and the on-disk cache root defaults under `~/.cache/precis/`
+(override with `PRECIS_EDGAR_RAW_ROOT`).
 
 ## Quickstart — get an NVIDIA filing
 

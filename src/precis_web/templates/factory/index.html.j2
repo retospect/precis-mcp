@@ -1,0 +1,152 @@
+{% extends "base.html.j2" %}
+{% block title %}Factory{% endblock %}
+{% block content %}
+<h1 class="text-lg font-semibold mb-1">Factory</h1>
+<p class="text-sm text-slate-500 mb-3">
+  Everything the factory runs — one row per pass, job-type, compute
+  service, daemon, and serving endpoint — from the ServiceSpec registry,
+  joined to its live <code>service_config</code> prio and last activity.
+  Editing writes <code>service_config</code> for the selected host; the
+  worker picks it up on its next cycle (no redeploy).
+</p>
+
+{# ── Host selector — edits apply to this host ('*' = all) ─────── #}
+<form method="get" action="/factory" class="mb-4 flex items-center gap-2 text-sm">
+  <label class="text-slate-500">Editing host</label>
+  <select name="host" onchange="this.form.submit()"
+          class="rounded-md border border-slate-300 text-sm px-2 py-1.5">
+    {% for h in host_options %}
+    <option value="{{ h }}" {% if h == selected_host %}selected{% endif %}>{{ '* (all hosts)' if h == '*' else h }}</option>
+    {% endfor %}
+  </select>
+  <span class="text-xs text-slate-400">prio 0 = off · 1–10 = claim weight · blank = env/profile default ({{ default_prio }})</span>
+</form>
+
+{# ── Host strip ───────────────────────────────────────────────── #}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Hosts</h2>
+  {% if not hosts %}
+  <p class="text-xs text-slate-500">No host heartbeats — running outside the cluster?</p>
+  {% else %}
+  <div class="flex flex-wrap gap-2">
+    {% for h in hosts %}
+    <div class="rounded-lg border {% if h.alive %}border-emerald-200 bg-emerald-50{% else %}border-rose-200 bg-rose-50{% endif %} px-3 py-2 text-xs">
+      <div class="flex items-center gap-2">
+        <span class="font-mono font-semibold text-slate-800">{{ h.host }}</span>
+        {% if h.alive %}
+        <span class="text-emerald-700">● live</span>
+        {% else %}
+        <span class="text-rose-700">● stale ({{ h.ago }})</span>
+        {% endif %}
+      </div>
+      <div class="text-slate-500 mt-0.5">
+        load
+        <span class="font-mono">{{ '%.2f'|format(h.load1) if h.load1 is not none else '—' }}</span>
+        /
+        <span class="font-mono">{{ '%.2f'|format(h.load5) if h.load5 is not none else '—' }}</span>
+        /
+        <span class="font-mono">{{ '%.2f'|format(h.load15) if h.load15 is not none else '—' }}</span>
+        {% if h.temp_c is not none %}
+        · <span class="font-mono">{{ '%.0f'|format(h.temp_c) }}°C</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+{# ── One list per category ───────────────────────────────────── #}
+{% for cat in categories %}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2 capitalize">{{ cat.name }}</h2>
+  <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+    <table class="min-w-full text-xs">
+      <thead class="bg-slate-50 text-slate-500">
+        <tr>
+          <th class="text-left font-medium px-3 py-2">service</th>
+          <th class="text-left font-medium px-3 py-2">kind</th>
+          <th class="text-left font-medium px-3 py-2">profile</th>
+          <th class="text-left font-medium px-3 py-2">needs</th>
+          <th class="text-left font-medium px-3 py-2">prio ({{ selected_host }})</th>
+          <th class="text-left font-medium px-3 py-2">model</th>
+          <th class="text-left font-medium px-3 py-2">last ok</th>
+          <th class="text-left font-medium px-3 py-2">last fail</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for s in cat.services %}
+        <tr class="align-top">
+          <td class="px-3 py-2">
+            <div class="flex items-center gap-2">
+              <span class="font-mono font-semibold text-slate-800">{{ s.name }}</span>
+              {% if s.has_agent %}
+              <a href="/env?agent={{ s.name }}" class="text-emerald-700 hover:underline" title="agent env inspector">env↗</a>
+              {% endif %}
+            </div>
+            <div class="text-slate-500 mt-0.5">{{ s.one_line }}</div>
+          </td>
+          <td class="px-3 py-2 text-slate-600">{{ s.kind }}</td>
+          <td class="px-3 py-2 font-mono text-slate-600">
+            {{ s.profiles }}
+            {% if s.enable_env %}<div class="text-slate-400">{{ s.enable_env }}</div>{% endif %}
+          </td>
+          <td class="px-3 py-2">
+            {% if s.requires %}
+            <span class="font-mono text-amber-700">{{ ', '.join(s.requires) }}</span>
+            {% endif %}
+            {% if s.uses_model %}<span class="text-sky-700">model</span>{% endif %}
+            {% if s.external %}<div class="text-slate-400 font-mono">{{ ', '.join(s.external) }}</div>{% endif %}
+            {% if not s.requires and not s.uses_model and not s.external %}<span class="text-slate-300">—</span>{% endif %}
+          </td>
+          {# ── editable prio ── #}
+          <td class="px-3 py-2">
+            <form method="post" action="/factory/prio" class="flex items-center gap-1">
+              <input type="hidden" name="host" value="{{ selected_host }}">
+              <input type="hidden" name="service" value="{{ s.name }}">
+              <input type="number" name="prio" min="0" max="10"
+                     value="{{ s.prio if s.prio is not none else '' }}"
+                     placeholder="{{ default_prio }}"
+                     class="w-14 rounded border {% if s.prio == 0 %}border-rose-300 bg-rose-50{% else %}border-slate-300{% endif %} px-1 py-0.5 text-xs">
+              <button class="rounded bg-slate-700 text-white px-1.5 py-0.5 text-[11px]">set</button>
+            </form>
+            {% if s.prio is not none %}
+            <form method="post" action="/factory/clear" class="mt-0.5">
+              <input type="hidden" name="host" value="{{ selected_host }}">
+              <input type="hidden" name="service" value="{{ s.name }}">
+              <button class="text-[11px] text-slate-400 hover:text-rose-600 hover:underline">clear</button>
+            </form>
+            {% endif %}
+            {% if s.others %}<div class="text-[11px] text-slate-400 mt-0.5">others: {{ s.others }}</div>{% endif %}
+          </td>
+          {# ── model picker (model-using rows) ── #}
+          <td class="px-3 py-2">
+            {% if s.uses_model %}
+            <form method="post" action="/factory/model" class="flex items-center gap-1">
+              <input type="hidden" name="host" value="{{ selected_host }}">
+              <input type="hidden" name="service" value="{{ s.name }}">
+              <select name="model" onchange="this.form.submit()"
+                      class="rounded border border-slate-300 px-1 py-0.5 text-xs max-w-[10rem]">
+                <option value="" {% if not s.model_pref %}selected{% endif %}>(auto)</option>
+                {% for m in models %}
+                <option value="{{ m }}" {% if m == s.model_pref %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+                {% if s.model_pref and s.model_pref not in models %}
+                <option value="{{ s.model_pref }}" selected>{{ s.model_pref }} (?)</option>
+                {% endif %}
+              </select>
+            </form>
+            {% else %}
+            <span class="text-slate-300">—</span>
+            {% endif %}
+          </td>
+          <td class="px-3 py-2 {% if s.last_ok %}text-emerald-700{% else %}text-slate-300{% endif %}">{{ s.last_ok or '—' }}</td>
+          <td class="px-3 py-2 {% if s.last_fail %}text-rose-700{% else %}text-slate-300{% endif %}">{{ s.last_fail or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endfor %}
+{% endblock %}

@@ -850,11 +850,10 @@ def boot(
 
         _gated(NewsHandler)
 
-        # Patent — EPO OPS. ``PatentHandler.spec.requires_env``
-        # declares EPO_OPS_CLIENT_KEY / EPO_OPS_CLIENT_SECRET /
-        # PRECIS_PATENT_RAW_ROOT, so the kind_gate skips the handler
-        # cleanly when any of the three is missing (and surfaces it
-        # on the cold-start ``Kinds unavailable:`` banner). The
+        # Patent — EPO OPS. The EPO credentials are the one real gate
+        # (``requires_secret``, resolved through the vault); the raw-root
+        # cache dir is incidental and now defaults (factory-console slice
+        # 5), so patent no longer declares ``requires_env``. The
         # ``epo_ops`` import is deferred inside the handler's
         # ``__init__`` so a missing optional dep doesn't take down
         # other handlers' boot path.
@@ -885,13 +884,12 @@ def boot(
 
             _gated(PatentHandler)
 
-        # EDGAR — SEC filings. ``EdgarHandler.spec.requires_env`` declares
-        # PRECIS_EDGAR_USER_AGENT / PRECIS_EDGAR_RAW_ROOT, so the kind_gate
-        # skips the handler cleanly when either is missing (and surfaces it
-        # on the cold-start ``Kinds unavailable:`` banner). Unlike patent,
-        # the SEC APIs need no credentials and the HTTP dep (``httpx``) is
-        # already a top-level dep (web / news), so no package probe is
-        # needed — the env gate alone is honest here.
+        # EDGAR — SEC filings. Both former gates (a descriptive User-Agent
+        # and a raw-cache dir) are incidental and now default (factory-
+        # console slice 5), so edgar declares no ``requires_env`` and is
+        # available everywhere. The SEC APIs need no credentials and the
+        # HTTP dep (``httpx``) is already a top-level dep, so no package
+        # probe is needed either.
         from precis.handlers.edgar import EdgarHandler
 
         _gated(EdgarHandler)

@@ -14,8 +14,11 @@ Mirrors ``PatentHandler`` (EPO OPS) but talks to the key-less SEC APIs:
   against the prior same-form filing for that company.
 - ``put(...)`` raises ``Unsupported`` (public record, read-only).
 
-Hidden from the agent boundary unless ``PRECIS_EDGAR_USER_AGENT`` and
-``PRECIS_EDGAR_RAW_ROOT`` are set (``KindSpec.requires_env``).
+Available on every host: the SEC APIs need no credentials, the
+User-Agent defaults to a descriptive repo string (override
+``PRECIS_EDGAR_USER_AGENT`` to add a contact), and the raw-cache root
+defaults via ``config.edgar_raw_root()`` — both were incidental gates,
+dropped in factory-console slice 5.
 """
 
 from __future__ import annotations
@@ -61,11 +64,11 @@ _SUPPORTED_VIEWS: tuple[str, ...] = (
     "diff",
 )
 
-_REQUIRED_ENV: tuple[str, ...] = (
-    "PRECIS_EDGAR_USER_AGENT",
-    "PRECIS_EDGAR_RAW_ROOT",
-)
-
+# Both former gates are *incidental* (factory-console slice 5): the raw-root
+# is a cache dir any host can create, and the User-Agent is just an
+# identifying string SEC wants — neither is real scarcity. They default via
+# ``config.edgar_raw_root()`` / ``config.edgar_user_agent()`` so the kind is
+# available everywhere; override the UA to add a contact email if desired.
 _LIST_PAGE_LIMIT = 50
 _DEFAULT_REMOTE_PAGE = 20
 
@@ -92,7 +95,6 @@ class EdgarHandler(Handler):
         corpus_role="evidence",
         role="corpus",
         views=_SUPPORTED_VIEWS,
-        requires_env=_REQUIRED_ENV,
     )
 
     def __init__(
@@ -107,19 +109,14 @@ class EdgarHandler(Handler):
         self.store = hub.store
         self.embedder = hub.embedder
         if client is None or raw_root is None:
-            import os
-
+            from precis.config import edgar_raw_root, edgar_user_agent
             from precis.handlers._edgar_client import EdgarClient
 
-            ua = os.environ.get("PRECIS_EDGAR_USER_AGENT")
-            raw = os.environ.get("PRECIS_EDGAR_RAW_ROOT")
-            if not (ua and raw):
-                missing = [e for e in _REQUIRED_ENV if not os.environ.get(e)]
-                raise InitError("edgar: missing env vars " + ", ".join(missing))
+            # UA + raw-root are incidental (slice 5): both default when unset.
             if client is None:
-                client = EdgarClient(user_agent=ua)
+                client = EdgarClient(user_agent=edgar_user_agent())
             if raw_root is None:
-                raw_root = Path(raw).expanduser()
+                raw_root = edgar_raw_root()
         self.client = client
         self.raw_root = raw_root
 

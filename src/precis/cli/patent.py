@@ -21,6 +21,7 @@ import os
 import sys
 
 from precis.cli._common import resolve_dsn
+from precis.config import patent_raw_root
 
 # ---------------------------------------------------------------------------
 # Interval parsing
@@ -369,7 +370,6 @@ def run_list(args: argparse.Namespace) -> None:
 
 def run_runner(args: argparse.Namespace) -> None:
     """Implements ``precis jobs run-patent-watches``."""
-    from pathlib import Path
 
     from precis.config import load_config
     from precis.embedder import make_embedder
@@ -392,12 +392,11 @@ def run_runner(args: argparse.Namespace) -> None:
 
         epo_key = get_secret("EPO_OPS_CLIENT_KEY", store=store)
         epo_secret = get_secret("EPO_OPS_CLIENT_SECRET", store=store)
-        raw_root_str = os.environ.get("PRECIS_PATENT_RAW_ROOT")
-        if not (epo_key and epo_secret and raw_root_str):
+        if not (epo_key and epo_secret):
             print(
                 "run-patent-watches: EPO_OPS_CLIENT_KEY, "
-                "EPO_OPS_CLIENT_SECRET, and PRECIS_PATENT_RAW_ROOT must all "
-                "be set",
+                "and EPO_OPS_CLIENT_SECRET "
+                "must be set",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -417,7 +416,7 @@ def run_runner(args: argparse.Namespace) -> None:
             store=store,
             ops=ops,
             embedder=embedder,
-            raw_root=Path(raw_root_str).expanduser(),
+            raw_root=patent_raw_root(),
             only_name=args.name,
             dry_run=args.dry_run,
             fair_use_limit_gb=fair_use_limit_gb,
@@ -463,7 +462,6 @@ def run_fulltext_sweep_cli(args: argparse.Namespace) -> None:
     OPS description / claims endpoints for every awaiting-fulltext
     patent whose retry timestamp has matured.
     """
-    from pathlib import Path
 
     from precis.config import load_config
     from precis.embedder import make_embedder
@@ -487,12 +485,11 @@ def run_fulltext_sweep_cli(args: argparse.Namespace) -> None:
 
         epo_key = get_secret("EPO_OPS_CLIENT_KEY", store=store)
         epo_secret = get_secret("EPO_OPS_CLIENT_SECRET", store=store)
-        raw_root_str = os.environ.get("PRECIS_PATENT_RAW_ROOT")
-        if not (epo_key and epo_secret and raw_root_str):
+        if not (epo_key and epo_secret):
             print(
                 "sweep-patent-fulltext: EPO_OPS_CLIENT_KEY, "
-                "EPO_OPS_CLIENT_SECRET, and PRECIS_PATENT_RAW_ROOT must all "
-                "be set",
+                "and EPO_OPS_CLIENT_SECRET "
+                "must be set",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -514,7 +511,7 @@ def run_fulltext_sweep_cli(args: argparse.Namespace) -> None:
             store=store,
             ops=ops,
             embedder=embedder,
-            raw_root=Path(raw_root_str).expanduser(),
+            raw_root=patent_raw_root(),
             limit=limit,
             dry_run=args.dry_run,
             fair_use_limit_gb=fair_use_limit_gb,
@@ -610,7 +607,6 @@ def run_reingest_cli(args: argparse.Namespace) -> None:
     ``patent_block`` markers the freedom-to-operate digest reads
     (docs/design/patent-authoring-loop.md).
     """
-    from pathlib import Path
 
     from precis.config import load_config
     from precis.embedder import make_embedder
@@ -631,12 +627,11 @@ def run_reingest_cli(args: argparse.Namespace) -> None:
 
         epo_key = get_secret("EPO_OPS_CLIENT_KEY", store=store)
         epo_secret = get_secret("EPO_OPS_CLIENT_SECRET", store=store)
-        raw_root_str = os.environ.get("PRECIS_PATENT_RAW_ROOT")
-        if not (epo_key and epo_secret and raw_root_str):
+        if not (epo_key and epo_secret):
             print(
                 "reingest-patents: EPO_OPS_CLIENT_KEY, "
-                "EPO_OPS_CLIENT_SECRET, and PRECIS_PATENT_RAW_ROOT must all "
-                "be set",
+                "and EPO_OPS_CLIENT_SECRET "
+                "must be set",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -656,7 +651,7 @@ def run_reingest_cli(args: argparse.Namespace) -> None:
             store=store,
             ops=ops,
             embedder=embedder,
-            raw_root=Path(raw_root_str).expanduser(),
+            raw_root=patent_raw_root(),
             only_slugs=args.slugs,
             limit=args.limit,
             dry_run=args.dry_run,

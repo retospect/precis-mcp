@@ -53,6 +53,7 @@ from precis.cli import (
     schema_doc,
     secret,
     serve_embeddings,
+    service,
     stats,
     stubs,
     tools,
@@ -225,6 +226,10 @@ def main() -> None:
         llm.run(args)
         return
 
+    if args.cmd == "service":
+        service.run(args)
+        return
+
     parser.error(f"unknown command: {args.cmd!r}")
 
 
@@ -282,6 +287,7 @@ def _build_parser() -> argparse.ArgumentParser:
     quest.add_parser(sub)
     llm.add_parser(sub)
     heartbeat.add_parser(sub)
+    service.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
     jobs_sub = jobs.add_subparsers(dest="job", required=True)

@@ -42,6 +42,11 @@ from precis.workers import (
     WorkerHandler,
     run_loop,
 )
+from precis.workers.registry import (
+    SERVICES_BY_NAME,
+    service_names_for_profile,
+)
+from precis.workers.service_config import ServiceConfigResolver
 
 if TYPE_CHECKING:
     from precis.workers.runner import RefPass
@@ -381,83 +386,51 @@ def run(args: argparse.Namespace) -> None:
         # bubble ``child-failed:<job>`` to the parent — a routing-
         # induced false negative. Moving the pass to the agent profile
         # restricts claims to the host that can actually execute.
-        system_passes: frozenset[str] = frozenset(
-            {
-                "embed",
-                "summarize",
-                "chunk_keywords",
-                "chase",
-                "fetch",
-                "gp_fetch",
-                "tag_embeddings",
-                "auto_check",
-                "schedule",
-                "nursery",
-                "dispatch",
-                "sweeper",
-                # Coordinator passes ship on the system profile so every
-                # cluster node can host long-running coordinator jobs
-                # (precis-dft's dft_campaign). The wake_runner is cheap
-                # (status-flip + audit chunk) and benefits from running
-                # everywhere so wake latency stays low. The coordinator
-                # itself does no compute on its own — it dispatches to
-                # plugin job_types whose ``run`` decides what to do.
-                "job_coordinator",
-                "wake_runner",
-                # ssh_node drains jobs that run on a remote node
-                # (precis-dft's gpaw_relax → ssh spark docker run).
-                # Ships on every node like the coordinator; the claim
-                # lock (FOR UPDATE SKIP LOCKED) keeps a single worker
-                # per job. See workers/executors/ssh_node.py.
-                "job_ssh_node",
-                # Hierarchical SOM cluster maps for the precis-web grid.
-                # Self-gating: rebuilds one scope a day, idle otherwise
-                # (PRECIS_CLUSTER_INTERVAL_HOURS), so it costs ~nothing
-                # to host on every node.
-                "clusterize",
-                # Corpus-presence ledger: each node stats the held-paper
-                # PDFs under its own PRECIS_CORPUS_DIR roots and records a
-                # per-(sha,host) verdict, so the draft reader's "held but
-                # missing" ▲ is a corpus-wide DB read, not a per-web-host FS
-                # probe. Self-throttling (refresh window) → idle once fresh.
-                "corpus_reconcile",
-                # Paper-dedup reconcile: fold duplicate paper refs (shared
-                # pdf_sha256 / DOI-modulo-case / id-less title-only stubs
-                # that duplicate a held paper) into the survivor. Was
-                # manual-only (`precis reconcile-duplicates`); this runs it
-                # on a 24h cadence, single-runner (advisory lock) and
-                # throttled via an app_state marker so it's one cheap read
-                # between runs.
-                "paper_reconcile",
-            }
-        )
-        # dream_agent stays out of the profile — it has its own
-        # cadence (15-min LaunchDaemon via dream-pass.sh) and gates
-        # via PRECIS_DREAM_AGENT=1. The agent profile carries the
-        # dedup-window reviewers (structural / deep_review) PLUS
-        # ``job_claude_inproc`` (planner-coroutine slice).
-        agent_passes: frozenset[str] = frozenset(
-            {
-                "structural",
-                "deep_review",
-                "job_claude_inproc",
-                "quota_check",
-            }
-        )
-        profile_passes = {
-            "system": system_passes,
-            "agent": agent_passes,
-        }[args.profile]
+        # Profile membership + the extra ``PRECIS_*_ENABLED`` gates are
+        # now declared once in ``workers/registry.py`` (the ServiceSpec
+        # table) — the source of truth the factory console + capability
+        # scheduler read too (docs/design/factory-console-and-scheduling.md).
+        # ``system`` = every node's rotation (embed/summarize/… + the
+        # coordinator/ssh_node/clusterize/reconcile passes that ship on
+        # every node); ``agent`` = melchior's OAuth worker (the opus
+        # reviewers + job_claude_inproc + quota_check). dream_agent stays
+        # out of both — it has its own 15-min cadence and self-gates via
+        # PRECIS_DREAM_AGENT=1. A totality test
+        # (``tests/test_worker_registry.py``) fails CI if a pass wired
+        # below has no spec, so the table can't drift from the code.
+        profile_passes = service_names_for_profile(args.profile)
+
+        # Live run control (factory slice 2): the service_config table can
+        # override a pass's env/profile default per host — prio 0 forces it
+        # off, prio >= 1 forces it on — picked up on the next loop cycle
+        # without a redeploy. An empty table ⇒ byte-identical to the
+        # env/profile defaults. A short TTL keeps the per-cycle gate a dict
+        # lookup, not a query per pass per cycle.
+        from precis.corpus_layout import host_name
+
+        _svc_resolver = ServiceConfigResolver(store, host_name())
+
+        def _env_profile_default_on(name: str) -> bool:
+            """The env/profile verdict for ``name``, before any DB override."""
+            spec = SERVICES_BY_NAME.get(name)
+            return name in profile_passes or bool(
+                spec and spec.enable_env and env_flag(spec.enable_env)
+            )
 
         def _pass_enabled(name: str) -> bool:
-            """True when this pass should run on this invocation.
+            """True when this pass should be *registered* on this invocation.
 
-            ``--only X`` wins over the profile when set (single-pass
-            backfills). Otherwise the profile's pass set decides.
+            ``--only X`` wins over everything when set (single-pass
+            backfills). Otherwise the pass runs when its env/profile default
+            (the running profile's rotation, or its registry ``enable_env``
+            flag) says so — unless a ``service_config`` row overrides that
+            live. This is the boot-time gate; the per-cycle gate (below,
+            passed to ``run_loop``) re-checks the DB so a flip disables an
+            already-registered pass mid-run.
             """
             if args.only is not None:
                 return args.only == name
-            return name in profile_passes
+            return _svc_resolver.enabled(name, default_on=_env_profile_default_on(name))
 
         # Chunk-keybert pass (F20). Replaces the v1 segment_toc worker.
         # Runs after embeddings exist (the claim query requires
@@ -673,7 +646,7 @@ def run(args: argparse.Namespace) -> None:
         # explicit `--only job_claude_docker`, mirroring classify. So a
         # deploy of this slice changes nothing until a human enables it
         # on a box with podman + a dedicated CLAUDE_CODE_OAUTH_TOKEN.
-        if _pass_enabled("job_claude_docker") or env_flag("PRECIS_SANDBOX_ENABLED"):
+        if _pass_enabled("job_claude_docker"):
             from precis.workers.executors.claude_docker import (
                 run_claude_docker_pass,
             )
@@ -720,7 +693,7 @@ def run(args: argparse.Namespace) -> None:
         )
 
         _summarize_cfg = LlmConfig.from_env()
-        if _pass_enabled("llm_summarize") or _summarize_cfg.enabled:
+        if _pass_enabled("llm_summarize"):
             from precis.workers.runner import BatchResult as _BatchResult
 
             _summarize_client = LlmClient(_summarize_cfg)
@@ -749,7 +722,7 @@ def run(args: argparse.Namespace) -> None:
         # Forces model=`summarizer` (PRECIS_SUMMARIZE_MODEL=qwen returns
         # empty — it's a thinking model). See workers/classify.py +
         # scripts/classify/EVAL_RESULTS.md.
-        if _pass_enabled("classify") or env_flag("PRECIS_CLASSIFY_ENABLED"):
+        if _pass_enabled("classify"):
             import dataclasses as _dc
 
             from precis.workers.runner import BatchResult as _ClsBatchResult
@@ -785,7 +758,7 @@ def run(args: argparse.Namespace) -> None:
         # the litellm teardown). Default-OFF (PRECIS_LLM_RECONCILE_ENABLED /
         # --only llm_reconcile); a single cheap app_state read until the catalog
         # has cards. Corpus-wide single-runner (app_state cadence + xact lock).
-        if _pass_enabled("llm_reconcile") or env_flag("PRECIS_LLM_RECONCILE_ENABLED"):
+        if _pass_enabled("llm_reconcile"):
             from precis.workers.runner import BatchResult as _LlmRecBatchResult
 
             def _llm_reconcile_pass(batch_size: int) -> _LlmRecBatchResult:
@@ -804,7 +777,7 @@ def run(args: argparse.Namespace) -> None:
         # corpus-wide backfill is a deliberate, node-targeted batch, like
         # classify. Model defaults to the cheap `summarizer` alias. See
         # workers/paper_glossary.py + docs/design/reading-prep-loop.md.
-        if _pass_enabled("paper_glossary") or env_flag("PRECIS_PAPER_GLOSSARY_ENABLED"):
+        if _pass_enabled("paper_glossary"):
             import dataclasses as _pg_dc
 
             from precis.workers.runner import BatchResult as _PgBatchResult
@@ -849,7 +822,7 @@ def run(args: argparse.Namespace) -> None:
         # pass reads the persisted `briefing-<date>` ref and self-schedules off
         # its existence, idempotent via a `meta.audio_episode_id` marker. See
         # workers/briefing_audio.py.
-        if _pass_enabled("briefing_audio") or env_flag("PRECIS_BRIEFING_AUDIO_ENABLED"):
+        if _pass_enabled("briefing_audio"):
             from precis.workers.runner import BatchResult as _BaBatchResult
 
             _ba_image = os.environ.get("PRECIS_TTS_IMAGE")
@@ -904,7 +877,7 @@ def run(args: argparse.Namespace) -> None:
         # self-scheduling off an un-narrated cast draft, idempotent via
         # meta.audio_episode_id. Default-OFF (PRECIS_CAST_AUDIO_ENABLED=1 or
         # --only cast_audio) + needs PRECIS_TTS_IMAGE. See workers/cast_audio.py.
-        if _pass_enabled("cast_audio") or env_flag("PRECIS_CAST_AUDIO_ENABLED"):
+        if _pass_enabled("cast_audio"):
             from precis.workers.runner import BatchResult as _CaBatchResult
 
             _ca_image = os.environ.get("PRECIS_TTS_IMAGE")
@@ -953,7 +926,7 @@ def run(args: argparse.Namespace) -> None:
         # ``fix_gripe`` todos so the autonomous fixer substrate acts on the
         # bug backlog. Off by default because enabling it starts handing
         # repo bugs to claude_inproc — a deliberate flip, like classify.
-        if _pass_enabled("backlog_groom") or env_flag("PRECIS_BACKLOG_GROOM_ENABLED"):
+        if _pass_enabled("backlog_groom"):
             from precis.workers.runner import BatchResult as _GroomBatchResult
 
             def _backlog_groom_pass(batch_size: int) -> _GroomBatchResult:
@@ -1298,6 +1271,17 @@ def run(args: argparse.Namespace) -> None:
         # within a band. See ``_REF_PASS_PRIORITY``.
         ref_passes.sort(key=_ref_pass_priority)
 
+        # Per-cycle live gate: a service_config flip (prio → 0) skips an
+        # already-registered pass on the next cycle. ``default_on=True``
+        # because the pass was registered at boot, so it keeps running
+        # unless a row disables it. Skipped under ``--only`` (an explicit
+        # one-pass invocation shouldn't be silently DB-gated).
+        _pass_gate = (
+            None
+            if args.only is not None
+            else (lambda service: _svc_resolver.enabled(service, default_on=True))
+        )
+
         stop_flag = _install_signal_handlers()
         run_loop(
             handlers,
@@ -1307,6 +1291,7 @@ def run(args: argparse.Namespace) -> None:
             once=args.once,
             should_stop=lambda: stop_flag["stop"],
             ref_passes=ref_passes,
+            pass_gate=_pass_gate,
         )
     finally:
         store.close()

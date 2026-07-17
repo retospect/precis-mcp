@@ -10,11 +10,13 @@ Phase 1 surface (deferred items in ``docs/user-facing/patent-kind-spec.md``):
 - ``put(...)`` raises ``Unsupported`` (patents are read-only;
   watches and link/tag ops land in phase 2 / a follow-up).
 
-The handler is hidden from the agent boundary unless
-``EPO_OPS_CLIENT_KEY``, ``EPO_OPS_CLIENT_SECRET``, and
-``PRECIS_PATENT_RAW_ROOT`` are all set in the environment.
-``KindSpec.requires_env`` enforces the gate at registry construction
-— see ``precis/protocol.py``.
+The handler is hidden from the agent boundary unless the EPO
+credentials (``EPO_OPS_CLIENT_KEY`` / ``EPO_OPS_CLIENT_SECRET``,
+resolved through the secrets vault, ``KindSpec.requires_secret``) are
+available — the one genuinely-scarce gate. The on-disk OPS-XML mirror
+root is an incidental cache dir that defaults via
+``config.patent_raw_root()`` when ``PRECIS_PATENT_RAW_ROOT`` is unset
+(factory-console slice 5), so it no longer gates availability.
 """
 
 from __future__ import annotations
@@ -64,13 +66,14 @@ _SUPPORTED_VIEWS: tuple[str, ...] = (
     "bibtex",
 )
 
-# EPO credentials resolve through the secrets vault (ADR 0055); the raw-root is
-# a filesystem path that stays a plain env var.
+# EPO credentials resolve through the secrets vault (ADR 0055) — the one
+# genuinely-scarce gate (real credentials). The raw-root is an *incidental*
+# cache dir that any host can create, so it is no longer a required env
+# (factory-console slice 5): it defaults via ``config.patent_raw_root()``.
 _REQUIRED_SECRETS: tuple[str, ...] = (
     "EPO_OPS_CLIENT_KEY",
     "EPO_OPS_CLIENT_SECRET",
 )
-_REQUIRED_ENV: tuple[str, ...] = ("PRECIS_PATENT_RAW_ROOT",)
 
 # Conservative cap on local list views so the agent's context
 # isn't blown by a large patent corpus.
@@ -109,7 +112,6 @@ class PatentHandler(Handler):
         corpus_role="evidence",
         role="corpus",
         views=_SUPPORTED_VIEWS,
-        requires_env=_REQUIRED_ENV,
         requires_secret=_REQUIRED_SECRETS,
     )
 
@@ -124,26 +126,26 @@ class PatentHandler(Handler):
             raise InitError("patent: store required")
         self.store = hub.store
         self.embedder = hub.embedder
-        # Production path: read the env trio that this handler
-        # declares in :data:`_REQUIRED_ENV`. The kind_gate has
-        # already enforced presence before we land here, but a
-        # defensive raise prevents silent drift between the gate's
-        # requires_env tuple and what __init__ actually consumes.
-        # Test path: callers pass explicit ``ops=`` / ``raw_root=``
-        # so a fake OPS client can stand in for the network.
+        # Production path: resolve the EPO credentials (via the vault) and
+        # the raw-root cache dir (defaulting when unset). The kind_gate has
+        # already enforced the credentials (``requires_secret``); the
+        # defensive raise prevents silent drift. Test path: callers pass
+        # explicit ``ops=`` / ``raw_root=`` so a fake OPS client can stand
+        # in for the network.
         if ops is None or raw_root is None:
             import os
 
             from precis import secrets as _secrets
+            from precis.config import patent_raw_root
             from precis.handlers._patent_ops import OpsClient
 
             key = _secrets.get_secret("EPO_OPS_CLIENT_KEY")
             secret = _secrets.get_secret("EPO_OPS_CLIENT_SECRET")
-            raw = os.environ.get("PRECIS_PATENT_RAW_ROOT")
-            if not (key and secret and raw):
-                missing = [e for e in _REQUIRED_ENV if not os.environ.get(e)] + [
-                    s for s in _REQUIRED_SECRETS if not _secrets.is_available(s)
-                ]
+            # The raw-root is an incidental cache dir (defaults if unset); only
+            # the EPO credentials are a real gate (kind_gate already enforced
+            # them via requires_secret, but stay defensive against drift).
+            if not (key and secret):
+                missing = [s for s in _REQUIRED_SECRETS if not _secrets.is_available(s)]
                 raise InitError("patent: missing " + ", ".join(missing))
             if ops is None:
                 ops = OpsClient(
@@ -152,7 +154,7 @@ class PatentHandler(Handler):
                     user_agent=os.environ.get("EPO_OPS_USER_AGENT"),
                 )
             if raw_root is None:
-                raw_root = Path(raw).expanduser()
+                raw_root = patent_raw_root()
         self.ops = ops
         self.raw_root = raw_root
 

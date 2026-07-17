@@ -138,6 +138,62 @@ driver; adding one is a `Reviewer(...)` instance):
 
 ## Workers
 
+**Service registry (the declarative source of truth).** Profile
+membership + the extra `PRECIS_*_ENABLED` gates are declared once in
+`src/precis/workers/registry.py` — a frozen `ServiceSpec` row per
+pass/job-type/compute/daemon/serving (factory-console slice 1,
+`docs/design/factory-console-and-scheduling.md`). `cli/worker.py`
+derives `system_passes`/`agent_passes` via `service_names_for_profile()`
+and folds the old inline `or env_flag(...)` gates into `_pass_enabled`
+(reading `spec.enable_env`); the `/env` inspector derives its agent list
+from the rows carrying an `AgentIntrospect` (the old `AgentSpec` tuple is
+gone). `tests/test_worker_registry.py` AST-parses `cli/worker.py` and
+fails CI if a wired pass has no spec (or a `ref_pass=True` spec has no
+wiring site), so the four parallel lists can no longer drift.
+
+**Live run control — `service_config` (slice 2).** `service_config(host,
+service, prio, model_pref, write_level, …)` (migration 0072) is the
+DB-driven switch the worker consults *live* instead of a plist gate flag:
+`prio 0` = off, `1..10` = claim weight (fed into the scarcity+prio+age
+claim ordering slice 6 adds). An empty table is byte-identical to the
+env/profile defaults; a row overrides per host (exact host wins over the
+`*` wildcard). `workers/service_config.py::ServiceConfigResolver` (a
+short-TTL cache) is read at boot (`_pass_enabled`) *and* per-cycle
+(`run_loop`'s `pass_gate`), so a flip disables an already-registered pass
+on the next cycle — no redeploy. CLI: `precis service prio|model|clear|list`.
+
+**Console — `/factory` (slice 3, read-only).** `precis_web/routes/factory.py`
+renders a host strip (`host_heartbeat` load + liveness) over one list per
+category of every registry service, joined to its live `service_config`
+prio and its last-ok/last-fail from `worker_logs` (keyed by the
+`BatchResult.handler` string via `ServiceSpec.log_handler`). Each section
+degrades to empty on a schema surprise (the status-tab pattern); agent
+rows link to the `/env` inspector. **Slice 4 (live edit):** a host
+selector scopes the page; each row's prio is editable (POST `/factory/prio`)
+and model-using rows get a model_pref dropdown (POST `/factory/model`)
+populated from the `llm` catalog — both write `service_config` straight,
+picked up next cycle.
+
+**Capability universalization (slice 5).** The *incidental* kind gates —
+a raw-cache dir any host can create, edgar's descriptive User-Agent
+string — are dropped from `KindSpec.requires_env` and defaulted via
+`precis.config` (`cache_root`/`patent_raw_root`/`edgar_raw_root`/
+`edgar_user_agent`). So `edgar` is available on every host and `patent`
+gates only on the genuinely-scarce EPO credentials (`requires_secret`,
+via the vault) + the `epo_ops` dep probe — the honest "Kinds unavailable"
+set shrinks to the physical/real. (`python` stays gated: exposing local
+filesystem roots is a deliberate scoping choice, not incidental.)
+
+**OAuth materializer → vault (slice 0, code).** Both `ensure_oauth_token`
+mirrors (`utils/claude_oauth.py` + `asa_bot/oauth.py`) source the
+long-lived `CLAUDE_CODE_OAUTH_TOKEN` from the DB secrets vault when no
+`~/.claude_oauth_token` file is present (asa over its existing
+`PRECIS_DATABASE_URL`), so agentic daemons can run as `deploy` with no
+`~/.claude` state — de-pinning agentic work from the hermes principal.
+Ships safe (vault is a *fallback*). The live cutover — seed the vault,
+verify, flip run-as to `deploy`, scope vault read, retire hermes — is an
+ordered ops sequence (docs/design/factory-console-and-scheduling.md §12).
+
 **Two `precis worker` profiles, four LaunchDaemons total.**
 
 * `precis worker --profile=system` runs on every cluster node and

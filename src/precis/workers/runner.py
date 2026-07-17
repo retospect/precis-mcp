@@ -144,6 +144,7 @@ def run_loop(
     once: bool = False,
     should_stop: Callable[[], bool] | None = None,
     ref_passes: list[RefPass] | None = None,
+    pass_gate: Callable[[str], bool] | None = None,
 ) -> None:
     """Drive ``handlers`` (chunk-level) and ``ref_passes`` (ref-level)
     in round-robin until stopped or drained.
@@ -164,6 +165,13 @@ def run_loop(
       ref-passes; returning ``True`` breaks out cleanly. The CLI
       wires this to a SIGINT/SIGTERM flag so ``Ctrl-C`` returns
       within one batch.
+    * ``pass_gate(service)`` — consulted *each cycle* before running a
+      ref-pass, so a live ``service_config`` flip (prio → 0) skips the
+      pass on the next cycle without a worker restart (factory slice 2).
+      The service name is derived from the closure ``__name__``
+      (``_classify_pass`` → ``classify``); a closure whose name doesn't
+      fit that shape (plugin passes) is never gated. Returning ``False``
+      skips the pass this cycle; ``None`` gate disables gating entirely.
     """
     if not handlers and not ref_passes:
         log.warning("worker: no handlers and no ref_passes registered; nothing to do")
@@ -210,6 +218,15 @@ def run_loop(
             if should_stop is not None and should_stop():
                 log.info("worker: stop signal received; exiting loop")
                 return
+            if pass_gate is not None:
+                fn_name = getattr(ref_pass, "__name__", "")
+                if fn_name.startswith("_") and fn_name.endswith("_pass"):
+                    service = fn_name[1:-5]
+                    if not pass_gate(service):
+                        # Live-disabled via service_config (prio 0). Skip
+                        # this cycle; not counted as work so the loop can
+                        # still idle-sleep when everything else is drained.
+                        continue
             try:
                 result = ref_pass(batch_size)
             except Exception:

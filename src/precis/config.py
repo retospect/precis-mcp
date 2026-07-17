@@ -6,6 +6,8 @@ as a lower-precedence source.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -291,3 +293,50 @@ class PrecisConfig(BaseSettings):
 
 def load_config() -> PrecisConfig:
     return PrecisConfig()
+
+
+# ---------------------------------------------------------------------------
+# Incidental-capability defaults (factory-console slice 5).
+#
+# The patent / edgar data-source kinds used to hard-gate on a raw-cache
+# directory (and edgar on a User-Agent string) via ``KindSpec.requires_env``
+# — so a kind that a host could trivially do showed as "unavailable" only
+# because a cache dir any host can create wasn't wired. These are the
+# *incidental* class (docs/design/factory-console-and-scheduling.md §3): not
+# real scarcity, so we default them and drop the gate. The genuinely-scarce
+# gates stay (patent still needs the EPO OPS credentials, which resolve
+# through the secrets vault). Callers read these instead of the raw env.
+# ---------------------------------------------------------------------------
+
+#: A descriptive default User-Agent for SEC EDGAR. SEC blocks anonymous
+#: requests but only wants an identifying string; the repo URL is enough.
+#: Override with ``PRECIS_EDGAR_USER_AGENT`` (e.g. to add a contact email).
+DEFAULT_EDGAR_USER_AGENT = "precis-mcp (+https://github.com/retospect/precis-mcp)"
+
+
+def cache_root(name: str) -> Path:
+    """Per-host cache root: ``$XDG_CACHE_HOME`` (else ``~/.cache``)/precis/<name>.
+
+    A stable, writable default location for the on-disk mirrors that used to
+    require an explicit ``PRECIS_*_RAW_ROOT``. Side-effect free — callers
+    ``mkdir`` when they actually write.
+    """
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base).expanduser() / "precis" / name
+
+
+def patent_raw_root() -> Path:
+    """The EPO OPS XML mirror root — ``PRECIS_PATENT_RAW_ROOT`` else default."""
+    raw = os.environ.get("PRECIS_PATENT_RAW_ROOT")
+    return Path(raw).expanduser() if raw else cache_root("patent-raw")
+
+
+def edgar_raw_root() -> Path:
+    """The SEC filing mirror root — ``PRECIS_EDGAR_RAW_ROOT`` else default."""
+    raw = os.environ.get("PRECIS_EDGAR_RAW_ROOT")
+    return Path(raw).expanduser() if raw else cache_root("edgar-raw")
+
+
+def edgar_user_agent() -> str:
+    """The SEC EDGAR User-Agent — ``PRECIS_EDGAR_USER_AGENT`` else the default."""
+    return os.environ.get("PRECIS_EDGAR_USER_AGENT") or DEFAULT_EDGAR_USER_AGENT

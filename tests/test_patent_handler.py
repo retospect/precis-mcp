@@ -427,14 +427,15 @@ class TestSpec:
         assert PatentHandler.spec.supports_search is True
         assert PatentHandler.spec.supports_put is False
 
-    def test_spec_requires_three_env_vars(self) -> None:
-        # EPO credentials resolve through the secrets vault (ADR 0055); the
-        # raw-root stays a plain env var.
+    def test_spec_gates_on_epo_creds_only(self) -> None:
+        # EPO credentials resolve through the secrets vault (ADR 0055) — the
+        # one real gate. The raw-root is an incidental cache dir that defaults
+        # (factory-console slice 5), so it is no longer in requires_env.
         assert set(PatentHandler.spec.requires_secret) == {
             "EPO_OPS_CLIENT_KEY",
             "EPO_OPS_CLIENT_SECRET",
         }
-        assert set(PatentHandler.spec.requires_env) == {"PRECIS_PATENT_RAW_ROOT"}
+        assert PatentHandler.spec.requires_env == ()
 
 
 class TestClaimsView:

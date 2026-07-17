@@ -30,13 +30,13 @@ from __future__ import annotations
 
 import json
 import plistlib
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from precis.workers.registry import ServiceSpec, agent_specs
 from precis_web.deps import templates
 
 router = APIRouter(prefix="/env", tags=["env"])
@@ -142,164 +142,15 @@ def _read_plist_env(label: str) -> dict[str, str]:
     return {str(k): str(v) for k, v in env.items()}
 
 
-@dataclass(frozen=True, slots=True)
-class AgentSpec:
-    """Static config snapshot for one agent.
+#: Introspectable agents come from the one factory registry
+#: (``workers/registry.py``) — the rows carrying an ``AgentIntrospect``.
+#: This deletes the fourth parallel list that used to live here and had
+#: to be "kept loosely aligned" with the real ``call_claude_agent`` call
+#: sites; adding an agent is now a single ``ServiceSpec`` row with an
+#: ``introspect=`` block, and the registry totality test guards it.
+AGENTS: tuple[ServiceSpec, ...] = agent_specs()
 
-    ``env_keys`` is the set of env vars the worker consults — the
-    page reads the *target daemon's* plist EnvironmentVariables (NOT
-    the web process's env) and reports each as present/absent +
-    a redacted preview. ``launchd_label`` names the plist:
-    ``com.precis.dream`` → ``/Library/LaunchDaemons/com.precis.dream.plist``.
-
-    Some daemons (dream) wrap their precis-cli invocation in a bash
-    script that exports additional env vars at runtime. ``wrapper``
-    points at that script; we parse its ``export X=Y`` lines and
-    merge them on top of the plist env so the page reflects what
-    the agent *actually* sees, not just the launchd layer.
-    """
-
-    key: str
-    label: str
-    description: str
-    launchd_label: str
-    model_default: str
-    model_env: str
-    system_prompt_env: str
-    directive_prompt_env: str
-    mcp_config_env: str
-    disallowed_tools: tuple[str, ...]
-    max_turns: int
-    timeout_s: int
-    env_keys: tuple[str, ...]
-    gating: tuple[tuple[str, str], ...]  # (env_var, description)
-    wrapper: str = ""
-
-
-#: Hard-coded registry of introspectable agents. New agents land here
-#: when their worker module ships — adding one is a single dataclass
-#: row, no template branching needed. Keep aligned with the actual
-#: ``call_claude_agent`` call sites in workers/.
-AGENTS: tuple[AgentSpec, ...] = (
-    AgentSpec(
-        key="dream_agent",
-        label="Dream agent",
-        description=(
-            "15-min LaunchDaemon. Reads recent internal-thought memories "
-            "and writes new tier:dream memories. Runs as hermes on "
-            "melchior with Claude OAuth (no API key needed)."
-        ),
-        launchd_label="com.precis.dream",
-        model_default="claude-opus-4-8",
-        model_env="PRECIS_DREAM_AGENT_MODEL",
-        system_prompt_env="PRECIS_DREAM_SOUL_PATH",
-        directive_prompt_env="PRECIS_DREAM_PROMPT_PATH",
-        mcp_config_env="PRECIS_MCP_CONFIG",
-        disallowed_tools=("WebFetch", "WebSearch"),
-        max_turns=20,
-        timeout_s=600,
-        env_keys=(
-            "PRECIS_DREAM_AGENT",
-            "PRECIS_DREAM_AGENT_MODEL",
-            "PRECIS_DREAM_PROMPT_PATH",
-            "PRECIS_DREAM_SOUL_PATH",
-            "PRECIS_MCP_CONFIG",
-            "PRECIS_DATABASE_URL",
-            "PRECIS_PROCESS",
-        ),
-        gating=(
-            ("PRECIS_DREAM_AGENT", "must be '1' / 'true' to run"),
-            ("PRECIS_DATABASE_URL", "runtime can't load without it"),
-        ),
-        # The dream plist invokes ``bash dream-pass.sh`` which sets
-        # PRECIS_DREAM_* before exec'ing precis. Parse those exports.
-        wrapper="/opt/asa/bin/dream-pass.sh",
-    ),
-    AgentSpec(
-        key="structural",
-        label="Structural reviewer",
-        description=(
-            "6h-dedup pass. Walks the todo tree, flags drift / sibling "
-            "contradictions / depth-fanout warnings. Opus."
-        ),
-        launchd_label="com.precis.worker-agent",
-        model_default="claude-opus-4-8",
-        model_env="PRECIS_STRUCTURAL_MODEL",
-        system_prompt_env="",
-        directive_prompt_env="",
-        mcp_config_env="PRECIS_MCP_CONFIG",
-        disallowed_tools=("WebFetch", "WebSearch"),
-        max_turns=12,
-        timeout_s=600,
-        env_keys=(
-            "PRECIS_STRUCTURAL_REVIEW",
-            "PRECIS_STRUCTURAL_MODEL",
-            "PRECIS_MCP_CONFIG",
-            "PRECIS_DATABASE_URL",
-            "PRECIS_DAILY_COST_CEILING",
-        ),
-        gating=(
-            ("PRECIS_STRUCTURAL_REVIEW", "must be '1' to run"),
-            ("PRECIS_DATABASE_URL", "runtime can't load without it"),
-        ),
-    ),
-    AgentSpec(
-        key="deep_review",
-        label="Deep review",
-        description=(
-            "Weekly-dedup pass. Allen-style archive / prune / "
-            "rebalance / long-wait review. Opus."
-        ),
-        launchd_label="com.precis.worker-agent",
-        model_default="claude-opus-4-8",
-        model_env="PRECIS_DEEP_REVIEW_MODEL",
-        system_prompt_env="",
-        directive_prompt_env="",
-        mcp_config_env="PRECIS_MCP_CONFIG",
-        disallowed_tools=("WebFetch", "WebSearch"),
-        max_turns=12,
-        timeout_s=900,
-        env_keys=(
-            "PRECIS_DEEP_REVIEW",
-            "PRECIS_DEEP_REVIEW_MODEL",
-            "PRECIS_MCP_CONFIG",
-            "PRECIS_DATABASE_URL",
-            "PRECIS_DAILY_COST_CEILING",
-        ),
-        gating=(
-            ("PRECIS_DEEP_REVIEW", "must be '1' to run"),
-            ("PRECIS_DATABASE_URL", "runtime can't load without it"),
-        ),
-    ),
-    AgentSpec(
-        key="job_claude_inproc",
-        label="Claude in-process executor",
-        description=(
-            "Planner-coroutine consumer. Claims minted kind='job' refs "
-            "(plan_tick / fix_gripe), shells out to claude -p with the "
-            "model tier from the parent's LLM:* tag, records summary."
-        ),
-        launchd_label="com.precis.worker-agent",
-        model_default="(per parent LLM:* tag)",
-        model_env="PRECIS_JOB_CLAUDE_MODEL",
-        system_prompt_env="",
-        directive_prompt_env="",
-        mcp_config_env="PRECIS_MCP_CONFIG",
-        disallowed_tools=("WebFetch", "WebSearch"),
-        max_turns=20,
-        timeout_s=900,
-        env_keys=(
-            "PRECIS_MCP_CONFIG",
-            "PRECIS_DATABASE_URL",
-            "PRECIS_DAILY_COST_CEILING",
-            "PRECIS_FIX_REPO_DIR",
-            "PRECIS_FIX_WORK_DIR",
-        ),
-        gating=(("PRECIS_MCP_CONFIG", "MCP config the in-proc claude reads"),),
-    ),
-)
-
-_BY_KEY: dict[str, AgentSpec] = {a.key: a for a in AGENTS}
+_BY_KEY: dict[str, ServiceSpec] = {a.name: a for a in AGENTS}
 
 
 def _read_file(path: str | None, *, max_chars: int = 50_000) -> dict[str, Any]:
@@ -418,11 +269,12 @@ def _redact(value: str | None) -> str:
     return value
 
 
-def _env_snapshot(spec: AgentSpec, plist_env: dict[str, str]) -> list[dict[str, Any]]:
+def _env_snapshot(spec: ServiceSpec, plist_env: dict[str, str]) -> list[dict[str, Any]]:
     """One row per env var the agent consults, read from the plist."""
+    assert spec.introspect is not None  # only introspect-bearing specs reach here
     sensitive = {"PASSWORD", "KEY", "SECRET", "TOKEN", "API_KEY", "URL", "DSN"}
     rows: list[dict[str, Any]] = []
-    for key in spec.env_keys:
+    for key in spec.introspect.env_keys:
         raw = plist_env.get(key)
         present = raw is not None
         is_sensitive = any(tok in key.upper() for tok in sensitive)
@@ -454,29 +306,30 @@ async def index(
     """
     spec = _BY_KEY.get(agent) if agent else None
     detail: dict[str, Any] | None = None
-    if spec is not None:
-        plist_env = _read_plist_env(spec.launchd_label)
-        plist_path = _PLIST_DIR / f"{spec.launchd_label}.plist"
+    if spec is not None and spec.introspect is not None:
+        intro = spec.introspect
+        plist_env = _read_plist_env(intro.launchd_label)
+        plist_path = _PLIST_DIR / f"{intro.launchd_label}.plist"
         # Merge the wrapper script's exports on top of the plist env
         # so the page reflects what the worker actually sees at
         # runtime. Wrapper wins on conflicts (it's set after the
         # plist's EnvironmentVariables apply).
-        wrapper_env = _parse_wrapper_env(spec.wrapper) if spec.wrapper else {}
+        wrapper_env = _parse_wrapper_env(intro.wrapper) if intro.wrapper else {}
         effective_env: dict[str, str] = {**plist_env, **wrapper_env}
-        system_prompt = _read_file(effective_env.get(spec.system_prompt_env))
-        directive_prompt = _read_file(effective_env.get(spec.directive_prompt_env))
-        mcp = _parse_mcp_config(effective_env.get(spec.mcp_config_env))
+        system_prompt = _read_file(effective_env.get(intro.system_prompt_env))
+        directive_prompt = _read_file(effective_env.get(intro.directive_prompt_env))
+        mcp = _parse_mcp_config(effective_env.get(intro.mcp_config_env))
         detail = {
             "spec": spec,
-            "model": effective_env.get(spec.model_env) or spec.model_default,
+            "model": effective_env.get(intro.model_env) or intro.model_default,
             "system_prompt": system_prompt,
             "directive_prompt": directive_prompt,
             "mcp": mcp,
             "env_rows": _env_snapshot(spec, effective_env),
             "plist_path": str(plist_path),
             "plist_found": plist_path.exists(),
-            "wrapper_path": spec.wrapper or None,
-            "wrapper_found": (Path(spec.wrapper).exists() if spec.wrapper else False),
+            "wrapper_path": intro.wrapper or None,
+            "wrapper_found": (Path(intro.wrapper).exists() if intro.wrapper else False),
         }
     return templates.TemplateResponse(
         request,
