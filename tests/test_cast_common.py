@@ -32,6 +32,14 @@ class TestBudgets:
         assert CAST_PROFILES["reading"].voice == "bm_george"
         assert CAST_PROFILES["nidra"].voice == "af_nicole"
 
+    def test_casts_publish_under_distinct_producer_tags(self) -> None:
+        # Each cast must own its `source` tag so a shared feed can subfilter by
+        # producer; nidra used to inherit "reading" from a default and mislabel
+        # every meditation episode.
+        sources = {name: p.source for name, p in CAST_PROFILES.items()}
+        assert sources == {"reading": "brief", "nidra": "meditation"}
+        assert len(set(sources.values())) == len(sources)  # all distinct
+
 
 class TestCreateCastDraft:
     def test_idempotent_per_slug(self, store: Any) -> None:

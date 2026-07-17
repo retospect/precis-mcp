@@ -44,7 +44,9 @@ class CastProfile:
     job_type: str  # the compose job_type that produces this cast
     slug_prefix: str  # dated-draft slug + episode-id stem
     title: str  # episode/draft title (date appended)
-    source: str = "reading"  # publish_episode producer tag
+    source: str  # publish_episode producer tag — DISTINCT per cast
+    #: ("brief", "meditation", "news"); a shared feed can subfilter by it, so a
+    #: cast must not borrow another's tag. Required (no default) for that reason.
 
 
 CAST_PROFILES: dict[str, CastProfile] = {
@@ -58,6 +60,7 @@ CAST_PROFILES: dict[str, CastProfile] = {
         job_type="reading_brief",
         slug_prefix="cast-reading",
         title="\U0001f305 Morning brief",  # 🌅
+        source="brief",
     ),
     "nidra": CastProfile(
         cast="nidra",
@@ -69,6 +72,7 @@ CAST_PROFILES: dict[str, CastProfile] = {
         job_type="meditation",
         slug_prefix="cast-nidra",
         title="\U0001f319 Evening meditation",  # 🌙
+        source="meditation",
     ),
 }
 

@@ -143,7 +143,7 @@ def narrate_cast_ref(
     date_tag = str(meta.get("date") or now.date().isoformat())
     episode_id = f"{cast}-{date_tag}"
     title = f"{profile.title} — {date_tag}" if profile else (ref.title or episode_id)
-    source = profile.source if profile else "reading"
+    source = profile.source if profile else "cast"
     render_kw: dict[str, Any] = {} if encode is None else {"encode": encode}
 
     with tempfile.TemporaryDirectory() as td:

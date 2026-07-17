@@ -94,7 +94,9 @@ class TestNarrateTail:
 
         assert r["published"] is True
         assert r["episode_id"].startswith("reading-")
-        assert captured["publish"]["source"] == "reading"
+        # The reading cast publishes under the distinct producer tag "brief"
+        # (not "reading" — that borrowed tag collided with nidra's episodes).
+        assert captured["publish"]["source"] == "brief"
         assert captured["publish"]["duration_seconds"] == 3
         # Idempotency marker stamped on the draft.
         after = store.get_ref(kind="draft", id=ref.id)

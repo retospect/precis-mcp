@@ -212,6 +212,24 @@ get(kind='calc', q='42 * 365')                # → 15330        (free)
 get(kind='math', q='speed of light in km/h')  # → 1.079e9 km/h (paid)
 ```
 
+## Overloaded words — which one do you mean?
+
+A few short tokens carry several unrelated meanings across the system. If one
+shows up in output and is ambiguous:
+
+- **tier** — how *broad* a paper search is (`good=True` = deep, `precis-search-help`),
+  OR a reviewer class (nursery/structural/deep), OR an LLM capability band.
+- **card** — a searchable **embedding** of a ref (why a `quest`/`concept`/`llm`
+  ref shows up in `search`), OR an **Anki** flashcard (`precis-anki-help`).
+- **role** — `ROLE3:*` tags classify a *chunk's* content (own/background/
+  furniture, the citation-grounding filter); a kind's *citability* is a separate
+  thing. See `precis-tags`.
+- **lane / dispatch / plan** — internal task-engine words; you address work
+  through todos + jobs (`precis-tasks-help`, `precis-dispatch-help`), not these.
+
+(Developers: `docs/architecture/glossary.md` maps every coined/overloaded term to
+its source file.)
+
 ## See also
 
 ```python

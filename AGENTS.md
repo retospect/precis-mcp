@@ -7,10 +7,13 @@ Read this before substantive changes.
 > contract: conventions, workflow, definition-of-done. (2)
 > [`docs/architecture.md`](docs/architecture.md) — a thin, link-heavy
 > system map + source-tree map; orient once, follow links for depth.
-> (3) [`CLAUDE.md`](CLAUDE.md) — the present-tense map of the live
-> subsystems you're about to touch. Deep per-kind reference is on demand
-> via skills (`get(kind='skill', id='precis-overview')` for the master
-> kinds table + index). Backlog: [`OPEN-ITEMS.md`](OPEN-ITEMS.md).
+> (3) [`CLAUDE.md`](CLAUDE.md) — the lean session router (ship workflow +
+> conventions + pointers), then
+> [`docs/architecture/state-map.md`](docs/architecture/state-map.md) — the
+> present-tense map of the live subsystems you're about to touch. Deep
+> per-kind reference is on demand via skills
+> (`get(kind='skill', id='precis-overview')` for the master kinds table +
+> index). Backlog: [`OPEN-ITEMS.md`](OPEN-ITEMS.md).
 
 ## Identity
 
