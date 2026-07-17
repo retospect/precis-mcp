@@ -14,6 +14,8 @@ import re
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
 from precis.quest import compute as compute_mod
@@ -507,6 +509,114 @@ class TestCatpathHarvest:
         links = store.links_for(sid, direction="both", relation="related-to")
         linked = [ln.dst_ref_id for ln in links] + [ln.src_ref_id for ln in links]
         assert target in linked
+
+
+def _catpath_registered() -> bool:
+    """The `catpath_explore` job_type (and `pathway` kind) come from the catpath
+    plugin — present in the dev container, absent on the torch-free host."""
+    from precis.workers.job_types import get_job_type
+
+    return get_job_type("catpath_explore") is not None
+
+
+@pytest.mark.skipif(
+    not _catpath_registered(), reason="catpath plugin not installed (host venv)"
+)
+class TestDispatchCatpath:
+    """The candidate→catpath dispatch: mints a `catpath_explore` job pinned on
+    the candidate (so :func:`harvest_measures` finds it) carrying the exported
+    slab, plus the `pathway` write-back ref. The round-trip test closes the loop
+    with the harvest half."""
+
+    _RX = {"substrate": "NO", "target": "NH3", "network": "ammonia"}
+
+    @pytest.fixture(autouse=True)
+    def _catpath_schema(self, store: Any) -> None:
+        """Guarantee the catpath plugin's `pathway` kind is registered on this
+        worker's clone. A `fresh_db`-based migration test elsewhere in the suite
+        rebuilds the clone with the plugin entry points monkeypatched out, which
+        drops `pathway` — so ``insert_ref(kind='pathway')`` would then raise
+        'unknown kind'. Re-applying migrations *through the plugin sources* is
+        idempotent and restores the kind (a no-op when already present). Passing
+        the bare dir would only load precis-core — ``discover_sources`` is what
+        pulls in the catpath plugin migration."""
+        from precis.store import Migrator
+        from tests.conftest import MIGRATIONS_DIR, _active_dsn
+
+        Migrator(_active_dsn(), Migrator.discover_sources(MIGRATIONS_DIR)).apply_all()
+
+    def _candidate(self, store: Any, qid: int) -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        return sid
+
+    def test_mints_job_on_candidate_with_slab_and_pathway(self, store: Any) -> None:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)
+        note = compute_mod.dispatch_catpath(store, sid, self._RX)
+        assert note.startswith("catpath[")
+        jobs = compute_mod._fresh_catpath_jobs(store, sid, 0)
+        assert len(jobs) == 1
+        _job_id, jmeta = jobs[0]
+        params = jmeta.get("params") or {}
+        # the exported slab rides along, provenance points back at the candidate,
+        # and the reaction config is carried verbatim
+        assert params["structure_ref"] == sid
+        assert params["config"] == self._RX
+        assert (
+            isinstance(params["slab_extxyz"], str)
+            and "Lattice=" in (params["slab_extxyz"])
+        )
+        # a pathway write-back ref was minted (status=computing)
+        pw = store.get_ref(kind="pathway", id=params["pathway_slug"])
+        assert pw is not None and pw.meta.get("candidate_ref") == sid
+
+    def test_dispatch_is_idempotent(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_catpath(store, sid, self._RX)
+        compute_mod.dispatch_catpath(store, sid, self._RX)  # same geometry+config
+        assert len(compute_mod._fresh_catpath_jobs(store, sid, 0)) == 1
+
+    def test_roundtrip_dispatch_then_harvest(self, store: Any) -> None:
+        """Dispatch mints a job the harvest can read back — the two halves wire
+        together (the parent_id contract). Simulate the worker emitting a barrier
+        onto the job meta, then harvest lifts it onto the candidate."""
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        sid = self._candidate(store, qid)
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-10.0,
+        )
+        compute_mod.dispatch_catpath(store, sid, self._RX)
+        job_id, _jmeta = compute_mod._fresh_catpath_jobs(store, sid, 0)[0]
+        # the ssh_node worker's dispatch emits the scalar summary onto the job meta
+        store.stamp_ref_meta(job_id, {"barrier": 0.33, "span": 0.9})
+        compute_mod.harvest_measures(store, qid)
+        assert store.fetch_refs_by_ids({sid})[sid].meta["barrier"] == 0.33
+        fr = quest_frontier(store, qid)
+        assert [c.ref_id for c in fr.frontier] == [sid]  # ranked on the barrier
+
+    def test_missing_structure_degrades(self, store: Any) -> None:
+        note = compute_mod.dispatch_catpath(store, 999_999, self._RX)
+        assert "skipped" in note and "not found" in note
+
+    def test_empty_config_skipped(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        note = compute_mod.dispatch_catpath(store, sid, {})
+        assert "skipped" in note
+        assert compute_mod._fresh_catpath_jobs(store, sid, 0) == []
 
 
 # ── tick integration ──────────────────────────────────────────────────

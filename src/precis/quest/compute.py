@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -134,6 +135,116 @@ def dispatch_relax(
     except Exception as e:
         return f"relax dispatch failed for {ref.slug}: {e}"
     return f"relax[{fidelity}] dispatched for {ref.slug}"
+
+
+#: Env pin for the node that runs catpath (has the plugin + an ML backend). When
+#: unset the job routes nowhere special and force-EMT keeps an in-process demo cheap.
+_CATPATH_ROUTE_NODE_ENV = "PRECIS_CATPATH_ROUTE_NODE"
+
+
+def _catpath_content_key(config: dict[str, Any], slab_extxyz: str) -> str:
+    """Stable idempotency key for a (reaction, exported slab) pair.
+
+    Its own hash (not catpath's ``content_key``) so this stays precis-native — a
+    re-dispatch of the same geometry + reaction collapses onto the in-flight job.
+    """
+    payload = _canonical_spec(config) + "\n" + slab_extxyz
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def dispatch_catpath(
+    store: Store,
+    structure_ref_id: int,
+    config: dict[str, Any],
+    *,
+    hub: Any | None = None,
+    force_backend: str | None = None,
+) -> str:
+    """Dispatch a catpath barrier evaluation on a candidate structure.
+
+    Exports the candidate's (relaxed) geometry as extxyz, ensures a `pathway` ref
+    for the write-back, and mints a ``catpath_explore`` job **pinned on the
+    candidate** — so :func:`harvest_measures` finds it under the structure's
+    compute lane (it queries ``parent_id = candidate``, unlike the standalone
+    `pathway` handler which parents on the pathway ref). The job hydrates the
+    extxyz into a prepared slab (catpath's injected-slab seam) and runs the
+    reaction network on the routed node; on completion it emits a scalar
+    ``barrier`` onto its own meta, which the harvest lifts onto the candidate.
+
+    Precis-native (no catpath import — the `pathway` kind, if the plugin is
+    installed, is reached only through the store) and **defensive**: degrades to a
+    note on any error (missing plugin, unloadable scene) and never raises, so a
+    compute hiccup can't fail the tick.
+    """
+    if not isinstance(config, dict) or not config:
+        return f"catpath skipped: no reaction config for structure {structure_ref_id}"
+    refs = store.fetch_refs_by_ids({structure_ref_id})
+    ref = refs.get(structure_ref_id)
+    if ref is None or ref.slug is None:
+        return f"catpath skipped: structure {structure_ref_id} not found"
+    hub = hub or _hub_for(store)
+
+    # Export the candidate geometry — the injected-slab seam catpath consumes.
+    try:
+        from precis.structure import export
+
+        scene, _handles = store.structure_load(structure_ref_id)
+        slab_extxyz = export.to_extxyz(scene)
+    except Exception as e:
+        return f"catpath dispatch failed for {ref.slug}: export ({e})"
+
+    node = os.environ.get(_CATPATH_ROUTE_NODE_ENV) or None
+    # Routed → run the config's own backend on the pinned node; unrouted → EMT
+    # (an in-process demo has no ML backend). An explicit override wins either way.
+    force = force_backend or (None if node else "emt")
+    key = _catpath_content_key(config, slab_extxyz)
+    pslug = f"{ref.slug}-rx-{key[:10]}"
+
+    # Ensure the pathway ref (status=computing) the job writes its graph back onto.
+    try:
+        existing = store.get_ref(kind="pathway", id=pslug)
+        if existing is not None:
+            pathway_ref_id = int(existing.id)
+        else:
+            with store.tx() as conn:
+                pref = store.insert_ref(
+                    kind="pathway",
+                    slug=pslug,
+                    title=f"pathway {pslug} (computing)",
+                    meta={
+                        "content_key": key,
+                        "status": "computing",
+                        "candidate_ref": structure_ref_id,
+                    },
+                    conn=conn,
+                )
+            pathway_ref_id = int(pref.id)
+    except Exception as e:
+        return f"catpath dispatch failed for {ref.slug}: pathway ref ({e})"
+
+    # Mint the compute-lane job PINNED ON THE CANDIDATE (harvest queries parent_id).
+    try:
+        from precis.handlers.job import JobHandler
+
+        JobHandler(hub=hub).put(
+            job_type="catpath_explore",
+            executor="ssh_node",
+            parent_id=structure_ref_id,
+            idem_key=f"catpath_explore:{key}",
+            params={
+                "pathway_ref_id": pathway_ref_id,
+                "pathway_slug": pslug,
+                "config": config,
+                "slab_extxyz": slab_extxyz,
+                "structure_ref": structure_ref_id,
+                "force_backend": force,
+                "content_key": key,
+                "target_node": node,
+            },
+        )
+    except Exception as e:
+        return f"catpath dispatch failed for {ref.slug}: job mint ({e})"
+    return f"catpath[{force or 'config'}] dispatched for {ref.slug} → pathway {pslug}"
 
 
 #: Job-meta spellings that carry catpath's rate-limiting barrier (eV). The
@@ -391,6 +502,7 @@ def run_compute_step(
 
 __all__ = [
     "ComputeStep",
+    "dispatch_catpath",
     "dispatch_relax",
     "ensure_candidate",
     "harvest_measures",
