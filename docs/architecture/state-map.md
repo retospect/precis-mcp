@@ -524,7 +524,23 @@ The master kinds table lives in the `precis-overview` skill.
   ordinals — the open-weight menu `select_offering` picks from; `record_observed_axes`
   / `record_eval` overwrite the ordinals with higher-trust numbers once they run.
   Empty catalog ⇒ byte-identical to today (`Tier` stays the
-  floor). **Slice 2 (`admit()`) built** (`utils/llm/admit.py`): a pure
+  floor). **Variant-precise offerings (gripe 162624) built**: one OpenRouter slug
+  fans out to ~28 bookable **endpoints** differing by provider / quant (fp4≠fp8) /
+  window (1M..101k) / price, so capability + price are *endpoint*-scoped, not
+  card-scoped. `llm_reconcile` now also pulls `/models/{slug}/endpoints` → a
+  machine-maintained `meta.endpoints` list (kept separate from the curated
+  `meta.offerings` — reconcile never clobbers a seed) + nightly per-variant prices;
+  `record_benchmark` stamps a `published-benchmark` ordinal onto *only* the matching
+  quant's endpoints (a fp8 SWE-bench number the fp4 variant can't inherit); frontier
+  cards seed `meta.params` (size/arch/license — OpenRouter carries no param count).
+  `admit.window_for` / `policy._model_price` read the widest/cheapest endpoint;
+  `select_offering` returns `Selection.endpoint` (cheapest fitting variant), which a
+  caller threads onto `LlmRequest.endpoint` so `_dispatch_openai_compat` emits the
+  OpenRouter `provider:{order,quantizations,allow_fallbacks:false,require_parameters:
+  true}` + `reasoning:{effort}` pin (`router.openrouter_routing`) — reproducibly
+  hitting that provider×quant instead of load-balancing the 28. Ships dark: no
+  endpoints ⇒ the bare slug is posted (today's behaviour); the pin only engages
+  under `PRECIS_LLM_BACKEND=openai`. **Slice 2 (`admit()`) built** (`utils/llm/admit.py`): a pure
   `est_tokens×(1+headroom) ≤ max_input` fit-check wired into `router.dispatch`
   after `gate_tier` — refuses a doomed (context, model) pairing *with the numbers*
   as a normalized `LlmResult.error` (never raised, so a pinned pass backs off, not

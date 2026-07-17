@@ -54,6 +54,16 @@ _ALERT_SOURCE = "llm_reconcile:drift"
 #: The live model feed. No key needed; SSRF-guarded via safe_get.
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
+#: Per-slug endpoint feed: the ~28 bookable provider×quant variants of one model
+#: (gripe 162624). ``{slug}`` is the OpenRouter model id (``z-ai/glm-5.2``).
+OPENROUTER_ENDPOINTS_URL_TMPL = "https://openrouter.ai/api/v1/models/{slug}/endpoints"
+
+#: supported_parameters values that satisfy a "structured output" flag (mirrors
+#: the policy's ``_STRUCTURED_PARAMS`` — kept local to avoid the import).
+_STRUCTURED_PARAMS: frozenset[str] = frozenset(
+    {"structured_outputs", "response_format"}
+)
+
 #: Offering transports that route through the loopback / OpenAI-compatible proxy —
 #: the ones whose served-model set the drift check consults.
 _PROXY_TRANSPORTS: frozenset[str] = frozenset({"litellm", "openai_compat"})
@@ -149,6 +159,55 @@ def fetch_openrouter_models(
     return out
 
 
+def _endpoint_from_openrouter(e: dict[str, Any]) -> dict[str, Any]:
+    """Distil one OpenRouter endpoint object into a bookable-variant dict
+    (:data:`precis.llm_catalog.ENDPOINT_KEYS`). Prices → per-1M USD; the
+    ``supported_parameters`` list collapses to the tools/structured booleans a
+    requirement filters on. ``status`` (0 = live) + ``uptime_1d`` are the
+    availability telemetry a booking consults."""
+    pricing = e.get("pricing") or {}
+    sp = set(e.get("supported_parameters") or [])
+    return {
+        "provider": e.get("provider_name"),
+        "quant": e.get("quantization"),
+        "tag": e.get("tag"),
+        "max_input": e.get("context_length") or e.get("max_prompt_tokens"),
+        "max_output": e.get("max_completion_tokens"),
+        "price_in": _price_per_million(pricing.get("prompt")),
+        "price_out": _price_per_million(pricing.get("completion")),
+        "tools": "tools" in sp,
+        "structured": bool(_STRUCTURED_PARAMS & sp),
+        "status": e.get("status"),
+        "uptime_1d": e.get("uptime_last_1d"),
+    }
+
+
+def fetch_openrouter_endpoints(
+    slug: str, *, timeout: float = 20.0
+) -> list[dict[str, Any]] | None:
+    """Fetch the bookable endpoints for one OpenRouter slug, distilled.
+
+    Best-effort: ``None`` on any failure so the caller keeps the card's prior
+    endpoints rather than blanking them. An empty list (a real "no endpoints")
+    is distinct from ``None`` (a fetch failure).
+    """
+    import httpx
+
+    from precis.utils.safe_fetch import safe_get
+
+    url = OPENROUTER_ENDPOINTS_URL_TMPL.format(slug=slug)
+    try:
+        with httpx.Client(follow_redirects=False, timeout=timeout) as client:
+            resp = safe_get(client, url)
+            resp.raise_for_status()
+            data = resp.json().get("data") or {}
+    except Exception:  # pragma: no cover — network/parse variance
+        log.warning("llm_reconcile: endpoints fetch failed for %s", slug, exc_info=True)
+        return None
+    eps = data.get("endpoints") or []
+    return [_endpoint_from_openrouter(e) for e in eps if e.get("provider_name")]
+
+
 def _drift_fingerprint(model_id: str) -> str:
     return f"proxy-missing:{model_id}"
 
@@ -158,6 +217,7 @@ def run_llm_reconcile_pass(
     *,
     models: dict[str, dict[str, Any]] | None = None,
     proxy_models: set[str] | None = None,
+    endpoints_by_key: dict[str, list[dict[str, Any]]] | None = None,
     force: bool = False,
     _fetch: bool = True,
 ) -> BatchResult:
@@ -166,7 +226,11 @@ def run_llm_reconcile_pass(
     ``models`` — the OpenRouter feed (keyed by :func:`_norm_model_key`); fetched
     live when ``None`` and ``_fetch`` is set. ``proxy_models`` — the set of model
     ids the loopback proxy actually serves (normalised keys); ``None`` = unknown
-    (drift check skipped, no false alerts). Both are injected by tests.
+    (drift check skipped, no false alerts). ``endpoints_by_key`` — pre-fetched
+    per-slug bookable variants (keyed by :func:`_norm_model_key`) for tests; when
+    ``None`` and ``_fetch`` is set, each matched card's endpoints are fetched live
+    from ``/models/{slug}/endpoints`` (gripe 162624). All three are injected by
+    tests and degrade to a no-op on a fetch failure.
 
     ``claimed``/``ok`` count cards refreshed + drift findings raised this pass.
     """
@@ -194,6 +258,7 @@ def run_llm_reconcile_pass(
 
             now_iso = datetime.now(UTC).isoformat()
             refreshed = 0
+            endpoints_reconciled = 0
             live_drift: set[str] = set()
 
             for card in cards:
@@ -204,17 +269,36 @@ def run_llm_reconcile_pass(
                 key = _norm_model_key(model_id)
 
                 # (A) refresh authoritative facts from the live feed.
-                if models is not None:
-                    m = models.get(key)
-                    if m is not None:
-                        store.update_ref(
-                            card.id,
-                            meta_patch={
-                                "facts_openrouter": _facts_from_openrouter(m),
-                                "reconciled_at": now_iso,
-                            },
-                        )
-                        refreshed += 1
+                m = models.get(key) if models is not None else None
+                if m is not None:
+                    store.update_ref(
+                        card.id,
+                        meta_patch={
+                            "facts_openrouter": _facts_from_openrouter(m),
+                            "reconciled_at": now_iso,
+                        },
+                    )
+                    refreshed += 1
+
+                # (A2) refresh the bookable-variant endpoints (gripe 162624): one
+                # per provider×quant×window×price, so capability + price become
+                # variant-precise. Only for a card present in the live feed (a
+                # matched slug); a fetch failure (``None``) keeps the prior
+                # endpoints rather than blanking them.
+                eps: list[dict[str, Any]] | None = None
+                if endpoints_by_key is not None:
+                    eps = endpoints_by_key.get(key)
+                elif _fetch and m is not None:
+                    eps = fetch_openrouter_endpoints(m.get("id") or model_id)
+                if eps is not None:
+                    store.update_ref(
+                        card.id,
+                        meta_patch={
+                            "endpoints": eps,
+                            "endpoints_reconciled_at": now_iso,
+                        },
+                    )
+                    endpoints_reconciled += 1
 
                 # (B) drift: a proxy-routed offering for a model the proxy can't
                 # serve. Only assert absence when proxy_models is authoritative.
@@ -249,11 +333,13 @@ def run_llm_reconcile_pass(
                 )
 
             store.set_setting(_STATE_KEY, datetime.now(UTC).isoformat())
-            work = refreshed + len(live_drift)
+            work = refreshed + endpoints_reconciled + len(live_drift)
             if work:
                 log.info(
-                    "llm_reconcile: refreshed %d card(s), flagged %d drift finding(s)",
+                    "llm_reconcile: refreshed %d card(s), %d endpoint set(s), "
+                    "flagged %d drift finding(s)",
                     refreshed,
+                    endpoints_reconciled,
                     len(live_drift),
                 )
             return BatchResult(handler="llm_reconcile", claimed=work, ok=work, failed=0)
@@ -269,4 +355,8 @@ def _has_proxy_offering(meta: dict[str, Any]) -> bool:
     return False
 
 
-__all__ = ["fetch_openrouter_models", "run_llm_reconcile_pass"]
+__all__ = [
+    "fetch_openrouter_endpoints",
+    "fetch_openrouter_models",
+    "run_llm_reconcile_pass",
+]

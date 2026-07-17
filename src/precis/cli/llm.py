@@ -166,6 +166,12 @@ def _cmd_select(store: Store, args: argparse.Namespace) -> None:
     sel = select_offering(store, req)
     src = "catalog" if sel.from_catalog else "tier-floor"
     print(f"model: {sel.model}  [{src}] — {sel.reason}")
+    if sel.endpoint:
+        e = sel.endpoint
+        print(
+            f"booked endpoint: {e.get('provider')} quant={e.get('quant')} "
+            f"window={e.get('max_input')} ${e.get('price_in')}/1M in"
+        )
     if sel.next_better:
         print(f"next better: {sel.next_better}")
 
@@ -179,6 +185,12 @@ def _cmd_choose(store: Store, args: argparse.Namespace) -> None:
     print(f"requirement: {axis}, tools={req.needs_tools}, window={req.max_input}")
     src = "catalog" if sel.from_catalog else "tier-floor"
     print(f"model: {sel.model}  [{src}] — {sel.reason}")
+    if sel.endpoint:
+        e = sel.endpoint
+        print(
+            f"booked endpoint: {e.get('provider')} quant={e.get('quant')} "
+            f"window={e.get('max_input')} ${e.get('price_in')}/1M in"
+        )
     if sel.next_better:
         print(f"next better: {sel.next_better}")
 

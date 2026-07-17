@@ -198,6 +198,9 @@ class LlmHandler(NumericRefHandler):
         lines = [f"# {handle} — {model_id}"]
         if meta.get("tier_floor"):
             lines.append(f"tier floor: {meta['tier_floor']}")
+        params = meta.get("params") or {}
+        if params:
+            lines.append("params: " + ", ".join(f"{k}={v}" for k, v in params.items()))
 
         offerings = meta.get("offerings") or []
         if offerings:
@@ -217,6 +220,28 @@ class LlmHandler(NumericRefHandler):
                 if o.get("quant"):
                     bits.append(f"quant={o['quant']}")
                 lines.append("  · " + ", ".join(bits))
+
+        endpoints = meta.get("endpoints") or []
+        if endpoints:
+            quants = sorted(
+                {str(e.get("quant") or "?") for e in endpoints if isinstance(e, dict)}
+            )
+            wins = [
+                int(e["max_input"])
+                for e in endpoints
+                if isinstance(e, dict) and e.get("max_input")
+            ]
+            prices = [
+                float(e["price_in"])
+                for e in endpoints
+                if isinstance(e, dict) and e.get("price_in") is not None
+            ]
+            bits = [f"{len(endpoints)} bookable variants", f"quant {'/'.join(quants)}"]
+            if wins:
+                bits.append(f"window {min(wins):,}–{max(wins):,}")
+            if prices:
+                bits.append(f"${min(prices)}–${max(prices)} in/1M")
+            lines += ["", "## endpoints", "  · " + ", ".join(bits)]
 
         capability = meta.get("capability") or {}
         if capability:

@@ -186,6 +186,148 @@ class TestHandler:
         assert "triage classifier" in resp.body
 
 
+class TestVariantOfferings:
+    """gripe 162624 — per-endpoint bookable variants + variant-scoped benchmarks."""
+
+    def test_reconcile_populates_endpoints(self, store: Any) -> None:
+        from precis import llm_catalog
+        from precis.workers.llm_reconcile import _norm_model_key, run_llm_reconcile_pass
+
+        rid, _ = llm_catalog.upsert_card(
+            store, model_id="z-ai/glm-5.2", text="GLM 5.2 card."
+        )
+        key = _norm_model_key("z-ai/glm-5.2")
+        eps = [
+            {
+                "provider": "Baidu",
+                "quant": "fp8",
+                "max_input": 1_048_576,
+                "price_in": 0.97,
+                "price_out": 3.0,
+                "tools": True,
+                "status": 0,
+            },
+            {
+                "provider": "Ambient",
+                "quant": "fp8",
+                "max_input": 101_376,
+                "price_in": 1.05,
+                "price_out": 3.5,
+                "tools": True,
+                "status": 0,
+            },
+            {
+                "provider": "DeepInfra",
+                "quant": "fp4",
+                "max_input": 1_048_576,
+                "price_in": 0.93,
+                "price_out": 3.0,
+                "tools": True,
+                "status": 0,
+            },
+        ]
+        res = run_llm_reconcile_pass(
+            store, models={}, endpoints_by_key={key: eps}, force=True
+        )
+        assert res.ok >= 1
+        ref = store.get_ref(kind="llm", id=rid)
+        got = ref.meta["endpoints"]
+        assert len(got) == 3
+        assert {e["provider"] for e in got} == {"Baidu", "Ambient", "DeepInfra"}
+        assert ref.meta.get("endpoints_reconciled_at")
+
+    def test_endpoint_price_and_window_are_variant_precise(self, store: Any) -> None:
+        # The cheapest bookable price + widest window come from the endpoints, not
+        # the single seed offering (which named one generic price).
+        from precis import llm_catalog
+        from precis.utils.llm.admit import window_for
+        from precis.utils.llm.policy import _model_price
+
+        rid, _ = llm_catalog.upsert_card(
+            store,
+            model_id="var-model",
+            text="A model.",
+            tier_floor="cloud-super",
+            offerings=[
+                {"transport": "openai_compat", "max_input": 200_000, "price_in": 5.0}
+            ],
+            endpoints=[
+                {
+                    "provider": "A",
+                    "quant": "fp4",
+                    "max_input": 1_048_576,
+                    "price_in": 0.9,
+                },
+                {
+                    "provider": "B",
+                    "quant": "fp8",
+                    "max_input": 101_376,
+                    "price_in": 1.2,
+                },
+            ],
+        )
+        meta = store.get_ref(kind="llm", id=rid).meta
+        # cheapest bookable = the fp4 endpoint (0.9), below the seed offering's 5.0
+        assert _model_price(meta) == 0.9
+        # widest window prefers the offering's max_input (most-specific) → 200k;
+        # with no offering window it would fall to the endpoints' 1,048,576.
+        assert window_for(meta) == 200_000
+        assert window_for({"endpoints": meta["endpoints"]}) == 1_048_576
+
+    def test_record_benchmark_scopes_ordinal_to_the_quant(self, store: Any) -> None:
+        from precis import llm_catalog
+
+        rid, _ = llm_catalog.upsert_card(
+            store,
+            model_id="bench-model",
+            text="A model.",
+            endpoints=[
+                {"provider": "A", "quant": "fp8", "max_input": 1_048_576},
+                {"provider": "B", "quant": "fp4", "max_input": 1_048_576},
+            ],
+        )
+        n = llm_catalog.record_benchmark(
+            store,
+            "bench-model",
+            axis="code",
+            ordinal=5,
+            quant="fp8",
+            source_url="https://swebench.example/pro",
+        )
+        assert n >= 1
+        meta = store.get_ref(kind="llm", id=rid).meta
+        eps = {e["quant"]: e for e in meta["endpoints"]}
+        # the fp8 endpoint carries the ordinal; the fp4 endpoint does NOT inherit it
+        assert eps["fp8"]["capability"]["code"]["score"] == 5
+        assert "capability" not in eps["fp4"] or "code" not in (
+            eps["fp4"].get("capability") or {}
+        )
+        # a variant-scoped published-benchmark review lands with the quant in prov
+        reviews = llm_catalog.list_reviews(store, rid)
+        bench = [
+            b
+            for b in reviews
+            if (b.meta or {}).get("entry_type") == "published-benchmark"
+        ]
+        assert bench and (bench[-1].meta or {}).get("variant") == "fp8"
+
+    def test_frontier_seed_stamps_params(self, store: Any) -> None:
+        from precis import llm_catalog
+
+        llm_catalog.seed_frontier_cards(store)
+        ref = store.find_ref_by_meta(kind="llm", key="model_id", value="z-ai/glm-5.2")
+        assert (ref.meta.get("params") or {}).get("size") == "744B"
+
+    def test_rejects_unknown_endpoint_key(self, store: Any) -> None:
+        from precis import llm_catalog
+        from precis.errors import BadInput
+
+        with pytest.raises(BadInput):
+            llm_catalog.upsert_card(
+                store, model_id="ep1", text="x", endpoints=[{"bogus": 1}]
+            )
+
+
 class TestReconcile:
     def test_refresh_from_injected_feed(self, store: Any) -> None:
         from precis import llm_catalog

@@ -57,15 +57,24 @@ class Requirement:
 
 @dataclass(frozen=True, slots=True)
 class Selection:
-    """The policy's answer: a concrete model (+ the offering to run it on), the
-    Pareto ``next_better`` rung for an escalation, and whether it came from the
-    catalog or degraded to the ``Tier`` floor."""
+    """The policy's answer: a concrete model (+ the offering to run it on + the
+    booked ``endpoint`` variant to pin), the Pareto ``next_better`` rung for an
+    escalation, and whether it came from the catalog or degraded to the ``Tier``
+    floor.
+
+    ``endpoint`` is the variant-precise booking (a ``meta.endpoints`` dict —
+    provider / quant / window, gripe 162624): the cheapest reconciled endpoint of
+    the chosen model that fits the requirement. A caller threads it onto
+    ``LlmRequest.endpoint`` so the ``openai_compat`` wire pins that provider×quant
+    reproducibly. ``None`` when the card has no reconciled endpoints (the slug is
+    posted bare, today's behaviour)."""
 
     model: str
     offering: dict[str, Any] | None
     next_better: str | None
     from_catalog: bool
     reason: str
+    endpoint: dict[str, Any] | None = None
 
 
 def _tier_of(meta: dict[str, Any]) -> Tier | None:
@@ -78,9 +87,22 @@ def _tier_of(meta: dict[str, Any]) -> Tier | None:
         return None
 
 
-def _axis_ordinal(meta: dict[str, Any], axis: str | None) -> int:
+def _axis_ordinal(
+    meta: dict[str, Any],
+    axis: str | None,
+    endpoint: dict[str, Any] | None = None,
+) -> int:
+    """The model's ordinal on ``axis``. When an ``endpoint`` is given, its
+    variant-scoped capability wins (a fp8 SWE-bench number the fp4 variant must
+    not inherit — gripe 162624); the card-level ordinal is the coarse fallback."""
     if not axis:
         return 0
+    if endpoint is not None:
+        ev = (endpoint.get("capability") or {}).get(axis)
+        if ev is not None:
+            score = ev.get("score") if isinstance(ev, dict) else ev
+            if score is not None:
+                return int(score)
     v = (meta.get("capability") or {}).get(axis)
     if v is None:
         return 0
@@ -89,14 +111,17 @@ def _axis_ordinal(meta: dict[str, Any], axis: str | None) -> int:
 
 
 def _model_price(meta: dict[str, Any]) -> float:
-    """A comparable per-1M input price. Local tiers are free (0); a cloud model
-    with no known price sorts last (``inf``) so an unknown never wins on cost."""
+    """A comparable per-1M input price — the **cheapest bookable** rate. Local
+    tiers are free (0); a cloud model with no known price sorts last (``inf``) so
+    an unknown never wins on cost. Considers both the curated offerings and the
+    reconciled per-variant endpoints (gripe 162624), since the cheapest fp4
+    endpoint is the price a booking can actually get."""
     if (meta.get("tier_floor") or "").startswith("local"):
         return 0.0
     prices = [
-        o["price_in"]
-        for o in (meta.get("offerings") or [])
-        if isinstance(o, dict) and o.get("price_in") is not None
+        src["price_in"]
+        for src in (meta.get("offerings") or []) + (meta.get("endpoints") or [])
+        if isinstance(src, dict) and src.get("price_in") is not None
     ]
     if prices:
         return float(min(prices))
@@ -117,10 +142,46 @@ def _pick_offering(
     return offerings[0] if offerings else None
 
 
+def _endpoint_fits(e: dict[str, Any], req: Requirement) -> bool:
+    """A reconciled endpoint is bookable for ``req``: live-ish (``status`` not a
+    hard-down negative), window big enough (headroom-aware), and carrying the
+    required tool/structured flags when it declares them."""
+    if e.get("status") is not None and int(e["status"]) < 0:
+        return False
+    if req.max_input is not None and e.get("max_input"):
+        if not admit(req.max_input, int(e["max_input"])).fits:
+            return False
+    if req.needs_tools and e.get("tools") is False:
+        return False
+    if req.needs_structured and e.get("structured") is False:
+        return False
+    return True
+
+
+def _pick_endpoint(meta: dict[str, Any], req: Requirement) -> dict[str, Any] | None:
+    """The cheapest reconciled endpoint of a card that fits the requirement — the
+    variant a booking pins (gripe 162624). ``None`` when the card has no endpoints
+    or none fit (the caller posts the bare slug, today's behaviour)."""
+    fits = [
+        e
+        for e in (meta.get("endpoints") or [])
+        if isinstance(e, dict) and _endpoint_fits(e, req)
+    ]
+    if not fits:
+        return None
+    return min(
+        fits,
+        key=lambda e: e["price_in"] if e.get("price_in") is not None else float("inf"),
+    )
+
+
 def _runnable(meta: dict[str, Any]) -> bool:
-    """Availability proxy: we know how to run it (an offering or reconciled
-    facts). A bare card with neither is skipped."""
-    return bool(meta.get("offerings") or meta.get("facts_openrouter"))
+    """Availability proxy: we know how to run it (a curated offering, a reconciled
+    endpoint, or the top-level reconciled facts). A bare card with none is
+    skipped."""
+    return bool(
+        meta.get("offerings") or meta.get("endpoints") or meta.get("facts_openrouter")
+    )
 
 
 def _passes(store: Store, meta: dict[str, Any], req: Requirement) -> bool:
@@ -219,6 +280,13 @@ def select_offering(store: Store, req: Requirement) -> Selection:
         key=lambda it: (_model_price(it[1]), -_axis_ordinal(it[1], req.axis), it[0])
     )
     chosen_mid, chosen_meta = survivors[0]
+    endpoint = _pick_endpoint(chosen_meta, req)
+    booked = ""
+    if endpoint is not None:
+        variant = "/".join(
+            str(endpoint[k]) for k in ("provider", "quant") if endpoint.get(k)
+        )
+        booked = f"; booked {variant}" if variant else ""
     return Selection(
         model=chosen_mid,
         offering=_pick_offering(chosen_meta, req.transport),
@@ -228,7 +296,9 @@ def select_offering(store: Store, req: Requirement) -> Selection:
             f"cheapest {req.axis or 'model'}"
             + (f" ≥{req.min_ordinal}" if req.axis else "")
             + " that fits window/budget/flags"
+            + booked
         ),
+        endpoint=endpoint,
     )
 
 

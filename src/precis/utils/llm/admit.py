@@ -136,9 +136,12 @@ def window_for(meta: dict[str, Any], transport: str | None = None) -> int | None
     """The max-input token window for a card, most-specific first.
 
     Prefers an offering matching ``transport`` that declares ``max_input``, then
-    any offering's ``max_input``, then the reconciled OpenRouter
-    ``context_length`` (the slice-1 fact). ``None`` when the card knows no
-    window — the admit degrades to allow.
+    any offering's ``max_input``, then the **widest** reconciled endpoint window
+    (a booking can pin the wide variant — gripe 162624), then the reconciled
+    OpenRouter ``context_length`` (the slice-1 fact). ``None`` when the card
+    knows no window — the admit degrades to allow. This is deliberately lenient
+    (admit refuses only a *known* too-small window); the per-variant window a
+    concrete booking actually gets is enforced at selection time.
     """
     offerings = meta.get("offerings") or []
     if transport is not None:
@@ -152,6 +155,13 @@ def window_for(meta: dict[str, Any], transport: str | None = None) -> int | None
     for o in offerings:
         if isinstance(o, dict) and o.get("max_input"):
             return int(o["max_input"])
+    windows = [
+        int(e["max_input"])
+        for e in (meta.get("endpoints") or [])
+        if isinstance(e, dict) and e.get("max_input")
+    ]
+    if windows:
+        return max(windows)
     fo = meta.get("facts_openrouter") or {}
     if fo.get("context_length"):
         return int(fo["context_length"])

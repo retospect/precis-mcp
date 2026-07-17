@@ -61,6 +61,34 @@ OFFERING_KEYS: frozenset[str] = frozenset(
     }
 )
 
+#: Keys a reconciled **endpoint** (a bookable provider×quant variant, minted by
+#: ``llm_reconcile`` from OpenRouter ``/models/{slug}/endpoints``) may carry. An
+#: endpoint is the variant-precise unit the ``provider:{order,quantizations}`` pin
+#: books (gripe 162624): one OpenRouter slug fans out to ~28 of these, differing
+#: by provider / quant (fp4≠fp8) / window (1M..101k) / price — so capability and
+#: price are *endpoint*-scoped, not card-scoped. ``meta.endpoints`` is machine-
+#: maintained (reconcile rewrites it wholesale each pass) and kept **separate**
+#: from the curated ``meta.offerings`` (the operating points the policy ranks):
+#: reconcile never clobbers a seeded offering. ``capability`` is an optional
+#: per-variant ordinal block (a fp8/1M endpoint scores differently than fp4/101k);
+#: ``status`` / ``uptime_1d`` are the availability telemetry a booking consults.
+ENDPOINT_KEYS: frozenset[str] = frozenset(
+    {
+        "provider",
+        "quant",
+        "tag",
+        "max_input",
+        "max_output",
+        "price_in",
+        "price_out",
+        "tools",
+        "structured",
+        "status",
+        "uptime_1d",
+        "capability",
+    }
+)
+
 LLM_KIND = "llm"
 
 
@@ -106,12 +134,46 @@ def _validate_capability(capability: Any) -> dict[str, Any]:
     return capability
 
 
+def _validate_endpoints(endpoints: Any) -> list[dict[str, Any]]:
+    if not isinstance(endpoints, list):
+        raise BadInput(
+            "endpoints= must be a list of bookable-variant dicts",
+            next="each is {provider, quant, max_input, price_in, price_out, ...}",
+        )
+    out: list[dict[str, Any]] = []
+    for e in endpoints:
+        if not isinstance(e, dict):
+            raise BadInput("each endpoint must be a dict")
+        unknown = set(e) - ENDPOINT_KEYS
+        if unknown:
+            raise BadInput(
+                f"unknown endpoint key(s) {sorted(unknown)}",
+                options=sorted(ENDPOINT_KEYS),
+            )
+        if e.get("capability") is not None:
+            _validate_capability(e["capability"])
+        out.append(e)
+    return out
+
+
+def _validate_params(params: Any) -> dict[str, Any]:
+    """The model's static shape (size / architecture / license) — free-form
+    prose-grade facts, so only the container is checked. OpenRouter's feed
+    carries no param count, so ``params`` is seeded from curated knowledge and
+    left for a human/reconcile to enrich."""
+    if not isinstance(params, dict):
+        raise BadInput("params= must be a dict (size / arch / license facts)")
+    return params
+
+
 def build_meta(
     *,
     model_id: str,
     tier_floor: str | None = None,
     offerings: Any = None,
+    endpoints: Any = None,
     capability: Any = None,
+    params: Any = None,
     provenance: Any = None,
 ) -> dict[str, Any]:
     """Validate + assemble the ``meta`` patch for a model card.
@@ -128,8 +190,12 @@ def build_meta(
         meta["tier_floor"] = str(tier_floor)
     if offerings is not None:
         meta["offerings"] = _validate_offerings(offerings)
+    if endpoints is not None:
+        meta["endpoints"] = _validate_endpoints(endpoints)
     if capability is not None:
         meta["capability"] = _validate_capability(capability)
+    if params is not None:
+        meta["params"] = _validate_params(params)
     if provenance is not None:
         meta["provenance"] = provenance
     return meta
@@ -142,7 +208,9 @@ def upsert_card(
     text: str,
     tier_floor: str | None = None,
     offerings: Any = None,
+    endpoints: Any = None,
     capability: Any = None,
+    params: Any = None,
     provenance: Any = None,
 ) -> tuple[int, bool]:
     """Create or refresh the ``llm`` card for ``model_id``. Returns ``(ref_id, created)``.
@@ -158,7 +226,9 @@ def upsert_card(
         model_id=model_id,
         tier_floor=tier_floor,
         offerings=offerings,
+        endpoints=endpoints,
         capability=capability,
+        params=params,
         provenance=provenance,
     )
     existing = store.find_ref_by_meta(kind=LLM_KIND, key="model_id", value=model_id)
@@ -215,12 +285,16 @@ def append_review(
     provenance: str | None = None,
     axis: str | None = None,
     ordinal: int | None = None,
+    variant: str | None = None,
 ) -> int:
     """Append one WORM review entry to a card; return its 1-based number.
 
     Permissive (stamps what it is given) — the handler validates ``review_type``
     against :data:`REVIEW_TYPES` to reject a typo. ``axis``/``ordinal`` tag an
-    eval result so the derived capability can be traced back to its evidence.
+    eval result so the derived capability can be traced back to its evidence;
+    ``variant`` (e.g. ``fp8`` or ``fp8@Baidu``) scopes a ``published-benchmark``
+    entry to the endpoint it was measured on — a card-level number silently
+    inherited by a fp4/101k endpoint is the bug gripe 162624 fixes.
     """
     meta: dict[str, Any] = {
         "chunk_kind": REVIEW_KIND,
@@ -233,6 +307,8 @@ def append_review(
         meta["axis"] = axis
     if ordinal is not None:
         meta["ordinal"] = int(ordinal)
+    if variant is not None:
+        meta["variant"] = variant
     # list_blocks_for_ref excludes the ord=-1 card, so the first review is pos=0.
     next_pos = len(store.list_blocks_for_ref(ref_id))
     with store.tx() as conn:
@@ -405,6 +481,81 @@ def record_eval(
         provenance=provenance,
         axis=axis,
         ordinal=ordinal,
+    )
+
+
+def record_benchmark(
+    store: Store,
+    model_id: str,
+    *,
+    axis: str,
+    ordinal: int,
+    quant: str | None = None,
+    provider: str | None = None,
+    source_url: str | None = None,
+    by: str = "reconcile",
+    note: str = "",
+) -> int:
+    """Record a **variant-scoped** published benchmark: a low-trust
+    ``published-benchmark`` review whose provenance carries the quant + source
+    URL, plus (when ``quant`` matches a reconciled endpoint) the ordinal stamped
+    onto *that endpoint's* capability rather than the whole card (gripe 162624).
+
+    A card-level published ordinal is the coarse fallback the policy reads when a
+    specific endpoint has none; this is the higher-fidelity path — a fp8 SWE-bench
+    number lands only on the fp8 endpoints, so booking a fp4/101k variant does not
+    inherit it. Returns the review number.
+    """
+    if axis not in CAPABILITY_AXES:
+        raise BadInput(
+            f"unknown capability axis {axis!r}", options=list(CAPABILITY_AXES)
+        )
+    if (
+        not isinstance(ordinal, int)
+        or isinstance(ordinal, bool)
+        or not 1 <= ordinal <= 5
+    ):
+        raise BadInput(f"ordinal must be an int 1..5, got {ordinal!r}")
+    ref = store.find_ref_by_meta(kind=LLM_KIND, key="model_id", value=model_id)
+    if ref is None:
+        raise BadInput(f"no llm card for model {model_id!r}")
+    variant = None
+    if quant:
+        variant = f"{quant}@{provider}" if provider else quant
+
+    # Stamp the ordinal onto every reconciled endpoint of this quant (the
+    # variant-scoped capability the slice-2 policy will read); no-op when the
+    # card has no endpoints yet or the quant is unspecified.
+    if quant:
+        meta = ref.meta or {}
+        endpoints = [dict(e) for e in (meta.get("endpoints") or [])]
+        touched = False
+        for e in endpoints:
+            if e.get("quant") != quant:
+                continue
+            if provider is not None and e.get("provider") != provider:
+                continue
+            cap = dict(e.get("capability") or {})
+            cap[axis] = {"score": ordinal, "provenance": "published-benchmark"}
+            e["capability"] = cap
+            touched = True
+        if touched:
+            store.update_ref(ref.id, meta_patch={"endpoints": endpoints})
+
+    prov = source_url or "published-benchmark"
+    if quant and source_url:
+        prov = f"{source_url} ({quant})"
+    return append_review(
+        store,
+        ref.id,
+        text=note
+        or f"{axis} = {ordinal} (published-benchmark{f', {variant}' if variant else ''})",
+        review_type="published-benchmark",
+        by=by,
+        provenance=prov,
+        axis=axis,
+        ordinal=ordinal,
+        variant=variant,
     )
 
 
@@ -675,6 +826,31 @@ _FRONTIER_PROSE: dict[str, str] = {
 }
 
 
+#: Static model shape per frontier model — ``meta.params`` (size / arch /
+#: license). OpenRouter's ``architecture`` block carries no parameter count, so
+#: these are curated (the number you need to reason about "the 744B MoE vs the
+#: 20B" when booking). ``reconcile`` leaves ``params`` untouched (it refreshes
+#: only the live facts), so a hand-correction survives.
+_FRONTIER_PARAMS: dict[str, dict[str, str]] = {
+    "z-ai/glm-5.2": {"size": "744B", "arch": "MoE", "license": "MIT"},
+    "moonshotai/kimi-k3": {"size": "~1T", "arch": "MoE", "license": "modified-MIT"},
+    "deepseek/deepseek-v4-pro": {"size": "~685B", "arch": "MoE", "license": "MIT"},
+    "moonshotai/kimi-k2.7-code": {
+        "size": "~1T",
+        "arch": "MoE",
+        "license": "modified-MIT",
+    },
+    "qwen/qwen3.7-max": {"size": "~1T", "arch": "MoE", "license": "Apache-2.0"},
+    "minimax/minimax-m3": {"size": "~456B", "arch": "MoE", "license": "MIT"},
+    "z-ai/glm-4.7": {"size": "355B", "arch": "MoE", "license": "MIT"},
+    "qwen/qwen3.6-flash": {"size": "~30B", "arch": "MoE", "license": "Apache-2.0"},
+    "deepseek/deepseek-v4-flash": {"size": "~100B", "arch": "MoE", "license": "MIT"},
+    "z-ai/glm-4.7-flash": {"size": "~106B", "arch": "MoE", "license": "MIT"},
+    "openai/gpt-oss-120b": {"size": "117B", "arch": "MoE", "license": "Apache-2.0"},
+    "openai/gpt-oss-20b": {"size": "21B", "arch": "MoE", "license": "Apache-2.0"},
+}
+
+
 def seed_frontier_cards(store: Store) -> list[tuple[str, int, bool]]:
     """Mint (or refresh) a card per curated **frontier open-weight** model — the
     best OSS reasoning/agentic models, Opus→Haiku (:data:`_FRONTIER_CARDS`).
@@ -712,6 +888,7 @@ def seed_frontier_cards(store: Store) -> list[tuple[str, int, bool]]:
             tier_floor=tier_floor,
             offerings=[offering],
             capability=capability,
+            params=_FRONTIER_PARAMS.get(model_id),
             provenance={"source": "seed-frontier", "band": "published-benchmark"},
         )
         results.append((model_id, ref_id, created))
@@ -757,6 +934,7 @@ def seed_default_cards(store: Store) -> list[tuple[str, int, bool]]:
 __all__ = [
     "CAPABILITY_AXES",
     "DEFAULT_REVIEW_TYPE",
+    "ENDPOINT_KEYS",
     "LLM_KIND",
     "OFFERING_KEYS",
     "PROVENANCE_TRUST",
@@ -769,6 +947,7 @@ __all__ = [
     "list_reviews",
     "llm_tote",
     "llm_tote_by_source",
+    "record_benchmark",
     "record_eval",
     "record_observed_axes",
     "seed_default_cards",

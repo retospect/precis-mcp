@@ -202,3 +202,96 @@ class TestHardFilters:
             clean_catalog, _req(tier_floor=Tier.CLOUD_MID, axis="code", min_ordinal=4)
         )
         assert sel.model == "mid4" and sel.next_better is None
+
+
+class TestEndpointBooking:
+    """gripe 162624 — select_offering pins the cheapest fitting endpoint."""
+
+    def test_books_cheapest_fitting_endpoint(self, clean_catalog: Any) -> None:
+        from precis.utils.llm.policy import select_offering
+
+        _card(
+            clean_catalog,
+            "z-ai/glm-5.2",
+            tier_floor="cloud-super",
+            capability={"code": 5},
+            endpoints=[
+                {
+                    "provider": "Baidu",
+                    "quant": "fp8",
+                    "max_input": 1_048_576,
+                    "price_in": 0.97,
+                    "tools": True,
+                    "status": 0,
+                },
+                {
+                    "provider": "DeepInfra",
+                    "quant": "fp4",
+                    "max_input": 1_048_576,
+                    "price_in": 0.93,
+                    "tools": True,
+                    "status": 0,
+                },
+            ],
+        )
+        sel = select_offering(
+            clean_catalog, _req(tier_floor="cloud-super", axis="code", min_ordinal=5)
+        )
+        assert sel.from_catalog
+        assert sel.endpoint is not None
+        assert sel.endpoint["provider"] == "DeepInfra"  # cheapest (0.93)
+        assert "DeepInfra/fp4" in sel.reason
+
+    def test_endpoint_window_filter_excludes_small_variant(
+        self, clean_catalog: Any
+    ) -> None:
+        from precis.utils.llm.policy import select_offering
+
+        _card(
+            clean_catalog,
+            "wide-model",
+            tier_floor="cloud-super",
+            endpoints=[
+                {
+                    "provider": "Small",
+                    "quant": "fp8",
+                    "max_input": 101_376,
+                    "price_in": 0.1,
+                    "status": 0,
+                },
+                {
+                    "provider": "Wide",
+                    "quant": "fp8",
+                    "max_input": 1_048_576,
+                    "price_in": 0.5,
+                    "status": 0,
+                },
+            ],
+        )
+        # need a 500k window → the cheap 101k endpoint can't be booked
+        sel = select_offering(
+            clean_catalog, _req(tier_floor="cloud-super", max_input=500_000)
+        )
+        assert sel.endpoint is not None
+        assert sel.endpoint["provider"] == "Wide"
+
+    def test_no_endpoints_leaves_endpoint_none(self, clean_catalog: Any) -> None:
+        from precis.utils.llm.policy import select_offering
+
+        _card(
+            clean_catalog,
+            "slug-only",
+            tier_floor="cloud-super",
+            offerings=[{"transport": "openai_compat", "price_in": 1.0}],
+        )
+        sel = select_offering(clean_catalog, _req(tier_floor="cloud-super"))
+        assert sel.from_catalog
+        assert sel.endpoint is None  # bare slug, today's behaviour
+
+    def test_endpoint_capability_overrides_card_ordinal(self) -> None:
+        from precis.utils.llm.policy import _axis_ordinal
+
+        meta = {"capability": {"code": 3}}
+        ep = {"capability": {"code": {"score": 5}}}
+        assert _axis_ordinal(meta, "code") == 3
+        assert _axis_ordinal(meta, "code", ep) == 5  # variant-scoped wins

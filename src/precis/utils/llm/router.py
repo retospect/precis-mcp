@@ -388,6 +388,13 @@ class LlmRequest:
     model: str | None = None
     max_usd: float | None = None
     timeout_s: float | None = None
+    #: A booked OpenRouter variant (a ``meta.endpoints`` dict — provider / quant /
+    #: window) + reasoning effort, pinned onto the ``openai_compat`` wire so the
+    #: call reproducibly hits *that* provider×quant instead of OpenRouter load-
+    #: balancing the ~28 (gripe 162624). ``None`` ⇒ today's behaviour (slug only).
+    #: A ``select_offering`` caller threads ``Selection.endpoint`` here.
+    endpoint: dict[str, Any] | None = None
+    effort: str | None = None
     #: Caller label ("dream", "review:structural", "chase:verify", ...) — the
     #: categorical feature the route-log keys on and the future per-source
     #: switchover knob. Free-form; empty when a caller hasn't set one yet.
@@ -829,15 +836,56 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     return result_from_openai(res, model=model, tier=req.tier)
 
 
+def openrouter_routing(
+    endpoint: dict[str, Any] | None, *, effort: str | None = None
+) -> dict[str, Any]:
+    """Translate a booked ``meta.endpoints`` variant → the OpenRouter request-body
+    block that pins it (gripe 162624).
+
+    Emits ``provider:{order:[<slug>], quantizations:[<quant>],
+    allow_fallbacks:false, require_parameters:true}`` so OpenRouter routes to
+    *exactly* that provider×quant (no load-balancing across the ~28 endpoints),
+    plus ``reasoning:{effort}`` when an effort is set. The provider slug comes
+    from the endpoint's OpenRouter ``tag`` (``deepinfra/fp4`` → ``deepinfra``,
+    the routing key), falling back to a lower-cased ``provider`` name. A
+    ``quant`` of ``unknown`` is omitted (nothing to pin). Returns ``{}`` when
+    there is nothing to pin — the caller then posts the bare slug, today's
+    behaviour.
+    """
+    body: dict[str, Any] = {}
+    provider: dict[str, Any] = {}
+    if endpoint:
+        tag = str(endpoint.get("tag") or "")
+        slug = (
+            tag.split("/")[0]
+            if "/" in tag
+            else str(endpoint.get("provider") or "").lower()
+        )
+        if slug:
+            provider["order"] = [slug]
+            provider["allow_fallbacks"] = False
+        quant = endpoint.get("quant")
+        if quant and quant != "unknown":
+            provider["quantizations"] = [quant]
+    if provider:
+        provider["require_parameters"] = True
+        body["provider"] = provider
+    if effort:
+        body["reasoning"] = {"effort": effort}
+    return body
+
+
 def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
     """Drive a hosted OpenAI-compatible OSS backend (the ``OPENAI`` backend).
 
     Same OpenAI ``/v1/chat/completions`` client as :func:`_dispatch_local`,
     but pointed at ``PRECIS_LLM_BASE_URL`` and authed with a vault-resolved
     key (``get_secret('PRECIS_LLM_API_KEY')`` — env-override-wins, so a key
-    in the environment still works during transition). Imports the
-    summarizer client + the secrets resolver lazily to keep this module out
-    of the worker/DB import chain.
+    in the environment still works during transition). When the request carries
+    a booked ``endpoint`` (gripe 162624), the OpenRouter ``provider:{}`` /
+    ``reasoning:{}`` pin is merged into the body so the call hits that exact
+    provider×quant. Imports the summarizer client + the secrets resolver lazily
+    to keep this module out of the worker/DB import chain.
     """
     from dataclasses import replace
 
@@ -854,9 +902,16 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
         enabled=True,
     )
     messages = req.messages or [{"role": "user", "content": req.prompt}]
+    extra_body = openrouter_routing(req.endpoint, effort=req.effort)
     client = LlmClient(cfg)
     try:
-        res = client.complete(messages)
+        # Only pass extra_body when there is a booking to pin, so the un-booked
+        # path is the byte-identical call it was before (gripe 162624 ships dark).
+        res = (
+            client.complete(messages, extra_body=extra_body)
+            if extra_body
+            else client.complete(messages)
+        )
     except (RuntimeError, OSError) as exc:
         return LlmResult(
             text="",
@@ -969,6 +1024,7 @@ __all__ = [
     "Tier",
     "Transport",
     "dispatch",
+    "openrouter_routing",
     "provider_for",
     "resolve_backend",
     "resolve_model",

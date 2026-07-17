@@ -767,3 +767,69 @@ def test_failover_no_warning_when_primary_succeeds(
     with caplog.at_level(logging.WARNING, logger="precis.utils.llm.router"):
         prov.run(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x"), model="m")
     assert not [r for r in caplog.records if "llm-failover" in r.getMessage()]
+
+
+# ── openrouter_routing: variant pin → OpenRouter provider{} block (162624) ──
+
+
+def test_openrouter_routing_pins_provider_and_quant() -> None:
+    from precis.utils.llm.router import openrouter_routing
+
+    body = openrouter_routing(
+        {"provider": "DeepInfra", "quant": "fp4", "tag": "deepinfra/fp4"},
+        effort="medium",
+    )
+    assert body["provider"]["order"] == ["deepinfra"]  # slug from the tag
+    assert body["provider"]["quantizations"] == ["fp4"]
+    assert body["provider"]["allow_fallbacks"] is False
+    assert body["provider"]["require_parameters"] is True
+    assert body["reasoning"] == {"effort": "medium"}
+
+
+def test_openrouter_routing_falls_back_to_provider_name() -> None:
+    from precis.utils.llm.router import openrouter_routing
+
+    body = openrouter_routing({"provider": "Baidu", "quant": "fp8"})
+    assert body["provider"]["order"] == ["baidu"]
+    assert body["provider"]["quantizations"] == ["fp8"]
+    assert "reasoning" not in body  # no effort → no reasoning block
+
+
+def test_openrouter_routing_omits_unknown_quant_and_empty() -> None:
+    from precis.utils.llm.router import openrouter_routing
+
+    body = openrouter_routing({"provider": "X", "quant": "unknown"})
+    assert "quantizations" not in body["provider"]
+    assert openrouter_routing(None) == {}  # nothing to pin → bare slug
+
+
+def test_dispatch_openai_compat_threads_the_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The booked endpoint on the request lands as extra_body on the wire.
+    import precis.workers.llm_summarize as summ
+    from precis.utils.llm.router import _dispatch_openai_compat
+
+    captured: dict[str, object] = {}
+
+    class _FakeClient:
+        def __init__(self, cfg: object) -> None:
+            pass
+
+        def complete(self, messages, *, extra_body=None):  # type: ignore[no-untyped-def]
+            captured["extra_body"] = extra_body
+            return summ.LlmResult(text="ok", total_tokens=3)
+
+    monkeypatch.setattr(summ, "LlmClient", _FakeClient)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "http://backend.example/v1")
+    req = LlmRequest(
+        tier=Tier.CLOUD_SUPER,
+        prompt="hi",
+        endpoint={"provider": "DeepInfra", "quant": "fp4", "tag": "deepinfra/fp4"},
+        effort="high",
+    )
+    res = _dispatch_openai_compat(req, "z-ai/glm-5.2")
+    assert res.error is None and res.text == "ok"
+    eb = captured["extra_body"]
+    assert eb["provider"]["order"] == ["deepinfra"]  # type: ignore[index]
+    assert eb["reasoning"] == {"effort": "high"}  # type: ignore[index]

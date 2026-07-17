@@ -274,8 +274,18 @@ class LlmClient:
         self._config = config
         self._transport: Transport = transport or _UrllibTransport()
 
-    def complete(self, messages: list[dict[str, str]]) -> LlmResult:
+    def complete(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        extra_body: dict[str, Any] | None = None,
+    ) -> LlmResult:
         """POST ``messages`` and return the assistant text + usage.
+
+        ``extra_body`` is merged into the request payload — the seam the router
+        uses to pin an OpenRouter variant (``provider:{order,quantizations,…}`` +
+        ``reasoning:{effort}``, gripe 162624) without this client knowing about
+        booking. Absent on the loopback / summarizer path.
 
         Raises on transport error or a malformed response so the pass
         marks the chunk failed (ADR 0007) and moves on.
@@ -287,6 +297,8 @@ class LlmClient:
             "max_tokens": self._config.max_tokens,
             "temperature": 0,
         }
+        if extra_body:
+            payload.update(extra_body)
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self._config.api_key}",
