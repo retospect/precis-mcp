@@ -553,7 +553,15 @@ The master kinds table lives in the `precis-overview` skill.
   live OpenRouter feed (`/api/v1/models` — no key) + flags **proxy drift** (a card
   whose loopback-proxy offering names a model the proxy can't serve — the
   opus-not-in-proxy 400) via `raise_alert`. Seed + drive: `precis llm
-  seed|reconcile|list`. Empty catalog ⇒ byte-identical to today (`Tier` stays the
+  seed|reconcile|list`. **`seed_frontier_cards`** (`precis llm seed --frontier` /
+  `--all`) additionally mints a curated **frontier open-weight ladder** (Opus→Haiku,
+  all tool+reasoning-capable: GLM-5.2 / Kimi K3 / DeepSeek-V4 / Kimi-K2.7-Code /
+  Qwen3.7-Max / MiniMax-M3 / GLM-4.7 / Qwen3.6-Flash / DeepSeek-V4-Flash /
+  GLM-4.7-Flash / gpt-oss-120b/20b) with `openai_compat` offerings (window+price
+  from the live OpenRouter snapshot) + provisional `published-benchmark` capability
+  ordinals — the open-weight menu `select_offering` picks from; `record_observed_axes`
+  / `record_eval` overwrite the ordinals with higher-trust numbers once they run.
+  Empty catalog ⇒ byte-identical to today (`Tier` stays the
   floor). **Slice 2 (`admit()`) built** (`utils/llm/admit.py`): a pure
   `est_tokens×(1+headroom) ≤ max_input` fit-check wired into `router.dispatch`
   after `gate_tier` — refuses a doomed (context, model) pairing *with the numbers*

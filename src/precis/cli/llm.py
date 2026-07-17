@@ -1,8 +1,10 @@
 """``precis llm`` — drive the LLM catalog from the CLI (docs/proposals/llm-catalog.md).
 
-    precis llm seed          # mint/refresh a card per model precis runs
-    precis llm reconcile      # run one reconcile pass now (facts + drift), forced
-    precis llm list           # list the catalog cards
+    precis llm seed             # mint/refresh a card per model precis runs
+    precis llm seed --frontier  # + the curated frontier open-weight ladder (OSS)
+    precis llm seed --all       # both default + frontier
+    precis llm reconcile        # run one reconcile pass now (facts + drift), forced
+    precis llm list             # list the catalog cards
 
 Slice 1 is read-only: the catalog is machine-maintained (seed + reconcile), and
 agents *read* it via search/get. The whole thing ships dark — an empty catalog is
@@ -26,6 +28,17 @@ def add_parser(subparsers: Any) -> None:
 
     s = lsub.add_parser("seed", help="Mint/refresh a card per model precis runs.")
     s.add_argument("--database-url", default=None, help="Postgres DSN override.")
+    s.add_argument(
+        "--frontier",
+        action="store_true",
+        help="Seed the curated frontier open-weight ladder (Opus→Haiku) instead "
+        "of the models precis already runs.",
+    )
+    s.add_argument(
+        "--all",
+        action="store_true",
+        help="Seed both the default (models precis runs) and frontier ladders.",
+    )
 
     r = lsub.add_parser(
         "reconcile", help="Run one reconcile pass now (refresh facts + flag drift)."
@@ -77,11 +90,18 @@ def add_parser(subparsers: Any) -> None:
     ch.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
 
-def _cmd_seed(store: Store) -> None:
-    from precis.llm_catalog import seed_default_cards
+def _cmd_seed(store: Store, *, frontier: bool = False, seed_all: bool = False) -> None:
+    from precis.llm_catalog import seed_default_cards, seed_frontier_cards
 
-    for model_id, ref_id, created in seed_default_cards(store):
-        print(f"{'created' if created else 'refreshed'} llm lm{ref_id} — {model_id}")
+    seeders = []
+    if seed_all or not frontier:
+        seeders.append(seed_default_cards)
+    if seed_all or frontier:
+        seeders.append(seed_frontier_cards)
+    for seeder in seeders:
+        for model_id, ref_id, created in seeder(store):
+            verb = "created" if created else "refreshed"
+            print(f"{verb} llm lm{ref_id} — {model_id}")
 
 
 def _cmd_reconcile(store: Store) -> None:
@@ -166,7 +186,7 @@ def _cmd_choose(store: Store, args: argparse.Namespace) -> None:
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url))
     if args.llm_cmd == "seed":
-        _cmd_seed(store)
+        _cmd_seed(store, frontier=args.frontier, seed_all=args.all)
     elif args.llm_cmd == "reconcile":
         _cmd_reconcile(store)
     elif args.llm_cmd == "list":

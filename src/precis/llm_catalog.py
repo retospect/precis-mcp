@@ -438,6 +438,286 @@ _SEED_PROSE: dict[str, str] = {
 }
 
 
+#: The curated **frontier open-weight** ladder — the best OSS reasoning/agentic
+#: models, spanning the tiers Opus→Haiku, all tool- *and* reasoning-capable
+#: (``supported_parameters`` on OpenRouter carries ``tools`` + ``reasoning``).
+#: These are the Claude-Code-reasoning replacements: seeded so the ``select_offering``
+#: policy can pick per task (heavy reasoner vs cheap coder vs fast triage) once a
+#: call site routes through it. Facts are seed-grade from the live OpenRouter feed
+#: (window + per-1M USD price snapshot); the ``llm_reconcile`` pass then keeps
+#: ``facts_openrouter`` (window / price / ``supported_parameters``) authoritative.
+#: Capability ordinals are **provisional ``published-benchmark``** (low trust) from
+#: mid-2026 SWE-bench/Terminal-Bench/agentic leaderboards — ``record_observed_axes``
+#: (telemetry) and ``record_eval`` (golden sets) overwrite them with higher-trust
+#: numbers once these models actually run. All route via the OSS backend
+#: (``openai_compat`` transport → OpenRouter), so switching to one is env-only
+#: (``PRECIS_LLM_BACKEND`` + ``PRECIS_LLM_BASE_URL``).
+#:
+#: Each row: (model_id, tier_floor, max_input, price_in, price_out, capability).
+_FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] = (
+    # ── cloud-super — Opus-class heavy reasoning with tools ────────────────
+    (
+        "z-ai/glm-5.2",
+        "cloud-super",
+        1_048_576,
+        0.969,
+        3.045,
+        {
+            "code": 5,
+            "reasoning-convergence": 5,
+            "tool-structured": 5,
+            "long-context-recall": 5,
+        },
+    ),
+    (
+        "moonshotai/kimi-k3",
+        "cloud-super",
+        1_048_576,
+        3.0,
+        15.0,
+        {
+            "code": 5,
+            "reasoning-convergence": 5,
+            "tool-structured": 5,
+            "long-context-recall": 5,
+        },
+    ),
+    (
+        "deepseek/deepseek-v4-pro",
+        "cloud-super",
+        1_048_576,
+        0.435,
+        0.87,
+        {
+            "code": 4,
+            "reasoning-convergence": 5,
+            "tool-structured": 4,
+            "long-context-recall": 5,
+        },
+    ),
+    # ── cloud-mid — Sonnet-class workhorse, capable with tools, cheaper ────
+    (
+        "moonshotai/kimi-k2.7-code",
+        "cloud-mid",
+        262_144,
+        0.75,
+        3.5,
+        {
+            "code": 5,
+            "reasoning-convergence": 4,
+            "tool-structured": 5,
+            "long-context-recall": 4,
+        },
+    ),
+    (
+        "qwen/qwen3.7-max",
+        "cloud-mid",
+        1_000_000,
+        1.475,
+        4.425,
+        {
+            "code": 4,
+            "reasoning-convergence": 4,
+            "tool-structured": 4,
+            "long-context-recall": 5,
+        },
+    ),
+    (
+        "minimax/minimax-m3",
+        "cloud-mid",
+        1_048_576,
+        0.30,
+        1.20,
+        {
+            "code": 3,
+            "reasoning-convergence": 3,
+            "tool-structured": 4,
+            "long-context-recall": 5,
+        },
+    ),
+    (
+        "z-ai/glm-4.7",
+        "cloud-mid",
+        202_752,
+        0.40,
+        1.75,
+        {
+            "code": 4,
+            "reasoning-convergence": 4,
+            "tool-structured": 4,
+            "long-context-recall": 3,
+        },
+    ),
+    # ── cloud-small — Haiku-class fast/cheap triage, still tool-capable ────
+    (
+        "qwen/qwen3.6-flash",
+        "cloud-small",
+        1_000_000,
+        0.188,
+        1.125,
+        {
+            "code": 3,
+            "reasoning-convergence": 3,
+            "tool-structured": 3,
+            "long-context-recall": 5,
+        },
+    ),
+    (
+        "deepseek/deepseek-v4-flash",
+        "cloud-small",
+        1_048_576,
+        0.098,
+        0.196,
+        {
+            "code": 3,
+            "reasoning-convergence": 4,
+            "tool-structured": 3,
+            "long-context-recall": 5,
+        },
+    ),
+    (
+        "z-ai/glm-4.7-flash",
+        "cloud-small",
+        202_752,
+        0.06,
+        0.40,
+        {
+            "code": 3,
+            "reasoning-convergence": 3,
+            "tool-structured": 3,
+            "long-context-recall": 3,
+        },
+    ),
+    (
+        "openai/gpt-oss-120b",
+        "cloud-small",
+        131_072,
+        0.037,
+        0.17,
+        {
+            "code": 3,
+            "reasoning-convergence": 3,
+            "tool-structured": 3,
+            "long-context-recall": 2,
+        },
+    ),
+    (
+        "openai/gpt-oss-20b",
+        "cloud-small",
+        131_072,
+        0.03,
+        0.13,
+        {
+            "code": 2,
+            "reasoning-convergence": 2,
+            "tool-structured": 2,
+            "long-context-recall": 2,
+        },
+    ),
+)
+
+#: Short capability prose per frontier model — the embedded body a card is born
+#: with (so ``search(kind='llm', q=…)`` matches before reviews/evals enrich it).
+_FRONTIER_PROSE: dict[str, str] = {
+    "z-ai/glm-5.2": (
+        "GLM-5.2 (Z.ai, 744B MoE, MIT) — the strongest all-round open-weight "
+        "model: first OSS to beat GPT-5.5 on SWE-bench Pro, leads Terminal-Bench, "
+        "1M context, multiple reasoning-effort levels. The primary open-weight "
+        "replacement for Claude-class agentic reasoning."
+    ),
+    "moonshotai/kimi-k3": (
+        "Kimi K3 (Moonshot, MoE) — flagship agentic / long-horizon model, 1M "
+        "context, reasoning always on. Strong at tool orchestration and repo-"
+        "level coding over long agent runs."
+    ),
+    "deepseek/deepseek-v4-pro": (
+        "DeepSeek V4 Pro (MIT) — algorithmic / competitive-programming reasoning "
+        "leader at a low price floor; 1M context, tools + reasoning. The cheap "
+        "heavy-reasoner rung."
+    ),
+    "moonshotai/kimi-k2.7-code": (
+        "Kimi K2.7 Code (Moonshot) — coding-specialised, ~30% fewer thinking "
+        "tokens than K2.6, which directly lowers the cost of long agent runs. "
+        "262K context, tools + reasoning."
+    ),
+    "qwen/qwen3.7-max": (
+        "Qwen3.7 Max (Alibaba, Apache) — a capable 1M-context workhorse with "
+        "strong tool calling and reasoning; the Sonnet-class rung."
+    ),
+    "minimax/minimax-m3": (
+        "MiniMax M3 — cheapest 1M-context open-weight model with tools + "
+        "reasoning and native multimodality; a low-cost long-context workhorse."
+    ),
+    "z-ai/glm-4.7": (
+        "GLM-4.7 (Z.ai) — the mid rung of the GLM line: strong coding + tool use "
+        "at a fraction of the flagship's price, 200K context."
+    ),
+    "qwen/qwen3.6-flash": (
+        "Qwen3.6 Flash (Alibaba) — a fast, cheap 1M-context model that still "
+        "carries tools + reasoning; the Haiku-class triage rung with a wide window."
+    ),
+    "deepseek/deepseek-v4-flash": (
+        "DeepSeek V4 Flash (MIT) — a remarkably cheap 1M-context reasoning model "
+        "with tools; strong value for fast triage that still needs to think."
+    ),
+    "z-ai/glm-4.7-flash": (
+        "GLM-4.7 Flash (Z.ai) — a very cheap fast model with tools + reasoning, "
+        "200K context; the low-cost classification / triage rung."
+    ),
+    "openai/gpt-oss-120b": (
+        "gpt-oss-120b (OpenAI, Apache) — an extremely cheap open-weight model with "
+        "tools + reasoning; runnable self-hosted, the near-free tool-capable rung."
+    ),
+    "openai/gpt-oss-20b": (
+        "gpt-oss-20b (OpenAI, Apache) — the small open-weight model with tools + "
+        "reasoning, runnable on modest hardware; the cheapest tool-capable rung."
+    ),
+}
+
+
+def seed_frontier_cards(store: Store) -> list[tuple[str, int, bool]]:
+    """Mint (or refresh) a card per curated **frontier open-weight** model — the
+    best OSS reasoning/agentic models, Opus→Haiku (:data:`_FRONTIER_CARDS`).
+
+    Additive to :func:`seed_default_cards` (which seeds the models precis already
+    runs): this fills the catalog with the open-weight menu the ``select_offering``
+    policy can pick from. Each card gets one ``openai_compat`` offering (window +
+    price from the live OpenRouter snapshot) and provisional ``published-benchmark``
+    capability ordinals; ``llm_reconcile`` keeps window/price/flags authoritative.
+    Idempotent (``upsert_card`` on ``model_id``). Returns ``[(model_id, ref_id,
+    created)]``.
+    """
+    results: list[tuple[str, int, bool]] = []
+    for (
+        model_id,
+        tier_floor,
+        max_input,
+        price_in,
+        price_out,
+        capability,
+    ) in _FRONTIER_CARDS:
+        offering: dict[str, Any] = {
+            "effort": "medium",
+            "transport": "openai_compat",
+            "endpoint": "openrouter",
+            "max_input": max_input,
+            "price_in": price_in,
+            "price_out": price_out,
+        }
+        prose = _FRONTIER_PROSE.get(model_id, f"{model_id} — open-weight model.")
+        ref_id, created = upsert_card(
+            store,
+            model_id=model_id,
+            text=prose,
+            tier_floor=tier_floor,
+            offerings=[offering],
+            capability=capability,
+            provenance={"source": "seed-frontier", "band": "published-benchmark"},
+        )
+        results.append((model_id, ref_id, created))
+    return results
+
+
 def seed_default_cards(store: Store) -> list[tuple[str, int, bool]]:
     """Mint (or refresh) a card per model precis actually runs — the ``Tier``
     table's resolved models (docs/proposals/llm-catalog.md, slice 1 seed).
@@ -492,5 +772,6 @@ __all__ = [
     "record_eval",
     "record_observed_axes",
     "seed_default_cards",
+    "seed_frontier_cards",
     "upsert_card",
 ]

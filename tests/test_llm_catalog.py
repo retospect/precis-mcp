@@ -271,3 +271,43 @@ class TestSeed:
         cards = store.list_refs(kind="llm", limit=100)
         floors = {(c.meta or {}).get("tier_floor") for c in cards}
         assert {t.value for t in Tier} <= floors
+
+    def test_frontier_seed_mints_oss_ladder(self, store: Any) -> None:
+        from precis import llm_catalog
+        from precis.llm_catalog import CAPABILITY_AXES
+
+        results = llm_catalog.seed_frontier_cards(store)
+        model_ids = {model_id for model_id, _rid, _created in results}
+        # The curated ladder is present, spans the cloud tiers, and every card is
+        # runnable (an offering) with a priced/windowed openai_compat operating point.
+        assert "z-ai/glm-5.2" in model_ids
+        assert len(model_ids) >= 10
+        by_id = {
+            (c.meta or {}).get("model_id"): c.meta or {}
+            for c in store.list_refs(kind="llm", limit=100)
+        }
+        floors = {
+            m.get("tier_floor")
+            for m in by_id.values()
+            if m.get("model_id") in model_ids
+        }
+        assert {"cloud-super", "cloud-mid", "cloud-small"} <= floors
+        glm = by_id["z-ai/glm-5.2"]
+        off = glm["offerings"][0]
+        assert off["transport"] == "openai_compat"
+        assert off["max_input"] == 1_048_576
+        assert off["price_in"] > 0 and off["price_out"] > 0
+        # Provisional capability ordinals are seeded, valid axes, 1..5.
+        cap = glm["capability"]
+        assert set(cap) <= set(CAPABILITY_AXES)
+        assert all(1 <= v <= 5 for v in cap.values())
+
+    def test_frontier_seed_is_idempotent(self, store: Any) -> None:
+        from precis import llm_catalog
+
+        first = llm_catalog.seed_frontier_cards(store)
+        assert all(created for _mid, _rid, created in first)
+        second = llm_catalog.seed_frontier_cards(store)
+        assert not any(created for _mid, _rid, created in second)
+        # Same ref ids on re-seed (upsert on model_id, no duplicates).
+        assert {rid for _m, rid, _c in first} == {rid for _m, rid, _c in second}
