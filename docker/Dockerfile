@@ -642,3 +642,39 @@ RUN pip install --no-cache-dir \
 WORKDIR /work
 ENTRYPOINT ["tini", "--"]
 CMD ["bash"]
+
+# =============================================================================
+# Stage: agent — the `precis-agent` image (§13, 13-code). runtime + node +
+# the `claude` CLI. ONE host-resident, digest-pinned image holding the SAME
+# wheel the worker installs, plus the CLI + the skill set (skills ship in the
+# wheel as package data → `get(kind='skill')`, so no extra copy). `docker run
+# --rm` against a resident image is milliseconds; the pull cost amortizes to ~0
+# because it's the wheel you already ship, frozen into a layer.
+#
+# The vaulted OAuth token (slice 0) makes `claude -p` stateless — env-only auth,
+# NO `~/.claude` state and NO key baked in. Two modes, one image (§13): OAuth
+# (`claude -p` on the Max token, the default) and API (metered
+# `ANTHROPIC_API_KEY`, the escape hatch); the executor injects `PRECIS_AGENT_MODE`
+# + the right secret by env (workers/executors/agent_container.py). The default
+# CMD just proves the CLI is present — real runs pass `claude -p "<prompt>"` (or
+# the api entrypoint) as `docker run` args, and the entrypoint execs them after
+# loading the injected secrets.
+#
+# Build:  docker build --target agent -t precis-agent:latest -f docker/Dockerfile .
+# =============================================================================
+FROM runtime AS agent
+
+USER root
+ARG NODE_MAJOR=20
+ARG CLAUDE_CODE_VERSION=2.1.143
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && npm cache clean --force \
+    && rm -rf /var/lib/apt/lists/*
+
+USER precis
+WORKDIR /data
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
+CMD ["claude", "--version"]
