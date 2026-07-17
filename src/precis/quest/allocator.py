@@ -6,12 +6,19 @@ interleave on their own. The allocator's only real decision is the narrow one �
 **when a slot frees, which idle / ready active quest ticks next?** — scored by a
 long-running average so it damps on the smoothed trend, not a single result:
 
-    score = EWMA( priority × momentum × (1 + promise) ) + exploration
+    score = EWMA( priority × progress_factor × (1 + promise) ) + aging
 
 * **priority** — the striving weight (slice 2's `base_weight` over `refs.prio`);
-* **momentum** — is anything flowing in (slice 3's label → a factor);
+* **progress_factor** — decays geometrically each tick a quest makes no
+  *external progress* (a new result / resolved hypothesis / paper / frontier
+  gain), floored so it never hard-zeroes. This deliberately replaced the old
+  *momentum* term, which rated a furiously-logging spin "active" and let it
+  monopolise the loop — activity is not progress;
 * **promise** — the frontier-improvement rate (slice 4c's acquisition term);
-* **exploration** — a decaying bonus so a rarely-picked quest is not starved.
+* **aging** — a weighted-round-robin fairness floor: a quest's score rises by
+  `EXPLORE` per round it has waited since its last pick, so nobody starves and
+  higher-priority strivings simply come up more often (replaces the old
+  picks-decay explore, which a much-picked quest could never recover).
 
 A **weekly proportional budget** (``PRECIS_QUEST_WEEKLY_BUDGET``, unset = no cap)
 bounds total draw: each active quest's share ∝ its priority weight, metered
@@ -49,13 +56,25 @@ log = logging.getLogger(__name__)
 
 #: EWMA smoothing on the raw bandit score (higher = more reactive).
 EWMA_ALPHA = float(os.environ.get("PRECIS_QUEST_EWMA_ALPHA", "0.3"))
-#: Exploration weight — the bonus a never-picked quest gets over a hot one.
+#: Aging weight — a quest's pick_score gains this per allocator round it has
+#: waited since it was last picked (anti-starvation; replaces the old
+#: picks-decay explore that a much-picked quest could never recover).
 EXPLORE = float(os.environ.get("PRECIS_QUEST_EXPLORE", "0.15"))
 #: Days a stalled quest may sit with no improvement before it cools to dormant.
 COOL_AFTER_TICKS = int(os.environ.get("PRECIS_QUEST_COOL_AFTER_TICKS", "12"))
 
-#: momentum label → a multiplicative factor on the bandit score.
-_MOMENTUM_FACTOR = {"active": 1.0, "warming": 0.7, "quiet": 0.5, "stalled": 0.3}
+#: Per-tick geometric decay of the progress factor: a quest making no external
+#: progress loses ground each tick, so a spinner falls behind a fresh or
+#: productive quest well before `cool_stalled` fires — without ever rewarding
+#: mere activity (the old momentum term rated a furiously-logging spin "active").
+PROGRESS_DECAY = float(os.environ.get("PRECIS_QUEST_PROGRESS_DECAY", "0.8"))
+#: Floor under the progress factor so a stalled quest still gets rare, aged picks
+#: (never a hard zero — cooling to dormant is the deliberate exit, not silent
+#: starvation).
+STALL_FLOOR = float(os.environ.get("PRECIS_QUEST_STALL_FLOOR", "0.1"))
+
+#: app_state key holding the monotonic allocator round counter (drives aging).
+_ROUND_KEY = "quest_allocator:round"
 
 
 @dataclass(frozen=True)
@@ -86,17 +105,32 @@ def active_quest_ids(store: Store) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
+def progress_factor(store: Store, quest_id: int) -> float:
+    """Geometric decay on ticks-since-progress, floored — the anti-spin term.
+
+    `ticks_since_frontier_improve` is the cascade's broadened progress clock: it
+    resets to 0 on any external progress (result / resolved hypothesis / paper /
+    frontier gain) and climbs otherwise. So a quest that only re-reasons decays
+    toward :data:`STALL_FLOOR` and loses picks to fresher / productive quests,
+    while never hard-zeroing (cooling to dormant is the deliberate exit).
+    """
+    ref = store.get_ref(kind="quest", id=quest_id)
+    ticks = (
+        int((ref.meta or {}).get("ticks_since_frontier_improve", 0) or 0) if ref else 0
+    )
+    return max(STALL_FLOOR, PROGRESS_DECAY**ticks)
+
+
 def raw_score(store: Store, quest_id: int) -> float:
-    """priority × momentum × (1 + promise) — the un-smoothed bandit value."""
-    from precis.quest import cascade, gaps, reweight
+    """priority × progress_factor × (1 + promise) — the un-smoothed bandit value."""
+    from precis.quest import cascade, reweight
 
     ref = store.get_ref(kind="quest", id=quest_id)
     if ref is None:
         return 0.0
     base = reweight.base_weight(ref.prio)
-    momentum = _MOMENTUM_FACTOR.get(gaps.quest_momentum(store, quest_id).label, 0.5)
     promise = max(0.0, cascade.quest_promise(store, quest_id))
-    return base * momentum * (1.0 + promise)
+    return base * progress_factor(store, quest_id) * (1.0 + promise)
 
 
 def _pick_count(store: Store, quest_id: int) -> int:
@@ -105,15 +139,32 @@ def _pick_count(store: Store, quest_id: int) -> int:
     return int((ref.meta or {}).get("picks", 0) or 0) if ref else 0
 
 
-def pick_score(store: Store, quest_id: int) -> float:
-    """The EWMA-smoothed score + a decaying exploration bonus, for ranking."""
+def _current_round(store: Store) -> int:
+    """The monotonic allocator round counter (0 before the first pick)."""
+    raw = store.get_setting(_ROUND_KEY)
+    try:
+        return int(raw) if raw is not None else 0
+    except ValueError:
+        return 0
+
+
+def _slots_since_last_pick(store: Store, quest_id: int, *, now_round: int) -> int:
+    """Rounds this quest has waited since its last pick (the aging term)."""
+    ref = store.get_ref(kind="quest", id=quest_id)
+    last = int((ref.meta or {}).get("last_pick_round", 0) or 0) if ref else 0
+    return max(0, now_round - last)
+
+
+def pick_score(store: Store, quest_id: int, *, now_round: int | None = None) -> float:
+    """The EWMA-smoothed raw score + the anti-starvation aging bonus, for ranking."""
     ref = store.get_ref(kind="quest", id=quest_id)
     meta = (ref.meta or {}) if ref else {}
     raw = raw_score(store, quest_id)
     prev = meta.get("ewma_score")
     smoothed = float(prev) if isinstance(prev, (int, float)) else raw
-    picks = int(meta.get("picks", 0) or 0)
-    return smoothed + EXPLORE / (picks + 1)
+    rnd = _current_round(store) if now_round is None else now_round
+    aging = EXPLORE * _slots_since_last_pick(store, quest_id, now_round=rnd)
+    return smoothed + aging
 
 
 # ── weekly budget (metered against the tote) ──────────────────────────
@@ -186,7 +237,8 @@ def pick_next_quest(store: Store, *, total_budget: float | None = None) -> Pick 
     if untried:
         best = max(untried, key=lambda q: raw_score(store, q))
     else:
-        best = max(eligible, key=lambda q: pick_score(store, q))
+        now_round = _current_round(store)
+        best = max(eligible, key=lambda q: pick_score(store, q, now_round=now_round))
     return Pick(
         quest_id=best, score=pick_score(store, best), raw=raw_score(store, best)
     )
@@ -288,16 +340,27 @@ def run_allocator_pass(
 
 
 def _record_pick(store: Store, quest_id: int, raw: float) -> None:
-    """Bump pick count + fold the raw score into the quest's EWMA."""
+    """Advance the round, stamp this quest's pick, fold raw into its EWMA.
+
+    Bumping the global round on every pick is what makes the aging bonus tick:
+    an un-picked quest's ``now_round - last_pick_round`` grows each round while
+    the just-picked quest resets to 0.
+    """
     ref = store.get_ref(kind="quest", id=quest_id)
     meta = (ref.meta or {}) if ref else {}
     prev = meta.get("ewma_score")
     prev_v = float(prev) if isinstance(prev, (int, float)) else raw
     ewma = EWMA_ALPHA * raw + (1.0 - EWMA_ALPHA) * prev_v
+    now_round = _current_round(store) + 1
+    store.set_setting(_ROUND_KEY, str(now_round))
     _merge_meta(
         store,
         quest_id,
-        {"picks": int(meta.get("picks", 0) or 0) + 1, "ewma_score": round(ewma, 6)},
+        {
+            "picks": int(meta.get("picks", 0) or 0) + 1,
+            "ewma_score": round(ewma, 6),
+            "last_pick_round": now_round,
+        },
     )
 
 
@@ -305,12 +368,15 @@ __all__ = [
     "COOL_AFTER_TICKS",
     "EWMA_ALPHA",
     "EXPLORE",
+    "PROGRESS_DECAY",
+    "STALL_FLOOR",
     "Pick",
     "active_quest_ids",
     "cool_stalled",
     "over_budget",
     "pick_next_quest",
     "pick_score",
+    "progress_factor",
     "raw_score",
     "run_allocator_pass",
     "weekly_spend",

@@ -75,6 +75,18 @@ def _has_candidates(store: Store, quest_id: int) -> bool:
     return any(s.kind == "structure" for s in _live_servers(store, quest_id))
 
 
+def _n_open_hypotheses(store: Store, quest_id: int) -> int:
+    from precis.quest.gaps import _open_hypotheses
+
+    return len(_open_hypotheses(store, quest_id))
+
+
+def _n_paper_servers(store: Store, quest_id: int) -> int:
+    from precis.quest.gaps import _live_servers
+
+    return sum(1 for s in _live_servers(store, quest_id) if s.kind == "paper")
+
+
 def escalation_signal(store: Store, quest_id: int) -> Escalation:
     """Decide whether the next tick should run at the frontier tier."""
     ref = store.get_ref(kind="quest", id=quest_id)
@@ -137,35 +149,45 @@ def update_cascade_state(store: Store, quest_id: int, *, reviewed: bool) -> floa
     promise = 0.0
     patch: dict[str, Any] = {"tick_count": tick_count}
 
-    # A milestone deed is the progress marker a reasoning-only quest has
-    # instead of a compute frontier — track how many we've seen so a new one
-    # this tick can reset the stall clock below.
+    # ── progress signal (broadened) ──────────────────────────────────
+    # A compute quest has a Pareto frontier; a reasoning quest never does, so
+    # judging progress by frontier energy alone left `cool_stalled` blind to a
+    # spin (the tell tonight: 10 restated hypotheses, no frontier, never cooled).
+    # Progress is now ANY external-evidence signal since the last tick:
+    #   frontier improved · a new milestone deed · a new `result` entry ·
+    #   an open hypothesis got resolved (count dropped) · a paper server was
+    #   acquired (a lit search paid off). Activity alone (more hypotheses, a
+    #   rewritten dossier) is NOT progress — that is exactly the spin.
     n_milestones = _n_entries(store, quest_id, "milestone")
-    made_deed = n_milestones > int(meta.get("milestones_seen", 0) or 0)
+    n_results = _n_results(store, quest_id)
+    n_open_hyp = _n_open_hypotheses(store, quest_id)
+    n_papers = _n_paper_servers(store, quest_id)
     patch["milestones_seen"] = n_milestones
+    patch["results_seen"] = n_results
+    patch["open_hyp_seen"] = n_open_hyp
+    patch["paper_servers_seen"] = n_papers
 
+    frontier_improved = False
     if curr_best is not None:
         patch["frontier_best"] = curr_best
         if isinstance(prev_best, (int, float)) and curr_best < float(prev_best):
             improvement = float(prev_best) - curr_best
             cost = _recent_cost(store, quest_id)
             promise = improvement / cost if cost > 0 else improvement
-            patch["ticks_since_frontier_improve"] = 0
-        else:
-            patch["ticks_since_frontier_improve"] = (
-                int(meta.get("ticks_since_frontier_improve", 0) or 0) + 1
-            )
-    else:
-        # No compute frontier (a reasoning-only quest): its energy stall clock
-        # would never advance, so `cool_stalled` could never catch a spin. Judge
-        # progress by deeds instead — a milestone resets the clock; otherwise it
-        # climbs, so a quest that ticks forever without landing one self-cools.
-        if made_deed:
-            patch["ticks_since_frontier_improve"] = 0
-        else:
-            patch["ticks_since_frontier_improve"] = (
-                int(meta.get("ticks_since_frontier_improve", 0) or 0) + 1
-            )
+            frontier_improved = True
+
+    made_progress = (
+        frontier_improved
+        or n_milestones > int(meta.get("milestones_seen", 0) or 0)
+        or n_results > int(meta.get("results_seen", 0) or 0)
+        or n_open_hyp < int(meta.get("open_hyp_seen", n_open_hyp) or n_open_hyp)
+        or n_papers > int(meta.get("paper_servers_seen", 0) or 0)
+    )
+    patch["ticks_since_frontier_improve"] = (
+        0
+        if made_progress
+        else int(meta.get("ticks_since_frontier_improve", 0) or 0) + 1
+    )
     patch["promise"] = round(promise, 6)
 
     if reviewed:

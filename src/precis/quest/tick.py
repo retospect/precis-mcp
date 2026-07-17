@@ -82,6 +82,10 @@ class QuestTickOutcome:
     results_harvested: int = 0
     ruled_out: int = 0
     graduated: int = 0  # rung 4e — candidates that crossed the ceiling
+    # Lit-search grounding action.
+    searches_run: int = 0
+    papers_linked: int = 0
+    hypotheses_deduped: int = 0
     # Cascade (rung 4c).
     escalated: bool = False
     mode: str = "local"  # "local" | "frontier-review"
@@ -218,11 +222,21 @@ Do ONE increment of thinking: interpret the state, pick the most promising \
 next direction to close a gap, and note what you'd try. Then rewrite the \
 dossier to reflect current understanding.
 
+**Progress means new external evidence, not more restating.** If there are open \
+hypotheses above, your job is to *close* them — resolve one with evidence \
+(a `result`) or kill it (a `dead-end`) — NOT to restate it as a fresh \
+hypothesis. Do not mint a hypothesis that merely rephrases one already open. \
+When the answer lies in the literature you don't yet hold (a `no-literature` or \
+`thin-support` gap, or a hypothesis that points at "published data"), emit \
+`searches` to go get it instead of hypothesising in a vacuum.
+
 Respond with EXACTLY ONE JSON object and nothing else:
 {{
   "logbook": [
     {{"entry_type": "<one of: {entry_types}>", "text": "<one concise entry>"}}
   ],
+  "searches": ["<0–3 literature queries to ground this quest — papers found are \
+linked as servers and feed the next step>"],
   "dossier_markdown": "<the FULL rewritten dossier in markdown: current \
 understanding, best leads so far, what's ruled out, open questions>",
   "proposals": [
@@ -235,8 +249,8 @@ understanding, best leads so far, what's ruled out, open questions>",
 }}
 
 Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
-state, a `decision` on direction, or a `dead-end` to stop re-treading are the \
-most useful. Keep the dossier tight.
+state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
+`decision` on direction are the most useful. Keep the dossier tight.
 
 `proposals` (0–3) are candidate materials to simulate — each an atomistic \
 `structure` (a periodic `cell` + `add_atom` ops with fractional coords). Only \
@@ -293,6 +307,35 @@ def _payload_from_result(res: Any) -> dict[str, Any] | None:
     return _extract_json(getattr(res, "text", "") or "")
 
 
+#: Jaccard overlap of significant tokens above which two hypotheses are "the
+#: same question restated" and the new one is dropped (the spin was ~10
+#: rephrasings of one hypothesis).
+_HYP_DUP_JACCARD = 0.6
+
+
+def _sig_tokens(text: str) -> set[str]:
+    """Lowercased word tokens ≥4 chars — a cheap topical fingerprint."""
+    import re
+
+    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) >= 4}
+
+
+def _is_near_dup(text: str, existing: list[str]) -> bool:
+    """True when ``text`` restates any of ``existing`` (token Jaccard ≥ floor)."""
+    toks = _sig_tokens(text)
+    if not toks:
+        return False
+    for other in existing:
+        ot = _sig_tokens(other)
+        if not ot:
+            continue
+        inter = len(toks & ot)
+        union = len(toks | ot)
+        if union and inter / union >= _HYP_DUP_JACCARD:
+            return True
+    return False
+
+
 # ── the tick ──────────────────────────────────────────────────────────
 
 
@@ -305,6 +348,7 @@ def run_quest_tick(
     by: str = "agent",
     compute: bool = False,
     review: bool | None = None,
+    search_fn: Any = None,
 ) -> QuestTickOutcome:
     """Run one structured research step against ``quest_id``.
 
@@ -365,6 +409,11 @@ def run_quest_tick(
             quest_id, "failed", 0, False, cost, "unparseable model output"
         )
 
+    # Open hypotheses to dedup fresh ones against — a spin is the same question
+    # restated, so a near-duplicate `hypothesis` is dropped rather than appended.
+    open_hyps = list(gaps_mod._open_hypotheses(store, quest_id))
+    deduped = 0
+
     # Apply logbook entries (clamp unknown entry types rather than reject).
     added = 0
     for e in payload.get("logbook") or []:
@@ -374,9 +423,14 @@ def run_quest_tick(
         if not text:
             continue
         etype = clamp_entry_type(e.get("entry_type"))
+        if etype == "hypothesis" and _is_near_dup(text, open_hyps):
+            deduped += 1
+            continue
         raw_cost = e.get("cost")
         cost_val = float(raw_cost) if isinstance(raw_cost, (int, float)) else None
         append_entry(store, quest_id, text=text, entry_type=etype, by=by, cost=cost_val)
+        if etype == "hypothesis":
+            open_hyps.append(text)
         added += 1
 
     # Rewrite the dossier (the rolling context) if the model produced one.
@@ -419,6 +473,25 @@ def run_quest_tick(
             )
             added += 1
 
+    # Lit-search — go ground the quest in the literature (the missing half of
+    # the loop). Runs in the same acting mode as compute; linking a paper is
+    # external progress, so it must land BEFORE update_cascade_state resets the
+    # stall clock. Injectable search seam lives in run_quest_tick's `search_fn`.
+    searches_run = papers_linked = 0
+    if compute:
+        from precis.quest.search import run_search_step
+
+        queries = [
+            str(q).strip() for q in (payload.get("searches") or []) if str(q).strip()
+        ]
+        if queries:
+            sstep = run_search_step(
+                store, quest_id, queries, by=by, search_fn=search_fn
+            )
+            searches_run = sstep.queries_run
+            papers_linked = sstep.papers_linked
+            added += sstep.queries_run
+
     created = dispatched = harvested = ruled = graduated = 0
     if compute:
         from precis.quest.compute import run_compute_step
@@ -433,7 +506,15 @@ def run_quest_tick(
     # Advance the cascade counters + recompute `promise` (rung 4d reads it).
     cascade_mod.update_cascade_state(store, quest_id, reviewed=is_review)
 
-    did_work = added or rewritten or created or harvested or ruled or graduated
+    did_work = (
+        added
+        or rewritten
+        or created
+        or harvested
+        or ruled
+        or graduated
+        or papers_linked
+    )
     note = (
         (f"frontier-review ({reason})" if is_review else "ok") if did_work else "no-op"
     )
@@ -450,6 +531,9 @@ def run_quest_tick(
         results_harvested=harvested,
         ruled_out=ruled,
         graduated=graduated,
+        searches_run=searches_run,
+        papers_linked=papers_linked,
+        hypotheses_deduped=deduped,
         escalated=is_review,
         mode="frontier-review" if is_review else "local",
     )
