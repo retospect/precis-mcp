@@ -1,0 +1,11 @@
+---
+- name: restart sshd macos
+  ansible.builtin.command: launchctl kickstart -k system/com.openssh.sshd
+  become: true
+  failed_when: false
+
+- name: restart sshd linux
+  ansible.builtin.systemd:
+    name: ssh
+    state: restarted
+  become: true

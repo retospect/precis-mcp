@@ -1,0 +1,20 @@
+---
+# nightly_reboot — schedule a gentle nightly reboot on the Linux GPU
+# node. The GPU/NVIDIA driver periodically wedges a compute
+# process (e.g. a runaway gpaw-relax) into an uninterruptible state that
+# survives even SIGKILL, starving the co-located embedder; a reboot is
+# the ONLY reliable recovery (gripe 50907). The Macs already reboot
+# nightly via their own mechanism — this brings the GPU node onto the same
+# cadence. Linux/systemd only.
+
+# When the timer fires (local time; the GPU node is Europe/Dublin). At this
+# moment the reboot is *scheduled*, not immediate — see the warning
+# window below.
+nightly_reboot_oncalendar: "*-*-* 04:00:00"
+
+# Grace/warning window, in minutes, between the timer firing and the
+# actual reboot. `shutdown -r +N` broadcasts a wall warning and lets
+# in-flight work keep running for N minutes, then systemd stops units
+# with their normal TimeoutStopSec. So a 04:00 timer + 5 min → reboot
+# at 04:05. This is the "gentle" part: nothing is killed abruptly.
+nightly_reboot_warning_minutes: 5

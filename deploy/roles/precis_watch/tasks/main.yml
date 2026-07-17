@@ -1,0 +1,77 @@
+---
+# precis_watch — runs `precis watch` against papers_inbox_path.
+# Single instance only (race on inbox dir if multiple watchers). Throughput
+# scales via the precis_worker pool, not via watcher copies.
+#
+# Assumes precis_worker role has already provisioned /opt/precis/venv
+# with precis-mcp[paper]. We don't reinstall it here.
+
+- name: Verify /opt/precis/venv exists (precis_worker should have created it)
+  ansible.builtin.stat:
+    path: "{{ precis_watch_venv }}/bin/precis"
+  register: precis_bin
+  become: true
+
+- name: Fail early if precis venv is missing
+  ansible.builtin.fail:
+    msg: "{{ precis_watch_venv }}/bin/precis not found. Run playbooks/20-precis-worker.yml on this host first."
+  when: not precis_bin.stat.exists
+
+- name: Pre-create precis-watch log file (macOS — launchd can't if it's not the root user)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-watch.log
+    state: touch
+    owner: deploy
+    group: wheel
+    mode: "0644"
+  become: true
+  changed_when: false
+
+- name: Render precis-watch LaunchDaemon (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: precis-watch.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.watch.plist
+    mode: "0644"
+  become: true
+  notify: reload precis watch (macos)
+
+- name: Unload existing precis-watch before re-bootstrap (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl bootout system/com.precis.watch
+  become: true
+  register: launchctl_bootout
+  changed_when: launchctl_bootout.rc == 0
+  failed_when: false
+
+- name: Bootstrap precis-watch LaunchDaemon (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl bootstrap system /Library/LaunchDaemons/com.precis.watch.plist
+  become: true
+  register: launchctl_bootstrap
+  changed_when: launchctl_bootstrap.rc == 0
+  failed_when:
+    - launchctl_bootstrap.rc != 0
+    - "'service already loaded' not in launchctl_bootstrap.stderr"
+    - "'Bootstrap failed: 5' not in launchctl_bootstrap.stderr"   # 5 = I/O (already running, race after bootout)
+    - "'Bootstrap failed: 17' not in launchctl_bootstrap.stderr"  # 17 = file exists
+
+# ── Linux (systemd) — GPU node ──
+- name: Render precis-watch systemd unit (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: precis-watch.service.j2
+    dest: /etc/systemd/system/precis-watch.service
+    mode: "0644"
+  become: true
+  notify: reload precis watch (linux)
+
+- name: Enable + start precis-watch (Linux)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: precis-watch
+    daemon_reload: true
+    enabled: true
+    state: started
+  become: true

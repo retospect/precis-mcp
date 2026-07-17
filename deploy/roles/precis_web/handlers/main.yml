@@ -1,0 +1,11 @@
+---
+# Persistent daemon: reload via the shared safe launchd task (retry the
+# transient load failure + assert the daemon has a pid before succeeding).
+# gripe #48490 — previously a bare `load -wF` with no retry/assert, the
+# exact gr48481 hazard that can leave the service down on a green deploy.
+- name: restart precis-web
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.precis.web
+    reload_persistent: true
+  when: os_family == "darwin"

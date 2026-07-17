@@ -1,0 +1,102 @@
+---
+# ─────────────────────────────────────────────────────────────────────────
+# EXAMPLE inventory — the shape of the per-cluster overlay.
+#
+# Copy this directory to `deploy/inventory/` (gitignored, local-only) and fill
+# in your real hosts, addresses, and vault. NOTHING here names a real machine:
+# node names are placeholders and every address is an RFC-5737 documentation
+# range (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24 — never routed).
+#
+# Groups are host-centric: each node lists the OS family it belongs to; the
+# capability→node map lives in group_vars/all/topology.example.yml. Roles gate
+# on capability membership and inventory variables, never a literal hostname.
+# ─────────────────────────────────────────────────────────────────────────
+all:
+  vars:
+    ansible_python_interpreter: auto_silent
+    # LAN — NFS only (high-bandwidth, no encryption overhead).
+    lan_subnet: "192.0.2.0/24"
+    # Tailscale — SSH, services, inter-node comms.
+    tailscale_subnet: "100.64.0.0/10"  # secret-gate: allow — universal Tailscale CGNAT range, not host-specific
+    tailscale_tailnet: "your-tailnet"
+    nfs_server: node-data
+    nfs_export_path: "/opt/nfs"
+    # shared_mount set per-OS group: /opt/shared (macOS), /shared (Linux)
+    pgbouncer_port: 6432
+    postgres_port: 5432
+    # The single Postgres host. precis_* roles build their DSN from this
+    # (`hostvars[postgres_host]['ansible_host']`) rather than a literal — the
+    # design §15c singleton. Same node as the data/NFS host here.
+    postgres_host: node-data
+    redis_host: node-data
+    redis_port: 6379
+    litellm_host: node-gateway
+    # The web/MCP gateway host (nginx, precis-web, asa-bot, webhook).
+    gateway_host: node-gateway
+    litellm_port: 4000
+    ollama_port: 11435
+    # precis embedder (`serve-embeddings`) — loopback on EVERY node, one model
+    # load per host shared by that node's worker/watch/MCP. Bind is always
+    # 127.0.0.1 (unauthenticated), so only the port is a knob.
+    embedder_port: 8181
+    # Shared NAS (autofs_client). nas_host is the NFS server hostname;
+    # nas_mount_base is overridden per-OS in host_vars where needed.
+    nas_host: "fileserver.local"
+    nas_mount_base: "/opt/nas"
+    nas_nfs_export: "/Volume1/botshome"
+    nas_mount_name: "botshome"
+
+  children:
+    macos:
+      hosts:
+        node-gateway:
+          ansible_host: 203.0.113.10
+          lan_ip: 192.0.2.10
+          node_role: gateway
+        node-worker:
+          ansible_host: 203.0.113.11
+          lan_ip: 192.0.2.11
+          node_role: scheduler
+        node-data:
+          ansible_host: 203.0.113.12
+          lan_ip: 192.0.2.12
+          node_role: data
+      vars:
+        ansible_become_method: sudo
+        ansible_shell_executable: /bin/zsh
+        os_family: darwin
+        shared_mount: "/opt/shared"
+
+    linux:
+      hosts:
+        node-gpu:
+          ansible_host: 203.0.113.20
+          lan_ip: 192.0.2.20
+          node_role: compute
+      vars:
+        os_family: linux
+        shared_mount: "/shared"
+
+    # ── Capability-bearing groups (membership is the placement knob) ────────
+    llamacpp_hosts:
+      hosts:
+        node-gateway:
+        node-worker:
+        node-gpu:
+
+    # GGUF canonical store (NFS server); downloads + manifest live here.
+    gguf_store_hosts:
+      hosts:
+        node-data:
+
+    agent_sandbox_hosts:
+      hosts:
+        node-worker:
+        node-gpu:
+
+    # Anki sync — the SINGLE designated runner for `precis anki-sync`
+    # (headless AnkiWeb sync needs a working `claude -p` OAuth on the host;
+    # two mirrors on one account would force a full-sync conflict).
+    precis_anki_sync:
+      hosts:
+        node-gateway:

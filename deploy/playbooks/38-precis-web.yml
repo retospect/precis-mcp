@@ -1,0 +1,13 @@
+---
+# 38-precis-web.yml — precis web tab UI on the gateway.
+#
+# FastAPI service over the tailnet via ``tailscale serve``. See
+# roles/precis_web/README.md for the architecture.
+
+- name: Deploy precis web service
+  hosts: gateway
+  become: true
+  roles:
+    - precis_web
+  # Canonical: precis-web. ``precis`` umbrella runs all precis-* plays.
+  tags: [precis-web, precis]

@@ -1,0 +1,8 @@
+---
+# 25-alchemi.yml — NVIDIA ALCHEMI Toolkit on the gateway (M2 Ultra, 192 GB)
+- name: Deploy ALCHEMI Toolkit
+  hosts: gateway
+  become: true
+  roles:
+    - alchemi
+  tags: [alchemi]

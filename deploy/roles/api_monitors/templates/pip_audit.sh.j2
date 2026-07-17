@@ -1,0 +1,26 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Weekly pip-audit for known vulnerabilities
+set -euo pipefail
+
+LOG_DIR="{{ shared_mount }}/logs/pip-audit"
+mkdir -p "${LOG_DIR}"
+TIMESTAMP=$(date +%Y-%m-%d)
+
+echo "=== pip-audit ${TIMESTAMP} ==="
+
+pip-audit --format json --output "${LOG_DIR}/audit_${TIMESTAMP}.json" 2>&1 || true
+
+VULN_COUNT=$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('${LOG_DIR}/audit_${TIMESTAMP}.json'))
+    vulns = [d for d in data.get('dependencies', []) if d.get('vulns')]
+    print(len(vulns))
+except:
+    print('?')
+" 2>/dev/null)
+
+echo "Packages with vulnerabilities: ${VULN_COUNT}"
+echo "Full report: ${LOG_DIR}/audit_${TIMESTAMP}.json"
+echo "=== End ==="

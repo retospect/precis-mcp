@@ -1,0 +1,198 @@
+---
+# aizynth — make a Linux compute node run precis-mcp `retrosynth` jobs
+# (ADR 0056 slice 1b). The precis-mcp worker (already deployed by
+# roles/precis_worker) claims a retrosynth job — only on THIS node, per the
+# target_node claim gate — and shells out (precis_chem.jobs._run_container) to
+# `podman run precis-aizynth precis-aizynth-run <SMILES>`, staging in/out under
+# the NFS scratch tree, mounting the models read-only, and parsing the
+# container's trees.json into the `route` ref.
+#
+# AiZynthFinder is baked into the IMAGE (not the venv); the models mount from
+# the NAS. The route KIND + retrosynth job_type are bundled in precis-mcp, so
+# there is nothing to pip-install — this role wires only:
+#   1. the container runtime is present + the scratch tree exists,
+#   2. the wrapper image is built on the node,
+#   3. the AiZynth models are on the NAS (config.yml present),
+#   4. the worker's PRECIS_CHEM_* / PRECIS_NODE env (systemd drop-in, so we
+#      never touch the precis_worker unit template).
+# Linux / compute node only. The macOS gateway gets the KIND SURFACE
+# (PRECIS_CHEM_ENABLED + PRECIS_CHEM_ROUTE_NODE) via roles/precis_web.
+
+- name: aizynth targets the Linux compute node only
+  ansible.builtin.assert:
+    that: os_family == "linux"
+    fail_msg: >-
+      The aizynth role runs the retrosynth container on the Linux compute node
+      (the GPU node). The macOS gateway needs only the KIND SURFACE (PRECIS_CHEM_ENABLED
+      + PRECIS_CHEM_ROUTE_NODE) — wire that via roles/precis_web, not here.
+      See roles/aizynth/README.md.
+
+- name: Ensure the container runtime is present
+  ansible.builtin.command: "{{ aizynth_container_cmd }} --version"
+  register: aizynth_runtime
+  changed_when: false
+  failed_when: aizynth_runtime.rc != 0
+
+- name: Allow the worker user to run docker without sudo (docker group)
+  ansible.builtin.user:
+    name: "{{ aizynth_worker_user }}"
+    groups: docker
+    append: true
+  become: true
+  notify: restart precis-worker (aizynth)
+
+- name: Ensure the NFS scratch tree exists (container in/out staging)
+  ansible.builtin.file:
+    path: "{{ aizynth_scratch_dir }}"
+    state: directory
+    owner: "{{ aizynth_worker_user }}"
+    group: "{{ aizynth_worker_user }}"
+    mode: "0755"
+  become: true
+
+- name: Ensure the AiZynth models dir exists (mounted /models at run)
+  ansible.builtin.file:
+    path: "{{ aizynth_models_dir }}"
+    state: directory
+    owner: "{{ aizynth_worker_user }}"
+    group: "{{ aizynth_worker_user }}"
+    mode: "0755"
+  become: true
+
+# ── (re)build the precis-aizynth image on the node ────────────────────
+- name: (Re)build the precis-aizynth image
+  when: aizynth_build_image | bool
+  block:
+    - name: Ensure the build context dir on the node
+      ansible.builtin.file:
+        path: /tmp/precis-aizynth-build
+        state: directory
+        mode: "0755"
+      become: true
+
+    - name: Copy the precis-aizynth build context to the node
+      # copy (not synchronize) rides ansible's own ssh connection — the
+      # controller's ssh-agent is flaky, and synchronize spawns a fresh rsync
+      # ssh that fails agent auth. The context is two small files, so a plain
+      # copy is fine (and agent-independent).
+      ansible.builtin.copy:
+        src: "{{ aizynth_src_dir }}/"
+        dest: /tmp/precis-aizynth-build/
+        mode: preserve
+      become: true
+
+    - name: Ensure the base image is present (pull only if missing — registry is flaky)
+      # the GPU node's link to Docker Hub (AWS) is intermittently TLS-timing-out, so a
+      # plain `docker pull` (which HEADs the registry even for a cached image)
+      # is unreliable. Pull ONLY when the base is absent; once cached, the
+      # legacy-builder build below resolves it from the local store with no
+      # registry call. Keep the tag in sync with the Dockerfile FROM.
+      ansible.builtin.shell: >-
+        {{ aizynth_container_cmd }} image inspect {{ aizynth_base_image }} >/dev/null 2>&1
+        || {{ aizynth_container_cmd }} pull {{ aizynth_base_image }}
+      become: true
+      register: aizynth_basepull
+      retries: 8
+      delay: 15
+      until: aizynth_basepull.rc == 0
+      changed_when: "'Pull complete' in aizynth_basepull.stdout"
+
+    - name: Build the precis-aizynth image
+      ansible.builtin.command:
+        cmd: "{{ aizynth_container_cmd }} build -t {{ aizynth_image }} ."
+        chdir: /tmp/precis-aizynth-build
+      # Legacy builder (not buildkit): with the base image cached locally it
+      # resolves FROM from the local store WITHOUT a registry metadata HEAD, so
+      # the flaky Docker Hub link can't fail the build. The pip layer hits PyPI
+      # (separate infra, reachable).
+      environment:
+        DOCKER_BUILDKIT: "0"
+      become: true
+      register: aizynth_build
+      retries: 3
+      delay: 5
+      until: aizynth_build.rc == 0
+      changed_when: >-
+        'Successfully' in (aizynth_build.stdout + aizynth_build.stderr)
+        or 'COMMIT' in (aizynth_build.stdout + aizynth_build.stderr)
+        or 'Storing signatures' in (aizynth_build.stdout + aizynth_build.stderr)
+
+- name: Assert the precis-aizynth image is present
+  ansible.builtin.command: "{{ aizynth_container_cmd }} image inspect {{ aizynth_image }}"
+  become: true
+  register: aizynth_img
+  changed_when: false
+  failed_when: aizynth_img.rc != 0
+  # Fails when the image is absent: (re)build with -e aizynth_build_image=true.
+
+# ── download the AiZynth public models onto the NAS (one-time) ─────────
+- name: Check whether AiZynth models are already present
+  ansible.builtin.stat:
+    path: "{{ aizynth_models_dir }}/config.yml"
+  register: aizynth_config
+
+- name: Download AiZynth public models (figshare) into the models dir
+  when:
+    - aizynth_download_models | bool
+    - not aizynth_config.stat.exists
+  ansible.builtin.command:
+    # `download_public_data <dir>` is an AiZynth console script in the image; it
+    # fetches the USPTO policy + templates + stock and writes config.yml into
+    # the dir (paths are /models/*, matching the run-time mount). Heavy (hundreds
+    # of MB); guarded to run only when config.yml is absent.
+    cmd: >-
+      {{ aizynth_container_cmd }} run --rm
+      -v {{ aizynth_models_dir }}:/models
+      {{ aizynth_image }} download_public_data /models
+  become: true
+  register: aizynth_download
+  changed_when: aizynth_download.rc == 0
+
+- name: Assert the AiZynth config.yml is present (models wired)
+  ansible.builtin.stat:
+    path: "{{ aizynth_models_dir }}/config.yml"
+  register: aizynth_config_after
+  failed_when: not aizynth_config_after.stat.exists
+  # Absent → the engine can't run. Re-run with -e aizynth_download_models=true,
+  # or place a config.yml + models under {{ aizynth_models_dir }} by hand.
+
+# ── worker env (systemd drop-in — leaves the precis_worker unit untouched) ──
+- name: Ensure the precis env dir
+  ansible.builtin.file:
+    path: /etc/precis
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Drop the worker aizynth env file
+  ansible.builtin.template:
+    src: aizynth.env.j2
+    dest: /etc/precis/aizynth.env
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart precis-worker (aizynth)
+
+- name: Ensure the precis-worker systemd drop-in dir
+  ansible.builtin.file:
+    path: /etc/systemd/system/precis-worker.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Drop the precis-worker aizynth env drop-in (EnvironmentFile)
+  ansible.builtin.template:
+    src: precis-worker-aizynth.conf.j2
+    # 30- sorts after dft's 10- and catpath's 20- ; all set PRECIS_NODE to the
+    # same value, so order is immaterial.
+    dest: /etc/systemd/system/precis-worker.service.d/30-aizynth.conf
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart precis-worker (aizynth)

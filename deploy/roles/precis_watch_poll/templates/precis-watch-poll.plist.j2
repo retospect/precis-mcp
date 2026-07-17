@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} #}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.watch-poll</string>
+
+  {# Citation-forward watcher (docs/design/watching.md). One single-shot
+     pass per fire — selects the most-due salient papers, polls S2 for
+     their forward-citations, mints stubs. NOT in the system-worker hot
+     loop (it makes external S2 calls); this timer sets its cadence. #}
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{ precis_watch_poll_venv }}/bin/precis</string>
+    <string>worker</string>
+    <string>--only</string>
+    <string>watch_poll</string>
+    <string>--once</string>
+    <string>--batch-size</string>
+    <string>{{ precis_watch_poll_batch_size }}</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>{{ precis_watch_poll_interval }}</integer>
+
+  {# Fire once at load so the operator sees activity without waiting a
+     full interval. launchd does not overlap StartInterval fires. #}
+  <key>RunAtLoad</key>
+  <true/>
+
+  {# Transient timer, NOT a daemon: each fire runs one pass (~seconds)
+     and exits. #}
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>UserName</key>
+  <string>deploy</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/deploy</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>{{ precis_watch_poll_venv }}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PRECIS_DATABASE_URL</key>
+    <string>postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod</string>
+    <key>PRECIS_PROCESS</key>
+    <string>precis-watch-poll</string>
+    {# Shared API keys — incl. SEMANTIC_SCHOLAR_API_KEY (the watcher's S2
+       client). See inventory/group_vars/all/precis_env.yml. #}
+    {% for env_key, env_val in precis_shared_env.items() %}
+    <key>{{ env_key }}</key>
+    <string>{{ env_val }}</string>
+    {% endfor %}
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/precis-watch-poll.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/precis-watch-poll.log</string>
+</dict>
+</plist>

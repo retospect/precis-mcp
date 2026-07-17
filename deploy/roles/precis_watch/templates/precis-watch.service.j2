@@ -1,0 +1,48 @@
+# {{ ansible_managed }}
+# precis watch — watches NAS inbox + spawns Marker subprocesses to ingest
+# PDFs. Linux-only systemd unit (the GPU node, where CUDA does most of the work).
+#
+# --polling is still passed because the NAS is an NFS mount; inotify isn't
+# reliable across NFS. Same args as the macOS LaunchDaemon — see
+# templates/precis-watch.plist.j2 for the full rationale.
+
+[Unit]
+Description=precis-mcp inbox watcher (Marker + precis_add)
+After=network-online.target remote-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+
+WorkingDirectory=/tmp
+
+Environment=PATH={{ precis_watch_venv }}/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/precis
+Environment=PRECIS_DATABASE_URL={{ precis_watch_dsn }}
+Environment=HF_HOME={{ precis_worker_hf_home | default('/var/lib/precis/hf-cache') }}
+# Shared API keys (Semantic Scholar, Unpaywall, Elsevier, …) — same
+# block precis_worker carries. The ingest pipeline enriches metadata via
+# the S2 graph API; without SEMANTIC_SCHOLAR_API_KEY the watcher hits S2's
+# anonymous limit and gets 429-throttled on every paper.
+{% for env_key, env_val in precis_shared_env.items() %}
+Environment={{ env_key }}={{ env_val }}
+{% endfor %}
+
+ExecStart={{ precis_watch_venv }}/bin/precis watch \
+  --polling \
+  --debounce {{ precis_watch_debounce }} \
+  --user {{ precis_watch_user }} \
+  --corpus-dir {{ precis_watch_corpus }} \
+  --subprocess-batch-size {{ precis_watch_subprocess_batch }} \
+  --subprocess-concurrency {{ precis_watch_subprocess_concurrency }} \
+  {{ precis_watch_dir }}
+
+Restart=always
+RestartSec=30
+StandardOutput=append:/var/log/precis-watch.log
+StandardError=append:/var/log/precis-watch.log
+
+[Install]
+WantedBy=multi-user.target

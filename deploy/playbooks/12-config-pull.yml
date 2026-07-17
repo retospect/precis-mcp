@@ -1,0 +1,8 @@
+---
+# 12-config-pull.yml — Nightly /etc + /opt → /shared/backups/configs
+- name: Configure config pull
+  hosts: all
+  become: true
+  roles:
+    - config_pull
+  tags: [config_pull]

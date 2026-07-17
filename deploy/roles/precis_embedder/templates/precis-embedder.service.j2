@@ -1,0 +1,36 @@
+# {{ ansible_managed }}
+# precis embedding service (per-node, loopback). Serves bge-m3 over HTTP
+# so the same-node `precis worker` embeds via PRECIS_EMBEDDER=remote.
+# Linux unit runs on the GPU node, where CUDA does the forward pass. See ADR
+# 0020/0021 in the precis-mcp repo.
+
+[Unit]
+Description=precis-mcp embedding service (serve-embeddings, bge-m3)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+
+WorkingDirectory=/tmp
+
+Environment=PATH={{ precis_embedder_venv }}/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/precis
+Environment=HF_HOME={{ precis_embedder_hf_home }}
+Environment=TOKENIZERS_PARALLELISM=false
+
+ExecStart={{ precis_embedder_venv }}/bin/precis serve-embeddings \
+  --host {{ precis_embedder_host }} \
+  --port {{ precis_embedder_port }} \
+  --embedder {{ precis_embedder_backend }} \
+  --max-inflight {{ precis_embedder_max_inflight }}
+
+Restart=always
+RestartSec=30
+StandardOutput=append:/var/log/precis-embedder.log
+StandardError=append:/var/log/precis-embedder.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+---
+# 28-precis-watch.yml — Single-node inbox watcher.
+# Replaces the legacy `extract_watch` role / 27-extract-watch.yml: same
+# daemon shape (LaunchDaemon on the scheduler node), but the watcher is
+# `precis watch` (v8) writing into precis_prod, not acatome-extract
+# writing into the non-existent `cluster` db.
+#
+# Run order: precis_worker (20) must run first — it provisions
+# /opt/precis/venv which precis_watch reuses.
+
+- name: Deploy precis-mcp inbox watcher
+  # Multiple watchers are correctness-safe: precis_add takes a Postgres
+  # advisory lock keyed on pdf_sha256 before invoking Marker, and the
+  # file-move path tolerates FileNotFoundError as "another host won the
+  # race". Running on more than one node ~doubles Marker capacity at
+  # the cost of some duplicated NFS chatter + a Marker load each.
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: true
+  roles:
+    - precis_watch
+  tags: [precis_watch]

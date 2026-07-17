@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+# Listen on Tailscale and LAN interfaces only
+ListenAddress {{ ansible_host }}
+ListenAddress {{ lan_ip }}
+ListenAddress 127.0.0.1
+
+PermitRootLogin {{ sshd_permit_root_login }}
+PasswordAuthentication {{ sshd_password_auth }}
+ChallengeResponseAuthentication no
+UsePAM yes
+AllowUsers {{ sshd_allow_users }}
+
+# Key exchange and ciphers
+KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+
+# Logging
+SyslogFacility AUTH
+LogLevel VERBOSE
+
+# Session
+MaxAuthTries 3
+MaxSessions 10
+LoginGraceTime 30
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+# Forwarding
+AllowTcpForwarding yes
+X11Forwarding no

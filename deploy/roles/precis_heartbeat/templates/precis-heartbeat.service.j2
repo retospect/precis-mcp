@@ -1,0 +1,25 @@
+# {{ ansible_managed }}
+# precis heartbeat — one-shot reporter that the timer fires every
+# ${precis_heartbeat_interval_seconds}. UPSERTs this host's load +
+# CPU temperature into host_heartbeat. Read by the precis-web Status
+# tab.
+
+[Unit]
+Description=precis-mcp heartbeat reporter (load + temp UPSERT)
+After=network-online.target autossh@{{ postgres_host }}.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+WorkingDirectory=/tmp
+
+Environment=PATH={{ precis_heartbeat_venv }}/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PRECIS_DATABASE_URL={{ precis_heartbeat_dsn }}
+Environment=PRECIS_PROCESS=precis-heartbeat
+{% if precis_heartbeat_temp_cmd %}
+Environment=PRECIS_TEMP_CMD={{ precis_heartbeat_temp_cmd }}
+{% endif %}
+
+ExecStart={{ precis_heartbeat_venv }}/bin/precis heartbeat

@@ -1,0 +1,40 @@
+---
+# node_exporter on every node — Prometheus scrapes metrics from port 9100
+
+- name: Install node_exporter (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: node_exporter
+    state: present
+  become: false
+
+- name: Install node_exporter (Linux)
+  when: os_family == "linux"
+  ansible.builtin.apt:
+    name: prometheus-node-exporter
+    state: present
+  become: true
+
+- name: Start node_exporter (macOS — brew services as root)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    /opt/homebrew/bin/brew services start node_exporter 2>/dev/null || true
+  become: true
+  environment:
+    HOME: /Users/deploy
+    USER: deploy
+  changed_when: false
+
+- name: Enable and start node_exporter (Linux)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started
+  become: true
+
+- name: Wait for node_exporter
+  ansible.builtin.wait_for:
+    port: 9100
+    host: 127.0.0.1
+    timeout: 10

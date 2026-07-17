@@ -1,0 +1,8 @@
+---
+# 18-node-exporter.yml — Prometheus node_exporter on every cluster node
+- name: Configure node_exporter
+  hosts: all
+  become: true
+  roles:
+    - node_exporter
+  tags: [node_exporter, monitoring]

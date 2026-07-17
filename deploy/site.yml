@@ -1,0 +1,112 @@
+---
+# site.yml — Master playbook, runs all plays in order.
+# Usage:
+#   ansible-playbook site.yml                    # full run
+#   ansible-playbook site.yml --tags postgres     # just postgres
+#   ansible-playbook site.yml --limit the GPU node       # just the GPU node node
+
+- name: "00 — System users"
+  ansible.builtin.import_playbook: playbooks/00-users.yml
+
+- name: "01 — NFS"
+  ansible.builtin.import_playbook: playbooks/01-nfs.yml
+
+- name: "02 — PostgreSQL"
+  ansible.builtin.import_playbook: playbooks/02-postgres.yml
+
+- name: "03 — Redis"
+  ansible.builtin.import_playbook: playbooks/03-redis.yml
+
+- name: "04 — Ollama"
+  ansible.builtin.import_playbook: playbooks/04-ollama.yml
+
+- name: "05 — Autofs (the fileserver NAS)"
+  ansible.builtin.import_playbook: playbooks/05-autofs.yml
+
+- name: "05a — SSH tunnels"
+  ansible.builtin.import_playbook: playbooks/17-ssh-tunnels.yml
+
+- name: "06 — LiteLLM"
+  ansible.builtin.import_playbook: playbooks/06-litellm.yml
+
+- name: "08 — Monitoring"
+  ansible.builtin.import_playbook: playbooks/08-monitoring.yml
+
+- name: "08a — Node exporter"
+  ansible.builtin.import_playbook: playbooks/18-node-exporter.yml
+
+- name: "09 — Nginx"
+  ansible.builtin.import_playbook: playbooks/09-nginx.yml
+
+- name: "10 — Hardening"
+  ansible.builtin.import_playbook: playbooks/10-hardening.yml
+
+- name: "10a — TCC (Full Disk Access) profile for macOS daemons"
+  ansible.builtin.import_playbook: playbooks/10a-tcc-profile.yml
+
+- name: "11 — Backups"
+  ansible.builtin.import_playbook: playbooks/11-backups.yml
+
+- name: "12 — Config pull"
+  ansible.builtin.import_playbook: playbooks/12-config-pull.yml
+
+- name: "13 — Ansible callback"
+  ansible.builtin.import_playbook: playbooks/13-ansible-callback.yml
+
+- name: "14 — MCPs"
+  ansible.builtin.import_playbook: playbooks/14-mcps.yml
+
+- name: "15 — Log rotation"
+  ansible.builtin.import_playbook: playbooks/15-logrotate.yml
+
+- name: "16 — API monitors"
+  ansible.builtin.import_playbook: playbooks/16-api-monitors.yml
+
+- name: "21 — Daily briefing"
+  ansible.builtin.import_playbook: playbooks/21-daily-briefing.yml
+
+- name: "22 — Sortie campaign orchestration"
+  ansible.builtin.import_playbook: playbooks/22-sortie.yml
+
+- name: "25 — ALCHEMI Toolkit"
+  ansible.builtin.import_playbook: playbooks/25-alchemi.yml
+
+
+- name: "27 — Acatome extract-watch daemon"
+  ansible.builtin.import_playbook: playbooks/27-extract-watch.yml
+
+- name: "29 — Claude Code CLI on the gateway"
+  ansible.builtin.import_playbook: playbooks/29-claude-code.yml
+
+- name: "30 — precis cron-tick launchd timer"
+  ansible.builtin.import_playbook: playbooks/30-precis-cron-tick.yml
+
+- name: "31 — asa_bot Discord bridge"
+  ansible.builtin.import_playbook: playbooks/31-asa-bot.yml
+
+- name: "32 — precis dream worker (15-minute LaunchDaemon)"
+  ansible.builtin.import_playbook: playbooks/32-precis-dream.yml
+
+# Playbooks 33-36 (precis_schedule / precis_nursery / precis_structural /
+# precis_deep_review) were retired by the Slice-5 consolidation. Their
+# passes now ride either the system worker (schedule / nursery — see
+# 20-precis-worker.yml + roles/precis_worker) or the agent worker
+# (structural / deep_review — see 37-precis-worker-agent.yml).
+
+- name: "37 — precis worker (agent profile, the gateway)"
+  ansible.builtin.import_playbook: playbooks/37-precis-worker-agent.yml
+
+- name: "38 — precis web tab UI (gateway, tailnet HTTPS)"
+  ansible.builtin.import_playbook: playbooks/38-precis-web.yml
+
+- name: "39 — precis watch-poll timer (citation-forward corpus growth, the gateway)"
+  ansible.builtin.import_playbook: playbooks/39-precis-watch-poll.yml
+
+- name: "40 — precis reconcile-duplicates nightly timer (data node)"
+  ansible.builtin.import_playbook: playbooks/40-precis-reconcile.yml
+
+- name: "41 — precis EDA toolchain (Freerouting, gateway — ADR 0042)"
+  ansible.builtin.import_playbook: playbooks/41-precis-eda.yml
+
+- name: "42 — nightly gentle reboot of the GPU node (the GPU node — gripe 50907)"
+  ansible.builtin.import_playbook: playbooks/42-nightly-reboot.yml

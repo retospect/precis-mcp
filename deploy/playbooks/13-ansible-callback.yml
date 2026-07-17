@@ -1,0 +1,9 @@
+---
+# 13-ansible-callback.yml — Alerts → cluster webhook
+- name: Deploy Ansible callback plugin
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - ansible_callback
+  tags: [callback, webhook]

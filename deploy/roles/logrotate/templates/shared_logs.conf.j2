@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# newsyslog.conf(5) — macOS log rotation for /shared/logs
+# logfilename                          [owner:group]  mode  count  size  when  flags
+{{ shared_mount }}/logs/hermes/*.log                 644   7      10240 *     GJ
+{{ shared_mount }}/logs/litellm/*.log                  644   7      10240 *     GJ
+{{ shared_mount }}/logs/agents/*.log                   644   7      10240 *     GJ
+{{ shared_mount }}/logs/nginx-*.log                    644   7      10240 *     GJ
+{{ shared_mount }}/logs/redis.log                      644   7      10240 *     GJ
+{{ shared_mount }}/logs/olla-*.log                     644   7      10240 *     GJ
+{{ shared_mount }}/logs/extract-watch/*.log            644   7      10240 *     GJ

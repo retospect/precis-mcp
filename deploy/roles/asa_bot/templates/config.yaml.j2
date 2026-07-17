@@ -1,0 +1,86 @@
+# {{ ansible_managed }}
+# asa_bot config — read once at boot, frozen.
+
+llm:
+  command:
+    - /opt/homebrew/bin/claude
+    - "-p"
+    - "--max-turns"
+    - "100"
+    # Sonnet at the asa level — fast, cheap, good enough for chat
+    # routing and tool dispatch. Reasoning-heavy subagents
+    # (deep-researcher, improver, code-reviewer) pin themselves to
+    # opus via `model:` frontmatter in their grimoire definitions;
+    # the rest inherit sonnet.
+    - "--model"
+    - "claude-sonnet-4-6"
+    - "--output-format"
+    - "stream-json"
+    - "--verbose"
+    - "--include-partial-messages"
+    # No human-in-the-loop for asa_bot turns. Every tool call would
+    # otherwise stall on a permission prompt that can't be answered
+    # in -p mode. (settings.json carries a narrower allowlist as
+    # belt-and-suspenders, but this flag is the bypass that actually
+    # ships.) NB: --allow-dangerously-skip-permissions only ENABLES
+    # the bypass-permissions OPTION; it does not engage it. The flag
+    # below actually flips the runtime mode.
+    - "--permission-mode"
+    - "bypassPermissions"
+    # Hard-block the native web tools so asa can't bypass the
+    # precis(kind='web')/(kind='websearch') cache + embed pipeline.
+    # Even with bypassPermissions, --disallowed-tools forbids the call
+    # entirely. SOUL also steers her away on the soft-rule side.
+    # `--disallowed-tools <tools...>` is variadic. To pass two names
+    # without the next flag absorbing them, use the comma form (which
+    # the help text explicitly accepts: "Comma or space-separated").
+    - "--disallowed-tools"
+    - "WebFetch,WebSearch"
+  system_prompt_flag: "--append-system-prompt"
+  mcp_config_flag: "--mcp-config"
+  mcp_config_path: /Users/hermes/.claude/mcp.json
+  cwd: /Users/hermes/claudebot
+  turn_timeout_seconds: 600
+
+discord:
+  # asa resolves the token via load_discord_token: env → precis DB vault
+  # (ADR 0055) → token_file. The plist no longer injects it; ASA_DISCORD_TOKEN
+  # lives only in the vault now. token_file stays a last-resort fallback.
+  token_env: ASA_DISCORD_TOKEN
+  token_file: /Users/hermes/.secrets/asa-discord-token
+  max_message_chars: 1900
+  attachment_threshold_chars: 6000
+
+precis:
+  command:
+    # asa's own venv now ships the `precis` entry point (monorepo merge),
+    # so the preamble MCP runs from the same wheel as asa-bot.
+    - /opt/asa/venv/bin/precis
+    - serve
+  database_url: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  env:
+    ACATOME_PG_HOST: "{{ hostvars[postgres_host]['ansible_host'] }}"
+    ACATOME_PG_PORT: "{{ postgres_port }}"
+    ACATOME_PG_DATABASE: "precis_prod"
+    ACATOME_PG_USER: "agent_rw"
+    ACATOME_PG_PASSWORD: "{{ vault_pg_agent_rw_pass }}"
+  health_check_interval_seconds: 30
+
+preamble:
+  soul_path: /Users/hermes/.asa/SOUL.md
+  tool_hints_path: /Users/hermes/.asa/TOOL_HINTS.md
+  # Operator preferences → injected as an "## Operator preferences" block in
+  # the system prompt (name/timezone/tone/house-rules). Deployment-specific,
+  # so it lives here, not in the source. Set `asa_operator_prefs` in your
+  # inventory vars to fill it; empty by default.
+  operator_prefs: {{ asa_operator_prefs | default('') | to_json }}
+  recent_turns: 5
+  digest_turns: 20
+  sticky_max_thread: 5
+  sticky_max_global: 5
+  expiry_warn_within_days: 3
+
+capture:
+  listen_host: 127.0.0.1
+  listen_port: 9876
+  fallback_jsonl: /Users/hermes/claudebot/capture-fallback.jsonl

@@ -1,0 +1,22 @@
+---
+# Periodic timer. macOS: reload via the shared safe launchd task with
+# reload_persistent=false (asserts the unit is LOADED, not a pid). Both
+# the old bootout and bootstrap steps were `failed_when: false`, so a
+# failed reload was invisible; the shared task now retries the transient
+# load failure and fails loudly if the unit never registers (gripe
+# #48490). Keeps the `listen` topic the install task notifies.
+- name: reload precis heartbeat (macos)
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.precis.heartbeat
+    reload_persistent: false
+  when: os_family == "darwin"
+  listen: restart precis heartbeat (macos)
+
+- name: reload precis heartbeat (linux)
+  ansible.builtin.systemd:
+    name: precis-heartbeat.timer
+    daemon_reload: true
+    state: restarted
+  become: true
+  listen: restart precis heartbeat (linux)

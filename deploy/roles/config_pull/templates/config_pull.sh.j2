@@ -1,0 +1,43 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Nightly config backup for {{ inventory_hostname }}
+set -euo pipefail
+
+DEST="{{ shared_mount }}/backups/configs/{{ inventory_hostname }}"
+mkdir -p "${DEST}"
+
+echo "[$(date)] Config pull starting for {{ inventory_hostname }}"
+
+# SSH config
+rsync -a --delete /etc/ssh/sshd_config "${DEST}/sshd_config" 2>/dev/null || true
+
+# Sudoers
+rsync -a /etc/sudoers.d/ "${DEST}/sudoers.d/" 2>/dev/null || true
+
+{% if 'data' in group_names %}
+# Postgres configs (data node)
+rsync -a --delete {{ postgres_data_dir | default('/var/lib/postgresql/data') }}/pg_hba.conf "${DEST}/pg_hba.conf" 2>/dev/null || true
+rsync -a --delete {{ postgres_data_dir | default('/var/lib/postgresql/data') }}/conf.d/ "${DEST}/postgres_conf.d/" 2>/dev/null || true
+rsync -a /usr/local/etc/pgbouncer/ "${DEST}/pgbouncer/" 2>/dev/null || true
+{% endif %}
+
+{% if 'gateway' in group_names %}
+# Nginx configs (gateway node)
+rsync -a --delete /usr/local/etc/nginx/ "${DEST}/nginx/" 2>/dev/null || true
+# LiteLLM config
+rsync -a /usr/local/etc/litellm/ "${DEST}/litellm/" 2>/dev/null || true
+{% endif %}
+
+{% if 'inference' in group_names %}
+# Ollama systemd overrides (GPU node)
+rsync -a /etc/systemd/system/ollama.service.d/ "${DEST}/ollama.service.d/" 2>/dev/null || true
+{% endif %}
+
+# LaunchDaemons (macOS)
+{% if os_family == "darwin" %}
+rsync -a /Library/LaunchDaemons/com.hermes.* "${DEST}/" 2>/dev/null || true
+rsync -a /Library/LaunchDaemons/com.litellm.* "${DEST}/" 2>/dev/null || true
+rsync -a /Library/LaunchDaemons/com.olla.* "${DEST}/" 2>/dev/null || true
+{% endif %}
+
+echo "[$(date)] Config pull complete for {{ inventory_hostname }}"

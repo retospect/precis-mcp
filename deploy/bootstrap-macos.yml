@@ -1,0 +1,130 @@
+---
+# bootstrap-macos.yml — Run ONCE on fresh macOS nodes before any other playbooks.
+# Uses only raw/shell/command modules (no Homebrew dependency).
+#
+# Usage:
+#   ansible-playbook bootstrap-macos.yml
+#
+# This handles:
+#   1. Deploy user home directory scaffolding (Library/Caches etc.)
+#   2. Xcode Command Line Tools install
+#   3. Homebrew install + PATH setup
+#   4. Ethernet hardening (disable EEE, force 1000baseT full-duplex)
+#   5. Wi-Fi disable (headless servers use Ethernet only)
+#   6. Power management (no sleep, autorestart, WoL)
+#
+# After this completes, run bootstrap-tailscale.yml, then site.yml.
+
+- name: Bootstrap macOS nodes (via LAN, no Homebrew required)
+  hosts: macos
+  vars:
+    ansible_host: "{{ lan_ip }}"
+  become: true
+  tasks:
+
+    # ── 1. Deploy user home dirs ──
+    - name: Create deploy user Library directories
+      ansible.builtin.file:
+        path: "/Users/deploy/{{ item }}"
+        state: directory
+        owner: deploy
+        group: staff
+        mode: "0755"
+      loop:
+        - Library
+        - Library/Caches
+        - Library/Logs
+
+    # ── 2. Xcode Command Line Tools ──
+    - name: Check if CLT is installed
+      ansible.builtin.stat:
+        path: /Library/Developer/CommandLineTools/usr/bin/git
+      register: clt_check
+
+    - name: Check if Xcode provides CLT
+      ansible.builtin.command: xcode-select -p
+      register: xcode_select
+      changed_when: false
+      failed_when: false
+
+    - name: Install CLT via softwareupdate
+      when:
+        - not (clt_check.stat.exists | default(false))
+        - xcode_select.rc != 0
+      block:
+        - name: Create CLT install-on-demand trigger
+          ansible.builtin.file:
+            path: /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
+            state: touch
+            mode: "0644"
+
+        - name: Find CLT package label
+          ansible.builtin.shell: |
+            softwareupdate -l 2>&1 \
+              | grep -B 1 -E 'Command Line Tools' \
+              | awk -F'*' '/\*/{print $2}' \
+              | sed 's/^ *Label: //' \
+              | head -n 1
+          register: clt_label
+          changed_when: false
+
+        - name: Install CLT package
+          ansible.builtin.command: >
+            softwareupdate -i "{{ clt_label.stdout | trim }}" --agree-to-license
+          when: clt_label.stdout | trim | length > 0
+
+        - name: Clean up CLT trigger
+          ansible.builtin.file:
+            path: /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
+            state: absent
+
+    # ── 3. Homebrew ──
+    - name: Check if Homebrew is installed
+      ansible.builtin.stat:
+        path: /opt/homebrew/bin/brew
+      register: brew_check
+
+    - name: Install Homebrew
+      when: not (brew_check.stat.exists | default(false))
+      become: true
+      become_user: deploy
+      ansible.builtin.shell: |
+        NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      args:
+        creates: /opt/homebrew/bin/brew
+      environment:
+        HOME: /Users/deploy
+
+    - name: Add Homebrew to deploy user PATH
+      ansible.builtin.lineinfile:
+        path: /Users/deploy/.zprofile
+        line: 'eval "$(/opt/homebrew/bin/brew shellenv zsh)"'
+        create: true
+        owner: deploy
+        group: staff
+        mode: "0644"
+
+    # ── 4. Ethernet: disable EEE ──
+    - name: Disable EEE — force 1000baseT full-duplex
+      ansible.builtin.command: networksetup -setMedia 'Ethernet' 1000baseT full-duplex
+      changed_when: false
+      failed_when: false
+
+    # ── 5. Wi-Fi off ──
+    - name: Disable Wi-Fi (headless servers)
+      ansible.builtin.command: networksetup -setairportpower en1 off
+      changed_when: false
+      failed_when: false
+
+    # ── 6. Power management ──
+    - name: Configure pmset (no sleep, autorestart, WoL)
+      ansible.builtin.command: "pmset -a {{ item }}"
+      loop:
+        - "sleep 0 disksleep 0 displaysleep 5"
+        - "autorestart 1"
+        - "womp 1"
+      changed_when: false
+
+    - name: Mute startup chime
+      ansible.builtin.command: nvram StartupMute=%01
+      changed_when: false

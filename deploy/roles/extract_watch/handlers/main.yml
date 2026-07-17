@@ -1,0 +1,5 @@
+---
+- name: restart extract-watch
+  ansible.builtin.command: launchctl kickstart -k system/com.acatome.extract-watch
+  become: true
+  changed_when: false

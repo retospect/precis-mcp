@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} — precis embedding service (per-node, loopback).
+
+  Runs `precis serve-embeddings` natively so the model reaches Metal/MPS
+  (a container on macOS cannot). The same-node `precis worker` embeds
+  against it via PRECIS_EMBEDDER=remote → http://127.0.0.1:8181. One
+  model load per node; the worker venv stays torch-free for embedding.
+  See ADR 0020/0021 in the precis-mcp repo.
+
+  Bound to loopback only — the sole consumers are same-node daemons and
+  the service is unauthenticated.
+#}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.embedder</string>
+
+  {# bash wrapper makes /bin/bash the TCC "responsible process" (FDA-
+     granted cluster-wide via tcc_profile); python inherits the grant
+     across exec. Matches the worker/watch daemons so we never need a
+     per-venv-python FDA toggle. #}
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>exec {{ precis_embedder_venv }}/bin/precis serve-embeddings --host {{ precis_embedder_host }} --port {{ precis_embedder_port }} --embedder {{ precis_embedder_backend }} --max-inflight {{ precis_embedder_max_inflight }}</string>
+  </array>
+
+  <key>UserName</key>
+  <string>deploy</string>
+
+  {# /tmp avoids the getcwd() EPERM trap that bites launchd daemons
+     inside NFS-mounted dirs. The embedder touches no NFS path. #}
+  <key>WorkingDirectory</key>
+  <string>/tmp</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/deploy</string>
+    <key>PATH</key>
+    <string>{{ precis_embedder_venv }}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HF_HOME</key>
+    <string>{{ precis_embedder_hf_home }}</string>
+    <key>TOKENIZERS_PARALLELISM</key>
+    <string>false</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  {# Restart unconditionally — the service is meant to run forever.
+     ThrottleInterval stops a crash loop from chewing CPU. #}
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/precis-embedder.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/precis-embedder.log</string>
+</dict>
+</plist>

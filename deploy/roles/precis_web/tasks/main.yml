@@ -1,0 +1,181 @@
+---
+# precis_web — FastAPI tab UI for the corpus (ADR 0026).
+# Runs on the gateway alongside asa-bot / dream / worker-agent.
+# Exposed over the tailnet via ``tailscale serve --https=443``.
+
+# uv binary path — same conditional shape the mcps role uses
+# (role-local, not a global). Set here so we don't depend on a
+# role earlier in the play setting it for us.
+- name: Resolve uv binary path
+  ansible.builtin.set_fact:
+    uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+- name: Install precis-mcp[web,docx,pcb,external,mermaid] into shared MCP venv
+  when: os_family == "darwin"
+  # The ``docx`` extra (python-docx + latex2mathml) backs the .docx
+  # export route's OMML math — without latex2mathml ``latex_to_omml``
+  # falls back to plain italic text, so the web host needs it too (not
+  # just the worker). cf. CHANGELOG 2026-06-22 export toolchain.
+  #
+  # The ``pcb`` extra (easyeda2kicad) backs the kind='pcb' Flow-B footprint
+  # conversion (ADR 0042 §5) — the shared venv runs both precis-web and the
+  # agent worker that drive PCB export/route. The Freerouting jar it routes
+  # with is installed separately by the precis_eda role.
+  #
+  # The ``external`` extra (trafilatura + feedparser + wolframalpha +
+  # youtube-transcript-api + httpx — all lightweight, no marker/torch) backs
+  # get(kind='web') / news fetch. This shared venv also runs `precis worker
+  # --profile=agent` AND dream-pass.sh (`/opt/mcps/venv/bin/precis worker
+  # --only dream_agent`); without `external`, trafilatura is absent and the
+  # dream cycle's web fetch fails with "[error:Unsupported] trafilatura is
+  # not installed" (gr48611). The worker venv already carries it.
+  #
+  # The ``mermaid`` extra (mermaidx = embedded QuickJS + resvg, pure wheels)
+  # backs the kind='mermaid' /mermaid web editor's server-side render/validate
+  # (ADR 0057). Without it the kind still works but render/validate degrade to
+  # accept-as-authored. resvg-py is already pulled by ``docx``.
+  ansible.builtin.shell: |
+    {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
+      --refresh-package precis-mcp \
+      'precis-mcp[web,docx,pcb,external,mermaid] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
+  become: true
+  register: precis_web_install
+  # uv prints its "Installed/Updated N package(s)" summary to STDERR, so
+  # a stdout-only match never fires on a real code-only refresh — the
+  # files land on disk but `notify: restart precis-web` is skipped and
+  # the daemon keeps serving stale code. Check both streams (cf. the
+  # llamacpp role, which already does).
+  changed_when: >-
+    'Installed' in (precis_web_install.stdout + precis_web_install.stderr)
+    or 'Updated' in (precis_web_install.stdout + precis_web_install.stderr)
+  # Without this notify the daemon keeps running the *old* venv
+  # contents — Jinja env, runtime, filters all cached in the live
+  # process. After a code bump that registers a new filter (e.g.
+  # linkify_refs) but doesn't change the plist, deploys would land
+  # new files on disk while the live process kept rendering with
+  # the old environment, producing 500s like "No filter named X".
+  # Mirrors the precis_worker / precis_worker_agent roles, which
+  # have always notified their reload handler on install changes.
+  notify: restart precis-web
+
+# catpath `pathway` kind surface (topology: catpath_plugin). Installs the
+# LIGHT plugin extra only (no ML backend — the gateway mints jobs, it doesn't
+# compute). Must run BEFORE the migrate task below so `precis migrate`
+# discovers catpath's plugin migration and creates the `pathway` kind. The
+# plist enables it + routes compute to the pinned node (see the template).
+- name: Install catpath[precis] into the MCP venv (pathway kind surface)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in (precis_capabilities.catpath_plugin | default([]))
+  ansible.builtin.shell: |
+    {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
+      --refresh-package catpath \
+      'catpath[precis] @ git+https://github.com/retospect/catpath'
+  become: true
+  register: precis_web_catpath
+  changed_when: >-
+    'Installed' in (precis_web_catpath.stdout + precis_web_catpath.stderr)
+    or 'Updated' in (precis_web_catpath.stdout + precis_web_catpath.stderr)
+  notify: restart precis-web
+
+# TeX toolchain for the draft → PDF export. The sync ``GET
+# /drafts/<id>/pdf`` route and the ``draft_export`` job both shell
+# ``latexmk`` (+ biber / makeglossaries) over the draft's LaTeX
+# project, whose preamble pulls biblatex+biber, glossaries-extra,
+# cleveref, siunitx, listings — a full TeX Live, not a minimal one.
+# ``mactex-no-gui`` is the headless cask (no GUI apps); it installs
+# every package the preamble needs and symlinks the binaries into
+# ``/Library/TeX/texbin`` (added to the daemon PATH in the plist).
+# Homebrew runs as the connecting (deploy) user — never root — so
+# ``become: false`` (cf. ssh_tunnels/redis). Idempotent: a no-op once
+# present; the ~4 GB download only happens on the first converge.
+- name: Install MacTeX (no GUI) for draft PDF export
+  when: os_family == "darwin"
+  community.general.homebrew_cask:
+    name: mactex-no-gui
+    state: present
+  become: false
+
+# Apply pending forward-only DB migrations before the daemon comes up
+# on the new code. Without this the deploy ships routes/queries that
+# reference tables a migration was supposed to create, and the live
+# service 500s with UndefinedTable (e.g. 0027_clusterize / the
+# /clusters grid, 2026-06). The gateway is a single host and reaches
+# the DB over the same pgbouncer DSN the daemon uses; migrations are
+# forward-only and idempotent (each is BEGIN/COMMIT, IF NOT EXISTS),
+# so running this every deploy is safe and a no-op once caught up.
+# Runs unconditionally — not gated on the install changing — so a
+# previously-shipped-but-unmigrated DB (exactly the 0027 case) still
+# gets caught up on the next deploy. The Migrator opens its own
+# autocommit connection per migration with no session-level advisory
+# locks, so it is safe through pgbouncer transaction pooling.
+- name: Apply pending precis DB migrations
+  when: os_family == "darwin"
+  ansible.builtin.command:
+    # `--dry-run` (set -e precis_migrate_dry_run=true) reports pending
+    # migrations without applying — handy to preview a deploy.
+    argv: "{{ ['' ~ precis_web_venv ~ '/bin/precis', 'migrate'] + (['--dry-run'] if precis_migrate_dry_run | bool else []) }}"
+  environment:
+    PRECIS_DATABASE_URL: "{{ precis_web_dsn }}"
+  become: true
+  register: precis_web_migrate
+  changed_when: "'migrate: applied' in precis_web_migrate.stdout"
+  tags: [precis-migrate]
+
+- name: Ensure /var/log/precis-web.log writable by daemon user
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-web.log
+    state: touch
+    # Mode + owner must let the daemon's UserName write to stdout/stderr.
+    # Same trap that bit precis_worker_agent — root:wheel 0644 makes
+    # the daemon exit 78 (EX_CONFIG) before logging anything.
+    mode: "0664"
+    owner: deploy
+    group: staff
+    modification_time: preserve
+    access_time: preserve
+  become: true
+
+- name: Ensure the private podcast feed dir (episodes live here)
+  ansible.builtin.file:
+    path: "{{ precis_web_podcast_dir }}"
+    state: directory
+    # The web daemon (deploy) reads it; producers (a TTS pass, the CLI)
+    # write it. deploy-owned, group-readable.
+    owner: deploy
+    group: staff
+    mode: "0755"
+  become: true
+
+- name: Ensure precis-web LaunchDaemon plist
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: precis-web.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.web.plist
+    mode: "0644"
+    owner: root
+    group: wheel
+  become: true
+  notify: restart precis-web
+
+- name: Load precis-web LaunchDaemon
+  when: os_family == "darwin"
+  ansible.builtin.command: >
+    launchctl load -w /Library/LaunchDaemons/com.precis.web.plist
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: Tailscale-serve precis-web on tailnet
+  when: os_family == "darwin"
+  # ``tailscale serve --bg`` writes config that persists across
+  # reboots. Re-running it with the same target is idempotent;
+  # Tailscale's API treats it as "set this mapping" rather than
+  # "spawn another listener." ``changed_when: false`` because the
+  # output is "serving" both on the first and subsequent runs.
+  ansible.builtin.shell: |
+    tailscale serve --bg --https=443 http://127.0.0.1:{{ precis_web_port }}
+  become: true
+  changed_when: false
+  failed_when: false

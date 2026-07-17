@@ -1,0 +1,9 @@
+---
+# 02-postgres.yml — PostgreSQL, PgBouncer, roles, schemas on the data node
+- name: Configure PostgreSQL
+  hosts: data
+  become: true
+  roles:
+    - postgres
+    - pgbouncer
+  tags: [postgres, pgbouncer]

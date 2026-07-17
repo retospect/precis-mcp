@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+# Fired by nightly-reboot.timer at {{ nightly_reboot_oncalendar }} (local
+# time). Schedules a reboot {{ nightly_reboot_warning_minutes }} minutes
+# out via `shutdown -r`, which broadcasts a warning and lets in-flight
+# work wind down before systemd stops units. Runs as root (system unit).
+#
+# The reboot is UNCONDITIONAL by design: its whole purpose is to clear a
+# GPU/driver-wedged process that can't be killed from userspace, and such
+# a process usually looks like "a compute job is still running" — so a
+# "skip if a job is running" guard would skip exactly the night we need
+# it. Factory relax jobs are idempotent/content-addressed (they re-run +
+# cache-fill), so the blast radius of interrupting one is small.
+
+[Unit]
+Description=Nightly gentle reboot of the GPU node (precis — gripe 50907)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/shutdown -r +{{ nightly_reboot_warning_minutes }} "Scheduled nightly reboot of the GPU node in {{ nightly_reboot_warning_minutes }} minutes (precis GPU-node hygiene)"

@@ -1,0 +1,11 @@
+---
+# Set to true on a single playbook run to force the installer to
+# re-run even when claude is already present. Useful when the
+# auto-update channel has stalled and you want to bump to the
+# latest immediately.
+claude_code_force_reinstall: false
+
+# Pre-create /Users/hermes/.claude so a future `sudo -iu hermes
+# claude` interactive login can drop its OAuth credentials there
+# cleanly. Set to false on hosts where hermes isn't running.
+claude_code_prep_hermes_home: true

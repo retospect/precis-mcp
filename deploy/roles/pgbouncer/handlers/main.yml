@@ -1,0 +1,6 @@
+---
+- name: restart pgbouncer
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl kickstart -k system/com.pgbouncer
+  become: true
+  failed_when: false

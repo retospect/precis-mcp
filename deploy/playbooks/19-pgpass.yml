@@ -1,0 +1,14 @@
+---
+# 19-pgpass.yml — Drop ~deploy/.pgpass + .psqlrc + PG* env defaults on all
+# cluster nodes so bare `psql` lands on the data node/cluster as agent_rw.
+
+- name: Distribute pgpass + psqlrc + PG env defaults
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: true
+  roles:
+    - pgpass
+  tags: [pgpass]

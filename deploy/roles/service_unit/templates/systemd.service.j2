@@ -1,0 +1,30 @@
+# {{ ansible_managed }} — generic precis service_unit (§15h).
+# Rendered from the abstract service_unit_* spec (roles/service_unit/defaults).
+# Post-collapse the thin timers fold into the worker's §15i scheduler, so the
+# systemd side renders long-running daemons only (keepalive).
+
+[Unit]
+Description={{ service_unit_description }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ service_unit_run_as }}
+Group={{ service_unit_run_as }}
+
+WorkingDirectory={{ service_unit_working_dir }}
+
+{% for env_key, env_val in service_unit_env.items() %}
+Environment={{ env_key }}={{ env_val }}
+{% endfor %}
+
+ExecStart={{ service_unit_exec }}
+
+Restart=always
+RestartSec={{ service_unit_throttle_seconds }}
+StandardOutput=append:{{ service_unit_log }}
+StandardError=append:{{ service_unit_log }}
+
+[Install]
+WantedBy=multi-user.target

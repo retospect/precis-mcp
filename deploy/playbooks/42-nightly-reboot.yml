@@ -1,0 +1,16 @@
+---
+# 42-nightly-reboot.yml — install a gentle nightly reboot timer on the
+# GPU node (the GPU node, the sole `inference` host). The NVIDIA driver
+# periodically wedges a compute process into a SIGKILL-immune state that
+# starves the co-located embedder; a reboot is the only reliable
+# recovery (gripe 50907). The Macs already reboot nightly — this puts
+# the GPU node on the same cadence. Applying this play renders two unit files
+# and enables a timer; it does NOT restart precis-worker or any other
+# service.
+
+- name: Install nightly gentle-reboot timer on the GPU node
+  hosts: inference
+  become: true
+  roles:
+    - nightly_reboot
+  tags: [nightly-reboot, precis]

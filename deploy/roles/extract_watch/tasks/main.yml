@@ -1,0 +1,223 @@
+---
+# acatome-extract watch daemon — runs on the scheduler node, watches the shared
+# NFS inbox, and auto-ingests anything that lands in it.
+#
+# Why a managed daemon? The watcher has a slow memory leak; running it
+# loose in a terminal means someone has to remember to restart it. The
+# LaunchDaemon does two things:
+#   - KeepAlive {SuccessfulExit: false} — auto-restart on crash/OOM
+#   - `launchctl kickstart -k` cron — clean restart every N hours to
+#     reclaim memory before the leak grows teeth
+#
+# acatome-extract lives in its own venv (/opt/mcps/extract/venv) with a
+# pinned Python — its deps (marker-pdf, torch, sentence-transformers,
+# pillow) refuse to build against Python 3.14, which is what the shared
+# /opt/mcps/venv currently uses.
+
+- name: Set uv binary path
+  ansible.builtin.set_fact:
+    uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+# Pinned to 3.12 because acatome-extract's deps (pillow, sentence-transformers,
+# torch) don't yet have clean macOS arm64 wheels for 3.14. Use Homebrew rather
+# than uv-managed Python: uv caches into /var/root/ when run as root, which is
+# unreachable when the LaunchDaemon drops privileges to `deploy` at exec time
+# (manifests as launchd exit status 78 / EX_CONFIG, silent failure).
+- name: Ensure Homebrew python@3.12 (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: python@3.12
+    state: present
+  become: false
+
+- name: Resolve brew python@3.12 path
+  when: os_family == "darwin"
+  ansible.builtin.set_fact:
+    brew_python312: /opt/homebrew/opt/python@3.12/bin/python3.12
+
+- name: Ensure extract venv directory
+  ansible.builtin.file:
+    path: /opt/mcps/extract
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  become: true
+
+# The venv python MUST be a symlink to brew's python@3.12, not a copy:
+#
+#   1. If it's a copy, each `uv venv` / rebuild produces a fresh cdhash and
+#      invalidates the Full Disk Access grant that the operator clicked in
+#      (see roles/tcc_profile/README.md). Symlinks inherit brew's cdhash,
+#      which only changes on `brew upgrade python@3.12`.
+#   2. Earlier versions used `uv venv --python` which cached python under
+#      /var/root/.local/share/uv/python when run as root — unreachable when
+#      launchd drops privileges to `deploy` (manifests as launchd exit code
+#      78 / EX_CONFIG, silent). Brew's python in /opt/homebrew/... is world-
+#      readable, dodges the trap entirely.
+# Follow python3 through every symlink hop. If the final target is inside
+# /opt/homebrew (or /usr), the venv is properly symlinked to brew and the
+# FDA grant pins to brew's cdhash. If it's inside /opt/mcps/extract/venv
+# the interpreter was copied — wipe to force a --symlinks rebuild. If it
+# lives under /var/root/, a previous `uv venv --python` as root cached it
+# in root's home where launchd-dropped-to-deploy can't read it — also wipe.
+- name: Detect /opt/mcps/extract/venv python mode
+  ansible.builtin.shell: |
+    set -u
+    resolved=$(/usr/bin/readlink -f /opt/mcps/extract/venv/bin/python3 2>/dev/null || true)
+    case "$resolved" in
+      "")                               echo missing ;;
+      /opt/homebrew/*|/usr/*)           echo symlinked ;;
+      /opt/mcps/extract/venv/*)         echo copied ;;
+      /var/root/*)                      echo root-cached ;;
+      *)                                echo "other:$resolved" ;;
+    esac
+  register: extract_venv_mode
+  changed_when: false
+  become: true
+
+- name: Wipe extract venv when it's copied or root-cached
+  when: extract_venv_mode.stdout | default('') | trim in ["copied", "root-cached"]
+  ansible.builtin.file:
+    path: /opt/mcps/extract/venv
+    state: absent
+  become: true
+
+- name: Create acatome-extract venv (symlinked to brew python@3.12)
+  ansible.builtin.command:
+    cmd: "{{ brew_python312 }} -m venv --symlinks /opt/mcps/extract/venv"
+    creates: /opt/mcps/extract/venv/bin/python3
+  become: true
+  become_user: deploy
+
+- name: Install acatome-extract into dedicated venv
+  ansible.builtin.shell: |
+    {{ uv_bin }} pip install --python /opt/mcps/extract/venv/bin/python --upgrade \
+      'acatome-extract[embeddings,store]'
+  become: true
+  become_user: deploy
+  register: extract_install
+  changed_when: "'Installed' in extract_install.stdout or 'Updated' in extract_install.stdout"
+
+- name: Fix extract venv ownership
+  ansible.builtin.file:
+    path: /opt/mcps/extract
+    state: directory
+    recurse: true
+    owner: deploy
+    group: staff
+  become: true
+
+- name: Symlink acatome-extract binary into PATH
+  ansible.builtin.file:
+    src: /opt/mcps/extract/venv/bin/acatome-extract
+    dest: /opt/mcps/bin/acatome-extract
+    state: link
+    force: true
+  become: true
+
+# Log file lives on local disk — launchd stdio redirect to NFS fails silently
+# on macOS. We still keep a symlink in the shared logs dir so that monitoring
+# cron / ops scripts find the log at the canonical NFS location.
+- name: Ensure local log file pre-exists with correct owner
+  ansible.builtin.file:
+    path: /var/log/acatome-extract-watch.log
+    state: touch
+    owner: deploy
+    group: wheel
+    mode: "0644"
+  become: true
+  changed_when: false
+
+- name: Ensure extract-watch shared log dir (for rotation pattern)
+  ansible.builtin.file:
+    path: "{{ shared_mount }}/logs/extract-watch"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  become: true
+
+- name: Symlink shared log path to local log file
+  ansible.builtin.file:
+    src: /var/log/acatome-extract-watch.log
+    dest: "{{ shared_mount }}/logs/extract-watch/watch.log"
+    state: link
+    force: true
+  become: true
+
+- name: Ensure papers inbox / completed / errors dirs exist
+  # `acatome-extract watch` creates completed/ and errors/ on its own at
+  # startup, but provisioning them here makes ownership deterministic.
+  ansible.builtin.file:
+    path: "{{ papers_inbox_path }}/{{ item }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0775"
+  become: true
+  loop:
+    - ""
+    - completed
+    - errors
+    - errors/duplicates
+
+- name: Verify acatome-extract binary is present
+  ansible.builtin.stat:
+    path: /opt/mcps/extract/venv/bin/acatome-extract
+  register: acatome_extract_bin
+  failed_when: not acatome_extract_bin.stat.exists
+  changed_when: false
+
+- name: Deploy extract-watch LaunchDaemon (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: extract-watch.plist.j2
+    dest: /Library/LaunchDaemons/com.acatome.extract-watch.plist
+    mode: "0644"
+    owner: root
+    group: wheel
+  become: true
+  register: plist_deployed
+
+# launchctl caches the plist contents at `load` time — subsequent `load` calls
+# or `kickstart -k` re-run the service with the OLD plist. On config change
+# we must bootout to tear down the cached registration, then bootstrap to
+# re-read the plist from disk. `failed_when: false` on bootout covers the
+# first-ever run where the service isn't loaded yet.
+- name: Bootout cached daemon registration on config change
+  when: os_family == "darwin" and plist_deployed.changed
+  ansible.builtin.command: launchctl bootout system/com.acatome.extract-watch
+  become: true
+  changed_when: true
+  failed_when: false
+
+- name: Bootstrap (load) extract-watch LaunchDaemon
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl bootstrap system /Library/LaunchDaemons/com.acatome.extract-watch.plist
+  become: true
+  register: bootstrap_result
+  changed_when: bootstrap_result.rc == 0
+  # rc=37 = "already loaded", rc=9216 = "service already bootstrapped" — both fine
+  failed_when: bootstrap_result.rc not in [0, 37, 9216]
+
+# Periodic clean restart — the leak makes the RSS climb ~1 MB / paper, so
+# every N hours we kickstart to reclaim memory. `-k` sends SIGTERM first so
+# the watcher finishes the current PDF cleanly before dying.
+- name: Schedule periodic kickstart to mitigate memory leak
+  when: extract_watch_kickstart_hours | int > 0
+  ansible.builtin.cron:
+    name: "acatome-extract watch kickstart"
+    minute: "0"
+    hour: "*/{{ extract_watch_kickstart_hours }}"
+    job: "launchctl kickstart -k system/com.acatome.extract-watch >> {{ shared_mount }}/logs/extract-watch/kickstart.log 2>&1"
+    user: root
+  become: true
+
+- name: Remove kickstart cron when disabled
+  when: extract_watch_kickstart_hours | int == 0
+  ansible.builtin.cron:
+    name: "acatome-extract watch kickstart"
+    state: absent
+    user: root
+  become: true

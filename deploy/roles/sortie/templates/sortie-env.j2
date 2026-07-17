@@ -1,0 +1,17 @@
+# sortie-mcp environment — sourced by cron and MCP server
+# {{ ansible_managed }}
+DATABASE_URL=postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:6432/precis_prod
+SORTIE_SCHEMA={{ sortie_schema | default('sortie') }}
+SORTIE_MAX_CONCURRENT={{ sortie_max_concurrent | default(4) }}
+SORTIE_ZOMBIE_TIMEOUT={{ sortie_zombie_timeout | default(30) }}
+SORTIE_PLANNER_MODEL={{ sortie_planner_model | default('qwen3.5:9b') }}
+LITELLM_URL=http://{{ hostvars[litellm_host]['ansible_host'] }}:4000
+LITELLM_KEY={{ vault_litellm_key_background }}
+HERMES_URL=http://127.0.0.1:3000
+
+# Embeddings (v0.2.0): feature-flagged. Off by default — set to 1 once a
+# 384-dim embedding model has been registered in LiteLLM under the name
+# below. See sortie_mcp.embeddings for the fail-open contract.
+SORTIE_EMBEDDINGS_ENABLED={{ sortie_embeddings_enabled | default('0') }}
+SORTIE_EMBEDDING_MODEL={{ sortie_embedding_model | default('nomic-embed-text') }}
+SORTIE_EMBEDDING_DIM={{ sortie_embedding_dim | default('384') }}

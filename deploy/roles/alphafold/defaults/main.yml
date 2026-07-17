@@ -1,0 +1,53 @@
+---
+# alphafold role defaults — configure the GPU compute node to run
+# precis-mcp `fold` jobs (ADR 0056 slice 4). AlphaFold3 lives in the
+# `alphafold3:ready` container IMAGE (already built on the GPU node) and its weights in
+# a models dir (already present), so — unlike roles/aizynth — this role BUILDS
+# NOTHING and DOWNLOADS NOTHING: it only asserts the image + weights are there
+# and wires the worker's PRECIS_FOLD_* / PRECIS_NODE env. The `protein` kind +
+# `fold` job_type are bundled in precis-mcp (already in every venv), and the
+# plugin migration (precis_bio) already applied at deploy.
+#
+# GPU container — like roles/dft (--gpus all via the NVIDIA toolkit), unlike the
+# CPU-only roles/aizynth. Gated on the single topology map: this role runs where
+# `inventory_hostname in precis_capabilities.bio_fold`.
+
+# The node this role targets / fold jobs pin themselves to. Must match
+# inventory_hostname so the target_node claim gate lets THIS node's worker claim
+# the job (and the container runner run locally, no self-ssh — so the /shared
+# scratch paths line up on the same box that staged them).
+alphafold_node: "{{ inventory_hostname }}"
+
+# The AlphaFold3 image (built + validated on the GPU node by reto, ARM64/GB10). docker
+# (not podman) is the GPU node's deployed runtime (same as roles/dft); --gpus all works
+# via the NVIDIA toolkit. This role does NOT build it — it asserts it is present.
+alphafold_image: "alphafold3:ready"
+alphafold_container_cmd: docker
+
+# The AF3 model weights (af3.bin), already on the node — world-readable under
+# reto's home, mounted read-only at /models in the container (ADR 0056 §5:
+# image = code, weights = mounted data). NOT downloaded by this role.
+alphafold_models_dir: /home/reto/alphafold3/models
+
+# the data node's NFS export, as mounted on this node (the GPU node = /shared). The container
+# in/out scratch lives here so the claiming worker and the container share a
+# filesystem view (the AF3 input JSON staged in, the mmCIF + confidences out).
+alphafold_nfs_root: /shared
+alphafold_scratch_dir: "{{ alphafold_nfs_root }}/scratch"
+
+# Persistent XLA compilation cache (mounted at /root/.cache/xla_extension). AF3's
+# first run JIT-compiles for ~5-10 min; caching it across runs makes subsequent
+# folds start fast. On the shared tree so it survives a node rebuild; the GPU node is
+# the only GB10 fold node, so cross-host cache pollution isn't a concern.
+alphafold_xla_cache_dir: "{{ alphafold_nfs_root }}/xla-af3"
+
+# Memory cap on the fold container (docker size string → --memory/--memory-swap
+# via PRECIS_FOLD_MEM_LIMIT). The GB10 is a DGX the GPU node with UNIFIED CPU+GPU
+# LPDDR5X (~121 GB total here), so an uncapped AF3 XLA-compile spike could starve
+# the resident precis-worker (+ its embedder) and wedge the node. 96g leaves
+# ~25 GB headroom for the OS/worker/driver. Empty ⇒ no cap.
+alphafold_mem_limit: 96g
+
+# The worker runs as this user; rootful docker (deploy in the docker group) can
+# bind-mount the models under /home/reto regardless of owner.
+alphafold_worker_user: deploy

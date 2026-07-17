@@ -1,0 +1,8 @@
+; Managed by Ansible — do not edit
+{% for role in postgres_roles %}
+"{{ role.name }}" "{{ lookup('vars', 'vault_' + role.password_var) }}"
+{% endfor %}
+; openclaw_app: externally-managed role for the retired monolith DB. Kept here
+; so the openclaw DB stays reachable through pgbouncer until it is retired.
+; Remove this line together with the openclaw DB / vault_pg_openclaw_pass.
+"openclaw_app" "{{ vault_pg_openclaw_pass }}"

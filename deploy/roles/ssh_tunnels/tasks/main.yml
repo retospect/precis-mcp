@@ -1,0 +1,126 @@
+---
+# Persistent SSH tunnels between cluster nodes using autossh.
+# Requires an ssh_tunnels list in each host's host_vars.
+
+- name: Install autossh (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: autossh
+    state: present
+  become: false
+
+- name: Install autossh (Linux)
+  when: os_family == "linux"
+  ansible.builtin.apt:
+    name: autossh
+    state: present
+  become: true
+
+- name: Ensure deploy .ssh directory
+  ansible.builtin.file:
+    path: /Users/deploy/.ssh
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0700"
+  become: true
+  when: os_family == "darwin"
+
+- name: Generate tunnel SSH key
+  ansible.builtin.command:
+    cmd: ssh-keygen -t ed25519 -f /Users/deploy/.ssh/tunnel_ed25519 -N "" -C "tunnel@{{ inventory_hostname }}"
+    creates: /Users/deploy/.ssh/tunnel_ed25519
+  become: true
+  become_user: deploy
+
+- name: Read tunnel public key
+  ansible.builtin.slurp:
+    src: /Users/deploy/.ssh/tunnel_ed25519.pub
+  register: tunnel_pubkey
+  become: true
+
+- name: Distribute tunnel public key to destination nodes
+  ansible.posix.authorized_key:
+    user: deploy
+    key: "{{ tunnel_pubkey.content | b64decode }}"
+    comment: "tunnel from {{ inventory_hostname }}"
+    state: present
+  delegate_to: "{{ item.dest }}"
+  become: true
+  loop: "{{ ssh_tunnels }}"
+  loop_control:
+    label: "{{ inventory_hostname }} → {{ item.dest }}"
+
+- name: Accept destination host keys
+  ansible.builtin.shell: |
+    ssh-keyscan -t ed25519 {{ hostvars[item.dest]['lan_ip'] }} >> /Users/deploy/.ssh/known_hosts 2>/dev/null
+    sort -u /Users/deploy/.ssh/known_hosts -o /Users/deploy/.ssh/known_hosts
+  become: true
+  become_user: deploy
+  loop: "{{ ssh_tunnels }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  changed_when: false
+
+- name: Ensure tunnel log directory exists
+  ansible.builtin.file:
+    path: /opt/homebrew/var/log
+    state: directory
+    mode: "0755"
+  become: true
+  when: os_family == "darwin"
+
+- name: Pre-create tunnel log files for deploy user
+  ansible.builtin.file:
+    path: "/opt/homebrew/var/log/tunnel-{{ item.dest }}.log"
+    state: touch
+    owner: deploy
+    group: staff
+    mode: "0644"
+  become: true
+  loop: "{{ ssh_tunnels }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  changed_when: false
+  when: os_family == "darwin"
+
+- name: Deploy autossh launchd plist (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: autossh_tunnel.plist.j2
+    dest: "/Library/LaunchDaemons/com.tunnel.{{ item.dest }}.plist"
+    mode: "0644"
+  become: true
+  loop: "{{ ssh_tunnels }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: "reload ssh tunnels"
+
+- name: Unload old tunnel plists (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    launchctl unload /Library/LaunchDaemons/com.tunnel.{{ item.dest }}.plist 2>/dev/null || true
+  become: true
+  loop: "{{ ssh_tunnels }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  changed_when: false
+
+- name: Load tunnel plists (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl load -w /Library/LaunchDaemons/com.tunnel.{{ item.dest }}.plist
+  become: true
+  loop: "{{ ssh_tunnels }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  changed_when: false
+  failed_when: false
+
+- name: Wait for first forwarded port per tunnel
+  ansible.builtin.wait_for:
+    port: "{{ item.forwards[0].split(':')[0] }}"
+    host: 127.0.0.1
+    timeout: 15
+  loop: "{{ ssh_tunnels }}"
+  loop_control:
+    label: "{{ item.dest }} (port {{ item.forwards[0].split(':')[0] }})"

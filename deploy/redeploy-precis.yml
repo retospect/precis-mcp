@@ -1,0 +1,444 @@
+---
+# redeploy-precis.yml — Pull fresh precis-mcp from GitHub and bounce every
+# precis daemon so all nodes run the new HEAD.
+#
+# Usage:
+#   ansible-playbook redeploy-precis.yml                       # deploy main
+#   ansible-playbook redeploy-precis.yml \
+#     -e precis_worker_git_ref=some-branch \
+#     -e precis_web_git_ref=some-branch                        # deploy a branch
+#
+# How precis-mcp ships (see CLAUDE.md for the full map):
+#   precis-mcp is `uv pip install`-ed from
+#   git+https://github.com/retospect/precis-mcp@<ref> into three venvs.
+#   `--refresh-package precis-mcp` forces uv to re-resolve the branch HEAD,
+#   so re-running these plays pulls whatever was last pushed:
+#
+#     /opt/precis/venv          ← 20-precis-worker   (worker, watch, heartbeat, dream)
+#     /opt/mcps/venv            ← 38-precis-web       (web, worker-agent, watch-poll, cron-tick)
+#     /opt/precis/embedder-venv ← 19a-precis-embedder (embedder)
+#
+# This playbook does six things:
+#   0. Pin the target: resolve the deploy ref (default `main`) to ONE commit
+#      sha *once* at play start and freeze every install/compare against it.
+#      Without this the install, the pre-flight, and the convergence assert
+#      each re-sampled `main` independently, so a commit landing mid-deploy
+#      (the autonomous fixer, a sibling /go) made the assert compare an
+#      already-installed sha to a NEWER HEAD and false-fail. See step 0 play.
+#   0b. Pre-flight: per host, decides whether this deploy will move ANY managed
+#      venv (installed sha vs the pinned sha). Sets `precis_deploy_changed` to
+#      gate the restart in step 2 — a redundant same-sha redeploy skips the
+#      bounce entirely (gr51351: stops the worker-restart storm from a burst
+#      of /go deploys, and coalesces overlapping runs).
+#   1. Re-runs those three install plays → the PINNED commit lands in every venv.
+#   2. Restarts every com.precis.* LaunchDaemon (macOS) and the precis-*
+#      units (Linux/the GPU node) — including daemons that share a venv and saw no
+#      install change of their own — so nothing keeps running stale in-memory
+#      code. GATED on step 0b: skipped on a host where nothing moved.
+#   3. Removes the vestigial /opt/mcps venv off non-gateway hosts (precis_web
+#      only belongs on the gateway) so an orphaned relic can't drift and
+#      masquerade as a failed deploy in a spot-check.
+#   4. ASSERTS convergence: every managed venv's INSTALLED commit
+#      (direct_url.json) must equal the PINNED sha, or the redeploy fails
+#      loudly. This is the proof the deploy actually landed everywhere — the
+#      uv checkout cache's .git/HEAD lags and cannot be trusted for it.
+
+# ── 0. Pin the deploy target to ONE commit (kills the mid-deploy race) ──
+# The install roles install `@{{ precis_*_git_ref }}` and the pre-flight (0b)
+# + convergence assert (4) compared the installed sha to `git ls-remote <ref>`.
+# When the ref is a moving branch (`main`), each of those three re-sampled it
+# independently — so a commit landing between install and assert (the out-of-cluster
+# fixer shipping mid-deploy, or a sibling /go) left the venvs correctly on the
+# sha they installed while the assert compared against a NEWER HEAD → a spurious
+# "DEPLOY DID NOT CONVERGE" on a perfectly good, uniform cluster (observed twice
+# on 2026-07-06/07). Fix: resolve the ref to a concrete commit ONCE here and pin
+# every downstream install + comparison to that frozen sha, so a `main` that
+# advances under an in-flight deploy can't false-fail it (this deploy simply
+# lands the pinned commit; the next deploy picks up the newer one). An explicit
+# `-e precis_worker_git_ref=<branch>` still wins (extra-vars > set_fact); the
+# pin only overrides the role *defaults*.
+- name: "Pin the deploy target to a single commit sha (freeze a moving ref)"
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: false
+  tasks:
+    - name: Resolve the deploy ref to one commit (once, shared to all hosts)
+      # run_once → a single ls-remote; its result is broadcast to every host in
+      # the play, so all hosts pin the SAME sha even if main moves a beat later.
+      ansible.builtin.shell: |
+        set -uo pipefail
+        git ls-remote https://github.com/retospect/precis-mcp \
+          "{{ precis_worker_git_ref | default('main') }}" | awk 'NR==1{print $1}'
+      args:
+        executable: /bin/bash
+      register: precis_target_ls
+      run_once: true
+      changed_when: false
+
+    - name: Refuse to deploy if the ref did not resolve to a commit
+      ansible.builtin.assert:
+        that:
+          - precis_target_ls.stdout | length == 40
+        fail_msg: >-
+          could not resolve '{{ precis_worker_git_ref | default('main') }}' to a
+          commit via git ls-remote (got '{{ precis_target_ls.stdout }}') — refusing
+          to deploy an unpinned/unresolvable ref.
+        quiet: true
+      run_once: true
+
+    - name: Pin every managed venv's install ref + the compare target to that sha
+      # set_fact beats the role defaults (precis_*_git_ref: main) so the install
+      # roles install `@<sha>`; it does NOT beat an explicit `-e` (extra-vars),
+      # so a deliberate branch deploy is untouched. precis_target_sha is the
+      # single source of truth the pre-flight (0b) and the assert (4) compare to.
+      ansible.builtin.set_fact:
+        precis_target_sha: "{{ precis_target_ls.stdout }}"
+        precis_worker_git_ref: "{{ precis_target_ls.stdout }}"
+        precis_embedder_git_ref: "{{ precis_target_ls.stdout }}"
+        precis_web_git_ref: "{{ precis_target_ls.stdout }}"
+
+    - name: Report the pinned target
+      ansible.builtin.debug:
+        msg: "deploy target pinned to {{ precis_target_sha }}"
+      run_once: true
+
+# ── 0b. Decide whether this deploy actually changes anything (gate the bounce) ──
+# gr51351: the bounce play (step 2) used to restart EVERY precis daemon on
+# EVERY run — even a redundant same-sha redeploy — so a burst of back-to-back
+# /go deploys caused a worker-restart STORM (the GPU node hit 9× in 1h on 2026-07-06,
+# tripping the nursery worker-restart critical alert; each mid-job kill orphans
+# in-flight work, swept + re-run at the 1h clock).
+#
+# Fix: snapshot each managed venv's INSTALLED sha *before* the reinstall and
+# compare it to the ref HEAD we're about to deploy. Per host, set a
+# `precis_deploy_changed` fact — true iff some managed venv will actually move.
+# Step 2's restart actions are gated on it, so:
+#   * a redundant same-sha deploy is a true no-op (no restart, no storm), and
+#   * an overlapping second /go that finds every venv already on the target sha
+#     does not re-bounce — the "skip if venv already on target sha" coalescing
+#     the gripe asks for (gr51351 fix #2), covering the observed sequential
+#     back-to-back case without a separate lock.
+# A real code change still bounces exactly as before. Defaults to bouncing if
+# the pre-flight can't run (MISSING venv, network hiccup on git ls-remote), so
+# the safe direction is "restart", never "silently skip a real update".
+- name: "Pre-flight: will this deploy move any managed venv? (gate the restart)"
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: true
+  vars:
+    # Same venv → ref mapping as the convergence assert (step 4). /opt/mcps
+    # only exists on the gateway (precis_web); the other two are on every host.
+    _precis_venv_refs: >-
+      {{ {
+           '/opt/precis/venv': precis_worker_git_ref | default('main'),
+           '/opt/precis/embedder-venv': precis_embedder_git_ref | default(precis_worker_git_ref | default('main')),
+         } | combine(
+           {'/opt/mcps/venv': precis_web_git_ref | default('main')}
+           if inventory_hostname in groups['gateway'] else {}
+         ) }}
+  tasks:
+    - name: Compare each managed venv's installed sha to the pinned target
+      # Reads pip's direct_url.json (the sha actually built into the venv, not
+      # the lagging uv checkout cache) and diffs it against the PINNED sha from
+      # step 0 — not a fresh ls-remote, so a main that moves mid-deploy can't
+      # skew this decision. Emits SAME (already on target → no move) or DIFF
+      # (will move, or the venv is MISSING). Never fails: a MISSING venv emits
+      # DIFF so the gate errs toward bouncing.
+      ansible.builtin.shell: |
+        set -uo pipefail
+        venv="{{ item.key }}"; expected="{{ precis_target_sha }}"
+        f=$(ls $venv/lib/python*/site-packages/precis_mcp-*.dist-info/direct_url.json 2>/dev/null | head -1)
+        installed=$([ -n "$f" ] && python3 -c "import json;print(json.load(open('$f'))['vcs_info']['commit_id'])" || echo MISSING)
+        [ -n "$expected" ] && [ "$installed" = "$expected" ] && echo SAME || echo DIFF
+      args:
+        executable: /bin/bash
+      loop: "{{ _precis_venv_refs | dict2items }}"
+      loop_control:
+        label: "{{ inventory_hostname }}:{{ item.key }}"
+      register: precis_preflight
+      changed_when: false
+      failed_when: false
+
+    - name: Set the deploy-changed gate (true if ANY managed venv will move)
+      ansible.builtin.set_fact:
+        precis_deploy_changed: >-
+          {{ precis_preflight.results
+             | map(attribute='stdout') | map('trim')
+             | select('equalto', 'DIFF') | list | length > 0 }}
+
+    - name: Report the deploy-change decision
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: deploy_changed={{ precis_deploy_changed }}
+          ({{ precis_preflight.results | map(attribute='stdout') | map('trim') | list }})
+
+# ── 1. Reinstall from GitHub HEAD ──
+# Order matters: the embedder goes FIRST. The system worker calls the
+# embedder at boot (`_build_handlers` → `EmbedHandler` → GET /model) and
+# *crashes* — not retries — if the listener is refusing connections, so
+# launchd crash-loops it. Installing/health-checking the embedder before
+# the worker (and web) plays guarantees a live listener is already up
+# when those plays restart their daemons. See the gated bounce play below
+# for the same invariant at restart time.
+- name: "Refresh /opt/precis/embedder-venv (embedder) — FIRST, dependents need it"
+  ansible.builtin.import_playbook: playbooks/19a-precis-embedder.yml
+
+- name: "Refresh /opt/precis/venv          (worker, watch, heartbeat, dream)"
+  ansible.builtin.import_playbook: playbooks/20-precis-worker.yml
+
+- name: "Refresh /opt/mcps/venv            (web, worker-agent, watch-poll, cron-tick)"
+  ansible.builtin.import_playbook: playbooks/38-precis-web.yml
+
+# The agent-worker plist (the gateway only) carries env the web play does NOT
+# re-render — the review-pass gates plus the feature toggles that live only
+# on the agent profile (PRECIS_QUEST_LOOP_ENABLED, PRECIS_DIAGRAM_AGENTIC,
+# PRECIS_CARD_FORGE_AUTONOMY, …). 38 refreshes the shared /opt/mcps/venv the
+# agent worker runs from; this play then re-renders + reloads its plist so a
+# plain `scripts/deploy` applies agent-env changes too (previously they
+# needed a separate `ansible-playbook playbooks/37-…` and silently drifted).
+- name: "Re-render the worker-agent plist   (the gateway — agent-profile env)"
+  ansible.builtin.import_playbook: playbooks/37-precis-worker-agent.yml
+
+# ── 2. Force-bounce every precis daemon so fresh code is in memory ──
+- name: "Bounce all precis daemons"
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: true
+  tasks:
+    # ── Embedder FIRST, with a health gate ──
+    # The system worker (and anything else that embeds at boot) crashes
+    # rather than retries if the embedder listener is refusing
+    # connections, so launchd crash-loops it. Restart the embedder on its
+    # own and block until /healthz is 200 before bouncing any dependent
+    # daemon. `bootstrap` also re-loads it if a prior run left it
+    # *unloaded* — `kickstart` alone can't restart a service that isn't
+    # loaded (the failure mode that crash-looped the gateway's worker).
+    - name: Ensure embedder is loaded (macOS) — no-op if already loaded
+      when: os_family == "darwin"
+      ansible.builtin.command:
+        cmd: launchctl bootstrap system /Library/LaunchDaemons/com.precis.embedder.plist
+      changed_when: false
+      failed_when: false
+
+    - name: Restart embedder (macOS)
+      when:
+        - os_family == "darwin"
+        - precis_deploy_changed | default(true) | bool
+      ansible.builtin.command:
+        cmd: launchctl kickstart -k system/com.precis.embedder
+      changed_when: true
+      failed_when: false
+
+    - name: Wait for embedder /healthz before bouncing dependents (macOS)
+      when:
+        - os_family == "darwin"
+        - precis_deploy_changed | default(true) | bool
+      ansible.builtin.uri:
+        url: >-
+          http://{{ precis_embedder_host | default('127.0.0.1') }}:{{
+          precis_embedder_port | default(8181) }}/healthz
+        status_code: 200
+      register: precis_embedder_gate
+      retries: 80
+      delay: 3
+      until: precis_embedder_gate.status == 200
+      # Don't abort the whole redeploy if it's still warming — the worker
+      # self-heals once the listener binds. The gate's job is to give it
+      # those ~4 minutes (80×3s) BEFORE we bounce the worker, not to be a
+      # tripwire. Widened from 40 after a cold bge-m3 warm exceeded 2 min on
+      # a slower Mac and left the worker bouncing against a not-yet-bound
+      # listener (2026-07-04).
+      failed_when: false
+
+    - name: Find precis LaunchDaemons except embedder (macOS)
+      when: os_family == "darwin"
+      ansible.builtin.find:
+        paths: /Library/LaunchDaemons
+        patterns: "com.precis.*.plist"
+        excludes: "com.precis.embedder.plist"
+      register: precis_plists
+
+    - name: Kickstart each remaining precis LaunchDaemon (macOS)
+      when:
+        - os_family == "darwin"
+        - precis_deploy_changed | default(true) | bool
+      ansible.builtin.command: >-
+        launchctl kickstart -k
+        system/{{ item.path | basename | regex_replace('\.plist$', '') }}
+      loop: "{{ precis_plists.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      changed_when: true
+      failed_when: false
+
+    # Linux/the GPU node: same invariant — embedder first + health gate, then
+    # every OTHER precis-*.service. (the GPU node also runs precis-watch, the
+    # inbox ingester; bouncing only the worker left the watcher on stale
+    # code, so we still restart all the rest — just not before the
+    # embedder is up.)
+    - name: Restart embedder first (Linux/the GPU node)
+      when:
+        - os_family == "linux"
+        - precis_deploy_changed | default(true) | bool
+      ansible.builtin.systemd:
+        name: precis-embedder
+        state: restarted
+      failed_when: false
+
+    - name: Wait for embedder /healthz before bouncing dependents (Linux/the GPU node)
+      when:
+        - os_family == "linux"
+        - precis_deploy_changed | default(true) | bool
+      ansible.builtin.uri:
+        url: >-
+          http://{{ precis_embedder_host | default('127.0.0.1') }}:{{
+          precis_embedder_port | default(8181) }}/healthz
+        status_code: 200
+      register: precis_embedder_gate_linux
+      retries: 80
+      delay: 3
+      until: precis_embedder_gate_linux.status == 200
+      failed_when: false
+
+    - name: Find precis systemd units except embedder (Linux/the GPU node)
+      when: os_family == "linux"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        systemctl list-units --type=service --all --no-legend 'precis-*.service'
+        | awk '{print $1}' | grep -vx 'precis-embedder.service'
+      args:
+        executable: /bin/bash
+      register: precis_units
+      changed_when: false
+      failed_when: false
+
+    - name: Restart each remaining precis systemd unit (Linux/the GPU node)
+      when:
+        - os_family == "linux"
+        - precis_deploy_changed | default(true) | bool
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: restarted
+      loop: "{{ precis_units.stdout_lines | select | list }}"
+      failed_when: false
+
+    - name: Report bounced units (Linux/the GPU node)
+      when: os_family == "linux"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          {{ 'bounced' if (precis_deploy_changed | default(true) | bool)
+             else 'skipped bounce (no venv changed)' }}
+          {{ precis_units.stdout_lines | select | list }}
+
+    - name: Report bounced daemons (macOS)
+      when: os_family == "darwin"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          {{ 'bounced' if (precis_deploy_changed | default(true) | bool)
+             else 'skipped bounce (no venv changed)' }}
+          {{ precis_plists.files | map(attribute='path') | map('basename') | list }}
+
+# ── 3. Remove the vestigial /opt/mcps/venv relic off hosts that never run it ──
+# `precis_web` — the only role that installs the gateway's /opt/mcps/venv —
+# targets the `gateway` group (the gateway) ONLY. `data`/`inference` hosts may
+# carry an /opt/mcps/venv relic from an earlier topology; nothing loads it
+# (their daemons run off /opt/precis/venv), so it drifts a release behind and
+# is a diagnostic trap (a stale direct_url.json sha reads like a failed deploy
+# when it is just a relic). Remove that ONE venv so the convergence check below
+# asserts cleanly. Idempotent (no-op if absent).
+#
+# NB: `scheduler` (the scheduler node) is DELIBERATELY EXCLUDED — it legitimately owns
+# /opt/mcps/venv (roles/mcps + daily_briefing) AND /opt/mcps/extract
+# (extract_watch), neither of which this playbook re-creates. Targeting it here
+# wiped both on every /go (introduced by db84485 2026-07-04; fixed 2026-07-13).
+# And we scope the removal to /opt/mcps/venv, NEVER the whole /opt/mcps tree, so
+# it can't collateral-damage extract/, quest/, bin/.
+- name: "Remove vestigial /opt/mcps/venv off non-owning hosts"
+  hosts:
+    - data
+    - inference
+  become: true
+  tasks:
+    - name: Absent /opt/mcps/venv (the gateway-only precis_web relic)
+      ansible.builtin.file:
+        path: /opt/mcps/venv
+        state: absent
+
+# ── 4. Prove convergence: every MANAGED precis venv runs the deployed sha ──
+# Deploy is only done when every venv a role installs is actually ON the ref
+# it was told to deploy. Without this, a silently-skipped install (uv thought
+# it was satisfied, or an install task's changed_when missed the update) leaves
+# a daemon on stale in-memory code with no signal — and the uv checkout cache's
+# `.git/HEAD` lags the installed wheel, so a manual spot-check there is
+# actively misleading. This play reads each managed venv's installed commit_id
+# (from pip's direct_url.json — the authoritative record of what's INSTALLED,
+# not what's cached) and asserts it equals the current HEAD of that venv's ref.
+# A mismatch fails the redeploy loudly instead of leaving a quiet laggard.
+- name: "Verify every managed precis venv is on the deployed commit"
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: true
+  vars:
+    # venv → the git ref its role deploys. /opt/mcps only exists on the gateway
+    # (precis_web); the other two venvs are installed on every host.
+    _precis_venv_refs: >-
+      {{ {
+           '/opt/precis/venv': precis_worker_git_ref | default('main'),
+           '/opt/precis/embedder-venv': precis_embedder_git_ref | default(precis_worker_git_ref | default('main')),
+         } | combine(
+           {'/opt/mcps/venv': precis_web_git_ref | default('main')}
+           if inventory_hostname in groups['gateway'] else {}
+         ) }}
+  tasks:
+    - name: Read installed commit_id vs the pinned target for each managed venv
+      # direct_url.json carries {"vcs_info": {"commit_id": "<sha>"}} for a
+      # git-installed dist — the sha actually built into the venv. Compare it
+      # to the PINNED sha from step 0 (NOT a fresh ls-remote), so a commit
+      # landing on main mid-deploy can't make this false-fail. Emits
+      # "<installed> <expected>" for the assert below; MISSING if the venv
+      # has no precis dist at all.
+      ansible.builtin.shell: |
+        set -uo pipefail
+        venv="{{ item.key }}"; expected="{{ precis_target_sha }}"
+        f=$(ls $venv/lib/python*/site-packages/precis_mcp-*.dist-info/direct_url.json 2>/dev/null | head -1)
+        installed=$([ -n "$f" ] && python3 -c "import json;print(json.load(open('$f'))['vcs_info']['commit_id'])" || echo MISSING)
+        echo "$installed $expected"
+      args:
+        executable: /bin/bash
+      loop: "{{ _precis_venv_refs | dict2items }}"
+      loop_control:
+        label: "{{ inventory_hostname }}:{{ item.key }}"
+      register: precis_convergence
+      changed_when: false
+
+    - name: Assert each managed venv matches its deployed ref
+      ansible.builtin.assert:
+        that:
+          - item.stdout.split()[0] == item.stdout.split()[1]
+        fail_msg: >-
+          {{ inventory_hostname }}: {{ item.item.key }} is on
+          {{ item.stdout.split()[0][:10] }} but the pinned deploy target is
+          {{ item.stdout.split()[1][:10] }} — DEPLOY DID NOT CONVERGE. The
+          target is frozen for this run, so this means the install was genuinely
+          skipped/failed on this venv (re-run), not a main that moved under it.
+        success_msg: >-
+          {{ inventory_hostname }}: {{ item.item.key }} @
+          {{ item.stdout.split()[0][:10] }} ✓ (pinned {{ item.stdout.split()[1][:10] }})
+        quiet: true
+      loop: "{{ precis_convergence.results }}"
+      loop_control:
+        label: "{{ inventory_hostname }}:{{ item.item.key }}"

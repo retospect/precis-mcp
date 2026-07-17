@@ -1,0 +1,13 @@
+---
+# Deploy acatome-extract watch daemon on the scheduler node.
+#
+# Watches the NAS inbox ({{ papers_inbox_path }}) and
+# auto-ingests any PDFs that land in it (quest runner drops, user drops,
+# agent drops). Depends on the mcps role having installed acatome-extract
+# in /opt/mcps/venv on the scheduler — so keep this after playbook 14.
+
+- name: acatome-extract watch daemon (scheduler)
+  hosts: scheduler
+  roles:
+    - extract_watch
+  tags: [extract-watch]

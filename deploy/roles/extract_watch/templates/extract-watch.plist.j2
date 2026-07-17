@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} — acatome-extract watch daemon on the scheduler node.
+
+  Watches {{ papers_inbox_path }} for new PDFs and runs
+  extract → enrich → ingest automatically. Processed PDFs move to
+  completed/, failures to errors/. Tagged with '{{ extract_watch_tag }}'.
+
+  Flags:
+    --poll           use PollingObserver (network mount / NFS)
+    --no-summarize   skip LLM summaries (RAKE still runs at extract)
+    --debounce 3     wait 3s for file stability before processing
+    --tag            apply '{{ extract_watch_tag }}' to every paper
+
+  Connection to Postgres uses the deploy user's ~/.acatome/config.toml
+  (populated by the acatome-store config step during 22-papers-sync /
+  mcps roles). No explicit DATABASE_URL here — acatome-meta resolves it.
+#}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.acatome.extract-watch</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/mcps/extract/venv/bin/acatome-extract</string>
+    <string>watch</string>
+    <string>{{ papers_inbox_path }}</string>
+    <string>--poll</string>
+    <string>--no-summarize</string>
+    <string>--tag</string>
+    <string>{{ extract_watch_tag }}</string>
+    <string>--user</string>
+    <string>auto-watch</string>
+  </array>
+
+  <key>UserName</key>
+  <string>deploy</string>
+
+  {# WorkingDirectory must be a path the daemon can getcwd() on after setuid.
+     On macOS launchd daemons, TCC/Full-Disk-Access restricts /Users/* and NFS
+     mounts — both return EPERM from getcwd() (triggers a crash in rich/httpx
+     on import). /tmp is always accessible to system daemons. The inbox is
+     passed as an arg, so cwd doesn't need to be there. #}
+  <key>WorkingDirectory</key>
+  <string>/tmp</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/deploy</string>
+    <key>PATH</key>
+    <string>/opt/mcps/extract/venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    {# acatome-meta config.py reads ACATOME_PG_* and overrides any
+       ~/.acatome/config.toml values. Using agent_rw to match the
+       one-off ingest pattern in 22-papers-sync. Embeddings are produced
+       locally by sentence-transformers (default BAAI/bge-m3, 1024-dim)
+       so no LiteLLM env is needed when --no-summarize is on. #}
+    <key>ACATOME_PG_HOST</key>
+    <string>{{ hostvars[postgres_host]['ansible_host'] }}</string>
+    <key>ACATOME_PG_PORT</key>
+    <string>{{ postgres_port }}</string>
+    <key>ACATOME_PG_DATABASE</key>
+    <string>cluster</string>
+    <key>ACATOME_PG_USER</key>
+    <string>agent_rw</string>
+    <key>ACATOME_PG_PASSWORD</key>
+    <string>{{ vault_pg_agent_rw_pass }}</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  {# KeepAlive triggers on abnormal exits only. A clean SIGTERM (from the
+     periodic kickstart cron) counts as "successful", so the cron controls
+     the restart cadence without racing the daemon. #}
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+    <key>Crashed</key>
+    <true/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  {# Keep logs on local disk, not NFS — macOS launchd fails silently when
+     redirecting stdio to NFS-mounted paths. The rotation cron in the
+     logrotate role reads the NFS pattern, so we symlink post-hoc. #}
+  <key>StandardOutPath</key>
+  <string>/var/log/acatome-extract-watch.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/acatome-extract-watch.log</string>
+</dict>
+</plist>

@@ -1,0 +1,33 @@
+---
+# 46-alphafold.yml — configure the GPU compute node to run precis-mcp
+# `fold` jobs: the AlphaFold3 structure predictor behind the `protein` kind
+# (ADR 0056 slice 4). Wires the container runtime + GPU passthrough + NFS
+# scratch + the XLA cache + the worker's PRECIS_FOLD_* / PRECIS_NODE env
+# (systemd drop-in). AF3 lives in the alphafold3:ready IMAGE (already on the GPU node)
+# and the protein kind + fold job_type are bundled in precis-mcp, so there is
+# nothing to build, download, or pip-install. See roles/alphafold/README.md.
+#
+# Targeting is driven entirely by the topology map
+# (inventory/group_vars/all/topology.yml): the role runs where
+# `inventory_hostname in precis_capabilities.bio_fold`. Move folding to another
+# GPU box by editing that one line, not this playbook.
+#
+# Run order: AFTER playbooks/20-precis-worker.yml (the worker unit must exist;
+# this drops the EnvironmentFile drop-in it reads, then restarts it) AND after
+# precis-mcp is deployed at the commit carrying the precis_bio plugin. Like the
+# other worker plays, not part of site.yml — run explicitly:
+#
+#   ansible-playbook playbooks/46-alphafold.yml
+#
+# The run is light — no image build, no model download (the alphafold3:ready
+# image + af3.bin weights already exist on the GPU node; the role only ASSERTS them).
+# The macOS gateway needs only the KIND SURFACE (PRECIS_BIO_ENABLED +
+# PRECIS_FOLD_NODE) — wired by roles/precis_web from the `bio_plugin` topology —
+# so re-run redeploy-precis.yml (or 38-precis-web.yml) after this to un-dark the
+# protein kind.
+
+- name: Configure AlphaFold3 fold compute (topology-driven)
+  hosts: all
+  roles:
+    - role: alphafold
+      when: inventory_hostname in (precis_capabilities.bio_fold | default([]))

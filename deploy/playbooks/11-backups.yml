@@ -1,0 +1,8 @@
+---
+# 11-backups.yml — pg_dump, rsync → USB, restore tests on the data node
+- name: Configure backups
+  hosts: data
+  become: true
+  roles:
+    - backups
+  tags: [backups]

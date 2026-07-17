@@ -1,0 +1,21 @@
+---
+# 40-precis-heartbeat.yml — fire `precis heartbeat` every 60s on each
+# cluster node. Each fire UPSERTs the host's load + (best-effort) CPU
+# temperature into the host_heartbeat table (migration 0017). The
+# web Status tab reads the table to show "which machines are alive
+# and is any of them hot".
+#
+# Reuses precis_worker's venv (so requires that role to have run
+# first) and the same DSN convention. Coexists with the other precis
+# daemons on every host.
+
+- name: Deploy precis heartbeat reporter (timer) on all cluster nodes
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: true
+  roles:
+    - precis_heartbeat
+  tags: [precis-heartbeat, precis]

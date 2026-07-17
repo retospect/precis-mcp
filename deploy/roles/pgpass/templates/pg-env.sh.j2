@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+# Default postgres connection target for the deploy user.
+# Sourced from /etc/profile.d (Linux) or ~/.zprofile (macOS).
+# psql / pg_dump / pgcli pick these up automatically.
+
+export PGHOST={{ pgpass_host }}
+export PGPORT={{ pgpass_port }}
+export PGDATABASE={{ pgpass_database }}
+export PGUSER={{ pgpass_default_user }}

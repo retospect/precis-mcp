@@ -1,0 +1,31 @@
+---
+# 45-tts.yml — configure the Linux compute node to render the audio feed
+# via the `precis-tts` container: Kokoro TTS + misaki (native cn/jp), models
+# baked. Wires the container runtime + worker env (systemd drop-in) so the
+# briefing_audio pass runs `docker run precis-tts` per episode. The TTS engine
+# lives in the IMAGE (this worker venv has no [tts] extra), so there is nothing
+# to pip-install. See roles/tts/README.md + precis-mcp/docker/tts/README.md.
+#
+# Targeting is topology-driven (inventory/group_vars/all/topology.yml): the role
+# runs where `inventory_hostname in precis_capabilities.tts_render`. Move audio
+# rendering to another Linux box by editing that one line.
+#
+# Run order: AFTER playbooks/20-precis-worker.yml (the worker unit must exist;
+# this drops the EnvironmentFile it reads, then restarts it). Not in site.yml —
+# run explicitly:
+#
+#   ansible-playbook playbooks/45-tts.yml
+#   # skip the heavy first-time image build once present:
+#   ansible-playbook playbooks/45-tts.yml -e tts_build_image=false
+#   # pin the render engine to a sha instead of tip:
+#   ansible-playbook playbooks/45-tts.yml -e tts_precis_ref=<sha>
+#
+# NOTE: the first run is heavy — it `docker build`s the precis-tts image
+# (pip-installs precis-mcp[tts] + misaki, downloads the ~330 MB Kokoro models,
+# warms the misaki dicts). Idempotent; the layer cache makes re-runs cheap.
+
+- name: Configure precis-tts audio render (topology-driven)
+  hosts: all
+  roles:
+    - role: tts
+      when: inventory_hostname in (precis_capabilities.tts_render | default([]))

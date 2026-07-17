@@ -1,0 +1,44 @@
+# {{ ansible_managed }}
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alert_rules.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: node
+    static_configs:
+      - targets:
+{% for host in groups['all'] %}
+          - '{{ hostvars[host]["ansible_host"] }}:9100'
+{% endfor %}
+
+  - job_name: postgres
+    static_configs:
+      - targets: ['{{ hostvars[postgres_host]["ansible_host"] }}:9187']
+
+  - job_name: redis
+    static_configs:
+      - targets: ['{{ hostvars[postgres_host]["ansible_host"] }}:9121']
+
+  - job_name: litellm
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['{{ hostvars[litellm_host]["ansible_host"] }}:{{ litellm_port }}']
+
+  - job_name: pgbouncer
+    static_configs:
+      - targets: ['{{ hostvars[postgres_host]["ansible_host"] }}:9127']
+
+  - job_name: ollama
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+{% for host in groups['ollama_hosts'] %}
+          - '{{ hostvars[host]["ansible_host"] }}:{{ ollama_port }}'
+{% endfor %}

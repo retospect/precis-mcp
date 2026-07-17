@@ -1,0 +1,11 @@
+---
+# Persistent daemon: reload via the shared safe launchd task. Modern
+# bootstrap was already correct here, but it had no retry for the
+# transient `Load failed: 5` nor a post-restart pid assertion (gripe
+# #48490) — the shared task adds both.
+- name: restart precis-worker-agent
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.precis.worker-agent
+    reload_persistent: true
+  when: os_family == "darwin"

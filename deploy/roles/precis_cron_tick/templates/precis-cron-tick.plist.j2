@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} #}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.cron-tick</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/mcps/venv/bin/precis</string>
+    <string>cron</string>
+    <string>tick</string>
+  </array>
+
+  <!-- Fire every 60 seconds. launchd does not overlap StartInterval
+       invocations by default — if a tick is still running when the
+       next would arrive, the next fires after the current exits. -->
+  <key>StartInterval</key>
+  <integer>60</integer>
+
+  <!-- Fire once immediately at load so the operator sees activity
+       without waiting up to a minute. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- KeepAlive=false: this is a transient timer, NOT a daemon. Each
+       fire spawns precis cron tick, runs ~2s, exits cleanly. -->
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>UserName</key>
+  <string>deploy</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/deploy</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/mcps/venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PRECIS_DATABASE_URL</key>
+    <string>postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod</string>
+    <key>PRECIS_PROCESS</key>
+    <string>precis-cron-tick</string>
+    {# Shared API keys — see inventory/group_vars/all/precis_env.yml. #}
+    {% for env_key, env_val in precis_shared_env.items() %}
+    <key>{{ env_key }}</key>
+    <string>{{ env_val }}</string>
+    {% endfor %}
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/precis-cron-tick.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/precis-cron-tick.log</string>
+</dict>
+</plist>

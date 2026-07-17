@@ -1,0 +1,80 @@
+## ANSIBLE MANAGED — roles/llamacpp/templates/llama-swap.yaml.j2
+## llama-swap config for {{ inventory_hostname }}.
+## Rendered from roles/llamacpp/templates/llama-swap.yaml.j2.
+## See docs/llamacpp-migration-plan.md for topology.
+
+healthCheckTimeout: 120
+# debug level surfaces llama-server subprocess stderr in real time. At info
+# level, llama-swap only logs its own proxy events — so crashes like
+# --model-draft exiting code 1 on Blackwell appeared as opaque "ExitError"
+# lines with no actionable context. Keep at debug while the stack is young.
+logLevel: debug
+
+models:
+{% set servable = llamacpp_catalog
+     | selectattr('name', 'in', llamacpp_models)
+     | rejectattr('draft_only', 'defined')
+     | list %}
+{% for entry in servable %}
+{%   set serve = llamacpp_serve_defaults | combine(entry.serve | default({})) %}
+{%   set port = llamacpp_server_port_base + loop.index0 %}
+{%   set model_path = llamacpp_model_dir + '/' + entry.hf_file %}
+{%   set draft_entry = llamacpp_catalog | selectattr('name', 'equalto', serve.draft_model | default('__none__')) | list | first | default(none) %}
+  {{ entry.name }}:
+    cmd: >-
+      {{ llamacpp_bin_dir }}/llama-server
+      --model {{ model_path }}
+      --port {{ port }}
+      --host 127.0.0.1
+      --ctx-size {{ serve.ctx_size }}
+      --parallel {{ serve.parallel }}
+      --n-gpu-layers {{ serve.n_gpu_layers }}
+      --log-file {{ llamacpp_log_dir }}/llama-server-{{ entry.name }}.log
+{% if serve.mlock %}      --mlock{% endif %}
+
+{% if serve.no_mmap %}      --no-mmap{% endif %}
+
+{% if serve.flash_attn %}      --flash-attn on{% endif %}
+
+{% if serve.jinja %}      --jinja{% endif %}
+
+{% if serve.reasoning_format is defined %}      --reasoning-format {{ serve.reasoning_format }}{% endif %}
+
+{% if draft_entry %}      --model-draft {{ llamacpp_model_dir }}/{{ draft_entry.hf_file }}
+      --draft-max 8 --draft-min 1{% endif %}
+
+{% for arg in serve.extra_args %}      {{ arg }}
+{% endfor %}
+    proxy: "http://127.0.0.1:{{ port }}"
+    ttl: {{ llamacpp_default_ttl }}
+    aliases:
+      - {{ entry.name }}
+{% endfor %}
+
+{# Matrix (concurrent model residency).
+   Per-host opt-in via `llamacpp_matrix` host_var. When defined, we render a
+   matrix block that lets the llama-swap solver keep multiple models loaded
+   simultaneously and only evict when memory pressure forces it.
+   See https://github.com/mostlygeek/llama-swap/blob/main/docs/configuration.md#matrix
+   for DSL details.
+   the GPU node intentionally stays single-model until Phase 6 purges Ollama
+   (`ansible/playbooks/99-ollama-purge.yml`); the gateway has 192 GB and is
+   the only host where matrix is currently enabled. #}
+{% if llamacpp_matrix is defined %}
+
+matrix:
+  vars:
+{% for short, full in (llamacpp_matrix.vars | dictsort) %}
+    {{ short }}: {{ full }}
+{% endfor %}
+{% if llamacpp_matrix.evict_costs is defined %}
+  evict_costs:
+{% for short, cost in (llamacpp_matrix.evict_costs | dictsort) %}
+    {{ short }}: {{ cost }}
+{% endfor %}
+{% endif %}
+  sets:
+{% for name, expr in (llamacpp_matrix.sets | dictsort) %}
+    {{ name }}: "{{ expr }}"
+{% endfor %}
+{% endif %}

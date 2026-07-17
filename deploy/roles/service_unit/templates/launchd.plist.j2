@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} — generic precis service_unit (§15h).
+   Rendered from the abstract service_unit_* spec; one template renders any
+   precis daemon or launchd-side periodic. See roles/service_unit/defaults. #}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.{{ service_unit_name }}</string>
+
+  {# bash wrapper keeps /bin/bash the TCC responsible process — bash is
+     FDA-granted cluster-wide (tcc_profile); the child inherits across exec. #}
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>exec {{ service_unit_exec }}</string>
+  </array>
+
+  <key>UserName</key>
+  <string>{{ service_unit_run_as }}</string>
+
+  <key>WorkingDirectory</key>
+  <string>{{ service_unit_working_dir }}</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+{% for env_key, env_val in service_unit_env.items() %}
+    <key>{{ env_key }}</key>
+    <string>{{ env_val }}</string>
+{% endfor %}
+  </dict>
+
+{% if service_unit_schedule.mode == 'keepalive' %}
+  <key>RunAtLoad</key>
+  <true/>
+  {# Restart forever; ThrottleInterval bounds a crash loop. #}
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>{{ service_unit_throttle_seconds }}</integer>
+{% elif service_unit_schedule.mode == 'interval' %}
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>{{ service_unit_schedule.seconds }}</integer>
+{% elif service_unit_schedule.mode == 'calendar' %}
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>{{ service_unit_schedule.hour }}</integer>
+    <key>Minute</key>
+    <integer>{{ service_unit_schedule.minute | default(0) }}</integer>
+  </dict>
+{% endif %}
+
+{% if service_unit_process_type %}
+  {# Jetsam band — cull this daemon last under RAM pressure (and disable
+     App-Nap). Cheap; harmless on unpressured hosts. #}
+  <key>ProcessType</key>
+  <string>{{ service_unit_process_type }}</string>
+{% endif %}
+
+  <key>StandardOutPath</key>
+  <string>{{ service_unit_log }}</string>
+  <key>StandardErrorPath</key>
+  <string>{{ service_unit_log }}</string>
+</dict>
+</plist>

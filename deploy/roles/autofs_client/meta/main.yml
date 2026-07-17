@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: autofs_client
+  description: Autofs client configuration for NAS mounts
+  platforms:
+    - name: macOS
+      versions:
+        - all
+    - name: EL
+      versions:
+        - all
+dependencies: []

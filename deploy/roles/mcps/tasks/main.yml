@@ -1,0 +1,217 @@
+---
+# MCP servers used by Hermes agent profiles.
+#
+# Categories:
+#   1. Upstream pip packages (gripe, health, precis, arxiv, perplexity, sortie, git)
+#   2. Filesystem MCP via npx (@modelcontextprotocol/server-filesystem)
+#   3. Policy wrapper MCPs (git-installable from /shared/git, version-pinned)
+#   4. Code sandbox Podman containers (CPU on the scheduler node, GPU on the GPU node)
+
+- name: Ensure MCP directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  become: true
+  loop:
+    - /opt/mcps
+    - /opt/mcps/etc
+    - /opt/mcps/bin
+
+# ── 1. MCP venv (shared by all pip-installable MCPs) ──
+
+- name: Ensure uv is installed (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: uv
+    state: present
+  become: false
+
+- name: Set uv binary path
+  ansible.builtin.set_fact:
+    uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+# TCC note: the venv python must be a *symlink* to brew's python, not a copy.
+# If it's a copy, each Ansible re-run produces a fresh cdhash and invalidates
+# every Full Disk Access grant the operator clicked in. With a symlink, the
+# grant pins to brew's python (via the cluster-fda-checklist) and is stable
+# across Ansible runs.
+- name: Ensure Homebrew python@3.14 is installed (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: python@3.14
+    state: present
+  become: false
+
+- name: Resolve brew python@3.14 path (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.set_fact:
+    mcps_brew_python: /opt/homebrew/opt/python@3.14/bin/python3.14
+
+# Detect whether the venv python is a symlink to brew (correct) or a copy
+# (broken — cdhash churns on every rebuild). `python3` in a venv is always
+# a symlink (-> python3.X) regardless of mode, so we must follow to the
+# leaf and check if it escapes the venv tree.
+- name: Detect /opt/mcps/venv python mode (symlink-to-brew vs. copy)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    set -u
+    resolved=$(/usr/bin/readlink -f /opt/mcps/venv/bin/python3 2>/dev/null || true)
+    case "$resolved" in
+      "")                      echo missing   ;;
+      /opt/homebrew/*|/usr/*)  echo symlinked ;;
+      /opt/mcps/venv/*)        echo copied    ;;
+      *)                       echo "other:$resolved" ;;
+    esac
+  register: mcps_venv_mode
+  changed_when: false
+  become: true
+
+- name: Wipe /opt/mcps/venv if python is a copy (force symlink rebuild)
+  when:
+    - os_family == "darwin"
+    - mcps_venv_mode.stdout | default('') | trim == "copied"
+  ansible.builtin.file:
+    path: /opt/mcps/venv
+    state: absent
+  become: true
+
+- name: Create MCP Python venv (symlinked to brew python, macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command:
+    cmd: "{{ mcps_brew_python }} -m venv --symlinks /opt/mcps/venv"
+    creates: /opt/mcps/venv/bin/python3
+  become: true
+
+- name: Create MCP Python venv with uv (non-macOS)
+  when: os_family != "darwin"
+  ansible.builtin.command:
+    cmd: "{{ uv_bin }} venv /opt/mcps/venv"
+    creates: /opt/mcps/venv/bin/python
+  become: true
+
+# ── 2. Upstream pip-installable MCPs ──
+
+- name: Install core MCP packages (all nodes)
+  ansible.builtin.shell: |
+    {{ uv_bin }} pip install --python /opt/mcps/venv/bin/python --upgrade \
+      gripe-mcp \
+      fs-mcp
+  become: true
+  register: mcp_core
+  changed_when: "'Installed' in mcp_core.stdout or 'Updated' in mcp_core.stdout"
+
+- name: Install research/writing MCP packages (gateway + scheduler)
+  when: node_role in ["gateway", "scheduler"]
+  # ``--refresh-package precis-mcp`` forces uv to ignore its
+  # cached resolution of the ``main`` branch and re-fetch the
+  # current HEAD. Without it, uv pins the first SHA it ever
+  # resolved for the branch and a fresh push doesn't deploy
+  # until someone manually clears the cache. Same flag would
+  # apply to any other ``@<branch>`` git dep that lands here.
+  ansible.builtin.shell: |
+    {{ uv_bin }} pip install --python /opt/mcps/venv/bin/python --upgrade \
+      --refresh-package precis-mcp \
+      'precis-mcp[patent,mermaid] @ git+https://github.com/retospect/precis-mcp@main' \
+      acatome-meta \
+      'acatome-store[embeddings]' \
+      acatome-mcp \
+      arxiv-mcp-server \
+      perplexity-sonar-mcp \
+      wolfravant-mcp \
+      tubescribe-mcp \
+      sortie-mcp \
+      git-mcp \
+      'remarkable-mcp @ git+https://github.com/retospect/remarkable-mcp.git@feature/write-support'
+  become: true
+  register: mcp_research
+  changed_when: "'Installed' in mcp_research.stdout or 'Updated' in mcp_research.stdout"
+
+- name: Symlink MCP binaries into PATH
+  ansible.builtin.shell: |
+    for name in gripe fs-mcp gripe-mcp precis acatome-store acatome-mcp arxiv-mcp-server perplexity-sonar-mcp wolfravant-mcp tubescribe-mcp sortie-mcp sortie-runner git-mcp remarkable-mcp mcp fastmcp; do
+      [ -f "/opt/mcps/venv/bin/$name" ] && ln -sf "/opt/mcps/venv/bin/$name" "/opt/mcps/bin/$name"
+    done
+    true
+  become: true
+  changed_when: false
+
+# ── 3. Persistent workspace containers (science-agent, improvement-agent) ──
+
+- name: Ensure workspace base directory
+  ansible.builtin.file:
+    path: "{{ shared_mount }}/workspaces"
+    state: directory
+    owner: deploy
+    mode: "0755"
+  become: true
+
+- name: Pull workspace CPU image (the scheduler node)
+  when: node_role == "scheduler" and podman_installed | default(false)
+  containers.podman.podman_image:
+    name: "{{ workspace_image | default('ghcr.io/retospect/code-workspace:latest') }}"
+    state: present
+  become: true
+  become_user: agent_sandbox
+
+- name: Pull workspace GPU image (the GPU node)
+  when: node_role == "inference" and podman_installed | default(false)
+  containers.podman.podman_image:
+    name: "{{ workspace_gpu_image | default('ghcr.io/retospect/code-workspace:gpu') }}"
+    state: present
+  become: true
+  become_user: agent_sandbox
+
+- name: Pull code-repo CPU image (the scheduler node)
+  when: node_role == "scheduler" and podman_installed | default(false)
+  containers.podman.podman_image:
+    name: "{{ code_repo_image | default('ghcr.io/retospect/code-repo:latest') }}"
+    state: present
+  become: true
+  become_user: agent_sandbox
+
+- name: Pull code-repo GPU image (the GPU node)
+  when: node_role == "inference" and podman_installed | default(false)
+  containers.podman.podman_image:
+    name: "{{ code_repo_gpu_image | default('ghcr.io/retospect/code-repo:gpu') }}"
+    state: present
+  become: true
+  become_user: agent_sandbox
+
+# ── 5. Ephemeral code sandbox Podman containers ──
+
+- name: Deploy code-sandbox-mcp Podman container (the scheduler node)
+  when: node_role == "scheduler" and podman_installed | default(false)
+  block:
+    - name: Pull code-sandbox CPU image
+      containers.podman.podman_image:
+        name: "{{ code_sandbox_image | default('ghcr.io/retospect/code-sandbox-mcp:latest') }}"
+        state: present
+      become: true
+      become_user: agent_sandbox
+
+    - name: Deploy code-sandbox launchd plist (macOS)
+      when: os_family == "darwin"
+      ansible.builtin.template:
+        src: code-sandbox.plist.j2
+        dest: /Library/LaunchDaemons/com.code-sandbox.plist
+        mode: "0644"
+      become: true
+
+- name: Deploy GPU sandbox Podman container (the GPU node)
+  when: node_role == "inference" and podman_installed | default(false)
+  block:
+    - name: Pull code-sandbox GPU image
+      containers.podman.podman_image:
+        name: "{{ code_sandbox_gpu_image | default('ghcr.io/retospect/code-sandbox-mcp:gpu') }}"
+        state: present
+      become: true
+      become_user: agent_sandbox
+
+    - name: Deploy code-sandbox-gpu systemd unit
+      ansible.builtin.template:
+        src: code-sandbox.service.j2
+        dest: /etc/systemd/system/code-sandbox-mcp.service
+        mode: "0644"
+      become: true
+      notify: restart code-sandbox

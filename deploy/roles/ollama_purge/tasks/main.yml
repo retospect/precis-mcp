@@ -1,0 +1,124 @@
+---
+# ollama_purge — hard cutover of Ollama from all inference nodes.
+# Run ONLY after Phases 1-5 of docs/llamacpp-migration-plan.md are green
+# and the LiteLLM watchdog has been on the llamacpp backend for 24h+.
+#
+# Actions (per node):
+#   - stop + disable + uninstall Ollama
+#   - delete model storage (~/.ollama, /opt/homebrew/var/ollama, /var/snap/ollama)
+#   - delete service units (launchd plist on macOS, systemd on Linux)
+#
+# Expected reclaim: ~150 GB on the GPU node, ~60 GB on the gateway, ~10 GB on other macOS nodes.
+#
+# NOT REVERSIBLE. The weights are deleted, not archived.
+
+- name: Confirm purge is intended
+  ansible.builtin.assert:
+    that:
+      - ollama_purge_confirm | default(false)
+    fail_msg: >-
+      ollama_purge refuses to run without ollama_purge_confirm=true.
+      Invoke as: ansible-playbook playbooks/99-ollama-purge.yml -e ollama_purge_confirm=true
+
+# ── macOS ─────────────────────────────────────────────────────────────────
+- name: Unload Ollama LaunchDaemon (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    launchctl bootout system/com.ollama 2>/dev/null || \
+    launchctl unload /Library/LaunchDaemons/com.ollama.plist 2>/dev/null || true
+  become: true
+  changed_when: true
+
+- name: Remove Ollama plist (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /Library/LaunchDaemons/com.ollama.plist
+    state: absent
+  become: true
+
+- name: Uninstall Homebrew Ollama (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: ollama
+    state: absent
+  become: false
+
+- name: Remove Ollama data + logs (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /opt/homebrew/var/ollama
+    - /opt/homebrew/var/log/ollama.log
+    - /Users/ollama/.ollama
+    - /Users/deploy/.ollama
+    - /usr/local/bin/ollama
+  become: true
+
+# ── Linux (snap) ──────────────────────────────────────────────────────────
+- name: Stop + disable snap Ollama (Linux)
+  when: os_family == "linux"
+  ansible.builtin.command: snap stop --disable ollama
+  become: true
+  changed_when: true
+  failed_when: false
+
+- name: Unhold snap Ollama (required before remove) (Linux)
+  when: os_family == "linux"
+  ansible.builtin.command: snap refresh --unhold ollama
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: Uninstall snap Ollama (Linux)
+  when: os_family == "linux"
+  community.general.snap:
+    name: ollama
+    state: absent
+  become: true
+
+- name: Disable + stop legacy systemd Ollama if present (Linux)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: ollama
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  become: true
+  failed_when: false
+
+- name: Remove legacy systemd unit (Linux)
+  when: os_family == "linux"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/ollama.service
+    - /usr/local/bin/ollama
+    - /usr/bin/ollama
+  become: true
+
+- name: Remove Ollama data + snap remnants (Linux)
+  when: os_family == "linux"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /var/snap/ollama
+    - /var/lib/snapd/snaps/ollama_*.snap
+    - /root/.ollama
+    - /home/deploy/.ollama
+    - /usr/share/ollama
+  become: true
+
+# ── Report reclaimed space ────────────────────────────────────────────────
+- name: Report disk usage on local Ollama paths (post-purge should show absent)
+  ansible.builtin.shell: |
+    df -h / | tail -1 | awk '{print "  root FS: " $4 " avail"}'
+  register: ollama_purge_df
+  changed_when: false
+
+- name: Purge summary
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: purge complete. {{ ollama_purge_df.stdout }}"

@@ -1,0 +1,28 @@
+---
+# precis_anki_sync — tunables. Override in inventory / group_vars.
+
+# How often the sync tick fires (seconds). Anki sync is "occasional": a
+# network sync + (first run) a full download + the read-only projection.
+# The projection is content-hash-gated so re-runs are cheap. 30 min default.
+anki_sync_interval: 1800
+
+# Run the read-only PG projection of ALL Anki cards (foreign incl.) so the
+# whole collection is searchable in precis + feeds the knowledge-model.
+anki_sync_project: true
+
+# Run the precis-fix pass (LLM-rewrite of `precis-fix`-tagged cards).
+# ⚠️ Needs a working `claude -p` (OAuth) ON THIS HOST — enable only on a
+# claude-capable node (e.g. the agent host, the gateway). Default off so the
+# base sync+project runs on any host with the anki wheel + DB.
+anki_sync_fix: false
+
+# The single authoritative .anki2 mirror. MUST be stable across runs and
+# unique to the one runner (two mirrors on one account manufacture a
+# full-sync conflict). Owned by `deploy`.
+anki_mirror_dir: /opt/mcps/anki-mirror
+
+# AnkiWeb login. Email may be plain; the password MUST come from the vault
+# (inventory/group_vars/.../vault.yml → vault_anki_password). Rotate the
+# password Reto pasted in chat before using it here.
+anki_user: "{{ vault_anki_user | default('') }}"
+anki_deck: Precis

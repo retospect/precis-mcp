@@ -1,0 +1,125 @@
+---
+# Claude Code — Anthropic's official CLI for Claude.
+#
+# Installs the `claude` binary system-wide so any user on the host
+# can run it. OAuth login is per-user (each user signs in once and
+# their credentials land under their own ~/.claude/) — this role
+# does NOT automate login (the device-flow needs an interactive
+# browser).
+#
+# Install method: npm global via Homebrew. The official Anthropic
+# install script (claude.ai/install.sh) is per-user — it lands in
+# $HOME/.local/bin and when run as root puts the binary in
+# /var/root/.local/bin where no daemon will find it. npm global
+# instead lands the binary at $(npm prefix -g)/bin/claude — on
+# Homebrew Apple Silicon that's /opt/homebrew/bin/claude, which
+# IS on every user's default PATH including the hermes daemon's.
+#
+# After this role runs, finish setup interactively:
+#
+#   # As yourself (for ops + ad-hoc use):
+#   ssh the gateway
+#   claude            # device flow → ~/.claude/.credentials.json
+#
+#   # As the hermes daemon user (only if you intend to wire Asa
+#   # through `claude -p` as a subprocess — see roles/hermes/README.md):
+#   ssh the gateway
+#   sudo -iu hermes
+#   claude            # device flow → /Users/hermes/.claude/.credentials.json
+#
+# References:
+#   - https://docs.claude.com/en/docs/claude-code/quickstart
+#   - https://www.npmjs.com/package/@anthropic-ai/claude-code
+
+- name: Ensure Node.js is installed (Homebrew on macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: node
+    state: present
+  become: false
+
+- name: Resolve npm global prefix
+  ansible.builtin.command: /opt/homebrew/bin/npm prefix -g
+  register: claude_npm_prefix
+  changed_when: false
+
+- name: Compute expected claude binary path
+  ansible.builtin.set_fact:
+    claude_bin: "{{ claude_npm_prefix.stdout | trim }}/bin/claude"
+
+- name: Check whether the npm-installed claude is already present
+  ansible.builtin.stat:
+    path: "{{ claude_bin }}"
+  register: claude_stat
+
+# Earlier ansible runs (or any historical `sudo npm install`) seed
+# /Users/deploy/.npm with root-owned cache files. The next npm
+# invocation as the deploy user then fails with EACCES on
+# .npm/_cacache. Fix the ownership tree before the install so the
+# role is idempotent against the legacy state. The chown is a
+# no-op when ownership is already clean.
+- name: Reclaim ownership of the deploy user's npm cache (.npm)
+  ansible.builtin.file:
+    path: /Users/deploy/.npm
+    state: directory
+    owner: deploy
+    group: staff
+    recurse: true
+  become: true
+
+- name: Install / upgrade @anthropic-ai/claude-code globally via npm
+  when: not claude_stat.stat.exists or (claude_code_force_reinstall | default(false) | bool)
+  ansible.builtin.command: /opt/homebrew/bin/npm install -g @anthropic-ai/claude-code
+  become: false
+  register: claude_npm_install
+  changed_when: "'added' in (claude_npm_install.stdout | default('')) or 'updated' in (claude_npm_install.stdout | default('')) or 'changed' in (claude_npm_install.stdout | default(''))"
+
+- name: Verify the claude binary is now present
+  ansible.builtin.stat:
+    path: "{{ claude_bin }}"
+  register: claude_post_stat
+  failed_when: not claude_post_stat.stat.exists
+
+- name: Report installed claude version
+  ansible.builtin.command: "{{ claude_bin }} --version"
+  register: claude_version
+  changed_when: false
+
+- name: Show claude install summary
+  ansible.builtin.debug:
+    msg: "claude at {{ claude_bin }} — {{ claude_version.stdout }}"
+
+# The per-user installer from earlier role versions landed claude at
+# /var/root/.local/bin/claude. It's harmless but invisible to every
+# user shell. Surface it so the operator can rm it if they want a
+# clean state — we don't auto-delete because it's not ours to
+# trample.
+- name: Detect stray per-user install from /var/root/.local/bin
+  ansible.builtin.stat:
+    path: /var/root/.local/bin/claude
+  register: claude_stray
+  become: true
+
+- name: Note stray /var/root install (manual cleanup, not auto-removed)
+  when: claude_stray.stat.exists
+  ansible.builtin.debug:
+    msg: |
+      An older per-user claude install exists at /var/root/.local/bin/claude
+      (left over from when this role used the official install.sh script as
+      root). It is unused now that {{ claude_bin }} is on PATH. To remove:
+        ssh the gateway 'sudo rm -rf /var/root/.local/bin/claude /var/root/.claude'
+
+# Ensure ~/.claude exists for the hermes daemon user so a future
+# `sudo -iu hermes claude` interactive login can drop its
+# credentials there without permission gymnastics. Mode 0700
+# matches what `claude` would create itself; we just front-load it
+# so the directory perms are deterministic.
+- name: Ensure hermes user's ~/.claude directory exists
+  when: claude_code_prep_hermes_home | default(true) | bool
+  ansible.builtin.file:
+    path: /Users/hermes/.claude
+    state: directory
+    owner: hermes
+    group: staff
+    mode: "0700"
+  become: true

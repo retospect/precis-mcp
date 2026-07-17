@@ -1,0 +1,24 @@
+{
+  "_comment": "Managed by Ansible role asa_bot. Edits will be overwritten.",
+  "_note_one_mcp_to_rule_them_all": "acatome-quest, arxiv, wolfravant, tubescribe, gripe, sortie all rolled into precis kinds. Every API key the rolled-in tools used now lives on the precis MCP env below. If feynman is still a separate MCP we'll add it back, but unsure as of 2026-06-12.",
+  "mcpServers": {
+    "precis": {
+      "command": "/opt/asa/venv/bin/precis",
+      "args": ["serve"],
+      "env": {
+        "ACATOME_PG_HOST": "{{ hostvars[postgres_host]['ansible_host'] }}",
+        "ACATOME_PG_PORT": "{{ postgres_port }}",
+        "ACATOME_PG_DATABASE": "precis_prod",
+        "ACATOME_PG_USER": "agent_rw",
+        "ACATOME_PG_PASSWORD": "{{ vault_pg_agent_rw_pass }}",
+        "PRECIS_DATABASE_URL": "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod",
+        "UNPAYWALL_EMAIL": "{{ vault_unpaywall_email | default('') }}",
+        "CROSSREF_MAILTO": "{{ vault_unpaywall_email | default('') }}",
+        "PRECIS_PATENT_RAW_ROOT": "{{ precis_patent_raw_root | default('') }}",
+        "PRECIS_ROOT": "{{ precis_root | default('') }}",
+        "PRECIS_PYTHON_ROOTS": "{{ precis_python_roots | default('') }}",
+        "PRECIS_STARTUP_SKILLS": "{{ precis_startup_skills | default('') }}"
+      }
+    }
+  }
+}

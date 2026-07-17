@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} — precis worker daemon.
+
+  Runs `precis worker` continuously, claiming chunk_embeddings and
+  chunk_summaries batches from the postgres queue (via the local
+  pgbouncer tunnel). All cluster nodes run an identical copy; postgres
+  row-level locking arbitrates which node gets which batch.
+
+  PRECIS_DATABASE_URL points at the local SSH tunnel (laid down by
+  ssh_tunnels role) so the connection survives postgres-host reboots cleanly —
+  pgbouncer reconnects automatically and the worker's psycopg pool
+  picks back up. No retry logic needed in the daemon itself.
+#}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.worker</string>
+
+  {# bash wrapper makes /bin/bash the TCC "responsible process". bash is
+     FDA-granted cluster-wide via tcc_profile; python inherits the grant
+     across exec. Means we never need a per-venv-python FDA toggle. #}
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>exec {{ precis_worker_venv }}/bin/precis worker --profile system --batch-size {{ precis_worker_batch_size }} --idle-seconds {{ precis_worker_idle_seconds }} --embedder {{ precis_worker_embedder }} --embedder-url {{ precis_worker_embedder_url }} --summarizer-model {{ precis_worker_summarizer }}</string>
+  </array>
+
+  <key>UserName</key>
+  <string>deploy</string>
+
+  {# /tmp avoids the same getcwd() EPERM trap that bit extract_watch:
+     macOS launchd daemons can't getcwd() inside NFS-mounted dirs. #}
+  <key>WorkingDirectory</key>
+  <string>/tmp</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/deploy</string>
+    <key>PATH</key>
+    <string>{{ precis_worker_venv }}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PRECIS_DATABASE_URL</key>
+    <string>{{ precis_worker_dsn }}</string>
+    <key>HF_HOME</key>
+    <string>{{ precis_worker_hf_home }}</string>
+    {# PRECIS_PROCESS tags every row written to worker_logs so
+       `precis logs --process precis-worker` filters cleanly across
+       the cluster. PRECIS_SOURCE serves the existing audit role
+       (level-gradient guard, ref_events.source). #}
+    <key>PRECIS_PROCESS</key>
+    <string>precis-worker</string>
+    <key>PRECIS_SOURCE</key>
+    <string>precis-worker</string>
+    {# Planner-coroutine guardrails. Read by the dispatch pass when
+       it gates each candidate parent — the dispatch pass runs in the
+       system profile (here), even though the job execution happens
+       on the agent profile (the gateway). Defaults in code are 10/2/20;
+       bumped to give a real strategic-decomposition room to converge.
+       #}
+    <key>PRECIS_MAX_TICKS</key>
+    <string>{{ precis_max_ticks | default(10000) }}</string>
+    <key>PRECIS_MAX_TODO_USD</key>
+    <string>{{ precis_max_todo_usd | default(5.0) }}</string>
+    <key>PRECIS_DAILY_COST_CEILING</key>
+    <string>{{ precis_daily_cost_ceiling | default(50.0) }}</string>
+    {# llm_summarize backfill — default OFF everywhere; enabled per-host
+       (the gateway, where the litellm `summarizer` alias lives) to drain the
+       chunk_summaries['llm-v1'] backlog. PRECIS_SUMMARIZE_CONCURRENCY fills
+       the 80B's --parallel slots from this one worker. Remove the host_var +
+       re-apply once drained (the pass idles at claimed=0 meanwhile, but keeps
+       the 80B's `n` slot warm). #}
+    {% if precis_worker_summarize_llm | default(false) %}
+    <key>PRECIS_SUMMARIZE_LLM</key>
+    <string>1</string>
+    <key>PRECIS_SUMMARIZE_CONCURRENCY</key>
+    <string>{{ precis_worker_summarize_concurrency | default(3) }}</string>
+    <key>PRECIS_SUMMARIZE_TIMEOUT</key>
+    <string>{{ precis_worker_summarize_timeout | default(120) }}</string>
+    {% endif %}
+    {# chunk-tag classify cascade (ADR 0047) — default OFF everywhere;
+       enabled per-host (the gateway), like llm_summarize, because tier-1
+       calls the cheap `summarizer` litellm alias that only resolves on
+       the gateway loopback proxy. Kept off the agent worker (RAM). #}
+    {% if precis_worker_classify | default(false) %}
+    <key>PRECIS_CLASSIFY_ENABLED</key>
+    <string>1</string>
+    {% endif %}
+    {# llm-catalog reconcile (llm-catalog slice 1) — default OFF; enabled on
+       the gateway, where the loopback llama.cpp /props (local-model windows) + the
+       outbound OpenRouter feed are both reachable. Single-runner (advisory xact
+       lock) + 24h cadence, so one host reconciles the catalog corpus-wide. #}
+    {% if precis_worker_llm_reconcile | default(false) %}
+    <key>PRECIS_LLM_RECONCILE_ENABLED</key>
+    <string>1</string>
+    {% endif %}
+    {# markup-first ingest leg (devin) — default OFF; enabled on the
+       single OA-fetch host (the gateway) where PRECIS_OA_FETCH=1, so the
+       flag only bites where the fetch pass actually runs. #}
+    {% if precis_worker_fetch_markup | default(false) %}
+    <key>PRECIS_FETCH_MARKUP</key>
+    <string>1</string>
+    {% endif %}
+    {# sandbox_run executor — emitted ONLY on the agent_sandbox_hosts
+       (the agent_sandbox_hosts group; via the systemd unit on Linux). The gate reads this raw,
+       so a "0" would enable it — omit on excluded hosts, don't set false. #}
+    {% if inventory_hostname in groups['agent_sandbox_hosts'] %}
+    <key>PRECIS_SANDBOX_ENABLED</key>
+    <string>1</string>
+    {% endif %}
+    {# Shared API keys — Perplexity, EPO OPS, patent raw cache.
+       See inventory/group_vars/all/precis_env.yml. Even though the
+       system worker rotation today (embed/summarize/chunk_keywords/
+       fetch/auto_check/schedule/nursery/dispatch/sweeper) doesn't
+       call out to Perplexity, future passes might, and the cost of
+       carrying unused env vars is negligible. #}
+    {% for env_key, env_val in precis_shared_env.items() %}
+    <key>{{ env_key }}</key>
+    <string>{{ env_val }}</string>
+    {% endfor %}
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  {# Restart unconditionally — worker is meant to run forever. ThrottleInterval
+     stops a crash loop from chewing CPU. #}
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  {# Jetsam protection — mirrors precis_worker_agent. The gateway co-hosts
+     local llama.cpp inference servers that wire down the bulk of RAM;
+     a large Marker ingest on top spikes pressure, and macOS jetsam then
+     culls low-band background LaunchDaemons ("inefficient"). On
+     2026-07-05 that crash-looped this worker ~8x in 20 min until launchd
+     hit ThrottleInterval and *booted it out of the system domain* — so
+     KeepAlive couldn't revive it and it stayed dead ~40 min, halting
+     fetch_oa (pinned to the gateway) plus this node's embed/summarize/
+     dispatch passes until a manual `launchctl bootstrap`. ProcessType
+     Interactive raises the jetsam band toward the foreground tier so the
+     worker is culled last, not first (and disables App-Nap throttling);
+     cheap for a ~100 MB process. Harmless on the non-pressured nodes. #}
+  <key>ProcessType</key>
+  <string>Interactive</string>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/precis-worker.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/precis-worker.log</string>
+</dict>
+</plist>

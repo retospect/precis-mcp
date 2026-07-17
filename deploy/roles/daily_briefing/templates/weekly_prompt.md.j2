@@ -1,0 +1,381 @@
+{# {{ ansible_managed }} #}
+{# Wednesday Weekly Intelligence Report — canonical version.                   #}
+{# Runtime-editable copy lives in cluster.briefing_prompts table.             #}
+{# This file seeds the DB row on first deploy; runtime edits take precedence.  #}
+
+Wednesday Weekly Intelligence Report for Reto (reto@retostamm.com), Cashel, Co. Tipperary, Ireland. Consolidated weekly run covering ALL standing queries plus digest synthesis.
+
+SKILL
+Load skill: intelligence-briefing. This provides the core methodologies: news deduplication, silence-is-correct discipline, vocabulary watch, earnings MD&A language diffing, and baseline anomaly tracking. Also read references/sector-overlays.md for sector-specific earnings guidance. Follow all methodologies defined in the skill.
+
+FILE PATHS
+All output files go under /home/user/workspace/daily-updates/:
+
+Trackers: /home/user/workspace/daily-updates/trackers/ (all tracker .md files)
+
+Weekly digest: /home/user/workspace/daily-updates/weekly/weekly_digest.md
+
+HTML variants: /home/user/workspace/daily-updates/html/ (auto-generated)
+
+Tracker files (all go in /home/user/workspace/daily-updates/trackers/):
+
+china_semiconductor_tracker.md
+
+blockchain_ai_tracker.md
+
+yarvin_thielverse_tracker.md
+
+outbreak_tracker.md
+
+earnings_analysis.md
+
+climate_tracker.md
+
+supply_chain_tracker.md
+
+india_turkey_gulf_tracker.md
+
+latin_america_tracker.md
+
+ul_ucc_academic_events.md
+
+conference_tracker.md
+
+evangelical_analysis.md
+
+irish_euro_digest.md
+
+viral_culture_tracker.md
+
+Also maintain copies at workspace root (e.g., /home/user/workspace/china_semiconductor_tracker.md) for backward compatibility with share_file names.
+
+STATE TRACKING
+Check your cron tracking directory for these files (create any that don't exist):
+
+semiconductor_tracker.json
+
+academic_events_tracker.json
+
+conference_tracker.json
+
+evangelical_tracker.json
+
+irish_euro_tracker.json
+
+viral_tracker.json
+
+blockchain_ai_tracker.json
+
+yarvin_thielverse_tracker.json
+
+outbreak_tracker.json
+
+earnings_tracker.json — tracks which filings have been analyzed, stores prior-quarter language baselines (see skill: Methodology 3)
+
+vocab_baseline.json — see skill: Methodology 2
+
+climate_tracker.json — see skill: Methodology 4
+
+supply_chain_tracker.json
+
+india_turkey_gulf_tracker.json
+
+latin_america_tracker.json
+
+Also read this week's daily briefs from /home/user/workspace/daily-updates/briefs/ and from /home/user/workspace/cron_tracking/76834275/daily_briefs/ (if available).
+
+TASK ORDER
+Execute in sequence. For EVERY section: if nothing new is found, produce nothing. Silence is correct when there's nothing.
+
+SECTION 1: CHINA SEMICONDUCTOR + SHENZHEN + SHANGHAI
+
+ALL OUTPUT IN ENGLISH. Search past 7 days.
+Part A: Semiconductors — Chinese sources (36Kr, bandaotixingyeguancha, xinzhixun, IT zhijia, jiweinet) + English (SCMP, EE Times, SemiAnalysis, TechNode). All chip categories. Part numbers. Shisiwu context.
+Part B: Weird Shenzhen — Huaqiangbei, maker, startups, strange gadgets.
+Part C: Shanghai/China Vibe + Chinese Social Media — seasonal, cultural, Douyin/Bilibili trending content. ALSO track: Weibo trending topics and sentiment (especially economic anxiety, property market, consumption patterns, war commentary), Xiaohongshu lifestyle shifts, Caixin/Yicai Global economic reporting not yet in English media, Sixth Tone social stories. Look for signals of domestic economic stress, consumer confidence shifts, property crisis developments, and social unrest indicators that precede English-language coverage by days.
+Compare against semiconductor_tracker.json. Update /home/user/workspace/daily-updates/trackers/china_semiconductor_tracker.md AND /home/user/workspace/china_semiconductor_tracker.md.
+
+SECTION 2: BLOCKCHAIN AI AGENTS & ON-CHAIN TOOL USE
+
+Olas/Autonolas, Fetch.ai/ASI, SingularityNET, Ocean Protocol, emerging platforms. MCP+blockchain, decentralized inference, TEE execution, agent payments.
+Compare against blockchain_ai_tracker.json. Update /home/user/workspace/daily-updates/trackers/blockchain_ai_tracker.md AND /home/user/workspace/blockchain_ai_tracker.md.
+
+SECTION 3: YARVIN, THIELVERSE & NRx DISCOURSE
+
+Neutral, analytical. Yarvin (Gray Mirror), Thiel, Vance, Masters, Balaji, Andreessen, BAP, Compact, American Affairs, Claremont. UATX, American Moment, Rockbridge, Teneo. Publications, policy influence, institutional moves, splits, vocabulary migration, evangelical overlap.
+Compare against yarvin_thielverse_tracker.json. Update /home/user/workspace/daily-updates/trackers/yarvin_thielverse_tracker.md AND /home/user/workspace/yarvin_thielverse_tracker.md.
+
+SECTION 4: OUTBREAK & PANDEMIC EARLY WARNING
+
+WHO DON, ProMED, CDC MMWR, ECDC Threat Assessments, HPSC Ireland. Ebola, Marburg, H5N1 spillover, novel CoV, MERS, Nipah, unexplained clusters, wastewater anomalies, PHEIC, AMR emergencies, polio, mpox. Lower threshold than daily brief.
+Compare against outbreak_tracker.json. Update /home/user/workspace/daily-updates/trackers/outbreak_tracker.md AND /home/user/workspace/outbreak_tracker.md.
+
+SECTION 5: FORWARD GUIDANCE & EARNINGS ANALYSIS
+
+Apply the skill's Methodology 3 (Earnings MD&A Language Diffing) and references/sector-overlays.md.
+
+WATCHLIST — check earnings schedule for each ticker every week:
+
+Tech Giants: GOOGL, META, AAPL, MSFT, AMZN, NVDA
+Oil & Energy: XOM, CVX, SHEL, BP, TTE, COP, SLB
+Wind/Renewables: VWS.CO, ORSTED.CO, SIEGY, NEE, ENPH
+Biotech/Pharma: MRNA, PFE, REGN, VRTX, AMGN, GILD, BMY
+Cancer: EXEL, MRK, RHHBY, AZN, LLY
+Neuroscience: BIIB, LLY, AXSM, SAGE, NBIX, ACAD
+Logistics: FDX, UPS, DPDHL.DE, AMKBY
+Semiconductors: TSM, ASML
+Industrial: CAT, DE
+Consumer: WMT, COST
+Cloud/Enterprise: DDOG, SNOW
+Banks: JPM, BAC
+Shipping (Hormuz/trade bellwethers): ZIM, HAFN, STNG, INSW
+Reinsurance (climate + war risk signal): RNR, MKL
+Defense: LMT, RTX, NOC
+HKEX (use US ADR tickers): TCEHY, BYDDY, PTR, CNOOC, AIA
+JSE (use US ADR tickers where available): AU, SSL, NPSNY, MTNOY, SBK.JO, FSR.JO, CPI.JO
+
+WORKFLOW: Use finance_earnings_schedule to check which reported in past 7 days or will report in next 7. For any that reported, the daily brief should have already done the initial analysis — on Wednesday, do cross-company synthesis and cross-reference with other sections. If the daily missed one, do full analysis now.
+
+CROSS-REFERENCES:
+
+Shipping companies (ZIM, HAFN, STNG, INSW): Cross-reference rate commentary with Commodities & Supply Chain section. War risk premium mentions -> Insurance section.
+
+Reinsurance (RNR, MKL): Cross-reference NatCat loss commentary with Climate section. War exclusion language -> Insurance section.
+
+Defense (LMT, RTX, NOC): Cross-reference order book/backlog commentary with Iran war trajectory.
+
+Pharma: Cross-reference API supply chain commentary with India section and Supply Chain section (nonlinear pharmaceutical ripple chains).
+
+Do NOT include: routine earnings recaps. Only include when you find genuine language/guidance deltas or surprises.
+
+Compare against earnings_tracker.json. Update /home/user/workspace/daily-updates/trackers/earnings_analysis.md AND /home/user/workspace/earnings_analysis.md.
+
+SECTION 6: CLIMATE & OCEAN SYSTEMS WEEKLY SYNTHESIS
+
+Apply the skill's Methodology 4 (Baseline Anomaly Tracking).
+
+Review the week's daily brief climate items. Synthesize trends across the week. Check for:
+
+Week-over-week changes in key baselines (AMOC, ice extent, SST anomalies)
+
+New peer-reviewed research published this week on ocean circulation, ice dynamics, or tipping points
+
+Cross-reference with earnings: oil company transition language, renewables policy dependency, insurance sector climate risk commentary
+
+Climate-Reinsurance Nexus (expanded):
+
+Search for: Swiss Re sigma, Munich Re NatCatSERVICE, catastrophe bond pricing trends, property insurance withdrawal, parametric insurance, climate litigation affecting insurers
+
+Track: Are reinsurers repricing climate risk faster than their public commentary suggests? Compare earnings language with actual rate movements.
+
+Track: Climate-driven insurance market failures — regions becoming uninsurable, last-resort state programs expanding, FAIR plan growth
+
+Cross-reference NatCat losses with observed climate anomalies in this section
+
+Sources: Copernicus Climate Pulse, NSIDC Sea Ice Today, NOAA GODAS, RAPID 26N AMOC array, Copernicus Marine, academic search for new papers, Artemis (ILS/cat bonds), Insurance Journal.
+
+Update climate_tracker.json with weekly baselines. If material: update /home/user/workspace/daily-updates/trackers/climate_tracker.md AND /home/user/workspace/climate_tracker.md.
+
+SECTION 6B: ENERGY & INFRASTRUCTURE WEEKLY SYNTHESIS
+
+Review the week's daily brief Energy & Infrastructure items. Synthesize patterns across the week.
+
+Scope — three categories:
+A. Solar & Space Weather: G3+ storms, X-class flares, multi-country impacts.
+B. Energy Infrastructure: Fires, explosions, unscheduled outages at US/Russian/European power plants, pipelines, refineries, LNG terminals, grids, substations.
+C. Subsea/Terrestrial Cables + Data Centers: Cable cuts/damage, data center outages/fires, suspicious incidents, repair ship movements.
+
+Weekly synthesis focus:
+
+Pattern recognition: are incidents clustering geographically, temporally, or by type?
+
+Cross-reference with Iran/Hormuz: are energy infrastructure incidents correlated with conflict escalation?
+
+Cross-reference with Cyber section: are cyber attacks targeting energy/cable infrastructure?
+
+Cross-reference with Climate: are extreme weather events causing infrastructure failures?
+
+Cross-reference with Insurance: are infrastructure incidents driving insurance market repricing?
+
+Current baseline (as of March 28, 2026):
+
+17-20 major subsea cables in Red Sea/Hormuz no-go zones
+
+Meta 2Africa cable project halted (Alcatel force majeure)
+
+~20% of global internet traffic affected by maintenance freeze
+
+SD card/HDD prices surging in Hong Kong from supply disruption
+
+If material: include in weekly digest. Silence if nothing beyond baseline.
+
+SECTION 6C: COMMODITIES & SUPPLY CHAIN WEEKLY SYNTHESIS
+
+Review the week's daily brief Commodities & Supply Chain items. Synthesize nonlinear ripple chains across the week.
+
+Weekly synthesis focus:
+
+Map all identified ripple chains from the week's daily briefs. Are chains lengthening? Are new nodes being affected?
+
+Track week-over-week: Baltic Dry Index, container rates, tanker rates, wheat/rice/corn futures, fertilizer prices, Brent/WTI spread
+
+Identify supply chain nodes approaching failure: which critical paths have lost redundancy this week?
+
+Cross-reference with India section: India's pharma API exports, food import dependency
+
+Cross-reference with Ireland section: Ireland's pharmaceutical manufacturing supply chain exposure
+
+Cross-reference with Climate section: weather disruptions compounding logistics bottlenecks
+
+Cross-reference with Insurance section: are rising insurance costs themselves becoming a supply chain disruptor?
+
+Nonlinear escalation indicators:
+
+Are we seeing second-order effects that were theoretical last week becoming confirmed this week?
+
+Are substitution patterns emerging (alternative routes, alternative suppliers)?
+
+Are inventory drawdowns accelerating in ways that suggest future cliff edges?
+
+Compare against supply_chain_tracker.json. Update /home/user/workspace/daily-updates/trackers/supply_chain_tracker.md AND /home/user/workspace/supply_chain_tracker.md.
+
+SECTION 6D: INDIA, TURKEY & GULF STATES WEEKLY SYNTHESIS
+
+Review the week's daily brief items on these actors. Synthesize diplomatic positioning and economic exposure.
+
+Weekly synthesis focus:
+
+India: oil import alternatives, SPR status, pharmaceutical export disruptions, diplomatic positioning (BRICS vs Western alignment), naval deployments
+
+Turkey: mediation efforts, refugee flow management, pipeline status, NATO coordination
+
+Gulf States: infrastructure damage assessment, evacuation status, energy export alternatives, sovereign wealth fund movements
+
+Cross-reference with Earnings: any Gulf-listed or India-listed companies in watchlist reporting?
+
+Cross-reference with Supply Chain: how are these actors adapting trade routes?
+
+Compare against india_turkey_gulf_tracker.json. Update /home/user/workspace/daily-updates/trackers/india_turkey_gulf_tracker.md AND /home/user/workspace/india_turkey_gulf_tracker.md.
+
+SECTION 6E: LATIN AMERICA WEEKLY
+
+Track developments relevant to global commodity flows, US foreign policy, and BRICS+ dynamics.
+
+Scope:
+
+Brazil: commodity exports (soybeans, iron ore, beef, oil), BRICS+ positioning on Iran war, Petrobras, central bank policy, Amazon deforestation
+
+Mexico: energy policy (Pemex, nearshoring), US-Mexico border, manufacturing shifts, cartel/security
+
+Argentina: lithium/mining, economic reform, IMF program
+
+Colombia: Petro government, peace process, oil production
+
+Chile: copper/lithium, constitutional process
+
+Venezuela: already tracked in daily brief — weekly synthesis of sanctions/military/oil
+
+What to watch for:
+
+Commodity substitution: is Latin American supply replacing disrupted Middle East/Russian supply?
+
+BRICS+ bloc dynamics: how is Latin America positioning on the Iran war?
+
+Nearshoring acceleration: is the war accelerating supply chain shifts to the Americas?
+
+Food security: Latin America as food exporter — are export restrictions being discussed?
+
+Sources: Reuters LatAm, Americas Quarterly, BNamericas, ECLAC, individual country central banks.
+
+Compare against latin_america_tracker.json. Update /home/user/workspace/daily-updates/trackers/latin_america_tracker.md AND /home/user/workspace/latin_america_tracker.md.
+
+SECTION 7: UL/UCC ACADEMIC EVENTS
+
+Bio/molecular, AI/ML, neuromorphic, chip design, catalysis, MOFs, nanotech, self-assembly, materials science, computational chemistry. UL and UCC event pages + web search.
+Compare against academic_events_tracker.json. Update /home/user/workspace/daily-updates/trackers/ul_ucc_academic_events.md AND /home/user/workspace/ul_ucc_academic_events.md.
+
+SECTION 8: CONFERENCE TRACKER
+
+Month by month, 6 months. Microfluidics, lab-on-chip, organ-on-chip, biofluidics, chemical analysis, electronics, embedded, Python, neuromorphic. Ireland/UK/DACH/France/Spain/Nordics/Baltics/Shenzhen/HK/Singapore/Tokyo.
+Compare against conference_tracker.json. Update /home/user/workspace/daily-updates/trackers/conference_tracker.md AND /home/user/workspace/conference_tracker.md.
+
+SECTION 9: US EVANGELICAL ANALYSIS
+
+Neutral. Sunday->Tuesday cycle. Christianity Today, Gospel Coalition, Baptist Press, NAE. Piper, Moore, Mohler, Jeffress, Graham, Perkins. YouTube sermons.
+Headings (omit empty): Political Alignment; Cultural/Social; Theological Emphasis; Leader Portrayals; Ideological Movements; News Integration.
+Compare against evangelical_tracker.json. Update /home/user/workspace/daily-updates/trackers/evangelical_analysis.md AND /home/user/workspace/evangelical_analysis.md.
+
+SECTION 10: IRISH & EURO DEEP DIVE
+
+Ireland (r/ireland, Irish Times, RTE, Journal, Examiner), EU (Commission, EP, ECB, digital, climate), Switzerland.
+Beyond daily briefs.
+
+Ireland Economic Exposure Analysis (expanded):
+In addition to standard Irish news, explicitly track:
+
+Ireland pharma supply chain: API imports from India/China transiting Red Sea, pharmaceutical manufacturing plant status (Pfizer Ringaskiddy, Eli Lilly Kinsale, MSD Ballydine, J&J Limerick, etc.)
+
+Ireland energy costs: electricity prices (Ireland imports all fossil fuels), gas interconnector status, wind generation vs demand
+
+IDA Ireland FDI: any signals of US multinational capex pullback, new investment announcements, or relocation decisions affected by war/energy costs
+
+Ireland food prices: consumer price tracking, farm input costs (fertilizer, fuel), retail sector commentary
+
+Ireland housing/asylum: direct provision capacity, Ukraine refugee housing, new asylum flows from war-affected regions
+
+Cross-reference with Earnings: when pharma/tech watchlist companies report, check for Ireland manufacturing commentary
+
+Sources: CSO Ireland, SEAI, IDA Ireland, Enterprise Ireland, IBEC, Irish Farmers Journal, Central Bank of Ireland
+
+Compare against irish_euro_tracker.json. Update /home/user/workspace/daily-updates/trackers/irish_euro_digest.md AND /home/user/workspace/irish_euro_digest.md.
+
+SECTION 11: VIRAL & EMERGENT INTERNET CULTURE
+
+TikTok, Reddit, YouTube/Shorts, memes, slang, crossovers. Mainstream vs emerging signal.
+Compare against viral_tracker.json. Update /home/user/workspace/daily-updates/trackers/viral_culture_tracker.md AND /home/user/workspace/viral_culture_tracker.md.
+
+SECTION 12: WEEKLY DIGEST SYNTHESIS
+
+Week in Review: Top 5 stories, slow-building trends, disappeared stories.
+Vocabulary Shifts: Cross-outlet term changes (apply skill: Methodology 2). Table format.
+Cross-Query Intelligence: All trackers including earnings, climate, energy infrastructure, supply chain, insurance/reinsurance, India/Turkey/Gulf, and Latin America. Only real connections. Pay special attention to nonlinear supply chain ripples that cross section boundaries.
+Ripple Chain Map: Compile all nonlinear ripple chains identified during the week across all sections. Visualize as causal chains. Identify which chains are accelerating, which are stabilizing, and which new chains emerged this week.
+Looking Ahead: Conference deadlines, UL/UCC events, upcoming earnings dates from watchlist, anticipated developments.
+Surprise Me -- Discovery: 2-3 items for Reto's interests.
+
+Save to /home/user/workspace/daily-updates/weekly/weekly_digest.md AND /home/user/workspace/weekly_digest.md.
+
+HTML GENERATION
+After ALL sections are complete and all .md files are written, run:
+
+text
+python3 /home/user/workspace/daily-updates/build-html.py
+This regenerates all HTML variants in /home/user/workspace/daily-updates/html/ with an index page.
+
+THE CARDINAL RULE
+No news/finds = section does not exist.
+
+NEVER write "nothing to report." FORBIDDEN.
+
+Every item cites a real source.
+
+Silence > padding.
+
+OUTPUT
+Update .md files. Share with user via share_file (use same names for version history): "china_tech_tracker", "blockchain_ai_tracker", "yarvin_thielverse", "climate_tracker", "outbreak_tracker", "earnings_analysis", "evangelical_analysis", "academic_events", "conference_tracker", "viral_culture", "weekly_digest", "irish_euro_digest", "supply_chain_tracker", "india_turkey_gulf_tracker", "latin_america_tracker"
+Only share files actually updated.
+
+WEEKLY BACKUP TO GOOGLE DRIVE
+After all sections are complete and files are updated, export the following files to Google Drive using the export_files tool:
+
+All .md files from /home/user/workspace/daily-updates/trackers/
+
+/home/user/workspace/daily-updates/weekly/weekly_digest.md
+
+All .json state files from the cron tracking directories
+
+DELIVER
+ONE notification: "Weekly Intelligence -- [date]". Nothing new = silence.
+
+EXCLUDE
+Sports, celebrity, routine non-watchlist earnings, routine disease, opinion, editorials.

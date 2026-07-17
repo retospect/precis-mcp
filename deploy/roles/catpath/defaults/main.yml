@@ -1,0 +1,40 @@
+---
+# catpath role defaults — install the catpath reaction-pathway compute stack
+# (catpath[precis] + an ML backend) into the precis worker venv on the GPU node
+# and wire the worker env so it runs `catpath_explore` jobs pinned here.
+#
+# Mirrors roles/dft, but catpath IS a Python package (goes in the venv), whereas
+# precis-dft lives in a container image. Everything gates on the single topology
+# map (inventory/group_vars/all/topology.yml): this role runs where
+# `inventory_hostname in precis_capabilities.catpath`.
+
+# The precis worker venv this installs into (same one roles/precis_worker manages).
+catpath_worker_venv: "{{ precis_worker_venv | default('/opt/precis/venv') }}"
+
+# uv, per OS — same expression roles/precis_worker uses.
+catpath_uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+# Where catpath is installed from. Override the ref to test a branch on the GPU node.
+catpath_git_url: "git+https://github.com/retospect/catpath"
+catpath_git_ref: main
+
+# The node this role targets / catpath_explore jobs pin themselves to. Must match
+# inventory_hostname so the target_node claim gate lets THIS node's worker run it.
+catpath_node: "{{ inventory_hostname }}"
+
+# The worker runs as this user.
+catpath_worker_user: deploy
+
+# The precis-worker unit's HOME (Environment=HOME in precis-worker.service).
+# MACE caches its model under $HOME/.cache/mace, so the pre-seed must use this
+# same HOME or the daemon won't find the warmed weights.
+catpath_worker_home: /var/lib/precis
+
+# The pip extras spec, derived from the topology in ONE expression:
+# 'precis,mace' on catpath_mace nodes (exactly one ML backend per env —
+# catpath's extras conflict), else 'precis' (EMT-only, dependency-free).
+# Single expression on purpose: chaining through a folded-scalar
+# `catpath_backend` mis-rendered to just 'precis', so the mace extra never
+# installed on a fresh node (it only worked where torch/mace pre-existed).
+catpath_extras: >-
+  {{ 'precis,mace' if inventory_hostname in (precis_capabilities.catpath_mace | default([])) else 'precis' }}

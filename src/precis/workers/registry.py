@@ -225,6 +225,22 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-recurring-help",
     ),
     ServiceSpec(
+        # §15i: the decentralized recurring-work trigger. Folds the standalone
+        # launchd thin-timers (cron tick, watch poll) into the worker via a
+        # DB-lease conditional advance (exactly-once, no designated node).
+        # DARK — no default profile + PRECIS_SCHEDULER_ENABLED unset, so the
+        # timers still own the ticks until the Phase-2 cutover flips it on.
+        name="scheduler",
+        label="Recurring trigger (decentralized)",
+        category="jobs",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_SCHEDULER_ENABLED",
+        one_line="Decentralized thin-timer cadences (cron tick, watch poll); "
+        "dark until the §15i cutover.",
+        doc_skill="precis-recurring-help",
+    ),
+    ServiceSpec(
         name="nursery",
         label="Nursery (SQL health)",
         category="health",

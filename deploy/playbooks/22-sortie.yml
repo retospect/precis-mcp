@@ -1,0 +1,42 @@
+---
+# Deploy sortie-mcp campaign orchestration
+#   - MCP server binary on gateway + scheduler (the scheduler node)
+#   - Runner cron + DB migrations on the scheduler node only (delegated to the data node)
+
+- name: Install sortie-mcp on gateway
+  hosts: gateway
+  tags: [sortie]
+  tasks:
+    - name: Set uv binary path
+      ansible.builtin.set_fact:
+        uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+    - name: Ensure sortie-mcp venv directory
+      ansible.builtin.file:
+        path: /opt/mcps/sortie
+        state: directory
+        owner: deploy
+        mode: "0755"
+      become: true
+
+    - name: Install sortie-mcp from PyPI with uv
+      ansible.builtin.shell: |
+        [ -d /opt/mcps/sortie/venv ] || {{ uv_bin }} venv /opt/mcps/sortie/venv
+        {{ uv_bin }} pip install --python /opt/mcps/sortie/venv/bin/python sortie-mcp
+      become: true
+      register: sortie_install
+      changed_when: "'Installed' in sortie_install.stdout"
+
+    - name: Fix sortie venv ownership
+      ansible.builtin.file:
+        path: /opt/mcps/sortie/venv
+        state: directory
+        recurse: true
+        owner: deploy
+      become: true
+
+- name: sortie-mcp campaign orchestration
+  hosts: scheduler
+  roles:
+    - sortie
+  tags: [sortie]

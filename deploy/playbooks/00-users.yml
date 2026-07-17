@@ -1,0 +1,21 @@
+---
+# 00-users.yml — System users with fixed UIDs on all nodes
+- name: Create system users
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Determine which users to create on this host
+      ansible.builtin.set_fact:
+        users_to_create: >-
+          {%- set result = [] -%}
+          {%- for u in system_users -%}
+            {%- if u.all_nodes
+                or (u.only_groups is defined and u.only_groups | intersect(group_names) | length > 0) -%}
+              {%- set _ = result.append(u) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ result }}
+      tags: [always]
+  roles:
+    - users
+  tags: [users]

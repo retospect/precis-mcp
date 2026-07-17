@@ -1,0 +1,32 @@
+---
+# Handlers for the llamacpp role. All restart-triggering tasks notify
+# "restart llamaswap"; both OS-specific handlers listen on that topic so
+# exactly one fires per host based on os_family.
+
+- name: reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+  when: os_family == "linux"
+
+- name: Restart llamaswap launchd (macOS)
+  listen: "restart llamaswap"
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    if [ -f /Library/LaunchDaemons/com.llamaswap.plist ]; then
+      launchctl unload /Library/LaunchDaemons/com.llamaswap.plist 2>/dev/null || true
+      launchctl load -w /Library/LaunchDaemons/com.llamaswap.plist
+    fi
+  become: true
+  changed_when: true
+
+- name: Restart llamaswap systemd (Linux)
+  listen: "restart llamaswap"
+  when: os_family == "linux"
+  ansible.builtin.shell: |
+    if [ -f /etc/systemd/system/llamaswap.service ]; then
+      systemctl daemon-reload
+      systemctl restart llamaswap
+    fi
+  become: true
+  changed_when: true

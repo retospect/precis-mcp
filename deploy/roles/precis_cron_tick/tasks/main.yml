@@ -1,0 +1,50 @@
+---
+# precis cron-tick — launchd timer that runs `precis cron tick` every
+# 60s on the gateway. Wakes the precis cron-runner; emits pg_notify on
+# `precis.cron` for due entries; asa_bot LISTENs and delivers.
+#
+# Low overhead: each tick is ~2s wall (Python boot + one SQL query +
+# N NOTIFYs). Roughly 3% of one core averaged over the minute. No
+# long-running process between ticks; launchd respawns each cycle.
+#
+# Designed to coexist with the existing precis-worker LaunchDaemon
+# (which still owns the embed / chunk_keywords / summarize / chase
+# batch queue). cron-tick is intentionally NOT folded into the
+# worker — scheduling cadence is real-time-sensitive while batches
+# are throughput-sensitive.
+
+- name: Ensure precis cron-tick LaunchDaemon plist
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: precis-cron-tick.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.cron-tick.plist
+    mode: "0644"
+    owner: root
+    group: wheel
+  become: true
+  notify: restart precis-cron-tick
+
+- name: Ensure precis-cron-tick log file is writable
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-cron-tick.log
+    state: touch
+    # Daemon runs as ``deploy`` (per the plist's UserName), so
+    # the log must be deploy-writable. root:wheel 0644 made bash
+    # fail to open stdout/stderr and the daemon exited 78
+    # (EX_CONFIG) before logging anything — silent failure mode.
+    # Same trap that bit precis_worker_agent.
+    mode: "0664"
+    owner: deploy
+    group: staff
+    modification_time: preserve
+    access_time: preserve
+  become: true
+
+- name: Load precis-cron-tick LaunchDaemon
+  when: os_family == "darwin"
+  ansible.builtin.command: >
+    launchctl load -w /Library/LaunchDaemons/com.precis.cron-tick.plist
+  become: true
+  changed_when: false
+  failed_when: false

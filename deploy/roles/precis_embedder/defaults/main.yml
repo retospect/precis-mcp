@@ -1,0 +1,43 @@
+---
+# precis_embedder role defaults.
+#
+# Each cluster node runs `precis serve-embeddings` on loopback, and that
+# node's `precis worker` (precis_worker role) embeds against it via
+# PRECIS_EMBEDDER=remote → http://127.0.0.1:8181. One model load per node,
+# shared by every local embedder consumer; the worker venv stays free of
+# the sentence-transformers / torch weight that the service carries.
+# See ADR 0020/0021 in the precis-mcp repo.
+#
+# Why a SEPARATE venv from precis_worker's /opt/precis/venv: once the
+# worker is flipped to the remote embedder it needs no torch to embed
+# (RemoteEmbedder is a pure-HTTP client), so the embed extra lives only
+# here. Decoupling also means this role doesn't depend on the worker
+# role's venv contents.
+
+precis_embedder_venv: /opt/precis/embedder-venv
+
+# Git ref to install precis-mcp[embed] from. Tracks the same ref as the
+# worker by default so a single push redeploys both consistently — keeps
+# the wire schema (precis.embedder_wire) and the served model in lockstep
+# with the clients.
+precis_embedder_git_ref: "{{ precis_worker_git_ref | default('main') }}"
+
+# Bind address + port. Loopback only: the sole consumers are same-node
+# native daemons (worker / watch / the MCP serve process), so there is no
+# reason to expose the unauthenticated service beyond 127.0.0.1.
+precis_embedder_host: "127.0.0.1"
+# Port comes from inventory/hosts.yml (all.vars.embedder_port) so it is the
+# single source of truth shared with precis_worker's embedder URL. The
+# literal fallback keeps the role resolvable if run outside this inventory.
+precis_embedder_port: "{{ embedder_port | default(8181) }}"
+
+# Which model the service loads and serves. 'bge-m3' is the corpus model
+# (dim 1024); 'mock' is for smoke runs without weights.
+precis_embedder_backend: bge-m3
+
+# Concurrent embed requests admitted before the service returns 429.
+precis_embedder_max_inflight: 4
+
+# Shared HF cache with precis_worker on the same host — local disk, off
+# NFS/NAS, so bge-m3 isn't dragged over the network on each load.
+precis_embedder_hf_home: "{{ precis_worker_hf_home | default('/var/lib/precis/hf-cache') }}"

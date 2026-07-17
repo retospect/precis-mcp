@@ -1,0 +1,18 @@
+# Managed by Ansible — do not edit
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+
+# Local superuser (peer on Linux, trust on macOS where peer isn't supported)
+local   all             {{ pg_user }}                               trust
+
+# Local app connections
+local   all             all                                     md5
+
+# Localhost TCP (PgBouncer, SSH tunnels)
+host    all             all             127.0.0.1/32                md5
+
+# Subnet connections
+host    all             all             {{ lan_subnet }}            md5
+host    all             all             {{ tailscale_subnet }}               md5
+
+# Replication (if needed later)
+# host  replication     replicator      {{ lan_subnet }}            md5

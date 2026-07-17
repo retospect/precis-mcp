@@ -1,0 +1,65 @@
+---
+# Defaults for the llamacpp role.
+# Most knobs live in group_vars/all/main.yml; these are role-local.
+# See docs/llamacpp-migration-plan.md.
+
+# Venv on the data node hosting huggingface-cli (and later llama.cpp build tools).
+llamacpp_venv_dir: /opt/llamacpp/venv
+
+# Which catalog entries to download canonically on the data node.
+# Defaults to "everything any host needs" — union of each host's llamacpp_models.
+# Can override to stage more (hot-swap models) or fewer (testing).
+llamacpp_download_names: "{{ groups['llamacpp_hosts'] | map('extract', hostvars, 'llamacpp_models') | select('defined') | flatten | unique | list }}"
+
+# hf-transfer gives 5-10x faster downloads for large files.
+llamacpp_hf_enable_transfer: true
+
+# Manifest file — SHA256 + size of every downloaded GGUF.
+llamacpp_manifest_path: "{{ llamacpp_nfs_dir_server }}/manifest.yaml"
+
+# ── llama.cpp source build ──
+llamacpp_src_dir: /opt/llamacpp/src
+llamacpp_build_dir: /opt/llamacpp/build
+llamacpp_git_url: "https://github.com/ggml-org/llama.cpp.git"
+# Pin a specific ref for reproducibility. Bump deliberately when upgrading.
+llamacpp_git_ref: "master"
+# CUDA compute capability for the DGX the GPU node's GB10 Blackwell (sm_121).
+llamacpp_cuda_arch: "121"
+# Parallel build jobs.
+llamacpp_build_jobs: "{{ ansible_processor_vcpus | default(4) }}"
+
+# ── llama-swap (Go binary, GitHub releases) ──
+# Release tags are bare integers (v206, v205, ...) — no semver. The tarball
+# filename drops the "v" prefix.
+llamacpp_llama_swap_version: "206"
+llamacpp_llama_swap_url_template: >-
+  https://github.com/mostlygeek/llama-swap/releases/download/v{version}/llama-swap_{version}_{os}_{arch}.tar.gz
+
+# ── llama-server runtime defaults (per-model overrides via catalog.serve) ──
+llamacpp_serve_defaults:
+  ctx_size: 131072
+  parallel: 4
+  flash_attn: true
+  mlock: true
+  no_mmap: true
+  jinja: true                # use model's embedded chat template for tool-use
+  n_gpu_layers: 999          # offload everything by default (GPU nodes)
+  extra_args: []
+
+# llama-swap ttl: 0 = never unload (persistent), N seconds = evict after idle.
+llamacpp_default_ttl: 0
+
+# Port range for individual llama-server instances (llama-swap proxies to these).
+# llama-swap itself listens on llama_swap_port_{linux,macos}.
+llamacpp_server_port_base: 8001
+
+# Log dir.
+llamacpp_log_dir_darwin: /opt/homebrew/var/log
+llamacpp_log_dir_linux: /var/log
+
+# Per-model llama-server logs — one file per loaded model, written via
+# llama-server's own --log-file flag. llama-swap's own log (lifecycle events,
+# proxy errors, health-check results) stays under llamacpp_log_dir_{os}.
+# Putting server logs under the llama.cpp root keeps them away from generic
+# system logs and makes `tail -f /opt/llamacpp/logs/*.log` trivial.
+llamacpp_log_dir: /opt/llamacpp/logs

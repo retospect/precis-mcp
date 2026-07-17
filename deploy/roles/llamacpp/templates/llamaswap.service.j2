@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+[Unit]
+Description=llama-swap (llama.cpp multi-model proxy)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=HOME=/opt/llamacpp
+Environment=PATH={{ llamacpp_bin_dir }}:/usr/local/bin:/usr/bin:/bin
+ExecStart={{ llamacpp_bin_dir }}/llama-swap \
+    -config /opt/llamacpp/etc/llama-swap.yaml \
+    -listen 0.0.0.0:{{ llama_swap_port_linux }}
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

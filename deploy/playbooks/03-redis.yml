@@ -1,0 +1,8 @@
+---
+# 03-redis.yml — Redis on the data node
+- name: Configure Redis
+  hosts: data
+  become: true
+  roles:
+    - redis
+  tags: [redis]

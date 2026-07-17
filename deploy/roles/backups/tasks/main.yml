@@ -1,0 +1,144 @@
+---
+# Backup strategy: pg_dump → /shared/backups/postgres, B2 offsite
+# Optional: USB rsync if backup_usb_mount is defined in host_vars
+# Runs on the data node (internal SSD at /opt/nfs)
+
+- name: Set postgres runtime user
+  ansible.builtin.set_fact:
+    pg_user: "{{ 'deploy' if os_family == 'darwin' else 'postgres' }}"
+
+- name: Ensure zstd is installed (macOS — for the NAS-archive step in pg_backup.sh)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: zstd
+    state: present
+  become: false
+
+- name: Ensure zstd is installed (Linux)
+  when: os_family == "linux"
+  ansible.builtin.package:
+    name: zstd
+    state: present
+  become: true
+
+- name: Ensure backup directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ pg_user }}"
+    mode: "0750"
+  become: true
+  loop:
+    - "{{ shared_mount }}/backups/postgres"
+    - "{{ shared_mount }}/backups/configs"
+    - "{{ shared_mount }}/scripts"
+    - "{{ shared_mount }}/logs"
+
+- name: Ensure NAS backup destination exists
+  ansible.builtin.file:
+    path: "{{ nas_root }}/backups/postgres"
+    state: directory
+    owner: "{{ pg_user }}"
+    mode: "0755"
+  become: true
+
+- name: Deploy pg_dump backup script
+  ansible.builtin.template:
+    src: pg_backup.sh.j2
+    dest: "{{ shared_mount }}/scripts/pg_backup.sh"
+    mode: "0750"
+    owner: "{{ pg_user }}"
+  become: true
+
+- name: Deploy USB rsync backup script
+  when: backup_usb_mount is defined
+  ansible.builtin.template:
+    src: usb_backup.sh.j2
+    dest: "{{ shared_mount }}/scripts/usb_backup.sh"
+    mode: "0750"
+  become: true
+
+- name: Deploy restore test script
+  ansible.builtin.template:
+    src: restore_test.sh.j2
+    dest: "{{ shared_mount }}/scripts/restore_test.sh"
+    mode: "0750"
+    owner: "{{ pg_user }}"
+  become: true
+
+- name: Schedule nightly pg_dump via cron
+  ansible.builtin.cron:
+    name: "pg_dump nightly backup"
+    minute: "0"
+    hour: "2"
+    job: "{{ shared_mount }}/scripts/pg_backup.sh >> {{ shared_mount }}/logs/backup-pg.log 2>&1"
+    user: "{{ pg_user }}"
+  become: true
+
+- name: Schedule weekly USB rsync
+  when: backup_usb_mount is defined
+  ansible.builtin.cron:
+    name: "weekly USB rsync backup"
+    minute: "0"
+    hour: "4"
+    weekday: "0"
+    job: "{{ shared_mount }}/scripts/usb_backup.sh >> {{ shared_mount }}/logs/backup-usb.log 2>&1"
+  become: true
+
+- name: Schedule weekly restore test
+  ansible.builtin.cron:
+    name: "weekly restore test"
+    minute: "0"
+    hour: "6"
+    weekday: "1"
+    job: "{{ shared_mount }}/scripts/restore_test.sh >> {{ shared_mount }}/logs/backup-tests.log 2>&1"
+    user: "{{ pg_user }}"
+  become: true
+
+# ── Backblaze B2 offsite backup ──
+- name: Ensure uv is installed (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: uv
+    state: present
+  become: false
+
+- name: Set uv binary path
+  ansible.builtin.set_fact:
+    uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+- name: Create B2 CLI venv with uv
+  ansible.builtin.command:
+    cmd: "{{ uv_bin }} venv /opt/b2"
+    creates: /opt/b2/bin/python
+  become: true
+
+- name: Install Backblaze B2 CLI with uv
+  ansible.builtin.shell: |
+    {{ uv_bin }} pip install --python /opt/b2/bin/python 'b2[full]'
+  become: true
+  register: b2_install
+  changed_when: "'Installed' in b2_install.stdout"
+
+- name: Symlink b2 binary into PATH
+  ansible.builtin.file:
+    src: /opt/b2/bin/b2
+    dest: /usr/local/bin/b2
+    state: link
+    force: true
+  become: true
+
+- name: Deploy B2 sync script
+  ansible.builtin.template:
+    src: b2_sync.sh.j2
+    dest: "{{ shared_mount }}/scripts/b2_sync.sh"
+    mode: "0750"
+  become: true
+
+- name: Schedule nightly B2 offsite sync (after pg_dump at 2am)
+  ansible.builtin.cron:
+    name: "nightly b2 offsite sync"
+    minute: "30"
+    hour: "2"
+    job: "{{ shared_mount }}/scripts/b2_sync.sh >> {{ shared_mount }}/logs/backup-b2.log 2>&1"
+  become: true

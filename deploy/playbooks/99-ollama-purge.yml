@@ -1,0 +1,31 @@
+---
+# 99-ollama-purge.yml — the final, irreversible cutover from Ollama.
+# Phase 6 of docs/llamacpp-migration-plan.md.
+#
+# Run ONLY AFTER:
+#   - ansible-playbook playbooks/04-llamacpp.yml             (llama.cpp stack up)
+#   - Flip litellm_backend: llamacpp in group_vars/all/main.yml
+#   - ansible-playbook playbooks/06-litellm.yml              (LiteLLM on llama.cpp)
+#   - ansible-playbook playbooks/21-hermes.yml               (Hermes profiles flipped)
+#   - Watchdog green for 24h+ on the llama.cpp backend
+#   - Discord smoke tests pass for every profile + fallback tier
+#
+# Usage:
+#   ansible-playbook playbooks/99-ollama-purge.yml -e ollama_purge_confirm=true
+#
+# After this plays, also manually:
+#   - Remove the Ollama entries from inventory/host_vars/{the GPU node,the gateway,the scheduler node}.yml
+#     (ollama_models, `ollama` in services list)
+#   - Remove `ollama_hosts` group from inventory/hosts.yml
+#   - Remove legacy 11436/11437 tunnels from inventory/host_vars/the gateway.yml
+#   - git rm -r ansible/roles/ollama ansible/playbooks/04-ollama.yml
+#   - git rm ansible/roles/litellm/templates/litellm_config.yml.j2
+#   - git rm ansible/roles/litellm/templates/litellm_watchdog.sh.j2
+#   - Remove the ollama_* vars and the litellm_backend dual-path logic from group_vars
+
+- name: Purge Ollama from all nodes
+  hosts: ollama_hosts
+  become: true
+  roles:
+    - ollama_purge
+  tags: [purge, ollama_purge]

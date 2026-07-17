@@ -1,0 +1,29 @@
+---
+# dft role defaults — configure the GPU node to run precis-mcp
+# `struct_relax` jobs (ADR 0043 §23.12). precis-dft lives in the IMAGE, not the
+# worker venv, so this role only wires the container runtime + NFS scratch + the
+# worker's env; there is nothing to pip-install.
+
+# The node this role targets / the node struct_relax jobs pin themselves to.
+# Must match inventory_hostname so the §23 #3 node gate lets THIS node's worker
+# claim the job (and the worker that stages to NFS == the box the container runs
+# on, so the bind paths line up).
+dft_node: "{{ inventory_hostname }}"
+
+# The precis-dft compute image (built + validated on the GPU node, 2026-06-21). docker
+# (not podman) is the deployed runtime; --gpus all works via the NVIDIA toolkit.
+dft_image: "precis-dft:cpu"
+dft_container_cmd: docker
+
+# the data node's NFS export, as mounted on this node (the GPU node = /shared; macOS = /opt/shared).
+dft_nfs_root: /shared
+dft_scratch_dir: "{{ dft_nfs_root }}/scratch"
+
+# The worker runs as this user; it must be able to run `docker` (no sudo).
+dft_worker_user: deploy
+
+# Rebuild the image on the node (rsync source → docker build). Default OFF —
+# the image is already present; flip on to (re)build:
+#   ansible-playbook playbooks/42-dft.yml -e dft_build_image=true
+dft_build_image: false
+dft_src_dir: "{{ lookup('env', 'HOME') }}/work/projects/code/precis-dft"

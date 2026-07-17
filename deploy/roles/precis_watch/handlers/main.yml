@@ -1,0 +1,19 @@
+---
+# Persistent daemon. macOS: reload via the shared safe launchd task —
+# previously `kickstart -k` only, which never re-read the plist and never
+# asserted the daemon came back up (gripe #48490). The shared task
+# bootstraps the plist afresh and asserts a pid.
+- name: reload precis watch (macos)
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.precis.watch
+    reload_persistent: true
+  when: os_family == "darwin"
+
+- name: reload precis watch (linux)
+  ansible.builtin.systemd:
+    name: precis-watch
+    daemon_reload: true
+    state: restarted
+  become: true
+  when: os_family == "linux"

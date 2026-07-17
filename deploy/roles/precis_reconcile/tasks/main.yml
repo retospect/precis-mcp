@@ -1,0 +1,36 @@
+---
+# precis_reconcile — nightly launchd timer firing
+# `precis reconcile-duplicates --apply` on one host (the data node).
+# Mirrors precis_dream's calendar one-shot shape (RunAtLoad/KeepAlive
+# false; each fire runs once and exits).
+
+- name: Ensure precis-reconcile LaunchDaemon plist
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: precis-reconcile.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.reconcile.plist
+    mode: "0644"
+    owner: root
+    group: wheel
+  become: true
+  notify: restart precis-reconcile
+
+- name: Ensure precis-reconcile log file is writable
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-reconcile.log
+    state: touch
+    mode: "0664"
+    owner: deploy
+    group: staff
+    modification_time: preserve
+    access_time: preserve
+  become: true
+
+- name: Load precis-reconcile LaunchDaemon
+  when: os_family == "darwin"
+  ansible.builtin.command: >
+    launchctl load -w /Library/LaunchDaemons/com.precis.reconcile.plist
+  become: true
+  changed_when: false
+  failed_when: false

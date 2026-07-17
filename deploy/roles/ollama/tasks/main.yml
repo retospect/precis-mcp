@@ -1,0 +1,128 @@
+---
+# Ollama — GPU inference on the Linux GPU node, light models on macOS nodes
+
+- name: Install Ollama (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: ollama
+    state: present
+  become: false
+
+# Linux (GPU node): Ollama via snap — arm64 Linux has no tarballs on GitHub.
+# The snap listener service runs on port 11434 (default).
+- name: Install Ollama snap (Linux)
+  when: os_family == "linux"
+  community.general.snap:
+    name: ollama
+    channel: "{{ ollama_snap_channel | default('edge') }}"
+    state: present
+  become: true
+
+- name: Refresh Ollama snap (Linux)
+  when: os_family == "linux"
+  ansible.builtin.command: snap refresh ollama --{{ ollama_snap_channel | default('edge') }}
+  become: true
+  register: ollama_snap_refresh
+  changed_when: "'refreshed' in ollama_snap_refresh.stdout | default('')"
+  failed_when: false
+
+- name: Pin Ollama snap to prevent auto-updates (Linux)
+  when: os_family == "linux"
+  ansible.builtin.command: snap refresh --hold ollama
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: Configure Ollama snap (Linux)
+  when: os_family == "linux"
+  ansible.builtin.command: "snap set ollama {{ item.key }}={{ item.value }}"
+  loop:
+    - { key: "flash-attention", value: "{{ ollama_flash_attention }}" }
+    - { key: "host", value: "0.0.0.0:11434" }
+    - { key: "keep-alive", value: "-1" }
+    - { key: "num-parallel", value: "{{ ollama_num_parallel }}" }
+    - { key: "kv-cache-type", value: "{{ ollama_kv_cache_type }}" }
+  become: true
+  changed_when: false
+
+# Disable the systemd service installed by curl|sh if it exists —
+# the snap listener is the primary Ollama instance on the Linux GPU node.
+- name: Disable legacy Ollama systemd service (Linux)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: ollama
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  become: true
+  failed_when: false
+
+- name: Ensure snap Ollama listener is running (Linux)
+  when: os_family == "linux"
+  ansible.builtin.command: snap start ollama.listener
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: Ensure Ollama data directory (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /opt/homebrew/var/ollama
+    state: directory
+    owner: ollama
+    group: staff
+    mode: "0750"
+  become: true
+
+- name: Ensure Ollama log file ownership (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /opt/homebrew/var/log/ollama.log
+    state: touch
+    owner: ollama
+    group: staff
+    mode: "0644"
+  become: true
+  changed_when: false
+
+- name: Deploy Ollama launchd plist (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: ollama.plist.j2
+    dest: /Library/LaunchDaemons/com.ollama.plist
+    mode: "0644"
+  become: true
+  notify: restart ollama
+
+- name: Ensure Ollama is loaded (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    launchctl list | grep -q com.ollama || launchctl load -w /Library/LaunchDaemons/com.ollama.plist
+  become: true
+  changed_when: false
+  failed_when: false
+
+# Snap listener on Linux uses port 11434; macOS plist uses ollama_port (11435).
+- name: Set effective Ollama port
+  ansible.builtin.set_fact:
+    _ollama_port: "{{ 11434 if os_family == 'linux' else ollama_port }}"
+
+- name: Wait for Ollama API
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ _ollama_port }}/api/tags"
+    method: GET
+    status_code: 200
+  register: ollama_health
+  until: ollama_health.status == 200
+  retries: 10
+  delay: 3
+
+- name: Pull Ollama models
+  when: ollama_models is defined
+  ansible.builtin.command: "{{ '/opt/homebrew/bin/ollama' if os_family == 'darwin' else 'ollama' }} pull {{ item }}"
+  loop: "{{ ollama_models }}"
+  register: ollama_pull
+  changed_when: "'pulling' in ollama_pull.stderr | default('')"
+  become: true
+  environment:
+    OLLAMA_HOST: "127.0.0.1:{{ _ollama_port }}"

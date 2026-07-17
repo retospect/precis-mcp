@@ -1,0 +1,14 @@
+---
+# 14-mcps.yml — MCP servers for Hermes agent profiles
+# Core MCPs (gripe, health) on the gateway + the scheduler node
+# Research/writing MCPs on the scheduler node
+# Code sandbox CPU on the scheduler node, GPU on the GPU node
+- name: Deploy MCP servers
+  hosts:
+    - gateway
+    - scheduler
+    - inference
+  become: true
+  roles:
+    - mcps
+  tags: [mcps]

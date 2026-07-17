@@ -1,0 +1,65 @@
+---
+# service_unit — the missing multiplatform launch-unit abstraction (§15h,
+# slice 10 of docs/design/factory-console-and-scheduling.md).
+#
+# Today platform-branching is a custom `os_family` var plus inline
+# `when: os_family == …` guards, duplicated across six dual-template roles
+# (llamacpp, mcps, precis_embedder, precis_heartbeat, precis_watch,
+# precis_worker), each carrying its own launchd plist AND systemd unit. There
+# is no single role that owns multiplatform. This is it: one abstract spec →
+# a launchd LaunchDaemon (macOS) OR a systemd unit (Linux), selected by
+# `os_family`. A capability role then delegates unit-rendering here instead of
+# maintaining two templates — "one plist" is really "one service *definition*,
+# two renderings" (§15h). Ships DARK: no playbook includes this role yet; the
+# Phase-2 window rewires the daemon roles onto it.
+#
+# The canonical consumer is slice 10's single COLLAPSED worker — one
+# DB-controlled `precis worker` daemon per host, loading every capability the
+# host can do (capability × service_config.prio, so it carries NONE of the
+# retired PRECIS_*_ENABLED env flags):
+#
+#   - role: service_unit
+#     vars:
+#       service_unit_name: worker
+#       service_unit_exec: >-
+#         {{ precis_worker_venv }}/bin/precis worker --profile system
+#         --batch-size {{ precis_worker_batch_size }}
+#         --idle-seconds {{ precis_worker_idle_seconds }}
+#         --embedder {{ precis_worker_embedder }}
+#         --embedder-url {{ precis_worker_embedder_url }}
+#         --summarizer-model {{ precis_worker_summarizer }}
+#       service_unit_env: "{{ precis_shared_env | combine(precis_worker_core_env) }}"
+#       service_unit_schedule: {mode: keepalive}
+#       service_unit_process_type: Interactive   # jetsam band (RAM-pressured host)
+
+# ── required (the including role/playbook MUST set these) ──────────────────
+#   service_unit_name:  logical short name, e.g. "worker" →
+#                       launchd Label  com.precis.worker
+#                       systemd unit   precis-worker.service
+#   service_unit_exec:  the command line to run (a single string). On launchd
+#                       it is wrapped `/bin/bash -c 'exec <cmd>'` so bash stays
+#                       the TCC responsible process (FDA grant survives exec).
+
+# ── optional ──────────────────────────────────────────────────────────────
+service_unit_run_as: deploy
+service_unit_working_dir: /tmp
+service_unit_env: {} #  dict of KEY: value environment pairs
+service_unit_description: "precis {{ service_unit_name }}"
+service_unit_log: "/var/log/precis-{{ service_unit_name }}.log"
+
+# schedule — exactly one shape:
+#   {mode: keepalive}                       daemon: runs forever
+#                                           (RunAtLoad+KeepAlive / Restart=always)
+#   {mode: interval, seconds: 3600}         periodic one-shot every N seconds
+#                                           (launchd only — post-collapse the
+#                                            thin timers fold into the worker's
+#                                            §15i scheduler, so systemd hosts
+#                                            need no periodic units)
+#   {mode: calendar, hour: 4, minute: 30}   daily at HH:MM (launchd only)
+service_unit_schedule:
+  mode: keepalive
+
+service_unit_throttle_seconds: 30 #  crash-loop guard (keepalive only)
+# "Interactive" raises the macOS jetsam band toward foreground so a
+# RAM-pressured host culls this daemon last, not first. Empty = default band.
+service_unit_process_type: ""

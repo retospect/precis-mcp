@@ -1,0 +1,4 @@
+---
+- name: reload nfs exports
+  ansible.builtin.command: nfsd update
+  become: true

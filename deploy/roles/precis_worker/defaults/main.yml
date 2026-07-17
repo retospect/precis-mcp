@@ -1,0 +1,58 @@
+---
+# precis_worker role defaults.
+#
+# Each cluster node runs `precis worker` continuously, claiming work from
+# the shared chunk_embeddings + chunk_summaries queues backed by the postgres host's
+# postgres. All workers see the same queue → adding nodes scales throughput.
+
+precis_worker_venv: /opt/precis/venv
+
+# Git ref to install precis-mcp from. Tracks ``main`` post-F20
+# (per-chunk keybert + dynamic TOC); the long-running
+# ``feat/storage-v2-step-b`` branch was retired when storage-v2 landed
+# on main. Override per-host (or via ``--extra-vars``) if you want to
+# test a different branch on, say, the GPU node first.
+precis_worker_git_ref: main
+
+# Connection target: pgbouncer on the postgres host, reached directly over tailscale.
+# Skipping the ssh_tunnels indirection because (a) a tunnel-less node has none
+# configured today, (b) the postgres host would have to tunnel to itself, and (c)
+# tailscale is already proven solid for inter-node traffic. agent_rw scope
+# matches the existing ingest pipeline (22-papers-sync.yml).
+precis_worker_dsn: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+
+# Worker loop knobs. Defaults match precis worker --help.
+precis_worker_batch_size: 32
+precis_worker_idle_seconds: 2
+# Embed via the same-node `precis serve-embeddings` (precis_embedder role,
+# 127.0.0.1:8181) rather than loading bge-m3 in-process. Required: the
+# worker venv installs precis-mcp[paper], which no longer ships
+# sentence-transformers (it moved to the [embed] extra, ADR 0021), so
+# `--embedder bge-m3` would fail to import the model here. RemoteEmbedder
+# is a pure-HTTP client and needs no torch. Run 19a-precis-embedder.yml
+# first so the service is listening.
+precis_worker_embedder: remote
+# Port from inventory/hosts.yml (all.vars.embedder_port) — same source the
+# precis_embedder service binds to, so the two can never drift apart.
+precis_worker_embedder_url: "http://127.0.0.1:{{ embedder_port | default(8181) }}"
+precis_worker_summarizer: rake-lemma
+
+# llm_summarize (chunk_summaries['llm-v1']) backfill. Default OFF; enable on a
+# single node (the gateway — co-located with the litellm `summarizer` alias) to
+# drain the backlog. Concurrency should match the 80B llama-server --parallel.
+precis_worker_summarize_llm: false
+precis_worker_summarize_concurrency: 3
+precis_worker_summarize_timeout: 120
+
+# chunk-tag classify cascade (ADR 0047). Default OFF; enable on the gateway
+# (the litellm `summarizer` alias host) like llm_summarize.
+precis_worker_classify: false
+
+# markup-first ingest leg (devin). Default OFF; enable on the OA-fetch
+# host (the gateway) so the flag only bites where the fetch pass runs.
+precis_worker_fetch_markup: false
+
+# HF cache location — keep models off NFS to avoid first-load lock storms,
+# but also off NAS so workers don't drag bge-m3 over the network each load.
+# Local disk per node is the right place; ~/.cache/huggingface is fine.
+precis_worker_hf_home: /var/lib/precis/hf-cache

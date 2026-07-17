@@ -1,0 +1,176 @@
+---
+# precis_embedder — runs `precis serve-embeddings` as a daemon on every
+# cluster node, on loopback. The precis_worker daemon on the same node
+# embeds against it via PRECIS_EMBEDDER=remote. See ADR 0020/0021.
+#
+# Mirrors precis_worker's provisioning (uv + Homebrew python@3.12 on
+# macOS) but installs the [embed] extra into a dedicated venv and runs
+# the HTTP service instead of the queue worker.
+
+# torch (via sentence-transformers) has no Python 3.14 wheels yet and the
+# src build fails on the macOS 26 toolchain — pin to 3.12, same as the
+# worker / watch roles.
+- name: Ensure uv is installed (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: uv
+    state: present
+  become: false
+
+- name: Ensure Homebrew python@3.12 (macOS — torch doesn't build on 3.14)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: python@3.12
+    state: present
+  become: false
+
+- name: Resolve venv python interpreter (macOS — Homebrew python3.12)
+  ansible.builtin.set_fact:
+    precis_embedder_brew_python: /opt/homebrew/opt/python@3.12/bin/python3.12
+  when: os_family == "darwin"
+
+- name: Resolve uv binary path
+  ansible.builtin.set_fact:
+    precis_embedder_uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+- name: Create venv parent dir
+  ansible.builtin.file:
+    path: /opt/precis
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Create precis embedder venv (macOS — Homebrew python3.12)
+  when: os_family == "darwin"
+  ansible.builtin.command:
+    cmd: "{{ precis_embedder_brew_python }} -m venv --symlinks {{ precis_embedder_venv }}"
+    creates: "{{ precis_embedder_venv }}/bin/python3"
+  become: true
+
+- name: Create precis embedder venv (Linux — uv)
+  when: os_family == "linux"
+  ansible.builtin.command:
+    cmd: "{{ precis_embedder_uv_bin }} venv {{ precis_embedder_venv }}"
+    creates: "{{ precis_embedder_venv }}/bin/python"
+  become: true
+
+- name: Install precis-mcp[embed] into embedder venv
+  # [embed] = sentence-transformers + torch (the served model). Installed
+  # from git so the wire schema + served model track the same ref as the
+  # workers that call this service. A push to the ref redeploys on the
+  # next ansible run.
+  #
+  # ``--refresh-package precis-mcp`` forces uv to ignore its cached
+  # resolution of the branch — without it, a fresh push wouldn't
+  # actually pull the new SHA until someone cleared the uv cache.
+  ansible.builtin.shell: |
+    {{ precis_embedder_uv_bin }} pip install --python {{ precis_embedder_venv }}/bin/python --upgrade \
+      --refresh-package precis-mcp \
+      'precis-mcp[embed] @ git+https://github.com/retospect/precis-mcp@{{ precis_embedder_git_ref }}'
+  become: true
+  register: precis_embedder_install
+  # A git+https resolve/build can hiccup transiently (network, a slow
+  # github fetch, a torch wheel download) on one host per run — retry so a
+  # blip doesn't fail the whole redeploy (each host is independent; a real
+  # persistent failure still surfaces after the retries).
+  retries: 3
+  delay: 10
+  until: precis_embedder_install.rc == 0
+  # uv prints its "Installed/Updated N package(s)" summary to STDERR, so
+  # a stdout-only match misses a real code-only refresh and the reload
+  # handler is skipped — the daemon keeps running stale in-memory code.
+  # Check both streams (cf. the llamacpp role, which already does).
+  changed_when: >-
+    'Installed' in (precis_embedder_install.stdout + precis_embedder_install.stderr)
+    or 'Updated' in (precis_embedder_install.stdout + precis_embedder_install.stderr)
+
+- name: Ensure HF model cache dir
+  ansible.builtin.file:
+    path: "{{ precis_embedder_hf_home }}"
+    state: directory
+    owner: deploy
+    mode: "0755"
+  become: true
+
+# launchd hits EX_CONFIG (78) when StandardOutPath can't be created.
+# /var/log on modern macOS only allows root writes — pre-create with
+# deploy ownership so the daemon can append.
+- name: Pre-create precis-embedder log file (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-embedder.log
+    state: touch
+    owner: deploy
+    group: wheel
+    mode: "0644"
+  become: true
+  changed_when: false
+
+# ── macOS: LaunchDaemon ──
+- name: Render precis-embedder LaunchDaemon (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: precis-embedder.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.embedder.plist
+    mode: "0644"
+  become: true
+  notify: reload precis embedder (macos)
+
+- name: Unload existing precis-embedder before re-bootstrap (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl bootout system/com.precis.embedder
+  become: true
+  register: precis_embedder_bootout
+  changed_when: precis_embedder_bootout.rc == 0
+  failed_when: false
+
+- name: Bootstrap precis-embedder LaunchDaemon (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl bootstrap system /Library/LaunchDaemons/com.precis.embedder.plist
+  become: true
+  register: precis_embedder_bootstrap
+  changed_when: precis_embedder_bootstrap.rc == 0
+  failed_when:
+    - precis_embedder_bootstrap.rc != 0
+    - "'service already loaded' not in precis_embedder_bootstrap.stderr"
+    - "'Bootstrap failed: 17' not in precis_embedder_bootstrap.stderr"  # 17 = file exists
+    - "'Bootstrap failed: 5' not in precis_embedder_bootstrap.stderr"   # 5 = I/O error (already running)
+
+# ── Linux: systemd ──
+- name: Render precis-embedder systemd unit (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: precis-embedder.service.j2
+    dest: /etc/systemd/system/precis-embedder.service
+    mode: "0644"
+  become: true
+  notify: reload precis embedder (linux)
+
+- name: Enable + start precis-embedder (Linux)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: precis-embedder
+    daemon_reload: true
+    enabled: true
+    state: started
+  become: true
+
+# ── Verification ──
+# Give a fresh service a moment to bind, then probe /healthz. We do NOT
+# wait for /readyz — first boot downloads bge-m3 (~2.3 GB) and warms the
+# model, which can take minutes; /healthz proves the listener is up and
+# the deploy succeeded. The worker tolerates a warming embedder (retries
+# with backoff), so readiness is not a deploy gate.
+- name: Probe precis-embedder /healthz
+  ansible.builtin.uri:
+    url: "http://{{ precis_embedder_host }}:{{ precis_embedder_port }}/healthz"
+    return_content: true
+  register: precis_embedder_health
+  # 20×3s ≈ 1 min: enough for the listener to bind after a restart without
+  # waiting on the (minutes-long) model warm, which /readyz — not /healthz —
+  # covers and which the worker tolerates.
+  retries: 20
+  delay: 3
+  until: precis_embedder_health.status == 200
+  changed_when: false
+  failed_when: false

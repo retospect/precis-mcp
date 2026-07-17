@@ -1,0 +1,24 @@
+---
+# precis_watch — runs `precis watch` on the NAS inbox, single instance.
+# Reuses the /opt/precis/venv from the precis_worker role (already has
+# precis-mcp[paper] installed).
+
+precis_watch_venv: /opt/precis/venv
+
+# Same DSN as precis_worker — both pull/push to precis_prod via pgbouncer.
+precis_watch_dsn: "{{ precis_worker_dsn | default('postgresql://agent_rw:' + vault_pg_agent_rw_pass + '@' + hostvars[postgres_host]['ansible_host'] + ':' + (pgbouncer_port | string) + '/precis_prod') }}"
+
+# Watch knobs
+precis_watch_dir: "{{ papers_inbox_path }}"     # /opt/nas/botshome/papers/inbox
+precis_watch_corpus: "{{ papers_corpus_path }}" # /opt/nas/botshome/papers/corpus
+precis_watch_debounce: 3
+precis_watch_user: auto-watch
+
+# Subprocess batching — leak isolation. Marker has a slow memory leak;
+# running each PDF in its own subprocess is the proven workaround.
+# Concurrency 3 = up to 3 parallel Marker subprocesses per watcher; with
+# 2 watchers (gateway + a worker node) that's 6 concurrent Markers cluster-
+# wide. Each Marker is ~3 GB RAM resident; 6 × 3 = ~18 GB peak across both
+# nodes, well within headroom (M2 Ultra: ~96 GB free, M2 Pro: ~30 GB).
+precis_watch_subprocess_batch: 3
+precis_watch_subprocess_concurrency: 3

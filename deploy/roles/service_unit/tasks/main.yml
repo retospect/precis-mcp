@@ -1,0 +1,105 @@
+---
+# service_unit — render + (re)load one precis service, launchd or systemd,
+# from the abstract service_unit_* spec (§15h). Included once per service.
+#
+# Reload is done INLINE, gated on the render's `changed`, referencing
+# `service_unit_name` — a global named handler can't target the right unit
+# when this role is included N times in a play. The reload mirrors the tuned
+# precis_worker handler (bootout→bootstrap→kickstart with retry + a
+# pid assertion) so a green run never leaves a daemon down.
+
+- name: "service_unit[{{ service_unit_name }}]: require a name + exec"
+  ansible.builtin.assert:
+    that:
+      - service_unit_name | length > 0
+      - service_unit_exec | length > 0
+    fail_msg: "service_unit needs service_unit_name and service_unit_exec"
+    quiet: true
+
+- name: "service_unit[{{ service_unit_name }}]: systemd renders daemons only"
+  ansible.builtin.assert:
+    that: service_unit_schedule.mode == 'keepalive'
+    fail_msg: >-
+      service_unit on Linux renders keepalive daemons only — post-collapse the
+      periodic cadences fold into the worker's §15i scheduler. Requested mode:
+      {{ service_unit_schedule.mode }}.
+    quiet: true
+  when: os_family == "linux"
+
+# ── macOS: LaunchDaemon ──────────────────────────────────────────────────
+# launchd hits EX_CONFIG (78) when StandardOutPath can't be created; /var/log
+# is root-only on modern macOS, so pre-create the log deploy-owned.
+- name: "service_unit[{{ service_unit_name }}]: pre-create log (macOS)"
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: "{{ service_unit_log }}"
+    state: touch
+    owner: "{{ service_unit_run_as }}"
+    group: wheel
+    mode: "0644"
+  become: true
+  changed_when: false
+
+- name: "service_unit[{{ service_unit_name }}]: render LaunchDaemon (macOS)"
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: launchd.plist.j2
+    dest: "/Library/LaunchDaemons/com.precis.{{ service_unit_name }}.plist"
+    mode: "0644"
+  become: true
+  register: _service_unit_plist
+
+- name: "service_unit[{{ service_unit_name }}]: load LaunchDaemon (macOS — idempotent)"
+  when: os_family == "darwin"
+  ansible.builtin.command: >
+    launchctl load -w /Library/LaunchDaemons/com.precis.{{ service_unit_name }}.plist
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: "service_unit[{{ service_unit_name }}]: reload on change (macOS)"
+  when:
+    - os_family == "darwin"
+    - _service_unit_plist is changed
+  ansible.builtin.shell: |
+    set -u
+    unit=com.precis.{{ service_unit_name }}
+    plist="/Library/LaunchDaemons/${unit}.plist"
+    for attempt in 1 2 3 4 5; do
+      launchctl bootout "system/${unit}" 2>/dev/null || true
+      sleep 1
+      launchctl bootstrap system "${plist}" 2>/dev/null \
+        || launchctl load -wF "${plist}" 2>/dev/null || true
+      sleep 1
+      launchctl kickstart "system/${unit}" 2>/dev/null || true
+      sleep 1
+      if launchctl print "system/${unit}" 2>/dev/null | grep -qE 'pid = [0-9]+'; then
+        echo "${unit}: running (attempt ${attempt})"
+        exit 0
+      fi
+      echo "${unit}: not running after attempt ${attempt}, retrying" >&2
+      sleep 2
+    done
+    echo "${unit}: FAILED to come up after 5 attempts" >&2
+    exit 1
+  become: true
+  changed_when: true
+
+# ── Linux: systemd ───────────────────────────────────────────────────────
+- name: "service_unit[{{ service_unit_name }}]: render systemd unit (Linux)"
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: systemd.service.j2
+    dest: "/etc/systemd/system/precis-{{ service_unit_name }}.service"
+    mode: "0644"
+  become: true
+  register: _service_unit_systemd
+
+- name: "service_unit[{{ service_unit_name }}]: enable + (re)start (Linux)"
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: "precis-{{ service_unit_name }}"
+    daemon_reload: true
+    enabled: true
+    state: "{{ 'restarted' if _service_unit_systemd is changed else 'started' }}"
+  become: true

@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+# Fires nightly-reboot.service at {{ nightly_reboot_oncalendar }} local
+# time. Persistent=false: if the host was powered off at the scheduled
+# moment we must NOT fire a catch-up reboot the instant it next boots —
+# that would turn a missed window into a surprise reboot (or a boot-time
+# loop). Missing one night is fine; the next night catches it.
+
+[Unit]
+Description=Nightly gentle reboot timer (precis GPU node — gripe 50907)
+
+[Timer]
+OnCalendar={{ nightly_reboot_oncalendar }}
+Persistent=false
+AccuracySec=1min
+Unit=nightly-reboot.service
+
+[Install]
+WantedBy=timers.target

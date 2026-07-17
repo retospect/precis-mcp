@@ -1,0 +1,65 @@
+---
+# precis anki-sync — launchd timer that runs `precis anki-sync` on ONE
+# designated Mac. Pushes precis-authored cloze cards to AnkiWeb, reads decay
+# stats back, projects the whole collection into PG (read-only), and (opt-in)
+# runs the precis-fix LLM pass. Single-runner: `precis anki-sync` takes a pg
+# advisory lock, so even if this is mistakenly enabled on two hosts they
+# serialise on the account rather than corrupt it.
+#
+# Reuses /opt/mcps/venv (provisioned by the `mcps` / precis_worker roles). The
+# `anki` wheel is installed here (a prebuilt binary wheel; no Rust toolchain).
+
+- name: Install the anki pylib into the precis venv
+  when: os_family == "darwin"
+  vars:
+    uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+  ansible.builtin.command: >
+    {{ uv_bin }} pip install --python /opt/mcps/venv/bin/python --upgrade anki
+  become: true
+  register: anki_pip
+  changed_when: "'Installed' in anki_pip.stdout or 'Downloaded' in anki_pip.stdout"
+
+- name: Ensure the .anki2 mirror directory (deploy-owned, stable)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: "{{ anki_mirror_dir }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0700"
+  become: true
+
+- name: Ensure precis-anki-sync log file is deploy-writable
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-anki-sync.log
+    state: touch
+    mode: "0664"
+    owner: deploy
+    group: staff
+    modification_time: preserve
+    access_time: preserve
+  become: true
+
+- name: Ensure precis anki-sync LaunchDaemon plist
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: precis-anki-sync.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.anki-sync.plist
+    # 0600 root:wheel — the plist embeds the AnkiWeb password in
+    # EnvironmentVariables; launchd reads it as root, so no other local
+    # user needs (or should get) read access. Tighter than cron-tick's
+    # 0644 on purpose: this is a personal account credential.
+    mode: "0600"
+    owner: root
+    group: wheel
+  become: true
+  notify: restart precis-anki-sync
+
+- name: Load precis-anki-sync LaunchDaemon
+  when: os_family == "darwin"
+  ansible.builtin.command: >
+    launchctl load -w /Library/LaunchDaemons/com.precis.anki-sync.plist
+  become: true
+  changed_when: false
+  failed_when: false

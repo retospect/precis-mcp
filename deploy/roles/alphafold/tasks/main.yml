@@ -1,0 +1,135 @@
+---
+# alphafold — make the GPU compute node run precis-mcp `fold` jobs
+# (ADR 0056 slice 4). The precis-mcp worker (already deployed by
+# roles/precis_worker) claims a fold job — only on THIS node, per the
+# target_node claim gate — and shells out (precis_bio.jobs._run_container) to
+# `docker run --gpus all -v <in>:/input/protein.json:ro -v <models>:/models:ro
+# -v <out>:/output alphafold3:ready python3 run_alphafold.py …
+# --norun_data_pipeline`, staging the AF3 input JSON under the NFS scratch tree
+# and parsing the container's mmCIF + summary-confidences into the `protein` ref.
+#
+# AlphaFold3 is baked into the IMAGE and its weights are already on the node;
+# the protein KIND + fold job_type are bundled in precis-mcp, so there is
+# nothing to build, download, or pip-install — this role wires only:
+#   1. the container runtime + GPU passthrough present + the scratch/XLA trees,
+#   2. an ASSERT that the alphafold3:ready image + the af3.bin weights are there,
+#   3. the worker's PRECIS_FOLD_* / PRECIS_NODE env (systemd drop-in, so we
+#      never touch the precis_worker unit template).
+# Linux / GPU node only. The macOS gateway gets the KIND SURFACE
+# (PRECIS_BIO_ENABLED + PRECIS_FOLD_NODE) via roles/precis_web.
+
+- name: alphafold targets the Linux GPU compute node only
+  ansible.builtin.assert:
+    that: os_family == "linux"
+    fail_msg: >-
+      The alphafold role runs the fold container on the Linux GPU node.
+      The macOS gateway needs only the KIND SURFACE (PRECIS_BIO_ENABLED +
+      PRECIS_FOLD_NODE) — wire that via roles/precis_web, not here.
+      See roles/alphafold/README.md.
+
+- name: Ensure the container runtime is present
+  ansible.builtin.command: "{{ alphafold_container_cmd }} --version"
+  register: alphafold_runtime
+  changed_when: false
+  failed_when: alphafold_runtime.rc != 0
+
+- name: Probe the NVIDIA Container Toolkit (GPU passthrough for --gpus all)
+  ansible.builtin.command: nvidia-ctk --version
+  register: alphafold_ctk
+  changed_when: false
+  failed_when: false
+
+- name: Warn if the NVIDIA toolkit is absent
+  ansible.builtin.debug:
+    msg: >-
+      nvidia-ctk not found — `docker run --gpus all` will fail and a fold cannot
+      run. AF3 already runs on the GPU node, so this should be present; install
+      nvidia-container-toolkit if this warns.
+  when: alphafold_ctk.rc != 0
+
+- name: Allow the worker user to run docker without sudo (docker group)
+  ansible.builtin.user:
+    name: "{{ alphafold_worker_user }}"
+    groups: docker
+    append: true
+  become: true
+  notify: restart precis-worker (alphafold)
+
+- name: Ensure the NFS scratch tree exists (container in/out staging)
+  ansible.builtin.file:
+    path: "{{ alphafold_scratch_dir }}"
+    state: directory
+    owner: "{{ alphafold_worker_user }}"
+    group: "{{ alphafold_worker_user }}"
+    mode: "0755"
+  become: true
+
+- name: Ensure the XLA cache dir exists (mounted /root/.cache/xla_extension)
+  # Written by the container as root (rootful docker), so root ownership is fine;
+  # it only needs to exist + persist across runs.
+  ansible.builtin.file:
+    path: "{{ alphafold_xla_cache_dir }}"
+    state: directory
+    mode: "0777"
+  become: true
+
+# ── assert the image + weights are present (this role builds NOTHING) ──────
+- name: Assert the alphafold3 image is present
+  ansible.builtin.command: "{{ alphafold_container_cmd }} image inspect {{ alphafold_image }}"
+  become: true
+  register: alphafold_img
+  changed_when: false
+  failed_when: alphafold_img.rc != 0
+  # Fails when the image is absent. Unlike aizynth/dft there is no build path:
+  # the alphafold3:ready image was built on the GPU node by reto (ARM64/GB10, Triton→XLA)
+  # and is not reproducible off that box. Rebuild is reto's
+  # ~/CascadeProjects/alphafold-setup (see the alphafold-the GPU node-facts note).
+
+- name: Assert the AF3 model weights (af3.bin) are present
+  ansible.builtin.stat:
+    path: "{{ alphafold_models_dir }}/af3.bin"
+  register: alphafold_weights
+  failed_when: not alphafold_weights.stat.exists
+  # Absent → the engine can't run. The weights live under reto's home
+  # (world-readable); if they move, update alphafold_models_dir.
+
+# ── worker env (systemd drop-in — leaves the precis_worker unit untouched) ──
+- name: Ensure the precis env dir
+  ansible.builtin.file:
+    path: /etc/precis
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Drop the worker alphafold env file
+  ansible.builtin.template:
+    src: alphafold.env.j2
+    dest: /etc/precis/alphafold.env
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart precis-worker (alphafold)
+
+- name: Ensure the precis-worker systemd drop-in dir
+  ansible.builtin.file:
+    path: /etc/systemd/system/precis-worker.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Drop the precis-worker alphafold env drop-in (EnvironmentFile)
+  ansible.builtin.template:
+    src: precis-worker-alphafold.conf.j2
+    # 40- sorts after dft's 10- / catpath's 20- / aizynth's 30- ; all set
+    # PRECIS_NODE to the same value, so order is immaterial.
+    dest: /etc/systemd/system/precis-worker.service.d/40-alphafold.conf
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart precis-worker (alphafold)

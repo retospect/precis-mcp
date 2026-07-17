@@ -1,0 +1,143 @@
+---
+# Build llama.cpp from source on each inference node.
+# CUDA on Linux (the GPU node), Metal (default) on macOS.
+# Installs llama-server + llama-cli + llama-quantize into {{ llamacpp_bin_dir }}.
+
+- name: Ensure build toolchain (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name:
+      - cmake
+      - git
+      - pkg-config
+    state: present
+
+- name: Ensure build toolchain (Linux)
+  when: os_family == "linux"
+  ansible.builtin.apt:
+    name:
+      - cmake
+      - git
+      - build-essential
+      - pkg-config
+      - libcurl4-openssl-dev
+    state: present
+    # Skip update_cache if repo metadata is fresh (1h). Avoids blocking when
+    # upstream mirrors are transiently flaky.
+    cache_valid_time: 3600
+  become: true
+
+- name: Ensure llamacpp dirs exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/llamacpp
+    - "{{ llamacpp_bin_dir }}"
+    - "{{ llamacpp_src_dir | dirname }}"
+  become: true
+
+- name: Clone or update llama.cpp source
+  ansible.builtin.git:
+    repo: "{{ llamacpp_git_url }}"
+    dest: "{{ llamacpp_src_dir }}"
+    version: "{{ llamacpp_git_ref }}"
+    depth: 1
+    force: true
+  become: true
+  register: llamacpp_git
+
+# If a previous configure left a broken cache (e.g. wrong CUDA path, missing
+# RPATH), nuke it so the next cmake call re-negotiates from scratch. This is
+# cheap compared to a build, and idempotent for fresh nodes (no cache = noop).
+- name: Check configure flags cache
+  ansible.builtin.stat:
+    path: "{{ llamacpp_build_dir }}/.llamacpp-role-cache-v2"
+  register: llamacpp_cache_marker
+
+- name: Nuke stale build + install dirs so we re-configure with new flags
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  become: true
+  loop:
+    - "{{ llamacpp_build_dir }}"
+    - "{{ llamacpp_bin_dir }}"
+  when: not llamacpp_cache_marker.stat.exists
+
+- name: Recreate llamacpp bin dir (post-nuke)
+  ansible.builtin.file:
+    path: "{{ llamacpp_bin_dir }}"
+    state: directory
+    mode: "0755"
+  become: true
+  when: not llamacpp_cache_marker.stat.exists
+
+- name: Configure llama.cpp (Linux / CUDA)
+  when: os_family == "linux"
+  ansible.builtin.command:
+    cmd: >-
+      cmake -B {{ llamacpp_build_dir }} -S {{ llamacpp_src_dir }}
+        -DGGML_CUDA=ON
+        -DCMAKE_CUDA_ARCHITECTURES={{ llamacpp_cuda_arch }}
+        -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_INSTALL_PREFIX=/opt/llamacpp
+        -DCMAKE_INSTALL_RPATH=/opt/llamacpp/lib
+        -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE
+    creates: "{{ llamacpp_build_dir }}/CMakeCache.txt"
+  become: true
+
+- name: Configure llama.cpp (macOS / Metal)
+  when: os_family == "darwin"
+  ansible.builtin.command:
+    cmd: >-
+      cmake -B {{ llamacpp_build_dir }} -S {{ llamacpp_src_dir }}
+        -DGGML_METAL=ON
+        -DGGML_METAL_EMBED_LIBRARY=ON
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_INSTALL_PREFIX=/opt/llamacpp
+        -DCMAKE_INSTALL_RPATH=@loader_path/../lib
+        -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE
+    creates: "{{ llamacpp_build_dir }}/CMakeCache.txt"
+  become: true
+
+- name: Mark build dir as configured with current role flags
+  ansible.builtin.file:
+    path: "{{ llamacpp_build_dir }}/.llamacpp-role-cache-v2"
+    state: touch
+  become: true
+  changed_when: false
+
+- name: Build llama.cpp
+  ansible.builtin.command:
+    cmd: cmake --build {{ llamacpp_build_dir }} --config Release -j {{ llamacpp_build_jobs }}
+  become: true
+  when: llamacpp_git.changed or not (llamacpp_binary_check.stat.exists | default(false))
+  register: llamacpp_build_result
+  changed_when: true
+  notify: restart llamaswap
+
+- name: Check if llama-server is already installed
+  ansible.builtin.stat:
+    path: "{{ llamacpp_bin_dir }}/llama-server"
+  register: llamacpp_binary_check
+
+- name: Install llama.cpp binaries
+  ansible.builtin.command:
+    cmd: cmake --install {{ llamacpp_build_dir }}
+  become: true
+  when: llamacpp_git.changed or not llamacpp_binary_check.stat.exists
+  changed_when: true
+  notify: restart llamaswap
+
+- name: Verify llama-server binary
+  ansible.builtin.command: "{{ llamacpp_bin_dir }}/llama-server --version"
+  register: llamacpp_version
+  changed_when: false
+  failed_when: llamacpp_version.rc != 0
+
+- name: Report llama-server version
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: {{ llamacpp_version.stderr_lines[0] | default(llamacpp_version.stdout_lines[0] | default('unknown')) }}"

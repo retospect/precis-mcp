@@ -1,0 +1,78 @@
+---
+# Copy to `deploy/inventory/group_vars/all/vault.yml` and encrypt with:
+#   ansible-vault encrypt vault.yml
+# The encrypted file (with its ansible-vault header) lives ONLY in the local
+# overlay — it is gitignored and never committed to this public repo. This
+# template lists every vault_* variable the roles expect, all as CHANGEME.
+
+# Postgres passwords
+vault_pg_cluster_pass: "CHANGEME"
+vault_pg_agent_rw_pass: "CHANGEME"
+vault_pg_agent_ro_pass: "CHANGEME"
+vault_pg_pgboss_pass: "CHANGEME"
+vault_pg_litellm_pass: "CHANGEME"
+vault_pg_prometheus_pass: "CHANGEME"
+vault_pg_admin_pass: "CHANGEME"
+
+# Redis (retires with litellm — see design §15a)
+vault_redis_password: "CHANGEME"
+
+# LiteLLM (retires — design §7a)
+vault_litellm_master_key: "CHANGEME"
+vault_litellm_salt_key: "CHANGEME"
+vault_litellm_key_interactive: "sk-interactive-CHANGEME"
+vault_litellm_key_foreground: "sk-foreground-CHANGEME"
+vault_litellm_key_background: "sk-background-CHANGEME"
+
+# Tailscale
+vault_tailscale_authkey: "tskey-auth-CHANGEME"
+
+# Bitwarden
+vault_bitwarden_token: "CHANGEME"
+
+# Nginx TLS
+vault_nginx_ssl_cert: |
+  -----BEGIN CERTIFICATE-----
+  ...
+  -----END CERTIFICATE-----
+vault_nginx_ssl_key: |
+  -----BEGIN PRIVATE KEY-----
+  ...
+  -----END PRIVATE KEY-----
+
+# API keys for external services
+vault_anthropic_api_key: "CHANGEME"
+
+# Research service API keys
+vault_kagi_api_key: "CHANGEME"
+vault_kagi_summarizer_engine: "cecil"
+vault_unpaywall_email: "CHANGEME"
+
+# Email (schedule-agent, alert-agent)
+vault_email_imap_host: "imap.example.com"
+vault_email_smtp_host: "smtp.example.com"
+vault_email_user: "CHANGEME"
+vault_email_pass: "CHANGEME"
+
+# Backblaze B2 (offsite backup)
+vault_b2_application_key_id: "CHANGEME"
+vault_b2_application_key: "CHANGEME"
+vault_b2_bucket_name: "cluster-backups"
+
+# Discord bridge (asa-bot)
+vault_discord_guild_id: 0
+vault_discord_owner_id: "CHANGEME"  # your Discord user ID (enables /debug, /config)
+vault_discord_home_channel: "CHANGEME"  # channel ID for #home
+
+# Outlook Calendar (schedule-agent)
+vault_outlook_client_id: "CHANGEME"
+vault_outlook_client_secret: "CHANGEME"
+
+# reMarkable tablet
+vault_remarkable_token: "CHANGEME"
+
+# EPO OPS API (precis patent kind) — register at https://developers.epo.org/
+# ORCID OAuth client — https://orcid.org/developer-tools
+# Elsevier Article Retrieval API — https://dev.elsevier.com/apikey/manage
+# Wiley TDM client token — https://onlinelibrary.wiley.com/library-info/resources/text-and-datamining
+# CORE API — https://core.ac.uk/services/api

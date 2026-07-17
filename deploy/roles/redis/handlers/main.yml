@@ -1,0 +1,7 @@
+---
+- name: restart redis
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    launchctl kickstart -k system/com.redis
+  become: true
+  failed_when: false

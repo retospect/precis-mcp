@@ -1,0 +1,68 @@
+---
+# Install huggingface_hub[cli] in a dedicated venv on the data node.
+# This is the only Python surface we need for Phase 0/1 — llama.cpp source
+# build (Phase 2+) will land in a separate task file.
+
+- name: Ensure llamacpp root dir exists on the data node
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  loop:
+    - /opt/llamacpp
+    - "{{ llamacpp_venv_dir | dirname }}"
+  become: true
+
+- name: Ensure deploy user uv cache dir is writable (the data node)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  loop:
+    - /Users/deploy/.cache
+    - /Users/deploy/.cache/uv
+  become: true
+
+- name: Check if llamacpp venv Python is valid
+  ansible.builtin.command: "{{ llamacpp_venv_dir }}/bin/python --version"
+  register: llamacpp_venv_check
+  changed_when: false
+  failed_when: false
+
+- name: Remove broken llamacpp venv
+  ansible.builtin.file:
+    path: "{{ llamacpp_venv_dir }}"
+    state: absent
+  become: true
+  when: llamacpp_venv_check.rc != 0
+
+- name: Create llamacpp venv with uv
+  ansible.builtin.command: /opt/homebrew/bin/uv venv {{ llamacpp_venv_dir }}
+  become: true
+  become_user: deploy
+  when: llamacpp_venv_check.rc != 0
+  changed_when: true
+
+- name: Install huggingface_hub[cli] (+ optional hf_transfer) in venv
+  ansible.builtin.command: >
+    /opt/homebrew/bin/uv pip install
+      --python {{ llamacpp_venv_dir }}/bin/python
+      "huggingface_hub[cli]"
+      {{ 'hf_transfer' if llamacpp_hf_enable_transfer else '' }}
+  become: true
+  become_user: deploy
+  register: llamacpp_hf_install
+  changed_when: "'Installed' in (llamacpp_hf_install.stdout | default('')) or 'installed' in (llamacpp_hf_install.stderr | default(''))"
+
+- name: Ensure canonical GGUF directory exists
+  ansible.builtin.file:
+    path: "{{ llamacpp_nfs_dir_server }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  become: true

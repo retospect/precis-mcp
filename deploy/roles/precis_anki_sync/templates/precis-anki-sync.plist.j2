@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} #}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.anki-sync</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/mcps/venv/bin/precis</string>
+    <string>anki-sync</string>
+{% if anki_sync_fix %}
+    <string>--fix</string>
+{% endif %}
+{% if anki_sync_project %}
+    <string>--project</string>
+{% endif %}
+  </array>
+
+  <!-- Occasional tick. launchd does not overlap StartInterval invocations:
+       if a sync is still running when the next would fire, the next waits. -->
+  <key>StartInterval</key>
+  <integer>{{ anki_sync_interval }}</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Transient timer, not a daemon: each fire runs one sync and exits. -->
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>UserName</key>
+  <string>deploy</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/deploy</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/mcps/venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PRECIS_DATABASE_URL</key>
+    <string>postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod</string>
+    <key>PRECIS_PROCESS</key>
+    <string>precis-anki-sync</string>
+
+    <key>PRECIS_ANKI_ENABLED</key>
+    <string>1</string>
+    <key>PRECIS_ANKI_USER</key>
+    <string>{{ anki_user }}</string>
+    <key>PRECIS_ANKI_PASSWORD</key>
+    <string>{{ vault_anki_password }}</string>
+    <key>PRECIS_ANKI_MIRROR_DIR</key>
+    <string>{{ anki_mirror_dir }}</string>
+    <key>PRECIS_ANKI_DECK</key>
+    <string>{{ anki_deck }}</string>
+{% if anki_sync_fix %}
+    <key>PRECIS_ANKI_FIX_ENABLED</key>
+    <string>1</string>
+{% endif %}
+{% if anki_sync_project %}
+    <key>PRECIS_ANKI_PROJECT_ENABLED</key>
+    <string>1</string>
+{% endif %}
+    {# Shared API keys / claude OAuth env — the precis-fix pass needs a working
+       `claude -p` on this host. See inventory/group_vars/all/precis_env.yml. #}
+    {% for env_key, env_val in precis_shared_env.items() %}
+    <key>{{ env_key }}</key>
+    <string>{{ env_val }}</string>
+    {% endfor %}
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/precis-anki-sync.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/precis-anki-sync.log</string>
+</dict>
+</plist>

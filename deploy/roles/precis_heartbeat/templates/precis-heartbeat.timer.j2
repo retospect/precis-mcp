@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+# Fires precis-heartbeat.service every
+# ${precis_heartbeat_interval_seconds}. systemd handles the at-load
+# fire via OnBootSec; OnUnitActiveSec keeps the cadence steady even
+# under load spikes.
+
+[Unit]
+Description=precis-mcp heartbeat reporter timer
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec={{ precis_heartbeat_interval_seconds }}s
+AccuracySec=5s
+Unit=precis-heartbeat.service
+
+[Install]
+WantedBy=timers.target

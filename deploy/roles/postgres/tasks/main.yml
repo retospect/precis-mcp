@@ -1,0 +1,276 @@
+---
+# PostgreSQL + pgvector + pg_cron on the data node
+#
+# macOS Homebrew: runs as deploy user, data in /opt/homebrew/var/postgresql@17
+# Linux: runs as postgres user (standard package)
+
+- name: Set postgres runtime user
+  ansible.builtin.set_fact:
+    pg_user: "{{ 'deploy' if os_family == 'darwin' else 'postgres' }}"
+    pg_bin: "{{ '/opt/homebrew/opt/postgresql@17/bin' if os_family == 'darwin' else '/usr/bin' }}"
+
+- name: Install PostgreSQL (macOS via Homebrew)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name:
+      - postgresql@17
+      - pgvector
+      - pg_cron
+    state: present
+  become: false
+
+- name: Ensure PostgreSQL data directory
+  ansible.builtin.file:
+    path: "{{ postgres_data_dir }}"
+    state: directory
+    owner: "{{ pg_user }}"
+    mode: "0700"
+  become: true
+
+- name: Ensure conf.d directory exists
+  ansible.builtin.file:
+    path: "{{ postgres_data_dir }}/conf.d"
+    state: directory
+    owner: "{{ pg_user }}"
+    mode: "0700"
+  become: true
+
+- name: Include conf.d in postgresql.conf
+  ansible.builtin.lineinfile:
+    path: "{{ postgres_data_dir }}/postgresql.conf"
+    line: "include_dir = 'conf.d'"
+    regexp: "^include_dir"
+    state: present
+  become: true
+  become_user: "{{ pg_user }}"
+
+- name: Deploy pg_hba.conf
+  ansible.builtin.template:
+    src: pg_hba.conf.j2
+    dest: "{{ postgres_data_dir }}/pg_hba.conf"
+    owner: "{{ pg_user }}"
+    mode: "0600"
+  become: true
+  notify: restart postgresql
+
+- name: Deploy postgresql.conf overrides
+  ansible.builtin.template:
+    src: postgresql.conf.j2
+    dest: "{{ postgres_data_dir }}/conf.d/cluster.conf"
+    owner: "{{ pg_user }}"
+    mode: "0600"
+  become: true
+  notify: restart postgresql
+
+- name: Deploy PostgreSQL guarded launcher (macOS)
+  # Clears a stale postmaster.pid on unclean shutdown so a reused PID after a
+  # reboot can't wedge Postgres off forever (2026-07-05 outage). The plist
+  # ProgramArguments points here instead of at postgres directly.
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: pg-guarded-start.sh.j2
+    dest: /opt/homebrew/etc/pg-guarded-start.sh
+    mode: "0755"
+    owner: root
+    group: wheel
+  become: true
+  notify: restart postgresql
+
+- name: Deploy PostgreSQL launchd plist (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: postgresql.plist.j2
+    dest: /Library/LaunchDaemons/com.postgresql.plist
+    mode: "0644"
+  become: true
+  notify: restart postgresql
+
+- name: Ensure PostgreSQL is loaded (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    launchctl list | grep -q com.postgresql || launchctl load -w /Library/LaunchDaemons/com.postgresql.plist
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: Start PostgreSQL (Linux — systemd)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: postgresql
+    enabled: true
+    state: started
+  become: true
+
+- name: Apply pending config changes before DB operations
+  ansible.builtin.meta: flush_handlers
+
+# The community.postgresql.* modules below need psycopg2 importable by the
+# interpreter Ansible runs them under. auto_silent resolves to Homebrew's
+# default python3 (currently 3.14), which has no psycopg2 — and nothing else
+# on the data node provides it. Provision a small dedicated venv (python3.12,
+# which has psycopg2-binary wheels) and point the DB-management tasks at it.
+# Dedicated so a uv --refresh of the precis venvs can never wipe it.
+- name: Resolve uv binary path
+  ansible.builtin.set_fact:
+    pg_uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+- name: Create postgres-admin venv (macOS — python3.12 for psycopg2-binary wheels)
+  when: os_family == "darwin"
+  ansible.builtin.command:
+    cmd: /opt/homebrew/bin/python3.12 -m venv --symlinks /opt/postgres-admin-venv
+    creates: /opt/postgres-admin-venv/bin/python
+  become: true
+
+- name: Install psycopg2-binary into postgres-admin venv (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    {{ pg_uv_bin }} pip install --python /opt/postgres-admin-venv/bin/python psycopg2-binary
+  become: true
+  register: pg_admin_deps
+  changed_when: "'Installed' in pg_admin_deps.stdout"
+
+- name: Use psycopg2-equipped interpreter for DB-management modules (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.set_fact:
+    ansible_python_interpreter: /opt/postgres-admin-venv/bin/python
+
+- name: Create precis_prod database
+  community.postgresql.postgresql_db:
+    name: precis_prod
+    state: present
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+
+- name: Create litellm database
+  community.postgresql.postgresql_db:
+    name: litellm
+    state: present
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+
+- name: Grant litellm_app ownership of litellm public schema
+  community.postgresql.postgresql_privs:
+    database: litellm
+    objs: public
+    type: schema
+    privs: ALL
+    role: litellm_app
+    state: present
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+
+- name: Make litellm_app owner of litellm public schema
+  community.postgresql.postgresql_query:
+    db: litellm
+    query: "ALTER SCHEMA public OWNER TO litellm_app"
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+  changed_when: false
+
+- name: Create database roles
+  community.postgresql.postgresql_user:
+    name: "{{ item.name }}"
+    password: "{{ lookup('vars', 'vault_' + item.password_var) }}"
+    role_attr_flags: LOGIN
+    state: present
+    db: postgres
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+  loop: "{{ postgres_roles }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+# precis_prod's extensions (vector, …) and schema are owned and migrated by
+# precis-mcp itself (see precis_web's "Apply pending precis DB migrations").
+# The former "Create extensions / Create schemas / agent_ro USAGE" tasks here
+# targeted the retired monolithic `cluster` database (now `openclaw`, slated
+# for retirement) and its research/memory/jobs/schedule/sortie/papers schemas
+# — none of which exist in precis_prod — so they were removed.
+
+- name: Grant CREATE on public schema to agent_rw
+  community.postgresql.postgresql_privs:
+    database: precis_prod
+    objs: public
+    type: schema
+    privs: CREATE,USAGE
+    role: agent_rw
+    state: present
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+
+# pg_stat_statements: cluster-wide query performance history. The library is
+# loaded via shared_preload_libraries (postgresql.conf.j2); the flush_handlers
+# restart above applies that before this runs, so CREATE EXTENSION succeeds.
+- name: Enable pg_stat_statements extension in precis_prod
+  community.postgresql.postgresql_ext:
+    name: pg_stat_statements
+    db: precis_prod
+    state: present
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+
+# pgcrypto: the secrets vault (precis ADR 0055 / migration 0059) encrypts
+# values with pgp_sym_encrypt. Provision the extension here as superuser so
+# it's present before `precis migrate` runs (the migration's own
+# CREATE EXTENSION degrades to a NOTICE when it lacks privilege).
+- name: Enable pgcrypto extension in precis_prod
+  community.postgresql.postgresql_ext:
+    name: pgcrypto
+    db: precis_prod
+    state: present
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+
+# Secrets-vault passphrase (precis ADR 0055): the pgcrypto pgp_sym key that
+# vault.reveal/set use. Set via ALTER SYSTEM (→ postgresql.auto.conf) + reload —
+# a SIGHUP-level GUC, so NO restart (no factory downtime). Held in server config,
+# never in a table, so a logical pg_dump stays shareable. Skipped until
+# vault_pg_app_secret_key is defined in inventory/group_vars/all/vault.yml.
+- name: Set secrets-vault app.secret_key (ALTER SYSTEM)
+  when: vault_pg_app_secret_key is defined and (vault_pg_app_secret_key | length > 0)
+  community.postgresql.postgresql_query:
+    db: precis_prod
+    query: "ALTER SYSTEM SET app.secret_key = '{{ vault_pg_app_secret_key }}'"
+    autocommit: true
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+  changed_when: false
+  no_log: true
+  check_mode: false  # autocommit (required for ALTER SYSTEM) is incompatible with check mode
+
+- name: Reload PostgreSQL config to apply app.secret_key
+  when: vault_pg_app_secret_key is defined and (vault_pg_app_secret_key | length > 0)
+  community.postgresql.postgresql_query:
+    db: precis_prod
+    query: "SELECT pg_reload_conf()"
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+  changed_when: false
+
+# pg_cron maintenance jobs and the channel_prompts table both targeted the
+# retired `cluster` database (`psql -d cluster`). pg_cron is not installed on
+# precis_prod and channel_prompts is an empty asa_bot table living in the
+# `openclaw` (ex-`cluster`) DB. Both were removed here; if asa_bot still needs
+# channel_prompts it will be re-provisioned against precis_prod in a later pass.
+# Orphaned templates: pg_cron_jobs.sql.j2, channel_prompts.sql.j2.

@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Code Sandbox MCP (Podman)
+After=network.target
+
+[Service]
+Type=simple
+User=agent_sandbox
+ExecStart=/usr/bin/podman run --rm \
+    --name code-sandbox-mcp \
+    --network=host \
+    --security-opt=no-new-privileges \
+    --cap-drop=ALL \
+    --read-only \
+    --tmpfs /tmp:rw,size=512m \
+    {{ code_sandbox_image | default('ghcr.io/retospect/code-sandbox-mcp:latest') }}
+ExecStop=/usr/bin/podman stop code-sandbox-mcp
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

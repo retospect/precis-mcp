@@ -1,0 +1,11 @@
+---
+# Periodic StartInterval timer: reload via the shared safe launchd task
+# with reload_persistent=false — asserts the unit is LOADED (no pid; it
+# fires on its interval and exits) and adds the retry the legacy
+# unload/load pair lacked (gripe #48490).
+- name: restart precis-cron-tick
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.precis.cron-tick
+    reload_persistent: false
+  when: os_family == "darwin"

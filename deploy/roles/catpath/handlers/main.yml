@@ -1,0 +1,9 @@
+---
+- name: restart precis-worker (catpath)
+  # daemon_reload picks up the drop-in; restart re-reads the EnvironmentFile so
+  # the worker sees PRECIS_CATPATH_ENABLED / PRECIS_NODE on its next claim loop.
+  ansible.builtin.systemd:
+    name: precis-worker
+    daemon_reload: true
+    state: restarted
+  become: true

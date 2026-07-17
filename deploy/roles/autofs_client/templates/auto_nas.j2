@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# NFS autofs map for the shared NAS
+# Format: mount_point -fstype=nfs,options server:/export
+
+{{ nas_mount_name }} -fstype=nfs4,soft,intr,_netdev {{ nas_host }}:{{ nas_nfs_export }}

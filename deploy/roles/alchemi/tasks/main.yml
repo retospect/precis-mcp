@@ -1,0 +1,115 @@
+---
+# ALCHEMI Toolkit — atomistic simulation on a macOS compute node (Apple Silicon, MPS backend)
+# Package: nvalchemi-toolkit (PyPI) + ASE for analysis
+
+- name: Ensure uv + Python 3.12 via Homebrew
+  community.general.homebrew:
+    name:
+      - uv
+      - python@3.12
+    state: present
+  become: false
+
+- name: Ensure /opt/alchemi directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  become: true
+  loop:
+    - /opt/alchemi
+    - /opt/alchemi/work
+
+- name: Check if ALCHEMI venv Python is valid
+  ansible.builtin.command: /opt/alchemi/venv/bin/python --version
+  register: alchemi_venv_check
+  changed_when: false
+  failed_when: false
+
+- name: Remove broken venv
+  ansible.builtin.file:
+    path: /opt/alchemi/venv
+    state: absent
+  become: true
+  when: alchemi_venv_check.rc != 0
+
+- name: Create ALCHEMI venv with uv (Python 3.12)
+  when: alchemi_venv_check.rc != 0
+  ansible.builtin.shell: |
+    /opt/homebrew/bin/uv venv /opt/alchemi/venv --python /opt/homebrew/opt/python@3.12/bin/python3.12
+  become: false
+
+- name: Install ALCHEMI Toolkit and dependencies
+  ansible.builtin.shell: |
+    /opt/homebrew/bin/uv pip install --python /opt/alchemi/venv/bin/python \
+      "nvalchemi-toolkit{{ alchemi_version_pin }}" \
+      ase \
+      jupyter \
+      matplotlib
+  become: false
+  register: alchemi_install
+  changed_when: "'Installed' in alchemi_install.stdout"
+
+- name: Fix venv ownership
+  ansible.builtin.file:
+    path: /opt/alchemi/venv
+    state: directory
+    recurse: true
+    owner: deploy
+    group: staff
+  become: true
+
+- name: Symlink alchemi python into PATH
+  ansible.builtin.file:
+    src: /opt/alchemi/venv/bin/python
+    dest: /usr/local/bin/alchemi-python
+    state: link
+    force: true
+  become: true
+
+- name: Deploy convenience wrapper script
+  ansible.builtin.copy:
+    dest: /usr/local/bin/alchemi
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      # Convenience wrapper — activates ALCHEMI venv and runs the given command.
+      # Usage: alchemi python my_script.py
+      #        alchemi jupyter lab --ip=0.0.0.0
+      export VIRTUAL_ENV=/opt/alchemi/venv
+      export PATH="/opt/alchemi/venv/bin:$PATH"
+      exec "$@"
+  become: true
+
+- name: Verify ALCHEMI Toolkit installation
+  ansible.builtin.shell: |
+    /opt/alchemi/venv/bin/python -c "
+    import nvalchemi
+    v = getattr(nvalchemi, '__version__', None)
+    if v is None:
+        import importlib.metadata
+        v = importlib.metadata.version('nvalchemi-toolkit')
+    print(v)
+    "
+  become: false
+  register: alchemi_version
+  changed_when: false
+  failed_when: alchemi_version.rc != 0
+
+- name: Show ALCHEMI Toolkit version
+  ansible.builtin.debug:
+    msg: "ALCHEMI Toolkit version: {{ alchemi_version.stdout }}"
+
+- name: Verify PyTorch MPS backend
+  ansible.builtin.shell: |
+    /opt/alchemi/venv/bin/python -c "import torch; print(f'MPS available: {torch.backends.mps.is_available()}, Built: {torch.backends.mps.is_built()}')"
+  become: false
+  register: mps_check
+  changed_when: false
+  failed_when: false
+
+- name: Show MPS status
+  ansible.builtin.debug:
+    msg: "{{ mps_check.stdout }}"

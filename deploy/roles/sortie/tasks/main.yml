@@ -1,0 +1,146 @@
+---
+# sortie-mcp: Campaign orchestration MCP server + runner
+# Deploys to the scheduler node, DB migrations delegated to the postgres host
+#
+# Components:
+#   1. sortie-mcp Python package (pip install from git or PyPI)
+#   2. MCP server config in Hermes profile
+#   3. Campaign runner cron (*/15 watchdog)
+#   4. PostgreSQL schema migration (sortie schema)
+#   5. Log directory + logrotate
+
+# ── Variables ──
+# sortie_schema: "sortie"              (group_vars)
+# sortie_max_concurrent: 4             (group_vars)
+# sortie_zombie_timeout: 30            (group_vars)
+# sortie_planner_model: "qwen3.5:9b"  (group_vars)
+# mcp_sortie_version: "main"           (group_vars)
+
+# ── 1. Install sortie-mcp into MCP venv ──
+
+- name: Set uv binary path
+  ansible.builtin.set_fact:
+    uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+- name: Ensure sortie-mcp venv directory
+  ansible.builtin.file:
+    path: /opt/mcps/sortie
+    state: directory
+    owner: deploy
+    mode: "0755"
+  become: true
+
+- name: Install sortie-mcp from PyPI with uv
+  ansible.builtin.shell: |
+    [ -d /opt/mcps/sortie/venv ] || {{ uv_bin }} venv /opt/mcps/sortie/venv
+    {{ uv_bin }} pip install --python /opt/mcps/sortie/venv/bin/python sortie-mcp
+  become: true
+  register: sortie_install
+  changed_when: "'Installed' in sortie_install.stdout"
+
+- name: Fix sortie venv ownership
+  ansible.builtin.file:
+    path: /opt/mcps/sortie/venv
+    state: directory
+    recurse: true
+    owner: deploy
+  become: true
+
+- name: Symlink sortie binaries into PATH
+  ansible.builtin.file:
+    src: "/opt/mcps/sortie/venv/bin/{{ item }}"
+    dest: "/opt/mcps/bin/{{ item }}"
+    state: link
+    force: true
+  become: true
+  loop:
+    - sortie-mcp
+    - sortie-runner
+
+# ── 2. Deploy environment config ──
+
+- name: Deploy sortie-mcp environment file
+  ansible.builtin.template:
+    src: sortie-env.j2
+    dest: /opt/mcps/sortie/env
+    owner: deploy
+    mode: "0600"
+  become: true
+  no_log: true
+
+# ── 3. Log directory ──
+
+- name: Create sortie log directory
+  ansible.builtin.file:
+    path: "{{ shared_mount }}/logs/sortie"
+    state: directory
+    owner: deploy
+    mode: "0755"
+  become: true
+
+# ── 4. Ensure pgvector extension on the postgres host (needs superuser) ──
+#
+# sortie-migrate (run on the scheduler node) would fail to create the extension
+# without superuser privilege; create it once from the postgres host where the
+# postgres/deploy user has it.
+
+- name: Ensure pgvector extension exists
+  community.postgresql.postgresql_ext:
+    name: vector
+    db: cluster
+    login_user: "{{ 'deploy' if hostvars[postgres_host]['os_family'] | default('darwin') == 'darwin' else 'postgres' }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ 'deploy' if hostvars[postgres_host]['os_family'] | default('darwin') == 'darwin' else 'postgres' }}"
+  delegate_to: "{{ postgres_host }}"
+
+# ── 4b. DB schema migration (runs on the scheduler node, connects via PgBouncer) ──
+#
+# Migration versioning via yoyo-migrations
+# (pips/packages/sortie-mcp/src/sortie_mcp/migrations/*.py).
+# Tracking table: public._sortie_migrations__<schema> in the target DB.
+# Idempotent: yoyo acquires an advisory lock and skips applied revisions.
+
+- name: Apply sortie-mcp migrations
+  ansible.builtin.shell: |
+    set -a && . /opt/mcps/sortie/env && set +a
+    /opt/mcps/sortie/venv/bin/sortie-migrate
+  become: true
+  become_user: deploy
+  changed_when: false  # yoyo prints its own "applied N" line; we don't parse it
+
+# ── 5. Grant DB permissions ──
+
+- name: Grant sortie schema permissions to runtime roles
+  community.postgresql.postgresql_query:
+    db: cluster
+    query: |
+      GRANT USAGE ON SCHEMA {{ sortie_schema | default('sortie') }}
+        TO agent_rw;
+      GRANT SELECT, INSERT, UPDATE, DELETE
+        ON ALL TABLES IN SCHEMA {{ sortie_schema | default('sortie') }}
+        TO agent_rw;
+      GRANT USAGE, SELECT ON ALL SEQUENCES
+        IN SCHEMA {{ sortie_schema | default('sortie') }}
+        TO agent_rw;
+      GRANT SELECT ON ALL TABLES
+        IN SCHEMA {{ sortie_schema | default('sortie') }}
+        TO agent_ro;
+    login_user: "{{ 'deploy' if hostvars[postgres_host]['os_family'] | default('darwin') == 'darwin' else 'postgres' }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ 'deploy' if hostvars[postgres_host]['os_family'] | default('darwin') == 'darwin' else 'postgres' }}"
+  delegate_to: "{{ postgres_host }}"
+
+# ── 6. Campaign runner cron ──
+
+- name: Schedule sortie-runner cron (every 15 minutes)
+  ansible.builtin.cron:
+    name: "sortie campaign runner"
+    minute: "*/15"
+    job: >-
+      set -a && . /opt/mcps/sortie/env && set +a &&
+      /opt/mcps/sortie/venv/bin/sortie-runner
+      >> {{ shared_mount }}/logs/sortie/runner.log 2>&1
+    user: deploy
+  become: true

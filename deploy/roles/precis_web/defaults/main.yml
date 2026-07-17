@@ -1,0 +1,30 @@
+---
+# precis_web role defaults.
+
+precis_web_venv: /opt/mcps/venv
+precis_web_port: 8000
+# Private podcast feed (precis_web /podcast). The episode dir is on the SHARED
+# NAS (the fileserver:/Volume1/botshome) so a producer on any node — e.g. Kokoro
+# TTS on the GPU node (mounts it at /nas/botshome) — publishes an episode and this
+# gateway serves it, no cross-host copy. base_url is the gateway's
+# Tailscale-serve name so a podcast app on the phone can reach the enclosures.
+precis_web_podcast_dir: /opt/nas/botshome/podcast
+precis_web_podcast_base_url: "https://{{ inventory_hostname }}.tailded4cf.ts.net"
+# When true, the "Apply pending precis DB migrations" task only reports
+# the pending set (precis migrate --dry-run) instead of applying it.
+# Override per-run: -e precis_migrate_dry_run=true.
+precis_migrate_dry_run: false
+precis_web_dsn: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+# Corpus root(s) for the paper viewer. Must agree with where the
+# watcher deposits PDFs: precis_watch sets --corpus-dir to
+# papers_corpus_path (/opt/nas/botshome/papers/corpus on the macOS
+# gateway). Point the web at the same canonical path so a held paper
+# resolves instead of 404-ing.
+#
+# PRECIS_CORPUS_DIR accepts an os.pathsep-separated list (precis-mcp
+# >= 8.13): the web tries each <root>/<letter>/<cite_key>.pdf in
+# order. We list the canonical NAS path first, then the legacy
+# /opt/shared/corpus mount as a fallback for any PDFs staged there
+# before the path was unified.
+precis_web_corpus: "{{ papers_corpus_path }}:/opt/shared/corpus"
+precis_web_git_ref: main

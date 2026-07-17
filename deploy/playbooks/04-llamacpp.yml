@@ -1,0 +1,33 @@
+---
+# 04-llamacpp.yml — llama.cpp + llama-swap on all inference nodes, with
+# canonical GGUF store on the data node. See docs/llamacpp-migration-plan.md.
+#
+# Does NOT touch Ollama (runs alongside until Phase 6 purge).
+# llama-swap binds to distinct ports from Ollama: 11444 (Linux/the GPU node),
+# 11445 (macOS). the gateway hosts two parallel tunnels to each remote node:
+# 11436/11437 for Ollama and 11446/11447 for llama-swap, so both stacks are
+# reachable simultaneously during the migration window.
+#
+# Usage:
+#   ansible-playbook playbooks/04-llamacpp.yml --tags install    # the data node prereqs (HF CLI venv)
+#   ansible-playbook playbooks/04-llamacpp.yml --tags download   # the data node: HF pulls to NFS
+#   ansible-playbook playbooks/04-llamacpp.yml --tags sync       # clients: rsync NFS → local SSD
+#   ansible-playbook playbooks/04-llamacpp.yml --tags build      # clients: build llama.cpp from source
+#   ansible-playbook playbooks/04-llamacpp.yml --tags swap       # clients: install llama-swap binary
+#   ansible-playbook playbooks/04-llamacpp.yml --tags config     # clients: render llama-swap.yaml
+#   ansible-playbook playbooks/04-llamacpp.yml --tags service    # clients: launchd/systemd + health probe
+#   ansible-playbook playbooks/04-llamacpp.yml                   # all of the above
+
+- name: Configure llama.cpp GGUF store on the data node
+  hosts: gguf_store_hosts
+  become: false
+  roles:
+    - llamacpp
+  tags: [llamacpp, llamacpp_store]
+
+- name: Sync GGUFs to inference node local SSD
+  hosts: llamacpp_hosts
+  become: false
+  roles:
+    - llamacpp
+  tags: [llamacpp, llamacpp_sync]

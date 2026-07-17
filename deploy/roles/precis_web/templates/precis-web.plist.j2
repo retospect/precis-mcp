@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} #}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.web</string>
+
+  {# bash wrapper makes /bin/bash the TCC "responsible process". Same
+     pattern as precis_worker / precis_worker_agent. #}
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>exec {{ precis_web_venv }}/bin/precis web --host 127.0.0.1 --port {{ precis_web_port }}</string>
+  </array>
+
+  {# deploy user: same as precis_worker. The web service doesn't
+     need claude OAuth (it's a server, not an agent). #}
+  <key>UserName</key>
+  <string>deploy</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/deploy</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/deploy</string>
+    {# /Library/TeX/texbin is MacTeX's binary symlink dir — latexmk and
+       the tools it shells (pdflatex, biber, makeglossaries) must all be
+       on the daemon PATH for the draft → PDF export route to compile. #}
+    <key>PATH</key>
+    <string>{{ precis_web_venv }}/bin:/Library/TeX/texbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PRECIS_DATABASE_URL</key>
+    <string>{{ precis_web_dsn }}</string>
+    <key>PRECIS_CORPUS_DIR</key>
+    <string>{{ precis_web_corpus }}</string>
+    {# Private podcast feed (/podcast): where episodes live + the public
+       Tailscale origin for enclosure URLs so the phone can fetch them. #}
+    <key>PRECIS_PODCAST_DIR</key>
+    <string>{{ precis_web_podcast_dir }}</string>
+    <key>PRECIS_PODCAST_BASE_URL</key>
+    <string>{{ precis_web_podcast_base_url }}</string>
+    {# Level-gradient guard reads PRECIS_SOURCE; ``web:*`` is treated
+       as owner (interactive Reto) so the web UI can mint
+       level:strategic / level:recurring. Workers can't. #}
+    <key>PRECIS_SOURCE</key>
+    <string>web:reto</string>
+    <key>PRECIS_PROCESS</key>
+    <string>precis-web</string>
+    {% if inventory_hostname in (precis_capabilities.catpath_plugin | default([])) %}
+    {# catpath `pathway` kind: expose it on the MCP surface, and route compute
+       to the pinned GPU node — the gateway has no ML backend, so an in-process
+       run here would be EMT-only. Topology: catpath_plugin / catpath. #}
+    <key>PRECIS_CATPATH_ENABLED</key>
+    <string>1</string>
+    {% if (precis_capabilities.catpath | default([])) | length > 0 %}
+    <key>PRECIS_CATPATH_ROUTE_NODE</key>
+    <string>{{ precis_capabilities.catpath | first }}</string>
+    {% endif %}
+    {% endif %}
+    {% if inventory_hostname in (precis_capabilities.chem_plugin | default([])) %}
+    {# precis-chem `route` kind (ADR 0056): un-dark it on the MCP surface + route
+       retrosynth compute to the pinned node. precis_chem is bundled in precis-mcp
+       (no install; the plugin migration applies at deploy). The gateway never
+       runs the engine — a route node is required — so with no chem_route the
+       kind stays visible but every put() reports "needs a route node".
+       Topology: chem_plugin / chem_route. #}
+    <key>PRECIS_CHEM_ENABLED</key>
+    <string>1</string>
+    {% if (precis_capabilities.chem_route | default([])) | length > 0 %}
+    <key>PRECIS_CHEM_ROUTE_NODE</key>
+    <string>{{ precis_capabilities.chem_route | first }}</string>
+    {% endif %}
+    {% endif %}
+    {% if inventory_hostname in (precis_capabilities.bio_plugin | default([])) %}
+    {# precis-bio `protein` kind (ADR 0056 slice 4): un-dark it on the MCP surface
+       + route fold compute to the pinned GPU node. precis_bio is bundled in
+       precis-mcp (no install; the plugin migration applies at deploy). The
+       gateway never runs the engine — a fold node is required — so with no
+       bio_fold the kind stays visible but every put() reports "needs a fold
+       node". Topology: bio_plugin / bio_fold. #}
+    <key>PRECIS_BIO_ENABLED</key>
+    <string>1</string>
+    {% if (precis_capabilities.bio_fold | default([])) | length > 0 %}
+    <key>PRECIS_FOLD_NODE</key>
+    <string>{{ precis_capabilities.bio_fold | first }}</string>
+    {% endif %}
+    {% endif %}
+    {# Shared API keys — Perplexity, EPO OPS, patent raw cache.
+       See inventory/group_vars/all/precis_env.yml for the canonical
+       list. Every precis-* daemon includes the same block so capability
+       parity is automatic; daemon-specific keys above are unique. #}
+    {% for env_key, env_val in precis_shared_env.items() %}
+    <key>{{ env_key }}</key>
+    <string>{{ env_val }}</string>
+    {% endfor %}
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  {# Long-running uvicorn process; KeepAlive=true so launchd
+     restarts on crash. ThrottleInterval prevents a crash loop. #}
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/precis-web.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/precis-web.log</string>
+</dict>
+</plist>

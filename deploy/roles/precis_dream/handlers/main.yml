@@ -1,0 +1,13 @@
+---
+# Periodic job (StartCalendarInterval, every 4h): reload via the shared
+# safe launchd task with reload_persistent=false — it re-reads the plist
+# and asserts the unit is LOADED (not a pid; the job exits between runs)
+# and does NOT kickstart, so a deploy no longer forces a full off-cycle
+# dream sweep. Mirrors precis_reconcile's calendar-one-shot philosophy
+# (gripe #48490).
+- name: restart precis-dream
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.precis.dream
+    reload_persistent: false
+  when: os_family == "darwin"

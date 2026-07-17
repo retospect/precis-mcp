@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+{{ shared_mount }}/logs/hermes/*.log
+{{ shared_mount }}/logs/litellm/*.log
+{{ shared_mount }}/logs/agents/*.log
+{{ shared_mount }}/logs/olla-*.log
+{{ shared_mount }}/logs/extract-watch/*.log
+{
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 root root
+    sharedscripts
+}

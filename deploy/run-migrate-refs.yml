@@ -1,0 +1,41 @@
+---
+# Ad-hoc runner for `precis migrate-refs` (the legacy-ref → universal-handle
+# data migration).
+#
+# Runs on the data host with the full precis runtime env — the prod DSN is
+# injected from the vault into the remote process environment, so it never
+# appears in any local transcript. Only the (non-secret) dry-run / apply
+# report is streamed back.
+#
+#   ansible-playbook run-migrate-refs.yml                                 # dry-run, all scopes
+#   ansible-playbook run-migrate-refs.yml -e 'migrate_refs_args="--scope drafts"'
+#   ansible-playbook run-migrate-refs.yml -e 'migrate_refs_args="--apply"'
+#
+# Pinned to the data node so the DB is local and a single process
+# owns the rewrite (no two hosts racing the same edits). The migration is
+# idempotent + re-runnable, so a mid-run failure is safe to retry.
+
+- name: Run precis migrate-refs
+  hosts: data
+  gather_facts: false
+  become: false
+  vars:
+    migrate_refs_args: ""
+    precis_worker_venv: /opt/precis/venv
+    # precis_worker_dsn lives in the precis_worker *role* defaults (not in
+    # scope for a standalone play), so reconstruct it here from the same
+    # in-scope inventory/vault vars the role uses.
+    precis_worker_dsn: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  tasks:
+    - name: Invoke precis migrate-refs
+      ansible.builtin.command:
+        cmd: >-
+          {{ precis_worker_venv }}/bin/precis migrate-refs
+          {{ migrate_refs_args }}
+      environment: "{{ precis_shared_env | combine({'PRECIS_DATABASE_URL': precis_worker_dsn}) }}"
+      register: migrate_refs
+      changed_when: "'[APPLY]' in (migrate_refs.stderr | default(''))"
+
+    - name: Show report
+      ansible.builtin.debug:
+        msg: "{{ (migrate_refs.stdout | default('')).split('\n') + (migrate_refs.stderr | default('')).split('\n') }}"

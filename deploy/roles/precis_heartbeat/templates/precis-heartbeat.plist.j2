@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} #}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.heartbeat</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{ precis_heartbeat_venv }}/bin/precis</string>
+    <string>heartbeat</string>
+  </array>
+
+  <!-- Fire every ${precis_heartbeat_interval_seconds}. Each tick is
+       ~1s wall (Python boot + a load read + one UPSERT). launchd
+       doesn't overlap StartInterval invocations. -->
+  <key>StartInterval</key>
+  <integer>{{ precis_heartbeat_interval_seconds }}</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>UserName</key>
+  <string>deploy</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/deploy</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>{{ precis_heartbeat_venv }}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PRECIS_DATABASE_URL</key>
+    <string>{{ precis_heartbeat_dsn }}</string>
+    <key>PRECIS_PROCESS</key>
+    <string>precis-heartbeat</string>
+{% if precis_heartbeat_temp_cmd %}
+    <key>PRECIS_TEMP_CMD</key>
+    <string>{{ precis_heartbeat_temp_cmd }}</string>
+{% endif %}
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/precis-heartbeat.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/precis-heartbeat.log</string>
+</dict>
+</plist>

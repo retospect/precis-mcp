@@ -1,0 +1,5 @@
+---
+- name: restart nginx
+  when: os_family == "darwin"
+  ansible.builtin.command: brew services restart nginx
+  become: false

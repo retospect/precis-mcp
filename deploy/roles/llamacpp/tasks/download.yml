@@ -1,0 +1,115 @@
+---
+# Download canonical GGUFs on the data node into {{ llamacpp_nfs_dir_server }}.
+# Idempotent: huggingface-cli skips files that already exist and match size/etag.
+# Builds a manifest with SHA256 + size so clients can verify their rsync.
+
+- name: Collect catalog entries to download
+  ansible.builtin.set_fact:
+    llamacpp_download_entries: >-
+      {{ llamacpp_catalog
+         | selectattr('name', 'in', llamacpp_download_names)
+         | list }}
+
+- name: Report download plan
+  ansible.builtin.debug:
+    msg: >-
+      Will download {{ llamacpp_download_entries | length }} GGUFs
+      (~{{ llamacpp_download_entries | map(attribute='size_gb') | sum }} GB)
+      into {{ llamacpp_nfs_dir_server }}
+
+- name: Ensure deploy async + tmp dirs exist (needed for async become_user)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  loop:
+    - /Users/deploy/.ansible_async
+    - /Users/deploy/.ansible/tmp
+  become: true
+
+- name: Download single-file GGUFs via hf CLI (huggingface_hub >= 1.0)
+  ansible.builtin.command:
+    argv:
+      - "{{ llamacpp_venv_dir }}/bin/hf"
+      - download
+      - "{{ item.hf_repo }}"
+      - "{{ item.hf_file }}"
+      - --local-dir
+      - "{{ llamacpp_nfs_dir_server }}/{{ item.name }}"
+  loop: "{{ llamacpp_download_entries | rejectattr('hf_pattern', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.size_gb }} GB)"
+  environment:
+    HF_HUB_ENABLE_HF_TRANSFER: "{{ '1' if llamacpp_hf_enable_transfer else '0' }}"
+    HF_HOME: "{{ llamacpp_nfs_dir_server }}/.hf-cache"
+    # Disable Xet CAS backend (cas-server.xethub.hf.co unreliable from the data node):
+    # forces classic HTTP resolve/download path which hf-transfer handles fine.
+    HF_HUB_DISABLE_XET: "1"
+    HF_XET_HIGH_PERFORMANCE: "0"
+  become: true
+  become_user: deploy
+  register: llamacpp_download_single
+  changed_when: "'already exists' not in (llamacpp_download_single.stderr | default(''))"
+  async: 7200   # allow 2h per file for slow pulls
+  poll: 10
+
+# Multi-part GGUFs (e.g. Qwen3-235B sharded into 3 files, 50+50+4 GB) — fetch
+# every file matching {hf_pattern} into the same local subfolder so llama.cpp
+# can auto-discover sibling shards via the 00001-of-NNNNN naming convention.
+- name: Download multi-part GGUFs via hf CLI (folder pattern)
+  ansible.builtin.command:
+    argv:
+      - "{{ llamacpp_venv_dir }}/bin/hf"
+      - download
+      - "{{ item.hf_repo }}"
+      - --include
+      - "{{ item.hf_pattern }}"
+      - --local-dir
+      - "{{ llamacpp_nfs_dir_server }}/{{ item.name }}"
+  loop: "{{ llamacpp_download_entries | selectattr('hf_pattern', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.size_gb }} GB, pattern={{ item.hf_pattern }})"
+  environment:
+    HF_HUB_ENABLE_HF_TRANSFER: "{{ '1' if llamacpp_hf_enable_transfer else '0' }}"
+    HF_HOME: "{{ llamacpp_nfs_dir_server }}/.hf-cache"
+    HF_HUB_DISABLE_XET: "1"
+    HF_XET_HIGH_PERFORMANCE: "0"
+  become: true
+  become_user: deploy
+  register: llamacpp_download_multi
+  changed_when: "'already exists' not in (llamacpp_download_multi.stderr | default(''))"
+  async: 14400   # 4h ceiling for the 100+ GB pulls
+  poll: 30
+
+- name: Compute SHA256 for each downloaded GGUF (primary file only for multi-part)
+  ansible.builtin.stat:
+    path: "{{ llamacpp_nfs_dir_server }}/{{ item.name }}/{{ item.hf_file }}"
+    checksum_algorithm: sha256
+    get_checksum: true
+  loop: "{{ llamacpp_download_entries }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: llamacpp_stat
+
+- name: Write manifest.yaml
+  ansible.builtin.copy:
+    content: |
+      # ANSIBLE MANAGED — roles/llamacpp/tasks/download.yml
+      # Generated on {{ ansible_date_time.iso8601 | default('') }}.
+      # Do not edit by hand — re-run the download playbook to refresh.
+      models:
+      {% for entry, st in (llamacpp_download_entries | zip(llamacpp_stat.results)) %}
+        - name: {{ entry.name }}
+          hf_repo: {{ entry.hf_repo }}
+          hf_file: {{ entry.hf_file }}
+          size_bytes: {{ st.stat.size }}
+          size_gb: {{ entry.size_gb }}
+          sha256: {{ st.stat.checksum }}
+      {% endfor %}
+    dest: "{{ llamacpp_manifest_path }}"
+    owner: deploy
+    group: staff
+    mode: "0644"
+  become: true

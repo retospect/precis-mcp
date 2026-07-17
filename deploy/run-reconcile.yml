@@ -1,0 +1,26 @@
+---
+# Ad-hoc runner for `precis reconcile-duplicates` (dedup Phase 2).
+# DB-only; prod DSN injected from vault into the remote env (never the
+# local transcript). Dry-run by default:
+#   ansible-playbook run-reconcile.yml
+#   ansible-playbook run-reconcile.yml -e '{"args":"--apply"}'
+
+- name: Run precis reconcile-duplicates
+  hosts: data
+  gather_facts: false
+  become: false
+  vars:
+    args: ""
+    precis_worker_venv: /opt/precis/venv
+    precis_worker_dsn: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  tasks:
+    - name: Invoke precis reconcile-duplicates
+      ansible.builtin.command:
+        cmd: "{{ precis_worker_venv }}/bin/precis reconcile-duplicates {{ args }}"
+      environment:
+        PRECIS_DATABASE_URL: "{{ precis_worker_dsn }}"
+      register: rec
+      changed_when: "'[APPLY]' in (rec.stderr | default(''))"
+    - name: Show report
+      ansible.builtin.debug:
+        msg: "{{ (rec.stdout | default('')).split('\n') + (rec.stderr | default('')).split('\n') }}"

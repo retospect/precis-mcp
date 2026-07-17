@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# Sources the catpath env (PRECIS_CATPATH_ENABLED / PRECIS_NODE) into
+# precis-worker. `-` makes the file optional so the unit still starts when
+# catpath is absent.
+[Service]
+EnvironmentFile=-/etc/precis/catpath.env

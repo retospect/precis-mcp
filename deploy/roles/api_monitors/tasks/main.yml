@@ -1,0 +1,33 @@
+---
+# API credit monitoring for Anthropic / Perplexity / other external APIs
+
+- name: Deploy API credit monitoring script
+  ansible.builtin.template:
+    src: api_credit_monitor.sh.j2
+    dest: "{{ shared_mount }}/scripts/api_credit_monitor.sh"
+    mode: "0750"
+  become: true
+
+- name: Deploy pip-audit script
+  ansible.builtin.template:
+    src: pip_audit.sh.j2
+    dest: "{{ shared_mount }}/scripts/pip_audit.sh"
+    mode: "0750"
+  become: true
+
+- name: Schedule daily API credit check
+  ansible.builtin.cron:
+    name: "daily API credit monitor"
+    minute: "0"
+    hour: "8"
+    job: "{{ shared_mount }}/scripts/api_credit_monitor.sh >> {{ shared_mount }}/logs/api-credits.log 2>&1"
+  become: true
+
+- name: Schedule weekly pip-audit
+  ansible.builtin.cron:
+    name: "weekly pip-audit"
+    minute: "0"
+    hour: "5"
+    weekday: "3"
+    job: "{{ shared_mount }}/scripts/pip_audit.sh >> {{ shared_mount }}/logs/pip-audit/audit.log 2>&1"
+  become: true

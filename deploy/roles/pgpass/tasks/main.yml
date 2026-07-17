@@ -1,0 +1,76 @@
+---
+# pgpass — drop ~deploy/.pgpass + .psqlrc + env defaults so bare `psql`
+# from any cluster node lands on the data node:pgbouncer/precis_prod as agent_rw.
+
+# psql client must exist for the pgpass entries to mean anything. the data node
+# already has the full postgres install; the gateway / the scheduler node / the GPU node
+# only need the client.
+- name: Install libpq client (macOS — psql via brew, force-linked so it's on PATH)
+  when: os_family == "darwin"
+  block:
+    - community.general.homebrew:
+        name: libpq
+        state: present
+      become: false
+    - ansible.builtin.command: brew link --force libpq
+      become: false
+      register: brew_link
+      changed_when: "'already' not in brew_link.stderr | default('')"
+      failed_when:
+        - brew_link.rc != 0
+        - "'already linked' not in brew_link.stderr | default('')"
+
+- name: Install postgresql-client (Linux)
+  when: os_family == "linux"
+  ansible.builtin.package:
+    name: postgresql-client
+    state: present
+  become: true
+
+- name: Deploy .pgpass for deploy user
+  ansible.builtin.template:
+    src: pgpass.j2
+    dest: "{{ pgpass_deploy_home }}/.pgpass"
+    owner: deploy
+    group: "{{ 'staff' if os_family == 'darwin' else 'deploy' }}"
+    mode: "0600"
+  become: true
+  no_log: true   # contains all the db passwords
+
+- name: Deploy .psqlrc for deploy user
+  ansible.builtin.template:
+    src: psqlrc.j2
+    dest: "{{ pgpass_deploy_home }}/.psqlrc"
+    owner: deploy
+    group: "{{ 'staff' if os_family == 'darwin' else 'deploy' }}"
+    mode: "0644"
+  become: true
+
+# ── Default PG* env vars so bare `psql` works ──
+# On Linux: /etc/profile.d (system-wide; affects every login user)
+# On macOS: ~deploy/.zprofile (per-user; macOS doesn't run /etc/profile.d)
+- name: Deploy /etc/profile.d/pg-env.sh (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: pg-env.sh.j2
+    dest: /etc/profile.d/pg-env.sh
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Append PG* env vars to ~deploy/.zprofile (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.blockinfile:
+    path: "{{ pgpass_deploy_home }}/.zprofile"
+    marker: "# {mark} ANSIBLE MANAGED — pgpass role"
+    block: |
+      export PGHOST={{ pgpass_host }}
+      export PGPORT={{ pgpass_port }}
+      export PGDATABASE={{ pgpass_database }}
+      export PGUSER={{ pgpass_default_user }}
+    create: true
+    owner: deploy
+    group: staff
+    mode: "0644"
+  become: true

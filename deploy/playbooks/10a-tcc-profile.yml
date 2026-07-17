@@ -1,0 +1,15 @@
+---
+# 10a-tcc-profile.yml — deploy the cluster FDA PPPC profile to macOS hosts.
+#
+# Runs AFTER 10-hardening (so sshd + sudoers are in place) and BEFORE any
+# role that installs a cron job or LaunchDaemon which needs NFS access.
+# Without this profile, every such daemon silently EPERM's on macOS 15+.
+#
+# After the first run on a fresh host, the operator MUST click "Install"
+# in System Settings → Profiles. See roles/tcc_profile/README.md.
+- name: Deploy Full Disk Access profile to macOS nodes
+  hosts: macos
+  become: true
+  roles:
+    - tcc_profile
+  tags: [tcc, tcc-profile, security, macos]

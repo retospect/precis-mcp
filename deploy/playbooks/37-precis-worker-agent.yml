@@ -1,0 +1,15 @@
+---
+# 37-precis-worker-agent.yml — consolidated agent-profile worker
+# on the gateway. Replaces precis_schedule +
+# precis_nursery + precis_structural + precis_deep_review.
+
+- name: Deploy precis worker (agent profile)
+  hosts: gateway
+  become: true
+  roles:
+    - precis_worker_agent
+  # Family-umbrella ``precis`` tag so ``--tags precis`` fans this
+  # out with the other precis-* plays. Without it the agent worker
+  # (which carries quota_check + planner-coroutine claude_inproc)
+  # gets skipped on bulk re-deploys and runs stale code for hours.
+  tags: [precis-worker-agent, precis]

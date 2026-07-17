@@ -1,0 +1,214 @@
+---
+# precis_worker — runs `precis worker` as a daemon on every cluster node.
+# Pulls work from the postgres queue via the local SSH tunnel.
+
+# precis-mcp[paper] pulls in marker-pdf → pillow==10.4.0, which refuses to
+# build against Python 3.14 (no 3.14 wheels yet, src build fails on macOS
+# 26 toolchain). Pin to Python 3.12 — same trick the extract_watch role
+# uses for the same reason.
+- name: Ensure uv is installed (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: uv
+    state: present
+  become: false
+
+- name: Ensure Homebrew python@3.12 (macOS — pillow/marker-pdf don't build on 3.14)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: python@3.12
+    state: present
+  become: false
+
+- name: Resolve venv python interpreter (macOS — symlink to Homebrew python3.12)
+  ansible.builtin.set_fact:
+    precis_brew_python: /opt/homebrew/opt/python@3.12/bin/python3.12
+  when: os_family == "darwin"
+
+- name: Resolve uv binary path
+  ansible.builtin.set_fact:
+    precis_uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+- name: Create venv parent dir
+  ansible.builtin.file:
+    path: /opt/precis
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Create precis worker venv (macOS — symlink to Homebrew python so FDA grant survives ansible re-runs)
+  when: os_family == "darwin"
+  ansible.builtin.command:
+    cmd: "{{ precis_brew_python }} -m venv --symlinks {{ precis_worker_venv }}"
+    creates: "{{ precis_worker_venv }}/bin/python3"
+  become: true
+
+- name: Create precis worker venv (Linux — uv)
+  when: os_family == "linux"
+  ansible.builtin.command:
+    cmd: "{{ precis_uv_bin }} venv {{ precis_worker_venv }}"
+    creates: "{{ precis_worker_venv }}/bin/python"
+  become: true
+
+- name: Install precis-mcp[paper,patent,external,mermaid] into worker venv
+  # Installing from git+https because the worker subcommand only lives in
+  # the v7/v8 line — PyPI is still at 6.0.0 as of 2026-05-31. Point at a
+  # branch ref (configurable via precis_worker_git_ref) so a single commit
+  # to that branch redeploys the workers on the next ansible run.
+  #
+  # ``--refresh-package precis-mcp`` forces uv to ignore its cached
+  # resolution of ``main`` and re-fetch the current HEAD. Without it,
+  # uv pins the first SHA it ever resolved for the branch and a fresh
+  # push doesn't deploy until someone manually clears the cache.
+  #
+  # The ``mermaid`` extra (mermaidx, pure wheels) backs the diagram_propose
+  # tick's mermaid render/validate (ADR 0057) on the agent worker.
+  ansible.builtin.shell: |
+    {{ precis_uv_bin }} pip install --python {{ precis_worker_venv }}/bin/python --upgrade \
+      --refresh-package precis-mcp \
+      'precis-mcp[paper,patent,external,mermaid] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref }}'
+  become: true
+  register: precis_install
+  # uv prints its "Installed/Updated N package(s)" summary to STDERR, so
+  # a stdout-only match misses a real code-only refresh and the reload
+  # handler is skipped — the daemon keeps running stale in-memory code.
+  # Check both streams (cf. the llamacpp role, which already does).
+  changed_when: >-
+    'Installed' in (precis_install.stdout + precis_install.stderr)
+    or 'Updated' in (precis_install.stdout + precis_install.stderr)
+  # A code-only refresh MUST restart the daemon, else it keeps running
+  # the old in-memory code with a fresh venv on disk (seen 2026-07-01:
+  # a struct_relax redeploy updated the venv but the Linux worker stayed
+  # up 2 days on stale code — only a later role's restart saved it). The
+  # unit/plist render tasks below also notify these, so an unchanged unit
+  # + changed code now still restarts. Both handlers are OS-guarded, so
+  # notifying both from this OS-agnostic task runs only the matching one.
+  notify:
+    - reload precis worker (macos)
+    - reload precis worker (linux)
+
+- name: Ensure HF model cache dir
+  ansible.builtin.file:
+    path: "{{ precis_worker_hf_home }}"
+    state: directory
+    owner: deploy
+    mode: "0755"
+  become: true
+
+# Marker tries to create a `static/` directory at the site-packages root the
+# first time it processes a PDF, but the venv is root-owned so deploy can't
+# write there → silent fallback to fitz (cruder layout extraction). Pre-create
+# as deploy-owned.
+- name: Ensure marker static dir is deploy-writable (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: "{{ precis_worker_venv }}/lib/python3.12/site-packages/static"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  become: true
+
+- name: Ensure marker static dir is deploy-writable (Linux)
+  when: os_family == "linux"
+  ansible.builtin.file:
+    path: "{{ precis_worker_venv }}/lib/python3.12/site-packages/static"
+    state: directory
+    owner: deploy
+    group: deploy
+    mode: "0755"
+  become: true
+
+# Marker uses exiftool when present to pull PDF metadata cleanly. Without it,
+# every ingest logs "exiftool not found in PATH" and falls back to fitz-only
+# metadata, which can lose page-level title/author/DOI hints.
+- name: Ensure exiftool is installed (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: exiftool
+    state: present
+  become: false
+
+- name: Ensure exiftool is installed (Linux)
+  when: os_family == "linux"
+  ansible.builtin.package:
+    name: libimage-exiftool-perl
+    state: present
+  become: true
+
+# launchd hits EX_CONFIG (78) when StandardOutPath can't be created. /var/log
+# on modern macOS only allows root writes, so a deploy-owned daemon can't
+# create the file itself — pre-create with deploy ownership.
+- name: Pre-create precis-worker log file (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-worker.log
+    state: touch
+    owner: deploy
+    group: wheel
+    mode: "0644"
+  become: true
+  changed_when: false
+
+# ── macOS: LaunchDaemon ──
+- name: Render precis-worker LaunchDaemon (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: precis-worker.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.worker.plist
+    mode: "0644"
+  become: true
+  notify: reload precis worker (macos)
+
+# Idempotent load. Previously this was an unconditional ``bootout``
+# followed by an unconditional ``bootstrap`` — that killed the
+# running worker on every play, and if ``bootstrap`` silent-failed
+# (rc=0 but daemon didn't actually start) the worker ended up gone
+# for hours. Symptom seen 2026-06-16: ``--tags precis`` ran clean
+# on three nodes and left every precis-worker unloaded. Now we just
+# load-if-needed; the actual reload-with-new-plist happens via the
+# handler (``reload precis worker (macos)``) only when the install
+# or plist task fires it, mirroring the precis_web role.
+- name: Load precis-worker LaunchDaemon (macOS — idempotent)
+  when: os_family == "darwin"
+  ansible.builtin.command: >
+    launchctl load -w /Library/LaunchDaemons/com.precis.worker.plist
+  become: true
+  changed_when: false
+  failed_when: false
+
+# ── Linux: systemd ──
+- name: Render precis-worker systemd unit (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: precis-worker.service.j2
+    dest: /etc/systemd/system/precis-worker.service
+    mode: "0644"
+  become: true
+  notify: reload precis worker (linux)
+
+- name: Enable + start precis-worker (Linux)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: precis-worker
+    daemon_reload: true
+    enabled: true
+    state: started
+  become: true
+
+# ── Verification ──
+- name: Check precis worker status (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl print system/com.precis.worker
+  become: true
+  register: precis_status_macos
+  changed_when: false
+  failed_when: false
+
+- name: Check precis worker status (Linux)
+  when: os_family == "linux"
+  ansible.builtin.command: systemctl is-active precis-worker
+  become: true
+  register: precis_status_linux
+  changed_when: false
+  failed_when: false

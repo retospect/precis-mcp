@@ -1,0 +1,50 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Backblaze B2 offsite sync — runs nightly on the data node after pg_dump
+set -euo pipefail
+
+# cron's minimal PATH (/usr/bin:/bin) omits /usr/local/bin, where the `b2`
+# CLI is symlinked — so every nightly offsite sync died with
+# "b2: command not found" (silent: the local dumps existed but never left
+# the building). Prepend it so cron finds b2.
+export PATH="/usr/local/bin:/opt/homebrew/bin:${PATH}"
+
+export B2_APPLICATION_KEY_ID="{{ vault_b2_application_key_id }}"
+export B2_APPLICATION_KEY="{{ vault_b2_application_key }}"
+BUCKET="{{ vault_b2_bucket_name }}"
+SHARED="{{ shared_mount }}"
+LOG_TAG="b2-sync"
+
+logger -t "$LOG_TAG" "Starting B2 offsite sync"
+
+# Sync Postgres dumps (keep last 7 days remotely via --keepDays 7)
+logger -t "$LOG_TAG" "Syncing postgres backups"
+b2 sync --keepDays 7 --replaceNewer \
+  "$SHARED/backups/postgres/" \
+  "b2://$BUCKET/backups/postgres/"
+
+# Sync config backups
+logger -t "$LOG_TAG" "Syncing config backups"
+b2 sync --replaceNewer \
+  "$SHARED/backups/configs/" \
+  "b2://$BUCKET/backups/configs/"
+
+# Sync git repos (bare repos — small, critical)
+logger -t "$LOG_TAG" "Syncing git repos"
+b2 sync --replaceNewer \
+  "$SHARED/git/" \
+  "b2://$BUCKET/git/"
+
+# Sync souls (prompts, exports — the important agent data)
+logger -t "$LOG_TAG" "Syncing souls"
+b2 sync --replaceNewer \
+  "$SHARED/souls/" \
+  "b2://$BUCKET/souls/"
+
+# Sync research data
+logger -t "$LOG_TAG" "Syncing research data"
+b2 sync --replaceNewer \
+  "$SHARED/data/" \
+  "b2://$BUCKET/data/"
+
+logger -t "$LOG_TAG" "B2 offsite sync complete"

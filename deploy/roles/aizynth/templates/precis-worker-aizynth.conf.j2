@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# Sources the aizynth env (PRECIS_CHEM_* / PRECIS_NODE) into precis-worker.
+# `-` makes the file optional so the unit still starts when aizynth is absent.
+[Service]
+EnvironmentFile=-/etc/precis/aizynth.env

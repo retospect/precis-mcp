@@ -1,0 +1,18 @@
+---
+# precis_watch_poll role defaults.
+
+# How often the timer fires (seconds). Each fire runs ONE
+# `precis worker --only watch_poll --once` cycle. Hourly is polite to
+# Semantic Scholar; the salience rotation (last_watched) spreads seeds
+# across runs so a different set of papers is polled each time.
+precis_watch_poll_interval: 3600
+
+# Salient papers polled per fire (the worker --batch-size). Bounds the
+# external S2 calls and stubs minted per hour:
+# ~batch_size seeds × max_per_seed citers (default 10) upper bound.
+precis_watch_poll_batch_size: 5
+
+# Venv with precis installed. /opt/mcps/venv is the shared MCP venv on
+# the gateway (also used by cron-tick / dream); the watcher needs no
+# OAuth, just the precis package + the S2 key from precis_shared_env.
+precis_watch_poll_venv: /opt/mcps/venv

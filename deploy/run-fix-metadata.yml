@@ -1,0 +1,40 @@
+---
+# Ad-hoc runner for `precis fix-metadata` (the junk-metadata remediation).
+#
+# Runs on a single data host with the full precis runtime env — the prod
+# DSN and Semantic Scholar key are injected from the vault into the remote
+# process environment, so they never appear in any local transcript. Only
+# the (non-secret) dry-run / apply report is streamed back.
+#
+#   ansible-playbook run-fix-metadata.yml                       # dry-run --limit 5
+#   ansible-playbook run-fix-metadata.yml -e 'fixmeta_args="--limit 50"'
+#   ansible-playbook run-fix-metadata.yml -e 'fixmeta_args="--apply"'
+#
+# Pinned to the data node so the DB + NAS corpus are local and a
+# single process owns the sweep (no two hosts racing the same renames).
+
+- name: Run precis fix-metadata
+  hosts: data
+  gather_facts: false
+  become: false
+  vars:
+    fixmeta_args: "--limit 5"
+    precis_worker_venv: /opt/precis/venv
+    # precis_worker_dsn lives in the precis_worker *role* defaults (not in
+    # scope for a standalone play), so reconstruct it here from the same
+    # in-scope inventory/vault vars the role uses.
+    precis_worker_dsn: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  tasks:
+    - name: Invoke precis fix-metadata
+      ansible.builtin.command:
+        cmd: >-
+          {{ precis_worker_venv }}/bin/precis fix-metadata
+          --corpus-dir {{ papers_corpus_path }}
+          {{ fixmeta_args }}
+      environment: "{{ precis_shared_env | combine({'PRECIS_DATABASE_URL': precis_worker_dsn}) }}"
+      register: fixmeta
+      changed_when: "'[APPLY]' in (fixmeta.stderr | default('')) and 'fixed=' in (fixmeta.stdout | default(''))"
+
+    - name: Show report
+      ansible.builtin.debug:
+        msg: "{{ (fixmeta.stdout | default('')).split('\n') + (fixmeta.stderr | default('')).split('\n') }}"

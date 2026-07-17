@@ -232,6 +232,40 @@ class ResourceSlotsMixin:
             rows = conn.execute(sql).fetchall()
         return [_row_to_slot(r) for r in rows]
 
+    def reconcile_llm_served_slots(
+        self, desired: dict[tuple[str, str], int]
+    ) -> tuple[int, int]:
+        """Reconcile the ``llm:<model>`` resource rows to the catalog's declared
+        local serving (slice 7 / §6). ``desired`` maps ``(host, resource)`` →
+        capacity, where ``resource`` is ``"llm:<model_id>"`` and capacity is the
+        ``served_by`` entry's ``max_parallel``.
+
+        A full sync scoped to the ``llm:`` namespace: every desired row is
+        UPSERTed (reservation-safe — the delta-adjust preserves any slice-6c
+        reservation across a capacity change), and any existing ``llm:`` row NOT
+        in ``desired`` is DELETEd (a card stopped serving, or a ``served_by``
+        entry was removed). Hardware rows (gpu/podman/tts/mem) are untouched —
+        the namespace prefix keeps the two seeding sources from colliding.
+
+        Returns ``(upserted, deleted)``.
+        """
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                for (host, resource), capacity in desired.items():
+                    cap = max(1, int(capacity))
+                    conn.execute(_UPSERT_SLOT, (host, resource, cap, cap, "hard"))
+                # Delete stale llm: rows no longer declared.
+                existing = conn.execute(
+                    "SELECT host, resource FROM resource_slots "
+                    "WHERE resource LIKE 'llm:%'"
+                ).fetchall()
+                deleted = 0
+                for host, resource in existing:
+                    if (str(host), str(resource)) not in desired:
+                        conn.execute(_DELETE_SLOT, (host, resource))
+                        deleted += 1
+        return len(desired), deleted
+
 
 __all__ = [
     "ResourceSlot",

@@ -1,0 +1,16 @@
+---
+# 40-precis-reconcile.yml — nightly duplicate-reconciliation sweep on
+# the data node. Fires `precis reconcile-duplicates --apply`
+# once a night to collapse live paper refs that share a pdf_sha256 to
+# the best survivor. Single host on purpose — it's a global
+# single-writer sweep. See docs/design/duplicate-paper-handling.md in
+# precis-mcp (Phase 2).
+
+- name: Deploy precis reconcile-duplicates nightly timer
+  hosts: data
+  become: true
+  roles:
+    - precis_reconcile
+  # Family-umbrella ``precis`` tag so ``--tags precis`` fans this out
+  # with the other precis-* plays.
+  tags: [precis-reconcile, precis]

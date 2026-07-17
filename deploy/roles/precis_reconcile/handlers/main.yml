@@ -1,0 +1,12 @@
+---
+# Calendar one-shot: reload via the shared safe launchd task with
+# reload_persistent=false — re-reads the plist and asserts the unit is
+# LOADED (no pid; it fires at its scheduled window and exits), and does
+# not kickstart. Adds the retry-on-transient-load-failure the bare
+# `load -wF` lacked (gripe #48490).
+- name: restart precis-reconcile
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.precis.reconcile
+    reload_persistent: false
+  when: os_family == "darwin"

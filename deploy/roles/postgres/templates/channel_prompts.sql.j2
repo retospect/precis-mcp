@@ -1,0 +1,37 @@
+-- {{ ansible_managed }}
+-- Per-channel context prompts, editable at runtime by Asa via set_channel_prompt tool
+
+CREATE TABLE IF NOT EXISTS cluster.channel_prompts (
+    id              serial PRIMARY KEY,
+    channel_type    text NOT NULL DEFAULT 'discord',   -- discord, api, etc.
+    guild_id        text,                              -- Discord guild ID (null for non-Discord)
+    channel_name    text NOT NULL,                     -- Channel name (e.g. "research", "writing")
+    prompt          text NOT NULL DEFAULT '',           -- The context/overlay prompt text
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    updated_by      text NOT NULL DEFAULT 'system',    -- Who last edited: "system", Discord username, etc.
+    UNIQUE (channel_type, guild_id, channel_name)
+);
+
+-- Grant access: agent_rw (tools) reads+writes
+GRANT SELECT, INSERT, UPDATE ON cluster.channel_prompts TO agent_rw;
+GRANT USAGE, SELECT ON SEQUENCE cluster.channel_prompts_id_seq TO agent_rw;
+
+-- Seed defaults (skip if rows already exist)
+INSERT INTO cluster.channel_prompts (channel_type, guild_id, channel_name, prompt, updated_by)
+VALUES
+    ('discord', '{{ vault_discord_guild_id }}', 'general',
+     'General-purpose channel. Route requests to the appropriate agent based on content.',
+     'system'),
+    ('discord', '{{ vault_discord_guild_id }}', 'research',
+     'This is the #research channel. Default to queuing research-agent for most requests here. The user is primarily interested in academic literature, paper discovery, and scientific analysis.',
+     'system'),
+    ('discord', '{{ vault_discord_guild_id }}', 'writing',
+     'This is the #writing channel. Default to queuing writing-agent for most requests here. The user is working on a book manuscript.',
+     'system'),
+    ('discord', '{{ vault_discord_guild_id }}', 'science',
+     'This is the #science channel. Default to queuing science-agent for most requests here. The user is interested in computational experiments, data analysis, and scientific workflows.',
+     'system'),
+    ('discord', '{{ vault_discord_guild_id }}', 'todo',
+     'This is the #todo channel. Be extremely concise. Help manage task lists. Queue to schedule-agent for calendar/email items.',
+     'system')
+ON CONFLICT (channel_type, guild_id, channel_name) DO NOTHING;

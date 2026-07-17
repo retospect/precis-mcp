@@ -1,0 +1,46 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Weekly restore test — restores the latest precis_prod dump into a throwaway
+# database and sanity-checks it. This is the safety net that PROVES the
+# nightly dumps are actually restorable; if it is silently broken, a dead
+# backup goes unnoticed (which is exactly what happened — see git log).
+set -euo pipefail
+
+# cron's minimal PATH (/usr/bin:/bin) lacks the Homebrew pg17 client bins, so
+# the old script died with "dropdb: command not found" every week. Pin them.
+{% if os_family == 'darwin' %}
+export PATH="/opt/homebrew/opt/postgresql@17/bin:/opt/homebrew/bin:${PATH}"
+{% endif %}
+
+BACKUP_DIR="{{ shared_mount }}/backups/postgres"
+TEST_DB="precis_prod_restore_test"
+PG_USER="{{ pg_user }}"
+
+# Newest dump — matches both the nightly directory-format dumps
+# (precis_prod_<TS>/) and the on-demand custom-format files
+# (precis_prod_manual_<TS>.dump). `ls -td` lists the entries themselves
+# (dirs not expanded) newest-first; pg_restore auto-detects either format.
+LATEST_DUMP=$(ls -td "${BACKUP_DIR}"/precis_prod_* 2>/dev/null | head -1)
+
+if [ -z "${LATEST_DUMP}" ]; then
+    echo "[$(date)] ERROR: No precis_prod dump found under ${BACKUP_DIR}"
+    exit 1
+fi
+
+echo "[$(date)] Testing restore of: ${LATEST_DUMP}"
+
+# Drop and recreate the throwaway test database.
+dropdb -U "${PG_USER}" --if-exists "${TEST_DB}"
+createdb -U "${PG_USER}" "${TEST_DB}"
+
+# Restore. --no-owner/--no-privileges keep a throwaway restore from choking on
+# role grants; -j4 parallelises (works for both -Fd and -Fc archives).
+pg_restore -U "${PG_USER}" -d "${TEST_DB}" --no-owner --no-privileges -j4 "${LATEST_DUMP}"
+
+# Basic sanity check — a healthy precis_prod restore has hundreds of tables.
+TABLE_COUNT=$(psql -U "${PG_USER}" -d "${TEST_DB}" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")
+echo "[$(date)] Restore OK — ${TABLE_COUNT} tables found"
+
+# Clean up.
+dropdb -U "${PG_USER}" "${TEST_DB}"
+echo "[$(date)] Test database dropped. Restore test PASSED."

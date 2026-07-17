@@ -212,6 +212,49 @@ def _drift_fingerprint(model_id: str) -> str:
     return f"proxy-missing:{model_id}"
 
 
+def _iter_served_by(meta: dict[str, Any]) -> Any:
+    """Yield every ``served_by`` entry declared on a card — both the card-level
+    ``meta.served_by`` and each offering's ``served_by`` (§6's example nests it
+    under the local-serving offering). Each entry is a dict with at least a
+    ``host``; ``max_parallel`` is the slot capacity (default 1)."""
+    for e in meta.get("served_by") or []:
+        if isinstance(e, dict):
+            yield e
+    for o in meta.get("offerings") or []:
+        if isinstance(o, dict):
+            for e in o.get("served_by") or []:
+                if isinstance(e, dict):
+                    yield e
+
+
+def llm_served_slots_from_cards(cards: list[Any]) -> dict[tuple[str, str], int]:
+    """Build the desired ``(host, "llm:<model_id>") → max_parallel`` map from the
+    ``served_by`` declarations across every ``llm`` card (slice 7 / §6). This is
+    the *declared* local-serving capacity that seeds ``resource_slots`` — the
+    dial the capability-gated inline-LLM passes reserve against. Purely from card
+    facts (no network). If the same (host, model) is declared twice the larger
+    capacity wins."""
+    desired: dict[tuple[str, str], int] = {}
+    for card in cards:
+        meta = card.meta or {}
+        model_id = meta.get("model_id")
+        if not model_id:
+            continue
+        resource = f"llm:{model_id}"
+        for entry in _iter_served_by(meta):
+            host = entry.get("host")
+            if not host:
+                continue
+            raw = entry.get("max_parallel", 1)
+            try:
+                cap = max(1, int(raw))
+            except (TypeError, ValueError):
+                cap = 1
+            key = (str(host), resource)
+            desired[key] = max(desired.get(key, 0), cap)
+    return desired
+
+
 def run_llm_reconcile_pass(
     store: Store,
     *,
@@ -249,6 +292,16 @@ def run_llm_reconcile_pass(
                 return idle  # another node owns the sweep this cycle
 
             cards = store.list_refs(kind="llm", limit=1000)
+
+            # (S) Seed resource_slots from the catalog's declared local serving
+            # (slice 7 / §6): served_by.max_parallel → llm:<model> hard slots.
+            # Runs on every locked pass (declared facts, no network) and BEFORE
+            # the empty-catalog return so an emptied catalog reaps its stale
+            # llm: rows. DARK: nothing reserves these slots until the inline-LLM
+            # passes are capability-gated; litellm routing is untouched.
+            served = llm_served_slots_from_cards(cards)
+            slots_up, slots_del = store.reconcile_llm_served_slots(served)
+
             if not cards:
                 store.set_setting(_STATE_KEY, datetime.now(UTC).isoformat())
                 return idle
@@ -333,14 +386,23 @@ def run_llm_reconcile_pass(
                 )
 
             store.set_setting(_STATE_KEY, datetime.now(UTC).isoformat())
-            work = refreshed + endpoints_reconciled + len(live_drift)
+            work = (
+                refreshed
+                + endpoints_reconciled
+                + len(live_drift)
+                + slots_up
+                + slots_del
+            )
             if work:
                 log.info(
                     "llm_reconcile: refreshed %d card(s), %d endpoint set(s), "
-                    "flagged %d drift finding(s)",
+                    "flagged %d drift finding(s), seeded %d llm slot(s) "
+                    "(%d reaped)",
                     refreshed,
                     endpoints_reconciled,
                     len(live_drift),
+                    slots_up,
+                    slots_del,
                 )
             return BatchResult(handler="llm_reconcile", claimed=work, ok=work, failed=0)
     finally:
@@ -358,5 +420,6 @@ def _has_proxy_offering(meta: dict[str, Any]) -> bool:
 __all__ = [
     "fetch_openrouter_endpoints",
     "fetch_openrouter_models",
+    "llm_served_slots_from_cards",
     "run_llm_reconcile_pass",
 ]

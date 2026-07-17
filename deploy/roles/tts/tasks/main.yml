@@ -1,0 +1,150 @@
+---
+# tts — make the Linux compute node render the audio feed via the
+# `precis-tts` container. The precis-mcp worker (roles/precis_worker) runs the
+# `briefing_audio` pass, which — when PRECIS_TTS_IMAGE is set — shells out to
+# `docker run precis-tts` per episode, staging segments.json in a local scratch
+# dir and reading back out.m4a. Kokoro + misaki live in the IMAGE; the models are
+# baked in. Linux / compute node only (the macOS gateway needs none of this).
+# See roles/tts/README.md + precis-mcp/docker/tts/README.md.
+
+- name: tts runs the container on the Linux compute node only
+  ansible.builtin.assert:
+    that: os_family == "linux"
+    fail_msg: >-
+      The tts role runs the precis-tts container on the Linux compute node
+      (the GPU node). The macOS gateway needs nothing here. See roles/tts/README.md.
+
+- name: Ensure the container runtime is present
+  ansible.builtin.command: "{{ tts_container_cmd }} --version"
+  register: tts_runtime
+  changed_when: false
+  failed_when: tts_runtime.rc != 0
+
+- name: Allow the worker user to run docker without sudo (docker group)
+  ansible.builtin.user:
+    name: "{{ tts_worker_user }}"
+    groups: docker
+    append: true
+  become: true
+  notify: restart precis-worker (tts)
+
+- name: Ensure the local scratch dir (container in/out staging)
+  ansible.builtin.file:
+    path: "{{ tts_scratch_dir }}"
+    state: directory
+    owner: "{{ tts_worker_user }}"
+    group: "{{ tts_worker_user }}"
+    mode: "0755"
+  become: true
+
+- name: Ensure the podcast dir exists (episodes land here)
+  ansible.builtin.file:
+    path: "{{ tts_podcast_dir }}"
+    state: directory
+    owner: "{{ tts_worker_user }}"
+    group: "{{ tts_worker_user }}"
+    mode: "0755"
+  become: true
+
+# ── (re)build the precis-tts image on the node ────────────────────────
+- name: (Re)build the precis-tts image
+  when: tts_build_image | bool
+  block:
+    - name: Ensure the build context dir on the node
+      ansible.builtin.file:
+        path: /tmp/precis-tts-build
+        state: directory
+        mode: "0755"
+      become: true
+
+    - name: Copy the precis-tts build context to the node
+      # copy (not synchronize) rides ansible's own ssh — the controller's
+      # ssh-agent is flaky and synchronize spawns a fresh rsync ssh that fails
+      # agent auth. The context is two small files (Dockerfile + shim).
+      ansible.builtin.copy:
+        src: "{{ tts_src_dir }}/"
+        dest: /tmp/precis-tts-build/
+        mode: preserve
+      become: true
+
+    - name: Ensure the base image is present (pull only if missing — registry is flaky)
+      ansible.builtin.shell: >-
+        {{ tts_container_cmd }} image inspect {{ tts_base_image }} >/dev/null 2>&1
+        || {{ tts_container_cmd }} pull {{ tts_base_image }}
+      become: true
+      register: tts_basepull
+      retries: 8
+      delay: 15
+      until: tts_basepull.rc == 0
+      changed_when: "'Pull complete' in tts_basepull.stdout"
+
+    - name: Build the precis-tts image
+      # The build pip-installs precis-mcp@{{ tts_precis_ref }} + misaki and curls
+      # the ~330 MB Kokoro models + warms the misaki dicts — a few minutes, needs
+      # PyPI + GitHub reachable (separate infra from the flaky Docker Hub HEAD).
+      ansible.builtin.command:
+        cmd: >-
+          {{ tts_container_cmd }} build
+          -t {{ tts_image }}
+          --build-arg PRECIS_REF={{ tts_precis_ref }}
+          .
+        chdir: /tmp/precis-tts-build
+      environment:
+        DOCKER_BUILDKIT: "0"
+      become: true
+      register: tts_build
+      retries: 3
+      delay: 5
+      until: tts_build.rc == 0
+      changed_when: >-
+        'Successfully' in (tts_build.stdout + tts_build.stderr)
+        or 'COMMIT' in (tts_build.stdout + tts_build.stderr)
+        or 'Storing signatures' in (tts_build.stdout + tts_build.stderr)
+
+- name: Assert the precis-tts image is present
+  ansible.builtin.command: "{{ tts_container_cmd }} image inspect {{ tts_image }}"
+  become: true
+  register: tts_img
+  changed_when: false
+  failed_when: tts_img.rc != 0
+  # Fails when the image is absent: (re)build with -e tts_build_image=true.
+
+# ── worker env (systemd drop-in — leaves the precis_worker unit untouched) ──
+- name: Ensure the precis env dir
+  ansible.builtin.file:
+    path: /etc/precis
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Drop the worker tts env file
+  ansible.builtin.template:
+    src: tts.env.j2
+    dest: /etc/precis/tts.env
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart precis-worker (tts)
+
+- name: Ensure the precis-worker systemd drop-in dir
+  ansible.builtin.file:
+    path: /etc/systemd/system/precis-worker.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Drop the precis-worker tts env drop-in (EnvironmentFile)
+  ansible.builtin.template:
+    src: precis-worker-tts.conf.j2
+    # 40- sorts after dft's 10-, catpath's 20-, aizynth's 30-.
+    dest: /etc/systemd/system/precis-worker.service.d/40-tts.conf
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart precis-worker (tts)

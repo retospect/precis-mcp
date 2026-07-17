@@ -1,0 +1,7 @@
+---
+# Deploy daily briefing infrastructure (RSS ingestion + prompt management)
+# Runs on the scheduler node (scheduler), with DB migrations delegated to the data node
+- name: Daily briefing infrastructure
+  hosts: scheduler
+  roles:
+    - daily_briefing

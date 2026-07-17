@@ -1,0 +1,14 @@
+---
+- name: restart postgresql
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    launchctl kickstart -k system/com.postgresql
+  become: true
+  failed_when: false
+
+- name: restart postgresql (linux)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: postgresql
+    state: restarted
+  become: true

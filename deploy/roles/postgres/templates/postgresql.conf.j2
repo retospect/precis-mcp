@@ -1,0 +1,66 @@
+# Managed by Ansible — do not edit
+listen_addresses = '{{ postgres_listen_addresses | default("*") }}'
+port = {{ postgres_port }}
+
+# Unix socket — pin to /tmp so the socket path is deterministic across
+# restarts. initdb bakes a host-detected default into the base
+# postgresql.conf; a restart that moved the socket off /tmp took the
+# 02-postgres DB-management tasks RED with "connection refused", because
+# their peer-auth connection hardcodes login_unix_socket: /tmp (peer auth
+# needs the socket, so TCP is not an option). Pinning both ends to /tmp
+# removes the drift (gripe 160582). pgbouncer's 6432 socket lives here too.
+unix_socket_directories = '/tmp'
+
+# Memory — sized for the data node (32 GB RAM, NVMe SSD, single primary).
+# Old values (256MB / 1GB) were tiny-VM defaults and biased the planner toward
+# seq scans; effective_cache_size especially is just a planner hint (no alloc).
+shared_buffers = '8GB'
+effective_cache_size = '20GB'
+work_mem = '64MB'
+maintenance_work_mem = '512MB'
+
+# Planner — NVMe SSD, not spinning rust. random_page_cost = 4 made index scans
+# look ~4x too expensive vs seq scans; 1.1 reflects real SSD random-read cost.
+random_page_cost = 1.1
+{# macOS lacks posix_fadvise(); effective_io_concurrency must be 0 there. #}
+effective_io_concurrency = {{ 0 if os_family == 'darwin' else 200 }}
+max_parallel_workers_per_gather = 4
+track_io_timing = on
+
+# WAL
+wal_level = replica
+max_wal_senders = 3
+
+# Timezone — UTC throughout. initdb bakes the host-detected zone ('GB' on
+# these Macs) into the base postgresql.conf; this conf.d override loads after
+# it and wins. Every session then reports/interprets timestamps in UTC, which
+# also silences psycopg's "unknown PostgreSQL timezone: 'GB'" warning (it
+# can't map the 'GB' alias to a Python zoneinfo). The DB stores timestamptz as
+# UTC internally regardless — this pins the session default so rendering and
+# naive-timestamp interpretation are UTC too, not British Summer Time.
+timezone = 'UTC'
+log_timezone = 'UTC'
+
+# Logging
+log_destination = 'stderr'
+logging_collector = on
+log_directory = 'log'
+log_filename = 'postgresql-%Y-%m-%d.log'
+log_min_duration_statement = 1000
+log_autovacuum_min_duration = 0          # log every autovacuum/analyze (observability)
+
+# Autovacuum — on by default; this makes it keep up on high-churn tables.
+# cost_limit raised so a vacuum completes quickly instead of being throttled
+# and then canceled by competing queries. Per-table overrides on the hot
+# chunks* tables are set via ALTER TABLE (catalog-stored).
+autovacuum_vacuum_scale_factor = 0.05
+autovacuum_analyze_scale_factor = 0.02
+autovacuum_vacuum_cost_delay = '2ms'
+autovacuum_vacuum_cost_limit = 2000
+
+# Extensions
+shared_preload_libraries = 'pg_cron,pg_stat_statements'
+cron.database_name = 'precis_prod'
+compute_query_id = on
+pg_stat_statements.max = 10000
+pg_stat_statements.track = top

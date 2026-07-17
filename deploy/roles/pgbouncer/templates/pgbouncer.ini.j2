@@ -1,0 +1,26 @@
+; Managed by Ansible — do not edit
+[databases]
+precis_prod = host=127.0.0.1 port={{ postgres_port }} dbname=precis_prod
+; openclaw is the retired monolith DB, kept routable until it is fully
+; retired (port news/data out first). Remove this line with the openclaw DB.
+openclaw = host=127.0.0.1 port={{ postgres_port }} dbname=openclaw
+
+[pgbouncer]
+listen_addr = *
+listen_port = {{ pgbouncer_listen_port }}
+auth_type = md5
+auth_file = /usr/local/etc/pgbouncer/userlist.txt
+pool_mode = transaction
+max_client_conn = {{ pgbouncer_max_client_conn | default(200) }}
+default_pool_size = {{ pgbouncer_default_pool_size | default(25) }}
+min_pool_size = 5
+reserve_pool_size = 5
+reserve_pool_timeout = 3
+server_lifetime = 3600
+server_idle_timeout = 600
+log_connections = 0
+log_disconnections = 0
+stats_period = 60
+admin_users = {{ 'deploy' if os_family == 'darwin' else 'postgres' }}
+pidfile = /opt/homebrew/var/run/pgbouncer/pgbouncer.pid
+logfile = {{ shared_mount }}/logs/pgbouncer.log

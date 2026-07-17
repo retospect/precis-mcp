@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} #}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.dream</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/opt/asa/bin/dream-pass.sh</string>
+  </array>
+
+  <!-- Fire every 15 minutes (:00, :15, :30, :45). 96 passes/day; a
+       newly-written internal-thought enters the dream rotation within
+       ~15 min. Each pass is one claude opus call (~3-5K tokens) so
+       this stays well within Max-plan limits. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Minute</key><integer>45</integer></dict>
+  </array>
+
+  <!-- Don't fire at load — a dream pass is heavy enough (~30-60s of
+       qwen-heavy inference) that we'd rather wait for the next
+       scheduled window than thrash on every plist reload. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- Transient timer, not a daemon. Each fire spawns
+       'precis worker only dream_agent', runs one pass, exits.
+       KeepAlive=false. (Avoid the literal '- -only' inside this
+       comment — XML disallows '- -' in a comment body, which trips
+       strict parsers even though Apple's plutil tolerates it.) -->
+  <key>KeepAlive</key>
+  <false/>
+
+  <!-- Run as hermes so claude -p inherits her Max-plan OAuth + her
+       ~/.claude config (the asa-bot daemon also runs as hermes). -->
+  <key>UserName</key>
+  <string>hermes</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/hermes</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/hermes</string>
+    <key>PATH</key>
+    <string>/opt/asa/venv/bin:/opt/homebrew/bin:/opt/mcps/venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PRECIS_PROCESS</key>
+    <string>precis-dream</string>
+    {# The dream wrapper invokes ``precis worker --only dream_agent`` which
+       loads the precis runtime and needs a Postgres DSN. Without
+       PRECIS_DATABASE_URL the worker exits 2 immediately ("no
+       database_url configured…") and the plist just respawns on
+       every StartCalendarInterval tick — every 15 min, forever.
+       Use the same agent_rw DSN the worker-agent does (same role,
+       both run as hermes, both want the same write perms). #}
+    <key>PRECIS_DATABASE_URL</key>
+    <string>{{ precis_dream_dsn }}</string>
+    {# Shared API keys — see inventory/group_vars/all/precis_env.yml.
+       Dream calls claude -p directly today, but the precis MCP
+       handlers it can dispatch into may use Perplexity / EPO. #}
+    {% for env_key, env_val in precis_shared_env.items() %}
+    <key>{{ env_key }}</key>
+    <string>{{ env_val }}</string>
+    {% endfor %}
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/precis-dream.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/precis-dream.log</string>
+</dict>
+</plist>

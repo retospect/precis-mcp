@@ -1,0 +1,52 @@
+# {{ ansible_managed }}
+# precis worker — pulls chunk_embeddings / chunk_summaries batches from
+# the postgres queue. Multiple nodes run identical units; postgres
+# row-level locking arbitrates work.
+
+[Unit]
+Description=precis-mcp derived-artifact worker (embed + summarize)
+After=network-online.target autossh@{{ postgres_host }}.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+
+WorkingDirectory=/tmp
+
+Environment=PATH={{ precis_worker_venv }}/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/precis
+Environment=PRECIS_DATABASE_URL={{ precis_worker_dsn }}
+Environment=HF_HOME={{ precis_worker_hf_home }}
+Environment=PRECIS_PROCESS=precis-worker
+Environment=PRECIS_SOURCE=precis-worker
+Environment=PRECIS_MAX_TICKS={{ precis_max_ticks | default(10000) }}
+Environment=PRECIS_MAX_TODO_USD={{ precis_max_todo_usd | default(5.0) }}
+Environment=PRECIS_DAILY_COST_CEILING={{ precis_daily_cost_ceiling | default(50.0) }}
+{# sandbox_run executor — emitted ONLY on the agent_sandbox_hosts (the gate
+   reads it raw, so "0" would enable it; omit rather than set false). #}
+{% if inventory_hostname in groups['agent_sandbox_hosts'] %}
+Environment=PRECIS_SANDBOX_ENABLED=1
+{% endif %}
+
+# Shared API keys — see inventory/group_vars/all/precis_env.yml.
+{% for env_key, env_val in precis_shared_env.items() %}
+Environment={{ env_key }}={{ env_val }}
+{% endfor %}
+
+ExecStart={{ precis_worker_venv }}/bin/precis worker \
+  --profile system \
+  --batch-size {{ precis_worker_batch_size }} \
+  --idle-seconds {{ precis_worker_idle_seconds }} \
+  --embedder {{ precis_worker_embedder }} \
+  --embedder-url {{ precis_worker_embedder_url }} \
+  --summarizer-model {{ precis_worker_summarizer }}
+
+Restart=always
+RestartSec=30
+StandardOutput=append:/var/log/precis-worker.log
+StandardError=append:/var/log/precis-worker.log
+
+[Install]
+WantedBy=multi-user.target

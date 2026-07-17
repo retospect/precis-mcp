@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} #}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.worker-agent</string>
+
+  {# bash wrapper makes /bin/bash the TCC "responsible process". Same
+     pattern as precis_worker. #}
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>exec {{ precis_worker_agent_venv }}/bin/precis worker --profile agent --batch-size {{ precis_worker_agent_batch_size }} --idle-seconds {{ precis_worker_agent_idle_seconds }}</string>
+  </array>
+
+  {# hermes owns the OAuth claude state + ~/.claude/mcp.json the
+     review passes inject via call_claude_agent. Same user as
+     precis_dream / the now-deleted precis_structural. #}
+  <key>UserName</key>
+  <string>hermes</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/hermes</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/hermes</string>
+    <key>PATH</key>
+    <string>{{ precis_worker_agent_venv }}/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PRECIS_DATABASE_URL</key>
+    <string>{{ precis_worker_agent_dsn }}</string>
+    <key>PRECIS_MCP_CONFIG</key>
+    <string>{{ precis_worker_agent_mcp_config }}</string>
+    <key>PRECIS_SOURCE</key>
+    <string>precis-worker-agent</string>
+    {# PRECIS_PROCESS tags every row in worker_logs so
+       `precis logs --process precis-worker-agent` filters cleanly. #}
+    <key>PRECIS_PROCESS</key>
+    <string>precis-worker-agent</string>
+    {# Gate envs — set to "1" to enable the corresponding review
+       pass. Clearing any of these mutes the pass without
+       uninstalling. #}
+    <key>PRECIS_STRUCTURAL_REVIEW</key>
+    <string>1</string>
+    <key>PRECIS_DEEP_REVIEW</key>
+    <string>1</string>
+    {% if precis_worker_agent_load_ceiling %}
+    <key>PRECIS_LOAD_CEILING</key>
+    <string>{{ precis_worker_agent_load_ceiling }}</string>
+    {% endif %}
+    {# Planner-coroutine guardrails. Defaults are 10/2/20 in code;
+       bumped here so the first real production planner can converge
+       on a strategic with ~5-level decomposition before hitting the
+       tick cap, and the daily ceiling allows ~10 planning sessions
+       a day. Override at the host-vars level if a budget shift is
+       needed. #}
+    <key>PRECIS_MAX_TICKS</key>
+    <string>{{ precis_max_ticks | default(10000) }}</string>
+    <key>PRECIS_MAX_TODO_USD</key>
+    <string>{{ precis_max_todo_usd | default(5.0) }}</string>
+    <key>PRECIS_DAILY_COST_CEILING</key>
+    <string>{{ precis_daily_cost_ceiling | default(50.0) }}</string>
+    {# Autonomous quest loop (rung 4d, agent-profile only). The allocator
+       pass mints frontier ticks + structure-relax compute; the weekly
+       budget caps its spend (distinct from the global $/day breaker).
+       Compute relax rides the existing GPU DFT lane.
+       GATED OFF by default: the loop's frontier ticks are PAID calls, so
+       it only does useful work when the global budget breaker
+       (PRECIS_BUDGET_DAILY_USD) has headroom — otherwise every tick
+       claims, hits the tripped breaker, fails, and re-claims in a
+       ~0.5s spin. Flip `precis_quest_loop_enabled: true` in
+       the gateway's host_vars once the daily cap is raised. #}
+    <key>PRECIS_QUEST_LOOP_ENABLED</key>
+    <string>{{ '1' if precis_quest_loop_enabled | default(false) else '0' }}</string>
+    <key>PRECIS_QUEST_WEEKLY_BUDGET</key>
+    <string>{{ precis_quest_weekly_budget | default(25) }}</string>
+    {# diagram_propose autonomous drawer — agentic path (claude_inproc). #}
+    <key>PRECIS_DIAGRAM_AGENTIC</key>
+    <string>1</string>
+    {# card_forge morning pass — `act` applies the retire/rework ladder
+       (default `report` = observe-only). Composes here (claude_inproc). #}
+    <key>PRECIS_CARD_FORGE_AUTONOMY</key>
+    <string>{{ precis_card_forge_autonomy | default('act') }}</string>
+    {# Shared API keys — Perplexity, EPO OPS, patent raw cache.
+       See inventory/group_vars/all/precis_env.yml. Same block in
+       every precis-* daemon so capability parity is automatic. #}
+    {% for env_key, env_val in precis_shared_env.items() %}
+    <key>{{ env_key }}</key>
+    <string>{{ env_val }}</string>
+    {% endfor %}
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  {# Long-running daemon. KeepAlive=true so launchd restarts on
+     crash; ThrottleInterval prevents a crash-loop from chewing
+     CPU. Matches precis_worker. #}
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  {# Jetsam protection. This node co-hosts local llama.cpp inference
+     servers that wire down the bulk of RAM (~70G+ resident, most of
+     the machine's memory shows as wired). Under that pressure macOS
+     terminates low-band background LaunchDaemons for "efficiency"
+     (`launchctl print` reports `immediate reason = inefficient`) —
+     and this worker, though tiny (~100 MB RSS), was being culled
+     ~200x/day. Each kill that lands mid-tick orphans a claimed
+     `plan_tick` (STATUS:running with no live runner) → the sweeper
+     fails it `swept:claim-orphaned` → the parent todo child-fails and
+     never converges. This host is the ONLY place plan_tick runs, so
+     the worker must outlive the memory pressure. ProcessType
+     Interactive raises its jetsam band toward the foreground tier so
+     it is culled last, not first, and disables App-Nap-style timer
+     throttling. The lightweight footprint makes the elevation cheap. #}
+  <key>ProcessType</key>
+  <string>Interactive</string>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/precis-worker-agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/precis-worker-agent.log</string>
+</dict>
+</plist>

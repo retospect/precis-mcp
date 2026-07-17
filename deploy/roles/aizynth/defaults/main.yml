@@ -1,0 +1,58 @@
+---
+# aizynth role defaults — configure a Linux compute node to run
+# precis-mcp `retrosynth` jobs (ADR 0056 slice 1b). AiZynthFinder lives in the
+# `precis-aizynth` container IMAGE, not the worker venv, so this role only wires
+# the container runtime + NFS scratch + the AiZynth models on the NAS + the
+# worker's PRECIS_CHEM_* / PRECIS_NODE env. There is nothing to pip-install:
+# the `route` kind + `retrosynth` job_type are bundled in precis-mcp (already in
+# every venv), and the plugin migration already applied at deploy.
+#
+# Mirrors roles/dft (a container job on the compute node), gated on the single
+# topology map: this role runs where `inventory_hostname in
+# precis_capabilities.chem_route`.
+
+# The node this role targets / retrosynth jobs pin themselves to. Must match
+# inventory_hostname so the target_node claim gate lets THIS node's worker claim
+# the job (and the container runner run locally, no self-ssh — so the /work
+# bind paths line up on the same box that staged them).
+aizynth_node: "{{ inventory_hostname }}"
+
+# The precis-aizynth wrapper image (built on the node from docker/aizynth).
+# docker is the GPU node's deployed runtime (same as roles/dft); the executor is
+# OCI-agnostic (ADR 0056 §5 — "if the GPU node already runs docker, use it"). AiZynth
+# is CPU-only, so no --gpus / nvidia toolkit is needed, unlike roles/dft.
+aizynth_image: "precis-aizynth:latest"
+aizynth_container_cmd: docker
+# The wrapper's base image — pre-pulled (with retries) before the build so a
+# flaky Docker Hub metadata HEAD doesn't fail the build. Keep in sync with the
+# FROM in docker/aizynth/Dockerfile.
+aizynth_base_image: "python:3.11-slim-bookworm"
+
+# the data node's NFS export, as mounted on this node (the GPU node = /shared). The container
+# in/out scratch lives here so the claiming worker and the container share a
+# filesystem view.
+aizynth_nfs_root: /shared
+aizynth_scratch_dir: "{{ aizynth_nfs_root }}/scratch"
+
+# AiZynth policy/stock model files (config.yml + the ONNX/template/stock data),
+# on the shared NAS, mounted read-only at /models in the container (ADR 0056 §5:
+# image = code, weights = mounted data). Downloaded once (below).
+aizynth_models_dir: "{{ aizynth_nfs_root }}/aizynth-models"
+
+# The worker runs as this user; rootless podman runs containers as it.
+aizynth_worker_user: deploy
+
+# (Re)build the wrapper image on the node (rsync docker/aizynth → podman build).
+# Needed for the first run; podman's layer cache makes re-runs cheap. Flip off
+# to skip once the image is present:
+#   ansible-playbook playbooks/43-aizynth.yml -e aizynth_build_image=false
+aizynth_build_image: true
+# The build context is precis-mcp's docker/aizynth (Dockerfile + shim), on the
+# ansible controller (this laptop), rsync'd to the node.
+aizynth_src_dir: "{{ lookup('env', 'HOME') }}/work/projects/code/precis-mcp/docker/aizynth"
+
+# Download AiZynth's public models into aizynth_models_dir (one-time, hundreds
+# of MB from figshare via AiZynth's `download_public_data`). Idempotent: skipped
+# when a config.yml is already present. Flip off to wire env without downloading:
+#   ansible-playbook playbooks/43-aizynth.yml -e aizynth_download_models=false
+aizynth_download_models: true

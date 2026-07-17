@@ -1,0 +1,15 @@
+---
+# precis_dream role defaults.
+
+# Same DSN the agent worker uses — the dream pass invokes
+# ``precis worker --only dream_agent`` against the precis runtime,
+# which needs Postgres write perms (memory put, ref_tags upsert,
+# ref_events append). agent_rw is the right role; pgbouncer is
+# the local SSH-tunneled port so connections stay local.
+#
+# Keep the value byte-for-byte identical to
+# precis_worker_agent_dsn (precis_worker_agent/defaults/main.yml)
+# — same user, same host, same port. A diff between them would
+# surface as the dream worker silently bypassing connection
+# pooling rules the agent worker enforces.
+precis_dream_dsn: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"

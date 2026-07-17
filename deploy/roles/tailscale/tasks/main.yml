@@ -1,0 +1,120 @@
+---
+# Install Tailscale and join the the tailnet tailnet
+
+- name: Install Tailscale (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: tailscale
+    state: present
+  become: false
+
+- name: Install Tailscale (Linux)
+  when: os_family == "linux"
+  block:
+    - name: Add Tailscale apt key
+      ansible.builtin.shell: |
+        curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg \
+          | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+      args:
+        creates: /usr/share/keyrings/tailscale-archive-keyring.gpg
+      become: true
+
+    - name: Add Tailscale apt repo
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu jammy main"
+        filename: tailscale
+        state: present
+      become: true
+
+    - name: Install tailscale package
+      ansible.builtin.apt:
+        name: tailscale
+        state: present
+        update_cache: true
+      become: true
+
+    - name: Enable and start tailscaled
+      ansible.builtin.systemd:
+        name: tailscaled
+        enabled: true
+        state: started
+      become: true
+
+# Resolve tailscale binary — Homebrew path on macOS, system path on Linux
+- name: Set tailscale binary path
+  ansible.builtin.set_fact:
+    tailscale_bin: "{{ '/opt/homebrew/bin/tailscale' if os_family == 'darwin' else 'tailscale' }}"
+    brew_bin: /opt/homebrew/bin/brew
+
+- name: Start Tailscale daemon (macOS)
+  when: os_family == "darwin"
+  block:
+    - name: Ensure tailscaled state and log directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      become: true
+      loop:
+        - /var/lib/tailscale
+        - /opt/homebrew/var/log
+
+    - name: Stop nohup tailscaled if running outside launchd
+      ansible.builtin.shell: |
+        pkill -f 'nohup.*tailscaled' 2>/dev/null || true
+      become: true
+      changed_when: false
+
+    - name: Deploy tailscaled launchd plist
+      ansible.builtin.template:
+        src: tailscaled.plist.j2
+        dest: /Library/LaunchDaemons/com.tailscale.tailscaled.plist
+        mode: "0644"
+      become: true
+
+    - name: Ensure tailscaled is loaded
+      ansible.builtin.shell: |
+        launchctl list | grep -q com.tailscale.tailscaled || launchctl load -w /Library/LaunchDaemons/com.tailscale.tailscaled.plist
+      become: true
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for tailscaled socket
+      ansible.builtin.wait_for:
+        path: /var/run/tailscaled.socket
+        timeout: 10
+
+- name: Check Tailscale status
+  ansible.builtin.command: "{{ tailscale_bin }} status --json"
+  register: ts_status
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Bring up Tailscale on the the tailnet tailnet
+  when: >
+    ts_status.rc != 0 or
+    (ts_status.stdout | from_json).BackendState | default('') != 'Running'
+  ansible.builtin.command: >
+    {{ tailscale_bin }} up
+    --authkey={{ vault_tailscale_authkey }}
+    --hostname={{ inventory_hostname }}
+    --accept-routes
+    --reset
+  become: true
+
+- name: Verify Tailscale IP matches inventory
+  block:
+    - name: Get current Tailscale IP
+      ansible.builtin.command: "{{ tailscale_bin }} ip -4"
+      register: ts_ip
+      changed_when: false
+      become: true
+
+    - name: Warn if Tailscale IP does not match ansible_host
+      ansible.builtin.debug:
+        msg: >
+          WARNING: Tailscale IP {{ ts_ip.stdout | trim }} does not match
+          ansible_host {{ ansible_host }}. Update inventory or re-assign in
+          Tailscale admin console.
+      when: ts_ip.stdout | trim != ansible_host

@@ -99,6 +99,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_wake_runner_pass": PassBand.JOB,
     "_auto_check_pass": PassBand.PLANNER,
     "_schedule_pass": PassBand.PLANNER,
+    "_scheduler_pass": PassBand.PLANNER,
     "_dispatch_pass": PassBand.PLANNER,
     "_sweeper_pass": PassBand.PLANNER,
     "_nursery_pass": PassBand.HEALTH,
@@ -1116,6 +1117,23 @@ def run(args: argparse.Namespace) -> None:
                 return run_schedule_pass(store, limit=batch_size)
 
             ref_passes.append(_schedule_pass)
+
+        # Scheduler pass — §15i, slice 10 (DARK). The decentralized
+        # recurring-work trigger: folds the standalone thin-timer daemons
+        # (cron tick, watch poll) into the worker via a DB-lease conditional
+        # advance (exactly-once across the fleet, no designated node). Off by
+        # default (no profile, PRECIS_SCHEDULER_ENABLED unset) so the launchd
+        # timers still own the ticks — no double-fire until the Phase-2 flip.
+        if _pass_enabled("scheduler"):
+            from precis.workers.runner import BatchResult as _BatchResult
+            from precis.workers.scheduler import run_scheduler_pass
+
+            def _scheduler_pass(batch_size: int) -> _BatchResult:
+                return run_scheduler_pass(
+                    store, host=host_name(), batch_size=batch_size
+                )
+
+            ref_passes.append(_scheduler_pass)
 
         # Nursery pass — Slice 3 of todo-tree-plan.md. SQL-only
         # pattern matcher that surfaces local incoherence (orphans,

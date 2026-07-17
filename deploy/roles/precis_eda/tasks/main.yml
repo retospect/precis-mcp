@@ -1,0 +1,68 @@
+---
+# precis_eda — the electronics/PCB toolchain (ADR 0042 §6), gateway only.
+#
+# precis.pcb.route shells out to Freerouting (java -jar … -de in.dsn -do
+# out.ses) for the place<->route round-trip. The wrapper is gated on the jar
+# (PRECIS_FREEROUTING_JAR) and degrades cleanly to .dsn-only when absent, so
+# this role is purely additive — nothing breaks if it hasn't run yet.
+#
+# The Python footprint backend (easyeda2kicad, the `pcb` extra) ships with the
+# precis_web venv install, not here. kicad-cli (gerbers) is Tier 2, deferred.
+
+- name: Ensure a JRE for Freerouting (macOS — Temurin)
+  when: os_family == "darwin"
+  community.general.homebrew_cask:
+    name: temurin
+    state: present
+  become: false
+  ignore_errors: true   # large download; tolerate intermittent network
+  tags: [precis-eda, precis]
+
+- name: Ensure a JRE for Freerouting (Linux)
+  when: os_family == "linux"
+  ansible.builtin.package:
+    name: default-jre-headless
+    state: present
+  become: true
+  tags: [precis-eda, precis]
+
+- name: Ensure EDA artifact dir
+  ansible.builtin.file:
+    path: "{{ precis_eda_dir }}"
+    state: directory
+    owner: deploy
+    mode: "0755"
+  become: true
+  tags: [precis-eda, precis]
+
+- name: Download Freerouting headless jar
+  ansible.builtin.get_url:
+    url: "{{ precis_eda_freerouting_url }}"
+    dest: "{{ precis_eda_freerouting_jar }}"
+    # Verify when a sha256 is pinned in defaults; otherwise omit the check
+    # (download unverified — pin it for supply-chain safety).
+    checksum: "{{ ('sha256:' + precis_eda_freerouting_sha256)
+                  if precis_eda_freerouting_sha256 else omit }}"
+    owner: deploy
+    mode: "0644"
+  become: true
+  tags: [precis-eda, precis]
+
+- name: Verify java can load the Freerouting jar (headless --help)
+  ansible.builtin.command:
+    cmd: java -Djava.awt.headless=true -jar {{ precis_eda_freerouting_jar }} -h
+  become: false
+  register: precis_eda_fr_check
+  changed_when: false
+  failed_when: false
+  tags: [precis-eda, precis]
+
+- name: Report Freerouting availability
+  ansible.builtin.debug:
+    msg: >-
+      Freerouting {{ precis_eda_freerouting_version }} at
+      {{ precis_eda_freerouting_jar }} —
+      {{ 'reachable (rc=' ~ precis_eda_fr_check.rc ~ ')'
+         if precis_eda_fr_check.rc is defined else 'check skipped' }}.
+      PRECIS_FREEROUTING_JAR is set via precis_shared_env.
+  tags: [precis-eda, precis]

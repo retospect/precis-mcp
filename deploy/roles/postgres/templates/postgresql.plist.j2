@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.postgresql</string>
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Guarded launcher (clears a stale postmaster.pid on unclean
+             shutdown before exec'ing postgres); see pg-guarded-start.sh.j2. -->
+        <string>/opt/homebrew/etc/pg-guarded-start.sh</string>
+    </array>
+    <key>UserName</key>
+    <string>{{ pg_user }}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/opt/homebrew/var/log/postgresql@17.log</string>
+    <key>StandardOutPath</key>
+    <string>/opt/homebrew/var/log/postgresql@17.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>LC_ALL</key>
+        <string>C</string>
+    </dict>
+</dict>
+</plist>

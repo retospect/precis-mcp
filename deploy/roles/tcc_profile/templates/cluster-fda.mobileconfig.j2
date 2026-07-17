@@ -1,0 +1,74 @@
+{#-
+  cluster-fda.mobileconfig
+  {{ ansible_managed }}
+
+  PPPC (Privacy Preferences Policy Control) profile granting Full Disk
+  Access (kTCCServiceSystemPolicyAllFiles) to the cluster's daemon
+  binaries. Required on macOS 15+ so that launchd/cron-spawned processes
+  can access the NFS mount (/opt/shared). See roles/tcc_profile/defaults
+  for rationale.
+
+  This profile is *unsigned* — macOS will require one-time user approval
+  in System Settings → Profiles on each Mac. Signing it would require a
+  Developer ID cert; we don't have one, and unsigned profiles work fine
+  for unsupervised hosts with explicit approval.
+-#}
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadDisplayName</key>
+      <string>Cluster Full Disk Access — PPPC payload</string>
+      <key>PayloadIdentifier</key>
+      <string>{{ tcc_profile_identifier | e }}.pppc</string>
+      <key>PayloadType</key>
+      <string>com.apple.TCC.configuration-profile-policy</string>
+      <key>PayloadUUID</key>
+      <string>{{ (tcc_profile_identifier ~ '.pppc') | to_uuid | upper }}</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>Services</key>
+      <dict>
+        <key>SystemPolicyAllFiles</key>
+        <array>
+{% for rec in tcc_profile_records | sort(attribute='path') %}
+          <dict>
+            <key>Allowed</key>
+            <true/>
+            <key>CodeRequirement</key>
+            <string>{{ rec.requirement | e }}</string>
+            <key>Comment</key>
+            <string>Cluster daemon binary: {{ rec.path | e }}</string>
+            <key>Identifier</key>
+            <string>{{ rec.path | e }}</string>
+            <key>IdentifierType</key>
+            <string>path</string>
+            <key>StaticCode</key>
+            <false/>
+          </dict>
+{% endfor %}
+        </array>
+      </dict>
+    </dict>
+  </array>
+  <key>PayloadDescription</key>
+  <string>{{ tcc_profile_description | trim | e }}</string>
+  <key>PayloadDisplayName</key>
+  <string>{{ tcc_profile_display_name | e }}</string>
+  <key>PayloadIdentifier</key>
+  <string>{{ tcc_profile_identifier | e }}</string>
+  <key>PayloadOrganization</key>
+  <string>{{ tcc_profile_organization | e }}</string>
+  <key>PayloadScope</key>
+  <string>System</string>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>{{ tcc_profile_identifier | to_uuid | upper }}</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+</dict>
+</plist>

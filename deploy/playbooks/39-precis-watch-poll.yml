@@ -1,0 +1,16 @@
+---
+# 39-precis-watch-poll.yml — launchd timer for the citation-forward
+# watcher (`precis worker --only watch_poll`). Runs on the gateway; polls
+# Semantic Scholar for papers citing our most-due salient papers and
+# mints stubs (docs/design/watching.md). fetch_oa OA-gates acquisition.
+#
+# Run order: requires the mcps role (14-mcps.yml) to have installed a
+# precis new enough to ship the watch_poll pass, ssh_tunnels (pgbouncer
+# to the data node), and SEMANTIC_SCHOLAR_API_KEY in precis_shared_env.
+
+- name: Deploy precis watch-poll timer (citation-forward corpus growth)
+  hosts: gateway
+  become: true
+  roles:
+    - precis_watch_poll
+  tags: [precis-watch-poll, precis]

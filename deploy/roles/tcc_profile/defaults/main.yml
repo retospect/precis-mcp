@@ -1,0 +1,64 @@
+---
+# tcc_profile role — builds a per-host "Full Disk Access" checklist at
+# /Users/Shared/cluster-fda-checklist.txt listing every cluster binary
+# that must be granted FDA via System Settings.
+#
+# Why this exists
+# ───────────────
+# macOS 15+ denies NFS access to every process spawned by launchd or cron
+# (LaunchDaemons, LaunchAgents, cron, at, periodic), regardless of UID.
+# Only SSH sessions and GUI apps get implicit access. Consequence: every
+# cron job and LaunchDaemon we deploy that touches /opt/shared silently
+# EPERM's.
+#
+# On macOS 26 Apple also blocks unsigned PPPC profiles from installing
+# outside MDM ("Profile Installation failed. The profile must originate
+# from a user approved MDM server."). For a small cluster we skip MDM
+# entirely and click each binary into Full Disk Access manually once.
+# This role's job is to tell the operator exactly which binaries, on
+# each host, and why.
+#
+# Stability: the sibling roles (mcps, extract_watch, hermes) create
+# their venvs with `python -m venv --symlinks` so the venv's python
+# resolves to Homebrew's python binary. FDA grants pin to the resolved
+# cdhash, so they survive Ansible re-runs and only break on
+# `brew upgrade python@3.1x`. Pin with `brew pin python@3.14` /
+# `brew pin python@3.12` on hosts where the re-click is annoying.
+
+# Canonical binary list. Each role that schedules work via launchd/cron
+# should ensure its binary is listed here (or overridden per host).
+# Missing binaries are dropped silently so the same list works across
+# gateway / scheduler / data nodes.
+tcc_profile_binaries:
+  # Apple-signed system binaries — always present, grants are stable.
+  - /usr/sbin/cron
+  - /bin/sh
+  - /bin/bash
+  # SSH sessions accessing SMB autofs mounts (/opt/nas) need FDA on sshd-keygen-wrapper.
+  # NFS at /opt/shared gets an implicit SSH grant; SMB does not.
+  - /usr/libexec/sshd-keygen-wrapper
+  # automountd performs the actual SMB mount; without FDA it fails with EPERM
+  # before any shell-side grants matter. Restart with:
+  #   sudo killall automountd   # launchd respawns it on demand
+  - /usr/libexec/automountd
+  # autofsd is the higher-level autofs LaunchDaemon (pid 151) that triggers
+  # automountd. Both need FDA for SMB autofs mounts to succeed.
+  - /usr/libexec/autofsd
+
+  # Shared /opt/mcps venv (symlink → /opt/homebrew/opt/python@3.14/…).
+  # Used by daily_briefing, sortie runner, quest runner, most cron jobs.
+  - /opt/mcps/venv/bin/python3
+
+  # Dedicated extract-watch venv (symlink → /opt/homebrew/opt/python@3.12/…).
+  - /opt/mcps/extract/venv/bin/python3
+
+  # precis_worker venv (symlink → /opt/homebrew/opt/python@3.12/… because
+  # marker-pdf/pillow refuses to build on 3.14). Same resolved binary as
+  # /opt/mcps/extract/venv/bin/python3 → same cdhash → same FDA grant on
+  # hosts where extract_watch already deployed. On data nodes (the data node) this
+  # is the only 3.12 venv → needs its own click.
+  - /opt/precis/venv/bin/python3
+
+  # Hermes / Asa agent venv (symlink → /opt/homebrew/opt/python@3.14/…).
+  # Present on the gateway only; auto-skipped elsewhere.
+  - /opt/hermes/venv/bin/python3

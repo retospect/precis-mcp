@@ -58,8 +58,17 @@ OFFERING_KEYS: frozenset[str] = frozenset(
         "price_in",
         "price_out",
         "quant",
+        # slice 7 / §6: which hosts serve this offering LOCALLY, and how many
+        # concurrent calls each admits. Seeds ``resource_slots`` (the
+        # ``max_parallel`` IS the slot capacity); a capability-gated inline-LLM
+        # pass reserves a local slot before calling localhost. Absent on
+        # external-service offerings (OpenRouter / anthropic — no reservation).
+        "served_by",
     }
 )
+
+#: Keys one ``served_by`` entry (a local-serving host for an offering) may carry.
+SERVED_BY_KEYS: frozenset[str] = frozenset({"host", "endpoint", "max_parallel"})
 
 #: Keys a reconciled **endpoint** (a bookable provider×quant variant, minted by
 #: ``llm_reconcile`` from OpenRouter ``/models/{slug}/endpoints``) may carry. An
@@ -109,8 +118,35 @@ def _validate_offerings(offerings: Any) -> list[dict[str, Any]]:
                 f"unknown offering key(s) {sorted(unknown)}",
                 options=sorted(OFFERING_KEYS),
             )
+        if o.get("served_by") is not None:
+            _validate_served_by(o["served_by"])
         out.append(o)
     return out
+
+
+def _validate_served_by(served_by: Any) -> None:
+    """A ``served_by`` list — each entry a local-serving host. ``host`` is
+    required; ``max_parallel`` (if given) is a positive int (the slot capacity)."""
+    if not isinstance(served_by, list):
+        raise BadInput(
+            "served_by must be a list of {host, endpoint, max_parallel} dicts"
+        )
+    for e in served_by:
+        if not isinstance(e, dict):
+            raise BadInput("each served_by entry must be a dict")
+        unknown = set(e) - SERVED_BY_KEYS
+        if unknown:
+            raise BadInput(
+                f"unknown served_by key(s) {sorted(unknown)}",
+                options=sorted(SERVED_BY_KEYS),
+            )
+        if not e.get("host") or not isinstance(e["host"], str):
+            raise BadInput("served_by entry requires a non-empty string host")
+        mp = e.get("max_parallel")
+        if mp is not None and (
+            not isinstance(mp, int) or isinstance(mp, bool) or mp < 1
+        ):
+            raise BadInput(f"served_by max_parallel must be a positive int, got {mp!r}")
 
 
 def _validate_capability(capability: Any) -> dict[str, Any]:
@@ -940,6 +976,7 @@ __all__ = [
     "PROVENANCE_TRUST",
     "REVIEW_KIND",
     "REVIEW_TYPES",
+    "SERVED_BY_KEYS",
     "ToteRow",
     "append_review",
     "build_meta",

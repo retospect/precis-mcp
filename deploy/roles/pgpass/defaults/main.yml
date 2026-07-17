@@ -1,0 +1,15 @@
+---
+# pgpass role — distribute ~deploy/.pgpass + ~/.psqlrc + shell defaults so
+# bare `psql` from any cluster node lands on the data node's prod db as agent_rw.
+# `admin` is also provisioned for the rare write-everything operation
+# (`psql -U admin`).
+
+# the data node's hostname (resolves on tailnet from every node, including the data node
+# itself — saves us a per-host conditional for socket vs tcp).
+pgpass_host: "{{ hostvars[postgres_host]['ansible_host'] }}"
+pgpass_port: "{{ pgbouncer_port }}"
+pgpass_database: precis_prod
+pgpass_default_user: agent_rw
+
+# deploy user home on each OS. Linux = /home/deploy, macOS = /Users/deploy.
+pgpass_deploy_home: "{{ '/Users/deploy' if os_family == 'darwin' else '/home/deploy' }}"

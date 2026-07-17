@@ -1,0 +1,98 @@
+Cluster Full Disk Access — Operator Checklist
+==============================================
+
+Host:       {{ inventory_hostname }}  ({{ ansible_hostname }})
+Role:       {{ node_role | default('unknown') }}
+Generated:  {{ ansible_date_time.iso8601 }}
+
+Why this file exists
+--------------------
+macOS 15+ (Sequoia, Tahoe/26) blocks NFS access for every process spawned
+by launchd or cron, regardless of UID. LaunchDaemons on this host
+(com.hermes.agent, com.acatome.extract-watch, …) and cron jobs
+(daily_briefing, quest runner, sortie-runner) cannot touch /opt/shared
+until each interpreter has been granted Full Disk Access.
+
+Apple removed the `profiles install` CLI in macOS 26 and now requires
+PPPC/FDA profiles to come from an approved MDM server. For a small
+cluster we skip MDM entirely and grant FDA manually in System Settings.
+This is a one-time chore per host.
+
+How to grant (once per host)
+----------------------------
+
+ 1. Screen-share or log in locally to {{ inventory_hostname }}
+    (physical console, VNC, or Tailscale Screen Sharing).
+
+ 2. Open **System Settings → Privacy & Security → Full Disk Access**.
+
+ 3. Click the **"+"** button at the bottom of the list. Authenticate
+    with an admin password when prompted.
+
+ 4. In the file picker press **Cmd + Shift + G** to reveal the path
+    entry field. Paste a path from the list below, press **Return**,
+    then click **Open**.
+
+ 5. Repeat step 4 for every binary listed below.
+
+ 6. Double-check that the toggle next to each new entry is **ON (blue)**.
+
+ 7. Restart the daemons so they re-exec under the fresh grant:
+      launchctl kickstart -k system/com.hermes.agent
+      launchctl kickstart -k system/com.acatome.extract-watch
+
+Binaries to add on this host
+----------------------------
+
+{% if present_records | length == 0 %}
+  (none — nothing to add on this host)
+{% else %}
+{% for r in present_records %}
+  [ ] {{ r.path }}
+{% if r.resolved != r.path %}
+        ↳ symlink → {{ r.resolved }}
+{% endif %}
+{% if r.signed_by %}
+        signed:  {{ r.signed_by }}
+{% else %}
+        signed:  (unsigned — grant may be fragile)
+{% endif %}
+
+{% endfor %}
+{% endif %}
+
+{% if skipped_binaries | length > 0 %}
+Skipped (not present on this host, no action needed):
+{% for p in skipped_binaries %}
+  - {{ p }}
+{% endfor %}
+
+{% endif %}
+How stable are these grants?
+----------------------------
+
+All venv pythons on this host are **symlinks** to Homebrew-installed
+Python frameworks under /opt/homebrew/opt/python@*. macOS FDA records
+the *resolved* binary's cdhash, so:
+
+  - `uv pip install` / Ansible re-runs inside the venv   → grant stable
+  - `brew upgrade python@3.12` / `python@3.14`           → grant BREAKS,
+    re-add the affected venv python (this file regenerates on each
+    Ansible run so you can re-open it to see the current set).
+  - macOS major version upgrade                           → Apple re-signs
+    /usr/sbin/cron etc. with the same identity → grant stable.
+
+If you want to avoid the brew-upgrade breakage entirely, pin the
+Python formulas:
+      brew pin python@3.14
+      brew pin python@3.12
+
+Verifying grants are live
+-------------------------
+
+    sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
+      "SELECT client, auth_value FROM access \
+       WHERE service='kTCCServiceSystemPolicyAllFiles';"
+
+`auth_value = 2` means granted. Re-run this after clicking through the
+list above — you should see one row per entry.

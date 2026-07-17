@@ -1,0 +1,83 @@
+---
+# precis_dream — launchd timer firing `precis worker --only dream_agent`
+# every 4 hours on the gateway via dream-pass.sh. The dream_agent pass
+# is a `claude -p` + precis-MCP call (workers/dream_agent.py);
+# `--only dream_agent` force-enables it and dream-pass.sh also sets
+# PRECIS_DREAM_AGENT=1. We schedule it here alone so only this
+# invocation dreams — the general precis-worker LaunchDaemon's pass
+# set stays unchanged. (The legacy in-process litellm loop,
+# workers/dream.py / PRECIS_DREAM_LLM, was retired — ADR 0024.)
+#
+# Co-located with litellm (the gateway:4000 → qwen-heavy). Each pass
+# is ~30–60s of local inference, cost in electrons not API tokens.
+# Output lands as memories tagged DREAM:speculative, fenced from
+# regular search by the existing speculative_fence in tag_filter.
+# asa surfaces them in her preamble's "## Inner life" block.
+
+- name: Ensure /opt/asa/bin exists
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /opt/asa/bin
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  become: true
+
+- name: Ensure /opt/asa/files exists
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /opt/asa/files
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  become: true
+
+# The dreaming workflow prompt ships with precis-mcp
+# (precis/data/prompts/dream-prompt.md) and dream_agent loads it by
+# default — no longer installed here. The persona (SOUL.md) stays
+# operator-side; set PRECIS_DREAM_PROMPT_PATH in dream-pass.sh only to
+# override the packaged default.
+
+- name: Install dream-pass.sh
+  when: os_family == "darwin"
+  ansible.builtin.copy:
+    src: dream-pass.sh
+    dest: /opt/asa/bin/dream-pass.sh
+    mode: "0755"
+    owner: deploy
+    group: staff
+  become: true
+  notify: restart precis-dream
+
+- name: Ensure precis-dream LaunchDaemon plist
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: precis-dream.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.dream.plist
+    mode: "0644"
+    owner: root
+    group: wheel
+  become: true
+  notify: restart precis-dream
+
+- name: Ensure precis-dream log file is writable
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-dream.log
+    state: touch
+    mode: "0664"
+    owner: deploy
+    group: staff
+    modification_time: preserve
+    access_time: preserve
+  become: true
+
+- name: Load precis-dream LaunchDaemon
+  when: os_family == "darwin"
+  ansible.builtin.command: >
+    launchctl load -w /Library/LaunchDaemons/com.precis.dream.plist
+  become: true
+  changed_when: false
+  failed_when: false

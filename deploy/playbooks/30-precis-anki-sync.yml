@@ -1,0 +1,21 @@
+---
+# 30-precis-anki-sync.yml — the headless AnkiWeb sync tick (precis anki slices
+# 2/2.5/3). Runs on ONE designated Mac (the `precis_anki_sync` inventory group).
+#
+# Prereqs:
+#   - precis_worker (20) / mcps must have run first — provisions /opt/mcps/venv.
+#   - Vault vars (inventory/group_vars/precis_anki_sync/vault.yml, ansible-vault):
+#       vault_anki_user: reto@retostamm.com
+#       vault_anki_password: <ROTATE the one pasted in chat, then put it here>
+#   - Assign exactly ONE host to the group in inventory, e.g.:
+#       [precis_anki_sync]
+#       the gateway        # if you want --fix (needs claude -p OAuth on the host)
+#     or a claude-less host with anki_sync_fix=false (sync+project only).
+#
+# Enable the precis-fix LLM pass with `anki_sync_fix: true` (group_vars) — only
+# on a host where `claude -p` authenticates.
+
+- name: Deploy precis anki-sync (AnkiWeb sync + projection + precis-fix)
+  hosts: precis_anki_sync
+  roles:
+    - precis_anki_sync

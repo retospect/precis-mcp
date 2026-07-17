@@ -68,6 +68,7 @@ from precis.store._pcb_ops import PcbMixin
 from precis.store._pdf_ops import PdfMixin
 from precis.store._refs_ops import RefsMixin
 from precis.store._resource_slots_ops import ResourceSlotsMixin
+from precis.store._scheduler_ops import SchedulerLeasesMixin
 from precis.store._structure_ops import StructureMixin
 from precis.store._tags_ops import TagsMixin
 from precis.store.pool import create_pool
@@ -93,6 +94,7 @@ class Store(
     EventsMixin,
     HeartbeatMixin,
     ResourceSlotsMixin,
+    SchedulerLeasesMixin,
     ClaudeQuotaMixin,
     KindsMixin,
     PdfMixin,

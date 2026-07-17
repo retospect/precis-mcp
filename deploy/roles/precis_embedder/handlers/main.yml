@@ -1,0 +1,20 @@
+---
+# Persistent daemon. macOS: reload via the shared safe launchd task,
+# which re-reads the plist and asserts a pid (the old `kickstart -k`
+# never re-read the plist nor verified the daemon came up — gripe
+# #48490). A pid appears immediately on launch even while bge-m3 is
+# still warming; readiness is gated separately in redeploy-precis.yml.
+- name: reload precis embedder (macos)
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.precis.embedder
+    reload_persistent: true
+  when: os_family == "darwin"
+
+- name: reload precis embedder (linux)
+  ansible.builtin.systemd:
+    name: precis-embedder
+    daemon_reload: true
+    state: restarted
+  become: true
+  when: os_family == "linux"

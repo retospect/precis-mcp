@@ -1,0 +1,22 @@
+---
+# precis_worker_agent role defaults.
+
+# The agent profile runs on the gateway alongside precis_dream +
+# precis_cron_tick, all of which share the /opt/mcps/venv install
+# (managed by the mcps role). /opt/precis/venv is the worker-host
+# venv on the data node — not present on gateway hosts. Stick with the
+# shared venv so a single `ansible-playbook --tags mcps` refresh
+# updates every consumer at once.
+precis_worker_agent_venv: /opt/mcps/venv
+precis_worker_agent_dsn: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+precis_worker_agent_batch_size: 2
+precis_worker_agent_idle_seconds: 60
+
+# Load-average ceiling above which heavy passes self-skip.
+# Default null = let the worker auto-scale (os.cpu_count() * 1.5).
+# Override to an absolute number (e.g. "12.0") to fix the ceiling.
+precis_worker_agent_load_ceiling: ""
+
+# Path to the agent's MCP config (so review passes can read the
+# tree via precis tool calls). Same path as precis_dream.
+precis_worker_agent_mcp_config: /Users/hermes/.claude/mcp.json

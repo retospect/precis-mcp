@@ -1,0 +1,149 @@
+-- {{ ansible_managed }}
+-- Daily briefing infrastructure: news ingestion + prompt management
+
+-- ── News items table (hourly RSS + API ingestion) ──
+CREATE TABLE IF NOT EXISTS cluster.news_items (
+    id              bigserial PRIMARY KEY,
+    fingerprint     text NOT NULL,                -- SHA-256 of normalized title+source for dedup
+    source          text NOT NULL,                -- Feed URL or "semantic_scholar", "arxiv", etc.
+    source_name     text NOT NULL DEFAULT '',      -- Human-readable: "The Guardian", "BBC", etc.
+    title           text NOT NULL,
+    link            text NOT NULL DEFAULT '',
+    summary         text NOT NULL DEFAULT '',      -- RSS description or article abstract
+    content         text NOT NULL DEFAULT '',      -- Full content if available
+    authors         text NOT NULL DEFAULT '',      -- Comma-separated
+    tags            text[] NOT NULL DEFAULT '{}',  -- e.g. {"news","osint"} or {"academic","mof"}
+    published_at    timestamptz,                   -- Original publication time
+    ingested_at     timestamptz NOT NULL DEFAULT now(),
+    metadata        jsonb NOT NULL DEFAULT '{}',   -- Flexible: DOI, arxiv_id, s2_paper_id, etc.
+    UNIQUE (fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_news_items_ingested ON cluster.news_items (ingested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_news_items_source ON cluster.news_items (source_name);
+CREATE INDEX IF NOT EXISTS idx_news_items_tags ON cluster.news_items USING gin (tags);
+CREATE INDEX IF NOT EXISTS idx_news_items_published ON cluster.news_items (published_at DESC);
+
+-- ── Briefing prompts table (runtime-editable, versioned) ──
+CREATE TABLE IF NOT EXISTS cluster.briefing_prompts (
+    id              serial PRIMARY KEY,
+    name            text NOT NULL UNIQUE,           -- e.g. "daily_morning_brief", "weekly_science"
+    prompt          text NOT NULL,                  -- The full prompt text
+    version         integer NOT NULL DEFAULT 1,
+    active          boolean NOT NULL DEFAULT true,  -- Only one active per name (enforced in app)
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    updated_by      text NOT NULL DEFAULT 'system', -- "system", "asa", Discord username, etc.
+    metadata        jsonb NOT NULL DEFAULT '{}'      -- Config: schedule, model, feeds filter, etc.
+);
+
+-- ── Briefing runs log (tracks each execution) ──
+CREATE TABLE IF NOT EXISTS cluster.briefing_runs (
+    id              bigserial PRIMARY KEY,
+    prompt_name     text NOT NULL,                  -- FK-ish to briefing_prompts.name
+    started_at      timestamptz NOT NULL DEFAULT now(),
+    finished_at     timestamptz,
+    status          text NOT NULL DEFAULT 'running', -- running, completed, failed
+    news_item_count integer NOT NULL DEFAULT 0,     -- How many items were fed to the LLM
+    model           text NOT NULL DEFAULT '',        -- Which LLM model was used
+    output_path     text,                           -- Path to saved brief
+    error           text,                           -- Error message if failed
+    tokens_used     integer,                        -- Total tokens consumed
+    metadata        jsonb NOT NULL DEFAULT '{}'
+);
+
+-- ── RSS feed configuration (managed via Ansible seed, editable at runtime) ──
+CREATE TABLE IF NOT EXISTS cluster.rss_feeds (
+    id              serial PRIMARY KEY,
+    url             text NOT NULL UNIQUE,
+    name            text NOT NULL,                  -- Human-readable name
+    category        text NOT NULL DEFAULT 'news',   -- news, osint, academic, science, finance
+    enabled         boolean NOT NULL DEFAULT true,
+    fetch_interval  interval NOT NULL DEFAULT '1 hour',
+    last_fetched_at timestamptz,
+    last_error      text,
+    tags            text[] NOT NULL DEFAULT '{}',   -- Default tags applied to items from this feed
+    metadata        jsonb NOT NULL DEFAULT '{}'
+);
+
+-- ── Semantic Scholar watch queries (poll API for matching papers) ──
+CREATE TABLE IF NOT EXISTS cluster.scholar_watches (
+    id              serial PRIMARY KEY,
+    query           text NOT NULL,                  -- Search query string
+    fields          text NOT NULL DEFAULT 'title,abstract,authors,year,citationCount,externalIds',
+    min_citations   integer NOT NULL DEFAULT 0,     -- Filter: minimum citation count
+    enabled         boolean NOT NULL DEFAULT true,
+    last_polled_at  timestamptz,
+    tags            text[] NOT NULL DEFAULT '{}',   -- Tags applied to ingested papers
+    metadata        jsonb NOT NULL DEFAULT '{}'
+);
+
+-- ── Permissions ──
+-- agent_rw reads+writes (runtime/tools)
+GRANT SELECT, INSERT, UPDATE ON cluster.news_items TO agent_rw;
+GRANT SELECT, INSERT, UPDATE ON cluster.briefing_prompts TO agent_rw;
+GRANT SELECT, INSERT, UPDATE ON cluster.briefing_runs TO agent_rw;
+GRANT SELECT, INSERT, UPDATE ON cluster.rss_feeds TO agent_rw;
+GRANT SELECT, INSERT, UPDATE ON cluster.scholar_watches TO agent_rw;
+
+GRANT USAGE, SELECT ON SEQUENCE cluster.news_items_id_seq TO agent_rw;
+GRANT USAGE, SELECT ON SEQUENCE cluster.briefing_prompts_id_seq TO agent_rw;
+GRANT USAGE, SELECT ON SEQUENCE cluster.briefing_runs_id_seq TO agent_rw;
+GRANT USAGE, SELECT ON SEQUENCE cluster.rss_feeds_id_seq TO agent_rw;
+GRANT USAGE, SELECT ON SEQUENCE cluster.scholar_watches_id_seq TO agent_rw;
+
+-- Read-only for agent_ro
+GRANT SELECT ON cluster.news_items TO agent_ro;
+GRANT SELECT ON cluster.briefing_prompts TO agent_ro;
+GRANT SELECT ON cluster.briefing_runs TO agent_ro;
+GRANT SELECT ON cluster.rss_feeds TO agent_ro;
+GRANT SELECT ON cluster.scholar_watches TO agent_ro;
+
+-- ── Seed: RSS feeds ──
+INSERT INTO cluster.rss_feeds (url, name, category, tags) VALUES
+    -- News
+    ('https://www.theguardian.com/world/rss', 'The Guardian World', 'news', '{"news","world"}'),
+    ('https://www.aljazeera.com/xml/rss/all.xml', 'Al Jazeera', 'news', '{"news","world"}'),
+    ('http://feeds.reuters.com/reuters/worldNews', 'Reuters World', 'news', '{"news","world"}'),
+    ('http://feeds.bbci.co.uk/news/world/rss.xml', 'BBC World', 'news', '{"news","world"}'),
+    ('https://en.wikinews.org/w/index.php?title=Special:NewsFeed&feed=atom', 'Wikinews', 'news', '{"news","world"}'),
+    ('https://www.scmp.com/rss/91/feed', 'South China Morning Post', 'news', '{"news","china","asia"}'),
+    -- OSINT & Investigative
+    ('https://www.bellingcat.com/feed', 'Bellingcat', 'osint', '{"osint","investigations"}'),
+    ('https://understandingwar.org/rss.xml', 'ISW', 'osint', '{"osint","ukraine","iran","military"}'),
+    -- Science & Academic
+    ('https://www.nature.com/nature.rss', 'Nature', 'science', '{"academic","science"}'),
+    ('https://export.arxiv.org/rss/cs.AI', 'arXiv cs.AI', 'academic', '{"academic","ai"}'),
+    ('https://feeds.arstechnica.com/arstechnica/index', 'Ars Technica', 'science', '{"tech","science"}')
+ON CONFLICT (url) DO NOTHING;
+
+-- ── Seed: briefing prompts (from canonical templates, only if not exists) ──
+-- Actual prompt text is inserted by the Ansible task on first deploy.
+-- Runtime edits via agent tools take precedence thereafter.
+INSERT INTO cluster.briefing_prompts (name, prompt, updated_by, metadata)
+VALUES (
+    'daily_morning_brief',
+    '',  -- Seeded from template file on first deploy
+    'system',
+    '{"schedule": "0 6 * * *", "model": "claude-fallback", "max_news_items": 200}'::jsonb
+)
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO cluster.briefing_prompts (name, prompt, updated_by, metadata)
+VALUES (
+    'wednesday_weekly_intel',
+    '',  -- Seeded from template file on first deploy
+    'system',
+    '{"schedule": "0 6 * * 3", "model": "claude-fallback", "max_news_items": 500, "day_of_week": "wednesday"}'::jsonb
+)
+ON CONFLICT (name) DO NOTHING;
+
+-- ── Seed: Semantic Scholar watch queries ──
+INSERT INTO cluster.scholar_watches (query, tags, metadata) VALUES
+    ('metal-organic framework water harvesting', '{"academic","mof","water"}', '{"min_year": 2024}'::jsonb),
+    ('AMOC Atlantic meridional overturning circulation', '{"academic","climate","amoc"}', '{"min_year": 2024}'::jsonb),
+    ('AI alignment safety', '{"academic","ai","safety"}', '{"min_year": 2024}'::jsonb)
+ON CONFLICT DO NOTHING;
+
+-- ── Cleanup: auto-expire old news items (>30 days) via pg_cron if available ──
+-- This is a suggestion — actual pg_cron job should be created separately if desired.
+-- DELETE FROM cluster.news_items WHERE ingested_at < now() - interval '30 days';

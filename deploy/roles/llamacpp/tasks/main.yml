@@ -1,0 +1,71 @@
+---
+# llamacpp role — entry point.
+#
+# Phases map to docs/llamacpp-migration-plan.md §7:
+#   Phase 0/1 : install (the data node HF CLI) + download (the data node HF pulls) + sync (rsync to clients)
+#   Phase 2   : build (llama.cpp source) + swap (llama-swap binary) + config + service
+#   Phase 4+  : handled by roles/litellm and roles/ollama_purge
+#
+# Usage:
+#   ansible-playbook playbooks/04-llamacpp.yml                              # all
+#   ansible-playbook playbooks/04-llamacpp.yml --tags install,download     # the data node only
+#   ansible-playbook playbooks/04-llamacpp.yml --tags sync                 # rsync to clients
+#   ansible-playbook playbooks/04-llamacpp.yml --tags build,swap,config,service  # clients serve
+
+# ── GGUF store host (the data node) ────────────────────────────────────────────
+- name: Install HF CLI on GGUF store host
+  ansible.builtin.include_tasks:
+    file: install.yml
+    apply:
+      tags: [install]
+  when: inventory_hostname in groups['gguf_store_hosts']
+  tags: [install]
+
+- name: Download canonical GGUFs on GGUF store host
+  ansible.builtin.include_tasks:
+    file: download.yml
+    apply:
+      tags: [download]
+  when: inventory_hostname in groups['gguf_store_hosts']
+  tags: [download]
+
+# ── Inference nodes (the GPU node, the gateway, the scheduler node) ────────────────────────
+- name: Sync GGUFs from NFS to local SSD on inference nodes
+  ansible.builtin.include_tasks:
+    file: sync.yml
+    apply:
+      tags: [sync]
+  when: inventory_hostname in groups['llamacpp_hosts']
+  tags: [sync]
+
+- name: Build llama.cpp from source on inference nodes
+  ansible.builtin.include_tasks:
+    file: build.yml
+    apply:
+      tags: [build]
+  when: inventory_hostname in groups['llamacpp_hosts']
+  tags: [build]
+
+- name: Install llama-swap binary on inference nodes
+  ansible.builtin.include_tasks:
+    file: swap.yml
+    apply:
+      tags: [swap]
+  when: inventory_hostname in groups['llamacpp_hosts']
+  tags: [swap]
+
+- name: Render per-node llama-swap config
+  ansible.builtin.include_tasks:
+    file: config.yml
+    apply:
+      tags: [config]
+  when: inventory_hostname in groups['llamacpp_hosts']
+  tags: [config]
+
+- name: Install + start llama-swap service on inference nodes
+  ansible.builtin.include_tasks:
+    file: service.yml
+    apply:
+      tags: [service]
+  when: inventory_hostname in groups['llamacpp_hosts']
+  tags: [service]

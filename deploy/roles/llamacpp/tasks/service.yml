@@ -1,0 +1,65 @@
+---
+# Install + start llama-swap as a system service on each inference node.
+
+# ── macOS (launchd) ──────────────────────────────────────────────────────
+- name: Ensure llamaswap log file (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: "{{ llamacpp_log_dir_darwin }}/llamaswap.log"
+    state: touch
+    mode: "0644"
+  become: true
+  changed_when: false
+
+- name: Deploy llamaswap launchd plist (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: llamaswap.plist.j2
+    dest: /Library/LaunchDaemons/com.llamaswap.plist
+    mode: "0644"
+  become: true
+  notify: restart llamaswap
+
+- name: Ensure llamaswap is loaded (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    launchctl list | grep -q com.llamaswap || launchctl load -w /Library/LaunchDaemons/com.llamaswap.plist
+  become: true
+  changed_when: false
+  failed_when: false
+
+# ── Linux (systemd) ──────────────────────────────────────────────────────
+- name: Deploy llamaswap systemd unit (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: llamaswap.service.j2
+    dest: /etc/systemd/system/llamaswap.service
+    mode: "0644"
+  become: true
+  notify:
+    - reload systemd
+    - restart llamaswap
+
+- name: Enable + start llamaswap (Linux)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: llamaswap
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+
+# ── Effective port per OS ────────────────────────────────────────────────
+- name: Set effective llamaswap port
+  ansible.builtin.set_fact:
+    _llamaswap_port: "{{ llama_swap_port_linux if os_family == 'linux' else llama_swap_port_macos }}"
+
+- name: Wait for llamaswap API
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ _llamaswap_port }}/v1/models"
+    method: GET
+    status_code: 200
+  register: llamaswap_health
+  until: llamaswap_health.status == 200
+  retries: 15
+  delay: 3

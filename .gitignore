@@ -17,6 +17,16 @@ build/
 .env.*
 !.env.example
 
+# The LIVE per-cluster ansible overlay (real Tailscale/LAN IPs, node
+# hostnames, the encrypted vault) is LOCAL-ONLY — never committed into this
+# PUBLIC repo (a public push is irreversible). The operator symlinks/clones
+# their private cluster inventory here; only the scrubbed template
+# `deploy/inventory.example/` is tracked. Guarded in depth by
+# tests/test_deploy_tree_no_secrets.py (the ship-gate leak-gate).
+deploy/inventory/
+deploy/.vault-pass
+deploy/*.local.yml
+
 # OS junk
 .DS_Store
 **/.DS_Store

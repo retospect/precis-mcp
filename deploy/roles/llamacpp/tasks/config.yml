@@ -1,0 +1,20 @@
+---
+# Render per-node llama-swap YAML config.
+
+- name: Ensure llama-swap config + per-model log dirs exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/llamacpp/etc
+    - "{{ llamacpp_log_dir }}"
+  become: true
+
+- name: Deploy llama-swap config
+  ansible.builtin.template:
+    src: llama-swap.yaml.j2
+    dest: /opt/llamacpp/etc/llama-swap.yaml
+    mode: "0644"
+  become: true
+  notify: restart llamaswap

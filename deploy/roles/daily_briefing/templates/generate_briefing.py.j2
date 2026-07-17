@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+# {{ ansible_managed }}
+# Briefing generation agent — reads news_items + prompt → LiteLLM → markdown
+#
+# Modes:
+#   daily  — last 24h of news_items, uses 'daily_morning_brief' prompt
+#   weekly — last 7 days of news_items, uses 'wednesday_weekly_intel' prompt
+#
+# Usage:
+#   python3 generate_briefing.py daily   [--dry-run] [--verbose]
+#   python3 generate_briefing.py weekly  [--dry-run] [--verbose]
+
+import argparse
+import json
+import logging
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import psycopg2
+import psycopg2.extras
+import requests
+
+# ── Config ──
+DB_DSN = "host=127.0.0.1 port=6432 dbname=precis_prod user=agent_rw password={{ vault_pg_agent_rw_pass }}"
+LITELLM_BASE = "http://{{ hostvars[litellm_host]['ansible_host'] }}:{{ litellm_port }}"
+LITELLM_API_KEY = "{{ vault_litellm_key_background }}"
+MODEL = "qwen3.5-35b"
+REQUEST_TIMEOUT = 600  # 10 min — these are long generations
+
+BRIEFS_DIR = Path("{{ shared_mount }}/data/daily_briefing/briefs")
+WEEKLY_DIR = Path("{{ shared_mount }}/data/daily_briefing/weekly")
+TRACKERS_DIR = Path("{{ shared_mount }}/data/daily_briefing/trackers")
+LOG_DIR = Path("{{ shared_mount }}/logs/daily_briefing")
+
+PROMPT_MAP = {
+    "daily": "daily_morning_brief",
+    "weekly": "wednesday_weekly_intel",
+}
+
+LOOKBACK_HOURS = {
+    "daily": 26,    # 24h + 2h overlap to catch late-arriving items
+    "weekly": 170,  # 7 days + 2h overlap
+}
+
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=logging.INFO,
+)
+log = logging.getLogger("generate_briefing")
+
+
+def load_prompt(conn, mode):
+    """Load the active prompt from the DB."""
+    prompt_name = PROMPT_MAP[mode]
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT id, name, prompt, version, metadata
+            FROM cluster.briefing_prompts
+            WHERE name = %s
+        """, (prompt_name,))
+        row = cur.fetchone()
+
+    if not row or not row["prompt"]:
+        log.error("No prompt found for '%s' — run Ansible to seed it", prompt_name)
+        sys.exit(1)
+
+    log.info("Loaded prompt '%s' v%d (%d chars)", row["name"], row["version"], len(row["prompt"]))
+    return row
+
+
+def fetch_news_items(conn, mode):
+    """Fetch recent news items for the briefing window."""
+    hours = LOOKBACK_HOURS[mode]
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT id, source_name, title, link, summary, content, authors,
+                   tags, published_at, metadata
+            FROM cluster.news_items
+            WHERE ingested_at >= now() - interval '%s hours'
+            ORDER BY published_at DESC NULLS LAST, ingested_at DESC
+        """, (hours,))
+        items = cur.fetchall()
+
+    log.info("Fetched %d news items from last %dh", len(items), hours)
+    return items
+
+
+def format_news_context(items, max_chars=200000):
+    """Format news items into a context block for the LLM."""
+    lines = []
+    total = 0
+
+    for item in items:
+        tags = ", ".join(item["tags"]) if item["tags"] else ""
+        pub = item["published_at"].strftime("%Y-%m-%d %H:%M UTC") if item["published_at"] else "unknown"
+
+        # Use summary for RSS, content if available and short enough
+        body = (item["content"] or item["summary"] or "")[:2000]
+
+        entry = (
+            f"---\n"
+            f"SOURCE: {item['source_name']}\n"
+            f"TITLE: {item['title']}\n"
+            f"DATE: {pub}\n"
+            f"LINK: {item['link']}\n"
+            f"TAGS: {tags}\n"
+        )
+        if item["authors"]:
+            entry += f"AUTHORS: {item['authors']}\n"
+        entry += f"\n{body}\n"
+
+        if total + len(entry) > max_chars:
+            lines.append(f"\n--- [TRUNCATED: {len(items) - len(lines)} more items not shown] ---\n")
+            break
+
+        lines.append(entry)
+        total += len(entry)
+
+    return "\n".join(lines)
+
+
+def call_llm(system_prompt, user_content, dry_run=False):
+    """Call LiteLLM with the briefing prompt and news context."""
+    if dry_run:
+        log.info("[DRY-RUN] Would call LLM with %d char system prompt, %d char user content",
+                 len(system_prompt), len(user_content))
+        return "[DRY-RUN] Briefing would be generated here."
+
+    headers = {
+        "Authorization": f"Bearer {LITELLM_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 16384,
+        "stream": False,
+    }
+
+    log.info("Calling LiteLLM model=%s, system=%d chars, user=%d chars",
+             MODEL, len(system_prompt), len(user_content))
+
+    resp = requests.post(
+        f"{LITELLM_BASE}/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=REQUEST_TIMEOUT,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    content = data["choices"][0]["message"]["content"]
+    usage = data.get("usage", {})
+    log.info("LLM response: %d chars, tokens: prompt=%s completion=%s",
+             len(content),
+             usage.get("prompt_tokens", "?"),
+             usage.get("completion_tokens", "?"))
+
+    return content
+
+
+def save_briefing(content, mode):
+    """Save the briefing markdown to the appropriate location."""
+    now = datetime.now(timezone.utc)
+    date_str = now.strftime("%Y-%m-%d")
+
+    if mode == "daily":
+        out_path = BRIEFS_DIR / f"{date_str}.md"
+    else:
+        out_path = WEEKLY_DIR / f"weekly_digest_{date_str}.md"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(content, encoding="utf-8")
+    log.info("Saved briefing to %s (%d bytes)", out_path, len(content))
+
+    return str(out_path)
+
+
+def log_run(conn, prompt_row, mode, output_path, item_count, content_length, error=None):
+    """Log this briefing run in the DB."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO cluster.briefing_runs
+                    (prompt_id, prompt_version, status, output_path, metadata)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                prompt_row["id"],
+                prompt_row["version"],
+                "error" if error else "completed",
+                output_path,
+                json.dumps({
+                    "mode": mode,
+                    "news_item_count": item_count,
+                    "output_chars": content_length,
+                    "model": MODEL,
+                    "error": str(error) if error else None,
+                }),
+            ))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log.error("Failed to log briefing run: %s", e)
+
+
+def notify_completion(conn, mode, output_path, item_count):
+    """Send PG NOTIFY so the gateway can push to Discord."""
+    payload = json.dumps({
+        "mode": mode,
+        "path": output_path,
+        "items": item_count,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_notify('briefing_complete', %s)", (payload,))
+        conn.commit()
+        log.info("Sent PG NOTIFY briefing_complete: %s", payload[:200])
+    except Exception as e:
+        conn.rollback()
+        log.warning("PG NOTIFY failed (non-fatal): %s", e)
+
+
+def load_previous_briefs(mode):
+    """For weekly mode, load this week's daily briefs as additional context."""
+    if mode != "weekly":
+        return ""
+
+    briefs = []
+    now = datetime.now(timezone.utc)
+
+    for i in range(7):
+        from datetime import timedelta
+        day = now - timedelta(days=i)
+        path = BRIEFS_DIR / f"{day.strftime('%Y-%m-%d')}.md"
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
+            # Truncate each daily brief to keep context manageable
+            if len(text) > 15000:
+                text = text[:15000] + "\n\n[... truncated ...]\n"
+            briefs.append(f"=== Daily Brief {day.strftime('%Y-%m-%d')} ===\n{text}")
+
+    if briefs:
+        log.info("Loaded %d daily briefs for weekly cross-reference", len(briefs))
+        return "\n\n".join(briefs)
+
+    return ""
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate daily/weekly intelligence briefing")
+    parser.add_argument("mode", choices=["daily", "weekly"], help="Briefing type")
+    parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument("--dry-run", "-n", action="store_true")
+    args = parser.parse_args()
+
+    if args.verbose:
+        log.setLevel(logging.DEBUG)
+
+    log.info("Starting %s briefing generation", args.mode)
+
+    # Connect to DB
+    try:
+        conn = psycopg2.connect(DB_DSN)
+    except Exception as e:
+        log.error("Database connection failed: %s", e)
+        sys.exit(1)
+
+    output_path = None
+    error = None
+
+    try:
+        # 1. Load prompt
+        prompt_row = load_prompt(conn, args.mode)
+        system_prompt = prompt_row["prompt"]
+
+        # 2. Fetch news items
+        items = fetch_news_items(conn, args.mode)
+        if not items:
+            log.info("No news items found — skipping briefing (silence is correct)")
+            log_run(conn, prompt_row, args.mode, None, 0, 0)
+            return
+
+        # 3. Build user message with news context
+        news_context = format_news_context(items)
+
+        # For weekly mode, also include this week's daily briefs
+        previous_briefs = load_previous_briefs(args.mode)
+
+        now_str = datetime.now(timezone.utc).strftime("%A, %B %d, %Y %H:%M UTC")
+        user_message = f"Current date/time: {now_str}\n\n"
+
+        if args.mode == "daily":
+            user_message += (
+                f"Below are {len(items)} news items ingested in the last "
+                f"{LOOKBACK_HOURS[args.mode]} hours. Generate today's daily "
+                f"intelligence briefing following your system prompt instructions.\n\n"
+                f"NEWS ITEMS:\n{news_context}"
+            )
+        else:
+            user_message += (
+                f"Below are {len(items)} news items ingested in the last 7 days, "
+                f"plus this week's daily briefs for cross-reference. Generate the "
+                f"Wednesday Weekly Intelligence Report following your system prompt "
+                f"instructions.\n\n"
+            )
+            if previous_briefs:
+                user_message += f"THIS WEEK'S DAILY BRIEFS:\n{previous_briefs}\n\n"
+            user_message += f"NEWS ITEMS:\n{news_context}"
+
+        # 4. Call LLM
+        briefing_content = call_llm(system_prompt, user_message, dry_run=args.dry_run)
+
+        # 5. Save output
+        output_path = save_briefing(briefing_content, args.mode)
+
+        # 6. Log the run
+        log_run(conn, prompt_row, args.mode, output_path, len(items), len(briefing_content))
+
+        # 7. Notify
+        notify_completion(conn, args.mode, output_path, len(items))
+
+        log.info("Briefing generation complete: %s", output_path)
+
+    except Exception as e:
+        error = e
+        log.error("Briefing generation failed: %s", e, exc_info=True)
+        try:
+            log_run(conn, prompt_row, args.mode, output_path, len(items) if 'items' in dir() else 0, 0, error=e)
+        except Exception:
+            pass
+        sys.exit(1)
+
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    main()

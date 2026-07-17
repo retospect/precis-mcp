@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.code-sandbox</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/podman</string>
+        <string>run</string>
+        <string>--rm</string>
+        <string>--network=none</string>
+        <string>--security-opt=no-new-privileges</string>
+        <string>--cap-drop=ALL</string>
+        <string>--read-only</string>
+        <string>--tmpfs</string>
+        <string>/tmp:rw,size=512m</string>
+        <string>{{ code_sandbox_image | default('ghcr.io/retospect/code-sandbox-mcp:latest') }}</string>
+    </array>
+    <key>UserName</key>
+    <string>agent_sandbox</string>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>{{ shared_mount }}/logs/agents/code-sandbox.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{ shared_mount }}/logs/agents/code-sandbox-error.log</string>
+</dict>
+</plist>

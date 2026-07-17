@@ -1,0 +1,9 @@
+---
+# Install Claude Code (the `claude` CLI) on the gateway. See
+# roles/claude_code/README.md for the full rationale + post-install
+# OAuth login flow (which is interactive and can't be automated).
+- name: Install Claude Code on the gateway
+  hosts: gateway
+  roles:
+    - claude_code
+  tags: [claude-code, claude]

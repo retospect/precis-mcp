@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tunnel.{{ item.dest }}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/autossh</string>
+        <string>-M</string>
+        <string>0</string>
+        <string>-N</string>
+        <string>-o</string>
+        <string>ServerAliveInterval=30</string>
+        <string>-o</string>
+        <string>ServerAliveCountMax=3</string>
+        <string>-o</string>
+        <string>ExitOnForwardFailure=yes</string>
+        <string>-o</string>
+        <string>StrictHostKeyChecking=accept-new</string>
+        <string>-i</string>
+        <string>/Users/deploy/.ssh/tunnel_ed25519</string>
+{% for fwd in item.forwards %}
+        <string>-L</string>
+        <string>{{ fwd }}</string>
+{% endfor %}
+        <string>deploy@{{ hostvars[item.dest]['lan_ip'] }}</string>
+    </array>
+    <key>UserName</key>
+    <string>deploy</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardErrorPath</key>
+    <string>/opt/homebrew/var/log/tunnel-{{ item.dest }}.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AUTOSSH_GATETIME</key>
+        <string>0</string>
+    </dict>
+</dict>
+</plist>

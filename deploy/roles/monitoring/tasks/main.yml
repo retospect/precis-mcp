@@ -1,0 +1,76 @@
+---
+# Prometheus + Grafana + exporters on the data node
+
+- name: Install monitoring stack (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name:
+      - prometheus
+      - grafana
+      - node_exporter
+    state: present
+  become: false
+
+- name: Install process-exporter
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: process-exporter
+    state: present
+  become: false
+  failed_when: false
+
+- name: Ensure Prometheus config directory
+  ansible.builtin.file:
+    path: /usr/local/etc/prometheus
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Deploy Prometheus config
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: /usr/local/etc/prometheus/prometheus.yml
+    mode: "0644"
+  become: true
+  notify: restart prometheus
+
+- name: Deploy alert rules
+  ansible.builtin.template:
+    src: alert_rules.yml.j2
+    dest: /usr/local/etc/prometheus/alert_rules.yml
+    mode: "0644"
+  become: true
+  notify: restart prometheus
+
+- name: Ensure Grafana config directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  become: true
+  loop:
+    - /usr/local/etc/grafana
+    - /usr/local/etc/grafana/provisioning
+    - /usr/local/etc/grafana/provisioning/datasources
+
+- name: Deploy Grafana datasource
+  ansible.builtin.template:
+    src: grafana_datasource.yml.j2
+    dest: /usr/local/etc/grafana/provisioning/datasources/prometheus.yml
+    mode: "0644"
+  become: true
+  notify: restart grafana
+
+- name: Start monitoring services (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    /opt/homebrew/bin/brew services start {{ item }} 2>/dev/null || true
+  become: true
+  environment:
+    HOME: /Users/deploy
+    USER: deploy
+  loop:
+    - prometheus
+    - node_exporter
+    - grafana
+  changed_when: false

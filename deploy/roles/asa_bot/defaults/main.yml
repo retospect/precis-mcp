@@ -1,0 +1,35 @@
+---
+# asa_bot role defaults. Overridable via host_vars or group_vars.
+#
+# precis_* paths below are the env vars the precis MCP reads at boot
+# to decide which kinds to expose. Set them empty/unset to keep a kind
+# dormant; populating turns it on. All paths must exist on the gateway as
+# hermes-readable/writable.
+
+# Editable sandbox for the markdown / plaintext / tex kinds. precis
+# treats this as the ONLY writable root — every read and write is
+# normalised through Path.resolve() and validated with
+# Path.relative_to(this_dir) so traversal attempts are rejected. Reuse
+# asa's working dir so anything she drops into Bash/Read/Edit/Write
+# (under WorkingDirectory in the LaunchDaemon) is also discoverable
+# via the file kinds.
+precis_root: "/opt/nas/botshome/precis_root"
+
+# Python repos exposed to the `python` kind. Format:
+#   alias1:/abs/path1,alias2:/abs/path2
+# Empty for now — projects get rsynced into /Users/hermes/claudebot/python/
+# only when there's a specific reason to expose them; the kind stays
+# dormant until at least one valid alias:path pair is provided.
+precis_python_roots: ""
+
+# Cache directory for raw patent XML downloaded by the patent kind via
+# EPO OPS. Created (mode 0750, hermes-owned) by the asa_bot role.
+precis_patent_raw_root: "/Users/hermes/claudebot/patents-raw"
+
+# Comma-separated list of skill ids the precis MCP surfaces in its
+# serverInfo.instructions on cold-start. Picks are biased toward
+# "things asa would otherwise miss": oracle (built-in I-Ching + cards
+# — saves her from rolling coins manually), overview (big-picture
+# tour), memory (used every turn), files (since PRECIS_ROOT is now
+# live for markdown/plaintext/tex).
+precis_startup_skills: "precis-overview,precis-oracle-help,precis-memory-help,precis-inner-life-help,precis-self-consolidation-help,precis-files-help"

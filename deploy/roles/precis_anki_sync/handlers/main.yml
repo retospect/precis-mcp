@@ -1,0 +1,10 @@
+---
+# Periodic StartInterval timer: reload via the shared safe launchd task
+# with reload_persistent=false (asserts LOADED, no pid — it fires on its
+# interval and exits), mirroring precis_cron_tick.
+- name: restart precis-anki-sync
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.precis.anki-sync
+    reload_persistent: false
+  when: os_family == "darwin"

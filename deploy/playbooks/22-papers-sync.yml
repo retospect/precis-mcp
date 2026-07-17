@@ -1,0 +1,73 @@
+---
+# 22-papers-sync.yml — Sync papers from local ~/.acatome to cluster NFS
+#
+# Usage:
+#   ansible-playbook playbooks/22-papers-sync.yml                    # rsync only
+#   ansible-playbook playbooks/22-papers-sync.yml --tags sync,ingest # rsync + one-time ingest
+#
+# Override source:
+#   -e papers_src=/path/to/papers/
+
+- name: Sync papers from laptop to NAS inbox
+  hosts: data
+  gather_facts: false
+  tasks:
+    - name: Rsync papers from local to NAS inbox
+      ansible.posix.synchronize:
+        src: "{{ papers_src | default(lookup('env', 'HOME') + '/.acatome/papers/') }}"
+        dest: "{{ papers_inbox_path }}/"
+        mode: push
+        rsync_opts:
+          - "--progress"
+          - "--partial"
+      tags: [sync]
+
+- name: Ingest papers into database
+  hosts: scheduler
+  gather_facts: false
+  tasks:
+    - name: Ensure ~/.acatome directory
+      ansible.builtin.file:
+        path: /Users/deploy/.acatome
+        state: directory
+        mode: "0700"
+      become: false
+      tags: [ingest, never]
+
+    - name: Deploy acatome config for ingest
+      ansible.builtin.copy:
+        content: |
+          [store]
+          metadata_backend = "postgres"
+          vector_backend = "postgres"
+
+          [store.postgres]
+          host = "{{ hostvars[postgres_host]['ansible_host'] }}"
+          port = {{ postgres_port }}
+          database = "cluster"
+          user = "agent_rw"
+          password = "{{ vault_pg_agent_rw_pass }}"
+
+          [extract.profiles.default]
+          model = "BAAI/bge-m3"
+          dim = 1024
+          provider = "sentence-transformers"
+        dest: /Users/deploy/.acatome/config.toml
+        mode: "0600"
+      become: false
+      no_log: true
+      tags: [ingest, never]
+
+    - name: Run acatome-store ingest
+      ansible.builtin.shell: |
+        /opt/mcps/venv/bin/acatome-store ingest {{ papers_inbox_path }} 2>&1
+      become: false
+      register: ingest_result
+      changed_when: "'ingested' in ingest_result.stdout"
+      tags: [ingest, never]
+
+    - name: Show ingest result
+      ansible.builtin.debug:
+        var: ingest_result.stdout_lines
+      when: ingest_result is defined
+      tags: [ingest, never]

@@ -1,0 +1,16 @@
+---
+# bootstrap-tailscale.yml — Run ONCE over LAN to install Tailscale on all nodes.
+#
+# Usage:
+#   ansible-playbook bootstrap-tailscale.yml --ask-vault-pass
+#
+# After this completes, all subsequent playbooks use Tailscale IPs (ansible_host).
+# You only need to run this again if adding new nodes.
+
+- name: Bootstrap Tailscale on all nodes (via LAN)
+  hosts: all
+  vars:
+    ansible_host: "{{ lan_ip }}"
+  roles:
+    - tailscale
+  tags: [tailscale]

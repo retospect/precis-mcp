@@ -1,0 +1,48 @@
+-- Managed by Ansible — do not edit
+-- pg_cron maintenance jobs for the cluster database
+
+-- Clear existing maintenance jobs (idempotent re-apply)
+DO $$
+DECLARE
+  _name text;
+BEGIN
+  FOR _name IN SELECT jobname FROM cron.job WHERE jobname LIKE 'maint_%'
+  LOOP
+    PERFORM cron.unschedule(_name);
+  END LOOP;
+EXCEPTION WHEN undefined_table THEN
+  NULL;  -- first run, cron.job may not exist yet
+END $$;
+
+-- ── VACUUM ANALYZE high-churn tables ──
+
+-- sortie campaigns: step churn from campaign execution
+SELECT cron.schedule('maint_vacuum_campaigns', '0 */2 * * *',
+  'VACUUM ANALYZE {{ sortie_schema | default('sortie') }}.campaign_steps');
+
+-- news_items: hourly RSS ingestion
+SELECT cron.schedule('maint_vacuum_news', '0 3 * * *',
+  'VACUUM ANALYZE cluster.news_items');
+
+-- acatome paper store: weekly after any bulk ingestion
+SELECT cron.schedule('maint_vacuum_refs', '0 3 * * 0',
+  'VACUUM ANALYZE public.refs');
+SELECT cron.schedule('maint_vacuum_blocks', '30 3 * * 0',
+  'VACUUM ANALYZE public.blocks');
+SELECT cron.schedule('maint_vacuum_papers', '0 3 * * 0',
+  'VACUUM ANALYZE public.papers');
+
+-- ── REINDEX (index bloat from pgvector) ──
+
+SELECT cron.schedule('maint_reindex', '0 4 * * 0',
+  'REINDEX DATABASE precis_prod');
+
+-- ── Purge stale data ──
+
+-- Old news items older than 90 days
+SELECT cron.schedule('maint_purge_news', '0 5 * * 0',
+  $$DELETE FROM cluster.news_items WHERE published_at < now() - interval '90 days'$$);
+
+-- Old briefing runs older than 180 days
+SELECT cron.schedule('maint_purge_briefings', '30 5 * * 0',
+  $$DELETE FROM cluster.briefing_runs WHERE completed_at < now() - interval '180 days'$$);

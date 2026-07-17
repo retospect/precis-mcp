@@ -1,0 +1,12 @@
+---
+# Periodic StartInterval timer: reload via the shared safe launchd task
+# with reload_persistent=false — RunAtLoad fires it once on bootstrap and
+# the interval drives the rest, so no kickstart and no pid assertion. The
+# shared task adds the retry-on-transient-load-failure this bare
+# bootstrap lacked (gripe #48490).
+- name: restart precis-watch-poll
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.precis.watch-poll
+    reload_persistent: false
+  when: os_family == "darwin"

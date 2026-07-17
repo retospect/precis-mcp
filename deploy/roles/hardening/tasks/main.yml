@@ -1,0 +1,212 @@
+---
+# SSH hardening + sudoers + power management + CLT + deploy key cleanup
+
+# ── macOS Command Line Tools (prerequisite for Homebrew, git, etc.) ──
+- name: Check if CLT is installed (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.stat:
+    path: /Library/Developer/CommandLineTools/usr/bin/git
+  register: clt_check
+
+- name: Install Command Line Tools (macOS)
+  when:
+    - os_family == "darwin"
+    - not (clt_check.stat.exists | default(false))
+  block:
+    - name: Create CLT install-on-demand trigger
+      ansible.builtin.file:
+        path: /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
+        state: touch
+        mode: "0644"
+      become: true
+
+    - name: Find CLT package in software update catalog
+      ansible.builtin.shell: >
+        softwareupdate --list 2>&1
+        | grep -o '.*Command Line Tools.*'
+        | head -1
+        | sed 's/^[* ]*//'
+      register: clt_package
+      changed_when: false
+      become: true
+
+    - name: Install CLT via softwareupdate
+      ansible.builtin.command: >
+        softwareupdate --install "{{ clt_package.stdout | trim }}" --agree-to-license
+      become: true
+      when: clt_package.stdout | trim | length > 0
+
+    - name: Clean up CLT trigger file
+      ansible.builtin.file:
+        path: /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
+        state: absent
+      become: true
+
+# ── macOS power management (headless server mode) ──
+- name: Auto-restart after power failure (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: pmset -a autorestart 1
+  become: true
+  changed_when: false
+
+- name: Enable Wake on LAN (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: pmset -a womp 1
+  become: true
+  changed_when: false
+
+- name: Prevent sleep (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: pmset -a sleep 0 disksleep 0 displaysleep 5
+  become: true
+  changed_when: false
+
+- name: Disable auto-login (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: defaults delete /Library/Preferences/com.apple.loginwindow autoLoginUser
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: Mute startup chime (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: nvram StartupMute=%01
+  become: true
+  changed_when: false
+
+# ── Ethernet: disable Energy-Efficient Ethernet (EEE) ──
+# EEE throttles the NIC during idle and doesn't always restore cleanly,
+# causing link flapping. Force manual 1000baseT full-duplex instead.
+- name: Disable EEE — set Ethernet to manual 1000baseT full-duplex (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: networksetup -setMedia 'Ethernet' 1000baseT full-duplex
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: Disable Wi-Fi (macOS — headless servers use Ethernet only)
+  when: os_family == "darwin"
+  ansible.builtin.command: networksetup -setairportpower en1 off
+  become: true
+  changed_when: false
+  failed_when: false
+
+# ── Daily 3 AM update + reboot ──
+- name: Ensure /usr/local/bin exists (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /usr/local/bin
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Deploy daily update-and-reboot script (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.copy:
+    dest: /usr/local/bin/daily-update-reboot.sh
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      # Managed by Ansible — do not edit
+      logger -t daily-update "Starting macOS software update"
+      /usr/sbin/softwareupdate --install --all --agree-to-license 2>&1 | logger -t daily-update
+
+      # Gracefully drain Postgres before the reboot. Otherwise `shutdown`
+      # SIGTERMs the postmaster into a "smart" shutdown that blocks on
+      # pgbouncer's held connections; it gets SIGKILLed mid-shutdown and leaves
+      # a stale postmaster.pid. If that PID is reused after the reboot (it was —
+      # by the embedder), Postgres refuses to start and the whole factory goes
+      # dark. No-op on hosts without the DB.
+      if launchctl print system/com.postgresql >/dev/null 2>&1; then
+        logger -t daily-update "Draining Postgres (fast shutdown)"
+        # Unload the daemon first so KeepAlive can't relaunch it mid-drain.
+        launchctl bootout system/com.postgresql 2>/dev/null
+        # bootout sends SIGTERM (smart); escalate to a fast shutdown so lingering
+        # clients are disconnected and the postmaster exits promptly, cleanly
+        # removing its own pid file.
+        sudo -u deploy /opt/homebrew/opt/postgresql@17/bin/pg_ctl \
+          -D /opt/homebrew/var/postgresql@17 stop -m fast -w -t 60 2>&1 \
+          | logger -t daily-update
+        for i in $(seq 1 30); do
+          pgrep -f "postgresql@17/bin/postgres" >/dev/null || break
+          sleep 1
+        done
+        logger -t daily-update "Postgres drained"
+      fi
+
+      logger -t daily-update "Rebooting"
+      /sbin/shutdown -r now
+  become: true
+  tags: [reboot_script]
+
+- name: Schedule daily 3 AM update + reboot (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.cron:
+    name: "daily 3am update and reboot"
+    minute: "0"
+    hour: "3"
+    job: "/usr/local/bin/daily-update-reboot.sh"
+    user: root
+  become: true
+
+- name: Schedule daily 3 AM update + reboot (Linux)
+  when: os_family == "linux"
+  ansible.builtin.cron:
+    name: "daily 3am update and reboot"
+    minute: "0"
+    hour: "3"
+    job: "apt-get update -qq && apt-get upgrade -y -qq && /sbin/shutdown -r now"
+    user: root
+  become: true
+
+- name: Configure sshd (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config
+    mode: "0600"
+    validate: "/usr/sbin/sshd -t -f %s"
+  become: true
+  notify: restart sshd macos
+
+- name: Configure sshd (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config
+    mode: "0600"
+    validate: "/usr/sbin/sshd -t -f %s"
+  become: true
+  notify: restart sshd linux
+
+- name: Deploy sudoers drop-in for deploy user
+  ansible.builtin.template:
+    src: sudoers_deploy.j2
+    dest: /etc/sudoers.d/deploy
+    mode: "0440"
+    validate: "visudo -cf %s"
+  become: true
+
+- name: Remove deploy user SSH authorized_keys (post-setup)
+  ansible.builtin.file:
+    path: "~deploy/.ssh/authorized_keys"
+    state: absent
+  become: true
+  when: remove_deploy_key | default(false) | bool
+  tags: [remove_deploy_key]
+
+- name: Lock deploy user (post-setup)
+  when: lock_deploy_user | default(false) | bool
+  block:
+    - name: Lock deploy user (macOS)
+      when: os_family == "darwin"
+      ansible.builtin.command: dscl . -create /Users/deploy UserShell /usr/bin/false
+      become: true
+
+    - name: Lock deploy user (Linux)
+      when: os_family == "linux"
+      ansible.builtin.user:
+        name: deploy
+        shell: /usr/sbin/nologin
+      become: true
+  tags: [lock_deploy]

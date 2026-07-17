@@ -1,0 +1,93 @@
+---
+# PgBouncer on the data node — connection pooler in front of Postgres
+
+- name: Install PgBouncer (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: pgbouncer
+    state: present
+  become: false
+
+- name: Stop default brew pgbouncer service
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    /opt/homebrew/bin/brew services stop pgbouncer 2>/dev/null || true
+    pkill -f 'pgbouncer.*/opt/homebrew/etc' 2>/dev/null || true
+  become: true
+  environment:
+    HOME: /Users/deploy
+    USER: deploy
+  changed_when: false
+
+- name: Symlink pgbouncer binary
+  ansible.builtin.file:
+    src: /opt/homebrew/bin/pgbouncer
+    dest: /usr/local/bin/pgbouncer
+    state: link
+    force: true
+  become: true
+  when: os_family == "darwin"
+
+- name: Ensure PgBouncer config directory
+  ansible.builtin.file:
+    path: /usr/local/etc/pgbouncer
+    state: directory
+    owner: pgboss
+    mode: "0755"
+  become: true
+
+- name: Deploy pgbouncer.ini
+  ansible.builtin.template:
+    src: pgbouncer.ini.j2
+    dest: /usr/local/etc/pgbouncer/pgbouncer.ini
+    mode: "0640"
+    owner: pgboss
+  become: true
+  notify: restart pgbouncer
+
+- name: Deploy userlist.txt
+  ansible.builtin.template:
+    src: userlist.txt.j2
+    dest: /usr/local/etc/pgbouncer/userlist.txt
+    mode: "0600"
+    owner: pgboss
+  become: true
+  no_log: true
+  notify: restart pgbouncer
+
+- name: Ensure PgBouncer runtime directories
+  ansible.builtin.file:
+    path: /opt/homebrew/var/run/pgbouncer
+    state: directory
+    owner: pgboss
+    group: staff
+    mode: "0755"
+  become: true
+
+- name: Deploy PgBouncer launchd plist (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: pgbouncer.plist.j2
+    dest: /Library/LaunchDaemons/com.pgbouncer.plist
+    mode: "0644"
+  become: true
+  notify: restart pgbouncer
+
+- name: Unload old PgBouncer plist
+  when: os_family == "darwin"
+  ansible.builtin.shell: launchctl unload /Library/LaunchDaemons/com.pgbouncer.plist 2>/dev/null || true
+  become: true
+  changed_when: false
+
+- name: Load PgBouncer plist
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl load -w /Library/LaunchDaemons/com.pgbouncer.plist
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: Wait for PgBouncer to listen
+  ansible.builtin.wait_for:
+    port: "{{ pgbouncer_listen_port }}"
+    host: 127.0.0.1
+    timeout: 15

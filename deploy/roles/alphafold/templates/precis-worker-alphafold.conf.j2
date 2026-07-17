@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# Sources the alphafold env (PRECIS_FOLD_* / PRECIS_NODE) into precis-worker.
+# `-` makes the file optional so the unit still starts when alphafold is absent.
+[Service]
+EnvironmentFile=-/etc/precis/alphafold.env

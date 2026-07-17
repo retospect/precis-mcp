@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# Sources the dft env (PRECIS_DFT_* / PRECIS_NODE) into precis-worker.
+# `-` makes the file optional so the unit still starts when dft is absent.
+[Service]
+EnvironmentFile=-/etc/precis/dft.env

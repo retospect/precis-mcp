@@ -1,0 +1,8 @@
+---
+# 04-ollama.yml — Ollama on all inference nodes (the GPU node GPU + macOS light models)
+- name: Configure Ollama
+  hosts: inference:ollama_hosts
+  become: true
+  roles:
+    - ollama
+  tags: [ollama]

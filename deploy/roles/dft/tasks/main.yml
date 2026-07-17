@@ -1,0 +1,127 @@
+---
+# dft — make the GPU node able to run precis-mcp `struct_relax` jobs (ADR 0043
+# §23.12). The precis-mcp worker (already deployed by roles/precis_worker)
+# claims a struct_relax job — only on THIS node, per the §23 #3 node gate — and
+# shells out to `docker run precis-dft:cpu precis-dft-run gpaw-relax`, staging
+# in/out under the NFS scratch tree and sinking the result into the run-cube.
+#
+# precis-dft is baked into the IMAGE, not the venv, so this role wires only:
+#   1. the container runtime can run as the worker user + see the GPU,
+#   2. the NFS scratch tree exists,
+#   3. the worker's PRECIS_DFT_* / PRECIS_NODE env (via a systemd drop-in so we
+#      never touch the precis_worker unit template).
+# Linux / inference node only.
+
+- name: dft targets the Linux GPU node only
+  ansible.builtin.assert:
+    that: os_family == "linux"
+    fail_msg: >-
+      The dft role targets the inference node (the GPU node, Linux/systemd). macOS
+      nodes have no GPU and never claim a node-pinned struct_relax job (a
+      node-less worker only claims un-pinned jobs), so they need nothing here.
+
+- name: Ensure docker is present
+  ansible.builtin.command: docker --version
+  register: dft_docker
+  changed_when: false
+  failed_when: dft_docker.rc != 0
+
+- name: Probe the NVIDIA Container Toolkit (GPU passthrough for --gpus all)
+  ansible.builtin.command: nvidia-ctk --version
+  register: dft_nvctk
+  changed_when: false
+  failed_when: false
+
+- name: Warn when the NVIDIA Container Toolkit is missing
+  ansible.builtin.debug:
+    msg: >-
+      nvidia-ctk not found — `docker run --gpus all` will fail; relax would run
+      CPU-only. Install nvidia-container-toolkit before running a GPU relax.
+  when: dft_nvctk.rc != 0
+
+- name: Allow the worker user to run docker without sudo (docker group)
+  ansible.builtin.user:
+    name: "{{ dft_worker_user }}"
+    groups: docker
+    append: true
+  become: true
+  notify: restart precis-worker (dft)
+
+- name: Ensure the NFS scratch tree exists (container in/out staging)
+  ansible.builtin.file:
+    path: "{{ dft_scratch_dir }}"
+    state: directory
+    owner: "{{ dft_worker_user }}"
+    group: "{{ dft_worker_user }}"
+    mode: "0755"
+  become: true
+
+# ── optional: (re)build the precis-dft image on the node ──────────────
+- name: (Re)build the precis-dft image
+  when: dft_build_image | bool
+  block:
+    - name: Sync the precis-dft build context to the node
+      ansible.posix.synchronize:
+        src: "{{ dft_src_dir }}/"
+        dest: /tmp/precis-dft-build/
+        rsync_opts:
+          - "--exclude=__pycache__"
+          - "--exclude=.git"
+          - "--exclude=.venv"
+
+    - name: docker build the precis-dft image
+      ansible.builtin.command:
+        cmd: "docker build -t {{ dft_image }} -f docker/Dockerfile ."
+        chdir: /tmp/precis-dft-build
+      become: true
+      register: dft_build
+      changed_when: >-
+        'Successfully' in (dft_build.stdout + dft_build.stderr)
+        or 'naming to' in (dft_build.stdout + dft_build.stderr)
+
+- name: Assert the precis-dft image is present
+  ansible.builtin.command: "docker image inspect {{ dft_image }}"
+  register: dft_img
+  changed_when: false
+  failed_when: dft_img.rc != 0
+  # Fails when the image is absent: (re)build with -e dft_build_image=true, or
+  # build by hand per precis-dft/docker/README.md.
+
+# ── worker env (systemd drop-in — leaves the precis_worker unit untouched) ──
+- name: Ensure the precis env dir
+  ansible.builtin.file:
+    path: /etc/precis
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Drop the worker dft env file
+  ansible.builtin.template:
+    src: dft.env.j2
+    dest: /etc/precis/dft.env
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart precis-worker (dft)
+
+- name: Ensure the precis-worker systemd drop-in dir
+  ansible.builtin.file:
+    path: /etc/systemd/system/precis-worker.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Drop the precis-worker dft env drop-in (EnvironmentFile)
+  ansible.builtin.template:
+    src: precis-worker-dft.conf.j2
+    dest: /etc/systemd/system/precis-worker.service.d/10-dft.conf
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart precis-worker (dft)

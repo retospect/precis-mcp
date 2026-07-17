@@ -1,0 +1,20 @@
+---
+# 32-precis-dream.yml — wire the dream worker on the gateway.
+#
+# The dreamer is the `claude -p` + precis-MCP `dream_agent` pass.
+# This playbook drops a LaunchDaemon that fires `precis worker --only
+# dream_agent` every 4 hours (via dream-pass.sh, which also sets
+# PRECIS_DREAM_AGENT=1), so only the scheduled pass actually dreams.
+# The general precis-worker daemon on the data node stays as-is.
+# (Legacy in-process litellm loop / PRECIS_DREAM_LLM retired — ADR 0024.)
+
+- name: Deploy precis dream worker
+  hosts: gateway
+  become: true
+  roles:
+    - precis_dream
+  # Include the family-umbrella ``precis`` tag so ``--tags precis``
+  # fans this out with every other precis-* play. Without it the
+  # dream plist (e.g. the PRECIS_DATABASE_URL env added 2026-06-16)
+  # silently gets skipped on bulk re-deploys.
+  tags: [precis-dream, precis]

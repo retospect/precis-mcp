@@ -1,0 +1,55 @@
+---
+- name: reload precis worker (macos)
+  # ``kickstart -k`` alone restarts the running process but doesn't
+  # re-read the plist — env changes (PRECIS_DATABASE_URL etc.) and
+  # ProgramArguments edits get missed. Mirror precis_web: bootout
+  # (tolerating "not loaded"), reload the plist, then kickstart so
+  # the daemon is actually running afterwards.
+  #
+  # gr48481: the old form (bootout → load -wF → kickstart, no set -e,
+  # no verification) is unsafe. ``launchctl load`` intermittently
+  # returns "Load failed: 5: Input/output error" right after a bootout
+  # (launchd still settling); the shell then kickstarts a service that
+  # isn't in the domain and returns rc 0 or 113 more or less at random —
+  # so a green deploy can leave the worker DOWN (observed on the data node,
+  # 2026-07-04). Fix: retry the whole bootout→bootstrap→kickstart cycle
+  # on the transient failure, and ASSERT the daemon is actually running
+  # (has a pid) before succeeding. If it never comes up the task fails
+  # loudly so the host goes red and a re-run recovers it, instead of
+  # masking a dead worker as success.
+  ansible.builtin.shell: |
+    set -u
+    unit=com.precis.worker
+    plist="/Library/LaunchDaemons/${unit}.plist"
+    for attempt in 1 2 3 4 5; do
+      launchctl bootout "system/${unit}" 2>/dev/null || true
+      sleep 1
+      # bootstrap is the modern replacement for `load` and gives richer
+      # errors; fall back to `load -wF` on older launchds.
+      launchctl bootstrap system "${plist}" 2>/dev/null \
+        || launchctl load -wF "${plist}" 2>/dev/null || true
+      sleep 1
+      launchctl kickstart "system/${unit}" 2>/dev/null || true
+      sleep 1
+      if launchctl print "system/${unit}" 2>/dev/null | grep -qE 'pid = [0-9]+'; then
+        echo "${unit}: running (attempt ${attempt})"
+        exit 0
+      fi
+      echo "${unit}: not running after attempt ${attempt}, retrying" >&2
+      sleep 2
+    done
+    echo "${unit}: FAILED to come up after 5 attempts" >&2
+    exit 1
+  become: true
+  changed_when: true
+  # OS-guarded: the code-install task notifies BOTH handlers (it has no
+  # os_family guard), so each must skip on the other family.
+  when: os_family == "darwin"
+
+- name: reload precis worker (linux)
+  ansible.builtin.systemd:
+    name: precis-worker
+    daemon_reload: true
+    state: restarted
+  become: true
+  when: os_family == "linux"

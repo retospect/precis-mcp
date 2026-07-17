@@ -1,0 +1,106 @@
+---
+# Create system users with fixed UIDs across all nodes.
+# macOS uses sysadminctl/dscl, Linux uses useradd.
+
+- name: Fallback — set users_to_create if not already defined
+  when: users_to_create is not defined
+  ansible.builtin.set_fact:
+    users_to_create: "{{ system_users | selectattr('all_nodes', 'equalto', true) | list }}"
+
+- name: Create system users (macOS)
+  when: os_family == "darwin"
+  block:
+    - name: Check if user exists (macOS)
+      ansible.builtin.command: id -u "{{ item.name }}"
+      register: user_check
+      failed_when: false
+      changed_when: false
+      loop: "{{ users_to_create }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create missing users (macOS)
+      ansible.builtin.command: >
+        sysadminctl -addUser {{ item.item.name }}
+        -UID {{ item.item.uid }}
+        -shell {{ item.item.shell | default('/usr/bin/false') }}
+        {% if item.item.home | default('') == '/dev/null' or item.item.home | default('') == '' %}
+        -home /dev/null
+        {% endif %}
+      when: item.rc != 0
+      become: true
+      loop: "{{ user_check.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Grant SSH access on macOS (com.apple.access_ssh)
+      ansible.builtin.command: >
+        dseditgroup -o edit -a {{ item.name }} -t user com.apple.access_ssh
+      become: true
+      changed_when: false
+      failed_when: false
+      loop: "{{ users_to_create | selectattr('shell', 'ne', '/usr/bin/false') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+# ── macOS PATH: profile.d drop-in system ──
+# /etc/zshenv is sourced for ALL zsh invocations (interactive, non-interactive,
+# login, non-login). This makes PATH available to Ansible shell tasks, cron, etc.
+
+- name: Create /etc/profile.d directory (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /etc/profile.d
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Drop Homebrew PATH into profile.d (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.copy:
+    dest: /etc/profile.d/00-homebrew.sh
+    content: |
+      # Managed by Ansible — do not edit
+      export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+    mode: "0644"
+  become: true
+
+- name: Drop MCP bin PATH into profile.d (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.copy:
+    dest: /etc/profile.d/10-mcps.sh
+    content: |
+      # Managed by Ansible — do not edit
+      export PATH="/opt/mcps/bin:$PATH"
+    mode: "0644"
+  become: true
+
+- name: Wire profile.d sourcing into /etc/zshenv (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.blockinfile:
+    path: /etc/zshenv
+    marker: "# {mark} ANSIBLE MANAGED — profile.d sourcing"
+    block: |
+      if [ -d /etc/profile.d ]; then
+        for _f in /etc/profile.d/*.sh; do
+          [ -r "$_f" ] && . "$_f"
+        done
+        unset _f
+      fi
+    create: true
+    mode: "0644"
+  become: true
+
+- name: Create system users (Linux)
+  when: os_family == "linux"
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    uid: "{{ item.uid }}"
+    shell: "{{ item.shell | default('/usr/sbin/nologin') }}"
+    create_home: false
+    system: true
+    state: present
+  become: true
+  loop: "{{ users_to_create }}"
+  loop_control:
+    label: "{{ item.name }}"

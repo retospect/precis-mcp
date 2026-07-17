@@ -1,0 +1,61 @@
+---
+# Install llama-swap binary from GitHub releases.
+# Arch mapping:
+#   macOS → darwin_arm64  (M2 Ultra, M4)
+#   Linux → linux_arm64   (the GPU node GB10 is aarch64)
+
+- name: Determine llama-swap arch triple
+  ansible.builtin.set_fact:
+    _llamaswap_os: "{{ 'darwin' if os_family == 'darwin' else 'linux' }}"
+    _llamaswap_arch: "arm64"
+
+- name: Compose llama-swap download URL
+  ansible.builtin.set_fact:
+    _llamaswap_url: "{{ llamacpp_llama_swap_url_template
+      | replace('{version}', llamacpp_llama_swap_version)
+      | replace('{os}', _llamaswap_os)
+      | replace('{arch}', _llamaswap_arch) }}"
+    _llamaswap_tarball: "/tmp/llama-swap_{{ llamacpp_llama_swap_version }}_{{ _llamaswap_os }}_{{ _llamaswap_arch }}.tar.gz"
+
+- name: Check installed llama-swap version
+  ansible.builtin.command: "{{ llamacpp_bin_dir }}/llama-swap --version"
+  register: _llamaswap_installed
+  changed_when: false
+  failed_when: false
+
+- name: Download llama-swap release tarball
+  ansible.builtin.get_url:
+    url: "{{ _llamaswap_url }}"
+    dest: "{{ _llamaswap_tarball }}"
+    mode: "0644"
+  when: llamacpp_llama_swap_version not in (_llamaswap_installed.stdout | default(''))
+  register: _llamaswap_download
+
+# Run extract when either we just downloaded OR the installed binary is stale
+# (e.g. get_url left a tarball on disk from a previous failed run).
+- name: Extract llama-swap binary (BSD-tar-compatible)
+  ansible.builtin.command:
+    cmd: tar -xzf {{ _llamaswap_tarball }} -C {{ llamacpp_bin_dir }} llama-swap
+  become: true
+  when: llamacpp_llama_swap_version not in (_llamaswap_installed.stdout | default(''))
+  changed_when: true
+  notify: restart llamaswap
+
+- name: Ensure llama-swap binary is executable
+  ansible.builtin.file:
+    path: "{{ llamacpp_bin_dir }}/llama-swap"
+    mode: "0755"
+  become: true
+  when: llamacpp_llama_swap_version not in (_llamaswap_installed.stdout | default(''))
+
+- name: Remove llama-swap tarball
+  ansible.builtin.file:
+    path: "{{ _llamaswap_tarball }}"
+    state: absent
+  when: llamacpp_llama_swap_version not in (_llamaswap_installed.stdout | default(''))
+
+- name: Verify llama-swap binary
+  ansible.builtin.command: "{{ llamacpp_bin_dir }}/llama-swap --version"
+  register: _llamaswap_final
+  changed_when: false
+  failed_when: _llamaswap_final.rc != 0

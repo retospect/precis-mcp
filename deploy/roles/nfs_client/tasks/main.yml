@@ -1,0 +1,43 @@
+---
+# NFS client mount on all non-server nodes
+# Mount options:
+#   hard   — retry indefinitely if server goes down (default, but explicit)
+#   intr   — allow interrupt on hung operations
+#   _netdev (Linux) — wait for network before mounting at boot
+
+- name: Ensure mount point exists
+  ansible.builtin.file:
+    path: "{{ shared_mount }}"
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Mount NFS share (macOS)
+  when: os_family == "darwin"
+  ansible.posix.mount:
+    path: "{{ shared_mount }}"
+    src: "{{ hostvars[nfs_server]['lan_ip'] }}:{{ nfs_export_path }}/shared"
+    fstype: nfs
+    opts: hard,intr
+    state: mounted
+  become: true
+
+- name: Mount NFS share (Linux)
+  when: os_family == "linux"
+  ansible.posix.mount:
+    path: "{{ shared_mount }}"
+    src: "{{ hostvars[nfs_server]['lan_ip'] }}:{{ nfs_export_path }}/shared"
+    fstype: nfs
+    opts: hard,intr,_netdev
+    state: mounted
+  become: true
+
+- name: Verify NFS canary
+  ansible.builtin.stat:
+    path: "{{ shared_mount }}/.nfs-canary"
+  register: nfs_canary
+
+- name: Fail if NFS not working
+  ansible.builtin.fail:
+    msg: "NFS canary file not found at {{ shared_mount }}/.nfs-canary — NFS mount may have failed"
+  when: not nfs_canary.stat.exists

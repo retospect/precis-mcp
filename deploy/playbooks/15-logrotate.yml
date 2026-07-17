@@ -1,0 +1,8 @@
+---
+# 15-logrotate.yml — /shared/logs rotation
+- name: Configure log rotation
+  hosts: all
+  become: true
+  roles:
+    - logrotate
+  tags: [logrotate]

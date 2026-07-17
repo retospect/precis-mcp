@@ -1,0 +1,23 @@
+---
+# How often each host reports its load + temperature into the
+# host_heartbeat table. 60s matches precis_cron_tick's cadence —
+# cheap (~1s of Python boot + one UPSERT) and gives the web Status
+# tab fresh-enough liveness signal.
+precis_heartbeat_interval_seconds: 60
+
+# Worker venv path matches precis_worker_venv. The same venv carries
+# the `precis heartbeat` subcommand once the worker code is installed,
+# so we don't need a separate venv here.
+precis_heartbeat_venv: /opt/precis/venv
+
+# Mirror precis_worker_dsn so the heartbeat role doesn't depend on
+# the precis_worker role's variables being in scope. Same DSN
+# expression: connect to the postgres host's pgbouncer as agent_rw.
+precis_heartbeat_dsn: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+
+# Optional override: a shell command whose first numeric stdout token
+# is parsed as °C. Honoured by `precis heartbeat` via the
+# PRECIS_TEMP_CMD env var. macOS hosts have no portable thermal
+# interface without sudo; leave empty unless osx-cpu-temp or similar
+# is installed on the host. Set per-host in host_vars/ when needed.
+precis_heartbeat_temp_cmd: ""

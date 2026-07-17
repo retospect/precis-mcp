@@ -1,0 +1,37 @@
+---
+# nightly_reboot — install a systemd timer + oneshot service that
+# gently reboots the Linux GPU node nightly (gripe 50907). Renders two
+# unit files and enables the timer; it does NOT touch precis-worker or
+# any other service, so applying this role never bounces the factory.
+
+- name: nightly_reboot targets the Linux GPU node only
+  ansible.builtin.assert:
+    that: os_family == "linux"
+    fail_msg: >-
+      The nightly_reboot role targets the inference node (the GPU node,
+      Linux/systemd). The macOS nodes reboot nightly via their own
+      mechanism and need nothing here.
+
+- name: Render nightly-reboot systemd service
+  ansible.builtin.template:
+    src: nightly-reboot.service.j2
+    dest: /etc/systemd/system/nightly-reboot.service
+    mode: "0644"
+  become: true
+  notify: reload nightly-reboot timer
+
+- name: Render nightly-reboot systemd timer
+  ansible.builtin.template:
+    src: nightly-reboot.timer.j2
+    dest: /etc/systemd/system/nightly-reboot.timer
+    mode: "0644"
+  become: true
+  notify: reload nightly-reboot timer
+
+- name: Enable + start nightly-reboot timer
+  ansible.builtin.systemd:
+    name: nightly-reboot.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true

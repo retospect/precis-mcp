@@ -1,0 +1,57 @@
+# {{ ansible_managed }}
+upstream cluster_api {
+    server 127.0.0.1:8000;
+}
+
+upstream litellm_proxy {
+    server 127.0.0.1:{{ litellm_port }};
+}
+
+server {
+    listen 80;
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name _;
+
+    ssl_certificate     {{ nginx_ssl_cert }};
+    ssl_certificate_key {{ nginx_ssl_key }};
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # Hermes API
+    location /api/ {
+        proxy_pass http://cluster_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+    }
+
+    # LiteLLM proxy
+    location /llm/ {
+        proxy_pass http://litellm_proxy/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+    }
+
+    # Webhook endpoint
+    location /webhook {
+        proxy_pass http://cluster_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # Deny everything else
+    location / {
+        return 404;
+    }
+}

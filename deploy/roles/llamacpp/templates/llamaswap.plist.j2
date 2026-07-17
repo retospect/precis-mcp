@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- {{ ansible_managed }} -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.llamaswap</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{ llamacpp_bin_dir }}/llama-swap</string>
+        <string>-config</string>
+        <string>/opt/llamacpp/etc/llama-swap.yaml</string>
+        <string>-listen</string>
+        <string>0.0.0.0:{{ llama_swap_port_macos }}</string>
+    </array>
+    <key>UserName</key>
+    <string>root</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>{{ llamacpp_log_dir_darwin }}/llamaswap.log</string>
+    <key>StandardOutPath</key>
+    <string>{{ llamacpp_log_dir_darwin }}/llamaswap.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/opt/llamacpp</string>
+        <key>PATH</key>
+        <string>{{ llamacpp_bin_dir }}:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

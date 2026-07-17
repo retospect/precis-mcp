@@ -1,0 +1,104 @@
+---
+# Sync GGUFs from the NFS canonical store to the inference node's local SSD.
+# mmap over NFS is a correctness and performance footgun — llama-server reads
+# exclusively from the local cache at runtime.
+#
+# Uses rsync with size+mtime check (default); idempotent, only copies new/changed.
+
+- name: Ensure local model cache dir exists
+  ansible.builtin.file:
+    path: "{{ llamacpp_model_dir }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  become: true
+
+- name: Resolve local catalog entries this host wants
+  ansible.builtin.set_fact:
+    llamacpp_local_entries: >-
+      {{ llamacpp_catalog
+         | selectattr('name', 'in', (llamacpp_models | default([])))
+         | list }}
+
+- name: Report sync plan
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} wants
+      {{ llamacpp_local_entries | length }} GGUFs
+      (~{{ llamacpp_local_entries | map(attribute='size_gb') | sum }} GB)
+      from {{ llamacpp_nfs_dir_client }}
+
+- name: Ensure local subdirs exist for multi-part GGUFs
+  ansible.builtin.file:
+    path: "{{ llamacpp_model_dir }}/{{ item.hf_file | dirname }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  loop: "{{ llamacpp_local_entries | selectattr('hf_pattern', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }} → {{ item.hf_file | dirname }}"
+  become: true
+
+- name: Rsync single-file GGUFs from NFS to local SSD
+  ansible.builtin.command:
+    argv:
+      - rsync
+      - -a
+      - --partial
+      - --inplace
+      - "{{ llamacpp_nfs_dir_client }}/{{ item.name }}/{{ item.hf_file }}"
+      - "{{ llamacpp_model_dir }}/{{ item.hf_file }}"
+  loop: "{{ llamacpp_local_entries | rejectattr('hf_pattern', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.size_gb }} GB)"
+  register: llamacpp_sync_single
+  changed_when: llamacpp_sync_single.rc == 0 and (llamacpp_sync_single.stderr | default('') | length) == 0
+  become: true
+
+# Multi-part GGUFs: rsync the entire {nfs}/{name}/{subdir}/ → {local}/{subdir}/
+# preserving the relative folder layout. llama.cpp's auto-shard discovery uses
+# the 00001-of-NNNNN naming pattern and requires every part to be in the same
+# directory as the part referenced by --model.
+- name: Rsync multi-part GGUF folders from NFS to local SSD
+  ansible.builtin.command:
+    argv:
+      - rsync
+      - -a
+      - --partial
+      - --inplace
+      - "{{ llamacpp_nfs_dir_client }}/{{ item.name }}/{{ item.hf_file | dirname }}/"
+      - "{{ llamacpp_model_dir }}/{{ item.hf_file | dirname }}/"
+  loop: "{{ llamacpp_local_entries | selectattr('hf_pattern', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.size_gb }} GB, pattern={{ item.hf_pattern }})"
+  register: llamacpp_sync_multi
+  changed_when: llamacpp_sync_multi.rc == 0 and (llamacpp_sync_multi.stderr | default('') | length) == 0
+  become: true
+
+- name: Cleanup orphaned single-file GGUFs in models root
+  ansible.builtin.find:
+    paths: "{{ llamacpp_model_dir }}"
+    patterns: "*.gguf"
+    file_type: file
+    recurse: false
+  register: llamacpp_local_files
+
+- name: Build set of wanted single-file filenames
+  ansible.builtin.set_fact:
+    llamacpp_wanted_files: >-
+      {{ llamacpp_local_entries
+         | rejectattr('hf_pattern', 'defined')
+         | map(attribute='hf_file')
+         | list }}
+
+- name: Remove orphaned single-file GGUFs
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ llamacpp_local_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename) not in llamacpp_wanted_files
+  become: true

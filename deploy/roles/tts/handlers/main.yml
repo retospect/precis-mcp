@@ -1,0 +1,10 @@
+---
+- name: restart precis-worker (tts)
+  # daemon_reload picks up the drop-in; restart re-reads the EnvironmentFile so
+  # the worker sees PRECIS_TTS_IMAGE / PRECIS_BRIEFING_AUDIO_ENABLED on its next
+  # loop and registers the briefing_audio pass.
+  ansible.builtin.systemd:
+    name: precis-worker
+    daemon_reload: true
+    state: restarted
+  become: true

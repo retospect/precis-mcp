@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0:{{ ollama_port }}"
+Environment="OLLAMA_NUM_PARALLEL={{ ollama_num_parallel }}"
+Environment="OLLAMA_MAX_LOADED_MODELS={{ ollama_max_loaded_models }}"
+Environment="OLLAMA_FLASH_ATTENTION={{ ollama_flash_attention }}"
+Environment="OLLAMA_KV_CACHE_TYPE={{ ollama_kv_cache_type }}"
+Environment="OLLAMA_KEEP_ALIVE=-1s"
+User=ollama
+Group=ollama

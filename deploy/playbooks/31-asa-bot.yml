@@ -1,0 +1,9 @@
+---
+# Deploy asa_bot — the Discord bridge that runs Asa as a Claude
+# Code agent backed by precis. See roles/asa_bot/README.md for the
+# manual prep needed (Discord token + claude OAuth as hermes user).
+- name: Deploy asa_bot
+  hosts: gateway
+  roles:
+    - asa_bot
+  tags: [asa-bot, asa]

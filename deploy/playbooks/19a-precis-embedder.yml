@@ -1,0 +1,31 @@
+---
+# 19a-precis-embedder.yml — Per-node embedding service.
+# Runs `precis serve-embeddings` on loopback on every cluster node so the
+# same-node `precis worker` (20) embeds via PRECIS_EMBEDDER=remote instead
+# of loading bge-m3 in-process. One model load per node; the worker venv
+# stays free of the sentence-transformers / torch weight. See ADR
+# 0020/0021 in the precis-mcp repo.
+#
+# Run order: MUST run before playbooks/20-precis-worker.yml — the worker
+# is configured to embed against http://127.0.0.1:8181 and will error on
+# every batch (retrying) until this service is listening. Not part of
+# site.yml; run explicitly like the worker / watch plays:
+#
+#   ansible-playbook playbooks/19a-precis-embedder.yml
+#   ansible-playbook playbooks/20-precis-worker.yml
+#
+# NOTE: requires a precis-mcp git ref that includes the remote-embedder
+# worker threading (`precis worker --embedder remote --embedder-url`) and
+# `precis serve-embeddings`. Push those to the ref in
+# precis_embedder_git_ref / precis_worker_git_ref before deploying.
+
+- name: Deploy precis-mcp embedding service on all cluster nodes
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: true
+  roles:
+    - precis_embedder
+  tags: [precis_embedder]

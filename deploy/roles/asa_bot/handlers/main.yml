@@ -1,0 +1,12 @@
+---
+# Persistent daemon (the Discord bridge runs continuously): reload via the
+# shared safe launchd task — retry the transient load failure and assert
+# the daemon has a pid before succeeding. Previously a bare unload/load -w
+# with no retry/assert, the same gr48481/#48490 hazard where a transient
+# `Load failed: 5` leaves asa down while the deploy reports success.
+- name: restart asa-bot
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.asa.bot
+    reload_persistent: true
+  when: os_family == "darwin"

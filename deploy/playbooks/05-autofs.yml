@@ -1,0 +1,9 @@
+---
+# 05-autofs.yml — Autofs mounts for the fileserver.local NAS
+# macOS nodes use SMB/CIFS; the GPU node uses NFSv4
+- name: Configure autofs for the fileserver
+  hosts: all
+  become: true
+  roles:
+    - autofs_client
+  tags: [autofs, nas]

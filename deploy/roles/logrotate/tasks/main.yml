@@ -1,0 +1,18 @@
+---
+# Log rotation for /shared/logs
+
+- name: Deploy logrotate config (macOS — uses newsyslog)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: shared_logs.conf.j2
+    dest: /etc/newsyslog.d/shared_logs.conf
+    mode: "0644"
+  become: true
+
+- name: Deploy logrotate config (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: shared_logs_logrotate.j2
+    dest: /etc/logrotate.d/shared_logs
+    mode: "0644"
+  become: true

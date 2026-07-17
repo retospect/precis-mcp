@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+# {{ ansible_managed }}
+# Hourly RSS + Semantic Scholar ingestion into cluster.news_items
+#
+# Fetches all enabled feeds from cluster.rss_feeds, deduplicates via
+# SHA-256 fingerprint, and inserts new items. Also polls Semantic Scholar
+# API for configured watch queries.
+#
+# Usage: python3 rss_ingest.py [--verbose] [--dry-run]
+
+import argparse
+import hashlib
+import json
+import logging
+import sys
+import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Optional
+
+import feedparser
+import psycopg2
+import psycopg2.extras
+import requests
+
+# ── Config ──
+DB_DSN = "host=127.0.0.1 port=6432 dbname=precis_prod user=agent_rw password={{ vault_pg_agent_rw_pass }}"
+
+
+def _reveal_secret(name: str) -> str:
+    """Reveal a secret from the precis DB vault (ADR 0055); '' on any failure.
+    The S2 key is a rate-limit booster, so keyless is a fine fallback."""
+    try:
+        with psycopg2.connect(DB_DSN) as _c, _c.cursor() as _cur:
+            _cur.execute("SELECT coalesce(vault.reveal(%s), '')", (name,))
+            return _cur.fetchone()[0]
+    except Exception:
+        return ""
+
+
+# Semantic Scholar key comes from the DB vault, not ansible-vault / this file.
+S2_API_KEY = _reveal_secret("SEMANTIC_SCHOLAR_API_KEY")
+S2_BASE_URL = "https://api.semanticscholar.org/graph/v1"
+S2_RATE_LIMIT = 1.0  # seconds between API calls
+REQUEST_TIMEOUT = 30  # seconds
+MAX_ITEMS_PER_FEED = 100  # safety cap per feed
+
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=logging.INFO,
+)
+log = logging.getLogger("rss_ingest")
+
+
+def fingerprint(title: str, source: str) -> str:
+    """Deterministic fingerprint for deduplication."""
+    normalized = f"{title.strip().lower()}|{source.strip().lower()}"
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def parse_pub_date(entry) -> Optional[datetime]:
+    """Extract publication date from a feed entry."""
+    for attr in ("published_parsed", "updated_parsed"):
+        parsed = getattr(entry, attr, None)
+        if parsed:
+            try:
+                return datetime(*parsed[:6], tzinfo=timezone.utc)
+            except Exception:
+                pass
+    for attr in ("published", "updated"):
+        raw = getattr(entry, attr, None)
+        if raw:
+            try:
+                return parsedate_to_datetime(raw)
+            except Exception:
+                pass
+    return None
+
+
+def extract_content(entry) -> str:
+    """Extract the best available content from a feed entry."""
+    if hasattr(entry, "content") and entry.content:
+        return entry.content[0].get("value", "")
+    return getattr(entry, "summary", "") or ""
+
+
+def fetch_rss_feeds(conn, dry_run=False):
+    """Fetch all enabled RSS feeds and insert new items."""
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT id, url, name, category, tags
+            FROM cluster.rss_feeds
+            WHERE enabled = true
+            ORDER BY id
+        """)
+        feeds = cur.fetchall()
+
+    log.info("Fetching %d enabled RSS feeds", len(feeds))
+    total_new = 0
+
+    for feed_row in feeds:
+        feed_url = feed_row["url"]
+        feed_name = feed_row["name"]
+        default_tags = feed_row["tags"] or []
+
+        try:
+            parsed = feedparser.parse(feed_url)
+            if parsed.bozo and not parsed.entries:
+                log.warning("Feed parse error for %s: %s", feed_name, parsed.bozo_exception)
+                _update_feed_error(conn, feed_row["id"], str(parsed.bozo_exception))
+                continue
+
+            entries = parsed.entries[:MAX_ITEMS_PER_FEED]
+            new_count = 0
+
+            for entry in entries:
+                title = getattr(entry, "title", "").strip()
+                if not title:
+                    continue
+
+                fp = fingerprint(title, feed_url)
+                link = getattr(entry, "link", "") or ""
+                summary = getattr(entry, "summary", "") or ""
+                content = extract_content(entry)
+                authors = ", ".join(
+                    a.get("name", "") for a in getattr(entry, "authors", [])
+                ) if hasattr(entry, "authors") else ""
+                pub_date = parse_pub_date(entry)
+
+                # Merge feed-level tags with entry categories
+                entry_tags = list(default_tags)
+                if hasattr(entry, "tags"):
+                    for t in entry.tags:
+                        term = t.get("term", "").strip().lower()
+                        if term and term not in entry_tags:
+                            entry_tags.append(term)
+
+                if dry_run:
+                    log.info("  [DRY-RUN] Would insert: %s", title[:80])
+                    new_count += 1
+                    continue
+
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO cluster.news_items
+                                (fingerprint, source, source_name, title, link,
+                                 summary, content, authors, tags, published_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (fingerprint) DO NOTHING
+                            RETURNING id
+                        """, (
+                            fp, feed_url, feed_name, title, link,
+                            summary[:10000], content[:50000], authors,
+                            entry_tags, pub_date,
+                        ))
+                        if cur.fetchone():
+                            new_count += 1
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    log.error("Insert error for '%s': %s", title[:60], e)
+
+            _update_feed_success(conn, feed_row["id"])
+            if new_count:
+                log.info("  %s: %d new items", feed_name, new_count)
+            total_new += new_count
+
+        except Exception as e:
+            log.error("Error fetching %s: %s", feed_name, e)
+            _update_feed_error(conn, feed_row["id"], str(e))
+
+    log.info("RSS ingestion complete: %d new items total", total_new)
+    return total_new
+
+
+def _update_feed_success(conn, feed_id):
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE cluster.rss_feeds
+                SET last_fetched_at = now(), last_error = NULL
+                WHERE id = %s
+            """, (feed_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+
+def _update_feed_error(conn, feed_id, error):
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE cluster.rss_feeds
+                SET last_fetched_at = now(), last_error = %s
+                WHERE id = %s
+            """, (error[:500], feed_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+
+def fetch_semantic_scholar(conn, dry_run=False):
+    """Poll Semantic Scholar API for configured watch queries."""
+    if not S2_API_KEY:
+        log.info("No Semantic Scholar API key configured, skipping")
+        return 0
+
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT id, query, fields, min_citations, tags, metadata
+            FROM cluster.scholar_watches
+            WHERE enabled = true
+            ORDER BY id
+        """)
+        watches = cur.fetchall()
+
+    if not watches:
+        log.info("No Semantic Scholar watches configured")
+        return 0
+
+    log.info("Polling %d Semantic Scholar watches", len(watches))
+    headers = {"x-api-key": S2_API_KEY}
+    total_new = 0
+
+    for watch in watches:
+        query = watch["query"]
+        fields = watch["fields"]
+        min_citations = watch["min_citations"]
+        default_tags = watch["tags"] or []
+        meta = watch["metadata"] or {}
+        min_year = meta.get("min_year")
+
+        try:
+            params = {
+                "query": query,
+                "fields": fields,
+                "limit": 50,
+            }
+            if min_year:
+                params["year"] = f"{min_year}-"
+
+            resp = requests.get(
+                f"{S2_BASE_URL}/paper/search",
+                params=params,
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            papers = data.get("data", [])
+
+            new_count = 0
+            for paper in papers:
+                title = (paper.get("title") or "").strip()
+                if not title:
+                    continue
+
+                citation_count = paper.get("citationCount", 0) or 0
+                if citation_count < min_citations:
+                    continue
+
+                paper_id = paper.get("paperId", "")
+                fp = fingerprint(title, "semantic_scholar")
+
+                ext_ids = paper.get("externalIds") or {}
+                doi = ext_ids.get("DOI", "")
+                arxiv_id = ext_ids.get("ArXiv", "")
+                link = f"https://www.semanticscholar.org/paper/{paper_id}" if paper_id else ""
+                if doi:
+                    link = f"https://doi.org/{doi}"
+
+                abstract = paper.get("abstract") or ""
+                authors_list = paper.get("authors") or []
+                authors = ", ".join(a.get("name", "") for a in authors_list[:10])
+                year = paper.get("year")
+
+                tags = list(default_tags) + ["academic", "semantic_scholar"]
+                metadata_json = {
+                    "s2_paper_id": paper_id,
+                    "doi": doi,
+                    "arxiv_id": arxiv_id,
+                    "citation_count": citation_count,
+                    "year": year,
+                }
+
+                if dry_run:
+                    log.info("  [DRY-RUN] Would insert paper: %s", title[:80])
+                    new_count += 1
+                    continue
+
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO cluster.news_items
+                                (fingerprint, source, source_name, title, link,
+                                 summary, authors, tags, metadata)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (fingerprint) DO NOTHING
+                            RETURNING id
+                        """, (
+                            fp, "semantic_scholar", f"Semantic Scholar: {query[:50]}",
+                            title, link, abstract[:10000], authors,
+                            tags, json.dumps(metadata_json),
+                        ))
+                        if cur.fetchone():
+                            new_count += 1
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    log.error("Insert error for paper '%s': %s", title[:60], e)
+
+            # Update last polled
+            if not dry_run:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE cluster.scholar_watches
+                        SET last_polled_at = now()
+                        WHERE id = %s
+                    """, (watch["id"],))
+                conn.commit()
+
+            if new_count:
+                log.info("  S2 '%s': %d new papers", query[:40], new_count)
+            total_new += new_count
+
+            time.sleep(S2_RATE_LIMIT)
+
+        except requests.exceptions.HTTPError as e:
+            log.error("S2 API error for '%s': %s", query[:40], e)
+        except Exception as e:
+            log.error("Error polling S2 for '%s': %s", query[:40], e)
+
+    log.info("Semantic Scholar ingestion complete: %d new papers total", total_new)
+    return total_new
+
+
+def cleanup_old_items(conn, days=30, dry_run=False):
+    """Remove items older than N days to keep the table manageable."""
+    if dry_run:
+        log.info("[DRY-RUN] Would clean up items older than %d days", days)
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM cluster.news_items
+                WHERE ingested_at < now() - interval '%s days'
+            """, (days,))
+            deleted = cur.rowcount
+        conn.commit()
+        if deleted:
+            log.info("Cleaned up %d items older than %d days", deleted, days)
+    except Exception as e:
+        conn.rollback()
+        log.error("Cleanup error: %s", e)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="RSS + Semantic Scholar ingestion")
+    parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument("--dry-run", "-n", action="store_true")
+    parser.add_argument("--cleanup-days", type=int, default=30)
+    args = parser.parse_args()
+
+    if args.verbose:
+        log.setLevel(logging.DEBUG)
+
+    try:
+        conn = psycopg2.connect(DB_DSN)
+        log.info("Connected to database")
+    except Exception as e:
+        log.error("Database connection failed: %s", e)
+        sys.exit(1)
+
+    try:
+        rss_new = fetch_rss_feeds(conn, dry_run=args.dry_run)
+        s2_new = fetch_semantic_scholar(conn, dry_run=args.dry_run)
+        cleanup_old_items(conn, days=args.cleanup_days, dry_run=args.dry_run)
+        log.info("Done. Total new: %d (RSS: %d, S2: %d)", rss_new + s2_new, rss_new, s2_new)
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    main()

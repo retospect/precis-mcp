@@ -1,0 +1,59 @@
+# {{ ansible_managed }}
+groups:
+  - name: cluster_alerts
+    rules:
+      - alert: NodeDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{% raw %}{{ $labels.instance }}{% endraw %} is down"
+
+      - alert: HighDiskUsage
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{% raw %}Disk usage above 90% on {{ $labels.instance }}{% endraw %}"
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{% raw %}Memory usage above 90% on {{ $labels.instance }}{% endraw %}"
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is down on the data node"
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is down on the data node"
+
+      - alert: OllamaDown
+        expr: up{job="ollama"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{% raw %}Ollama is down on {{ $labels.instance }}{% endraw %}"
+
+      - alert: NFSMountMissing
+        expr: node_filesystem_avail_bytes{mountpoint="/shared"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{% raw %}NFS mount /shared missing on {{ $labels.instance }}{% endraw %}"

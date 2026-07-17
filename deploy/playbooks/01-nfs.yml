@@ -1,0 +1,15 @@
+---
+# 01-nfs.yml — NFS server on the data node, mounts on others
+- name: Configure NFS server
+  hosts: nfs_servers
+  become: true
+  roles:
+    - nfs_server
+  tags: [nfs, nfs_server]
+
+- name: Mount NFS on clients
+  hosts: nfs_clients
+  become: true
+  roles:
+    - nfs_client
+  tags: [nfs, nfs_client]

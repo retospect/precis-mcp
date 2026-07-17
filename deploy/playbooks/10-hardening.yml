@@ -1,0 +1,8 @@
+---
+# 10-hardening.yml — sshd, sudoers, remove deploy key
+- name: Harden all nodes
+  hosts: all
+  become: true
+  roles:
+    - hardening
+  tags: [hardening, sshd, security]

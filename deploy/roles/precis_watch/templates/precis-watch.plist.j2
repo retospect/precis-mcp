@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} — precis watch daemon (single-node).
+
+  Watches the NAS inbox for new PDFs and ingests via precis_add. The
+  watcher itself doesn't embed/summarize — that work goes into the
+  postgres queue that the precis_worker daemons drain across all 4
+  cluster nodes. So this daemon is single-instance by design (multiple
+  watchers would race on the inbox dir), but ingest throughput scales
+  with the worker pool, not with watchers.
+
+  --polling because NAS is NFS-mounted (inotify isn't reliable on NFS).
+  --subprocess-batch-size 1 isolates Marker's memory leak: every PDF
+  runs in its own subprocess that exits + reclaims VM after.
+#}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.watch</string>
+
+  {# Wrapping in `/bin/bash -c "exec ..."` is the TCC trick: bash is the
+     responsible process (FDA-granted cluster-wide via tcc_profile), and
+     python inherits the grant across exec. Avoids needing per-venv-python
+     FDA toggles every time we deploy on a new node or bump python@3.x. #}
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>exec {{ precis_watch_venv }}/bin/precis watch --polling --debounce {{ precis_watch_debounce }} --user {{ precis_watch_user }} --corpus-dir {{ precis_watch_corpus }} --subprocess-batch-size {{ precis_watch_subprocess_batch }} --subprocess-concurrency {{ precis_watch_subprocess_concurrency }} {{ precis_watch_dir }}</string>
+  </array>
+
+  <key>UserName</key>
+  <string>deploy</string>
+
+  {# Same /tmp trick as extract_watch: launchd-dropped-to-deploy can't
+     getcwd() inside NFS mounts on modern macOS — guaranteed crash on
+     httpx/rich import. /tmp is always traversable. #}
+  <key>WorkingDirectory</key>
+  <string>/tmp</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/deploy</string>
+    <key>PATH</key>
+    <string>{{ precis_watch_venv }}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PRECIS_DATABASE_URL</key>
+    <string>{{ precis_watch_dsn }}</string>
+    {# Local HF cache so bge-m3 doesn't redownload per-restart. Shared
+       with precis_worker on the same host. #}
+    <key>HF_HOME</key>
+    <string>{{ precis_worker_hf_home | default('/var/lib/precis/hf-cache') }}</string>
+    {# Shared API keys (Semantic Scholar, Unpaywall, Elsevier, …) — the
+       same block precis_worker carries. The ingest pipeline the watcher
+       runs enriches paper metadata via the S2 graph API; without
+       SEMANTIC_SCHOLAR_API_KEY here it hammered S2's anonymous limit and
+       got 429-throttled on every paper, degrading metadata and slowing
+       the drain. Carrying the full dict (incl. keys the watcher doesn't
+       use) is negligible and keeps it in lock-step with the worker. #}
+    {% for env_key, env_val in precis_shared_env.items() %}
+    <key>{{ env_key }}</key>
+    <string>{{ env_val }}</string>
+    {% endfor %}
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  {# Crashed-only restart — clean SIGTERM (cron kickstart) shouldn't loop.
+     The watch loop is meant to run continuously; a clean exit means
+     someone restarted it on purpose. #}
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+    <key>Crashed</key>
+    <true/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/precis-watch.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/precis-watch.log</string>
+</dict>
+</plist>

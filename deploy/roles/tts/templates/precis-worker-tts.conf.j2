@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# Sources the tts env (PRECIS_TTS_* / PRECIS_BRIEFING_AUDIO_*) into precis-worker.
+# `-` makes the file optional so the unit still starts when tts is absent.
+[Service]
+EnvironmentFile=-/etc/precis/tts.env

@@ -1,0 +1,10 @@
+---
+- name: restart prometheus
+  when: os_family == "darwin"
+  ansible.builtin.command: /opt/homebrew/bin/brew services restart prometheus
+  become: true
+
+- name: restart grafana
+  when: os_family == "darwin"
+  ansible.builtin.command: /opt/homebrew/bin/brew services restart grafana
+  become: true

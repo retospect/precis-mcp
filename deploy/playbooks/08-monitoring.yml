@@ -1,0 +1,8 @@
+---
+# 08-monitoring.yml — Prometheus, Grafana, exporters, alerts on the data node
+- name: Configure monitoring stack
+  hosts: monitoring
+  become: true
+  roles:
+    - monitoring
+  tags: [monitoring, prometheus, grafana]

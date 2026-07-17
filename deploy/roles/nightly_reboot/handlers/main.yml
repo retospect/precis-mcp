@@ -1,0 +1,9 @@
+---
+- name: reload nightly-reboot timer
+  ansible.builtin.systemd:
+    name: nightly-reboot.timer
+    daemon_reload: true
+    state: restarted
+    enabled: true
+  become: true
+  listen: reload nightly-reboot timer

@@ -1,0 +1,52 @@
+---
+# tts role defaults — configure the Linux compute node to render the
+# audio feed (the news-briefing → podcast producer, and any future audio
+# producer) via the `precis-tts` container. Mirrors roles/aizynth: the TTS engine
+# (Kokoro + misaki) lives in the IMAGE, not the worker venv (which has no [tts]
+# extra), so this role wires only the container runtime + the worker env. The
+# briefing_audio worker pass shells out to `docker run precis-tts` per episode.
+#
+# Unlike aizynth, the Kokoro model files are BAKED into the image (self-contained,
+# ~330 MB), so there is no models-on-NAS download step.
+
+# The node this role targets (the GPU node). The briefing_audio pass runs on this node's
+# system worker and launches the container locally, so the /work bind paths line
+# up on the same box that staged them.
+tts_node: "{{ inventory_hostname }}"
+
+# The precis-tts image (built on the node from precis-mcp/docker/tts). docker is
+# the GPU node's deployed runtime (same as roles/dft / roles/aizynth).
+tts_image: "precis-tts:latest"
+tts_container_cmd: docker
+# The image's base — already cached on the compute node (shared with aizynth's
+# 3.11-slim), so `image inspect` short-circuits the flaky the GPU node→Docker Hub pull.
+# Keep in sync with the FROM in docker/tts/Dockerfile (>=3.11 is all precis needs).
+tts_base_image: "python:3.11-slim-bookworm"
+# The precis-mcp ref installed INTO the image (the --build-arg). Pin to a sha for
+# a reproducible render engine; `main` tracks tip.
+tts_precis_ref: main
+
+# The worker runs as this user; it must be able to run the container.
+tts_worker_user: deploy
+
+# (Re)build the image on the node (rsync docker/tts → docker build). Needed for
+# the first run; the layer cache makes re-runs cheap. Flip off to skip once the
+# image is present:
+#   ansible-playbook playbooks/45-tts.yml -e tts_build_image=false
+tts_build_image: true
+# The build context is precis-mcp's docker/tts (Dockerfile + shim), on the
+# ansible controller (this laptop), copied to the node.
+tts_src_dir: "{{ lookup('env', 'HOME') }}/work/projects/code/precis-mcp/docker/tts"
+
+# Where the produced episodes land — the shared NAS podcast dir as mounted on
+# this node (the gateway serves it at /podcast/feed.xml). Matches roles/precis_web.
+tts_podcast_dir: /nas/botshome/podcast
+
+# Local scratch the worker stages segments.json into + bind-mounts into the
+# container. Local (same node), owned by the worker user; not NFS (the container
+# runs on this box).
+tts_scratch_dir: /var/lib/precis/tts-scratch
+
+# Defaults for the briefing narration (per-chunk meta still overrides).
+tts_briefing_voice: af_heart
+tts_briefing_lang: en-us

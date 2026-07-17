@@ -1,0 +1,24 @@
+# Managed by Ansible — do not edit
+bind 0.0.0.0
+port {{ redis_port }}
+{% if vault_redis_password is defined %}
+requirepass {{ vault_redis_password }}
+{% endif %}
+
+# Persistence
+save 900 1
+save 300 10
+save 60 10000
+appendonly yes
+appendfsync everysec
+
+# Memory
+maxmemory 512mb
+maxmemory-policy allkeys-lru
+
+# Logging
+logfile "/opt/homebrew/var/log/redis-server.log"
+loglevel notice
+
+# Security
+protected-mode yes

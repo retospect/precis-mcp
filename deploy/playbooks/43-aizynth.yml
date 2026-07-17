@@ -1,0 +1,35 @@
+---
+# 43-aizynth.yml — configure a Linux compute node to run precis-mcp
+# `retrosynth` jobs: the AiZynthFinder retrosynthesis engine behind the `route`
+# kind (ADR 0056 slice 1b). Wires the container runtime + NFS scratch + the
+# AiZynth models on the NAS + the worker's PRECIS_CHEM_* / PRECIS_NODE env
+# (systemd drop-in). AiZynth lives in the precis-aizynth IMAGE and the route
+# kind + retrosynth job_type are bundled in precis-mcp, so there is nothing to
+# pip-install. See roles/aizynth/README.md.
+#
+# Targeting is driven entirely by the topology map
+# (inventory/group_vars/all/topology.yml): the role runs where
+# `inventory_hostname in precis_capabilities.chem_route`. Move the engine to
+# another Linux box by editing that one line, not this playbook.
+#
+# Run order: AFTER playbooks/20-precis-worker.yml (the worker unit must exist;
+# this drops the EnvironmentFile drop-in it reads, then restarts it). Like the
+# other worker plays, not part of site.yml — run explicitly:
+#
+#   ansible-playbook playbooks/43-aizynth.yml
+#   # skip the heavy first-time image build + model download once present:
+#   ansible-playbook playbooks/43-aizynth.yml \
+#     -e aizynth_build_image=false -e aizynth_download_models=false
+#
+# NOTE: the first run is heavy — it `podman build`s the AiZynth image (rdkit +
+# onnxruntime) and downloads the public models (hundreds of MB from figshare).
+# Both are idempotent. The macOS gateway needs only the KIND SURFACE
+# (PRECIS_CHEM_ENABLED + PRECIS_CHEM_ROUTE_NODE) — wired by roles/precis_web from
+# the `chem_plugin` topology; re-run redeploy-precis.yml (or 38-precis-web.yml)
+# after this to un-dark the route kind.
+
+- name: Configure AiZynthFinder retrosynth compute (topology-driven)
+  hosts: all
+  roles:
+    - role: aizynth
+      when: inventory_hostname in (precis_capabilities.chem_route | default([]))

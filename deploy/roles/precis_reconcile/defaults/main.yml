@@ -1,0 +1,19 @@
+---
+# precis_reconcile role defaults — nightly duplicate-reconciliation sweep.
+#
+# Fires `precis reconcile-duplicates --apply` once a night on a single
+# host (the data node). It's a global single-writer sweep — collapsing
+# live paper refs that share a pdf_sha256 to the best survivor — so it
+# must run on exactly one host, not the whole cluster.
+#
+# Uses the worker venv (/opt/precis/venv) + the same agent_rw DSN the
+# worker uses; reconcile is DB-only (no corpus / API keys needed).
+
+precis_reconcile_venv: /opt/precis/venv
+
+# Nightly fire time (local). 04:30 — quiet hours, after the dream/
+# briefing churn.
+precis_reconcile_hour: 4
+precis_reconcile_minute: 30
+
+precis_reconcile_dsn: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"

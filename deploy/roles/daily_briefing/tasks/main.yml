@@ -1,0 +1,160 @@
+---
+# Daily briefing infrastructure: RSS ingestion + prompt management
+# Deploys to the scheduler node (scheduler node)
+
+# ── Python dependencies ──
+- name: Set uv binary path
+  ansible.builtin.set_fact:
+    uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+- name: Install Python packages for RSS ingestion
+  ansible.builtin.shell: |
+    {{ uv_bin }} pip install --python /opt/mcps/venv/bin/python \
+      feedparser psycopg2-binary requests
+  become: true
+  register: briefing_deps
+  changed_when: "'Installed' in briefing_deps.stdout"
+
+# ── Directories ──
+- name: Create daily briefing directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: deploy
+    mode: "0755"
+  become: true
+  loop:
+    - "{{ shared_mount }}/scripts/daily_briefing"
+    - "{{ shared_mount }}/logs/daily_briefing"
+    - "{{ shared_mount }}/data/daily_briefing/briefs"
+    - "{{ shared_mount }}/data/daily_briefing/weekly"
+    - "{{ shared_mount }}/data/daily_briefing/trackers"
+    - "{{ shared_mount }}/data/daily_briefing/html"
+    - "{{ shared_mount }}/data/daily_briefing/state"
+    - "{{ shared_mount }}/souls/prompts/briefing"
+
+# ── Deploy canonical briefing prompts ──
+- name: Deploy daily briefing prompt template
+  ansible.builtin.template:
+    src: briefing_prompt.md.j2
+    dest: "{{ shared_mount }}/souls/prompts/briefing/daily_morning_brief.md"
+    owner: deploy
+    mode: "0644"
+  become: true
+
+- name: Deploy weekly intelligence prompt template
+  ansible.builtin.template:
+    src: weekly_prompt.md.j2
+    dest: "{{ shared_mount }}/souls/prompts/briefing/wednesday_weekly_intel.md"
+    owner: deploy
+    mode: "0644"
+  become: true
+
+# ── Deploy RSS ingestion script ──
+- name: Deploy RSS ingestion script
+  ansible.builtin.template:
+    src: rss_ingest.py.j2
+    dest: "{{ shared_mount }}/scripts/daily_briefing/rss_ingest.py"
+    owner: deploy
+    mode: "0750"
+  become: true
+  no_log: true
+
+# ── Deploy DB migration ──
+- name: Deploy daily briefing tables migration
+  ansible.builtin.template:
+    src: daily_briefing_tables.sql.j2
+    dest: /tmp/daily_briefing_tables.sql
+    mode: "0644"
+  become: true
+  no_log: true
+  delegate_to: "{{ postgres_host }}"
+
+- name: Apply daily briefing tables migration
+  ansible.builtin.shell: |
+    psql -d cluster -f /tmp/daily_briefing_tables.sql
+  become: true
+  become_user: "{{ 'deploy' if hostvars[postgres_host]['os_family'] | default('darwin') == 'darwin' else 'postgres' }}"
+  delegate_to: "{{ postgres_host }}"
+  changed_when: false
+
+# ── Seed briefing prompts into DB (only if empty) ──
+# Copies prompt files to the data node /tmp, then uses psql to seed.
+# The UPDATE only touches rows where prompt is still empty.
+- name: Copy prompt files to the data node for DB seeding
+  ansible.builtin.copy:
+    src: "{{ shared_mount }}/souls/prompts/briefing/{{ item.file }}"
+    dest: "/tmp/{{ item.file }}"
+    remote_src: true
+    mode: "0644"
+  become: true
+  delegate_to: "{{ postgres_host }}"
+  loop:
+    - { file: daily_morning_brief.md }
+    - { file: wednesday_weekly_intel.md }
+  failed_when: false
+
+- name: Seed briefing prompts into DB (only if empty)
+  ansible.builtin.shell: |
+    python3 -c "
+    import sys
+    content = open('/tmp/{{ item.file }}').read().replace(\"'\", \"''\")
+    print(f\"UPDATE cluster.briefing_prompts SET prompt = E'{content}', updated_at = now() WHERE name = '{{ item.name }}' AND prompt = '';\")
+    " | psql -d cluster 2>/dev/null || true
+  become: true
+  become_user: "{{ 'deploy' if hostvars[postgres_host]['os_family'] | default('darwin') == 'darwin' else 'postgres' }}"
+  delegate_to: "{{ postgres_host }}"
+  changed_when: false
+  failed_when: false
+  loop:
+    - { file: daily_morning_brief.md, name: daily_morning_brief }
+    - { file: wednesday_weekly_intel.md, name: wednesday_weekly_intel }
+
+# ── Deploy briefing generation agent ──
+- name: Deploy briefing generation script
+  ansible.builtin.template:
+    src: generate_briefing.py.j2
+    dest: "{{ shared_mount }}/scripts/daily_briefing/generate_briefing.py"
+    owner: deploy
+    mode: "0750"
+  become: true
+  no_log: true
+
+# ── Cron: hourly RSS ingestion ──
+- name: Schedule hourly RSS ingestion
+  ansible.builtin.cron:
+    name: "hourly RSS + Semantic Scholar ingestion"
+    minute: "15"
+    job: >-
+      /opt/mcps/venv/bin/python
+      {{ shared_mount }}/scripts/daily_briefing/rss_ingest.py
+      >> {{ shared_mount }}/logs/daily_briefing/ingest.log 2>&1
+    user: deploy
+  become: true
+
+# ── Cron: daily briefing at 6:00 AM UTC ──
+- name: Schedule daily briefing generation
+  ansible.builtin.cron:
+    name: "daily intelligence briefing"
+    minute: "0"
+    hour: "6"
+    job: >-
+      /opt/mcps/venv/bin/python
+      {{ shared_mount }}/scripts/daily_briefing/generate_briefing.py daily
+      >> {{ shared_mount }}/logs/daily_briefing/generate.log 2>&1
+    user: deploy
+  become: true
+
+# ── Cron: weekly briefing at 6:00 AM UTC on Wednesdays ──
+- name: Schedule weekly briefing generation
+  ansible.builtin.cron:
+    name: "wednesday weekly intelligence report"
+    minute: "0"
+    hour: "6"
+    weekday: "3"
+    job: >-
+      /opt/mcps/venv/bin/python
+      {{ shared_mount }}/scripts/daily_briefing/generate_briefing.py weekly
+      >> {{ shared_mount }}/logs/daily_briefing/generate.log 2>&1
+    user: deploy
+  become: true

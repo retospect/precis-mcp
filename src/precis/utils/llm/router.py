@@ -723,8 +723,31 @@ def dispatch(req: LlmRequest) -> LlmResult:
             tier=req.tier,
             error=refusal,
         )
+    # Local serving slot (slice 7 / §6): if this host declares ``served_by`` for
+    # the model, hold one of its local slots for the call's duration so
+    # concurrent local calls can't exceed the declared ``max_parallel``. Ships
+    # dark — a model not served on this host (every model until ``served_by`` is
+    # populated) returns ``None`` and dispatch is byte-identical to today. A
+    # ``paused`` outcome (served here but all slots busy) folds into the same
+    # paused-result shape as the breaker, so a pinned pass backs off, not spins.
+    from precis.utils.llm import local_serving as _local
+
+    slot = _local.acquire(model)
+    if slot is not None and slot.paused:
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=f"all local serving slots for {model} are busy — backing off",
+            paused=True,
+        )
     started = time.monotonic()
-    result = provider.run(req, model=model)
+    try:
+        result = provider.run(req, model=model)
+    finally:
+        _local.release(slot)
     _record_dispatch(
         req,
         result,

@@ -1,0 +1,8 @@
+---
+# 09-nginx.yml — TLS reverse proxy on the gateway
+- name: Configure Nginx
+  hosts: gateway
+  become: true
+  roles:
+    - nginx
+  tags: [nginx]

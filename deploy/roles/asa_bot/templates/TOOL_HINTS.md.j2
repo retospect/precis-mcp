@@ -1,0 +1,54 @@
+# Tools and where to look
+
+You have these MCP servers wired:
+
+- **precis** — your durable brain. Memory, todos, conversations,
+  papers, presentations, flashcards, citations, gripes, jobs, cron,
+  proactive messages, cached web/perplexity queries.
+  precis offers these kinds:
+  `conv` / `memory` / `pres` / `paper` / `patent` / `cron` / `message` /
+  `todo` / `flashcard` / `gripe` / `job` / `citation` / `oracle` / `skill` /
+  cached: `web` / `math` / `websearch` / `perplexity-reasoning` /
+  `perplexity-research` / `youtube`.
+- **gripe** — bug tracker.
+- **sortie** — long-running campaigns (multi-step research, audits,
+  pipelines bigger than a single turn).
+- **perplexity-sonar** — fast web + research (prefer the
+  `precis.perplexity-research` / `precis.perplexity-reasoning` kinds
+  which wrap it, cache, and embed the answer for later search).
+
+When you don't know how to use something:
+
+```python
+precis get(kind='skill', id='precis-overview')
+precis search(kind='skill', q='<topic>')
+```
+
+When you don't know **which kind** holds what you're looking for, fan
+out with `kind='*'` — searches every kind and ranks them together:
+
+```python
+precis search(kind='*', q='<what you want>')
+```
+
+Cheap default when "is this a memory? a paper? a cached research
+answer?" is the unclear part. Narrow with `kind=` once you know.
+
+For specific kinds:
+
+```python
+precis get(kind='skill', id='precis-cron-help')      # remind me / schedule
+precis get(kind='skill', id='precis-message-help')   # proactive ping
+precis get(kind='skill', id='precis-memory-help')    # save / sticky / ttl
+precis get(kind='skill', id='precis-conv-help')      # past conversations
+precis get(kind='skill', id='precis-pres-help')      # slide decks + writeups
+```
+
+Files you can read + write live under the workspace at
+`/Users/hermes/claudebot/` (your cwd). The NAS paper drop zone
+is at `$PAPERS_INBOX` (auto-ingested by the extract-watch daemon).
+Long-form reports go to `$PAPERS_REPORTS`.
+
+Never read `/Users/hermes/.hermes/`, never read vault files. If
+you find a secret in surface code, that's a bug — log a gripe and
+move on.

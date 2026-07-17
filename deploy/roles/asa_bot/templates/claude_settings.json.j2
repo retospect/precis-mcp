@@ -1,0 +1,39 @@
+{
+  "_comment": "Managed by Ansible role asa_bot. Edits will be overwritten.",
+  "permissions": {
+    "allow": [
+      "mcp__precis",
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Agent"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/asa/hooks/capture_assistant_turn.py"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/asa/hooks/capture_subagent_turn.py"
+          }
+        ]
+      }
+    ]
+  }
+}

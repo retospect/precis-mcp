@@ -1,0 +1,27 @@
+#!/bin/bash
+# Managed by Ansible — do not edit
+#
+# Guarded launcher for the com.postgresql LaunchDaemon.
+#
+# On an unclean shutdown (power loss, panic, or a reboot that outruns the
+# nightly Postgres drain) the postmaster can leave a stale postmaster.pid. If
+# the PID recorded there is reused after the reboot by an unrelated process
+# (2026-07-05: the bge-m3 embedder inherited the old postmaster PID), `postgres`
+# refuses to start forever with
+#   FATAL: lock file "postmaster.pid" already exists
+# and the whole prod DB stays down until someone removes the file by hand.
+#
+# This wrapper removes the stale lock ONLY when no postmaster is actually
+# running, then exec's postgres. It never removes the lock of a live server, so
+# it is safe under KeepAlive restarts.
+set -u
+DATADIR="{{ postgres_data_dir }}"
+PGBIN="{{ pg_bin }}/postgres"
+PIDFILE="$DATADIR/postmaster.pid"
+
+if [ -f "$PIDFILE" ] && ! /usr/bin/pgrep -f "$PGBIN" >/dev/null 2>&1; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S %Z') [pg-guarded-start] no live postmaster; removing stale $PIDFILE" >&2
+    /bin/rm -f "$PIDFILE"
+fi
+
+exec "$PGBIN" -D "$DATADIR"

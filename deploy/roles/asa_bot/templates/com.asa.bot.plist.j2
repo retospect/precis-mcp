@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} #}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.asa.bot</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/asa/venv/bin/asa-bot</string>
+  </array>
+
+  <key>UserName</key>
+  <string>hermes</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/hermes/claudebot</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/hermes</string>
+    <key>PATH</key>
+    <string>/opt/asa/venv/bin:/opt/homebrew/bin:/opt/mcps/venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>ASA_CONFIG</key>
+    <string>/Users/hermes/.asa/config.yaml</string>
+    {# ASA_DISCORD_TOKEN removed — asa now resolves it from the precis DB vault
+       (secrets vault, ADR 0055) via load_discord_token's env→vault→file order,
+       revealing over PRECIS_DATABASE_URL below. #}
+    <key>PRECIS_DATABASE_URL</key>
+    <string>postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod</string>
+    {# LISTEN/NOTIFY needs a *direct* postgres session — it does not survive
+       transaction-pooled pgbouncer (notifies are dropped). Point the
+       listener at the local 5433 tunnel → the data node:5432 (see
+       host_vars/the gateway.yml ssh_tunnels). Queries still go via pgbouncer. #}
+    <key>PRECIS_NOTIFY_DATABASE_URL</key>
+    <string>postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@127.0.0.1:5433/precis_prod</string>
+    {# Route the spawned precis MCP subprocess at the always-hot
+       embedding service (precis_embedder role, loopback 8181) so
+       skill / cross-kind semantic search lands instantly instead of
+       waiting on a ~30s bge-m3 cold load per process. #}
+    <key>PRECIS_EMBEDDER</key>
+    <string>remote</string>
+    <key>PRECIS_EMBEDDER_URL</key>
+    <string>http://127.0.0.1:8181</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  {# Jetsam protection — same lever as precis_worker_agent. asa_bot runs on
+     the gateway alongside the local llama.cpp servers that wire down the bulk of
+     RAM; under that pressure macOS was terminating this bridge for
+     "efficiency" (`launchctl print` → `immediate reason = inefficient`,
+     runs=1415). Each cull drops its LISTEN on `precis.messages`, so queued
+     messages (news, briefings, ops alerts) silently stop delivering until it
+     next restarts and re-LISTENs. ProcessType Interactive raises its jetsam
+     band toward the foreground tier so it is culled last, not first, and
+     disables App-Nap timer throttling. #}
+  <key>ProcessType</key>
+  <string>Interactive</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/hermes/.asa/asa-bot.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/hermes/.asa/asa-bot.log</string>
+</dict>
+</plist>

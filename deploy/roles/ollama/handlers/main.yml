@@ -1,0 +1,15 @@
+---
+- name: restart ollama (linux)
+  when: os_family == "linux"
+  ansible.builtin.shell: |
+    snap restart ollama.listener
+  become: true
+  listen: restart ollama
+
+- name: restart ollama (macos)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    launchctl kickstart -k system/com.ollama
+  become: true
+  failed_when: false
+  listen: restart ollama

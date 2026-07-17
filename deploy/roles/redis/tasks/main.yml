@@ -1,0 +1,75 @@
+---
+# Redis on the data node
+
+- name: Install Redis (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: redis
+    state: present
+  become: false
+
+- name: Ensure Redis data directory
+  ansible.builtin.file:
+    path: /opt/homebrew/var/db/redis
+    state: directory
+    owner: redis
+    group: staff
+    mode: "0750"
+    recurse: true
+  become: true
+
+- name: Deploy redis.conf
+  ansible.builtin.template:
+    src: redis.conf.j2
+    dest: /usr/local/etc/redis.conf
+    owner: redis
+    group: staff
+    mode: "0640"
+  become: true
+  notify: restart redis
+
+- name: Ensure Redis log files exist with correct ownership
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: touch
+    owner: redis
+    group: staff
+    mode: "0644"
+  become: true
+  loop:
+    - /opt/homebrew/var/log/redis.log
+    - /opt/homebrew/var/log/redis-server.log
+  changed_when: false
+
+- name: Deploy Redis launchd plist (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: redis.plist.j2
+    dest: /Library/LaunchDaemons/com.redis.plist
+    mode: "0644"
+  become: true
+  notify: restart redis
+
+- name: Ensure Redis is loaded (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    launchctl list | grep -q com.redis || launchctl load -w /Library/LaunchDaemons/com.redis.plist
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: Wait for Redis to start
+  ansible.builtin.wait_for:
+    port: "{{ redis_port }}"
+    host: 127.0.0.1
+    timeout: 10
+
+- name: Verify Redis is responding
+  ansible.builtin.command: >
+    /opt/homebrew/bin/redis-cli -p {{ redis_port }}
+    {% if vault_redis_password is defined %}-a {{ vault_redis_password }}{% endif %}
+    ping
+  register: redis_ping
+  changed_when: false
+  failed_when: "'PONG' not in redis_ping.stdout"
+  no_log: true

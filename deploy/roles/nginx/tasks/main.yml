@@ -1,0 +1,78 @@
+---
+# Nginx TLS reverse proxy on the gateway node
+
+- name: Install Nginx (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: nginx
+    state: present
+  become: false
+
+- name: Ensure Nginx config directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  become: true
+  loop:
+    - /usr/local/etc/nginx/conf.d
+    - /usr/local/etc/nginx/ssl
+
+- name: Deploy Nginx main config
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /usr/local/etc/nginx/nginx.conf
+    mode: "0644"
+  become: true
+  notify: restart nginx
+
+- name: Deploy reverse proxy vhost
+  ansible.builtin.template:
+    src: cluster_proxy.conf.j2
+    dest: /usr/local/etc/nginx/conf.d/cluster.conf
+    mode: "0644"
+  become: true
+  notify: restart nginx
+
+- name: Ensure SSL directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  become: true
+  loop:
+    - /etc/ssl/certs
+    - /etc/ssl/private
+
+- name: Deploy TLS certificate
+  ansible.builtin.copy:
+    content: "{{ vault_nginx_ssl_cert }}"
+    dest: "{{ nginx_ssl_cert }}"
+    mode: "0644"
+  become: true
+  no_log: true
+  when: vault_nginx_ssl_cert is defined
+
+- name: Deploy TLS private key
+  ansible.builtin.copy:
+    content: "{{ vault_nginx_ssl_key }}"
+    dest: "{{ nginx_ssl_key }}"
+    mode: "0600"
+  become: true
+  no_log: true
+  when: vault_nginx_ssl_key is defined
+
+- name: Test Nginx config
+  ansible.builtin.command: /opt/homebrew/bin/nginx -t
+  become: true
+  changed_when: false
+
+- name: Start Nginx (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.shell: /opt/homebrew/bin/brew services start nginx 2>/dev/null || true
+  become: true
+  environment:
+    HOME: /Users/deploy
+    USER: deploy
+  changed_when: false
+  failed_when: false

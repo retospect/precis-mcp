@@ -1,0 +1,53 @@
+---
+# precis_worker_agent — long-running LaunchDaemon running
+# `precis worker --profile=agent` as hermes on the gateway. Slice-5
+# consolidation: replaces precis_schedule + precis_nursery +
+# precis_structural + precis_deep_review.
+
+- name: Ensure mactex-no-gui (for latexmk + biber, used by the compile guard)
+  when: os_family == "darwin"
+  community.general.homebrew_cask:
+    name: mactex-no-gui
+    state: present
+  become: false
+  ignore_errors: true  # large download; tolerate intermittent network
+  tags:
+    - mactex
+    - precis-worker-agent
+
+- name: Ensure /var/log/precis-worker-agent.log
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-worker-agent.log
+    state: touch
+    # Owner/mode must let ``hermes`` (the UserName in the plist)
+    # write to stdout/stderr. With ``root:wheel 0644`` (the launchd
+    # default) bash can't open the log for write and the daemon
+    # exits 78 (EX_CONFIG) before logging anything — the failure
+    # mode is silent because there's no log to write the error
+    # into. Same pattern precis_dream uses.
+    mode: "0664"
+    owner: hermes
+    group: staff
+    modification_time: preserve
+    access_time: preserve
+  become: true
+
+- name: Ensure precis-worker-agent LaunchDaemon plist
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: precis-worker-agent.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.worker-agent.plist
+    mode: "0644"
+    owner: root
+    group: wheel
+  become: true
+  notify: restart precis-worker-agent
+
+- name: Load precis-worker-agent LaunchDaemon
+  when: os_family == "darwin"
+  ansible.builtin.command: >
+    launchctl load -w /Library/LaunchDaemons/com.precis.worker-agent.plist
+  become: true
+  changed_when: false
+  failed_when: false

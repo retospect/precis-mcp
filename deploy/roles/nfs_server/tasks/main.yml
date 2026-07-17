@@ -1,0 +1,55 @@
+---
+# NFS server setup on the data node
+
+- name: Ensure NFS export directory exists
+  ansible.builtin.file:
+    path: "{{ nfs_export_path }}/shared"
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Configure /etc/exports (macOS)
+  ansible.builtin.lineinfile:
+    path: /etc/exports
+    line: '{{ nfs_export_path }}/shared -network {{ lan_subnet.split("/")[0] }} -mask 255.255.255.0 -alldirs -maproot=root'
+    regexp: "{{ nfs_export_path }}/shared"
+    create: true
+    mode: "0644"
+  become: true
+  notify: reload nfs exports
+
+- name: Ensure nfsd is running (macOS)
+  ansible.builtin.command: nfsd start
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: Check nfsd status
+  ansible.builtin.command: nfsd status
+  become: true
+  changed_when: false
+  register: nfsd_status
+  failed_when: "'not running' in nfsd_status.stdout"
+
+- name: Create shared directory layout
+  ansible.builtin.file:
+    path: "{{ nfs_export_path }}/shared/{{ item }}"
+    state: directory
+    mode: "0755"
+  become: true
+  loop: "{{ shared_dirs }}"
+
+- name: Set pgboss home ownership
+  ansible.builtin.file:
+    path: "{{ nfs_export_path }}/shared/home/pgboss"
+    owner: 802
+    group: staff
+  become: true
+
+- name: Create NFS canary file
+  ansible.builtin.file:
+    path: "{{ nfs_export_path }}/shared/.nfs-canary"
+    state: touch
+    mode: "0644"
+  become: true
+  changed_when: false

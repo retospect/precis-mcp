@@ -1,0 +1,8 @@
+---
+- name: restart code-sandbox
+  ansible.builtin.systemd:
+    name: code-sandbox-mcp
+    state: restarted
+    daemon_reload: true
+  become: true
+  when: os_family == "linux"

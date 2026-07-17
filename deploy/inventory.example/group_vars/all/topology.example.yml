@@ -1,0 +1,47 @@
+---
+# ═══════════════════════════════════════════════════════════════════════════
+# EXAMPLE cluster topology — the SINGLE source of truth for
+# "which precis capability runs on which node".
+#
+# Each key is a capability; the value is the list of nodes that run it. Roles
+# and playbooks gate on membership, e.g.:
+#
+#     when: inventory_hostname in precis_capabilities.catpath
+#
+# To move a capability to a different box: edit ONE line here and re-run that
+# capability's playbook. No role edits. Node names below are placeholders —
+# use your real inventory hostnames in `deploy/inventory/`.
+#
+# This map is a FLOOR, not a cage (design §15c): it declares intent; the worker
+# still discovers what is actually installed and gates live via
+# `service_config.prio`. Drift between declared and discovered surfaces on
+# /factory (design §15d).
+# ═══════════════════════════════════════════════════════════════════════════
+
+precis_capabilities:
+  # --- always-on, every node ------------------------------------------------
+  # serve-embeddings on 127.0.0.1:8181 — one model load per host, shared by
+  # that host's worker/web/MCP (RemoteEmbedder clients).
+  embedder:        [node-gateway, node-worker, node-data, node-gpu]
+  # precis worker --profile=system: chunk-level + SQL ref-level passes.
+  worker_system:   [node-gateway, node-worker, node-data, node-gpu]
+
+  # --- singletons (gateway host) -------------------------------------------
+  # The MCP / web host: serves the tool surface and runs DB migrations on deploy.
+  web_mcp:         [node-gateway]
+  # precis worker --profile=agent — needs the host's ~/.claude OAuth:
+  # plan_tick, structural/deep reviewers, quota_check, job_claude_inproc.
+  worker_agent:    [node-gateway]
+  llm_summarize:   [node-gateway]
+  oa_fetch:        [node-gateway]
+
+  # --- GPU / compute node ---------------------------------------------------
+  dft:             [node-gpu]
+  catpath:         [node-gpu]
+  catpath_mace:    [node-gpu]
+  catpath_plugin:  [node-gateway, node-gpu]
+  chem_route:      [node-gpu]
+  chem_plugin:     [node-gateway]
+  bio_fold:        [node-gpu]
+  bio_plugin:      [node-gateway]
+  tts_render:      [node-gpu]

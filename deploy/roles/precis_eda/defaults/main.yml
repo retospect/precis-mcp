@@ -1,0 +1,29 @@
+---
+# precis_eda role defaults — the electronics/PCB toolchain (ADR 0042 §6).
+#
+# Tier 1 of the EDA deploy: the Freerouting headless autorouter + a JRE to
+# run it. The `easyeda2kicad` footprint backend is a Python dep (the `pcb`
+# extra, installed into /opt/mcps/venv by the precis_web role), not handled
+# here. `kicad-cli` (.ses -> gerbers) is Tier 2 — deferred until the gerber
+# export step is coded in precis-mcp.
+
+# Where artifacts live (jar today; gerber tooling later). deploy-owned so the
+# agent/web daemons (running as deploy/hermes) can read it.
+precis_eda_dir: /opt/precis/eda
+
+# Freerouting headless jar.
+#
+# PINNED TO 1.9.0 ON PURPOSE: precis.pcb.route._cmd() emits the classic batch
+# CLI `-de <in.dsn> -do <out.ses> -mp 0`, which is the 1.x interface. The 2.x
+# line (current is 2.2.x) reworked the command line — bumping the version here
+# without updating route._cmd() will break routing. Keep the two in lock-step.
+precis_eda_freerouting_version: "1.9.0"
+precis_eda_freerouting_jar: "{{ precis_eda_dir }}/freerouting.jar"
+precis_eda_freerouting_url: >-
+  https://github.com/freerouting/freerouting/releases/download/v{{
+  precis_eda_freerouting_version }}/freerouting-{{
+  precis_eda_freerouting_version }}.jar
+# Supply-chain pin. Fill this in (sha256 of the asset above) so get_url
+# verifies the download; empty = download unverified (omit the check). Get it
+# with:  shasum -a 256 freerouting-1.9.0.jar
+precis_eda_freerouting_sha256: ""

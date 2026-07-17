@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+# ~deploy/.pgpass — auto-populated credentials for the data node's prod db.
+# Format: hostname:port:database:username:password
+# Mode must be 0600 or psql ignores the file.
+
+# Routine rw work — what `psql` picks up with no -U flag (matches PGUSER).
+{{ pgpass_host }}:{{ pgpass_port }}:{{ pgpass_database }}:agent_rw:{{ vault_pg_agent_rw_pass }}
+{{ pgpass_host }}:{{ pgpass_port }}:*:agent_rw:{{ vault_pg_agent_rw_pass }}
+
+# Read-only — switch to ro for accidents-resistant browsing: `psql -U agent_ro`.
+{{ pgpass_host }}:{{ pgpass_port }}:{{ pgpass_database }}:agent_ro:{{ vault_pg_agent_ro_pass }}
+{{ pgpass_host }}:{{ pgpass_port }}:*:agent_ro:{{ vault_pg_agent_ro_pass }}
+
+# Admin — rare, for schema changes / role grants / DDL. `psql -U admin`.
+{{ pgpass_host }}:{{ pgpass_port }}:{{ pgpass_database }}:admin:{{ vault_pg_admin_pass }}
+{{ pgpass_host }}:{{ pgpass_port }}:*:admin:{{ vault_pg_admin_pass }}

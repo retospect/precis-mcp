@@ -1,0 +1,136 @@
+---
+# tcc_profile — generate a per-host Full Disk Access checklist at
+# /Users/Shared/cluster-fda-checklist.txt and clean up any stale
+# PPPC mobileconfig artefacts from the previous strategy.
+#
+# Background
+# ──────────
+# macOS 26 requires PPPC/FDA profiles to originate from an approved
+# MDM server; double-clicking an unsigned .mobileconfig returns
+# "Profile Installation failed. The profile must originate from a
+# user approved MDM server." We therefore abandon the profile approach
+# and have the operator click each binary into System Settings →
+# Full Disk Access by hand. This role's job is to produce the exact
+# list of binaries that need clicking, per host, so nothing is forgotten.
+#
+# Sibling roles (mcps, extract_watch, hermes) ensure the venv pythons
+# listed below are *symlinks* to Homebrew interpreters, so the
+# cdhash-based grant is stable across Ansible re-runs.
+
+- name: Skip on non-macOS hosts
+  ansible.builtin.meta: end_host
+  when: os_family != "darwin"
+
+# ── 1. Resolve each candidate binary ─────────────────────────────────────
+
+- name: Stat candidate binaries (follow symlinks)
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: true
+  register: binary_stats
+  loop: "{{ tcc_profile_binaries }}"
+  loop_control:
+    label: "{{ item }}"
+  become: true
+
+- name: Split binaries into present vs. missing
+  ansible.builtin.set_fact:
+    present_paths: >-
+      {{ binary_stats.results
+         | selectattr('stat.exists')
+         | selectattr('stat.executable')
+         | list }}
+    skipped_binaries: >-
+      {{ binary_stats.results
+         | rejectattr('stat.exists')
+         | map(attribute='item')
+         | list }}
+
+# ── 2. Read codesign attribution for each present binary ────────────────
+# Informational only: helps the operator see at-a-glance whether a
+# binary is brew-signed (ad-hoc), Apple-signed, or genuinely unsigned.
+
+- name: Read codesign signing identity per binary
+  ansible.builtin.shell: |
+    set -eu
+    out=$(/usr/bin/codesign -dvv -- {{ item.stat.path | quote }} 2>&1 || true)
+    sig=$(printf '%s\n' "$out" | awk -F= '/^Signature=/ {print $2; exit}')
+    ident=$(printf '%s\n' "$out" | awk -F= '/^Identifier=/ {print $2; exit}')
+    authority=$(printf '%s\n' "$out" | awk -F= '/^Authority=/ {print $2; exit}')
+    if [ -z "${sig:-}${authority:-}" ]; then
+      echo "unsigned"
+    elif [ -n "${authority:-}" ]; then
+      echo "${authority} (${ident:-no id})"
+    elif [ "$sig" = "adhoc" ]; then
+      echo "ad-hoc (${ident:-no id})"
+    else
+      echo "$sig (${ident:-no id})"
+    fi
+  register: signer_results
+  loop: "{{ present_paths }}"
+  loop_control:
+    label: "{{ item.stat.path }}"
+  changed_when: false
+  become: true
+
+# Assemble the final records: original requested path, resolved real
+# path, and signer attribution. `present_paths[i].item` is the original
+# path from defaults; `.stat.path` is the resolved real path.
+- name: Assemble final present_records for template
+  ansible.builtin.set_fact:
+    present_records: >-
+      {{
+        (present_records | default([]))
+        + [{
+            'path':      present_paths[loop_index].item,
+            'resolved':  present_paths[loop_index].stat.path,
+            'signed_by': signer_results.results[loop_index].stdout | trim,
+          }]
+      }}
+  loop: "{{ present_paths }}"
+  loop_control:
+    index_var: loop_index
+    label: "{{ item.item }}"
+
+# ── 3. Render the checklist on the host ─────────────────────────────────
+
+- name: Render Full Disk Access checklist to /Users/Shared
+  ansible.builtin.template:
+    src: cluster-fda-checklist.txt.j2
+    dest: /Users/Shared/cluster-fda-checklist.txt
+    owner: root
+    group: wheel
+    mode: "0644"
+  become: true
+
+# ── 4. Clean up legacy PPPC mobileconfig artefacts ──────────────────────
+# The previous approach staged an unsigned PPPC profile that macOS 26
+# rejects ("must originate from a user approved MDM server"). Remove it.
+
+- name: Remove obsolete staged mobileconfig (macOS 26 rejects it)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  become: true
+  loop:
+    - /Users/Shared/cluster-fda.mobileconfig
+    - /etc/ansible-profiles/cluster-fda.mobileconfig
+
+# ── 5. Summary printed at the end of the play ───────────────────────────
+
+- name: Show FDA checklist reminder
+  ansible.builtin.debug:
+    msg: |
+      ─── Full Disk Access checklist on {{ inventory_hostname }} ───────
+      Wrote: /Users/Shared/cluster-fda-checklist.txt
+
+      {{ present_records | length }} binaries need FDA on this host;
+      {{ skipped_binaries | length }} master-list entries don't apply here.
+
+      One-time manual step:
+        Screen-share into {{ inventory_hostname }} and follow the
+        click-by-click instructions at the top of the checklist.
+
+      Until you do, cron + LaunchDaemons on this host cannot read
+      /opt/shared and will silently EPERM.
+      ──────────────────────────────────────────────────────────────────

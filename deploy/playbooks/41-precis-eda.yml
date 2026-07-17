@@ -1,0 +1,17 @@
+---
+# 41-precis-eda.yml — the electronics/PCB toolchain (ADR 0042 §6) on the gateway.
+#
+# Freerouting headless + a JRE, for precis.pcb.route's place<->route round-trip.
+# Gateway only: the agent worker (PCB design orchestration) and precis-web
+# (interactive export) both run there. Purely additive — the route wrapper
+# degrades to .dsn-only when the jar is absent, so this can land before the
+# rest of the PCB feature is in full use.
+
+- name: Deploy precis EDA toolchain (Freerouting)
+  hosts: gateway
+  become: true
+  roles:
+    - precis_eda
+  # Family-umbrella ``precis`` tag so ``--tags precis`` fans this out with
+  # every other precis-* play; ``precis-eda`` for a targeted run.
+  tags: [precis-eda, precis]

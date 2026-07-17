@@ -1,0 +1,72 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Nightly PostgreSQL backup.
+#
+# Strategy (revised 2026-05-31):
+#   1. pg_dump directory format with parallel workers (-Fd -j N) into
+#      LOCAL_BACKUP_DIR. Directory format lets us pg_restore in parallel
+#      too — major win when restoring a multi-GB db.
+#   2. tar+zstd the directory onto the NAS as a single archive. zstd
+#      compresses ~20% better than gzip at similar CPU cost, and the
+#      single-file artifact is simpler for off-site sync / inspection.
+#   3. Retain 7 days locally (fast restore), 90 days on NAS (durable
+#      archive). Adjust the *_RETENTION_DAYS values below.
+
+set -euo pipefail
+
+# cron runs with a minimal PATH (/usr/bin:/bin) that does NOT include the
+# Homebrew Postgres 17 client bin dir, so every nightly run died with
+# "pg_dump: command not found" — a silent backup outage (no dumps produced
+# for weeks; only the failure line landed in the log). Pin the pg17 client
+# bins explicitly so cron finds pg_dump/pg_restore.
+{% if os_family == 'darwin' %}
+export PATH="/opt/homebrew/opt/postgresql@17/bin:/opt/homebrew/bin:${PATH}"
+{% endif %}
+
+LOCAL_BACKUP_DIR="{{ shared_mount }}/backups/postgres"
+NAS_BACKUP_DIR="{{ nas_root }}/backups/postgres"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+DATE_TAG=$(date +%Y-%m-%d)
+
+LOCAL_DUMP_DIR="${LOCAL_BACKUP_DIR}/precis_prod_${TIMESTAMP}"
+NAS_ARCHIVE="${NAS_BACKUP_DIR}/precis_prod_${DATE_TAG}.tar.zst"
+
+LOCAL_RETENTION_DAYS=7
+NAS_RETENTION_DAYS=90
+
+mkdir -p "${LOCAL_BACKUP_DIR}" "${NAS_BACKUP_DIR}"
+
+echo "[$(date)] Starting pg_dump (directory format, 4 parallel workers, zlib level 6)..."
+# precis_prod is the live primary DB (24 GB+, self-migrated by precis-mcp). The
+# old `cluster` monolith was renamed to `openclaw` and is slated for retirement;
+# this nightly job intentionally covers precis_prod only. litellm/openclaw are
+# not dumped here (small / being retired) — revisit when openclaw is dealt with.
+pg_dump -U {{ pg_user }} -d precis_prod \
+  --format=directory \
+  --jobs=4 \
+  --compress=6 \
+  --file="${LOCAL_DUMP_DIR}"
+
+LOCAL_SIZE=$(du -sh "${LOCAL_DUMP_DIR}" | cut -f1)
+echo "[$(date)] Local dump complete: ${LOCAL_DUMP_DIR} (${LOCAL_SIZE})"
+
+echo "[$(date)] Archiving to NAS (tar+zstd)..."
+tar --use-compress-program='zstd -T0' -cf "${NAS_ARCHIVE}" \
+  -C "${LOCAL_BACKUP_DIR}" "precis_prod_${TIMESTAMP}"
+
+NAS_SIZE=$(du -h "${NAS_ARCHIVE}" | cut -f1)
+echo "[$(date)] NAS archive complete: ${NAS_ARCHIVE} (${NAS_SIZE})"
+
+# ── Retention sweep ──
+echo "[$(date)] Pruning local dumps older than ${LOCAL_RETENTION_DAYS} days..."
+find "${LOCAL_BACKUP_DIR}" -maxdepth 1 -type d -name "precis_prod_*" \
+  -mtime "+${LOCAL_RETENTION_DAYS}" -exec rm -rf {} +
+# Legacy plain-SQL gz dumps from the pre-2026-05 era — purge on same cadence.
+find "${LOCAL_BACKUP_DIR}" -maxdepth 1 -name "cluster_*.sql.gz" \
+  -mtime "+${LOCAL_RETENTION_DAYS}" -delete
+
+echo "[$(date)] Pruning NAS archives older than ${NAS_RETENTION_DAYS} days..."
+find "${NAS_BACKUP_DIR}" -maxdepth 1 -name "precis_prod_*.tar.zst" \
+  -mtime "+${NAS_RETENTION_DAYS}" -delete
+
+echo "[$(date)] Backup done."

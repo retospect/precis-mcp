@@ -1,0 +1,19 @@
+---
+# 42-dft.yml — configure the GPU node to run precis-mcp `struct_relax`
+# jobs (ADR 0043 §23.12). Wires the container runtime + NFS scratch + the
+# worker's PRECIS_DFT_* / PRECIS_NODE env (systemd drop-in). precis-dft lives in
+# the precis-dft:cpu IMAGE, not the worker venv, so there is nothing to
+# pip-install here. See roles/dft/README.md.
+#
+# Run order: AFTER playbooks/20-precis-worker.yml (the worker unit must exist;
+# this drops the EnvironmentFile drop-in it reads, then restarts it). Not part
+# of site.yml — run explicitly like the other worker plays:
+#
+#   ansible-playbook playbooks/42-dft.yml
+#   # (re)build the image on the node too:
+#   ansible-playbook playbooks/42-dft.yml -e dft_build_image=true
+
+- name: Configure DFT compute on the GPU node
+  hosts: inference
+  roles:
+    - dft

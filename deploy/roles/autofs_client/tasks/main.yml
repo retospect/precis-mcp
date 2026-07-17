@@ -1,0 +1,130 @@
+---
+# autofs_client — mounts the shared NAS via autofs
+# macOS: NFSv3 via /etc/fstab + autofs -static map
+#        (SMB indirect maps via automountd EPERM on macOS 26 regardless of FDA;
+#         fstab + -static uses the same path that /opt/shared already works on.)
+# Linux: NFSv4 via indirect /etc/auto.nas map
+
+- name: Ensure mount point parent exists
+  ansible.builtin.file:
+    path: "{{ nas_mount_base }}"
+    state: directory
+    mode: "0755"
+  become: true
+
+# ── macOS: NFS via fstab (picked up by autofs -static map) ──
+
+- name: Remove legacy SMB indirect map from auto_master (macOS)
+  ansible.builtin.lineinfile:
+    path: /etc/auto_master
+    regexp: "^{{ nas_mount_base }}\t/etc/auto_smb$"
+    state: absent
+  become: true
+  when: os_family == "darwin"
+  notify: restart autofs
+
+- name: Remove legacy /etc/auto_smb (macOS)
+  ansible.builtin.file:
+    path: /etc/auto_smb
+    state: absent
+  become: true
+  when: os_family == "darwin"
+
+- name: Remove legacy SMB credentials file (macOS)
+  ansible.builtin.file:
+    path: "{{ nas_pass_file | default('/etc/nas.pass') }}"
+    state: absent
+  become: true
+  when: os_family == "darwin"
+
+- name: Ensure NFS mount point exists (macOS)
+  ansible.builtin.file:
+    path: "{{ nas_mount_base }}/{{ nas_mount_name }}"
+    state: directory
+    mode: "0755"
+  become: true
+  when: os_family == "darwin"
+
+- name: Add NAS NFS entry to /etc/fstab (macOS)
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: "^{{ nas_host }}:{{ nas_nfs_export }} "
+    line: "{{ nas_host }}:{{ nas_nfs_export }} {{ nas_mount_base }}/{{ nas_mount_name }} nfs resvport,nolocks,soft,intr,bg,nosuid 0 0"
+    state: present
+    create: true
+    mode: "0644"
+  become: true
+  when: os_family == "darwin"
+  notify: restart autofs
+
+- name: Reload autofs (macOS)
+  ansible.builtin.command: /usr/sbin/automount -c
+  become: true
+  when: os_family == "darwin"
+  changed_when: false
+
+# ── Linux: NFS via autofs indirect map ──
+- name: Install autofs (Linux)
+  ansible.builtin.package:
+    name: autofs
+    state: present
+  become: true
+  when: os_family == "linux"
+
+- name: Configure auto.nas map for the NAS (Linux)
+  ansible.builtin.template:
+    src: auto_nas.j2
+    dest: /etc/auto.nas
+    mode: "0644"
+  become: true
+  when: os_family == "linux"
+  notify: restart autofs-linux
+
+- name: Add NAS to auto.master (Linux)
+  ansible.builtin.lineinfile:
+    path: /etc/auto.master
+    line: "{{ nas_mount_base }}\t/etc/auto.nas"
+    regexp: "^{{ nas_mount_base }}\t"
+    state: present
+  become: true
+  when: os_family == "linux"
+  notify: restart autofs-linux
+
+- name: Ensure autofs is enabled and running (Linux)
+  ansible.builtin.systemd:
+    name: autofs
+    enabled: true
+    state: started
+  become: true
+  when: os_family == "linux"
+
+# ── Verification ──
+- name: Wait for mount to be ready
+  ansible.builtin.pause:
+    seconds: 2
+
+- name: Verify autofs canary (macOS)
+  ansible.builtin.stat:
+    path: "{{ nas_mount_base }}/{{ nas_mount_name }}/.nas-canary"
+  register: nas_canary_macos
+  when: os_family == "darwin"
+
+- name: Verify autofs canary (Linux)
+  ansible.builtin.stat:
+    path: "{{ nas_mount_base }}/{{ nas_mount_name }}/.nas-canary"
+  register: nas_canary_linux
+  when: os_family == "linux"
+
+- name: Fail if NAS mount not working (macOS)
+  ansible.builtin.fail:
+    msg: "NAS canary not found at {{ nas_mount_base }}/{{ nas_mount_name }}/.nas-canary — NFS mount may have failed"
+  when:
+    - os_family == "darwin"
+    - not nas_canary_macos.stat.exists | default(false)
+
+- name: Fail if NAS mount not working (Linux)
+  ansible.builtin.fail:
+    msg: "NAS canary not found at {{ nas_mount_base }}/{{ nas_mount_name }}/.nas-canary — autofs mount may have failed"
+  when:
+    - os_family == "linux"
+    - not nas_canary_linux.stat.exists | default(false)

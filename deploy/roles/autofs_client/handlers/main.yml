@@ -1,0 +1,11 @@
+---
+- name: restart autofs
+  ansible.builtin.command: /usr/sbin/automount -c
+  become: true
+  changed_when: false
+
+- name: restart autofs-linux
+  ansible.builtin.systemd:
+    name: autofs
+    state: restarted
+  become: true

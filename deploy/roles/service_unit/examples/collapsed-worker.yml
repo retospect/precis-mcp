@@ -1,0 +1,53 @@
+---
+# The single COLLAPSED worker (slice 10 / §7 / §15h) — authored here as the
+# canonical `service_unit` consumer. DARK: not included by any playbook yet;
+# the Phase-2 window swaps the four hand-written worker variants (the two
+# profile plists + the agent/dream variants) for this one delegation.
+#
+# What collapses:
+#   * the four parallel worker daemons  → ONE per host,
+#   * the per-flag "if precis_worker_classify … endif" env blocks
+#     (PRECIS_CLASSIFY_ENABLED, PRECIS_SUMMARIZE_LLM, PRECIS_LLM_RECONCILE_ENABLED,
+#     PRECIS_FETCH_MARKUP, PRECIS_SANDBOX_ENABLED, …) → service_config.prio,
+#     live-toggled from the /factory console (§15e). The daemon carries NONE of
+#     the retired ENABLE flags; capability (probe) × prio (console) is the whole
+#     control surface.
+#   * the standalone thin-timer daemons (cron-tick, watch-poll) → the worker's
+#     own decentralized §15i `scheduler` pass (PRECIS_SCHEDULER_ENABLED, flipped
+#     on in the same window).
+#
+# The `--profile system` argument stays for now (behaviour-preserving); the
+# capability probe already gates what the host can actually run, and prio gates
+# what it should. Env is just the core daemon vars + shared API keys — no
+# ENABLE toggles.
+#
+# Usage (Phase-2 playbook):
+#
+#   - hosts: precis_workers
+#     roles:
+#       - role: precis_worker        # still provisions the venv + deps + dirs
+#       - role: service_unit         # …but renders the unit through the abstraction
+#         vars:
+#           service_unit_name: worker
+#           service_unit_run_as: deploy
+#           service_unit_process_type: Interactive
+#           service_unit_schedule: {mode: keepalive}
+#           service_unit_exec: >-
+#             {{ precis_worker_venv }}/bin/precis worker --profile system
+#             --batch-size {{ precis_worker_batch_size }}
+#             --idle-seconds {{ precis_worker_idle_seconds }}
+#             --embedder {{ precis_worker_embedder }}
+#             --embedder-url {{ precis_worker_embedder_url }}
+#             --summarizer-model {{ precis_worker_summarizer }}
+#           service_unit_env: >-
+#             {{ precis_shared_env | combine({
+#               'HOME': '/Users/deploy',
+#               'PATH': precis_worker_venv + '/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
+#               'PRECIS_DATABASE_URL': precis_worker_dsn,
+#               'HF_HOME': precis_worker_hf_home,
+#               'PRECIS_PROCESS': 'precis-worker',
+#               'PRECIS_SOURCE': 'precis-worker',
+#               'PRECIS_MAX_TICKS': (precis_max_ticks | default(10000)) | string,
+#               'PRECIS_MAX_TODO_USD': (precis_max_todo_usd | default(5.0)) | string,
+#               'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
+#             }) }}

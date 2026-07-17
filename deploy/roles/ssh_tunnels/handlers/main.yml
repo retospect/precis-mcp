@@ -1,0 +1,17 @@
+---
+# One handler that reloads every tunnel this host defines. Tasks notify the
+# shared "reload ssh tunnels" topic; the handler loops over the host's
+# ssh_tunnels list (from host_vars) rather than naming destinations, so it is
+# cluster-agnostic — a node with N tunnels gets all N reloaded on any change.
+
+- name: reload ssh tunnels
+  listen: "reload ssh tunnels"
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    launchctl unload /Library/LaunchDaemons/com.tunnel.{{ item.dest }}.plist 2>/dev/null || true
+    launchctl load -w /Library/LaunchDaemons/com.tunnel.{{ item.dest }}.plist
+  become: true
+  failed_when: false
+  loop: "{{ ssh_tunnels }}"
+  loop_control:
+    label: "{{ item.dest }}"

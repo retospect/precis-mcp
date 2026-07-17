@@ -187,80 +187,11 @@ def _tick(*, dry_run: bool) -> None:
     """
     dsn = resolve_dsn(None)
 
-    fired = 0
-    skipped = 0
-    expired = 0
-
     now = datetime.now(tz=UTC)
 
     with psycopg.connect(dsn) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT ref_id, meta
-                FROM refs
-                WHERE kind = 'cron'
-                  AND deleted_at IS NULL
-                  AND (meta->>'status') = 'scheduled'
-                  AND (meta->>'next_fire_at')::timestamptz <= %s
-                ORDER BY (meta->>'next_fire_at')::timestamptz ASC
-                FOR UPDATE SKIP LOCKED
-                """,
-                (now,),
-            )
-            due = cur.fetchall()
-            log.info(
-                "cron tick: %d due entr%s", len(due), "y" if len(due) == 1 else "ies"
-            )
-
-            for ref_id, meta in due:
-                if not isinstance(meta, dict):
-                    log.warning(
-                        "cron %d: meta is not a dict (%r); skipping", ref_id, type(meta)
-                    )
-                    continue
-                try:
-                    new_meta, action = _decide(meta, now)
-                except Exception:
-                    log.exception("cron %d: decision failed; leaving as-is", ref_id)
-                    continue
-
-                if dry_run:
-                    log.info("cron %d: would %s (dry-run)", ref_id, action)
-                    continue
-
-                cur.execute(
-                    "UPDATE refs SET meta = %s, updated_at = now() WHERE ref_id = %s",
-                    (Jsonb(new_meta), ref_id),
-                )
-
-                if action == "fire":
-                    payload = {
-                        "cron_id": ref_id,
-                        "payload": meta.get("title") or new_meta.get("title") or "",
-                        "target": meta.get("target"),
-                    }
-                    # Prefer the body chunk text when available; the
-                    # title is a copy of the first put-time text, so
-                    # use it as fallback to avoid an extra query.
-                    cur.execute(
-                        "SELECT text FROM chunks WHERE ref_id = %s "
-                        "AND chunk_kind = 'cron_payload' ORDER BY ord LIMIT 1",
-                        (ref_id,),
-                    )
-                    row = cur.fetchone()
-                    if row and row[0]:
-                        payload["payload"] = row[0]
-                    cur.execute(
-                        "SELECT pg_notify('precis.cron', %s)",
-                        (json.dumps(payload),),
-                    )
-                    fired += 1
-                elif action == "skip":
-                    skipped += 1
-                elif action == "expire":
-                    expired += 1
-
+            fired, skipped, expired = fire_due_cron(cur, now, dry_run=dry_run)
         if dry_run:
             conn.rollback()
         else:
@@ -273,6 +204,90 @@ def _tick(*, dry_run: bool) -> None:
         expired,
         " (dry-run)" if dry_run else "",
     )
+
+
+def fire_due_cron(
+    cur: psycopg.Cursor[Any], now: datetime, *, dry_run: bool = False
+) -> tuple[int, int, int]:
+    """Scan + fire every due cron entry on this open cursor. Returns
+    ``(fired, skipped, expired)``.
+
+    Extracted from :func:`_tick` so the launchd ``precis cron tick`` timer and
+    the decentralized ``scheduler`` worker pass (§15i) share ONE implementation
+    — no drift between the two triggers of the same recurring engine. The caller
+    owns the transaction (commit/rollback); this only reads + writes on ``cur``.
+
+    ``SELECT ... FOR UPDATE SKIP LOCKED`` + the ``status='scheduled'`` filter
+    make it idempotent and safe to run concurrently on every worker: a
+    re-entrant / racing call sees zero work.
+    """
+    fired = skipped = expired = 0
+
+    cur.execute(
+        """
+        SELECT ref_id, meta
+        FROM refs
+        WHERE kind = 'cron'
+          AND deleted_at IS NULL
+          AND (meta->>'status') = 'scheduled'
+          AND (meta->>'next_fire_at')::timestamptz <= %s
+        ORDER BY (meta->>'next_fire_at')::timestamptz ASC
+        FOR UPDATE SKIP LOCKED
+        """,
+        (now,),
+    )
+    due = cur.fetchall()
+    log.info("cron tick: %d due entr%s", len(due), "y" if len(due) == 1 else "ies")
+
+    for ref_id, meta in due:
+        if not isinstance(meta, dict):
+            log.warning(
+                "cron %d: meta is not a dict (%r); skipping", ref_id, type(meta)
+            )
+            continue
+        try:
+            new_meta, action = _decide(meta, now)
+        except Exception:
+            log.exception("cron %d: decision failed; leaving as-is", ref_id)
+            continue
+
+        if dry_run:
+            log.info("cron %d: would %s (dry-run)", ref_id, action)
+            continue
+
+        cur.execute(
+            "UPDATE refs SET meta = %s, updated_at = now() WHERE ref_id = %s",
+            (Jsonb(new_meta), ref_id),
+        )
+
+        if action == "fire":
+            payload = {
+                "cron_id": ref_id,
+                "payload": meta.get("title") or new_meta.get("title") or "",
+                "target": meta.get("target"),
+            }
+            # Prefer the body chunk text when available; the
+            # title is a copy of the first put-time text, so
+            # use it as fallback to avoid an extra query.
+            cur.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'cron_payload' ORDER BY ord LIMIT 1",
+                (ref_id,),
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                payload["payload"] = row[0]
+            cur.execute(
+                "SELECT pg_notify('precis.cron', %s)",
+                (json.dumps(payload),),
+            )
+            fired += 1
+        elif action == "skip":
+            skipped += 1
+        elif action == "expire":
+            expired += 1
+
+    return fired, skipped, expired
 
 
 def _decide(meta: dict[str, Any], now: datetime) -> tuple[dict[str, Any], str]:

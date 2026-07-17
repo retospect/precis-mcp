@@ -1,0 +1,20 @@
+---
+# Ansible callback plugin to send alerts to cluster webhook
+
+- name: Ensure callback plugin directory
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/callback_plugins"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Deploy cluster webhook callback plugin
+  ansible.builtin.template:
+    src: cluster_webhook.py.j2
+    dest: "{{ playbook_dir }}/callback_plugins/cluster_webhook.py"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+  run_once: true

@@ -1,0 +1,9 @@
+---
+# 17-ssh-tunnels.yml — Persistent SSH tunnels between cluster nodes
+- name: Configure SSH tunnels
+  hosts: macos
+  become: true
+  roles:
+    - role: ssh_tunnels
+      when: ssh_tunnels is defined
+  tags: [tunnels, ssh]

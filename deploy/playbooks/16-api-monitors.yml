@@ -1,0 +1,8 @@
+---
+# 16-api-monitors.yml — Perplexity/Claude credit monitoring
+- name: Configure API monitors
+  hosts: gateway
+  become: true
+  roles:
+    - api_monitors
+  tags: [api_monitors]

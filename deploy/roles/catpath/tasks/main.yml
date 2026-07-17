@@ -1,0 +1,99 @@
+---
+# catpath — make the GPU node run precis-mcp `catpath_explore` jobs.
+#
+# The precis-mcp worker (deployed by roles/precis_worker) claims a catpath job —
+# only on THIS node, per the target_node claim gate — and runs the catpath
+# pipeline (relax + NEB) locally via the installed backend, sinking the
+# reaction-network result into the `pathway` ref.
+#
+# Unlike precis-dft (which lives in a container image), catpath is a Python
+# package, so this role pip-installs catpath[precis(+backend)] into the worker
+# venv, then wires PRECIS_CATPATH_ENABLED / PRECIS_NODE via a systemd drop-in
+# (never touching the precis_worker unit template). Linux / compute node only —
+# the macOS MCP host gets the kind SURFACE via roles/precis_web (see README).
+
+- name: catpath targets the Linux compute node only
+  ansible.builtin.assert:
+    that: os_family == "linux"
+    fail_msg: >-
+      The catpath role installs the compute backend on the Linux GPU node
+      (the GPU node). The macOS gateway needs only the KIND SURFACE (catpath[precis]
+      in the web venv + PRECIS_CATPATH_ENABLED) — wire that via roles/precis_web,
+      not here. See roles/catpath/README.md.
+
+- name: Install catpath[{{ catpath_extras }}] into the precis worker venv
+  ansible.builtin.shell: |
+    {{ catpath_uv_bin }} pip install --python {{ catpath_worker_venv }}/bin/python --upgrade \
+      --refresh-package catpath \
+      'catpath[{{ catpath_extras }}] @ {{ catpath_git_url }}@{{ catpath_git_ref }}'
+  become: true
+  register: catpath_install
+  changed_when: >-
+    'Installed' in (catpath_install.stdout + catpath_install.stderr)
+    or 'Updated' in (catpath_install.stdout + catpath_install.stderr)
+  notify: restart precis-worker (catpath)
+
+# Pre-seed the MACE-MP-0 weights into the worker's cache. catpath's NEB gives
+# each image its own calculator, so the FIRST mace job loads the model N times
+# concurrently — and on a cold cache they race to download it and fail
+# ("Model download failed"). Warming it once here, as the worker user with the
+# worker unit's HOME (so the cache lands where the daemon looks — mace uses
+# $HOME/.cache/mace, not HF_HOME), removes the race.
+- name: Pre-seed the MACE model into the worker cache
+  when: inventory_hostname in (precis_capabilities.catpath_mace | default([]))
+  become: true
+  become_user: "{{ catpath_worker_user }}"
+  environment:
+    HOME: "{{ catpath_worker_home }}"
+  ansible.builtin.command:
+    cmd: >-
+      {{ catpath_worker_venv }}/bin/python -c "from mace.calculators import
+      mace_mp; mace_mp(model='medium', device='cpu')"
+  register: catpath_mace_warm
+  changed_when: "'Cached MACE model' in (catpath_mace_warm.stdout + catpath_mace_warm.stderr)"
+
+# ── worker env (systemd drop-in — leaves the precis_worker unit untouched) ──
+- name: Ensure the precis env dir
+  ansible.builtin.file:
+    path: /etc/precis
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Drop the worker catpath env file
+  ansible.builtin.template:
+    src: catpath.env.j2
+    dest: /etc/precis/catpath.env
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart precis-worker (catpath)
+
+- name: Ensure the precis-worker systemd drop-in dir
+  ansible.builtin.file:
+    path: /etc/systemd/system/precis-worker.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Drop the precis-worker catpath env drop-in (EnvironmentFile)
+  ansible.builtin.template:
+    src: precis-worker-catpath.conf.j2
+    # 20- sorts after dft's 10- ; both set PRECIS_NODE to the same value.
+    dest: /etc/systemd/system/precis-worker.service.d/20-catpath.conf
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart precis-worker (catpath)
+
+- name: Verify catpath imports in the worker venv
+  ansible.builtin.command:
+    cmd: "{{ catpath_worker_venv }}/bin/python -c 'import catpath.precis.runner; print(catpath.__version__)'"
+  become: true
+  changed_when: false

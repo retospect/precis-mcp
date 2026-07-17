@@ -1,0 +1,101 @@
+---
+# precis_heartbeat — one-shot reporter fired by a timer every
+# precis_heartbeat_interval_seconds (default 60s). Reports load + a
+# best-effort CPU temperature into the host_heartbeat table (migration
+# 0017). Web Status tab reads it to show "which machines are alive
+# and is any of them hot".
+#
+# Reuses the precis_worker venv at {{ precis_heartbeat_venv }} so we
+# don't install a second copy of the package. The role assumes
+# precis_worker has already run (and therefore the venv + the
+# `precis heartbeat` subcommand exist).
+#
+# Coexists with precis_worker on every host. Both run as `deploy`.
+
+# ── macOS: launchd ─────────────────────────────────────────────────
+
+# macOS doesn't expose CPU temperature via /sys the way Linux does.
+# ``osx-cpu-temp`` is a tiny Homebrew tool that does the SMC call in
+# userspace and prints "47.5°C". The heartbeat module probes
+# ``/opt/homebrew/bin/osx-cpu-temp`` (Apple Silicon) and
+# ``/usr/local/bin/osx-cpu-temp`` (Intel) and parses the first float
+# as °C. Without this brew install every Mac reports temp_c=None and
+# the Status panel's temperature column is blank for them.
+- name: Ensure osx-cpu-temp for macOS thermal readings
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: osx-cpu-temp
+    state: present
+  become: false  # brew runs as the local user, not root
+
+- name: Ensure precis-heartbeat log file is writable
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-heartbeat.log
+    state: touch
+    mode: "0664"
+    owner: deploy
+    group: staff
+    modification_time: preserve
+    access_time: preserve
+  become: true
+
+- name: Ensure precis-heartbeat LaunchDaemon plist
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: precis-heartbeat.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.heartbeat.plist
+    mode: "0644"
+    owner: root
+    group: wheel
+  become: true
+  notify: restart precis heartbeat (macos)
+
+- name: Unload any prior precis-heartbeat before bootstrap (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl bootout system/com.precis.heartbeat
+  become: true
+  register: hb_bootout
+  changed_when: hb_bootout.rc == 0
+  failed_when: false
+
+- name: Bootstrap precis-heartbeat LaunchDaemon (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl bootstrap system /Library/LaunchDaemons/com.precis.heartbeat.plist
+  become: true
+  register: hb_bootstrap
+  changed_when: hb_bootstrap.rc == 0
+  failed_when:
+    - hb_bootstrap.rc != 0
+    - "'service already loaded' not in hb_bootstrap.stderr"
+    - "'Bootstrap failed: 17' not in hb_bootstrap.stderr"
+    - "'Bootstrap failed: 5' not in hb_bootstrap.stderr"
+
+# ── Linux: systemd timer ───────────────────────────────────────────
+
+- name: Render precis-heartbeat systemd service (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: precis-heartbeat.service.j2
+    dest: /etc/systemd/system/precis-heartbeat.service
+    mode: "0644"
+  become: true
+  notify: restart precis heartbeat (linux)
+
+- name: Render precis-heartbeat systemd timer (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: precis-heartbeat.timer.j2
+    dest: /etc/systemd/system/precis-heartbeat.timer
+    mode: "0644"
+  become: true
+  notify: restart precis heartbeat (linux)
+
+- name: Enable + start precis-heartbeat timer (Linux)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: precis-heartbeat.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true

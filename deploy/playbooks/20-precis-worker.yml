@@ -1,0 +1,23 @@
+---
+# 20-precis-worker.yml — Fan out the precis-mcp derived-artifact worker
+# (`precis worker`) across every cluster node. Each daemon claims batches
+# from the shared postgres queues (chunk_embeddings + chunk_summaries) on
+# the data node; row-level locking arbitrates. Adding/removing nodes scales
+# throughput linearly with no coordinator.
+#
+# Run order: requires postgres (02), ssh_tunnels (17) — workers connect
+# via the local pgbouncer tunnel — and the mcps role's deploy user.
+
+- name: Deploy precis-mcp workers on all cluster nodes
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: true
+  roles:
+    - precis_worker
+  # ``precis-worker`` per the precis-* naming convention;
+  # ``precis`` matches the family umbrella so ``--tags precis``
+  # runs every precis-* play at once.
+  tags: [precis-worker, precis]

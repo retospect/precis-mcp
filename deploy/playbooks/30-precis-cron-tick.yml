@@ -1,0 +1,12 @@
+---
+# Deploy the precis cron-tick launchd timer on the gateway. See
+# roles/precis_cron_tick/README.md for what it does + why it's a
+# launchd timer rather than a daemon.
+- name: Deploy precis cron-tick timer
+  hosts: gateway
+  roles:
+    - precis_cron_tick
+  # ``precis-cron-tick`` is the per-play canonical (matches the
+  # precis-* naming convention). ``precis`` is the umbrella —
+  # ``--tags precis`` runs every precis-* play.
+  tags: [precis-cron-tick, precis]
