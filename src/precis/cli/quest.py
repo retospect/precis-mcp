@@ -55,6 +55,12 @@ def add_parser(subparsers: Any) -> None:
     f.add_argument("id", type=int, help="Quest ref id.")
     f.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    sc = qsub.add_parser(
+        "seed-catalyst",
+        help="Mint the NO→NH₃/Pd catalyst-discovery quest (idempotent, dark).",
+    )
+    sc.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
     r = qsub.add_parser(
         "run", help="Allocator: pick the best active quest + tick it once."
     )
@@ -105,6 +111,17 @@ def _cmd_tick(store: Store, args: argparse.Namespace) -> None:
     if outcome.cost_usd:
         msg += f", ${outcome.cost_usd:.4f}"
     print(f"{msg} ({outcome.note})")
+
+
+def _cmd_seed_catalyst(store: Store, args: argparse.Namespace) -> None:
+    from precis.quest.catalyst_seed import seed_catalyst_quest
+
+    qid, created = seed_catalyst_quest(store)
+    verb = "minted" if created else "already exists"
+    print(
+        f"catalyst quest {verb}: qu{qid} (NO→NH₃ on Pd(111)). "
+        f"First light:  precis quest tick {qid} --compute"
+    )
 
 
 def _cmd_run(store: Store, args: argparse.Namespace) -> None:
@@ -174,5 +191,7 @@ def run(args: argparse.Namespace) -> None:
         _cmd_gaps(store, args)
     elif args.quest_cmd == "frontier":
         _cmd_frontier(store, args)
+    elif args.quest_cmd == "seed-catalyst":
+        _cmd_seed_catalyst(store, args)
     elif args.quest_cmd == "run":
         _cmd_run(store, args)
