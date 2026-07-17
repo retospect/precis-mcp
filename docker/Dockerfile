@@ -336,6 +336,20 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
         ipdb \
         rich
 
+# catpath[precis] — the `pathway` kind plugin (catalyst-discovery quest). Its
+# third-party deps (ase/networkx/rdkit/numpy/scipy/matplotlib/pyyaml) already
+# arrive via `--all-extras` in the `deps` stage, and precis-mcp is
+# editable-installed in the `dev` stage below, so we install **--no-deps** here:
+# the layer is source-independent (cached) and never re-resolves precis. At
+# runtime precis discovers the plugin via entry points and `import
+# catpath.precis` resolves against the editable precis. This is the dev mirror
+# of cluster `roles/catpath` (which installs `catpath[precis,mace]` on spark).
+# Tracks catpath `main`; bump/rebuild (`scripts/dev … --rebuild`) when the seam
+# moves — Docker caches this RUN by command text, not by the remote's HEAD.
+RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
+    uv pip install --python /opt/venv --no-deps \
+        "catpath @ git+https://github.com/retospect/catpath@main"
+
 # =============================================================================
 # Stage: dev — final developer image. dev-system + venv (from dev-venv)
 # + models (from models) + editable source install. Only the source
