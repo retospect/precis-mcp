@@ -424,8 +424,14 @@ that sharpens with data, not an oracle that finds the optimum.
 2. **Seed slabs** (§7.4 vs §7.6) — slab-builder op now, or library import first.
 3. **Backend** — MACE (deployed) vs FAIRChem/UMA (better for adsorbates) —
    a per-quest choice; MACE for the first light.
-4. **First reaction R** — pick the concrete reaction network for the Pd
-   quest (drives which catpath state library is exercised).
+4. **First reaction R** — **DECIDED: NO → NH₃ on Pd(111)** (`network:
+   ammonia`), catpath's own worked Pd example (`examples/no_to_nh3_pd.yaml`):
+   substrate `NO`, target `NH3`, 3×3×4 slab, 10 Å vacuum, 2 fixed layers, EMT
+   for dev / MACE for the real run. The dissociative-hydrogenation chain
+   (NO → N+O → NH → NH₂ → NH₃) exercises the built `ammonia` state library, so
+   first light rides an already-validated network — no new chemistry to author.
+   (Alt on hand: `no_to_no3_pd.yaml`, NO → NO₃ oxidation, if a shorter linear
+   chain is wanted for the very first smoke run.)
 
 ## 9. What this explicitly does not do (v1)
 
