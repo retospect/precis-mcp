@@ -18,14 +18,22 @@ the bare-name references in their bodies — and the tests that
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import socket
 from typing import Any
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.handlers._todo_views import _doable_exclusion_clause
+from precis.store._resource_slots_ops import (
+    release_resource_slots,
+    reserve_resource_slots,
+)
 from precis.store.types import BlockInsert
+from precis.workers.registry import SERVICES_BY_NAME
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +62,125 @@ TERMINAL = (SUCCEEDED, FAILED, CANCELLED)
 JOB_EVENT_KIND = "job_event"
 JOB_SUMMARY_KIND = "job_summary"
 
+#: Claim-ordering weight for a job whose ``refs.prio`` is unset (NULL).
+#: The mid-point of the 1..10 ``refs.prio`` scale, matching
+#: ``service_config``'s ``DEFAULT_PRIO`` — so an all-unset queue orders by
+#: age alone (``ref_id`` ASC), byte-identical to the pre-6a FIFO claim.
+_DEFAULT_JOB_PRIO = 5
+
+#: Candidate over-fetch factor for the scarcity re-rank (6d-deferred, §5.3).
+#: The SQL fetches ``limit × this`` rows in prio/age order, then the scarcity
+#: term re-ranks in Python and the top ``limit`` are reserved — so a rare-
+#: capability job can surface ahead of the prio/age head without an unbounded
+#: ``FOR UPDATE`` lock set. 1 (or no ``resource_slots``) ⇒ pre-6d behaviour.
+_CLAIM_OVERFETCH = 3
+
+
+def _scarcity(requires: dict[str, int], host_count: dict[str, int]) -> float:
+    """A job's capability-scarcity score — the first claim-order key (§5.3).
+
+    Rarer capability → higher score → claimed first, because the scarce
+    resource is the bottleneck the schedule should fill before commodity work.
+    Score = the max over the job's required resources of ``1 / (hosts
+    advertising it)``; a resource no host advertises contributes 0 (it can't be
+    reserved here anyway — it self-gates to the ``target_node`` pin). A job that
+    requires nothing scores 0, so a queue with no ``requires`` collapses to the
+    prio/age order (pre-6d, byte-identical).
+    """
+    best = 0.0
+    for res in requires:
+        n = host_count.get(res, 0)
+        if n > 0:
+            best = max(best, 1.0 / n)
+    return best
+
+
+def reserve_host() -> str:
+    """This host's identity for resource reservation (slice 6c).
+
+    Must match the key the ``heartbeat`` self-probe writes ``resource_slots``
+    under (``PRECIS_HOST_NAME`` or the hostname) — the reservation host is
+    the *heartbeat* identity, not the ``PRECIS_NODE`` claim-gate identity,
+    so a decrement lands on the same row the probe advertised.
+    """
+    return os.environ.get("PRECIS_HOST_NAME") or socket.gethostname()
+
+
+def effective_requires(meta: dict[str, Any]) -> dict[str, int]:
+    """The resource requirements of a job (slice 6d).
+
+    An explicit ``meta.requires`` (``{resource: units}``) wins; otherwise
+    the requirement is *derived* from the job's ``job_type`` via the
+    registry — a ``struct_relax``/``fold`` job matches a ``ServiceSpec``
+    whose ``requires={"gpu"}``, so it needs ``{"gpu": 1}`` without any mint
+    change. A job_type with no matching spec (or an empty ``requires``)
+    needs nothing — the common path. The vocabulary is the counted
+    ``resource_slots`` tokens (``gpu``/``podman``/``tts``), not the
+    executor-capability tokens the dispatcher validates.
+    """
+    explicit = meta.get("requires")
+    if explicit:
+        return {str(k): int(v) for k, v in dict(explicit).items()}
+    job_type = meta.get("job_type")
+    spec = SERVICES_BY_NAME.get(str(job_type)) if job_type else None
+    if spec is not None and spec.requires:
+        return {tok: 1 for tok in spec.requires}
+    return {}
+
+
+def _advertised_by_host(conn: Connection) -> dict[str, set[str]]:
+    """``host -> {resources it currently advertises}`` from ``resource_slots``.
+
+    The self-gating map (slice 6d): a required resource that no host — or
+    not *this* host — advertises is not reserved (it falls back to the
+    ``target_node`` pin), so activating ``requires`` can't strand a job in
+    the window before the heartbeat self-probe has populated the table.
+    """
+    rows = conn.execute("SELECT host, resource FROM resource_slots").fetchall()
+    out: dict[str, set[str]] = {}
+    for host, resource in rows:
+        out.setdefault(str(host), set()).add(str(resource))
+    return out
+
+
+def _mem_pressured_hosts(conn: Connection) -> set[str]:
+    """Hosts under measured memory pressure (6d-deferred, soft veto).
+
+    A host whose soft ``mem`` gauge (:meth:`Store.sync_soft_signal`) has hit
+    ``free = 0`` is out of headroom; the claim skips reserving *heavy*
+    (requires-bearing) jobs there so a jetsam-prone box (macOS) isn't handed
+    another GPU/container/TTS job while it's thrashing. Dark until the
+    heartbeat writes a ``mem`` row — no rows ⇒ empty set ⇒ no veto.
+    """
+    rows = conn.execute(
+        "SELECT host FROM resource_slots WHERE resource = 'mem' "
+        "AND kind = 'soft' AND free <= 0"
+    ).fetchall()
+    return {str(r[0]) for r in rows}
+
+
+def release_job_reservation(conn: Connection, ref_id: int) -> None:
+    """Refund + clear a job's ``meta.reserved`` slots (idempotent).
+
+    A no-op for a job that reserved nothing (no ``meta.reserved``). Clears
+    the key after refunding so a second terminal transition — e.g. the
+    sweeper racing an executor — can't double-refund (the capped release
+    also guards the counter). Called at every terminal transition.
+    """
+    row = conn.execute(
+        "SELECT meta->'reserved' FROM refs WHERE ref_id = %s", (ref_id,)
+    ).fetchone()
+    reserved = row[0] if row and row[0] else None
+    if not reserved:
+        return
+    host = reserved.get("host")
+    slots = reserved.get("slots") or {}
+    if host and slots:
+        release_resource_slots(conn, str(host), dict(slots))
+    conn.execute(
+        "UPDATE refs SET meta = meta - 'reserved' WHERE ref_id = %s", (ref_id,)
+    )
+
 
 # ── Claim ─────────────────────────────────────────────────────────
 
@@ -66,11 +193,37 @@ def claim_executor_jobs(
     exclude_paused: bool = False,
     node: str | None = None,
     parent_not_paused: bool = False,
+    reserve_host_id: str | None = None,
 ) -> list[tuple[int, str, dict[str, Any]]]:
     """Lock up to ``limit`` claimable jobs for ``executor``.
 
     Claimable = ``kind='job'``, ``meta.executor`` matches,
     ``STATUS:queued``, not terminal, lease expired or absent.
+
+    **Claim ordering (slice 6a).** ``ORDER BY COALESCE(prio, 5) DESC,
+    ref_id ASC`` — highest ``refs.prio`` first (the dispatcher propagates
+    the parent todo's prio onto the job, so a high-prio quest/project has
+    its compute claimed ahead of commodity work), oldest-first
+    (``ref_id``) as the within-prio tiebreak / anti-starvation term. An
+    all-unset queue collapses to ``ref_id`` ASC — the pre-6a FIFO. The
+    capability-rarity term (§5.3) is layered on in 6d.
+
+    **Reserve-at-claim (slices 6c/6d).** A job's resource requirements —
+    explicit ``meta.requires`` or *derived* from its ``job_type`` via the
+    registry (:func:`effective_requires`; ``struct_relax``/``fold`` →
+    ``{"gpu": 1}``) — are reserved in this transaction before the job is
+    handed back: the conditional decrement is the lock. The reservation
+    host is the job's ``target_node`` if pinned (the resource lives where
+    the job runs — an ssh_node GPU job reserves on the GPU box), else this
+    host (``reserve_host_id`` / :func:`reserve_host`). Reservation
+    *self-gates* on what that host advertises (slice 6d): an unadvertised
+    requirement is left to the ``target_node`` node-gate rather than
+    blocking, so activating ``requires`` can't strand a job before the
+    heartbeat probe has populated ``resource_slots``. A job whose reserved
+    slot is full is dropped from the batch (lock frees at commit → waits
+    for capacity). What was actually reserved is stamped on
+    ``meta.reserved`` for :func:`release_job_reservation` to refund at
+    terminal. Jobs needing nothing are unaffected — the common path.
 
     When ``exclude_paused`` is True, also exclude rows carrying an
     open-namespace pause tag (``ask-user:*`` / ``halt:*`` /
@@ -117,7 +270,7 @@ def claim_executor_jobs(
 
     rows = conn.execute(
         f"""
-        SELECT r.ref_id, r.title, r.meta
+        SELECT r.ref_id, r.title, r.meta, r.prio
           FROM refs r
          WHERE r.kind = 'job'
            AND r.deleted_at IS NULL
@@ -142,7 +295,7 @@ def claim_executor_jobs(
                 (r.meta->>'lease_until') IS NULL
              OR (r.meta->>'lease_until')::timestamptz < now()
            )
-         ORDER BY r.ref_id
+         ORDER BY COALESCE(r.prio, %s) DESC, r.ref_id ASC
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
@@ -153,10 +306,74 @@ def claim_executor_jobs(
             QUEUED,
             STATUS_NAMESPACE,
             list(TERMINAL),
-            limit,
+            _DEFAULT_JOB_PRIO,
+            limit * _CLAIM_OVERFETCH,
         ),
     ).fetchall()
-    return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
+
+    default_host = reserve_host_id or reserve_host()
+    advertised = _advertised_by_host(conn)
+
+    # Scarcity re-rank (6d-deferred, §5.3): capability-rarity is the FIRST
+    # claim-order key, then prio, then age. ``host_count[res]`` = how many hosts
+    # advertise ``res`` (rarer → higher scarcity). The SQL already returned rows
+    # in prio/age order and stably; re-sorting by (-scarcity, -prio, ref_id)
+    # keeps that order within a scarcity tier — so a queue with no ``requires``
+    # (scarcity 0 everywhere) is byte-identical to the pre-6d prio/age claim.
+    host_count: dict[str, int] = {}
+    for _h, res_set in advertised.items():
+        for res in res_set:
+            host_count[res] = host_count.get(res, 0) + 1
+
+    def _order_key(r: Any) -> tuple[float, int, int]:
+        prio = int(r[3]) if r[3] is not None else _DEFAULT_JOB_PRIO
+        scarcity = _scarcity(effective_requires(dict(r[2] or {})), host_count)
+        return (-scarcity, -prio, int(r[0]))
+
+    ranked = sorted(rows, key=_order_key)
+    pressured = _mem_pressured_hosts(conn)
+
+    claimed: list[tuple[int, str, dict[str, Any]]] = []
+    for r in ranked:
+        if len(claimed) >= limit:
+            break  # scarcity-ranked top ``limit`` reserved; leave the rest locked-free
+        ref_id, title, meta = int(r[0]), str(r[1]), dict(r[2] or {})
+        requires = effective_requires(meta)
+        if not requires:
+            claimed.append((ref_id, title, meta))
+            continue
+        # The resource lives where the job runs: its target_node (an
+        # ssh_node GPU job reserves on the GPU box, not the claimer), else
+        # this host. Self-gate to what that host actually advertises — an
+        # unadvertised requirement falls back to the node-gate/pin (no
+        # stall in the window before the probe populates the slot map).
+        params = meta.get("params") or {}
+        res_host = str(params.get("target_node") or default_host)
+        # Soft memory-pressure veto (6d-deferred): a heavy job's reservation
+        # host is out of RAM headroom → skip it this round (the lock frees at
+        # commit; it retries once pressure clears). Dark until a ``mem`` row
+        # with free=0 exists.
+        if res_host in pressured:
+            continue
+        reservable = {
+            res: units
+            for res, units in requires.items()
+            if res in advertised.get(res_host, set())
+        }
+        if reservable and not reserve_resource_slots(conn, res_host, reservable):
+            # A live slot is full → drop it; the lock frees at commit and
+            # the job waits for capacity on that host.
+            continue
+        if reservable:
+            reserved = {"host": res_host, "slots": reservable}
+            conn.execute(
+                "UPDATE refs SET meta = meta || "
+                "jsonb_build_object('reserved', %s::jsonb) WHERE ref_id = %s",
+                (json.dumps(reserved), ref_id),
+            )
+            meta["reserved"] = reserved
+        claimed.append((ref_id, title, meta))
+    return claimed
 
 
 # ── Status / chunk / meta helpers ─────────────────────────────────
@@ -165,7 +382,12 @@ def claim_executor_jobs(
 def set_status(
     store: Any, ref_id: int, value: str, *, conn: Connection | None = None
 ) -> None:
-    """Replace the current ``STATUS:`` tag with ``value`` on ``ref_id``."""
+    """Replace the current ``STATUS:`` tag with ``value`` on ``ref_id``.
+
+    A terminal value also refunds any resource reservation the job holds
+    (slice 6c) — release rides the same status write so a job's slots come
+    back the instant it stops running, in the caller's transaction.
+    """
     from precis.store import Tag
 
     tag = Tag.parse_strict(f"STATUS:{value}")
@@ -176,6 +398,13 @@ def set_status(
         replace_prefix=True,
         conn=conn,
     )
+    if value in TERMINAL:
+        if conn is not None:
+            release_job_reservation(conn, ref_id)
+        else:
+            with store.pool.connection() as c:
+                with c.transaction():
+                    release_job_reservation(c, ref_id)
 
 
 def is_cancel_requested(conn: Connection, ref_id: int) -> bool:
@@ -292,8 +521,11 @@ __all__ = [
     "append_chunk",
     "claim_executor_jobs",
     "current_status",
+    "effective_requires",
     "is_cancel_requested",
     "record_failure",
+    "release_job_reservation",
+    "reserve_host",
     "set_meta",
     "set_status",
 ]

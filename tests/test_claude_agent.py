@@ -356,6 +356,66 @@ def test_disallowed_tools_joined(stub_bin: Path) -> None:
     assert "WebSearch" in res.final_text
 
 
+def _write_argv_env_stub(path: Path) -> None:
+    """Stub echoing argv then ``PRECIS_MCP_DB_ROLE`` from the env."""
+    path.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            printf '%s\\n' "$@"
+            printf 'DB_ROLE=%s\\n' "${PRECIS_MCP_DB_ROLE:-unset}"
+            """
+        )
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def test_envelope_param_merges_tier1_deny(stub_bin: Path) -> None:
+    """An explicit envelope drops the mutate verbs + fetch tools (slice 8)."""
+    from precis.workers.envelope import Envelope
+
+    _write_argv_env_stub(stub_bin)
+    res = call_claude_agent("do", envelope=Envelope(write="none", egress="none"))
+    assert "--settings" in res.final_text
+    assert "mcp__precis__put" in res.final_text
+    assert "WebFetch" in res.final_text
+    # tier 2: the read-only role is advertised to the spawned MCP server.
+    assert "DB_ROLE=agent_ro" in res.final_text
+
+
+def test_envelope_merges_with_explicit_disallowed(stub_bin: Path) -> None:
+    """Envelope deny list unions with a caller's ``disallowed_tools``."""
+    from precis.workers.envelope import Envelope
+
+    _write_argv_env_stub(stub_bin)
+    res = call_claude_agent(
+        "do",
+        disallowed_tools=("Bash",),
+        envelope=Envelope(write="none"),
+    )
+    assert "Bash" in res.final_text
+    assert "mcp__precis__delete" in res.final_text
+
+
+def test_active_scope_envelope_applies_without_param(stub_bin: Path) -> None:
+    """The executor-scoped envelope is picked up when no param is passed."""
+    from precis.workers.envelope import Envelope, envelope_scope
+
+    _write_argv_env_stub(stub_bin)
+    with envelope_scope(Envelope(egress="none")):
+        res = call_claude_agent("do")
+    assert "WebFetch" in res.final_text
+    assert "WebSearch" in res.final_text
+
+
+def test_default_envelope_denies_nothing_and_no_role(stub_bin: Path) -> None:
+    """No envelope, no scope → today's behavior: no deny, role unset."""
+    _write_argv_env_stub(stub_bin)
+    res = call_claude_agent("do")
+    assert "--settings" not in res.final_text
+    assert "DB_ROLE=unset" in res.final_text
+
+
 def test_model_override(stub_bin: Path) -> None:
     stub_bin.write_text(
         textwrap.dedent(

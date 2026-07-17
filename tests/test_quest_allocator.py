@@ -28,6 +28,17 @@ def _mk_quest(store: Any, text: str, *, prio: str | None = None) -> int:
     return int(m.group(1))
 
 
+def _backdate_logbook(store: Any, quest_id: int, *, days: int) -> None:
+    """Push this quest's logbook chunks ``days`` into the past (window tests)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET created_at = now() - make_interval(days => %s) "
+            "WHERE ref_id = %s AND chunk_kind = 'quest_log'",
+            (days, quest_id),
+        )
+        conn.commit()
+
+
 # ── scoring ───────────────────────────────────────────────────────────
 
 
@@ -101,6 +112,34 @@ class TestBudget:
         append_entry(store, a, text="x", entry_type="result", by="agent", cost=1.5)
         append_entry(store, a, text="y", entry_type="cost", by="agent", cost=2.0)
         assert abs(alloc.weekly_spend(store, a) - 3.5) < 1e-9
+
+    def test_window_days_narrows_the_tote(self, store: Any) -> None:
+        # A $6 spend 3 days ago: inside a 7d window (over its $5 share → skip),
+        # outside a 1d window (under → eligible). Proves the window plumbs
+        # through over_budget (design §9: tab tunes 7d → 24/48h).
+        a = _mk_quest(store, "A", prio="PRIO:normal")
+        b = _mk_quest(store, "B", prio="PRIO:normal")
+        append_entry(store, a, text="old sim", entry_type="cost", by="agent", cost=6.0)
+        _backdate_logbook(store, a, days=3)
+        assert (
+            alloc.over_budget(store, a, [a, b], total_budget=10.0, window_days=7)
+            is True
+        )
+        assert (
+            alloc.over_budget(store, a, [a, b], total_budget=10.0, window_days=1)
+            is False
+        )
+
+    def test_window_days_none_uses_env_default(self, store: Any) -> None:
+        # window_days=None resolves to BUDGET_WINDOW_DAYS (7 by default), so a
+        # recent spend is counted exactly as before the param existed.
+        a = _mk_quest(store, "A", prio="PRIO:normal")
+        b = _mk_quest(store, "B", prio="PRIO:normal")
+        append_entry(store, a, text="sim", entry_type="cost", by="agent", cost=6.0)
+        assert (
+            alloc.over_budget(store, a, [a, b], total_budget=10.0, window_days=None)
+            is True
+        )
 
 
 # ── self-cooling ──────────────────────────────────────────────────────

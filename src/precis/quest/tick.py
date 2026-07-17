@@ -518,6 +518,22 @@ def run_quest_tick(
     note = (
         (f"frontier-review ({reason})" if is_review else "ok") if did_work else "no-op"
     )
+    # Attribute the tick's *real* measured spend to the tote (gripe 162594).
+    # The per-entry ``cost`` the model may self-declare (above) is almost always
+    # absent, so ``allocator.weekly_spend`` — which sums logbook ``meta.cost`` —
+    # would under-count and the fair-share meter (``over_budget``) could never
+    # fire. One terse ``cost`` deed per tick carries ``res.cost_usd`` into the
+    # dated ledger so the windowed share is honest. Only when a cost was
+    # actually measured (a paused/errored tick returns early above).
+    if isinstance(cost, (int, float)) and cost > 0:
+        append_entry(
+            store,
+            quest_id,
+            text=f"tick spend ${float(cost):.4f} ({'review' if is_review else 'local'})",
+            entry_type="cost",
+            by=by,
+            cost=float(cost),
+        )
     return QuestTickOutcome(
         quest_id,
         "succeeded",

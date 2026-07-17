@@ -11,7 +11,13 @@ from __future__ import annotations
 import json
 
 from precis.workers.service_config import set_service_model, set_service_prio
-from precis_web.routes.factory import _activity, _config_rows, _hosts
+from precis_web.routes.factory import (
+    _activity,
+    _config_rows,
+    _hosts,
+    _quests,
+    _slots_by_host,
+)
 
 
 def _log(conn, handler: str, *, ok: int, failed: int) -> None:
@@ -67,6 +73,18 @@ def test_activity_keys_by_payload_handler(store) -> None:
     assert act["classify"]["last_fail"] is not None
 
 
+def test_slots_by_host_groups_advertised_resources(store) -> None:
+    """The host strip's capability chips come from ``resource_slots``."""
+    store.sync_host_resource_slots("melchior", {"gpu": 1, "tts": 1})
+    store.sync_host_resource_slots("spark", {"gpu": 2})
+    by_host = _slots_by_host(store)
+    mel = {s["resource"]: s for s in by_host["melchior"]}
+    assert mel["gpu"]["capacity"] == 1 and mel["gpu"]["free"] == 1
+    assert set(mel) == {"gpu", "tts"}
+    assert by_host["spark"][0]["resource"] == "gpu"
+    assert by_host["spark"][0]["capacity"] == 2
+
+
 def test_activity_ignores_non_batchresult_rows(store) -> None:
     """A payload without a numeric ok/failed must not break the cast."""
     with store.pool.connection() as conn:
@@ -80,3 +98,50 @@ def test_activity_ignores_non_batchresult_rows(store) -> None:
     # row is present (has 'handler') but neither ok nor fail is numeric → both None
     assert act.get("weird", {}).get("last_ok") is None
     assert act.get("weird", {}).get("last_fail") is None
+
+
+def test_quests_reports_share_bar(store, monkeypatch) -> None:
+    """The quests panel surfaces windowed spend vs proportional share (§9)."""
+    import re
+
+    from precis.dispatch import Hub
+    from precis.handlers.quest import QuestHandler
+    from precis.quest.logbook import append_entry
+
+    h = QuestHandler(hub=Hub(store=store))
+
+    def _mk(text: str, prio: str) -> int:
+        resp = h.put(text=text, tags=[prio])
+        m = re.search(r"\bqu(\d+)\b", resp.body)
+        assert m is not None, resp.body
+        return int(m.group(1))
+
+    a = _mk("Quest A", "PRIO:normal")
+    b = _mk("Quest B", "PRIO:normal")
+    append_entry(store, a, text="spend", entry_type="cost", by="agent", cost=6.0)
+    monkeypatch.setenv("PRECIS_QUEST_WEEKLY_BUDGET", "10")
+
+    out = _quests(store)
+    assert out["budget"] == 10.0
+    rows = {r["id"]: r for r in out["rows"]}
+    # equal prio → $5 share each; A spent $6 → over (100%), B nothing.
+    assert rows[a]["over"] is True and rows[a]["pct"] == 100.0
+    assert rows[b]["spend"] == 0.0 and rows[b]["over"] is False
+    # heaviest share-consumer first
+    assert out["rows"][0]["id"] == a
+
+
+def test_quests_no_budget_shows_spend_only(store, monkeypatch) -> None:
+    import re
+
+    from precis.dispatch import Hub
+    from precis.handlers.quest import QuestHandler
+
+    monkeypatch.delenv("PRECIS_QUEST_WEEKLY_BUDGET", raising=False)
+    h = QuestHandler(hub=Hub(store=store))
+    resp = h.put(text="Lone quest", tags=["PRIO:normal"])
+    qid = int(re.search(r"\bqu(\d+)\b", resp.body).group(1))
+    out = _quests(store)
+    assert out["budget"] is None
+    row = {r["id"]: r for r in out["rows"]}[qid]
+    assert row["share"] is None and row["pct"] is None and row["over"] is False

@@ -1,0 +1,203 @@
+"""Unit tests for the per-host capability self-probe (slice 6b).
+
+Pure, no DB: the vocabulary derives from the registry, each probe returns
+present / absent / unknown from mocked tooling, and ``probe_host_resources``
+never lets a broken probe escape (heartbeat liveness must survive it).
+"""
+
+from __future__ import annotations
+
+import subprocess
+from types import SimpleNamespace
+
+import pytest
+
+from precis.workers import capability_probe as cap
+
+# Env overrides that would shadow the real probes — clear them per test.
+_OVERRIDE_ENVS = (
+    "PRECIS_GPU_COUNT",
+    "PRECIS_PODMAN_SLOTS",
+    "PRECIS_TTS_SLOTS",
+    "PRECIS_TTS_IMAGE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in _OVERRIDE_ENVS:
+        monkeypatch.delenv(name, raising=False)
+
+
+def _which(present: set[str]):
+    return lambda name: f"/usr/bin/{name}" if name in present else None
+
+
+# ── vocabulary ──────────────────────────────────────────────────────────
+
+
+def test_vocabulary_derives_from_registry() -> None:
+    """The evaluated set is exactly the union of every ``requires`` token."""
+    vocab = cap.capability_vocabulary()
+    # The capabilities services declare today.
+    assert {"gpu", "podman", "tts"} <= vocab
+    # Every probe key is a real capability some service requires (no orphans).
+    assert set(cap._PROBES) <= vocab
+
+
+# ── gpu ─────────────────────────────────────────────────────────────────
+
+
+def test_gpu_env_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_GPU_COUNT", "3")
+    assert cap._probe_gpu() == 3
+
+
+def test_gpu_absent_without_nvidia_smi(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No ``nvidia-smi`` on PATH ⇒ definitively 0 (every Mac node)."""
+    monkeypatch.setattr(cap.shutil, "which", _which(set()))
+    assert cap._probe_gpu() == 0
+
+
+def test_gpu_counts_nvidia_smi_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cap.shutil, "which", _which({"nvidia-smi"}))
+    out = "GPU 0: NVIDIA A100 (UUID: x)\nGPU 1: NVIDIA A100 (UUID: y)\n"
+    monkeypatch.setattr(
+        cap.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout=out),
+    )
+    assert cap._probe_gpu() == 2
+
+
+def test_gpu_unknown_when_nvidia_smi_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Binary present but the call blows up ⇒ None (leave the row alone)."""
+    monkeypatch.setattr(cap.shutil, "which", _which({"nvidia-smi"}))
+
+    def _boom(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=10)
+
+    monkeypatch.setattr(cap.subprocess, "run", _boom)
+    assert cap._probe_gpu() is None
+
+
+def test_gpu_unknown_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cap.shutil, "which", _which({"nvidia-smi"}))
+    monkeypatch.setattr(
+        cap.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=9, stdout=""),
+    )
+    assert cap._probe_gpu() is None
+
+
+# ── podman ──────────────────────────────────────────────────────────────
+
+
+def test_podman_present_default_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cap.shutil, "which", _which({"podman"}))
+    assert cap._probe_podman() == 2
+
+
+def test_podman_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cap.shutil, "which", _which(set()))
+    assert cap._probe_podman() == 0
+
+
+def test_podman_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_PODMAN_SLOTS", "5")
+    monkeypatch.setattr(cap.shutil, "which", _which(set()))  # override still wins
+    assert cap._probe_podman() == 5
+
+
+# ── tts ─────────────────────────────────────────────────────────────────
+
+
+def test_tts_container_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``PRECIS_TTS_IMAGE`` + podman ⇒ present (the cluster path)."""
+    monkeypatch.setenv("PRECIS_TTS_IMAGE", "precis-tts:latest")
+    monkeypatch.setattr(cap.shutil, "which", _which({"podman"}))
+    assert cap._probe_tts() == 1
+
+
+def test_tts_image_without_podman_falls_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_TTS_IMAGE", "precis-tts:latest")
+    monkeypatch.setattr(cap.shutil, "which", _which(set()))
+    monkeypatch.setattr(cap, "find_spec", lambda name: None)
+    assert cap._probe_tts() == 0
+
+
+def test_tts_local_extra_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No image, but the ``[tts]`` extra (``kokoro_onnx``) is importable."""
+    monkeypatch.setattr(cap.shutil, "which", _which(set()))
+    monkeypatch.setattr(
+        cap, "find_spec", lambda name: object() if name == "kokoro_onnx" else None
+    )
+    assert cap._probe_tts() == 1
+
+
+def test_tts_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cap.shutil, "which", _which(set()))
+    monkeypatch.setattr(cap, "find_spec", lambda name: None)
+    assert cap._probe_tts() == 0
+
+
+# ── probe_host_resources: the safe aggregate ────────────────────────────
+
+
+def test_probe_host_resources_covers_vocabulary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cap.shutil, "which", _which(set()))
+    monkeypatch.setattr(cap, "find_spec", lambda name: None)
+    result = cap.probe_host_resources()
+    assert set(result) == set(cap.capability_vocabulary())
+    # a bare host: no nvidia-smi, no podman, no tts → all definitively absent
+    assert result["gpu"] == 0
+    assert result["podman"] == 0
+    assert result["tts"] == 0
+
+
+def test_probe_host_resources_unknown_for_missing_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A required capability with no registered probe ⇒ None (untouched)."""
+    monkeypatch.setattr(cap, "capability_vocabulary", lambda: frozenset({"mystery"}))
+    result = cap.probe_host_resources()
+    assert result == {"mystery": None}
+
+
+def test_probe_host_resources_swallows_probe_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe that raises must be downgraded to unknown, not propagate."""
+
+    def _raiser() -> int:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cap, "capability_vocabulary", lambda: frozenset({"gpu"}))
+    monkeypatch.setitem(cap._PROBES, "gpu", _raiser)
+    result = cap.probe_host_resources()  # must not raise
+    assert result == {"gpu": None}
+
+
+# ── 6d-deferred: soft memory-pressure signal ─────────────────────────────
+
+
+def test_resource_kind_mem_is_soft() -> None:
+    assert cap.resource_kind("mem") == "soft"
+    assert cap.resource_kind("gpu") == "hard"
+
+
+def test_soft_signal_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_MEM_PRESSURE_FREE", "0")
+    assert cap.probe_soft_signals() == {"mem": 0}
+
+
+def test_soft_signal_override_clamped_to_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_MEM_PRESSURE_FREE", "9")
+    assert cap.probe_soft_signals()["mem"] == cap.mem_capacity()

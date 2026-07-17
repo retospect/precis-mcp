@@ -60,10 +60,20 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from precis.alerts import raise_alert
 from precis.handlers._job_bubble import bubble_job_failure
 from precis.store import Store
 from precis.store.types import Tag
+from precis.workers.executors._common import (
+    effective_requires,
+    release_job_reservation,
+)
 from precis.workers.runner import BatchResult
+
+#: Cap the unschedulable scan so a huge queue can't make the per-minute
+#: sweep expensive; a genuine capability outage trips the alert on the
+#: first few jobs regardless.
+_UNSCHEDULABLE_SCAN_CAP = 500
 
 log = logging.getLogger(__name__)
 
@@ -324,6 +334,69 @@ def _prune_dangling_intents(store: Store) -> int:
     return len(retired)
 
 
+def _alert_unschedulable_jobs(store: Store) -> int:
+    """Alert on queued jobs no host can place (slice 6d).
+
+    A job that requires (declares or derives) a resource, has no
+    ``target_node`` pin to fall back on, and whose capability is advertised
+    by NO host in ``resource_slots`` can never be reserved anywhere — it
+    would sit queued forever. Raise a ``warn`` alert per such job (deduped
+    by ref) so the gap is visible instead of a silent park. Pinned jobs are
+    skipped: self-gating declines to reserve but the node gate still runs
+    them, so they aren't stuck. Returns the alert count.
+    """
+    with store.pool.connection() as conn:
+        advertised = {
+            str(r[0])
+            for r in conn.execute(
+                "SELECT DISTINCT resource FROM resource_slots"
+            ).fetchall()
+        }
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.meta
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'job'
+               AND r.deleted_at IS NULL
+               AND t.namespace = 'STATUS'
+               AND t.value = 'queued'
+             ORDER BY r.ref_id
+             LIMIT %s
+            """,
+            (_UNSCHEDULABLE_SCAN_CAP,),
+        ).fetchall()
+    n = 0
+    for raw_id, raw_meta in rows:
+        ref_id = int(raw_id)
+        meta = dict(raw_meta or {})
+        requires = effective_requires(meta)
+        if not requires:
+            continue
+        params = meta.get("params") or {}
+        if params.get("target_node"):
+            continue  # pinned → the node gate still runs it; not stuck
+        unmet = sorted(res for res in requires if res not in advertised)
+        if not unmet:
+            continue
+        raise_alert(
+            store,
+            source="scheduler",
+            fingerprint=f"unschedulable:{ref_id}",
+            title=f"Job #{ref_id} needs {', '.join(unmet)} — no host advertises it",
+            detail=(
+                f"requires={requires}; unmet={unmet}; no target_node pin. "
+                "Provision the capability (a host must advertise it via the "
+                "heartbeat probe) or the job waits forever."
+            ),
+            severity="warn",
+            subject_ref_id=ref_id,
+        )
+        n += 1
+    return n
+
+
 def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     """Detect orphans, lock-and-transition each, return BatchResult.
 
@@ -369,6 +442,12 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
         log.info(
             "sweeper: retired %d dangling heading-intent note(s) (anchor heading gone)",
             pruned_intents,
+        )
+    unschedulable = _alert_unschedulable_jobs(store)
+    if unschedulable:
+        log.warning(
+            "sweeper: %d queued job(s) require a capability no host advertises",
+            unschedulable,
         )
     threshold_hours = _stuck_job_hours()
     candidates = _enumerate_orphans(store, threshold_hours, limit=limit)
@@ -500,6 +579,11 @@ def _transition_to_failed(
             },
             conn=conn,
         )
+        # Refund the crashed job's resource reservation (slice 6c) — the
+        # sweeper writes STATUS:failed directly rather than via
+        # ``set_status``, so it releases the slots itself. Idempotent: a
+        # no-op if the job reserved nothing.
+        release_job_reservation(conn, orphan.ref_id)
     # Bubble runs in its own transaction so the parent's tag write
     # is durable even if the caller's loop crashes mid-rotation. The
     # bubble helper is idempotent (re-applying the same

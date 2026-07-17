@@ -50,6 +50,13 @@
         · <span class="font-mono">{{ '%.0f'|format(h.temp_c) }}°C</span>
         {% endif %}
       </div>
+      {% if h.slots %}
+      <div class="mt-1 flex flex-wrap gap-1" title="Resources this host advertises (heartbeat self-probe). free/capacity slots; differ once reserve-at-claim lands.">
+        {% for sl in h.slots %}
+        <span class="rounded bg-white/70 border border-slate-200 px-1 py-0.5 font-mono text-[11px] text-slate-600">{{ sl.resource }} {{ sl.free }}/{{ sl.capacity }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
     </div>
     {% endfor %}
   </div>
@@ -149,4 +156,58 @@
   </div>
 </section>
 {% endfor %}
+
+{# ── Quests tab — the other substrate: which strivings get attention ── #}
+<section class="mt-8">
+  <h2 class="text-sm font-semibold mb-1">Quests</h2>
+  <p class="text-xs text-slate-500 mb-3">
+    Same model as services — set a priority, the system allocates
+    proportionally — on the striving substrate. Each active quest's spend
+    over the trailing {{ quests.window_days }}-day window against its
+    priority-weighted share of the budget
+    {% if quests.budget %}(${{ '%.2f'|format(quests.budget) }}){% else %}(no budget set — spend only){% endif %}.
+    A quest at 100% is one the allocator skips this round.
+  </p>
+  {% if not quests.rows %}
+  <p class="text-xs text-slate-500">No active quests.</p>
+  {% else %}
+  <div class="overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-slate-500 border-b border-slate-200">
+          <th class="py-1 pr-3">quest</th>
+          <th class="py-1 pr-3">prio</th>
+          <th class="py-1 pr-3">spend ({{ quests.window_days }}d)</th>
+          <th class="py-1 pr-3 w-64">share consumed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for q in quests.rows %}
+        <tr class="border-b border-slate-100">
+          <td class="py-1.5 pr-3">
+            <span class="text-slate-800">{{ q.title }}</span>
+            <span class="text-xs text-slate-400 font-mono">qu{{ q.id }}</span>
+          </td>
+          <td class="py-1.5 pr-3 font-mono text-xs">{{ q.prio if q.prio is not none else '—' }}</td>
+          <td class="py-1.5 pr-3 font-mono text-xs">${{ '%.4f'|format(q.spend) }}</td>
+          <td class="py-1.5 pr-3">
+            {% if q.pct is not none %}
+            <div class="flex items-center gap-2">
+              <div class="flex-1 h-2 rounded bg-slate-100 overflow-hidden">
+                <div class="h-2 {% if q.over %}bg-rose-500{% elif q.pct >= 75 %}bg-amber-500{% else %}bg-emerald-500{% endif %}"
+                     style="width: {{ q.pct }}%"></div>
+              </div>
+              <span class="text-xs {% if q.over %}text-rose-700 font-semibold{% else %}text-slate-500{% endif %}">{{ q.pct }}%</span>
+            </div>
+            {% else %}
+            <span class="text-xs text-slate-400">— (no budget share)</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
 {% endblock %}

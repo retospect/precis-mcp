@@ -137,6 +137,7 @@ def call_claude_agent(
     output_format: str = "text",
     bare: bool = False,
     disallowed_tools: tuple[str, ...] = (),
+    envelope: Any | None = None,
     extra_args: tuple[str, ...] = (),
     log_event: tuple[Store, int, str] | None = None,
 ) -> AgentResult:
@@ -172,6 +173,13 @@ def call_claude_agent(
         disallowed_tools: Tuple passed to ``--disallowed-tools``.
             Dream-pass disables ``WebFetch,WebSearch`` so dreams
             don't fan out beyond corpus state.
+        envelope: Optional per-todo permission box (slice 8,
+            :class:`precis.workers.envelope.Envelope`). Its tier-1
+            deny list is merged into ``disallowed_tools`` and its DB
+            role is exported as ``PRECIS_MCP_DB_ROLE`` for the spawned
+            MCP server. ``None`` falls back to the executor-scoped
+            active envelope (:func:`~precis.workers.envelope.active_envelope`);
+            no envelope either way → today's behavior (dark).
         extra_args: Pass-through for niche flags. Use sparingly.
         log_event: Optional ``(store, ref_id, source)`` triple. When
             provided and the call succeeds, writes a ``ref_events``
@@ -241,7 +249,22 @@ def call_claude_agent(
         args.append("--strict-mcp-config")
     if system_prompt_text:
         args.extend(["--append-system-prompt", system_prompt_text])
-    if disallowed_tools:
+    # Per-todo envelope (slice 8): resolve the explicit arg, else the
+    # executor-scoped active envelope. Its tier-1 deny list is merged into
+    # ``disallowed_tools`` below; its DB role is exported to the subprocess
+    # env further down. Lazy import — this module is imported by the router,
+    # and ``precis.workers.envelope`` is stdlib-only so there's no cycle, but
+    # keeping it local matches the rest of this function's late imports.
+    from precis.workers import envelope as _envelope
+
+    active_env = envelope if envelope is not None else _envelope.active_envelope()
+    effective_deny = list(disallowed_tools)
+    if active_env is not None:
+        for tool in _envelope.disallowed_tools(active_env):
+            if tool not in effective_deny:
+                effective_deny.append(tool)
+
+    if effective_deny:
         # ``claude -p`` declares ``--disallowed-tools <tools...>`` as
         # a Commander.js *variadic* — it greedily consumes every
         # subsequent positional as another tool name, including the
@@ -259,7 +282,7 @@ def call_claude_agent(
         import json as _json
 
         settings_payload = {
-            "permissions": {"deny": list(disallowed_tools)},
+            "permissions": {"deny": effective_deny},
         }
         args.extend(["--settings", _json.dumps(settings_payload)])
     args.extend(extra_args)
@@ -284,6 +307,12 @@ def call_claude_agent(
     # ``cost=$0 turns=None`` success in our logs (2026-06-17 dream
     # incident). Load the file ourselves when the var is missing.
     proc_env = dict(os.environ)
+    # Tier-2 (process-level) envelope enforcement: advertise the resolved
+    # Postgres role so the per-call ``precis serve`` the container executor
+    # spawns (§13) binds ``agent_ro`` for a read-only box. Harmless today —
+    # the current MCP config ignores it — so this ships dark ahead of §13.
+    if active_env is not None:
+        proc_env["PRECIS_MCP_DB_ROLE"] = _envelope.db_role(active_env)
     ensure_oauth_token(proc_env)
     if not bare:
         # Prefer the OAuth token (Max subscription) over ANTHROPIC_API_KEY

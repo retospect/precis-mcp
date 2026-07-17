@@ -63,6 +63,18 @@ EXPLORE = float(os.environ.get("PRECIS_QUEST_EXPLORE", "0.15"))
 #: Days a stalled quest may sit with no improvement before it cools to dormant.
 COOL_AFTER_TICKS = int(os.environ.get("PRECIS_QUEST_COOL_AFTER_TICKS", "12"))
 
+#: Trailing window (days) the proportional budget meters spend over — the
+#: fair-share horizon. Default 7 (weekly); the quests tab tunes it down to
+#: 24/48h so a burst is felt sooner (design §9). Env
+#: ``PRECIS_QUEST_BUDGET_WINDOW_DAYS``; a per-call ``window_days`` overrides.
+BUDGET_WINDOW_DAYS = int(os.environ.get("PRECIS_QUEST_BUDGET_WINDOW_DAYS", "7"))
+
+
+def _resolve_window(window_days: int | None) -> int:
+    """The effective budget window — explicit arg wins, else the env default."""
+    return BUDGET_WINDOW_DAYS if window_days is None else window_days
+
+
 #: Per-tick geometric decay of the progress factor: a quest making no external
 #: progress loses ground each tick, so a spinner falls behind a fresh or
 #: productive quest well before `cool_stalled` fires — without ever rewarding
@@ -198,9 +210,20 @@ def _budget_total() -> float | None:
 
 
 def over_budget(
-    store: Store, quest_id: int, active: list[int], *, total_budget: float | None
+    store: Store,
+    quest_id: int,
+    active: list[int],
+    *,
+    total_budget: float | None,
+    window_days: int | None = None,
 ) -> bool:
-    """True when the quest has spent past its proportional weekly share."""
+    """True when the quest has spent past its proportional share of the window.
+
+    The window defaults to :data:`BUDGET_WINDOW_DAYS` (env-configurable, 7d)
+    and is narrowed by the quests tab to 24/48h so a spend burst is felt
+    sooner (design §9). ``share`` is the priority-weighted slice of
+    ``total_budget``; the quest is over when its windowed spend meets it.
+    """
     if total_budget is None or not active:
         return False
     from precis.quest import reweight
@@ -210,20 +233,29 @@ def over_budget(
     }
     denom = sum(weights.values()) or 1.0
     share = total_budget * (weights.get(quest_id, 0.0) / denom)
-    return weekly_spend(store, quest_id) >= share
+    return weekly_spend(store, quest_id, days=_resolve_window(window_days)) >= share
 
 
 # ── the pick + the cool ───────────────────────────────────────────────
 
 
-def pick_next_quest(store: Store, *, total_budget: float | None = None) -> Pick | None:
-    """The highest-scoring active quest that is under its weekly budget."""
+def pick_next_quest(
+    store: Store,
+    *,
+    total_budget: float | None = None,
+    window_days: int | None = None,
+) -> Pick | None:
+    """The highest-scoring active quest that is under its windowed budget."""
     active = active_quest_ids(store)
     if not active:
         return None
     budget = total_budget if total_budget is not None else _budget_total()
     eligible = [
-        q for q in active if not over_budget(store, q, active, total_budget=budget)
+        q
+        for q in active
+        if not over_budget(
+            store, q, active, total_budget=budget, window_days=window_days
+        )
     ]
     if not eligible:
         return None
@@ -291,6 +323,7 @@ def run_allocator_pass(
     *,
     enabled: bool | None = None,
     total_budget: float | None = None,
+    window_days: int | None = None,
     compute: bool = True,
 ) -> dict[str, Any]:
     """One allocator step: cool the cold, pick the best, tick it once.
@@ -306,7 +339,7 @@ def run_allocator_pass(
         return {"enabled": False, "cooled": 0, "picked": None}
 
     cooled = cool_stalled(store)
-    pick = pick_next_quest(store, total_budget=total_budget)
+    pick = pick_next_quest(store, total_budget=total_budget, window_days=window_days)
     if pick is None:
         return {"enabled": True, "cooled": len(cooled), "picked": None}
 
@@ -365,6 +398,7 @@ def _record_pick(store: Store, quest_id: int, raw: float) -> None:
 
 
 __all__ = [
+    "BUDGET_WINDOW_DAYS",
     "COOL_AFTER_TICKS",
     "EWMA_ALPHA",
     "EXPLORE",

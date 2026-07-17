@@ -1,0 +1,24 @@
+[
+  {
+    "task_id": "needle-widget-01",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "You are given an internal parts memo. Read it and answer the question at the end with only the value.\n\n--- MEMO ---\nThe fabrication line runs three shifts. Bin A holds fasteners; bin B holds gaskets. Note for records: the calibration widget code is WX-4417. Bin C holds spare belts. The night supervisor signs off at 06:00. Coolant is topped up weekly. The loading dock closes at 18:00.\n--- END MEMO ---\n\nQuestion: What is the calibration widget code?",
+    "expect": {"needle": "WX-4417"}
+  },
+  {
+    "task_id": "needle-date-01",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "Read the project log and answer with only the requested value.\n\n--- LOG ---\nSprint 12 began on a Monday. The team closed 14 tickets. The staging deploy was scheduled for the following week. Important: the production cutover is locked for 2026-09-14. Retro was moved to Friday. Two engineers are on leave next month.\n--- END LOG ---\n\nQuestion: On what date is the production cutover locked?",
+    "expect": {"needle": "2026-09-14"}
+  },
+  {
+    "task_id": "tool-extract-01",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the fields from this order line and return ONLY a JSON object with keys \"sku\", \"qty\", and \"status\". Order: 3 units of SKU BOLT-88 were shipped.\n\nReturn only the JSON object as the last thing in your reply.",
+    "expect": {"answer": {"sku": "BOLT-88", "qty": "3", "status": "shipped"}}
+  }
+]

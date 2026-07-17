@@ -281,7 +281,8 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                      WHERE rt.ref_id = r.ref_id
                        AND t.namespace = 'OPEN'
                        AND t.value LIKE 'executor:%%'
-                     LIMIT 1) AS executor_tag
+                     LIMIT 1) AS executor_tag,
+                   r.prio AS parent_prio
               FROM refs r
              WHERE r.ref_id = %s
                AND r.kind = 'todo'
@@ -352,6 +353,11 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
         has_auto_check = bool(row[4])
         llm_tag = row[5]
         executor_tag = row[6]
+        # The parent todo's prio flows down the DAG onto the minted job so
+        # the claim ordering (slice 6a) can favour it — quests/high-prio
+        # projects get their compute claimed first. NULL stays NULL → the
+        # claim's COALESCE default (byte-identical to FIFO for unset work).
+        parent_prio = int(row[7]) if row[7] is not None else None
 
         # Planner-coroutine path: when a todo is LLM:*-tagged but lacks
         # ``meta.executor``, synthesize the dispatch parameters from the
@@ -465,6 +471,7 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
             title=title,
             meta=child_meta,
             parent_id=ref_id,
+            prio=parent_prio,
             conn=conn,
         )
         store.add_tag(

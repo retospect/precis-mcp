@@ -205,12 +205,43 @@ def run(args: argparse.Namespace) -> None:
             load15=load15,
             meta=meta,
         )
+        slots = _report_resource_slots(store, host)
     finally:
         store.close()
 
     temp_str = f"{temp_c:.1f}C" if temp_c is not None else "n/a"
     load_str = f"{load1:.2f}" if load1 is not None else "n/a"
-    print(f"heartbeat: {host} temp={temp_str} load1={load_str}")
+    print(f"heartbeat: {host} temp={temp_str} load1={load_str} slots={slots}")
+
+
+def _report_resource_slots(store: object, host: str) -> str:
+    """Self-probe this host's capabilities and sync ``resource_slots``.
+
+    Best-effort: the capability map (factory scheduler slice 6b, §5.5) is a
+    scheduling optimisation, never the liveness signal — a probe or write
+    failure must not fail the heartbeat, so this swallows and logs. Returns
+    a short ``gpu=1,podman=2`` summary for the CLI line (``n/a`` on error).
+    """
+    from precis.workers.capability_probe import (
+        mem_capacity,
+        probe_host_resources,
+        probe_soft_signals,
+        resource_kind,
+    )
+
+    try:
+        evaluated = probe_host_resources()
+        kinds = {r: resource_kind(r) for r in evaluated}
+        store.sync_host_resource_slots(host, evaluated, kinds=kinds)  # type: ignore[attr-defined]
+        # Soft memory-pressure gauge (6d-deferred): written free-first, read as
+        # a claim veto for heavy jobs. Best-effort, same as the hard sync.
+        for resource, free in probe_soft_signals().items():
+            store.sync_soft_signal(host, resource, free, mem_capacity())  # type: ignore[attr-defined]
+    except Exception:
+        log.warning("heartbeat: resource-slot probe/sync failed", exc_info=True)
+        return "n/a"
+    present = {r: c for r, c in evaluated.items() if c}
+    return ",".join(f"{r}={c}" for r, c in sorted(present.items())) or "none"
 
 
 __all__ = [

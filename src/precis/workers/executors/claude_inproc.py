@@ -253,35 +253,43 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
             conn.commit()
             return
 
-    # Plugin job_types declare their own ``dispatch`` callable.
-    # Built-ins (fix_gripe, plan_tick) leave ``spec.dispatch`` as
-    # ``None`` and fall through to the in-tree switch below.
-    if spec.dispatch is not None:
-        ctx = _build_dispatch_context(store, ref_id, title, meta)
-        spec.dispatch(ctx, spec)
-        # Plugin dispatchers signal *failure* explicitly (``ctx.record_failure``
-        # → ``STATUS:failed``) and *cancellation* via ``ctx.set_status``, but
-        # they leave the happy-path transition to the executor: they do their
-        # work, append a summary, and return still ``RUNNING``. Mark the job
-        # SUCCEEDED here unless the dispatcher already drove it terminal.
-        # Without this the job lingers ``running`` until the 1h stuck-job
-        # sweeper reaps it as ``claim-orphaned`` → ``failed`` — which, for a
-        # recurring ``news_poll`` / ``briefing``, bubbles onto the spawned
-        # child and wedges the schedule spawner ("previous still open").
-        _finalize_plugin_dispatch(store, ref_id)
-        return
+    # Honor the job's per-todo permission envelope (slice 8) for the whole
+    # dispatch: any ``call_claude_agent`` reached inside picks the box up via
+    # the executor-scoped active envelope, so its tier-1 deny list applies
+    # "regardless of host". Absent/permissive envelope → today's behavior.
+    from precis.workers.envelope import envelope_scope, parse_envelope
 
-    if spec.name == "fix_gripe":
-        _run_fix_gripe(store, ref_id, spec)
-    elif spec.name == "plan_tick":
-        _run_plan_tick(store, ref_id, spec)
-    else:  # pragma: no cover
-        _record_failure(
-            store,
-            ref_id,
-            f"no dispatcher for job_type {spec.name!r}",
-            gripe_rollback=None,
-        )
+    with envelope_scope(parse_envelope(meta)):
+        # Plugin job_types declare their own ``dispatch`` callable.
+        # Built-ins (fix_gripe, plan_tick) leave ``spec.dispatch`` as
+        # ``None`` and fall through to the in-tree switch below.
+        if spec.dispatch is not None:
+            ctx = _build_dispatch_context(store, ref_id, title, meta)
+            spec.dispatch(ctx, spec)
+            # Plugin dispatchers signal *failure* explicitly
+            # (``ctx.record_failure`` → ``STATUS:failed``) and *cancellation*
+            # via ``ctx.set_status``, but they leave the happy-path transition
+            # to the executor: they do their work, append a summary, and return
+            # still ``RUNNING``. Mark the job SUCCEEDED here unless the
+            # dispatcher already drove it terminal. Without this the job lingers
+            # ``running`` until the 1h stuck-job sweeper reaps it as
+            # ``claim-orphaned`` → ``failed`` — which, for a recurring
+            # ``news_poll`` / ``briefing``, bubbles onto the spawned child and
+            # wedges the schedule spawner ("previous still open").
+            _finalize_plugin_dispatch(store, ref_id)
+            return
+
+        if spec.name == "fix_gripe":
+            _run_fix_gripe(store, ref_id, spec)
+        elif spec.name == "plan_tick":
+            _run_plan_tick(store, ref_id, spec)
+        else:  # pragma: no cover
+            _record_failure(
+                store,
+                ref_id,
+                f"no dispatcher for job_type {spec.name!r}",
+                gripe_rollback=None,
+            )
 
 
 def _build_dispatch_context(

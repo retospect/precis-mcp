@@ -472,3 +472,44 @@ def test_row_lock_serialises_concurrent_dispatch(
     result2 = run_dispatch_pass(store)
     assert result2.claimed == 1
     assert result2.ok == 1
+
+
+# ── prio propagation (slice 6a) ──────────────────────────────────
+
+
+def _job_prio(store: Store, job_id: int) -> int | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT prio FROM refs WHERE ref_id = %s", (job_id,)
+        ).fetchone()
+    return None if row[0] is None else int(row[0])
+
+
+def test_minted_job_inherits_parent_prio(handler: TodoHandler, store: Store) -> None:
+    """A high-prio parent todo flows its prio onto the minted job (6a)."""
+    r = handler.put(
+        text="high-prio work",
+        meta={"executor": "claude_inproc", "job_type": "fix_gripe", "params": {}},
+        prio=9,
+    )
+    rid = id_of(r.body)
+    result = run_dispatch_pass(store)
+    assert result.ok == 1
+    jobs = _child_jobs_under(store, rid)
+    assert len(jobs) == 1
+    assert _job_prio(store, jobs[0]["id"]) == 9
+
+
+def test_minted_job_prio_null_when_parent_unset(
+    handler: TodoHandler, store: Store
+) -> None:
+    """An unset parent prio stays NULL on the job → claim's COALESCE default."""
+    r = handler.put(
+        text="commodity work",
+        meta={"executor": "claude_inproc", "job_type": "fix_gripe"},
+    )
+    rid = id_of(r.body)
+    run_dispatch_pass(store)
+    jobs = _child_jobs_under(store, rid)
+    assert len(jobs) == 1
+    assert _job_prio(store, jobs[0]["id"]) is None

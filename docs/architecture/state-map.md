@@ -194,6 +194,50 @@ Ships safe (vault is a *fallback*). The live cutover — seed the vault,
 verify, flip run-as to `deploy`, scope vault read, retire hermes — is an
 ordered ops sequence (docs/design/factory-console-and-scheduling.md §12).
 
+**Resource substrate — `resource_slots` (slice 6b, dark).** `resource_slots
+(host, resource, capacity, free, kind)` (migration 0073) is the per-host
+capability + slot map. The `heartbeat` reporter self-probes what each
+machine can do (`workers/capability_probe.py`: `gpu` via `nvidia-smi -L`,
+`podman`/`tts` via `which`/`find_spec`, env overrides
+`PRECIS_{GPU_COUNT,PODMAN_SLOTS,TTS_SLOTS}`) — vocabulary *derived from*
+`ServiceSpec.requires`, so present→advertise, absent→retract,
+unknown→leave-the-row (a transient probe hiccup never retracts a real
+capability, nor — once 6c lands — drops a live reservation). It syncs the
+verdict each cycle (`store.sync_host_resource_slots`, best-effort) and
+`/factory` renders each host's slots as chips. **Populated but unconsumed**
+— `free` always equals `capacity`; scheduling is unchanged until slice 6c
+reserves at claim (materialized-counter decrement in the claim txn, release
+on terminal + the existing `meta.lease_until` sweeper — no separate lease
+table). The soft memory signals are an unbuilt 6-sub-slice.
+
+**Reserve-at-claim (slice 6c, dark).** A job declaring `meta.requires`
+(`{resource: units}`) reserves those slots on the claiming host inside the
+claim txn — `reserve_resource_slots` (all-or-nothing conditional decrement,
+the lock itself) stamps `meta.reserved`; an unservable job is dropped from
+the batch and waits for a host with capacity. `release_job_reservation`
+refunds at terminal (`set_status`) and on crash recovery (the sweeper,
+which writes `STATUS:failed` directly) — idempotent + capped. No prod job
+carries `requires` yet, so nothing reserves until 6d wires the compute
+job-types; the mechanism is inert until opt-in.
+
+**6d — activation + self-gating (partial, unshipped).** `effective_requires`
+derives a job's needs from its `job_type` ServiceSpec (`struct_relax`/`fold`
+→ `{gpu:1}`); the claim reserves on `target_node`-or-local and *self-gates*
+— only a resource that host advertises is reserved, an unadvertised one
+falls back to the node-gate pin (no deploy stall). The sweeper flags a
+queued job needing an unadvertised capability with no pin
+(`_alert_unschedulable_jobs` → `scheduler` alert source). Deferred:
+capability-rarity ordering + soft memory signals. `target_node` stays (node
+gate + cache-affinity hint), not retired.
+
+**Claim ordering — prio+age (slice 6a).** `claim_executor_jobs`
+(`workers/executors/_common.py`) orders `COALESCE(prio, 5) DESC, ref_id
+ASC` (was pure `ORDER BY ref_id` FIFO), and `dispatch` mints each child
+job with `prio = <parent todo's prio>` — so prio flows down the DAG and a
+high-prio quest/project claims its compute ahead of commodity work,
+oldest-first within a band. An all-unset queue is byte-identical to the
+old FIFO. The capability-rarity term (§5.3, 6d) is not yet added.
+
 **Two `precis worker` profiles, four LaunchDaemons total.**
 
 * `precis worker --profile=system` runs on every cluster node and

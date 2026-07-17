@@ -89,6 +89,34 @@ def add_parser(subparsers: Any) -> None:
     )
     ch.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    ev = lsub.add_parser(
+        "eval",
+        help="Golden-task eval: run a model on precis's own tasks → measured-eval "
+        "ordinals (slice 11). EXPENSIVE — runs real model calls.",
+    )
+    ev.add_argument("model", help="Candidate model id (e.g. qwen3.6-27b).")
+    ev.add_argument(
+        "--compare",
+        default=None,
+        metavar="MODEL_B",
+        help="Second model — run both over the gold set and print an A/B table "
+        "(implies --no-record).",
+    )
+    ev.add_argument(
+        "--tier",
+        default="cloud-small",
+        help="Tier the candidate runs under (transport selection).",
+    )
+    ev.add_argument(
+        "--gold", default=None, help="Gold-set JSON path (default: the seed set)."
+    )
+    ev.add_argument(
+        "--no-record",
+        action="store_true",
+        help="Score + print only; do not write measured-eval ordinals to the card.",
+    )
+    ev.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
 
 def _cmd_seed(store: Store, *, frontier: bool = False, seed_all: bool = False) -> None:
     from precis.llm_catalog import seed_default_cards, seed_frontier_cards
@@ -195,6 +223,50 @@ def _cmd_choose(store: Store, args: argparse.Namespace) -> None:
         print(f"next better: {sel.next_better}")
 
 
+def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
+    from precis.llm_eval import compare as _compare
+    from precis.llm_eval import run_eval
+    from precis.utils.llm.router import Tier
+
+    tier = Tier(args.tier)
+    if args.compare:
+        reports = _compare(
+            store,
+            model_a=args.model,
+            model_b=args.compare,
+            tier=tier,
+            gold_path=args.gold,
+            record=False,
+        )
+        axes = sorted({a for r in reports.values() for a in r.ordinals})
+        print(f"{'axis':<24} {args.model:>16} {args.compare:>16}")
+        for axis in axes:
+            oa = reports[args.model].ordinals.get(axis, "—")
+            ob = reports[args.compare].ordinals.get(axis, "—")
+            print(f"{axis:<24} {oa!s:>16} {ob!s:>16}")
+        skipped = reports[args.model].skipped
+        if skipped:
+            print(f"\nskipped ({len(skipped)}): " + "; ".join(skipped))
+        return
+
+    report = run_eval(
+        store,
+        model=args.model,
+        tier=tier,
+        gold_path=args.gold,
+        record=not args.no_record,
+    )
+    print(f"golden eval — {args.model} (tier {args.tier})")
+    for res in report.results:
+        mark = "recorded" if res.recorded else "not recorded"
+        print(
+            f"  {res.axis:<24} ordinal {res.ordinal}  "
+            f"(mean {res.mean_score:.2f} / {res.n} tasks) [{mark}]"
+        )
+    if report.skipped:
+        print(f"  skipped ({len(report.skipped)}): " + "; ".join(report.skipped))
+
+
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url))
     if args.llm_cmd == "seed":
@@ -211,3 +283,5 @@ def run(args: argparse.Namespace) -> None:
         _cmd_select(store, args)
     elif args.llm_cmd == "choose":
         _cmd_choose(store, args)
+    elif args.llm_cmd == "eval":
+        _cmd_eval(store, args)

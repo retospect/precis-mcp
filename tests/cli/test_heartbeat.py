@@ -159,3 +159,67 @@ def test_temp_from_macos_smc_returns_none_when_binary_missing(monkeypatch) -> No
 
     monkeypatch.setattr(heartbeat.subprocess, "run", _raise_missing)
     assert heartbeat._temp_from_macos_smc() is None
+
+
+# ── slice 6b: the resource-slot self-probe wiring ────────────────────────
+
+
+class _RecordingStore:
+    def __init__(self, boom: bool = False) -> None:
+        self.boom = boom
+        self.synced: tuple | None = None
+        self.soft: list[tuple] = []
+
+    def sync_host_resource_slots(self, host, slots, *, kinds=None) -> None:
+        if self.boom:
+            raise RuntimeError("db down")
+        self.synced = (host, slots, kinds)
+
+    def sync_soft_signal(self, host, resource, free, capacity, *, conn=None) -> None:
+        if self.boom:
+            raise RuntimeError("db down")
+        self.soft.append((host, resource, free, capacity))
+
+
+def test_report_resource_slots_syncs_and_summarises(monkeypatch) -> None:
+    from precis.workers import capability_probe
+
+    monkeypatch.setattr(
+        capability_probe,
+        "probe_host_resources",
+        lambda: {"gpu": 1, "podman": 0, "tts": None},
+    )
+    # Deterministic soft signal (6d-deferred) so the test doesn't read real RAM.
+    monkeypatch.setattr(capability_probe, "probe_soft_signals", lambda: {"mem": 0})
+    store = _RecordingStore()
+    summary = heartbeat._report_resource_slots(store, "melchior")
+    # Only present (>0) capabilities land in the CLI summary.
+    assert summary == "gpu=1"
+    # The full verdict (including the 0 and the None) is handed to the store.
+    assert store.synced is not None
+    host, slots, kinds = store.synced
+    assert host == "melchior"
+    assert slots == {"gpu": 1, "podman": 0, "tts": None}
+    assert kinds == {"gpu": "hard", "podman": "hard", "tts": "hard"}
+    # The soft memory gauge is written free-first with the nominal capacity.
+    assert store.soft == [("melchior", "mem", 0, capability_probe.mem_capacity())]
+
+
+def test_report_resource_slots_swallows_failure(monkeypatch) -> None:
+    """A probe/sync failure must not fail the (liveness-critical) heartbeat."""
+    from precis.workers import capability_probe
+
+    monkeypatch.setattr(capability_probe, "probe_host_resources", lambda: {"gpu": 1})
+    store = _RecordingStore(boom=True)
+    assert heartbeat._report_resource_slots(store, "melchior") == "n/a"
+
+
+def test_report_resource_slots_none_when_nothing_present(monkeypatch) -> None:
+    from precis.workers import capability_probe
+
+    monkeypatch.setattr(
+        capability_probe, "probe_host_resources", lambda: {"gpu": 0, "tts": 0}
+    )
+    monkeypatch.setattr(capability_probe, "probe_soft_signals", lambda: {"mem": None})
+    store = _RecordingStore()
+    assert heartbeat._report_resource_slots(store, "spark") == "none"
