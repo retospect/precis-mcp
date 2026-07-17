@@ -619,6 +619,68 @@ class TestDispatchCatpath:
         assert compute_mod._fresh_catpath_jobs(store, sid, 0) == []
 
 
+class TestReactionCoDispatch:
+    """A barrier quest (``meta.reaction_config`` set) co-dispatches catpath with
+    the relax for each new candidate; a plain quest dispatches relax only. Both
+    dispatch fns are stubbed — no real compute, no `pathway` kind needed."""
+
+    def _stub_both(self, monkeypatch: Any) -> tuple[list[int], list[tuple[int, dict]]]:
+        relax_calls: list[int] = []
+        catpath_calls: list[tuple[int, dict]] = []
+
+        def _fake_relax(_store: Any, sid: int, **_kw: Any) -> str:
+            relax_calls.append(sid)
+            return f"relax[ml] dispatched for {sid}"
+
+        def _fake_catpath(_store: Any, sid: int, cfg: dict, **_kw: Any) -> str:
+            catpath_calls.append((sid, cfg))
+            return f"catpath[emt] dispatched for {sid} → pathway p"
+
+        monkeypatch.setattr(compute_mod, "dispatch_relax", _fake_relax)
+        monkeypatch.setattr(compute_mod, "dispatch_catpath", _fake_catpath)
+        return relax_calls, catpath_calls
+
+    _RX = {"substrate": "NO", "target": "NH3", "network": "ammonia"}
+
+    def test_reaction_quest_codispatches_catpath(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        relax_calls, catpath_calls = self._stub_both(monkeypatch)
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst for NO→NH₃")
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})
+        step = compute_mod.run_compute_step(
+            store, qid, [{"name": "Pd", "structure": _SPEC}]
+        )
+        assert step.candidates_created == 1
+        assert len(relax_calls) == 1
+        # catpath fired for the same candidate, carrying the reaction config
+        assert len(catpath_calls) == 1
+        assert catpath_calls[0][0] == relax_calls[0]
+        assert catpath_calls[0][1] == self._RX
+        assert step.sims_dispatched == 2  # relax + catpath
+
+    def test_plain_quest_dispatches_relax_only(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        relax_calls, catpath_calls = self._stub_both(monkeypatch)
+        qid = _mk_quest(store, "A striving")  # no reaction_config
+        step = compute_mod.run_compute_step(
+            store, qid, [{"name": "Fe", "structure": _SPEC}]
+        )
+        assert len(relax_calls) == 1
+        assert catpath_calls == []  # no reaction → no barrier lane
+        assert step.sims_dispatched == 1
+
+    def test_no_catpath_when_dispatch_off(self, store: Any, monkeypatch: Any) -> None:
+        relax_calls, catpath_calls = self._stub_both(monkeypatch)
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})
+        compute_mod.run_compute_step(
+            store, qid, [{"name": "Pd", "structure": _SPEC}], dispatch=False
+        )
+        assert relax_calls == [] and catpath_calls == []  # preview: no compute
+
+
 # ── tick integration ──────────────────────────────────────────────────
 
 

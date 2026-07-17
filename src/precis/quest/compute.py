@@ -449,6 +449,20 @@ def harvest_measures(store: Store, quest_id: int, *, by: str = "agent") -> Compu
     )
 
 
+def _quest_reaction_config(store: Store, quest_id: int) -> dict[str, Any] | None:
+    """The reaction `R` a barrier quest evaluates every candidate against.
+
+    Stored on the quest's ``meta.reaction_config`` (a parsed catpath config, e.g.
+    ``{substrate: 'NO', target: 'NH3', network: 'ammonia'}`` for NO→NH₃ on Pd).
+    Absent → the quest ranks on relax measures only (no barrier lane); present →
+    each new candidate also gets a catpath evaluation.
+    """
+    refs = store.fetch_refs_by_ids({quest_id})
+    ref = refs.get(quest_id)
+    cfg = (ref.meta or {}).get("reaction_config") if ref is not None else None
+    return cfg if isinstance(cfg, dict) and cfg else None
+
+
 def run_compute_step(
     store: Store,
     quest_id: int,
@@ -460,10 +474,17 @@ def run_compute_step(
 ) -> ComputeStep:
     """Turn a tick's proposals into candidates + sims, then harvest results.
 
+    Each candidate gets a **relax** (the stability / formation-energy lane) and,
+    when the quest declares a reaction (``meta.reaction_config``), a **catpath**
+    evaluation (the barrier lane) — both on the same structure. They are
+    independent measurements (catpath relaxes the injected slab internally), so
+    they co-dispatch; no cross-tick sequencing is needed for first light.
+
     ``dispatch=False`` records candidates without minting compute (useful for a
     dry preview). Always harvests any already-finished sims at the end.
     """
     hub = hub or _hub_for(store)
+    reaction = _quest_reaction_config(store, quest_id) if dispatch else None
     created = dispatched = 0
     notes: list[str] = []
     for p in proposals or []:
@@ -478,6 +499,11 @@ def run_compute_step(
             notes.append(note)
             if note.startswith("relax["):
                 dispatched += 1
+            if reaction is not None:
+                cnote = dispatch_catpath(store, sid, reaction, hub=hub)
+                notes.append(cnote)
+                if cnote.startswith("catpath["):
+                    dispatched += 1
 
     harvest = harvest_measures(store, quest_id, by=by)
     notes.extend(harvest.notes)
