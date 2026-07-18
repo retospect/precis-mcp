@@ -732,6 +732,19 @@ memory `repo_dev_claude_tooling.md`. Remaining:
 - **`subsystem-analyst` (opus) agent** *(feature, conditional — owner
   `.claude/agents/`).* A deep "how does the whole X work" synthesis subagent —
   build ONLY if the haiku `navigator` proves too shallow. Don't pre-build.
+- **Test-suite setup tax — serialized per-worker template clones** *(polish,
+  open — owner `tests/conftest.py::_initialise_test_db`).* Profiling
+  (`--durations`) shows the suite is **setup-dominated**: ~340 s of fixture
+  setup vs ~120 s of actual test-logic (7774 tests, ~100 s wall @ `-n6`). After
+  the leak fix, the dominant remaining cost is the **6 per-worker `FILE_COPY`
+  template clones, fully serialized under the session advisory lock** (the
+  76/50/30/15 s "setup" tail — the last worker waits behind all prior clones).
+  Options, none free: cap gate workers (fewer clones — already `-n6` not
+  `-n auto`); shrink the template (lighter clone); or let clones proceed with
+  less lock overlap. Real correctness/speed tradeoff — measure before touching.
+  The per-test TRUNCATE base (~40 ms × ~3000 DB tests ≈ 128 s CPU / ~21 s wall)
+  is the other aggregate; TRUNCATE is already the cheap isolation choice.
+  No coverage is measured anywhere (no `pytest-cov`/`--cov`) — a separate gap.
 
 ---
 

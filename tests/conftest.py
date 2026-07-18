@@ -45,6 +45,17 @@ Then export:
 pgvector + btree_gist are pre-installed because they're "untrusted"
 extensions only superuser can ``CREATE EXTENSION``. The migrations
 use ``IF NOT EXISTS`` so they're no-ops once installed.
+
+Connection-leak guard
+---------------------
+Per-worker DB isolation means a worker's tests run sequentially against
+its own clone, so a connection left open by one test blocks the next
+test's TRUNCATE for the full ``lock_timeout`` (the ~5 s "setup" stalls
+that used to show in ``--durations``). The ``store`` fixture diffs live
+backends across each test and, by default, **fails** a test that leaks
+one (``PRECIS_TEST_LEAKCHECK`` → ``report``/``off`` to soften). The
+boot-time oracle-sync daemon (``dispatch.boot`` F11) was the one real
+offender; it's disabled session-wide via ``PRECIS_ORACLE_AUTO_REINGEST``.
 """
 
 from __future__ import annotations
@@ -95,6 +106,74 @@ def _active_dsn() -> str:
 def _dsn_with_db(dsn: str, dbname: str) -> str:
     """``dsn`` with its database swapped for ``dbname`` (server + creds kept)."""
     return make_conninfo(dsn, dbname=dbname)
+
+
+# --- connection-leak detection (on by default; PRECIS_TEST_LEAKCHECK) -------
+# A test that opens a Store/pool/worker and doesn't close it leaves a backend
+# holding a RowExclusiveLock on the clone; the NEXT test's `store` fixture
+# TRUNCATE then blocks the full `lock_timeout` (see _run_with_lock_retry).
+# Under per-worker DB isolation there is no legitimate concurrent connection,
+# so a lock-holding backend the test leaves behind is a bug. Detect it by
+# diffing the *lock-holding* backends on the clone across the test (see
+# _live_backends for why only `active` / `idle in transaction` count):
+# anything new and still alive at teardown was leaked by this test (the
+# fixture's own pool closes on `s.close()` and drops out of the diff).
+#   PRECIS_TEST_LEAKCHECK=fail    → fail the leaking test (DEFAULT)
+#   PRECIS_TEST_LEAKCHECK=report  → collect leakers to PRECIS_TEST_LEAK_LOG
+#   PRECIS_TEST_LEAKCHECK=off     → disable (skip the snapshots entirely)
+# Default is `fail`: a test that leaks a DB connection is a bug — it stalls the
+# next test's TRUNCATE for the full lock_timeout — so we make it loud rather
+# than absorb it. Set `off` for a raw-speed run, `report` to enumerate.
+_LEAKCHECK = os.environ.get("PRECIS_TEST_LEAKCHECK", "fail").strip().lower()
+if _LEAKCHECK == "off":
+    _LEAKCHECK = ""
+
+
+def _live_backends(dbname: str) -> set[int]:
+    """PIDs of backends on ``dbname`` that hold (or can hold) a table lock —
+    i.e. state ``active`` / ``idle in transaction`` — excluding ours.
+
+    Plain ``idle`` backends are deliberately ignored: a connection the fixture
+    pool is tearing down lingers momentarily as ``idle`` and holds no lock, so
+    it can't block the next TRUNCATE and isn't a leak we care about. Only a
+    backend still *in a transaction* (or actively running SQL) blocks TRUNCATE —
+    which is exactly the leak signature (a live thread/generator holding a
+    checked-out connection, e.g. the boot oracle-sync daemon). Filtering by
+    state removes the pool-teardown-lag false positives that made a raw
+    pid-count flaky under load."""
+    with psycopg.connect(_dsn_with_db(_active_dsn(), dbname), autocommit=True) as c:
+        return {
+            r[0]
+            for r in c.execute(
+                "SELECT pid FROM pg_stat_activity "
+                "WHERE datname = %s AND pid <> pg_backend_pid() "
+                "  AND state IN ('active', 'idle in transaction', "
+                "                'idle in transaction (aborted)')",
+                (dbname,),
+            ).fetchall()
+        }
+
+
+def _leaked_backends(dbname: str, before: set[int]) -> set[int]:
+    """Backends opened during the test that are STILL alive after teardown.
+
+    A real leak — a live thread/generator holding a pooled connection — persists
+    indefinitely. But a connection the fixture's own pool just closed can linger
+    in ``pg_stat_activity`` for a few ms after ``s.close()`` (and the pool may
+    have grown past ``before`` during dependent-fixture setup), so a single
+    snapshot false-positives under load. Confirm only what survives a bounded
+    settle poll: return as soon as the candidate set clears, else report what
+    still persists after ~1 s. The common no-candidate path pays nothing.
+    """
+    leaked = _live_backends(dbname) - before
+    if not leaked:
+        return leaked
+    for _ in range(20):  # ~1s budget, exits early the moment it clears
+        time.sleep(0.05)
+        leaked = _live_backends(dbname) - before
+        if not leaked:
+            break
+    return leaked
 
 
 def _drop_db(admin: psycopg.Connection, name: str) -> None:
@@ -251,6 +330,16 @@ def _force_mock_embedder_for_tests() -> None:
 
     os.environ.pop("PRECIS_EMBEDDER", None)
     os.environ.pop("PRECIS_EMBEDDER_URL", None)
+    # Disable the boot-time oracle-sync DAEMON (dispatch.boot F11) for tests.
+    # It reingests the bundled oracle YAML on a background thread using the
+    # hub's store pool; a test that builds a runtime and closes its store
+    # before the daemon finishes leaves that pooled connection checked out
+    # `idle in transaction`, which then blocks the NEXT test's `store`-fixture
+    # TRUNCATE for the full `lock_timeout` (the ~5s "setup" stalls in
+    # --durations). Tests that exercise oracle sync call ``maybe_reingest``
+    # directly, so this only removes the nondeterministic boot race, never
+    # coverage. Per-test opt-in is still possible via monkeypatch.setenv.
+    os.environ.setdefault("PRECIS_ORACLE_AUTO_REINGEST", "0")
 
 
 # Fixed 64-bit key for the session-wide advisory lock that serialises
@@ -435,10 +524,26 @@ def store() -> Iterator[Store]:
         )
     _truncate_data_tables(_active_dsn())
     s = Store.connect(_active_dsn())
+    dbname = str(conninfo_to_dict(_active_dsn()).get("dbname") or "")
+    before = _live_backends(dbname) if _LEAKCHECK else set()
     try:
         yield s
     finally:
         s.close()
+        if _LEAKCHECK:
+            leaked = _leaked_backends(dbname, before)
+            if leaked:
+                nodeid = os.environ.get("PYTEST_CURRENT_TEST", "?").split(" ")[0]
+                if _LEAKCHECK == "fail":
+                    raise AssertionError(
+                        f"test leaked {len(leaked)} DB connection(s) "
+                        f"(pids {sorted(leaked)}) — close every Store/pool/worker "
+                        "it opens (use a context manager or an explicit .close())."
+                    )
+                logpath = os.environ.get("PRECIS_TEST_LEAK_LOG")
+                if logpath:
+                    with open(logpath, "a") as fh:
+                        fh.write(f"{len(leaked)}\t{nodeid}\n")
 
 
 @pytest.fixture
