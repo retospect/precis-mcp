@@ -678,16 +678,13 @@ memory `repo_dev_claude_tooling.md`. Remaining:
   currency. (3) user-facing/runbooks/reference assumed-current, unverified. (4)
   **ADR status labels inconsistent** (case drift; several "proposed" ADRs are
   shipped). (5) **`email` worktree `0074`→`0075` renumber** before it ships.
-- **More repo-dev hooks** *(feature, open — brainstormed 2026-07-18).* Turn
-  CLAUDE.md prose-warnings into firing hooks. **Tier-1 (build first):** (1) PROD-
-  write guard — PreToolUse on `mcp__precis__put|edit|delete|tag`, confirm when the
-  resolved DSN is `precis_prod`; (2) sealed-migration guard — deny editing a
-  committed `migrations/NNNN_*.sql` (ADR 0005; allow new + `baseline/`); (3)
-  bare-`git stash` guard. **Tier-2 (nudges):** extend `map-staleness-reminder`
-  (new migration→`migration-check`, new ADR→README index, new skill→overview);
-  bare-`pytest`→`scripts/test` nudge. **Tier-3:** PreCompact hook = `memory-lint`
-  + "persist residuals to OPEN-ITEMS first"; Stop-with-dirty-worktree reminder
-  (marginal).
+- **Repo-dev hooks — 2 deferred** *(feature, deferred — marginal).* The tier-1
+  guards (PROD-write / sealed-migration / git-stash), the map-staleness extension
+  (ADR + skill triggers + `migration-check` at write), the PreCompact
+  persist-residuals reminder, and `session-size-nudge` (propose `/compact` at
+  transcript-size tiers) all SHIPPED. Deferred as low-value / noise-risk, build
+  only if the pain shows up: bare-`pytest`→`scripts/test` nudge;
+  Stop-with-dirty-worktree reminder.
 - **Mutation testing via `cosmic-ray`** *(polish, blocked-on-adoption — owner
   `pyproject.toml` + nightly).* `mutmut` is incompatible with our `-n auto`;
   `cosmic-ray` runs the test command as a subprocess so `pytest -n0` works. Scope
