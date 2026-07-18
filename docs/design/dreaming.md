@@ -358,18 +358,14 @@ Not every kind should be dreamt *on*, but more kinds can *fertilize*:
 
 ## The dreaming agent (loop, prompt, budget)
 
-> **Implemented — in-process litellm loop, NOT the `claude` binary
-> (ADR 0024).** Step 2 below is superseded: the loop runs in-process
-> inside `precis worker` (`src/precis/workers/dream.py`), speaking the
-> OpenAI `/v1/chat/completions` wire (`tools=`) to the local litellm
-> proxy (`qwen-heavy` alias) and dispatching each tool-call back through
-> the in-process `PrecisRuntime` / handlers — no subprocess, no MCP
-> socket. Gated off by default (`PRECIS_DREAM_LLM`); runs only via
-> `precis worker --only dream`. Local inference has no USD cost, so the
-> `--max-budget-usd` cap is replaced by `PRECIS_DREAM_MAX_TURNS`. The
-> stdlib `urllib` transport seam (mirroring `RemoteEmbedder`) keeps the
-> loop dependency-free and offline-testable. See
-> `docs/design/dream-agent-loop.md` and `tests/test_dream.py`.
+> **Implemented — the `claude` binary via `call_claude_agent`
+> (ADR 0024).** The in-process litellm experiment was reversed: the pass
+> runs `claude -p` (SOUL.md persona + packaged `data/prompts/dream-prompt.md`
+> + MCP precis config, WebFetch/WebSearch off) through
+> `src/precis/workers/dream_agent.py`, sharing the structural/deep
+> reviewers' cost/timeout/turn caps. Step 2 below (launch the `claude`
+> binary) is therefore the live shape. Gated by `PRECIS_DREAM_AGENT=1`
+> and explicit `--only dream_agent`.
 
 The worker is **thin**. Per scheduled run it:
 

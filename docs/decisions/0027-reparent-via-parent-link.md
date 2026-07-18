@@ -5,7 +5,6 @@
 - **Builds on**:
   - ADR 0026 — precis-web surface (deferred "Move…")
   - `docs/design/todo-tree-plan.md` — the tree + write-time guards
-  - `docs/design/todo-reparent-via-link.md` — this change's plan
 
 ## Context
 

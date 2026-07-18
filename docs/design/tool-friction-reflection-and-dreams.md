@@ -238,8 +238,7 @@ cap so idle dreaming can't starve real compute.
   `handlers/gripe.py` (no programmatic raise — this is the surrogate),
   `workers/dream_agent.py` + `data/prompts/dream-prompt.md` (Part B),
   `workers/job_types/fix_gripe.py` (downstream consumer).
-- `docs/design/dreaming.md`, `docs/design/dream-agent-loop.md` (prior
-  dream design).
+- `docs/design/dreaming.md` (dream design).
 - Backlog: tool-call ledger (objective friction sibling); LLM-confusion
   mining (`/whattodo` step 5, the hard-friction cousin).
 </content>

@@ -4,8 +4,6 @@
 - **Deciders**: Reto + agent
 - **Builds on**:
   - ADR 0026 — precis-web surface (the Papers tab + PDF viewer)
-  - `docs/design/precis-web-refs-and-filters.md` — PDF path diagnostics
-  - `docs/design/precis-web-papers-conv-polish.md` — this change's plan
 
 ## Context
 

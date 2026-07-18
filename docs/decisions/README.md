@@ -22,7 +22,7 @@ currently-authoritative decisions — see
 | Dockerfile layout | [0004](./0004-multi-stage-dockerfile.md) → [0009](./0009-dockerfile-relocation-container-first.md) | 0009 relocated the file; 0004 still describes the stage layering |
 | Migration discipline (forward-only) | [0005](./0005-greenfield-migrations.md) | governs every `*.sql` edit |
 | Install path (baseline snapshot) | [0031](./0031-baseline-snapshot-dual-track.md) | fresh DBs load `migrations/baseline/schema.sql`; dual-track, not a greenfield (cf. [0019](./0019-second-greenfield.md)) |
-| Identifier scheme | [0036](./0036-universal-handles.md) | **draft/proposed**; one universal handle per record + chunk; supersedes 0006/0008 as the current address form, drops `pub_id`. Lineage: 0002 §id → 0006 → 0008 → 0036 |
+| Identifier scheme | [0036](./0036-universal-handles.md) | **accepted + implemented** (`utils/handle_registry.py`); one universal handle per record + chunk; supersedes 0006/0008 as the current address form. Lineage: 0002 §id → 0006 → 0008 → 0036 |
 | Derived queue pattern | [0017](./0017-derived-queue-family.md) | extends 0007 (chunk-level → family registry) |
 | Database backend | [0010](./0010-postgres-pgvector-system-of-record.md) | |
 | Secrets management | [0055](./0055-secrets-vault.md) | **proposed**; DB-resident encrypted secrets, key in server config so `pg_dump` is shareable, DB-enforced RBAC (list/mask/reveal), thin Python wrapper. Design: [`docs/design/secrets-vault.md`](../design/secrets-vault.md) |

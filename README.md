@@ -355,7 +355,6 @@ high-traffic ones:
 - [`docs/user-facing/paper_ingest.md`](docs/user-facing/paper_ingest.md) — `.acatome` bundle ingest path.
 - [`docs/design/storage-v2.md`](docs/design/storage-v2.md) — full schema + discovery-layer design.
 - [`docs/decisions/0026-precis-web-surface.md`](docs/decisions/0026-precis-web-surface.md) — the `precis web` browser UI (Tasks / Papers / Conversations / Console / Status).
-- [`docs/design/precis-web-papers-conv-polish.md`](docs/design/precis-web-papers-conv-polish.md) — paper DOI/arXiv links, multi-root corpus PDF serving, conversation transcript view.
 - [`docs/decisions/0029-multi-root-corpus-pdf.md`](docs/decisions/0029-multi-root-corpus-pdf.md) — why `PRECIS_CORPUS_DIR` accepts a list of roots.
 - [`src/precis/data/skills/precis-citation-help.md`](src/precis/data/skills/precis-citation-help.md) — `citation` kind + verifier-workflow agent surface.
 - [`src/precis/data/skills/precis-toc-help.md`](src/precis/data/skills/precis-toc-help.md) — TOC machinery (segments, sentences, matryoshka keywords).

@@ -5,7 +5,6 @@
 - **Builds on**:
   - ADR 0026 — precis-web surface (the Status tab)
   - migration 0015 — `worker_logs` (host liveness source)
-  - `docs/design/system-status-telemetry.md` — this change's plan
 
 ## Context
 

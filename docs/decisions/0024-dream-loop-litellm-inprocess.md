@@ -84,7 +84,6 @@ and dispatch each returned `tool_call` directly through the in-process
 
 ## See also
 
-- `docs/design/dream-agent-loop.md`
 - `docs/design/dreaming.md` (§The dreaming agent — superseded step 2)
 - Cluster: `~/work/cluster/roles/litellm` (`litellm_port: 4000`,
   `litellm_backend: llamacpp`, model aliases `qwen` / `qwen-heavy`).

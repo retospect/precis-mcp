@@ -217,7 +217,10 @@ back-compat with any files staged before the routing landed.
 - **Decisions** (ADR log): `docs/decisions/`
   (sorted by number; never delete, only supersede)
 - **Plans**: `docs/design/`
-  (one file per non-trivial change; obsolete plans stay for context)
+  (one file per non-trivial change; **delete on ship** once the truth
+  lives in code + the ADR — git holds the record. Keep only a plan still
+  referenced by `src/`, a current anchor, or an active ADR/proposal as
+  its design-of-record; that reference is what makes it load-bearing.)
 - **External-facing specs**: `docs/user-facing/`
   (`paper_ingest.md`, kind-spec docs, edit-protocol-spec)
 - **Active backlog**: `OPEN-ITEMS.md`

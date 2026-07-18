@@ -6,7 +6,6 @@
   - ADR 0004 — multi-stage Dockerfile (`docs/decisions/0004-multi-stage-dockerfile.md`)
   - ADR 0009 — Dockerfile relocation, container-first
     (`docs/decisions/0009-dockerfile-relocation-container-first.md`)
-- **Plan artefact**: `docs/design/dev-image-claude-code.md`
 
 ## Context
 
