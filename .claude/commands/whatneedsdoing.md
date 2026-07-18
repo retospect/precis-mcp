@@ -104,9 +104,12 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ memory ind
    - **Nightly build** (`scripts/nightly --check`) — the LOCAL full-suite health
      read (not GitHub). **`✗ RED`** means green main was broken by upstream
      dependency drift (the ship gate can't catch it — no code changed);
-     investigate the named failing tests. **`DUE`** (last run >24h ago) → run
-     `scripts/nightly` to refresh (a few minutes; records the result). A fresh
-     `✓ green` needs nothing.
+     investigate the named failing tests. **`DUE`** (last run >24h ago) →
+     **delegate the refresh to a background `test-runner` agent** (haiku) running
+     `scripts/nightly` — the suite takes minutes, so it runs off the main loop
+     and records green/red to `.nightly-status.md` for the next `--check`. Do
+     **not** run the suite inline here (it would block the report). A fresh
+     `✓ green`, or a `DUE` you've just delegated, needs nothing more.
 
 4. **Prod factory queue — todos.** `search(kind='todo', view='attention')`
    (asking-user + failed children) and `search(kind='todo', view='doable')`

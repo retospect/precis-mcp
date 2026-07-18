@@ -12,10 +12,14 @@
 # catches that per-ship gating can't.
 #
 # Modes:
-#   scripts/nightly            run the full suite now, append the result, print it
+#   scripts/nightly            run the full suite now, append the result, print it.
+#                              /whatneedsdoing delegates THIS to a background
+#                              `test-runner` agent on DUE (off the main loop) —
+#                              there's no launchd timer; the recurring driver is
+#                              simply that /whatneedsdoing gets run regularly.
 #   scripts/nightly --check    read-only: print the latest result + DUE if stale
 #                              (>24h). Never runs the suite — this is what
-#                              /whatneedsdoing calls.
+#                              /whatneedsdoing calls inline.
 #
 # Status lives at <main-checkout>/.nightly-status.md (gitignored, machine-local,
 # shared across worktrees). Advisory; always exits 0.
@@ -52,9 +56,9 @@ if [[ "${1:-}" == "--check" ]]; then
 fi
 
 # --- default: run the full suite locally, capture, record ---
-# Preflight: scripts/test needs the dev container, so a dead Docker (common at
-# 04:00 on a laptop) would otherwise record a FALSE red. Record a neutral skip
-# instead — --check still counts it stale, so it nudges a manual run.
+# Preflight: scripts/test needs the dev container, so a dead Docker (Desktop /
+# colima not up) would otherwise record a FALSE red. Record a neutral skip
+# instead — --check still counts it stale, so the next /whatneedsdoing re-delegates.
 if ! docker info >/dev/null 2>&1; then
     stamp="$(date +'%Y-%m-%d %H:%M')"
     line="- **$stamp** — ⚠ skipped — Docker unavailable (suite not run)"

@@ -86,8 +86,7 @@ hand-rolling. Admonish this in `CLAUDE.md`/`AGENTS.md`:
 | `scripts/memory-lint` | broken-link/unindexed + landed-thread scan (a `## Threads` bullet whose cited commits are all in main) + over-budget + reconsolidation-due signal | advisory; `/whatneedsdoing` |
 | `scripts/backlog-lint` | flag done-marked items still sitting in the backlog (`OPEN-ITEMS.md`) | advisory in ship when the diff touches it; `/whatneedsdoing` |
 | `scripts/token-review` | 7-day cadence nudge for a session-tightness / token-waste review pass (reads `docs/runbooks/token-review.md` `## Log`) | advisory cadence-check only (tier-1 script); the review it triggers is a judgment session; `/whatneedsdoing` |
-| `scripts/nightly` | LOCAL full-suite build; records dated green/red so `--check` surfaces main's health without re-running (catches upstream dep drift the ship gate can't) | run mode + read-only `--check`; result in gitignored `.nightly-status.md`; `/whatneedsdoing` |
-| `scripts/nightly-timer` | install/remove a macOS LaunchAgent that runs `scripts/nightly` at 04:00 daily (the unattended half; Docker-down → neutral skip) | `install` / `uninstall` / `status`; per-user, opt-in — not auto-installed on ship |
+| `scripts/nightly` | LOCAL full-suite build; records dated green/red so `--check` surfaces main's health without re-running (catches upstream dep drift the ship gate can't) | run mode + read-only `--check`; result in gitignored `.nightly-status.md`; on `DUE`, `/whatneedsdoing` refreshes it via a background `test-runner` agent (no daemon) |
 
 Package manager: pick one (`uv`, etc.) and forbid bare `pip`/`pytest`/`mypy`
 ("not reproducible"). Container-first for ops.
