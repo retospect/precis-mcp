@@ -79,6 +79,37 @@ def test_add_node_requires_text(plan: PlanHandler, hub: Hub) -> None:
         plan.put(id="p1", chunk_kind="paragraph")
 
 
+def test_create_with_project_and_text_creates_not_lookup(
+    plan: PlanHandler, hub: Hub
+) -> None:
+    # Regression (the plan-create chicken-and-egg, the top prod confusion
+    # signal): a create call that also carries text= must NOT be misrouted into
+    # the add-node lookup and hit "plan slug 'p1' not found". project= is the
+    # create signal; the text= seeds the first node.
+    proj = _proj(hub)
+    r = plan.put(id="p1", title="Plan One", project=proj, text="first thought")
+    assert "created plan 'p1'" in r.body
+    assert "added node pe" in r.body  # the text became the first node
+
+
+def test_mode_create_routes_to_create(plan: PlanHandler, hub: Hub) -> None:
+    # An explicit mode='create' forces the create path even with text= and no
+    # project — so the error is the actionable "requires project=", proving it
+    # did NOT fall into the add-node lookup ("doesn't exist yet").
+    with pytest.raises(BadInput, match="requires project="):
+        plan.put(id="ghost2", text="kickoff", mode="create")
+
+
+def test_add_node_to_missing_plan_gives_create_hint(
+    plan: PlanHandler, hub: Hub
+) -> None:
+    # Adding a node to a plan that doesn't exist yet must surface an actionable
+    # "create it first (needs project=)" message, not the misleading raw
+    # NotFound "slug not found" that read as a chicken-and-egg.
+    with pytest.raises(BadInput, match="doesn't exist yet"):
+        plan.put(id="ghost", text="a node", at={"last": True})
+
+
 # ── whole-tree render: markers + cursor ──────────────────────────────
 
 

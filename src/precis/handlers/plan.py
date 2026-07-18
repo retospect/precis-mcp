@@ -171,10 +171,27 @@ class PlanHandler(Handler):
                 next="put(kind='plan', id='nanotrans-plan', title='…', project=<todo-id>)",
             )
         slug = str(id).strip()
+        create_mode = str(_kw.get("mode") or "").strip().lower() == "create"
 
-        # Add a node when a chunk_kind or placement is given; else create.
-        if chunk_kind is not None or at is not None or text is not None:
-            ref = resolve_live_slug_ref(self.store, kind="plan", id=slug)
+        # Create vs. add-node. `project=` is the create-only param (the owning
+        # project todo) and `mode='create'` is the explicit signal — either one
+        # means "create", even alongside title=/text= (the natural "make me a
+        # plan" call). Only a node placement (chunk_kind/at/text) WITHOUT those
+        # adds a node to an existing plan. Routing on `text` alone caused the
+        # chicken-and-egg: a create call carrying text= was misrouted into the
+        # lookup below and hit a misleading "plan slug not found".
+        wants_node = chunk_kind is not None or at is not None or text is not None
+        if wants_node and project is None and not create_mode:
+            try:
+                ref = resolve_live_slug_ref(self.store, kind="plan", id=slug)
+            except NotFound:
+                raise BadInput(
+                    f"plan {slug!r} doesn't exist yet — create it before adding "
+                    "nodes (a create needs project=, the owning project todo id)",
+                    next=(
+                        f"put(kind='plan', id={slug!r}, title='…', project=<todo-id>)"
+                    ),
+                ) from None
             if text is None or not str(text).strip():
                 raise BadInput(
                     "adding a plan node requires text=",
@@ -214,10 +231,25 @@ class PlanHandler(Handler):
             kind="plan",
             relation="plan-of",
         )
+        # A create call that also carried text= meant "start the plan with this
+        # first thought" — seed it as a node so the text isn't silently dropped.
+        extra = ""
+        if text is not None and str(text).strip():
+            node_meta = dict(meta or {})
+            node_meta.update(self._marker_patch(status, belief, clear=False))
+            node_chunks = self.store.add_chunks(
+                ref_id=ref.id,
+                chunk_kind=chunk_kind or "paragraph",
+                text=str(text),
+                at=self._resolve_at_anchors(at),
+                meta=node_meta,
+                kind="plan",
+            )
+            extra = f"; added node {' '.join(c.dc for c in node_chunks)}"
         return Response(
             body=(
                 f"created plan '{slug}' (root {title_chunk.dc}); "
-                f"linked plan-of project {project_ref_id}"
+                f"linked plan-of project {project_ref_id}{extra}"
             )
         )
 
