@@ -436,11 +436,11 @@ mastery. `state` is thresholded from it. **Propagation along `prerequisite`
 edges** (mastering a concept bumps confidence in its prereqs; weakness flows to
 dependents) is a refinement layered on once the base field is flowing.
 
-> **Open decision — scalar vs event-sourced vector (fold-in from the retired
-> `docs/proposals/user-knowledge-model.md`, 2026-07-14).** The concept `meta`
-> currently carries a **scalar** `mastery` float (+ `mastery_updated_at`),
-> mutated in place. The retired proposal argued instead for an **event-sourced
-> vector**: an append-only evidence timeline as the source of truth (immutable
+> **Open decision — scalar vs event-sourced vector** (folded in 2026-07-14 from
+> the retired `user-knowledge-model` proposal; its full argument lives in this
+> block + git history). The concept `meta` currently carries a **scalar**
+> `mastery` float (+ `mastery_updated_at`), mutated in place. The alternative is
+> an **event-sourced vector**: an append-only evidence timeline as the source of truth (immutable
 > events — "card ak42 passed ease 2.3", "used in conv X", "read citing paper
 > Y"), with a small typed **axis projection** (exposure / retention / fluency)
 > materialized over it and a scalar display-confidence computed on read. Two
