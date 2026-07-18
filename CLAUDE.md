@@ -186,7 +186,10 @@ per-kind reference.
   for a mechanical task; use the Agent tool's `model:` for one-off downgrades.
 - **Three tiers, cheapest that fits:** a **deterministic** chore → a *script*
   (zero model, reproducible) — the hygiene scans already are (`memory-lint`,
-  `migration-check`, `docs-orphans`, `backlog-lint`); **mechanical-but-needs-a-
-  model** → a haiku agent (above); **judgment / stakes** → Opus. So memory
-  *index* hygiene is a script; memory *reconsolidation* (re-verify claims vs
-  code, merge/sharpen) is a judgment pass — not haiku.
+  `migration-check`, `docs-orphans`, `backlog-lint`), as are the **cadence
+  nudges** that only decide *when* a judgment pass is due (`token-review`, the
+  7-day session-tightness clock); **mechanical-but-needs-a-model** → a haiku
+  agent (above); **judgment / stakes** → Opus. So memory *index* hygiene is a
+  script; memory *reconsolidation* (re-verify claims vs code, merge/sharpen) is
+  a judgment pass — not haiku. Likewise the token-review *cadence check* is a
+  script; the *review* it triggers is a judgment session.

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# scripts/token-review — advisory 7-day cadence nudge for the session-tightness
+# / token-waste review. Mirrors memory-lint's reconsolidation-cadence check: it
+# does NOT do the review (that's a judgment session — see the runbook), it only
+# tells you WHEN one is due. Surfaced in `/whatneedsdoing`; always exits 0.
+#
+# The review reads local session transcripts for repeated token-waste patterns
+# (context bloat, wrong-tier agents, un-rtk'd firehoses, redundant calls) and
+# turns findings into OPEN-ITEMS / gripes. Procedure + dated log:
+#   docs/runbooks/token-review.md   (the `## Log` section is the clock)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+LOG="docs/runbooks/token-review.md"
+WINDOW_DAYS=7
+
+if [[ ! -f "$LOG" ]]; then
+    echo "token-review: DUE (no runbook at $LOG)"; exit 0
+fi
+
+# newest dated line in the `## Log` section (entries are newest-first, so head -1)
+last=$(awk '/^## Log/{f=1;next} f' "$LOG" \
+    | grep -oE '\*\*[0-9]{4}-[0-9]{2}-[0-9]{2}\*\*' | head -1 | tr -d '*' || true)
+
+if [[ -z "$last" ]]; then
+    echo "token-review: DUE (no dated entry in $LOG '## Log')"; exit 0
+fi
+
+# portable YYYY-MM-DD -> epoch seconds (BSD date on macOS, GNU date on CI/Linux)
+epoch_of() { date -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null; }
+last_e=$(epoch_of "$last" || true)
+now_e=$(date +%s)
+
+if [[ -z "$last_e" ]]; then
+    echo "token-review: last entry '$last' unparseable — check $LOG"; exit 0
+fi
+
+days=$(( (now_e - last_e) / 86400 ))
+if (( days > WINDOW_DAYS )); then
+    echo "token-review: DUE (last pass $last, ${days}d ago > ${WINDOW_DAYS}d) — scan recent large transcripts for repeated token-waste; file findings to OPEN-ITEMS/gripes; append a dated line to $LOG. See the runbook."
+else
+    echo "token-review: ok (last pass $last, ${days}d ago; due in $(( WINDOW_DAYS - days ))d)"
+fi
+exit 0

@@ -1,7 +1,7 @@
 ---
 description: One honest "what needs doing" across the two work substrates — repo dev work (OPEN-ITEMS backlog + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · orphan design docs · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
-allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-orphans:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), mcp__precis__get, mcp__precis__search
+allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-orphans:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/nightly:*), mcp__precis__get, mcp__precis__search
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
@@ -35,8 +35,8 @@ Live GitHub — open PRs:
 Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summary):
 !`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
 
-Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ memory index ⋅ done-gunk:
-!`scripts/migration-check --quiet 2>&1 || true; echo '— docs —'; scripts/docs-orphans 2>&1 | sed -n '1,2p;/^ORPHAN/,/^ADR-linked/p' || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true`
+Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ memory index ⋅ done-gunk ⋅ token-review cadence ⋅ nightly build:
+!`scripts/migration-check --quiet 2>&1 || true; echo '— docs —'; scripts/docs-orphans 2>&1 | sed -n '1,2p;/^ORPHAN/,/^ADR-linked/p' || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true`
 
 ## Procedure
 
@@ -95,6 +95,18 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ memory ind
      audit+compact+delete-landed pass, then append a dated line to
      `memory_consolidation_log.md`; on "done today", skip the heavy pass
      (**once/day at most** — constant re-auditing churns without benefit).
+   - **Token-review cadence** (`scripts/token-review`) — on **DUE** (last pass
+     >7 days ago) run the session-tightness scan: read recent large local
+     transcripts for repeated token-waste (context bloat, wrong-tier agents,
+     un-`rtk`'d firehoses, redundant calls), file findings to OPEN-ITEMS /
+     gripes, then append a dated line to `docs/runbooks/token-review.md`. Inside
+     the 7-day window it's quiet — skip it.
+   - **Nightly build** (`scripts/nightly --check`) — the LOCAL full-suite health
+     read (not GitHub). **`✗ RED`** means green main was broken by upstream
+     dependency drift (the ship gate can't catch it — no code changed);
+     investigate the named failing tests. **`DUE`** (last run >24h ago) → run
+     `scripts/nightly` to refresh (a few minutes; records the result). A fresh
+     `✓ green` needs nothing.
 
 4. **Prod factory queue — todos.** `search(kind='todo', view='attention')`
    (asking-user + failed children) and `search(kind='todo', view='doable')`

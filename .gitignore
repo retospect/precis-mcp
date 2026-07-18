@@ -72,6 +72,10 @@ memory/
 .testmondata
 .testmondata.*
 
+# scripts/nightly local full-build result + timer log (machine-specific, not git)
+.nightly-status.md
+.nightly-timer.log
+
 # rtk: keep project filters, ignore runtime tee logs/cache
 .rtk/*
 !.rtk/filters.toml

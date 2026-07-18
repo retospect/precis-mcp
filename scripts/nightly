@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# scripts/nightly — LOCAL nightly full-build. Runs the whole suite in the dev
+# container (via scripts/test) and records a dated green/red result, so
+# `/whatneedsdoing` can surface "is main still green?" daily WITHOUT re-running
+# the multi-minute suite. This is deliberately LOCAL — not GitHub Actions — so
+# the signal lives on this machine next to the rest of the repo-dev tooling.
+#
+# Why a nightly at all: the ship gate already runs the full suite on every merge,
+# so main is green at ship time. The only thing a nightly adds is catching
+# UPSTREAM DEPENDENCY DRIFT — a transitive dep releases a breaking version and
+# green main goes red with no code change. That's what a scheduled full run
+# catches that per-ship gating can't.
+#
+# Modes:
+#   scripts/nightly            run the full suite now, append the result, print it
+#   scripts/nightly --check    read-only: print the latest result + DUE if stale
+#                              (>24h). Never runs the suite — this is what
+#                              /whatneedsdoing calls.
+#
+# Status lives at <main-checkout>/.nightly-status.md (gitignored, machine-local,
+# shared across worktrees). Advisory; always exits 0.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+STATUS="$MAIN_ROOT/.nightly-status.md"
+STALE_HOURS=24
+
+# portable "YYYY-MM-DD HH:MM" -> epoch seconds (BSD date on macOS, GNU on Linux)
+epoch_of() { date -j -f "%Y-%m-%d %H:%M" "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null; }
+
+# --- --check: read-only cadence + status surface (what /whatneedsdoing runs) ---
+if [[ "${1:-}" == "--check" ]]; then
+    if [[ ! -f "$STATUS" ]]; then
+        echo "nightly: DUE (never run locally) — run \`scripts/nightly\` to record a baseline"; exit 0
+    fi
+    top=$(grep -E '^\- \*\*[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}\*\*' "$STATUS" | head -1 || true)
+    if [[ -z "$top" ]]; then
+        echo "nightly: DUE (no dated result in $STATUS)"; exit 0
+    fi
+    ts=$(echo "$top" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}' | head -1)
+    body=$(echo "$top" | sed -E 's/^\- \*\*[^*]+\*\* — //')
+    e=$(epoch_of "$ts" || true)
+    if [[ -z "$e" ]]; then echo "nightly: last result '$ts' unparseable — check $STATUS"; exit 0; fi
+    hours=$(( ( $(date +%s) - e ) / 3600 ))
+    if (( hours > STALE_HOURS )); then
+        echo "nightly: DUE (last ${ts}, ${hours}h ago) — run \`scripts/nightly\`. Last: $body"
+    else
+        echo "nightly: $body (${ts}, ${hours}h ago)"
+    fi
+    exit 0
+fi
+
+# --- default: run the full suite locally, capture, record ---
+# Preflight: scripts/test needs the dev container, so a dead Docker (common at
+# 04:00 on a laptop) would otherwise record a FALSE red. Record a neutral skip
+# instead — --check still counts it stale, so it nudges a manual run.
+if ! docker info >/dev/null 2>&1; then
+    stamp="$(date +'%Y-%m-%d %H:%M')"
+    line="- **$stamp** — ⚠ skipped — Docker unavailable (suite not run)"
+    echo "nightly: ⚠ skipped — Docker unavailable; not running the suite"
+    if [[ ! -f "$STATUS" ]]; then
+        printf '# Nightly local build status\n\nGitignored, machine-local. Written by `scripts/nightly`, read by\n`scripts/nightly --check` (surfaced in `/whatneedsdoing`). Newest first.\n\n' > "$STATUS"
+    fi
+    tmp=$(mktemp)
+    awk -v line="$line" 'BEGIN{done=0} /^- \*\*/ && !done {print line; done=1} {print} END{if(!done) print line}' "$STATUS" > "$tmp" && mv "$tmp" "$STATUS"
+    exit 0
+fi
+
+echo "nightly: running full suite via scripts/test (this takes a few minutes)…"
+run_log=$(mktemp)
+if scripts/test "$@" >"$run_log" 2>&1; then result="✓ green"; else result="✗ RED"; fi
+
+# pytest's final summary line, e.g. "===== 7774 passed, 18 skipped in 128.4s ====="
+# Take the LAST such line, then extract clean "<n> <word>" counts (+ duration).
+sumline=$(grep -E '[0-9]+ (passed|failed|error)' "$run_log" | tail -1 || true)
+# paste -d takes a *list* of delimiters used cyclically, so join with a single
+# ',' then space it out — otherwise it alternates ',' and ' ' between fields.
+summary=$(echo "$sumline" | grep -oE '[0-9]+ (passed|failed|errors?|skipped|xfailed|xpassed|deselected|warnings?)' \
+    | paste -sd',' - | sed 's/,/, /g' || true)
+dur=$(echo "$sumline" | grep -oE 'in [0-9]+(\.[0-9]+)?s' | tail -1 || true)
+[[ -n "$summary" && -n "$dur" ]] && summary="$summary $dur"
+[[ -z "$summary" ]] && summary="(no pytest summary — see run log; likely a collection/env error)"
+
+# on red, name the first few failing tests
+fails=""
+if [[ "$result" == "✗ RED" ]]; then
+    fails=$(grep -E '^FAILED ' "$run_log" | sed -E 's/^FAILED //; s/ -.*//' | head -5 | paste -sd', ' - || true)
+    [[ -n "$fails" ]] && fails=" — first fails: $fails"
+fi
+
+stamp="$(date +'%Y-%m-%d %H:%M')"
+line="- **$stamp** — $result — $summary$fails"
+
+# prepend under the header (newest-first); create the file on first run
+if [[ ! -f "$STATUS" ]]; then
+    {
+        echo "# Nightly local build status"
+        echo
+        echo "Gitignored, machine-local. Written by \`scripts/nightly\`, read by"
+        echo "\`scripts/nightly --check\` (surfaced in \`/whatneedsdoing\`). Newest first."
+        echo
+    } > "$STATUS"
+fi
+# insert the new line right after the first blank line following the header block
+tmp=$(mktemp)
+awk -v line="$line" 'BEGIN{done=0} /^- \*\*/ && !done {print line; done=1} {print} END{if(!done) print line}' "$STATUS" > "$tmp" && mv "$tmp" "$STATUS"
+
+echo "nightly: $result — $summary$fails"
+echo "nightly: recorded to $STATUS"
+rm -f "$run_log"
+exit 0
