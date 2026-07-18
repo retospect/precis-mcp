@@ -18,16 +18,31 @@
 #   scripts/test tests/test_foo.py            # one file
 #   scripts/test -k "registry or env"         # a -k expression
 #   scripts/test tests/test_foo.py::test_bar -x
+#   scripts/test --impacted                   # ONLY tests your changes affect
 #
 # Everything after the script name is passed straight to pytest. Default
 # parallelism is -n6 (the measured sweet spot); pass your own -n0/-nN to
 # override for a single fast test.
 #
+# --impacted (-i): impact selection via pytest-testmon. Runs only the tests
+# affected by your working-tree changes — the inner-loop accelerator when the
+# full 140s suite is mostly per-worker DB-clone setup for tests you didn't
+# touch. The FIRST run builds the test↔code map (a full run); after that each
+# run selects just the affected tests (sub-second when nothing changed). Forces
+# -n0 (testmon is per-process) and keeps a per-worktree map at ./.testmondata
+# (gitignored). Still not authoritative — scripts/ship runs the full gate.
+#
 # NOTE: the dev image bakes all extras, so you never need `--with`/`--extra`
-# here — that's only for the torch-free host.
+# here — that's only for the torch-free host (and the testmon plugin, which
+# --impacted pulls in on the fly so no image rebuild is needed).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 WORKTREE="$PWD"
+
+# --impacted / -i : testmon impact-selection mode (see header). Strip the
+# sentinel before the rest is forwarded to pytest.
+IMPACTED=0
+if [[ "${1:-}" == "--impacted" || "${1:-}" == "-i" ]]; then IMPACTED=1; shift; fi
 
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
 [[ -f "$INFRA_COMPOSE" ]] || {
@@ -49,13 +64,29 @@ fi
 NPROC=(-n6)
 for a in "$@"; do [[ "$a" == -n* ]] && NPROC=(); done
 
+# Impacted mode: pull in the testmon plugin on the fly (no image rebuild),
+# enable selection, force -n0 (testmon is per-process — xdist fragments the
+# map), and persist the map per-worktree at /app/.testmondata (the bind-mount,
+# so it survives on the host between runs). UV_WITH is expanded unquoted inside
+# the container so an empty value adds nothing in normal mode.
+UV_WITH=""
+TESTMON_ARGS=()
+TESTMON_ENV=()
+if [[ "$IMPACTED" == "1" ]]; then
+    UV_WITH="--with pytest-testmon"
+    TESTMON_ARGS=(--testmon)
+    TESTMON_ENV=(-e "TESTMON_DATAFILE=/app/.testmondata")
+    NPROC=(-n0)
+fi
+
 # --no-sync: the image already bakes the venv and installs /app editable, so
 # the bind-mounted source is live without a per-run reinstall (that reinstall
 # was pure noise + latency — the reason sessions hand-rolled `--no-sync`).
 # -p no:warnings drops the warnings summary (noise while iterating); --tb=short
 # keeps tracebacks compact; -q drops per-test verbosity. Pass pytest args as
 # inner positional params ("$@") so no cross-shell re-quoting is needed.
-compose run --rm --no-deps -e UV_LINK_MODE=copy "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" \
+compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
+    "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
     -v "${WORKTREE}":/app precis-dev \
-    bash -lc 'uv run --no-sync pytest -q --no-header --tb=short -p no:warnings "$@"' \
-    _ "${NPROC[@]+"${NPROC[@]}"}" "$@"
+    bash -lc 'uv run --no-sync ${UV_WITH} pytest -q --no-header --tb=short -p no:warnings "$@"' \
+    _ "${NPROC[@]+"${NPROC[@]}"}" "${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}" "$@"

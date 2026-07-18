@@ -50,6 +50,7 @@ scripts/exercise-mcp/out/
 !.claude/commands/
 !.claude/settings.json
 !.claude/skills/
+!.claude/agents/
 
 # Personal ops notes — anything matching *.local.md / *.local/.
 # Convention for ops crib sheets, scratch SQL, host-specific quirks.
@@ -74,3 +75,6 @@ memory/
 # rtk: keep project filters, ignore runtime tee logs/cache
 .rtk/*
 !.rtk/filters.toml
+
+# code-index: indexer deps (cached, reproducible via scripts/code-index)
+scripts/code-search/node_modules/

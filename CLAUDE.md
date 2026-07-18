@@ -113,9 +113,13 @@ per-kind reference.
 
       scripts/test                         # full suite (-n6)
       scripts/test tests/test_x.py -k …    # subset; args pass through to pytest
+      scripts/test --impacted              # ONLY tests your change affects (testmon)
 
-  `scripts/ship` (via `/endsession`, `/go`) runs the authoritative pre-merge
-  gate — `scripts/test` is the fast loop before it.
+  `--impacted` is the tightest inner loop: `pytest-testmon` maps test↔code and
+  runs just the tests a working-tree change touches (first run builds the map;
+  later runs are sub-second when nothing relevant changed). `scripts/ship` (via
+  `/endsession`, `/go`) runs the authoritative full pre-merge gate — everything
+  else is the fast loop before it.
 - **Container-first ops.** `scripts/dev` → dev shell; `scripts/db` → psql
   (LOCAL `precis` / `precis_test` only; dev pgvector at `127.0.0.1:5432`,
   `POSTGRES_USER=postgres`). Compose file: `~/work/infrastructure/compose.yaml`.

@@ -1,0 +1,9 @@
+{
+  "name": "precis-code-index",
+  "private": true,
+  "type": "module",
+  "description": "Shell-side seeder/refresher for the claude-context code-search index (see scripts/code-index).",
+  "dependencies": {
+    "@zilliz/claude-context-core": "0.1.15"
+  }
+}

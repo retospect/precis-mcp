@@ -74,12 +74,36 @@ main's collection read-only; don't re-embed 200k LOC per worktree).
   (put/edit/delete/tag) hit prod → use a dev-DB precis for write-path testing.
   Documented as a conventions-that-bite footgun in CLAUDE.md.
 
+## Done — second wave (2026-07-18)
+
+- ✅ **Test-gate optimization → `scripts/test --impacted`** (pytest-testmon).
+  Grounded in a durations profile: the 140s gate is dominated by per-worker
+  DB-clone **setup** (76s/50s/30s setups; slowest *call* is 15s), so the naive
+  fast/slow split is low-ROI — the lever is running FEWER tests. Impacted mode
+  runs only tests a working-tree change touches (cold builds the map, warm
+  0.31s deselecting all). testmon in dev group; gate still runs full. The
+  marker-based fast/slow split is **not worth it here** (setup-dominated) —
+  dropped, not deferred.
+- ✅ **`scripts/code-index`** — reproducible shell seed/refresh into the MCP's
+  collection (full seed when empty, Merkle-incremental after). Closes the
+  ephemeral-scratch-seed gap AND is the deterministic post-merge reindex the
+  plan had deferred.
+- ✅ **`navigator` agent** (`.claude/agents/navigator.md`, haiku) — the
+  dissolution the plan predicted, made concrete: a pre-briefed read-only
+  orientation subagent (codebase.md + maps + `search_code`, cite file:line).
+  Cheap, offloads spelunking from the main context.
+- ⛔ **Mutation testing — FILED, blocked on tool choice.** `mutmut` 3.6 runs
+  pytest **in-process**, which is incompatible with our global `addopts =
+  -n auto` (it builds `-n auto … -n0` and xdist can't fork inside the running
+  pytest → stats collection crashes, every mutant "not checked"). Fixing means
+  pulling `-n auto` out of `addopts` globally (breaks CI/scripts/test/the gate)
+  — too invasive for a nice-to-have. **Fix = `cosmic-ray`** (runs the test
+  command as a *subprocess*, so `pytest -n0` works cleanly). Scope to one
+  pure-logic module (SSRF guard exemplar); nightly bucket; feeds the
+  end-of-project unit-test skim.
+
 ## Backlog (land one at a time; keep only what earns weight)
 
-- **`navigator` agent — DEFERRED** (downstream of code search: `search_code`
-  IS most of it → may dissolve into "call search_code + read codebase.md",
-  or shrink to a semantic-hits + map/ADR fusion). `subsystem-analyst` (opus)
-  + convention skills — only if they earn weight.
 - **Docs: historical→current-state triage.** THE root disease (172 docs/57k
   lines accreted as append-only record, read as current, rot). Cure =
   triage, **delete-default** ("rest in git for the archeologists"): (1)
@@ -89,19 +113,14 @@ main's collection read-only; don't re-embed 200k LOC per worktree).
   retains). **Flip AGENTS.md "obsolete plans stay for context" → delete on
   ship.** Subsumes the prose compliance sweep (state-map 769L / AGENTS /
   glossary each own PR).
-- **Test-gate optimization.** Split fast-gate (BVT smoke + impacted) vs slow
-  (torch/CFD/DFT/ML → nightly, owned by the precis factory scheduler).
-  Impact analysis = **pytest-testmon** (`.testmondata` tests↔code map; nightly
-  rebuilds it = Reto's "coverage file drives the tests"; shared to worktrees
-  via `TESTMON_DATAFILE`, NOT git — volatile binary). CAVEAT: selection can
-  miss regressions → keep nightly full + BVT core, never impacted-only.
-  `scripts/test --impacted` mode + a marker-tagging pass.
-- **Coverage meaningfulness = mutation testing** (`mutmut`/`cosmic-ray`) —
-  line cov = executed, mutation = meaningfully asserted (surviving mutant =
-  hollow coverage). Nightly bucket. Feeds the **end-of-project unit-test
-  review/skim** (survivors + low-cov modules = the targets).
-- **SSH config** `IdentityAgent none` on the cluster Host block (216× — your
-  `~/.ssh`, not the repo).
+- **Mutation testing via cosmic-ray** (see FILED above) + the end-of-project
+  unit-test review/skim it feeds.
+- **`subsystem-analyst` (opus) agent** — only if the haiku navigator proves too
+  shallow for deep "how does the whole X work" synthesis.
+- **SSH config** — RESOLVED as a stale-memory fix, not a config change: bare
+  `ssh <cluster-host>` already works (`~/.ssh` bakes in `IdentityAgent none`);
+  the 2281× flag re-derivation was the `ssh-cluster-access` memory instructing
+  a redundant flag. Fixed the memory. Nothing to build.
 
 ## Decisions log
 

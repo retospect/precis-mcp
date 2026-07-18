@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# scripts/code-index — seed or refresh the semantic code-search index that the
+# claude-context MCP serves (`search_code`). Reproducible from the shell, no MCP
+# session needed — closes the gap that the index was first seeded from an
+# ephemeral scratch script.
+#
+# It indexes the MAIN checkout into ONE shared collection (keyed to the main
+# path, storing repo-relative paths), so every worktree reuses it by searching
+# with the main path. First run is a full seed (~minutes, embeds via Ollama);
+# later runs refresh incrementally (Merkle diff — only changed files re-embed).
+#
+# Prereqs (all local): the Milvus stack up (docker/code-search/compose.yaml —
+# the SessionStart hook does this) and Ollama serving the embedding model. Node
+# is used only here; deps install into scripts/code-search/node_modules (cached,
+# gitignored) on first run.
+#
+# Usage:
+#   scripts/code-index            # seed if empty, else incremental refresh
+#
+# After a merge to main you can re-run this to refresh; freshness is otherwise
+# lazy (the MCP's own Merkle sync). Config is read from .mcp.json's env so the
+# collection matches what the MCP queries — do not diverge them.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+ROOT="$PWD"
+HERE="$ROOT/scripts/code-search"
+
+command -v node >/dev/null 2>&1 || { echo "code-index: node not found (needed only for indexing)" >&2; exit 1; }
+
+# The shared index lives under the MAIN checkout's absolute path (parent of the
+# shared .git), even when this runs from a worktree.
+MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+
+# Mirror .mcp.json's claude-context env so we write the collection the MCP reads.
+# Prefer values already in the environment; fall back to the .mcp.json defaults.
+export EMBEDDING_MODEL="${EMBEDDING_MODEL:-nomic-embed-text}"
+export OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
+export EMBEDDING_DIMENSION="${EMBEDDING_DIMENSION:-768}"
+export MILVUS_ADDRESS="${MILVUS_ADDRESS:-127.0.0.1:19530}"
+export MILVUS_TOKEN="${MILVUS_TOKEN:-root:Milvus}"
+export CODE_INDEX_MAIN_ROOT="$MAIN_ROOT"
+
+# Install the indexer's deps once (cached thereafter). Quiet unless it fails.
+if [[ ! -d "$HERE/node_modules" ]]; then
+    echo "code-index: installing indexer deps (first run)…" >&2
+    ( cd "$HERE" && npm install --silent ) || { echo "code-index: npm install failed" >&2; exit 1; }
+fi
+
+echo "code-index: indexing $MAIN_ROOT → Milvus $MILVUS_ADDRESS" >&2
+exec node "$HERE/index.mjs"
