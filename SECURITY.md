@@ -32,4 +32,4 @@ list (with `Recheck-after:` dates and `Unblock-when:` conditions) is the
 
 | Alert | Package | Blocked by | Why tolerable | Recheck |
 | ----- | ------- | ---------- | ------------- | ------- |
-| [#44](https://github.com/retospect/precis-mcp/security/dependabot/44) (high) | `transformers` <5.3.0 RCE | `marker-pdf` (≤1.10.2) hard-pins `transformers<5.0.0`; needed by the `[paper]` OCR/layout extra, so `>=5.3.0` is **unsatisfiable** until marker lifts the cap | precis only loads the trusted local **bge-m3** embedder — never a user-supplied model path or `trust_remote_code`, which is what these `transformers` RCEs require | `2026-07-18` (see OPEN-ITEMS.md) |
+| [#44](https://github.com/retospect/precis-mcp/security/dependabot/44) (high) | `transformers` <5.3.0 RCE | `marker-pdf` (≤1.10.2) hard-pins `transformers<5.0.0`; needed by the `[paper]` OCR/layout extra, so `>=5.3.0` is **unsatisfiable** until marker lifts the cap | precis only loads the trusted local **bge-m3** embedder — never a user-supplied model path or `trust_remote_code`, which is what these `transformers` RCEs require | `2026-08-01` (re-verified still blocked 2026-07-18; see OPEN-ITEMS.md) |

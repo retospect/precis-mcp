@@ -486,13 +486,18 @@ Owner `mcp_modalities.py::register_skill_prompts`; artefact
 ## ⏸️ Snoozed — blocked upstream
 
 - **Dependabot #44 — `transformers` <5.3.0 RCE (high).** `Recheck-after:
-  2026-07-18`. `Unblock-when:` `marker-pdf` drops its `transformers<5.0.0` cap.
+  2026-08-01`. `Unblock-when:` `marker-pdf` drops its `transformers<5.0.0` cap.
   Today every `marker-pdf` (≤1.10.2) pins `transformers<5.0.0` and precis needs
   marker (`[paper]`), so `>=5.3.0` is unsatisfiable as a lockfile bump alone.
   Tolerable: exploit surface ~nil (precis only loads the trusted bge-m3 embedder,
   never a user model path or `trust_remote_code`). **Recheck:** re-run `uv lock
   --upgrade-package transformers`; if it reaches ≥5.3.0 take the fix + validate a
   sample re-embed for cosine drift; else bump `Recheck-after` +2 weeks.
+  **Re-verified 2026-07-18 (still blocked):** PyPI shows `marker-pdf` latest is
+  still `1.10.2` (no new release), capping `transformers<5.0.0`. Note a *second*
+  lock has appeared — `surya-ocr` moved to `0.22.0` requiring `transformers>=5.12.1`,
+  but marker also caps `surya-ocr<0.18.0`, so the newer surya can't be used either.
+  Both locks release only when marker-pdf ships a version that lifts them. → +2wk.
 
 ## 🔵 Paper-ingest `equation` chunk kind — retire later *(deferred)*
 
