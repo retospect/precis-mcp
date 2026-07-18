@@ -2100,15 +2100,17 @@ main `aa5b5c49` (prose convention, `docs/codebase.md`, `scripts/test
 `rtk`, navigator agent, `guard-commit-on-main` hook). Cross-session facts:
 memory `repo_dev_claude_tooling.md`. Remaining:
 
-- **Docs historical→current-state triage** *(refactor, in-progress — owner:
-  `docs/`).* THE root disease: `docs/` accreted append-only but is read as
-  current-state, so it rots. Cure = triage, **delete-default** ("rest in git
-  for the archeologists"), keeping only maintained current-state (codebase.md /
-  state-map / glossary + live specs) and active plans-of-record. Process +
-  order in memory `docs-triage-plan`. ADR compile-and-cut is the separate,
-  careful last pass and follows the **move-not-delete** ADR-0058 archive
-  convention (see the P1 "Compact ADRs" item above), not delete-default.
-  Flip AGENTS.md "obsolete plans stay for context" → delete-on-ship at the end.
+- **Even-application follow-ups** *(refactor, OPEN — the triage was a spotlight,
+  not a floodlight).* Untouched surfaces: (1) **`state-map.md` is stale** —
+  factory Phase-1/2 commits (`5d9e8a33` / `e5d5f1a0`) shipped after its last
+  edit; re-verify + add a `_Verified` stamp (it has none — the freshness
+  contract is itself unevenly applied). (2) **136 product skills
+  (`src/precis/data/skills/`) unaudited** — the *other* surface, never triaged
+  for currency. (3) **user-facing / runbooks / reference** assumed-current,
+  unverified. (4) **ADR status labels inconsistent** (case drift
+  accepted/Accepted; several "proposed" ADRs are actually shipped, like 0036
+  was). (5) **`email` worktree `0074`→`0075` renumber** before it ships
+  (migration-check flags it).
 
 - **Mutation testing via `cosmic-ray`** *(polish, blocked-on-adoption —
   owner: `pyproject.toml` + nightly bucket).* Line coverage proves executed,

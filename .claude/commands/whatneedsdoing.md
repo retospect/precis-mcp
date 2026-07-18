@@ -40,8 +40,12 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ memory ind
 
 ## Procedure
 
-1. **Repo dev — backlog.** Read `OPEN-ITEMS.md`. Take only *open* items (skip
-   shipped / done / deferred / retired). The dark-factory workstream is active.
+1. **Repo dev — backlog.** Read `OPEN-ITEMS.md`. Take only *open* items. **Prune
+   done gunk as you go** (same as closing a fixed gripe in step 2): an item whose
+   work is verified on `main` is not backlog — **delete its entry** (git log + the
+   topic memory hold the record), don't leave it marked "DONE". OPEN-ITEMS is the
+   *active* list, not an archive; a "DONE" bullet left in place is the same
+   append-only rot the docs triage cured. The dark-factory workstream is active.
 2. **Repo dev — gripes.** `get(kind='gripe', id='/open')` (the bug tracker).
    Tracked but **not auto-worked** — flag stale or high-impact ones. **Close
    the truly-fixed ones as you go:** if an open gripe's fix has already merged
