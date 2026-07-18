@@ -1,66 +1,93 @@
 #!/usr/bin/env bash
-# scripts/memory-lint — hygiene + reconsolidation-cadence check for the
-# file-based memory (Claude Code's `MEMORY.md` index + topic files + `ARCHIVE.md`).
+# scripts/memory-lint — advisory hygiene + reconsolidation-cadence check for the
+# file-based memory (Claude Code's hand-edited `MEMORY.md` index + topic files).
 #
-# Two jobs:
-#   1. Cheap hygiene (every run): broken index links, unindexed topic files,
-#      MEMORY.md over its byte budget.
-#   2. Reconsolidation cadence: a FULL audit (currency vs code, compaction,
-#      archiving) is a **once-a-day** pass — reading the whole memory and
-#      re-verifying claims constantly churns without benefit. This reads the top
-#      date of `memory_consolidation_log.md` and only says "DUE" when the last
-#      pass was on an earlier day.
+# The harness owns this dir: it loads MEMORY.md every session, recalls topic
+# files by relevance, and re-canonicalizes topic frontmatter on tool-writes. So
+# MEMORY.md is HAND-EDITED (don't generate it), grouped into `## Threads` /
+# `## Runbooks` / `## Gotchas` / `## Workflow` / `## Reference`. Policy: memory
+# holds only live threads + durable knowledge; landed work is DELETED (the
+# precis-mcp repo git log + ADRs are its record) — no ARCHIVE.md.
 #
-# Advisory: always exits 0. Meant to be called by `/whatneedsdoing`, not a gate
-# (the memory dir lives outside the repo).
+# Checks (all advisory — always exits 0; for `/whatneedsdoing`, not a gate):
+#   1. broken index links + unindexed topic files.
+#   2. landed-thread scan: a bullet under `## Threads` whose every cited commit
+#      is in main + no open-work words → shipped; verify + delete (the auto
+#      diagram-catch).
+#   3. MEMORY.md over byte budget.
+#   4. reconsolidation cadence (once/day).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 MEMDIR="$HOME/.claude/projects/${MAIN_ROOT//\//-}/memory"
-BUDGET=17510   # MEMORY.md byte budget (~17.1KB — the always-loaded index)
+# Size is HYSTERETIC — don't fiddle at the margin. Let the index grow untouched
+# up to the high-water mark; only then reconsolidate, and cut it back DOWN to
+# ~low-water (not just under the mark) so it stays quiet for a long time after.
+HIGH_WATER=22000
+LOW_WATER=16000
 
 if [[ ! -d "$MEMDIR" ]]; then
     echo "memory-lint: no memory dir at $MEMDIR (nothing to lint)"; exit 0
 fi
-cd "$MEMDIR"
-
+INDEX="$MEMDIR/MEMORY.md"
 problems=0
 
-# 1. broken links: [text](file.md) whose target is absent
+# 1a. broken links: [text](file.md) whose target is absent
 while IFS= read -r f; do
-    [[ -z "$f" || -f "$f" ]] || { echo "  broken link → $f"; problems=$((problems+1)); }
-done < <(grep -hoE '\]\([a-z0-9_]+\.md\)' MEMORY.md ARCHIVE.md 2>/dev/null | sed -E 's/\]\(|\)//g' | sort -u)
+    [[ -z "$f" || -f "$MEMDIR/$f" ]] || { echo "  broken link → $f"; problems=$((problems+1)); }
+done < <(grep -hoE '\(([a-z0-9_]+)\.md\)' "$INDEX" 2>/dev/null | tr -d '()' | sort -u)
 
-# 2. unindexed topic files (referenced by neither a (file.md) link nor a [[slug]])
-for tf in *.md; do
-    [[ "$tf" == MEMORY.md || "$tf" == ARCHIVE.md ]] && continue
-    slug="${tf%.md}"
-    grep -qE "\($tf\)|\[\[$slug\]\]" MEMORY.md ARCHIVE.md 2>/dev/null \
-        || { echo "  unindexed → $tf"; problems=$((problems+1)); }
+# 1b. unindexed topic files (referenced by neither a (file.md) link nor a [[slug]])
+for tf in "$MEMDIR"/*.md; do
+    b=$(basename "$tf"); [[ "$b" == MEMORY.md || "$b" == memory_consolidation_log.md ]] && continue
+    slug="${b%.md}"
+    grep -qE "\($b\)|\[\[$slug\]\]" "$INDEX" 2>/dev/null \
+        || { echo "  unindexed → $b (index it, or if landed delete it — git log is the record)"; problems=$((problems+1)); }
 done
 
-# 3. index size vs budget
-bytes=$(wc -c < MEMORY.md | tr -d ' ')
-if (( bytes > BUDGET )); then
-    echo "  MEMORY.md OVER budget: $bytes > $BUDGET B — compact it"
+# 2. landed-thread scan over the files listed under the `## Threads` section
+open_re='unshipped|not deployed|NOT shipped|deferred|remain|residual|pending|blocked|dark|NEXT|TODO|WIP|design-only|proposal|roadmap|backlog'
+threads=$(awk '/^## Threads/{f=1;next} /^## /{f=0} f' "$INDEX" 2>/dev/null \
+    | grep -oE '\([a-z0-9_]+\.md\)' | tr -d '()' || true)
+while IFS= read -r b; do
+    [[ -z "$b" ]] && continue
+    tf="$MEMDIR/$b"; [[ -f "$tf" ]] || continue
+    if grep -qiE "$open_re" "$tf"; then continue; fi     # open-work words → keep
+    shas=$(grep -oiE '\b[0-9a-f]{7,40}\b' "$tf" | grep -iE '[a-f]' | sort -u || true)  # need a letter
+    [[ -z "$shas" ]] && continue
+    landed=1
+    while IFS= read -r s; do
+        [[ -z "$s" ]] && continue
+        git merge-base --is-ancestor "$s" main 2>/dev/null || { landed=0; break; }
+    done <<< "$shas"
+    if (( landed )); then
+        echo "  landed thread → $b (all cited commits in main, no open-work words) — verify + delete"
+        problems=$((problems+1))
+    fi
+done <<< "$threads"
+
+# 3. index size — hysteresis: silent inside the band, flag only past high-water
+bytes=$(wc -c < "$INDEX" | tr -d ' ')
+if (( bytes > HIGH_WATER )); then
+    echo "  MEMORY.md past high-water: $bytes > $HIGH_WATER B — reconsolidate DOWN to ~$LOW_WATER B (delete landed threads; git has them), not just under the mark"
     problems=$((problems+1))
 fi
 
 if (( problems == 0 )); then
-    echo "memory-lint: ✓ index clean ($bytes B, all links resolve, all files indexed)"
+    echo "memory-lint: ✓ clean ($bytes B, links resolve, no landed threads lingering)"
 else
     echo "memory-lint: $problems hygiene issue(s) above"
 fi
 
 # 4. reconsolidation cadence (once/day)
 today=$(date +%Y-%m-%d)
-last=$(grep -oE '\*\*[0-9]{4}-[0-9]{2}-[0-9]{2}\*\*' memory_consolidation_log.md 2>/dev/null | head -1 | tr -d '*' || true)
+last=$(grep -oE '\*\*[0-9]{4}-[0-9]{2}-[0-9]{2}\*\*' "$MEMDIR/memory_consolidation_log.md" 2>/dev/null | head -1 | tr -d '*' || true)
 if [[ -z "$last" ]]; then
     echo "reconsolidation: DUE (no consolidation log yet)"
 elif [[ "$last" == "$today" ]]; then
     echo "reconsolidation: done today ($last) — skip the heavy pass"
 else
-    echo "reconsolidation: DUE (last $last) — run a full audit+compact pass, then append a dated line to memory_consolidation_log.md"
+    echo "reconsolidation: DUE (last $last) — currency audit (re-verify claims vs code; delete any landed thread flagged above). Compact for SIZE only if past the high-water mark. Append a dated line to memory_consolidation_log.md"
 fi
 exit 0

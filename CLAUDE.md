@@ -177,3 +177,16 @@ per-kind reference.
   core API or abstraction decisions.
 - **Default:** start cheap for mechanical/exploratory work; escalate only
   when deep cross-file reasoning is clearly needed.
+- **Prefer a cheap-pinned agent over a bare Opus subagent for rote work, when
+  practical** (a default, not an enforced gate — subagents otherwise inherit
+  the session model = Opus, so mechanical delegations run expensive by
+  accident). Haiku-pinned defs in `.claude/agents/`: `navigator` (locate /
+  orient), `extract` (rote gather), `test-runner` (`scripts/test`), `tidy`
+  (ruff/format). Reach for these instead of spawning `general-purpose` on Opus
+  for a mechanical task; use the Agent tool's `model:` for one-off downgrades.
+- **Three tiers, cheapest that fits:** a **deterministic** chore → a *script*
+  (zero model, reproducible) — the hygiene scans already are (`memory-lint`,
+  `migration-check`, `docs-orphans`, `backlog-lint`); **mechanical-but-needs-a-
+  model** → a haiku agent (above); **judgment / stakes** → Opus. So memory
+  *index* hygiene is a script; memory *reconsolidation* (re-verify claims vs
+  code, merge/sharpen) is a judgment pass — not haiku.

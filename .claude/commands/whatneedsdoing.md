@@ -88,9 +88,11 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ memory ind
    - **Orphan design docs** (`scripts/docs-orphans`) — ORPHAN / ADR-linked
      buckets are candidates for the `docs-triage` skill; load-bearing ones (src
      / anchor / sealed-migration refs) are fine, leave them.
-   - **Memory index** (`scripts/memory-lint`) — broken links / unindexed files /
-     over-budget are quick fixes. On **reconsolidation DUE** (last full pass was
-     an earlier day) do one full audit+compact pass, then append a dated line to
+   - **Memory index** (`scripts/memory-lint`) — a broken link / unindexed file,
+     a flagged **landed thread** (a `## Threads` bullet whose cited commits are
+     all in main → verify + delete), or over-budget are quick fixes. On
+     **reconsolidation DUE** (last full pass an earlier day) do one full
+     audit+compact+delete-landed pass, then append a dated line to
      `memory_consolidation_log.md`; on "done today", skip the heavy pass
      (**once/day at most** — constant re-auditing churns without benefit).
 

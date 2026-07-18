@@ -83,7 +83,7 @@ hand-rolling. Admonish this in `CLAUDE.md`/`AGENTS.md`:
 | `scripts/code-index` | seed/refresh the semantic code-search index | reproducible from shell, no MCP session needed |
 | `scripts/docs-orphans` | flag `docs/design` plans with no inbound ref | advisory; wired into ship when the diff touches `docs/design/` |
 | `scripts/migration-check` | flag duplicate migration **numbers** across main + all worktrees | advisory in ship when the diff touches migrations; fleet view in `/whatneedsdoing` |
-| `scripts/memory-lint` | broken links / unindexed / over-budget in the memory index + reconsolidation-due signal | advisory; `/whatneedsdoing` |
+| `scripts/memory-lint` | broken-link/unindexed + landed-thread scan (a `## Threads` bullet whose cited commits are all in main) + over-budget + reconsolidation-due signal | advisory; `/whatneedsdoing` |
 | `scripts/backlog-lint` | flag done-marked items still sitting in the backlog (`OPEN-ITEMS.md`) | advisory in ship when the diff touches it; `/whatneedsdoing` |
 
 Package manager: pick one (`uv`, etc.) and forbid bare `pip`/`pytest`/`mypy`
@@ -182,24 +182,28 @@ sinks are raw output and re-derived navigation. Patterns:
 ## 6. Memory (cross-session knowledge)
 
 A file-based memory dir with:
-- **`MEMORY.md`** — always-loaded index, **one line per memory**, grouped
-  (In-flight/backlog · Ops/runbooks · Gotchas · Workflow · Reference). Keep it
-  under a size budget; detail lives in the topic file, never the index.
-- **Topic files** — one fact each, frontmatter `type: user|feedback|project|
-  reference`. Link related ones with `[[slug]]`. Convert relative dates to
-  absolute. For feedback/project, add **Why** + **How to apply**.
-- **`ARCHIVE.md`** — fully-landed work (shipped+deployed, no open thread) moved
-  out of the index so it stays lean; topic files still recalled on relevance.
+- **Topic files** — one fact each; frontmatter is exactly `type` + `description`
+  (identity = the filename; `[[slug]]` = filename stem). `type` ∈ `thread`
+  (in-flight — delete on ship) · `runbook` · `gotcha` · `workflow` ·
+  `reference`. Link related ones with `[[slug]]`; convert relative dates to
+  absolute; for guidance/threads add **Why** + **How to apply**.
+- **`MEMORY.md`** — always-loaded index, **hand-edited** (the harness manages
+  this dir and expects it edited in place, not generated). One bullet per memory
+  under a bare-noun section: **Threads** (in-flight — delete on ship) · Runbooks
+  · Gotchas · Workflow · Reference. Keep it under a byte budget.
+- **No `ARCHIVE.md`.** Landed work is deleted — the repo git log + ADRs are its
+  record. Memory keeps only live threads + durable knowledge; `memory-lint`
+  flags a `## Threads` bullet whose cited commits all landed in `main`.
 
 Discipline: before saving, check for an existing file to update (no dupes);
 delete memories proven wrong; don't save what the repo already records
 (structure, past fixes, git history). Save the *non-obvious*.
 
 **Reconsolidate ≤ once/day.** A full pass (re-verify claims vs code, compact the
-index, archive landed work, fix broken links/orphans) is a **circadian** chore,
-not per-session — re-auditing constantly churns without benefit, like sleep-time
-consolidation. Keep a dated `memory-consolidation-log`; a `memory-lint` reads its
-top date and only flags a full pass when the last was an earlier day (the cheap
+topic files, **delete landed threads**, regenerate the index) is a **circadian**
+chore, not per-session — re-auditing constantly churns without benefit, like
+sleep-time consolidation. Keep a dated `memory-consolidation-log`; a `memory-lint`
+reads its top date and only flags a full pass when the last was an earlier day (the cheap
 broken-link/unindexed/size checks still run every time).
 
 ---
