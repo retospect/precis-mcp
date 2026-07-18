@@ -312,6 +312,45 @@ def build_agent_run(
     )
 
 
+def containerize_claude_argv(
+    host_argv: Sequence[str],
+    env: _envelope.Envelope,
+    *,
+    name: str,
+    model: str,
+    dsn: str | None = None,
+    image: str | None = None,
+    mode: str | None = None,
+) -> list[str]:
+    """Wrap an already-built host ``claude -p …`` argv into a synchronous
+    ``docker/podman run`` that execs the SAME command inside the container.
+
+    The general seam a live executor uses to containerize an in-proc agentic
+    call WITHOUT re-deriving the command: it takes the caller's exact
+    ``host_argv`` (``host_argv[0]`` is the host ``claude`` binary — dropped, the
+    image has ``claude`` on PATH; every flag after it is preserved verbatim,
+    so ``--max-budget-usd`` / ``--append-system-prompt`` / ``--settings`` etc.
+    all carry through) and prepends the tier-2 env + tier-3 network from the
+    envelope. ``detached=False`` — a foreground run whose stdout the caller
+    captures exactly as it captured the in-proc subprocess's (stream-json is
+    byte-identical), so the result parsing is unchanged.
+
+    The container inherits the runner's env for the by-key secrets
+    (``CLAUDE_CODE_OAUTH_TOKEN`` / ``ANTHROPIC_API_KEY``, ``PRECIS_DATABASE_URL``),
+    so the caller must pass its ``proc_env`` to the subprocess as today.
+    """
+    command = ["claude", *list(host_argv)[1:]]
+    return build_agent_run_argv(
+        container_bin=_container_bin(),
+        name=name,
+        image=image or default_agent_image(),
+        cenv=container_env(env, model=model, mode=mode),
+        net=resolve_network(env, dsn=dsn),
+        detached=False,
+        command=command,
+    )
+
+
 __all__ = [
     "ContainerEnv",
     "NetworkPlan",
@@ -321,6 +360,7 @@ __all__ = [
     "build_claude_command",
     "container_agent_enabled",
     "container_env",
+    "containerize_claude_argv",
     "default_agent_image",
     "default_agent_mcp_config",
     "resolve_network",

@@ -219,3 +219,44 @@ def test_build_agent_run_without_prompt_is_unchanged() -> None:
     env = Envelope()
     argv = ac.build_agent_run(env, name="a", model="qwen", image="precis-agent:x")
     assert argv[-1] == "precis-agent:x"
+
+
+# ── containerize an already-built host argv (the live-executor seam) ──
+
+
+def test_containerize_wraps_host_argv_preserving_all_flags() -> None:
+    env = Envelope(egress="none", write="none")
+    host = [
+        "/usr/local/bin/claude",
+        "-p",
+        "--model",
+        "opus",
+        "--max-budget-usd",
+        "5",
+        "--append-system-prompt",
+        "sys",
+        "the prompt",
+    ]
+    argv = ac.containerize_claude_argv(
+        host, env, name="agent-x", model="opus", image="precis-agent:x"
+    )
+    # host binary dropped; the image's `claude` (on PATH) runs instead
+    assert "/usr/local/bin/claude" not in argv
+    # tier-2 + tier-3 knobs applied from the envelope
+    assert "PRECIS_MCP_DB_ROLE=agent_ro" in argv
+    assert "--network" in argv and "none" in argv
+    # synchronous (foreground, stdout captured) — no -d
+    assert "-d" not in argv
+    # image then the command: `claude` + EVERY original flag after the host binary
+    i = argv.index("precis-agent:x")
+    assert argv[i + 1 :] == [
+        "claude",
+        "-p",
+        "--model",
+        "opus",
+        "--max-budget-usd",
+        "5",
+        "--append-system-prompt",
+        "sys",
+        "the prompt",
+    ]

@@ -1,0 +1,63 @@
+---
+# 20b-precis-worker-collapsed.yml — the Phase-2 COLLAPSED worker (slice 10 /
+# §7 / §15h). ONE `precis worker` daemon per host, its launch unit rendered
+# through the `service_unit` abstraction instead of a hand-written plist. The
+# runnable form of roles/service_unit/examples/collapsed-worker.yml.
+#
+# What it replaces at cutover: the four parallel worker daemons (the two
+# profile plists + the agent/dream variants) → one per host; the per-flag
+# "if …_ENABLED … endif" env blocks → service_config.prio (live from the
+# /factory console, §15e); the standalone thin-timer daemons (cron-tick,
+# watch-poll) → the worker's own decentralized §15i `scheduler` pass. The
+# daemon carries NONE of the retired PRECIS_*_ENABLED flags — capability
+# (probe) × prio (console) is the whole control surface.
+#
+# DARK: NOT imported by site.yml or redeploy-precis.yml. The Phase-2 window
+# runs this in place of 20-precis-worker.yml (+ 30/37/39 variants), AFTER the
+# run-as→deploy cutover (it renders run_as: deploy) and an `ansible --check`
+# rehearsal against the wired overlay. Preconditions to validate in-window:
+#   * the §15i scheduler owns cron_tick + watch_poll  → retire 30/39 timers
+#   * PRECIS_SCHEDULER_ENABLED flipped on in service_unit_env (below, commented)
+#   * every folded pass has a ServiceSpec (dream/reconcile stay node-pinned)
+
+- name: Deploy the collapsed precis worker (one service_unit per host)
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: true
+  roles:
+    # still provisions the venv + deps + dirs + the shared env facts …
+    - role: precis_worker
+    # … but renders the launch unit through the multiplatform abstraction.
+    - role: service_unit
+      vars:
+        service_unit_name: worker
+        service_unit_run_as: deploy
+        service_unit_process_type: Interactive   # jetsam band (RAM-pressured host)
+        service_unit_schedule:
+          mode: keepalive
+        service_unit_exec: >-
+          {{ precis_worker_venv }}/bin/precis worker --profile system
+          --batch-size {{ precis_worker_batch_size }}
+          --idle-seconds {{ precis_worker_idle_seconds }}
+          --embedder {{ precis_worker_embedder }}
+          --embedder-url {{ precis_worker_embedder_url }}
+          --summarizer-model {{ precis_worker_summarizer }}
+        # Core daemon vars + shared API keys only — NO ENABLE toggles. Flip
+        # PRECIS_SCHEDULER_ENABLED here in-window (with the timers retired) so
+        # the worker owns the recurring-work cadences (§15i).
+        service_unit_env: >-
+          {{ precis_shared_env | combine({
+            'HOME': '/Users/deploy',
+            'PATH': precis_worker_venv + '/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
+            'PRECIS_DATABASE_URL': precis_worker_dsn,
+            'HF_HOME': precis_worker_hf_home,
+            'PRECIS_PROCESS': 'precis-worker',
+            'PRECIS_SOURCE': 'precis-worker',
+            'PRECIS_MAX_TICKS': (precis_max_ticks | default(10000)) | string,
+            'PRECIS_MAX_TODO_USD': (precis_max_todo_usd | default(5.0)) | string,
+            'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
+          }) }}
+  tags: [precis-worker-collapsed, precis]

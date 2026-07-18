@@ -334,11 +334,34 @@ def call_claude_agent(
     # pipe behaviour can cause claude to read garbage / hang, ultimately
     # producing the "Not logged in" silent-success or zero-MCP-call
     # pattern observed 2026-06-17. Direct ``-p`` callers want no stdin.
+    # §13 container executor (dark, PRECIS_AGENT_CONTAINER off by default): run
+    # the SAME claude -p in a throwaway container instead of in-process, isolated
+    # by the envelope's tier-2 DB role + tier-3 network. A foreground run whose
+    # stdout we capture exactly as the in-proc subprocess's, so the parsing below
+    # is unchanged. Off ⇒ byte-identical to today. (plan_tick / fix_gripe have
+    # their own spawn seams + env back-doors — containerized in the window, not
+    # here.)
+    run_argv = args
+    run_binary = binary
+    from precis.workers.executors import agent_container as _container
+
+    if _container.container_agent_enabled():
+        import uuid as _uuid
+
+        run_argv = _container.containerize_claude_argv(
+            args,
+            active_env if active_env is not None else _envelope.Envelope(),
+            name=f"precis-agent-{_uuid.uuid4().hex[:12]}",
+            model=model or "",
+            dsn=proc_env.get("PRECIS_DATABASE_URL"),
+        )
+        run_binary = run_argv[0]
+
     res: Any
     try:
         res = run_claude(
-            args,
-            binary=binary,
+            run_argv,
+            binary=run_binary,
             label="claude -p (agent)",
             timeout_s=timeout_s,
             error_cls=ClaudeAgentError,

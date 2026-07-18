@@ -416,6 +416,50 @@ def test_default_envelope_denies_nothing_and_no_role(stub_bin: Path) -> None:
     assert "DB_ROLE=unset" in res.final_text
 
 
+# ── §13 container executor selection (dark) ────────────────────────
+
+
+def test_container_executor_off_uses_host_binary(monkeypatch, stub_bin: Path) -> None:
+    """Default (PRECIS_AGENT_CONTAINER unset) → the host claude runs directly."""
+    from types import SimpleNamespace
+
+    import precis.utils.claude_agent as ca
+
+    monkeypatch.delenv("PRECIS_AGENT_CONTAINER", raising=False)
+    captured: dict[str, object] = {}
+
+    def _fake(argv, **k):
+        captured["argv"] = argv
+        return SimpleNamespace(stdout="done", stderr="")
+
+    monkeypatch.setattr(ca, "run_claude", _fake)
+    call_claude_agent("do", model="opus")
+    assert captured["argv"][0] == str(stub_bin)  # host binary, not a container
+
+
+def test_container_executor_on_wraps_in_podman(monkeypatch, stub_bin: Path) -> None:
+    """PRECIS_AGENT_CONTAINER=1 → the SAME claude -p runs inside a container; the
+    prompt + flags are preserved and the run is synchronous (no -d)."""
+    from types import SimpleNamespace
+
+    import precis.utils.claude_agent as ca
+
+    monkeypatch.setenv("PRECIS_AGENT_CONTAINER", "1")
+    captured: dict[str, object] = {}
+
+    def _fake(argv, **k):
+        captured["argv"] = argv
+        return SimpleNamespace(stdout="done", stderr="")
+
+    monkeypatch.setattr(ca, "run_claude", _fake)
+    call_claude_agent("the prompt", model="opus")
+    argv = captured["argv"]
+    assert argv[0] == "podman" and "run" in argv
+    assert str(stub_bin) not in argv  # host binary dropped
+    assert "claude" in argv and argv[-1] == "the prompt"  # command preserved
+    assert "-d" not in argv  # synchronous (stdout captured)
+
+
 def test_model_override(stub_bin: Path) -> None:
     stub_bin.write_text(
         textwrap.dedent(
