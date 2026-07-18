@@ -21,5 +21,4 @@ loaded, the script prints a warning and exits non-zero for that service.
 
 ## Why this exists
 
-See `OPEN-ITEMS.md` / "Architecture review / P0 — stop the next incident" /
-"Worker + watch restarts are a pair".
+See `OPEN-ITEMS.md` / "Architecture review / compaction / footguns".

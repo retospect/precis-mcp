@@ -41,6 +41,18 @@ class FooHandler(Handler):
         ...
 ```
 
+## Secrets: `requires_secret` (vault-resolved credentials)
+
+For a credential rather than a plain env var — an API key or token that
+resolves through the secrets vault (ADR 0055) — declare it in the sibling
+`requires_secret` tuple instead of `requires_env`. The gate checks each name
+via `secrets.is_available` (env → vault) before `__init__`, and an unresolved
+secret surfaces on the `Kinds unavailable:` banner with a `missing secret …`
+reason, exactly like a missing env var. Example: `patent` gates on the EPO
+credentials this way, so the kind is hidden only where the vault can't supply
+them — its `PRECIS_PATENT_RAW_ROOT` is a config-defaulted path, not a gate
+(the capability-universalization dropped the incidental env gates).
+
 ## Anti-pattern: inline boot-site gating
 
 ```python

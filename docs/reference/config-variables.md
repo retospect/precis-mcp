@@ -105,13 +105,16 @@ values are from the cluster scan.
 | `PRECIS_DIAGRAM_AGENTIC` | Agentic diagram-propose path | off | not set | ⚠️ Dark; the diagram-propose loop is unshipped (memory). Expected. |
 | `PRECIS_PYTHON_ALLOW_EXEC` | Allow `python` kind to exec code | off (refuses) | not set | ✅ Correct — keep off in prod unless a sandbox is guaranteed. |
 
-**Kind-gate-by-presence** (`KindSpec.requires_env` — the kind is hidden
-unless the var is set): `PRECIS_PATENT_RAW_ROOT`→`patent`,
-`PRECIS_EDGAR_USER_AGENT`+`PRECIS_EDGAR_RAW_ROOT`→`edgar`,
-`PRECIS_PYTHON_ROOTS`→`python`, `PRECIS_ROOT`→markdown/plaintext/tex,
-`PRECIS_EPO_KEY`→patent-search skill. `PRECIS_PATENT_RAW_ROOT` **is** in
-shared-env (`/opt/nas/botshome/patents-raw`), so the `patent` kind is
-live cluster-wide; `edgar`/`python` are not wired (kinds dropped).
+**Kind gating** (a kind is hidden unless its gate is satisfied). Since the
+capability-universalization (state-map slice 5), the *incidental* env gates
+were dropped: `edgar` is now available on **every** host (its raw-root +
+User-Agent default via `precis.config`), and `patent` gates on the genuinely
+scarce **EPO credentials** via `KindSpec.requires_secret` (vault) — **not**
+`PRECIS_PATENT_RAW_ROOT`, which is now just a config-defaulted path. Still
+gated by `KindSpec.requires_env`: `PRECIS_PYTHON_ROOTS`→`python` (a deliberate
+filesystem-scoping choice) and `PRECIS_ROOT`→markdown/plaintext/tex. So in
+prod `patent` is live cluster-wide (EPO creds in the vault) and `edgar` is live
+everywhere; only `python` stays hidden (no `PRECIS_PYTHON_ROOTS`).
 
 ---
 
@@ -155,7 +158,7 @@ override if you want per-host divergence).
 | `PRECIS_LLM_BASE_URL` / `PRECIS_LLM_API_KEY` | OSS endpoint + key (vault) | none | not set | ✅ Only needed when backend flips. |
 | `PRECIS_LLM_FAILOVER` | Failover backend ladder | `""` | not set | ✅ Deferred (FailoverProvider not built). |
 | `PRECIS_MODEL_OPUS` | CLOUD_SUPER model id | `claude-opus-4-8` | not set ⇒ default | ✅ Current. |
-| `PRECIS_MODEL_SONNET` | CLOUD_MID model id | `claude-sonnet-4-6` | not set ⇒ default | ⚠️ **Pinned string, no auto-latest.** Opus (`4-8`) and Haiku (`4-5`) are current; only Sonnet lags. To use Sonnet 5, bump the `_TIER_MODEL[CLOUD_MID]` default to `claude-sonnet-5` (or set the env). Minor tier (`tex_llm_fix` + `job` retry only), so low blast radius. |
+| `PRECIS_MODEL_SONNET` | CLOUD_MID model id | `claude-sonnet-5` | not set ⇒ default | ✅ Current — the `_TIER_MODEL[CLOUD_MID]` default now tracks Sonnet 5 (bumped from `claude-sonnet-4-6`). Minor tier (`tex_llm_fix` + `job` retry only). |
 | `PRECIS_MODEL_HAIKU` | CLOUD_SMALL model id | `claude-haiku-4-5-20251001` | not set ⇒ default | ✅ Current. |
 | `PRECIS_LOCAL_BIG_MODEL` | LOCAL_BIG tier alias | `qwen-heavy` | not set ⇒ default | ✅ Resolves via the litellm proxy tier table. |
 | `PRECIS_SUMMARIZE_MODEL` | Summarize LLM alias | `summarizer` | `qwen` (shared-env) | ✅ Explicit prod alias. |
@@ -320,13 +323,10 @@ gates off). Items worth a decision, ranked:
 2. **Turn on the last-48h features you want live** (table above) — each
    needs a **deploy** first, then its flag/schedule step. The audio casts
    + `card_forge` are the closest to ready.
-3. **Sonnet model default** is a pinned `claude-sonnet-4-6` with no
-   auto-latest; bump `_TIER_MODEL[CLOUD_MID]` to `claude-sonnet-5` if the
-   mid tier should track current. Low blast radius.
-4. **Sandbox** is dark end-to-end (container deployed, pass gate off);
+3. **Sandbox** is dark end-to-end (container deployed, pass gate off);
    activating slice 1 gives build-only runs with no harvest — park it
    until slice 2 unless you need build containers now.
-5. **Paid OpenAlex leg** — the `PRECIS_OPENALEX_CONTENT_KEY` (vault) is
+4. **Paid OpenAlex leg** — the `PRECIS_OPENALEX_CONTENT_KEY` (vault) is
    the sole spend opt-in as of 2026-07-16; the old
    `PRECIS_OPENALEX_CONTENT_AUTO` second gate was dropped. Runway is
    guarded by the `fetch_oa:openalex_balance` low-balance alert

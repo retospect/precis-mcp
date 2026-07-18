@@ -7,10 +7,11 @@
 
 ## Hosts (SSH)
 
-Reach every node over Tailscale. ssh-agent forwarding is flaky, so always
-pass `-o IdentityAgent=none` (uses on-disk `~/.ssh/cluster`):
+Reach every node over Tailscale. Bare `ssh <host>` works — `~/.ssh/config`
+already pins `IdentityAgent none` for the cluster hosts (on-disk
+`~/.ssh/cluster`), so an explicit `-o IdentityAgent=none` is redundant:
 
-    ssh -o IdentityAgent=none <host> '<cmd>'
+    ssh <host> '<cmd>'
 
 | host       | OS / init      | role       | runs |
 |------------|----------------|------------|------|
@@ -52,7 +53,7 @@ orphan, stuck-doable, budget) as `kind='alert'` rows. Query the currently
 namespace as colon-strings — `alert-state:open`, `alert-source:…`,
 `severity:critical`):
 
-    ssh -o IdentityAgent=none caspar 'psql -h 100.126.127.107 -p 6432 -U agent_rw -d precis_prod -F "\t" -tA -c "
+    ssh caspar 'psql -h 100.126.127.107 -p 6432 -U agent_rw -d precis_prod -F "\t" -tA -c "
     WITH a AS (
       SELECT r.ref_id, r.title, r.updated_at,
         max(CASE WHEN t.value LIKE '\''alert-state:%'\'' THEN split_part(t.value,'\'':'\'',2) END) state,

@@ -18,8 +18,8 @@ Stop and ask before:
   verify the agent's grep is exhaustive against `tests/`,
   `src/precis/data/skills/`, the `docs/` tree, and recent git
   history. If the column is referenced in any place, ask.
-- Changing the dimension of `blocks.embedding` (or, after v2,
-  `block_embeddings.vector`). This invalidates pre-computed vectors
+- Changing the dimension of `chunk_embeddings.vector` (the v2/F20
+  embedding table). This invalidates pre-computed vectors
   and forces re-embed of the whole corpus.
 - Introducing a destructive migration (`DROP COLUMN`, `TRUNCATE`,
   `ALTER ... TYPE` that loses precision). Postgres will run them; the
@@ -35,8 +35,8 @@ Stop and ask before:
 - Changing the JSON shape of an MCP response. Agents in flight are
   using whatever is current. Add new fields freely; never repurpose
   or delete existing ones.
-- Changing the seven-verb surface (`list`, `get`, `search`, `put`,
-  `edit`, `delete`, `cite`). The verb count is a constitutional
+- Changing the seven-verb surface (`get`, `search`, `put`, `edit`,
+  `delete`, `tag`, `link`). The verb count is a constitutional
   promise. New functionality piggybacks on existing verbs through
   `kind=` or `mode=` arguments.
 
@@ -65,8 +65,8 @@ Stop and ask before:
 - Adding a new optional-extra (`[paper]`, `[docx]`, …). Optional
   extras are part of the public surface; users have install scripts
   that name them.
-- Merging another package into `precis-mcp` (currently planned for
-  `acatome-extract`). Plan in `docs/design/`, ADR in
+- Merging another package into `precis-mcp` (as was done for
+  `acatome-extract`, ADR 0001). Plan in `docs/design/`, ADR in
   `docs/decisions/`, do not rush.
 
 ## Ingest thresholds
