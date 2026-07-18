@@ -21,13 +21,17 @@ dive into the subdirectory that matches your task.
 
 - **[`decisions/`](./decisions/)** — Architecture Decision Records,
   numbered, one per substantive trade-off. **Never deleted**; obsolete
-  ones are marked superseded and kept for history. The
-  [index](./decisions/README.md) carries the by-topic table +
-  supersession graph.
+  ones are marked superseded and kept for history (fully-superseded
+  chains may move to [`archive/`](./decisions/archive/) under ADR 0059,
+  filename + number preserved). The [index](./decisions/README.md)
+  carries the by-topic table + supersession graph.
 - **[`design/`](./design/)** — plan artifacts, one per non-trivial
-  change (schema, new CLI subcommand, new handler, …). Obsolete plans
-  stay for context — treat a dated plan as point-in-time intent, not
-  current state, unless it says otherwise. Notable: the generated
+  change (schema, new CLI subcommand, new handler, …). **Deleted on
+  ship** once the truth lives in code + the ADR (git holds the record);
+  a plan stays only while it's still load-bearing — referenced by `src/`,
+  a current anchor, or an active ADR/proposal as its design-of-record.
+  Find dead plans with `scripts/docs-orphans`; adjudicate with the
+  `docs-triage` skill. Notable current ones: the generated
   [`schema.md`](./design/schema.md), the prose
   [`storage-v2.md`](./design/storage-v2.md), and the visual
   [`schema-v2.puml`](./design/schema-v2.puml) (conceptual sketch).

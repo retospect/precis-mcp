@@ -105,7 +105,13 @@ Extras (each enables its kinds; omit any you don't want):
 | `cad-step`   | `cad` exact STEP export (OpenCASCADE B-rep)        | yes (~200 MB OCCT libs) |
 | `pcb`        | `pcb` footprint resolution (LCSC → KiCad)          | no |
 | `dft`        | `structure` CIF I/O + symmetry (ASE + spglib)      | no |
-| `all`        | `embed` + `paper` + `docx` + `tex` + `calc` + `plot` + `external` + `patent` + `web` + `cad-export`. Excludes the heavy `cad-step`, `dft`, `dft-ml`, `pcb` tiers — install those explicitly. | yes |
+| `dft-ml`     | `structure` ML-potential relax (ASE + MACE-torch)  | yes (pulls torch) |
+| `edgar`      | `edgar` kind — SEC EDGAR filings (httpx)           | no |
+| `chem`       | `route` kind — retrosynthesis tool-pack (RDKit)    | no |
+| `mermaid`    | `mermaid` diagram kind — pure-Python `mermaidx` (no Node/Chromium) | no |
+| `tts`        | Audio export — local TTS for voice drafts + the morning brief (Kokoro) | yes (host-specific) |
+| `asa`        | `asa-bot` Discord bridge (discord.py)              | no |
+| `all`        | `embed` + `paper` + `docx` + `tex` + `calc` + `plot` + `external` + `patent` + `edgar` + `web` + `cad-export` + `mermaid`. Excludes the heavier / specialized `cad-step`, `dft`, `dft-ml`, `pcb`, `chem`, `tts`, `asa` tiers — install those explicitly. | yes |
 
 A bare `pip install precis-mcp` gives you the state kinds (`todo`,
 `memory`, `gripe`, `anki`, `conv`, `oracle`, `skill`,
