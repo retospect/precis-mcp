@@ -12,10 +12,61 @@ breaks ordinary JSON columns and is too implicit.
 
 from __future__ import annotations
 
+import os
+import re
 from typing import Any
 
-from psycopg import Connection
+from psycopg import Connection, sql
 from psycopg_pool import ConnectionPool
+
+#: A syntactically valid Postgres role name (lower-snake, ≤63 chars). Guards the
+#: ``SET ROLE`` below against a malformed / injected ``PRECIS_MCP_DB_ROLE`` even
+#: though ``sql.Identifier`` already quotes it — a privilege boundary refuses
+#: anything that isn't an obvious role name rather than quoting garbage.
+_ROLE_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+
+
+def _db_role_enforced() -> bool:
+    """Whether a session should ``SET ROLE`` to ``PRECIS_MCP_DB_ROLE`` (tier-2 of
+    the per-todo envelope, §13). DARK default: OFF.
+
+    Reads a SEPARATE flag from the role var itself: ``PRECIS_MCP_DB_ROLE`` is
+    already exported to every agentic ``claude -p`` subprocess today (harmless,
+    unconsumed), so keying enforcement on its mere presence would silently turn
+    write-isolation on across the fleet at deploy. ``PRECIS_MCP_DB_ROLE_ENFORCE``
+    is the explicit opt-in flipped in the Phase-2 window — and ONLY where
+    ``precis serve`` connects DIRECT to Postgres (session pooling): under a
+    pgbouncer *transaction* pool a session ``SET ROLE`` both fails to persist and
+    leaks across tenants, so it must not be enabled on a pgbouncer DSN.
+    """
+    return os.environ.get("PRECIS_MCP_DB_ROLE_ENFORCE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _apply_db_role(conn: Connection) -> None:
+    """Issue ``SET ROLE <PRECIS_MCP_DB_ROLE>`` when enforcement is on (tier-2).
+
+    Fails CLOSED: if the flag is on and the connecting role can't assume the
+    target (the ``agent_rw`` → ``agent_ro`` membership isn't granted), the
+    ``SET ROLE`` raises and the connection is refused — a write-isolation
+    boundary must break loudly, never silently run over-privileged. No-op (and
+    byte-identical to today) whenever the flag is off or the var is unset.
+
+    PREREQUISITE for turning this on: the connecting role must be a member of the
+    target role (``GRANT agent_ro TO agent_rw``), provisioned out-of-tree in the
+    prod DB before the window flips the flag.
+    """
+    if not _db_role_enforced():
+        return
+    role = (os.environ.get("PRECIS_MCP_DB_ROLE") or "").strip()
+    if not role:
+        return
+    if not _ROLE_NAME_RE.match(role):
+        raise ValueError(f"PRECIS_MCP_DB_ROLE {role!r} is not a valid role name")
+    conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
 
 
 def _configure_connection(conn: Connection) -> None:
@@ -43,6 +94,12 @@ def _configure_connection(conn: Connection) -> None:
             from pgvector.psycopg import register_vector
 
             register_vector(conn)
+        # Tier-2 write-isolation (§13): assume the envelope's DB role for the
+        # session's life. Session-level (survives the commit below), so a
+        # dedicated per-call ``precis serve`` binds e.g. ``agent_ro`` for every
+        # query. Dark unless PRECIS_MCP_DB_ROLE_ENFORCE is set. Runs LAST so the
+        # introspection above executes as the full connecting role.
+        _apply_db_role(conn)
     finally:
         conn.commit()
 

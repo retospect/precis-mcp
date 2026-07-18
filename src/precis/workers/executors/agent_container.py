@@ -30,8 +30,10 @@ never selected.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from precis.workers import envelope as _envelope
@@ -178,6 +180,62 @@ def container_env(
 # ── The run argv (pure — asserted by tests) ────────────────────────
 
 
+def default_agent_mcp_config() -> str:
+    """Path (inside the container) to the baked MCP config that wires the
+    ``precis`` server over stdio for the agent — ``claude -p`` spawns
+    ``precis serve`` per call (no daemon). Overridable via
+    ``PRECIS_AGENT_MCP_CONFIG``."""
+    return os.environ.get("PRECIS_AGENT_MCP_CONFIG") or "/etc/precis/agent-mcp.json"
+
+
+def build_claude_command(
+    *,
+    model: str,
+    prompt: str,
+    mode: str,
+    disallowed_tools: Sequence[str] = (),
+    mcp_config: str | None = None,
+    max_turns: int = 20,
+    permission_mode: str = "bypassPermissions",
+    output_format: str = "stream-json",
+) -> list[str]:
+    """The ``claude -p …`` argv the container execs (its entrypoint is
+    ``exec "$@"``, so the run argv's trailing command becomes the container's
+    command). Mirrors the in-proc :func:`precis.utils.claude_agent.call_claude_agent`
+    argv so a containerized run is the SAME invocation — minus the binary path
+    (``claude`` is on the image PATH).
+
+    ``api`` mode adds ``--bare`` (forces ``ANTHROPIC_API_KEY``, no OAuth
+    discovery); ``oauth`` uses the token passed by key. The tier-1 deny list
+    rides ``--settings`` JSON, never the variadic ``--disallowed-tools`` (which
+    greedily eats the prompt — the 2026-06-17 dream incident). ``stream-json``
+    output so the executor can reconstruct the transcript.
+    """
+    argv = [
+        "claude",
+        "-p",
+        "--model",
+        model,
+        "--max-turns",
+        str(max_turns),
+        "--permission-mode",
+        permission_mode,
+        "--output-format",
+        output_format,
+    ]
+    if mode == "api":
+        argv.append("--bare")
+    argv += ["--mcp-config", mcp_config or default_agent_mcp_config()]
+    argv.append("--strict-mcp-config")
+    if disallowed_tools:
+        argv += [
+            "--settings",
+            json.dumps({"permissions": {"deny": list(disallowed_tools)}}),
+        ]
+    argv.append(prompt)
+    return argv
+
+
 def build_agent_run_argv(
     *,
     container_bin: str,
@@ -186,6 +244,7 @@ def build_agent_run_argv(
     cenv: ContainerEnv,
     net: NetworkPlan,
     detached: bool = True,
+    command: Sequence[str] = (),
 ) -> list[str]:
     """Assemble the ``docker/podman run`` argv for one agentic job.
 
@@ -193,7 +252,9 @@ def build_agent_run_argv(
     entry passed ``--env NAME`` (KEY only — no secret in argv); every
     ``values`` entry ``--env NAME=value``; the tier-3 ``net.docker_args``
     present (so ``egress:none`` → ``--network none``); the resolved ``image``
-    last. No ``--device`` (never a GPU — agentic work is CPU + network).
+    then the container ``command`` (the ``claude -p …`` tail, empty ⇒ the
+    image's default ``CMD``). No ``--device`` (never a GPU — agentic work is
+    CPU + network).
     """
     argv = [container_bin, "run"]
     if detached:
@@ -205,6 +266,7 @@ def build_agent_run_argv(
         argv += ["--env", f"{k}={v}"]
     argv += list(net.docker_args)
     argv.append(image)
+    argv += list(command)
     return argv
 
 
@@ -213,20 +275,40 @@ def build_agent_run(
     *,
     name: str,
     model: str,
+    prompt: str | None = None,
     dsn: str | None = None,
     image: str | None = None,
     detached: bool = True,
+    mode: str | None = None,
+    max_turns: int = 20,
+    permission_mode: str = "bypassPermissions",
+    output_format: str = "stream-json",
 ) -> list[str]:
-    """Convenience: envelope → full run argv, resolving image + env + network.
-    The one call a live executor makes; the pieces are exposed separately so the
-    tier wiring is unit-testable."""
+    """Convenience: envelope → full run argv, resolving image + env + network +
+    (when ``prompt`` is given) the ``claude -p`` command. The one call a live
+    executor makes; the pieces are exposed separately so the tier wiring is
+    unit-testable. ``prompt=None`` ⇒ no command appended (the image's default
+    ``CMD``), the shape 13-code shipped."""
+    mode = mode or agent_run_mode()
+    command: list[str] = []
+    if prompt is not None:
+        command = build_claude_command(
+            model=model,
+            prompt=prompt,
+            mode=mode,
+            disallowed_tools=tuple(_envelope.disallowed_tools(env)),
+            max_turns=max_turns,
+            permission_mode=permission_mode,
+            output_format=output_format,
+        )
     return build_agent_run_argv(
         container_bin=_container_bin(),
         name=name,
         image=image or default_agent_image(),
-        cenv=container_env(env, model=model),
+        cenv=container_env(env, model=model, mode=mode),
         net=resolve_network(env, dsn=dsn),
         detached=detached,
+        command=command,
     )
 
 
@@ -236,8 +318,10 @@ __all__ = [
     "agent_run_mode",
     "build_agent_run",
     "build_agent_run_argv",
+    "build_claude_command",
     "container_agent_enabled",
     "container_env",
     "default_agent_image",
+    "default_agent_mcp_config",
     "resolve_network",
 ]

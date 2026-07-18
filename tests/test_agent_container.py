@@ -7,6 +7,8 @@ gate. All pure (no DB / no container), so it runs anywhere.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from precis.workers.envelope import Envelope
@@ -144,3 +146,76 @@ def test_default_image_env_override(monkeypatch) -> None:
     assert ac.default_agent_image() == "precis-agent:latest"
     monkeypatch.setenv("PRECIS_AGENT_IMAGE", "precis-agent@sha256:abc")
     assert ac.default_agent_image() == "precis-agent@sha256:abc"
+
+
+# ── the claude -p command (the container's argv tail) ──────────────
+
+
+def test_claude_command_mirrors_inproc_argv() -> None:
+    argv = ac.build_claude_command(model="qwen", prompt="do the thing", mode="oauth")
+    assert argv[0:2] == ["claude", "-p"]
+    assert argv[argv.index("--model") + 1] == "qwen"
+    assert "--strict-mcp-config" in argv
+    # baked MCP config wires precis serve over stdio
+    assert argv[argv.index("--mcp-config") + 1] == "/etc/precis/agent-mcp.json"
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert argv[-1] == "do the thing"  # prompt last
+    assert "--bare" not in argv  # oauth mode uses the token, not the API key
+
+
+def test_claude_command_api_mode_is_bare() -> None:
+    argv = ac.build_claude_command(model="qwen", prompt="p", mode="api")
+    assert "--bare" in argv
+
+
+def test_claude_command_deny_via_settings_not_variadic() -> None:
+    argv = ac.build_claude_command(
+        model="qwen", prompt="p", mode="oauth", disallowed_tools=("WebFetch", "put")
+    )
+    # deny list rides --settings JSON (never --disallowed-tools, which eats the
+    # prompt), and the prompt stays the final positional.
+    assert "--disallowed-tools" not in argv
+    settings = argv[argv.index("--settings") + 1]
+    assert json.loads(settings) == {"permissions": {"deny": ["WebFetch", "put"]}}
+    assert argv[-1] == "p"
+
+
+def test_mcp_config_env_override(monkeypatch) -> None:
+    assert ac.default_agent_mcp_config() == "/etc/precis/agent-mcp.json"
+    monkeypatch.setenv("PRECIS_AGENT_MCP_CONFIG", "/custom/mcp.json")
+    assert ac.default_agent_mcp_config() == "/custom/mcp.json"
+
+
+def test_run_argv_appends_command_after_image() -> None:
+    cenv = ac.ContainerEnv(secret_keys=("CLAUDE_CODE_OAUTH_TOKEN",), values={})
+    argv = ac.build_agent_run_argv(
+        container_bin="podman",
+        name="agent-1",
+        image="precis-agent:x",
+        cenv=cenv,
+        net=ac.NetworkPlan(mode="open"),
+        command=["claude", "-p", "hello"],
+    )
+    i = argv.index("precis-agent:x")
+    assert argv[i + 1 :] == ["claude", "-p", "hello"]  # command trails the image
+
+
+def test_build_agent_run_with_prompt_appends_claude_command() -> None:
+    env = Envelope(write="none", egress="none")
+    argv = ac.build_agent_run(
+        env, name="agent-9", model="qwen", prompt="summarize", image="precis-agent:x"
+    )
+    # run knobs still present (tier-2 + tier-3) ...
+    assert "PRECIS_MCP_DB_ROLE=agent_ro" in argv
+    assert "--network" in argv and "none" in argv
+    # ... and the claude -p command now trails the image, prompt last.
+    i = argv.index("precis-agent:x")
+    assert argv[i + 1 : i + 3] == ["claude", "-p"]
+    assert argv[-1] == "summarize"
+
+
+def test_build_agent_run_without_prompt_is_unchanged() -> None:
+    """The 13-code shape: no prompt ⇒ no command, image last (default CMD runs)."""
+    env = Envelope()
+    argv = ac.build_agent_run(env, name="a", model="qwen", image="precis-agent:x")
+    assert argv[-1] == "precis-agent:x"

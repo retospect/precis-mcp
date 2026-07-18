@@ -395,6 +395,11 @@ class LlmRequest:
     #: A ``select_offering`` caller threads ``Selection.endpoint`` here.
     endpoint: dict[str, Any] | None = None
     effort: str | None = None
+    #: Direct local-serving base URL (llama-swap's OpenAI endpoint), threaded in
+    #: by :func:`dispatch` when a reserved :class:`~precis.utils.llm.local_serving.LocalSlot`
+    #: declares an ``endpoint`` — the LITELLM transport routes here instead of the
+    #: litellm proxy (the Phase-2 flip). ``None`` ⇒ the ``LlmConfig.from_env`` URL.
+    local_url: str | None = None
     #: Caller label ("dream", "review:structural", "chase:verify", ...) — the
     #: categorical feature the route-log keys on and the future per-source
     #: switchover knob. Free-form; empty when a caller hasn't set one yet.
@@ -743,9 +748,20 @@ def dispatch(req: LlmRequest) -> LlmResult:
             error=f"all local serving slots for {model} are busy — backing off",
             paused=True,
         )
+    # A reserved slot that declares a direct ``endpoint`` (llama-swap) routes the
+    # LITELLM transport there instead of the litellm proxy, using the server-side
+    # model name — the Phase-2 litellm-retirement flip. No endpoint ⇒ req + model
+    # unchanged (today's behavior). Only the local transport reads ``local_url``.
+    call_req = req
+    call_model = model
+    if slot is not None and slot.reserved and slot.endpoint:
+        from dataclasses import replace as _replace
+
+        call_req = _replace(req, local_url=slot.endpoint)
+        call_model = slot.served_model or model
     started = time.monotonic()
     try:
-        result = provider.run(req, model=model)
+        result = provider.run(call_req, model=call_model)
     finally:
         _local.release(slot)
     _record_dispatch(
@@ -843,6 +859,12 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     from precis.workers.llm_summarize import LlmClient, LlmConfig
 
     cfg = replace(LlmConfig.from_env(), model=model, enabled=True)
+    # A local-serving slot may pin a direct endpoint (llama-swap) — route there
+    # instead of the litellm proxy URL (the Phase-2 flip; dark until a card
+    # declares served_by.endpoint). Mirrors the per-call url override the
+    # openai_compat path already uses.
+    if req.local_url:
+        cfg = replace(cfg, url=req.local_url)
     messages = req.messages or [{"role": "user", "content": req.prompt}]
     client = LlmClient(cfg)
     try:

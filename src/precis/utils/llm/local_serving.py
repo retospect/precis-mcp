@@ -29,6 +29,7 @@ import os
 import socket
 import time
 from dataclasses import dataclass
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -47,19 +48,65 @@ _served_at: float = 0.0
 class LocalSlot:
     """Outcome of an :func:`acquire`. ``reserved`` → the call may proceed and the
     caller MUST :func:`release`; ``paused`` → the host serves the model but every
-    local slot is busy (the caller should back off, not spin)."""
+    local slot is busy (the caller should back off, not spin).
+
+    When the card's ``served_by`` entry declares an ``endpoint`` (the local
+    server's OpenAI base URL, e.g. llama-swap at ``http://127.0.0.1:11445/v1``),
+    a reserved slot carries it in :attr:`endpoint` plus the server-side model
+    name in :attr:`served_model` — the router overrides the local dispatch's URL
+    + model with them so the call goes to llama-swap DIRECTLY instead of the
+    litellm proxy (the Phase-2 litellm-retirement flip; §6/§15a). A ``served_by``
+    with NO ``endpoint`` leaves both ``None`` → today's slot-only behavior (the
+    call still goes to whatever ``LlmConfig.from_env`` dials)."""
 
     host: str
     resource: str
     reserved: bool
     paused: bool
+    endpoint: str | None = None
+    served_model: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Served:
+    """A host's ``served_by`` declaration for one model: the local endpoint URL
+    (``None`` = slot-only, no direct routing) + the server-side model name."""
+
+    endpoint: str | None
+    served_model: str
+
+
+#: {host -> {resource -> _Served}} — the endpoint/model each ``llm:`` resource is
+#: served under on this host, from the cards' ``served_by``. Consulted only for a
+#: resource already confirmed served (so the dark no-op path never loads it).
+_endpoints: dict[str, dict[str, _Served]] = {}
+_endpoints_at: float = 0.0
 
 
 def reset_cache() -> None:
-    """Drop the served-resource cache (tests + after a known slot write)."""
-    global _served, _served_at
+    """Drop the served-resource + endpoint caches (tests + after a slot write)."""
+    global _served, _served_at, _endpoints, _endpoints_at
     _served = {}
     _served_at = 0.0
+    _endpoints = {}
+    _endpoints_at = 0.0
+
+
+def _iter_served_by(meta: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every ``served_by`` entry on a card — card-level ``meta.served_by`` and
+    each offering's nested ``served_by`` (§6 nests it under the local-serving
+    offering). Mirrors ``llm_reconcile._iter_served_by`` (kept local so the hot
+    path doesn't import the worker/DB chain)."""
+    out: list[dict[str, Any]] = []
+    for e in meta.get("served_by") or []:
+        if isinstance(e, dict):
+            out.append(e)
+    for o in meta.get("offerings") or []:
+        if isinstance(o, dict):
+            for e in o.get("served_by") or []:
+                if isinstance(e, dict):
+                    out.append(e)
+    return out
 
 
 def _local_host() -> str:
@@ -117,7 +164,59 @@ def acquire(model: str) -> LocalSlot | None:
     except Exception:  # pragma: no cover — reservation must never break dispatch
         log.warning("local_serving: reserve failed for %s", resource, exc_info=True)
         return None
-    return LocalSlot(host=host, resource=resource, reserved=ok, paused=not ok)
+    # Enrich a reserved slot with the card's direct endpoint (if declared), so the
+    # router can route to llama-swap instead of the litellm proxy. Looked up only
+    # once served + reserved — the dark no-op path never touches it.
+    endpoint: str | None = None
+    served_model: str | None = None
+    if ok:
+        served = _served_endpoints(store, host).get(resource)
+        if served is not None:
+            endpoint = served.endpoint
+            served_model = served.served_model
+    return LocalSlot(
+        host=host,
+        resource=resource,
+        reserved=ok,
+        paused=not ok,
+        endpoint=endpoint,
+        served_model=served_model,
+    )
+
+
+def _served_endpoints(store: object, host: str) -> dict[str, _Served]:
+    """Per-host ``{resource -> _Served}`` from the cards' ``served_by`` (60s TTL).
+
+    The authoritative endpoint source: the ``llm`` card's ``served_by`` entry for
+    this host carries ``endpoint`` (the local server's OpenAI base URL) and an
+    optional server-side ``model`` name (defaults to the card's ``model_id``).
+    Read only when a resource is already confirmed served, so the dark path pays
+    nothing. Any failure degrades to an empty map (no direct routing → the call
+    falls back to the litellm proxy)."""
+    global _endpoints, _endpoints_at
+    now = time.monotonic()
+    if host not in _endpoints or now - _endpoints_at > _CACHE_TTL_S:
+        try:
+            m: dict[str, _Served] = {}
+            for card in store.list_refs(kind="llm", limit=1000):  # type: ignore[attr-defined]
+                meta = getattr(card, "meta", None) or {}
+                model_id = meta.get("model_id")
+                if not model_id:
+                    continue
+                for entry in _iter_served_by(meta):
+                    if entry.get("host") != host:
+                        continue
+                    ep = entry.get("endpoint")
+                    m[f"llm:{model_id}"] = _Served(
+                        endpoint=ep if isinstance(ep, str) and ep else None,
+                        served_model=str(entry.get("model") or model_id),
+                    )
+            _endpoints = {host: m}
+            _endpoints_at = now
+        except Exception:  # pragma: no cover — must never break dispatch
+            log.warning("local_serving: endpoint lookup failed", exc_info=True)
+            return {}
+    return _endpoints.get(host, {})
 
 
 def release(slot: LocalSlot | None) -> None:

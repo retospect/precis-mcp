@@ -306,6 +306,87 @@ def test_dispatch_local_uses_explicit_messages(
     assert seen["messages"] == msgs
 
 
+def test_dispatch_local_routes_to_served_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reserved local slot that declares a direct ``endpoint`` (llama-swap)
+    overrides the local dispatch's URL + model — the Phase-2 litellm-retire flip.
+    """
+    import precis.workers.llm_summarize as summ
+    from precis.utils.llm import local_serving as ls
+
+    # A reserved slot carrying a direct endpoint + server-side model name.
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h",
+            resource=f"llm:{model}",
+            reserved=True,
+            paused=False,
+            endpoint="http://127.0.0.1:11445/v1",
+            served_model="qwen3-next-80b-a3b-q4_k_m",
+        ),
+    )
+    monkeypatch.setattr(ls, "release", lambda slot: None)
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["url"] = getattr(config, "url", None)
+            seen["model"] = getattr(config, "model", None)
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            return _FakeOpenAI(text="local gloss", total_tokens=7)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
+
+    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="hi"))
+
+    # URL + model came from the slot's endpoint, not the litellm proxy default.
+    assert seen["url"] == "http://127.0.0.1:11445/v1"
+    assert seen["model"] == "qwen3-next-80b-a3b-q4_k_m"
+    assert out.model == "qwen3-next-80b-a3b-q4_k_m"
+
+
+def test_dispatch_local_slot_without_endpoint_keeps_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reserved slot with NO endpoint leaves URL + model at today's defaults."""
+    import precis.workers.llm_summarize as summ
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h", resource=f"llm:{model}", reserved=True, paused=False
+        ),
+    )
+    monkeypatch.setattr(ls, "release", lambda slot: None)
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["url"] = getattr(config, "url", None)
+            seen["model"] = getattr(config, "model", None)
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            return _FakeOpenAI(text="x")
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
+    monkeypatch.delenv("PRECIS_SUMMARIZE_LLM_URL", raising=False)
+
+    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="hi"))
+
+    assert seen["url"] == "http://127.0.0.1:4000/v1"  # litellm proxy default
+    assert seen["model"] == "summarizer"
+
+
 def test_dispatch_local_big_routes_to_tools_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

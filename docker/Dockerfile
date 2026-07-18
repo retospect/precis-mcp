@@ -674,6 +674,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
+# The agent's MCP wiring: ``claude -p --mcp-config`` spawns ``precis serve`` over
+# stdio per call (no daemon). Path matches agent_container.default_agent_mcp_config().
+COPY docker/agent-mcp.json /etc/precis/agent-mcp.json
+
 USER precis
 WORKDIR /data
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]

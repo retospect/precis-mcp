@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "precis": {
+      "command": "precis",
+      "args": ["serve"]
+    }
+  }
+}

@@ -103,3 +103,94 @@ def test_only_this_host_slots_count(store) -> None:
     store.reconcile_llm_served_slots({("otherhost", "llm:remote"): 4})
     local_serving.reset_cache()
     assert local_serving.acquire("remote") is None
+
+
+# ── endpoint enrichment (the Phase-2 litellm-retire flip) ──────────────────
+
+
+def _serve_card(
+    store: Any,
+    host: str,
+    model_id: str,
+    cap: int,
+    *,
+    endpoint: str | None = None,
+    served_model: str | None = None,
+) -> None:
+    """Seed BOTH a real ``llm`` card (with ``served_by`` — the endpoint source)
+    and its ``resource_slots`` counter row, so ``acquire`` reserves *and* can
+    enrich with the declared endpoint."""
+    from precis import llm_catalog
+
+    rid, _ = llm_catalog.upsert_card(store, model_id=model_id, text=f"{model_id} card.")
+    entry: dict[str, Any] = {"host": host, "max_parallel": cap}
+    if endpoint is not None:
+        entry["endpoint"] = endpoint
+    if served_model is not None:
+        entry["model"] = served_model
+    store.update_ref(rid, meta_patch={"served_by": [entry]})
+    store.reconcile_llm_served_slots({(host, f"llm:{model_id}"): cap})
+    local_serving.reset_cache()
+
+
+def test_endpoint_enriches_a_reserved_slot(store) -> None:
+    """A ``served_by.endpoint`` on the card → the reserved slot carries the direct
+    llama-swap URL + server-side model name (what the router routes to)."""
+    meter.bind_store(store)
+    _serve_card(
+        store,
+        "testnode",
+        "qwen-local",
+        2,
+        endpoint="http://127.0.0.1:11445/v1",
+        served_model="qwen3-next-80b-a3b-q4_k_m",
+    )
+    slot = local_serving.acquire("qwen-local")
+    assert slot is not None and slot.reserved
+    assert slot.endpoint == "http://127.0.0.1:11445/v1"
+    assert slot.served_model == "qwen3-next-80b-a3b-q4_k_m"
+
+
+def test_served_by_without_endpoint_stays_slot_only(store) -> None:
+    """No ``endpoint`` declared → the reserved slot's endpoint is ``None`` (today's
+    slot-only behavior; the call still goes to the litellm proxy). The served
+    model defaults to the card's ``model_id``."""
+    meter.bind_store(store)
+    _serve_card(store, "testnode", "qwen-noep", 1)
+    slot = local_serving.acquire("qwen-noep")
+    assert slot is not None and slot.reserved
+    assert slot.endpoint is None
+    assert slot.served_model == "qwen-noep"
+
+
+def test_endpoint_is_host_scoped(store) -> None:
+    """A card served on two hosts with different endpoints → *this* host's slot
+    carries *this* host's endpoint, never the other's."""
+    meter.bind_store(store)
+    from precis import llm_catalog
+
+    rid, _ = llm_catalog.upsert_card(store, model_id="qwen-multi", text="multi.")
+    store.update_ref(
+        rid,
+        meta_patch={
+            "served_by": [
+                {
+                    "host": "otherhost",
+                    "max_parallel": 4,
+                    "endpoint": "http://otherhost:11445/v1",
+                },
+                {
+                    "host": "testnode",
+                    "max_parallel": 2,
+                    "endpoint": "http://127.0.0.1:11445/v1",
+                },
+            ]
+        },
+    )
+    store.reconcile_llm_served_slots(
+        {("otherhost", "llm:qwen-multi"): 4, ("testnode", "llm:qwen-multi"): 2}
+    )
+    local_serving.reset_cache()
+    slot = local_serving.acquire("qwen-multi")
+    assert slot is not None and slot.reserved
+    assert slot.endpoint == "http://127.0.0.1:11445/v1"
