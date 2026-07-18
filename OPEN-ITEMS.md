@@ -2112,6 +2112,22 @@ memory `repo_dev_claude_tooling.md`. Remaining:
   was). (5) **`email` worktree `0074`→`0075` renumber** before it ships
   (migration-check flags it).
 
+- **More repo-dev hooks** *(feature, OPEN — brainstormed 2026-07-18).* Turn
+  CLAUDE.md prose-warnings into firing hooks; mirror the existing
+  `scripts/hooks/guard-*`. **Tier-1 (prevent irreversible damage — build first):**
+  (1) **PROD-write guard** — PreToolUse on `mcp__precis__put|edit|delete|tag`,
+  confirm when the resolved DSN is `precis_prod` (enforces dogfood-read-only;
+  key off target, not verb, to avoid nagging dev-DB work). (2) **Sealed-migration
+  guard** — PreToolUse Edit/Write, deny editing an already-committed
+  `migrations/NNNN_*.sql` (ADR 0005; allow new files + `baseline/`).
+  (3) **bare-`git stash` guard** — deny bare `stash`/`pop` (shared stash stack).
+  **Tier-2 (drift nudges):** (4) extend `map-staleness-reminder` — new migration
+  → `migration-check`, new ADR → README index/graph, new skill → overview table;
+  (5) bare-`pytest`/`uv run pytest` → `scripts/test` nudge. **Tier-3:**
+  (6) **PreCompact** hook = run `memory-lint` + "persist residuals to OPEN-ITEMS
+  first" (automates this session's compaction discipline); (7) Stop-with-dirty-
+  worktree reminder (marginal — noise risk).
+
 - **Mutation testing via `cosmic-ray`** *(polish, blocked-on-adoption —
   owner: `pyproject.toml` + nightly bucket).* Line coverage proves executed,
   not asserted; mutation testing does. `mutmut` 3.6 runs pytest **in-process**,
