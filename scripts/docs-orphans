@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# scripts/docs-orphans — surface `docs/design/` plans that may have gone dead.
+#
+# The disease (see the `docs-triage` skill): a design doc is a point-in-time
+# plan. When its feature ships, the truth moves into code + the ADR, and the
+# plan orphans — but nobody deletes it, so it lingers and gets READ as
+# current-state. This scans every `docs/design/*.md` for inbound references and
+# buckets each by how load-bearing it is, so the orphaned tail is easy to spot.
+#
+# It does NOT delete anything and never fails the build — orphan status is a
+# prompt to *adjudicate* with the dead-check, not a verdict. Some flagged docs
+# are legitimately kept (e.g. a doc whose only ref is a path-link inside a
+# sealed migration, which ADR-0005 forbids editing → can't de-ref → keep).
+#
+# Buckets:
+#   LOAD-BEARING  ref from src/ or a current anchor  → keep (or de-ref first)
+#   ADR-linked    ref only from docs/decisions/      → adjudicate: a *proposed*
+#                 ADR delegating build-detail = live spec (keep); a *shipped*
+#                 feature = delete the doc + fix the ADR pointer same-commit
+#   DOC-only      ref only from other design/proposal docs (weak protection)
+#   ORPHAN        no inbound ref anywhere             → almost certainly delete
+#
+# Usage:  scripts/docs-orphans            # run from anywhere in the worktree
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+ANCHORS=(CLAUDE.md AGENTS.md README.md docs/codebase.md docs/architecture docs/conventions src/precis/data/skills)
+
+load_bearing=() adr_linked=() doc_only=() orphan=()
+
+for f in docs/design/*.md; do
+    stem="$(basename "$f" .md)"
+    # A ref is any mention of the stem outside the file itself.
+    src=$(grep -rl -- "$stem" src/ 2>/dev/null | grep -v "^$f\$" || true)
+    anchor=$(grep -rl -- "$stem" "${ANCHORS[@]}" 2>/dev/null || true)
+    adr=$(grep -rl -- "$stem" docs/decisions/ 2>/dev/null || true)
+    other=$(grep -rl -- "$stem" docs/design docs/proposals 2>/dev/null | grep -v "^$f\$" || true)
+
+    if [[ -n "$src" || -n "$anchor" ]]; then
+        load_bearing+=("$stem")
+    elif [[ -n "$adr" ]]; then
+        adr_linked+=("$stem  ←  $(echo "$adr" | sed 's#docs/decisions/##;s#\.md##' | tr '\n' ' ')")
+    elif [[ -n "$other" ]]; then
+        doc_only+=("$stem  ←  $(echo "$other" | tr '\n' ' ')")
+    else
+        orphan+=("$stem")
+    fi
+done
+
+n_total=$(ls docs/design/*.md | wc -l | tr -d ' ')
+echo "docs/design/: $n_total files"
+echo "  load-bearing (src/anchor ref): ${#load_bearing[@]}   adr-linked: ${#adr_linked[@]}   doc-only: ${#doc_only[@]}   orphan: ${#orphan[@]}"
+echo
+
+if ((${#orphan[@]})); then
+    echo "ORPHAN — no inbound ref anywhere (adjudicate; almost certainly delete):"
+    printf '  %s\n' "${orphan[@]}"
+    echo
+fi
+if ((${#adr_linked[@]})); then
+    echo "ADR-linked — adjudicate (proposed ADR=keep as live spec; shipped=delete + fix pointer):"
+    printf '  %s\n' "${adr_linked[@]}"
+    echo
+fi
+if ((${#doc_only[@]})); then
+    echo "DOC-only — referenced only by other design/proposal docs (weak protection):"
+    printf '  %s\n' "${doc_only[@]}"
+    echo
+fi
+echo "Next: adjudicate each non-load-bearing doc with the \`docs-triage\` skill."

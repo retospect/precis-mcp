@@ -220,7 +220,9 @@ back-compat with any files staged before the routing landed.
   (one file per non-trivial change; **delete on ship** once the truth
   lives in code + the ADR — git holds the record. Keep only a plan still
   referenced by `src/`, a current anchor, or an active ADR/proposal as
-  its design-of-record; that reference is what makes it load-bearing.)
+  its design-of-record; that reference is what makes it load-bearing.
+  Find dead plans with `scripts/docs-orphans`; adjudicate with the
+  `docs-triage` skill.)
 - **External-facing specs**: `docs/user-facing/`
   (`paper_ingest.md`, kind-spec docs, edit-protocol-spec)
 - **Active backlog**: `OPEN-ITEMS.md`
