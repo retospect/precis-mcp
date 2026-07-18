@@ -227,6 +227,9 @@ for attempt in 1 2 3; do
     case "$CHANGED" in
         *docs/design/*) say "docs/design changed — orphan-plan check"; scripts/docs-orphans || true ;;
     esac
+    case "$CHANGED" in
+        *OPEN-ITEMS.md*) scripts/backlog-lint || true ;;
+    esac
 
     # One gate invocation for the whole check. `ruff --fix`/`format` normalise
     # the source in-place (the mount in bind mode, the container's native copy

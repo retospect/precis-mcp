@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# scripts/backlog-lint — flag DONE-marked items still sitting in OPEN-ITEMS.md.
+#
+# OPEN-ITEMS is the ACTIVE backlog; a shipped/done entry is gunk (git log holds
+# the record — same delete-on-ship rule as docs/design). "Done" is a judgment
+# (some items say "SHIPPED" but keep an open remainder), so this only SURFACES
+# candidates — a list-item/heading whose TITLE carries an explicit done-marker —
+# it never deletes. Prune on completion; this catches the stragglers. Advisory
+# (exit 0), like docs-orphans / memory-lint. Bunched into /whatneedsdoing.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+F="${1:-OPEN-ITEMS.md}"
+
+# Title-level done-markers: a heading, or a list item whose bold title / leading
+# clause carries DONE/RESOLVED/RETIRED/✅/[x]/"SHIPPED + …".
+MARK='(DONE|RESOLVED|RETIRED|✅|\[x\]|SHIPPED \+|— *SHIPPED)'
+# Exclude partially-open items — a shipped sub-part under still-open work.
+OPEN='(still (open|unverified|pending)|remain|NEXT =|Phase-2|un(shipped|deployed)|not deployed|NOT deployed|slices? .*remain|round-trip)'
+
+hits="$(grep -nE "^(#{2,6} .*${MARK}|- .*${MARK})" "$F" 2>/dev/null | grep -viE "$OPEN" || true)"
+n="$(printf '%s' "$hits" | grep -c . || true)"
+
+if [[ "$n" -eq 0 ]]; then
+    echo "backlog-lint: ✓ no done-marked gunk in $F"
+    exit 0
+fi
+echo "backlog-lint: $n item(s) marked done but still in $F — verify shipped, then DELETE (git log keeps it):"
+printf '%s\n' "$hits" | sed -E 's/^([0-9]+):(.{0,88}).*/  L\1  \2/'
+exit 0

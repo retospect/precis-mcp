@@ -1,7 +1,7 @@
 ---
 description: One honest "what needs doing" across the two work substrates — repo dev work (OPEN-ITEMS backlog + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · orphan design docs · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
-allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-orphans:*), Bash(scripts/memory-lint:*), mcp__precis__get, mcp__precis__search
+allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-orphans:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), mcp__precis__get, mcp__precis__search
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
@@ -35,17 +35,20 @@ Live GitHub — open PRs:
 Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summary):
 !`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
 
-Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ memory index:
-!`scripts/migration-check --quiet 2>&1 || true; echo '— docs —'; scripts/docs-orphans 2>&1 | sed -n '1,2p;/^ORPHAN/,/^ADR-linked/p' || true; echo '— memory —'; scripts/memory-lint 2>&1 || true`
+Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ memory index ⋅ done-gunk:
+!`scripts/migration-check --quiet 2>&1 || true; echo '— docs —'; scripts/docs-orphans 2>&1 | sed -n '1,2p;/^ORPHAN/,/^ADR-linked/p' || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true`
 
 ## Procedure
 
 1. **Repo dev — backlog.** Read `OPEN-ITEMS.md`. Take only *open* items. **Prune
-   done gunk as you go** (same as closing a fixed gripe in step 2): an item whose
-   work is verified on `main` is not backlog — **delete its entry** (git log + the
-   topic memory hold the record), don't leave it marked "DONE". OPEN-ITEMS is the
-   *active* list, not an archive; a "DONE" bullet left in place is the same
-   append-only rot the docs triage cured. The dark-factory workstream is active.
+   done gunk as you go** (same as closing a fixed gripe in step 2): `scripts/backlog-lint`
+   lists items whose *title* carries a done-marker (DONE/RESOLVED/✅/SHIPPED-fully-
+   cut-over) yet still sit in the file — for each, confirm the work is on `main`,
+   then **delete its entry** (git log + the topic memory hold the record). Don't
+   leave it marked "DONE": OPEN-ITEMS is the *active* list, not an archive — a
+   left-in "DONE" bullet is the same append-only rot the docs triage cured. (The
+   lint excludes partially-open items that merely *mention* something shipped.)
+   The dark-factory workstream is active.
 2. **Repo dev — gripes.** `get(kind='gripe', id='/open')` (the bug tracker).
    Tracked but **not auto-worked** — flag stale or high-impact ones. **Close
    the truly-fixed ones as you go:** if an open gripe's fix has already merged

@@ -84,6 +84,7 @@ hand-rolling. Admonish this in `CLAUDE.md`/`AGENTS.md`:
 | `scripts/docs-orphans` | flag `docs/design` plans with no inbound ref | advisory; wired into ship when the diff touches `docs/design/` |
 | `scripts/migration-check` | flag duplicate migration **numbers** across main + all worktrees | advisory in ship when the diff touches migrations; fleet view in `/whatneedsdoing` |
 | `scripts/memory-lint` | broken links / unindexed / over-budget in the memory index + reconsolidation-due signal | advisory; `/whatneedsdoing` |
+| `scripts/backlog-lint` | flag done-marked items still sitting in the backlog (`OPEN-ITEMS.md`) | advisory in ship when the diff touches it; `/whatneedsdoing` |
 
 Package manager: pick one (`uv`, etc.) and forbid bare `pip`/`pytest`/`mypy`
 ("not reproducible"). Container-first for ops.
