@@ -11,6 +11,35 @@ is the historical observation log.
 
 ---
 
+## 🧵 Track 2 — litellm-retire transport-collapse
+
+Fold the direct-`LlmClient` consumers that bypassed `router.dispatch` through it
+so litellm loses its precis consumers. **LOCAL passes done + deployed** (main
+`7f24cbf0`): `llm_summarize` / `classify` / `paper_glossary` route via
+`router.DispatchClient` (a `.complete()`-shaped adapter over `dispatch`,
+`Tier.LOCAL_SMALL`); `LlmRequest.max_tokens` (glossary keeps 2000) +
+`log_call=False` (per-chunk backfills add no route-log row) landed with it.
+Byte-identical until `served_by` is seeded — then the call reroutes to the host
+llama-swap endpoint instead of the litellm proxy. Remaining:
+
+- **CLOUD passes → decision pending (window).** `reading/cards`, `workers/briefing`,
+  `reading/meditation`, `reading/briefing_cast` build an `LlmClient` at the litellm
+  proxy (model `claude-opus` → Anthropic API, pay-per-token). Targets: (a)
+  `claude_p` (§13 subscription OAuth, melchior-pinned so works today, but competes
+  for the quota that trips the $20/$85 breaker → a capped day ⇒ no morning brief);
+  (b) a new anthropic-direct HTTP transport (keeps API-key billing, adds a vault
+  key). Both need a `messages`→`prompt` flatten. Deferred to the Phase-2 window.
+- **`served_by` seeding.** Once cloud is decided, seed `served_by` on prod `llm`
+  cards (endpoint llama-swap `:11445`, real model) → local passes reroute off the
+  proxy. The flip that retires litellm's local role.
+- **Latent bug (pre-existing, not a Track-2 regression):** `workers/classify.py`
+  reads `PRECIS_CLASSIFY_ESCALATE_MODEL` but the "escalate re-judge" reuses the
+  **same** client/model — the env knob only gates *whether* to re-judge, never
+  *which* model. Fix: a second `DispatchClient(model=escalate_model)`, or drop the
+  dead knob.
+
+---
+
 ## 🔴 High-priority
 
 - **Consolidate `kind='cron'` and `level:recurring`** *(feature, open, high —
