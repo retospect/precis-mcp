@@ -2,7 +2,12 @@
 
 **Audience**: anyone writing/editing docs an agent reads to *develop this
 repo* — `CLAUDE.md`, `docs/codebase.md`, `state-map.md`, `glossary.md`,
-`AGENTS.md`, and files under `.claude/{agents,skills,commands}/`.
+`AGENTS.md`, `docs/design/`, `docs/decisions/`, and files under
+`.claude/{agents,skills,commands}/`.
+
+**These arch/design docs are LLM-guidance-first, human-second.** Written to
+be *acted on* by an agent, not read for narrative. So: no filler, no
+executive summary, no motivational preamble — the internals are the payload.
 
 **Sibling, opposite cut-list**: `docs/design/skill-authoring-style.md`
 governs the **product** surface (`src/precis/data/skills/`) — docs read by a

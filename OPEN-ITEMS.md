@@ -2091,3 +2091,34 @@ Architecture review covering ADR/documentation sprawl, code-structure overload, 
 - `## 🟠 Worker liveness + observability` (worker/watch restart / observability).
 - `## 🔵 Platform-specific test bugs` (Windows / macOS 3.12 test failures).
 - `## 🟠 LLM-confusion bugs mined from prod plan_tick transcripts` (plan_tick spin/optimization).
+
+## 🛠️ Repo-dev Claude tooling — backlog (2026-07-18)
+
+Tooling for **developing precis-mcp** (not the product). The bulk shipped
+main `aa5b5c49` (prose convention, `docs/codebase.md`, `scripts/test
+--impacted`, `scripts/prod-psql`, `scripts/code-index` + semantic code search,
+`rtk`, navigator agent, `guard-commit-on-main` hook). Cross-session facts:
+memory `repo_dev_claude_tooling.md`. Remaining:
+
+- **Docs historical→current-state triage** *(refactor, in-progress — owner:
+  `docs/`).* THE root disease: `docs/` accreted append-only but is read as
+  current-state, so it rots. Cure = triage, **delete-default** ("rest in git
+  for the archeologists"), keeping only maintained current-state (codebase.md /
+  state-map / glossary + live specs) and active plans-of-record. Process +
+  order in memory `docs-triage-plan`. ADR compile-and-cut is the separate,
+  careful last pass and follows the **move-not-delete** ADR-0058 archive
+  convention (see the P1 "Compact ADRs" item above), not delete-default.
+  Flip AGENTS.md "obsolete plans stay for context" → delete-on-ship at the end.
+
+- **Mutation testing via `cosmic-ray`** *(polish, blocked-on-adoption —
+  owner: `pyproject.toml` + nightly bucket).* Line coverage proves executed,
+  not asserted; mutation testing does. `mutmut` 3.6 runs pytest **in-process**,
+  incompatible with our global `addopts = -n auto` (builds `-n auto … -n0`;
+  xdist can't fork inside the running pytest → stats crash). `cosmic-ray` runs
+  the test command as a **subprocess**, so `pytest -n0` works. Scope to one
+  pure-logic module (SSRF guard exemplar), nightly; feeds an end-of-project
+  unit-test skim.
+
+- **`subsystem-analyst` (opus) agent** *(feature, conditional — owner:
+  `.claude/agents/`).* A deep "how does the whole X work" synthesis subagent —
+  build ONLY if the haiku `navigator` proves too shallow. Don't pre-build.

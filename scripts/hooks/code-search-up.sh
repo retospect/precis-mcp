@@ -19,7 +19,8 @@
 # Freshness is lazy: the synchronizer reconciles changed files by Merkle diff on
 # next use — a merge or two of lag on a navigation aid costs nothing.
 #
-# Wired in .claude/settings.json (SessionStart). See docs/design/claude-dev-tooling.md.
+# Wired in .claude/settings.json (SessionStart). Rationale: memory
+# `repo_dev_claude_tooling` + the "Semantic code search" convention in CLAUDE.md.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
