@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -17,6 +18,7 @@ import pytest
 
 from precis.reading.cards import (
     ForgeReport,
+    _stale_leeches,
     author_card,
     mint_daily_cards,
     rework_stale_cards,
@@ -269,6 +271,17 @@ class TestRework:
         card_id = _card(store, cid, stats=_LEECH)
         _age(store, card_id, 5)
         return card_id
+
+    def test_float_min_age_days_runs_on_pg(self, store: Any) -> None:
+        # Regression: prod's card_forge derives min_age_days via _env_float, so a
+        # *float* (e.g. 4.0) reaches _stale_leeches. `make_interval(days => 4.0)`
+        # has no PG overload (days is integer-only) → card_forge failed 100% with
+        # "function make_interval(days => double precision) does not exist". The
+        # int-defaulted tests never exercised the float path.
+        cid = _concept(store)
+        card_id = self._stale_leech(store, cid)
+        found = _stale_leeches(store, min_age_days=4.0, now=datetime.now(UTC))
+        assert card_id in {r[0] for r in found}
 
     def test_young_or_healthy_cards_untouched(self, store: Any) -> None:
         cid = _concept(store)

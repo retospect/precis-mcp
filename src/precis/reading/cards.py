@@ -340,7 +340,7 @@ def _stale_leeches(
           AND COALESCE(a.meta->>'source','') != 'anki-foreign'
           AND NOT COALESCE((a.meta->>'readonly')::boolean, FALSE)
           AND a.meta ? 'anki_stats'
-          AND a.created_at <= %s - make_interval(days => %s)
+          AND a.created_at <= %s - (%s * interval '1 day')
           AND ( (a.meta->'anki_stats'->>'lapses_total')::int >= %s
              OR (a.meta->'anki_stats'->>'ease_min')::float <= %s )
         ORDER BY (a.meta->'anki_stats'->>'lapses_total')::int DESC NULLS LAST
