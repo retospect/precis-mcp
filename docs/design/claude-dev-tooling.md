@@ -92,6 +92,13 @@ main's collection read-only; don't re-embed 200k LOC per worktree).
   dissolution the plan predicted, made concrete: a pre-briefed read-only
   orientation subagent (codebase.md + maps + `search_code`, cite file:line).
   Cheap, offloads spelunking from the main context.
+- ✅ **`guard-commit-on-main.py`** (PreToolUse Bash hook) — closes the footgun
+  that bit wave 2: a `git commit` whose target branch is `main`/`master` is
+  denied up-front (bypassing the worktree + ship gate is how work lands on main
+  un-gated). Narrow to stay false-positive-free: only `git commit` (follows
+  `cd`/`git -C` to the real target), NOT merge (ff-only sync is legit), NOT
+  `commit-tree` (ship's plumbing); `ALLOW_COMMIT_ON_MAIN=1` escapes. Mirrors
+  `guard-worktree-path.py` (remove the *ability*, not just warn).
 - ⛔ **Mutation testing — FILED, blocked on tool choice.** `mutmut` 3.6 runs
   pytest **in-process**, which is incompatible with our global `addopts =
   -n auto` (it builds `-n auto … -n0` and xdist can't fork inside the running

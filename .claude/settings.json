@@ -36,6 +36,15 @@
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-worktree-path.py\""
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-commit-on-main.py\""
+          }
+        ]
       }
     ],
     "PostToolUse": [
