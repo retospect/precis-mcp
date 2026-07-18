@@ -8,7 +8,8 @@
       "Bash(docker:*)",
       "Bash(uv:*)",
       "Bash(ansible-playbook:*)",
-      "Bash(ansible:*)"
+      "Bash(ansible:*)",
+      "mcp__claude-context"
     ],
     "additionalDirectories": ["/Users/reto/work/cluster"]
   },
