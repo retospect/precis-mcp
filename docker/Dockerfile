@@ -644,12 +644,19 @@ ENTRYPOINT ["tini", "--"]
 CMD ["bash"]
 
 # =============================================================================
-# Stage: agent — the `precis-agent` image (§13, 13-code). runtime + node +
-# the `claude` CLI. ONE host-resident, digest-pinned image holding the SAME
-# wheel the worker installs, plus the CLI + the skill set (skills ship in the
-# wheel as package data → `get(kind='skill')`, so no extra copy). `docker run
-# --rm` against a resident image is milliseconds; the pull cost amortizes to ~0
-# because it's the wheel you already ship, frozen into a layer.
+# Stage: agent — the `precis-agent` image (§13, 13-code). serve (torch-free) +
+# node + the `claude` CLI. ONE host-resident, digest-pinned image holding the
+# SAME wheel the worker installs, plus the CLI + the skill set (skills ship in
+# the wheel as package data → `get(kind='skill')`, so no extra copy). `docker
+# run --rm` against a resident image is milliseconds; the pull cost amortizes to
+# ~0 because it's the wheel you already ship, frozen into a layer.
+#
+# Base is `serve`, NOT `runtime`: the agent reaches precis over MCP (`claude -p
+# --mcp-config` spawns `precis serve` over stdio) against the real DB + the
+# REMOTE embedder, and never ingests/embeds locally — so it needs neither
+# marker/torch nor the ~3.8 GB baked model cache. `serve` is exactly "the wheel
+# the worker installs" (the torch-free `builder-lite` venv, ADR 0021), which
+# keeps the image ~1 GB and the build model-bake-free.
 #
 # The vaulted OAuth token (slice 0) makes `claude -p` stateless — env-only auth,
 # NO `~/.claude` state and NO key baked in. Two modes, one image (§13): OAuth
@@ -662,13 +669,19 @@ CMD ["bash"]
 #
 # Build:  docker build --target agent -t precis-agent:latest -f docker/Dockerfile .
 # =============================================================================
-FROM runtime AS agent
+FROM serve AS agent
 
 USER root
 ARG NODE_MAJOR=20
 ARG CLAUDE_CODE_VERSION=2.1.143
+# system-base carries neither curl nor the apt lists, and the nodesource
+# setup script pipes through curl — so install curl (+ apt lists) BEFORE the
+# `curl | bash`, exactly as dev-system / code-task do. Without this the agent
+# stage never built (curl: not found → E: Unable to locate package nodejs).
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force \

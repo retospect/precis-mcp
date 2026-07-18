@@ -11,6 +11,41 @@ is the historical observation log.
 
 ---
 
+## 🧵 Track 1 — precis-agent image (built + proven, window-wiring remains)
+
+The §13 container-agent executor's image. **Built, distributed, and smoke-proven
+end-to-end on melchior** (2026-07-18) — the concrete container-executor proof:
+
+- **Base fixed to `serve`, not `runtime`** (Dockerfile `agent` stage). The agent
+  reaches precis over MCP against the real DB + the *remote* embedder and never
+  ingests/embeds locally, so it needs neither marker/torch nor the ~3.8 GB baked
+  model cache — `serve` is exactly "the wheel the worker installs" (torch-free
+  `builder-lite`, ADR 0021). Image **1.48 GB**, not ~5 GB; build is model-bake-free
+  (~2 min) so the DockerHub-egress-blocked cluster is a non-issue (build on a
+  DockerHub-reachable arm64 Mac → `docker save | ssh | docker load`).
+- **Pre-existing latent bug fixed:** the `agent` stage piped `curl | bash` for
+  nodesource but `system-base` ships no `curl` and the RUN never `apt-get update`d
+  first → the stage *never built* (`curl: not found` → `Unable to locate package
+  nodejs`). Now installs `curl ca-certificates` first, like `dev-system`/`code-task`.
+- **Smoke (melchior colima, deploy):** auth-only `claude -p` → `PONG`; full path →
+  `claude -p` + precis MCP (`--mcp-config /etc/precis/agent-mcp.json`) +
+  `PRECIS_MCP_DB_ROLE=agent_ro` ran a real `search(kind='paper','catalyst')` → `42`.
+  Vaulted `CLAUDE_CODE_OAUTH_TOKEN` (108 ch) resolves via `precis secret get`;
+  the colima VM **does** route the tailscale `100.x:6432` DB (no routing gap).
+
+Remaining (window, task #23/#19):
+- **Distribution is melchior-only.** Only melchior runs the agent-profile worker,
+  so only it needs the image today. If a second host gets the agent profile,
+  repeat the `save|ssh|load` (all arm64 → no cross-build).
+- **Worker-daemon env wiring:** launchd PATH lacks `/opt/homebrew/bin`, so set
+  `PRECIS_CONTAINER_BIN=/opt/homebrew/bin/docker` (or `DOCKER_HOST`=the colima
+  sock) in the worker plist env; add a boot LaunchAgent for `colima start`.
+- **Flip is the window action:** `PRECIS_AGENT_CONTAINER=1` (+ pin
+  `PRECIS_AGENT_IMAGE` to a digest) makes the container the default agentic
+  executor. Until then the image is resident but unused (in-proc path unchanged).
+
+---
+
 ## 🧵 Track 2 — litellm-retire transport-collapse
 
 Fold the direct-`LlmClient` consumers that bypassed `router.dispatch` through it
