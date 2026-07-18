@@ -49,6 +49,7 @@ scripts/exercise-mcp/out/
 .claude/*
 !.claude/commands/
 !.claude/settings.json
+!.claude/skills/
 
 # Personal ops notes — anything matching *.local.md / *.local/.
 # Convention for ops crib sheets, scratch SQL, host-specific quirks.
@@ -65,3 +66,11 @@ memory/
 # Fixer loop runtime scratch (ADR 0048): build worktrees, lockfile, fixer.log.
 # Never source — and `scripts/ship`'s `git add -A` must not commit it.
 .fixer-work/
+
+# testmon test-selection DB (volatile binary; shared via TESTMON_DATAFILE, not git)
+.testmondata
+.testmondata.*
+
+# rtk: keep project filters, ignore runtime tee logs/cache
+.rtk/*
+!.rtk/filters.toml

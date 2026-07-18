@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# scripts/test — run the suite (or a subset) in the precis-dev container
+# against THIS worktree, with the RAM test DB wired, and terse "token-killer"
+# output (warnings suppressed, short tracebacks). The canonical way to check
+# tests while iterating.
+#
+# Why a wrapper: the host venv is torch-free, so a bare `uv run pytest` on the
+# host fails with spurious ModuleNotFoundError; and `scripts/dev` bind-mounts
+# MAIN, not your worktree, so it can't see your edits. This runs in the
+# container over a bind-mount of the CURRENT worktree, exactly like the
+# scripts/ship gate — so it tests what you're actually editing.
+#
+# The ship gate (scripts/ship, run by /endsession and /go) is still the
+# authoritative pre-merge run; this is the fast iteration loop.
+#
+# Usage:
+#   scripts/test                              # full suite (-n6)
+#   scripts/test tests/test_foo.py            # one file
+#   scripts/test -k "registry or env"         # a -k expression
+#   scripts/test tests/test_foo.py::test_bar -x
+#
+# Everything after the script name is passed straight to pytest. Default
+# parallelism is -n6 (the measured sweet spot); pass your own -n0/-nN to
+# override for a single fast test.
+#
+# NOTE: the dev image bakes all extras, so you never need `--with`/`--extra`
+# here — that's only for the torch-free host.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+WORKTREE="$PWD"
+
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
+[[ -f "$INFRA_COMPOSE" ]] || {
+    echo "ERR: compose file not found at ${INFRA_COMPOSE} (set PRECIS_COMPOSE)" >&2
+    exit 1
+}
+compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" --profile dev "$@"; }
+
+# Co-located RAM test DB (the same service scripts/ship's gate uses). If it
+# can't start, fall back to whatever PRECIS_TEST_PG_URL the container carries.
+TEST_DB_ENV=()
+if compose up -d --wait precis-test-db >/dev/null 2>&1; then
+    TEST_DB_ENV=(-e "PRECIS_TEST_PG_URL=postgresql://postgres@precis-test-db:5432/precis_test")
+else
+    echo "WARNING: precis-test-db didn't start — falling back to the container's default test DB" >&2
+fi
+
+# Default -n6 unless the caller set their own -n (single fast test → pass -n0).
+NPROC=(-n6)
+for a in "$@"; do [[ "$a" == -n* ]] && NPROC=(); done
+
+# --no-sync: the image already bakes the venv and installs /app editable, so
+# the bind-mounted source is live without a per-run reinstall (that reinstall
+# was pure noise + latency — the reason sessions hand-rolled `--no-sync`).
+# -p no:warnings drops the warnings summary (noise while iterating); --tb=short
+# keeps tracebacks compact; -q drops per-test verbosity. Pass pytest args as
+# inner positional params ("$@") so no cross-shell re-quoting is needed.
+compose run --rm --no-deps -e UV_LINK_MODE=copy "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" \
+    -v "${WORKTREE}":/app precis-dev \
+    bash -lc 'uv run --no-sync pytest -q --no-header --tb=short -p no:warnings "$@"' \
+    _ "${NPROC[@]+"${NPROC[@]}"}" "$@"

@@ -1,0 +1,59 @@
+# Milvus standalone (etcd + minio + milvus) for the claude-context code-search
+# MCP. Repo-dev tooling, NOT the precis product stack — kept separate on
+# purpose. Local, no cloud.
+#   docker compose -f docker/code-search/compose.yaml up -d --wait
+# etcd is pulled from gcr.io (quay.io was timing out); same coreos image.
+# Data lives in named volumes (never in the work tree). Milvus gRPC on 19530.
+# Only milvus carries a healthcheck (it has curl); etcd/minio just need to be
+# up — milvus retries its connections during its 90s start period.
+name: precis-code-search
+
+services:
+  etcd:
+    image: gcr.io/etcd-development/etcd:v3.5.25
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd-data:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+
+  minio:
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - minio-data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+
+  milvus:
+    image: milvusdb/milvus:v2.6.20
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      MINIO_REGION: us-east-1
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus-data:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    ports:
+      - "19530:19530"   # gRPC (claude-context connects here)
+      - "9091:9091"     # health
+    depends_on:
+      - etcd
+      - minio
+
+volumes:
+  etcd-data:
+  minio-data:
+  milvus-data:

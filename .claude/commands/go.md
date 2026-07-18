@@ -27,7 +27,16 @@ Optional ship message from the user: `$ARGUMENTS`
 2. **Decide the message.** Use `$ARGUMENTS` if non-empty; otherwise write a
    concise conventional-commit one-liner describing what this branch changes.
 
-3. **Ship.** `scripts/ship` is idempotent (re-run resumes cleanly): it does
+3. **Refresh touched docs (terse, in-place).** For each subsystem the diff
+   changes, re-read its `docs/architecture/state-map.md` section, the
+   `docs/codebase.md` invariants, and any affected product skill under
+   `src/precis/data/skills/`; update in place — terse, per
+   `docs/conventions/llm-facing-prose.md` — **only where the change altered
+   the contract or shape**, not for every edit. Bump `docs/codebase.md`'s
+   `_Verified @ <sha>._` stamp to the tip you're shipping. These edits ride
+   the same ship commit.
+
+4. **Ship.** `scripts/ship` is idempotent (re-run resumes cleanly): it does
    commit WIP → sync (`git fetch` + `git merge` main) → the container gate
    (auto-fixes ruff, then authoritative `ruff · format · mypy · pytest`) →
    squash-merge to `main` → reset the branch to the shipped `main` →
@@ -36,17 +45,19 @@ Optional ship message from the user: `$ARGUMENTS`
    scripts/ship "<message>"
    ```
 
-4. **Handle a red ship.** The script only exits non-zero on something it can't
+5. **Handle a red ship.** The script only exits non-zero on something it can't
    do mechanically. **Do NOT deploy if ship failed.**
    - **Red gate (mypy/pytest)** — fix the failure printed above the `✖`,
-     re-run `scripts/ship`. (A lone `UniqueViolation` in an unrelated test is
-     usually shared-`precis_test` pollution — clean the row, re-run.)
+     re-run `scripts/ship`. Iterate locally with `scripts/test <path or -k>`
+     (same container + test DB, against this worktree). (A lone
+     `UniqueViolation` in an unrelated test is usually shared-`precis_test`
+     pollution — clean the row, re-run.)
    - **Merge conflict** — resolve, `git add -A && git commit`, re-run.
    - **CAS push rejected** — a sibling shipped first; just re-run.
    - A `WARNING:` about the primary main not fast-forwarding is best-effort,
      not a failure — relay it and continue to deploy.
 
-5. **Deploy.** Only after a green ship, push the new `main` to the cluster:
+6. **Deploy.** Only after a green ship, push the new `main` to the cluster:
    ```
    scripts/deploy
    ```
@@ -57,7 +68,7 @@ Optional ship message from the user: `$ARGUMENTS`
    ansible task verbatim — the cluster may be on mixed versions; do not
    declare success.
 
-6. **Confirm — always end with this exact three-line block** (verify each
+7. **Confirm — always end with this exact three-line block** (verify each
    line, don't assume; check `git rev-parse origin/main` for the sha):
    ```
    Merged to main:  ✓ <sha> on origin/main   (or ✗ — ship failed above)
@@ -68,7 +79,7 @@ Optional ship message from the user: `$ARGUMENTS`
    ship but failed deploy → first two ✓, deploy ✗). If the local primary
    `main` didn't fast-forward, add the `WARNING:` line as a fourth line.
 
-7. **Follow through on residuals (tiered).** A green ship+deploy is not the
+8. **Follow through on residuals (tiered).** A green ship+deploy is not the
    end if this session surfaced latent bugs it parked. **Harvest** every
    residual whose finder is **Opus 4.7 or better** — *this* session (you
    qualify) or an opus reviewer memory (`structural` / `deep_review`). A
@@ -93,3 +104,16 @@ Optional ship message from the user: `$ARGUMENTS`
    - **Stop-and-report guard.** If a residual's fix balloons in scope, or goes
      red and isn't quickly greenable, stop, file it, and surface it — never
      chain unbounded ship+deploys.
+
+9. **Summarize next steps, then nudge a compact.** Close by telling the user
+   what — if anything — comes next: the persisted residuals from step 8, the
+   next item on a tracked list, or "nothing open." Then, when the session ran
+   long *or* there are next steps to resume, hand the user a clean-context
+   restart — you cannot run `/compact` yourself, so give a ready line, e.g.:
+   ```
+   /compact  — then resume from the OPEN-ITEMS "Residuals" block
+   ```
+   Draw the resume pointer from the **persisted** source (`OPEN-ITEMS.md` /
+   `kind='todo'` / memory), never a recap of this conversation — the durable
+   artifact is what survives compaction. Skip the nudge when the session was
+   short and nothing is open; don't manufacture ceremony.

@@ -26,7 +26,16 @@ Optional ship message from the user: `$ARGUMENTS`
    write a concise one-line, conventional-commit-style summary of what this
    branch changes (look at the diff vs `main` if unsure).
 
-2. **Run the script.** It is idempotent — re-running after a fix resumes
+2. **Refresh touched docs (terse, in-place).** For each subsystem this
+   branch's diff changes, re-read its `docs/architecture/state-map.md`
+   section, the `docs/codebase.md` invariants, and any affected product
+   skill under `src/precis/data/skills/`; update in place — terse, per
+   `docs/conventions/llm-facing-prose.md` — **only where the change altered
+   the contract or shape**, not for every edit. Bump `docs/codebase.md`'s
+   `_Verified @ <sha>._` stamp to the tip you're shipping. These edits ride
+   the same ship commit (the script auto-commits WIP).
+
+3. **Run the script.** It is idempotent — re-running after a fix resumes
    cleanly.
    ```
    scripts/ship "<message>"
@@ -40,13 +49,15 @@ Optional ship message from the user: `$ARGUMENTS`
    reset the feature branch to the shipped `main` (zero divergence) →
    fast-forward the local `main` → print the new `main` sha.
 
-3. **Handle failures.** The script exits non-zero and prints a `✖` line only
+4. **Handle failures.** The script exits non-zero and prints a `✖` line only
    on something it can't do mechanically:
    - **Merge conflict during sync** — resolve the conflict, then
      `git add -A && git commit`, then re-run `scripts/ship`.
    - **Red gate (mypy/pytest)** — the failure is printed above the `✖`. Ruff
      lint/format drift is auto-fixed, so a ruff failure here means an
-     *unfixable* lint error. Fix the code and re-run. Only real failures in
+     *unfixable* lint error. Fix the code and re-run. Reproduce/iterate on a
+     red test locally with `scripts/test <path or -k>` (same container + test
+     DB, against this worktree) before re-shipping. Only real failures in
      branch-touched code block the ship; a lone `UniqueViolation` /
      stale-row error in an unrelated test is usually shared-`precis_test`
      pollution — clean the stray row and re-run.
@@ -57,7 +68,7 @@ Optional ship message from the user: `$ARGUMENTS`
      just relay it so the human can `git merge --ff-only origin/main` in the
      primary worktree.
 
-4. **Confirm — always end with this exact three-line block** (verify each
+5. **Confirm — always end with this exact three-line block** (verify each
    line against `git rev-parse origin/main`, don't assume):
    ```
    Merged to main:  ✓ <sha> on origin/main   (or ✗ — ship failed above)
@@ -69,7 +80,7 @@ Optional ship message from the user: `$ARGUMENTS`
    didn't fast-forward, add the `WARNING:` line as a fourth line. Then one
    line summarizing what shipped.
 
-5. **Follow through on residuals (tiered).** A green ship is not the end if
+6. **Follow through on residuals (tiered).** A green ship is not the end if
    this session surfaced latent bugs it parked. **Harvest** every residual
    whose finder is **Opus 4.7 or better** — *this* session (you qualify) or
    an opus reviewer memory (`structural` / `deep_review`). A finding from
@@ -95,10 +106,15 @@ Optional ship message from the user: `$ARGUMENTS`
      red and isn't quickly greenable, stop, file it, and surface it — never
      chain unbounded ships.
 
-> **Why a script instead of `git town ship`.** `git town ship` runs
-> `git checkout main`, which always fails from a linked worktree (`main` is
-> already checked out in the primary). And `./scripts/dev` bind-mounts the
-> **main** repo at `/app`, so a naive gate would test `main`, not your edits.
-> `scripts/ship` works around both (worktree bind-mount + `commit-tree`/CAS-push
-> plumbing) and is race-safe against sibling sessions shipping concurrently
-> onto the shared `.git`.
+7. **Summarize next steps, then nudge a compact.** Close by telling the user
+   what — if anything — comes next: the persisted residuals from step 6, the
+   next item on a tracked list, or "nothing open." Then, when the session ran
+   long *or* there are next steps to resume, hand the user a clean-context
+   restart — you cannot run `/compact` yourself, so give a ready line, e.g.:
+   ```
+   /compact  — then resume from the OPEN-ITEMS "Residuals" block
+   ```
+   Draw the resume pointer from the **persisted** source (`OPEN-ITEMS.md` /
+   `kind='todo'` / memory), never a recap of this conversation — the durable
+   artifact is what survives compaction. Skip the nudge when the session was
+   short and nothing is open; don't manufacture ceremony.

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# scripts/prod-psql — psql into the LIVE precis_prod DB via a cluster node.
+#
+# scripts/db is LOCAL only (precis / precis_test). Prod sits behind pgbouncer
+# on the cluster; reach it by hopping through a node (caspar/melchior) as
+# agent_rw. Wraps the ssh-agent workaround (-o IdentityAgent=none) and the
+# fixed pgbouncer coordinates so you stop retyping them.
+#
+# ⚠ agent_rw is WRITE-capable and this is PRODUCTION. Prefer read-only SELECTs.
+#
+# Usage:
+#   scripts/prod-psql "SELECT count(*) FROM refs;"    # one-shot query
+#   scripts/prod-psql "\d refs"                        # psql backslash cmds too
+#   echo "SELECT ..." | scripts/prod-psql              # piped SQL (stdin)
+#   scripts/prod-psql                                  # interactive shell
+#
+# Overrides (env):
+#   PRECIS_PROD_SSH_HOST=melchior     # default caspar
+#   PRECIS_PROD_PSQL_OPTS="-At"       # extra psql flags (e.g. terse -At, -x)
+set -euo pipefail
+
+HOST="${PRECIS_PROD_SSH_HOST:-caspar}"
+PGB_HOST=100.126.127.107
+PGB_PORT=6432
+PGUSER=agent_rw
+PGDB=precis_prod
+OPTS="${PRECIS_PROD_PSQL_OPTS:-}"
+
+# Fixed connection string — no user input interpolated, so it's quoting-safe.
+# -P pager=off and ON_ERROR_STOP make one-shot output clean and fail loudly.
+REMOTE="psql -h ${PGB_HOST} -p ${PGB_PORT} -U ${PGUSER} -d ${PGDB} -P pager=off -v ON_ERROR_STOP=1 ${OPTS}"
+
+if [[ $# -gt 0 ]]; then
+    # One-shot: the SQL goes over ssh via psql's STDIN, never interpolated into
+    # the remote command line — so any quotes/`$`/`;` in the SQL are safe.
+    printf '%s\n' "$*" | ssh -o IdentityAgent=none "$HOST" "$REMOTE"
+elif [[ ! -t 0 ]]; then
+    # Piped SQL on stdin.
+    ssh -o IdentityAgent=none "$HOST" "$REMOTE"
+else
+    # No args, interactive terminal → interactive psql (allocate a tty).
+    exec ssh -t -o IdentityAgent=none "$HOST" "$REMOTE"
+fi
