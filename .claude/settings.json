@@ -78,6 +78,15 @@
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/map-staleness-reminder.py\""
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/session-size-nudge.py\""
+          }
+        ]
       }
     ],
     "PreCompact": [
