@@ -1066,7 +1066,7 @@ def _is_numeric_dump(text: str) -> bool:
 def run_llm_summarize_pass(
     store: Any,
     *,
-    client: LlmClient,
+    client: Any,
     summarizer: str = SUMMARIZER_NAME,
     batch_size: int = 16,
     concurrency: int = 1,

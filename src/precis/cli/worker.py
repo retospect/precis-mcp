@@ -688,16 +688,26 @@ def run(args: argparse.Namespace) -> None:
         # pick up. See workers/llm_summarize.py.
         from precis.workers.llm_summarize import (
             SUMMARIZER_NAME,
-            LlmClient,
             LlmConfig,
             run_llm_summarize_pass,
         )
 
         _summarize_cfg = LlmConfig.from_env()
         if _pass_enabled("llm_summarize"):
+            from precis.utils.llm.router import DispatchClient as _DispatchClient
+            from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _BatchResult
 
-            _summarize_client = LlmClient(_summarize_cfg)
+            # Fold through the router (ADR 0046) — same ``.complete`` contract, but
+            # the call gets the local-serving ``served_by`` reroute (Phase-2
+            # litellm-retire). model=None ⇒ resolve_model(LOCAL_SMALL) =
+            # ``PRECIS_SUMMARIZE_MODEL or summarizer`` = the config default, so
+            # behaviour is byte-identical until a card declares served_by. A
+            # per-chunk backfill opts out of the route-log (log_call defaults off
+            # on DispatchClient) so it doesn't add a row per chunk.
+            _summarize_client = _DispatchClient(
+                tier=_Tier.LOCAL_SMALL, source="llm_summarize"
+            )
 
             def _llm_summarize_pass(batch_size: int) -> _BatchResult:
                 r = run_llm_summarize_pass(
@@ -724,16 +734,18 @@ def run(args: argparse.Namespace) -> None:
         # empty — it's a thinking model). See workers/classify.py +
         # scripts/classify/EVAL_RESULTS.md.
         if _pass_enabled("classify"):
-            import dataclasses as _dc
-
+            from precis.utils.llm.router import DispatchClient as _DispatchClient
+            from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _ClsBatchResult
 
-            _cls_cfg = _dc.replace(
-                LlmConfig.from_env(),
-                enabled=True,
+            # Fold through the router (ADR 0046) for the Phase-2 served_by reroute.
+            # Forces model=`summarizer` (a thinking model like qwen returns empty).
+            # Per-chunk high volume ⇒ log_call defaults off on DispatchClient.
+            _cls_client = _DispatchClient(
+                tier=_Tier.LOCAL_SMALL,
                 model=os.environ.get("PRECIS_CLASSIFY_MODEL") or "summarizer",
+                source="classify",
             )
-            _cls_client = LlmClient(_cls_cfg)
             _cls_escalate = os.environ.get("PRECIS_CLASSIFY_ESCALATE_MODEL") or None
 
             def _classify_pass(batch_size: int) -> _ClsBatchResult:
@@ -779,23 +791,25 @@ def run(args: argparse.Namespace) -> None:
         # classify. Model defaults to the cheap `summarizer` alias. See
         # workers/paper_glossary.py + docs/design/reading-prep-loop.md.
         if _pass_enabled("paper_glossary"):
-            import dataclasses as _pg_dc
-
+            from precis.utils.llm.router import DispatchClient as _DispatchClient
+            from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _PgBatchResult
 
-            # A glossary is a multi-term JSON object, far larger than the
-            # 220-token 2-part summary LlmConfig defaults to — that budget
+            # Fold through the router (ADR 0046 dispatch seam) instead of holding
+            # a raw litellm client — so this pass gets the breaker gate + the
+            # local-serving ``served_by`` reroute (Phase-2 litellm-retire). A
+            # glossary is a multi-term JSON object, far larger than the 220-token
+            # 2-part summary the LOCAL_SMALL default caps at — that budget
             # truncates the JSON mid-object so it never parses (every paper
-            # "fails"). Give it room; env-overridable.
-            _pg_cfg = _pg_dc.replace(
-                LlmConfig.from_env(),
-                enabled=True,
+            # "fails"). Pin the room via ``max_tokens``; env-overridable.
+            _pg_client = _DispatchClient(
+                tier=_Tier.LOCAL_SMALL,
                 model=os.environ.get("PRECIS_PAPER_GLOSSARY_MODEL") or "summarizer",
                 max_tokens=int(
                     os.environ.get("PRECIS_PAPER_GLOSSARY_MAX_TOKENS") or 2000
                 ),
+                source="paper_glossary",
             )
-            _pg_client = LlmClient(_pg_cfg)
 
             def _paper_glossary_pass(batch_size: int) -> _PgBatchResult:
                 from precis.workers.paper_glossary import run_paper_glossary_pass

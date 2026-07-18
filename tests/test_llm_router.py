@@ -306,6 +306,33 @@ def test_dispatch_local_uses_explicit_messages(
     assert seen["messages"] == msgs
 
 
+def test_dispatch_local_threads_max_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller-pinned ``max_tokens`` overrides the LlmConfig default so a
+    migrated direct-``LlmClient`` pass (paper_glossary=2000) keeps its budget."""
+    import precis.workers.llm_summarize as summ
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["max_tokens"] = getattr(config, "max_tokens", None)
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            return _FakeOpenAI(text="x", total_tokens=1)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.delenv("PRECIS_SUMMARIZE_MAX_TOKENS", raising=False)
+
+    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p", max_tokens=2000))
+    assert seen["max_tokens"] == 2000
+
+    # Unset ⇒ the env/config default (220) — byte-identical to today.
+    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p"))
+    assert seen["max_tokens"] == 220
+
+
 def test_dispatch_local_routes_to_served_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -409,6 +436,90 @@ def test_dispatch_local_big_routes_to_tools_loop(
     assert out.text == "looped"
     assert out.turns_used == 2
     assert seen["model"] == "qwen-heavy"  # resolved from the tier table
+
+
+def test_dispatch_client_routes_through_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DispatchClient.complete folds a local completion through dispatch,
+    threading model + max_tokens, and returns a result carrying text +
+    total_tokens (the summarize/classify/glossary passes' contract)."""
+    import precis.workers.llm_summarize as summ
+    from precis.utils.llm.router import DispatchClient
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["model"] = getattr(config, "model", None)
+            seen["max_tokens"] = getattr(config, "max_tokens", None)
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            seen["messages"] = messages
+            return _FakeOpenAI(text="gloss out", total_tokens=99)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
+    monkeypatch.delenv("PRECIS_SUMMARIZE_MAX_TOKENS", raising=False)
+
+    client = DispatchClient(
+        tier=Tier.LOCAL_SMALL, model="summarizer", max_tokens=2000, source="glossary"
+    )
+    msgs = [{"role": "user", "content": "define terms"}]
+    out = client.complete(msgs)
+
+    assert out.text == "gloss out"
+    assert out.total_tokens == 99  # accounting preserved through dispatch
+    assert seen["model"] == "summarizer"
+    assert seen["max_tokens"] == 2000
+    assert seen["messages"] == msgs
+
+
+def test_dispatch_client_raises_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dispatch error (transport failure / breaker pause) surfaces as a raise,
+    so the pass marks the item failed + retries — the raw-client contract."""
+    import precis.workers.llm_summarize as summ
+    from precis.utils.llm.router import DispatchClient
+
+    class BoomClient:
+        def __init__(self, config: object) -> None:
+            pass
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            raise RuntimeError("proxy down")
+
+    monkeypatch.setattr(summ, "LlmClient", BoomClient)
+
+    client = DispatchClient(tier=Tier.LOCAL_SMALL, model="summarizer")
+    with pytest.raises(RuntimeError, match="proxy down"):
+        client.complete([{"role": "user", "content": "x"}])
+
+
+def test_dispatch_log_call_false_skips_route_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """log_call=False (the mechanical batch passes) skips the route-log so a
+    corpus-scale backfill doesn't add a row per chunk."""
+    import precis.workers.llm_summarize as summ
+    from precis import route_log
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            pass
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            return _FakeOpenAI(text="x", total_tokens=1)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    recorded: list[object] = []
+    monkeypatch.setattr(route_log, "record_call", lambda rec: recorded.append(rec))
+
+    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p", log_call=False))
+    assert recorded == []  # opted out
+
+    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p"))  # default logs
+    assert len(recorded) == 1
 
 
 def test_dispatch_folds_transport_error(monkeypatch: pytest.MonkeyPatch) -> None:

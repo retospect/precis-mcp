@@ -1537,6 +1537,20 @@ normal way; the already-built 8/9/11/6d batch ships in the same train.
    caspar-pinned; embedder / web / asa-bot stay separate processes.
 5. **Retire litellm** (slice 7): seed `resource_slots` from `served_by`,
    decommission the daemon, confirm no external consumer points at its port.
+   *Transport-collapse prerequisite (Track 2), landing dark ahead of the
+   window:* the **local** direct-`LlmClient` passes that bypassed the router —
+   `llm_summarize`, `classify`, `paper_glossary` — now fold through
+   `router.dispatch` via `DispatchClient` (`router.LlmRequest.max_tokens` lets
+   `paper_glossary` keep its 2000-token budget; a per-chunk pass sets
+   `log_call=False` so a corpus backfill doesn't add a row per chunk). Behaviour
+   is byte-identical until `served_by` is seeded — then the same call reroutes to
+   the host's llama-swap endpoint instead of the litellm proxy, and litellm loses
+   its precis **local** consumers. The **cloud** direct-`LlmClient` passes
+   (`reading/cards`, `workers/briefing`, `reading/meditation`,
+   `reading/briefing_cast` — "claude-opus" via the litellm aggregator) fold
+   through dispatch's cloud tier onto `claude_p` (direct Anthropic OAuth) next;
+   that removes litellm's last precis consumers. Seeding `served_by` on prod
+   cards (endpoint = llama-swap `:11445`, real model name) is the flip.
 6. **Cut the deploy substrate** (slice 12): flip `scripts/deploy` to
    install-from-tree, deploy from the new `deploy/` tree, retire
    `precis_worker_git_ref` / `precis_web_git_ref`.

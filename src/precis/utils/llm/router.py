@@ -298,6 +298,11 @@ class LlmResult:
     duration_s: float | None = None
     data: dict[str, Any] | None = None
     paused: bool = False
+    #: OpenAI ``usage.total_tokens`` for the local / openai-compat transports
+    #: (``None`` for the claude transports, which report cost not tokens). Kept
+    #: so a direct-``LlmClient`` pass folded through :class:`DispatchClient`
+    #: still gets the token count it recorded for accounting.
+    total_tokens: int | None = None
 
 
 def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
@@ -364,6 +369,7 @@ def result_from_openai(res: _HasText, *, model: str, tier: Tier) -> LlmResult:
         model=model,
         tier=tier,
         data=_parse_last_json_block(res.text),
+        total_tokens=getattr(res, "total_tokens", None),
     )
 
 
@@ -388,6 +394,15 @@ class LlmRequest:
     model: str | None = None
     max_usd: float | None = None
     timeout_s: float | None = None
+    #: Completion-length cap for the local / openai-compat transports (the
+    #: ``max_tokens`` field of the underlying ``LlmConfig``). ``None`` keeps
+    #: ``LlmConfig.from_env``'s default (220) — the summarizer's short-gloss
+    #: cap. A pass with a longer structured payload pins its own (e.g.
+    #: paper_glossary needs 2000, else the JSON truncates); this is the knob
+    #: that lets a direct-``LlmClient`` caller fold through ``dispatch`` without
+    #: silently shrinking its budget. Ignored by the ``claude_*`` transports,
+    #: which have their own turn/cost ceilings.
+    max_tokens: int | None = None
     #: A booked OpenRouter variant (a ``meta.endpoints`` dict — provider / quant /
     #: window) + reasoning effort, pinned onto the ``openai_compat`` wire so the
     #: call reproducibly hits *that* provider×quant instead of OpenRouter load-
@@ -404,6 +419,13 @@ class LlmRequest:
     #: categorical feature the route-log keys on and the future per-source
     #: switchover knob. Free-form; empty when a caller hasn't set one yet.
     source: str = ""
+    #: Whether to write this call to the route-log. Default ``True`` (every
+    #: existing dispatch caller is logged). A high-volume *mechanical* batch
+    #: pass (per-chunk summarize / classify, folded through
+    #: :class:`DispatchClient`) sets it ``False`` so a corpus-scale backfill
+    #: doesn't add a million ``llm_call_log`` rows — the route-log's value is
+    #: the agentic / judge calls, not the gloss loop.
+    log_call: bool = True
     # claude_agent pass-through knobs (ignored by the other transports).
     system_prompt: str | Path | None = None
     mcp_config: str | Path | None = None
@@ -773,6 +795,59 @@ def dispatch(req: LlmRequest) -> LlmResult:
     return result
 
 
+@dataclass
+class DispatchClient:
+    """A ``.complete(messages)``-shaped adapter that routes a local completion
+    through :func:`dispatch` instead of holding its own litellm ``LlmClient``.
+
+    Drop-in for the summarize / classify / glossary passes' ``client=`` seam:
+    the same ``complete(messages, *, extra_body=None) -> LlmResult`` contract
+    (``.text`` + ``.total_tokens``), but every call folds through the router — so
+    it gains the breaker gate, the local-serving slot reservation + ``served_by``
+    endpoint routing (the Phase-2 litellm-retire flip: once a card declares
+    ``served_by.endpoint`` the call reroutes to llama-swap instead of the litellm
+    proxy), and the route-log. **Behaviour-preserving until ``served_by`` is
+    seeded** — with no slot the model resolves to today's ``summarizer`` alias on
+    the ``LlmConfig.from_env`` proxy URL, byte-identical to the raw client.
+
+    Raises ``RuntimeError`` on a dispatch error / breaker-pause so the pass marks
+    the item failed and retries — exactly as the raw ``LlmClient.complete`` raised
+    on a transport error (the passes' ``except`` blocks count it failed). Local
+    tiers are free, so the breaker never trips them; the only pause is
+    all-slots-busy, which correctly backs a batch off.
+    """
+
+    tier: Tier = Tier.LOCAL_SMALL
+    model: str | None = None
+    max_tokens: int | None = None
+    source: str = ""
+    #: Mechanical per-item batch passes opt out of the route-log (see
+    #: :attr:`LlmRequest.log_call`); the default matches ``dispatch`` (logged).
+    log_call: bool = False
+
+    def complete(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        extra_body: dict[str, Any] | None = None,
+    ) -> LlmResult:
+        # ``extra_body`` (OpenRouter booking) is a hosted-backend concern; the
+        # local completion path these passes use never sets it, so it is ignored.
+        res = dispatch(
+            LlmRequest(
+                tier=self.tier,
+                messages=messages,
+                model=self.model,
+                max_tokens=self.max_tokens,
+                source=self.source,
+                log_call=self.log_call,
+            )
+        )
+        if res.error is not None:
+            raise RuntimeError(res.error)
+        return res
+
+
 def _route_features(req: LlmRequest) -> dict[str, Any]:
     """Cheap, deterministic code features for the route-log (the categorizer's
     first layer). No model call — just what's readable off the request."""
@@ -821,7 +896,7 @@ def _record_dispatch(
     store is bound at boot; any failure is swallowed so it can't break dispatch."""
     from precis import route_log
 
-    if not route_log.enabled():
+    if not req.log_call or not route_log.enabled():
         return
     try:
         route_log.record_call(
@@ -865,6 +940,10 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     # openai_compat path already uses.
     if req.local_url:
         cfg = replace(cfg, url=req.local_url)
+    # A caller-pinned completion cap (paper_glossary=2000, …) wins over the
+    # env default so a migrated direct-``LlmClient`` pass keeps its budget.
+    if req.max_tokens is not None:
+        cfg = replace(cfg, max_tokens=req.max_tokens)
     messages = req.messages or [{"role": "user", "content": req.prompt}]
     client = LlmClient(cfg)
     try:
@@ -946,6 +1025,8 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
         model=model,
         enabled=True,
     )
+    if req.max_tokens is not None:
+        cfg = replace(cfg, max_tokens=req.max_tokens)
     messages = req.messages or [{"role": "user", "content": req.prompt}]
     extra_body = openrouter_routing(req.endpoint, effort=req.effort)
     client = LlmClient(cfg)
@@ -1063,6 +1144,7 @@ __all__ = [
     "AgentResult",
     "Backend",
     "ClaudePResult",
+    "DispatchClient",
     "LlmProvider",
     "LlmRequest",
     "LlmResult",
