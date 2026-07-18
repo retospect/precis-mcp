@@ -38,6 +38,10 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-worktree-path.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-sealed-migration.py\""
           }
         ]
       },
@@ -47,6 +51,19 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-commit-on-main.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-git-stash.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__precis__put|mcp__precis__edit|mcp__precis__delete|mcp__precis__tag",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-prod-write.py\""
           }
         ]
       }
