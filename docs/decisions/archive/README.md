@@ -7,7 +7,7 @@ decisions, while the reasoning behind reversed or absorbed decisions stays one
 click away.
 
 The convention that governs what lands here, and how, is
-[ADR 0058 — Decision-log archive convention](../0058-decision-log-archive-convention.md).
+[ADR 0059 — Decision-log archive convention](../0059-decision-log-archive-convention.md).
 
 In short, an ADR is archived only when:
 
@@ -23,6 +23,6 @@ In short, an ADR is archived only when:
 Full history always lives in git ("Rest in Git"); this directory is a
 discoverability aid, not the system of record.
 
-No ADRs have been archived yet — this scaffold lands with ADR 0058. Each chain
+No ADRs have been archived yet — this scaffold lands with ADR 0059. Each chain
 condensation is a separate, reviewed change so its referrer updates are
 auditable one chain at a time.

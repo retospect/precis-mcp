@@ -1,4 +1,4 @@
-# ADR 0058 — Decision-log archive convention ("Rest in Git")
+# ADR 0059 — Decision-log archive convention ("Rest in Git")
 
 - **Status**: accepted (2026-07-15)
 - **Deciders**: Reto + agent
@@ -41,7 +41,7 @@ retiring a fully-superseded ADR into it. The full history always stays in git
    `archive/0004-…md`), so git history follows and the number is never reused.
 3. A **one-line archive banner** is prepended — the single sanctioned edit to
    an otherwise-sealed file:
-   `> **Archived 2026-07-15 — superseded by [ADR 00NN](../00NN-…​.md). Kept for history (ADR 0058).**`
+   `> **Archived 2026-07-15 — superseded by [ADR 00NN](../00NN-…​.md). Kept for history (ADR 0059).**`
    The body below the banner is left byte-for-byte intact.
 4. **Every referrer is updated** in the same change: the `README.md` index row,
    the `Supersession graph`, and any relative link in a live ADR or
@@ -62,9 +62,9 @@ While scoping this, two errors in the OPEN-ITEMS proposal were found and are
 recorded here so the follow-up condensations start from correct facts:
 
 - **Numbering.** The item proposes new ADR numbers `0064–0069`, but the ADR log
-  only reaches `0058` (migration files reach `0065`; the two were conflated).
-  Condensed head ADRs take the *next free ADR number* (`0058` here, `0059+`
-  next) — not `0064`.
+  only reaches `0059` (this ADR — `0058` was already taken by the figure-medium
+  ADR; migration files reach `0065`; the two were conflated). Condensed head
+  ADRs take the *next free ADR number* (`0060+`) — not `0064`.
 - **Chain grouping.** `0019-second-greenfield` is **not** part of the
   image/embedder chain; it is a migration-baseline decision superseded by
   `0031` (baseline-snapshot dual-track). It belongs to the migration chain, not

@@ -1,6 +1,6 @@
 # 0034 — Figure assets, data supplements, and permission provenance
 
-* Status: **Draft / proposed** (design plan; partly implemented — see §Phasing)
+* **Status**: draft / proposed (design plan; partly implemented — see §Phasing)
 * Date: 2026-06-21
 * Continues: [0033 — draft chunks as an editable document](0033-draft-chunks-editable-document.md)
 * Extended by: [0058 — figure medium axis + the source resolver](0058-figure-medium-axis-and-source-resolver.md) (splits `origin` into two axes — rights × medium — so a figure can be a blob / canvas / graph; `origin` here keeps its clearance meaning)

@@ -1,6 +1,6 @@
 # ADR 0030 — `job`, `finding`, `cron` stay separate from `todo`
 
-**Status:** Accepted (2026-06-15)
+- **Status**: accepted (2026-06-15)
 **Context:** Planner-coroutine cascade work (slices T1–T3) made the
 `kind='todo'` surface look like a generic workspace for "things with
 a STATUS and a worker." Three adjacent kinds — `job`, `finding`,

@@ -1,6 +1,6 @@
 # 0039 — ORCID author kind & network discovery
 
-- **Status**: proposed (2026-06-26)
+- **Status**: accepted — implemented (2026-06-26; `orcid` kind live — `src/precis/handlers/orcid.py`)
 - **Deciders**: Reto + agent
 - **Builds on**:
   - [ADR 0030 — job / finding / cron stay separate](./0030-job-finding-cron-stay-separate.md)

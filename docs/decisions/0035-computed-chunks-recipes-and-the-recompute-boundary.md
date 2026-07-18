@@ -1,6 +1,6 @@
 # 0035 — Computed chunks: payload + recipe, sandboxed execution, and the recompute boundary
 
-* Status: **Accepted** (design plan; build sequenced in §6, not yet implemented)
+* **Status**: accepted (design plan; build sequenced in §6, not yet implemented)
 * Date: 2026-06-22 (resolved 2026-06-22)
 * Refines: [0034 — figure assets, data supplements, permission provenance](0034-figure-assets-and-permission-provenance.md) (fills in its deferred *render step*, §3, and generalizes `figure_data`/`figure_code`)
 * Continues: [0033 — draft chunks as an editable document](0033-draft-chunks-editable-document.md)

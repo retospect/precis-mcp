@@ -1,6 +1,6 @@
 # 0058 — Figure medium axis + the source resolver (blob / canvas / graph)
 
-* Status: **Proposed** (design-of-record; build sequenced in §7, not yet implemented)
+* **Status**: proposed (design-of-record; build sequenced in §7, not yet implemented)
 * Date: 2026-07-15
 * Extends: [0034 — figure assets, data supplements, permission provenance](0034-figure-assets-and-permission-provenance.md) · [0035 — computed chunks: payload + recipe](0035-computed-chunks-recipes-and-the-recompute-boundary.md)
 * Continues: [0033 — draft chunks as an editable document](0033-draft-chunks-editable-document.md)

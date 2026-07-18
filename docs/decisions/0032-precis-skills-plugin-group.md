@@ -1,6 +1,6 @@
 # ADR 0032 — `precis.skills` entry-point group for plugin skill docs
 
-**Status:** Accepted (2026-06-20)
+- **Status**: accepted (2026-06-20)
 **Context:** Third-party handler packages (e.g. `precis-chain`) plug
 kinds in via the `precis.handlers` entry-point group
 (`dispatch._load_plugins`), and ship migrations / job_types via the

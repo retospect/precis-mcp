@@ -1,6 +1,6 @@
 # 0043 — The `structure` kind: an atomistic cell + bond-graph IR the LLM can *read*
 
-- **Status**: proposed (2026-06-28) · **v1 draft** (the materials sibling of
+- **Status**: accepted (2026-06-28) · **v1 implemented** (`structure` kind live — `src/precis/handlers/structure.py`; the materials sibling of
   [ADR 0041](./0041-cad-kind-analytic-ir.md) and
   [ADR 0042](./0042-pcb-kind-netlist-placement-ir.md); same philosophy — own
   a legible IR, rent the heavy kernel only at export — applied to a **general
