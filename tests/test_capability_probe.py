@@ -45,6 +45,58 @@ def test_vocabulary_derives_from_registry() -> None:
     assert set(cap._PROBES) <= vocab
 
 
+# ── container runtime (podman / docker / OrbStack) ──────────────────────
+
+
+def _no_container_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for v in ("PRECIS_CONTAINER_BIN", "PRECIS_PODMAN_BIN", "PRECIS_PODMAN_SLOTS"):
+        monkeypatch.delenv(v, raising=False)
+
+
+def test_container_runtime_prefers_podman(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_container_env(monkeypatch)
+    monkeypatch.setattr(cap.shutil, "which", _which({"podman", "docker"}))
+    assert cap.container_runtime() == "podman"
+
+
+def test_container_runtime_falls_back_to_docker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_container_env(monkeypatch)
+    monkeypatch.setattr(cap.shutil, "which", _which({"docker"}))
+    assert cap.container_runtime() == "docker"
+
+
+def test_container_runtime_none_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_container_env(monkeypatch)
+    monkeypatch.setattr(cap.shutil, "which", _which(set()))
+    assert cap.container_runtime() is None
+
+
+def test_container_runtime_explicit_abspath_off_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """OrbStack's docker often isn't on a daemon's PATH — a full path in
+    PRECIS_CONTAINER_BIN is found via existence, not ``which``."""
+    binp = tmp_path / "docker"
+    binp.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("PRECIS_CONTAINER_BIN", str(binp))
+    monkeypatch.setattr(cap.shutil, "which", _which(set()))  # not on PATH
+    assert cap.container_runtime() == str(binp)
+
+
+def test_probe_podman_counts_docker(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_container_env(monkeypatch)
+    monkeypatch.setattr(cap.shutil, "which", _which({"docker"}))
+    assert cap._probe_podman() == 2
+
+
+def test_probe_podman_zero_without_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_container_env(monkeypatch)
+    monkeypatch.setattr(cap.shutil, "which", _which(set()))
+    assert cap._probe_podman() == 0
+
+
 # ── gpu ─────────────────────────────────────────────────────────────────
 
 

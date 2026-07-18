@@ -85,6 +85,26 @@ def test_slots_by_host_groups_advertised_resources(store) -> None:
     assert by_host["spark"][0]["capacity"] == 2
 
 
+def test_slots_by_host_flags_memory_pressure(store) -> None:
+    """The soft ``mem`` gauge is annotated with a pressure level so the console
+    can colour it as a RAM-pressure indicator (what to watch when a host runs a
+    container runtime). Hard capability rows carry no level."""
+    store.sync_soft_signal("h-crit", "mem", 0, 2)  # 0 free → under pressure
+    store.sync_soft_signal("h-warn", "mem", 1, 4)  # <50% → low
+    store.sync_soft_signal("h-ok", "mem", 2, 2)  # full → plenty
+    store.sync_host_resource_slots("h-hard", {"gpu": 1})
+    by_host = _slots_by_host(store)
+
+    def _mem(host: str) -> dict:
+        return {s["resource"]: s for s in by_host[host]}["mem"]
+
+    assert _mem("h-crit")["pressure"] == "crit"
+    assert _mem("h-warn")["pressure"] == "warn"
+    assert _mem("h-ok")["pressure"] == "ok"
+    gpu = {s["resource"]: s for s in by_host["h-hard"]}["gpu"]
+    assert gpu["pressure"] is None
+
+
 def test_activity_ignores_non_batchresult_rows(store) -> None:
     """A payload without a numeric ok/failed must not break the cast."""
     with store.pool.connection() as conn:

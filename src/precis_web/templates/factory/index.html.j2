@@ -51,9 +51,19 @@
         {% endif %}
       </div>
       {% if h.slots %}
-      <div class="mt-1 flex flex-wrap gap-1" title="Resources this host advertises (heartbeat self-probe). free/capacity slots; differ once reserve-at-claim lands.">
+      <div class="mt-1 flex flex-wrap gap-1" title="Resources this host advertises (heartbeat self-probe). free/capacity slots; differ once reserve-at-claim lands. Soft gauges (mem) show memory-pressure headroom: green=plenty, amber=low, red=under pressure.">
         {% for sl in h.slots %}
+        {% if sl.pressure %}
+        {# soft memory-pressure gauge (6d): colour by headroom so RAM pressure #}
+        {# (what to watch when a host runs a container runtime) is legible. #}
+        <span class="rounded px-1 py-0.5 font-mono text-[11px] border
+          {% if sl.pressure == 'crit' %}bg-red-100 border-red-300 text-red-700
+          {% elif sl.pressure == 'warn' %}bg-amber-100 border-amber-300 text-amber-700
+          {% else %}bg-emerald-50 border-emerald-200 text-emerald-700{% endif %}"
+          title="Memory-pressure headroom on {{ h.host }}: {{ sl.free }}/{{ sl.capacity }} ({{ 'under pressure' if sl.pressure == 'crit' else ('low' if sl.pressure == 'warn' else 'plenty') }}). 0 = jetsam risk.">RAM {{ sl.free }}/{{ sl.capacity }}</span>
+        {% else %}
         <span class="rounded bg-white/70 border border-slate-200 px-1 py-0.5 font-mono text-[11px] text-slate-600">{{ sl.resource }} {{ sl.free }}/{{ sl.capacity }}</span>
+        {% endif %}
         {% endfor %}
       </div>
       {% endif %}

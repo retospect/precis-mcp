@@ -107,12 +107,23 @@ def _slots_by_host(store: Any) -> dict[str, list[dict[str, Any]]]:
         return {}
     out: dict[str, list[dict[str, Any]]] = {}
     for host, resource, capacity, free, kind in rows:
+        cap_i, free_i = int(capacity), int(free)
+        # Soft gauges (the 6d memory-pressure signal) render as a coloured
+        # pressure indicator, not a plain capability chip: free is measured
+        # headroom (0 = under pressure … capacity = plenty). RAM pressure is
+        # the thing to watch when a host runs a container runtime (OrbStack /
+        # podman VMs eat memory), so surface it as ok/warn/crit.
+        pressure: str | None = None
+        if kind == "soft" and cap_i > 0:
+            ratio = free_i / cap_i
+            pressure = "crit" if free_i == 0 else ("warn" if ratio < 0.5 else "ok")
         out.setdefault(host, []).append(
             {
                 "resource": resource,
-                "capacity": int(capacity),
-                "free": int(free),
+                "capacity": cap_i,
+                "free": free_i,
                 "kind": kind,
+                "pressure": pressure,
             }
         )
     return out

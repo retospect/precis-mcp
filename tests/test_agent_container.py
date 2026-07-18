@@ -221,6 +221,34 @@ def test_build_agent_run_without_prompt_is_unchanged() -> None:
     assert argv[-1] == "precis-agent:x"
 
 
+# ── container bin resolution (podman / docker / OrbStack) ──────────────
+
+
+def test_container_bin_explicit_override_wins(monkeypatch) -> None:
+    monkeypatch.setenv("PRECIS_CONTAINER_BIN", "docker")
+    assert ac._container_bin() == "docker"
+
+
+def test_container_bin_resolves_docker_when_only_docker(monkeypatch) -> None:
+    monkeypatch.delenv("PRECIS_CONTAINER_BIN", raising=False)
+    monkeypatch.delenv("PRECIS_PODMAN_BIN", raising=False)
+    import precis.workers.capability_probe as cap
+
+    monkeypatch.setattr(
+        cap.shutil, "which", lambda n: "/usr/bin/docker" if n == "docker" else None
+    )
+    assert ac._container_bin() == "docker"
+
+
+def test_container_bin_defaults_to_podman_when_none(monkeypatch) -> None:
+    monkeypatch.delenv("PRECIS_CONTAINER_BIN", raising=False)
+    monkeypatch.delenv("PRECIS_PODMAN_BIN", raising=False)
+    import precis.workers.capability_probe as cap
+
+    monkeypatch.setattr(cap.shutil, "which", lambda n: None)
+    assert ac._container_bin() == "podman"  # argv default even if absent
+
+
 # ── containerize an already-built host argv (the live-executor seam) ──
 
 

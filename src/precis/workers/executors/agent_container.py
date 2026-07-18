@@ -69,7 +69,18 @@ def default_agent_image() -> str:
 
 
 def _container_bin() -> str:
-    return os.environ.get("PRECIS_PODMAN_BIN") or "podman"
+    """The container CLI to invoke: an explicit ``PRECIS_CONTAINER_BIN`` /
+    ``PRECIS_PODMAN_BIN`` wins (even if not on PATH — it still goes in the argv),
+    else the detected runtime (podman on Linux, docker/OrbStack on the Macs),
+    else ``podman`` as the argv default."""
+    explicit = os.environ.get("PRECIS_CONTAINER_BIN") or os.environ.get(
+        "PRECIS_PODMAN_BIN"
+    )
+    if explicit:
+        return explicit
+    from precis.workers.capability_probe import container_runtime
+
+    return container_runtime() or "podman"
 
 
 # ── Tier-3: egress → --network + allowlist (pure) ──────────────────

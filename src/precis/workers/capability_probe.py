@@ -111,18 +111,41 @@ def _probe_gpu() -> int | None:
     return sum(1 for line in res.stdout.splitlines() if line.strip().startswith("GPU "))
 
 
-def _probe_podman() -> int:
-    """Container-agent slots: ``PRECIS_PODMAN_SLOTS`` override, else 2 if
-    ``podman`` is on PATH, else ``0``.
+def container_runtime() -> str | None:
+    """The container CLI this host can actually run (``podman``/``docker``), or
+    ``None``. Resolution: an explicit ``PRECIS_CONTAINER_BIN`` /
+    ``PRECIS_PODMAN_BIN`` (a name on PATH or an absolute path — OrbStack's
+    ``docker`` often isn't on a launchd daemon's PATH, so a full path is the
+    escape hatch), else ``podman`` then ``docker`` on PATH. One detector shared
+    by the capability probe and :func:`agent_container._container_bin`, so "each
+    host has its own container capability" is uniform across podman (spark/Linux)
+    and docker (OrbStack on the Macs)."""
+    explicit = os.environ.get("PRECIS_CONTAINER_BIN") or os.environ.get(
+        "PRECIS_PODMAN_BIN"
+    )
+    if explicit:
+        return (
+            explicit if (shutil.which(explicit) or os.path.exists(explicit)) else None
+        )
+    if shutil.which("podman"):
+        return "podman"
+    if shutil.which("docker"):
+        return "docker"
+    return None
 
-    Presence is a hard ``which``; the default concurrency (2) is a
-    provisioning choice slice 6c/the console can retune per host — bounded
-    because container agent jobs are heavy.
+
+def _probe_podman() -> int:
+    """Container-agent slots: ``PRECIS_PODMAN_SLOTS`` override, else 2 if a
+    container runtime (podman OR docker/OrbStack) is reachable, else ``0``.
+
+    Presence is a hard runtime check (:func:`container_runtime`); the default
+    concurrency (2) is a provisioning choice slice 6c/the console can retune per
+    host — bounded because container agent jobs are heavy.
     """
     override = _env_slots("PRECIS_PODMAN_SLOTS")
     if override is not None:
         return override
-    return 2 if shutil.which("podman") else 0
+    return 2 if container_runtime() else 0
 
 
 def _probe_tts() -> int:
@@ -135,7 +158,7 @@ def _probe_tts() -> int:
     override = _env_slots("PRECIS_TTS_SLOTS")
     if override is not None:
         return override
-    if os.environ.get("PRECIS_TTS_IMAGE") and shutil.which("podman"):
+    if os.environ.get("PRECIS_TTS_IMAGE") and container_runtime():
         return 1
     try:
         if find_spec("kokoro_onnx") is not None:

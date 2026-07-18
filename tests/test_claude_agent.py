@@ -445,6 +445,7 @@ def test_container_executor_on_wraps_in_podman(monkeypatch, stub_bin: Path) -> N
     import precis.utils.claude_agent as ca
 
     monkeypatch.setenv("PRECIS_AGENT_CONTAINER", "1")
+    monkeypatch.setenv("PRECIS_CONTAINER_BIN", "podman")  # deterministic bin
     captured: dict[str, object] = {}
 
     def _fake(argv, **k):
