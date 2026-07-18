@@ -81,7 +81,9 @@ hand-rolling. Admonish this in `CLAUDE.md`/`AGENTS.md`:
 | `scripts/db` | psql to the LOCAL dev DB | container-first |
 | `scripts/prod-psql "SELECT …"` | read prod through a bastion hop | prefer read-only; local `db` never reaches prod |
 | `scripts/code-index` | seed/refresh the semantic code-search index | reproducible from shell, no MCP session needed |
-| `scripts/docs-orphans` | flag `docs/design` plans with no inbound ref | advisory; run when a feature ships |
+| `scripts/docs-orphans` | flag `docs/design` plans with no inbound ref | advisory; wired into ship when the diff touches `docs/design/` |
+| `scripts/migration-check` | flag duplicate migration **numbers** across main + all worktrees | advisory in ship when the diff touches migrations; fleet view in `/whatneedsdoing` |
+| `scripts/memory-lint` | broken links / unindexed / over-budget in the memory index + reconsolidation-due signal | advisory; `/whatneedsdoing` |
 
 Package manager: pick one (`uv`, etc.) and forbid bare `pip`/`pytest`/`mypy`
 ("not reproducible"). Container-first for ops.
@@ -191,6 +193,13 @@ A file-based memory dir with:
 Discipline: before saving, check for an existing file to update (no dupes);
 delete memories proven wrong; don't save what the repo already records
 (structure, past fixes, git history). Save the *non-obvious*.
+
+**Reconsolidate ≤ once/day.** A full pass (re-verify claims vs code, compact the
+index, archive landed work, fix broken links/orphans) is a **circadian** chore,
+not per-session — re-auditing constantly churns without benefit, like sleep-time
+consolidation. Keep a dated `memory-consolidation-log`; a `memory-lint` reads its
+top date and only flags a full pass when the last was an earlier day (the cheap
+broken-link/unindexed/size checks still run every time).
 
 ---
 

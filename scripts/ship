@@ -217,6 +217,17 @@ for attempt in 1 2 3; do
         esac
     done <<< "$CHANGED"
 
+    # Pre-ship advisories (never block the ship — `|| true`): a migration-number
+    # collision across worktrees when this ship touches migrations, and orphaned
+    # design plans when it touches docs/design/. Both are also in
+    # /whatneedsdoing (the fleet-wide view).
+    case "$CHANGED" in
+        *src/precis/migrations/*) scripts/migration-check --quiet || true ;;
+    esac
+    case "$CHANGED" in
+        *docs/design/*) say "docs/design changed — orphan-plan check"; scripts/docs-orphans || true ;;
+    esac
+
     # One gate invocation for the whole check. `ruff --fix`/`format` normalise
     # the source in-place (the mount in bind mode, the container's native copy
     # in warm mode); run_gate syncs the result back and we amend it below.

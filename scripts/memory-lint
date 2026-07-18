@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# scripts/memory-lint — hygiene + reconsolidation-cadence check for the
+# file-based memory (Claude Code's `MEMORY.md` index + topic files + `ARCHIVE.md`).
+#
+# Two jobs:
+#   1. Cheap hygiene (every run): broken index links, unindexed topic files,
+#      MEMORY.md over its byte budget.
+#   2. Reconsolidation cadence: a FULL audit (currency vs code, compaction,
+#      archiving) is a **once-a-day** pass — reading the whole memory and
+#      re-verifying claims constantly churns without benefit. This reads the top
+#      date of `memory_consolidation_log.md` and only says "DUE" when the last
+#      pass was on an earlier day.
+#
+# Advisory: always exits 0. Meant to be called by `/whatneedsdoing`, not a gate
+# (the memory dir lives outside the repo).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+MEMDIR="$HOME/.claude/projects/${MAIN_ROOT//\//-}/memory"
+BUDGET=17510   # MEMORY.md byte budget (~17.1KB — the always-loaded index)
+
+if [[ ! -d "$MEMDIR" ]]; then
+    echo "memory-lint: no memory dir at $MEMDIR (nothing to lint)"; exit 0
+fi
+cd "$MEMDIR"
+
+problems=0
+
+# 1. broken links: [text](file.md) whose target is absent
+while IFS= read -r f; do
+    [[ -z "$f" || -f "$f" ]] || { echo "  broken link → $f"; problems=$((problems+1)); }
+done < <(grep -hoE '\]\([a-z0-9_]+\.md\)' MEMORY.md ARCHIVE.md 2>/dev/null | sed -E 's/\]\(|\)//g' | sort -u)
+
+# 2. unindexed topic files (referenced by neither a (file.md) link nor a [[slug]])
+for tf in *.md; do
+    [[ "$tf" == MEMORY.md || "$tf" == ARCHIVE.md ]] && continue
+    slug="${tf%.md}"
+    grep -qE "\($tf\)|\[\[$slug\]\]" MEMORY.md ARCHIVE.md 2>/dev/null \
+        || { echo "  unindexed → $tf"; problems=$((problems+1)); }
+done
+
+# 3. index size vs budget
+bytes=$(wc -c < MEMORY.md | tr -d ' ')
+if (( bytes > BUDGET )); then
+    echo "  MEMORY.md OVER budget: $bytes > $BUDGET B — compact it"
+    problems=$((problems+1))
+fi
+
+if (( problems == 0 )); then
+    echo "memory-lint: ✓ index clean ($bytes B, all links resolve, all files indexed)"
+else
+    echo "memory-lint: $problems hygiene issue(s) above"
+fi
+
+# 4. reconsolidation cadence (once/day)
+today=$(date +%Y-%m-%d)
+last=$(grep -oE '\*\*[0-9]{4}-[0-9]{2}-[0-9]{2}\*\*' memory_consolidation_log.md 2>/dev/null | head -1 | tr -d '*' || true)
+if [[ -z "$last" ]]; then
+    echo "reconsolidation: DUE (no consolidation log yet)"
+elif [[ "$last" == "$today" ]]; then
+    echo "reconsolidation: done today ($last) — skip the heavy pass"
+else
+    echo "reconsolidation: DUE (last $last) — run a full audit+compact pass, then append a dated line to memory_consolidation_log.md"
+fi
+exit 0

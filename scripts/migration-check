@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# scripts/migration-check — detect duplicate forward-migration NUMBERS across
+# `main` + every worktree, before two branches collide on ship.
+#
+# Forward-only migrations (ADR 0005) are numbered `NNNN_slug.sql`. Parallel
+# worktrees each mint the next number off the same `main`, so two of them
+# routinely grab the SAME number for DIFFERENT migrations — the collision only
+# surfaces when the second one ships (duplicate number, ledger confusion). This
+# scans the working tree of `main` (the primary checkout) and every sibling
+# worktree and flags any number that maps to 2+ distinct slugs.
+#
+# Exit 1 on collision (usable as a ship gate); 0 when clean. `--quiet` prints
+# only on collision (for soft/advisory wiring).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+QUIET=0
+[[ "${1:-}" == "--quiet" ]] && QUIET=1
+
+MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+MIGDIR="src/precis/migrations"
+
+rows="$(mktemp)"
+trap 'rm -f "$rows"' EXIT
+
+n_trees=0
+for wt in "$MAIN_ROOT" "$MAIN_ROOT"/.claude/worktrees/*; do
+    [[ -d "$wt/$MIGDIR" ]] || continue
+    name="$(basename "$wt")"; [[ "$wt" == "$MAIN_ROOT" ]] && name="main"
+    n_trees=$((n_trees + 1))
+    for f in "$wt/$MIGDIR"/[0-9][0-9][0-9][0-9]_*.sql; do
+        [[ -e "$f" ]] || continue
+        num="$(basename "$f" | grep -oE '^[0-9]{4}')"
+        printf '%s\t%s\t%s\n' "$num" "$name" "$(basename "$f")"
+    done
+done >> "$rows"
+
+# A collision worth flagging = a worktree introduces a slug at a number BEYOND
+# what main already carries. Main's own historical duplicate numbers (e.g. two
+# 0037_* shipped long ago) are accepted reality — every worktree carries them,
+# so they are NOT flagged. Rule per number: collision if the distinct-slug count
+# across all trees exceeds max(main's distinct-slug count, 1).
+collisions="$(awk -F'\t' '
+    {
+        pair = $1 SUBSEP $3
+        all[pair] = 1
+        if ($2 == "main") main[pair] = 1
+        where[pair] = where[pair] " " $2
+    }
+    END {
+        for (p in all)  { split(p, a, SUBSEP); ntot[a[1]]++ }
+        for (p in main) { split(p, a, SUBSEP); nmain[a[1]]++ }
+        for (num in ntot) {
+            floor = (nmain[num] > 1) ? nmain[num] : 1
+            if (ntot[num] > floor) {
+                print num ":"
+                for (p in all) {
+                    split(p, a, SUBSEP)
+                    if (a[1] == num && !(p in main))
+                        print "    NEW   " a[2] "  (in" where[p] " )"
+                }
+                for (p in main) {
+                    split(p, a, SUBSEP)
+                    if (a[1] == num) print "    main  " a[2]
+                }
+            }
+        }
+    }' "$rows")"
+
+if [[ -n "$collisions" ]]; then
+    echo "✖ migration NUMBER collision (same number, different slug across trees):"
+    echo "$collisions"
+    echo
+    echo "→ renumber the UNSHIPPED migration(s) to the next free number above"
+    echo "  main's max before that worktree ships."
+    exit 1
+fi
+
+[[ "$QUIET" == 1 ]] || echo "✓ migration numbers: no collisions across main + $((n_trees - 1)) worktree(s)"

@@ -1,7 +1,7 @@
 ---
-description: One honest "what needs doing" across the two work substrates — repo dev work (OPEN-ITEMS backlog + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a prod system-health read (per-host worker-log err/warn) and the latent LLM-confusion signal mined from prod agent transcripts.
+description: One honest "what needs doing" across the two work substrates — repo dev work (OPEN-ITEMS backlog + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · orphan design docs · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
-allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), mcp__precis__get, mcp__precis__search
+allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-orphans:*), Bash(scripts/memory-lint:*), mcp__precis__get, mcp__precis__search
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
@@ -34,6 +34,9 @@ Live GitHub — open PRs:
 
 Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summary):
 !`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
+
+Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ memory index:
+!`scripts/migration-check --quiet 2>&1 || true; echo '— docs —'; scripts/docs-orphans 2>&1 | sed -n '1,2p;/^ORPHAN/,/^ADR-linked/p' || true; echo '— memory —'; scripts/memory-lint 2>&1 || true`
 
 ## Procedure
 
@@ -69,6 +72,21 @@ Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summar
        (`/go`) or bump the date +2 weeks. This is what keeps a blocked-upstream
        alert (e.g. #44, `transformers` capped by marker-pdf) from re-nagging
        every triage.
+3a. **Repo hygiene (bunched structural checks).** Read the inline preview above
+   — three cheap scans, all advisory. This is *diagnosis bunched*; each fix is
+   its own worktree→ship.
+   - **Migration collisions** (`scripts/migration-check`) — a flagged number =
+     two worktrees will collide on ship; renumber the **unshipped** one above
+     main's max. (Known live case: the `email` worktree's `0074`.)
+   - **Orphan design docs** (`scripts/docs-orphans`) — ORPHAN / ADR-linked
+     buckets are candidates for the `docs-triage` skill; load-bearing ones (src
+     / anchor / sealed-migration refs) are fine, leave them.
+   - **Memory index** (`scripts/memory-lint`) — broken links / unindexed files /
+     over-budget are quick fixes. On **reconsolidation DUE** (last full pass was
+     an earlier day) do one full audit+compact pass, then append a dated line to
+     `memory_consolidation_log.md`; on "done today", skip the heavy pass
+     (**once/day at most** — constant re-auditing churns without benefit).
+
 4. **Prod factory queue — todos.** `search(kind='todo', view='attention')`
    (asking-user + failed children) and `search(kind='todo', view='doable')`
    (what the loop picks up next). NB: these are `search(...)` calls, not
