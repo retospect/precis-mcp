@@ -68,7 +68,8 @@ per-kind reference.
   → `docs/design/chunk-classifier-cascade.md`.
 - **Live affordances** — `folder`, `plan`, `figure`, `mermaid`, `gripe`,
   `anki`, `concept`, `quest`, `llm`, `alert`, `agentlog`, `job`/sandbox,
-  `structure`, `citation`, `cfp`, term registry, `cad`/`pcb`, broad+deep
+  `structure`, `citation`, `cfp`, `email` (live IMAP browse, read-only;
+  `docs/design/email-kind.md`), term registry, `cad`/`pcb`, broad+deep
   search, `precis web`, SSRF guard, ingest hygiene. → matching `precis-*-help`.
 - **Skill index** — start at `precis-toolpath-help` (call sequences) +
   `precis-overview` (master kinds table).

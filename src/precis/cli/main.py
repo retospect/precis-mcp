@@ -29,6 +29,7 @@ from precis.cli import (
     cron,
     db,
     draft,
+    email,
     enrich_openalex,
     fetch_openalex,
     fix_metadata,
@@ -230,6 +231,10 @@ def main() -> None:
         service.run(args)
         return
 
+    if args.cmd == "email":
+        email.run(args)
+        return
+
     parser.error(f"unknown command: {args.cmd!r}")
 
 
@@ -288,6 +293,7 @@ def _build_parser() -> argparse.ArgumentParser:
     llm.add_parser(sub)
     heartbeat.add_parser(sub)
     service.add_parser(sub)
+    email.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
     jobs_sub = jobs.add_subparsers(dest="job", required=True)

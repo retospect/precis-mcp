@@ -647,6 +647,7 @@ def boot(
         from precis.handlers.cron import CronHandler
         from precis.handlers.datasheet import DatasheetHandler
         from precis.handlers.draft import DraftHandler
+        from precis.handlers.email import EmailHandler
         from precis.handlers.figure import FigureHandler
         from precis.handlers.finding import FindingHandler
         from precis.handlers.folder import FolderHandler
@@ -688,6 +689,7 @@ def boot(
         _gated(ConversationHandler)
         _gated(CronHandler)
         _gated(MessageHandler)
+        _gated(EmailHandler)
         _gated(PresentationHandler)
         _gated(DraftHandler)
         _gated(PlanHandler)

@@ -471,6 +471,17 @@ The master kinds table lives in the `precis-overview` skill.
 - **`folder`** — single-parent placement container for authored artifacts on
   `refs.parent_id` (ADR 0045); `handlers/_placement.py`, `KindSpec.role`,
   `search(folder=)` scopes a subtree. Skill: `precis-folder-help`.
+- **`email`** — live, read-only IMAP mailbox browse (`handlers/email.py`,
+  direct `Handler` — mirrors nothing, IMAP is source of truth). `precis.mail`
+  = `account` (typed view over `email_account` row + JSONB config, provider
+  presets, pluggable `password`/`xoauth2` auth) · `imap` (stdlib connect +
+  probe) · `message` (list/fetch; `BODY.PEEK` + readonly SELECT ⇒ browsing
+  never marks `\Seen`). `get(kind='email')` overview · `id='INBOX'` folder ·
+  `id='INBOX/<uid>'` message · `account=` disambiguates. Accounts via the
+  `precis email` CLI; password in the vault (`email.<addr>.password`).
+  Migration `0075_email_account.sql`; design `docs/design/email-kind.md`.
+  **Slices 1+2 (config + browse) live; poll/injection-scan/promotion/send are
+  later slices — v1 is read-only.**
 - **`plan`** — a thread's reasoning outline (ADR 0051 §2b, slice A1): a
   hierarchical todo-list + notes on the `draft` chunk-tree substrate
   (`handlers/plan.py`, reusing the kind-parameterized `DraftMixin`), but a

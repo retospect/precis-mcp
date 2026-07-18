@@ -74,6 +74,7 @@ name/path.
 | `job` | `jo55` (int `55` still resolves) | Execution attempt of a todo intent. **New jobs require `parent_id` pointing at a `kind='todo'`** — see `precis-job-help` + `precis-dispatch-help`. | store |
 | `cron` | `cr42` (int `42` still resolves) | Push-notification scheduler — fires a payload to an external conversation (asa-bot Discord) at the scheduled time. **Different use case** from `level:recurring` todos (which pull recurring work into the doable queue); both kinds kept on purpose. See `precis-cron-help`, `precis-recurring-help`, ADR 0030. | store |
 | `message` | `ms11` (int `11` still resolves) | Proactive outbound (Discord post) | store |
+| `email` | *(no handle — live IMAP adapter)* | **Live, read-only mailbox browse** over IMAP — mirrors nothing (IMAP is source of truth). `get(kind='email')` lists recent mail; `id='INBOX'` a folder; `id='INBOX/<uid>'` reads one message; `account='addr@host'` picks among configured accounts. Never marks mail `\Seen`. Accounts configured via the `precis email` CLI (password in the vault). Send + injection-scan land in later slices. See `docs/design/email-kind.md`. | store |
 | `provenance` | `92` (int) | Per-ref provenance audit (sources, transforms) | store |
 | `tag` | `topic:co2-capture` | Discoverable tag row (`get`/`search` only) | store |
 
