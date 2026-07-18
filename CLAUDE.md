@@ -85,6 +85,7 @@ per-kind reference.
 | Mission / pitch narrative        | `docs/mission.md` (positioning, not architecture) |
 | Master kinds table + recipes     | skills `precis-overview`, `precis-toolpath-help` |
 | Dated history                    | `git log` (no CHANGELOG) |
+| Replicate this repo's setup elsewhere | `docs/how-to-setup-like-this.md` (portable scaffolding brief) |
 | Full schema (prose / visual)     | `docs/design/storage-v2.md` (F20-amended); `schema-v2.svg` |
 | Worker queue pattern             | `docs/decisions/0007-derived-queue-no-block-jobs.md`, `0017` |
 | ADR index + supersession graph   | `docs/decisions/README.md` |
