@@ -191,26 +191,30 @@ per-kind reference.
 
 ## Agent sizing
 
-- **Cheap:** search, extract, format, lint; single-file edits, local refactors.
-- **Opus:** multi-file/architecture; CFD/DFT/ML and NOx/catalyst reasoning;
-  core API or abstraction decisions.
-- **Default:** start cheap for mechanical/exploratory work; escalate only
-  when deep cross-file reasoning is clearly needed.
-- **Prefer a cheap-pinned agent over a bare Opus subagent for rote work, when
-  practical** (a default, not an enforced gate — subagents otherwise inherit
-  the session model = Opus, so mechanical delegations run expensive by
-  accident). Haiku-pinned defs in `.claude/agents/`: `navigator` (locate /
-  orient), `extract` (rote gather), `test-runner` (`scripts/test`), `tidy`
-  (ruff/format), `cluster-ops` (read-only ssh/log-tail/prod-psql probe — keeps
-  raw log & psql dumps off the main loop; never deploys or writes). Reach for
-  these instead of spawning `general-purpose` on Opus for a mechanical task;
-  use the Agent tool's `model:` for one-off downgrades.
-- **Three tiers, cheapest that fits:** a **deterministic** chore → a *script*
-  (zero model, reproducible) — the hygiene scans already are (`memory-lint`,
-  `migration-check`, `docs-orphans`, `backlog-lint`), as are the **cadence
-  nudges** that only decide *when* a judgment pass is due (`token-review`, the
-  7-day session-tightness clock); **mechanical-but-needs-a-model** → a haiku
-  agent (above); **judgment / stakes** → Opus. So memory *index* hygiene is a
-  script; memory *reconsolidation* (re-verify claims vs code, merge/sharpen) is
-  a judgment pass — not haiku. Likewise the token-review *cadence check* is a
-  script; the *review* it triggers is a judgment session.
+The main loop is Opus, so every task it does *itself* bills Opus — **delegating
+down is the primary cost lever, not an afterthought.** Pick the cheapest tier
+that fits; each agent def in `.claude/agents/` carries its own remit and
+guardrails (the Agent tool surfaces those descriptions), so this is just the map.
+
+- **Script (no model)** — a *deterministic* chore: hygiene scans (`memory-lint`,
+  `migration-check`, `docs-orphans`, `backlog-lint`) and the cadence nudges that
+  only decide *when* a judgment pass is due (`token-review`, the 7-day
+  session-tightness clock).
+- **Haiku** — mechanical, needs a model: `navigator` (locate/orient), `extract`
+  (rote gather), `test-runner` (`scripts/test`), `tidy` (ruff/format),
+  `cluster-ops` (read-only ssh/log/psql probe).
+- **Sonnet** — a *decided* change or bounded op, the *how* not the *what*:
+  `coder` (implement + test-to-green), `test-author` (tests from an Opus spec),
+  `reviewer` (pre-ship diff review), `documenter` (doc-sync in house style),
+  `dep-bumper` (apply + test a dependency bump), `cluster-admin` (runbook-bounded
+  write ops — the write sibling of `cluster-ops`), `forensics` (read-only
+  log/transcript mining → ranked findings).
+- **Opus (main loop)** — the *what/why*: architecture; core API/schema/
+  abstraction decisions; CFD/DFT/ML and NOx/catalyst reasoning; mission/voice
+  prose; novel prod diagnosis; memory *reconsolidation* (re-verify claims vs
+  code, merge/sharpen).
+
+Default: start cheap for mechanical/exploratory work, hand a decided change to
+the sonnet tier, keep only genuine design/domain judgment on Opus. Subagents
+otherwise inherit the session model (= Opus), so an undelegated mechanical task
+runs expensive by accident; use the Agent tool's `model:` for one-off downgrades.
