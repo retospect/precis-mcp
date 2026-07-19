@@ -15,7 +15,9 @@
 - name: Confirm purge is intended
   ansible.builtin.assert:
     that:
-      - ollama_purge_confirm | default(false)
+      # ``| bool`` coerces a string ``-e ollama_purge_confirm=true`` to a real
+      # boolean — ansible-core 2.21+ rejects a str-typed conditional otherwise.
+      - ollama_purge_confirm | default(false) | bool
     fail_msg: >-
       ollama_purge refuses to run without ollama_purge_confirm=true.
       Invoke as: ansible-playbook playbooks/99-ollama-purge.yml -e ollama_purge_confirm=true

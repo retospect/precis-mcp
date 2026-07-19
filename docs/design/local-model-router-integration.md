@@ -1,10 +1,31 @@
 # Routing local models through the precis router (retiring the litellm proxy)
 
-**Status:** plan (2026-07-19). **Goal:** make precis's own LLM router call the
-cluster's self-hosted models **directly** at their OpenAI-compatible `/v1`
-endpoints, instead of going through the litellm proxy on `melchior:4000`. This is
-the "local-serving flip" the factory design has been building toward, and it is
-the load-bearing step that lets litellm retire.
+**Status:** built, awaiting deploy (2026-07-19). **Goal:** make precis's own LLM
+router call the cluster's self-hosted models **directly** at their
+OpenAI-compatible `/v1` endpoints, instead of going through the litellm proxy on
+`melchior:4000`. The load-bearing step that lets litellm retire.
+
+## Implementation status (2026-07-19)
+
+Built + shipped (dark until `scripts/deploy`):
+- **Schema** — `served_by.model` + card-level `served_by` (`b1356d46`).
+- **Router** — `OPENAI_TOOLS` honors `local_url`, so `LOCAL_BIG` (tools-capable)
+  dispatches to a per-host llama-swap, not just `LITELLM`/`LOCAL_SMALL` (`8e4f8065`).
+- **Auto-discovery** — `workers/llm_serving.advertise_local_llm`, called from the
+  per-host heartbeat (`cli/heartbeat.py`): each worker polls its OWN loopback
+  llama-swap `/v1/models`, reads `--parallel` from the local config for slot
+  capacity (default 1), and reconciles its `served_by` card entries + `llm:` slots.
+  **No feature flag** (self-gates: no local server ⇒ no-op); **the deploy is the
+  go-live**. Decentralised per-host merge (melchior + spark both serving the 27B
+  share one card without clobbering).
+
+**Remaining:** (1) `scripts/deploy` → every host advertises, the `0 rows` fill;
+(2) bind the tiers — `PRECIS_SUMMARIZE_MODEL`→`qwen3.6-27b-q8_0`,
+`PRECIS_LOCAL_BIG_MODEL`→`qwen3-next-80b-a3b-q4_k_m` (melchior) or
+`qwen3-235b-thinking-2507-ud-q3_k_xl` (spark); (3) verify a dispatch hits the
+local `/v1`, not `:4000`; (4) retire the litellm proxy (its consumers now route
+native). The manual-card / reconcile-flag sequence below is superseded by
+auto-discovery — kept for the mechanism reference.
 
 ## ⚠️ Reframe: "ollama" → "local models", and ollama is on the way out
 

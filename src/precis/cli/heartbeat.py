@@ -394,6 +394,15 @@ def _report_resource_slots(store: object, host: str) -> str:
     except Exception:
         log.warning("heartbeat: resource-slot probe/sync failed", exc_info=True)
         return "n/a"
+    # Advertise this host's local llama-swap models as served_by cards + llm: slots
+    # so the router routes to them directly (self-gating: no local server ⇒ no-op).
+    # Best-effort + separate try so a catalog blip never fails the heartbeat.
+    try:
+        from precis.workers.llm_serving import advertise_local_llm
+
+        advertise_local_llm(store, host)
+    except Exception:
+        log.warning("heartbeat: local-llm advertise failed", exc_info=True)
     present = {r: c for r, c in evaluated.items() if c}
     return ",".join(f"{r}={c}" for r, c in sorted(present.items())) or "none"
 
