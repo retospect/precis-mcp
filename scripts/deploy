@@ -3,9 +3,11 @@
 # into every cluster venv and bounce every daemon.
 #
 # The deterministic deploy backbone (the twin of scripts/ship). No LLM in the
-# loop: it wraps `ansible-playbook redeploy-precis.yml` from ~/work/cluster,
-# which already wires the inventory, the `deploy` SSH user, and `.vault-pass`
-# via ansible.cfg. Chained after a green ship by the /go command.
+# loop: it wraps `ansible-playbook redeploy-precis.yml` from the in-repo
+# `deploy/` tree (default since the slice-12a cutover; `PRECIS_DEPLOY_FROM_TREE=`
+# rolls back to the legacy ~/work/cluster checkout), which wires the inventory,
+# the `deploy` SSH user, and `.vault-pass` via ansible.cfg. Chained after a green
+# ship by the /go command.
 #
 # Steps:
 #   1. reachability — `ansible all -m ping`; abort (non-zero) if any host is
