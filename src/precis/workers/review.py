@@ -49,10 +49,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.store import Store
 from precis.store.types import Tag
+from precis.utils.db_log_handler import _resolve_host_name
 from precis.utils.env import env_flag
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, LlmResult, Tier, dispatch
 from precis.utils.load_gate import skip_if_high_load
 from precis.utils.prompt import (
     AssemblyContext,
@@ -260,7 +262,27 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         log.error("review[%s]: claude agent failed: %s", reviewer.name, res.error)
         _write_failure_marker(store, reviewer, res.error)
         return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
+    if _is_silent_empty(res):
+        # Empty-result assertion (OPEN-ITEMS §🔇). The dispatch reported
+        # success, but the pass did *nothing* — zero tool calls, no text,
+        # $0, 0/None turns. On a CAPABLE host (the probe already diverts
+        # incapable ones) that is a silent failure, not a clean no-op, and
+        # must not become a $0 "success" digest that vanishes. Back the
+        # pass off (marker) and raise a visible alert instead.
+        log.error(
+            "review[%s]: silent-empty pass (cost=$0, turns=%s, tool_calls=0, "
+            "no text) — raising alert, not writing digest",
+            reviewer.name,
+            res.turns_used,
+        )
+        _write_failure_marker(
+            store, reviewer, "silent-empty pass (0 tool calls, no output, $0)"
+        )
+        _raise_empty_pass_alert(store, reviewer)
+        return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
     digest_id = _write_digest(store, reviewer, res.text, res.cost_usd)
+    # A real digest landed — clear any empty-pass alert this reviewer left open.
+    _resolve_empty_pass_alert(store, reviewer)
     log.info(
         "review[%s]: wrote digest memory id=%d cost=$%.4f duration=%.1fs",
         reviewer.name,
@@ -329,6 +351,67 @@ def _recent_failure(store: Store, reviewer: Reviewer) -> bool:
             (_failure_tag(reviewer), f"{reviewer.min_interval_hours} hours"),
         ).fetchone()
     return row is not None
+
+
+def _is_silent_empty(res: LlmResult) -> bool:
+    """True when a dispatched pass *returned* but did nothing.
+
+    The conjunction — $0 cost ∧ 0/None turns ∧ a *definitive* zero tool
+    calls ∧ no output text. ``tool_calls == 0`` (not ``None``) is the hard
+    anchor: it only holds on the stream-json path that positively counted
+    zero ``tool_use`` blocks, so a genuinely cheap-but-real pass (any tool
+    call, or any text) is never flagged, and a transport that cannot report
+    tool calls (``None``) can never trip it. Cost/turns are permissive
+    (``None`` allowed) — they corroborate; the anchor demands proof.
+    """
+    return (
+        res.tool_calls == 0
+        and not (res.text or "").strip()
+        and (res.cost_usd is None or res.cost_usd == 0.0)
+        and (res.turns_used is None or res.turns_used == 0)
+    )
+
+
+def _empty_alert_source(reviewer: Reviewer) -> str:
+    """Per-reviewer alert source so a resolve touches only this reviewer."""
+    return f"review:empty:{reviewer.name}"
+
+
+def _raise_empty_pass_alert(store: Store, reviewer: Reviewer) -> None:
+    """Surface a silent-empty pass as a ``warn`` alert (visible, not paging)."""
+    host = _resolve_host_name()
+    # Fingerprint is per-reviewer, NOT per-host: the source-scoped
+    # `_resolve_empty_pass_alert` clears by (source) alone, so a host in the
+    # fingerprint would let one host's recovery resolve another host's still-
+    # broken alert. Keep the identity symmetric with the resolve; the host is
+    # carried in the title/detail for the operator, not the dedup key.
+    fingerprint = f"{reviewer.name}:empty-pass"
+    title = (
+        f"[review-empty] {reviewer.name} produced nothing on {host} "
+        "($0, 0 tool calls, no text)"
+    )
+    detail = (
+        f"The {reviewer.name} reviewer dispatched on a capable host but "
+        "returned zero tool calls, no text, and $0 cost — a silent failure, "
+        "not a clean no-op. Check the agent transport on this host (OAuth "
+        "token, MCP config, model availability). The pass is backed off for "
+        "its normal interval and will retry."
+    )
+    raise_alert(
+        store,
+        source=_empty_alert_source(reviewer),
+        fingerprint=fingerprint,
+        title=title,
+        detail=detail,
+        severity="warn",
+    )
+
+
+def _resolve_empty_pass_alert(store: Store, reviewer: Reviewer) -> None:
+    """Clear this reviewer's empty-pass alert once it produces a real digest."""
+    resolve_stale_alerts(
+        store, source=_empty_alert_source(reviewer), live_fingerprints=()
+    )
 
 
 def _write_failure_marker(store: Store, reviewer: Reviewer, error: str | None) -> None:

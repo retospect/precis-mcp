@@ -333,6 +333,12 @@ class LlmResult:
     #: so a direct-``LlmClient`` pass folded through :class:`DispatchClient`
     #: still gets the token count it recorded for accounting.
     total_tokens: int | None = None
+    #: Count of ``tool_use`` blocks in the ``claude_agent`` stream-json stream
+    #: (``None`` for one-shot transports and any run without a stream to count).
+    #: The review seam's empty-result assertion reads this as *definitive*
+    #: evidence the pass acted: a ``0`` here (not ``None``) is one leg of the
+    #: silent-empty conjunction.
+    tool_calls: int | None = None
 
 
 def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
@@ -344,6 +350,7 @@ def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
         model=model,
         tier=tier,
         duration_s=res.duration_s,
+        tool_calls=res.tool_calls,
     )
 
 
@@ -1212,6 +1219,12 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
         model=model,
         tier=req.tier,
         error=result.error,
+        # Thread the definitive tool-call count so the review seam's
+        # empty-result assertion works on this (local/OSS) backend too —
+        # otherwise a silent-empty pass routed through OPENAI_TOOLS keeps
+        # tool_calls=None and the guard can never trip (the anchor demands
+        # a definitive 0). `tool_calls_made` is the loop's own count.
+        tool_calls=result.tool_calls_made,
     )
 
 

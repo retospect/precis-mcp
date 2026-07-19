@@ -108,19 +108,25 @@ Closes the retry-storm risk B2-on-melchior took live (deploy `dc0e5d05`):
   (capable→containerized, incapable→in-proc, infra→fallback+latch,
   OOM-137→fallback-not-skip, model-error→still raises).
 
-**REMAINING — two follow-ons (neither is the safety-critical path):**
+**SHIPPED (this cycle) — the empty-result assertion.** The residual silent-$0
+case: a broken pass on a *capable* host. `claude_agent.py` now counts `tool_use`
+blocks in the stream-json stream (`_count_tool_use_events`) and surfaces it as
+`AgentResult.tool_calls` (`None` on the text/stderr path — unknown, never a false
+zero), threaded through `LlmResult.tool_calls`. The `OPENAI_TOOLS` transport
+(ADR-0046 backend switch) threads the loop's own `tool_calls_made` too, so the
+guard is live on the local/OSS backend, not just the claude_agent path. `review.py::run_review_pass`
+guards the digest-write seam (`_is_silent_empty`): the conjunction **cost∈{0,None}
+∧ turns∈{0,None} ∧ tool_calls==0 (definitive) ∧ no text** writes a failure marker
+(backoff) + raises a per-reviewer `warn` alert (`review:empty:<name>`) instead of
+a $0 "success" digest; a later real digest resolves it. The `tool_calls==0`
+anchor demands positive evidence, so a cheap-but-real pass (any tool call or any
+text) is never flagged. Tests: `tests/test_structural.py` (silent-empty→alert+no
+digest; 4-way "one leg broken → digest, no alert"; raise→resolve),
+`tests/test_claude_agent.py` (`_count_tool_use_events`).
 
-1. **Empty-result assertion.** An agent pass that reports **cost==0 AND turns
-   0/None AND zero MCP tool-calls AND no output text** (the *conjunction* — any
-   one alone is legitimate) is almost certainly a silent failure, not a clean
-   no-op. Today those log clean and vanish. Change the executor/review dispatch
-   so this conjunction **raises + alerts** instead of writing a $0 "success".
-   Guard the conjunction hard so a genuinely cheap-but-real pass (a real
-   tool-call that returned fast) is never flagged. (The capability probe now
-   prevents the *most common* cause — an incapable host — but a broken pass on
-   a capable host can still $0-succeed, so this assertion is still worth having.)
+**REMAINING — one follow-on (not the safety-critical path):**
 
-2. **`/factory` render of `capability_ok` (degraded/green).** Surface an
+1. **`/factory` render of `capability_ok` (degraded/green).** Surface an
    opted-in-but-incapable host as degraded rather than silent. **Deferred: no
    clean seam.** `probe_host_resources()` only evaluates tokens in
    `capability_vocabulary()` = union of `ServiceSpec.requires`, so a *hard*

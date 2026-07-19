@@ -473,6 +473,46 @@ def test_run_oss_tool_loop_honors_local_url(monkeypatch: pytest.MonkeyPatch) -> 
     assert seen["model"] == "qwen3-235b-thinking-2507-ud-q3_k_xl"
 
 
+def test_openai_tools_threads_tool_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The OPENAI_TOOLS transport threads the loop's definitive tool-call count
+    into LlmResult.tool_calls — so the review seam's empty-result assertion works
+    on the local/OSS backend, not just the claude_agent path. A `0` here must be
+    a real 0 (not None), or a silent-empty pass on a backend-switched reviewer
+    would go undetected."""
+    from precis.utils.llm.openai_tools import AgentLoopResult
+    from precis.utils.llm.router import LlmRequest, Tier, _dispatch_openai_tools
+
+    monkeypatch.setattr(
+        "precis.utils.llm.router.run_oss_tool_loop",
+        lambda **k: AgentLoopResult(
+            final_text="",
+            turns_used=1,
+            tool_calls_made=0,
+            total_tokens=None,
+            stop_reason="stop",
+        ),
+    )
+    empty = _dispatch_openai_tools(
+        LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True), "m"
+    )
+    assert empty.tool_calls == 0  # definitive zero, NOT None
+
+    monkeypatch.setattr(
+        "precis.utils.llm.router.run_oss_tool_loop",
+        lambda **k: AgentLoopResult(
+            final_text="did stuff",
+            turns_used=3,
+            tool_calls_made=4,
+            total_tokens=None,
+            stop_reason="stop",
+        ),
+    )
+    acted = _dispatch_openai_tools(
+        LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True), "m"
+    )
+    assert acted.tool_calls == 4
+
+
 def test_dispatch_client_routes_through_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

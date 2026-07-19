@@ -115,13 +115,19 @@ class AgentResult:
     via MCP tools. ``cost_usd`` is best-effort (parsed from stderr).
     ``duration_s`` is the wall-clock duration of the subprocess
     call. ``turns_used`` is best-effort from the tool's stderr
-    accounting; ``None`` when it can't be parsed.
+    accounting; ``None`` when it can't be parsed. ``tool_calls`` is the
+    count of ``tool_use`` blocks in the stream-json stream — positive
+    evidence the pass *did something*; ``None`` on the text/stderr path
+    (unknown, never confused with a real zero) so the review seam's
+    empty-result assertion can't false-fire on a transport that doesn't
+    report tool calls.
     """
 
     final_text: str
     cost_usd: float | None
     duration_s: float
     turns_used: int | None
+    tool_calls: int | None = None
 
 
 def call_claude_agent(
@@ -443,6 +449,7 @@ def call_claude_agent(
     last_result = _last_result_event(res.stdout or "")
     cost_usd: float | None
     turns_used: int | None
+    tool_calls: int | None
     if last_result is not None:
         # stream-json path: pull cost + turns from the event AND lift
         # the assistant's final text out of the ``result`` field so
@@ -451,6 +458,11 @@ def call_claude_agent(
         cost_usd = float(raw_cost) if isinstance(raw_cost, (int, float)) else None
         raw_turns = last_result.get("num_turns")
         turns_used = int(raw_turns) if isinstance(raw_turns, (int, float)) else None
+        # Positive evidence the pass acted: count tool_use blocks in the
+        # stream. The review seam's empty-result assertion (cost==0 ∧
+        # turns 0/None ∧ tool_calls==0 ∧ no text) hinges on this being a
+        # *definitive* zero — only the stream-json path can supply it.
+        tool_calls = _count_tool_use_events(res.stdout or "")
         # Prefer the result event's ``result`` field; but on an exhaustion
         # cutoff (max_turns / budget) it is often null/empty, in which case
         # falling back to ``res.stdout`` would dump the entire JSON stream
@@ -467,12 +479,16 @@ def call_claude_agent(
         cost_usd = _extract_cost_usd(res.stderr or "")
         turns_used = _extract_turns_used(res.stderr or "")
         final_text = res.stdout
+        # No stream to count — leave tool_calls unknown (never a false
+        # zero) so the empty-result assertion stays inert on this path.
+        tool_calls = None
 
     result = AgentResult(
         final_text=final_text,
         cost_usd=cost_usd,
         duration_s=duration_s,
         turns_used=turns_used,
+        tool_calls=tool_calls,
     )
 
     if log_event is not None:
@@ -740,6 +756,42 @@ def _last_assistant_text(stdout: str) -> str | None:
             if joined:
                 return joined
     return None
+
+
+def _count_tool_use_events(stdout: str) -> int:
+    """Count ``tool_use`` blocks across all assistant events in a stream.
+
+    Every MCP / built-in tool call the agent makes surfaces as a
+    ``tool_use`` content block inside an ``assistant`` message event. The
+    total is the review seam's positive evidence that the pass *did
+    something*: a stream-json run reporting zero tool calls AND no text
+    AND $0 cost did nothing, and the empty-result assertion raises on it
+    rather than logging a silent "$0 success". Only meaningful on the
+    stream-json path — the caller leaves ``tool_calls`` ``None`` on the
+    text/stderr path so a definitive zero is never confused with unknown.
+    """
+    import json as _json
+
+    count = 0
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        if not isinstance(ev, dict) or ev.get("type") != "assistant":
+            continue
+        msg = ev.get("message")
+        content = msg.get("content") if isinstance(msg, dict) else ev.get("content")
+        if isinstance(content, list):
+            count += sum(
+                1
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "tool_use"
+            )
+    return count
 
 
 def _last_result_event(stdout: str) -> dict[str, Any] | None:

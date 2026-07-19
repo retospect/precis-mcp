@@ -91,6 +91,19 @@ Three reviewers write memory digests, factored into
 `workers/review.py` (`Reviewer` dataclass + `run_review_pass`
 driver; adding one is a `Reviewer(...)` instance):
 
+**Empty-result assertion** (driver-level, all agentic reviewers). Before
+`run_review_pass` writes a success digest it checks `_is_silent_empty(res)`:
+the conjunction **cost∈{0,None} ∧ turns∈{0,None} ∧ `tool_calls`==0 (definitive)
+∧ no text** means the pass returned but did nothing — a silent failure on a
+*capable* host (the §capability-probe already diverts incapable ones). It writes
+a failure marker (backoff) and raises a per-reviewer `warn` alert
+(`review:empty:<name>`) instead of a $0 "success" digest; a later real digest
+resolves it. `tool_calls` is counted from `tool_use` blocks in the stream-json
+stream (`claude_agent._count_tool_use_events` → `AgentResult.tool_calls` →
+`LlmResult.tool_calls`); it is `None` on the text/stderr path, so a definitive
+`0` (positive evidence of zero tool calls) is required to trip the guard — a
+cheap-but-real pass is never flagged.
+
 * `nursery` — SQL-only, every minute on the system worker. Flags
   orphans, stale claims, long waits, stuck doable, stalled recurrings,
   **spin loops** (any `(ref_id, source)` emitting >

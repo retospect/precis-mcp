@@ -705,6 +705,66 @@ def test_cost_walks_to_latest_result_event() -> None:
     assert _cost_from_stdout_result(stdout) == 0.42
 
 
+def test_count_tool_use_events_counts_blocks_across_assistants() -> None:
+    """Every ``tool_use`` content block across all assistant events counts —
+    the review seam's positive evidence that a pass actually acted."""
+    import json
+
+    from precis.utils.claude_agent import _count_tool_use_events
+
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "let me search"},
+                            {"type": "tool_use", "name": "search", "input": {}},
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "tool_use", "name": "get", "input": {}},
+                            {"type": "tool_use", "name": "get", "input": {}},
+                        ]
+                    },
+                }
+            ),
+            json.dumps({"type": "result", "total_cost_usd": 0.1, "num_turns": 3}),
+        ]
+    )
+    assert _count_tool_use_events(stdout) == 3
+
+
+def test_count_tool_use_events_zero_and_robust() -> None:
+    """A text-only stream counts zero; junk/empty lines never raise."""
+    import json
+
+    from precis.utils.claude_agent import _count_tool_use_events
+
+    text_only = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "hi"}]},
+                }
+            ),
+            json.dumps({"type": "result", "total_cost_usd": 0.0, "num_turns": 0}),
+        ]
+    )
+    assert _count_tool_use_events(text_only) == 0
+    assert _count_tool_use_events("") == 0
+    assert _count_tool_use_events("not json\n{broken") == 0
+
+
 # Skip the whole module on Windows, where ``shutil.which("bash")``
 # may find ``bash.exe`` (Git Bash) but ``#!/usr/bin/env bash``
 # shebangs can't be invoked directly via ``subprocess.run`` —

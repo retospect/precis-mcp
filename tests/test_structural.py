@@ -360,3 +360,108 @@ def test_pass_writes_empty_digest_with_placeholder_title(
     # display name ("Structural") + the date + an (empty) marker.
     assert "Structural" in row[0]
     assert "(empty)" in row[0]
+
+
+# ── empty-result assertion (OPEN-ITEMS §🔇) ──────────────────────
+
+
+def _stub_agent(monkeypatch: pytest.MonkeyPatch, **fields: object) -> None:
+    """Patch the dispatch transport to return one stubbed AgentResult."""
+
+    def _call(*a: object, **kw: object) -> AgentResult:
+        return AgentResult(**fields)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _call)
+
+
+def _structural_digest_count(store: Store) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT count(*) FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'memory' AND r.deleted_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'tier:structural'
+            """,
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _empty_alerts(store: Store) -> list[dict[str, object]]:
+    from precis.alerts import list_open_alerts
+
+    return [
+        a for a in list_open_alerts(store) if a["source"] == "review:empty:structural"
+    ]
+
+
+def test_silent_empty_pass_raises_alert_not_digest(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capable-host pass that did *nothing* — 0 tool calls, no text, $0,
+    0 turns — raises a warn alert and writes NO $0 "success" digest."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    _stub_agent(
+        monkeypatch,
+        final_text="",
+        cost_usd=0.0,
+        duration_s=0.5,
+        turns_used=0,
+        tool_calls=0,
+    )
+    result = run_structural_pass(store)
+    assert (result.claimed, result.ok, result.failed) == (1, 0, 1)
+    assert _structural_digest_count(store) == 0
+    alerts = _empty_alerts(store)
+    assert len(alerts) == 1
+    assert alerts[0]["severity"] == "warn"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        # a real tool call → positive evidence it acted
+        dict(final_text="", cost_usd=0.0, duration_s=0.5, turns_used=0, tool_calls=2),
+        # unknown tool-call count (text/stderr transport) → never a false zero
+        dict(
+            final_text="", cost_usd=0.0, duration_s=0.5, turns_used=0, tool_calls=None
+        ),
+        # any output text → a real (if terse) pass
+        dict(
+            final_text="Nothing to flag.",
+            cost_usd=0.0,
+            duration_s=0.5,
+            turns_used=0,
+            tool_calls=0,
+        ),
+        # spent money / took turns → it ran
+        dict(final_text="", cost_usd=0.03, duration_s=0.5, turns_used=2, tool_calls=0),
+    ],
+)
+def test_non_empty_pass_writes_digest_and_no_alert(
+    store: Store, monkeypatch: pytest.MonkeyPatch, fields: dict[str, object]
+) -> None:
+    """The guard is HARD: a cheap-but-real pass is never flagged. Only the
+    full conjunction (definitive 0 tool calls ∧ no text ∧ $0 ∧ 0/None turns)
+    trips it — each row here breaks exactly one leg."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    _stub_agent(monkeypatch, **fields)
+    result = run_structural_pass(store)
+    assert (result.ok, result.failed) == (1, 0)
+    assert _structural_digest_count(store) == 1
+    assert _empty_alerts(store) == []
+
+
+def test_empty_pass_alert_raise_then_resolve(store: Store) -> None:
+    """The per-reviewer alert clears once the reviewer produces a real digest."""
+    from precis.workers.review import (
+        _raise_empty_pass_alert,
+        _resolve_empty_pass_alert,
+    )
+    from precis.workers.structural import STRUCTURAL
+
+    _raise_empty_pass_alert(store, STRUCTURAL)
+    assert len(_empty_alerts(store)) == 1
+    _resolve_empty_pass_alert(store, STRUCTURAL)
+    assert _empty_alerts(store) == []
