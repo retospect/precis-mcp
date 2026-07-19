@@ -19,6 +19,16 @@ Where/Goal/Next-steps (the recovery prompt carries those from durable
 artifacts) — it carries only the transcript-only residue that survives
 nowhere else.
 
+**Corollary — anything you wrote to a file this session is, by that act,
+durable: reference it by locator and stop.** Do not restate its content in
+either block, and specifically do not do it framed as "here's what I saved,
+don't re-carry it" — narrating a fact in order to tell the next session not
+to carry it *is* carrying it, at full token cost. If a claim now lives in
+`OPEN-ITEMS.md`, a `todo`/`gripe`, an ADR, or any on-disk note, the pointer
+(`§section` / id / path) is the entire job; the bytes are on disk. This is
+the single most common way both blocks bloat — one durable locator replaces
+a paragraph.
+
 Live state at invocation:
 
 - Branch + status:
@@ -70,7 +80,10 @@ it, then let it shape the whole handoff:
    `/compact` invocation whose argument protects the un-persisted reasoning —
    everything the recovery prompt's pointers can't reconstruct. Source it from
    the "Watch out" / gap notes above: anything there NOT backed by a file
-   belongs here. Do not duplicate Where/Goal/Next-steps. Template:
+   belongs here. Do not duplicate Where/Goal/Next-steps. **Test each candidate
+   fact against "is this already on disk?"** — if you persisted it this session
+   (or it was already in a file), it fails the test: drop it entirely, don't
+   convert it into a "don't re-carry X" reminder that spells X out. Template:
 
    ````
    /compact Keep: <decisions made this session and the alternatives rejected + why; constraints/gotchas discovered but not yet written to any file; current verification state (what's been run and passed vs. untested)>. Preserve branch/worktree + todo/gripe ids verbatim. Drop tool-output dumps, file contents (re-readable from disk), and resolved dead-ends.
