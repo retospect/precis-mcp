@@ -1,0 +1,76 @@
+# {{ ansible_managed }}
+# precis AGENT-profile worker — Linux/systemd (the GPU node). Factory Phase-2 slice 2
+# (2026-07-18): relocates the CONTAINERIZED review passes (structural,
+# deep_review, diagram) off RAM-starved the gateway onto the GPU node (77G free,
+# deploy-usable /usr/bin/docker). These passes are pure `claude -p` opus (cloud)
+# — no local-model dependency — so they move cleanly. `PRECIS_AGENT_CONTAINER=1`
+# runs each `claude -p` in a throwaway precis-agent container here.
+#
+# Deliberately NOT run here (stay on the gateway's launchd agent worker):
+#   - job_claude_inproc (plan_tick / fix_gripe / casts) — needs a repo checkout
+#     (PRECIS_FIX_REPO_DIR) + is gated on PRECIS_MCP_CONFIG, which we leave UNSET
+#     here, so that pass self-skips (natural gate, no service_config needed).
+#   - briefing / casts — use the litellm loopback (the gateway's llama), absent here.
+#   - quest loop / card_forge — the gateway-pinned budget / local-model use.
+# dream stays its own hermes-pinned LaunchDaemon on the gateway.
+#
+# Review load is arbitrated by postgres row-locking, so this can run alongside
+# the gateway's reviews with zero double-work; the gateway's structural/deep_review are
+# shed via a service_config prio-0 row AFTER this is verified (live, no redeploy).
+
+[Unit]
+Description=precis-mcp agent-profile worker (containerized reviews)
+After=network-online.target autossh@{{ postgres_host }}.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+
+WorkingDirectory=/tmp
+
+Environment=PATH={{ precis_worker_agent_venv }}/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/precis
+Environment=PRECIS_DATABASE_URL={{ precis_worker_agent_dsn }}
+Environment=PRECIS_PROCESS=precis-worker-agent
+Environment=PRECIS_SOURCE=precis-worker-agent
+
+# Review gates — the passes we DO want here (all containerize via claude -p).
+Environment=PRECIS_STRUCTURAL_REVIEW=1
+Environment=PRECIS_DEEP_REVIEW=1
+Environment=PRECIS_DIAGRAM_AGENTIC=1
+
+# §13 container executor: run each review's `claude -p` in a precis-agent
+# container on this host's docker (deploy owns /usr/bin/docker → no socket fight).
+Environment=PRECIS_AGENT_CONTAINER=1
+Environment=PRECIS_CONTAINER_BIN=/usr/bin/docker
+Environment=PRECIS_AGENT_IMAGE={{ precis_agent_image | default('precis-agent:latest') }}
+
+# Planner-coroutine guardrails (mirror the the gateway plist defaults).
+Environment=PRECIS_MAX_TICKS={{ precis_max_ticks | default(10000) }}
+Environment=PRECIS_MAX_TODO_USD={{ precis_max_todo_usd | default(5.0) }}
+Environment=PRECIS_DAILY_COST_CEILING={{ precis_daily_cost_ceiling | default(50.0) }}
+
+# NB PRECIS_MCP_CONFIG is deliberately UNSET here — it gates job_claude_inproc,
+# so leaving it out keeps plan_tick/fix_gripe on the gateway. Containerized reviews
+# use the image's baked /etc/precis/agent-mcp.json, not this var.
+
+# Shared config keys — see inventory/group_vars/all/precis_env.yml. Same block as
+# every precis-* unit so capability parity is automatic.
+{% for env_key, env_val in precis_shared_env.items() %}
+Environment={{ env_key }}={{ env_val }}
+{% endfor %}
+
+ExecStart={{ precis_worker_agent_venv }}/bin/precis worker \
+  --profile agent \
+  --batch-size {{ precis_worker_agent_batch_size | default(2) }} \
+  --idle-seconds {{ precis_worker_agent_idle_seconds | default(60) }}
+
+Restart=always
+RestartSec=30
+StandardOutput=append:/var/log/precis-worker-agent.log
+StandardError=append:/var/log/precis-worker-agent.log
+
+[Install]
+WantedBy=multi-user.target

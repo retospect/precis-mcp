@@ -82,49 +82,26 @@ default-off hook.
 
 ---
 
-## 🧹 Slice 12a — finish the `deploy/` migration (kill the cluster hybrid)
+## 🧹 Slice 12a — switch `deploy/` authoritative + demote `~/work/cluster`
 
-Status: `open` (deferred to Phase-2 window, task #19) · Severity: `feature` ·
-Owner: `deploy/`, `scripts/deploy`, `~/work/cluster` · Test:
-`tests/test_deploy_tree_no_secrets.py` + a `--check` plan diff.
+Severity: `feature` · Owner: `scripts/deploy`, `~/work/cluster` (operator).
 
-The repo-rationalization is **~90% built but dark and rotting.** `deploy/` is a
-portable, cluster-agnostic copy of the whole ansible tree (49 roles, 48
-playbooks, `redeploy-precis.yml`, `site.yml`); `deploy/inventory/` (gitignored,
-symlink to the private overlay) + `deploy/inventory.example/` (scrubbed,
-tracked) + the leak-gate + the dark `PRECIS_DEPLOY_FROM_TREE` flag in
-`scripts/deploy` all exist. **Chosen sequencing: deploy-now / migrate-later —
-the pending factory deploy runs from `~/work/cluster` as-is; this cutover is its
-own later job.**
+The `deploy/` tree is carried, gated, and `--check`-convergent with the overlay
+wired (drift-carry + aliases shipped 2026-07-19). Only the **operator switch**
+remains:
+1. Flip `PRECIS_DEPLOY_FROM_TREE` to the default in `scripts/deploy` (or delete
+   the branch so `deploy/` is the only path).
+2. Deploy once from the tree, then demote `~/work/cluster` to overlay-only
+   (delete its now-in-repo roles/playbooks; it shrinks to `inventory/` +
+   `.vault-pass` + `.git`). Cluster changes then ride `scripts/ship`.
 
-The hybrid is real, not cosmetic — the two trees have **diverged both ways**
-(diffed 2026-07-19):
-- `~/work/cluster` is ahead on live ops edits never mirrored into `deploy/`:
-  the factory Phase-2 role changes (`558379b`), `playbooks/retire-thin-timers.yml`,
-  dozens of playbook/role edits since the 17 Jul snapshot.
-- `deploy/` is ahead on in-repo dark pieces: `20b-precis-worker-collapsed.yml`,
-  the `service_unit` role.
+⚠ That first tree-deploy is *also* the pending Phase-2 scheduler-activation
+deploy (`~/work/cluster@558379b`, undeployed) — time it deliberately. `litellm`
+stays uncarried until slice 7 (blocks only a full `site.yml`, not the routine
+`redeploy-precis.yml`); commit the overlay alias change staged in
+`~/work/cluster` (`! l=1 git commit`).
 
-Neither is a superset. Every "quick cluster fix" rots `deploy/` further.
-
-**Cutover (4 steps, Phase-2 window):**
-1. **Re-sync drift into `deploy/`** — drift is now too large to hand-carry
-   file-by-file (README's "never bulk-copy"), so do a *scripted* rsync →
-   scrub → run the leak-gate (`test_deploy_tree_no_secrets.py`) → commit. The
-   gate still vets every tracked file.
-2. **Wire + rehearse** — `ln -s ~/work/cluster/inventory deploy/inventory` +
-   `.vault-pass`; `PRECIS_DEPLOY_FROM_TREE=1 ansible-playbook redeploy-precis.yml
-   --check` and diff the plan against a `~/work/cluster --check`. Must converge
-   identically (the one unchecked README item).
-3. **Flip the default** — make `PRECIS_DEPLOY_FROM_TREE` the default (or delete
-   the branch so `deploy/` is the only path). Repo becomes authoritative.
-4. **Demote `~/work/cluster` to overlay-only** — delete its roles/playbooks
-   (now in-repo); it shrinks to `inventory/` + `.vault-pass` + `.git`. Cluster
-   changes then ride `scripts/ship` through the leak-gate; only placement/secrets
-   ever touch `~/work/cluster`.
-
-Design-of-record: `deploy/README.md` (checklist) +
-`docs/design/factory-console-and-scheduling.md` §15-16.
+Design-of-record: `deploy/README.md` + `docs/design/factory-console-and-scheduling.md` §15-16.
 
 ---
 

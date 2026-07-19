@@ -24,6 +24,7 @@ build/
 # `deploy/inventory.example/` is tracked. Guarded in depth by
 # tests/test_deploy_tree_no_secrets.py (the ship-gate leak-gate).
 deploy/inventory/
+deploy/inventory
 deploy/.vault-pass
 deploy/*.local.yml
 

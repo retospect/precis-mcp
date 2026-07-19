@@ -1,0 +1,42 @@
+---
+# retire-thin-timers.yml — factory Phase-2 §15i cutover (2026-07-18).
+#
+# Boots out + removes the two standalone thin-timer LaunchDaemons on the gateway
+# now that their cadences ride the decentralized `scheduler` worker pass
+# (PRECIS_SCHEDULER_ENABLED, migration 0074 leases; see workers/scheduler.py):
+#   - com.precis.cron-tick   (was: precis cron tick @60s)
+#   - com.precis.watch-poll  (was: precis worker --only watch_poll @1h)
+#
+# RUN ORDER: only AFTER a deploy that flips PRECIS_SCHEDULER_ENABLED on and the
+# scheduler_leases rows are confirmed advancing — otherwise these cadences stop
+# firing. Idempotent (tolerates already-removed). Retiring both is harmless even
+# if the scheduler briefly co-fires: fire_due_cron uses FOR UPDATE SKIP LOCKED.
+#
+# Reversal: re-add plays 30/39 to site.yml and re-run them.
+- name: Retire precis thin-timer LaunchDaemons (folded into the scheduler pass)
+  hosts: gateway
+  become: true
+  vars:
+    _thin_timers:
+      - com.precis.cron-tick
+      - com.precis.watch-poll
+  tasks:
+    - name: Bootout the timer daemon (tolerate not-loaded)
+      ansible.builtin.command: "launchctl bootout system/{{ item }}"
+      loop: "{{ _thin_timers }}"
+      register: _bootout
+      changed_when: _bootout.rc == 0
+      failed_when: false        # rc!=0 == already unloaded; the rm below is the real state
+
+    - name: Remove the timer LaunchDaemon plist
+      ansible.builtin.file:
+        path: "/Library/LaunchDaemons/{{ item }}.plist"
+        state: absent
+      loop: "{{ _thin_timers }}"
+
+    - name: Assert the timer daemons are gone
+      ansible.builtin.command: "launchctl print system/{{ item }}"
+      loop: "{{ _thin_timers }}"
+      register: _still_loaded
+      changed_when: false
+      failed_when: _still_loaded.rc == 0    # rc==0 means it is STILL loaded → fail loudly

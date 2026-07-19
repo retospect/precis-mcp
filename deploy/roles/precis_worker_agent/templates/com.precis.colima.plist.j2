@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} #}
+{# Factory Phase-2 slice 2B3: keep deploy's colima VM alive so the §13
+   container executor (PRECIS_AGENT_CONTAINER) always has a docker socket.
+   colima is a per-user VM with no native autostart — after the 2026-07-19
+   the gateway reboot it stayed DOWN, which would have broken every
+   containerized call_claude_agent pass silently. This daemon is the fix:
+   RunAtLoad starts it at boot; StartInterval re-checks every 5 min so a
+   crashed VM self-heals. `colima status` is a cheap no-op when it's already
+   up, so the steady state is one quick check per interval. Runs as deploy
+   (owns the VM + the docker.sock the worker dials). vz backend starts fine
+   from a non-GUI launchd context (verified from ssh+sudo, same shape). #}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.colima</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>{{ precis_colima_bin | default('/opt/homebrew/bin/colima') }} status &gt;/dev/null 2&gt;&amp;1 || {{ precis_colima_bin | default('/opt/homebrew/bin/colima') }} start</string>
+  </array>
+
+  <key>UserName</key>
+  <string>deploy</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/deploy</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/deploy</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  {# RunAtLoad: start colima at boot. StartInterval: re-check every 5 min so
+     a dead VM restarts within one window (the real reboot-persistence +
+     crash-recovery guarantee). launchd skips a fire if the prior start
+     (~60-90s) is still running, so overlap is harmless. #}
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartInterval</key>
+  <integer>300</integer>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/precis-colima.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/precis-colima.log</string>
+</dict>
+</plist>

@@ -18,5 +18,17 @@ precis_worker_agent_idle_seconds: 60
 precis_worker_agent_load_ceiling: ""
 
 # Path to the agent's MCP config (so review passes can read the
-# tree via precis tool calls). Same path as precis_dream.
-precis_worker_agent_mcp_config: /Users/hermes/.claude/mcp.json
+# tree via precis tool calls). Factory Phase-2 slice 2B: the agent
+# worker now runs as `deploy` (was hermes) so it can reach deploy's
+# colima docker socket for the container executor — so this points at
+# deploy's ~/.claude/mcp.json, provisioned by this role from the shared
+# asa_bot claude_mcp.json.j2 template.
+precis_worker_agent_mcp_config: /Users/deploy/.claude/mcp.json
+
+# Container executor (Factory Phase-2 §13). The image + colima live on
+# the gateway (Track 1). PRECIS_CONTAINER_BIN points at the homebrew docker
+# CLI that talks to deploy's colima VM. PRECIS_AGENT_CONTAINER stays OFF
+# in slice 2B (run-as flip only, behaviour-preserving) — flipped to "1"
+# in slice 2C once plan_tick is verified green under the new run-as user.
+precis_worker_agent_container_bin: /opt/homebrew/bin/docker
+precis_agent_image: "precis-agent:latest"

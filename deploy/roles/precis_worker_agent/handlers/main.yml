@@ -9,3 +9,21 @@
     reload_unit: com.precis.worker-agent
     reload_persistent: true
   when: os_family == "darwin"
+
+- name: restart precis-worker-agent (linux)
+  ansible.builtin.systemd:
+    name: precis-worker-agent
+    state: restarted
+    daemon_reload: true
+  become: true
+  when: os_family == "linux"
+
+# Reload the colima autostart daemon on template change (slice 2B3). bootout
+# then bootstrap so a changed plist takes effect; the RunAtLoad fire on
+# bootstrap runs the check-and-start, so colima comes up if it was down.
+- name: reload colima daemon
+  ansible.builtin.shell: |
+    launchctl bootout system/com.precis.colima 2>/dev/null || true
+    launchctl bootstrap system /Library/LaunchDaemons/com.precis.colima.plist 2>/dev/null || true
+  become: true
+  when: os_family == "darwin"

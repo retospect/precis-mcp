@@ -76,10 +76,24 @@ Populated so far:
       the authored single-collapsed-worker spec (slice 10; the Phase-2 window
       swaps the four hand-written worker plists for this one delegation, and
       the retired `PRECIS_*_ENABLED` flags → `service_config.prio`)
-- [ ] `ansible --check` rehearsal against the wired overlay (needs the local
-      overlay + vault-pass symlinked; Phase-2 pre-cutover)
+- [x] Phase-2 drift carried in (2026-07-19): `precis_worker_agent` role
+      (run-as deploy + colima autostart + Linux/systemd review-worker branch +
+      container-executor env + catpath route), `playbooks/37` (`+inference`),
+      `site.yml` (retire imports 30/39), new `playbooks/retire-thin-timers.yml`.
+- [x] `ansible --check` rehearsal against the wired overlay: both trees resolve
+      the same 4-host plan; the `precis-worker-agent` play converges — the only
+      delta is scrubbed **comment** text in the inference node's rendered systemd
+      unit (zero functional directives differ); self-heals on the first deploy.
+- [x] overlay var aliases added (`~/work/cluster/inventory`, slice-12a commit):
+      `postgres_host`/`gateway_host` + `nas_*` over the `finnmaccool_*` facts —
+      additive, both trees resolve identically. (Full `finnmaccool_* → nas_*`
+      *rename* still deferred to when the legacy tree is deleted.)
 - [ ] retire `litellm` role + `06-litellm.yml` + its `site.yml` entry (slice 7)
-- [ ] overlay var renames at cutover: `finnmaccool_* → nas_*` (autofs_client)
+      — the only role not carried; `site.yml --syntax-check` fails on it until
+      then. Does NOT block `redeploy-precis.yml` (the routine deploy path).
+- [ ] **switch (operator):** flip `PRECIS_DEPLOY_FROM_TREE` default in
+      `scripts/deploy` → deploy once from the tree → demote `~/work/cluster` to
+      overlay-only.
 
 Overlay variables the portable roles expect (define these in your local
 `deploy/inventory/`): `postgres_host`, `gateway_host`, `litellm_host`,

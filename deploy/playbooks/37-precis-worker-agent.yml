@@ -4,7 +4,12 @@
 # precis_nursery + precis_structural + precis_deep_review.
 
 - name: Deploy precis worker (agent profile)
-  hosts: gateway
+  # gateway (launchd plist) + inference (systemd unit): the role branches on
+  # os_family. Factory Phase-2 slice 2 added the inference node to run the
+  # CONTAINERIZED review passes (structural/deep_review/diagram) off the gateway.
+  hosts:
+    - gateway
+    - inference
   become: true
   roles:
     - precis_worker_agent

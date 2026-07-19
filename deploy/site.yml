@@ -78,8 +78,11 @@
 - name: "29 — Claude Code CLI on the gateway"
   ansible.builtin.import_playbook: playbooks/29-claude-code.yml
 
-- name: "30 — precis cron-tick launchd timer"
-  ansible.builtin.import_playbook: playbooks/30-precis-cron-tick.yml
+# Playbook 30 (precis-cron-tick launchd timer) retired 2026-07-18 by the
+# factory Phase-2 §15i cutover: the 60s cron tick now rides the decentralized
+# `scheduler` worker pass (PRECIS_SCHEDULER_ENABLED, migration 0074 leases) —
+# see 20-precis-worker.yml + roles/precis_worker. Its LaunchDaemon
+# (com.precis.cron-tick) is booted out of the gateway in the same window.
 
 - name: "31 — asa_bot Discord bridge"
   ansible.builtin.import_playbook: playbooks/31-asa-bot.yml
@@ -99,8 +102,11 @@
 - name: "38 — precis web tab UI (gateway, tailnet HTTPS)"
   ansible.builtin.import_playbook: playbooks/38-precis-web.yml
 
-- name: "39 — precis watch-poll timer (citation-forward corpus growth, the gateway)"
-  ansible.builtin.import_playbook: playbooks/39-precis-watch-poll.yml
+# Playbook 39 (precis-watch-poll timer) retired 2026-07-18 by the factory
+# Phase-2 §15i cutover: the hourly citation-forward watch poll now rides the
+# decentralized `scheduler` worker pass (PRECIS_SCHEDULER_ENABLED, migration
+# 0074 leases) — see workers/scheduler.py CADENCES. Its LaunchDaemon
+# (com.precis.watch-poll) is booted out of the gateway in the same window.
 
 - name: "40 — precis reconcile-duplicates nightly timer (data node)"
   ansible.builtin.import_playbook: playbooks/40-precis-reconcile.yml

@@ -15,19 +15,23 @@
     <string>exec {{ precis_worker_agent_venv }}/bin/precis worker --profile agent --batch-size {{ precis_worker_agent_batch_size }} --idle-seconds {{ precis_worker_agent_idle_seconds }}</string>
   </array>
 
-  {# hermes owns the OAuth claude state + ~/.claude/mcp.json the
-     review passes inject via call_claude_agent. Same user as
-     precis_dream / the now-deleted precis_structural. #}
+  {# Factory Phase-2 slice 2B: runs as `deploy` (was hermes). deploy owns
+     the colima docker socket (0600) the §13 container executor needs, plus
+     its own OAuth (~deploy/.claude_oauth_token, bootstrapped into
+     CLAUDE_CODE_OAUTH_TOKEN by ensure_oauth_token) and its own
+     ~/.claude/mcp.json (this role renders it from the shared asa_bot
+     template). plan_tick uses --permission-mode bypassPermissions so no
+     ~/.claude/settings.json dependency. dream stays its own hermes plist. #}
   <key>UserName</key>
-  <string>hermes</string>
+  <string>deploy</string>
 
   <key>WorkingDirectory</key>
-  <string>/Users/hermes</string>
+  <string>/Users/deploy</string>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
-    <string>/Users/hermes</string>
+    <string>/Users/deploy</string>
     <key>PATH</key>
     <string>{{ precis_worker_agent_venv }}/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin</string>
     <key>PRECIS_DATABASE_URL</key>
@@ -66,7 +70,7 @@
     {# Autonomous quest loop (rung 4d, agent-profile only). The allocator
        pass mints frontier ticks + structure-relax compute; the weekly
        budget caps its spend (distinct from the global $/day breaker).
-       Compute relax rides the existing GPU DFT lane.
+       Compute relax rides the existing the GPU node DFT lane.
        GATED OFF by default: the loop's frontier ticks are PAID calls, so
        it only does useful work when the global budget breaker
        (PRECIS_BUDGET_DAILY_USD) has headroom — otherwise every tick
@@ -77,6 +81,15 @@
     <string>{{ '1' if precis_quest_loop_enabled | default(false) else '0' }}</string>
     <key>PRECIS_QUEST_WEEKLY_BUDGET</key>
     <string>{{ precis_quest_weekly_budget | default(25) }}</string>
+    {# Catalyst-quest barrier lane. dispatch_catpath runs HERE (quest ticks
+       are claude_inproc, agent-profile only) and reads this env to pin the
+       minted `catpath_explore` job at the GPU node; unset → it force-EMTs
+       and the job never reaches the GPU node's MACE. Mirrors the precis-web plist,
+       which sets the same var for the pathway-kind MCP surface. #}
+    {% if (precis_capabilities.catpath | default([])) | length > 0 %}
+    <key>PRECIS_CATPATH_ROUTE_NODE</key>
+    <string>{{ precis_capabilities.catpath | first }}</string>
+    {% endif %}
     {# diagram_propose autonomous drawer — agentic path (claude_inproc). #}
     <key>PRECIS_DIAGRAM_AGENTIC</key>
     <string>1</string>
@@ -84,6 +97,20 @@
        (default `report` = observe-only). Composes here (claude_inproc). #}
     <key>PRECIS_CARD_FORGE_AUTONOMY</key>
     <string>{{ precis_card_forge_autonomy | default('act') }}</string>
+    {# §13 container executor — CAPABLE but OFF (slice 2B). The docker CLI
+       (homebrew) talks to deploy's colima VM where the precis-agent image
+       is loaded (Track 1). Setting PRECIS_AGENT_CONTAINER=1 (slice 2C, via
+       host_vars once plan_tick is verified under the deploy run-as) makes
+       call_claude_agent passes (reviews/diagram) run in a throwaway
+       container. plan_tick/fix_gripe use separate seams — unaffected. #}
+    <key>PRECIS_CONTAINER_BIN</key>
+    <string>{{ precis_worker_agent_container_bin }}</string>
+    <key>PRECIS_AGENT_IMAGE</key>
+    <string>{{ precis_agent_image }}</string>
+    {% if precis_agent_container_enabled | default(false) %}
+    <key>PRECIS_AGENT_CONTAINER</key>
+    <string>1</string>
+    {% endif %}
     {# Shared API keys — Perplexity, EPO OPS, patent raw cache.
        See inventory/group_vars/all/precis_env.yml. Same block in
        every precis-* daemon so capability parity is automatic. #}

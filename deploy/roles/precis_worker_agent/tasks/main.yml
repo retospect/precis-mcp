@@ -20,18 +20,78 @@
   ansible.builtin.file:
     path: /var/log/precis-worker-agent.log
     state: touch
-    # Owner/mode must let ``hermes`` (the UserName in the plist)
-    # write to stdout/stderr. With ``root:wheel 0644`` (the launchd
-    # default) bash can't open the log for write and the daemon
-    # exits 78 (EX_CONFIG) before logging anything — the failure
-    # mode is silent because there's no log to write the error
-    # into. Same pattern precis_dream uses.
+    # Owner/mode must let ``deploy`` (the UserName in the plist, slice 2B;
+    # was hermes) write to stdout/stderr. With ``root:wheel 0644`` (the
+    # launchd default) bash can't open the log for write and the daemon
+    # exits 78 (EX_CONFIG) before logging anything — the failure mode is
+    # silent because there's no log to write the error into.
     mode: "0664"
-    owner: hermes
-    group: staff
+    owner: deploy
+    group: admin
     modification_time: preserve
     access_time: preserve
   become: true
+
+# Factory Phase-2 slice 2B: the agent worker runs as ``deploy`` and its
+# in-proc planner (job_claude_inproc → claude -p --mcp-config) reads deploy's
+# own ~/.claude/mcp.json. hermes's is managed by the asa_bot role; render
+# deploy's copy from the SAME shared template so the DSN/keys stay
+# vault-sourced (never hand-copied). deploy already has a working ~/.claude
+# (OAuth + sessions from precis-web's claude -p), only mcp.json was missing.
+- name: Ensure /Users/deploy/.claude exists (agent worker run-as = deploy)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /Users/deploy/.claude
+    state: directory
+    owner: deploy
+    group: admin
+    mode: "0700"
+  become: true
+
+- name: Render deploy's Claude Code mcp.json (in-proc planner MCP config)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: "{{ role_path }}/../asa_bot/templates/claude_mcp.json.j2"
+    dest: /Users/deploy/.claude/mcp.json
+    owner: deploy
+    group: admin
+    mode: "0600"
+  become: true
+
+# Factory Phase-2 slice 2B3: keep deploy's colima VM alive (reboot + crash
+# persistence) so the §13 container executor always has a docker socket.
+# Without this, a reboot leaves colima down and containerized passes fail
+# silently. Prereq for flipping precis_agent_container_enabled=true.
+- name: Ensure /var/log/precis-colima.log (deploy-writable)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-colima.log
+    state: touch
+    mode: "0664"
+    owner: deploy
+    group: admin
+    modification_time: preserve
+    access_time: preserve
+  become: true
+
+- name: Ensure colima autostart LaunchDaemon
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: com.precis.colima.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.colima.plist
+    mode: "0644"
+    owner: root
+    group: wheel
+  become: true
+  notify: reload colima daemon
+
+- name: Load colima autostart LaunchDaemon
+  when: os_family == "darwin"
+  ansible.builtin.command: >
+    launchctl bootstrap system /Library/LaunchDaemons/com.precis.colima.plist
+  become: true
+  changed_when: false
+  failed_when: false
 
 - name: Ensure precis-worker-agent LaunchDaemon plist
   when: os_family == "darwin"
@@ -51,3 +111,38 @@
   become: true
   changed_when: false
   failed_when: false
+
+# ── Linux/systemd (the GPU node) — factory Phase-2 slice 2: containerized review
+# worker. Same role, os_family branch; reuses /opt/precis/venv (the system
+# worker's) since the agent profile is the same precis binary. ──
+- name: Ensure /var/log/precis-worker-agent.log (Linux, deploy-writable)
+  when: os_family == "linux"
+  ansible.builtin.file:
+    path: /var/log/precis-worker-agent.log
+    state: touch
+    mode: "0664"
+    owner: deploy
+    group: deploy
+    modification_time: preserve
+    access_time: preserve
+  become: true
+
+- name: Ensure precis-worker-agent systemd unit (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: precis-worker-agent.service.j2
+    dest: /etc/systemd/system/precis-worker-agent.service
+    mode: "0644"
+    owner: root
+    group: root
+  become: true
+  notify: restart precis-worker-agent (linux)
+
+- name: Enable + start precis-worker-agent (Linux)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: precis-worker-agent
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
