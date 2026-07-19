@@ -89,6 +89,18 @@ Remaining (window, task #23/#19):
 - **Flip is the window action:** `PRECIS_AGENT_CONTAINER=1` (+ pin
   `PRECIS_AGENT_IMAGE` to a digest) makes the container the default agentic
   executor. Until then the image is resident but unused (in-proc path unchanged).
+- **⚠ LIVE symptom on spark (found 2026-07-19 `/whatneedsdoing`):** spark runs
+  `review[structural]`, whose agent container exits at `docker-entrypoint.sh`
+  with `PRECIS_DATABASE_URL not set` → **124k ERROR/24h** (100×+ every other
+  host). Root cause is this same env-wiring gap on spark's review-agent (wire
+  `PRECIS_DATABASE_URL`, or don't set `PRECIS_STRUCTURAL_REVIEW` on hosts whose
+  agent container isn't provisioned) — **Phase-2 window, cluster-side.** The
+  repo-side **amplifier is fixed** (`review.py` now backs off a failed dispatch
+  to `min_interval_hours` instead of re-running every tick — 124k/day → ~4/day,
+  each logged + a `review-fail:<name>` cooldown marker); spark's structural
+  review still won't *succeed* until the env is wired, but it no longer floods.
+  Optional follow-up: raise one `alert` on the failure so the (now-quiet) config
+  gap stays visible instead of only ~4 log lines/day.
 
 ---
 
@@ -837,6 +849,23 @@ memory `repo_dev_claude_tooling.md`. Remaining:
   currency. (3) user-facing/runbooks/reference assumed-current, unverified. (4)
   **ADR status labels inconsistent** (case drift; several "proposed" ADRs are
   shipped). (5) **`email` worktree `0074`→`0075` renumber** before it ships.
+- **Memory currency-auditor → own pip? 1-month check-in** *(feature, deferred
+  — decide by 2026-08-19; owner `scripts/memory-lint`).* Shipped
+  `scripts/memory-lint --currency`: treats each memory as falsifiable anchors
+  (gone kebab branch/worktree naming unshipped work · repo path missing on main)
+  and runs the exact git+fs oracle, so the once/day reconsolidation pass gets a
+  suspect punch-list instead of re-reading every file (git+fs only — gripe-status
+  / deployed-sha oracles need the prod MCP, stay in the judgment pass). Prior-art
+  scan (`perplexity-research:164887`) found **no** open-source Claude-Code memory
+  tool that verifies memories against repo ground truth — claude-mem (74.8k⭐),
+  MCP `server-memory`, Mem0/Zep/Letta, memsearch all store/compress/retrieve, none
+  audit; the repo-dev-toolkit half (worktree ship, doc-guardian orphan-docs, `rtk`
+  itself, awesome-claude-code) is a crowded commodity. So the *only* novel slice is
+  this auditor. **Decision to make ~2026-08-19:** after a month of our own use, is
+  it worth extracting as a standalone pip/plugin (genericize oracles off precis
+  coupling, own maintenance), or does it stay a repo-local script + a line in
+  `docs/how-to-setup-like-this.md`? Prior is **transient at best** — the recipe
+  doc is likely the right home; only extract if the month proves recurring value.
 - **Repo-dev hooks — 2 deferred** *(feature, deferred — marginal).* The tier-1
   guards (PROD-write / sealed-migration / git-stash), the map-staleness extension
   (ADR + skill triggers + `migration-check` at write), the PreCompact

@@ -132,7 +132,11 @@ driver; adding one is a `Reviewer(...)` instance):
   `(category, ref_id)` digest fingerprint changed every pass and the
   per-node per-minute writer emitted >2000 near-dup memories/day.)
 * `structural` — opus, 6h dedup, agent profile. Drift, sibling
-  contradictions, depth/fanout warnings.
+  contradictions, depth/fanout warnings. Dedup is symmetric: a **failed**
+  dispatch (non-paused error — e.g. the agent container missing
+  `PRECIS_DATABASE_URL` on a host) writes a `review-fail:<name>` cooldown
+  marker so the pass backs off to `min_interval_hours` instead of
+  re-dispatching every tick (was spinning spark to 124k ERROR/24h).
 * `deep_review` — opus, weekly dedup, agent profile. Allen-style
   archive / prune / rebalance / long-wait review.
 

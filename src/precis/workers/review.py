@@ -193,6 +193,14 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
             reviewer.min_interval_hours,
         )
         return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
+    if _recent_failure(store, reviewer):
+        log.info(
+            "review[%s]: dispatch failed < %sh ago; backing off "
+            "(not re-attempting every tick)",
+            reviewer.name,
+            reviewer.min_interval_hours,
+        )
+        return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
     prompt = _build_prompt(reviewer, store)
     # Routed through the LLM seam (ADR 0046 unit 4b): the reviewer's tier
     # resolves the model at dispatch time, so PRECIS_LLM_BACKEND / PRECIS_MODEL_*
@@ -227,7 +235,15 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
                 "review[%s]: paused by breaker; skipping (%s)", reviewer.name, res.error
             )
             return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
+        # A non-paused dispatch error (agent-launch / config / transport — e.g.
+        # the agent container missing PRECIS_DATABASE_URL on a host) writes a
+        # cooldown marker so the NEXT tick backs off (see _recent_failure).
+        # Without it the pass re-dispatches every scheduler cycle and one
+        # persistent config gap becomes a flood (spark: 124k "failures"/24h) —
+        # the same spin the ``paused`` branch above already fixed for budget
+        # trips (see LlmResult.paused).
         log.error("review[%s]: claude agent failed: %s", reviewer.name, res.error)
+        _write_failure_marker(store, reviewer, res.error)
         return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
     digest_id = _write_digest(store, reviewer, res.text, res.cost_usd)
     log.info(
@@ -265,6 +281,65 @@ def _recent_digest_exists(store: Store, tier_tag: str, hours: float) -> bool:
             (tier_tag, f"{hours} hours"),
         ).fetchone()
     return row is not None
+
+
+def _failure_tag(reviewer: Reviewer) -> str:
+    """Open-tag literal marking a reviewer's dispatch-failure cooldown."""
+    return f"review-fail:{reviewer.name}"
+
+
+def _recent_failure(store: Store, reviewer: Reviewer) -> bool:
+    """True when this reviewer's dispatch failed within ``min_interval_hours``.
+
+    A non-paused dispatch failure writes a cooldown marker
+    (:func:`_write_failure_marker`); this gate then backs the pass off to its
+    normal cadence instead of re-dispatching every scheduler tick. One
+    persistent failure (e.g. the agent container missing ``PRECIS_DATABASE_URL``
+    on a host) would otherwise re-run ~1×/s and flood the error surface
+    (observed: spark 124k ERROR/24h, all ``review[structural]``).
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'memory'
+               AND r.deleted_at IS NULL
+               AND t.namespace = 'OPEN'
+               AND t.value = %s
+               AND r.created_at > now() - %s::interval
+             LIMIT 1
+            """,
+            (_failure_tag(reviewer), f"{reviewer.min_interval_hours} hours"),
+        ).fetchone()
+    return row is not None
+
+
+def _write_failure_marker(store: Store, reviewer: Reviewer, error: str | None) -> None:
+    """Record a dispatch-failure cooldown so the reviewer backs off.
+
+    One marker per interval (the next tick dedups on it via
+    :func:`_recent_failure`), so a broken reviewer attempts at its normal
+    cadence (~``min_interval_hours``) rather than every tick. Tagged
+    ``internal-thought`` only — NOT ``{tier_tag}`` — so it never masquerades as
+    a real digest in the deep-review summary.
+    """
+    today = datetime.now(UTC).date().isoformat()
+    msg = (error or "").strip()
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="memory",
+            slug=None,
+            title=f"{reviewer.name} review dispatch failed {today}: {msg[:180]}",
+            meta={
+                f"{reviewer.meta_prefix}fail_date": today,
+                f"{reviewer.meta_prefix}fail_error": msg[:500],
+            },
+            conn=conn,
+        )
+        for tag in (Tag.open(_failure_tag(reviewer)), Tag.open("internal-thought")):
+            store.add_tag(ref.id, tag, set_by="system", conn=conn)
 
 
 def _build_prompt(reviewer: Reviewer, store: Store) -> str:

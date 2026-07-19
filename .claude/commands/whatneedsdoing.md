@@ -91,10 +91,14 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ memory ind
    - **Memory index** (`scripts/memory-lint`) — a broken link / unindexed file,
      a flagged **landed thread** (a `## Threads` bullet whose cited commits are
      all in main → verify + delete), or over-budget are quick fixes. On
-     **reconsolidation DUE** (last full pass an earlier day) do one full
-     audit+compact+delete-landed pass, then append a dated line to
-     `memory_consolidation_log.md`; on "done today", skip the heavy pass
-     (**once/day at most** — constant re-auditing churns without benefit).
+     **reconsolidation DUE** (last full pass an earlier day) run
+     `scripts/memory-lint --currency` for the per-claim ledger (gone kebab
+     branch/worktree naming unshipped work · repo path missing on main), then
+     judgment-resolve each suspect — **adjust** the anchor, **kill** the memory,
+     or **promote** a decision to an ADR/doc — plus the compact+delete-landed
+     pass, then append a dated line to `memory_consolidation_log.md`; on "done
+     today", skip the heavy pass (**once/day at most** — constant re-auditing
+     churns without benefit).
    - **Token-review cadence** (`scripts/token-review`) — on **DUE** (last pass
      >7 days ago) run the session-tightness scan: read recent large local
      transcripts for repeated token-waste (context bloat, wrong-tier agents,

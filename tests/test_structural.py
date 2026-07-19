@@ -102,6 +102,56 @@ def test_recent_digest_returns_false_when_none(store: Store) -> None:
     assert _recent_digest_exists(store, 6) is False
 
 
+# ── failure backoff (the spark 124k/24h spin-loop guard) ──────────
+
+
+def _err_result() -> object:
+    """A non-paused dispatch error (config/transport failure)."""
+    from precis.utils.llm.router import LlmResult, Tier
+
+    return LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model="test",
+        tier=Tier.CLOUD_SUPER,
+        error="claude -p (agent) exited 1: [entrypoint] ERROR: PRECIS_DATABASE_URL not set",
+        paused=False,
+    )
+
+
+def test_dispatch_failure_backs_off_instead_of_spinning(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-paused dispatch error must NOT re-dispatch every tick: it records a
+    cooldown marker and the next pass within the interval backs off. Without
+    this, one persistent config gap (spark's agent container missing
+    PRECIS_DATABASE_URL) spun review[structural] into 124k ERROR/24h."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    from precis.workers.review import _recent_failure
+    from precis.workers.structural import STRUCTURAL
+
+    calls = {"n": 0}
+
+    def _fake_dispatch(*a: object, **kw: object) -> object:
+        calls["n"] += 1
+        return _err_result()
+
+    monkeypatch.setattr("precis.workers.review.dispatch", _fake_dispatch)
+
+    # First pass: dispatch runs, errors, records a failure (a real failed=1).
+    r1 = run_structural_pass(store)
+    assert calls["n"] == 1
+    assert r1.failed == 1 and r1.claimed == 1
+    assert _recent_failure(store, STRUCTURAL) is True
+
+    # Second pass within the interval: backs off WITHOUT re-dispatching —
+    # the spin is gone (this assertion is the regression).
+    r2 = run_structural_pass(store)
+    assert calls["n"] == 1  # dispatch NOT called again
+    assert r2.claimed == 0 and r2.failed == 0
+
+
 def test_pass_skips_when_recent_digest_exists(
     handler: TodoHandler,
     store: Store,
