@@ -250,6 +250,35 @@ Shipped + cut over. Remaining are small/by-design:
   `papers` schema, unused `quest_*`/`feynman` group_vars. Harmless; sweep with
   the litellm teardown.
 
+## 📧 `email` kind — next steps (slices 1–4 shipped)
+
+Slices 1–4 SHIPPED to `main` (slice 4 = `inject_scan` tier-1/2 + quarantine
+ladder, `cfb702f9`; dark behind `PRECIS_INJECT_SCAN_ENABLED`). Design +
+present-state: `docs/design/email-kind.md`, `state-map.md` `email` bullet.
+
+- **DEPLOY slice-4 code + ENABLE mail_poll — Reto's Phase-2 window.** Slice-4
+  code is shipped but **not deployed** (dark, so harmless to lag). The
+  `mail_poll` enable flag for melchior is **prepared, uncommitted** in the
+  cluster working tree (`~/work/cluster`): `inventory/host_vars/melchior.yml`
+  (`precis_worker_mail_poll: true`) + a `PRECIS_MAIL_POLL_ENABLED` /
+  `PRECIS_INJECT_SCAN_ENABLED` gate block in
+  `roles/precis_worker/templates/precis-worker.plist.j2` (mirrors
+  `precis_worker_classify`). **Not deployed on purpose:** the cluster repo has
+  another session's in-flight Phase-2 `precis_worker_agent` provisioning (new
+  `tasks/main.yml` steps + a colima plist) that a full `scripts/deploy` would
+  sweep in. Sequence with that Phase-2 deploy: a normal `scripts/deploy` picks
+  up slice-4 code + the mail_poll flag together and starts polling
+  `rs@retostamm.com` from melchior. (Reto's session-guard also blocked me
+  committing the cluster edit; commit + deploy is yours.)
+- **Enable slice-4 `inject_scan` after verifying mail_poll's tier-0 rows** —
+  set `precis_worker_inject_scan: true` on melchior (gate block already added);
+  it runs on the local `summarizer` proxy there. Kept dark until the tier-0
+  verdicts look right in prod.
+- **Slice 5 (design-only)** — opt-in promotion (`split_text`→`write_paper`-equiv
+  for a chosen clean message) + wire the recurring morning brief to read clean,
+  non-quarantined, summarized email rows. Send (SMTP) is a later slice behind a
+  confirm-gate.
+
 ## 🎨 `figure` kind — deferred slices
 
 Slice 1 shipped (interactive SVG canvas, `/figure` editor). All below are
