@@ -11,9 +11,12 @@ rewire them itself.
 
 Four pieces:
 
-* :func:`resolve_model` — the single tier→model table. It reads the
-  *existing* env vars / defaults so a migrated caller resolves to the
-  byte-for-byte model it uses today (ADR 0046 §"Resolver").
+* :func:`resolve_model` — the single tier→model table. Resolution is a
+  web-set ``app_settings`` override (the ``/factory`` live switch,
+  :mod:`precis.utils.llm.live_config`) → the *existing* env var → the
+  compiled default, so a caller with no override row resolves byte-for-byte
+  to the model it uses today (ADR 0046 §"Resolver"). :func:`resolve_backend`
+  layers the same DB tier over ``PRECIS_LLM_BACKEND``.
 * :func:`select_transport` — the pure (tier, tools) → transport choice.
 * :class:`LlmProvider` + the adapter classes + :func:`dispatch` — the
   **port**. Every backend implements one narrow ``run(req, *, model)``
@@ -176,10 +179,17 @@ def resolve_model(tier: Tier) -> str:
     """The concrete model id for ``tier`` — the ONE place model
     selection lives.
 
-    Reads the same env var (with the same default) a current call site
-    reads, so a migrated caller resolves byte-for-byte to the model it
-    uses today. See :data:`_TIER_MODEL` for the table.
+    Resolution order: a web-set ``app_settings`` override (the ``/factory``
+    live switch, :func:`precis.utils.llm.live_config.model_override`) → the
+    env var → the compiled default in :data:`_TIER_MODEL`. With no override
+    row (or no store bound) the DB tier is a no-op, so a caller resolves
+    byte-for-byte to the model it uses today.
     """
+    from precis.utils.llm import live_config
+
+    override = live_config.model_override(tier)
+    if override:
+        return override
     env_var, default = _TIER_MODEL[tier]
     return os.environ.get(env_var, default)
 
@@ -190,12 +200,20 @@ def resolve_model(tier: Tier) -> str:
 def resolve_backend() -> Backend:
     """The cloud backend family for this process — the LLM-independence switch.
 
-    Reads ``PRECIS_LLM_BACKEND`` (default ``anthropic``); an unknown value
-    degrades to ``anthropic`` so a typo can't dark a deployment. The
+    Resolution order: a web-set ``app_settings`` override (the ``/factory``
+    live toggle, :func:`precis.utils.llm.live_config.backend_override`) →
+    ``PRECIS_LLM_BACKEND`` (default ``anthropic``). An unknown value at either
+    tier degrades to ``anthropic`` so a typo can't dark a deployment. The
     OpenAI-compatible path additionally needs ``PRECIS_LLM_BASE_URL`` set
-    (checked at dispatch); with the backend on but no base url, cloud
-    calls fall back to ``claude`` rather than hit a phantom endpoint.
+    (checked at dispatch); with the backend on but no base url, cloud calls
+    fall back to ``claude`` rather than hit a phantom endpoint. With no override
+    row the DB tier is a no-op — byte-identical to the env-only read.
     """
+    from precis.utils.llm import live_config
+
+    override = live_config.backend_override()
+    if override is not None:
+        return Backend.OPENAI if override == Backend.OPENAI else Backend.ANTHROPIC
     raw = os.environ.get("PRECIS_LLM_BACKEND", Backend.ANTHROPIC).strip().lower()
     return Backend.OPENAI if raw == Backend.OPENAI else Backend.ANTHROPIC
 

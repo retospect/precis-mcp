@@ -417,9 +417,14 @@ tool-less calls → `OpenAICompatProvider`, tool-using calls →
 advertises the precis verbs from `TOOL_REGISTRY` as OpenAI function
 schemas and executes each tool call **in-process** via `runtime.dispatch`
 (no MCP socket round-trip), rebuilding ADR 0024's reversed loop behind the
-port. Model ids resolve from the same `PRECIS_MODEL_*` table, so switching
-model is env-only. With the backend unset, behavior is byte-identical to
-`claude -p`. **Unit 4b (call sites folded through the seam) is done**:
+port. Model ids resolve from the same `PRECIS_MODEL_*` table. **Both the
+backend and the per-tier model are live-switchable** (`utils/llm/live_config`):
+`resolve_backend`/`resolve_model` layer an `app_settings` DB override
+(`llm.backend` / `llm.model.<tier>`, keys the `/factory` console writes) over
+the env default — TTL-cached ~15s, read from the breaker's bound store
+(`meter.active_store()`), so a flip reaches the whole fleet within one TTL, no
+redeploy. Dark: no row (or no store) → env, byte-identical. With the backend
+unset, behavior is byte-identical to `claude -p`. **Unit 4b (call sites folded through the seam) is done**:
 dream, the structural/deep reviewers, cad_propose/cad_discuss/
 structure_propose, the web follow-up (`precis_web/ask`), and the
 `claude_p` judges (chase, good_search triage, figure) all call
