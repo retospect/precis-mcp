@@ -47,9 +47,11 @@ from typing import Any
 from precis.reading.cast_common import (
     CAST_PROFILES,
     CastProfile,
+    Source,
     compose_max_tokens,
     create_cast_draft,
     find_cast_draft,
+    link_sources,
     voice_skill_preamble,
 )
 from precis.workers.briefing import _complete_with_retry
@@ -63,13 +65,10 @@ _LOOKBACK_HOURS = 26
 #: Cap how many headline titles a lane names, keeping the compose context tight.
 _LANE_ITEM_CAP = 12
 
-#: A ``(ref_id, relation)`` a lane surfaced — the source refs the brief drew on.
-#: Collected as the lanes render, then linked from the composed draft so a
-#: listener can later open the paper / finding / quest the brief *mentioned*.
-#: The brief itself speaks sources by name and never reads a URL aloud (the
-#: voice contract), so this link is the *only* durable pointer back to the
-#: source — hence we preserve it even though nothing is cited inline.
-Source = tuple[int, str]
+# ``Source`` (a ``(ref_id, relation)`` a lane surfaced) + ``link_sources`` live in
+# cast_common — shared with the nidra producer. Lanes collect the sources they
+# render; the composed draft is then linked back to them (nothing is cited inline
+# because the brief reads no URL aloud, so the link is the durable pointer back).
 
 _MORNING_CONTRACT = (
     "You are composing a spoken MORNING BRIEFING — a roughly {minutes}-minute "
@@ -598,34 +597,6 @@ def _gather_lanes(
     return lanes, deduped
 
 
-def _link_sources(
-    store: Any, draft_id: int, sources: list[Source], *, date_tag: str
-) -> None:
-    """Link the composed brief draft back to each source ref it drew on.
-
-    Best-effort and non-fatal: a bad edge (a since-deleted ref, an unknown
-    relation) is logged and skipped — a broken back-link must never lose the
-    morning brief that was already composed and stored.
-    """
-    for ref_id, relation in sources:
-        try:
-            store.add_link(
-                src_ref_id=int(draft_id),
-                dst_ref_id=int(ref_id),
-                relation=relation,  # type: ignore[arg-type]
-                set_by="agent",
-                meta={"via": "reading_brief", "date": date_tag},
-            )
-        except Exception:  # pragma: no cover - per-edge isolation
-            log.warning(
-                "reading brief: could not link draft %s → ref %s (%s)",
-                draft_id,
-                ref_id,
-                relation,
-                exc_info=True,
-            )
-
-
 def _compose(
     llm: LlmClient, lanes: dict[str, str], *, date_tag: str, profile: CastProfile
 ) -> str:
@@ -692,12 +663,14 @@ def build_reading_briefing(
     store.add_chunks(ref_id=ref.id, chunk_kind="paragraph", text=script, split=True)
     # Link the draft back to its sources — the brief names them but reads no URL
     # aloud, so these edges are the only way to reach the paper/finding later.
-    _link_sources(store, int(ref.id), sources, date_tag=date_tag)
+    n_links = link_sources(
+        store, int(ref.id), sources, via="reading_brief", date_tag=date_tag
+    )
     log.info(
         "reading brief: composed %s → draft ref %s (%d source link(s))",
         date_tag,
         ref.id,
-        len(sources),
+        n_links,
     )
     return int(ref.id)
 

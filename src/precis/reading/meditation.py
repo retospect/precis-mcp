@@ -25,6 +25,7 @@ from precis.reading.cast_common import (
     SINGLE_CALL_WORD_CEILING,
     cast_slug,
     create_cast_draft,
+    link_sources,
     word_budget,
 )
 
@@ -407,6 +408,11 @@ def build_meditation(
         meta={"cohort": cohort},
     )
     store.add_chunks(ref_id=ref.id, chunk_kind="paragraph", text=script, split=True)
+    # Link the draft back to the concepts it walked — the meditation names them
+    # but reads no handle aloud, so these edges are the way to reopen a concept
+    # the walk touched (the nidra analogue of the morning brief's paper links).
+    sources = [(cid, "related-to") for cid in order if by_id[cid][0].strip()]
+    link_sources(store, int(ref.id), sources, via="meditation", date_tag=date_tag)
     return int(ref.id)
 
 

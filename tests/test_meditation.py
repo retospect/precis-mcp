@@ -89,6 +89,35 @@ class TestBuild:
         assert n_paras >= 2  # script split into paragraphs on blank lines
         assert client.calls  # the model was consulted
 
+    def test_walked_concepts_are_linked_from_the_draft(self, store: Any) -> None:
+        import uuid
+
+        from precis.reading.promote import create_concept
+
+        u = uuid.uuid4().hex[:8]
+        co = f"med-{u}"
+        a = create_concept(store, name=f"aa-{u}", definition="idea a", cohort=co)
+        b = create_concept(store, name=f"bb-{u}", definition="idea b", cohort=co)
+        store.add_link(src_ref_id=a, dst_ref_id=b, relation="analogy-of")
+        client = _FakeClient("Settle in.\n\nIdea a, then idea b.\n\nDrift.")
+
+        draft_id = build_meditation(
+            store, client=client, name=f"evening-{u}", cohort=co
+        )
+        assert draft_id is not None
+
+        with store.pool.connection() as conn:
+            linked = {
+                (r[0], r[1])
+                for r in conn.execute(
+                    "SELECT dst_ref_id, relation FROM links WHERE src_ref_id=%s",
+                    (draft_id,),
+                ).fetchall()
+            }
+        # Both walked concepts are reachable from the meditation draft for later.
+        assert (a, "related-to") in linked
+        assert (b, "related-to") in linked
+
     def test_too_few_concepts_returns_none(self, store: Any) -> None:
         import uuid
 

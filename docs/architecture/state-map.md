@@ -276,13 +276,14 @@ old FIFO. The capability-rarity term (§5.3, 6d) is not yet added.
   profiles: **`reading`** (morning situational-awareness brief, `bm_george`,
   ~20 min — `reading/briefing_cast.py` unions news/activity/recall/quest lanes, each
   degrade-to-empty; depth-first prompt, papers carry abstracts + leech cards carry
-  bodies, active-only quest report with a decaying dormant nudge; the composed draft
-  is **linked back to its sources** — papers/findings `cites`, news wire `derived-from`,
-  drafts/quests `related-to` — since the spoken brief names sources but reads no URL
-  aloud, so the link is the only durable pointer back) and **`nidra`**
+  bodies, active-only quest report with a decaying dormant nudge; papers/findings
+  `cites`, news wire `derived-from`, drafts/quests `related-to`) and **`nidra`**
   (evening concept-graph meditation, `af_nicole`, ~45 min segmented walk —
-  `reading/meditation.py`). Producers
-  persist a standalone dated `draft` marked `meta.cast`; `workers/cast_audio.py`
+  `reading/meditation.py`; walked concepts `related-to`). Producers
+  persist a standalone dated `draft` marked `meta.cast` and **link it back to the
+  sources it drew on** via the shared `cast_common.link_sources` (a cast names its
+  sources but reads no URL aloud, so the edge is the only durable pointer back —
+  `links_for` the cast draft reopens them; best-effort, a bad edge is skipped); `workers/cast_audio.py`
   (spark, default-OFF `PRECIS_CAST_AUDIO_ENABLED` + `PRECIS_TTS_IMAGE`) narrates
   any un-narrated cast draft via `render_narration` → `render_episode` →
   `publish_episode(source=profile.source)` — a **distinct** producer tag per cast

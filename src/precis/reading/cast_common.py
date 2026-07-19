@@ -30,6 +30,52 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+#: A ``(ref_id, relation)`` a cast drew on — the source ref it spoke about. A
+#: cast names its sources but reads no URL aloud (the voice contract), so nothing
+#: is cited inline; :func:`link_sources` writes these edges from the composed
+#: draft so a listener can later reopen the paper / concept / quest it mentioned.
+Source = tuple[int, str]
+
+
+def link_sources(
+    store: Any,
+    draft_id: int,
+    sources: list[Source],
+    *,
+    via: str,
+    date_tag: str,
+) -> int:
+    """Link a composed cast ``draft`` back to each source ref it drew on.
+
+    Shared by both producers (the morning brief's papers/findings/quests, the
+    evening nidra's concepts). Best-effort and non-fatal: a bad edge (a
+    since-deleted ref, an unknown relation) is logged and skipped — a broken
+    back-link must never lose a cast that was already composed and stored.
+    ``via`` tags each edge's ``meta`` with the producer for provenance. Returns
+    the count of edges written.
+    """
+    written = 0
+    for ref_id, relation in sources:
+        try:
+            store.add_link(
+                src_ref_id=int(draft_id),
+                dst_ref_id=int(ref_id),
+                relation=relation,  # type: ignore[arg-type]
+                set_by="agent",
+                meta={"via": via, "date": date_tag},
+            )
+            written += 1
+        except Exception:  # pragma: no cover - per-edge isolation
+            log.warning(
+                "%s: could not link draft %s → ref %s (%s)",
+                via,
+                draft_id,
+                ref_id,
+                relation,
+                exc_info=True,
+            )
+    return written
+
 
 @dataclass(frozen=True)
 class CastProfile:
@@ -175,10 +221,12 @@ __all__ = [
     "CAST_PROFILES",
     "SINGLE_CALL_WORD_CEILING",
     "CastProfile",
+    "Source",
     "cast_slug",
     "compose_max_tokens",
     "create_cast_draft",
     "find_cast_draft",
+    "link_sources",
     "voice_skill_preamble",
     "word_budget",
 ]
