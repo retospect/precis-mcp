@@ -39,8 +39,8 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from precis.errors import BadInput
-from precis.handlers._numeric_ref import NumericRefHandler
+from precis.errors import BadInput, Unsupported
+from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.protocol import KindSpec
 from precis.quest.logbook import (
     BY_VALUES as _BY_VALUES,
@@ -113,6 +113,20 @@ def _status_of(tags: list[Tag]) -> str | None:
         if t.namespace == "closed" and t.prefix == "STATUS":
             return t.value
     return None
+
+
+#: Quest-specific ``get(view=…)`` tokens on a concrete id, handled below
+#: before the base ``links/log/raw`` fall-through. Kept here so the
+#: unknown-view error can enumerate them — the base class only knows its own
+#: ``_BASE_VIEWS`` and would otherwise mislead a caller into thinking
+#: links/log/raw are the *only* quest views (they aren't).
+_QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
+    "tree",
+    "gaps",
+    "dossier",
+    "frontier",
+    "leaderboard",
+)
 
 
 class QuestHandler(NumericRefHandler):
@@ -382,6 +396,23 @@ class QuestHandler(NumericRefHandler):
         if view == "leaderboard" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
             return Response(body=self._render_leaderboard(ref))
+        # An unrecognised view on a concrete id would otherwise fall through to
+        # NumericRefHandler.get, whose error lists only links/log/raw — hiding
+        # the five quest views above. "logbook"/"deeds" are the two shapes a
+        # caller reaches for (the skill prose is saturated with both words), so
+        # name them explicitly: the logbook shows by default, deeds are a
+        # filtered slice of view='log'. (Tooling-log audit: recurring guess.)
+        if concrete and view is not None and view not in _BASE_VIEWS:
+            raise Unsupported(
+                f"unknown view {view!r} for kind='quest'",
+                options=[*_QUEST_CONCRETE_VIEWS, *_BASE_VIEWS],
+                next=[
+                    "quest views: tree, gaps, dossier, frontier, leaderboard "
+                    "(quest-specific) · links, log, raw (generic)",
+                    "no 'logbook'/'deeds' view — the logbook shows by default "
+                    "(get(kind='quest', id=N)); use view='log' for the raw ledger",
+                ],
+            )
         return super().get(id=id, view=view, q=q, **_kw)
 
     def _render_frontier(self, ref: Ref) -> str:

@@ -118,14 +118,23 @@ The append path takes only `text`/`entry`/`by`/`cost`; use `tag()` /
 ## Read a quest
 
 ```python
-get(kind='quest', id=7)               # statement + logbook timeline + tote
+get(kind='quest', id=7)               # statement + logbook timeline + tote (the logbook IS here)
 get(kind='quest', id=7, view='tree')  # rollup: servers + deed ledger + health + gaps
 get(kind='quest', id=7, view='gaps')  # just this quest's exploration queue
 get(kind='quest', id=7, view='dossier')  # the living research synthesis (slice 4)
 get(kind='quest', id=7, view='frontier') # Pareto frontier of candidate materials
+get(kind='quest', id=7, view='leaderboard') # ranked servers by deeds contributed
+get(kind='quest', id=7, view='log')   # raw append-only ledger (every logbook entry, dated)
 get(kind='quest', id='/active')       # every active striving
 get(kind='quest', id='/gaps')         # gaps across ALL active quests
 ```
+
+**The complete `view=` set is** `tree · gaps · dossier · frontier ·
+leaderboard` (quest-specific) plus the generic `links · log · raw`. Note the
+trap: this doc says *logbook* and *deeds* constantly, but **neither is a
+view** — the logbook renders by default (bare `get(id=N)`), `view='log'` is
+its raw ledger, and *deeds* are just the deed-typed slice of that log. There
+is no `view='logbook'` or `view='deeds'`.
 
 `view='tree'` is the map: it walks who serves the quest (grouped by
 kind), recurses into sub-quests, prints the deed ledger + tote, and — from
