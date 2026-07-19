@@ -69,9 +69,11 @@ memory/
 # Never source — and `scripts/ship`'s `git add -A` must not commit it.
 .fixer-work/
 
-# testmon test-selection DB (volatile binary; shared via TESTMON_DATAFILE, not git)
-.testmondata
-.testmondata.*
+# testmon test-selection DB (volatile binary; shared via TESTMON_DATAFILE, not git).
+# Glob covers the SQLite WAL sidecars too — `.testmondata-shm` / `.testmondata-wal`
+# use a HYPHEN, which the old `.testmondata.*` (dot) missed, so `git add -A` swept
+# a 4.7MB `-wal` blob into a ship once. `.testmondata*` catches all of them.
+.testmondata*
 
 # scripts/nightly local full-build result (machine-specific state, not git)
 .nightly-status.md
