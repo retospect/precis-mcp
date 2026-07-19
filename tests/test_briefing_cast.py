@@ -137,6 +137,53 @@ class TestBuild:
         user_turn = client.calls[0][1]["content"]
         assert "catalyst paper" in user_turn
 
+    def test_sources_are_linked_from_the_draft(self, store: Any) -> None:
+        date_tag = f"2026-09-{uuid.uuid4().hex[:2]}"
+        # A news wire (so it composes) + an overnight paper the brief draws on.
+        news = store.insert_ref(
+            kind="news",
+            slug=f"briefing-{date_tag}",
+            title="wire",
+            meta={"briefing": True, "date": date_tag},
+        )
+        store.add_chunks(
+            ref_id=news.id,
+            chunk_kind="paragraph",
+            text="A new catalyst paper landed.",
+            split=True,
+            kind="news",
+        )
+        paper = store.insert_ref(
+            kind="paper",
+            slug=f"paper-{uuid.uuid4().hex[:8]}",
+            title="Single-atom Pd catalyses ammonia synthesis at 1 bar",
+            meta={"abstract": "We report a single-atom palladium catalyst."},
+        )
+        client = _FakeClient("Morning.\n\nA paper landed.\n\nOn to the quests.")
+
+        draft_id = build_reading_briefing(store, client=client, date_tag=date_tag)
+        assert draft_id is not None
+
+        with store.pool.connection() as conn:
+            rels = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT relation FROM links WHERE src_ref_id=%s AND dst_ref_id=%s",
+                    (draft_id, paper.id),
+                ).fetchall()
+            }
+            news_rels = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT relation FROM links WHERE src_ref_id=%s AND dst_ref_id=%s",
+                    (draft_id, news.id),
+                ).fetchall()
+            }
+        # The paper the brief drew on is reachable from the draft for later use.
+        assert rels == {"cites"}
+        # …and the consumed news wire is linked as the thing it derived from.
+        assert news_rels == {"derived-from"}
+
     def test_idempotent_second_call_skips_compose(self, store: Any) -> None:
         date_tag = f"2026-08-{uuid.uuid4().hex[:2]}"
         news = store.insert_ref(

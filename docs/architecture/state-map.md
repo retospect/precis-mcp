@@ -276,7 +276,10 @@ old FIFO. The capability-rarity term (§5.3, 6d) is not yet added.
   profiles: **`reading`** (morning situational-awareness brief, `bm_george`,
   ~20 min — `reading/briefing_cast.py` unions news/activity/recall/quest lanes, each
   degrade-to-empty; depth-first prompt, papers carry abstracts + leech cards carry
-  bodies, active-only quest report with a decaying dormant nudge) and **`nidra`**
+  bodies, active-only quest report with a decaying dormant nudge; the composed draft
+  is **linked back to its sources** — papers/findings `cites`, news wire `derived-from`,
+  drafts/quests `related-to` — since the spoken brief names sources but reads no URL
+  aloud, so the link is the only durable pointer back) and **`nidra`**
   (evening concept-graph meditation, `af_nicole`, ~45 min segmented walk —
   `reading/meditation.py`). Producers
   persist a standalone dated `draft` marked `meta.cast`; `workers/cast_audio.py`

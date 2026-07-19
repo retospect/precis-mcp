@@ -112,6 +112,11 @@ through the same path — two voice profiles over one spine:
 - **`nidra`** — the evening concept-graph meditation (voice `af_nicole`, ~45 min).
   Producer `reading.meditation.build_meditation`, a segmented long-form walk.
 
+The `reading` cast also **links its draft back to the sources it drew on** (the
+brief names them but reads no URL aloud, so the link is the durable pointer):
+papers/findings `cites`, the news wire `derived-from`, drafts/quests `related-to`
+— so `links_for` on the cast draft reopens what the brief mentioned.
+
 Both compose with a **nice model** (`claude-opus`) and persist a standalone dated
 `draft` marked `meta.cast` (+ `meta.voice`). **TTS is a separate downstream step:**
 the `cast_audio` pass on spark (`PRECIS_CAST_AUDIO_ENABLED=1` + `PRECIS_TTS_IMAGE`)

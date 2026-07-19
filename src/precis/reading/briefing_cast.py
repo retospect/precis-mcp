@@ -24,6 +24,12 @@ layers land):
   about the dormant strivings takes its place (doubling cadence, so it fades
   rather than nags); silent when there are no quests at all.
 
+As it renders, each lane also records the source refs it surfaced; the finished
+draft is then linked back to them (papers/findings ``cites``, the news wire
+``derived-from``, drafts/quests ``related-to``). The spoken brief names its
+sources but reads no URL aloud (the voice contract), so nothing is cited inline
+— these edges are the only durable way to reopen the paper the brief mentioned.
+
 See docs/design/reading-prep-loop.md (§The briefing, Slice 5) and
 docs/proposals/quest-layer.md.
 """
@@ -56,6 +62,14 @@ log = logging.getLogger(__name__)
 _LOOKBACK_HOURS = 26
 #: Cap how many headline titles a lane names, keeping the compose context tight.
 _LANE_ITEM_CAP = 12
+
+#: A ``(ref_id, relation)`` a lane surfaced — the source refs the brief drew on.
+#: Collected as the lanes render, then linked from the composed draft so a
+#: listener can later open the paper / finding / quest the brief *mentioned*.
+#: The brief itself speaks sources by name and never reads a URL aloud (the
+#: voice contract), so this link is the *only* durable pointer back to the
+#: source — hence we preserve it even though nothing is cited inline.
+Source = tuple[int, str]
 
 _MORNING_CONTRACT = (
     "You are composing a spoken MORNING BRIEFING — a roughly {minutes}-minute "
@@ -122,17 +136,42 @@ _DORMANT_NUDGE_BASE_DAYS = 1
 _DORMANT_NUDGE_MAX_DAYS = 32
 
 
-def _safe_lane(name: str, fn: Callable[[], str]) -> str:
+def _safe_lane(
+    name: str, fn: Callable[[], str], sources: list[Source] | None = None
+) -> str:
     """Run a lane contributor, swallowing any error to ``""``.
 
     A single lane's data source misbehaving (a schema drift, an unbuilt view)
-    must never lose the whole morning brief — that lane just goes quiet.
+    must never lose the whole morning brief — that lane just goes quiet. If the
+    lane appends to ``sources`` and then raises, we roll those partial appends
+    back so the linked set never claims a source whose text never made the
+    prompt (text and links stay in lock-step per lane).
     """
+    mark = len(sources) if sources is not None else 0
     try:
         return (fn() or "").strip()
     except Exception:  # pragma: no cover - defensive per-lane isolation
+        if sources is not None:
+            del sources[mark:]
         log.warning("reading brief: lane %s failed", name, exc_info=True)
         return ""
+
+
+def _collect(sources: list[Source] | None, refs: list[Any], relation: str) -> None:
+    """Record each titled ref in ``refs`` as a ``relation`` source (best-effort).
+
+    Skips refs with no id or no title — a titleless ref is one the brief never
+    names, so there is nothing to point back to. Mirrors the ``title``-skip in
+    :func:`_render_papers` / :func:`_titles`, keeping the linked set aligned
+    with what the prompt actually mentioned.
+    """
+    if sources is None:
+        return
+    for r in refs:
+        rid = getattr(r, "id", None)
+        title = (getattr(r, "title", "") or "").strip()
+        if rid is not None and title:
+            sources.append((int(rid), relation))
 
 
 def _news_brief_text(store: Any, ref_id: int) -> str:
@@ -146,17 +185,19 @@ def _news_brief_text(store: Any, ref_id: int) -> str:
     return "\n\n".join((r[0] or "").strip() for r in rows if (r[0] or "").strip())
 
 
-def _lane_news(store: Any, date_tag: str) -> str:
+def _lane_news(
+    store: Any, date_tag: str, *, sources: list[Source] | None = None
+) -> str:
     """Today's ``briefing-<date>`` news ref, consumed verbatim (LIVE)."""
     ref = store.get_ref(kind="news", id=f"briefing-{date_tag}")
     if ref is None:
         return ""
     body = _news_brief_text(store, ref.id)
-    return (
-        f"NEWS WIRE (today's world briefing, already published):\n{body}"
-        if body
-        else ""
-    )
+    if not body:
+        return ""
+    # The brief is derived from (re-speaks) the wire → point back to it.
+    _collect(sources, [ref], "derived-from")
+    return f"NEWS WIRE (today's world briefing, already published):\n{body}"
 
 
 def _titles(refs: list[Any], cap: int = _LANE_ITEM_CAP) -> list[str]:
@@ -209,7 +250,9 @@ def _render_papers(papers: list[Any]) -> str:
     return f"Papers acquired or updated ({len(papers)}):\n" + "\n".join(lines)
 
 
-def _lane_system_activity(store: Any, *, cutoff: datetime) -> str:
+def _lane_system_activity(
+    store: Any, *, cutoff: datetime, sources: list[Source] | None = None
+) -> str:
     """What the untiring collaborator did overnight (LIVE)."""
     parts: list[str] = []
 
@@ -217,6 +260,7 @@ def _lane_system_activity(store: Any, *, cutoff: datetime) -> str:
     rendered_papers = _render_papers(papers)
     if rendered_papers:
         parts.append(rendered_papers)
+        _collect(sources, papers, "cites")  # open the paper later
 
     drafts = [
         r
@@ -225,12 +269,14 @@ def _lane_system_activity(store: Any, *, cutoff: datetime) -> str:
     ]
     if drafts:
         parts.append(f"Drafts advanced ({len(drafts)}): " + "; ".join(_titles(drafts)))
+        _collect(sources, drafts, "related-to")
 
     findings = store.list_refs(
         kind="finding", updated_after=cutoff, limit=_LANE_ITEM_CAP
     )
     if findings:
         parts.append(f"New findings ({len(findings)}): " + "; ".join(_titles(findings)))
+        _collect(sources, findings, "cites")
 
     # Open alerts (health/ops conditions) — machine-raised, best-effort.
     try:
@@ -474,7 +520,9 @@ def _dormant_nudge(store: Any, dormant: list[Any], *, now: datetime) -> str:
     )
 
 
-def _lane_quest(store: Any, *, now: datetime) -> str:
+def _lane_quest(
+    store: Any, *, now: datetime, sources: list[Source] | None = None
+) -> str:
     """The brief's closing "on to the quests" report. **Active quests only** get
     the full momentum + latest-deed treatment; when none is active, a *decaying*
     nudge about the dormant strivings takes its place (and goes quiet again on the
@@ -491,13 +539,13 @@ def _lane_quest(store: Any, *, now: datetime) -> str:
     if active:
         # The human is engaged — reset the decay so a future dormancy nudges fresh.
         _clear_nudge_cursor(store)
+        reported = active[:_QUEST_DEPTH_CAP]
         blocks = [
-            r
-            for q in active[:_QUEST_DEPTH_CAP]
-            if (r := _quest_report(store, q, status="active"))
+            r for q in reported if (r := _quest_report(store, q, status="active"))
         ]
         if not blocks:
             return ""
+        _collect(sources, reported, "related-to")  # jump to the quest later
         return (
             "QUESTS IN FLIGHT (the standing strivings above the day's work):\n"
             + "\n".join(blocks)
@@ -516,17 +564,66 @@ def _lane_quest(store: Any, *, now: datetime) -> str:
 
 def _gather_lanes(
     store: Any, *, date_tag: str, cutoff: datetime, now: datetime
-) -> dict[str, str]:
-    """All lanes, each degrading to ``""``. Keys preserve reading order."""
-    return {
-        "news": _safe_lane("news", lambda: _lane_news(store, date_tag)),
+) -> tuple[dict[str, str], list[Source]]:
+    """All lanes, each degrading to ``""``. Keys preserve reading order.
+
+    Also returns the ``(ref_id, relation)`` sources the lanes surfaced, deduped,
+    so the composed draft can be linked back to the papers / findings / quests it
+    drew on — the durable "for later" pointer the spoken brief can't carry.
+    """
+    src: list[Source] = []
+    lanes = {
+        "news": _safe_lane(
+            "news", lambda: _lane_news(store, date_tag, sources=src), src
+        ),
         "system": _safe_lane(
-            "system", lambda: _lane_system_activity(store, cutoff=cutoff)
+            "system",
+            lambda: _lane_system_activity(store, cutoff=cutoff, sources=src),
+            src,
         ),
         "reading": _safe_lane("reading", lambda: _lane_reading(store)),
         "recall": _safe_lane("recall", lambda: _lane_recall(store, cutoff=cutoff)),
-        "quest": _safe_lane("quest", lambda: _lane_quest(store, now=now)),
+        "quest": _safe_lane(
+            "quest", lambda: _lane_quest(store, now=now, sources=src), src
+        ),
     }
+    # Dedup on (ref_id, relation), keeping first-seen order (a ref could surface
+    # in two lanes — link it once per relation).
+    seen: set[Source] = set()
+    deduped: list[Source] = []
+    for s in src:
+        if s not in seen:
+            seen.add(s)
+            deduped.append(s)
+    return lanes, deduped
+
+
+def _link_sources(
+    store: Any, draft_id: int, sources: list[Source], *, date_tag: str
+) -> None:
+    """Link the composed brief draft back to each source ref it drew on.
+
+    Best-effort and non-fatal: a bad edge (a since-deleted ref, an unknown
+    relation) is logged and skipped — a broken back-link must never lose the
+    morning brief that was already composed and stored.
+    """
+    for ref_id, relation in sources:
+        try:
+            store.add_link(
+                src_ref_id=int(draft_id),
+                dst_ref_id=int(ref_id),
+                relation=relation,  # type: ignore[arg-type]
+                set_by="agent",
+                meta={"via": "reading_brief", "date": date_tag},
+            )
+        except Exception:  # pragma: no cover - per-edge isolation
+            log.warning(
+                "reading brief: could not link draft %s → ref %s (%s)",
+                draft_id,
+                ref_id,
+                relation,
+                exc_info=True,
+            )
 
 
 def _compose(
@@ -575,7 +672,7 @@ def build_reading_briefing(
         return int(existing.id)
 
     cutoff = now - timedelta(hours=_LOOKBACK_HOURS)
-    lanes = _gather_lanes(store, date_tag=date_tag, cutoff=cutoff, now=now)
+    lanes, sources = _gather_lanes(store, date_tag=date_tag, cutoff=cutoff, now=now)
     if not any(lanes.values()):
         log.info("reading brief: no material in any lane — nothing to compose")
         return None
@@ -593,7 +690,15 @@ def build_reading_briefing(
 
     ref, _created = create_cast_draft(store, profile=profile, date_tag=date_tag)
     store.add_chunks(ref_id=ref.id, chunk_kind="paragraph", text=script, split=True)
-    log.info("reading brief: composed %s → draft ref %s", date_tag, ref.id)
+    # Link the draft back to its sources — the brief names them but reads no URL
+    # aloud, so these edges are the only way to reach the paper/finding later.
+    _link_sources(store, int(ref.id), sources, date_tag=date_tag)
+    log.info(
+        "reading brief: composed %s → draft ref %s (%d source link(s))",
+        date_tag,
+        ref.id,
+        len(sources),
+    )
     return int(ref.id)
 
 
