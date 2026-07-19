@@ -160,12 +160,12 @@ per-kind reference.
   manually there:** `rtk git …`, `rtk err -- <cmd>`, `rtk summary -- <cmd>`.
   Filters: committed `.rtk/filters.toml` overrides the user-global template.
   Uninstall the hook: `rtk init --global --uninstall` (then restart).
-- **Semantic code search** (repo-dev, not the product). The `claude-context`
-  MCP (`.mcp.json`) over local Milvus (`docker/code-search/compose.yaml`, up'd
-  by a SessionStart hook) indexes the code. One **shared MAIN index** serves
-  every worktree: call `search_code` with the **main** repo path, not the
-  worktree's — hits are repo-relative and map onto your tree. Seed once with
-  `index_codebase(path=<main-root>)`; freshness is lazy (Merkle re-sync).
+- **Semantic code search — first move to orient** (repo-dev, not the product).
+  For *where-is / how-does / what-calls* questions, `search_code` (or the
+  `navigator` subagent) **before** grep/Read — one query → ranked `file:line`
+  across code+docs+tests. `claude-context` MCP over Milvus, up'd by a
+  SessionStart hook. Pass the **MAIN** repo path, not your worktree's (else no
+  hits). Index is **lazy** — code you just wrote can lag; Grep is truth there.
 - **Skills are runtime docs.** Editing `src/precis/data/skills/` is the
   agent-facing channel — the MCP server serves them via `get(kind='skill')`.
 - **Embeddings populated by the worker, not ingest** (ADR 0007): ingest
