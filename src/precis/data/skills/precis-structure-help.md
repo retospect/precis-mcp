@@ -28,6 +28,9 @@ Seven verbs, no new ones: `put` (create/replace), `edit` (apply ops / relax),
   per element and never recycled** (a vacancy doesn't free its label).
 - Design-scoped path: `st7#aPd123`. Atoms in different designs are unrelated
   even with the same label.
+- **`set_element` keeps the original label.** Transmuting `aPd28` → Cu leaves
+  it named **`aPd28`** (now a Cu atom) — it does **not** become `aCu…`. Refer to
+  it by its original label in later ops/eyes/measures; there is no `aCu28`.
 - A bond crossing a cell wall carries a **periodic image offset** `[i,j,k]`:
   `aPd1 — aPd2[−1,0,0]` bonds aPd1 to aPd2's image one cell back along **a**.
 
@@ -66,10 +69,11 @@ put(kind='structure', id='pd111', text='''{
 | op | args | effect |
 |----|------|--------|
 | `set_cell` | `lattice` or `a,b,c,…` + `pbc` | redefine the cell |
+| `slab` | `element`, `size:[nx,ny,nz]`, `vacuum?`, `fix_layers?`, `a?` | **bulk template** — build an fcc(111) metal slab; **clears the scene** and sets the cell (ASE-exact atom order, so catpath can inject it). Omit the top-level `cell`. |
 | `add_atom` | `element`, `frac:[fa,fb,fc]` | place an atom (wraps into the cell) |
-| `set_element` | `atom`, `element` | transmute (keeps the label & position) |
+| `set_element` | `atom`, `element` | transmute — **keeps the atom's label & position** (see caution below) |
 | `vacancy` | `atom` | remove an atom (label not recycled) |
-| `displace` | `atom`, `delta:[da,db,dc]` | nudge by a fractional delta |
+| `displace` | `atom`, `vector:[dx,dy,dz]`, `cartesian?` | nudge (Cartesian Å by default; `cartesian:false` for a fractional delta) |
 | `add_bond` | `i`, `j`, `order?`, `image?:[i,j,k]` | declare a bond (intent) |
 | `remove_bond` | `i`, `j` | drop a declared bond |
 | `constrain` | `atoms:[…]`, `kind` | `fixed-x|y|z|all` — freeze axes (use sparingly) |
