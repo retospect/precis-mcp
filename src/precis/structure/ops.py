@@ -2,8 +2,11 @@
 
 The LLM edits the *graph* (intent); the framework applies and re-derives. v1 op
 catalog floor: set_cell · add_atom · set_element · vacancy · displace · add_bond ·
-remove_bond · constrain. Bulk templates (slab/fill/attach, §5b) and the validator
-gate wiring (§5c) are the next increment. ``apply_ops`` mutates the Scene in place
+remove_bond · constrain. Bulk template ``slab`` (fcc(111), §5b) seeds a whole
+metal surface from a compact spec — mirrors catpath's ``build_slab`` (same ASE
+call → identical atom order + geometry) so the slab can be *injected* into a
+catpath barrier run and its NEB endpoints line up. The validator gate wiring
+(§5c) is the next increment. ``apply_ops`` mutates the Scene in place
 and returns it; an unknown op or a bad reference raises ``OpError`` (the Edit
 contract surfaces this as a structured error, §5c).
 """
@@ -227,8 +230,60 @@ def _op_remove_measure(scene: Scene, op: dict[str, Any]) -> None:
         raise OpError(f"no {kind!r} measure over {atoms!r}")
 
 
+def _op_slab(scene: Scene, op: dict[str, Any]) -> None:
+    """Bulk template (§5b): build an fcc(111) metal slab and (re)seed the scene.
+
+    Mirrors catpath's ``build_slab`` exactly — same ``ase.build.fcc111`` call →
+    identical atom order + geometry — so the resulting slab can be *injected*
+    into a catpath barrier run and its NEB endpoints line up. Params:
+    ``element`` (required), ``size`` ``[nx, ny, nz]`` (required), ``vacuum`` Å
+    (default 10.0), ``fix_layers`` (bottom layers frozen, default 0), ``a``
+    (lattice constant Å; default = ASE reference). A slab is a fresh base, so
+    this **clears** any existing atoms/bonds/measures and sets the cell.
+    """
+    try:
+        from ase.build import fcc111
+    except ImportError as exc:  # pragma: no cover - ASE is the [dft] extra
+        raise OpError("slab op needs ASE (the [dft] extra)") from exc
+    element = op.get("element")
+    size = op.get("size")
+    if not element or not isinstance(size, (list, tuple)) or len(size) != 3:
+        raise OpError("slab needs 'element' and 'size' as [nx, ny, nz]")
+    nx, ny, nz = int(size[0]), int(size[1]), int(size[2])
+    vacuum = float(op.get("vacuum", 10.0))
+    fix_layers = int(op.get("fix_layers", 0))
+    a = op.get("a")
+    slab = fcc111(
+        str(element),
+        size=(nx, ny, nz),
+        vacuum=vacuum,
+        a=float(a) if a is not None else None,
+    )
+    slab.pbc = (True, True, True)
+    # Freeze the bottom `fix_layers` layers (mirror catpath: sort by z ascending).
+    frozen: set[int] = set()
+    if fix_layers:
+        order = np.argsort(slab.positions[:, 2])
+        frozen = set(order[: fix_layers * nx * ny].tolist())
+    # (Re)seed the scene from the ASE slab, preserving ASE's atom order.
+    scene.cell = Cell(np.asarray(slab.cell), (True, True, True))  # type: ignore[arg-type]
+    scene.atoms.clear()
+    scene.bonds = []
+    scene.measures = []
+    scaled = slab.get_scaled_positions(wrap=False)
+    for i, sym in enumerate(slab.get_chemical_symbols()):
+        label = scene.next_label(sym)
+        scene.atoms[label] = Atom(
+            label=label,
+            element=sym,
+            frac=np.asarray(scaled[i], dtype=float),
+            fixed=FIX_ALL if i in frozen else 0,
+        )
+
+
 _OPS = {
     "set_cell": _op_set_cell,
+    "slab": _op_slab,
     "add_atom": _op_add_atom,
     "set_element": _op_set_element,
     "vacancy": _op_vacancy,

@@ -155,6 +155,17 @@ def _build_cell(spec: dict[str, Any]) -> Cell:
         ) from None
 
 
+#: Ops that establish the cell themselves, so a top-level ``cell`` is optional.
+_CELL_ESTABLISHING_OPS = frozenset({"slab", "set_cell"})
+
+
+def _ops_establish_cell(ops: Any) -> bool:
+    """True if ``ops`` contains an op that seeds the cell (``slab``/``set_cell``)."""
+    return isinstance(ops, list) and any(
+        isinstance(o, dict) and o.get("op") in _CELL_ESTABLISHING_OPS for o in ops
+    )
+
+
 def _payload(text: str | None, args: dict[str, Any] | None) -> dict[str, Any]:
     if args:
         return dict(args)
@@ -175,8 +186,9 @@ class StructureHandler(Handler):
         title="Structure",
         description=(
             "Atomistic cell + bond-graph design (ADR 0043). put creates/replaces "
-            "from JSON {cell:{a,b,c,pbc}|{lattice,pbc}, ops:[...]}; edit applies "
-            "more ops (set_cell/add_atom/set_element/vacancy/displace/add_bond/"
+            "from JSON {cell:{a,b,c,pbc}|{lattice,pbc}, ops:[...]} (cell optional "
+            "when ops start with a `slab` bulk template); edit applies "
+            "more ops (slab/set_cell/add_atom/set_element/vacancy/displace/add_bond/"
             "remove_bond/constrain, plus eye/measure/unmark/remove_measure "
             "markers); get lists designs, shows a TOC (id=slug), or probes "
             "(view='atom|neighborhood|bonds|find|validate|markers', args={...}); "
@@ -222,9 +234,18 @@ class StructureHandler(Handler):
             )
         slug = str(id).strip()
         payload = _payload(text, args)
-        if "cell" not in payload:
-            raise BadInput("put(kind='structure') payload needs a 'cell'")
-        scene = Scene(cell=_build_cell(payload["cell"]))
+        ops = payload.get("ops") or []
+        if "cell" in payload:
+            scene = Scene(cell=_build_cell(payload["cell"]))
+        elif _ops_establish_cell(ops):
+            # A bulk template (`slab`) or a `set_cell` op provides the cell — the
+            # placeholder is overwritten before any atom is placed.
+            scene = Scene(cell=Cell(np.eye(3), (True, True, True)))
+        else:
+            raise BadInput(
+                "put(kind='structure') payload needs a 'cell' (or a "
+                "cell-establishing op like 'slab')"
+            )
         res = self._run_ops(scene, payload.get("ops", []))
         if isinstance(res, _NeedsDispatch):
             relax_result: RelaxResult | None = None

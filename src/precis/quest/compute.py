@@ -75,7 +75,19 @@ def ensure_candidate(
     proposal of the same material returns the existing structure.
     """
     spec = proposal.get("structure")
-    if not isinstance(spec, dict) or "cell" not in spec:
+    if not isinstance(spec, dict):
+        return None
+    # A candidate needs a cell — either given directly, or established by a bulk
+    # template op (`slab`) / a `set_cell` op (a Pd(111) slab is 30+ atoms; the
+    # proposer emits the compact `slab` op, not a hand-enumerated cell).
+    ops = spec.get("ops") or []
+    has_cell = "cell" in spec or (
+        isinstance(ops, list)
+        and any(
+            isinstance(o, dict) and o.get("op") in ("slab", "set_cell") for o in ops
+        )
+    )
+    if not has_cell:
         return None
     slug = _candidate_slug(quest_id, spec)
     existing = store.get_ref(kind="structure", id=slug)
@@ -189,7 +201,9 @@ def dispatch_catpath(
         from precis.structure import export
 
         scene, _handles = store.structure_load(structure_ref_id)
-        slab_extxyz = export.to_extxyz(scene)
+        # constraints=True → the slab's frozen bottom layers ride along as a
+        # FixAtoms, so catpath's injected-slab relax/NEB keeps them fixed.
+        slab_extxyz = export.to_extxyz(scene, constraints=True)
     except Exception as e:
         return f"catpath dispatch failed for {ref.slug}: export ({e})"
 

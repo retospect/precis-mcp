@@ -344,11 +344,18 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
 # runtime precis discovers the plugin via entry points and `import
 # catpath.precis` resolves against the editable precis. This is the dev mirror
 # of cluster `roles/catpath` (which installs `catpath[precis,mace]` on spark).
-# Tracks catpath `main`; bump/rebuild (`scripts/dev … --rebuild`) when the seam
-# moves — Docker caches this RUN by command text, not by the remote's HEAD.
+# Tracks catpath `main`. Docker keys this RUN's cache on command TEXT, not the
+# remote's HEAD, so a bare `@main` silently baked a stale catpath and never
+# re-fetched on `--rebuild` (this is how the emit-side `_summarize` went missing
+# from the dev image). `scripts/build-image` resolves catpath's current main
+# HEAD on the host and threads it in as CATPATH_REV, so this layer busts (and
+# re-fetches) exactly when catpath main advances — no hash committed here, no
+# manual bump. A bare `docker build` with no arg falls back to `main`. Mirror of
+# cluster `roles/catpath` (installs `catpath[precis,mace]` on spark).
+ARG CATPATH_REV=main
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
-    uv pip install --python /opt/venv --no-deps \
-        "catpath @ git+https://github.com/retospect/catpath@main"
+    uv pip install --python /opt/venv --no-deps --refresh-package catpath \
+        "catpath @ git+https://github.com/retospect/catpath@${CATPATH_REV}"
 
 # =============================================================================
 # Stage: dev — final developer image. dev-system + venv (from dev-venv)

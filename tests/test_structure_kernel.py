@@ -434,3 +434,71 @@ def test_pov_uniform_readout() -> None:
     assert [t[0] for t in p.i_touch] == ["aO1"]  # H is out of reach
     pf = probe.pov(scene, ["aPd1", "aO1"], reach=2.0)
     assert pf.i_am == "fragment" and "aPd1" not in dict(pf.i_touch)
+
+
+# -- slab bulk template (§5b) ------------------------------------------------
+
+
+def test_op_slab_builds_fcc111_with_frozen_bottom_layers() -> None:
+    """The `slab` op re-seeds the scene with an fcc(111) surface and freezes the
+    bottom `fix_layers` layers (mirrors catpath's build_slab so the geometry can
+    be injected into a barrier run)."""
+    pytest.importorskip("ase.build")
+    from precis.structure.scene import FIX_ALL
+
+    scene = Scene(cell=_cubic(1.0))  # placeholder cell; slab overwrites it
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "slab",
+                "element": "Pd",
+                "size": [2, 2, 3],
+                "vacuum": 8.0,
+                "fix_layers": 1,
+            }
+        ],
+    )
+    assert len(scene.atoms) == 12  # nx*ny*nz = 2*2*3
+    assert {a.element for a in scene.atoms.values()} == {"Pd"}
+    assert scene.cell.pbc == (True, True, True)
+    # exactly one layer (nx*ny = 4 atoms) frozen, and it's the bottom (min z)
+    frozen = [a for a in scene.atoms.values() if a.fixed == FIX_ALL]
+    assert len(frozen) == 4
+    zs = sorted(a.frac[2] for a in scene.atoms.values())
+    frozen_zs = sorted(a.frac[2] for a in frozen)
+    assert frozen_zs == zs[:4]  # the four lowest
+
+
+def test_op_slab_needs_element_and_size() -> None:
+    pytest.importorskip("ase.build")
+    from precis.structure import OpError
+
+    scene = Scene(cell=_cubic(1.0))
+    with pytest.raises(OpError):
+        apply_ops(scene, [{"op": "slab", "element": "Pd"}])  # no size
+    with pytest.raises(OpError):
+        apply_ops(scene, [{"op": "slab", "size": [2, 2, 3]}])  # no element
+
+
+def test_slab_extxyz_carries_fixatoms_for_catpath() -> None:
+    """constraints=True serialises the frozen layers as a FixAtoms that ASE's
+    own reader (catpath's slab hydrator) round-trips exactly."""
+    pytest.importorskip("ase.build")
+    import io as _io
+
+    from ase.constraints import FixAtoms
+    from ase.io import read as ase_read
+
+    scene = Scene(cell=_cubic(1.0))
+    apply_ops(
+        scene,
+        [{"op": "slab", "element": "Pd", "size": [2, 2, 3], "fix_layers": 1}],
+    )
+    xyz = export.to_extxyz(scene, constraints=True)
+    atoms = ase_read(_io.StringIO(xyz), format="extxyz", index=0)
+    cons = [c for c in atoms.constraints if isinstance(c, FixAtoms)]
+    assert cons and len(cons[0].get_indices()) == 4  # bottom layer stays fixed
+    # the default (constraint-free) form keeps our label column and no FixAtoms
+    plain = export.to_extxyz(scene)
+    assert "label" in plain

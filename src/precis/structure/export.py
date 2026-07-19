@@ -17,7 +17,7 @@ import io
 
 import numpy as np
 
-from .scene import Scene
+from .scene import FIX_ALL, Scene
 
 
 def _grouped(scene: Scene) -> tuple[list[str], dict[str, list]]:
@@ -58,9 +58,34 @@ def to_poscar(scene: Scene) -> str:
     return "\n".join(lines) + "\n"
 
 
-def to_extxyz(scene: Scene) -> str:
+def to_extxyz(scene: Scene, *, constraints: bool = False) -> str:
     """Extended XYZ: Cartesian positions + a Lattice/pbc header + our `label`
-    as an extra per-atom column (the lossless, precis-native round-trip form)."""
+    as an extra per-atom column (the lossless, precis-native round-trip form).
+
+    ``constraints=True`` serialises the ``fixed`` mask too — a fully-frozen atom
+    (``FIX_ALL``, e.g. a slab's bottom layers) becomes an ASE ``FixAtoms``. This
+    path routes through ASE's own writer so it round-trips exactly into ASE's
+    reader (catpath hydrates the injected slab with ``ase.io.read``); it drops
+    our per-atom ``label`` column, which the consumer does not need. Requires
+    ASE — falls back to the label-carrying, constraint-free form when absent.
+    """
+    if constraints and any(a.fixed == FIX_ALL for a in scene.atoms.values()):
+        try:
+            import io as _io
+
+            from ase.constraints import FixAtoms
+            from ase.io import write
+
+            atoms = _to_ase(scene)
+            fixed = [
+                i for i, a in enumerate(scene.atoms.values()) if a.fixed == FIX_ALL
+            ]
+            atoms.set_constraint(FixAtoms(indices=fixed))
+            buf = _io.StringIO()
+            write(buf, atoms, format="extxyz")
+            return buf.getvalue()
+        except ImportError:
+            pass  # no ASE → degrade to the constraint-free form below
     flat = " ".join(f"{x:.8f}" for x in np.asarray(scene.cell.lattice).flatten())
     pbc = " ".join("T" if p else "F" for p in scene.cell.pbc)
     head = f'Lattice="{flat}" Properties=species:S:1:pos:R:3:label:S:1 pbc="{pbc}"'

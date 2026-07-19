@@ -146,6 +146,64 @@ def _frontier_summary(store: Store, quest_id: int) -> str:
     return "\n".join(lines)
 
 
+def _reaction_context(quest: Ref) -> str:
+    """Proposal rules for a **barrier quest** that declares a reaction (catpath).
+
+    When the quest carries ``meta.reaction_config`` every candidate is a *catalyst
+    slab* — catpath places the reactants and measures the rate-limiting barrier,
+    so a proposal builds the reaction's slab with the compact ``slab`` op and
+    varies only its surface composition (the ``meta.param_space`` design knobs).
+    Absent → ``""`` (a generic materials quest keeps the free-form,
+    hand-built-cell proposal rules already in the template).
+    """
+    meta = getattr(quest, "meta", None) or {}
+    rc = meta.get("reaction_config")
+    if not isinstance(rc, dict) or not rc:
+        return ""
+    slab = rc.get("slab") or {}
+    el = slab.get("element", "Pd")
+    size = list(slab.get("size", [3, 3, 4]))
+    vac = slab.get("vacuum", 10.0)
+    fixl = slab.get("fix_layers", 2)
+    sub, tgt, net = (
+        rc.get("substrate", "?"),
+        rc.get("target", "?"),
+        rc.get("network", "?"),
+    )
+    knob_bits: list[str] = []
+    for name, spec in (meta.get("param_space") or {}).items():
+        if isinstance(spec, dict) and spec.get("choices"):
+            knob_bits.append(f"{name} ∈ {{{', '.join(map(str, spec['choices']))}}}")
+        elif isinstance(spec, dict) and "low" in spec:
+            knob_bits.append(f"{name} ∈ [{spec['low']}..{spec.get('high', '?')}]")
+        else:
+            knob_bits.append(str(name))
+    knobs = "; ".join(knob_bits) or "surface composition"
+    slab_op = (
+        f'{{"op": "slab", "element": "{el}", "size": {size}, '
+        f'"vacuum": {vac}, "fix_layers": {fixl}}}'
+    )
+    base = f'{{"ops": [{slab_op}]}}'
+    doped = (
+        f'{{"ops": [{slab_op}, '
+        f'{{"op": "add_atom", "element": "Cu", "frac": [0.33, 0.33, 0.66]}}]}}'
+    )
+    return (
+        "\n## Reaction R — this is a catalyst-barrier quest\n"
+        f"Every candidate is a **catalyst slab**. catpath places the reactants "
+        f"(**{sub} → {tgt}** via the `{net}` network) on *your* slab and measures "
+        f"the rate-limiting **barrier** (eV, an ML-potential NEB); a relax measures "
+        f"the slab's **stability** (`energy`). You design the **surface**, NOT the "
+        f"adsorbate — so vary only its composition: {knobs}.\n\n"
+        f"Build the slab with the compact `slab` op (do NOT hand-enumerate the {el} "
+        f"atoms — the op builds the fcc(111) geometry ASE-exact so catpath can "
+        f"inject it), then edit composition. Omit the top-level `cell` (the `slab` "
+        f"op provides it).\n"
+        f"- reference point (propose this verbatim first): `{base}`\n"
+        f"- a doped variant (an adatom is the design knob): `{doped}`\n"
+    )
+
+
 def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
     """Assemble the full rolling-context prompt for one tick.
 
@@ -191,6 +249,7 @@ def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
         gaps="\n".join(gap_lines),
         logbook="\n".join(tail),
         servers="\n".join(servers),
+        reaction_context=_reaction_context(quest),
         entry_types=", ".join(sorted(ENTRY_TYPES)),
     )
 
@@ -216,7 +275,7 @@ no evidence for.
 
 ## What serves this quest
 {servers}
-
+{reaction_context}
 ## Your step
 Do ONE increment of thinking: interpret the state, pick the most promising \
 next direction to close a gap, and note what you'd try. Then rewrite the \
@@ -253,11 +312,12 @@ state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
 `decision` on direction are the most useful. Keep the dossier tight.
 
 `proposals` (0–3) are candidate materials to simulate — each an atomistic \
-`structure` (a periodic `cell` + `add_atom` ops with fractional coords). Only \
-propose a candidate you can express as a concrete structure and that is NOT \
-already ruled out; omit `structure` if you cannot, and it will be recorded as a \
-lead but not simulated. Propose nothing if the next step is analysis, not a new \
-material."""
+`structure` (a periodic `cell` + `add_atom` ops with fractional coords, or a \
+`slab` bulk-template op that builds a metal surface for you — see the reaction \
+rules above if this is a catalyst quest). Only propose a candidate you can \
+express as a concrete structure and that is NOT already ruled out; omit \
+`structure` if you cannot, and it will be recorded as a lead but not simulated. \
+Propose nothing if the next step is analysis, not a new material."""
 
 
 # ── model call + parsing ──────────────────────────────────────────────

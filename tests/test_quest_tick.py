@@ -238,3 +238,28 @@ def test_dossier_relation_registered() -> None:
 
     assert _INVERSE_RELATIONS["dossier-of"] == "has-dossier"
     assert _INVERSE_RELATIONS["has-dossier"] == "dossier-of"
+
+
+class TestReactionContext:
+    """A quest that declares `meta.reaction_config` gets catalyst-slab proposal
+    rules injected into its tick prompt (the lit-survey → catpath wire)."""
+
+    def test_barrier_quest_prompt_asks_for_a_slab(self, store: Any) -> None:
+        from precis.quest.catalyst_seed import seed_catalyst_quest
+
+        qid, created = seed_catalyst_quest(store)
+        assert created
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "catalyst slab" in prompt
+        assert '"op": "slab"' in prompt
+        assert "NO → NH3" in prompt  # substrate → target
+        assert "ammonia" in prompt  # the catpath network
+        assert "adatom" in prompt  # a param_space design knob
+
+    def test_generic_quest_prompt_has_no_reaction_block(self, store: Any) -> None:
+        qid = _mk_quest(store, "A generic materials striving with no reaction")
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "catalyst slab" not in prompt
+        assert "Reaction R" not in prompt

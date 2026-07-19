@@ -45,7 +45,16 @@ BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BUILD_HOST="$(hostname -f 2>/dev/null || hostname)"
 BUILD_USER="${USER:-unknown}"
 
+# Resolve catpath's current main HEAD on the host so the dev image's catpath
+# layer busts (and re-fetches) exactly when catpath main advances — Docker keys
+# that layer on command text, so a bare `@main` would silently stay stale. See
+# the CATPATH_REV ARG in docker/Dockerfile. Falls back to the `main` ref when
+# the host is offline (uv still resolves it, just without the cache-bust).
+CATPATH_REV="$(git ls-remote https://github.com/retospect/catpath main 2>/dev/null | cut -f1)"
+CATPATH_REV="${CATPATH_REV:-main}"
+
 exec docker compose -f "${INFRA_COMPOSE}" build \
+    --build-arg "CATPATH_REV=${CATPATH_REV}" \
     --build-arg "PRECIS_GIT_LAST_TAG=${GIT_LAST_TAG}" \
     --build-arg "PRECIS_GIT_SHA=${GIT_SHA}" \
     --build-arg "PRECIS_GIT_SHA_SHORT=${GIT_SHA_SHORT}" \

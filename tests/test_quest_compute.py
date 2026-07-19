@@ -99,6 +99,24 @@ class TestEnsureCandidate:
         qid = _mk_quest(store, "A striving")
         assert compute_mod.ensure_candidate(store, qid, {"name": "vague idea"}) is None
 
+    def test_slab_op_spec_materialises_without_a_top_level_cell(
+        self, store: Any
+    ) -> None:
+        """A catalyst candidate is a `slab` op (no hand-enumerated cell) — the op
+        builds the fcc(111) surface, so ensure_candidate must accept it."""
+        pytest.importorskip("ase.build")
+        qid = _mk_quest(store, "A NO→NH₃ catalyst")
+        spec = {
+            "ops": [{"op": "slab", "element": "Pd", "size": [2, 2, 3], "fix_layers": 1}]
+        }
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd(111)", "structure": spec}
+        )
+        assert sid is not None
+        scene, _ = store.structure_load(sid)
+        assert len(scene.atoms) == 12
+        assert {a.element for a in scene.atoms.values()} == {"Pd"}
+
 
 # ── harvest ───────────────────────────────────────────────────────────
 
