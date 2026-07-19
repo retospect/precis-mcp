@@ -13,9 +13,34 @@ is the historical observation log.
 
 ## 🔥 Containerized reviews on spark — DSN not reaching the container (retry-storm)
 
-Status: `open` (root-cause fixed, deploy pending) · Severity: `critical` ·
+Status: `FIXED + PROVEN 2026-07-19` · Severity: `critical` (resolved) ·
 Owner: `src/precis/utils/claude_agent.py` (container branch) · Test:
 `tests/test_claude_agent.py::test_container_reinjects_scrubbed_dsn`.
+
+**PROVEN 2026-07-19 14:07 UTC:** a forced structural retry (deleted the stale
+12:35 cooldown marker `164970`) brought up a live container
+(`precis-agent-17d16c04b201`, ran ~37s) — the DSN reached the container, the
+entrypoint no longer `exit 1`s on an empty DSN. Root cause + fix confirmed. The
+one wrinkle: that retry was interrupted by a mid-dispatch worker SIGTERM →
+`exited 143` → a *false* failure marker (see the interrupted-review secondary
+observation below); it does not reflect a DSN or code defect. The residual
+work here is that new false-marker robustness gap, not the DSN fix.
+
+**Update 2026-07-19 (post-deploy verify):** the fix (`get_adopted_dsn`
+re-inject) is **installed on spark** (sha `84aee042`, `claude_agent.py:362`).
+The spark worker-agent **restarted 13:23 UTC** today — before that it was
+running the *stale pre-fix process* against the already-updated venv (the
+07-17 deploy reinstalled the files but never bounced spark's worker, a
+2-day-stale-process gap). The **last** `review-fail:structural` marker is
+**12:35 UTC** (`[entrypoint] ERROR: PRECIS_DATABASE_URL not set`) — i.e. the
+final gasp of the stale process, *before* the bounce. Since 13:23 the fixed
+code is live but hasn't re-attempted yet (5h failure-marker backoff from
+12:35 → next natural retry ~17:35 UTC). **Not yet proven green** — force it by
+deleting the `review-fail:structural` cooldown marker (prod write) or wait for
+17:35. Leftover: a `precis-agent-2fba3b28e140` container stuck in `Created`
+state on spark (a pre-fix failed-start review) — harmless but should be
+`docker rm`'d. `PRECIS_DATABASE_URL` is present in spark's systemd env, so the
+re-inject `_dsn` is guaranteed non-empty there → high confidence it's green.
 
 **Symptom (live 2026-07-19):** spark's agent worker runs `structural` reviews in
 a `precis-agent` container (Linux template hardcodes `PRECIS_AGENT_CONTAINER=1`),
@@ -43,13 +68,71 @@ Until deployed, spark reviews keep storming — mitigate by flooring spark
 `structural` prio to 0 in `service_config` if the spam must stop sooner.
 
 **Secondary observations (file, don't block):**
-- **No backoff on a failing review** — a review that errors re-claims immediately
-  (~3×/s). Wants the exponential-backoff pattern (cf. `bg_job_spin_loops`).
+- ~~No backoff on a failing review~~ **CORRECTED 2026-07-19: a backoff already
+  exists.** A non-paused dispatch error writes a `review-fail:<name>` cooldown
+  marker (`review.py:_write_failure_marker`); the next tick's `_recent_failure`
+  gate (`review.py:291`) backs the pass off to its `min_interval_hours` (5h)
+  cadence — the log line is `dispatch failed < 5h ago; backing off (not
+  re-attempting every tick)`. The historical ~3×/s storm was *before* this
+  marker landed; it is not re-occurring.
+- **An INTERRUPTED review writes a false 5h failure marker.** PROVEN 2026-07-19:
+  after the DSN fix, a forced structural retry brought up a real container
+  (`precis-agent-17d16c04b201`, ran ~37s — the DSN fix works) but the worker got
+  a deliberate SIGTERM mid-dispatch (systemd `NRestarts=0`; spark bounced ~3× in
+  an hour under cutover churn). The `claude -p` child died `exited 143` (128+15),
+  and `review.py` logged it as `claude agent failed` → wrote a `review-fail`
+  cooldown marker (ref 165047), poisoning the next 5h. A child killed by
+  SIGTERM/SIGINT (143/130) is **interrupted, not a dispatch failure** — it should
+  be retryable (no marker) or at most a short backoff. Fix: in the review
+  dispatch-error path, distinguish exit 143/130 (and the worker's own
+  stop-signal) from a genuine failure and skip `_write_failure_marker`. Sibling
+  to §🔇 (result-fidelity of a review pass — don't falsely fail, don't falsely
+  succeed).
+- **claude_docker (sandbox path) hardcodes `podman`, ignoring `PRECIS_CONTAINER_BIN`.**
+  `_podman_bin()` (`claude_docker.py:96`) returns `PRECIS_PODMAN_BIN or "podman"` —
+  it does NOT consult the shared `container_runtime()` detector that the review
+  path uses. On docker-only spark (`PRECIS_CONTAINER_BIN=/usr/bin/docker`, no
+  podman) the unconditional boot-`reconcile_orphans` (`:344`, runs before any
+  sandbox gate) throws `FileNotFoundError: 'podman'` once per worker boot and
+  can never reap `sandbox-*` orphans there. Caught defensively, sandbox is dark,
+  so low severity — but a **judgment call, not a mechanical fix**: routing
+  sandbox launches through docker (rootful daemon) instead of rootless podman is
+  a security downgrade for *untrusted* compute. Options: (a) make reconcile/reap
+  runtime-agnostic via `container_runtime()` while keeping *launch* podman-only
+  and skipping cleanly when podman is absent; (b) don't schedule the pass on
+  hosts lacking podman. File; don't silently docker-fallback the launch path.
 - **`PRECIS_MCP_DB_ROLE=agent_rw` in the review container** — reviews are
   read-only; the tier-2 envelope should resolve `agent_ro`, not the write role.
 - **OAuth token appears in `docker inspect` `Config.Env`** — the "secret by key,
   never in inspect" goal isn't actually met (docker records inherited `--env`
   values). If that guarantee matters, move secrets to `--env-file`.
+
+---
+
+## 🔇 Unsilence silently-failing agent passes + verified-capability probe
+
+Status: `agreed, unbuilt` · Severity: `high` · Owner: executor + review seam ·
+Surfaced 2026-07-19 alongside the spark DSN retry-storm (a pass can "succeed"
+at cost=$0 while doing nothing).
+
+**Empty-result assertion.** An agent pass that reports **cost==0 AND turns
+0/None AND zero MCP tool-calls AND no output text** (the *conjunction* — any
+one alone is legitimate) is almost certainly a silent failure (env gap, image
+missing, OAuth expired, container never really ran), not a clean no-op. Today
+those log clean and vanish. Change the executor/review dispatch so this
+conjunction **raises + alerts** instead of writing a $0 "success". Guard the
+conjunction hard so a genuinely cheap-but-real pass (e.g. a real tool-call that
+returned fast) is never flagged.
+
+**Verified-capability probe (design-doc §15d/§15h).** Container auto-detect
+must be a *verified* capability, not presence-of-binary: gate on
+`runtime-live ∧ image-sha-verified ∧ in-container-OAuth round-trip` before a
+host advertises container-agent capability. This is what lets us retire the
+per-host `PRECIS_AGENT_CONTAINER` flag safely (the flag stays until the probe
+exists — presence-auto-detect alone would silently mis-route to a host whose
+OAuth/image is broken, the exact failure mode above). Wire the probe result
+into `/factory?host=*` so a host that *can't* actually containerize shows as
+degraded rather than silently erroring.
 
 ---
 
