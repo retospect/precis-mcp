@@ -129,6 +129,37 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
+    rm = dsub.add_parser(
+        "remarkable",
+        help="Export in reMarkable mode and send the PDF to the tablet.",
+        description=(
+            "Render a draft with the reMarkable-2 page geometry and every "
+            "source citation as a self-contained footnote (human cite + "
+            "bibliography number + the referenced chunk excerpt), compile the "
+            "PDF, and upload it to the reMarkable cloud via the rmapi CLI. "
+            "Needs rmapi on PATH and a device credential in the vault/env "
+            "(REMARKABLE_RMAPI_CONFIG or REMARKABLE_TOKEN). --dry-run compiles "
+            "the PDF but skips the upload (prints its path)."
+        ),
+    )
+    rm.add_argument("slug", help="Draft slug or numeric ref id.")
+    rm.add_argument(
+        "--folder", default="/Precis", help="Destination folder on the tablet."
+    )
+    rm.add_argument(
+        "--out",
+        default=None,
+        help="Directory for the LaTeX project + PDF. Default: a temp dir.",
+    )
+    rm.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Compile the reMarkable PDF but do not upload it.",
+    )
+    rm.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
 
 def run(args: argparse.Namespace) -> None:
     if args.draft_cmd == "export":
@@ -139,6 +170,9 @@ def run(args: argparse.Namespace) -> None:
         return
     if args.draft_cmd == "audio":
         _run_audio(args)
+        return
+    if args.draft_cmd == "remarkable":
+        _run_remarkable(args)
         return
     print(f"draft: unknown subcommand {args.draft_cmd!r}", file=sys.stderr)
     sys.exit(2)
@@ -273,6 +307,56 @@ def _run_export(args: argparse.Namespace) -> None:
         )
         sys.exit(3)
     print(f"draft export: compiled {res.pdf}", file=sys.stderr)
+
+
+def _run_remarkable(args: argparse.Namespace) -> None:
+    import tempfile
+
+    from precis.export.compile import compile_pdf
+    from precis.export.remarkable import remarkable_configured, send_pdf
+
+    dsn = resolve_dsn(args.database_url)
+    store = Store.connect(dsn)
+    try:
+        key: int | str = int(args.slug) if str(args.slug).isdigit() else args.slug
+        ref = store.get_ref(kind="draft", id=key)
+        if ref is None:
+            print(f"draft remarkable: no draft {args.slug!r}", file=sys.stderr)
+            sys.exit(2)
+        if not args.dry_run and not remarkable_configured(store):
+            print(
+                "draft remarkable: no device credential — set "
+                "REMARKABLE_RMAPI_CONFIG or REMARKABLE_TOKEN (or use --dry-run).",
+                file=sys.stderr,
+            )
+            sys.exit(3)
+        out = Path(args.out) if args.out else Path(tempfile.mkdtemp(prefix="rm-send-"))
+        title = (ref.title or str(ref.slug or ref.id)).splitlines()[0][:120]
+        result = export_draft(store, ref, target_dir=out, remarkable=True)
+        for w in result.warnings:
+            print(f"draft remarkable: {w}", file=sys.stderr)
+        cres = compile_pdf(result.main_tex.parent)
+        if cres.skipped or not cres.ok or cres.pdf is None:
+            detail = "latexmk isn't installed" if cres.skipped else cres.log_tail
+            print(f"draft remarkable: PDF compile failed — {detail}", file=sys.stderr)
+            sys.exit(3)
+        print(f"draft remarkable: compiled {cres.pdf}", file=sys.stderr)
+        if args.dry_run:
+            print("draft remarkable: --dry-run, not uploading.", file=sys.stderr)
+            return
+        sres = send_pdf(cres.pdf, folder=args.folder, display_name=title, store=store)
+        if not sres.ok:
+            print(
+                f"draft remarkable: upload FAILED — {sres.error}\n{sres.output}",
+                file=sys.stderr,
+            )
+            sys.exit(3)
+        print(
+            f"draft remarkable: sent {sres.name!r} → reMarkable {sres.folder}.",
+            file=sys.stderr,
+        )
+    finally:
+        store.close()
 
 
 def _run_papers(args: argparse.Namespace) -> None:

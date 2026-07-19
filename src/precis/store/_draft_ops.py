@@ -325,6 +325,18 @@ class DraftMixin:
             "text": row[3] or "",
         }
 
+    def chunk_text_at(self, ref_id: int, ord: int) -> str | None:
+        """The text of one chunk addressed by ``(ref_id, ord)`` — the
+        classic ``paper:slug~n`` chunk address (``n`` = ``chunks.ord``). Used
+        by the reMarkable footnote export to quote the referenced paper
+        chunk. ``None`` when no such chunk exists."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord = %s",
+                (ref_id, ord),
+            ).fetchone()
+        return (row[0] or "") if row is not None else None
+
     def get_draft_chunk(self, handle: str, *, kind: str = "draft") -> DraftChunk | None:
         """A single live-or-retired draft/plan chunk by its address.
 

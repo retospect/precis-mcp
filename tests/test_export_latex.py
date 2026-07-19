@@ -284,6 +284,143 @@ def test_handle_finding_fi_renders_cite_via_meta() -> None:
     assert r"\cite{ab12c3}" in out  # in-flight → pub_id placeholder
 
 
+# ── reMarkable send-to-tablet footnote mode (footnote_refs=True) ──────
+
+
+def _fn_ctx(store):
+    """A footnote-mode render context (reMarkable send-to-tablet)."""
+    return latex._Ctx(keymap={}, known_handles=set(), store=store, footnote_refs=True)
+
+
+def test_footnote_mode_pc_handle_quotes_the_chunk() -> None:
+    """A chunk-addressed [pc<id>] becomes a self-contained \\footnote: the
+    human cite + \\cite (bibliography number) + the referenced excerpt."""
+    import types
+
+    store = types.SimpleNamespace(
+        resolve_handle=lambda h: (
+            types.SimpleNamespace(public_id="kong24") if h == "pc10" else None
+        ),
+        universal_chunk=lambda h: (
+            {"text": "MOF-808 adsorbs uranyl at 2.6 mmol/g in seawater."}
+            if h == "pc10"
+            else None
+        ),
+        get_ref=lambda kind, id: (
+            types.SimpleNamespace(
+                id=99,
+                title="Uranium capture",
+                slug="kong24",
+                meta={"authors": [{"name": "Kong, L."}], "year": 2024},
+            )
+            if (kind, id) == ("paper", "kong24")
+            else None
+        ),
+    )
+    out = latex._render_inline("As in [pc10].", (ctx := _fn_ctx(store)))
+    assert r"\footnote{" in out  # a footnote, not an inline \cite
+    assert r"\cite{kong24}" in out  # prints [N] + registers the bib entry
+    assert "Kong et al., 2024" in out  # the human cite line
+    assert "MOF-808 adsorbs uranyl" in out  # the quoted chunk excerpt
+    assert ctx.cited == ["kong24"]  # still assembled into the end bibliography
+
+
+def test_footnote_mode_record_handle_has_no_excerpt() -> None:
+    """A bare record handle [pa<id>] (no specific chunk) footnotes the cite
+    line + number but quotes nothing (no \\emph excerpt block)."""
+    import types
+
+    store = types.SimpleNamespace(
+        resolve_handle=lambda h: (
+            types.SimpleNamespace(public_id="miller23") if h == "pa123" else None
+        ),
+        universal_chunk=lambda h: None,
+        get_ref=lambda kind, id: types.SimpleNamespace(
+            id=1, title="T", slug="miller23", meta={"authors": [{"name": "Miller, A."}]}
+        ),
+    )
+    out = latex._render_inline("see [pa123].", _fn_ctx(store))
+    assert r"\footnote{" in out and r"\cite{miller23}" in out
+    assert r"\emph{" not in out  # no excerpt block for a chunk-less ref
+
+
+def test_footnote_mode_slug_cite_resolves_chunk_excerpt() -> None:
+    """The classic [§slug~n] cite footnotes and quotes the paper chunk at
+    ordinal n (via the new chunk_text_at store helper)."""
+    import types
+
+    store = types.SimpleNamespace(
+        get_ref=lambda kind, id: (
+            types.SimpleNamespace(
+                id=42,
+                title="Amidoxime study",
+                slug="smith2024",
+                meta={
+                    "authors": [{"name": "Smith, J."}],
+                    "publication_date": "2024-05",
+                },
+            )
+            if (kind, id) == ("paper", "smith2024")
+            else None
+        ),
+        chunk_text_at=lambda ref_id, ordn: (
+            "Amidoxime groups bind uranyl selectively over vanadium."
+            if (ref_id, ordn) == (42, 3)
+            else None
+        ),
+    )
+    out = latex._render_inline("prior work [§smith2024~3].", (ctx := _fn_ctx(store)))
+    assert r"\footnote{" in out and r"\cite{smith2024}" in out
+    assert "Amidoxime groups bind uranyl" in out
+    assert ctx.cited == ["smith2024"]
+
+
+def test_footnote_mode_patent_uses_patent_citation_string() -> None:
+    """_source_footnote renders a patent's in-text citation string as the
+    footnote's human-readable line."""
+    import types
+
+    store = types.SimpleNamespace(
+        get_ref=lambda kind, id: (
+            types.SimpleNamespace(
+                id=7,
+                title="Catalyst",
+                slug="us2943737",
+                meta={"country": "us", "doc_number": "2943737", "kind_code": "A"},
+            )
+            if (kind, id) == ("patent", "us2943737")
+            else None
+        ),
+    )
+    out = latex._source_footnote("us2943737", "patent", "", _fn_ctx(store))
+    assert r"\footnote{" in out and r"\cite{us2943737}" in out
+    assert "U.S. Patent No. 2,943,737" in out
+
+
+def test_footnote_excerpt_trims_to_a_boundary() -> None:
+    """A long chunk is trimmed to ~one sentence and ellipsised, not dumped
+    whole, so a footnote stays readable on the tablet."""
+    ctx = latex._Ctx(keymap={}, known_handles=set())
+    long_text = "alpha beta gamma delta " * 40  # ~920 chars, no sentence stops
+    out = latex._footnote_excerpt(long_text, ctx)
+    assert out.startswith(r"\emph{") and out.endswith("}")
+    # the trailing "…" is unicode-encoded to \textellipsis by the prose pass
+    assert r"\textellipsis" in out and len(out) < len(long_text)
+
+
+def test_assemble_document_injects_remarkable_geometry() -> None:
+    """remarkable=True stamps the RM2 page geometry after the preamble;
+    the default export leaves the standard 1in margins untouched."""
+    rm = latex.assemble_document(
+        title="T", author_block=r"\author{x}", body="hi", acronyms="", remarkable=True
+    )
+    assert "paperwidth=157.6mm" in rm and r"\linespread" in rm
+    plain = latex.assemble_document(
+        title="T", author_block=r"\author{x}", body="hi", acronyms=""
+    )
+    assert "paperwidth=157.6mm" not in plain
+
+
 class _BibStore:
     """Minimal store for :func:`latex.build_bib`: resolves a slug to a
     paper / patent / datasheet ref and carries no DOI/arXiv aliases."""
@@ -497,8 +634,13 @@ def test_export_draft_include_sources_bundles_appendix(hub, tmp_path, monkeypatc
 def _stub_latexmk(tmp_path, *, succeed=True):
     """A fake latexmk that touches main.pdf (or not) and exits 0/1 —
     lets us exercise compile_pdf without a TeX install (PRECIS_LATEXMK_BIN
-    mirrors the PRECIS_CLAUDE_BIN stub-binary pattern)."""
-    import os
+    mirrors the PRECIS_CLAUDE_BIN stub-binary pattern).
+
+    Returns the script path; the caller points ``PRECIS_LATEXMK_BIN`` at it
+    via ``monkeypatch.setenv`` (which reverts at teardown). This helper must
+    NOT set ``os.environ`` itself — a direct write leaks the stub path into
+    other test files under xdist (a failing stub then makes an unrelated
+    draft_export compile run it and fail rc=1)."""
     import stat
 
     script = tmp_path / "latexmk"
@@ -508,7 +650,6 @@ def _stub_latexmk(tmp_path, *, succeed=True):
     )
     script.write_text(body)
     script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    os.environ["PRECIS_LATEXMK_BIN"] = str(script)
     return script
 
 

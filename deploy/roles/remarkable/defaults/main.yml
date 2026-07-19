@@ -1,0 +1,42 @@
+---
+# remarkable role defaults — build the `precis-remarkable` uploader image on
+# the agent host so the `remarkable_send` job can push a compiled draft PDF to
+# the reMarkable cloud in a throwaway container (docker/remarkable). The image
+# is CODE + the ddvk/rmapi binary only — no models, no precis wheel.
+#
+# Unlike roles/tts + roles/aizynth (Linux/systemd compute nodes), this targets
+# the macOS agent host (the gateway) where the `remarkable_send` claude_inproc
+# job runs. The worker env is NOT wired here: `PRECIS_CONTAINER_BIN` is already
+# set by roles/precis_worker_agent, and `PRECIS_REMARKABLE_IMAGE` rides the
+# existing `precis_shared_env` dict (see README) — so this role only builds the
+# image. The device credential lives in the vault (REMARKABLE_RMAPI_CONFIG,
+# ADR 0055), resolved at run time and passed into the container by key.
+
+# The node this role targets (the agent host that runs remarkable_send).
+remarkable_node: "{{ inventory_hostname }}"
+
+# The precis-remarkable image (built on the node from docker/remarkable). Tag
+# with a sha and point the worker at it via PRECIS_REMARKABLE_IMAGE.
+remarkable_image: "precis-remarkable:latest"
+
+# The container CLI — the same homebrew docker that talks to deploy's colima VM
+# that roles/precis_worker_agent already wired for the container executor.
+remarkable_container_cmd: "{{ precis_worker_agent_container_bin | default('/opt/homebrew/bin/docker') }}"
+
+# The image's base + the pinned ddvk/rmapi release (keep in sync with the FROM
+# and ARG in docker/remarkable/Dockerfile).
+remarkable_base_image: "debian:bookworm-slim"
+remarkable_rmapi_version: "v0.0.34"
+
+# The worker runs as this user; it owns the colima docker socket.
+remarkable_worker_user: deploy
+
+# (Re)build the image on the node. Needed for the first run; the layer cache
+# makes re-runs cheap. Flip off to skip once the image is present:
+#   ansible-playbook playbooks/47-remarkable.yml -e remarkable_build_image=false
+remarkable_build_image: true
+
+# The build context (docker/remarkable) on the ansible controller, copied to
+# the node under the worker user's home (colima shares $HOME into the VM).
+remarkable_src_dir: "{{ lookup('env', 'HOME') }}/work/projects/code/precis-mcp/docker/remarkable"
+remarkable_build_dir: "/Users/{{ remarkable_worker_user }}/.cache/precis-remarkable-build"

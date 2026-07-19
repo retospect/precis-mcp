@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""precis-remarkable-run — upload one PDF to the reMarkable cloud, one-shot, in
+the precis-remarkable container.
+
+Reads the PDF + a small params blob a precis worker staged on the bind mount,
+writes the rmapi config from the by-key ``REMARKABLE_RMAPI_CONFIG`` env (never
+on argv), and runs ``rmapi put``. The worker reads ``result.json`` back over
+the mount — so it never needs the rmapi binary or a device credential on the
+host, only a container runtime.
+
+  in : /work/in/doc.pdf         the compiled PDF to upload
+       /work/in/params.json     {"folder","name","timeout_s"}
+  env: REMARKABLE_RMAPI_CONFIG  the rmapi config body (devicetoken: …)
+  out: /work/out/result.json    {"ok","returncode","output","name","folder"}
+
+Dependency-light: Python stdlib only (no pip, no precis) — the shell around a
+single ``rmapi put``, so the image stays tiny and the sync-protocol churn is
+isolated to the pinned rmapi binary.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+def _run(
+    cmd: list[str], env: dict[str, str], timeout_s: int
+) -> subprocess.CompletedProcess[str] | None:
+    """Run an rmapi subcommand; ``None`` on timeout. Never raises."""
+    try:
+        return subprocess.run(
+            cmd, env=env, capture_output=True, text=True, timeout=timeout_s, check=False
+        )
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def main() -> int:
+    in_dir = Path(os.environ.get("PRECIS_RM_IN", "/work/in"))
+    out_dir = Path(os.environ.get("PRECIS_RM_OUT", "/work/out"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    result_path = out_dir / "result.json"
+
+    def fail(msg: str, rc: int = -1, output: str = "") -> int:
+        result_path.write_text(
+            json.dumps({"ok": False, "returncode": rc, "output": output, "error": msg}),
+            encoding="utf-8",
+        )
+        print(f"precis-remarkable-run: {msg}", file=sys.stderr)
+        return 1
+
+    params: dict[str, object] = {}
+    pj = in_dir / "params.json"
+    if pj.is_file():
+        try:
+            params = json.loads(pj.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return fail(f"bad params.json: {exc}")
+    folder = (str(params.get("folder") or "/").strip()) or "/"
+    name = (str(params.get("name") or "draft").strip()) or "draft"
+    try:
+        timeout_s = int(params.get("timeout_s") or 120)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        timeout_s = 120
+
+    pdf = in_dir / "doc.pdf"
+    if not pdf.is_file():
+        return fail(f"no pdf at {pdf}")
+
+    body = os.environ.get("REMARKABLE_RMAPI_CONFIG")
+    if not body:
+        return fail("REMARKABLE_RMAPI_CONFIG not set")
+
+    with tempfile.TemporaryDirectory(prefix="rmapi-") as td:
+        tmp = Path(td)
+        cfg = tmp / "rmapi.conf"
+        # The driver already normalised the body (a full config or a bare
+        # devicetoken wrapped into one) — write it verbatim.
+        cfg.write_text(body, encoding="utf-8")
+        cfg.chmod(0o600)
+        # rmapi names the uploaded document after the file's stem, so stage the
+        # PDF under the tablet-visible name.
+        staged = tmp / f"{name}.pdf"
+        shutil.copyfile(pdf, staged)
+        env = {**os.environ, "RMAPI_CONFIG": str(cfg)}
+        rmapi = os.environ.get("PRECIS_RMAPI_BIN", "rmapi")
+        # Best-effort create the destination folder (root always exists); an
+        # "already exists" failure is fine — the put is what matters.
+        if folder not in ("", "/"):
+            _run([rmapi, "mkdir", folder], env, timeout_s)
+        proc = _run([rmapi, "put", str(staged), folder], env, timeout_s)
+
+    if proc is None:
+        return fail(f"rmapi timed out after {timeout_s}s")
+    output = ((proc.stdout or "") + (proc.stderr or "")).strip()[-2000:]
+    ok = proc.returncode == 0
+    result_path.write_text(
+        json.dumps(
+            {
+                "ok": ok,
+                "returncode": proc.returncode,
+                "output": output,
+                "name": name,
+                "folder": folder,
+                "error": "" if ok else "rmapi upload failed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    print(json.dumps({"ok": ok, "returncode": proc.returncode}))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

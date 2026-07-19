@@ -726,6 +726,32 @@ Both are **disposable** — re-export from the draft; never hand-edit the
 output. Citations must resolve (`[pc<id>]` → a chunk of a paper in the
 corpus) or the export marks a stub + warns.
 
+## Send to reMarkable (send-to-tablet)
+
+A draft can be pushed to a reMarkable 2 for offline reading + pen annotation:
+
+```
+precis draft remarkable <slug> [--folder /Precis] [--dry-run]
+```
+
+Web: the **→ reMarkable** button on the draft reader (shown only when a device
+credential is configured). It runs the `remarkable_send` job — same shape as
+`draft_export` — which renders a **reMarkable-mode** PDF and uploads it.
+
+reMarkable mode (`export_draft(remarkable=True)`) differs from the normal PDF in
+two ways, so the document is **self-contained on the tablet**: (1) the page
+geometry matches the RM2 screen (157.6×209.6 mm, wide outer margin for the pen);
+(2) every source citation (`[pc<id>]` / `[§slug~n]` / patent) renders as a
+numbered **`\footnote`** — the human cite + its bibliography number + the
+referenced chunk excerpt — instead of a bare `\cite`, so you read the source
+inline with no round-trip to the reference list. A numbered bibliography still
+renders at the end (the footnote's `[N]` matches it).
+
+The device credential lives in the **secrets vault** (`REMARKABLE_RMAPI_CONFIG`,
+ADR 0055), never in `app_settings`; the upload runs in the `precis-remarkable`
+container (`docker/remarkable`) via the `ddvk/rmapi` CLI. The destination folder
+is the `remarkable.target_folder` app_setting (default `/Precis`).
+
 ## Freeze / snapshot (release + backup)
 
 A *freeze* copies the draft's current chunks into an immutable

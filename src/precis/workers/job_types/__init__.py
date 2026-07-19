@@ -118,6 +118,13 @@ def _load_draft_export() -> JobTypeSpec:
     return draft_export.SPEC
 
 
+def _load_remarkable_send() -> JobTypeSpec:
+    # Deterministic reMarkable-mode export + upload (runs via plugin dispatch).
+    from precis.workers.job_types import remarkable_send
+
+    return remarkable_send.SPEC
+
+
 def _load_news_poll() -> JobTypeSpec:
     # Deterministic RSS ingestion pass (runs via plugin dispatch).
     from precis.workers.job_types import news_poll
@@ -359,6 +366,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "draft_export":
         _REGISTRY["draft_export"] = _load_draft_export()
         return _REGISTRY["draft_export"]
+    if name == "remarkable_send":
+        _REGISTRY["remarkable_send"] = _load_remarkable_send()
+        return _REGISTRY["remarkable_send"]
     if name == "news_poll":
         _REGISTRY["news_poll"] = _load_news_poll()
         return _REGISTRY["news_poll"]
@@ -414,6 +424,7 @@ def known_job_types() -> list[str]:
         "fix_gripe",
         "plan_tick",
         "draft_export",
+        "remarkable_send",
         "news_poll",
         "briefing",
         "reading_brief",

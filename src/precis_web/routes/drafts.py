@@ -1607,6 +1607,62 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
     )
 
 
+@router.post("/drafts/{ident}/remarkable")
+async def send_remarkable_route(request: Request, ident: str) -> Response:
+    """Start a ``remarkable_send`` job — export the draft in reMarkable mode
+    (RM2 geometry + citations as self-contained footnotes), compile the PDF,
+    and upload it to the tablet. Runs on a worker; progress + result land
+    under the draft's project on the task page. Redirects back to the reader.
+
+    Only meaningful when a reMarkable credential is configured — the button
+    is hidden otherwise — but we re-check here so a stale page can't enqueue
+    a job that would just fail."""
+    from precis.export.remarkable import remarkable_configured
+
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return RedirectResponse(url="/drafts", status_code=303)
+    if not remarkable_configured(store):
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "title": "reMarkable not configured",
+                "detail": "no reMarkable device credential is set — add "
+                "REMARKABLE_RMAPI_CONFIG (or REMARKABLE_TOKEN) at /secrets.",
+                "status": 400,
+            },
+            status_code=400,
+        )
+    project = _project_id(store, ref.id)
+    if project is None:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "title": "reMarkable send error",
+                "detail": "this draft has no project todo to parent the job under",
+                "status": 400,
+            },
+            status_code=400,
+        )
+    slug = str(ref.slug or ref.id)
+    return await redirect_or_error(
+        request,
+        "put",
+        {
+            "kind": "job",
+            "job_type": "remarkable_send",
+            "parent_id": project,
+            "params": {"draft": slug},
+            "idem_key": f"remarkable_send:{slug}",
+        },
+        redirect=f"/drafts/{ident}",
+        error_title="reMarkable send error",
+    )
+
+
 def _delete_confirm_ok(ref: Any, confirm: str) -> bool:
     """The type-the-name guard: the typed text must match the draft's title
     or slug (trimmed, case-insensitive). Deliberately strict — a delete must
@@ -1692,12 +1748,17 @@ async def reader(request: Request, ident: str) -> Response:
     skeleton = _skeleton(store, ref)
     botpad = sum(s["est"] for s in skeleton[first:])
     _, owner_ws = _owner_workspace(store, ref)
+    from precis.export.remarkable import remarkable_configured
+
     return templates.TemplateResponse(
         request,
         "drafts/detail.html.j2",
         {
             "active_tab": "drafts",
             "ref": _ref_view(ref),
+            # Gate the "Send to reMarkable" button on a configured credential
+            # (no device token → no affordance).
+            "remarkable_ready": remarkable_configured(store),
             "author_lines": _draft_author_lines(ref),
             "window_rows": window_rows,
             "skeleton": skeleton,

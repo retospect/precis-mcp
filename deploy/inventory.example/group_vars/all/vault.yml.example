@@ -68,8 +68,14 @@ vault_discord_home_channel: "CHANGEME"  # channel ID for #home
 vault_outlook_client_id: "CHANGEME"
 vault_outlook_client_secret: "CHANGEME"
 
-# reMarkable tablet
+# reMarkable tablet — send-to-tablet draft export (roles/remarkable).
+# A bare device token (REMARKABLE_TOKEN fallback) …
 vault_remarkable_token: "CHANGEME"
+# … or the full rmapi config body (preferred; REMARKABLE_RMAPI_CONFIG). Mint it
+# once with `rmapi` + the 8-letter code from my.remarkable.com/device/desktop/
+# connect, then paste ~/.config/rmapi/rmapi.conf here (at least devicetoken:).
+vault_remarkable_rmapi_config: |
+  devicetoken: CHANGEME
 
 # EPO OPS API (precis patent kind) — register at https://developers.epo.org/
 # ORCID OAuth client — https://orcid.org/developer-tools

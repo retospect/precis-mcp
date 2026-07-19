@@ -148,6 +148,18 @@
         <a href="/drafts/{{ ref.ident }}/papers.zip"
            class="text-slate-500 underline hover:text-slate-800"
            title="zip the cited paper/datasheet PDFs + a manifest">download papers</a>
+        {# Send to reMarkable — shown only when a device credential is
+           configured (remarkable_ready). Starts a background job: exports in
+           reMarkable mode (RM2 page size + citations as self-contained
+           footnotes with the referenced chunk), compiles, and uploads to the
+           tablet. #}
+        {% if remarkable_ready %}
+        <form method="post" action="/drafts/{{ ref.ident }}/remarkable" class="inline">
+          <button type="submit" class="text-slate-500 underline hover:text-slate-800"
+                  title="export in reMarkable mode (footnoted references) and send to the tablet">
+            → reMarkable</button>
+        </form>
+        {% endif %}
       </span>
       <a href="/drafts" class="text-slate-500 underline hover:text-slate-800">all drafts</a>
       {# Author byline editor — the web twin of edit(kind='draft',

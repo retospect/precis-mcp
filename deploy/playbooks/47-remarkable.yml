@@ -1,0 +1,26 @@
+---
+# 47-remarkable.yml — build the `precis-remarkable` uploader image on the agent
+# host so the `remarkable_send` job can push a compiled draft PDF to the
+# reMarkable cloud in a throwaway container (docker/remarkable). The rmapi Go
+# binary lives in the IMAGE (this worker venv has nothing to pip-install — the
+# render + upload driver are bundled in precis-mcp). See roles/remarkable/README
+# + precis-mcp/docker/remarkable/README.md.
+#
+# Targeting is topology-driven (inventory/group_vars/all/topology.yml): the role
+# runs where `inventory_hostname in precis_capabilities.remarkable_send` — the
+# agent host (the gateway) that runs the remarkable_send claude_inproc job.
+#
+# NOT in redeploy-precis.yml / site.yml — run explicitly, and only after the
+# device credential is vaulted (populate-secrets-vault.yml). The send stays dark
+# until PRECIS_REMARKABLE_IMAGE is added to precis_shared_env (re-run
+# playbooks/37-precis-worker-agent.yml):
+#
+#   ansible-playbook playbooks/47-remarkable.yml
+#   # skip the image build once present:
+#   ansible-playbook playbooks/47-remarkable.yml -e remarkable_build_image=false
+
+- name: Build the precis-remarkable uploader image (topology-driven)
+  hosts: all
+  roles:
+    - role: remarkable
+      when: inventory_hostname in (precis_capabilities.remarkable_send | default([]))

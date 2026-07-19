@@ -1,0 +1,87 @@
+---
+# remarkable — build the `precis-remarkable` uploader image on the agent host
+# (send-to-tablet). The precis worker (roles/precis_worker_agent) claims a
+# `remarkable_send` job, compiles the RM2 PDF with its own MacTeX, and shells
+# out to `docker run precis-remarkable` to push it to the reMarkable cloud —
+# staging the PDF + a params blob under a scratch dir and passing the device
+# credential (vault: REMARKABLE_RMAPI_CONFIG) into the container by key.
+#
+# This role wires ONLY the image build. The env is already in place:
+#   - PRECIS_CONTAINER_BIN — set by roles/precis_worker_agent (colima docker),
+#   - PRECIS_REMARKABLE_IMAGE — add to `precis_shared_env` (see README) so the
+#     existing plist loop renders it; that flips send_pdf onto the container.
+# macOS / the agent host only (mirrors how the container executor is gated).
+
+- name: Ensure the container runtime is present
+  ansible.builtin.command: "{{ remarkable_container_cmd }} --version"
+  register: remarkable_runtime
+  changed_when: false
+  failed_when: remarkable_runtime.rc != 0
+  become: true
+  become_user: "{{ remarkable_worker_user }}"
+
+# ── (re)build the precis-remarkable image on the node ─────────────────
+- name: (Re)build the precis-remarkable image
+  when: remarkable_build_image | bool
+  become: true
+  become_user: "{{ remarkable_worker_user }}"
+  block:
+    - name: Ensure the build context dir on the node
+      ansible.builtin.file:
+        path: "{{ remarkable_build_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy the precis-remarkable build context to the node
+      # copy (not synchronize) rides ansible's own ssh connection — the same
+      # agent-independent path roles/aizynth uses. The context is three small
+      # files (Dockerfile + entrypoint + README).
+      ansible.builtin.copy:
+        src: "{{ remarkable_src_dir }}/"
+        dest: "{{ remarkable_build_dir }}/"
+        mode: preserve
+
+    - name: Ensure the base image is present (pull only if missing)
+      ansible.builtin.shell: >-
+        {{ remarkable_container_cmd }} image inspect {{ remarkable_base_image }} >/dev/null 2>&1
+        || {{ remarkable_container_cmd }} pull {{ remarkable_base_image }}
+      register: remarkable_basepull
+      retries: 5
+      delay: 15
+      until: remarkable_basepull.rc == 0
+      changed_when: "'Pull complete' in remarkable_basepull.stdout"
+
+    - name: Build the precis-remarkable image (fetches the pinned rmapi release)
+      ansible.builtin.command:
+        cmd: >-
+          {{ remarkable_container_cmd }} build
+          -t {{ remarkable_image }}
+          --build-arg RMAPI_VERSION={{ remarkable_rmapi_version }}
+          .
+        chdir: "{{ remarkable_build_dir }}"
+      register: remarkable_build
+      retries: 3
+      delay: 5
+      until: remarkable_build.rc == 0
+      changed_when: >-
+        'Successfully' in (remarkable_build.stdout + remarkable_build.stderr)
+        or 'writing image' in (remarkable_build.stdout + remarkable_build.stderr)
+
+- name: Assert the precis-remarkable image is present
+  ansible.builtin.command: "{{ remarkable_container_cmd }} image inspect {{ remarkable_image }}"
+  become: true
+  become_user: "{{ remarkable_worker_user }}"
+  register: remarkable_img
+  changed_when: false
+  failed_when: remarkable_img.rc != 0
+  # Fails when the image is absent: (re)build with -e remarkable_build_image=true.
+
+- name: Remind about the remaining wiring (env + credential)
+  ansible.builtin.debug:
+    msg: >-
+      precis-remarkable image built. To arm the send: (1) vault the device
+      credential as REMARKABLE_RMAPI_CONFIG (populate-secrets-vault.yml or
+      /secrets), (2) add PRECIS_REMARKABLE_IMAGE={{ remarkable_image }} to
+      precis_shared_env and re-run playbooks/37-precis-worker-agent.yml so the
+      worker plist renders it. Until both are done the send stays dark (the
+      button is hidden; the job reports 'no credential').

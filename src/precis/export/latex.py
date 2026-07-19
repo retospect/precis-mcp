@@ -46,6 +46,18 @@ from precis.utils.workspace import Workspace
 #: mode: prior-art rendered in-text, no ``\cite`` / no bibliography.
 _PATENT_DOC_TYPE = "patent"
 
+#: reMarkable-2 page profile injected after the preamble in send-to-tablet
+#: mode: a page geometry matching the device screen (1404×1872 px @226 dpi ≈
+#: 157.6×209.6 mm) with a wide outer margin for pen annotation, and a touch
+#: more line spacing for e-ink legibility. ``\geometry`` re-invokes the
+#: already-loaded geometry package, overriding the preamble's default margins.
+_REMARKABLE_GEOMETRY = (
+    "% ── reMarkable 2 page profile (send-to-tablet export) ──\n"
+    "\\geometry{paperwidth=157.6mm,paperheight=209.6mm,"
+    "top=10mm,bottom=14mm,left=12mm,right=22mm,heightrounded}\n"
+    "\\linespread{1.08}"
+)
+
 #: Translate non-ASCII glyphs to LaTeX commands. ``non_ascii_only`` leaves
 #: ASCII (including the backslash escapes we emit) untouched, so it's safe
 #: to run over already-escaped prose; ``keep`` leaves the rare glyph with
@@ -318,6 +330,9 @@ class _Ctx:
     seen_acr: set[str] = field(default_factory=set)  # glossary keys already emitted
     figures: list[tuple[str, bytes]] = field(default_factory=list)  # (relpath, bytes)
     doc_type: str = ""  # meta.workspace.doc_type; "patent" → in-text cites, no bib
+    footnote_refs: bool = (
+        False  # reMarkable mode: source cites → self-contained footnotes
+    )
 
     @property
     def patent_mode(self) -> bool:
@@ -442,7 +457,19 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
             if ctx.patent_mode:
                 return _inline_source_cite(tgt, kind, surface, ctx)
             slug = _handle_cite_key(tgt, ctx)
-            return _cite(slug, ctx) if slug else ""
+            if not slug:
+                return ""
+            if ctx.footnote_refs:
+                # reMarkable mode: a chunk-addressed handle (``pc<id>``)
+                # carries the specific chunk we resolve for the excerpt;
+                # a bare record handle (``pa<id>`` / a patent) has none.
+                excerpt = ""
+                if is_chunk and ctx.store is not None:
+                    uc = ctx.store.universal_chunk(tgt)
+                    if uc:
+                        excerpt = uc.get("text") or ""
+                return _source_footnote(slug, kind, excerpt, ctx)
+            return _cite(slug, ctx)
         if kind == "finding":
             slug = _finding_cite_key(tgt, ctx)
             return _cite(slug, ctx) if slug else ""
@@ -458,7 +485,9 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
     if tgt.startswith("§"):
         cm = DRAFT_CITE_PATTERN.fullmatch(tgt)
         if cm is not None:
-            return _cite(cm.group("slug"), ctx)
+            # Keep the ~n chunk suffix on the slug — _cite drops it for the
+            # cite key but reMarkable mode uses it to quote the paper chunk.
+            return _cite(cm.group("slug") + (cm.group("chunk") or ""), ctx)
         return ""
     if tgt.startswith(("http://", "https://")):
         if surface:
@@ -504,15 +533,81 @@ def _inline_paper_by_slug(slug: str, ctx: _Ctx) -> str:
 def _cite(slug: str, ctx: _Ctx) -> str:
     # Cite the PAPER, not the chunk: ``a~3`` / ``a~9`` → one \cite{a} and
     # one bib entry (biblatex collapses repeated cites; build_bib resolves
-    # the bare slug).
-    slug = slug.split("~", 1)[0]
+    # the bare slug). The ``~n`` chunk ordinal is dropped for the cite key
+    # but kept for the reMarkable footnote excerpt.
+    base, _, chunk_ord = slug.partition("~")
     if ctx.patent_mode:
         # A patent specification has no bibliography — every source is
         # cited in the running text.
-        return _inline_paper_by_slug(slug, ctx)
-    if slug not in ctx.cited:
-        ctx.cited.append(slug)
-    return f"\\cite{{{slug}}}"
+        return _inline_paper_by_slug(base, ctx)
+    if ctx.footnote_refs:
+        return _source_footnote(
+            base, "paper", _slug_chunk_excerpt(base, chunk_ord, ctx), ctx
+        )
+    if base not in ctx.cited:
+        ctx.cited.append(base)
+    return f"\\cite{{{base}}}"
+
+
+#: Longest excerpt (chars) quoted into a reMarkable footnote before it's
+#: trimmed to a sentence/word boundary + ellipsis.
+_FOOTNOTE_EXCERPT_CHARS = 320
+
+
+def _slug_chunk_excerpt(base: str, chunk_ord: str, ctx: _Ctx) -> str:
+    """The referenced paper chunk's text for a ``[§slug~n]`` / bare
+    ``slug~n`` cite (``n`` = the paper chunk ordinal). Empty when there's no
+    ordinal, no store, or no such paper/chunk."""
+    if not chunk_ord.isdigit() or ctx.store is None:
+        return ""
+    ref = ctx.store.get_ref(kind="paper", id=base)
+    if ref is None:
+        return ""
+    try:
+        return ctx.store.chunk_text_at(ref.id, int(chunk_ord)) or ""
+    except Exception:  # pragma: no cover — store hiccup / missing method
+        return ""
+
+
+def _footnote_excerpt(text: str, ctx: _Ctx) -> str:
+    """Trim a referenced chunk to a short quotable excerpt and render it as
+    LaTeX (prose escaped, math/sub-sup preserved). Empty when there's
+    nothing to show."""
+    t = " ".join((text or "").split())
+    if not t:
+        return ""
+    if len(t) > _FOOTNOTE_EXCERPT_CHARS:
+        cut = t[:_FOOTNOTE_EXCERPT_CHARS]
+        end = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "))
+        if end >= _FOOTNOTE_EXCERPT_CHARS // 2:
+            t = cut[: end + 1]
+        else:
+            sp = cut.rfind(" ")
+            t = (cut[:sp] if sp > 0 else cut) + "…"
+    return f"\\emph{{{_render_gap(t, ctx)}}}"
+
+
+def _source_footnote(slug: str, kind: str, excerpt: str, ctx: _Ctx) -> str:
+    """reMarkable mode: render a source citation as a **self-contained
+    numbered footnote** so a draft reads offline on the tablet without a
+    round-trip to the reference list. The footnote is the human cite +
+    ``\\cite`` (which prints the bibliography number *and* registers the
+    entry — so the footnote's ``[N]`` always matches the end bibliography,
+    which the preamble numbers in citation order) + the referenced chunk
+    excerpt when the ref addresses a specific chunk."""
+    base = slug.split("~", 1)[0]
+    if base not in ctx.cited:
+        ctx.cited.append(base)
+    ref = ctx.store.get_ref(kind=kind, id=base) if ctx.store is not None else None
+    if kind == "patent":
+        line = _tex(format_patent_citation(getattr(ref, "meta", None), base))
+    else:
+        line = _tex(paper_inline_citation(ref)) if ref is not None else _tex(base)
+    body = f"{line}~\\cite{{{base}}}"
+    exc = _footnote_excerpt(excerpt, ctx)
+    if exc:
+        body += f"\\\\ {exc}"
+    return f"\\footnote{{{body}}}"
 
 
 #: A run of directly-adjacent ``\cite{…}`` (no separator) → one grouped
@@ -587,11 +682,19 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
 _SECTION_CMD = ["section", "subsection", "subsubsection", "paragraph"]
 
 
-def render_body(store: Any, ref: Any, *, doc_type: str = "") -> RenderResult:
+def render_body(
+    store: Any, ref: Any, *, doc_type: str = "", footnote_refs: bool = False
+) -> RenderResult:
     """Render the whole draft body to LaTeX (no preamble/title chrome).
 
     ``doc_type='patent'`` renders prior-art references in-text (no
-    ``\\cite`` / no bibliography) — see ``docs/design/patent-authoring-loop.md``."""
+    ``\\cite`` / no bibliography) — see ``docs/design/patent-authoring-loop.md``.
+
+    ``footnote_refs=True`` (reMarkable send-to-tablet mode) turns every source
+    citation into a self-contained numbered ``\\footnote`` — human cite +
+    bibliography number + the referenced chunk excerpt — so the draft reads
+    offline without a round-trip to the reference list. The end bibliography
+    is still built (the footnote's ``[N]`` matches it)."""
     chunks = store.reading_order(ref.id)
     abbrevs: dict[str, str] = store.defined_abbrevs(ref.id)
     ctx = _Ctx(
@@ -600,6 +703,7 @@ def render_body(store: Any, ref: Any, *, doc_type: str = "") -> RenderResult:
         store=store,
         legacy_to_dc={c.handle: c.dc for c in chunks},
         doc_type=doc_type,
+        footnote_refs=footnote_refs,
     )
     lines: list[str] = []
     # Open list environments (migration 0037): ulist→itemize, olist→
@@ -911,6 +1015,7 @@ def assemble_document(
     acronyms: str,
     appendix: str = "",
     doc_type: str = "",
+    remarkable: bool = False,
 ) -> str:
     """Assemble the full ``main.tex`` around the checked-in preamble.
 
@@ -922,12 +1027,17 @@ def assemble_document(
     ``doc_type='patent'`` suppresses the bibliography (``\\addbibresource`` /
     ``\\printbibliography``) — a patent specification cites prior art in the
     running text, not in a reference list.
+
+    ``remarkable=True`` injects the reMarkable-2 page geometry after the
+    preamble (send-to-tablet export).
     """
     patent_mode = doc_type == _PATENT_DOC_TYPE
     parts = [
         _template_text("preamble.tex").rstrip(),
         "",
     ]
+    if remarkable:
+        parts += [_REMARKABLE_GEOMETRY, ""]
     if not patent_mode:
         parts.append("\\addbibresource{refs.bib}")
     parts.append("\\makeglossaries")
@@ -961,6 +1071,7 @@ def export_draft(
     target_dir: Path,
     include_sources: bool = False,
     doc_type: str | None = None,
+    remarkable: bool = False,
 ) -> ExportResult:
     """Render a draft into a compilable LaTeX project under
     ``target_dir``: ``main.tex`` + ``refs.bib`` + a copy of the
@@ -984,8 +1095,11 @@ def export_draft(
         ws = Workspace.from_meta(getattr(ref, "meta", None))
         doc_type = ws.doc_type if ws else ""
     patent_mode = doc_type == _PATENT_DOC_TYPE
+    # reMarkable footnote mode is orthogonal to genre but meaningless without a
+    # bibliography, so it yields to patent-spec mode (in-text cites, no bib).
+    remarkable = remarkable and not patent_mode
 
-    rendered = render_body(store, ref, doc_type=doc_type)
+    rendered = render_body(store, ref, doc_type=doc_type, footnote_refs=remarkable)
     acronyms_tex = build_acronyms(rendered.acronyms, rendered.acronym_keys)
     # A patent specification has no bibliography — everything is cited
     # in-text, so ``cited_slugs`` stays empty and refs.bib is a stub.
@@ -1021,6 +1135,7 @@ def export_draft(
         acronyms=acronyms_tex,
         appendix=appendix_tex,
         doc_type=doc_type,
+        remarkable=remarkable,
     )
 
     # Materialise figure images beside main.tex (ADR 0058 slice 4) — the body
