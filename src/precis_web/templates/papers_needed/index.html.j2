@@ -231,13 +231,13 @@
 </section>
 
 {# "Open all downloads" — walks every direct-download link on the page
-   (DOI→LibKey, arXiv→PDF) and opens each in its own tab, staggered by a
+   (DOI→LibKey, arXiv→PDF) and opens each in its own *background* tab (a
+   synthesized Cmd/Ctrl-click, so focus stays on this page), staggered by a
    randomized 10–30s so it's gentle (and less bot-like to the publisher)
-   rather than a 100-tab avalanche. Staggered window.open() calls lose
-   the click's user-gesture, so the browser pop-up blocker WILL stop them
-   after the first tab until the user allows pop-ups for this site — the
-   status line says so. Only rows with a direct download carry a
-   data-download link. #}
+   rather than a 100-tab avalanche. Staggered opens lose the click's
+   user-gesture, so the browser pop-up blocker WILL stop them after the
+   first tab until the user allows pop-ups for this site — the status line
+   says so. Only rows with a direct download carry a data-download link. #}
 <script>
 (function () {
   const btn = document.getElementById("open-all-libkey");
@@ -249,6 +249,22 @@
   const MIN_MS = 10000;
   const MAX_MS = 30000;
   const nextGap = () => MIN_MS + Math.floor(Math.random() * (MAX_MS - MIN_MS + 1));
+
+  // Open a URL in a *background* tab without stealing focus. A plain
+  // window.open() foregrounds the new tab; instead we synthesize the
+  // Cmd/Ctrl-click a user would do to background-open a link, which every
+  // major browser honors by keeping the current tab focused. metaKey (macOS)
+  // and ctrlKey (Win/Linux) are both set so each platform reads its own.
+  const openBackground = function (url) {
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.dispatchEvent(new MouseEvent("click", {
+      bubbles: true, cancelable: true, view: window,
+      ctrlKey: true, metaKey: true,
+    }));
+  };
 
   btn.textContent = "Open all " + links.length + " downloads ↓";
   btn.classList.remove("hidden");
@@ -271,7 +287,7 @@
         running = false;
         return;
       }
-      window.open(urls[i], "_blank", "noopener");
+      openBackground(urls[i]);
       i += 1;
       if (i >= urls.length) { step(); return; }
       const secs = Math.round(nextGap() / 1000);
