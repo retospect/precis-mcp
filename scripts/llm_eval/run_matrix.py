@@ -41,9 +41,10 @@ if not os.environ.get("PRECIS_LLM_API_KEY"):
     if _keyfile.exists():
         os.environ["PRECIS_LLM_API_KEY"] = _keyfile.read_text().strip()
 
-from precis.llm_eval.harness import run_eval  # noqa: E402
-from precis.llm_eval.tasks import load_gold_set  # noqa: E402
-from precis.utils.llm.router import Tier, dispatch as _real_dispatch  # noqa: E402
+from precis.llm_eval.harness import run_eval
+from precis.llm_eval.tasks import load_gold_set
+from precis.utils.llm.router import Tier
+from precis.utils.llm.router import dispatch as _real_dispatch
 
 # tier label -> candidate OpenRouter slugs; the first of each tier is the
 # claude INCUMBENT it would replace. All resolve on OpenRouter (verified).
@@ -125,7 +126,10 @@ def main() -> int:
     args = ap.parse_args()
 
     if not os.environ.get("PRECIS_LLM_API_KEY"):
-        print("ERROR: PRECIS_LLM_API_KEY not set and no ~/.secrets key found", file=sys.stderr)
+        print(
+            "ERROR: PRECIS_LLM_API_KEY not set and no ~/.secrets key found",
+            file=sys.stderr,
+        )
         return 2
 
     tasks = load_gold_set(args.gold)
@@ -134,8 +138,10 @@ def main() -> int:
         models = [(t, m) for t, m in models if m in args.only]
     incumbents = {ms[0] for ms in MATRIX.values()}
 
-    print(f"eval: {len(models)} models × {len(tasks)} tasks "
-          f"({len({t.axis for t in tasks})} axes) via {os.environ['PRECIS_LLM_BASE_URL']}")
+    print(
+        f"eval: {len(models)} models × {len(tasks)} tasks "
+        f"({len({t.axis for t in tasks})} axes) via {os.environ['PRECIS_LLM_BASE_URL']}"
+    )
     tally: dict[str, dict] = defaultdict(
         lambda: {"calls": 0, "cost": 0.0, "tokens": 0, "errors": 0}
     )
@@ -164,7 +170,7 @@ def main() -> int:
     scorecard = render(payload)
     (out / "scorecard.md").write_text(scorecard)
     print("\n" + scorecard)
-    print(f"\nwrote {out/'scorecard.md'} and {out/'results.json'}")
+    print(f"\nwrote {out / 'scorecard.md'} and {out / 'results.json'}")
     return 0
 
 
@@ -196,7 +202,9 @@ def render(p: dict) -> str:
             continue
         # incumbent mean, for the delta flag
         inc = next((m for m in tier_models if m in incs), None)
-        inc_ord = {a: results[inc].get(a, {}).get("ordinal", 0) for a in AXES} if inc else {}
+        inc_ord = (
+            {a: results[inc].get(a, {}).get("ordinal", 0) for a in AXES} if inc else {}
+        )
 
         def mean_ord(m):
             vs = [results[m].get(a, {}).get("ordinal", 0) for a in AXES]
@@ -214,7 +222,8 @@ def render(p: dict) -> str:
             beats = ""
             if inc and m not in incs:
                 n_ge = sum(
-                    1 for a in AXES
+                    1
+                    for a in AXES
                     if results[m].get(a, {}).get("ordinal", 0) >= inc_ord.get(a, 0)
                 )
                 beats = f" ({n_ge}/{len(AXES)}≥★)"
@@ -222,7 +231,8 @@ def render(p: dict) -> str:
             errs = spend.get(m, {}).get("errors", 0)
             name = m.split("/")[-1]
             lines.append(
-                f"| {name}{star}{beats} | " + " | ".join(cells)
+                f"| {name}{star}{beats} | "
+                + " | ".join(cells)
                 + f" | {mo:.1f} | ${cost:.4f} | {errs} |"
             )
     lines += [

@@ -773,7 +773,13 @@ The master kinds table lives in the `precis-overview` skill.
   `precis-job-help`.
 - **`structure`** — atomistic cell+bond IR (ADR 0043); typed ops + in-memory
   probes, relax on the GPU node (derived-lane job, ADR 0044), cursors/measures
-  on `struct_measures`, web `/structure`. Skill: `precis-structure-help`.
+  on `struct_measures`, web `/structure`. `slab` op hardened against messy LLM
+  JSON (null/list params → clean `OpError`, not a crash); `invariants.py` gives a
+  representation-invariant fingerprint (composition · per-layer · adsorbate site ·
+  coordination) powering the **round-trip eval** (`scripts/llm_eval/roundtrip.py`,
+  `docs/design/structure-roundtrip-eval.md`). `structure_propose` build step
+  pinned to CLOUD_MID=sonnet (ties opus at ½ cost; reasoning stays super). Skill:
+  `precis-structure-help`.
 - **`citation`** — verifier-workflow kind (`text`+`source_handle`+`source_quote`
   +`verifier_confidence`, `link='paper:<slug>'`); tex `\citequote` persists the
   same quote. Skill: `precis-citation-help`.

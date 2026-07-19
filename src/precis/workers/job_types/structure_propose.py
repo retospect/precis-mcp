@@ -171,12 +171,17 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     model = os.environ.get("PRECIS_STRUCTURE_PROPOSE_MODEL")
     ctx.append_chunk("job_event", f"propose: {instruction[:200]}")
     # Routed through the LLM seam (ADR 0046 unit 4b): tool-less agent call on
-    # CLOUD_SUPER, so PRECIS_LLM_BACKEND can switch it. Broad except kept +
-    # the folded res.error checked.
+    # CLOUD_MID (sonnet). The structure round-trip eval
+    # (docs/design/structure-roundtrip-eval.md) showed sonnet TIES opus on this
+    # mechanical describe→build step at ~½ the cost — so the *build* runs mid-tier
+    # while catalyst *reasoning* (quest ticks, reviewers) stays CLOUD_SUPER=opus.
+    # Override the model with PRECIS_STRUCTURE_PROPOSE_MODEL (e.g. back to an opus
+    # id to revert without a redeploy); PRECIS_LLM_BACKEND still switches the
+    # transport. Broad except kept + the folded res.error checked.
     try:
         res = dispatch(
             LlmRequest(
-                tier=Tier.CLOUD_SUPER,
+                tier=Tier.CLOUD_MID,
                 source="structure_propose",
                 ref_id=structure_ref_id,  # attribute spend to the structure (gr162130)
                 prompt=prompt,

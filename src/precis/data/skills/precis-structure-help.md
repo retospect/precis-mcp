@@ -69,7 +69,7 @@ put(kind='structure', id='pd111', text='''{
 | op | args | effect |
 |----|------|--------|
 | `set_cell` | `lattice` or `a,b,c,…` + `pbc` | redefine the cell |
-| `slab` | `element`, `size:[nx,ny,nz]`, `vacuum?`, `fix_layers?`, `a?` | **bulk template** — build an fcc(111) metal slab; **clears the scene** and sets the cell (ASE-exact atom order, so catpath can inject it). Omit the top-level `cell`. |
+| `slab` | `element`, `size:[nx,ny,nz]`, `vacuum?`, `fix_layers?`, `a?` | **bulk template** — build an fcc(111) metal slab; **clears the scene** and sets the cell (ASE-exact atom order, so catpath can inject it). Omit the top-level `cell`. `fix_layers` is an **integer count** of *bottom* layers to freeze (`2` = bottom two layers), **not** a list of layer indices. |
 | `add_atom` | `element`, `frac:[fa,fb,fc]` | place an atom (wraps into the cell) |
 | `set_element` | `atom`, `element` | transmute — **keeps the atom's label & position** (see caution below) |
 | `vacancy` | `atom` | remove an atom (label not recycled) |

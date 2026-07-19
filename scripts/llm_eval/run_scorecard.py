@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import concurrent.futures as cf
 import json
-import time
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _dispatch import last_json_object, robust_dispatch
 
 from precis.llm_eval.scorers import SCORERS, bucket_to_ordinal
 from precis.llm_eval.tasks import load_gold_set
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import Tier
 
 GOLD = "scripts/llm_eval/gold_set/corpus_v1.json"
 
@@ -55,34 +58,30 @@ def run_model(display: str, slug: str, tier: Tier, tasks: list) -> dict:
     for t in tasks:
         score = 0.0
         err = None
-        for attempt in range(2):  # one retry on transient transport error
-            try:
-                res = dispatch(
-                    LlmRequest(
-                        tier=tier,
-                        prompt=t.prompt,
-                        model=slug,
-                        tools_needed=t.tools_needed,
-                        max_tokens=800,
-                        source="llm_eval",
-                    )
-                )
-            except Exception as exc:  # transport blew up
-                err = f"raise: {exc}"
-                time.sleep(2)
-                continue
-            err = getattr(res, "error", None)
-            if err:
-                time.sleep(2)
-                continue
-            c = getattr(res, "cost_usd", None)
+        try:
+            # robust_dispatch retries an empty reply with a bounded reasoning
+            # budget, so a reasoning model isn't scored 0 for starving its own
+            # content (the confound the slab probe surfaced).
+            res, note = robust_dispatch(
+                tier=tier,
+                prompt=t.prompt,
+                model=slug,
+                tools_needed=t.tools_needed,
+                max_tokens=1200,
+                source="llm_eval",
+            )
+        except Exception as exc:  # transport blew up
+            res, note = None, f"raise: {exc}"
+        if res is None or res.error or note == "empty":
+            err = note if res is None else (res.error or "empty")
+        else:
+            c = res.cost_usd
             if c is not None:
                 cost_total += float(c)
                 cost_known += 1
-            score = SCORERS[t.scorer](
-                getattr(res, "text", "") or "", getattr(res, "data", None), t.expect
-            )
-            break
+            # fence-/nesting-tolerant data fallback (res.data is one-level regex)
+            data = res.data if res.data is not None else last_json_object(res.text)
+            score = SCORERS[t.scorer](res.text or "", data, t.expect)
         by_axis.setdefault(t.axis, []).append(
             {"task_id": t.task_id, "score": score, "error": err}
         )

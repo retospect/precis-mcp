@@ -171,6 +171,39 @@ def test_dispatch_writes_valid_proposal(seeded, monkeypatch):
     assert ctx.meta_set["proposed_ops"] == 1
 
 
+def test_dispatch_pins_build_to_sonnet_mid_tier_with_override(seeded, monkeypatch):
+    # The structure BUILD step runs on CLOUD_MID (sonnet) — the round-trip eval
+    # showed sonnet ties opus on this mechanical step at ~½ the cost, while
+    # catalyst *reasoning* stays CLOUD_SUPER=opus. Capture the model that reaches
+    # the claude_agent transport to prove the pin (and the revert knob).
+    from precis.utils.llm.router import Tier, resolve_model
+
+    store, ref = seeded
+    seen: dict = {}
+    reply = json.dumps(
+        {
+            "ops": [{"op": "add_atom", "element": "O", "frac": [0.5, 0.5, 0.55]}],
+            "rationale": "x",
+        }
+    )
+
+    def _capture(*a, **k):
+        seen["model"] = k.get("model")
+        return AgentResult(final_text=reply, cost_usd=0.0, duration_s=0.0, turns_used=1)
+
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _capture)
+    params = {"structure_ref_id": ref.id, "slug": "pp_pd", "instruction": "add O"}
+
+    monkeypatch.delenv("PRECIS_STRUCTURE_PROPOSE_MODEL", raising=False)
+    sp._dispatch(_FakeCtx(store, ref.id, params), sp.SPEC)
+    assert seen["model"] == resolve_model(Tier.CLOUD_MID)  # sonnet, the default now
+    assert seen["model"] != resolve_model(Tier.CLOUD_SUPER)  # NOT opus
+
+    monkeypatch.setenv("PRECIS_STRUCTURE_PROPOSE_MODEL", "claude-opus-4-8")
+    sp._dispatch(_FakeCtx(store, ref.id, params), sp.SPEC)
+    assert seen["model"] == "claude-opus-4-8"  # explicit override / revert wins
+
+
 def test_dispatch_marks_invalid_proposal(seeded, monkeypatch):
     store, ref = seeded
     reply = json.dumps(

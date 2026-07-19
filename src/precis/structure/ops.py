@@ -13,6 +13,7 @@ contract surfaces this as a structured error, §5c).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import numpy as np
@@ -50,8 +51,42 @@ def apply_ops(scene: Scene, ops: list[dict[str, Any]]) -> Scene:
 def _require_atom(scene: Scene, label: str) -> Atom:
     atom = scene.atoms.get(label)
     if atom is None:
-        raise OpError(f"no such atom: {label!r}")
+        raise OpError(_no_atom_msg(scene, label))
     return atom
+
+
+def _no_atom_msg(scene: Scene, label: str) -> str:
+    """A friendlier not-found message than a bare miss.
+
+    The common trap (only the strongest models hit it, by doing more): atom
+    labels are **stable** — ``set_element`` transmutes an atom's element but
+    KEEPS its mint-time ``a<El><n>`` label, so an ``aPd28`` doped to Cu is still
+    named ``aPd28``; there is no ``aCu28``. A model that assumes a relabel then
+    references the phantom name. So when a lookup misses on a label with a
+    numeric suffix, surface the atom(s) at that same position (the one the
+    caller likely means) and name the label-retention rule; otherwise fall back
+    to a short roster of what exists.
+    """
+    base = f"no such atom: {label!r}"
+    if not scene.atoms:
+        return f"{base} — the scene has no atoms yet"
+    m = re.search(r"(\d+)$", label)
+    if m:
+        n = m.group(1)
+        twins = sorted(
+            lb
+            for lb in scene.atoms
+            if (mm := re.search(r"(\d+)$", lb)) and mm.group(1) == n
+        )
+        if twins:
+            return (
+                f"{base}. Labels are STABLE: set_element keeps an atom's original "
+                f"mint label when it changes element, so a transmuted atom is not "
+                f"renamed. Did you mean {twins[0]!r}? (same position {n})"
+            )
+    roster = ", ".join(sorted(scene.atoms)[:8])
+    more = "" if len(scene.atoms) <= 8 else f", … ({len(scene.atoms)} atoms total)"
+    return f"{base}. Available atoms: {roster}{more}"
 
 
 def _op_set_cell(scene: Scene, op: dict[str, Any]) -> None:
@@ -249,15 +284,37 @@ def _op_slab(scene: Scene, op: dict[str, Any]) -> None:
     size = op.get("size")
     if not element or not isinstance(size, (list, tuple)) or len(size) != 3:
         raise OpError("slab needs 'element' and 'size' as [nx, ny, nz]")
-    nx, ny, nz = int(size[0]), int(size[1]), int(size[2])
-    vacuum = float(op.get("vacuum", 10.0))
-    fix_layers = int(op.get("fix_layers", 0))
-    a = op.get("a")
+    # Coerce every numeric param defensively: an LLM emits messy JSON — an
+    # explicit ``null`` for an optional key (treat as absent → default), or a
+    # non-number where an int/float is due. Any non-coercible value raises a
+    # clean OpError (retryable) instead of a raw TypeError/ValueError crashing
+    # apply_ops. ``null`` vacuum/fix_layers mean "use the default / none frozen".
+    fl = op.get("fix_layers")
+    if isinstance(fl, (list, tuple)):
+        # A common model misreading (deepseek): fix_layers as a list of layer
+        # *indices*. It's an integer COUNT of bottom layers — say so, retryably.
+        raise OpError(
+            f"slab 'fix_layers' is an integer COUNT of bottom layers to freeze "
+            f"(e.g. 2 = the bottom two layers), not a list of indices — got {fl!r}"
+        )
+    try:
+        nx, ny, nz = int(size[0]), int(size[1]), int(size[2])
+        vac = op.get("vacuum")
+        vacuum = float(vac) if vac is not None else 10.0
+        fix_layers = int(fl) if fl is not None else 0
+        a_raw = op.get("a")
+        a = float(a_raw) if a_raw is not None else None
+    except (TypeError, ValueError) as exc:
+        raise OpError(
+            f"slab numeric params must be numbers — got size={size!r}, "
+            f"vacuum={op.get('vacuum')!r}, fix_layers={op.get('fix_layers')!r}, "
+            f"a={op.get('a')!r}"
+        ) from exc
     slab = fcc111(
         str(element),
         size=(nx, ny, nz),
         vacuum=vacuum,
-        a=float(a) if a is not None else None,
+        a=a,
     )
     slab.pbc = (True, True, True)
     # Freeze the bottom `fix_layers` layers (mirror catpath: sort by z ascending).

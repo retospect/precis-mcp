@@ -24,18 +24,21 @@ from __future__ import annotations
 
 import concurrent.futures as cf
 import json
-import re
+import sys
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _dispatch import last_json_object, robust_dispatch
+
 from precis.handlers.structure import _build_cell, _ops_establish_cell
 from precis.structure.cell import Cell
 from precis.structure.ops import OpError, apply_ops
 from precis.structure.scene import FIX_ALL, Scene
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import Tier
 
 SKILL = (
     resources.files("precis.data")
@@ -78,26 +81,6 @@ MODELS = [
     ("haiku-4.5 (small inc.)", "anthropic/claude-haiku-4.5", Tier.CLOUD_SMALL),
     ("gpt-oss-120b", "openai/gpt-oss-120b", Tier.CLOUD_SMALL),
 ]
-
-_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
-
-
-def _last_json(text: str) -> dict | None:
-    """Best-effort: parse the last {...} block in the reply."""
-    m = _JSON_RE.search(text or "")
-    if not m:
-        return None
-    # try progressively shorter suffixes from the last '{'
-    starts = [mm.start() for mm in re.finditer(r"\{", text)]
-    for s in reversed(starts):
-        try:
-            return json.loads(text[s : m.end()])
-        except json.JSONDecodeError:
-            continue
-    try:
-        return json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return None
 
 
 def _build_scene(payload: dict) -> Scene:
@@ -166,18 +149,17 @@ def _analyze(payload: dict | None, task: str) -> dict[str, Any]:
 def run_one(display: str, slug: str, tier: Tier, task_id: str, task: str) -> dict:
     prompt = f"{SKILL}\n\n---\n\n# TASK\n{task}"
     try:
-        res = dispatch(
-            LlmRequest(
-                tier=tier, prompt=prompt, model=slug, max_tokens=2000, source="llm_eval"
-            )
+        res, note = robust_dispatch(
+            tier=tier, prompt=prompt, model=slug, max_tokens=2000, source="llm_eval"
         )
-        err = getattr(res, "error", None)
-        text = getattr(res, "text", "") or ""
+        err = res.error
+        text = res.text or ""
     except Exception as exc:  # transport blew up
-        err, text = str(exc), ""
-    payload = _last_json(text) if not err else None
+        err, text, note = str(exc), "", "raise"
+    # fence- + nesting-tolerant parse (the shipped res.data regex is one-level)
+    payload = last_json_object(text) if not err else None
     a = _analyze(payload, task_id)
-    a.update({"model": display, "task": task_id, "transport_error": err})
+    a.update({"model": display, "task": task_id, "transport_error": err, "note": note})
     return a
 
 
@@ -206,10 +188,11 @@ def main() -> None:
     ):
         print(f"\n=== TASK {task_id} (expect: {expect}) ===")
         for r in sorted([x for x in results if x["task"] == task_id], key=key):
+            note = r.get("note", "")
             if r.get("transport_error"):
                 print(f"  {r['model']:<24} TRANSPORT-ERR {r['transport_error'][:40]}")
             elif not r.get("parsed"):
-                print(f"  {r['model']:<24} NO-JSON in reply")
+                print(f"  {r['model']:<24} NO-JSON in reply  [{note}]")
             elif not r.get("built"):
                 print(
                     f"  {r['model']:<24} BUILD-FAIL slab={r['used_slab']} "

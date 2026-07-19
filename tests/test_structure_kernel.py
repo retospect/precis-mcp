@@ -83,6 +83,33 @@ def test_set_element_vacancy_and_label_no_recycle() -> None:
     assert scene.next_label("Pd") == "aPd2"
 
 
+def test_set_element_phantom_relabel_hints_stable_label() -> None:
+    # The strong-model trap: set_element KEEPS the label, so an aPd1 doped to Cu
+    # stays aPd1. A model that then references the phantom aCu1 should get a
+    # message that names the label-retention rule + points at the real atom.
+    from precis.structure import OpError
+
+    scene = Scene(cell=_cubic())
+    apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0, 0, 0]}])
+    apply_ops(scene, [{"op": "set_element", "atom": "aPd1", "element": "Cu"}])
+    with pytest.raises(OpError) as exc:
+        apply_ops(scene, [{"op": "set_element", "atom": "aCu1", "element": "Ni"}])
+    msg = str(exc.value)
+    assert "aPd1" in msg  # points at the atom the caller meant
+    assert "stable" in msg.lower() or "keeps" in msg.lower()
+
+
+def test_bad_ref_message_rosters_when_no_position_match() -> None:
+    # A label with no matching position falls back to a roster of what exists.
+    from precis.structure import OpError
+
+    scene = Scene(cell=_cubic())
+    apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0, 0, 0]}])
+    with pytest.raises(OpError) as exc:
+        apply_ops(scene, [{"op": "vacancy", "atom": "aXx"}])
+    assert "aPd1" in str(exc.value)
+
+
 def test_bonds_add_remove_and_constrain() -> None:
     scene = Scene(cell=_cubic())
     apply_ops(
@@ -479,6 +506,58 @@ def test_op_slab_needs_element_and_size() -> None:
         apply_ops(scene, [{"op": "slab", "element": "Pd"}])  # no size
     with pytest.raises(OpError):
         apply_ops(scene, [{"op": "slab", "size": [2, 2, 3]}])  # no element
+
+
+def test_op_slab_tolerates_null_optional_params() -> None:
+    # An LLM often emits an explicit null for an optional param instead of
+    # omitting the key; null must mean "default", not a raw TypeError crash.
+    pytest.importorskip("ase.build")
+    scene = Scene(cell=_cubic(1.0))
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "slab",
+                "element": "Pd",
+                "size": [2, 2, 3],
+                "vacuum": None,
+                "fix_layers": None,
+            }
+        ],
+    )
+    assert len(scene.atoms) == 12  # 2*2*3 built despite the nulls
+    assert sum(1 for a in scene.atoms.values() if a.fixed) == 0  # null => none frozen
+
+
+def test_op_slab_bad_numeric_param_raises_clean_operror() -> None:
+    # A non-coercible numeric (a null buried in size, a string vacuum) must raise
+    # OpError — retryable — not a raw TypeError/ValueError that crashes apply_ops.
+    pytest.importorskip("ase.build")
+    from precis.structure import OpError
+
+    scene = Scene(cell=_cubic(1.0))
+    with pytest.raises(OpError):
+        apply_ops(scene, [{"op": "slab", "element": "Pd", "size": [3, 3, None]}])
+    with pytest.raises(OpError):
+        apply_ops(
+            scene,
+            [{"op": "slab", "element": "Pd", "size": [2, 2, 2], "vacuum": "lots"}],
+        )
+
+
+def test_op_slab_fix_layers_as_list_gets_count_hint() -> None:
+    # deepseek reads fix_layers as a list of indices; the error must name the
+    # count-not-list semantics so an agent can self-correct.
+    pytest.importorskip("ase.build")
+    from precis.structure import OpError
+
+    scene = Scene(cell=_cubic(1.0))
+    with pytest.raises(OpError) as exc:
+        apply_ops(
+            scene,
+            [{"op": "slab", "element": "Pd", "size": [3, 3, 3], "fix_layers": [0]}],
+        )
+    assert "count" in str(exc.value).lower()
 
 
 def test_slab_extxyz_carries_fixatoms_for_catpath() -> None:
