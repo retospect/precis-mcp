@@ -7,6 +7,7 @@ constructed directly here (registry-level env-gating tests live in
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound, Unsupported
-from precis.handlers._patent_ops import FakeOpsClient
+from precis.handlers._patent_ops import FakeOpsClient, OpsAuthError
 from precis.handlers.patent import PatentHandler
 from precis.store import Store, Tag
 from tests.conftest import chunk_handle, record_handle
@@ -296,6 +297,41 @@ class TestSearch:
         # carries the no-match message.
         r = handler.search(q="completely-novel-topic-xyz", page_size=10)
         assert "no patents match" in r.body.lower()
+
+    def test_search_ops_auth_error_stays_best_effort_but_logs(
+        self,
+        handler: PatentHandler,
+        hub: Hub,
+        raw_root: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Ingest the fixture patent so there's a local hit to fall back
+        # to — the remote leg's failure must NOT swallow it.
+        handler.get(id="EP1234567B1")
+
+        # A fresh OPS client bound to the SAME CQL key as the shared
+        # ``fake_ops`` fixture's ``photocatalytic`` mapping, but wired
+        # to raise OpsAuthError instead of returning search XML —
+        # simulates bad/expired EPO credentials.
+        cql = '(ti="photocatalytic" OR ab="photocatalytic")'
+        bad_ops = FakeOpsClient(
+            raises={("search", cql): OpsAuthError("invalid client credentials")}
+        )
+        bad_handler = PatentHandler(hub=hub, ops=bad_ops, raw_root=raw_root)
+
+        with caplog.at_level(logging.WARNING, logger="precis.handlers.patent"):
+            r = bad_handler.search(q="photocatalytic", page_size=10)
+
+        # Best-effort: search() does not raise, and the local hit
+        # (ingested above) still renders.
+        assert "[local]" in r.body
+
+        # But the auth failure must NOT masquerade as "no patents
+        # matched" — a breadcrumb is logged.
+        warnings = [rec for rec in caplog.records if rec.levelno == logging.WARNING]
+        assert any("OpsAuthError" in rec.getMessage() for rec in warnings), [
+            rec.getMessage() for rec in warnings
+        ]
 
     def test_search_axis_enforcement(self, handler: PatentHandler) -> None:
         # patent kind allows {SRC, CACHE} only — STATUS:open should fail.

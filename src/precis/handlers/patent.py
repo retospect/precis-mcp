@@ -21,6 +21,7 @@ root is an incidental cache dir that defaults via
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any, ClassVar
@@ -34,9 +35,11 @@ from precis.handlers._patent_ingest import (
     ingest_patent,
 )
 from precis.handlers._patent_ops import (
+    OpsAuthError,
     OpsClientProto,
     OpsError,
     OpsHttpError,
+    OpsQuotaError,
 )
 from precis.handlers._patent_slug import looks_like_docdb, parse_docdb_id
 from precis.handlers._patent_xml import OpsHit, parse_search_response
@@ -57,6 +60,8 @@ from precis.utils.text import excerpt as _excerpt
 # ---------------------------------------------------------------------------
 # Spec
 # ---------------------------------------------------------------------------
+
+log = logging.getLogger(__name__)
 
 _SUPPORTED_VIEWS: tuple[str, ...] = (
     "biblio",
@@ -307,8 +312,19 @@ class PatentHandler(Handler):
                             ),
                         ) from e
                     remote_hits = []
-                except OpsError:
-                    # Network/auth/quota/5xx — keep best-effort behaviour.
+                except OpsError as e:
+                    # Network/auth/quota/5xx — best-effort: the remote leg
+                    # empties rather than failing the whole search. But
+                    # auth/quota failures must NOT masquerade as "no
+                    # patents matched" — leave a breadcrumb so a
+                    # misconfigured sweep is diagnosable.
+                    if isinstance(e, (OpsAuthError, OpsQuotaError)):
+                        log.warning(
+                            "patent remote search leg failed (%s): %s; "
+                            "returning local-only results",
+                            type(e).__name__,
+                            e,
+                        )
                     remote_hits = []
 
         # source='remote' — dedupe against local so the caller sees
