@@ -14,12 +14,18 @@ Temperature is genuinely hard to read portably, so it is best-effort
 in priority order:
 
 1. ``PRECIS_TEMP_CMD`` — a shell command whose stdout's first float
-   is parsed as °C. The escape hatch for any sensor (macOS
-   ``osx-cpu-temp``, IPMI, a custom script) without baking platform
-   logic here.
+   is parsed as °C. The escape hatch for any sensor (IPMI, a custom
+   script) without baking platform logic here.
 2. Linux ``/sys/class/thermal/thermal_zone*/temp`` (millidegrees),
    max across zones.
-3. ``None`` — the host still reports load + liveness.
+3. macOS — read the SoC thermal sensors through IOKit's HID event
+   system (``ctypes``, unprivileged, no install); on the old Intel
+   path fall back to the ``osx-cpu-temp`` brew binary. Apple Silicon
+   exposes no sensor files and ``osx-cpu-temp`` reads Intel-only SMC
+   keys (returns 0.0), so the IOKit read is the only numeric source
+   short of ``sudo powermetrics`` (which itself gives only a
+   qualitative thermal-pressure level on Apple Silicon).
+4. ``None`` — the host still reports load + liveness.
 """
 
 from __future__ import annotations
@@ -135,19 +141,120 @@ def _temp_from_linux_thermal() -> float | None:
     return max(readings) if readings else None
 
 
+def _temp_from_macos_iokit() -> float | None:
+    """Read the Apple Silicon SoC temp via IOKit's HID event system.
+
+    macOS exposes no thermal sensor files; the SoC die sensors live
+    behind the IOKit HID event system, which an unprivileged process
+    can read (no sudo, no install — ``osx-cpu-temp`` reads Intel-only
+    SMC keys and returns 0.0 here). We match HID services on the
+    Apple-vendor temperature usage page and copy a temperature event
+    from each, returning the hottest reading in °C.
+
+    Pure ``ctypes`` against system frameworks; any failure (missing
+    framework, API shape change, no matching sensors) degrades to
+    ``None`` so the host still reports load + liveness.
+    """
+    import ctypes
+    import ctypes.util
+
+    # kHIDPage_AppleVendor / kHIDUsage_AppleVendor_TemperatureSensor
+    HID_PAGE, HID_USAGE = 0xFF00, 0x0005
+    kIOHIDEventTypeTemperature = 15
+    temperature_field = kIOHIDEventTypeTemperature << 16
+    kCFNumberSInt32Type = 3
+    kCFStringEncodingUTF8 = 0x08000100
+
+    try:
+        iokit = ctypes.CDLL(ctypes.util.find_library("IOKit"))
+        cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+
+        cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+        cf.CFStringCreateWithCString.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_uint32,
+        ]
+        cf.CFNumberCreate.restype = ctypes.c_void_p
+        cf.CFNumberCreate.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+        cf.CFDictionaryCreate.restype = ctypes.c_void_p
+        cf.CFDictionaryCreate.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_long,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        cf.CFArrayGetCount.restype = ctypes.c_long
+        cf.CFArrayGetCount.argtypes = [ctypes.c_void_p]
+        cf.CFArrayGetValueAtIndex.restype = ctypes.c_void_p
+        cf.CFArrayGetValueAtIndex.argtypes = [ctypes.c_void_p, ctypes.c_long]
+
+        iokit.IOHIDEventSystemClientCreate.restype = ctypes.c_void_p
+        iokit.IOHIDEventSystemClientCreate.argtypes = [ctypes.c_void_p]
+        iokit.IOHIDEventSystemClientSetMatching.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        iokit.IOHIDEventSystemClientCopyServices.restype = ctypes.c_void_p
+        iokit.IOHIDEventSystemClientCopyServices.argtypes = [ctypes.c_void_p]
+        iokit.IOHIDServiceClientCopyEvent.restype = ctypes.c_void_p
+        iokit.IOHIDServiceClientCopyEvent.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int32,
+            ctypes.c_int64,
+        ]
+        iokit.IOHIDEventGetFloatValue.restype = ctypes.c_double
+        iokit.IOHIDEventGetFloatValue.argtypes = [ctypes.c_void_p, ctypes.c_int32]
+
+        def _cfstr(s: str) -> ctypes.c_void_p:
+            return cf.CFStringCreateWithCString(None, s.encode(), kCFStringEncodingUTF8)
+
+        def _cfnum(n: int) -> ctypes.c_void_p:
+            v = ctypes.c_int32(n)
+            return cf.CFNumberCreate(None, kCFNumberSInt32Type, ctypes.byref(v))
+
+        keys = (ctypes.c_void_p * 2)(_cfstr("PrimaryUsagePage"), _cfstr("PrimaryUsage"))
+        vals = (ctypes.c_void_p * 2)(_cfnum(HID_PAGE), _cfnum(HID_USAGE))
+        matching = cf.CFDictionaryCreate(None, keys, vals, 2, None, None)
+
+        client = iokit.IOHIDEventSystemClientCreate(None)
+        if not client:
+            return None
+        iokit.IOHIDEventSystemClientSetMatching(client, matching)
+        services = iokit.IOHIDEventSystemClientCopyServices(client)
+        if not services:
+            return None
+
+        readings: list[float] = []
+        for i in range(cf.CFArrayGetCount(services)):
+            svc = cf.CFArrayGetValueAtIndex(services, i)
+            event = iokit.IOHIDServiceClientCopyEvent(
+                svc, kIOHIDEventTypeTemperature, 0, 0
+            )
+            if not event:
+                continue
+            val = iokit.IOHIDEventGetFloatValue(event, temperature_field)
+            if val and val > 0:
+                readings.append(val)
+    except (OSError, AttributeError, ValueError):
+        log.warning("heartbeat: IOKit temperature read failed", exc_info=True)
+        return None
+    return max(readings) if readings else None
+
+
 def _temp_from_macos_smc() -> float | None:
-    """Probe macOS CPU temp via ``osx-cpu-temp`` (Homebrew, no sudo).
+    """Intel-Mac fallback: CPU temp via the ``osx-cpu-temp`` brew binary.
 
-    macOS doesn't expose thermal sensors as files — userspace reads
-    have to go through IOKit / SMC. ``osx-cpu-temp`` is a 1-binary
-    Homebrew tool that does the SMC call and prints "47.5°C". On
-    Apple Silicon it reads the package temp from the SoC. Returns
-    ``None`` when the binary isn't installed (cluster nodes lacking
-    the brew install still report load + host fine).
+    ``osx-cpu-temp`` does the SMC call and prints "47.5°C". It reads
+    Intel-only SMC keys, so on Apple Silicon it returns 0.0 — treated
+    as no reading here (the IOKit path above covers Apple Silicon).
+    Returns ``None`` when the binary isn't installed.
 
-    The binary lives at ``/opt/homebrew/bin/osx-cpu-temp`` on Apple
-    Silicon and ``/usr/local/bin/osx-cpu-temp`` on Intel. ``which``
-    via ``/usr/bin/env`` walks PATH for either.
+    The binary lives at ``/usr/local/bin/osx-cpu-temp`` on Intel and
+    ``/opt/homebrew/bin/osx-cpu-temp`` on Apple Silicon.
     """
     for path in (
         "/opt/homebrew/bin/osx-cpu-temp",
@@ -166,7 +273,7 @@ def _temp_from_macos_smc() -> float | None:
         if res.returncode != 0:
             continue
         val = _parse_first_float(res.stdout)
-        if val is not None:
+        if val is not None and val > 0:
             return val
     return None
 
@@ -181,7 +288,7 @@ def read_temp_c() -> float | None:
     if platform.system() == "Linux":
         return _temp_from_linux_thermal()
     if platform.system() == "Darwin":
-        return _temp_from_macos_smc()
+        return _temp_from_macos_iokit() or _temp_from_macos_smc()
     return None
 
 
