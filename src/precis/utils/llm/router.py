@@ -164,8 +164,10 @@ _TIER_MODEL: dict[Tier, tuple[str, str]] = {
     # The litellm ``summarizer`` alias (``LlmConfig.model`` default), read
     # from ``PRECIS_SUMMARIZE_MODEL`` exactly as ``LlmConfig.from_env``.
     Tier.LOCAL_SMALL: ("PRECIS_SUMMARIZE_MODEL", "summarizer"),
-    # The future local-big alias — ADR 0024's dream model. Resolvable now
-    # (so the seam is complete) but not yet dispatchable (see below).
+    # ADR 0024's dream model — local big + tools. Dispatchable to a per-host
+    # llama-swap endpoint when a served_by card declares one (OPENAI_TOOLS now
+    # honors the slot's local_url); with no served_by it falls to the hosted
+    # PRECIS_LLM_BASE_URL path (dark by default).
     Tier.LOCAL_BIG: ("PRECIS_LOCAL_BIG_MODEL", "qwen-heavy"),
 }
 
@@ -808,9 +810,11 @@ def dispatch(req: LlmRequest) -> LlmResult:
             paused=True,
         )
     # A reserved slot that declares a direct ``endpoint`` (llama-swap) routes the
-    # LITELLM transport there instead of the litellm proxy, using the server-side
+    # local transport there instead of the litellm proxy, using the server-side
     # model name — the Phase-2 litellm-retirement flip. No endpoint ⇒ req + model
-    # unchanged (today's behavior). Only the local transport reads ``local_url``.
+    # unchanged (today's behavior). Both local transports read ``local_url``:
+    # LITELLM (tool-less, ``_dispatch_local``) and OPENAI_TOOLS (LOCAL_BIG, tools,
+    # ``run_oss_tool_loop``).
     call_req = req
     call_model = model
     if slot is not None and slot.reserved and slot.endpoint:
@@ -1122,6 +1126,7 @@ def run_oss_tool_loop(
     max_turns: int = 20,
     timeout_s: float | None = None,
     tool_less: bool = False,
+    local_url: str | None = None,
 ) -> AgentLoopResult:
     """Drive the in-process OSS ``tools=`` loop and return the RAW
     :class:`~precis.utils.llm.openai_tools.AgentLoopResult`.
@@ -1131,7 +1136,12 @@ def run_oss_tool_loop(
     answer (``stop``) from a ``max_turns`` cutoff (resumable, not failed) —
     reuses the exact client-build + verb-wiring instead of the collapsed
     :class:`LlmResult`. Builds the client from ``PRECIS_LLM_BASE_URL`` + the
-    vault key; runs the precis verbs in-process via ``runtime.dispatch`` unless
+    vault key, UNLESS ``local_url`` is given — a local-serving slot's pinned
+    llama-swap endpoint — in which case it routes there directly with an authless
+    dummy key (a loopback model has no auth; the vault key is for the hosted OSS
+    backend). This is what makes the ``LOCAL_BIG`` tier dispatch to a per-host
+    local endpoint, mirroring :func:`_dispatch_local`'s ``local_url`` override.
+    Runs the precis verbs in-process via ``runtime.dispatch`` unless
     ``tool_less``. May raise ``RuntimeError`` / ``OSError`` if the executor /
     tools can't be built (an unavailable runtime); the loop itself folds a
     transport failure into ``AgentLoopResult.error`` (``stop_reason='error'``)
@@ -1142,8 +1152,12 @@ def run_oss_tool_loop(
     from precis.utils.llm.openai_tools import ToolChatClient, run_tool_loop
     from precis.utils.llm.precis_tools import precis_tool_specs, runtime_executor
 
-    base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
-    api_key = get_secret("PRECIS_LLM_API_KEY") or ""
+    if local_url:
+        base_url = local_url
+        api_key = "dummy"
+    else:
+        base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
+        api_key = get_secret("PRECIS_LLM_API_KEY") or ""
     timeout = timeout_s if timeout_s is not None else 600.0
     client = ToolChatClient(url=base_url, api_key=api_key, model=model, timeout=timeout)
     return run_tool_loop(
@@ -1180,6 +1194,7 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
             max_turns=req.max_turns,
             timeout_s=req.timeout_s,
             tool_less=req.mcp_config is None,
+            local_url=req.local_url,
         )
     except (RuntimeError, OSError) as exc:
         return LlmResult(

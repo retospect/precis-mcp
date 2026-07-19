@@ -438,6 +438,41 @@ def test_dispatch_local_big_routes_to_tools_loop(
     assert seen["model"] == "qwen-heavy"  # resolved from the tier table
 
 
+def test_run_oss_tool_loop_honors_local_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A local-serving slot's endpoint routes the OSS tools loop to that
+    llama-swap URL with an authless dummy key — the LOCAL_BIG per-host flip,
+    winning over PRECIS_LLM_BASE_URL + the vault key."""
+    from precis.utils.llm.router import run_oss_tool_loop
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(
+            self, *, url: str, api_key: str, model: str, timeout: float
+        ) -> None:
+            seen["url"] = url
+            seen["api_key"] = api_key
+            seen["model"] = model
+
+    monkeypatch.setattr("precis.utils.llm.openai_tools.ToolChatClient", FakeClient)
+    monkeypatch.setattr(
+        "precis.utils.llm.openai_tools.run_tool_loop", lambda *a, **k: object()
+    )
+    monkeypatch.setattr("precis.utils.llm.precis_tools.precis_tool_specs", lambda: [])
+    monkeypatch.setattr("precis.utils.llm.precis_tools.runtime_executor", lambda: None)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "http://hosted-oss:9999/v1")
+
+    run_oss_tool_loop(
+        prompt="think hard",
+        model="qwen3-235b-thinking-2507-ud-q3_k_xl",
+        local_url="http://127.0.0.1:11444/v1",
+    )
+
+    assert seen["url"] == "http://127.0.0.1:11444/v1"  # local wins over the hosted base
+    assert seen["api_key"] == "dummy"  # authless loopback, not the vault key
+    assert seen["model"] == "qwen3-235b-thinking-2507-ud-q3_k_xl"
+
+
 def test_dispatch_client_routes_through_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
