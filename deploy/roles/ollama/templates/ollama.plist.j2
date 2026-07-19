@@ -15,6 +15,12 @@
     <true/>
     <key>KeepAlive</key>
     <true/>
+    {# De-prioritize heavy compute so it can't starve interactive/system
+       work — mirrors the systemd Nice on the Linux/systemd unit. #}
+    <key>Nice</key>
+    <integer>{{ precis_compute_nice | default(10) }}</integer>
+    <key>LowPriorityIO</key>
+    <true/>
     <key>StandardErrorPath</key>
     <string>/opt/homebrew/var/log/ollama.log</string>
     <key>StandardOutPath</key>

@@ -24,6 +24,10 @@ Environment=PRECIS_SOURCE=precis-worker
 Environment=PRECIS_MAX_TICKS={{ precis_max_ticks | default(10000) }}
 Environment=PRECIS_MAX_TODO_USD={{ precis_max_todo_usd | default(5.0) }}
 Environment=PRECIS_DAILY_COST_CEILING={{ precis_daily_cost_ceiling | default(50.0) }}
+# CPU-limit passthrough for containerized jobs this worker spawns
+# (docker run inherits cpuset/shares from the environment).
+Environment=PRECIS_JOB_CPUSET={{ precis_job_cpuset | default('') }}
+Environment=PRECIS_JOB_CPU_SHARES={{ precis_job_cpu_shares | default('') }}
 {# sandbox_run executor — emitted ONLY on the agent_sandbox_hosts (the gate
    reads it raw, so "0" would enable it; omit rather than set false). #}
 {% if inventory_hostname in groups['agent_sandbox_hosts'] %}

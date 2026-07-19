@@ -52,6 +52,11 @@ Environment=PRECIS_MAX_TICKS={{ precis_max_ticks | default(10000) }}
 Environment=PRECIS_MAX_TODO_USD={{ precis_max_todo_usd | default(5.0) }}
 Environment=PRECIS_DAILY_COST_CEILING={{ precis_daily_cost_ceiling | default(50.0) }}
 
+# CPU-limit passthrough for containerized jobs this worker spawns
+# (docker run inherits cpuset/shares from the environment).
+Environment=PRECIS_JOB_CPUSET={{ precis_job_cpuset | default('') }}
+Environment=PRECIS_JOB_CPU_SHARES={{ precis_job_cpu_shares | default('') }}
+
 # NB PRECIS_MCP_CONFIG is deliberately UNSET here — it gates job_claude_inproc,
 # so leaving it out keeps plan_tick/fix_gripe on the gateway. Containerized reviews
 # use the image's baked /etc/precis/agent-mcp.json, not this var.

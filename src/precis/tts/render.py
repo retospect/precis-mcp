@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.tts.encode import encode_mp3
+from precis.utils.container_limits import container_limit_flags
 
 log = logging.getLogger(__name__)
 
@@ -76,17 +77,17 @@ def render_via_container(
     outdir.mkdir(parents=True, exist_ok=True)
     (indir / "segments.json").write_text(json.dumps(payload), encoding="utf-8")
     try:
+        argv = [container_cmd, "run", "--rm"]
+        argv += container_limit_flags()
+        argv += [
+            "-v",
+            f"{indir}:/work/in:ro",
+            "-v",
+            f"{outdir}:/work/out",
+            image,
+        ]
         run(
-            [
-                container_cmd,
-                "run",
-                "--rm",
-                "-v",
-                f"{indir}:/work/in:ro",
-                "-v",
-                f"{outdir}:/work/out",
-                image,
-            ],
+            argv,
             check=True,
             timeout=timeout,
         )

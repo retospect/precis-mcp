@@ -8,3 +8,7 @@ Environment="OLLAMA_KV_CACHE_TYPE={{ ollama_kv_cache_type }}"
 Environment="OLLAMA_KEEP_ALIVE=-1s"
 User=ollama
 Group=ollama
+# De-prioritize heavy compute so it can't starve interactive/system work
+# (e.g. sshd). CPUAffinity is omitted on hosts that don't reserve cores.
+Nice={{ precis_compute_nice | default(10) }}
+{% if precis_compute_cpuaffinity | default('') %}CPUAffinity={{ precis_compute_cpuaffinity }}{% endif %}

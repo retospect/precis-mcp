@@ -67,6 +67,11 @@
     <string>{{ precis_max_todo_usd | default(5.0) }}</string>
     <key>PRECIS_DAILY_COST_CEILING</key>
     <string>{{ precis_daily_cost_ceiling | default(50.0) }}</string>
+    {# CPU-shares passthrough for containerized jobs this worker spawns
+       (docker run --cpu-shares). Soft weight only — no core fencing on
+       the Macs (PRECIS_JOB_CPUSET is set on the Linux/systemd node only). #}
+    <key>PRECIS_JOB_CPU_SHARES</key>
+    <string>{{ precis_job_cpu_shares | default('') }}</string>
     {# Autonomous quest loop (rung 4d, agent-profile only). The allocator
        pass mints frontier ticks + structure-relax compute; the weekly
        budget caps its spend (distinct from the global $/day breaker).

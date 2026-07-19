@@ -16,6 +16,10 @@ Restart=always
 RestartSec=5
 LimitNOFILE=65536
 LimitMEMLOCK=infinity
+# De-prioritize heavy compute so it can't starve interactive/system work
+# (e.g. sshd). CPUAffinity is omitted on hosts that don't reserve cores.
+Nice={{ precis_compute_nice | default(10) }}
+{% if precis_compute_cpuaffinity | default('') %}CPUAffinity={{ precis_compute_cpuaffinity }}{% endif %}
 
 [Install]
 WantedBy=multi-user.target

@@ -38,6 +38,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from precis.utils.container_limits import container_limit_flags
 from precis.workers import envelope as _envelope
 
 log = logging.getLogger(__name__)
@@ -386,6 +387,7 @@ def build_agent_run_argv(
     if detached:
         argv += ["-d"]
     argv += ["--rm", "--name", name]
+    argv += container_limit_flags()
     for key in cenv.secret_keys:
         argv += ["--env", key]
     for k, v in cenv.values.items():

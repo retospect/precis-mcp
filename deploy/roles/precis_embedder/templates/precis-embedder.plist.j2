@@ -58,6 +58,13 @@
   <key>ThrottleInterval</key>
   <integer>30</integer>
 
+  {# De-prioritize heavy compute so it can't starve interactive/system
+     work — mirrors the systemd Nice on the Linux/systemd unit. #}
+  <key>Nice</key>
+  <integer>{{ precis_compute_nice | default(10) }}</integer>
+  <key>LowPriorityIO</key>
+  <true/>
+
   <key>StandardOutPath</key>
   <string>/var/log/precis-embedder.log</string>
   <key>StandardErrorPath</key>

@@ -267,6 +267,18 @@ before it re-reserves. Opt-in per caller — `claude_inproc`/`coordinator` are
 unchanged (they'd need their own ensure-dead story for a re-run). A live-lease
 running job is never stolen. Container dispatchers (dft) must reap their own
 handle before relaunch; catpath (in-process) has nothing to kill.
+
+**Job containers carry CPU-limit flags (nice-all-jobs).** Every spawned
+`docker/podman run` (`struct_relax`, `fold`, TTS, sandbox agents) splices
+`container_limit_flags()` (`utils/container_limits.py`) right after `run` —
+`--cpuset-cpus`/`--cpu-shares` from `PRECIS_JOB_CPUSET`/`PRECIS_JOB_CPU_SHARES`
+(absent when unset, so a no-op by default). A container does *not* inherit the
+host worker's `nice`, so this is what keeps a heavy fold/relax off the reserved
+system cores — spark sets both to `2-19`, fencing cores 0-1 for sshd; the
+systemd inference units (llama-swap/embedder/marker/ollama) get matching
+`Nice`/`CPUAffinity`, the macOS plists `Nice`/`LowPriorityIO` (worker plists
+stay `ProcessType=Interactive` for jetsam).
+
 **The `sweeper` excludes `ssh_node`-executor jobs** (`meta.executor IS
 DISTINCT FROM 'ssh_node'` on both its enumerate + transition-re-verify
 queries): the sweeper fails an expired-lease `STATUS:running` job outright,

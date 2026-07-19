@@ -65,6 +65,11 @@
     <string>{{ precis_max_todo_usd | default(5.0) }}</string>
     <key>PRECIS_DAILY_COST_CEILING</key>
     <string>{{ precis_daily_cost_ceiling | default(50.0) }}</string>
+    {# CPU-shares passthrough for containerized jobs this worker spawns
+       (docker run --cpu-shares). Soft weight only — no core fencing on
+       the Macs (PRECIS_JOB_CPUSET is set on the Linux/systemd node only). #}
+    <key>PRECIS_JOB_CPU_SHARES</key>
+    <string>{{ precis_job_cpu_shares | default('') }}</string>
     {# llm_summarize backfill — default OFF everywhere; enabled per-host
        (the gateway, where the litellm `summarizer` alias lives) to drain the
        chunk_summaries['llm-v1'] backlog. PRECIS_SUMMARIZE_CONCURRENCY fills

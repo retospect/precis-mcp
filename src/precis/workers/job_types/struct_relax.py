@@ -39,6 +39,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from precis.utils.container_limits import container_limit_flags
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -121,6 +122,7 @@ def build_run_argv(
     ``--name precis-job-<ref_id>`` so the sweeper can kill it by name (§23 #6).
     ``gpus=0`` omits the GPU flag (CPU fallback — same image)."""
     argv = [container_cmd, "run", "--rm", "--name", f"precis-job-{ref_id}"]
+    argv += container_limit_flags()
     if gpus:
         argv += _gpu_flags(container_cmd)
     argv += [
