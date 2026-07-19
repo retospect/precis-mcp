@@ -210,8 +210,24 @@ that reached the composing context is still `untrusted`. Deferred deliberately.
    account). Live fetch-through, no persistence, no scan yet. Tests:
    test_mail_message.py (11 pure) + test_email_handler.py (8 real-PG, IMAP
    monkeypatched).
-3. **`mail_poll` pass + tier-0 scan.** Registered compute pass, per-account
-   cadence + backoff, `last_uid`/`UIDVALIDITY` high-water, inline regex tag.
+3. **`mail_poll` pass + tier-0 scan.** ✅ **BUILT** — migration
+   `0076_email_scan.sql` (verdict rows, keyed `(account,folder,uidvalidity,uid)`;
+   no body stored — only the verdict + evidence; + poll-bookkeeping columns on
+   `email_account`). `workers/mail_poll.py` = registered compute pass
+   (`PRECIS_MAIL_POLL_ENABLED`, **dark**, no default profile so it doesn't poll
+   the same mailbox from every node — the every-node lease is the §15i
+   scheduler, still dark). Per-account cadence (`config.poll_seconds`) + IMAP
+   exponential backoff on `consecutive_errors`, the news_poll/fetch/chase
+   discipline. First poll (or after a UIDVALIDITY change) **adopts the
+   watermark** (`UIDNEXT-1`) without back-filling the archive; steady state
+   fetches `UID > last_uid` (oldest-first, capped at 200/tick so a backlog
+   drains across ticks), tier-0 regex-scans each inline (`mail/inject.py`,
+   `scan_tier0` → `clean`|`suspect` + named signals + version), persists to
+   `email_scan`, advances the high-water. v1 watches the **primary** folder
+   (one account-level cursor per the 0075 schema; per-folder cursors are later).
+   `precis email poll [account] [--all]` runs a tick by hand. Tests:
+   test_mail_inject.py (pure tier-0) + test_email_scan_store.py (real-PG
+   store) + test_mail_poll.py (real-PG pass, IMAP injected).
 4. **`inject_scan` pass (tiers 1–2) + quarantine ladder.** Lease + versioned
    artifact + `INJECT` closed tag; the withhold/badge/`alert` handling.
 5. **Promotion + brief consumption.** Opt-in `split_text`→`write_paper`-equiv

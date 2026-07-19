@@ -22,7 +22,9 @@ class EmailAccount:
     ``config`` is the open-ended JSONB bag (imap/smtp host+port+tls, folders,
     poll_seconds, auth mode, scan_policy); the typed accessors on
     :class:`precis.mail.account.Account` interpret it. ``secret_name`` is the
-    vault key holding the password/token, never the secret itself.
+    vault key holding the password/token, never the secret itself. The
+    ``last_polled_at`` / ``consecutive_errors`` / ``last_status`` trio is the
+    ``mail_poll`` pass's bookkeeping (slice 3; migration 0076).
     """
 
     account: str
@@ -32,9 +34,35 @@ class EmailAccount:
     uidvalidity: int | None
     config: dict[str, Any] = field(default_factory=dict)
     updated_at: datetime | None = None
+    last_polled_at: datetime | None = None
+    consecutive_errors: int = 0
+    last_status: str | None = None
 
 
-_ACCT_COLS = "account, enabled, secret_name, last_uid, uidvalidity, config, updated_at"
+@dataclass(frozen=True, slots=True)
+class EmailScan:
+    """One row from ``email_scan`` — a per-message injection-scan verdict.
+
+    No body is stored (IMAP is source of truth); only the verdict, the tier
+    that produced it (0 = ``mail_poll`` regex), and the ``evidence`` bag
+    (which signals fired + scanner version). Keyed by
+    (account, folder, uidvalidity, uid).
+    """
+
+    account: str
+    folder: str
+    uidvalidity: int
+    uid: int
+    verdict: str
+    tier: int
+    evidence: dict[str, Any] = field(default_factory=dict)
+    scanned_at: datetime | None = None
+
+
+_ACCT_COLS = (
+    "account, enabled, secret_name, last_uid, uidvalidity, config, updated_at, "
+    "last_polled_at, consecutive_errors, last_status"
+)
 
 
 def _row_to_account(row: tuple[Any, ...]) -> EmailAccount:
@@ -46,6 +74,25 @@ def _row_to_account(row: tuple[Any, ...]) -> EmailAccount:
         uidvalidity=None if row[4] is None else int(row[4]),
         config=dict(row[5] or {}),
         updated_at=row[6],
+        last_polled_at=row[7],
+        consecutive_errors=int(row[8] or 0),
+        last_status=None if row[9] is None else str(row[9]),
+    )
+
+
+_SCAN_COLS = "account, folder, uidvalidity, uid, verdict, tier, evidence, scanned_at"
+
+
+def _row_to_scan(row: tuple[Any, ...]) -> EmailScan:
+    return EmailScan(
+        account=str(row[0]),
+        folder=str(row[1]),
+        uidvalidity=int(row[2]),
+        uid=int(row[3]),
+        verdict=str(row[4]),
+        tier=int(row[5]),
+        evidence=dict(row[6] or {}),
+        scanned_at=row[7],
     )
 
 
@@ -69,6 +116,38 @@ _UPSERT_ACCOUNT = (
 _SET_HIGHWATER = (
     "UPDATE email_account SET last_uid = %s, uidvalidity = %s, updated_at = now() "
     "WHERE account = %s"
+)
+
+# Accounts whose next mail_poll tick is due. Cadence = config.poll_seconds
+# (default 900), multiplied by 2^consecutive_errors for exponential backoff on
+# a failing account, capped at one day — the news_sources/fetch/chase
+# discipline. A never-polled account (last_polled_at IS NULL) is always due.
+_DUE_ACCOUNTS = (
+    f"SELECT {_ACCT_COLS} FROM email_account "
+    "WHERE enabled = true AND ("
+    "  last_polled_at IS NULL OR "
+    "  now() - last_polled_at >= make_interval(secs => least("
+    "    COALESCE(NULLIF(config->>'poll_seconds', '')::int, 900) "
+    "      * power(2, consecutive_errors)::int, 86400))) "
+    "ORDER BY account"
+)
+
+# Record a poll outcome: stamp last_polled_at, reset the error counter on
+# success or increment it on failure (drives the backoff above).
+_RECORD_POLL = (
+    "UPDATE email_account SET last_polled_at = now(), last_status = %s, "
+    "consecutive_errors = CASE WHEN %s = 0 THEN 0 ELSE consecutive_errors + 1 END "
+    "WHERE account = %s"
+)
+
+# Record a tier-0 verdict. INSERT-if-absent: a message is scanned exactly once
+# (the high-water advances past it), and DO NOTHING guarantees tier-0 never
+# clobbers a deeper (tier >= 1) verdict a later inject_scan pass wrote.
+_INSERT_SCAN = (
+    "INSERT INTO email_scan "
+    "(account, folder, uidvalidity, uid, verdict, tier, evidence) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+    "ON CONFLICT (account, folder, uidvalidity, uid) DO NOTHING"
 )
 
 
@@ -126,3 +205,49 @@ class EmailAccountMixin:
         """Advance the poll cursor (owned by the poll loop, slice 3)."""
         with self.pool.connection() as conn:
             conn.execute(_SET_HIGHWATER, (last_uid, uidvalidity, account))
+
+    def due_email_accounts(self, *, limit: int | None = None) -> list[EmailAccount]:
+        """Enabled accounts whose next ``mail_poll`` tick is due (cadence+backoff)."""
+        sql = _DUE_ACCOUNTS + (f" LIMIT {int(limit)}" if limit is not None else "")
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [_row_to_account(r) for r in rows]
+
+    def record_email_poll(self, account: str, *, status: str) -> None:
+        """Stamp a poll outcome; ``status == 'ok'`` clears the backoff counter."""
+        err = 0 if status == "ok" else 1
+        with self.pool.connection() as conn:
+            conn.execute(_RECORD_POLL, (status[:200], err, account))
+
+    def record_email_scan(
+        self,
+        account: str,
+        *,
+        folder: str,
+        uidvalidity: int,
+        uid: int,
+        verdict: str,
+        tier: int,
+        evidence: dict[str, Any],
+    ) -> bool:
+        """Persist a tier-0 verdict; returns False if a row already existed."""
+        from psycopg.types.json import Jsonb
+
+        with self.pool.connection() as conn:
+            cur = conn.execute(
+                _INSERT_SCAN,
+                (account, folder, uidvalidity, uid, verdict, tier, Jsonb(evidence)),
+            )
+            return cur.rowcount > 0
+
+    def get_email_scan(
+        self, account: str, *, folder: str, uidvalidity: int, uid: int
+    ) -> EmailScan | None:
+        with self.pool.connection() as conn:
+            cur = conn.execute(
+                f"SELECT {_SCAN_COLS} FROM email_scan "
+                "WHERE account = %s AND folder = %s AND uidvalidity = %s AND uid = %s",
+                (account, folder, uidvalidity, uid),
+            )
+            row = cur.fetchone()
+        return None if row is None else _row_to_scan(row)

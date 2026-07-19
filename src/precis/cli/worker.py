@@ -110,6 +110,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_classify_pass": PassBand.BACKGROUND,
     "_llm_reconcile_pass": PassBand.BACKGROUND,
     "_paper_glossary_pass": PassBand.BACKGROUND,
+    "_mail_poll_pass": PassBand.BACKGROUND,
     "_structural_pass": PassBand.BACKGROUND,
     "_deep_review_pass": PassBand.BACKGROUND,
     "_dream_agent_pass": PassBand.BACKGROUND,
@@ -221,6 +222,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "quota_check",
             "watch_poll",
             "news_poll",
+            "mail_poll",
             "briefing",
             "llm_summarize",
             "classify",
@@ -1057,6 +1059,27 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_news_poll_pass)
+
+        # Mailbox poll (email kind, slice 3). Per-account IMAP poll for new
+        # mail past the last_uid high-water + inline tier-0 regex injection
+        # scan; verdicts land in email_scan (no body stored). Dark behind
+        # PRECIS_MAIL_POLL_ENABLED (no default profile) so it runs on one host,
+        # not every node against the same mailbox. Cadence + backoff are inside
+        # the pass, so it's cheap to tick every cycle.
+        if _pass_enabled("mail_poll"):
+            from precis.workers.mail_poll import run_mail_poll
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _mail_poll_pass(batch_size: int) -> _BatchResult:
+                r = run_mail_poll(store)
+                return _BatchResult(
+                    handler="mail_poll",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_mail_poll_pass)
 
         # Morning briefing — summarizes recent `news` refs into a dated
         # digest ref. LLM-backed (summarizer alias), so cron-driven via

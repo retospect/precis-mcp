@@ -20,7 +20,7 @@ from email.policy import default as default_policy
 from typing import TYPE_CHECKING
 
 from precis.mail.account import Account
-from precis.mail.imap import _quote, connect
+from precis.mail.imap import _quote, _status_int, connect
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -54,6 +54,18 @@ class Message:
     date: str
     body_text: str
     truncated_html: bool  # True when body came from stripped HTML (no text/plain)
+
+
+@dataclass(frozen=True, slots=True)
+class PollBatch:
+    """New messages past a UID high-water, plus the folder's current UIDVALIDITY.
+
+    ``uidvalidity`` lets the poller detect a mid-flight resync; ``messages`` are
+    fully parsed (bodies fetched), UID-ascending, and strictly ``> since_uid``.
+    """
+
+    uidvalidity: int | None
+    messages: list[Message]
 
 
 def _decode_uids(raw: bytes | None) -> list[int]:
@@ -144,6 +156,55 @@ def fetch_one(
         return None
     raw = payloads[0][1]
     return parse_message(raw, folder=folder, uid=uid)
+
+
+#: Hard ceiling on messages fetched in one poll — a large backlog drains
+#: forward over several ticks rather than pulling thousands of bodies at once.
+DEFAULT_POLL_BATCH = 200
+
+
+def fetch_new(
+    account: Account,
+    *,
+    store: Store,
+    folder: str,
+    since_uid: int,
+    limit: int = DEFAULT_POLL_BATCH,
+) -> PollBatch:
+    """Fetch messages with ``UID > since_uid`` in ``folder`` (bodies included).
+
+    Oldest-first and capped at ``limit`` so a big backlog drains across ticks.
+    Read-only + ``BODY.PEEK`` (never sets ``\\Seen``). The ``UID n:*`` search
+    always includes the mailbox's highest UID even when ``n`` exceeds it (an
+    IMAP quirk), so the result is re-filtered to strictly ``> since_uid``.
+    """
+    with connect(account, store=store) as conn:
+        typ, _sel = conn.select(_quote(folder), readonly=True)
+        if typ != "OK":
+            return PollBatch(uidvalidity=None, messages=[])
+        uidvalidity = _status_int(conn, folder, "UIDVALIDITY")
+        typ, data = conn.uid("SEARCH", "UID", f"{since_uid + 1}:*")
+        if typ != "OK":
+            return PollBatch(uidvalidity=uidvalidity, messages=[])
+        uids = sorted(
+            u for u in _decode_uids(data[0] if data else None) if u > since_uid
+        )
+        uids = uids[:limit]
+        if not uids:
+            return PollBatch(uidvalidity=uidvalidity, messages=[])
+        typ, fetched = conn.uid(
+            "FETCH", ",".join(str(u) for u in uids), "(BODY.PEEK[])"
+        )
+        if typ != "OK":
+            return PollBatch(uidvalidity=uidvalidity, messages=[])
+
+    messages = [
+        parse_message(payload, folder=folder, uid=uid)
+        for uid, payload in _iter_fetch_payloads(fetched)
+        if uid > since_uid
+    ]
+    messages.sort(key=lambda m: m.uid)
+    return PollBatch(uidvalidity=uidvalidity, messages=messages)
 
 
 def parse_message(raw: bytes, *, folder: str, uid: int) -> Message:

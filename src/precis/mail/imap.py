@@ -102,6 +102,22 @@ def _quote(folder: str) -> str:
     return '"' + folder.replace('"', '\\"') + '"'
 
 
+def folder_watermark(
+    account: Account, *, store: Store, folder: str
+) -> tuple[int | None, int | None]:
+    """Cheap ``(uidvalidity, uidnext)`` read — SELECT + STATUS, no bodies.
+
+    Used by ``mail_poll`` to adopt a high-water on the first poll / after a
+    UIDVALIDITY change without back-filling every historical message.
+    """
+    with connect(account, store=store) as conn:
+        conn.select(_quote(folder), readonly=True)
+        return (
+            _status_int(conn, folder, "UIDVALIDITY"),
+            _status_int(conn, folder, "UIDNEXT"),
+        )
+
+
 def probe(account: Account, *, store: Store) -> ProbeResult:
     """Connect, log in, and report each watched folder's count + UIDVALIDITY.
 

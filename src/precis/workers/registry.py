@@ -556,6 +556,22 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # email-kind slice 3. Dark until PRECIS_MAIL_POLL_ENABLED is set on one
+        # host — no default profile, so it doesn't poll the same mailbox from
+        # every node (a per-account lease that would make every-node safe is the
+        # §15i scheduler, still dark). Per-account cadence + IMAP-error backoff
+        # live in the pass; it fetches new bodies (BODY.PEEK) + tier-0 scans.
+        name="mail_poll",
+        label="Mailbox poll + tier-0 scan",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_MAIL_POLL_ENABLED",
+        uses_external=("imap",),
+        one_line="Poll email accounts for new mail; inline tier-0 injection scan.",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="briefing",
         label="Morning briefing",
         category="review",

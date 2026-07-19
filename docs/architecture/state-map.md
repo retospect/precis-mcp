@@ -476,12 +476,18 @@ The master kinds table lives in the `precis-overview` skill.
   = `account` (typed view over `email_account` row + JSONB config, provider
   presets, pluggable `password`/`xoauth2` auth) · `imap` (stdlib connect +
   probe) · `message` (list/fetch; `BODY.PEEK` + readonly SELECT ⇒ browsing
-  never marks `\Seen`). `get(kind='email')` overview · `id='INBOX'` folder ·
-  `id='INBOX/<uid>'` message · `account=` disambiguates. Accounts via the
+  never marks `\Seen`) · `inject` (`scan_tier0` — regex tier-0 injection scan,
+  `clean`|`suspect` + named signals). `get(kind='email')` overview ·
+  `id='INBOX'` folder · `id='INBOX/<uid>'` message · `account=` disambiguates.
+  `mail_poll` (`workers/mail_poll.py`, **dark** behind `PRECIS_MAIL_POLL_ENABLED`)
+  = per-account IMAP poll (cadence + backoff, watermark-adopt on first poll /
+  resync, no back-fill) → inline tier-0 scan → verdict rows in `email_scan`
+  (no body stored); `precis email poll` runs a tick by hand. Accounts via the
   `precis email` CLI; password in the vault (`email.<addr>.password`).
-  Migration `0075_email_account.sql`; design `docs/design/email-kind.md`.
-  **Slices 1+2 (config + browse) live; poll/injection-scan/promotion/send are
-  later slices — v1 is read-only.**
+  Migrations `0075_email_account` + `0076_email_scan`; design
+  `docs/design/email-kind.md`. **Slices 1–3 (config + browse + poll/tier-0)
+  live; inject_scan tiers 1–2 + quarantine ladder (slice 4), promotion + brief
+  (slice 5), and send are later — v1 is read-only.**
 - **`plan`** — a thread's reasoning outline (ADR 0051 §2b, slice A1): a
   hierarchical todo-list + notes on the `draft` chunk-tree substrate
   (`handlers/plan.py`, reusing the kind-parameterized `DraftMixin`), but a

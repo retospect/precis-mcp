@@ -9,6 +9,9 @@ Subcommands:
 * ``rm ACCOUNT``   — delete a row (the vault secret is left in place).
 * ``test ACCOUNT`` — connect + SELECT each watched folder; report counts and
   UIDVALIDITY. The end-to-end proof that credentials + TLS + login work.
+* ``poll [ACCOUNT]`` — run one ``mail_poll`` tick now (fetch new mail past the
+  high-water + inline tier-0 injection scan). No arg = every *due* account;
+  ``ACCOUNT`` = that one regardless of cadence; ``--all`` = every enabled now.
 
 The password/token itself lives in the secrets vault (ADR 0055); this table
 holds only its vault key. Send (SMTP) is a later slice; this is read config.
@@ -101,6 +104,22 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     t.add_argument("account")
     t.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    po = esub.add_parser(
+        "poll", help="Run one mail_poll tick now (fetch new mail + tier-0 scan)."
+    )
+    po.add_argument(
+        "account",
+        nargs="?",
+        default=None,
+        help="Poll just this account (default: every due account).",
+    )
+    po.add_argument(
+        "--all",
+        action="store_true",
+        help="Ignore the cadence and poll now even if not yet due.",
+    )
+    po.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
 
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(getattr(args, "database_url", None)))
@@ -114,6 +133,8 @@ def run(args: argparse.Namespace) -> None:
             _rm(args, store)
         elif cmd == "test":
             _test(args, store)
+        elif cmd == "poll":
+            _poll(args, store)
     finally:
         store.close()
 
@@ -242,3 +263,21 @@ def _test(args: argparse.Namespace, store: Store) -> None:
             f"   {f.folder:20s} {f.exists:6d} msgs  "
             f"uidvalidity={f.uidvalidity}  uidnext={f.uidnext}"
         )
+
+
+def _poll(args: argparse.Namespace, store: Store) -> None:
+    from precis.workers.mail_poll import run_mail_poll
+
+    if args.account is not None:
+        print(f"email: polling {args.account} …")
+        r = run_mail_poll(store, only_account=args.account)
+    elif args.all:
+        print("email: polling all enabled accounts …")
+        r = run_mail_poll(store, force=True)
+    else:
+        print("email: polling due accounts …")
+        r = run_mail_poll(store)
+    print(
+        f"email: polled {r['claimed']} account(s) — "
+        f"{r['ok']} message(s) scanned, {r['failed']} failed"
+    )
