@@ -90,7 +90,7 @@ def evaluate(command: str, cwd: str) -> str | None:
                 f"Refusing `git commit` on `{branch}` (at {target}). That lands "
                 "work directly on the primary branch, bypassing the worktree "
                 "and the scripts/ship gate. Commit inside a `claude -w` "
-                "worktree on a feature branch and let /endsession (scripts/ship) "
+                "worktree on a feature branch and let /land (scripts/ship) "
                 "merge it. If this really is intended, set ALLOW_COMMIT_ON_MAIN=1."
             )
     return None

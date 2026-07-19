@@ -50,7 +50,7 @@ and give each its own cut-list.
 - **Start every task in a worktree:** a `claude -w <name>` wrapper creates
   `.claude/worktrees/<name>/` on branch `worktree-<name>`, isolated from `main`
   and siblings. Many run at once.
-- **Finish with one command, not hand-rolled git:** `/endsession` (ship) or
+- **Finish with one command, not hand-rolled git:** `/land` (ship) or
   `/go` (ship + deploy), both slash-commands that call **`scripts/ship`**:
   commit WIP → sync (`fetch` + `merge` main) → **gate** → **squash-merge to main
   via `git commit-tree` + `--force-with-lease` CAS push** → reset the feature
@@ -118,7 +118,7 @@ Small, single-purpose, never-block-unless-guarding:
 `.claude/` is the repeatable-work surface — build it out so procedures aren't
 re-driven from memory each session:
 - **Commands** (`.claude/commands/*.md`) — slash-commands for multi-step
-  routines: `/endsession` (ship), `/go` (ship+deploy), a `/whatneedsdoing`
+  routines: `/land` (ship), `/go` (ship+deploy), a `/whatneedsdoing`
   backlog survey. A routine done twice becomes a command.
 - **Subagents** (`.claude/agents/*.md`; frontmatter = model + tool allowlist) —
   task-scoped, usually **read-only + cheap-model**, so heavy work doesn't burn

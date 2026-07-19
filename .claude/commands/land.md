@@ -73,7 +73,7 @@ Optional ship message from the user: `$ARGUMENTS`
    ```
    Merged to main:  ✓ <sha> on origin/main   (or ✗ — ship failed above)
    Pushed:          ✓ origin/main             (the squash-merge IS the push)
-   Deployed:        — not deployed (/endsession is ship-only; run /go to deploy)
+   Deployed:        — not deployed (/land is ship-only; run /go to deploy)
    ```
    Use ✗ on the first two lines if the ship failed (red gate / conflict). The
    deploy line is always "not deployed" here. If the local primary `main`
@@ -95,7 +95,7 @@ Optional ship message from the user: `$ARGUMENTS`
      persisted list — not your memory — is the source of truth for the loop
      below, so it keeps working after the harness self-compacts.
    - **Fix the in-reach ones now.** For each residual that is a known, bounded
-     fix, open a fresh worktree cycle, fix it, and run `/endsession` again
+     fix, open a fresh worktree cycle, fix it, and run `/land` again
      (ship-only here — `/go` if you also want it deployed). Each residual is
      its own cycle so history stays legible.
    - **File the rest.** Anything that needs investigation before a fix, or is

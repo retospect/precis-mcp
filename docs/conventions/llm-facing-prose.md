@@ -60,7 +60,7 @@ invariants rots slowly; one pinned to status rots on the next commit.
 - **Update in the same commit** that changes what the doc describes.
 - Orientation/reference docs carry a `_Verified @ <sha>._` stamp; bump it
   when you re-verify against the tip.
-- `/endsession` and `/go` re-check touched-subsystem docs before shipping;
+- `/land` and `/go` re-check touched-subsystem docs before shipping;
   the `map-staleness-reminder` hook nudges on the paths that usually drift.
 - **Terse is a freshness mechanism**: a short doc gets re-read and
   re-verified; a long one rots unread. Cut before you add.

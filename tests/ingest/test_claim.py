@@ -197,7 +197,7 @@ class TestClaimIntegration:
         # ``other_sha`` must be a *fresh* random key, not a hardcoded
         # constant: the test DB is a shared singleton, so a hardcoded
         # second key collides across concurrent test runs (e.g. two
-        # ``/endsession`` gates on sibling worktrees) — both grab the
+        # ``/land`` gates on sibling worktrees) — both grab the
         # same advisory lock and one sees ``acquired is False``, a
         # false failure unrelated to the code under test. A fresh key
         # per run keeps the "two distinct hashes" property while staying

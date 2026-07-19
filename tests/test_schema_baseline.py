@@ -12,7 +12,7 @@ Two tiers, matching the guarantee split:
   proof — ``load baseline + apply tail`` produces the *same* schema as
   a full from-scratch replay of the numbered chain, and the resulting
   ``_migrations`` ledgers match. This is the deep guarantee the
-  /endsession container gate exercises.
+  /land container gate exercises.
 """
 
 from __future__ import annotations

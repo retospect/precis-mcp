@@ -10,7 +10,7 @@
 # container over a bind-mount of the CURRENT worktree, exactly like the
 # scripts/ship gate — so it tests what you're actually editing.
 #
-# The ship gate (scripts/ship, run by /endsession and /go) is still the
+# The ship gate (scripts/ship, run by /land and /go) is still the
 # authoritative pre-merge run; this is the fast iteration loop.
 #
 # Usage:

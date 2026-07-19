@@ -82,7 +82,7 @@ matched to where each can run:
 2. **Baseline integrity** (always, no DB) — every version baked into the
    snapshot maps to an unedited migration file, and the baked set is a
    contiguous prefix. This runs in CI, which has no Postgres.
-3. **Schema convergence** (DB + `pg_dump`, in the /endsession gate) —
+3. **Schema convergence** (DB + `pg_dump`, in the /land gate) —
    `load baseline + apply tail` produces the *identical* schema and
    ledger as a full from-scratch replay. This is the deep proof that the
    snapshot is not lying about the chain.

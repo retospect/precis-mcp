@@ -24,7 +24,7 @@
    `.claude/worktrees/<name>/` on branch `worktree-<name>`, isolated from
    `main` and siblings.
 2. **Do the work** — implement, test, iterate.
-3. **`/endsession`** (ship) **or `/go`** (ship + deploy). Both run
+3. **`/land`** (ship) **or `/go`** (ship + deploy). Both run
    `scripts/ship`: commit WIP → sync (`fetch` + `merge` main) → container
    gate (auto-fix ruff, then authoritative `ruff` + `mypy` + `pytest`) →
    squash-merge to `main` if green → reset branch to shipped `main` →
@@ -120,7 +120,7 @@ per-kind reference.
   `--impacted` is the tightest inner loop: `pytest-testmon` maps test↔code and
   runs just the tests a working-tree change touches (first run builds the map;
   later runs are sub-second when nothing relevant changed). `scripts/ship` (via
-  `/endsession`, `/go`) runs the authoritative full pre-merge gate — everything
+  `/land`, `/go`) runs the authoritative full pre-merge gate — everything
   else is the fast loop before it.
 - **Never `cd` into your own worktree.** The Bash shell already runs in the
   worktree root and the harness re-anchors cwd there after *every* call, so a

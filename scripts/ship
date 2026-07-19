@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# scripts/ship — deterministic /endsession: commit WIP → sync → gate → squash-merge to main.
+# scripts/ship — deterministic /land: commit WIP → sync → gate → squash-merge to main.
 #
-# Replaces the LLM-orchestrated endsession steps with one script (token
+# Replaces the LLM-orchestrated land steps with one script (token
 # efficient + reproducible). The caller's only job is to pass a good commit
 # message; everything below is mechanical. Only genuine failures (merge
 # conflicts, mypy/pytest errors, a lost CAS race) exit non-zero for a human
