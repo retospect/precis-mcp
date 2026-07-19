@@ -94,6 +94,21 @@ def test_due_accounts_recently_polled_not_due(store) -> None:
     assert "recent@x.test" not in due
 
 
+def test_due_accounts_survives_large_backoff(store) -> None:
+    # A permanently-failing account must not overflow the backoff arithmetic
+    # (poll_seconds * 2^consecutive_errors) and crash due_email_accounts for
+    # every account. 2^60 * 900 blows past int4 if cast before the least() cap.
+    _seed(store, "broken@x.test", poll_seconds=900)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE email_account SET consecutive_errors = 60, "
+            "last_polled_at = now() WHERE account = %s",
+            ("broken@x.test",),
+        )
+    due = {a.account for a in store.due_email_accounts()}  # must not raise
+    assert "broken@x.test" not in due  # backed off (capped at 1 day), not due now
+
+
 def test_due_accounts_skips_disabled(store) -> None:
     store.upsert_email_account(
         "off@x.test", secret_name="s", config={"imap": {"host": "h"}}, enabled=False

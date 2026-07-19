@@ -122,13 +122,17 @@ _SET_HIGHWATER = (
 # (default 900), multiplied by 2^consecutive_errors for exponential backoff on
 # a failing account, capped at one day — the news_sources/fetch/chase
 # discipline. A never-polled account (last_polled_at IS NULL) is always due.
+# The backoff stays in double precision and is capped by ``least`` BEFORE any
+# int cast: a permanently-failing account would otherwise drive
+# ``poll_seconds * 2^errors`` past int4's range (~21 errors) and throw, taking
+# the whole poll pass down. make_interval(secs => …) accepts the double.
 _DUE_ACCOUNTS = (
     f"SELECT {_ACCT_COLS} FROM email_account "
     "WHERE enabled = true AND ("
     "  last_polled_at IS NULL OR "
     "  now() - last_polled_at >= make_interval(secs => least("
     "    COALESCE(NULLIF(config->>'poll_seconds', '')::int, 900) "
-    "      * power(2, consecutive_errors)::int, 86400))) "
+    "      * power(2, consecutive_errors), 86400))) "
     "ORDER BY account"
 )
 
