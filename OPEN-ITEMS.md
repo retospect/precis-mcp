@@ -11,70 +11,16 @@ is the historical observation log.
 
 ---
 
-## 🔥 Containerized reviews on spark — DSN not reaching the container (retry-storm)
+## 🩹 Containerized-review robustness residuals
 
-Status: `FIXED + PROVEN 2026-07-19` · Severity: `critical` (resolved) ·
-Owner: `src/precis/utils/claude_agent.py` (container branch) · Test:
-`tests/test_claude_agent.py::test_container_reinjects_scrubbed_dsn`.
+The spark *DSN-not-reaching-the-container* retry-storm is **resolved** —
+`get_adopted_dsn()` re-inject into `proc_env` (`claude_agent.py:362`), proven
+2026-07-19 (a real `precis-agent` container ran ~37s where it previously
+`exit 1`'d on the empty DSN); regression test
+`tests/test_claude_agent.py::test_container_reinjects_scrubbed_dsn`; full
+root-cause is in `git log`. These robustness gaps the incident surfaced remain
+open:
 
-**PROVEN 2026-07-19 14:07 UTC:** a forced structural retry (deleted the stale
-12:35 cooldown marker `164970`) brought up a live container
-(`precis-agent-17d16c04b201`, ran ~37s) — the DSN reached the container, the
-entrypoint no longer `exit 1`s on an empty DSN. Root cause + fix confirmed. The
-one wrinkle: that retry was interrupted by a mid-dispatch worker SIGTERM →
-`exited 143` → a *false* failure marker (see the interrupted-review secondary
-observation below); it does not reflect a DSN or code defect. The residual
-work here is that new false-marker robustness gap, not the DSN fix.
-
-**Update 2026-07-19 (post-deploy verify):** the fix (`get_adopted_dsn`
-re-inject) is **installed on spark** (sha `84aee042`, `claude_agent.py:362`).
-The spark worker-agent **restarted 13:23 UTC** today — before that it was
-running the *stale pre-fix process* against the already-updated venv (the
-07-17 deploy reinstalled the files but never bounced spark's worker, a
-2-day-stale-process gap). The **last** `review-fail:structural` marker is
-**12:35 UTC** (`[entrypoint] ERROR: PRECIS_DATABASE_URL not set`) — i.e. the
-final gasp of the stale process, *before* the bounce. Since 13:23 the fixed
-code is live but hasn't re-attempted yet (5h failure-marker backoff from
-12:35 → next natural retry ~17:35 UTC). **Not yet proven green** — force it by
-deleting the `review-fail:structural` cooldown marker (prod write) or wait for
-17:35. Leftover: a `precis-agent-2fba3b28e140` container stuck in `Created`
-state on spark (a pre-fix failed-start review) — harmless but should be
-`docker rm`'d. `PRECIS_DATABASE_URL` is present in spark's systemd env, so the
-re-inject `_dsn` is guaranteed non-empty there → high confidence it's green.
-
-**Symptom (live 2026-07-19):** spark's agent worker runs `structural` reviews in
-a `precis-agent` container (Linux template hardcodes `PRECIS_AGENT_CONTAINER=1`),
-and every one fast-fails ~3×/second:
-`claude -p (agent) exited 1: [entrypoint] ERROR: PRECIS_DATABASE_URL not set`.
-No backoff → a retry-storm that burns CPU, spams `worker_logs`, respawns the
-worker every few minutes, and leaves orphaned `created`-state containers. It
-**does** surface in `/factory?host=*` (the console's `_errors_by_host` reads
-`worker_logs` ERROR/CRITICAL — spark's chip is lit).
-
-**Root cause:** `secrets.adopt_process_store` scrubs `PRECIS_DATABASE_URL` from
-`os.environ` at worker boot (ADR 0059) *specifically* so host `claude -p` spawns
-don't inherit the DSN. The §13 container executor passed the DSN **by key**
-(`--env PRECIS_DATABASE_URL`, value inherited from the docker client's env) — but
-after the scrub `proc_env` no longer carries it, so docker inherits nothing and
-the entrypoint aborts. OAuth survived only because `ensure_oauth_token`
-re-injects it. (`/proc/<pid>/environ` still shows the DSN — that's the immutable
-systemd startup snapshot, not live `os.environ`; a debugging trap.)
-
-**Fix (this branch, unshipped):** re-inject the captured DSN
-(`secrets.get_adopted_dsn()`) into `proc_env` before the container run so the
-by-key passthrough carries it in — mirrors the OAuth re-injection; secret stays
-out of the argv. **Ships via `/go`; needs a cluster deploy to land on spark.**
-Until deployed, spark reviews keep storming — mitigate by flooring spark
-`structural` prio to 0 in `service_config` if the spam must stop sooner.
-
-**Secondary observations (file, don't block):**
-- ~~No backoff on a failing review~~ **CORRECTED 2026-07-19: a backoff already
-  exists.** A non-paused dispatch error writes a `review-fail:<name>` cooldown
-  marker (`review.py:_write_failure_marker`); the next tick's `_recent_failure`
-  gate (`review.py:291`) backs the pass off to its `min_interval_hours` (5h)
-  cadence — the log line is `dispatch failed < 5h ago; backing off (not
-  re-attempting every tick)`. The historical ~3×/s storm was *before* this
-  marker landed; it is not re-occurring.
 - **An INTERRUPTED review writes a false 5h failure marker.** PROVEN 2026-07-19:
   after the DSN fix, a forced structural retry brought up a real container
   (`precis-agent-17d16c04b201`, ran ~37s — the DSN fix works) but the worker got
