@@ -155,8 +155,59 @@ spark worker reaches it on `127.0.0.1` — keep it loopback in the card.)
 - **Prod writes** — S2/S3 mutate prod; the session MCP is read-only. Drive them
   from a cluster worker / CLI or a seed migration, with Reto's go.
 
-## Open decision (for the post-compact session)
+## Decision (locked 2026-07-19): **llama-swap only** — and retire ollama end-to-end
 
-**Which backends to register?** (a) llama-swap only — recommended, retires litellm,
-durable; (b) llama-swap + ollama-for-spark-big-models (interim, gets `llama3.3:70b`
-et al. routable now); (c) ollama only — not recommended (on the purge path).
+Register `served_by` cards against **llama-swap only**. Ollama is not a routing
+target; instead it gets **retired cleanly** as part of this work (below). This
+keeps one local backend and doubles as the litellm-retire flip.
+
+## Recommended local reasoning roster (hardware-fit, 2026-07-19)
+
+Confirmed hardware: **melchior 192 GB unified (Metal)**, **spark 121 GB unified
+(NVIDIA GB10, CUDA, ~75 GB free)**. Fit math from host_vars: ~0.55 GB/B-param at
+Q4, ~0.95 GB/B at Q8, plus KV.
+
+**Ceiling (honest):** the top open-weight reasoners do NOT fit locally — GLM-5.2
+(744B MoE, reasoning-convergence 5) ≈ 400 GB @ Q4; DeepSeek V4 Pro (reasoning 5)
+≈ 380 GB; Kimi K3 similar. Keep a **cloud** reasoning tier for those.
+
+**Best that fit (high reasoning):**
+
+| Model | Params | ~Q4 | reasoning | spark 121 GB | melchior 192 GB |
+|---|---|---|---|---|---|
+| **gpt-oss-120b** (Apache, MoE ~5B active) | 117B | ~63 GB | 3 + native effort | ✅ | ✅ |
+| **Qwen3-235B-A22B-Thinking** (MoE 22B active) | 235B | ~130 GB | ~4 | ❌ too tight | ✅ only |
+| Qwen3-Next-80B (running) | 80B | ~44 GB | ~3 | ✅ | ✅ |
+
+Picks: **spark → `gpt-oss-120b`** (MoE ⇒ GB10's ~270 GB/s bandwidth isn't a
+bottleneck; also the clean replacement for spark's ollama models). **melchior →
+add `Qwen3-235B-A22B-Thinking`** as the heavy-reasoning slot (needs the 192 GB),
+keeping `qwen3-next-80b` as the fast heavy tier.
+
+## Retiring the remaining ollama models cleanly (end-to-end)
+
+Ollama today: spark `llama3.3:70b / mistral:7b / qwen2.5-coder:7b / devstral /
+qwen3-coder-next`; melchior+balthazar `qwen3.5:9b`. spark's `llamacpp_models` is
+`[]` — so spark still *depends* on ollama. Sequence, so nothing loses its model:
+
+- **R1 — stand up llama-swap replacements first.** Add to spark's
+  `llamacpp_models` (host_vars): `gpt-oss-120b` (reasoning, replaces `llama3.3:70b`)
+  + a coder GGUF to replace `qwen2.5-coder`/`devstral`/`qwen3-coder-next`
+  (e.g. a Qwen3-Coder). melchior/balthazar's `qwen3.5:9b` is already superseded by
+  the local qwen3.6-27b tier — no replacement needed. Deploy `04-llamacpp.yml`;
+  verify each new model answers on `127.0.0.1:<llama_swap_port>/v1/models`.
+- **R2 — repoint every ollama consumer.** The only tracked one is Prometheus
+  (`monitoring/prometheus.yml.j2` `job_name: ollama`) — drop/replace that scrape.
+  Any llm cards or `PRECIS_*_MODEL` referencing an ollama-served model → point at
+  the llama-swap card (this plan's S2/S4 already does the precis side).
+- **R3 — run `99-ollama-purge.yml`.** It flips the `litellm_backend: llamacpp`
+  toggle and removes ollama entirely (role, plists/units, `ollama_models` from
+  host_vars, the `ollama_hosts` group). Confirm no `curl 127.0.0.1:1143{4,5}/v1`
+  consumers remain first.
+- **R4 — drop the retiring tunnels.** melchior host_vars has
+  `11437:…:{{ ollama_port }}` (balthazar ollama, tagged "retiring") + the ollama
+  scrape — remove at purge.
+
+This R-track runs alongside S1–S4 (routing) and lands before/with S5 (litellm
+retire): once local routes to llama-swap and ollama has no consumers, both the
+proxy and ollama come down together.
