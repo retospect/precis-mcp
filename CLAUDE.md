@@ -81,7 +81,7 @@ per-kind reference.
 | **Orientation — read first**     | **`docs/codebase.md`** (shape, lifecycle, seams) |
 | Subsystem detail (present-state) | `docs/architecture/state-map.md` |
 | Coined / overloaded terms → files| `docs/architecture/glossary.md` |
-| To-do list / what's planned next | `OPEN-ITEMS.md` — **open work only**; when a ship completes an item, *delete* its entry in that same commit (never leave a "done ✅" note — `git log` is the record, like memory's landed-work rule) |
+| To-do list / what's planned next | `OPEN-ITEMS.md` — **open work only**; when a ship completes an item, *delete* its entry in that same commit (never leave a "done ✅" note — `git log` is the record, like memory's landed-work rule). **No "completed log" file/directory** — a resolved item is proven by `git log` + its regression test; reusable forensics from an incident go to an **ADR** or `docs/runbooks/`, never a done-log |
 | Conventions / workflow / DoD     | `AGENTS.md` |
 | Mission / pitch narrative        | `docs/mission.md` (positioning, not architecture) |
 | Master kinds table + recipes     | skills `precis-overview`, `precis-toolpath-help` |

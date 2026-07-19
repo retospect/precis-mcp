@@ -235,6 +235,21 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
                 "review[%s]: paused by breaker; skipping (%s)", reviewer.name, res.error
             )
             return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
+        if res.interrupted:
+            # The worker was told to stop mid-review (a launchd/deploy bounce or
+            # a jetsam cull) and the ``claude -p`` child died with it (exit ≥128
+            # = signal). This is NOT a dispatch/config failure — the review
+            # simply didn't run — so DON'T write a cooldown marker: a false
+            # ``review-fail`` marker would back the pass off for
+            # ``min_interval_hours`` (5h) even though nothing is wrong. The
+            # digest isn't deduped, so the next tick re-attempts for free.
+            log.info(
+                "review[%s]: interrupted (signal exit) mid-dispatch; not a "
+                "failure, will retry next tick (%s)",
+                reviewer.name,
+                res.error,
+            )
+            return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
         # A non-paused dispatch error (agent-launch / config / transport — e.g.
         # the agent container missing PRECIS_DATABASE_URL on a host) writes a
         # cooldown marker so the NEXT tick backs off (see _recent_failure).

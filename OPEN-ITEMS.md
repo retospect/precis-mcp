@@ -21,19 +21,6 @@ The spark *DSN-not-reaching-the-container* retry-storm is **resolved** —
 root-cause is in `git log`. These robustness gaps the incident surfaced remain
 open:
 
-- **An INTERRUPTED review writes a false 5h failure marker.** PROVEN 2026-07-19:
-  after the DSN fix, a forced structural retry brought up a real container
-  (`precis-agent-17d16c04b201`, ran ~37s — the DSN fix works) but the worker got
-  a deliberate SIGTERM mid-dispatch (systemd `NRestarts=0`; spark bounced ~3× in
-  an hour under cutover churn). The `claude -p` child died `exited 143` (128+15),
-  and `review.py` logged it as `claude agent failed` → wrote a `review-fail`
-  cooldown marker (ref 165047), poisoning the next 5h. A child killed by
-  SIGTERM/SIGINT (143/130) is **interrupted, not a dispatch failure** — it should
-  be retryable (no marker) or at most a short backoff. Fix: in the review
-  dispatch-error path, distinguish exit 143/130 (and the worker's own
-  stop-signal) from a genuine failure and skip `_write_failure_marker`. Sibling
-  to §🔇 (result-fidelity of a review pass — don't falsely fail, don't falsely
-  succeed).
 - **claude_docker (sandbox path) hardcodes `podman`, ignoring `PRECIS_CONTAINER_BIN`.**
   `_podman_bin()` (`claude_docker.py:96`) returns `PRECIS_PODMAN_BIN or "podman"` —
   it does NOT consult the shared `container_runtime()` detector that the review
@@ -48,7 +35,16 @@ open:
   and skipping cleanly when podman is absent; (b) don't schedule the pass on
   hosts lacking podman. File; don't silently docker-fallback the launch path.
 - **`PRECIS_MCP_DB_ROLE=agent_rw` in the review container** — reviews are
-  read-only; the tier-2 envelope should resolve `agent_ro`, not the write role.
+  *mostly* read-only, so the write role looks wrong. **But it is NOT a mechanical
+  flip to `agent_ro`:** the shared reviewer footer (`review.py::_footer_block`)
+  grants a deliberate `put(kind='gripe', …)` carve-out so a reviewer can report
+  tool-friction it hits mid-review — an INSERT that `agent_ro` (writes refused by
+  the DB, `envelope.py::db_role`) would silently break. So the options are a
+  design call, not a fix: (a) keep `agent_rw` (the gripe write is intentional);
+  (b) mint a narrow `agent_review` role that can INSERT `kind='gripe'` and
+  nothing else (a cluster-side role + grant, since these roles live in ansible,
+  not in-repo migrations); (c) drop the gripe carve-out and go pure `agent_ro`.
+  Decide deliberately — don't blind-flip.
 - **OAuth token appears in `docker inspect` `Config.Env`** — the "secret by key,
   never in inspect" goal isn't actually met (docker records inherited `--env`
   values). If that guarantee matters, move secrets to `--env-file`.

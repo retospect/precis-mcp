@@ -152,6 +152,39 @@ def test_dispatch_failure_backs_off_instead_of_spinning(
     assert r2.claimed == 0 and r2.failed == 0
 
 
+def test_interrupted_review_writes_no_failure_marker(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker bounce mid-review kills the ``claude -p`` child with a signal
+    (exit 143 = 128 + SIGTERM). That is an interruption, not a dispatch failure:
+    the pass must NOT write a ``review-fail`` cooldown marker (which would back
+    the reviewer off for min_interval_hours = 5h even though nothing is wrong)
+    and must NOT count as failed=1 on the FAILED-PASSES panel. The digest isn't
+    deduped, so the next tick re-attempts for free.
+
+    Regression for the false 5h markers a rolling deploy / jetsam cull spun onto
+    spark's structural reviewer during the Phase-2 cutover churn."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    from precis.workers.review import _recent_failure
+    from precis.workers.structural import STRUCTURAL
+
+    def _sigterm_child(*a: object, **kw: object) -> AgentResult:
+        # 128 + 15 (SIGTERM) — how launchd/a deploy bounce terminates the child.
+        raise ClaudeAgentError(
+            "claude -p (agent) exited 143: ",
+            stdout="",
+            stderr="",
+            returncode=143,
+        )
+
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _sigterm_child)
+
+    result = run_structural_pass(store)
+    assert result.claimed == 0 and result.ok == 0 and result.failed == 0
+    # The decisive assertion: no cooldown marker was written.
+    assert _recent_failure(store, STRUCTURAL) is False
+
+
 def test_pass_skips_when_recent_digest_exists(
     handler: TodoHandler,
     store: Store,

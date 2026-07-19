@@ -306,6 +306,14 @@ class LlmResult:
       that clears when the window rolls off) instead of recording a failure and
       re-attempting every cycle — the spin that flooded the FAILED-PASSES panel
       with 100k+ structural "failures" while the budget was capped.
+    * ``interrupted`` — ``True`` when ``error`` is a *signal-termination* of the
+      subprocess (exit ≥ 128 = 128 + signum: SIGTERM→143, SIGINT→130, SIGKILL→
+      137). The worker was told to stop mid-call (a launchd/deploy bounce or a
+      jetsam cull), so the ``claude -p`` child died with the worker — this is
+      **not** a dispatch/config failure and must not be recorded as one. Same
+      skip-not-fail treatment as ``paused``: the call simply didn't run, and the
+      next tick re-attempts for free. (Without it, every worker bounce mid-review
+      wrote a false 5h ``review-fail`` cooldown marker.)
     """
 
     text: str
@@ -317,6 +325,7 @@ class LlmResult:
     duration_s: float | None = None
     data: dict[str, Any] | None = None
     paused: bool = False
+    interrupted: bool = False
     #: OpenAI ``usage.total_tokens`` for the local / openai-compat transports
     #: (``None`` for the claude transports, which report cost not tokens). Kept
     #: so a direct-``LlmClient`` pass folded through :class:`DispatchClient`
@@ -1197,7 +1206,13 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
     Surfaces any partial stdout the wrapper captured as ``text`` so a
     caller keeps a recoverable-exhaustion answer while still seeing the
     ``error``.
+
+    A signal-terminated child (returncode ≥ 128 = 128 + signum) is flagged
+    ``interrupted``: the process was killed by a signal (worker bounce / jetsam),
+    not by a genuine program failure, so callers skip it rather than recording a
+    dispatch failure (see :attr:`LlmResult.interrupted`).
     """
+    rc = getattr(exc, "returncode", None)
     return LlmResult(
         text=getattr(exc, "stdout", "") or "",
         cost_usd=None,
@@ -1205,6 +1220,7 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         model=model,
         tier=tier,
         error=str(exc),
+        interrupted=rc is not None and rc >= 128,
     )
 
 
