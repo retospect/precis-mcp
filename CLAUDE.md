@@ -122,6 +122,13 @@ per-kind reference.
   later runs are sub-second when nothing relevant changed). `scripts/ship` (via
   `/endsession`, `/go`) runs the authoritative full pre-merge gate — everything
   else is the fast loop before it.
+- **Never `cd` into your own worktree.** The Bash shell already runs in the
+  worktree root and the harness re-anchors cwd there after *every* call, so a
+  `cd <worktree> && …` prefix is pure redundancy — wasted tokens on each call
+  and the exact "`cd` in a compound command can trigger a permission prompt"
+  footgun. Run commands bare; use an **absolute path** to reach another dir
+  (`--git-dir=…`, `ls /Users/reto/work/cluster`), not a `cd`. (Log audit: ~60%
+  of Bash calls carried a redundant `cd` — the top single waste in the fleet.)
 - **Container-first ops.** `scripts/dev` → dev shell; `scripts/db` → psql
   (LOCAL `precis` / `precis_test` only; dev pgvector at `127.0.0.1:5432`,
   `POSTGRES_USER=postgres`). Compose file: `~/work/infrastructure/compose.yaml`.
@@ -190,8 +197,10 @@ per-kind reference.
   the session model = Opus, so mechanical delegations run expensive by
   accident). Haiku-pinned defs in `.claude/agents/`: `navigator` (locate /
   orient), `extract` (rote gather), `test-runner` (`scripts/test`), `tidy`
-  (ruff/format). Reach for these instead of spawning `general-purpose` on Opus
-  for a mechanical task; use the Agent tool's `model:` for one-off downgrades.
+  (ruff/format), `cluster-ops` (read-only ssh/log-tail/prod-psql probe — keeps
+  raw log & psql dumps off the main loop; never deploys or writes). Reach for
+  these instead of spawning `general-purpose` on Opus for a mechanical task;
+  use the Agent tool's `model:` for one-off downgrades.
 - **Three tiers, cheapest that fits:** a **deterministic** chore → a *script*
   (zero model, reproducible) — the hygiene scans already are (`memory-lint`,
   `migration-check`, `docs-orphans`, `backlog-lint`), as are the **cadence
