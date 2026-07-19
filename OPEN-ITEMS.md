@@ -592,6 +592,15 @@ Owner `mcp_modalities.py::register_skill_prompts`; artefact
   but marker also caps `surya-ocr<0.18.0`, so the newer surya can't be used either.
   Both locks release only when marker-pdf ships a version that lifts them. → +2wk.
 
+- **Dependabot #45 — `transformers` LightGlue-load RCE (high).** `Recheck-after:
+  2026-08-01`. `Unblock-when:` same block as #44 — `marker-pdf` (≤1.10.2) caps
+  `transformers<5.0.0`, so the fixed `transformers` is unsatisfiable as a lockfile
+  bump while precis needs marker (`[paper]`). Exploit surface ~nil: the RCE is in
+  the LightGlue model-init path, which precis never loads (only the trusted bge-m3
+  embedder; no `trust_remote_code`, no user model path). **Recheck together with
+  #44** — one `uv lock --upgrade-package transformers` clears both when marker lifts
+  the cap; else bump `Recheck-after` +2 weeks.
+
 ## 🔵 Paper-ingest `equation` chunk kind — retire later *(deferred)*
 
 *(feature — owner `ingest/{marker,pipeline,literature}.py`).* Companion to the
