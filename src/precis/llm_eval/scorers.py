@@ -72,12 +72,114 @@ def score_tool_json(
     return hits / len(answer)
 
 
+def score_exact(
+    response_text: str, response_data: dict[str, Any] | None, expect: dict[str, Any]
+) -> float:
+    """reasoning-convergence: 1.0 iff the model's final answer matches the gold.
+
+    ``expect = {"answer": "<value>", "aliases": [...]}``. Tasks are asked to end
+    with ``ANSWER: <x>``; when that marker is present only the tail is compared
+    (equality after normalization, or numeric value so ``42`` == ``42.0``), which
+    avoids the false positives of matching the gold digit anywhere in a chain of
+    thought. With no marker, falls back to a substring test over the whole reply.
+    """
+    gold = [str(expect.get("answer") or "")]
+    gold += [str(a) for a in (expect.get("aliases") or [])]
+    text = response_text or ""
+    m = re.search(r"answer\s*[:=]\s*(.+)", text, re.IGNORECASE | re.DOTALL)
+    tail = m.group(1) if m else text
+    tail_n = _norm(tail)
+    tail_num = re.sub(r"[^0-9.\-]", "", tail.splitlines()[0] if tail else "")
+    for g in gold:
+        gn = _norm(g)
+        if not gn:
+            continue
+        if gn == tail_n or (m and gn in tail_n) or (not m and gn in tail_n):
+            return 1.0
+        try:
+            if tail_num and abs(float(g) - float(tail_num)) < 1e-9:
+                return 1.0
+        except ValueError:
+            pass
+    return 0.0
+
+
+def score_keypoints(
+    response_text: str, response_data: dict[str, Any] | None, expect: dict[str, Any]
+) -> float:
+    """summarize-extract: fraction of required key facts a faithful summary keeps.
+
+    ``expect = {"keypoints": ["distinctive token", ...], "forbid": [...]}``.
+    Coverage = matched keypoints / total (each keypoint a distinctive name/number
+    a faithful summary must carry). Any ``forbid`` phrase present — a fact the
+    source does not support — zeroes the task (a hallucination check, not just
+    recall).
+    """
+    hay = _norm(response_text or "")
+    kps = [str(k) for k in (expect.get("keypoints") or [])]
+    if not kps:
+        return 0.0
+    for bad in expect.get("forbid") or []:
+        if _norm(str(bad)) and _norm(str(bad)) in hay:
+            return 0.0
+    hits = sum(1 for k in kps if _norm(k) and _norm(k) in hay)
+    return hits / len(kps)
+
+
+def _extract_code(text: str) -> str:
+    """Pull the last fenced code block from a reply (whole reply if unfenced)."""
+    blocks = re.findall(r"```(?:python)?\s*\n(.*?)```", text, re.DOTALL)
+    return blocks[-1] if blocks else text
+
+
+def score_code(
+    response_text: str, response_data: dict[str, Any] | None, expect: dict[str, Any]
+) -> float:
+    """code: 1.0 iff the model's code passes the task's hidden test.
+
+    ``expect = {"test": "<python asserting on the entrypoint>", "timeout": 10}``.
+    Extracts the last fenced code block, appends the test, and runs it in an
+    isolated (``python -I``) subprocess in a throwaway tempdir; exit 0 → pass.
+
+    Executes model-generated code — a **controlled-eval** convenience only (the
+    subprocess is isolated + timed but not otherwise jailed); never point this at
+    untrusted gold sets on a host you care about.
+    """
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    code = _extract_code(response_text or "")
+    if not code.strip():
+        return 0.0
+    test = str(expect.get("test") or "")
+    timeout = int(expect.get("timeout") or 10)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "cand.py")
+        with open(path, "w") as fh:
+            fh.write(code + "\n\n" + test + "\n")
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-I", path],
+                cwd=d,
+                capture_output=True,
+                timeout=timeout,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return 0.0
+    return 1.0 if proc.returncode == 0 else 0.0
+
+
 #: Registry of the wired (deterministic) scorers. A gold task names one via its
 #: ``scorer`` field; an unknown scorer is skipped by the harness (logged), never
 #: silently scored 0.
 SCORERS: dict[str, Scorer] = {
     "needle": score_needle,
     "tool_json": score_tool_json,
+    "exact": score_exact,
+    "keypoints": score_keypoints,
+    "code": score_code,
 }
 
 
@@ -96,6 +198,9 @@ __all__ = [
     "SCORERS",
     "Scorer",
     "bucket_to_ordinal",
+    "score_code",
+    "score_exact",
+    "score_keypoints",
     "score_needle",
     "score_tool_json",
 ]

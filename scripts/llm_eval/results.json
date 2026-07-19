@@ -1,0 +1,526 @@
+{
+  "gold": "/Users/reto/work/projects/code/precis-mcp/.claude/worktrees/keen-hatching-cloud/scripts/llm_eval/gold_set/full.json",
+  "n_tasks": 17,
+  "elapsed_s": 608.0,
+  "results": {
+    "minimax/minimax-m3": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 2,
+        "mean": 0.333,
+        "n": 3
+      }
+    },
+    "anthropic/claude-sonnet-5": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 1,
+        "mean": 0.0,
+        "n": 3
+      }
+    },
+    "anthropic/claude-haiku-4.5": {
+      "code": {
+        "ordinal": 4,
+        "mean": 0.75,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 4,
+        "mean": 0.75,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 2,
+        "mean": 0.222,
+        "n": 3
+      }
+    },
+    "anthropic/claude-opus-4.8": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 2,
+        "mean": 0.333,
+        "n": 3
+      }
+    },
+    "moonshotai/kimi-k2.7-code": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 1,
+        "mean": 0.0,
+        "n": 3
+      }
+    },
+    "deepseek/deepseek-v4-flash": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      }
+    },
+    "deepseek/deepseek-v4-pro": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 2,
+        "mean": 0.333,
+        "n": 3
+      }
+    },
+    "openai/gpt-oss-120b": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 4,
+        "mean": 0.667,
+        "n": 3
+      }
+    },
+    "z-ai/glm-5.2": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 1,
+        "mean": 0.0,
+        "n": 3
+      }
+    },
+    "moonshotai/kimi-k3": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 1,
+        "mean": 0.0,
+        "n": 3
+      }
+    },
+    "openai/gpt-oss-20b": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 4,
+        "mean": 0.667,
+        "n": 3
+      }
+    },
+    "qwen/qwen3.7-max": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 2,
+        "mean": 0.222,
+        "n": 3
+      }
+    },
+    "qwen/qwen3.6-flash": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 2,
+        "mean": 0.222,
+        "n": 3
+      }
+    },
+    "z-ai/glm-4.7": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 2,
+        "mean": 0.333,
+        "n": 3
+      }
+    },
+    "z-ai/glm-4.7-flash": {
+      "code": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 4
+      },
+      "reasoning-convergence": {
+        "ordinal": 4,
+        "mean": 0.75,
+        "n": 4
+      },
+      "long-context-recall": {
+        "ordinal": 5,
+        "mean": 1.0,
+        "n": 3
+      },
+      "tool-structured": {
+        "ordinal": 5,
+        "mean": 0.889,
+        "n": 3
+      },
+      "summarize-extract": {
+        "ordinal": 2,
+        "mean": 0.333,
+        "n": 3
+      }
+    }
+  },
+  "spend": {
+    "minimax/minimax-m3": {
+      "calls": 17,
+      "cost": 0.005265840000000001,
+      "tokens": 7121,
+      "errors": 0
+    },
+    "anthropic/claude-sonnet-5": {
+      "calls": 17,
+      "cost": 0.022843999999999996,
+      "tokens": 4054,
+      "errors": 0
+    },
+    "anthropic/claude-haiku-4.5": {
+      "calls": 17,
+      "cost": 0.015293000000000001,
+      "tokens": 4361,
+      "errors": 0
+    },
+    "anthropic/claude-opus-4.8": {
+      "calls": 17,
+      "cost": 0.04801,
+      "tokens": 3690,
+      "errors": 0
+    },
+    "moonshotai/kimi-k2.7-code": {
+      "calls": 17,
+      "cost": 0.01354389392,
+      "tokens": 4560,
+      "errors": 0
+    },
+    "deepseek/deepseek-v4-flash": {
+      "calls": 17,
+      "cost": 0.0007920583,
+      "tokens": 4130,
+      "errors": 0
+    },
+    "deepseek/deepseek-v4-pro": {
+      "calls": 17,
+      "cost": 0.00937816203,
+      "tokens": 5003,
+      "errors": 0
+    },
+    "openai/gpt-oss-120b": {
+      "calls": 17,
+      "cost": 0.0015431,
+      "tokens": 6008,
+      "errors": 0
+    },
+    "z-ai/glm-5.2": {
+      "calls": 17,
+      "cost": 0.009832921860000001,
+      "tokens": 7339,
+      "errors": 0
+    },
+    "moonshotai/kimi-k3": {
+      "calls": 17,
+      "cost": 0.066687,
+      "tokens": 6713,
+      "errors": 0
+    },
+    "openai/gpt-oss-20b": {
+      "calls": 17,
+      "cost": 0.000686029,
+      "tokens": 6470,
+      "errors": 0
+    },
+    "qwen/qwen3.7-max": {
+      "calls": 17,
+      "cost": 0.0619795,
+      "tokens": 15070,
+      "errors": 0
+    },
+    "qwen/qwen3.6-flash": {
+      "calls": 17,
+      "cost": 0.06036843749999998,
+      "tokens": 54990,
+      "errors": 0
+    },
+    "z-ai/glm-4.7": {
+      "calls": 17,
+      "cost": 0.027846759999999998,
+      "tokens": 16263,
+      "errors": 0
+    },
+    "z-ai/glm-4.7-flash": {
+      "calls": 17,
+      "cost": 0.004911963,
+      "tokens": 13402,
+      "errors": 0
+    }
+  },
+  "tier_of": {
+    "anthropic/claude-opus-4.8": "cloud-super",
+    "z-ai/glm-5.2": "cloud-super",
+    "moonshotai/kimi-k3": "cloud-super",
+    "deepseek/deepseek-v4-pro": "cloud-super",
+    "anthropic/claude-sonnet-5": "cloud-mid",
+    "moonshotai/kimi-k2.7-code": "cloud-mid",
+    "z-ai/glm-4.7": "cloud-mid",
+    "qwen/qwen3.7-max": "cloud-mid",
+    "minimax/minimax-m3": "cloud-mid",
+    "anthropic/claude-haiku-4.5": "cloud-small",
+    "openai/gpt-oss-120b": "cloud-small",
+    "deepseek/deepseek-v4-flash": "cloud-small",
+    "z-ai/glm-4.7-flash": "cloud-small",
+    "qwen/qwen3.6-flash": "cloud-small",
+    "openai/gpt-oss-20b": "cloud-small"
+  },
+  "incumbents": [
+    "anthropic/claude-haiku-4.5",
+    "anthropic/claude-opus-4.8",
+    "anthropic/claude-sonnet-5"
+  ]
+}

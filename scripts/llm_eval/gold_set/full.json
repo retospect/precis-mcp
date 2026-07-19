@@ -1,0 +1,128 @@
+[
+  {
+    "task_id": "code-two-sum",
+    "axis": "code",
+    "scorer": "code",
+    "prompt": "Write a Python function `two_sum(nums, target)` that returns a tuple `(i, j)` of two distinct indices with `i < j` and `nums[i] + nums[j] == target`. Assume exactly one solution exists. Return your solution as a single Python code block and nothing else.",
+    "expect": {"test": "r = two_sum([2,7,11,15], 9)\nassert tuple(r) == (0,1), r\nassert tuple(two_sum([3,2,4], 6)) == (1,2)\nassert tuple(two_sum([3,3], 6)) == (0,1)", "timeout": 10}
+  },
+  {
+    "task_id": "code-roman",
+    "axis": "code",
+    "scorer": "code",
+    "prompt": "Write a Python function `roman_to_int(s)` that converts a Roman numeral string (I, V, X, L, C, D, M, with the usual subtractive cases) to an integer. Return your solution as a single Python code block and nothing else.",
+    "expect": {"test": "assert roman_to_int('III') == 3\nassert roman_to_int('IV') == 4\nassert roman_to_int('IX') == 9\nassert roman_to_int('LVIII') == 58\nassert roman_to_int('MCMXCIV') == 1994", "timeout": 10}
+  },
+  {
+    "task_id": "code-balanced",
+    "axis": "code",
+    "scorer": "code",
+    "prompt": "Write a Python function `is_balanced(s)` that returns True iff the brackets `()[]{}` in `s` are balanced and properly nested. Non-bracket characters are ignored. Return your solution as a single Python code block and nothing else.",
+    "expect": {"test": "assert is_balanced('()[]{}')\nassert is_balanced('([{}])')\nassert is_balanced('a(b)c')\nassert not is_balanced('(]')\nassert not is_balanced('([)]')\nassert not is_balanced('(')", "timeout": 10}
+  },
+  {
+    "task_id": "code-rle",
+    "axis": "code",
+    "scorer": "code",
+    "prompt": "Write a Python function `rle(s)` that returns the run-length encoding of string `s`, where each maximal run of a character `c` of length `n` becomes `c` followed by the decimal `n`. Example: `rle('aaabbc')` == `'a3b2c1'`. `rle('')` == `''`. Return your solution as a single Python code block and nothing else.",
+    "expect": {"test": "assert rle('aaabbc') == 'a3b2c1'\nassert rle('') == ''\nassert rle('x') == 'x1'\nassert rle('aabbaa') == 'a2b2a2'", "timeout": 10}
+  },
+
+  {
+    "task_id": "reason-pipes",
+    "axis": "reasoning-convergence",
+    "scorer": "exact",
+    "prompt": "A tank has an inlet pipe that fills it in 6 minutes and a drain that empties a full tank in 9 minutes. Starting empty, both are opened at once. How many minutes until the tank is full? Show brief working, then end your reply with a line 'ANSWER: <number>'.",
+    "expect": {"answer": "18"}
+  },
+  {
+    "task_id": "reason-ages",
+    "axis": "reasoning-convergence",
+    "scorer": "exact",
+    "prompt": "Sam is currently twice as old as Kim. In 4 years, Sam will be 1.5 times as old as Kim is then. How old is Kim now? Show brief working, then end your reply with a line 'ANSWER: <number>'.",
+    "expect": {"answer": "4"}
+  },
+  {
+    "task_id": "reason-seq",
+    "axis": "reasoning-convergence",
+    "scorer": "exact",
+    "prompt": "Consider the sequence 2, 6, 12, 20, 30, ... What is the next term? Show brief working, then end your reply with a line 'ANSWER: <number>'.",
+    "expect": {"answer": "42"}
+  },
+  {
+    "task_id": "reason-boxes",
+    "axis": "reasoning-convergence",
+    "scorer": "exact",
+    "prompt": "Three boxes A, B, C. Exactly one contains a prize. The sign on A reads 'the prize is here'. The sign on B reads 'the prize is not here'. The sign on C reads 'the prize is not in A'. Exactly one of the three signs is true. Which box holds the prize? Show brief working, then end your reply with a line 'ANSWER: <A, B, or C>'.",
+    "expect": {"answer": "B"}
+  },
+
+  {
+    "task_id": "needle-argon",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "Read the lab protocol below, then answer the question at the end with only the value.\n\n--- PROTOCOL ---\nBefore each run, verify the balance is tared and the fume hood sash is at the marked line. Weigh out the catalyst to the nearest milligram and log the lot number. The reaction vessel must be purged with argon for 12 minutes before heating begins; do not shorten this step even if the line pressure reads nominal. Set the hotplate ramp to 5 degrees per minute and hold the setpoint for two hours. Quench with chilled methanol only after the vessel is below 40 degrees. Record the final mass and photograph the crucible. Dispose of solvent waste in the yellow bin.\n--- END PROTOCOL ---\n\nQuestion: For how long must the reaction vessel be purged with argon before heating?",
+    "expect": {"needle": "12 minutes", "aliases": ["12 min", "12"]}
+  },
+  {
+    "task_id": "needle-budget",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "Read the meeting notes below, then answer the question at the end with only the value.\n\n--- NOTES ---\nAttendance was light because of the holiday. Priya walked through the roadmap and noted the design review slips to next sprint. Finance flagged that all Q3 travel must be booked against budget code FR-2291 or it will be rejected by the portal. Marcus took the action to update the vendor list. The demo environment will be frozen on Thursday. We agreed to revisit hiring in the next all-hands. Coffee machine on floor 3 is still broken.\n--- END NOTES ---\n\nQuestion: Which budget code must Q3 travel be booked against?",
+    "expect": {"needle": "FR-2291"}
+  },
+  {
+    "task_id": "needle-gate",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "Read the itinerary below, then answer the question at the end with only the value.\n\n--- ITINERARY ---\nDepart Friday on the 07:40 express to the airport; allow time for the long security queue in terminal 2. The first leg lands at 11:05 with a ninety-minute layover. The connecting flight to Lisbon departs from gate B14 — note that this terminal renumbered its gates last year, so ignore older signage. Dinner is booked near the hotel for 20:00 local time. The return is open-jaw from Porto on Tuesday. Keep all boarding passes for the expense report.\n--- END ITINERARY ---\n\nQuestion: From which gate does the connecting flight to Lisbon depart?",
+    "expect": {"needle": "B14"}
+  },
+
+  {
+    "task_id": "tool-order",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the fields from this order line and return ONLY a JSON object with keys \"sku\", \"qty\", and \"status\". Order: 3 units of SKU BOLT-88 were shipped on Tuesday.\n\nReturn only the JSON object as the last thing in your reply.",
+    "expect": {"answer": {"sku": "BOLT-88", "qty": "3", "status": "shipped"}}
+  },
+  {
+    "task_id": "tool-log",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Parse this log line and return ONLY a JSON object with keys \"level\", \"service\", and \"code\". Log line: [ERROR] auth-service returned status 503 during token refresh.\n\nReturn only the JSON object as the last thing in your reply.",
+    "expect": {"answer": {"level": "ERROR", "service": "auth-service", "code": "503"}}
+  },
+  {
+    "task_id": "tool-person",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the fields from this sentence and return ONLY a JSON object with keys \"name\", \"role\", and \"city\". Sentence: Dr. Elena Ruiz, the lead radiologist, relocated to Denver last spring.\n\nReturn only the JSON object as the last thing in your reply.",
+    "expect": {"answer": {"name": "Elena Ruiz", "role": "lead radiologist", "city": "Denver"}}
+  },
+
+  {
+    "task_id": "sum-battery",
+    "axis": "summarize-extract",
+    "scorer": "keypoints",
+    "prompt": "Summarize the following passage in one or two sentences, keeping the key quantitative findings and not adding anything not stated.\n\nPASSAGE: In a recent cell test, replacing the graphite anode with a silicon composite raised measured capacity by 40 percent versus the graphite baseline. The improvement held across the tested range, though the silicon cells showed faster fade, retaining useful capacity for about 500 cycles before dropping below the threshold. The team did not evaluate any lithium-sulfur chemistry in this study.",
+    "expect": {"keypoints": ["silicon", "40", "500"], "forbid": ["lithium-sulfur"]}
+  },
+  {
+    "task_id": "sum-policy",
+    "axis": "summarize-extract",
+    "scorer": "keypoints",
+    "prompt": "Summarize the following passage in one or two sentences, keeping the key facts and not adding anything not stated.\n\nPASSAGE: The council approved a carbon levy that takes effect in 2027, adding roughly 12 percent to wholesale fuel costs in the first year. Revenue is earmarked for transit rather than general funds. Officials stressed the measure is a levy, not a subsidy, and that rebates for low-income households were deferred to a later vote.",
+    "expect": {"keypoints": ["carbon", "2027", "12"], "forbid": ["subsidy"]}
+  },
+  {
+    "task_id": "sum-merger",
+    "axis": "summarize-extract",
+    "scorer": "keypoints",
+    "prompt": "Summarize the following passage in one or two sentences, keeping the key facts and not adding anything not stated.\n\nPASSAGE: The two firms confirmed a merger that consolidates their engineering teams in Toronto, bringing about 300 employees under one roof by the end of the year. Management said no layoffs are planned as part of the integration, and that the combined group will keep both product lines running in parallel.",
+    "expect": {"keypoints": ["merger", "Toronto", "300"], "forbid": ["layoffs are planned", "job cuts"]}
+  }
+]
