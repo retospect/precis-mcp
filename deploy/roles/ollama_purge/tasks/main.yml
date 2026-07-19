@@ -73,12 +73,29 @@
   changed_when: false
   failed_when: false
 
-- name: Uninstall snap Ollama (Linux)
+- name: Uninstall snap Ollama with --purge (Linux)
   when: os_family == "linux"
-  community.general.snap:
-    name: ollama
-    state: absent
+  # `--purge` skips snapd's automatic pre-remove snapshot — otherwise snap COPIES
+  # the model data (~115 GB) into /var/lib/snapd/snapshots before deleting, so the
+  # space is never reclaimed. The community.general.snap module can't pass --purge,
+  # so drive the command directly.
+  ansible.builtin.command: snap remove --purge ollama
   become: true
+  changed_when: true
+  failed_when: false
+
+- name: Forget any orphaned Ollama snapshots (Linux — reclaim a prior no-purge remove)
+  when: os_family == "linux"
+  ansible.builtin.shell: |
+    set -o pipefail
+    for id in $(snap saved 2>/dev/null | awk '$2=="ollama"{print $1}'); do
+      snap forget "$id" || true
+    done
+  args:
+    executable: /bin/bash
+  become: true
+  changed_when: false
+  failed_when: false
 
 - name: Disable + stop legacy systemd Ollama if present (Linux)
   when: os_family == "linux"
