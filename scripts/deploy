@@ -4,10 +4,11 @@
 #
 # The deterministic deploy backbone (the twin of scripts/ship). No LLM in the
 # loop: it wraps `ansible-playbook redeploy-precis.yml` from the in-repo
-# `deploy/` tree (default since the slice-12a cutover; `PRECIS_DEPLOY_FROM_TREE=`
-# rolls back to the legacy ~/work/cluster checkout), which wires the inventory,
-# the `deploy` SSH user, and `.vault-pass` via ansible.cfg. Chained after a green
-# ship by the /go command.
+# `deploy/` tree (default since the slice-12a cutover). The private overlay
+# (real inventory + `.vault-pass`) is gitignored and LOCAL-only; it lives in the
+# main checkout's `deploy/inventory` and is resolved from there even when a
+# deploy runs from a worktree (e.g. /go), so there are no symlinks and no
+# per-worktree secret copies. Chained after a green ship by the /go command.
 #
 # Steps:
 #   1. reachability — `ansible all -m ping`; abort (non-zero) if any host is
@@ -27,17 +28,28 @@ say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 
 # ── slice 12a: install-from-tree is the DEFAULT (cutover complete 2026-07-19).
-# Deploy runs ansible from the portable in-repo `deploy/` tree; the per-cluster
-# overlay (real inventory + vault) stays LOCAL-only at deploy/inventory/
-# (gitignored — the operator symlinks it there, plus deploy/.vault-pass).
-# Roll back to the legacy private checkout with `PRECIS_DEPLOY_FROM_TREE= scripts/deploy`
-# (kept until ~/work/cluster is demoted to overlay-only).
+# Deploy runs ansible from the portable in-repo `deploy/` tree. Overlay (private
+# inventory + vault) resolution, symlink-free and checkout-independent:
+#   • if THIS checkout has deploy/inventory, use it (ansible.cfg's relative paths);
+#   • else fall back to the CANONICAL overlay in the main checkout (found via
+#     git --git-common-dir), or $PRECIS_OVERLAY_DIR — so a deploy works from any
+#     worktree (/go ships+deploys from one) with the overlay stored in ONE place.
+# Legacy escape (pre-cutover private checkout): `PRECIS_DEPLOY_FROM_TREE=`.
+INV_ARGS=()
 PRECIS_DEPLOY_FROM_TREE="${PRECIS_DEPLOY_FROM_TREE-1}"
 if [[ -n "${PRECIS_DEPLOY_FROM_TREE}" ]]; then
     _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     CLUSTER_DIR="$(cd "${_script_dir}/.." && pwd)/deploy"
-    [[ -d "${CLUSTER_DIR}/inventory" ]] || die "install-from-tree (default): ${CLUSTER_DIR}/inventory is not wired — symlink your private overlay (see deploy/README.md), or roll back with PRECIS_DEPLOY_FROM_TREE=."
-    say "install-from-tree: deploying from ${CLUSTER_DIR} (portable tree + local overlay)"
+    if [[ -d "${CLUSTER_DIR}/inventory" ]]; then
+        say "install-from-tree: deploying from ${CLUSTER_DIR} (local overlay)"
+    else
+        _main="$(dirname "$(git -C "${CLUSTER_DIR}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")"
+        _overlay="${PRECIS_OVERLAY_DIR:-${_main}/deploy/inventory}"
+        _vpass="$(dirname "${_overlay}")/.vault-pass"
+        [[ -d "${_overlay}" && -f "${_vpass}" ]] || die "install-from-tree: no overlay — this checkout's ${CLUSTER_DIR}/inventory is empty and the canonical overlay (${_overlay}) is missing. Put your private inventory in the main checkout's deploy/inventory, or set PRECIS_OVERLAY_DIR (see deploy/README.md)."
+        INV_ARGS=(-i "${_overlay}/hosts.yml" --vault-password-file "${_vpass}")
+        say "install-from-tree: deploying from ${CLUSTER_DIR} (canonical overlay: ${_overlay})"
+    fi
 fi
 
 [[ -d "$CLUSTER_DIR" ]] || die "cluster dir not found at ${CLUSTER_DIR} (set PRECIS_CLUSTER_DIR)."
@@ -47,7 +59,7 @@ cd "$CLUSTER_DIR"
 
 # ── 1. reachability ─────────────────────────────────────────────────────
 say "checking cluster reachability (ansible ping)"
-ansible all -m ping >/tmp/precis-deploy-ping.$$ 2>&1 || {
+ansible all -m ping ${INV_ARGS[@]+"${INV_ARGS[@]}"} >/tmp/precis-deploy-ping.$$ 2>&1 || {
     cat /tmp/precis-deploy-ping.$$ >&2
     rm -f /tmp/precis-deploy-ping.$$
     die "a host is unreachable — aborting (a partial redeploy mixes code versions)."
@@ -57,11 +69,11 @@ rm -f /tmp/precis-deploy-ping.$$
 # ── 2. deploy ───────────────────────────────────────────────────────────
 if [[ "$REF" == "main" ]]; then
     say "deploying main to the cluster"
-    ansible-playbook redeploy-precis.yml \
+    ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
         || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
 else
     say "deploying ref '${REF}' to the cluster"
-    ansible-playbook redeploy-precis.yml \
+    ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
         -e precis_worker_git_ref="$REF" -e precis_web_git_ref="$REF" \
         || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
 fi

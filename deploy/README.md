@@ -7,9 +7,10 @@ nothing here names a real machine, address, or secret. Everything specific to
 
 Design-of-record: [`docs/design/factory-console-and-scheduling.md`](../docs/design/factory-console-and-scheduling.md)
 §15 (convergence) and §16 (two-phase build). This directory is **slice 12a** —
-the repo rationalization. It is being populated incrementally; until the
-migration completes, the authoritative deploy path is still the operator's
-private ansible checkout (`scripts/deploy` → `$PRECIS_CLUSTER_DIR`).
+the repo rationalization, **complete since 2026-07-19**: `scripts/deploy` runs
+from this tree by default, and it is the authoritative deploy path. The only
+per-cluster piece is the gitignored local overlay (`deploy/inventory/` +
+`deploy/.vault-pass`).
 
 ## The three layers (by rate-of-change)
 
@@ -33,8 +34,8 @@ Therefore:
 
 * **`deploy/inventory/`** — your live overlay (real `hosts.yml`,
   `group_vars/all/vault.yml`, `.vault-pass`, …). It is **gitignored** and
-  local-only. Point it at your private cluster inventory (symlink or clone).
-  It is **never** committed and is **skipped** by the leak-gate.
+  local-only — real files in the main checkout's `deploy/` (no symlink). It is
+  **never** committed and is **skipped** by the leak-gate.
 * **`deploy/inventory.example/`** — the scrubbed template that documents the
   overlay's *shape* using RFC-5737 documentation addresses and placeholder
   node names. This **is** tracked, and it must stay scrubbed.
@@ -46,18 +47,26 @@ Therefore:
 
 ## Setting up the overlay (operator)
 
+Put your private overlay as **real files** in the **main checkout's** `deploy/`
+(both paths are gitignored, so they never reach the public repo — no symlinks):
+
 ```sh
-# one-time: point the local overlay at your private cluster inventory + vault pass
-ln -s ~/work/cluster/inventory   deploy/inventory
-ln -s ~/work/cluster/.vault-pass deploy/.vault-pass
-# (or copy them if you prefer detached working copies — both stay gitignored)
+# one-time, in the MAIN checkout (not a worktree):
+cp -R /path/to/your/private/inventory   deploy/inventory
+cp    /path/to/your/private/.vault-pass deploy/.vault-pass
+chmod 600 deploy/.vault-pass
 ```
 
-`scripts/deploy` runs ansible from this tree **only when
-`PRECIS_DEPLOY_FROM_TREE` is set** (dark). Unset — the default — it uses
-`$PRECIS_CLUSTER_DIR` (your private checkout) exactly as before, byte for byte.
-Flip the flag to rehearse install-from-tree; make it the default at the Phase-2
-cutover.
+`scripts/deploy` is install-from-tree by **default**. It resolves the overlay
+symlink-free and checkout-independently: it uses **this** checkout's
+`deploy/inventory` if present, otherwise falls back to the **main checkout's**
+`deploy/inventory` (found via `git --git-common-dir`), or `$PRECIS_OVERLAY_DIR`.
+So a deploy works from any worktree — `/go` ships+deploys from one — with the
+overlay stored in exactly one place and no per-worktree secret copies.
+
+> **Back up `.vault-pass`.** It is the only key to the ansible-encrypted
+> `vault.yml`; it has no git history and no remote. Keep a copy in your password
+> manager — if the main checkout is lost, the vault is unrecoverable without it.
 
 ## Migration status
 
@@ -96,9 +105,10 @@ Populated so far:
       then. Does NOT block `redeploy-precis.yml` (the routine deploy path).
 - [x] **switched** (2026-07-19): default flipped + a full tree-deploy landed
       green on all 4 nodes and was health-verified (Phase-2 scheduler live).
-- [ ] **demote `~/work/cluster`** (operator, `! l=1 git commit`): commit the
-      staged overlay aliases, then delete its now-in-repo roles/playbooks/tasks
-      (shrinks to `inventory/` + `.vault-pass` + `.git`).
+- [x] **demoted** (2026-07-19): `~/work/cluster` retired; its roles/playbooks are
+      the in-repo `deploy/` tree. The overlay (real `inventory/` + `.vault-pass`)
+      moved into the main checkout's `deploy/` as gitignored files, resolved from
+      any worktree via the `git --git-common-dir` fallback in `scripts/deploy`.
 
 Overlay variables the portable roles expect (define these in your local
 `deploy/inventory/`): `postgres_host`, `gateway_host`, `litellm_host`,

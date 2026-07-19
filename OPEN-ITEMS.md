@@ -105,26 +105,6 @@ default-off hook.
   to catch the *forgotten* ones.) Note: the **laptop fixer** `PRECIS_FIXER_AUTONOMY`
   is intentional + documented (report/ship/full), not a candidate for removal.
 
----
-
-## 🧹 Slice 12a — demote `~/work/cluster` to overlay-only
-
-Severity: `polish` · Owner: `~/work/cluster` (operator).
-
-`deploy/` is now the authoritative deploy path — `scripts/deploy` defaults to the
-tree, deployed + health-verified on the fleet 2026-07-19. Remaining cleanup is
-all in the private `~/work/cluster` checkout, which needs `! l=1 git commit`
-(the `guard-commit-on-main` hook blocks agent commits there):
-- **Commit the staged overlay aliases** (`inventory/hosts.yml` +
-  `inventory/group_vars/all/main.yml`) so a `git reset` can't strand them and
-  break the next tree deploy.
-- **Delete the now-in-repo roles/playbooks/tasks**; the checkout shrinks to
-  `inventory/` + `.vault-pass` + `.git`. Cluster changes then ride `scripts/ship`
-  through the leak-gate. Rollback stays available until then via
-  `PRECIS_DEPLOY_FROM_TREE= scripts/deploy`.
-
-`litellm` (slice 7) is the only role still uncarried — blocks a full `site.yml`
-bootstrap, not the routine `redeploy-precis.yml`. Design-of-record: `deploy/README.md`.
 
 ---
 
