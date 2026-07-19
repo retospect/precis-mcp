@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# scripts/db-thrash-review — advisory 14-day (biweekly) cadence nudge for the
+# prod-DB thrashing / index-hygiene review. Mirrors token-review: it does NOT
+# run the review (that's a judgment session against prod — see the runbook), it
+# only tells you WHEN one is due. Surfaced in `/whatneedsdoing`; always exits 0.
+#
+# The review prod-hops and reads pg_stat_* for: long-running/active queries,
+# seq-scan-heavy tables (missing-index candidates), never-used indexes (write
+# cost), and dead-tuple bloat — then interprets outliers and files findings.
+# Procedure + the exact queries + the dated log:
+#   docs/runbooks/db-thrash-review.md   (the `## Log` section is the clock)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+LOG="docs/runbooks/db-thrash-review.md"
+WINDOW_DAYS=14
+
+if [[ ! -f "$LOG" ]]; then
+    echo "db-thrash-review: DUE (no runbook at $LOG)"; exit 0
+fi
+
+# newest dated line in the `## Log` section (entries are newest-first, so head -1)
+last=$(awk '/^## Log/{f=1;next} f' "$LOG" \
+    | grep -oE '\*\*[0-9]{4}-[0-9]{2}-[0-9]{2}\*\*' | head -1 | tr -d '*' || true)
+
+if [[ -z "$last" ]]; then
+    echo "db-thrash-review: DUE (no dated entry in $LOG '## Log')"; exit 0
+fi
+
+# portable YYYY-MM-DD -> epoch seconds (BSD date on macOS, GNU date on CI/Linux)
+epoch_of() { date -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null; }
+last_e=$(epoch_of "$last" || true)
+now_e=$(date +%s)
+
+if [[ -z "$last_e" ]]; then
+    echo "db-thrash-review: last entry '$last' unparseable — check $LOG"; exit 0
+fi
+
+days=$(( (now_e - last_e) / 86400 ))
+if (( days > WINDOW_DAYS )); then
+    echo "db-thrash-review: DUE (last pass $last, ${days}d ago > ${WINDOW_DAYS}d) — prod-hop and run the four pg_stat scans; interpret outliers (ratio not absolute; lifetime idx_scan=0); file findings to OPEN-ITEMS/gripes; append a dated line to $LOG. See the runbook."
+else
+    echo "db-thrash-review: ok (last pass $last, ${days}d ago; due in $(( WINDOW_DAYS - days ))d)"
+fi
+exit 0

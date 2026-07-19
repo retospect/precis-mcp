@@ -27,6 +27,8 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.sweeper import (
     _REOPEN_MAX_ATTEMPTS,
+    _WORKER_LOG_GC_LOCK,
+    _gc_worker_logs,
     _reopen_transient_failed_embeds,
     _reopen_transient_failed_summaries,
     run_sweeper_pass,
@@ -40,6 +42,51 @@ def handler(hub: Hub) -> TodoHandler:
 
 def _id_of(body: str) -> int:
     return int(body.split("id=")[1].split()[0].rstrip(",.()"))
+
+
+def _insert_worker_log(store: Store, host: str, *, age_days: int) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs (ts, host, level, message) "
+            "VALUES (now() - make_interval(days => %s), %s, 'INFO', 'gc-test')",
+            (age_days, host),
+        )
+        conn.commit()
+
+
+def test_gc_worker_logs_prunes_aged_and_is_single_flight(store: Store) -> None:
+    # worker_logs is insert-only; the sweeper prunes rows past the 30d window,
+    # single-flighted (the sweeper runs fleet-wide). Tag by a uuid host so the
+    # shared precis_test DB doesn't perturb the assertion.
+    from uuid import uuid4
+
+    host = f"gc-{uuid4().hex[:8]}"
+
+    def _count() -> int:
+        with store.pool.connection() as conn:
+            return conn.execute(
+                "SELECT count(*) FROM worker_logs WHERE host = %s", (host,)
+            ).fetchone()[0]
+
+    for _ in range(3):
+        _insert_worker_log(store, host, age_days=100)  # past the window
+    for _ in range(2):
+        _insert_worker_log(store, host, age_days=1)  # fresh — keep
+    assert _count() == 5
+
+    # A held lock makes the pruner fast-fail (0), deleting nothing — the guard
+    # that stops the fleet from piling concurrent prunes onto the DB.
+    with store.pool.connection() as holder:
+        holder.execute("SELECT pg_advisory_lock(%s)", (_WORKER_LOG_GC_LOCK,))
+        holder.commit()
+        assert _gc_worker_logs(store) == 0
+        assert _count() == 5
+        holder.execute("SELECT pg_advisory_unlock(%s)", (_WORKER_LOG_GC_LOCK,))
+        holder.commit()
+
+    # Lock free: aged rows pruned, the 2 fresh rows survive.
+    _gc_worker_logs(store)
+    assert _count() == 2
 
 
 def _mint_running_job(

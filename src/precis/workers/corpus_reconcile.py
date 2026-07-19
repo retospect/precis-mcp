@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from precis.corpus_layout import corpus_pdf_dest, rebase_onto_local
@@ -40,6 +41,13 @@ from precis.store._pdf_ops import DuePdf
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
+
+#: app_state key prefix (per-host — the pass is node-local) holding the ISO-8601
+#: time this host's last scan found nothing due. While it's fresh we skip the
+#: whole ``pdfs_due_for_host`` enumeration rather than re-discover "nothing due"
+#: every tick (the full ``pdfs ⋈ refs ⋈ pdf_locations`` scan was firing per-minute
+#: on every host — pure waste once the ledger is warm).
+_LAST_EMPTY_KEY_PREFIX = "corpus_reconcile:last_empty:"
 
 
 def _refresh_hours() -> float:
@@ -56,6 +64,24 @@ def _refresh_hours() -> float:
         return max(0.1, float(raw))
     except ValueError:
         return 6.0
+
+
+def _scan_throttled(store: Store, host: str) -> bool:
+    """True when this host's last enumeration came up empty within the refresh
+    window — so skip the scan entirely this tick.
+
+    Set only on an *empty* scan (see the pass), so an active backlog keeps
+    draining every tick; once warm, the window matches ``_refresh_hours`` so the
+    scan resumes exactly when the freshest verdict can next age out. Any missing/
+    unparseable marker → not throttled (safe default: scan)."""
+    last = store.get_setting(_LAST_EMPTY_KEY_PREFIX + host)
+    if not last:
+        return False
+    try:
+        last_ts = datetime.fromisoformat(last)
+    except ValueError:
+        return False
+    return datetime.now(UTC) - last_ts < timedelta(hours=_refresh_hours())
 
 
 def _resolve_local(corpus_dirs: tuple[Path, ...], due: DuePdf) -> Path | None:
@@ -95,11 +121,18 @@ def run_corpus_reconcile_pass(
     error — surfaced as a counter so the absent count is visible in the
     worker log rollup).
     """
+    idle = BatchResult(handler="corpus_reconcile", claimed=0, ok=0, failed=0)
     if not corpus_dirs:
-        return BatchResult(handler="corpus_reconcile", claimed=0, ok=0, failed=0)
+        return idle
+    if _scan_throttled(store, host):
+        return idle  # last scan was empty and still fresh — don't re-enumerate
     due = store.pdfs_due_for_host(host, refresh_hours=_refresh_hours(), limit=limit)
     if not due:
-        return BatchResult(handler="corpus_reconcile", claimed=0, ok=0, failed=0)
+        # Nothing stale: record the quiet window so we skip the (full-table)
+        # scan until a verdict can next age out. Set ONLY here — an active
+        # backlog leaves the marker stale and keeps draining every tick.
+        store.set_setting(_LAST_EMPTY_KEY_PREFIX + host, datetime.now(UTC).isoformat())
+        return idle
     n_found = 0
     n_absent = 0
     for d in due:

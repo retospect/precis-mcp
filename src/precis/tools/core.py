@@ -455,7 +455,8 @@ def search(
     `folder=` scopes to a subtree (ADR 0045).
 
     `mode=` `'hybrid'` (default) / `'lexical'` (exact string) /
-    `'semantic'`. `angle=`+`like=` spray `n` diverse items;
+    `'semantic'` / `'verbatim'` (all query words present as chunk
+    keywords). `angle=`+`like=` spray `n` diverse items;
     `view='dreamable'`/`'stubs'` are special browses.
 
     Broad retrieval (paper): `queries=`/`answers=` (HyDE) fuse ranked
@@ -505,13 +506,14 @@ def search(
         "hybrid",
         "lexical",
         "semantic",
+        "verbatim",
     ):
         runtime = _get_runtime()
         return _validation_error(
             runtime.render_error(
                 BadInput(
                     f"unknown search mode {mode!r}",
-                    next="mode='hybrid' (default) | 'lexical' | 'semantic'",
+                    next="mode='hybrid' (default) | 'lexical' | 'semantic' | 'verbatim'",
                 )
             )
         )
@@ -1043,7 +1045,8 @@ _GET_HELP: dict[str, str] = {
 _SEARCH_HELP: dict[str, str] = {
     "q": "Free-text query (lexical + semantic, hybrid-fused).",
     "mode": "Ranking: 'hybrid' (default) | 'lexical' (exact keyword/"
-    "phrase/identifier, embedder-independent) | 'semantic'.",
+    "phrase/identifier, embedder-independent) | 'semantic' | 'verbatim' "
+    "(chunks whose KeyBERT keywords contain ALL query words; GIN, exact).",
     "kind": "Restrict to a kind (or comma-list, '*', omit for fan-out).",
     "scope": "Restrict to one ref's blocks (slug or numeric id).",
     "page_size": "Max results per page. Positive int ≤ 100 (default 10).",

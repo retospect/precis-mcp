@@ -311,6 +311,58 @@ def _route_log_retention_days() -> int:
         return route_log.DEFAULT_RETENTION_DAYS
 
 
+#: Rows to prune per sweep from ``worker_logs`` — bounded so the first drain of a
+#: long-unpruned table stays a short DELETE; successive per-minute passes finish
+#: the backlog, then it trickles at the aging rate.
+_WORKER_LOG_GC_BATCH = 50_000
+#: Fleet-wide single-flight key for the worker_logs pruner (ascii ``"wlgc"``).
+#: The sweeper runs on every host, so an unguarded retention DELETE would pile up
+#: — the exact failure ``route_log.gc`` had. Xact-scoped, auto-released at commit.
+_WORKER_LOG_GC_LOCK = 0x776C6763
+
+
+def _worker_logs_retention_days() -> int:
+    """Days to keep ``worker_logs`` rows before GC. The fleet's log sink is
+    insert-only and was previously unpruned (~200 MB/day, grew past 7 GB /
+    ~20M rows). ``PRECIS_WORKER_LOG_RETENTION_DAYS`` (default 30)."""
+    raw = os.environ.get("PRECIS_WORKER_LOG_RETENTION_DAYS")
+    if not raw:
+        return 30
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 30
+
+
+def _gc_worker_logs(store: Store) -> int:
+    """Prune ``worker_logs`` past the retention window, one bounded batch per
+    pass. Returns rows deleted. Two guards mirror the ``route_log.gc`` fix — the
+    same shape (a fleet-wide sweeper pass over a big log table):
+
+    * **Single-flight** — a fleet advisory lock (:data:`_WORKER_LOG_GC_LOCK`);
+      the sweeper runs on every host, so an unguarded DELETE would pile up.
+    * **Batched** — ``LIMIT`` per pass so the first drain of a long-unpruned
+      table (millions of aged rows) can't become one multi-second DELETE
+      holding a lock. Old rows sit at the head of the append-only heap, so the
+      unordered ``LIMIT`` subquery finds a batch without a dedicated ts index.
+    """
+    days = _worker_logs_retention_days()
+    with store.pool.connection() as conn:
+        got = conn.execute(
+            "SELECT pg_try_advisory_xact_lock(%s)", (_WORKER_LOG_GC_LOCK,)
+        ).fetchone()
+        if not got or not got[0]:
+            return 0  # another host is already pruning — don't pile on
+        cur = conn.execute(
+            "DELETE FROM worker_logs WHERE log_id IN ("
+            "  SELECT log_id FROM worker_logs"
+            "   WHERE ts < now() - %s::interval LIMIT %s)",
+            (f"{days} days", _WORKER_LOG_GC_BATCH),
+        )
+        conn.commit()
+        return cur.rowcount or 0
+
+
 #: app_state marker + refresh window for the heading-intent prune piggy-back
 #: (source-backfill slice 8b.4). Throttled to once per this window; between runs
 #: the sweeper does one cheap ``app_state`` read.
@@ -445,6 +497,9 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     reaped_calls = route_log.gc(store, retention_days=_route_log_retention_days())
     if reaped_calls:
         log.info("sweeper: GC'd %d stale llm_call_log row(s)", reaped_calls)
+    pruned_worker_logs = _gc_worker_logs(store)
+    if pruned_worker_logs:
+        log.info("sweeper: GC'd %d stale worker_logs row(s)", pruned_worker_logs)
     reopen_limit = _reopen_limit()
     reopened = _reopen_transient_failed_embeds(store, limit=reopen_limit)
     if reopened:

@@ -603,6 +603,84 @@ class BlocksMixin:
             rows = conn.execute(sql, params).fetchall()
         return [_unpack_search_row(r) for r in rows]
 
+    def search_blocks_keywords(
+        self,
+        *,
+        terms: list[str],
+        kind: str | None = None,
+        kinds: list[str] | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+        scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        exclude_ref_ids: list[int] | None = None,
+        include_speculative: bool = False,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        chunk_kinds: list[str] | None = None,
+        chunk_ids: list[int] | None = None,
+        card_kinds: tuple[str, ...] | None = None,
+    ) -> list[tuple[Block, Ref, float]]:
+        """Verbatim keyword search — chunks whose ``keywords`` array contains
+        **all** of ``terms`` (GIN ``@>`` containment against the per-chunk
+        KeyBERT terms, F20). The ``search(mode='verbatim')`` leg: exact,
+        embedder-independent term matching for when an agent wants a literal
+        keyword rather than fuzzy relevance. Shares every filter with the
+        lexical leg (kind/date/scope/tags/fences/year/chunk-scope/exclude).
+
+        Terms are lowercased (KeyBERT stores lowercased); empty ``terms``
+        returns nothing — an empty ``@>`` matches every row, never what a
+        search wants. No relevance gradient (containment is all-or-nothing),
+        so hits are ordered newest-chunk-first (``chunk_id`` DESC) and the
+        score is a constant ``0.0``.
+        """
+        norm = [t.lower() for t in terms if t.strip()]
+        if not norm:
+            return []
+        clauses = [
+            "r.deleted_at IS NULL",
+            "c.retired_at IS NULL",
+            _ord_card_clause(card_kinds),
+            "c.keywords @> %s::text[]",
+            *_block_noise_clauses(text_alias="c.text"),
+        ]
+        params: list[Any] = [norm]
+        kd_clauses, kd_params = _kind_date_where(kinds, kind, created_from, created_to)
+        clauses.extend(kd_clauses)
+        params.extend(kd_params)
+        if scope_ref_id is not None:
+            params.append(scope_ref_id)
+            clauses.append("c.ref_id = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag)
+            params.extend(tag_params)
+        if self._fence_speculative(tags, include_speculative):
+            clauses.append(speculative_fence("r"))
+        if self._fence_wiki(tags, kind):
+            clauses.append(wiki_fence("r"))
+        clauses.extend(_year_range_clauses(year_from, year_to))
+        clauses.extend(_chunk_scope_clauses(chunk_kinds, chunk_ids))
+        if exclude_ref_ids:
+            params.append(list(exclude_ref_ids))
+            clauses.append("c.ref_id <> ALL(%s)")
+        params.append(limit)
+        params.append(offset)
+
+        proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        sql = (
+            f"SELECT {proj}, {_REFS_COLS_ALIASED}, 0.0::float AS rank "
+            "FROM chunks c "
+            "JOIN refs r ON r.ref_id = c.ref_id "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY c.chunk_id DESC LIMIT %s OFFSET %s"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_unpack_search_row(r) for r in rows]
+
     def search_blocks_semantic(
         self,
         *,
@@ -950,6 +1028,28 @@ class BlocksMixin:
                 f"{_MULTI_LEG_HARD_CAP} (callers must bound queries=/answers=)"
             )
         m = (mode or "hybrid").strip().lower()
+        if m == "verbatim":
+            # Verbatim keyword match has no relevance gradient to fuse across
+            # reformulations — run it once on the primary query and return.
+            primary = next((qt for qt in q_texts if qt and qt.strip()), "")
+            return self.search_blocks_keywords(
+                terms=primary.split(),
+                kind=kind,
+                kinds=kinds,
+                created_from=created_from,
+                created_to=created_to,
+                scope_ref_id=scope_ref_id,
+                tags=tags,
+                limit=limit,
+                offset=offset,
+                exclude_ref_ids=exclude_ref_ids,
+                include_speculative=include_speculative,
+                year_from=year_from,
+                year_to=year_to,
+                chunk_kinds=chunk_kinds,
+                chunk_ids=chunk_ids,
+                card_kinds=card_kinds,
+            )
         run_lexical = m != "semantic"
         run_semantic = m != "lexical" and bool(query_vecs)
         # A semantic-only request with no usable vectors still answers via
@@ -1136,6 +1236,22 @@ class BlocksMixin:
         relevant first" within a mode, never comparable across modes).
         """
         m = (mode or "hybrid").strip().lower()
+        if m == "verbatim":
+            return self.search_blocks_keywords(
+                terms=q.split(),
+                kind=kind,
+                scope_ref_id=scope_ref_id,
+                tags=tags,
+                limit=limit,
+                offset=offset,
+                exclude_ref_ids=exclude_ref_ids,
+                include_speculative=include_speculative,
+                year_from=year_from,
+                year_to=year_to,
+                chunk_kinds=chunk_kinds,
+                chunk_ids=chunk_ids,
+                card_kinds=card_kinds,
+            )
         if m == "semantic" and query_vec is not None:
             return self.search_blocks_semantic(
                 query_vec=query_vec,

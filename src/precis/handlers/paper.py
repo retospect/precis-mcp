@@ -1151,7 +1151,7 @@ class PaperHandler(Handler):
             # and ``mode='lexical'`` skips embedding entirely.
             q_texts = [q, *extra_queries]
             query_vecs: list[list[float]] = []
-            if (mode or "hybrid").strip().lower() != "lexical":
+            if (mode or "hybrid").strip().lower() not in ("lexical", "verbatim"):
                 query_vecs = _embed_query_batch(
                     self.embedder, [q, *extra_queries, *hyde_answers]
                 )

@@ -4,6 +4,8 @@ and hybrid routing (incl. the no-embedder degrade)."""
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 from precis.embedder import MockEmbedder
 from precis.store import BlockInsert, Store
 
@@ -60,6 +62,42 @@ def test_hybrid_default_matches_fused(store: Store) -> None:
     via_fused = store.search_blocks_fused(q="nitrate", query_vec=qv, kind="paper")
     assert [h[0].id for h in via_dispatch] == [h[0].id for h in via_fused]
     assert rid  # seeded
+
+
+def test_verbatim_mode_requires_all_keywords_present(store: Store) -> None:
+    # Verbatim = chunks whose KeyBERT `keywords` array contains ALL query
+    # words (`@>` containment, AND). Unique tag so the shared DB can't perturb.
+    tag = uuid4().hex[:8]
+    rid = _seed(store, slug=f"vb{tag}", blocks=_BLOCKS, embed=False)
+    with store.pool.connection() as conn:
+        # ord=0 carries both terms; ord=2 carries only one.
+        conn.execute(
+            "UPDATE chunks SET keywords = %s WHERE ref_id = %s AND ord = 0",
+            ([f"nitrate{tag}", f"copper{tag}"], rid),
+        )
+        conn.execute(
+            "UPDATE chunks SET keywords = %s WHERE ref_id = %s AND ord = 2",
+            ([f"nitrate{tag}"], rid),
+        )
+        conn.commit()
+
+    # Both terms present as keywords → exactly the ord=0 chunk.
+    hits = store.search_blocks(
+        q=f"nitrate{tag} copper{tag}", mode="verbatim", kind="paper"
+    )
+    assert [h[1].id for h in hits] == [rid]
+    assert "copper" in hits[0][0].text.lower()
+
+    # AND semantics: a term absent from every keyword set → no hit (even though
+    # `nitrate{tag}` alone appears on two chunks).
+    assert (
+        store.search_blocks(
+            q=f"nitrate{tag} absent{tag}", mode="verbatim", kind="paper"
+        )
+        == []
+    )
+    # Empty query → nothing (an empty `@>` would otherwise match every row).
+    assert store.search_blocks(q="   ", mode="verbatim", kind="paper") == []
 
 
 def test_lexical_mode_ignores_supplied_vector(store: Store) -> None:

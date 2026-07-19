@@ -32,7 +32,7 @@ search(kind='paper', q='X', queries=['rephrase 1','rephrase 2'],
        per_paper=2, page_size=30)                   # broad / high-recall (see below)
 ```
 
-## Ranking mode — hybrid (default), lexical, or semantic
+## Ranking mode — hybrid (default), lexical, semantic, or verbatim
 
 By default `search` is **hybrid**: it fuses a lexical pass (Postgres
 full-text) with a semantic pass (embeddings) by reciprocal-rank fusion.
@@ -44,10 +44,12 @@ the ranking with `mode=`:
 | `'hybrid'` *(default)* | RRF of lexical + semantic. | General recall — concepts *and* keywords. |
 | `'lexical'` | Postgres FTS only; no embedding. | You know the **exact string** — an identifier, acronym, surname, code token, a numeric like `1.523 eV`, or an exact phrase. Embeddings blur these; lexical is precise and deterministic. Also the honest tool when the embedder is down (hybrid silently degrades to this anyway). |
 | `'semantic'` | Embedding cosine only. | Pure conceptual / paraphrase recall where the wording won't match but the meaning does, and keyword noise is hurting precision. Degrades to lexical if the embedder is unavailable. |
+| `'verbatim'` | Chunks whose per-chunk **KeyBERT keywords** contain **all** your query words (GIN `@>` containment; embedder-independent). No relevance gradient — newest chunk first. | You want only chunks a topic model actually tagged with your term(s) — a topical filter tighter than FTS. Each query word must appear as a *distinct* keyword, so it's terms, not phrases (`'oxygen evolution'` = both words present, not the 2-gram). Empty query returns nothing. |
 
 ```python
 search(kind='paper', q='MoS2 monolayer', mode='lexical')   # exact term recall
 search(q='ways to stop catalyst poisoning', mode='semantic') # paraphrase recall
+search(kind='paper', q='perovskite stability', mode='verbatim') # chunks keyworded BOTH terms
 ```
 
 `mode=` works on a single kind **and** across the cross-kind fan-out.

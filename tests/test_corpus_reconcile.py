@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
+
+import pytest
 
 from precis.corpus_layout import rebase_onto_local
 from precis.store import Store
 from precis.store._pdf_ops import DuePdf
 from precis.workers.corpus_reconcile import (
+    _LAST_EMPTY_KEY_PREFIX,
     _resolve_local,
+    _scan_throttled,
     run_corpus_reconcile_pass,
 )
 
@@ -124,3 +130,36 @@ def test_reconcile_no_corpus_dirs_is_noop(store: Store) -> None:
     """No roots configured on this node → the pass claims nothing."""
     r = run_corpus_reconcile_pass(store, (), "melchior", limit=50)
     assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
+
+
+def test_scan_throttled_skips_enumeration_when_marker_fresh(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh per-host 'last empty' marker suppresses the full
+    ``pdfs_due_for_host`` enumeration entirely — the fix for the every-tick
+    full-table scan. Unique host so the shared app_state can't perturb it."""
+    host = f"thr-{uuid4().hex[:8]}"
+    store.set_setting(_LAST_EMPTY_KEY_PREFIX + host, datetime.now(UTC).isoformat())
+    calls: list[int] = []
+
+    def _spy(*a: object, **k: object) -> list[DuePdf]:
+        calls.append(1)
+        return []
+
+    monkeypatch.setattr(store, "pdfs_due_for_host", _spy)
+    r = run_corpus_reconcile_pass(store, (tmp_path,), host, limit=50)
+    assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
+    assert calls == []  # throttled: the enumeration never ran
+
+
+def test_empty_scan_stamps_marker_then_throttles(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When a scan finds nothing due, the pass records the quiet window so the
+    next tick is throttled — set ONLY on empty, so a backlog keeps draining."""
+    host = f"thr-{uuid4().hex[:8]}"
+    monkeypatch.setattr(store, "pdfs_due_for_host", lambda *a, **k: [])
+    assert store.get_setting(_LAST_EMPTY_KEY_PREFIX + host) is None
+    run_corpus_reconcile_pass(store, (tmp_path,), host, limit=50)
+    assert store.get_setting(_LAST_EMPTY_KEY_PREFIX + host) is not None
+    assert _scan_throttled(store, host) is True
