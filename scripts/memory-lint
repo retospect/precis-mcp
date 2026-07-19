@@ -114,15 +114,36 @@ if (( CURRENCY )); then
         findings=()
         has_open=0; grep -qiE "$open_re" "$tf" && has_open=1
 
+        # A memory RECORDS A LANDING when a positive "SHIPPED/MERGED … <sha>" line
+        # cites a commit that is actually an ancestor of main. When it does, a gone
+        # branch name elsewhere in that memory is just provenance (the landing is
+        # already on record) — NOT a suspect. This is what kills the dominant
+        # false-positive: historical branch names in shipped/deployed threads.
+        # (Coarse by design: a memory that mixes a landed slice with a genuinely-
+        # stranded branch is suppressed too — the judgment pass reads those threads
+        # regardless; note "not shipped/unshipped/not deployed" lines are excluded so
+        # an unshipped thread like open-namespace-teardown still surfaces.)
+        has_landing=0
+        while IFS= read -r _line; do
+            printf '%s\n' "$_line" | grep -qiE 'shipped|merged' || continue
+            printf '%s\n' "$_line" | grep -qiE 'not +shipped|unshipped|not +deployed|not +merged' && continue
+            while IFS= read -r s; do
+                [[ -z "$s" ]] && continue
+                git merge-base --is-ancestor "$s" main 2>/dev/null && { has_landing=1; break; }
+            done < <(printf '%s\n' "$_line" | grep -oiE '\b[0-9a-f]{7,40}\b' | grep -iE '[a-f]')
+            (( has_landing )) && break
+        done < "$tf"
+
         # (a) branch / worktree names — only when the memory claims LIVE unshipped
-        #     work (has_open): a named branch now gone is shipped-and-pruned (prune
-        #     the thread) OR stranded dark work (recover it) — either way, resolve.
+        #     work (has_open) AND records no real landing (! has_landing): a named
+        #     branch now gone is shipped-and-pruned (prune the thread) OR stranded
+        #     dark work (recover it) — either way, resolve.
         #     Require a hyphen: this repo's branches/worktrees are always kebab-case
         #     (worktrees are `adjective-verbing-noun`), so a hyphen cleanly rejects
         #     English words that follow "branch"/"worktree" in prose ("branch
         #     deleted", "worktree files"); bare real names (newenv, bettersearch)
         #     still surface via their hyphenated `worktree-<name>` spelling.
-        if (( has_open )); then
+        if (( has_open )) && (( ! has_landing )); then
             while IFS= read -r n; do
                 [[ -z "$n" ]] && continue
                 n="${n%%[.,;:)\`]*}"                         # strip trailing punctuation
@@ -138,11 +159,18 @@ if (( CURRENCY )); then
         # "sha unknown to repo" mostly false-positive. Check #2 already covers the
         # only reliable direction — all cited shas in main + no open-work → landed.
 
-        # (b) repo paths the memory names that no longer exist on main.
+        # (b) repo paths the memory names that no longer exist on main. Anchor the
+        #     match to a CLEAN boundary (start-of-line or a non-path char) so a repo
+        #     path embedded inside a FOREIGN one doesn't false-positive as a missing
+        #     precis-mcp path: /opt/shared/scripts/pg_backup.sh (a cluster host path)
+        #     and infrastructure/…/scripts/regen-secrets-env.sh (the infra repo) both
+        #     end in `scripts/…` but neither is ours — the `/` before `scripts` is a
+        #     path char, so the boundary anchor rejects them.
         while IFS= read -r p; do
             [[ -z "$p" ]] && continue
             [[ -e "$MAIN_ROOT/$p" ]] || findings+=("path $p missing on main (renamed/deleted → fix or drop the ref)")
-        done < <(grep -oE '(src|docs|scripts|tests)/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+' "$tf" | sort -u)
+        done < <(grep -oE '(^|[^A-Za-z0-9_/.-])(src|docs|scripts|tests)/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+' "$tf" \
+                   | sed -E 's/^[^A-Za-z0-9]+//' | sort -u)
 
         if (( ${#findings[@]} )); then
             cur_suspect=$((cur_suspect+1))
