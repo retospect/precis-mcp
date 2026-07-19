@@ -40,6 +40,7 @@ class TestPure:
 
     def test_propose_fix_filters_hallucinated_and_unchanged(self, monkeypatch) -> None:
         import precis.utils.claude_p as cp
+        from precis.utils.llm import router
 
         req = FixRequest(
             note_id=1,
@@ -60,7 +61,11 @@ class TestPure:
                 cost_usd=None,
             )
 
-        monkeypatch.setattr(cp, "call_claude_p", fake_call)
+        # propose_fix routes through the ADR 0046 router (unit 4b); stub the
+        # subprocess helper the CLOUD_SMALL/claude_p transport wraps, so the
+        # real dispatch → ClaudePProvider → result_from_claude_p path runs and
+        # LlmResult.data carries the parsed dict.
+        monkeypatch.setattr(router, "call_claude_p", fake_call)
         out = propose_fix(req)
         assert out == {"Text": "new corrected"}
 

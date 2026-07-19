@@ -11,6 +11,35 @@ is the historical observation log.
 
 ---
 
+## 🕯️ Dark-switch audit — orphaned vs staged feature flags
+
+Status: `open` · Severity: `polish` · Owner: repo-wide
+
+Two related items, surfaced 2026-07-19 during the ADR-0046 unit-4b (factory
+LLM-switch) work when the tex Layer-2 fixer turned out to be a forgotten
+default-off hook.
+
+- **Revisit `PRECIS_LAYER2_FIXER` (tex_llm_fix).** `src/precis/utils/tex_llm_fix.py`
+  (~220 lines, self-contained) is the Layer-2 chktex LLM-fixer on the `kind='tex'`
+  put path, gated behind `PRECIS_LAYER2_FIXER=1` (**default off**), one caller
+  (`handlers/plaintext.py:~650`). Drafts are the authoring source of truth now, so
+  this dark hook is likely superseded — but it's low-complexity and harmless, so
+  **leave it running dark** and decide keep-vs-delete deliberately later (not a
+  mechanical rip: removing it also drops the Layer-2 fix-*hint* on tex puts).
+- **Audit the other dark switches.** Enumerate every default-off feature flag and
+  classify each as **intentional-staged** (Phase-2 provisioning behind unset flags —
+  the deliberate pattern) vs **orphaned/superseded** (like `PRECIS_LAYER2_FIXER`) vs
+  **experimental-abandoned**; decide keep/remove per flag. Starter list to triage:
+  `PRECIS_LAYER2_FIXER`, `PRECIS_BACKLOG_GROOM_ENABLED` (+ the container `fix_gripe`
+  job_type it feeds — never produced a `gripe_*` branch), `PRECIS_FRICTION_REFLECT`,
+  `ROLE3:own`, `PRECIS_AGENT_CONTAINER`, `PRECIS_SCHEDULER_ENABLED`,
+  `PRECIS_MCP_DB_ROLE_ENFORCE`, `PRECIS_LLM_BACKEND`/`PRECIS_LLM_FAILOVER`. (The
+  *intentional* dark flags — the whole factory Phase-2 set — are fine; the goal is
+  to catch the *forgotten* ones.) Note: the **laptop fixer** `PRECIS_FIXER_AUTONOMY`
+  is intentional + documented (report/ship/full), not a candidate for removal.
+
+---
+
 ## 🧹 Slice 12a — finish the `deploy/` migration (kill the cluster hybrid)
 
 Status: `open` (deferred to Phase-2 window, task #19) · Severity: `feature` ·
@@ -191,8 +220,8 @@ Daily reading-brief + nidra casts shipped + live. Owner: `reading/*`,
 ## 🗺️ Quest layer
 
 All slices (1 structure, 2 reweighting, 3 gaps+health, 4a–4e autonomous loop)
-built + shipped + deployed. Design `docs/proposals/quest-layer.md`; skill
-`precis-quest-help`; tests `tests/test_quest*.py`. Loop currently dormant (all
+built + shipped + deployed. Skill `precis-quest-help`; tests
+`tests/test_quest*.py`. Loop currently dormant (all
 quests paused 2026-07-16). Remaining:
 
 - **Link real mission quests to projects + activate the loop** *(feature, open
