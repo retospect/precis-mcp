@@ -377,20 +377,29 @@ def _report_resource_slots(store: object, host: str) -> str:
     a short ``gpu=1,podman=2`` summary for the CLI line (``n/a`` on error).
     """
     from precis.workers.capability_probe import (
-        mem_capacity,
+        RETRACTABLE_SOFT_SIGNALS,
         probe_host_resources,
         probe_soft_signals,
         resource_kind,
+        soft_capacity,
     )
 
     try:
         evaluated = probe_host_resources()
         kinds = {r: resource_kind(r) for r in evaluated}
         store.sync_host_resource_slots(host, evaluated, kinds=kinds)  # type: ignore[attr-defined]
-        # Soft memory-pressure gauge (6d-deferred): written free-first, read as
-        # a claim veto for heavy jobs. Best-effort, same as the hard sync.
-        for resource, free in probe_soft_signals().items():
-            store.sync_soft_signal(host, resource, free, mem_capacity())  # type: ignore[attr-defined]
+        # Soft gauges: memory-pressure headroom (6d) + container_agent capability.
+        # Written free-first, read as a claim veto / rendered as a console health
+        # chip. Each carries its own capacity (mem is multi-bucket, container_agent
+        # 0/1) — hence per-resource ``soft_capacity``, not one stamp for all.
+        soft = probe_soft_signals()
+        for resource, free in soft.items():
+            store.sync_soft_signal(host, resource, free, soft_capacity(resource))  # type: ignore[attr-defined]
+        # Retract a retractable gauge that dropped out (e.g. container_agent once
+        # a host opts out of PRECIS_AGENT_CONTAINER) so the console stops showing
+        # a stale chip. mem is never retractable — its absence means "leave".
+        for resource in RETRACTABLE_SOFT_SIGNALS - soft.keys():
+            store.delete_soft_signal(host, resource)  # type: ignore[attr-defined]
     except Exception:
         log.warning("heartbeat: resource-slot probe/sync failed", exc_info=True)
         return "n/a"

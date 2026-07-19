@@ -107,6 +107,25 @@ def test_slots_by_host_flags_memory_pressure(store) -> None:
     assert gpu["pressure"] is None
 
 
+def test_slots_by_host_renders_container_agent_capability(store) -> None:
+    """The soft ``container_agent`` gauge renders as its own green/red chip: a
+    verified host is 'ok' (green), an opted-in-but-degraded host is 'crit' (red)
+    — surfaced, not silent. Its label + tooltip differ from mem's RAM copy."""
+    store.sync_soft_signal("h-ok", "container_agent", 1, 1)  # verified
+    store.sync_soft_signal("h-degraded", "container_agent", 0, 1)  # opted in, can't
+    by_host = _slots_by_host(store)
+
+    def _ca(host: str) -> dict:
+        return {s["resource"]: s for s in by_host[host]}["container_agent"]
+
+    ok, bad = _ca("h-ok"), _ca("h-degraded")
+    assert ok["pressure"] == "ok" and bad["pressure"] == "crit"
+    # Its own label (not "RAM") and a capability-flavoured tooltip.
+    assert ok["label"] == "agent" and bad["label"] == "agent"
+    assert "verified" in ok["ptitle"].lower()
+    assert "degraded" in bad["ptitle"].lower()
+
+
 def test_activity_ignores_non_batchresult_rows(store) -> None:
     """A payload without a numeric ok/failed must not break the cast."""
     with store.pool.connection() as conn:

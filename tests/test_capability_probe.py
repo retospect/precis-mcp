@@ -253,3 +253,73 @@ def test_soft_signal_override_clamped_to_capacity(
 ) -> None:
     monkeypatch.setenv("PRECIS_MEM_PRESSURE_FREE", "9")
     assert cap.probe_soft_signals()["mem"] == cap.mem_capacity()
+
+
+# ── the container_agent verified-capability soft gauge ───────────────────────
+
+
+def _patch_container(
+    monkeypatch: pytest.MonkeyPatch, *, enabled: bool, capable: bool | Exception
+) -> None:
+    from precis.workers.executors import agent_container
+
+    monkeypatch.setattr(agent_container, "container_agent_enabled", lambda: enabled)
+
+    def _cap(*a, **k):
+        if isinstance(capable, Exception):
+            raise capable
+        return capable
+
+    monkeypatch.setattr(agent_container, "container_capability_ok", _cap)
+
+
+def test_container_agent_omitted_when_not_opted_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host that never opted in advertises no container_agent row at all —
+    silence there is correct (the gauge means 'you asked; here's whether it
+    works'). ``mem`` is still reported."""
+    monkeypatch.setenv("PRECIS_MEM_PRESSURE_FREE", "2")
+    _patch_container(monkeypatch, enabled=False, capable=True)
+    assert cap.probe_soft_signals() == {"mem": 2}
+
+
+def test_container_agent_verified_reports_full(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_MEM_PRESSURE_FREE", "2")
+    _patch_container(monkeypatch, enabled=True, capable=True)
+    sig = cap.probe_soft_signals()
+    assert sig["container_agent"] == cap.soft_capacity("container_agent")
+    assert cap.soft_capacity("container_agent") == 1
+
+
+def test_container_agent_degraded_reports_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opted in but the runtime/image/token probe fails ⇒ 0 (degraded), so the
+    console renders it red instead of the host silently running in-proc."""
+    monkeypatch.setenv("PRECIS_MEM_PRESSURE_FREE", "2")
+    _patch_container(monkeypatch, enabled=True, capable=False)
+    assert cap.probe_soft_signals()["container_agent"] == 0
+
+
+def test_container_agent_probe_error_reads_degraded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raising capability probe on an opted-in host is fail-*visible*: 0, not
+    omitted — an unverifiable opted-in host must not read as healthy."""
+    monkeypatch.setenv("PRECIS_MEM_PRESSURE_FREE", "2")
+    _patch_container(monkeypatch, enabled=True, capable=RuntimeError("boom"))
+    assert cap.probe_soft_signals()["container_agent"] == 0
+
+
+def test_container_agent_kind_is_soft() -> None:
+    assert cap.resource_kind("container_agent") == "soft"
+
+
+def test_soft_capacity_unknown_defaults_to_one() -> None:
+    assert cap.soft_capacity("frobnicator") == 1
+
+
+def test_retractable_soft_signals_covers_container_not_mem() -> None:
+    """container_agent must be retracted on opt-out (absence = definitive);
+    mem must NOT be (absence = unmeasurable → leave)."""
+    assert "container_agent" in cap.RETRACTABLE_SOFT_SIGNALS
+    assert "mem" not in cap.RETRACTABLE_SOFT_SIGNALS

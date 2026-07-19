@@ -43,6 +43,10 @@ _STALE_AFTER_S = 600
 #: How far back the per-host "recent errors" chip looks.
 _ERROR_WINDOW = "6 hours"
 
+#: The soft verified-capability gauge (mirrors ``capability_probe``); rendered
+#: as a green/red "agent" chip rather than the ``mem`` RAM-pressure copy.
+_CONTAINER_AGENT_RESOURCE = "container_agent"
+
 #: Human-readable mouseover copy per ``resource_slots.resource``. Keyed by
 #: resource name; ``_slot_desc`` falls back to a generic line for unknowns so a
 #: newly-probed resource still gets *a* tooltip rather than none.
@@ -62,6 +66,12 @@ _RESOURCE_DESC = {
         "Higher free = more RAM headroom; 0 = under pressure (jetsam risk on a "
         "Mac). Watch this on any host running a container runtime."
     ),
+    "container_agent": (
+        "Agent-container capability — a verified 0/1 gauge, shown only where "
+        "the operator opted in (PRECIS_AGENT_CONTAINER). 1 = the runtime, image "
+        "and auth token all check out; 0 = degraded (opted in but can't launch, "
+        "so agentic passes fall back in-process rather than failing)."
+    ),
 }
 
 
@@ -72,6 +82,34 @@ def _slot_desc(resource: str, free: int, capacity: int, kind: str) -> str:
         f"'{resource}' capacity on this host ({'headroom gauge' if kind == 'soft' else 'parallel slots'}).",
     )
     return f"{resource}: {free}/{capacity} — {base}"
+
+
+def _soft_gauge_render(
+    resource: str, host: str, free: int, capacity: int, pressure: str
+) -> tuple[str, str]:
+    """Label + mouseover for a soft gauge chip (``mem`` / ``container_agent``).
+
+    Each soft gauge renders as a coloured chip (crit=red … ok=green) but reads
+    differently: ``mem`` is RAM-pressure headroom (0 = jetsam risk), while
+    ``container_agent`` is a verified-capability flag (0 = degraded, opted in but
+    can't launch). Both share the colour ramp; only the label + copy differ."""
+    if resource == _CONTAINER_AGENT_RESOURCE:
+        state = (
+            "verified — can launch agent containers"
+            if free > 0
+            else "degraded — opted in (PRECIS_AGENT_CONTAINER) but can't launch; "
+            "agentic passes fall back in-process"
+        )
+        return "agent", f"Agent-container capability on {host}: {state}."
+    word = (
+        "under pressure"
+        if pressure == "crit"
+        else ("low" if pressure == "warn" else "plenty")
+    )
+    return "RAM", (
+        f"Memory-pressure headroom on {host}: {free}/{capacity} ({word}). "
+        "0 = jetsam risk."
+    )
 
 
 #: All-hosts wildcard shown first in the host selector.
@@ -146,15 +184,18 @@ def _slots_by_host(store: Any) -> dict[str, list[dict[str, Any]]]:
     out: dict[str, list[dict[str, Any]]] = {}
     for host, resource, capacity, free, kind in rows:
         cap_i, free_i = int(capacity), int(free)
-        # Soft gauges (the 6d memory-pressure signal) render as a coloured
-        # pressure indicator, not a plain capability chip: free is measured
-        # headroom (0 = under pressure … capacity = plenty). RAM pressure is
-        # the thing to watch when a host runs a container runtime (OrbStack /
-        # podman VMs eat memory), so surface it as ok/warn/crit.
+        # Soft gauges (6d memory-pressure + the container_agent capability
+        # flag) render as a coloured indicator, not a plain capability chip:
+        # free is measured headroom / a 0-1 verified flag (0 = under pressure or
+        # degraded … capacity = plenty / verified). Colour ok/warn/crit; the
+        # per-gauge label + tooltip come from ``_soft_gauge_render``.
         pressure: str | None = None
+        label: str | None = None
+        ptitle: str | None = None
         if kind == "soft" and cap_i > 0:
             ratio = free_i / cap_i
             pressure = "crit" if free_i == 0 else ("warn" if ratio < 0.5 else "ok")
+            label, ptitle = _soft_gauge_render(resource, host, free_i, cap_i, pressure)
         out.setdefault(host, []).append(
             {
                 "resource": resource,
@@ -162,6 +203,8 @@ def _slots_by_host(store: Any) -> dict[str, list[dict[str, Any]]]:
                 "free": free_i,
                 "kind": kind,
                 "pressure": pressure,
+                "label": label,
+                "ptitle": ptitle,
                 "desc": _slot_desc(resource, free_i, cap_i, kind),
             }
         )

@@ -51,6 +51,28 @@ _SOFT = "soft"
 _MEM_RESOURCE = "mem"
 _MEM_CAP = 2
 
+#: The soft ``container_agent`` gauge + its capacity. Unlike ``mem`` (a live
+#: headroom bucket), this is a binary verified-capability readout: reported
+#: ONLY on a host that opted into the container executor
+#: (``PRECIS_AGENT_CONTAINER``), as ``1`` = the run-time/image/token probe
+#: passes (verified) or ``0`` = opted-in-but-incapable (degraded — the selection
+#: seam falls back in-proc). A host that never opted in reports nothing, so the
+#: gauge means "you asked for containers here; here's whether they work", which
+#: the ``/factory`` strip renders green/red instead of failing silently.
+_CONTAINER_AGENT_RESOURCE = "container_agent"
+_CONTAINER_AGENT_CAP = 1
+
+#: Nominal capacity per soft resource, for the heartbeat writer (each soft gauge
+#: has its own — ``mem`` is a multi-bucket headroom, ``container_agent`` is 0/1).
+_SOFT_CAPS = {_MEM_RESOURCE: _MEM_CAP, _CONTAINER_AGENT_RESOURCE: _CONTAINER_AGENT_CAP}
+
+#: Soft gauges the heartbeat must DELETE when they drop out of
+#: :func:`probe_soft_signals` (definitively absent), mirroring the hard-probe
+#: delete-on-absent discipline. ``mem`` is NOT here: its absence is ``None`` =
+#: "unmeasurable, leave the row". ``container_agent`` is reported only on an
+#: opted-in host, so its absence means "opted out → retract the stale chip".
+RETRACTABLE_SOFT_SIGNALS = frozenset({_CONTAINER_AGENT_RESOURCE})
+
 
 def capability_vocabulary() -> frozenset[str]:
     """Every capability token any service declares via ``requires``.
@@ -210,7 +232,7 @@ def resource_kind(resource: str) -> str:
     The 6b capability probes are ``hard`` (counted, refuse-past-0); the
     memory-pressure signal is ``soft`` (advisory — a claim veto, not a slot).
     """
-    return _SOFT if resource == _MEM_RESOURCE else _HARD
+    return _SOFT if resource in _SOFT_CAPS else _HARD
 
 
 def _mem_free_bucket() -> int | None:
@@ -275,21 +297,55 @@ def _macos_mem_free_pct() -> float | None:
     return float(m.group(1)) if m else None
 
 
+def _container_agent_signal() -> int | None:
+    """This host's ``container_agent`` gauge, or ``None`` to omit the row.
+
+    ``None`` on a host that did NOT opt into the container executor — the gauge
+    is meaningless there, so no row is advertised. On an opted-in host it's the
+    verified-capability probe reduced to a binary: ``1`` (can launch) /
+    ``0`` (degraded — opted in but the run-time/image/token check fails, so the
+    selection seam runs in-proc). Any probe error ⇒ ``0`` (fail-*visible*: an
+    opted-in host we can't verify reads as degraded on the console, not green).
+    """
+    # Lazy import (intentional): ``agent_container._container_bin`` imports
+    # ``capability_probe.container_runtime`` the same way, so the two modules
+    # depend on each other in both directions. Both imports MUST stay
+    # function-local — hoisting either to module level reintroduces a cycle.
+    from precis.workers.executors.agent_container import (
+        container_agent_enabled,
+        container_capability_ok,
+    )
+
+    if not container_agent_enabled():
+        return None
+    try:
+        return _CONTAINER_AGENT_CAP if container_capability_ok() else 0
+    except Exception:
+        log.warning("capability_probe: container_agent probe raised", exc_info=True)
+        return 0
+
+
 def probe_soft_signals() -> dict[str, int | None]:
-    """This host's soft (advisory) signals — currently memory pressure.
+    """This host's soft (advisory) signals — memory pressure + agent capability.
 
     Returns ``{resource: free|None}`` (``None`` = unmeasurable → leave the row).
     Separate from :func:`probe_host_resources` because soft signals are a gauge
     the heartbeat writes with :meth:`Store.sync_soft_signal` (free set directly,
     not the hard-capability delta path), and they're read as a claim veto, not
     reserved. A raising probe is swallowed to ``None`` (heartbeat is
-    liveness-critical).
+    liveness-critical). ``container_agent`` is present only on an opted-in host
+    (see :func:`_container_agent_signal`).
     """
+    signals: dict[str, int | None] = {}
     try:
-        return {_MEM_RESOURCE: _mem_free_bucket()}
+        signals[_MEM_RESOURCE] = _mem_free_bucket()
     except Exception:
         log.warning("capability_probe: soft-signal probe raised", exc_info=True)
-        return {_MEM_RESOURCE: None}
+        signals[_MEM_RESOURCE] = None
+    container = _container_agent_signal()
+    if container is not None:
+        signals[_CONTAINER_AGENT_RESOURCE] = container
+    return signals
 
 
 def mem_capacity() -> int:
@@ -297,10 +353,22 @@ def mem_capacity() -> int:
     return _MEM_CAP
 
 
+def soft_capacity(resource: str) -> int:
+    """Nominal capacity of a soft gauge, for the heartbeat writer.
+
+    Each soft resource carries its own capacity — ``mem`` is a multi-bucket
+    headroom gauge, ``container_agent`` a 0/1 verified-capability flag — so the
+    heartbeat must not stamp one capacity across every soft signal. Unknown
+    resources default to ``1`` (a plain present/absent gauge)."""
+    return _SOFT_CAPS.get(resource, 1)
+
+
 __all__ = [
+    "RETRACTABLE_SOFT_SIGNALS",
     "capability_vocabulary",
     "mem_capacity",
     "probe_host_resources",
     "probe_soft_signals",
     "resource_kind",
+    "soft_capacity",
 ]

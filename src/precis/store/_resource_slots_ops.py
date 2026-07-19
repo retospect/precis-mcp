@@ -82,6 +82,12 @@ _UPSERT_GAUGE = (
     "  updated_at = now()"
 )
 
+#: Retract a soft gauge (e.g. ``container_agent`` after a host opts out). Scoped
+#: to ``kind='soft'`` so it can never delete a same-named hard capability row.
+_DELETE_GAUGE = (
+    "DELETE FROM resource_slots WHERE host = %s AND resource = %s AND kind = 'soft'"
+)
+
 
 # ── Reserve / release (slice 6c) ──────────────────────────────────────────
 #
@@ -208,6 +214,28 @@ class ResourceSlotsMixin:
 
         def _apply(c: Connection) -> None:
             c.execute(_UPSERT_GAUGE, (host, resource, capacity, max(0, free), "soft"))
+
+        if conn is not None:
+            _apply(conn)
+        else:
+            with self.pool.connection() as c:
+                with c.transaction():
+                    _apply(c)
+
+    def delete_soft_signal(
+        self, host: str, resource: str, *, conn: Connection | None = None
+    ) -> None:
+        """Retract a soft gauge row for a host — idempotent (absent → no-op).
+
+        The soft counterpart to the hard path's delete-on-absent discipline:
+        :meth:`sync_soft_signal` can only leave a row (``free is None``) or set
+        it, never remove it, so a gauge that becomes *definitively* absent (a
+        host that opted out of ``PRECIS_AGENT_CONTAINER`` no longer advertising
+        ``container_agent``) would otherwise render a stale chip on ``/factory``
+        forever. Scoped to ``kind='soft'`` so a hard row is never touched."""
+
+        def _apply(c: Connection) -> None:
+            c.execute(_DELETE_GAUGE, (host, resource))
 
         if conn is not None:
             _apply(conn)

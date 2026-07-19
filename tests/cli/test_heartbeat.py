@@ -205,6 +205,7 @@ class _RecordingStore:
         self.boom = boom
         self.synced: tuple | None = None
         self.soft: list[tuple] = []
+        self.deleted: list[tuple] = []
 
     def sync_host_resource_slots(self, host, slots, *, kinds=None) -> None:
         if self.boom:
@@ -215,6 +216,11 @@ class _RecordingStore:
         if self.boom:
             raise RuntimeError("db down")
         self.soft.append((host, resource, free, capacity))
+
+    def delete_soft_signal(self, host, resource, *, conn=None) -> None:
+        if self.boom:
+            raise RuntimeError("db down")
+        self.deleted.append((host, resource))
 
 
 def test_report_resource_slots_syncs_and_summarises(monkeypatch) -> None:
@@ -239,6 +245,67 @@ def test_report_resource_slots_syncs_and_summarises(monkeypatch) -> None:
     assert kinds == {"gpu": "hard", "podman": "hard", "tts": "hard"}
     # The soft memory gauge is written free-first with the nominal capacity.
     assert store.soft == [("melchior", "mem", 0, capability_probe.mem_capacity())]
+
+
+def test_report_resource_slots_threads_per_resource_soft_capacity(monkeypatch) -> None:
+    """Each soft gauge is written with ITS OWN capacity, not one stamp for all.
+
+    Regression for the pre-fix bug where the heartbeat passed ``mem_capacity()``
+    for every soft signal — a ``container_agent`` 0/1 flag would have been
+    advertised with mem's capacity of 2, mis-rendering the console."""
+    from precis.workers import capability_probe
+
+    monkeypatch.setattr(capability_probe, "probe_host_resources", lambda: {})
+    monkeypatch.setattr(
+        capability_probe,
+        "probe_soft_signals",
+        lambda: {"mem": 1, "container_agent": 0},
+    )
+    store = _RecordingStore()
+    heartbeat._report_resource_slots(store, "melchior")
+    assert ("melchior", "mem", 1, capability_probe.soft_capacity("mem")) in store.soft
+    assert (
+        "melchior",
+        "container_agent",
+        0,
+        capability_probe.soft_capacity("container_agent"),
+    ) in store.soft
+    # The two capacities genuinely differ (the point of the fix).
+    assert capability_probe.soft_capacity("mem") != capability_probe.soft_capacity(
+        "container_agent"
+    )
+
+
+def test_report_resource_slots_retracts_dropped_soft_gauge(monkeypatch) -> None:
+    """A retractable soft gauge absent from the probe (container_agent once a
+    host opts out) is DELETEd, so the console stops showing a stale chip. mem,
+    always present, is never retracted."""
+    from precis.workers import capability_probe
+
+    monkeypatch.setattr(capability_probe, "probe_host_resources", lambda: {})
+    # container_agent has dropped out (host opted back out); only mem remains.
+    monkeypatch.setattr(capability_probe, "probe_soft_signals", lambda: {"mem": 2})
+    store = _RecordingStore()
+    heartbeat._report_resource_slots(store, "melchior")
+    assert store.deleted == [("melchior", "container_agent")]
+    # mem was synced, not deleted.
+    assert ("melchior", "mem") not in store.deleted
+
+
+def test_report_resource_slots_no_retract_when_gauge_present(monkeypatch) -> None:
+    """When container_agent IS reported (host still opted in), nothing is
+    retracted — the row is synced, not deleted."""
+    from precis.workers import capability_probe
+
+    monkeypatch.setattr(capability_probe, "probe_host_resources", lambda: {})
+    monkeypatch.setattr(
+        capability_probe,
+        "probe_soft_signals",
+        lambda: {"mem": 2, "container_agent": 1},
+    )
+    store = _RecordingStore()
+    heartbeat._report_resource_slots(store, "melchior")
+    assert store.deleted == []
 
 
 def test_report_resource_slots_swallows_failure(monkeypatch) -> None:

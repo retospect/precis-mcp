@@ -96,3 +96,22 @@ def test_sync_soft_signal_sets_free_directly(store) -> None:
     # a later measurement of plenty updates free directly (no delta math)
     store.sync_soft_signal("sh", "mem", 2, 2)
     assert {s.resource: s.free for s in store.resource_slots_for_host("sh")}["mem"] == 2
+
+
+def test_delete_soft_signal_retracts_row(store) -> None:
+    """A soft gauge can be definitively retracted (host opted out) — idempotent."""
+    store.sync_soft_signal("dh", "container_agent", 0, 1)
+    assert store.resource_slots_for_host("dh")  # row present
+    store.delete_soft_signal("dh", "container_agent")
+    assert not store.resource_slots_for_host("dh")  # gone
+    # idempotent — deleting an absent soft row is a no-op.
+    store.delete_soft_signal("dh", "container_agent")
+
+
+def test_delete_soft_signal_spares_hard_namesake(store) -> None:
+    """The delete is scoped to ``kind='soft'`` — a hard capability row of the
+    same name (were one ever present) is never collateral."""
+    store.sync_host_resource_slots("dh2", {"podman": 3})
+    store.delete_soft_signal("dh2", "podman")  # wrong-kind delete is a no-op
+    rows = {s.resource: s for s in store.resource_slots_for_host("dh2")}
+    assert rows["podman"].kind == "hard" and rows["podman"].capacity == 3

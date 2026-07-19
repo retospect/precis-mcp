@@ -431,8 +431,11 @@ runs in-process instead of failing every pass. A containerized run's
 vs. a claude/model error) trips a ~10-min health latch (`trip_container_unhealthy`)
 and retries the same call in-process once — catching the OOM 137 here keeps it
 off the router's `interrupted` (`rc>=128`) skip path. Flag stays opt-in
-(unset=OFF); auto-detect retirement + `/factory` degraded-render are follow-ons
-(`OPEN-ITEMS.md §🔇`).
+(unset=OFF); auto-detect retirement is the remaining follow-on. On an opted-in
+host the heartbeat also advertises a soft **`container_agent`** gauge
+(`capability_probe.probe_soft_signals`, capacity 1) — `1` = verified, `0` =
+degraded (opted in but can't launch) — which `/factory` renders as a green/red
+"agent" chip so a silently-in-proc host reads as degraded, not silent.
 
 **LLM independence — the switchable router (`utils/llm/`, ADR 0046).**
 Every routed call goes through `dispatch(LlmRequest)` → a narrow
