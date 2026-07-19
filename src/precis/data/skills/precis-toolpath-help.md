@@ -94,6 +94,7 @@ Paid tools cache automatically (`precis-cache`).
 | Doable leaves in a subtree | `search(kind='todo', view='doable', args={'under': N})` | `precis-tasks-help` |
 | What needs my attention | `search(kind='todo', view='attention')` | `precis-tasks-help` |
 | Split a task | children via `put(..., parent_id=N)` | `precis-decomposition-help` |
+| Sketch a thread's reasoning outline | `put(kind='plan', id='x-plan', title='…', project=N)`, then add `pe<id>` nodes | `precis-plan-help` |
 | Wait on a condition | leaf with `meta.auto_check` | `precis-auto-tasks-help` |
 | Recurring work | `level:recurring` + `meta.schedule` | `precis-recurring-help` |
 | Run a job under a todo | set `meta.executor`; `dispatch` mints a `kind='job'` | `precis-dispatch-help`, `precis-job-help` |

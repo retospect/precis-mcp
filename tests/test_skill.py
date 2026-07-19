@@ -36,6 +36,20 @@ def test_get_paper_skill_documents_navigation(skill: SkillHandler) -> None:
     assert "Navigate" in out.body or "TOC" in out.body
 
 
+def test_get_plan_skill_resolves_and_documents_create(skill: SkillHandler) -> None:
+    """gr164476 — the `plan` kind now has a dedicated help skill; agents
+    were reaching for `precis-plan-help` and getting NotFound. It must
+    resolve, name the create-vs-add-node contract, and appear in the
+    bare-list index."""
+    out = skill.get(id="precis-plan-help")
+    assert "precis-plan-help" in out.body
+    # The headline contract: create vs. add-node.
+    assert "create" in out.body and "add a node" in out.body
+    assert "pe<chunk_id>" in out.body or "pe<id>" in out.body
+    # Discoverable in the index the bare list returns.
+    assert "precis-plan-help" in skill.get().body
+
+
 def test_get_missing_raises_with_options(skill: SkillHandler) -> None:
     with pytest.raises(NotFound) as excinfo:
         skill.get(id="nonexistent-skill")
