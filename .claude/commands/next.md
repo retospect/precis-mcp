@@ -1,6 +1,6 @@
 ---
 description: Summarize the next logical steps and emit both a /compact retention argument and a copy-paste recovery prompt to resume after compacting. Use before compacting, or any time you want a clean-context restart point.
-argument-hint: "[optional focus — what to center the handoff on]"
+argument-hint: "[optional steer — where you want to go next, e.g. 'do the factory with the flubber']"
 allowed-tools: Bash(git:*), Read, Glob, Grep, mcp__precis__get, mcp__precis__search
 ---
 
@@ -28,15 +28,33 @@ Live state at invocation:
 - Uncommitted changes:
   !`git -c color.ui=never diff --stat HEAD 2>/dev/null | tail -20`
 
-Optional focus from the user: `$ARGUMENTS`
+Optional steer from the user: `$ARGUMENTS`
+
+**If `$ARGUMENTS` is non-empty, treat it as a forward-intent steer, not just a
+topic label.** It tells you where the user wants the *next* session to go — read
+it, then let it shape the whole handoff:
+
+- **Interpret it against real state first.** Resolve vague or playful phrasing
+  ("do the factory with the flubber") to concrete artifacts before you write
+  anything — the matching worktree, `OPEN-ITEMS.md` §section, `kind='todo'` /
+  memory thread, design doc or ADR. Use the tools you have (git, Read/Grep,
+  `precis get`/`search`) to pin it down. If you genuinely can't map it to
+  anything, say so and ask rather than inventing a target.
+- **Let it bias what's kept and what's queued.** The steer sets the destination;
+  the recovery prompt's Goal + Next-steps should point there, and the compact
+  retention argument should preferentially preserve the transcript-only residue
+  that serves *that* direction (and can drop residue for threads the user is
+  clearly setting aside). Don't discard genuinely-open work the steer ignores —
+  note it as a parked pointer — but the ordering and emphasis follow the steer.
 
 ## Procedure
 
 1. **Establish the next logical steps.** From the work this session, name what
    comes next concretely — the in-progress edit to finish, the next item on a
    tracked list, the test to make green, the thing to verify. If `$ARGUMENTS`
-   names a focus, center on it. If genuinely nothing is open, say so and stop —
-   don't manufacture ceremony.
+   names a steer, resolve it per the note above and center the next steps on
+   where it points. If genuinely nothing is open, say so and stop — don't
+   manufacture ceremony.
 
 2. **Anchor to durable artifacts.** The recovery prompt must point at things
    that survive compaction, not at "as we discussed": the worktree path +
@@ -45,7 +63,23 @@ Optional focus from the user: `$ARGUMENTS`
    isn't persisted anywhere durable and matters, note that gap to the user (they
    may want it in `OPEN-ITEMS.md` or a todo before compacting).
 
-3. **Emit the recovery prompt.** Output a single fenced block the user can copy
+   Emit the two blocks **in the order the user runs them**: the `/compact`
+   retention argument first, then the recovery prompt.
+
+3. **Emit the compact retention argument.** Output the first fenced block: a
+   `/compact` invocation whose argument protects the un-persisted reasoning —
+   everything the recovery prompt's pointers can't reconstruct. Source it from
+   the "Watch out" / gap notes above: anything there NOT backed by a file
+   belongs here. Do not duplicate Where/Goal/Next-steps. Template:
+
+   ````
+   /compact Keep: <decisions made this session and the alternatives rejected + why; constraints/gotchas discovered but not yet written to any file; current verification state (what's been run and passed vs. untested)>. Preserve branch/worktree + todo/gripe ids verbatim. Drop tool-output dumps, file contents (re-readable from disk), and resolved dead-ends.
+   ````
+
+   If genuinely nothing lives only in the transcript — every open thread is
+   already durable — say so and skip this block rather than padding it.
+
+4. **Emit the recovery prompt.** Output the second fenced block the user can copy
    verbatim. Fill every bracket from real state — no placeholders left in. Keep
    it tight; it is a re-orientation, not a transcript replay. Template:
 
@@ -67,19 +101,6 @@ Optional focus from the user: `$ARGUMENTS`
 
    Start by reading the "Re-read to reground" pointers, then do step 1.
    ````
-
-4. **Emit the compact retention argument.** Output a second fenced block: a
-   `/compact` invocation whose argument protects the un-persisted reasoning —
-   everything the recovery prompt's pointers can't reconstruct. Source it from
-   the "Watch out" / gap notes above: anything there NOT backed by a file
-   belongs here. Do not duplicate Where/Goal/Next-steps. Template:
-
-   ````
-   /compact Keep: <decisions made this session and the alternatives rejected + why; constraints/gotchas discovered but not yet written to any file; current verification state (what's been run and passed vs. untested)>. Preserve branch/worktree + todo/gripe ids verbatim. Drop tool-output dumps, file contents (re-readable from disk), and resolved dead-ends.
-   ````
-
-   If genuinely nothing lives only in the transcript — every open thread is
-   already durable — say so and skip this block rather than padding it.
 
 5. **Close with the nudge.** After the blocks, one line:
    ```
