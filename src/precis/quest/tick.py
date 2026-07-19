@@ -448,7 +448,17 @@ def run_quest_tick(
     from precis.utils.llm.router import dispatch as _dispatch
 
     disp = dispatch_fn if dispatch_fn is not None else _dispatch
-    res = disp(LlmRequest(tier=resolved_tier, prompt=prompt, source="quest_tick"))
+    # Attribute the call to *this* quest (llm_call_log.ref_id) and split the lane
+    # in `source` so per-quest, local-vs-review spend is mineable from the log —
+    # neither is back-fillable, so it must be stamped at dispatch (gr162130).
+    res = disp(
+        LlmRequest(
+            tier=resolved_tier,
+            prompt=prompt,
+            source="quest_review" if is_review else "quest_tick",
+            ref_id=quest_id,
+        )
+    )
     cost = getattr(res, "cost_usd", None)
     if getattr(res, "error", None):
         # A window-scoped breaker trip (dollar cap / claude-OAuth quota) is a

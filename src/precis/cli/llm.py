@@ -5,6 +5,7 @@
     precis llm seed --all       # both default + frontier
     precis llm reconcile        # run one reconcile pass now (facts + drift), forced
     precis llm list             # list the catalog cards
+    precis llm cost --days 7    # mine llm_call_log: per lane/pass/ref spend + wall-clock
 
 Slice 1 is read-only: the catalog is machine-maintained (seed + reconcile), and
 agents *read* it via search/get. The whole thing ships dark — an empty catalog is
@@ -88,6 +89,27 @@ def add_parser(subparsers: Any) -> None:
         "--tier", default="cloud-super", help="Tier floor / degrade target."
     )
     ch.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+    co = lsub.add_parser(
+        "cost",
+        help="Mine llm_call_log — per lane / pass / ref / model: calls, real-$, "
+        "wall-clock. Read-only. (Logged agentic lanes only; local batch passes "
+        "run un-logged.)",
+    )
+    co.add_argument(
+        "--days", type=int, default=7, help="Trailing window in days (default 7)."
+    )
+    co.add_argument(
+        "--by",
+        default="transport",
+        choices=["transport", "source", "ref", "model"],
+        help="Group by lane (transport), pass (source), entity (ref), or model.",
+    )
+    co.add_argument(
+        "--source", default=None, help="Restrict to one pass label (e.g. quest_tick)."
+    )
+    co.add_argument("--limit", type=int, default=40, help="Max rows (default 40).")
+    co.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     ev = lsub.add_parser(
         "eval",
@@ -223,6 +245,58 @@ def _cmd_choose(store: Store, args: argparse.Namespace) -> None:
         print(f"next better: {sel.next_better}")
 
 
+def _fmt_int(n: int) -> str:
+    """Human-terse thousands (1234567 → '1.2M', 12345 → '12.3k')."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
+def _cmd_cost(store: Store, args: argparse.Namespace) -> None:
+    from precis import route_log
+
+    rows = route_log.spend_rollup(
+        store,
+        days=args.days,
+        group_by=args.by,
+        source=args.source,
+        limit=args.limit,
+    )
+    scope = f" source={args.source}" if args.source else ""
+    print(f"llm_call_log — last {args.days}d, by {args.by}{scope}")
+    if not rows:
+        print("  (no rows — the route-log started ~2026-07-14; widen --days or wait)")
+        return
+    # Natural units kept separate — real-$ is only the lanes that bill; chars are a
+    # ~token volume proxy (÷4); wall is compute time (the local lane's real cost).
+    print(
+        f"  {'key':<22} {'calls':>7} {'real $':>9} {'chars(in/out)':>15} "
+        f"{'wall':>8} {'err':>5}"
+    )
+    tot_calls = tot_usd = tot_wall = 0
+    for r in rows:
+        wall_h = r.wall_ms / 3_600_000
+        chars = f"{_fmt_int(r.req_chars)}/{_fmt_int(r.resp_chars)}"
+        print(
+            f"  {r.key[:22]:<22} {r.calls:>7} {r.real_usd:>9.4f} {chars:>15} "
+            f"{wall_h:>7.1f}h {r.errors:>5}"
+        )
+        tot_calls += r.calls
+        tot_usd += r.real_usd
+        tot_wall += r.wall_ms
+    print(
+        f"  {'TOTAL':<22} {tot_calls:>7} {tot_usd:>9.4f} {'':>15} "
+        f"{tot_wall / 3_600_000:>7.1f}h"
+    )
+    print(
+        "  note: covers logged (agentic/judge) lanes only — high-volume local "
+        "batch\n        passes (llm_summarize, classify) run log_call=False and "
+        "are NOT here."
+    )
+
+
 def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
     from precis.llm_eval import compare as _compare
     from precis.llm_eval import run_eval
@@ -283,5 +357,7 @@ def run(args: argparse.Namespace) -> None:
         _cmd_select(store, args)
     elif args.llm_cmd == "choose":
         _cmd_choose(store, args)
+    elif args.llm_cmd == "cost":
+        _cmd_cost(store, args)
     elif args.llm_cmd == "eval":
         _cmd_eval(store, args)

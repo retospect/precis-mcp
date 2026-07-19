@@ -419,6 +419,12 @@ class LlmRequest:
     #: categorical feature the route-log keys on and the future per-source
     #: switchover knob. Free-form; empty when a caller hasn't set one yet.
     source: str = ""
+    #: The ref this call is *for* (a quest / paper / todo id), stamped onto
+    #: ``llm_call_log.ref_id`` so spend/wall-clock is attributable to an entity,
+    #: not just a ``source`` pass. ``None`` ⇒ pass-level attribution only. Cannot
+    #: be back-filled — a row logged without it is permanently un-attributable, so
+    #: an inproc pass that has a natural ref should set it (gr162130).
+    ref_id: int | None = None
     #: Whether to write this call to the route-log. Default ``True`` (every
     #: existing dispatch caller is logged). A high-volume *mechanical* batch
     #: pass (per-chunk summarize / classify, folded through
@@ -914,6 +920,7 @@ def _record_dispatch(
                 errored=result.error is not None,
                 error=result.error,
                 data_parsed=result.data is not None,
+                ref_id=req.ref_id,
                 features=_route_features(req),
             )
         )

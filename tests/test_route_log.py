@@ -72,6 +72,64 @@ def test_record_call_writes_row_and_dedups_blobs(store: Any) -> None:
     assert row[2] is True
 
 
+def test_record_call_persists_ref_id(store: Any) -> None:
+    # gr162130: ref_id is stamped so a call is attributable to an entity, not
+    # just a source pass. It cannot be back-filled — verify it round-trips.
+    tag = uuid4().hex[:8]
+    src = f"quest_tick-{tag}"
+    route_log.record_call(_rec(source=src, ref_id=424242), store=store)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM llm_call_log WHERE source=%s", (src,)
+        ).fetchone()
+    assert row is not None and row[0] == 424242
+
+
+def test_spend_rollup_groups_and_keeps_units_separate(store: Any) -> None:
+    # The mining rollup buckets by a column and keeps natural units apart:
+    # real_usd sums ONLY billed (non-null cost) rows; wall_ms sums duration;
+    # a null-cost lane shows $0 (quota/local cost, not a gap).
+    tag = uuid4().hex[:8]
+    src = f"rollup-{tag}"
+    # Two lanes under one tagged source: a billed cloud row + two null-cost OAuth
+    # rows (one of which errored).
+    route_log.record_call(
+        _rec(source=src, transport="litellm", cost_usd=0.10, duration_ms=1000),
+        store=store,
+    )
+    route_log.record_call(
+        _rec(source=src, transport="claude_agent", cost_usd=None, duration_ms=2000),
+        store=store,
+    )
+    route_log.record_call(
+        _rec(
+            source=src,
+            transport="claude_agent",
+            cost_usd=None,
+            duration_ms=500,
+            errored=True,
+        ),
+        store=store,
+    )
+    rows = {r.key: r for r in route_log.spend_rollup(store, days=1, source=src)}
+    assert set(rows) == {"litellm", "claude_agent"}
+    assert rows["litellm"].calls == 1
+    assert abs(rows["litellm"].real_usd - 0.10) < 1e-9
+    assert rows["litellm"].wall_ms == 1000
+    # The OAuth lane: two calls, no real dollars, wall-clock summed, one error.
+    assert rows["claude_agent"].calls == 2
+    assert rows["claude_agent"].real_usd == 0.0
+    assert rows["claude_agent"].wall_ms == 2500
+    assert rows["claude_agent"].errors == 1
+
+
+def test_spend_rollup_rejects_unknown_group_by(store: Any) -> None:
+    import pytest
+
+    with pytest.raises(ValueError):
+        route_log.spend_rollup(store, group_by="prompt")
+
+
 def test_record_call_swallows_write_errors() -> None:
     # A store whose connection blows up → the failure is swallowed (best-effort).
     class _BadStore:

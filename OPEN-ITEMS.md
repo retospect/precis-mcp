@@ -210,8 +210,31 @@ branch, unshipped** (see memory `budget_oauth_quota_split`). Remaining:
   `LlmResult.error`), auto-clear as the window ages, emit a Discord `alert`.
   Owner `src/precis/budget/breaker.py` + `router.dispatch` + cache `_fetch` +
   `/budget`.
-- **Piece C — quest attribution** *(deferred).* Let `LlmRequest.source` carry a
-  quest id so per-quest spend is a query over the same ledger.
+- **Piece C — per-entity cost attribution** *(partly shipped).* `LlmRequest.ref_id`
+  now stamps `llm_call_log.ref_id` (was never wired → 100% null in prod), so spend
+  is attributable to an *entity*, not just a `source` pass — **cannot be
+  back-filled**, so it's stamped at dispatch. Live on `quest_tick`/`quest_review`
+  (+ lane-split source) and the active job-type lanes (`structure_propose`,
+  `cad_propose`, `cad_discuss`, `good_search:triage`). Mining CLI: `precis llm cost
+  [--days N] [--by transport|source|ref|model] [--source X]` (read-only rollup —
+  calls · real-$ · char volume · wall-clock, units kept *separate*). *Remaining
+  follow-ups:*
+  - **Stamp the rest of the attributable callsites** — `handlers/ask.py`
+    (`conv_ref_id`) + `utils/_chase_llm.py` ×3 (`finding.ref_id`, needs threading
+    from callers). Pass-level passes (dream, review) legitimately carry no single
+    ref — leave them.
+  - **Local-lane visibility gap** *(the real "log well" piece).* The high-volume
+    local batch passes (`llm_summarize`, per-chunk classify) dispatch
+    `log_call=False`, so they never hit `llm_call_log` — a **local-vs-cloud**
+    comparison is *not* answerable from the log no matter how long it runs. Needs a
+    lightweight aggregate counter (the factory-console §8 `service_calls` rollup:
+    per `(pass, host, day)` count + chars + wall-clock, no blobs) before placement
+    decisions have local data. Bigger, separate build.
+  - **Quest fair-share meter** *(deferred — was gr162594).* The meter
+    (`allocator.weekly_spend`/`over_budget`) is inert because it sums dollar
+    `meta.cost` deeds that never land (local tier = $0 cost). Decide the meter
+    *unit* (token/tick vs estimated-USD) **after** a week of the now-attributed
+    data shows what the constraint actually is. Don't build ahead of the data.
 - **Open decisions** (design doc): ledger union without double-count; per-model
   price-table source + upkeep; cheap-band threshold; real cap defaults.
 

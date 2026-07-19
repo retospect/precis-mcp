@@ -178,6 +178,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             LlmRequest(
                 tier=Tier.CLOUD_SUPER,
                 source="structure_propose",
+                ref_id=structure_ref_id,  # attribute spend to the structure (gr162130)
                 prompt=prompt,
                 tools_needed=True,  # the agent wrapper; no MCP tools wired
                 model=model,

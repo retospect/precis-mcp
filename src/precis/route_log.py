@@ -137,6 +137,83 @@ def _write(store: Store, rec: LlmCallRecord) -> None:
         conn.commit()
 
 
+@dataclass(frozen=True, slots=True)
+class SpendRow:
+    """One grouped row of the mining rollup — natural units kept *separate* (no
+    single collapsed 'cost' number): a lane's real dollars, its char volume, and
+    its wall-clock all stand on their own so a later placement decision reads the
+    dimension it cares about. ``real_usd`` sums only non-null ``cost_usd`` (the
+    lanes that actually bill); the OAuth / local lanes report ``$0`` here because
+    they cost quota / wall-clock, not money — that is the point, not a gap."""
+
+    key: str
+    calls: int
+    real_usd: float
+    req_chars: int
+    resp_chars: int
+    wall_ms: int
+    errors: int
+
+
+#: The columns ``group_by`` may bucket on (allow-listed — never interpolate raw).
+_GROUP_COLS = {
+    "transport": "transport",
+    "source": "source",
+    "ref": "ref_id",
+    "model": "model",
+}
+
+
+def spend_rollup(
+    store: Store,
+    *,
+    days: int = 7,
+    group_by: str = "transport",
+    source: str | None = None,
+    limit: int = 40,
+) -> list[SpendRow]:
+    """Mine ``llm_call_log`` for the last ``days`` — grouped by lane / pass / ref /
+    model — into per-group volume + real-$ + wall-clock. Read-only.
+
+    **Covers the *logged* (agentic / judge) lanes only.** The high-volume local
+    batch passes (``llm_summarize``, per-chunk classify) dispatch with
+    ``log_call=False`` and never reach this table, so a local-vs-cloud comparison
+    is *not* answerable from here until an aggregate counter (service_calls)
+    lands — the CLI header says so."""
+    col = _GROUP_COLS.get(group_by)
+    if col is None:
+        raise ValueError(f"group_by must be one of {sorted(_GROUP_COLS)}")
+    with store.pool.connection() as conn:
+        cur = conn.execute(
+            f"""
+            SELECT COALESCE({col}::text, '∅') AS key,
+                   count(*)::int AS calls,
+                   COALESCE(sum(cost_usd) FILTER (WHERE cost_usd IS NOT NULL), 0)::float AS real_usd,
+                   COALESCE(sum(request_chars), 0)::bigint AS req_chars,
+                   COALESCE(sum(response_chars), 0)::bigint AS resp_chars,
+                   COALESCE(sum(duration_ms), 0)::bigint AS wall_ms,
+                   count(*) FILTER (WHERE errored)::int AS errors
+            FROM llm_call_log
+            WHERE ts > now() - (%s || ' days')::interval
+              AND (%s::text IS NULL OR source = %s)
+            GROUP BY 1 ORDER BY calls DESC LIMIT %s
+            """,
+            (days, source, source, limit),
+        )
+        return [
+            SpendRow(
+                key=r[0],
+                calls=r[1],
+                real_usd=float(r[2]),
+                req_chars=int(r[3]),
+                resp_chars=int(r[4]),
+                wall_ms=int(r[5]),
+                errors=r[6],
+            )
+            for r in cur.fetchall()
+        ]
+
+
 def gc(store: Store, *, retention_days: int = DEFAULT_RETENTION_DAYS) -> int:
     """Delete log rows past the retention window; GC orphaned blobs. Returns the
     number of call rows deleted. Wire into the sweeper when the log grows."""
@@ -159,8 +236,10 @@ __all__ = [
     "DEFAULT_RETENTION_DAYS",
     "RETENTION_DAYS_ENV",
     "LlmCallRecord",
+    "SpendRow",
     "bind_store",
     "enabled",
     "gc",
     "record_call",
+    "spend_rollup",
 ]

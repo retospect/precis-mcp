@@ -661,6 +661,7 @@ def _triage_dispatch(ctx: Any, spec: Any) -> None:
                 prompt=prompt,
                 model=model,
                 source="good_search:triage",
+                ref_id=ctx.ref_id,  # attribute spend to the search ref (gr162130)
             )
         )
         if res.error:

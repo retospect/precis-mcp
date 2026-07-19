@@ -250,6 +250,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             LlmRequest(
                 tier=Tier.CLOUD_SUPER,
                 source="cad_discuss",
+                ref_id=cad_ref_id,  # attribute spend to the cad entity (gr162130)
                 prompt=prompt,
                 tools_needed=True,  # the agent wrapper; no MCP tools wired
                 model=model,
