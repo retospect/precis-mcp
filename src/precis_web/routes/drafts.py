@@ -266,6 +266,18 @@ def _project_id(store: Any, ref_id: int) -> int | None:
     return None
 
 
+def _job_parent(store: Any, ref: Any) -> int:
+    """The ref a draft-scoped job (export / reMarkable send) should anchor
+    under: the owning project todo when linked, else the draft ref itself.
+
+    ``draft`` is a valid :data:`JOB_PARENT_KINDS` member, so a project-less
+    draft still parents its job cleanly (progress/result land under the draft
+    on the task page) instead of hard-erroring. Mirrors ``_owner_workspace``'s
+    ``pid if pid is not None else ref.id`` fallback."""
+    pid = _project_id(store, ref.id)
+    return pid if pid is not None else int(ref.id)
+
+
 def _ancestor_headings(chunk_objs: list[Any]) -> dict[str, list[str]]:
     """Each chunk's ancestor *heading* handles (root→nearest), walking
     ``parent_chunk_id``. Drives client-side collapse: a row hides when any
@@ -1572,18 +1584,6 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
     ref = _draft_ref(store, ident)
     if ref is None:
         return RedirectResponse(url="/drafts", status_code=303)
-    project = _project_id(store, ref.id)
-    if project is None:
-        return templates.TemplateResponse(
-            request,
-            "error.html.j2",
-            {
-                "title": "PDF export error",
-                "detail": "this draft has no project todo to parent the job under",
-                "status": 400,
-            },
-            status_code=400,
-        )
     form = await request.form()
     with_sources = str(form.get("sources") or "") in ("1", "true", "yes", "on")
     slug = str(ref.slug or ref.id)
@@ -1598,7 +1598,7 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
         {
             "kind": "job",
             "job_type": "draft_export",
-            "parent_id": project,
+            "parent_id": _job_parent(store, ref),
             "params": params,
             "idem_key": idem,
         },
@@ -1635,18 +1635,6 @@ async def send_remarkable_route(request: Request, ident: str) -> Response:
             },
             status_code=400,
         )
-    project = _project_id(store, ref.id)
-    if project is None:
-        return templates.TemplateResponse(
-            request,
-            "error.html.j2",
-            {
-                "title": "reMarkable send error",
-                "detail": "this draft has no project todo to parent the job under",
-                "status": 400,
-            },
-            status_code=400,
-        )
     slug = str(ref.slug or ref.id)
     return await redirect_or_error(
         request,
@@ -1654,7 +1642,7 @@ async def send_remarkable_route(request: Request, ident: str) -> Response:
         {
             "kind": "job",
             "job_type": "remarkable_send",
-            "parent_id": project,
+            "parent_id": _job_parent(store, ref),
             "params": {"draft": slug},
             "idem_key": f"remarkable_send:{slug}",
         },

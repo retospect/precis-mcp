@@ -1129,6 +1129,65 @@ def test_change_request_omits_parent_when_project_soft_deleted(tmp_path) -> None
     assert args["meta"]["anchor"] == "BBBBBB"
 
 
+class _NoProjectStore(DraftFakeStore):
+    """A draft with no live ``draft-of`` project todo (the project was never
+    linked, or was soft-deleted). ``_project_id`` → None → the job anchors on
+    the draft ref itself instead of 400ing."""
+
+    def get_ref(self, *, kind, id):
+        if kind == "todo" and id == 1:
+            return None
+        return super().get_ref(kind=kind, id=id)
+
+
+def test_export_pdf_parents_on_project_when_linked(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    r = draft_client.post("/drafts/nt/export.pdf", follow_redirects=False)
+    assert r.status_code == 303
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put" and args["job_type"] == "draft_export"
+    assert args["parent_id"] == 1  # the draft-of project todo
+
+
+def test_export_pdf_falls_back_to_draft_ref_when_no_project(tmp_path) -> None:
+    """A project-less draft must still export — the job anchors on the draft
+    ref (a valid JOB_PARENT_KINDS member), not hard-400."""
+    runtime = FakeRuntime(_NoProjectStore())
+    app = create_app(runtime=runtime, web_config=WebConfig(corpus_dir=tmp_path))
+    r = TestClient(app).post("/drafts/nt/export.pdf", follow_redirects=False)
+    assert r.status_code == 303
+    verb, args = runtime.calls[-1]
+    assert verb == "put" and args["job_type"] == "draft_export"
+    assert args["parent_id"] == 500  # the draft ref itself
+
+
+def test_remarkable_send_falls_back_to_draft_ref_when_no_project(
+    tmp_path, monkeypatch
+) -> None:
+    """The reMarkable send must not 400 on a project-less draft either — same
+    draft-ref fallback as export. (Credential armed via env so the gate opens.)"""
+    monkeypatch.setenv("REMARKABLE_TOKEN", "test-device-token")
+    runtime = FakeRuntime(_NoProjectStore())
+    app = create_app(runtime=runtime, web_config=WebConfig(corpus_dir=tmp_path))
+    r = TestClient(app).post("/drafts/nt/remarkable", follow_redirects=False)
+    assert r.status_code == 303
+    verb, args = runtime.calls[-1]
+    assert verb == "put" and args["job_type"] == "remarkable_send"
+    assert args["parent_id"] == 500  # the draft ref itself
+
+
+def test_remarkable_send_400s_without_credential(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """No device credential → the route declines (the button is hidden, but a
+    stale page must not enqueue a doomed job)."""
+    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
+    r = draft_client.post("/drafts/nt/remarkable", follow_redirects=False)
+    assert r.status_code == 400
+
+
 # ── hand-driven working set: pen/eye marks + request-ws (ADR 0051 §6) ──
 
 
