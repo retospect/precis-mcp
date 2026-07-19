@@ -11,6 +11,35 @@ is the historical observation log.
 
 ---
 
+## 📄 CLAUDE.md "conventions that bite" audit (rule vs rationale)
+
+- **Compress the ~16 conventions bullets to rule + pointer.** That section is
+  ~100 lines / ~45% of CLAUDE.md, which loads every session. Several bullets
+  (rtk, code-anchors, container-first, …) keep the full *why* inline even though
+  they already reference a `docs/conventions/*.md` that should own it. Trim each
+  to the terse rule + the pointer; push rationale to the referenced doc. The
+  coderef bullet + the agent-sizing roster were already trimmed in the coderef
+  ship — this is the same pass over the rest.
+  Status: `open` · Severity: `polish` · Owner: CLAUDE.md + docs/conventions/ ·
+  Test: none (prose) — target is a leaner every-session router, no info loss.
+
+---
+
+## 🧹 `scripts/coderef` — factor the exact/unique-suffix matcher
+
+- **`resolve()`, `_dep_node()`, and the inline block in `cmd_callers` each
+  reimplement the same "exact qual match, else unique `.`-suffix match against
+  the symbol index" logic.** Not a bug (all three consistent today), but a
+  shared `_lookup_qual(idx, qual)` helper would remove the drift risk. Deferred
+  from the coderef ship on purpose: factoring it touches `resolve()`, which the
+  review confirmed byte-for-byte unchanged — not worth risking the shipped
+  verbs for a cosmetic dedup. Do it as its own cycle with the existing tests
+  green as the guard.
+  Status: `open` · Severity: `polish` · Owner: `scripts/coderef` ·
+  Test: existing `tests/test_coderef*.py` (behavior must not change).
+
+---
+
 ## 🩹 Containerized-review robustness residuals
 
 The spark *DSN-not-reaching-the-container* retry-storm is **resolved** —

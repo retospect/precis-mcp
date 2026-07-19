@@ -41,5 +41,7 @@ fi
 if [[ -n "$MAIN_ROOT" ]]; then
     echo "🔎 code search (claude-context MCP): shared MAIN index — call search_code with"
     echo "   path=\"$MAIN_ROOT\" (hits are repo-relative → they map onto this worktree)."
+    echo "🧭 exact who-calls / what-depends-on (Python): scripts/coderef callers|deps <file.py::Sym>"
+    echo "   (structural, deterministic — prefer over grepping a bare symbol name)."
 fi
 exit 0

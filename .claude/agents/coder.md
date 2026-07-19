@@ -31,8 +31,10 @@ guess. Those decisions belong on Opus.
 ## How to work
 1. **Orient before editing.** For where-is/how-does questions, prefer
    `search_code` against the MAIN repo path or a quick Grep — don't spelunk with
-   Read. Confirm you're editing the worktree copy, not MAIN (see the path traps
-   in CLAUDE.md).
+   Read. For who-calls / what-depends-on over Python, `scripts/coderef
+   callers|deps <file.py::Sym>` is exact — use it over grepping the bare name.
+   Confirm you're editing the worktree copy, not MAIN (see the path traps in
+   CLAUDE.md).
 2. **Make the change** to match the surrounding code — its naming, idiom, comment
    density. Read the file's neighbors, don't invent a new style.
 3. **Verify it.** Run `scripts/test --impacted` (the tightest loop) or the

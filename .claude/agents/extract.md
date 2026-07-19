@@ -19,7 +19,9 @@ if the task needs judgment, that's the caller's job, not yours.
 
 1. Read the request as a precise spec: what to find, from where, in what shape.
 2. Use Grep/Glob to locate, Read to confirm the exact text, Bash for mechanical
-   shaping (count, sort, dedupe) when it helps.
+   shaping (count, sort, dedupe) when it helps. For "every call site of X" /
+   "what X depends on" over Python, `scripts/coderef callers|deps <file.py::X>`
+   is exact (no same-named false positives) — prefer it over grepping the name.
 3. Cite real locations — never report a match you didn't read.
 
 ## What to return

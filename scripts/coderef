@@ -22,6 +22,26 @@ whose output IS the convention doc — but only at point-of-use, never tree-wide
 would be a firehose). Advisory (always exits 0); wired into `/whatneedsdoing`'s
 hygiene wave alongside memory-lint / docs-orphans.
 
+Four more verbs are structural RETRIEVAL over the same index — not anchor text,
+the graph the anchors point into:
+
+    coderef deps    file.py::Qual [--depth N]   # what this symbol directly calls (N=1)
+    coderef callers file.py::Qual                # who calls this symbol (alias: refs)
+    coderef imports   <module|file.py|anchor> [--transitive]   # modules it imports
+    coderef importers <module|file.py|anchor> [--transitive]   # modules that import it
+
+`deps`/`callers` stay stdlib ``ast``, same exactness tradeoff as resolve/anchor:
+`deps` walks a symbol's body, resolves each name it touches (same-file, or an
+imported module found under `src/`), and recurses to `--depth`; anything it can't
+resolve (stdlib, third-party, dynamic dispatch) lands in a trailing
+external/unresolved list rather than erroring. `callers` narrows candidates with
+`git grep` then CONFIRMS each hit by checking the candidate imports the target's
+module/symbol (or is the same file) — precise, but import-based: it misses
+dynamic dispatch (`getattr`, DI containers, …). `imports`/`importers` are
+module-granularity and need the real import graph, so they lazy-import `grimp`
+(dev dependency-group) rather than pulling it into every invocation — absent,
+they print a one-line install nudge and exit 1 instead of failing the script.
+
 Python-only (the repo is ~all Python); stdlib ``ast``, no deps, no running index —
 deterministic, exact, fast. The semantic code index (claude-context/Milvus) is for
 DISCOVERY (find the symbol the first time you write an anchor); this is for
@@ -139,6 +159,488 @@ def anchor_for(root: Path, relpath: str, line: int) -> tuple[str | None, str]:
         return None, "module-level (no enclosing symbol)"
     qual = max(containing, key=lambda qs: qs[1])[0]  # innermost = latest def_line
     return f"{relpath}::{qual}", ""
+
+
+# --- structural retrieval (deps / callers / imports / importers) -------------
+#
+# resolve/anchor/check above are about the ANCHOR TEXT — citing a symbol so it
+# survives a rename. These helpers are the retrieval half: given a symbol, what
+# does it touch and who touches it.
+
+
+def _symbol_nodes(src: str) -> dict[str, ast.AST]:
+    """qualname -> ast node, mirroring ``symbol_index``'s walk (same qualname
+    convention) but keeping the node itself — what ``deps`` needs to inspect a
+    symbol's body rather than just its line range."""
+    out: dict[str, ast.AST] = {}
+
+    def walk(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                qual = prefix + child.name
+                out[qual] = child
+                walk(child, qual + ".")
+            elif isinstance(child, (ast.Assign, ast.AnnAssign)) and isinstance(
+                node, (ast.Module, ast.ClassDef)
+            ):
+                for name in _assign_names(child):
+                    out.setdefault(prefix + name, child)
+            else:
+                walk(child, prefix)
+
+    walk(ast.parse(src), "")
+    return out
+
+
+@cache
+def _node_index(path_str: str) -> dict[str, ast.AST]:
+    return _symbol_nodes(Path(path_str).read_text(encoding="utf-8", errors="ignore"))
+
+
+def _dep_node(
+    root: Path, relpath: str, qual: str
+) -> tuple[ast.AST | None, str | None, str]:
+    """ast node for a resolved anchor — same lookup/suffix-fallback as
+    ``resolve``, returning (node, matched_qual, note)."""
+    p = root / relpath
+    if not p.is_file():
+        return None, None, "file not found"
+    idx = _node_index(str(p))
+    if qual in idx:
+        return idx[qual], qual, ""
+    suffix = [q for q in idx if q == qual or q.endswith("." + qual)]
+    if len(suffix) == 1:
+        return idx[suffix[0]], suffix[0], f"(matched {suffix[0]})"
+    if len(suffix) > 1:
+        return None, None, "ambiguous — qualify: " + ", ".join(sorted(suffix))
+    return None, None, "symbol not found (renamed/removed? re-grep)"
+
+
+def _bound_names(node: ast.AST) -> set[str]:
+    """Names bound *within* node's subtree (params, assignment/for/with/except
+    targets, comprehension vars, nested def/class names) — locals, not deps."""
+    bound: set[str] = set()
+
+    def _params(a: ast.arguments) -> None:
+        for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs):
+            bound.add(arg.arg)
+        if a.vararg:
+            bound.add(a.vararg.arg)
+        if a.kwarg:
+            bound.add(a.kwarg.arg)
+
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            bound.add(n.id)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(n.name)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                _params(n.args)
+        elif isinstance(n, ast.Lambda):
+            _params(n.args)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            bound.add(n.name)
+    return bound
+
+
+def _referenced(node: ast.AST) -> set[tuple[str, str | None]]:
+    """(root_name, first_attr) pairs referenced (Load) in node's subtree —
+    ``ast.Name`` ids collect as (name, None); an ``ast.Attribute`` chain rooted
+    directly in a Name (``Store.put``) additionally collects (root, first attr),
+    so a whole-module import (``import precis.store as store``) can still
+    resolve the specific symbol used off it (``store.Store`` -> Store)."""
+    out: set[tuple[str, str | None]] = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
+            out.add((n.id, None))
+        elif isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name):
+            out.add((n.value.id, n.attr))
+    return out
+
+
+def _file_package(root: Path, path: Path) -> str | None:
+    """Dotted package of the directory containing ``path``, relative to
+    ``src/`` (falling back to repo-root-relative) — used to resolve relative
+    imports (``from . import x``)."""
+    for base in (root / "src", root):
+        try:
+            rel = path.resolve().relative_to(base.resolve())
+        except ValueError:
+            continue
+        return ".".join(rel.parent.parts)
+    return None
+
+
+def _path_to_module(root: Path, path: Path) -> str | None:
+    """Dotted module name for a repo file (inverse of ``_module_paths``)."""
+    for base in (root / "src", root):
+        try:
+            rel = path.resolve().relative_to(base.resolve())
+        except ValueError:
+            continue
+        parts = list(rel.with_suffix("").parts)
+        if parts and parts[-1] == "__init__":
+            parts.pop()
+        return ".".join(parts)
+    return None
+
+
+def _module_paths(root: Path, module: str) -> list[Path]:
+    """Candidate repo files for a dotted module, tried in order: src/ layout
+    first, then repo-relative (a test fixture / non-src package)."""
+    if not module:
+        return []
+    rel = Path(*module.split("."))
+    return [
+        root / "src" / rel.with_suffix(".py"),
+        root / "src" / rel / "__init__.py",
+        root / rel.with_suffix(".py"),
+        root / rel / "__init__.py",
+    ]
+
+
+def _module_file(root: Path, module: str) -> Path | None:
+    for p in _module_paths(root, module):
+        if p.is_file():
+            return p
+    return None
+
+
+def _parse_imports(
+    root: Path, path: Path, tree: ast.Module
+) -> dict[str, tuple[str, str | None]]:
+    """Top-level ``import``/``from … import`` bindings: local name -> (module,
+    imported name); imported name is None for a whole-module bind (``import
+    X``/``import X as Y``). Relative imports (``from . import x``) are resolved
+    via the importing file's own package."""
+    out: dict[str, tuple[str, str | None]] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name.split(".")[0]
+                out[local] = (alias.name, None)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level:
+                pkg = _file_package(root, path)
+                if pkg is None:
+                    continue
+                parts = pkg.split(".") if pkg else []
+                up = node.level - 1
+                if up:
+                    parts = parts[:-up] if up <= len(parts) else []
+                module = ".".join([*parts, module] if module else parts)
+            for alias in node.names:
+                local = alias.asname or alias.name
+                out[local] = (module, alias.name)
+    return out
+
+
+def _deps_direct(
+    root: Path,
+    relpath: str,
+    node: ast.AST,
+    self_anchor: str,
+    enclosing_class: str | None,
+) -> tuple[list[tuple[str, ast.AST]], list[str]]:
+    """One hop of dependency resolution from ``node`` (whose file is
+    ``relpath``, nested in ``enclosing_class`` if it's a method):
+    ([(dep_anchor, dep_node), …], [external/unresolved label, …])."""
+    path = root / relpath
+    tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+    imports = _parse_imports(root, path, tree)
+    same_idx = _node_index(str(path))
+    # ``self``/``cls`` ARE technically bound (method params) but need the
+    # dedicated resolution below rather than the blanket "it's a local, skip"
+    # treatment — dropping them would silently lose the most common dep shape
+    # (an intra-class ``self.other_method()`` call).
+    bound = _bound_names(node) - {"self", "cls"}
+    by_root: dict[str, set[str | None]] = {}
+    for name, attr in _referenced(node):
+        by_root.setdefault(name, set()).add(attr)
+
+    resolved: list[tuple[str, ast.AST]] = []
+    seen: set[str] = set()
+    unresolved: list[str] = []
+
+    def _emit(trelpath: str, tqual: str, tnode: ast.AST) -> None:
+        anchor = f"{trelpath}::{tqual}"
+        if anchor == self_anchor or anchor in seen:
+            return
+        seen.add(anchor)
+        resolved.append((anchor, tnode))
+
+    def _unresolve(label: str) -> None:
+        if label not in unresolved:
+            unresolved.append(label)
+
+    for name in sorted(by_root):
+        if name in bound:
+            continue
+        attrs = by_root[name]
+        if name in ("self", "cls"):
+            attr_names = sorted(a for a in attrs if a)
+            if not attr_names:
+                continue  # bare self/cls reference (e.g. `return self`) — no dep
+            for attr in attr_names:
+                cand_qual = f"{enclosing_class}.{attr}" if enclosing_class else None
+                if cand_qual is not None and cand_qual in same_idx:
+                    _emit(relpath, cand_qual, same_idx[cand_qual])
+                else:
+                    # inherited from a base class / set dynamically — can't
+                    # resolve from this file's index, but don't drop it either.
+                    _unresolve(f"{name}.{attr}")
+            continue
+        target: tuple[str, str, ast.AST] | None = None
+        if name in same_idx:
+            target = (relpath, name, same_idx[name])
+        elif name in imports:
+            module, imported_name = imports[name]
+            mfile = _module_file(root, module)
+            if mfile is not None:
+                midx = _node_index(str(mfile))
+                mrel = str(mfile.relative_to(root))
+                for candidate in filter(
+                    None, [imported_name, *sorted(a for a in attrs if a)]
+                ):
+                    if candidate in midx:
+                        target = (mrel, candidate, midx[candidate])
+                        break
+        if target is None:
+            label = (
+                name if None in attrs else f"{name}.{sorted(a for a in attrs if a)[0]}"
+            )
+            _unresolve(label)
+            continue
+        trelpath, tqual, tnode = target
+        _emit(trelpath, tqual, tnode)
+    return resolved, unresolved
+
+
+def cmd_deps(root: Path, tokens: list[str]) -> int:
+    depth = 1
+    anchors: list[str] = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == "--depth" and i + 1 < len(tokens):
+            depth = int(tokens[i + 1])
+            i += 2
+        else:
+            anchors.append(tokens[i])
+            i += 1
+    rc = 0
+    for tok in anchors:
+        relpath, qual = parse_anchor(tok)
+        if qual is None:
+            print(f"{tok}: not an anchor (need file.py::Qual.name)")
+            rc = 1
+            continue
+        node, matched_qual, note = _dep_node(root, relpath, qual)
+        if node is None or matched_qual is None:
+            print(f"{tok}: {note}")
+            rc = 1
+            continue
+        self_anchor = f"{relpath}::{matched_qual}"
+        seen = {self_anchor}
+        # frontier carries (relpath, qual, node) — qual is needed each hop to
+        # derive that node's OWN enclosing class for self/cls resolution (not
+        # just the original anchor's).
+        frontier: list[tuple[str, str, ast.AST]] = [(relpath, matched_qual, node)]
+        external: list[str] = []
+        total = 0
+        for d in range(1, depth + 1):
+            hits: list[tuple[str, str, str, ast.AST]] = []
+            for frelpath, fqual, fnode in frontier:
+                enclosing = fqual.rsplit(".", 1)[0] if "." in fqual else None
+                direct, unresolved = _deps_direct(
+                    root, frelpath, fnode, self_anchor, enclosing
+                )
+                external.extend(u for u in unresolved if u not in external)
+                for anchor, tnode in direct:
+                    if anchor in seen:
+                        continue
+                    seen.add(anchor)
+                    trelpath, tqual = anchor.split("::", 1)
+                    hits.append((anchor, trelpath, tqual, tnode))
+            if not hits:
+                break
+            print(f"  depth {d}:")
+            for anchor, trelpath, _tqual, tnode in hits:
+                start = getattr(tnode, "lineno", 0)
+                end = getattr(tnode, "end_lineno", None) or start
+                lines = (
+                    (root / trelpath)
+                    .read_text(encoding="utf-8", errors="ignore")
+                    .splitlines()
+                )
+                print(f"    {anchor}  (lines {start}-{end})")
+                for ln in lines[start - 1 : end]:
+                    print(f"      {ln}")
+                total += 1
+            frontier = [(trelpath, tqual, tnode) for _, trelpath, tqual, tnode in hits]
+        if external:
+            print(f"  external/unresolved: {', '.join(sorted(external))}")
+        plural = "y" if total == 1 else "ies"
+        print(f"{tok}: {total} dependenc{plural}, {len(external)} external/unresolved")
+    return rc
+
+
+def _leaf_name(qual: str) -> str:
+    return qual.rsplit(".", 1)[-1]
+
+
+def _is_leaf_ref(node: ast.AST, leaf: str) -> bool:
+    """A ``Load``-context reference to ``leaf`` — a bare name or the last hop
+    of an attribute chain (``Store.put`` -> attr ``put``)."""
+    if isinstance(node, ast.Name):
+        return node.id == leaf and isinstance(node.ctx, ast.Load)
+    if isinstance(node, ast.Attribute):
+        return node.attr == leaf and isinstance(node.ctx, ast.Load)
+    return False
+
+
+def _grep_candidates(root: Path, leaf: str) -> list[Path]:
+    try:
+        out = subprocess.run(
+            # --untracked: a file not yet `git add`ed is still a real caller
+            # site (the common case mid-edit) — without it, `git grep` only
+            # sees the index/HEAD and silently under-reports.
+            ["git", "grep", "-l", "-w", "--untracked", leaf, "--", "*.py"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if out.returncode in (0, 1):
+            return [root / line for line in out.stdout.splitlines() if line]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    # git grep unavailable (or not a git repo, e.g. a test fixture) — scan directly.
+    base = root / "src" if (root / "src").is_dir() else root
+    return sorted(p for p in base.rglob("*.py") if ".git" not in p.parts)
+
+
+def cmd_callers(root: Path, tokens: list[str]) -> int:
+    rc = 0
+    for tok in tokens:
+        relpath, qual = parse_anchor(tok)
+        if qual is None:
+            print(f"{tok}: not an anchor (need file.py::Qual.name)")
+            rc = 1
+            continue
+        def_line, note = resolve(root, relpath, qual)
+        if def_line is None:
+            print(f"{tok}: {note}")
+            rc = 1
+            continue
+        idx = _index_path(str(root / relpath))
+        matched_qual = (
+            qual
+            if qual in idx
+            else next((q for q in idx if q == qual or q.endswith("." + qual)), qual)
+        )
+        leaf = _leaf_name(matched_qual)
+        def_path = (root / relpath).resolve()
+        target_module = _path_to_module(root, root / relpath)
+
+        hits: dict[str, list[tuple[int, str, str]]] = {}
+        for cand in _grep_candidates(root, leaf):
+            if not cand.is_file():
+                continue
+            try:
+                src = cand.read_text(encoding="utf-8", errors="ignore")
+                tree = ast.parse(src)
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            same_file = cand.resolve() == def_path
+            if not same_file:
+                imports = _parse_imports(root, cand, tree)
+                if target_module is None or not any(
+                    m == target_module and (n is None or n == leaf)
+                    for m, n in imports.values()
+                ):
+                    continue
+            lines = src.splitlines()
+            for node in ast.walk(tree):
+                if not _is_leaf_ref(node, leaf):
+                    continue
+                site_line = getattr(node, "lineno", 0)
+                if same_file and site_line == def_line:
+                    continue
+                crel = str(cand.relative_to(root))
+                anchor, _ = anchor_for(root, crel, site_line)
+                hits.setdefault(crel, []).append(
+                    (site_line, lines[site_line - 1].strip(), anchor or "")
+                )
+        total = 0
+        for crel in sorted(hits):
+            print(f"  {crel}:")
+            for site_line, text, anchor in sorted(set(hits[crel])):
+                loc = f"{crel}:{site_line}"
+                print(f"    {loc}  {text}" + (f"  [{anchor}]" if anchor else ""))
+                total += 1
+        print(f"{tok}: {total} caller site(s) across {len(hits)} file(s)")
+    return rc
+
+
+def _to_module(root: Path, token: str) -> str | None:
+    """Accept a dotted module (``precis.store``) OR an anchor/relpath — derive
+    the module from the path under ``src/``."""
+    relpath = parse_anchor(token)[0] if "::" in token else token
+    if relpath.endswith(".py") or "/" in relpath:
+        return _path_to_module(root, root / relpath)
+    return relpath
+
+
+def _cmd_grimp(
+    root: Path, tokens: list[str], *, direct_fn: str, transitive_fn: str
+) -> int:
+    try:
+        import grimp
+    except ImportError:
+        print(
+            "imports/importers need grimp — run via `uv run scripts/coderef …` "
+            "(grimp is in the dev dependency-group)"
+        )
+        return 1
+    transitive = "--transitive" in tokens
+    modules = [t for t in tokens if t != "--transitive"]
+    if not modules:
+        print("usage: coderef imports|importers <module> [--transitive]")
+        return 2
+    rc = 0
+    for tok in modules:
+        module = _to_module(root, tok)
+        if not module:
+            print(f"{tok}: can't derive a module (not under src/?)")
+            rc = 1
+            continue
+        top = module.split(".", 1)[0]
+        graph = grimp.build_graph(top)
+        fn = getattr(graph, transitive_fn if transitive else direct_fn)
+        mods = sorted(fn(module))
+        for m in mods:
+            print(m)
+        print(f"{module}: {len(mods)} module(s)")
+    return rc
+
+
+def cmd_imports(root: Path, tokens: list[str]) -> int:
+    return _cmd_grimp(
+        root,
+        tokens,
+        direct_fn="find_modules_directly_imported_by",
+        transitive_fn="find_downstream_modules",
+    )
+
+
+def cmd_importers(root: Path, tokens: list[str]) -> int:
+    return _cmd_grimp(
+        root,
+        tokens,
+        direct_fn="find_modules_that_directly_import",
+        transitive_fn="find_upstream_modules",
+    )
 
 
 # code-ref tokens in prose. Boundary lookbehind rejects a path embedded inside a
@@ -260,7 +762,18 @@ def main(argv: list[str]) -> int:
         bare = "--bare" in rest
         rest = [a for a in rest if a != "--bare"]
         return cmd_check(root, rest or ["docs"], bare=bare)
-    print(f"unknown command: {cmd} (resolve | anchor | check)")
+    if cmd == "deps":
+        return cmd_deps(root, rest)
+    if cmd in ("callers", "refs"):
+        return cmd_callers(root, rest)
+    if cmd == "imports":
+        return cmd_imports(root, rest)
+    if cmd == "importers":
+        return cmd_importers(root, rest)
+    print(
+        f"unknown command: {cmd} "
+        "(resolve | anchor | check | deps | callers | refs | imports | importers)"
+    )
     return 2
 
 

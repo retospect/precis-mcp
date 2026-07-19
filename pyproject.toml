@@ -329,6 +329,13 @@ dev = [
     # FastAPI's TestClient (starlette) needs httpx; used by the
     # precis_web route tests under tests/precis_web/.
     "httpx>=0.27",
+    # Module-level import graph for `scripts/coderef imports|importers` (the
+    # structural-retrieval verbs). Lazy-imported inside those verbs so coderef's
+    # stdlib core (resolve/anchor/check/deps/callers) stays dep-free and
+    # host-runnable; grimp only needs to be present under `uv run` / in the dev
+    # image. Needs a dev-image rebuild to activate the grimp verbs in-container;
+    # until then their tests `importorskip("grimp")`.
+    "grimp>=3",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -67,6 +67,15 @@
         ]
       },
       {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/coderef-nudge.py\""
+          }
+        ]
+      },
+      {
         "matcher": "mcp__precis__put|mcp__precis__edit|mcp__precis__delete|mcp__precis__tag",
         "hooks": [
           {

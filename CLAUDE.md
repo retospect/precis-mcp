@@ -166,6 +166,12 @@ per-kind reference.
   across code+docs+tests. `claude-context` MCP over Milvus, up'd by a
   SessionStart hook. Pass the **MAIN** repo path, not your worktree's (else no
   hits). Index is **lazy** — code you just wrote can lag; Grep is truth there.
+- **`coderef` for exact who-calls / what-depends-on** (structural complement to
+  the fuzzy index above). Over Python, `scripts/coderef callers|deps
+  <file.py::Sym>` before grep — exact, no same-named false positives, returns the
+  *connected* code (also `imports|importers` via grimp; `-h` for verbs). A
+  PreToolUse hook nudges on bare-symbol greps. Grep stays right for text /
+  non-Python / a symbol you can't yet name; blind to dynamic dispatch.
 - **Skills are runtime docs.** Editing `src/precis/data/skills/` is the
   agent-facing channel — the MCP server serves them via `get(kind='skill')`.
 - **Embeddings populated by the worker, not ingest** (ADR 0007): ingest
@@ -200,21 +206,16 @@ guardrails (the Agent tool surfaces those descriptions), so this is just the map
   `migration-check`, `docs-orphans`, `backlog-lint`) and the cadence nudges that
   only decide *when* a judgment pass is due (`token-review`, the 7-day
   session-tightness clock).
-- **Haiku** — mechanical, needs a model: `navigator` (locate/orient), `extract`
-  (rote gather), `test-runner` (`scripts/test`), `tidy` (ruff/format),
-  `cluster-ops` (read-only ssh/log/psql probe).
-- **Sonnet** — a *decided* change or bounded op, the *how* not the *what*:
-  `coder` (implement + test-to-green), `test-author` (tests from an Opus spec),
-  `reviewer` (pre-ship diff review), `documenter` (doc-sync in house style),
-  `dep-bumper` (apply + test a dependency bump), `cluster-admin` (runbook-bounded
-  write ops — the write sibling of `cluster-ops`), `forensics` (read-only
-  log/transcript mining → ranked findings).
+- **Haiku** — mechanical, needs a model: `navigator`, `extract`, `test-runner`,
+  `tidy`, `cluster-ops`.
+- **Sonnet** — a *decided* change or bounded op (the *how*, not the *what*):
+  `coder`, `test-author`, `reviewer`, `documenter`, `dep-bumper`,
+  `cluster-admin`, `forensics`.
 - **Opus (main loop)** — the *what/why*: architecture; core API/schema/
-  abstraction decisions; CFD/DFT/ML and NOx/catalyst reasoning; mission/voice
-  prose; novel prod diagnosis; memory *reconsolidation* (re-verify claims vs
-  code, merge/sharpen).
+  abstraction; CFD/DFT/ML and NOx/catalyst reasoning; mission/voice prose;
+  novel prod diagnosis; memory *reconsolidation*.
 
-Default: start cheap for mechanical/exploratory work, hand a decided change to
-the sonnet tier, keep only genuine design/domain judgment on Opus. Subagents
-otherwise inherit the session model (= Opus), so an undelegated mechanical task
-runs expensive by accident; use the Agent tool's `model:` for one-off downgrades.
+Default: start cheap, hand a decided change to the sonnet tier, keep genuine
+design/domain judgment on Opus. An agent def with no `model:` line inherits the
+session model (= Opus), so a mechanical task runs expensive by accident; use the
+Agent tool's `model:` for one-off downgrades.

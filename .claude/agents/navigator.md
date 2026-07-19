@@ -36,7 +36,12 @@ Ignore them for your job. Your tools are code search + file reading.
    → its parent), not a worktree path; hits are repo-relative and map onto the
    caller's tree. If `search_code` is unavailable (the MCP isn't loaded this
    session), fall back to `Grep`/`Glob` — say which you used.
-3. **Confirm by reading.** Open the top hits and verify before citing. Never
+3. **For exact who-calls / what-depends-on over Python, use `coderef`.**
+   `scripts/coderef callers <file.py::Sym>` finds real references (no
+   same-named false positives); `deps <file.py::Sym>` pulls the connected
+   definitions. Exact where semantic search is fuzzy — reach for it on a
+   "what calls Z" / "what does Z depend on" question before grepping the name.
+4. **Confirm by reading.** Open the top hits and verify before citing. Never
    cite a line you haven't read.
 
 ## What to return
