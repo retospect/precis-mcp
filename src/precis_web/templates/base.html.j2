@@ -64,7 +64,7 @@
               Browse <span class="text-[9px]">▾</span>
             </button>
             <div x-show="open" x-cloak x-transition.opacity
-                 class="absolute left-0 mt-1 z-30 min-w-[9rem] rounded-md border border-slate-700 bg-slate-800 py-1 shadow-lg">
+                 class="absolute left-0 mt-1 z-40 min-w-[9rem] rounded-md border border-slate-700 bg-slate-800 py-1 shadow-lg">
               {% for key, label, href in browse %}
               <a href="{{ href }}"
                  class="block px-3 py-1.5 text-xs font-medium transition {% if active_tab == key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-700 hover:text-white{% endif %}">
@@ -95,7 +95,7 @@
                 Ops <span class="text-[9px]">▾</span>
               </button>
               <div x-show="open" x-cloak x-transition.opacity
-                   class="absolute right-0 mt-1 z-30 min-w-[9rem] rounded-md border border-slate-700 bg-slate-800 py-1 shadow-lg">
+                   class="absolute right-0 mt-1 z-40 min-w-[9rem] rounded-md border border-slate-700 bg-slate-800 py-1 shadow-lg">
                 {% for key, label, href in ops %}
                 <a href="{{ href }}"
                    class="block px-3 py-1.5 text-xs font-medium transition {% if active_tab == key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-700 hover:text-white{% endif %}">
