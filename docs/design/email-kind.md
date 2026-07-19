@@ -228,8 +228,33 @@ that reached the composing context is still `untrusted`. Deferred deliberately.
    `precis email poll [account] [--all]` runs a tick by hand. Tests:
    test_mail_inject.py (pure tier-0) + test_email_scan_store.py (real-PG
    store) + test_mail_poll.py (real-PG pass, IMAP injected).
-4. **`inject_scan` pass (tiers 1–2) + quarantine ladder.** Lease + versioned
-   artifact + `INJECT` closed tag; the withhold/badge/`alert` handling.
+4. **`inject_scan` pass (tiers 1–2) + quarantine ladder.** ✅ **BUILT** — no
+   migration (the 0076 `email_scan` table already carries `tier`/`verdict`/
+   `evidence` + the `tier < 1` pending index). `workers/inject_scan.py` =
+   registered compute pass (`PRECIS_INJECT_SCAN_ENABLED`, **dark**, no default
+   profile — enabled on the agent host where the local model proxy resolves,
+   alongside `mail_poll`). Each tick: claim tier-0 verdicts a deeper scan
+   hasn't reached (`store.pending_email_scans`, the pending index), **re-fetch
+   the body from IMAP** (nothing is stored), and score it with a local model
+   (`mail/inject.py` `build_tier1_prompt` / `parse_tier1_verdict` +
+   `TIER1_SYSTEM`, routed through the ADR 0046 `DispatchClient`). Ambiguous
+   `suspect` verdicts **escalate** to a stronger model (tier 2) when
+   `PRECIS_INJECT_SCAN_ESCALATE_MODEL` is set. The verdict is written by a
+   **guarded CAS** (`store.upgrade_email_scan`, `tier < new_tier`) so a deeper
+   verdict is never clobbered and re-runs are no-ops — that CAS *is* the
+   lock-free claim (no row lock held across the model call). On `high` it
+   `raise_alert`s (source `inject_scan`, warn) — the surfacing half of the
+   ladder. The **withholding** half lives in `handlers/email.py`: a `high`
+   body is kept out of the browse response (metadata + a withheld banner),
+   `suspect` passes fenced under an untrusted-data banner, and listings carry a
+   🚫/⚠ badge. Nothing is deleted — the message stays intact in IMAP. Messages
+   that left the mailbox (or a misconfigured account) are *retired* at tier 1
+   keeping the coarse verdict so they stop being pending; model / IMAP errors
+   leave the row pending for a retry (never a silent downgrade). `precis email
+   scan` runs a tick by hand. Tests: `test_inject_scan.py` (real-PG, model +
+   IMAP injected) + tier-1 helpers in `test_mail_inject.py` + guarded-upgrade /
+   badge-lookup in `test_email_scan_store.py` + withhold/badge in
+   `test_email_handler.py`.
 5. **Promotion + brief consumption.** Opt-in `split_text`→`write_paper`-equiv
    for chosen messages; wire the recurring brief to read clean summarized rows.
 

@@ -1,10 +1,19 @@
-"""Tier-0 injection scanner — pure regex, no IMAP/DB (email-kind slice 3)."""
+"""Tier-0 injection scanner — pure regex, no IMAP/DB (email-kind slice 3).
+
+Also the tier-1 pure helpers (prompt build + verdict parse) from slice 4; the
+model call itself lives in ``workers/inject_scan`` and is tested there.
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from precis.mail.inject import TIER0_VERSION, scan_tier0
+from precis.mail.inject import (
+    TIER0_VERSION,
+    build_tier1_prompt,
+    parse_tier1_verdict,
+    scan_tier0,
+)
 
 
 def test_clean_newsletter_passes() -> None:
@@ -82,3 +91,51 @@ def test_injection_about_word_is_not_overmatched() -> None:
         "Researchers published a study on prompt safety in language models.",
     )
     assert r.verdict == "clean"
+
+
+# ── tier-1 pure helpers (slice 4) ──────────────────────────────────────
+
+
+def test_build_tier1_prompt_carries_subject_body_and_hint() -> None:
+    p = build_tier1_prompt(
+        "Weird subject", "the body text here", tier0_signals=("ignore-previous",)
+    )
+    assert "Weird subject" in p
+    assert "the body text here" in p
+    assert "ignore-previous" in p  # tier-0 tells passed as a hint
+
+
+def test_build_tier1_prompt_truncates_long_body() -> None:
+    p = build_tier1_prompt("s", "x" * 10_000)
+    assert "[truncated]" in p
+    assert len(p) < 6_000  # capped well under the raw body length
+
+
+def test_build_tier1_prompt_no_signals_says_none() -> None:
+    p = build_tier1_prompt("s", "b")
+    assert "flagged: none" in p
+
+
+@pytest.mark.parametrize("verdict", ["clean", "suspect", "high"])
+def test_parse_tier1_accepts_the_three_verdicts(verdict) -> None:
+    v, reason = parse_tier1_verdict(f'{{"verdict": "{verdict}", "reason": "why"}}')
+    assert v == verdict
+    assert reason == "why"
+
+
+def test_parse_tier1_extracts_embedded_json() -> None:
+    v, _ = parse_tier1_verdict('Sure!\n{"verdict": "high", "reason": "attack"}\ndone')
+    assert v == "high"
+
+
+def test_parse_tier1_normalizes_case_and_whitespace() -> None:
+    v, _ = parse_tier1_verdict('{"verdict": "  HIGH  "}')
+    assert v == "high"
+
+
+@pytest.mark.parametrize("bad", ["", "not json", '{"verdict": "maybe"}', "{}", "[]"])
+def test_parse_tier1_rejects_offschema_as_none(bad) -> None:
+    # None means "scan failed" — the caller leaves the row pending, never
+    # silently downgrading to a clean verdict.
+    v, _ = parse_tier1_verdict(bad)
+    assert v is None

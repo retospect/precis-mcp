@@ -154,6 +154,35 @@ _INSERT_SCAN = (
     "ON CONFLICT (account, folder, uidvalidity, uid) DO NOTHING"
 )
 
+# Upgrade a verdict to a deeper tier (slice 4 inject_scan). The
+# ``tier < %(tier)s`` guard is a compare-and-swap: a tier-1 write only lands
+# on a still-tier-0 row, a tier-2 write only over a tier-1 row — so a deeper
+# verdict is never clobbered by a shallower re-scan, and a concurrent runner
+# or a re-run is an idempotent no-op (rowcount 0). This is the lock-free claim:
+# ``pending_email_scans`` selects tier-0 rows without a row lock, and the CAS
+# here resolves any race at write time.
+_UPGRADE_SCAN = (
+    "UPDATE email_scan SET verdict = %(verdict)s, tier = %(tier)s, "
+    "evidence = %(evidence)s, scanned_at = now() "
+    "WHERE account = %(account)s AND folder = %(folder)s "
+    "AND uidvalidity = %(uidvalidity)s AND uid = %(uid)s AND tier < %(tier)s"
+)
+
+# The slice-4 lease target: messages a deeper (tier >= 1) scan hasn't reached
+# (the email_scan_pending_idx partial index). Oldest-scanned first so a backlog
+# drains in arrival order. No FOR UPDATE — the CAS in _UPGRADE_SCAN is the
+# race-guard, so this stays a cheap lock-free read.
+_PENDING_SCANS = (
+    f"SELECT {_SCAN_COLS} FROM email_scan WHERE tier < 1 ORDER BY scanned_at LIMIT %s"
+)
+
+# Verdicts for a set of UIDs in one folder (browse-handler badges). Keyed on
+# the account's current uidvalidity so a resync's stale rows don't leak badges.
+_SCAN_VERDICTS = (
+    "SELECT uid, verdict FROM email_scan "
+    "WHERE account = %s AND folder = %s AND uidvalidity = %s AND uid = ANY(%s)"
+)
+
 
 class EmailAccountMixin:
     """``email_account`` reads/writes for :class:`precis.store.Store`."""
@@ -255,3 +284,51 @@ class EmailAccountMixin:
             )
             row = cur.fetchone()
         return None if row is None else _row_to_scan(row)
+
+    def pending_email_scans(self, *, limit: int) -> list[EmailScan]:
+        """Tier-0 verdicts a deeper ``inject_scan`` hasn't reached (slice 4)."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(_PENDING_SCANS, (int(limit),)).fetchall()
+        return [_row_to_scan(r) for r in rows]
+
+    def upgrade_email_scan(
+        self,
+        account: str,
+        *,
+        folder: str,
+        uidvalidity: int,
+        uid: int,
+        verdict: str,
+        tier: int,
+        evidence: dict[str, Any],
+    ) -> bool:
+        """Deepen a verdict; the ``tier < new_tier`` CAS never clobbers a
+        deeper verdict. Returns True when this call actually moved the row."""
+        from psycopg.types.json import Jsonb
+
+        with self.pool.connection() as conn:
+            cur = conn.execute(
+                _UPGRADE_SCAN,
+                {
+                    "verdict": verdict,
+                    "tier": tier,
+                    "evidence": Jsonb(evidence),
+                    "account": account,
+                    "folder": folder,
+                    "uidvalidity": uidvalidity,
+                    "uid": uid,
+                },
+            )
+            return cur.rowcount > 0
+
+    def list_email_scan_verdicts(
+        self, account: str, *, folder: str, uidvalidity: int, uids: list[int]
+    ) -> dict[int, str]:
+        """``{uid: verdict}`` for the given UIDs (browse-handler badges)."""
+        if not uids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                _SCAN_VERDICTS, (account, folder, uidvalidity, list(uids))
+            ).fetchall()
+        return {int(r[0]): str(r[1]) for r in rows}

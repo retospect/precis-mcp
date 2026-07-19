@@ -572,6 +572,25 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # email slice 4: the deep rung of the injection cascade. Leases tier-0
+        # verdicts (email_scan_pending_idx), re-fetches the body from IMAP,
+        # scores it with a local model (+ optional tier-2 escalate), and raises
+        # an alert on `high`. DARK — no default profile + PRECIS_INJECT_SCAN_
+        # ENABLED unset; enabled on the agent host (melchior) where the local
+        # model proxy resolves, alongside mail_poll.
+        name="inject_scan",
+        label="Email injection scan (tier 1/2)",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_INJECT_SCAN_ENABLED",
+        uses_model=True,
+        uses_external=("imap",),
+        cost_sources=("inject_scan",),
+        one_line="Model-score flagged email for prompt injection; quarantine on high.",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="briefing",
         label="Morning briefing",
         category="review",

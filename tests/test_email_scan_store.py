@@ -115,3 +115,109 @@ def test_due_accounts_skips_disabled(store) -> None:
     )
     due = {a.account for a in store.due_email_accounts()}
     assert "off@x.test" not in due
+
+
+# ── slice 4: guarded verdict upgrade + pending claim + badge lookup ─────
+
+
+def _seed_scan(
+    store, *, uid, verdict="suspect", tier=0, folder="INBOX", uidv=1
+) -> None:
+    _seed(store)
+    store.record_email_scan(
+        "rs@x.test",
+        folder=folder,
+        uidvalidity=uidv,
+        uid=uid,
+        verdict=verdict,
+        tier=tier,
+        evidence={"signals": ["ignore-previous"]},
+    )
+
+
+def test_upgrade_deepens_a_tier0_verdict(store) -> None:
+    _seed_scan(store, uid=5, verdict="suspect", tier=0)
+    moved = store.upgrade_email_scan(
+        "rs@x.test",
+        folder="INBOX",
+        uidvalidity=1,
+        uid=5,
+        verdict="high",
+        tier=1,
+        evidence={"tier1": {"verdict": "high"}},
+    )
+    assert moved is True
+    row = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1, uid=5)
+    assert row is not None and row.verdict == "high" and row.tier == 1
+
+
+def test_upgrade_cas_never_clobbers_a_deeper_verdict(store) -> None:
+    # A tier-2 verdict is in place; a stray tier-1 write must not overwrite it.
+    _seed_scan(store, uid=6, verdict="high", tier=2)
+    moved = store.upgrade_email_scan(
+        "rs@x.test",
+        folder="INBOX",
+        uidvalidity=1,
+        uid=6,
+        verdict="clean",
+        tier=1,
+        evidence={},
+    )
+    assert moved is False  # tier < 1 guard: 2 is not < 1, so no-op
+    row = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1, uid=6)
+    assert row is not None and row.verdict == "high" and row.tier == 2
+
+
+def test_upgrade_is_idempotent_at_same_tier(store) -> None:
+    _seed_scan(store, uid=7, verdict="suspect", tier=1)
+    moved = store.upgrade_email_scan(
+        "rs@x.test",
+        folder="INBOX",
+        uidvalidity=1,
+        uid=7,
+        verdict="high",
+        tier=1,
+        evidence={},
+    )
+    assert moved is False  # tier 1 is not < 1 — a re-run does nothing
+
+
+def test_pending_scans_returns_only_tier0(store) -> None:
+    _seed_scan(store, uid=10, tier=0)
+    _seed_scan(store, uid=11, tier=0)
+    _seed_scan(store, uid=12, tier=1)  # already deep — excluded
+    pending = {s.uid for s in store.pending_email_scans(limit=10)}
+    assert pending == {10, 11}
+
+
+def test_pending_scans_respects_limit(store) -> None:
+    for u in range(20, 25):
+        _seed_scan(store, uid=u, tier=0)
+    assert len(store.pending_email_scans(limit=3)) == 3
+
+
+def test_list_verdicts_maps_uid_to_verdict(store) -> None:
+    _seed_scan(store, uid=30, verdict="high", tier=1)
+    _seed_scan(store, uid=31, verdict="clean", tier=1)
+    got = store.list_email_scan_verdicts(
+        "rs@x.test", folder="INBOX", uidvalidity=1, uids=[30, 31, 99]
+    )
+    assert got == {30: "high", 31: "clean"}  # 99 unscanned → absent
+
+
+def test_list_verdicts_is_uidvalidity_scoped(store) -> None:
+    _seed_scan(store, uid=40, verdict="high", tier=1, uidv=1)
+    # A resync (new uidvalidity) must not leak the stale verdict.
+    got = store.list_email_scan_verdicts(
+        "rs@x.test", folder="INBOX", uidvalidity=2, uids=[40]
+    )
+    assert got == {}
+
+
+def test_list_verdicts_empty_uids_is_empty(store) -> None:
+    assert (
+        store.list_email_scan_verdicts(
+            "rs@x.test", folder="INBOX", uidvalidity=1, uids=[]
+        )
+        == {}
+    )

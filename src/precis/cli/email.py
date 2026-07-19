@@ -12,6 +12,8 @@ Subcommands:
 * ``poll [ACCOUNT]`` — run one ``mail_poll`` tick now (fetch new mail past the
   high-water + inline tier-0 injection scan). No arg = every *due* account;
   ``ACCOUNT`` = that one regardless of cadence; ``--all`` = every enabled now.
+* ``scan`` — run one ``inject_scan`` tick now (model-score the tier-0-flagged
+  backlog + quarantine ladder). Needs the local model proxy; ops-side tool.
 
 The password/token itself lives in the secrets vault (ADR 0055); this table
 holds only its vault key. Send (SMTP) is a later slice; this is read config.
@@ -120,6 +122,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     po.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    sc = esub.add_parser(
+        "scan", help="Run one inject_scan tick now (model-score flagged mail)."
+    )
+    sc.add_argument(
+        "--batch", type=int, default=8, help="Max messages to scan this tick."
+    )
+    sc.add_argument(
+        "--model", default=None, help="Model alias (default PRECIS_INJECT_SCAN_MODEL)."
+    )
+    sc.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
 
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(getattr(args, "database_url", None)))
@@ -135,6 +148,8 @@ def run(args: argparse.Namespace) -> None:
             _test(args, store)
         elif cmd == "poll":
             _poll(args, store)
+        elif cmd == "scan":
+            _scan(args, store)
     finally:
         store.close()
 
@@ -280,4 +295,30 @@ def _poll(args: argparse.Namespace, store: Store) -> None:
     print(
         f"email: polled {r['claimed']} account(s) — "
         f"{r['ok']} message(s) scanned, {r['failed']} failed"
+    )
+
+
+def _scan(args: argparse.Namespace, store: Store) -> None:
+    import os
+
+    from precis.utils.llm.router import DispatchClient, Tier
+    from precis.workers.inject_scan import run_inject_scan_pass
+
+    model = args.model or os.environ.get("PRECIS_INJECT_SCAN_MODEL") or "summarizer"
+    client = DispatchClient(tier=Tier.LOCAL_SMALL, model=model, source="inject_scan")
+    escalate_model = os.environ.get("PRECIS_INJECT_SCAN_ESCALATE_MODEL")
+    escalate = (
+        DispatchClient(
+            tier=Tier.LOCAL_SMALL, model=escalate_model, source="inject_scan"
+        )
+        if escalate_model
+        else None
+    )
+    print(f"email: inject_scan tick (model={model}) …")
+    r = run_inject_scan_pass(
+        store, client=client, escalate_client=escalate, batch_size=args.batch
+    )
+    print(
+        f"email: scanned {r['claimed']} flagged message(s) — "
+        f"{r['ok']} deepened, {r['failed']} left pending"
     )

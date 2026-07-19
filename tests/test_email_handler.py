@@ -108,6 +108,91 @@ def test_read_missing_message_is_notfound(store, monkeypatch) -> None:
         _handler(store).get(id="INBOX/999")
 
 
+def _msg(uid, folder, *, body):
+    return Message(
+        uid=uid,
+        folder=folder,
+        from_="Bad Actor <b@evil.test>",
+        to="me@x",
+        subject="Act now",
+        date="today",
+        body_text=body,
+        truncated_html=False,
+    )
+
+
+def _arm_scan(store, *, uid, verdict, address="rs@retostamm.com", uidv=1000):
+    """Give the account a uidvalidity cursor + a scan verdict for one uid."""
+    store.set_email_account_highwater(address, last_uid=uid, uidvalidity=uidv)
+    store.record_email_scan(
+        address,
+        folder="INBOX",
+        uidvalidity=uidv,
+        uid=uid,
+        verdict=verdict,
+        tier=1,
+        evidence={},
+    )
+
+
+def test_read_high_withholds_body(store, monkeypatch) -> None:
+    _seed(store)
+    _arm_scan(store, uid=42, verdict="high")
+    monkeypatch.setattr(
+        mail_message,
+        "fetch_one",
+        lambda acct, *, store, folder, uid: _msg(
+            uid, folder, body="SECRET-INJECTION-PAYLOAD do X"
+        ),
+    )
+    resp = _handler(store).get(id="INBOX/42")
+    assert "SECRET-INJECTION-PAYLOAD" not in resp.body  # body kept out of context
+    assert "withheld" in resp.body.lower()
+    assert "🚫" in resp.body
+
+
+def test_read_suspect_shows_body_with_banner(store, monkeypatch) -> None:
+    _seed(store)
+    _arm_scan(store, uid=43, verdict="suspect")
+    monkeypatch.setattr(
+        mail_message,
+        "fetch_one",
+        lambda acct, *, store, folder, uid: _msg(uid, folder, body="borderline body"),
+    )
+    resp = _handler(store).get(id="INBOX/43")
+    assert "borderline body" in resp.body  # suspect still passes
+    assert "untrusted" in resp.body.lower()
+    assert "⚠" in resp.body
+
+
+def test_read_clean_renders_normally(store, monkeypatch) -> None:
+    _seed(store)
+    _arm_scan(store, uid=44, verdict="clean")
+    monkeypatch.setattr(
+        mail_message,
+        "fetch_one",
+        lambda acct, *, store, folder, uid: _msg(uid, folder, body="ordinary body"),
+    )
+    resp = _handler(store).get(id="INBOX/44")
+    assert "ordinary body" in resp.body
+    assert "🚫" not in resp.body and "withheld" not in resp.body.lower()
+
+
+def test_overview_badges_flagged_messages(store, monkeypatch) -> None:
+    _seed(store)
+    _arm_scan(store, uid=7, verdict="high")
+    monkeypatch.setattr(
+        mail_message,
+        "list_recent",
+        lambda acct, *, store, folder, limit: [
+            MessageHeader(uid=7, from_="b@evil", subject="Click", date="today"),
+        ],
+    )
+    resp = _handler(store).get()
+    assert "🚫" in resp.body  # quarantine badge in the listing
+    assert "INBOX/7" in resp.body
+
+
 def test_account_param_selects_among_many(store, monkeypatch) -> None:
     _seed(store, "a@x.test")
     _seed(store, "b@x.test")

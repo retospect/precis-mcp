@@ -111,6 +111,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_llm_reconcile_pass": PassBand.BACKGROUND,
     "_paper_glossary_pass": PassBand.BACKGROUND,
     "_mail_poll_pass": PassBand.BACKGROUND,
+    "_inject_scan_pass": PassBand.BACKGROUND,
     "_structural_pass": PassBand.BACKGROUND,
     "_deep_review_pass": PassBand.BACKGROUND,
     "_dream_agent_pass": PassBand.BACKGROUND,
@@ -223,6 +224,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "watch_poll",
             "news_poll",
             "mail_poll",
+            "inject_scan",
             "briefing",
             "llm_summarize",
             "classify",
@@ -1080,6 +1082,50 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_mail_poll_pass)
+
+        # Email injection scan (email kind, slice 4). The deep rung of the
+        # cascade: leases tier-0 verdicts, re-fetches the body from IMAP, and
+        # model-scores it (local `summarizer` alias by default) for a prompt-
+        # injection attempt, escalating ambiguous ones + raising an alert on
+        # `high`. Dark behind PRECIS_INJECT_SCAN_ENABLED (agent host, where the
+        # local model proxy resolves); routed through the ADR 0046 DispatchClient.
+        if _pass_enabled("inject_scan"):
+            from precis.utils.llm.router import DispatchClient as _InjDispatchClient
+            from precis.utils.llm.router import Tier as _InjTier
+            from precis.workers.inject_scan import run_inject_scan_pass
+            from precis.workers.runner import BatchResult as _InjBatchResult
+
+            _inj_client = _InjDispatchClient(
+                tier=_InjTier.LOCAL_SMALL,
+                model=os.environ.get("PRECIS_INJECT_SCAN_MODEL") or "summarizer",
+                source="inject_scan",
+            )
+            _inj_escalate_model = os.environ.get("PRECIS_INJECT_SCAN_ESCALATE_MODEL")
+            _inj_escalate = (
+                _InjDispatchClient(
+                    tier=_InjTier.LOCAL_SMALL,
+                    model=_inj_escalate_model,
+                    source="inject_scan",
+                )
+                if _inj_escalate_model
+                else None
+            )
+
+            def _inject_scan_pass(batch_size: int) -> _InjBatchResult:
+                r = run_inject_scan_pass(
+                    store,
+                    client=_inj_client,
+                    escalate_client=_inj_escalate,
+                    batch_size=min(batch_size, 8),
+                )
+                return _InjBatchResult(
+                    handler="inject_scan",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_inject_scan_pass)
 
         # Morning briefing — summarizes recent `news` refs into a dated
         # digest ref. LLM-backed (summarizer alias), so cron-driven via

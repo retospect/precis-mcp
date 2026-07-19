@@ -488,10 +488,18 @@ The master kinds table lives in the `precis-overview` skill.
   resync, no back-fill) → inline tier-0 scan → verdict rows in `email_scan`
   (no body stored); `precis email poll` runs a tick by hand. Accounts via the
   `precis email` CLI; password in the vault (`email.<addr>.password`).
-  Migrations `0075_email_account` + `0076_email_scan`; design
-  `docs/design/email-kind.md`. **Slices 1–3 (config + browse + poll/tier-0)
-  live; inject_scan tiers 1–2 + quarantine ladder (slice 4), promotion + brief
-  (slice 5), and send are later — v1 is read-only.**
+  `inject_scan` (`workers/inject_scan.py`, **dark** behind
+  `PRECIS_INJECT_SCAN_ENABLED`) = the deep rung: lease tier-0 verdicts
+  (`pending_email_scans`), re-fetch the body, model-score (tier 1,
+  `DispatchClient`; escalate `suspect` to tier 2 when
+  `PRECIS_INJECT_SCAN_ESCALATE_MODEL` set), guarded CAS `upgrade_email_scan`
+  (`tier < new_tier`, the lock-free claim), `raise_alert` on `high`. The browse
+  handler badges listings (🚫/⚠) and **withholds** a `high` body (metadata
+  only). `precis email poll` / `precis email scan` run a tick by hand.
+  Migrations `0075_email_account` + `0076_email_scan` (slice 4 needed none);
+  design `docs/design/email-kind.md`. **Slices 1–4 (config + browse +
+  poll/tier-0 + inject_scan/quarantine) live (3 & 4 dark behind their flags);
+  promotion + brief (slice 5) and send are later — v1 is read-only.**
 - **`plan`** — a thread's reasoning outline (ADR 0051 §2b, slice A1): a
   hierarchical todo-list + notes on the `draft` chunk-tree substrate
   (`handlers/plan.py`, reusing the kind-parameterized `DraftMixin`), but a
