@@ -106,15 +106,13 @@ Optional ship message from the user: `$ARGUMENTS`
      red and isn't quickly greenable, stop, file it, and surface it — never
      chain unbounded ships.
 
-7. **Summarize next steps, then nudge a compact.** Close by telling the user
-   what — if anything — comes next: the persisted residuals from step 6, the
-   next item on a tracked list, or "nothing open." Then, when the session ran
-   long *or* there are next steps to resume, hand the user a clean-context
-   restart — you cannot run `/compact` yourself, so give a ready line, e.g.:
-   ```
-   /compact  — then resume from the OPEN-ITEMS "Residuals" block
-   ```
-   Draw the resume pointer from the **persisted** source (`OPEN-ITEMS.md` /
-   `kind='todo'` / memory), never a recap of this conversation — the durable
-   artifact is what survives compaction. Skip the nudge when the session was
-   short and nothing is open; don't manufacture ceremony.
+7. **Summarize next steps, then hand off a clean restart.** Close by telling
+   the user what — if anything — comes next: the persisted residuals from step
+   6, the next item on a tracked list, or "nothing open." Then, when the session
+   ran long *or* there are next steps to resume, emit a **full handoff block**
+   per `.claude/commands/next.md` step 3 (the copy → `/compact` → paste
+   recovery prompt), drawing its pointers from the **persisted** source
+   (`OPEN-ITEMS.md` / `kind='todo'` / memory), never a recap of this
+   conversation — the durable artifact is what survives compaction. Skip the
+   handoff when the session was short and nothing is open; don't manufacture
+   ceremony.
