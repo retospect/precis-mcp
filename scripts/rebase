@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# scripts/rebase — deterministic fast path for /rebase: fast-forward or rebase
+# the current worktree's branch onto its base (default origin/main).
+#
+# Fast + zero-LLM when it can finish mechanically: already up to date, a clean
+# fast-forward, or a conflict-free rebase all complete here and exit 0. The
+# script hands back to the /rebase command's LLM ONLY when it hits something a
+# human/model must judge — a real merge conflict (which it leaves IN PROGRESS,
+# conflict markers in the tree, for intelligent resolution) or a diverged main
+# that can't fast-forward.
+#
+# Rebase (not merge) keeps the feature branch linear on top of main; a branch
+# with no local commits just fast-forwards. --autostash carries a dirty tree
+# across and reapplies it — it uses its OWN autostash entry (reapplied by sha),
+# so it never pops a sibling worktree's shared-stack stash.
+#
+# Final `REBASE_STATUS: <token>` line the caller parses, and exit code:
+#   0  uptodate  — base already contained in HEAD; nothing to do
+#   0  ff        — branch had no local commits; fast-forwarded to base
+#   0  clean     — rebased onto base with no conflicts
+#   10 conflict  — rebase stopped on a conflict; left IN PROGRESS for the LLM
+#   10 diverged  — on main and it has diverged from base; can't ff (LLM/human)
+#   1  error     — hard failure (not a repo, detached HEAD, fetch failed, …)
+#
+# Usage:  scripts/rebase              # rebase current branch onto origin/main
+#         scripts/rebase origin/foo   # rebase onto a different base
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+BASE_REF="${1:-origin/main}"
+
+say()  { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
+warn() { printf '\033[33m! %s\033[0m\n' "$*" >&2; }
+die()  { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; echo "REBASE_STATUS: error"; exit 1; }
+
+git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository."
+
+# Don't start on top of a half-finished rebase — hand that state to the LLM.
+# Checked BEFORE the branch probe: mid-rebase, HEAD is detached and
+# `git branch --show-current` is empty, so this must win over the detached-HEAD
+# guard below (re-running /rebase during a conflict should say conflict, resume).
+if [[ -d "$(git rev-parse --git-path rebase-merge)" || -d "$(git rev-parse --git-path rebase-apply)" ]]; then
+    warn "a rebase is already in progress in this worktree."
+    echo "REBASE_STATUS: conflict"; exit 10
+fi
+
+BRANCH="$(git branch --show-current)"
+[[ -n "$BRANCH" ]] || die "detached HEAD — check out a branch first."
+
+# ── fetch the base ───────────────────────────────────────────────────────
+# For a remote base (origin/main) refresh just that ref; a local base is used
+# as-is. Then confirm it resolves before we lean on it.
+if [[ "$BASE_REF" == */* ]]; then
+    R="${BASE_REF%%/*}"; B="${BASE_REF#*/}"
+    say "fetching ${R} ${B}"
+    git fetch -q "$R" "$B" || die "git fetch ${R} ${B} failed — check the network/remote and re-run."
+fi
+git rev-parse --verify -q "${BASE_REF}^{commit}" >/dev/null \
+    || die "base ref '${BASE_REF}' does not resolve to a commit."
+
+# ── already up to date? ──────────────────────────────────────────────────
+if git merge-base --is-ancestor "$BASE_REF" HEAD; then
+    echo "${BRANCH} already contains ${BASE_REF} — nothing to do."
+    echo "REBASE_STATUS: uptodate"; exit 0
+fi
+
+# ── on main: fast-forward only (never auto-rebase the trunk) ─────────────
+if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
+    if git merge --ff-only "$BASE_REF" >/dev/null 2>&1; then
+        echo "fast-forwarded ${BRANCH} → $(git rev-parse --short HEAD)"
+        echo "REBASE_STATUS: ff"; exit 0
+    fi
+    warn "${BRANCH} has diverged from ${BASE_REF} — refusing to auto-rebase the trunk."
+    echo "REBASE_STATUS: diverged"; exit 10
+fi
+
+# ── feature branch: fast-forward if no local commits, else rebase ────────
+AHEAD="$(git rev-list --count "${BASE_REF}..HEAD")"
+if [[ "$AHEAD" == 0 ]]; then
+    say "no local commits ahead — fast-forwarding to ${BASE_REF}"
+    if git merge --ff-only "$BASE_REF" >/dev/null 2>&1; then
+        echo "fast-forwarded ${BRANCH} → $(git rev-parse --short HEAD)"
+        echo "REBASE_STATUS: ff"; exit 0
+    fi
+    # HEAD is an ancestor of base (checked above) yet ff failed — only a dirty
+    # tree blocks it; fall through to rebase --autostash, which handles it.
+fi
+
+say "rebasing ${BRANCH} (${AHEAD} commit(s)) onto ${BASE_REF}"
+if git rebase --autostash "$BASE_REF"; then
+    echo "rebased ${BRANCH} onto $(git rev-parse --short "$BASE_REF") cleanly."
+    echo "REBASE_STATUS: clean"; exit 0
+fi
+
+# git rebase left the tree at the first conflicting commit (autostash held back
+# until it completes). Leave it exactly there for the /rebase LLM to resolve.
+warn "rebase stopped on a conflict — left IN PROGRESS (git rebase --abort to bail out)."
+echo "REBASE_STATUS: conflict"
+exit 10
