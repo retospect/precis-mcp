@@ -236,11 +236,17 @@ branch, unshipped** (see memory `budget_oauth_quota_split`). Remaining:
     counter (the factory-console §8 `service_calls` rollup: per `(pass, host, day)`
     count + wall-clock). Build only if the week's data says local *compute* (not
     LLM) capacity is the constraint.
-  - **Quest fair-share meter** *(deferred — was gr162594).* The meter
-    (`allocator.weekly_spend`/`over_budget`) is inert because it sums dollar
+  - **Quest fair-share meter** *(deferred — gr162594; reminder td164931).* The
+    meter (`allocator.weekly_spend`/`over_budget`) is inert because it sums dollar
     `meta.cost` deeds that never land (local tier = $0 cost). Decide the meter
     *unit* (token/tick vs estimated-USD) **after** a week of the now-attributed
-    data shows what the constraint actually is. Don't build ahead of the data.
+    data — the clock starts at **deploy**, not ship. When
+    `precis llm cost --days 7 --by source` shows the local batch lanes populated,
+    run `--by source`/`--by transport`/`--by ref` and let the data (constraint =
+    wall-clock vs quota vs real $) pick the unit; then implement in
+    `quest/{tick,allocator}.py` + close gr162594. Don't build ahead of the data.
+    `ask-user` todo **td164931** carries the same trigger + guard so it surfaces in
+    `view='attention'` — this bullet is the passive record, the todo is the nudge.
 - **Open decisions** (design doc): ledger union without double-count; per-model
   price-table source + upkeep; cheap-band threshold; real cap defaults.
 
