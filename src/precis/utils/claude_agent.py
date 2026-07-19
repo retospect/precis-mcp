@@ -345,7 +345,14 @@ def call_claude_agent(
     run_binary = binary
     from precis.workers.executors import agent_container as _container
 
-    if _container.container_agent_enabled():
+    # Opt-in (``PRECIS_AGENT_CONTAINER``) is necessary but NOT sufficient: gate
+    # it behind the verified-capability probe (runtime live ∧ image resident ∧
+    # auth token resolvable ∧ not health-latched, §15d). An opted-in host that
+    # can't actually containerize runs in-process — byte-identical to today —
+    # instead of failing every agentic pass on a box it can't launch (the spark
+    # DSN retry-storm's failure mode, 2026-07-19).
+    containerized = False
+    if _container.container_agent_enabled() and _container.container_capability_ok():
         import uuid as _uuid
 
         from precis import secrets as _secrets
@@ -370,6 +377,12 @@ def call_claude_agent(
             dsn=_dsn,
         )
         run_binary = run_argv[0]
+        containerized = True
+    elif _container.container_agent_enabled():
+        # Opted in but this host can't be *verified* to run the container (no
+        # runtime / image / token, or the health latch is tripped after a recent
+        # infra failure). Run in-process rather than failing every pass.
+        _warn_container_incapable_once()
 
     res: Any
     try:
@@ -383,38 +396,26 @@ def call_claude_agent(
             stdin_devnull=True,
         )
     except ClaudeAgentError as exc:
-        # A non-zero exit that is actually a *resumable exhaustion* — the
-        # ``--max-turns`` ceiling or the ``--max-budget-usd`` cap — is not
-        # a crash: the CLI ran, emitted full ``stream-json`` telemetry, and
-        # usually a partial answer in the trailing ``result`` event. The
-        # planner already treats this as resumable-not-failed
-        # (``workers/job_types/plan_tick.py`` runs with ``check=False`` and
-        # lifts ``stream_final_text`` regardless of exit code); the agentic
-        # wrapper must not throw that work away and surface a bare
-        # "exited 1: " (empty stderr) to the follow-up / dream / reviewer
-        # callers. Recover the stream and fall through to normal parsing.
-        reason = _recoverable_exhaustion(exc.stdout or "")
-        if reason is None:
-            # Genuine failure. The CLI's bare "exited N: " is undiagnosable
-            # when stderr is empty (stream-json errors land on stdout), so
-            # enrich the message with the terminal reason when one is
-            # present before re-raising.
-            term = stream_terminal_reason(exc.stdout or "")
-            if term is not None:
-                raise ClaudeAgentError(
-                    f"{exc} (terminal_reason={term})",
-                    stdout=exc.stdout,
-                    stderr=exc.stderr,
-                    returncode=exc.returncode,
-                ) from exc
-            raise
-        log.info(
-            "claude_agent: exit %s recovered as resumable exhaustion (%s); "
-            "returning partial result",
-            exc.returncode,
-            reason,
-        )
-        res = SimpleNamespace(stdout=exc.stdout or "", stderr=exc.stderr or "")
+        if containerized and _container_infra_failure(exc):
+            # The *container* failed to run (image missing, daemon unreachable,
+            # socket perm, OOM 137) — NOT a claude/model error inside it. Latch
+            # the host unhealthy so subsequent passes skip the container for
+            # ~10 min, and retry the SAME call in-process once: one bad box
+            # degrades to in-proc instead of dropping the pass. (A container OOM
+            # exits 137 ≥128, which the router would otherwise mis-read as a
+            # signal 'interrupt' and *skip* — catching it here routes it to the
+            # fallback, not the skip.)
+            _container.trip_container_unhealthy()
+            log.warning(
+                "claude_agent: containerized run failed at the container-infra "
+                "level (rc=%s); latching host unhealthy and retrying in-process",
+                getattr(exc, "returncode", None),
+            )
+            res = _run_inproc_fallback(binary, args, timeout_s, proc_env)
+        else:
+            # A non-container failure (or a claude/model error inside the
+            # container): recover a resumable exhaustion or re-raise enriched.
+            res = _recover_exhaustion_or_raise(exc)
     duration_s = time.monotonic() - started
 
     # "Not logged in" guard. ``claude -p`` exits 0 with the message
@@ -499,6 +500,122 @@ def call_claude_agent(
 
 
 # ── helpers ────────────────────────────────────────────────────────
+
+
+def _recover_exhaustion_or_raise(exc: ClaudeAgentError) -> Any:
+    """A genuine ``ClaudeAgentError`` → either a recovered partial (resumable
+    ``--max-turns`` / ``--max-budget-usd`` exhaustion, whose full ``stream-json``
+    is on stdout with a partial answer in the trailing ``result`` event) or a
+    re-raise enriched with the stream's terminal reason.
+
+    Factored out of :func:`call_claude_agent`'s run so the primary
+    (container-or-in-proc) run and the post-container-failure in-proc fallback
+    share one recovery. The planner already treats exhaustion as
+    resumable-not-failed (``plan_tick`` runs ``check=False`` and lifts the final
+    text regardless of exit code); the agentic wrapper must likewise not throw
+    that work away and surface a bare undiagnosable ``exited 1:`` to the
+    follow-up / dream / reviewer callers."""
+    reason = _recoverable_exhaustion(exc.stdout or "")
+    if reason is None:
+        # Genuine failure. The CLI's bare "exited N: " is undiagnosable when
+        # stderr is empty (stream-json errors land on stdout), so enrich the
+        # message with the terminal reason when one is present before re-raising.
+        term = stream_terminal_reason(exc.stdout or "")
+        if term is not None:
+            raise ClaudeAgentError(
+                f"{exc} (terminal_reason={term})",
+                stdout=exc.stdout,
+                stderr=exc.stderr,
+                returncode=exc.returncode,
+            ) from exc
+        raise exc
+    log.info(
+        "claude_agent: exit %s recovered as resumable exhaustion (%s); "
+        "returning partial result",
+        exc.returncode,
+        reason,
+    )
+    return SimpleNamespace(stdout=exc.stdout or "", stderr=exc.stderr or "")
+
+
+def _run_inproc_fallback(
+    binary: str, args: list[str], timeout_s: float, proc_env: dict[str, str]
+) -> Any:
+    """Retry the SAME agentic call in-process after a container-infra failure.
+
+    Runs the ORIGINAL host argv (``args`` / ``binary`` — not the ``docker run``
+    wrapper), so a host whose container can't launch still completes the pass.
+    A ``ClaudeAgentError`` from the fallback is a real in-proc failure and goes
+    through the shared exhaustion-recovery / enrich path."""
+    try:
+        return run_claude(
+            args,
+            binary=binary,
+            label="claude -p (agent · in-proc fallback)",
+            timeout_s=timeout_s,
+            error_cls=ClaudeAgentError,
+            env=proc_env,
+            stdin_devnull=True,
+        )
+    except ClaudeAgentError as exc:
+        return _recover_exhaustion_or_raise(exc)
+
+
+#: Substrings in a failed ``docker/podman run``'s output that mean the
+#: *container* couldn't run (vs. claude failing inside it). Lower-cased
+#: substring match over stderr+stdout. OOM is caught by the 137 exit code below,
+#: not a marker.
+_CONTAINER_INFRA_MARKERS = (
+    "cannot connect to the docker daemon",
+    "cannot connect to podman",
+    "is the docker daemon running",
+    "no such image",
+    "unable to find image",
+    "manifest unknown",
+    "image not known",
+    "permission denied",
+    "dial unix",
+    "connection refused",
+)
+
+
+def _container_infra_failure(exc: ClaudeAgentError) -> bool:
+    """Whether a containerized run's error is the *container* failing to run
+    (image missing, daemon unreachable, socket perm, OOM) rather than a
+    claude/model error inside it.
+
+    Exit 137 = the container was OOM/SIGKILLed (``docker run`` forwards the
+    container's exit code); other infra failures surface a known runtime
+    message. Deliberately narrow — a false positive costs only one in-proc
+    retry, but a false negative (mis-reading a model error as infra) would hide
+    a real failure behind a pointless retry — so we match specific signatures,
+    never any non-zero exit."""
+    rc = getattr(exc, "returncode", None)
+    if rc == 137:  # container OOM / SIGKILL (128 + 9)
+        return True
+    blob = (
+        (getattr(exc, "stderr", "") or "") + "\n" + (getattr(exc, "stdout", "") or "")
+    ).lower()
+    return any(m in blob for m in _CONTAINER_INFRA_MARKERS)
+
+
+#: Warn only once per process when opted-in-but-incapable (avoid per-pass spam).
+_warned_container_incapable = False
+
+
+def _warn_container_incapable_once() -> None:
+    """Log (once per process) that ``PRECIS_AGENT_CONTAINER`` is set but this
+    host can't be verified to run the container, so passes run in-process."""
+    global _warned_container_incapable
+    if _warned_container_incapable:
+        return
+    _warned_container_incapable = True
+    log.warning(
+        "claude_agent: PRECIS_AGENT_CONTAINER is set but this host can't be "
+        "verified to run the agent container (runtime/image/token missing, or "
+        "the health latch is tripped) — running agentic passes in-process. "
+        "Warns once per process; /factory shows the host as degraded."
+    )
 
 
 # claude emits "turns: N" on stderr in some output formats; best-effort.

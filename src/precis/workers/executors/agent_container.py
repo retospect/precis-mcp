@@ -33,6 +33,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -81,6 +83,119 @@ def _container_bin() -> str:
     from precis.workers.capability_probe import container_runtime
 
     return container_runtime() or "podman"
+
+
+# ── Verified-capability probe + run-health latch (§15d/§15h) ───────
+#
+# ``container_agent_enabled()`` is a bare policy read — it says the operator
+# *opted in*, not that this host can actually run the container. A host that
+# lacks the runtime, the image, or a resolvable auth token would containerize
+# every agentic pass and fail at ``docker run`` — the spark DSN retry-storm's
+# shape (2026-07-19). So the live selection seam gates the opt-in behind THIS
+# verified probe: the runtime+daemon reachable ∧ the ``precis-agent`` image
+# resident ∧ an auth token actually resolvable. Any leg missing / any probe
+# erroring ⇒ ``False`` ⇒ the caller runs in-process (byte-identical to today),
+# never a container it can't launch. Per-process cached (~60s) so the probe's
+# subprocesses don't ride every pass; the run-failure breaker
+# (:func:`trip_container_unhealthy`) latches a ~10-min ``False`` when a
+# containerized run dies at the infra level (melchior's OOM case, where
+# pre-flight passes but the box is SIGKILLed at run).
+
+_CAPABILITY_TTL_S = 60.0
+_CAPABILITY_PROBE_TIMEOUT_S = 5.0
+_UNHEALTHY_COOLDOWN_S = 600.0
+
+#: (mono_ts, ok) per (bin, image, mode) — the last probe result within TTL.
+_CAPABILITY_CACHE: dict[str, tuple[float, bool]] = {}
+#: monotonic deadline the container path is latched unhealthy until (0 = healthy).
+_UNHEALTHY_UNTIL: float = 0.0
+
+
+def trip_container_unhealthy(*, _now: float | None = None) -> None:
+    """Latch the container path unhealthy for ~10 min (per process).
+
+    The live executor calls this when a containerized run dies at the *infra*
+    level (image missing, daemon unreachable, socket perm, OOM 137) — as
+    distinct from a claude/model error. While latched,
+    :func:`container_capability_ok` returns ``False`` so every pass falls back
+    in-process instead of retry-storming a box that just proved it can't run the
+    container. Self-clears when the cooldown elapses (the next probe
+    re-verifies from scratch)."""
+    global _UNHEALTHY_UNTIL
+    now = _now if _now is not None else time.monotonic()
+    _UNHEALTHY_UNTIL = now + _UNHEALTHY_COOLDOWN_S
+
+
+def reset_capability_cache() -> None:
+    """Clear the probe cache + health latch (tests, or a forced re-probe)."""
+    global _UNHEALTHY_UNTIL
+    _CAPABILITY_CACHE.clear()
+    _UNHEALTHY_UNTIL = 0.0
+
+
+def _auth_token_present(mode: str | None = None) -> bool:
+    """Whether an auth token for ``mode`` is actually resolvable — mirrors the
+    run path's resolution (env → ``~/.claude_oauth_token`` → vault for oauth;
+    env only for the api key) so the probe agrees with what a real run sees."""
+    mode = mode or agent_run_mode()
+    from precis.utils import claude_oauth as _oauth
+
+    if mode == "api":
+        return bool(os.environ.get(_oauth.API_KEY_VAR, "").strip())
+    probe_env = dict(os.environ)
+    _oauth.ensure_oauth_token(probe_env)
+    return bool(probe_env.get(_oauth.ENV_VAR, "").strip())
+
+
+def _probe_container_capability(image: str) -> bool:
+    """The uncached probe: an auth token resolvable ∧ ``<bin> info`` exit 0
+    (runtime+daemon reachable) ∧ ``<bin> image inspect <image>`` exit 0 (the
+    image resident). Short subprocess timeouts; ANY exception → ``False``
+    (fail-safe → in-proc)."""
+    if not _auth_token_present():
+        return False
+    bin_ = _container_bin()
+    try:
+        for probe in ([bin_, "info"], [bin_, "image", "inspect", image]):
+            res = subprocess.run(
+                probe,
+                capture_output=True,
+                timeout=_CAPABILITY_PROBE_TIMEOUT_S,
+                check=False,
+            )
+            if res.returncode != 0:
+                return False
+    except Exception:
+        # OSError (bin absent), TimeoutExpired (daemon wedged), anything — the
+        # host can't be *verified* to containerize, so it doesn't.
+        return False
+    return True
+
+
+def container_capability_ok(
+    image: str | None = None, *, _now: float | None = None
+) -> bool:
+    """Whether THIS host can actually run an agentic container right now (§15d).
+
+    The verified capability the live selection seam gates the
+    ``PRECIS_AGENT_CONTAINER`` opt-in behind: unlike
+    :func:`container_agent_enabled` (a bare policy read), this confirms the
+    runtime is live, the image is resident, and an auth token resolves — so an
+    opted-in host that *can't* containerize falls back in-process instead of
+    failing every pass. Per-process cached (~60s); the health latch
+    (:func:`trip_container_unhealthy`) forces ``False`` through a post-failure
+    cooldown. Fail-safe: any uncertainty ⇒ ``False`` ⇒ in-proc."""
+    now = _now if _now is not None else time.monotonic()
+    if now < _UNHEALTHY_UNTIL:
+        return False
+    image = image or default_agent_image()
+    key = f"{_container_bin()}\x00{image}\x00{agent_run_mode()}"
+    cached = _CAPABILITY_CACHE.get(key)
+    if cached is not None and now - cached[0] < _CAPABILITY_TTL_S:
+        return cached[1]
+    ok = _probe_container_capability(image)
+    _CAPABILITY_CACHE[key] = (now, ok)
+    return ok
 
 
 # ── Tier-3: egress → --network + allowlist (pure) ──────────────────
@@ -370,9 +485,12 @@ __all__ = [
     "build_agent_run_argv",
     "build_claude_command",
     "container_agent_enabled",
+    "container_capability_ok",
     "container_env",
     "containerize_claude_argv",
     "default_agent_image",
     "default_agent_mcp_config",
+    "reset_capability_cache",
     "resolve_network",
+    "trip_container_unhealthy",
 ]

@@ -443,9 +443,13 @@ def test_container_executor_on_wraps_in_podman(monkeypatch, stub_bin: Path) -> N
     from types import SimpleNamespace
 
     import precis.utils.claude_agent as ca
+    from precis.workers.executors import agent_container as ac
 
     monkeypatch.setenv("PRECIS_AGENT_CONTAINER", "1")
     monkeypatch.setenv("PRECIS_CONTAINER_BIN", "podman")  # deterministic bin
+    # The selection seam now also gates on the verified-capability probe (§15d);
+    # the test host has no real podman/image, so force it capable.
+    monkeypatch.setattr(ac, "container_capability_ok", lambda *a, **k: True)
     captured: dict[str, object] = {}
 
     def _fake(argv, **k):
@@ -473,9 +477,11 @@ def test_container_reinjects_scrubbed_dsn(monkeypatch, stub_bin: Path) -> None:
 
     import precis.utils.claude_agent as ca
     from precis import secrets as _secrets
+    from precis.workers.executors import agent_container as ac
 
     monkeypatch.setenv("PRECIS_AGENT_CONTAINER", "1")
     monkeypatch.setenv("PRECIS_CONTAINER_BIN", "podman")
+    monkeypatch.setattr(ac, "container_capability_ok", lambda *a, **k: True)  # §15d
     # Boot-time state: DSN gone from the environ, captured in the secrets module.
     monkeypatch.delenv("PRECIS_DATABASE_URL", raising=False)
     monkeypatch.setattr(_secrets, "_ADOPTED_DSN", "postgresql://ro@h:6432/db")
@@ -729,3 +735,136 @@ def test_stream_final_text_lifts_result_then_falls_back() -> None:
     # text-format / stub output (no result event) → raw stdout
     assert stream_final_text("plain stub output") == "plain stub output"
     assert stream_final_text("") == ""
+
+
+# ── §15d/§15h: container selection gate + infra-fallback breaker ───
+#
+# These patch ``run_claude`` directly (no stub binary), so they exercise the
+# selection logic in ``call_claude_agent`` — which run argv is chosen, and how a
+# containerized failure is classified — without a real container or claude.
+
+
+def _ok(stdout: str = "agent ran", stderr: str = ""):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(stdout=stdout, stderr=stderr)
+
+
+class _RunClaudeSeq:
+    """A ``run_claude`` stub: applies ``behaviors`` (a result object to return or
+    an exception to raise) per successive call, recording each call's argv."""
+
+    def __init__(self, *behaviors) -> None:
+        self.calls: list[list[str]] = []
+        self._it = iter(behaviors)
+
+    def __call__(self, argv, **kw):
+        self.calls.append(list(argv))
+        b = next(self._it)
+        if isinstance(b, BaseException):
+            raise b
+        return b
+
+
+@pytest.fixture
+def _container_selected(monkeypatch):
+    """Opt in + force-capable, with hermetic DSN/secrets and an observable latch.
+
+    Returns the list the patched ``trip_container_unhealthy`` appends to, so a
+    test can assert whether the infra-health latch was tripped."""
+    import precis.utils.claude_agent as ca
+    from precis import secrets as _secrets
+    from precis.workers.executors import agent_container as ac
+
+    monkeypatch.setenv("PRECIS_AGENT_CONTAINER", "1")
+    monkeypatch.setenv("PRECIS_CONTAINER_BIN", "podman")
+    monkeypatch.setattr(ac, "container_capability_ok", lambda *a, **k: True)
+    monkeypatch.setattr(_secrets, "get_adopted_dsn", lambda: None, raising=False)
+    ac.reset_capability_cache()
+    trips: list[int] = []
+    monkeypatch.setattr(ac, "trip_container_unhealthy", lambda *a, **k: trips.append(1))
+    ca._warned_container_incapable = False
+    return trips
+
+
+def test_enabled_and_capable_runs_containerized(monkeypatch, _container_selected):
+    import precis.utils.claude_agent as ca
+
+    fake = _RunClaudeSeq(_ok("done"))
+    monkeypatch.setattr(ca, "run_claude", fake)
+    res = ca.call_claude_agent("do it", model="opus")
+    assert isinstance(res, AgentResult)
+    argv = fake.calls[0]
+    assert argv[0] == "podman" and "run" in argv  # containerized
+    assert any("precis-agent" in a for a in argv)  # the agent image
+    assert _container_selected == []  # healthy run → no latch trip
+
+
+def test_enabled_but_incapable_runs_in_proc(monkeypatch):
+    import precis.utils.claude_agent as ca
+    from precis.workers.executors import agent_container as ac
+
+    monkeypatch.setenv("PRECIS_AGENT_CONTAINER", "1")
+    monkeypatch.setattr(ac, "container_capability_ok", lambda *a, **k: False)
+    ca._warned_container_incapable = False
+    fake = _RunClaudeSeq(_ok("in proc"))
+    monkeypatch.setattr(ca, "run_claude", fake)
+    res = ca.call_claude_agent("do it", model="opus")
+    assert isinstance(res, AgentResult)
+    argv = fake.calls[0]
+    assert argv[0] == "claude"  # the host claude argv, not `podman run`
+    assert not any("precis-agent" in a for a in argv)
+    assert "podman" not in argv
+
+
+def test_container_infra_failure_falls_back_in_proc_and_latches(
+    monkeypatch, _container_selected
+):
+    import precis.utils.claude_agent as ca
+
+    infra = ClaudeAgentError(
+        "cannot connect to the Docker daemon",
+        stdout="",
+        stderr="cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+        returncode=125,
+    )
+    fake = _RunClaudeSeq(infra, _ok("recovered in proc"))
+    monkeypatch.setattr(ca, "run_claude", fake)
+    res = ca.call_claude_agent("do it", model="opus")
+    assert isinstance(res, AgentResult)
+    assert "recovered in proc" in res.final_text
+    assert fake.calls[0][0] == "podman"  # first: containerized
+    assert fake.calls[1][0] == "claude"  # then: in-proc fallback
+    assert _container_selected == [1]  # infra failure latched the host unhealthy
+
+
+def test_container_oom_137_falls_back_not_skipped(monkeypatch, _container_selected):
+    import precis.utils.claude_agent as ca
+
+    # Exit 137 (OOM/SIGKILL) is ≥128, which the router's LlmResult.interrupted
+    # would read as a signal 'interrupt' and *skip*. The breaker must catch it
+    # first as a container-infra failure and fall back in-proc — not skip.
+    oom = ClaudeAgentError("exited 137", stdout="", stderr="", returncode=137)
+    fake = _RunClaudeSeq(oom, _ok("in proc after OOM"))
+    monkeypatch.setattr(ca, "run_claude", fake)
+    res = ca.call_claude_agent("do it", model="opus")
+    assert "in proc after OOM" in res.final_text
+    assert fake.calls[1][0] == "claude"
+    assert _container_selected == [1]
+
+
+def test_container_model_error_still_raises(monkeypatch, _container_selected):
+    import precis.utils.claude_agent as ca
+
+    # A claude/model failure INSIDE the container (non-infra: no runtime marker,
+    # rc=1, no recoverable-exhaustion stream) must NOT be swallowed by the
+    # fallback — it's a real failure the caller needs to see.
+    model_err = ClaudeAgentError(
+        "exited 1", stdout="", stderr="model overloaded", returncode=1
+    )
+    fake = _RunClaudeSeq(model_err)
+    monkeypatch.setattr(ca, "run_claude", fake)
+    with pytest.raises(ClaudeAgentError):
+        ca.call_claude_agent("do it", model="opus")
+    assert len(fake.calls) == 1  # no in-proc retry
+    assert _container_selected == []  # not an infra failure → no latch trip

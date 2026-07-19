@@ -8,6 +8,7 @@ gate. All pure (no DB / no container), so it runs anywhere.
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
@@ -288,3 +289,118 @@ def test_containerize_wraps_host_argv_preserving_all_flags() -> None:
         "sys",
         "the prompt",
     ]
+
+
+# ── verified-capability probe + health latch (§15d/§15h) ───────────
+
+
+@pytest.fixture
+def _fresh_capability(monkeypatch):
+    """A clean probe cache + latch, a resolvable auth token, and a fixed bin."""
+    monkeypatch.setenv("PRECIS_CONTAINER_BIN", "podman")
+    monkeypatch.setattr(ac, "_auth_token_present", lambda mode=None: True)
+    ac.reset_capability_cache()
+    yield
+    ac.reset_capability_cache()
+
+
+def _fake_run(returncode: int):
+    """A ``subprocess.run`` stub returning a fixed exit code for any argv."""
+
+    def _run(argv, **kw):
+        return subprocess.CompletedProcess(argv, returncode)
+
+    return _run
+
+
+def test_capability_ok_true_when_all_legs_pass(monkeypatch, _fresh_capability) -> None:
+    monkeypatch.setattr(ac.subprocess, "run", _fake_run(0))
+    assert ac.container_capability_ok() is True
+
+
+def test_capability_false_without_auth_token(monkeypatch, _fresh_capability) -> None:
+    monkeypatch.setattr(ac, "_auth_token_present", lambda mode=None: False)
+    called: list[int] = []
+
+    def _run(*a, **k):
+        called.append(1)
+        return subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(ac.subprocess, "run", _run)
+    assert ac.container_capability_ok() is False
+    assert not called  # short-circuits before touching the runtime
+
+
+def test_capability_false_when_daemon_unreachable(
+    monkeypatch, _fresh_capability
+) -> None:
+    monkeypatch.setattr(ac.subprocess, "run", _fake_run(1))  # `<bin> info` != 0
+    assert ac.container_capability_ok() is False
+
+
+def test_capability_false_when_image_absent(monkeypatch, _fresh_capability) -> None:
+    def _run(argv, **kw):  # info ok, image inspect fails
+        rc = 0 if argv[1] == "info" else 1
+        return subprocess.CompletedProcess(argv, rc)
+
+    monkeypatch.setattr(ac.subprocess, "run", _run)
+    assert ac.container_capability_ok() is False
+
+
+def test_capability_false_on_probe_exception(monkeypatch, _fresh_capability) -> None:
+    def _boom(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, 5)
+
+    monkeypatch.setattr(ac.subprocess, "run", _boom)
+    assert ac.container_capability_ok() is False  # any exception → fail-safe
+
+
+def test_capability_result_is_cached(monkeypatch, _fresh_capability) -> None:
+    calls: list[list[str]] = []
+
+    def _run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(ac.subprocess, "run", _run)
+    assert ac.container_capability_ok(_now=1000.0) is True
+    assert ac.container_capability_ok(_now=1030.0) is True  # within TTL → cached
+    assert len(calls) == 2  # one info + one image-inspect, from the first call only
+
+
+def test_capability_cache_expires_after_ttl(monkeypatch, _fresh_capability) -> None:
+    calls: list[list[str]] = []
+
+    def _run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(ac.subprocess, "run", _run)
+    ac.container_capability_ok(_now=1000.0)
+    ac.container_capability_ok(_now=1000.0 + ac._CAPABILITY_TTL_S + 1)
+    assert len(calls) == 4  # re-probed after the TTL elapses
+
+
+def test_health_latch_forces_incapable(monkeypatch, _fresh_capability) -> None:
+    monkeypatch.setattr(ac.subprocess, "run", _fake_run(0))  # probe would pass
+    ac.trip_container_unhealthy(_now=1000.0)
+    # within the cooldown → False regardless of a healthy probe.
+    assert ac.container_capability_ok(_now=1000.0 + 60.0) is False
+    # after the cooldown → re-verifies and passes.
+    assert (
+        ac.container_capability_ok(_now=1000.0 + ac._UNHEALTHY_COOLDOWN_S + 1) is True
+    )
+
+
+def test_auth_token_present_api_mode_reads_env(monkeypatch) -> None:
+    monkeypatch.setenv("PRECIS_AGENT_MODE", "api")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    assert ac._auth_token_present() is True
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert ac._auth_token_present() is False
+
+
+def test_auth_token_present_oauth_uses_env_token(monkeypatch) -> None:
+    monkeypatch.delenv("PRECIS_AGENT_MODE", raising=False)  # oauth (default)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
+    assert ac._auth_token_present() is True  # env token wins, no file read

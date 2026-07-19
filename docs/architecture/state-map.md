@@ -407,6 +407,19 @@ resumable. This stopped the follow-up "ask & think" path surfacing a
 bare `⚠️ thinking failed: …exited 1:` whenever the agent ran out of
 turns. Genuine errors still raise — now with the `terminal_reason`
 folded into the message, since stream-json errors leave stderr empty.
+**Container executor gate (§13/§15d).** When `PRECIS_AGENT_CONTAINER` is set
+the SAME `claude -p` runs in a throwaway `precis-agent` container
+(`workers/executors/agent_container.py`), but the opt-in is now gated behind a
+**verified-capability probe** (`container_capability_ok()`: auth token
+resolvable ∧ `<bin> info` ∧ `<bin> image inspect` — per-process ~60s-cached,
+fail-safe to in-proc), so an opted-in host that can't actually containerize
+runs in-process instead of failing every pass. A containerized run's
+**infra** failure (image-missing/daemon-unreachable/socket-perm/**OOM 137**,
+vs. a claude/model error) trips a ~10-min health latch (`trip_container_unhealthy`)
+and retries the same call in-process once — catching the OOM 137 here keeps it
+off the router's `interrupted` (`rc>=128`) skip path. Flag stays opt-in
+(unset=OFF); auto-detect retirement + `/factory` degraded-render are follow-ons
+(`OPEN-ITEMS.md §🔇`).
 
 **LLM independence — the switchable router (`utils/llm/`, ADR 0046).**
 Every routed call goes through `dispatch(LlmRequest)` → a narrow

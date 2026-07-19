@@ -53,28 +53,59 @@ open:
 
 ## 🔇 Unsilence silently-failing agent passes + verified-capability probe
 
-Status: `agreed, unbuilt` · Severity: `high` · Owner: executor + review seam ·
-Surfaced 2026-07-19 alongside the spark DSN retry-storm (a pass can "succeed"
-at cost=$0 while doing nothing).
+Status: `partly shipped` · Severity: `high` → `medium` (retry-storm risk
+closed) · Owner: executor + review seam · Surfaced 2026-07-19 alongside the
+spark DSN retry-storm (a pass can "succeed" at cost=$0 while doing nothing).
 
-**Empty-result assertion.** An agent pass that reports **cost==0 AND turns
-0/None AND zero MCP tool-calls AND no output text** (the *conjunction* — any
-one alone is legitimate) is almost certainly a silent failure (env gap, image
-missing, OAuth expired, container never really ran), not a clean no-op. Today
-those log clean and vanish. Change the executor/review dispatch so this
-conjunction **raises + alerts** instead of writing a $0 "success". Guard the
-conjunction hard so a genuinely cheap-but-real pass (e.g. a real tool-call that
-returned fast) is never flagged.
+**SHIPPED (this cycle) — the verified-capability probe + infra-fallback breaker.**
+Closes the retry-storm risk B2-on-melchior took live (deploy `dc0e5d05`):
+- `agent_container.container_capability_ok()` — per-process ~60s-cached probe:
+  auth token resolvable (env→file→vault, mirrors the run) ∧ `<bin> info` exit 0
+  ∧ `<bin> image inspect <image>` exit 0; any exception → `False` (fail-safe).
+  Plus `trip_container_unhealthy()` (~10-min health latch) + `reset_capability_cache()`.
+- Selection seam `utils/claude_agent.py` now gates the `PRECIS_AGENT_CONTAINER`
+  opt-in behind the probe: enabled-but-incapable ⇒ warn-once + run in-proc.
+- Infra-fallback breaker: a containerized run's **container-infra** error
+  (image-missing · daemon-unreachable · socket-perm · **OOM exit 137**), as
+  distinct from a claude/model error (`_container_infra_failure`), trips the
+  latch + retries the SAME call in-proc once. The 137-vs-interrupted split is
+  handled *structurally* — the breaker catches the container OOM before it can
+  reach the router's `interrupted` skip, so `_error_result`'s `rc>=128`
+  semantics stayed correct for the in-proc path (no change needed there).
+- Flag semantics kept opt-in (unset=OFF); full auto-detect retirement is a
+  separate follow-on.
+- Tests green: `tests/test_agent_container.py` (probe true + per-leg false +
+  latch + cache TTL + auth), `tests/test_claude_agent.py`
+  (capable→containerized, incapable→in-proc, infra→fallback+latch,
+  OOM-137→fallback-not-skip, model-error→still raises).
 
-**Verified-capability probe (design-doc §15d/§15h).** Container auto-detect
-must be a *verified* capability, not presence-of-binary: gate on
-`runtime-live ∧ image-sha-verified ∧ in-container-OAuth round-trip` before a
-host advertises container-agent capability. This is what lets us retire the
-per-host `PRECIS_AGENT_CONTAINER` flag safely (the flag stays until the probe
-exists — presence-auto-detect alone would silently mis-route to a host whose
-OAuth/image is broken, the exact failure mode above). Wire the probe result
-into `/factory?host=*` so a host that *can't* actually containerize shows as
-degraded rather than silently erroring.
+**REMAINING — two follow-ons (neither is the safety-critical path):**
+
+1. **Empty-result assertion.** An agent pass that reports **cost==0 AND turns
+   0/None AND zero MCP tool-calls AND no output text** (the *conjunction* — any
+   one alone is legitimate) is almost certainly a silent failure, not a clean
+   no-op. Today those log clean and vanish. Change the executor/review dispatch
+   so this conjunction **raises + alerts** instead of writing a $0 "success".
+   Guard the conjunction hard so a genuinely cheap-but-real pass (a real
+   tool-call that returned fast) is never flagged. (The capability probe now
+   prevents the *most common* cause — an incapable host — but a broken pass on
+   a capable host can still $0-succeed, so this assertion is still worth having.)
+
+2. **`/factory` render of `capability_ok` (degraded/green).** Surface an
+   opted-in-but-incapable host as degraded rather than silent. **Deferred: no
+   clean seam.** `probe_host_resources()` only evaluates tokens in
+   `capability_vocabulary()` = union of `ServiceSpec.requires`, so a *hard*
+   `container_agent` slot couples to scheduling (agentic services would need
+   `requires={"container_agent"}`, changing placement). The *soft*-signal path
+   (like `mem`) avoids scheduling but `probe_soft_signals()` is hardcoded to
+   `{mem}` and `heartbeat.py:_report_resource_slots` passes `mem_capacity()`
+   for *every* soft signal — a `container_agent` gauge needs per-resource
+   capacity plumbing + `/factory` template verification (~30-40 lines, 3 files).
+   Do it as its own cycle: add `container_agent` to `probe_soft_signals()`,
+   thread a per-resource capacity through the heartbeat soft-signal loop,
+   confirm `_slots_by_host()`/`index.html.j2` render soft signals distinctly,
+   test. Files: `src/precis/workers/capability_probe.py:278`,
+   `src/precis/cli/heartbeat.py:390`, `src/precis_web/routes/factory.py:129`.
 
 ---
 
