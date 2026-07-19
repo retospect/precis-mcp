@@ -247,15 +247,20 @@ passes `reclaim_stale_running=True` to `claim_executor_jobs`, so a
 `STATUS:running` job whose lease has *provably* expired (non-null and
 `< now()`) is claimable again — its worker died mid-dispatch (a deploy
 restart is the common cause; the ssh_node dispatch is in-process, so a dead
-worker == dead compute). Without this the job stranded forever (claim was
-`STATUS:queued`-only, and nothing flipped `running`→`queued`). The steal
-bumps `meta.attempts`; past `_MAX_ATTEMPTS` (3) it's failed + bubbled
-(poison-guard against a job that crashes its worker every time), and a
-stolen job's stale `meta.reserved` slots are refunded before it re-reserves.
-Opt-in per caller — `claude_inproc`/`coordinator` are unchanged (they'd need
-their own ensure-dead story for a re-run). A live-lease running job is never
-stolen. Container dispatchers (dft) must reap their own handle before
-relaunch; catpath (in-process) has nothing to kill.
+worker == dead compute). The steal bumps `meta.attempts`; past `_MAX_ATTEMPTS`
+(3) it's failed + bubbled (poison-guard against a job that crashes its worker
+every time), and a stolen job's stale `meta.reserved` slots are refunded
+before it re-reserves. Opt-in per caller — `claude_inproc`/`coordinator` are
+unchanged (they'd need their own ensure-dead story for a re-run). A live-lease
+running job is never stolen. Container dispatchers (dft) must reap their own
+handle before relaunch; catpath (in-process) has nothing to kill.
+**The `sweeper` excludes `ssh_node`-executor jobs** (`meta.executor IS
+DISTINCT FROM 'ssh_node'` on both its enumerate + transition-re-verify
+queries): the sweeper fails an expired-lease `STATUS:running` job outright,
+which would *race and win* the claim-side steal at lease expiry — stranding
+the compute result as `failed` instead of retrying it. So the executor owns
+crash-recovery for its own jobs; the sweeper still reaps every other
+executor's (`claude_inproc` plan_tick, etc.).
 
 **Two `precis worker` profiles, four LaunchDaemons total.**
 
@@ -335,7 +340,8 @@ relaunch; catpath (in-process) has nothing to kill.
 * `sweeper` — fails `kind='job'` rows whose `STATUS:running` is older
   than `PRECIS_STUCK_JOB_HOURS` (1.0h), tagging `swept:claim-orphaned`
   so the parent's failure-bubble unblocks the cascade. Recovers
-  deploy-time claim orphans.
+  deploy-time claim orphans — **except `ssh_node`-executor jobs**, which
+  the executor itself reclaims + retries (see the crash-recovery note above).
 * `corpus_reconcile` — maintains the per-host `pdf_locations` presence
   ledger (migration 0052). Each node stats the held-paper PDFs under its
   own `PRECIS_CORPUS_DIR` roots (preferring `pdfs.storage_path`, falling

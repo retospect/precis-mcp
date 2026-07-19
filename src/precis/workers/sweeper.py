@@ -506,6 +506,13 @@ def _enumerate_orphans(
     handler writes with ``replace_prefix=True``, so only one
     ``STATUS:`` row per ref ever exists at a given time). Its
     ``ref_tags.created_at`` is the claim timestamp.
+
+    ``ssh_node``-executor jobs are excluded: that executor reclaims its own
+    expired-lease running jobs (lease-steal + attempt cap in
+    ``executors/ssh_node.py``), so a swept→failed here would race — and win —
+    the steal, stranding the barrier instead of retrying it. The executor
+    owns the crash-recovery story for its jobs; the sweeper must not fail
+    them out from under it.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -518,6 +525,7 @@ def _enumerate_orphans(
                AND r.deleted_at IS NULL
                AND t.namespace = 'STATUS'
                AND t.value = 'running'
+               AND (r.meta->>'executor') IS DISTINCT FROM 'ssh_node'
                AND rt.created_at < now() - %s::interval
                AND (
                     (r.meta->>'lease_until') IS NULL
@@ -559,6 +567,7 @@ def _transition_to_failed(
                AND r.deleted_at IS NULL
                AND t.namespace = 'STATUS'
                AND t.value = 'running'
+               AND (r.meta->>'executor') IS DISTINCT FROM 'ssh_node'
                AND rt.created_at < now() - %s::interval
                AND (
                     (r.meta->>'lease_until') IS NULL

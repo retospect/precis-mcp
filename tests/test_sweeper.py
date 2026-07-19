@@ -48,6 +48,7 @@ def _mint_running_job(
     *,
     backdate_hours: float,
     lease_offset_hours: float | None = None,
+    executor: str = "claude_inproc",
 ) -> int:
     """Insert a ``kind='job'`` ref, tag STATUS:running, backdate the tag.
 
@@ -55,12 +56,16 @@ def _mint_running_job(
     ``now() + offset``: a positive value gives a *live* lease (worker
     still owns the job — must not be swept), a negative value an
     *expired* one. ``None`` leaves the meta lease-less (legacy job).
+
+    ``executor`` sets ``meta.executor`` — ``ssh_node`` jobs are excluded
+    from the sweep (that executor reclaims its own expired-lease running
+    jobs), so this parameter drives the exclusion test.
     """
     job = store.insert_ref(
         kind="job",
         slug=None,
         title="plan_tick test job",
-        meta={"job_type": "plan_tick", "executor": "claude_inproc"},
+        meta={"job_type": "plan_tick", "executor": executor},
         parent_id=parent_id,
     )
     store.add_tag(
@@ -168,6 +173,32 @@ def test_stale_running_job_with_expired_lease_is_swept(
     job_tags = {str(t) for t in store.tags_for(job_id)}
     assert "STATUS:failed" in job_tags
     assert "swept:claim-orphaned" in job_tags
+
+
+def test_ssh_node_job_is_never_swept(handler: TodoHandler, store: Store) -> None:
+    """An ``ssh_node``-executor job past the threshold with an *expired* lease
+    is left alone — that executor reclaims and retries its own crashed jobs
+    (lease-steal + attempt cap), so a sweeper failure here would race and win
+    the steal, stranding the compute result instead of re-running it."""
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(
+        store,
+        rid,
+        backdate_hours=2.0,
+        lease_offset_hours=-0.5,
+        executor="ssh_node",
+    )
+
+    result = run_sweeper_pass(store, limit=10)
+
+    assert result.claimed == 0
+    assert result.ok == 0
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:running" in job_tags  # left for the executor to reclaim
+    assert "STATUS:failed" not in job_tags
+    parent_tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{job_id}" not in parent_tags
 
 
 def test_already_failed_job_is_skipped(handler: TodoHandler, store: Store) -> None:
