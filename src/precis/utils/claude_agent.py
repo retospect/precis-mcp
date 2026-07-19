@@ -348,12 +348,26 @@ def call_claude_agent(
     if _container.container_agent_enabled():
         import uuid as _uuid
 
+        from precis import secrets as _secrets
+
+        # ``adopt_process_store`` scrubs ``PRECIS_DATABASE_URL`` from
+        # ``os.environ`` at worker boot (ADR 0059) precisely so host ``claude
+        # -p`` spawns don't inherit the DSN — so ``proc_env`` (a copy of the
+        # scrubbed environ) no longer carries it. The container is an isolation
+        # boundary that *does* need DB access: re-inject the captured DSN so the
+        # by-key ``--env PRECIS_DATABASE_URL`` carries it in (mirrors the OAuth
+        # re-injection above). Without this the container's entrypoint aborts
+        # "PRECIS_DATABASE_URL not set" and every agentic pass fails 1 — the
+        # spark review retry-storm (2026-07-19).
+        _dsn = _secrets.get_adopted_dsn() or proc_env.get("PRECIS_DATABASE_URL")
+        if _dsn:
+            proc_env["PRECIS_DATABASE_URL"] = _dsn
         run_argv = _container.containerize_claude_argv(
             args,
             active_env if active_env is not None else _envelope.Envelope(),
             name=f"precis-agent-{_uuid.uuid4().hex[:12]}",
             model=model or "",
-            dsn=proc_env.get("PRECIS_DATABASE_URL"),
+            dsn=_dsn,
         )
         run_binary = run_argv[0]
 

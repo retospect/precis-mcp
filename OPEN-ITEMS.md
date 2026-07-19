@@ -11,6 +11,48 @@ is the historical observation log.
 
 ---
 
+## 🔥 Containerized reviews on spark — DSN not reaching the container (retry-storm)
+
+Status: `open` (root-cause fixed, deploy pending) · Severity: `critical` ·
+Owner: `src/precis/utils/claude_agent.py` (container branch) · Test:
+`tests/test_claude_agent.py::test_container_reinjects_scrubbed_dsn`.
+
+**Symptom (live 2026-07-19):** spark's agent worker runs `structural` reviews in
+a `precis-agent` container (Linux template hardcodes `PRECIS_AGENT_CONTAINER=1`),
+and every one fast-fails ~3×/second:
+`claude -p (agent) exited 1: [entrypoint] ERROR: PRECIS_DATABASE_URL not set`.
+No backoff → a retry-storm that burns CPU, spams `worker_logs`, respawns the
+worker every few minutes, and leaves orphaned `created`-state containers. It
+**does** surface in `/factory?host=*` (the console's `_errors_by_host` reads
+`worker_logs` ERROR/CRITICAL — spark's chip is lit).
+
+**Root cause:** `secrets.adopt_process_store` scrubs `PRECIS_DATABASE_URL` from
+`os.environ` at worker boot (ADR 0059) *specifically* so host `claude -p` spawns
+don't inherit the DSN. The §13 container executor passed the DSN **by key**
+(`--env PRECIS_DATABASE_URL`, value inherited from the docker client's env) — but
+after the scrub `proc_env` no longer carries it, so docker inherits nothing and
+the entrypoint aborts. OAuth survived only because `ensure_oauth_token`
+re-injects it. (`/proc/<pid>/environ` still shows the DSN — that's the immutable
+systemd startup snapshot, not live `os.environ`; a debugging trap.)
+
+**Fix (this branch, unshipped):** re-inject the captured DSN
+(`secrets.get_adopted_dsn()`) into `proc_env` before the container run so the
+by-key passthrough carries it in — mirrors the OAuth re-injection; secret stays
+out of the argv. **Ships via `/go`; needs a cluster deploy to land on spark.**
+Until deployed, spark reviews keep storming — mitigate by flooring spark
+`structural` prio to 0 in `service_config` if the spam must stop sooner.
+
+**Secondary observations (file, don't block):**
+- **No backoff on a failing review** — a review that errors re-claims immediately
+  (~3×/s). Wants the exponential-backoff pattern (cf. `bg_job_spin_loops`).
+- **`PRECIS_MCP_DB_ROLE=agent_rw` in the review container** — reviews are
+  read-only; the tier-2 envelope should resolve `agent_ro`, not the write role.
+- **OAuth token appears in `docker inspect` `Config.Env`** — the "secret by key,
+  never in inspect" goal isn't actually met (docker records inherited `--env`
+  values). If that guarantee matters, move secrets to `--env-file`.
+
+---
+
 ## 🕯️ Dark-switch audit — orphaned vs staged feature flags
 
 Status: `open` · Severity: `polish` · Owner: repo-wide

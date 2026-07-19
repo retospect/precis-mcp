@@ -461,6 +461,44 @@ def test_container_executor_on_wraps_in_podman(monkeypatch, stub_bin: Path) -> N
     assert "-d" not in argv  # synchronous (stdout captured)
 
 
+def test_container_reinjects_scrubbed_dsn(monkeypatch, stub_bin: Path) -> None:
+    """Regression (spark review retry-storm, 2026-07-19). The worker scrubs
+    ``PRECIS_DATABASE_URL`` from ``os.environ`` at boot (``adopt_process_store``,
+    ADR 0059), so the container's by-key ``--env PRECIS_DATABASE_URL`` would
+    inherit nothing → the entrypoint aborts "PRECIS_DATABASE_URL not set" and
+    every agentic pass fails 1. The container path must re-inject the captured
+    (adopted) DSN into the subprocess env docker inherits from — by KEY, so the
+    secret never enters the argv."""
+    from types import SimpleNamespace
+
+    import precis.utils.claude_agent as ca
+    from precis import secrets as _secrets
+
+    monkeypatch.setenv("PRECIS_AGENT_CONTAINER", "1")
+    monkeypatch.setenv("PRECIS_CONTAINER_BIN", "podman")
+    # Boot-time state: DSN gone from the environ, captured in the secrets module.
+    monkeypatch.delenv("PRECIS_DATABASE_URL", raising=False)
+    monkeypatch.setattr(_secrets, "_ADOPTED_DSN", "postgresql://ro@h:6432/db")
+
+    captured: dict[str, object] = {}
+
+    def _fake(argv, **k):
+        captured["argv"] = argv
+        captured["env"] = k.get("env")
+        return SimpleNamespace(stdout="done", stderr="")
+
+    monkeypatch.setattr(ca, "run_claude", _fake)
+    call_claude_agent("the prompt", model="opus")
+
+    argv = captured["argv"]
+    assert "--env" in argv and "PRECIS_DATABASE_URL" in argv  # by-key passthrough
+    assert "postgresql://ro@h:6432/db" not in argv  # value NEVER in argv
+    env = captured["env"]
+    assert isinstance(env, dict)
+    # …the value IS in the env docker inherits the by-key var from.
+    assert env["PRECIS_DATABASE_URL"] == "postgresql://ro@h:6432/db"
+
+
 def test_model_override(stub_bin: Path) -> None:
     stub_bin.write_text(
         textwrap.dedent(
