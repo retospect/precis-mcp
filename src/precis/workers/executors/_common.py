@@ -194,11 +194,24 @@ def claim_executor_jobs(
     node: str | None = None,
     parent_not_paused: bool = False,
     reserve_host_id: str | None = None,
+    reclaim_stale_running: bool = False,
 ) -> list[tuple[int, str, dict[str, Any]]]:
     """Lock up to ``limit`` claimable jobs for ``executor``.
 
     Claimable = ``kind='job'``, ``meta.executor`` matches,
     ``STATUS:queued``, not terminal, lease expired or absent.
+
+    **Crash recovery (``reclaim_stale_running``).** Off by default, so
+    ``claude_inproc`` / ``coordinator`` behaviour is unchanged. When on
+    (``ssh_node`` only), a ``STATUS:running`` row whose lease has
+    *provably* expired (``lease_until`` non-null and ``< now()``) is also
+    claimable — its worker died mid-dispatch (e.g. a deploy restart) and
+    the lease, sized to outlive the job plus margin, is the death-
+    presumption signal. Stealing re-runs the job (the ssh_node caller
+    bumps ``meta.attempts`` and poison-guards past a cap); a stolen row's
+    stale ``meta.reserved`` slots are refunded here before it re-reserves,
+    so a crash can't leak resource slots. A running job with a *live*
+    (unexpired) lease is never stolen — the lease clause excludes it.
 
     **Claim ordering (slice 6a).** ``ORDER BY COALESCE(prio, 5) DESC,
     ref_id ASC`` — highest ``refs.prio`` first (the dispatcher propagates
@@ -268,6 +281,39 @@ def claim_executor_jobs(
                     AND {_doable_exclusion_clause()}
                )"""
 
+    # Status/lease predicate. Fresh queued work (``put`` sets no lease) is
+    # always claimable; with ``reclaim_stale_running`` an expired-lease
+    # ``STATUS:running`` row is too (crash recovery — see the docstring). A
+    # live-lease running row is excluded either way.
+    status_lease_sql = """
+           AND (
+             (
+               EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %s AND t.value = %s
+               )
+               AND (
+                    (r.meta->>'lease_until') IS NULL
+                 OR (r.meta->>'lease_until')::timestamptz < now()
+               )
+             )"""
+    status_params: list[Any] = [STATUS_NAMESPACE, QUEUED]
+    if reclaim_stale_running:
+        status_lease_sql += """
+             OR (
+               EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %s AND t.value = %s
+               )
+               AND (r.meta->>'lease_until') IS NOT NULL
+               AND (r.meta->>'lease_until')::timestamptz < now()
+             )"""
+        status_params += [STATUS_NAMESPACE, RUNNING]
+    status_lease_sql += """
+           )"""
+
     rows = conn.execute(
         f"""
         SELECT r.ref_id, r.title, r.meta, r.prio
@@ -278,23 +324,13 @@ def claim_executor_jobs(
            AND (
                 (r.meta->'params'->>'target_node') IS NULL
              OR (r.meta->'params'->>'target_node') = %s
-           )
-           AND EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s
-                    AND t.value = %s
-               )
+           ){status_lease_sql}
            AND NOT EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
                     AND t.namespace = %s
                     AND t.value = ANY(%s)
                ){exclusion_sql}{parent_sql}
-           AND (
-                (r.meta->>'lease_until') IS NULL
-             OR (r.meta->>'lease_until')::timestamptz < now()
-           )
          ORDER BY COALESCE(r.prio, %s) DESC, r.ref_id ASC
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
@@ -302,8 +338,7 @@ def claim_executor_jobs(
         (
             executor,
             node,
-            STATUS_NAMESPACE,
-            QUEUED,
+            *status_params,
             STATUS_NAMESPACE,
             list(TERMINAL),
             _DEFAULT_JOB_PRIO,
@@ -338,6 +373,12 @@ def claim_executor_jobs(
         if len(claimed) >= limit:
             break  # scarcity-ranked top ``limit`` reserved; leave the rest locked-free
         ref_id, title, meta = int(r[0]), str(r[1]), dict(r[2] or {})
+        if reclaim_stale_running and meta.get("reserved"):
+            # A stolen (crash-recovered) job still carries the dead worker's
+            # reservation — refund it before this claim re-reserves, so slots
+            # don't leak on the reserving host. No-op for fresh queued work.
+            release_job_reservation(conn, ref_id)
+            meta.pop("reserved", None)
         requires = effective_requires(meta)
         if not requires:
             claimed.append((ref_id, title, meta))

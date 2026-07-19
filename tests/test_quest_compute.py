@@ -636,6 +636,32 @@ class TestDispatchCatpath:
         assert "skipped" in note
         assert compute_mod._fresh_catpath_jobs(store, sid, 0) == []
 
+    def test_routed_job_pins_cuda_device(self, store: Any, monkeypatch: Any) -> None:
+        """A GPU-routed catpath job gets ``mlip.device=cuda`` injected (catpath
+        defaults to cpu → the GPU sits idle otherwise); the caller's config dict
+        is not mutated and its other keys are preserved."""
+        monkeypatch.setenv(compute_mod._CATPATH_ROUTE_NODE_ENV, "spark")
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_catpath(store, sid, self._RX)
+        _job_id, jmeta = compute_mod._fresh_catpath_jobs(store, sid, 0)[0]
+        cfg = (jmeta.get("params") or {})["config"]
+        assert cfg["mlip"]["device"] == "cuda"
+        assert cfg["substrate"] == "NO"  # original keys ride along
+        assert "mlip" not in self._RX  # caller's dict untouched
+
+    def test_unrouted_job_leaves_device_unset(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """Without a route node there's no GPU to pin — the config is passed
+        through verbatim (in-process EMT demo path)."""
+        monkeypatch.delenv(compute_mod._CATPATH_ROUTE_NODE_ENV, raising=False)
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_catpath(store, sid, self._RX)
+        _job_id, jmeta = compute_mod._fresh_catpath_jobs(store, sid, 0)[0]
+        assert (jmeta.get("params") or {})["config"] == self._RX  # unchanged
+
 
 class TestReactionCoDispatch:
     """A barrier quest (``meta.reaction_config`` set) co-dispatches catpath with

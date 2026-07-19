@@ -79,6 +79,13 @@ _EXECUTOR_NAME = "ssh_node"
 _LEASE_FLOOR_S = 7200
 _LEASE_MARGIN_S = 3600
 
+#: Max run-attempts before a job is treated as poison. Crash recovery
+#: (``reclaim_stale_running``) re-runs a job whose worker died mid-dispatch,
+#: but a job that crashes the worker *every* time would steal itself forever —
+#: after this many claims it's failed + bubbled instead. First claim = attempt
+#: 1, each subsequent steal +1.
+_MAX_ATTEMPTS = 3
+
 
 def _lease_seconds(meta: dict[str, Any]) -> int:
     resources = (meta.get("params") or {}).get("resources") or {}
@@ -93,36 +100,63 @@ def run_ssh_node_pass(store: Any, *, limit: int = 1) -> dict[str, int]:
     ``limit=1`` because each dispatch blocks the worker on a
     multi-hour remote run.
     """
+    # Local import to dodge the handlers↔workers import cycle (mirrors
+    # _common.record_failure); used to bubble a poison-guard failure.
+    from precis.handlers._job_bubble import bubble_job_failure
+
+    poisoned = 0
+    to_run: list[tuple[int, str, dict[str, Any]]] = []
     with store.pool.connection() as conn:
         # Node gate: only the node a job pins itself to (meta.params.
         # target_node) claims it, so the worker that stages to NFS is the
         # same box the container runs on (§23 #3). Parent gate: skip jobs
         # whose parent project is paused / halted / asking-user.
+        # reclaim_stale_running: steal an expired-lease STATUS:running job whose
+        # worker died mid-dispatch (e.g. a deploy restart) — the ssh_node
+        # dispatch is in-process (catpath) so a dead worker means dead compute;
+        # container dispatchers reap their own handle before relaunch.
         rows = claim_executor_jobs(
             conn,
             executor=_EXECUTOR_NAME,
             limit=limit,
             node=os.environ.get("PRECIS_NODE"),
             parent_not_paused=True,
+            reclaim_stale_running=True,
         )
         if not rows:
             conn.commit()
             return {"claimed": 0, "ok": 0, "failed": 0}
-        for ref_id, _title, meta in rows:
+        for ref_id, title, meta in rows:
+            attempts = int(meta.get("attempts") or 0) + 1
+            if attempts > _MAX_ATTEMPTS:
+                # Poison guard: a job re-claimed past the cap keeps crashing its
+                # worker — fail + bubble instead of stealing it yet again.
+                _append_chunk(
+                    store,
+                    ref_id,
+                    _JOB_EVENT_KIND,
+                    f"runner: exceeded {_MAX_ATTEMPTS} run attempts "
+                    "(crash-loop guard) — failing",
+                    conn=conn,
+                )
+                _set_status(store, ref_id, _FAILED, conn=conn)
+                bubble_job_failure(store, ref_id, conn=conn)
+                poisoned += 1
+                continue
             conn.execute(
-                "UPDATE refs SET meta = meta || "
-                "jsonb_build_object("
-                "  'lease_until', (now() + make_interval(secs => %s))::text"
-                ") "
-                "WHERE ref_id = %s",
-                (_lease_seconds(meta), ref_id),
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "  'lease_until', (now() + make_interval(secs => %s))::text,"
+                "  'attempts', %s"
+                ") WHERE ref_id = %s",
+                (_lease_seconds(meta), attempts, ref_id),
             )
             _set_status(store, ref_id, _RUNNING, conn=conn)
+            to_run.append((ref_id, title, meta))
         conn.commit()
 
     ok = 0
-    failed = 0
-    for ref_id, title, meta in rows:
+    failed = poisoned
+    for ref_id, title, meta in to_run:
         try:
             _run_one(store, ref_id, title, meta)
             ok += 1

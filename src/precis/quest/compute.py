@@ -211,7 +211,16 @@ def dispatch_catpath(
     # Routed → run the config's own backend on the pinned node; unrouted → EMT
     # (an in-process demo has no ML backend). An explicit override wins either way.
     force = force_backend or (None if node else "emt")
-    key = _catpath_content_key(config, slab_extxyz)
+    # Routed nodes are the GPU boxes (topology: catpath → the CUDA node), so pin
+    # the ML potential to cuda there — catpath's MLIPConfig.device defaults to
+    # "cpu", which otherwise leaves the GPU idle and the NEB CPU-bound (~20×
+    # slower). Copy the config so we neither mutate the caller's dict nor churn
+    # the content key when unrouted; an explicit mlip.device wins (setdefault).
+    run_config = config
+    if node:
+        run_config = {**config, "mlip": {**(config.get("mlip") or {})}}
+        run_config["mlip"].setdefault("device", "cuda")
+    key = _catpath_content_key(run_config, slab_extxyz)
     pslug = f"{ref.slug}-rx-{key[:10]}"
 
     # Ensure the pathway ref (status=computing) the job writes its graph back onto.
@@ -248,7 +257,7 @@ def dispatch_catpath(
             params={
                 "pathway_ref_id": pathway_ref_id,
                 "pathway_slug": pslug,
-                "config": config,
+                "config": run_config,
                 "slab_extxyz": slab_extxyz,
                 "structure_ref": structure_ref_id,
                 "force_backend": force,

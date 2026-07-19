@@ -242,6 +242,21 @@ high-prio quest/project claims its compute ahead of commodity work,
 oldest-first within a band. An all-unset queue is byte-identical to the
 old FIFO. The capability-rarity term (§5.3, 6d) is not yet added.
 
+**ssh_node crash recovery — lease-steal (claim-side).** `run_ssh_node_pass`
+passes `reclaim_stale_running=True` to `claim_executor_jobs`, so a
+`STATUS:running` job whose lease has *provably* expired (non-null and
+`< now()`) is claimable again — its worker died mid-dispatch (a deploy
+restart is the common cause; the ssh_node dispatch is in-process, so a dead
+worker == dead compute). Without this the job stranded forever (claim was
+`STATUS:queued`-only, and nothing flipped `running`→`queued`). The steal
+bumps `meta.attempts`; past `_MAX_ATTEMPTS` (3) it's failed + bubbled
+(poison-guard against a job that crashes its worker every time), and a
+stolen job's stale `meta.reserved` slots are refunded before it re-reserves.
+Opt-in per caller — `claude_inproc`/`coordinator` are unchanged (they'd need
+their own ensure-dead story for a re-run). A live-lease running job is never
+stolen. Container dispatchers (dft) must reap their own handle before
+relaunch; catpath (in-process) has nothing to kill.
+
 **Two `precis worker` profiles, four LaunchDaemons total.**
 
 * `precis worker --profile=system` runs on every cluster node and

@@ -224,3 +224,92 @@ def test_parent_gate_skips_paused_project(
     ssh_node.run_ssh_node_pass(store, limit=5)
     assert _status(store, blocked) == "queued"  # parent halted → skipped
     assert _status(store, ok) == "succeeded"  # live parent → claimed
+
+
+# ── crash recovery: reclaim expired-lease STATUS:running jobs ─────
+
+
+def _mk_running_job(
+    store: Store,
+    *,
+    lease_offset_s: int,
+    attempts: int | None = None,
+    target_node: str | None = None,
+) -> int:
+    """A STATUS:running job with a lease ``lease_offset_s`` from now (negative =
+    expired) — stands in for a job whose worker died mid-dispatch."""
+    params: dict[str, Any] = {}
+    if target_node is not None:
+        params["target_node"] = target_node
+    meta: dict[str, Any] = {
+        "executor": "ssh_node",
+        "job_type": "fake_relax",
+        "params": params,
+    }
+    if attempts is not None:
+        meta["attempts"] = attempts
+    ref = store.insert_ref(
+        kind="job", slug=None, title="orphaned running job", meta=meta
+    )
+    store.add_tag(ref.id, Tag.parse_strict("STATUS:running"), set_by="agent")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object("
+            "  'lease_until', (now() + make_interval(secs => %s))::text"
+            ") WHERE ref_id = %s",
+            (lease_offset_s, int(ref.id)),
+        )
+        conn.commit()
+    return int(ref.id)
+
+
+def test_reclaims_expired_lease_running_job(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A STATUS:running job whose lease has expired (worker died mid-dispatch)
+    is stolen, re-run, and its attempt counter bumped."""
+    _succeeds(ssh_node, monkeypatch)
+    rid = _mk_running_job(store, lease_offset_s=-60, attempts=1)
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status(store, rid) == "succeeded"
+    assert _meta(store, rid)["attempts"] == 2  # bumped on the steal
+
+
+def test_does_not_steal_live_lease_running_job(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A STATUS:running job with a still-valid lease is left alone — only a
+    provably-dead (expired-lease) holder is stolen."""
+    _succeeds(ssh_node, monkeypatch)
+    rid = _mk_running_job(store, lease_offset_s=3600, attempts=1)
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result["claimed"] == 0
+    assert _status(store, rid) == "running"  # untouched
+
+
+def test_poison_guard_fails_past_max_attempts(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job re-claimed past the attempt cap is failed (bubbled), not stolen
+    yet again — a crash-loop can't burn the worker forever."""
+    dispatched = {"n": 0}
+
+    def _dispatch(ctx: Any, _s: Any) -> None:
+        dispatched["n"] += 1
+        ctx.set_status("succeeded")
+
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _spec(dispatch=_dispatch)
+    )
+    rid = _mk_running_job(store, lease_offset_s=-60, attempts=ssh_node._MAX_ATTEMPTS)
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 0, "failed": 1}
+    assert _status(store, rid) == "failed"
+    assert dispatched["n"] == 0  # never dispatched
