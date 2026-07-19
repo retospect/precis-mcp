@@ -146,16 +146,20 @@ per-kind reference.
   MCP with **read verbs only** (`search`/`get`/`more`); `put`/`edit`/`delete`/
   `tag` mutate production. For write-path testing, drive a **dev-DB** precis
   (`scripts/dev`, local test DB) — never the session MCP.
-- **Compress noisy output with `rtk`** (a token-killer CLI proxy;
-  `brew install rtk` — a prereq, like `uv`/`docker`). Prefix a verbose command
-  to filter it to signal: `rtk git …`, `rtk psql …`, `rtk grep/rg/find …`, or
-  `rtk err -- <cmd>` / `rtk summary -- <cmd>` for anything else. Safe
-  passthrough (an unfiltered command runs unchanged) and it tees the full log
-  to disk — but **the shown output is a filtered digest, not raw**: treat it as
-  such and re-run raw if a detail is missing. We run it **manually, no hook**
-  (an explicit `rtk` in the command line is the signal that a filter is in
-  play). Project filters live in `.rtk/filters.toml` (committed). Don't wrap
-  `scripts/test` (already terse) or interactive commands (a `psql` shell).
+- **`rtk` compresses noisy command output** (token-killer CLI proxy;
+  `brew install rtk`, a prereq like `uv`/`docker`). A **global PreToolUse hook**
+  (`rtk init --global`, installed on Reto's dev Mac → covers *every* local
+  worktree session) auto-rewrites Bash commands to `rtk <cmd>` transparently —
+  no manual prefix needed. **Consequence: Bash output is a filtered digest, not
+  raw.** If a detail is missing, re-run via `rtk proxy <cmd>` (raw passthrough)
+  or read the teed full log. Only rtk's *known* commands are rewritten
+  (git/psql/grep/find/docker/cargo/pytest…); `scripts/*` wrappers and the
+  already-terse `scripts/test` pass through untouched, and the repo's Bash
+  guards (commit-on-main / git-stash / prod-psql) are prefix-robust so the
+  rewrite can't blind them. **No hook in CI or cluster `claude -p` → prefix
+  manually there:** `rtk git …`, `rtk err -- <cmd>`, `rtk summary -- <cmd>`.
+  Filters: committed `.rtk/filters.toml` overrides the user-global template.
+  Uninstall the hook: `rtk init --global --uninstall` (then restart).
 - **Semantic code search** (repo-dev, not the product). The `claude-context`
   MCP (`.mcp.json`) over local Milvus (`docker/code-search/compose.yaml`, up'd
   by a SessionStart hook) indexes the code. One **shared MAIN index** serves
