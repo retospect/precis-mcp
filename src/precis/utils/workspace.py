@@ -45,6 +45,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from precis.utils import inproc_context
+
 log = logging.getLogger(__name__)
 
 
@@ -181,8 +183,20 @@ def current_from_env() -> str | None:
     Returns the relative path the env var carries (e.g.
     ``projects/nanotrans_auto``). Caller resolves against PRECIS_ROOT.
     Empty / unset env → None.
+
+    In-process tick override: an OSS (``OPENAI_TOOLS``) tick has no subprocess
+    env, so it binds its workspace via :func:`precis.utils.inproc_context`; that
+    wins over ``os.environ`` when set (the spawned-claude path leaves it unset).
     """
-    raw = os.environ.get("PRECIS_WORKSPACE")
+    ctx = inproc_context.current()
+    if ctx is not None and ctx.workspace is not None:
+        return _clean_workspace(ctx.workspace)
+    return _clean_workspace(os.environ.get("PRECIS_WORKSPACE"))
+
+
+def _clean_workspace(raw: str | None) -> str | None:
+    """Validate a workspace path (env or in-process ctx): must be a non-empty
+    relative path with no ``..`` traversal. Rejected / empty → ``None``."""
     if not raw:
         return None
     raw = raw.strip()
@@ -229,9 +243,16 @@ def current_model_from_env() -> str | None:
     * Opus on a topic that's clear and obvious? Do it yourself
       without a model upgrade.
 
-    Returns ``None`` when unset (operator CLI session, tests).
+    Returns ``None`` when unset (operator CLI session, tests). An in-process
+    OSS tick binds its model via :func:`precis.utils.inproc_context` instead of
+    the subprocess env; that wins when set.
     """
-    raw = os.environ.get("PRECIS_CURRENT_MODEL")
+    ctx = inproc_context.current()
+    raw = (
+        ctx.model
+        if (ctx is not None and ctx.model is not None)
+        else (os.environ.get("PRECIS_CURRENT_MODEL"))
+    )
     if not raw:
         return None
     raw = raw.strip().lower()
@@ -256,7 +277,15 @@ def current_todo_from_env() -> int | None:
     Returns ``None`` on unset / non-integer / negative values
     (the LLM should still be able to mint a root todo explicitly when
     ``parent_id=None`` is passed; this helper only handles defaulting).
+
+    In-process tick override: an OSS (``OPENAI_TOOLS``) tick has no subprocess
+    env, so it binds its parent todo via :func:`precis.utils.inproc_context`;
+    that wins over ``os.environ`` when set. Thread-isolated, so concurrent
+    ticks (``PRECIS_INPROC_CONCURRENCY>1``) never cross-attribute children.
     """
+    ctx = inproc_context.current()
+    if ctx is not None and ctx.parent_todo is not None:
+        return ctx.parent_todo if ctx.parent_todo > 0 else None
     raw = os.environ.get("PRECIS_CURRENT_TODO")
     if not raw:
         return None

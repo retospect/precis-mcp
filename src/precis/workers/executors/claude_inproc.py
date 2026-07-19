@@ -687,9 +687,18 @@ def _resume_reason(outcome: Any, raw_stream: str) -> str | None:
     the wall-clock timeout (the process was killed, so there's no result
     event — detected by the ``PlanTickOutcome`` timeout sentinel exit code).
     Each is bounded by the same per-parent streak cap so a tick that *always*
-    runs out escalates (and splits) instead of looping forever."""
+    runs out escalates (and splits) instead of looping forever.
+
+    A non-claude transport (the in-process OSS ``tools=`` tick, ADR 0046
+    unit-4b) emits no stream-json for the parse below, so it sets an explicit
+    ``outcome.resume_reason`` instead — honored verbatim here. The claude path
+    leaves it ``None`` (the field defaults so), so its classification is the
+    stream + exit-code logic below, unchanged/byte-identical."""
     from precis.utils.claude_agent import stream_terminal_reason
 
+    explicit = getattr(outcome, "resume_reason", None)
+    if explicit is not None:
+        return explicit
     if outcome.exit_code == 0:
         return None
     reason = stream_terminal_reason(raw_stream)

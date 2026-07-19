@@ -58,6 +58,7 @@ from precis.utils.claude_agent import AgentResult, call_claude_agent
 from precis.utils.claude_p import ClaudePResult, call_claude_p
 
 if TYPE_CHECKING:
+    from precis.utils.llm.openai_tools import AgentLoopResult
     from precis.utils.prompt.model import Profile
 
 log = logging.getLogger(__name__)
@@ -1086,16 +1087,56 @@ def _read_system_prompt(sp: str | Path | None) -> str | None:
     return sp
 
 
+def run_oss_tool_loop(
+    *,
+    prompt: str,
+    model: str,
+    system_prompt: str | Path | None = None,
+    max_turns: int = 20,
+    timeout_s: float | None = None,
+    tool_less: bool = False,
+) -> AgentLoopResult:
+    """Drive the in-process OSS ``tools=`` loop and return the RAW
+    :class:`~precis.utils.llm.openai_tools.AgentLoopResult`.
+
+    Extracted from :func:`_dispatch_openai_tools` so a caller that needs the
+    loop's ``stop_reason`` verbatim — the planner tick, which must tell a clean
+    answer (``stop``) from a ``max_turns`` cutoff (resumable, not failed) —
+    reuses the exact client-build + verb-wiring instead of the collapsed
+    :class:`LlmResult`. Builds the client from ``PRECIS_LLM_BASE_URL`` + the
+    vault key; runs the precis verbs in-process via ``runtime.dispatch`` unless
+    ``tool_less``. May raise ``RuntimeError`` / ``OSError`` if the executor /
+    tools can't be built (an unavailable runtime); the loop itself folds a
+    transport failure into ``AgentLoopResult.error`` (``stop_reason='error'``)
+    rather than raising. Imports the loop + bridge lazily so the router stays
+    DB-free.
+    """
+    from precis.secrets import get_secret
+    from precis.utils.llm.openai_tools import ToolChatClient, run_tool_loop
+    from precis.utils.llm.precis_tools import precis_tool_specs, runtime_executor
+
+    base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
+    api_key = get_secret("PRECIS_LLM_API_KEY") or ""
+    timeout = timeout_s if timeout_s is not None else 600.0
+    client = ToolChatClient(url=base_url, api_key=api_key, model=model, timeout=timeout)
+    return run_tool_loop(
+        client,
+        prompt=prompt,
+        tools=[] if tool_less else precis_tool_specs(),
+        execute=runtime_executor(),
+        system_prompt=_read_system_prompt(system_prompt),
+        max_turns=max_turns,
+    )
+
+
 def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
     """Drive the OSS ``tools=`` agent loop (the ``OPENAI_TOOLS`` transport).
 
-    Assembles a :class:`~precis.utils.llm.openai_tools.ToolChatClient` (hosted
-    or local OSS backend at ``PRECIS_LLM_BASE_URL``, vault key), advertises the
-    precis verbs, and runs :func:`~precis.utils.llm.openai_tools.run_tool_loop`
-    with each tool call executed in-process via ``runtime.dispatch``. The loop
-    already folds transport errors into its result; the outer guard catches a
-    failure to *build* the executor/tools (e.g. an unavailable runtime).
-    Imports the loop + bridge lazily so the router stays DB-free.
+    Thin wrapper over :func:`run_oss_tool_loop` that collapses the raw
+    :class:`~precis.utils.llm.openai_tools.AgentLoopResult` into the normalized
+    :class:`LlmResult`. The loop already folds transport errors into its result;
+    the outer guard catches a failure to *build* the executor / tools (e.g. an
+    unavailable runtime).
 
     A *tool-less* agent call (``req.mcp_config is None`` — cad_propose /
     cad_discuss / structure_propose route here with ``tools_needed=True`` only
@@ -1104,23 +1145,14 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
     on the OSS backend — matching the claude path, where ``mcp_config=None``
     means no tools advertised (gripe 159759).
     """
-    from precis.secrets import get_secret
-    from precis.utils.llm.openai_tools import ToolChatClient, run_tool_loop
-    from precis.utils.llm.precis_tools import precis_tool_specs, runtime_executor
-
-    base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
-    api_key = get_secret("PRECIS_LLM_API_KEY") or ""
-    timeout = req.timeout_s if req.timeout_s is not None else 600.0
-    client = ToolChatClient(url=base_url, api_key=api_key, model=model, timeout=timeout)
-    tool_less = req.mcp_config is None
     try:
-        result = run_tool_loop(
-            client,
+        result = run_oss_tool_loop(
             prompt=req.prompt,
-            tools=[] if tool_less else precis_tool_specs(),
-            execute=runtime_executor(),
-            system_prompt=_read_system_prompt(req.system_prompt),
+            model=model,
+            system_prompt=req.system_prompt,
             max_turns=req.max_turns,
+            timeout_s=req.timeout_s,
+            tool_less=req.mcp_config is None,
         )
     except (RuntimeError, OSError) as exc:
         return LlmResult(
@@ -1176,6 +1208,7 @@ __all__ = [
     "result_from_agent",
     "result_from_claude_p",
     "result_from_openai",
+    "run_oss_tool_loop",
     "select_transport",
     "transport_for_profile",
 ]

@@ -424,9 +424,21 @@ dream, the structural/deep reviewers, cad_propose/cad_discuss/
 structure_propose, the web follow-up (`precis_web/ask`), and the
 `claude_p` judges (chase, good_search triage, figure) all call
 `dispatch(LlmRequest)` now — so `PRECIS_LLM_BACKEND` switches the whole
-agentic + judge surface. (Still direct `claude -p`: `plan_tick` /
-`fix_gripe`, which build the subprocess themselves — a separate
-migration.) Deferred: a `FailoverProvider` ladder (method + model
+agentic + judge surface. **`plan_tick`** keeps its own spawn seam (neutral
+cwd + env back-doors + `acceptEdits`, no friction footer — ADR 0051 §12)
+but now **forks on `resolve_backend()`**: default `anthropic` = the
+byte-identical `claude -p` spawn; `openai` (+ base url) runs the tick over
+the in-process `OPENAI_TOOLS` loop (`run_oss_tool_loop`), binding its
+runtime context (parent todo / workspace / model / agentlog) through a
+**thread-isolated `ContextVar`** (`utils/inproc_context.py`) instead of the
+subprocess env the in-process loop can't carry — the env-readers
+(`workspace.current_*_from_env`, `agentlog.current_from_env`) consult it
+first, env otherwise, so the spawned-claude + operator/test paths stay
+byte-identical. `max_turns` maps to a resumable `PlanTickOutcome`
+(`resume_reason`) so the executor streak-cap still fires. (Known gap: the
+OSS tick skips the prose-kind gate — boot-time only — so the `## Draft`
+prompt block is its sole steer there.) Still direct `claude -p`:
+`fix_gripe`. Deferred: a `FailoverProvider` ladder (method + model
 failover) over the same port.
 
 ## Discovery layer (F20)

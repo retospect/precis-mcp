@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.utils.claude_oauth import ensure_oauth_token
-from precis.utils.llm.router import Tier, resolve_model
+from precis.utils.llm.router import Backend, Tier, resolve_backend, resolve_model
 
 log = logging.getLogger(__name__)
 
@@ -106,6 +106,11 @@ class PlanTickOutcome:
     stdout: str
     stderr: str
     duration_s: float
+    #: Explicit resumable-exhaustion signal from a non-claude transport (the
+    #: in-process OSS tools loop, which emits no stream-json for the executor's
+    #: ``_resume_reason`` to parse). ``None`` on the claude path — its resume
+    #: reason stays derived from the stream + exit code, unchanged/byte-identical.
+    resume_reason: str | None = None
 
 
 def validate_submit(
@@ -240,6 +245,30 @@ def run(
         except Exception:
             log.warning("plan_tick: failed to finalize agentlog", exc_info=True)
 
+    # ── ADR 0046 unit-4b: the /factory backend switch (the LLM-independence
+    # lever). Under the default ANTHROPIC backend this tick spawns ``claude -p``
+    # exactly as before (byte-identical — the code below is untouched). When a
+    # deployment flips ``PRECIS_LLM_BACKEND=openai`` (with a base url), the tick
+    # instead drives the precis verbs in-process over the OSS ``tools=`` loop,
+    # binding its runtime context (parent todo / workspace / model / agentlog)
+    # via a thread-isolated ContextVar rather than the subprocess env the OSS
+    # loop can't carry. Ships dark: no deployment sets the backend, so prod is
+    # the claude path.
+    if resolve_backend() is Backend.OPENAI and os.environ.get("PRECIS_LLM_BASE_URL"):
+        outcome = _run_oss_tick(
+            prompts=prompts,
+            model=model,
+            parent_ref_id=parent_ref_id,
+            agentlog_id=agentlog_id,
+            workspace=workspace,
+            timeout_s=timeout_s,
+            started=started,
+            job_ref_id=job_ref_id,
+            log_event=log_event,
+        )
+        _finalize("ok" if outcome.exit_code == 0 else f"exit:{outcome.exit_code}")
+        return outcome
+
     cmd: list[str] = [
         claude_bin,
         "-p",
@@ -332,6 +361,111 @@ def run(
         stderr=proc.stderr,
         duration_s=duration,
     )
+
+
+def _run_oss_tick(
+    *,
+    prompts: Any,
+    model: str,
+    parent_ref_id: int,
+    agentlog_id: int | None,
+    workspace: Any,
+    timeout_s: int,
+    started: float,
+    job_ref_id: int,
+    log_event: Any,
+) -> PlanTickOutcome:
+    """Run one planner tick over the in-process OSS ``tools=`` loop (the
+    ``OPENAI_TOOLS`` transport), instead of spawning ``claude -p``.
+
+    The spawned-claude tick hands its runtime context to the subprocess via env
+    back-doors (``PRECIS_CURRENT_TODO`` &c.); the OSS loop drives
+    ``runtime.dispatch`` *in this process*, so those env vars would resolve
+    against the worker's environment — and clobber under thread concurrency.
+    We bind the context in a thread-isolated ContextVar
+    (:func:`precis.utils.inproc_context.tick_context`) instead, for the
+    synchronous span of the loop; the verb readers consult it first. So
+    children default under the right parent, file-kinds route by the workspace,
+    and draft writes attribute to this run's agentlog — with no env mutation and
+    no cross-tick bleed.
+
+    Maps the loop's ``stop_reason`` onto :class:`PlanTickOutcome`: ``stop`` →
+    clean exit 0; ``max_turns`` → a *resumable exhaustion* (exit 1 +
+    ``resume_reason`` so the executor bumps the streak and re-mints, matching
+    the claude ``--max-turns`` path); ``error`` → a real failure.
+    """
+    from precis.utils.inproc_context import TickContext, tick_context
+    from precis.utils.llm.router import run_oss_tool_loop
+
+    tier = _TIER_BY_ALIAS.get(model, Tier.CLOUD_SUPER)
+    model_id = resolve_model(tier)
+    ctx = TickContext(
+        parent_todo=parent_ref_id,
+        workspace=workspace.path if workspace is not None else None,
+        model=model,
+        agentlog_id=agentlog_id,
+    )
+    if log_event:
+        log_event(
+            "plan_tick.spawn",
+            {
+                "job_ref_id": job_ref_id,
+                "parent_ref_id": parent_ref_id,
+                "model": model,
+                "transport": "openai_tools",
+                "system_chars": len(prompts.system),
+                "user_chars": len(prompts.user),
+            },
+        )
+    try:
+        with tick_context(ctx):
+            result = run_oss_tool_loop(
+                prompt=prompts.user,
+                model=model_id,
+                system_prompt=prompts.system,
+                max_turns=_max_turns(),
+                timeout_s=timeout_s,
+            )
+    except (RuntimeError, OSError) as exc:
+        duration = time.monotonic() - started
+        log.warning(
+            "plan_tick: OSS tick for parent #%d could not run: %s",
+            parent_ref_id,
+            exc,
+        )
+        return PlanTickOutcome(
+            exit_code=1,
+            stdout="",
+            stderr=f"plan_tick OSS tick error: {exc}",
+            duration_s=duration,
+        )
+    duration = time.monotonic() - started
+    exit_code, resume_reason = _oss_exit(result.stop_reason)
+    return PlanTickOutcome(
+        exit_code=exit_code,
+        stdout=result.final_text,
+        stderr=result.error or "",
+        duration_s=duration,
+        resume_reason=resume_reason,
+    )
+
+
+def _oss_exit(stop_reason: str) -> tuple[int, str | None]:
+    """Map the OSS loop's ``stop_reason`` → ``(exit_code, resume_reason)`` for
+    the ``claude_inproc`` executor.
+
+    ``stop`` (model answered) → clean exit 0, no resume. ``max_turns`` (turn
+    ceiling) → a resumable exhaustion: exit 1 + ``resume_reason='max_turns'`` so
+    the executor bumps the per-parent streak and re-mints a fresh tick (bounded
+    by the cap) rather than parking the parent — the same treatment as the
+    claude ``--max-turns`` cutoff. ``error`` / anything else → a real failure:
+    exit 1, no resume, so it bubbles.
+    """
+    if stop_reason == "stop":
+        return 0, None
+    if stop_reason == "max_turns":
+        return 1, "max_turns"
+    return 1, None
 
 
 def _refresh_patent_claims_digest(store: Any, parent_ref_id: int) -> None:

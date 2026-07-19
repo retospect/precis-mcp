@@ -279,7 +279,16 @@ def current_from_env() -> int | None:
     the runner sets it on the ``claude -p`` subprocess env; the MCP
     server inside that subprocess reads it here when attributing draft
     writes. ``None`` on unset / non-integer / non-positive — attribution
-    silently skipped rather than erroring."""
+    silently skipped rather than erroring.
+
+    In-process tick override: an OSS (``OPENAI_TOOLS``) tick has no subprocess
+    env, so it binds its agentlog id via :func:`precis.utils.inproc_context`;
+    that wins over ``os.environ`` when set (spawned-claude leaves it unset)."""
+    from precis.utils import inproc_context
+
+    ctx = inproc_context.current()
+    if ctx is not None and ctx.agentlog_id is not None:
+        return ctx.agentlog_id if ctx.agentlog_id > 0 else None
     raw = os.environ.get(ENV_VAR)
     if not raw or not raw.strip():
         return None
