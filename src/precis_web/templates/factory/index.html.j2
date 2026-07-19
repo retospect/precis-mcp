@@ -50,6 +50,18 @@
         · <span class="font-mono">{{ '%.0f'|format(h.temp_c) }}°C</span>
         {% endif %}
       </div>
+      {% if h.top_cpu %}
+      {# top processes by CPU% — so "why is load high?" is answerable here #}
+      {# instead of SSH-ing in. A postgres backend shows as `postgres`; the #}
+      {# exact query still needs pg_stat_activity. #}
+      <div class="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] text-slate-500"
+        title="Top processes by CPU% at last heartbeat (host-local `ps`).">
+        <span class="text-slate-400">top</span>
+        {% for p in h.top_cpu %}
+        <span class="font-mono {% if p.cpu >= 90 %}text-rose-700 font-semibold{% elif p.cpu >= 50 %}text-amber-700{% endif %}">{{ p.cmd }}&nbsp;{{ '%.0f'|format(p.cpu) }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
       {% if h.slots %}
       <div class="mt-1 flex flex-wrap gap-1" title="Resources this host advertises (heartbeat self-probe). free/capacity slots; differ once reserve-at-claim lands. Soft gauges (mem) show memory-pressure headroom: green=plenty, amber=low, red=under pressure.">
         {% for sl in h.slots %}

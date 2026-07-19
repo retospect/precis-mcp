@@ -33,6 +33,14 @@ _STORE: Store | None = None
 RETENTION_DAYS_ENV = "PRECIS_LLM_LOG_RETENTION_DAYS"
 DEFAULT_RETENTION_DAYS = 90
 
+#: Fleet-wide advisory-lock key for :func:`gc`. Every host runs a system-profile
+#: sweeper, and each pass called ``gc`` with no guard — so the (table-scanning)
+#: orphan-blob sweep piled up concurrently and pegged the DB host's CPU. A fixed,
+#: arbitrary signed-64 constant (ascii ``"llm_gc"``) makes the sweep single-flight
+#: across the fleet: one worker holds it, the rest fast-fail. Xact-scoped, so it
+#: auto-releases at commit/rollback — no unlock bookkeeping.
+_GC_LOCK = 0x6C6C6D5F6763
+
 
 def bind_store(store: Store | None) -> None:
     """Bind (or clear) the process store the logger writes through."""
@@ -230,18 +238,36 @@ def spend_rollup(
 
 def gc(store: Store, *, retention_days: int = DEFAULT_RETENTION_DAYS) -> int:
     """Delete log rows past the retention window; GC orphaned blobs. Returns the
-    number of call rows deleted. Wire into the sweeper when the log grows."""
+    number of call rows deleted (0 when another worker holds the GC lock).
+
+    Two guards keep this cheap on the per-pass sweeper hot path:
+
+    * **Single-flight** — a fleet-wide advisory lock (:data:`_GC_LOCK`). Every
+      host runs a sweeper, so without it they ran concurrent orphan-blob sweeps
+      and saturated the DB host. Xact-scoped: released at commit/rollback.
+    * **Skip when idle** — the orphan-blob sweep only runs when this pass
+      actually deleted call rows. No deleted calls → no newly-orphaned blobs, so
+      the anti-join (indexed on ``request_hash``/``response_hash``, migration
+      0077) is skipped entirely on the common no-op pass. When it does run, it
+      still clears *any* orphan, so a one-off backlog is reclaimed next sweep.
+    """
     with store.pool.connection() as conn:
+        got = conn.execute(
+            "SELECT pg_try_advisory_xact_lock(%s)", (_GC_LOCK,)
+        ).fetchone()
+        if not got or not got[0]:
+            return 0  # another worker is already GC'ing — don't pile on
         cur = conn.execute(
             "DELETE FROM llm_call_log WHERE ts < now() - (%s || ' days')::interval",
             (retention_days,),
         )
         deleted = cur.rowcount
-        conn.execute(
-            "DELETE FROM llm_blob b WHERE NOT EXISTS ("
-            "  SELECT 1 FROM llm_call_log l"
-            "   WHERE l.request_hash = b.hash OR l.response_hash = b.hash)"
-        )
+        if deleted:
+            conn.execute(
+                "DELETE FROM llm_blob b WHERE NOT EXISTS ("
+                "  SELECT 1 FROM llm_call_log l"
+                "   WHERE l.request_hash = b.hash OR l.response_hash = b.hash)"
+            )
         conn.commit()
     return deleted
 

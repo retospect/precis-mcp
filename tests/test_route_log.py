@@ -217,6 +217,39 @@ def test_gc_prunes_aged_rows_and_orphan_blobs(store: Any) -> None:
     assert n_blob == 0  # orphaned blob swept
 
 
+def test_gc_single_flight_skips_when_lock_held(store: Any) -> None:
+    # A concurrent worker holding the GC advisory lock makes gc() fast-fail
+    # (return 0) instead of piling a second full blob sweep onto the DB — the
+    # guard that stops the fleet from saturating the DB host. Age a row so a
+    # lock-free run *would* delete >=1, proving the 0 comes from the lock.
+    tag = uuid4().hex[:8]
+    src = f"gclock-{tag}"
+    route_log.record_call(_rec(source=src, request_text=f"L-{tag}"), store=store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE llm_call_log SET ts = now() - interval '100 days' WHERE source=%s",
+            (src,),
+        )
+        conn.commit()
+    # Hold the same advisory key session-scoped on a separate connection, so
+    # gc()'s pg_try_advisory_xact_lock (a different session) fast-fails. Unlock
+    # explicitly before returning the connection to the pool — a session lock
+    # survives rollback and would otherwise leak into the next test.
+    with store.pool.connection() as holder:
+        holder.execute("SELECT pg_advisory_lock(%s)", (route_log._GC_LOCK,))
+        holder.commit()
+        assert route_log.gc(store, retention_days=30) == 0  # locked out
+        with store.pool.connection() as check:
+            still = check.execute(
+                "SELECT count(*) FROM llm_call_log WHERE source=%s", (src,)
+            ).fetchone()[0]
+        assert still == 1  # nothing deleted while locked
+        holder.execute("SELECT pg_advisory_unlock(%s)", (route_log._GC_LOCK,))
+        holder.commit()
+    # Lock released → the next run reaps normally.
+    assert route_log.gc(store, retention_days=30) >= 1
+
+
 def test_spend_rollup_rejects_unknown_group_by(store: Any) -> None:
     import pytest
 

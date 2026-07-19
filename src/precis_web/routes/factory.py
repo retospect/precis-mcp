@@ -97,7 +97,7 @@ def _hosts(store: Any) -> list[dict[str, Any]]:
     try:
         with store.pool.connection() as conn:
             cur = conn.execute(
-                "SELECT host, ts, temp_c, load1, load5, load15, "
+                "SELECT host, ts, temp_c, load1, load5, load15, meta, "
                 "       EXTRACT(EPOCH FROM (now() - ts)) AS age_s "
                 "FROM host_heartbeat ORDER BY host"
             )
@@ -106,8 +106,11 @@ def _hosts(store: Any) -> list[dict[str, Any]]:
         log.warning("factory: host_heartbeat read failed", exc_info=True)
         return []
     out: list[dict[str, Any]] = []
-    for host, ts, temp_c, load1, load5, load15, age_s in rows:
+    for host, ts, temp_c, load1, load5, load15, meta, age_s in rows:
         age = float(age_s) if age_s is not None else None
+        # top_cpu is a heartbeat nicety (top processes by CPU%); tolerate its
+        # absence on old rows / hosts that couldn't probe.
+        top_cpu = (meta or {}).get("top_cpu") or []
         out.append(
             {
                 "host": host,
@@ -117,6 +120,7 @@ def _hosts(store: Any) -> list[dict[str, Any]]:
                 "load1": load1,
                 "load5": load5,
                 "load15": load15,
+                "top_cpu": top_cpu,
             }
         )
     return out

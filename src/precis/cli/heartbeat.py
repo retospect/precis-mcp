@@ -37,6 +37,7 @@ import os
 import platform
 import re
 import subprocess
+from typing import Any
 
 from precis.cli._common import resolve_dsn
 
@@ -88,6 +89,48 @@ def collect_loads() -> tuple[float | None, float | None, float | None]:
     except (OSError, AttributeError):
         return (None, None, None)
     return (one, five, fifteen)
+
+
+def collect_top_cpu(n: int = 3) -> list[dict[str, Any]]:
+    """Best-effort top-``n`` processes by CPU %, for the factory host strip.
+
+    So "why is this host's load high?" is answerable from the dashboard
+    (postgres pegging three cores, a runaway worker, …) without SSH-ing in.
+    A diagnostic nicety, never the liveness signal: any failure degrades to
+    ``[]`` rather than failing the report, same grain as the temp probe.
+
+    ``ps -Ao pcpu=,comm=`` is the portable slice across the Linux + macOS
+    cluster hosts (``=`` suppresses headers on both BSD and GNU ``ps``). We
+    sort in Python (don't rely on ``-r`` / ``--sort``), basename ``comm`` so
+    an absolute path doesn't bloat the JSONB, and keep only cpu > 0. Note a
+    postgres backend collapses to ``postgres`` here — enough to point at the
+    DB; the exact query still needs ``pg_stat_activity``.
+    """
+    try:
+        res = subprocess.run(
+            ["ps", "-Ao", "pcpu=,comm="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        log.warning("heartbeat: top-CPU probe failed to run", exc_info=True)
+        return []
+    if res.returncode != 0:
+        return []
+    procs: list[dict[str, Any]] = []
+    for line in res.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        cpu = _parse_first_float(parts[0])
+        if cpu is None or cpu <= 0.0:
+            continue
+        cmd = os.path.basename(parts[1].strip()) or parts[1].strip()
+        procs.append({"cpu": round(cpu, 1), "cmd": cmd[:40]})
+    procs.sort(key=lambda p: p["cpu"], reverse=True)
+    return procs[:n]
 
 
 def _parse_first_float(text: str) -> float | None:
@@ -299,7 +342,11 @@ def run(args: argparse.Namespace) -> None:
     host = resolve_host(getattr(args, "host", None))
     load1, load5, load15 = collect_loads()
     temp_c = read_temp_c()
-    meta = {"platform": platform.system(), "release": platform.release()}
+    meta: dict[str, Any] = {
+        "platform": platform.system(),
+        "release": platform.release(),
+        "top_cpu": collect_top_cpu(),
+    }
 
     dsn = resolve_dsn(getattr(args, "database_url", None))
     store = Store.connect(dsn)
@@ -354,6 +401,7 @@ def _report_resource_slots(store: object, host: str) -> str:
 __all__ = [
     "add_parser",
     "collect_loads",
+    "collect_top_cpu",
     "read_temp_c",
     "resolve_host",
     "run",

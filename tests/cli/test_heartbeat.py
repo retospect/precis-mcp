@@ -35,6 +35,42 @@ def test_resolve_host_precedence(monkeypatch) -> None:
     assert heartbeat.resolve_host(None)  # hostname fallback, non-empty
 
 
+def _fake_ps(stdout: str, returncode: int = 0):
+    def _run(*args, **kwargs):
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+
+    return _run
+
+
+def test_collect_top_cpu_sorts_limits_and_basenames(monkeypatch) -> None:
+    # Unsorted `ps -Ao pcpu=,comm=` output with an absolute path, a zero-CPU
+    # process, and a blank line — sorted desc, cpu>0 kept, comm basenamed, top-n.
+    out = (
+        " 7.3 /System/Library/.../WindowServer\n"
+        "100.0 /opt/homebrew/opt/postgresql/bin/postgres\n"
+        " 0.0 idled\n"
+        "\n"
+        " 99.8 /opt/homebrew/opt/postgresql/bin/postgres\n"
+    )
+    monkeypatch.setattr(heartbeat.subprocess, "run", _fake_ps(out))
+    top = heartbeat.collect_top_cpu(n=2)
+    assert top == [
+        {"cpu": 100.0, "cmd": "postgres"},
+        {"cpu": 99.8, "cmd": "postgres"},
+    ]
+
+
+def test_collect_top_cpu_degrades_on_failure(monkeypatch) -> None:
+    def _boom(*args, **kwargs):
+        raise OSError("no ps")
+
+    monkeypatch.setattr(heartbeat.subprocess, "run", _boom)
+    assert heartbeat.collect_top_cpu() == []
+    # Non-zero exit → empty, not a crash.
+    monkeypatch.setattr(heartbeat.subprocess, "run", _fake_ps("", returncode=1))
+    assert heartbeat.collect_top_cpu() == []
+
+
 @pytest.mark.skipif(_NO_GETLOADAVG, reason="os.getloadavg is Unix-only")
 def test_collect_loads_normal(monkeypatch) -> None:
     monkeypatch.setattr(heartbeat.os, "getloadavg", lambda: (1.5, 1.2, 0.9))
