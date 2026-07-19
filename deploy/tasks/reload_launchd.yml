@@ -1,0 +1,58 @@
+---
+# Shared macOS launchd reload — parametrised, so the per-role handlers
+# stop drifting (gripe #48490). Mirrors the safe pattern proven on
+# precis_worker (cluster 32f357b, gripe #48481): retry the
+# bootout -> bootstrap -> (kickstart) cycle to survive the transient
+# `launchctl Load failed: 5: Input/output error` right after a bootout,
+# and fail LOUDLY if the unit never comes up so the host goes red instead
+# of a green deploy masking a dead daemon.
+#
+# Caller must pass:
+#   reload_unit:       the launchd label, e.g. com.precis.web
+#   reload_persistent: true  -> long-lived daemon; assert it is RUNNING
+#                              (`launchctl print` shows `pid = <n>`) and
+#                              kickstart it so it ends up running.
+#                      false -> periodic / one-shot job (StartInterval /
+#                              StartCalendarInterval / RunAtLoad-and-exit).
+#                              It exits between runs, so a pid assertion
+#                              would wrongly fail the deploy; assert only
+#                              that it is LOADED in the domain
+#                              (`launchctl print` rc == 0) and do NOT
+#                              kickstart (that would run a full off-cycle
+#                              sweep on every deploy).
+- name: "reload {{ reload_unit }} (macos, {{ 'persistent' if reload_persistent | bool else 'periodic' }})"
+  become: true
+  changed_when: true
+  ansible.builtin.shell: |
+    set -u
+    unit={{ reload_unit }}
+    plist="/Library/LaunchDaemons/${unit}.plist"
+    persistent={{ 'yes' if reload_persistent | bool else 'no' }}
+    for attempt in 1 2 3 4 5; do
+      launchctl bootout "system/${unit}" 2>/dev/null || true
+      sleep 1
+      # bootstrap is the modern replacement for `load` and gives richer
+      # errors; fall back to `load -wF` on older launchds.
+      launchctl bootstrap system "${plist}" 2>/dev/null \
+        || launchctl load -wF "${plist}" 2>/dev/null || true
+      sleep 1
+      if [ "${persistent}" = "yes" ]; then
+        launchctl kickstart "system/${unit}" 2>/dev/null || true
+        sleep 1
+        if launchctl print "system/${unit}" 2>/dev/null | grep -qE 'pid = [0-9]+'; then
+          echo "${unit}: running (attempt ${attempt})"
+          exit 0
+        fi
+      else
+        # Periodic/one-shot: RunAtLoad / the interval fires it; we only
+        # require it be registered in the domain. No kickstart, no pid.
+        if launchctl print "system/${unit}" >/dev/null 2>&1; then
+          echo "${unit}: loaded (attempt ${attempt})"
+          exit 0
+        fi
+      fi
+      echo "${unit}: not ready after attempt ${attempt}, retrying" >&2
+      sleep 2
+    done
+    echo "${unit}: FAILED to come up after 5 attempts" >&2
+    exit 1

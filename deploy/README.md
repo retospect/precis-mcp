@@ -69,7 +69,10 @@ Populated so far:
       deferred: it retires in slice 7)
 - [x] portable playbooks (48) + `redeploy-precis.yml` + `site.yml` +
       `run-*.yml` + `bootstrap-*.yml` + `ansible.cfg`
-- [x] `scripts/deploy` install-from-tree (dark, behind `$PRECIS_DEPLOY_FROM_TREE`)
+- [x] `scripts/deploy` install-from-tree is the **DEFAULT** (2026-07-19); roll
+      back to the legacy checkout with `PRECIS_DEPLOY_FROM_TREE= scripts/deploy`
+- [x] top-level `tasks/reload_launchd.yml` carried (the shared safe-launchd-reload
+      include every persistent-daemon handler pulls via `role_path/../../tasks/`)
 - [x] `service_unit` role — §15h's multiplatform launch-unit abstraction (one
       abstract spec → launchd plist **or** systemd unit). Dark: no playbook
       includes it yet. `roles/service_unit/examples/collapsed-worker.yml` is
@@ -91,9 +94,11 @@ Populated so far:
 - [ ] retire `litellm` role + `06-litellm.yml` + its `site.yml` entry (slice 7)
       — the only role not carried; `site.yml --syntax-check` fails on it until
       then. Does NOT block `redeploy-precis.yml` (the routine deploy path).
-- [ ] **switch (operator):** flip `PRECIS_DEPLOY_FROM_TREE` default in
-      `scripts/deploy` → deploy once from the tree → demote `~/work/cluster` to
-      overlay-only.
+- [x] **switched** (2026-07-19): default flipped + a full tree-deploy landed
+      green on all 4 nodes and was health-verified (Phase-2 scheduler live).
+- [ ] **demote `~/work/cluster`** (operator, `! l=1 git commit`): commit the
+      staged overlay aliases, then delete its now-in-repo roles/playbooks/tasks
+      (shrinks to `inventory/` + `.vault-pass` + `.git`).
 
 Overlay variables the portable roles expect (define these in your local
 `deploy/inventory/`): `postgres_host`, `gateway_host`, `litellm_host`,

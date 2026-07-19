@@ -24,17 +24,17 @@ CLUSTER_DIR="${PRECIS_CLUSTER_DIR:-${HOME}/work/cluster}"
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 
-# ── slice 12a (DARK): install-from-tree ──────────────────────────────────
-# When PRECIS_DEPLOY_FROM_TREE is set, run ansible from the portable in-repo
-# `deploy/` tree instead of the operator's private checkout. The tree carries
-# the roles + playbooks; the per-cluster overlay (real inventory + vault) stays
-# LOCAL-only at deploy/inventory/ (gitignored — the operator symlinks it there,
-# along with a deploy/.vault-pass). Default UNSET → behaviour is byte-identical
-# to the pre-12a path. Flip to the tree only after the Phase-2 cutover rehearsal.
-if [[ -n "${PRECIS_DEPLOY_FROM_TREE:-}" ]]; then
+# ── slice 12a: install-from-tree is the DEFAULT (cutover complete 2026-07-19).
+# Deploy runs ansible from the portable in-repo `deploy/` tree; the per-cluster
+# overlay (real inventory + vault) stays LOCAL-only at deploy/inventory/
+# (gitignored — the operator symlinks it there, plus deploy/.vault-pass).
+# Roll back to the legacy private checkout with `PRECIS_DEPLOY_FROM_TREE= scripts/deploy`
+# (kept until ~/work/cluster is demoted to overlay-only).
+PRECIS_DEPLOY_FROM_TREE="${PRECIS_DEPLOY_FROM_TREE-1}"
+if [[ -n "${PRECIS_DEPLOY_FROM_TREE}" ]]; then
     _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     CLUSTER_DIR="$(cd "${_script_dir}/.." && pwd)/deploy"
-    [[ -d "${CLUSTER_DIR}/inventory" ]] || die "PRECIS_DEPLOY_FROM_TREE set but ${CLUSTER_DIR}/inventory is not wired — symlink your private overlay (see deploy/README.md)."
+    [[ -d "${CLUSTER_DIR}/inventory" ]] || die "install-from-tree (default): ${CLUSTER_DIR}/inventory is not wired — symlink your private overlay (see deploy/README.md), or roll back with PRECIS_DEPLOY_FROM_TREE=."
     say "install-from-tree: deploying from ${CLUSTER_DIR} (portable tree + local overlay)"
 fi
 

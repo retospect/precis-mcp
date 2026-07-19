@@ -111,26 +111,24 @@ default-off hook.
 
 ---
 
-## 🧹 Slice 12a — switch `deploy/` authoritative + demote `~/work/cluster`
+## 🧹 Slice 12a — demote `~/work/cluster` to overlay-only
 
-Severity: `feature` · Owner: `scripts/deploy`, `~/work/cluster` (operator).
+Severity: `polish` · Owner: `~/work/cluster` (operator).
 
-The `deploy/` tree is carried, gated, and `--check`-convergent with the overlay
-wired (drift-carry + aliases shipped 2026-07-19). Only the **operator switch**
-remains:
-1. Flip `PRECIS_DEPLOY_FROM_TREE` to the default in `scripts/deploy` (or delete
-   the branch so `deploy/` is the only path).
-2. Deploy once from the tree, then demote `~/work/cluster` to overlay-only
-   (delete its now-in-repo roles/playbooks; it shrinks to `inventory/` +
-   `.vault-pass` + `.git`). Cluster changes then ride `scripts/ship`.
+`deploy/` is now the authoritative deploy path — `scripts/deploy` defaults to the
+tree, deployed + health-verified on the fleet 2026-07-19. Remaining cleanup is
+all in the private `~/work/cluster` checkout, which needs `! l=1 git commit`
+(the `guard-commit-on-main` hook blocks agent commits there):
+- **Commit the staged overlay aliases** (`inventory/hosts.yml` +
+  `inventory/group_vars/all/main.yml`) so a `git reset` can't strand them and
+  break the next tree deploy.
+- **Delete the now-in-repo roles/playbooks/tasks**; the checkout shrinks to
+  `inventory/` + `.vault-pass` + `.git`. Cluster changes then ride `scripts/ship`
+  through the leak-gate. Rollback stays available until then via
+  `PRECIS_DEPLOY_FROM_TREE= scripts/deploy`.
 
-⚠ That first tree-deploy is *also* the pending Phase-2 scheduler-activation
-deploy (`~/work/cluster@558379b`, undeployed) — time it deliberately. `litellm`
-stays uncarried until slice 7 (blocks only a full `site.yml`, not the routine
-`redeploy-precis.yml`); commit the overlay alias change staged in
-`~/work/cluster` (`! l=1 git commit`).
-
-Design-of-record: `deploy/README.md` + `docs/design/factory-console-and-scheduling.md` §15-16.
+`litellm` (slice 7) is the only role still uncarried — blocks a full `site.yml`
+bootstrap, not the routine `redeploy-precis.yml`. Design-of-record: `deploy/README.md`.
 
 ---
 
