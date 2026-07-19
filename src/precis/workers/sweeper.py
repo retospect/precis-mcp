@@ -293,6 +293,24 @@ def _agentlog_retention_days() -> int:
         return RETENTION_DAYS
 
 
+def _route_log_retention_days() -> int:
+    """Days to keep ``llm_call_log`` rows (+ orphaned blobs) before GC.
+
+    ``PRECIS_LLM_LOG_RETENTION_DAYS`` (default
+    :data:`precis.route_log.DEFAULT_RETENTION_DAYS`). Lite metadata rows are
+    cheap, but a corpus-scale batch pass now writes one per chunk, so the log
+    needs an actual pruner — this wires :func:`route_log.gc` into the sweep."""
+    from precis import route_log
+
+    raw = os.environ.get(route_log.RETENTION_DAYS_ENV)
+    if not raw:
+        return route_log.DEFAULT_RETENTION_DAYS
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return route_log.DEFAULT_RETENTION_DAYS
+
+
 #: app_state marker + refresh window for the heading-intent prune piggy-back
 #: (source-backfill slice 8b.4). Throttled to once per this window; between runs
 #: the sweeper does one cheap ``app_state`` read.
@@ -422,6 +440,11 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     )
     if reaped_logs:
         log.info("sweeper: GC'd %d stale agentlog(s)", reaped_logs)
+    from precis import route_log
+
+    reaped_calls = route_log.gc(store, retention_days=_route_log_retention_days())
+    if reaped_calls:
+        log.info("sweeper: GC'd %d stale llm_call_log row(s)", reaped_calls)
     reopen_limit = _reopen_limit()
     reopened = _reopen_transient_failed_embeds(store, limit=reopen_limit)
     if reopened:

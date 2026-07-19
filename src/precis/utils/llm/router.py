@@ -425,13 +425,16 @@ class LlmRequest:
     #: be back-filled — a row logged without it is permanently un-attributable, so
     #: an inproc pass that has a natural ref should set it (gr162130).
     ref_id: int | None = None
-    #: Whether to write this call to the route-log. Default ``True`` (every
-    #: existing dispatch caller is logged). A high-volume *mechanical* batch
-    #: pass (per-chunk summarize / classify, folded through
-    #: :class:`DispatchClient`) sets it ``False`` so a corpus-scale backfill
-    #: doesn't add a million ``llm_call_log`` rows — the route-log's value is
-    #: the agentic / judge calls, not the gloss loop.
+    #: Whether to write this call to the route-log at all. Default ``True``.
+    #: ``False`` = no row (a caller that wants zero footprint).
     log_call: bool = True
+    #: Whether to store the full request/response *text* (the ``llm_blob`` replay
+    #: material) alongside the metadata row. Default ``True``. A high-volume
+    #: *mechanical* batch pass (per-chunk summarize / classify) sets this ``False``
+    #: for a **lite** row — metadata (chars / cost / duration / ref_id) is kept
+    #: (~660 B/row, cheap + mineable), but the ~18 KB unique-per-call blob it would
+    #: never replay is skipped. Ignored when ``log_call`` is ``False``.
+    log_blobs: bool = True
     # claude_agent pass-through knobs (ignored by the other transports).
     system_prompt: str | Path | None = None
     mcp_config: str | Path | None = None
@@ -827,9 +830,15 @@ class DispatchClient:
     model: str | None = None
     max_tokens: int | None = None
     source: str = ""
-    #: Mechanical per-item batch passes opt out of the route-log (see
-    #: :attr:`LlmRequest.log_call`); the default matches ``dispatch`` (logged).
+    #: Whether to write a route-log row (see :attr:`LlmRequest.log_call`).
+    #: Default ``False`` — a bare ``DispatchClient`` stays silent (unchanged
+    #: blast radius); a corpus batch pass opts *in* to a lite row below.
     log_call: bool = False
+    #: Store the replay blobs too, or write a **lite** metadata-only row (see
+    #: :attr:`LlmRequest.log_blobs`). A corpus-scale batch pass sets ``log_call=
+    #: True, log_blobs=False`` so the mineable metadata (chars / cost / duration /
+    #: ref_id) is kept without a per-call blob explosion.
+    log_blobs: bool = True
 
     def complete(
         self,
@@ -847,6 +856,7 @@ class DispatchClient:
                 max_tokens=self.max_tokens,
                 source=self.source,
                 log_call=self.log_call,
+                log_blobs=self.log_blobs,
             )
         )
         if res.error is not None:
@@ -921,6 +931,7 @@ def _record_dispatch(
                 error=result.error,
                 data_parsed=result.data is not None,
                 ref_id=req.ref_id,
+                store_blobs=req.log_blobs,
                 features=_route_features(req),
             )
         )

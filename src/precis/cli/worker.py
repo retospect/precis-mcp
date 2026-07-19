@@ -706,11 +706,14 @@ def run(args: argparse.Namespace) -> None:
             # the call gets the local-serving ``served_by`` reroute (Phase-2
             # litellm-retire). model=None ⇒ resolve_model(LOCAL_SMALL) =
             # ``PRECIS_SUMMARIZE_MODEL or summarizer`` = the config default, so
-            # behaviour is byte-identical until a card declares served_by. A
-            # per-chunk backfill opts out of the route-log (log_call defaults off
-            # on DispatchClient) so it doesn't add a row per chunk.
+            # behaviour is byte-identical until a card declares served_by. The
+            # per-chunk backfill logs a **lite** row (metadata + ref_id, no replay
+            # blob) so local spend/wall-clock is mineable without a blob explosion.
             _summarize_client = _DispatchClient(
-                tier=_Tier.LOCAL_SMALL, source="llm_summarize"
+                tier=_Tier.LOCAL_SMALL,
+                source="llm_summarize",
+                log_call=True,
+                log_blobs=False,
             )
 
             def _llm_summarize_pass(batch_size: int) -> _BatchResult:
@@ -744,11 +747,13 @@ def run(args: argparse.Namespace) -> None:
 
             # Fold through the router (ADR 0046) for the Phase-2 served_by reroute.
             # Forces model=`summarizer` (a thinking model like qwen returns empty).
-            # Per-chunk high volume ⇒ log_call defaults off on DispatchClient.
+            # Per-chunk high volume ⇒ a lite row (metadata, no replay blob).
             _cls_client = _DispatchClient(
                 tier=_Tier.LOCAL_SMALL,
                 model=os.environ.get("PRECIS_CLASSIFY_MODEL") or "summarizer",
                 source="classify",
+                log_call=True,
+                log_blobs=False,
             )
             _cls_escalate = os.environ.get("PRECIS_CLASSIFY_ESCALATE_MODEL") or None
 
@@ -813,6 +818,8 @@ def run(args: argparse.Namespace) -> None:
                     os.environ.get("PRECIS_PAPER_GLOSSARY_MAX_TOKENS") or 2000
                 ),
                 source="paper_glossary",
+                log_call=True,
+                log_blobs=False,
             )
 
             def _paper_glossary_pass(batch_size: int) -> _PgBatchResult:

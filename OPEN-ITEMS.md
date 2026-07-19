@@ -223,13 +223,19 @@ branch, unshipped** (see memory `budget_oauth_quota_split`). Remaining:
     (`conv_ref_id`) + `utils/_chase_llm.py` ×3 (`finding.ref_id`, needs threading
     from callers). Pass-level passes (dream, review) legitimately carry no single
     ref — leave them.
-  - **Local-lane visibility gap** *(the real "log well" piece).* The high-volume
-    local batch passes (`llm_summarize`, per-chunk classify) dispatch
-    `log_call=False`, so they never hit `llm_call_log` — a **local-vs-cloud**
-    comparison is *not* answerable from the log no matter how long it runs. Needs a
-    lightweight aggregate counter (the factory-console §8 `service_calls` rollup:
-    per `(pass, host, day)` count + chars + wall-clock, no blobs) before placement
-    decisions have local data. Bigger, separate build.
+  - **Local-lane visibility** *(shipped — lite logging).* The corpus batch passes
+    (`llm_summarize` / `classify` / `paper_glossary`) previously ran
+    `log_call=False` (invisible). They now write a **lite** `llm_call_log` row —
+    metadata (chars / cost / duration / ref_id) kept, the ~18 KB unique-per-call
+    replay blob skipped (`LlmRequest.log_blobs=False`; ~660 B/row). So
+    local-vs-cloud volume + wall-clock **is** mineable via `precis llm cost`.
+    `route_log.gc` (90d floor, `PRECIS_LLM_LOG_RETENTION_DAYS`) is now wired into
+    the sweeper (was defined-but-uncalled) since the batch passes add ~1 row/chunk.
+    *Residual — non-LLM compute only:* spark DFT / relax / fold + container jobs
+    never touch `dispatch`, so a placement view over those still needs its own
+    counter (the factory-console §8 `service_calls` rollup: per `(pass, host, day)`
+    count + wall-clock). Build only if the week's data says local *compute* (not
+    LLM) capacity is the constraint.
   - **Quest fair-share meter** *(deferred — was gr162594).* The meter
     (`allocator.weekly_spend`/`over_budget`) is inert because it sums dollar
     `meta.cost` deeds that never land (local tier = $0 cost). Decide the meter

@@ -93,8 +93,7 @@ def add_parser(subparsers: Any) -> None:
     co = lsub.add_parser(
         "cost",
         help="Mine llm_call_log — per lane / pass / ref / model: calls, real-$, "
-        "wall-clock. Read-only. (Logged agentic lanes only; local batch passes "
-        "run un-logged.)",
+        "wall-clock. Read-only. (All dispatch LLM lanes; non-LLM compute excluded.)",
     )
     co.add_argument(
         "--days", type=int, default=7, help="Trailing window in days (default 7)."
@@ -291,9 +290,10 @@ def _cmd_cost(store: Store, args: argparse.Namespace) -> None:
         f"{tot_wall / 3_600_000:>7.1f}h"
     )
     print(
-        "  note: covers logged (agentic/judge) lanes only — high-volume local "
-        "batch\n        passes (llm_summarize, classify) run log_call=False and "
-        "are NOT here."
+        "  note: covers all LLM lanes through dispatch — agentic/judge (full "
+        "rows) +\n        corpus batch passes (llm_summarize/classify/glossary, "
+        "lite rows). Non-LLM\n        compute (DFT/relax/fold, containers) is not "
+        "here (never hits dispatch)."
     )
 
 

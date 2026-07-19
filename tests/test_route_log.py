@@ -123,6 +123,100 @@ def test_spend_rollup_groups_and_keeps_units_separate(store: Any) -> None:
     assert rows["claude_agent"].errors == 1
 
 
+def test_lite_row_skips_blob_but_keeps_metadata(store: Any) -> None:
+    # A lite row (store_blobs=False) records the mineable metadata — char counts,
+    # cost, duration — but leaves the hashes NULL and stores NO replay blob.
+    tag = uuid4().hex[:8]
+    src = f"lite-{tag}"
+    req_text = f"LITE-REQ-{tag}"
+    route_log.record_call(
+        _rec(
+            source=src,
+            request_text=req_text,
+            response_text=f"LITE-RESP-{tag}",
+            store_blobs=False,
+        ),
+        store=store,
+    )
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT request_hash, response_hash, request_chars FROM llm_call_log "
+            "WHERE source=%s",
+            (src,),
+        ).fetchone()
+        n_blob = conn.execute(
+            "SELECT count(*) FROM llm_blob WHERE text=%s", (req_text,)
+        ).fetchone()[0]
+    assert row is not None
+    assert row[0] is None and row[1] is None  # no blob linked
+    assert row[2] == len(req_text)  # volume signal still recorded
+    assert n_blob == 0  # the ~18 KB replay blob was NOT stored
+
+
+def test_dispatch_lite_when_log_blobs_false(store: Any, monkeypatch: Any) -> None:
+    import precis.utils.llm.router as router
+    from precis.utils.claude_p import ClaudePResult
+    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+
+    tag = uuid4().hex[:8]
+    src = f"litedisp-{tag}"
+
+    def fake_p(prompt: str, **kwargs: Any) -> ClaudePResult:
+        return ClaudePResult(data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.0)
+
+    monkeypatch.setattr(router, "call_claude_p", fake_p)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+
+    route_log.bind_store(store)
+    try:
+        dispatch(
+            LlmRequest(
+                tier=Tier.CLOUD_SMALL, prompt="gloss this", source=src, log_blobs=False
+            )
+        )
+    finally:
+        route_log.bind_store(None)
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT request_hash, request_chars FROM llm_call_log WHERE source=%s",
+            (src,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] is None  # lite — no blob hash
+    assert row[1] > 0  # chars still recorded
+
+
+def test_gc_prunes_aged_rows_and_orphan_blobs(store: Any) -> None:
+    # The sweeper-wired GC deletes rows past the retention window + their now-
+    # orphaned blobs. Age a tagged row into the past, then GC with a 30d floor.
+    tag = uuid4().hex[:8]
+    src = f"gc-{tag}"
+    old_req = f"GC-REQ-{tag}"
+    route_log.record_call(
+        _rec(source=src, request_text=old_req, response_text=f"GC-RESP-{tag}"),
+        store=store,
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE llm_call_log SET ts = now() - interval '100 days' WHERE source=%s",
+            (src,),
+        )
+        conn.commit()
+    deleted = route_log.gc(store, retention_days=30)
+    assert deleted >= 1
+    with store.pool.connection() as conn:
+        n_rows = conn.execute(
+            "SELECT count(*) FROM llm_call_log WHERE source=%s", (src,)
+        ).fetchone()[0]
+        n_blob = conn.execute(
+            "SELECT count(*) FROM llm_blob WHERE text=%s", (old_req,)
+        ).fetchone()[0]
+    assert n_rows == 0  # aged row pruned
+    assert n_blob == 0  # orphaned blob swept
+
+
 def test_spend_rollup_rejects_unknown_group_by(store: Any) -> None:
     import pytest
 

@@ -66,6 +66,11 @@ class LlmCallRecord:
     data_parsed: bool | None
     features: dict[str, Any] = field(default_factory=dict)
     ref_id: int | None = None
+    #: Store the full request/response text in ``llm_blob`` (the replay material),
+    #: or write a **lite** metadata-only row (hashes NULL, char counts still
+    #: recorded). Corpus batch passes set this ``False`` — cheap + mineable, no
+    #: per-call blob. See :attr:`precis.utils.llm.router.LlmRequest.log_blobs`.
+    store_blobs: bool = True
 
 
 def _blob_hash(text: str) -> str:
@@ -89,17 +94,25 @@ def record_call(rec: LlmCallRecord, *, store: Store | None = None) -> None:
 
 
 def _write(store: Store, rec: LlmCallRecord) -> None:
-    req_hash = _blob_hash(rec.request_text)
-    resp_hash = _blob_hash(rec.response_text)
     import json
 
+    # Char counts are recorded either way (the mineable volume signal); the blob
+    # text + its hash are stored only for a full row. A lite row leaves the
+    # (nullable) hashes NULL — no ~18 KB replay blob per corpus-batch call.
+    req_hash = _blob_hash(rec.request_text) if rec.store_blobs else None
+    resp_hash = _blob_hash(rec.response_text) if rec.store_blobs else None
+
     with store.pool.connection() as conn:
-        for h, text in ((req_hash, rec.request_text), (resp_hash, rec.response_text)):
-            conn.execute(
-                "INSERT INTO llm_blob (hash, text, bytes) VALUES (%s, %s, %s) "
-                "ON CONFLICT (hash) DO NOTHING",
-                (h, text, len(text.encode("utf-8"))),
-            )
+        if rec.store_blobs:
+            for h, text in (
+                (req_hash, rec.request_text),
+                (resp_hash, rec.response_text),
+            ):
+                conn.execute(
+                    "INSERT INTO llm_blob (hash, text, bytes) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (hash) DO NOTHING",
+                    (h, text, len(text.encode("utf-8"))),
+                )
         conn.execute(
             """
             INSERT INTO llm_call_log (
@@ -175,11 +188,12 @@ def spend_rollup(
     """Mine ``llm_call_log`` for the last ``days`` — grouped by lane / pass / ref /
     model — into per-group volume + real-$ + wall-clock. Read-only.
 
-    **Covers the *logged* (agentic / judge) lanes only.** The high-volume local
-    batch passes (``llm_summarize``, per-chunk classify) dispatch with
-    ``log_call=False`` and never reach this table, so a local-vs-cloud comparison
-    is *not* answerable from here until an aggregate counter (service_calls)
-    lands — the CLI header says so."""
+    Covers every LLM lane that goes through ``dispatch``: the agentic / judge
+    calls (full rows) **and** the corpus batch passes (``llm_summarize`` /
+    ``classify`` / ``paper_glossary``), which write **lite** metadata rows — so
+    local-vs-cloud volume + wall-clock is answerable here. What's *not* here:
+    non-LLM compute (spark DFT / relax / fold, container jobs) never touches
+    ``dispatch``, so a placement view over those still needs its own counter."""
     col = _GROUP_COLS.get(group_by)
     if col is None:
         raise ValueError(f"group_by must be one of {sorted(_GROUP_COLS)}")
