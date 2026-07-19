@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""scripts/coderef — durable code anchors for repo docs (repo-dev tool, NOT product).
+
+Line numbers rot; symbol names don't. So in `docs/` and the memory index, cite a
+Python symbol as a DURABLE ANCHOR — the file plus its dotted qualified name (the
+shape of Python's ``__qualname__``: a module-level ``function``, a ``Class``, or a
+``Class.method``):
+
+    path/to/file.py::Qual.name        # e.g. src/precis/alerts.py::AlertManager.create_alert
+
+This tool is the three verbs over one ``ast`` pass that make the convention stick:
+
+    coderef resolve src/precis/alerts.py::raise_alert   # -> src/precis/alerts.py:60  (clickable)
+    coderef anchor  src/precis/alerts.py:60             # -> src/precis/alerts.py::raise_alert  (author it)
+    coderef check   docs                                # DRIFT: written anchors whose symbol no longer resolves
+    coderef check --bare docs/design/foo.md             # + UPGRADE nudges: bare file.py:line refs, with the anchor to use
+
+`check` default is drift-only — the ever-after value: a citation that broke because
+its symbol was renamed/removed (loud), high-signal, safe to run tree-wide. `--bare`
+adds the per-file upgrade nudges (bare ``file.py:line`` → the anchor to replace it),
+whose output IS the convention doc — but only at point-of-use, never tree-wide (that
+would be a firehose). Advisory (always exits 0); wired into `/whatneedsdoing`'s
+hygiene wave alongside memory-lint / docs-orphans.
+
+Python-only (the repo is ~all Python); stdlib ``ast``, no deps, no running index —
+deterministic, exact, fast. The semantic code index (claude-context/Milvus) is for
+DISCOVERY (find the symbol the first time you write an anchor); this is for
+RESOLUTION (exact symbol -> line). Complementary, cleanly separated. Nudge only in
+citation surfaces (docs/ + memory) — NOT inline code comments, where a :line sits
+next to its target and moves with it. Convention: docs/conventions/code-anchors.md.
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+import subprocess
+import sys
+from functools import cache
+from pathlib import Path
+
+
+def repo_root() -> Path:
+    out = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    return Path(out)
+
+
+def _assign_names(node: ast.Assign | ast.AnnAssign) -> list[str]:
+    """Bound names of a module/class-level assignment (constants, config)."""
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    names: list[str] = []
+    for t in targets:
+        if isinstance(t, ast.Name):
+            names.append(t.id)
+        elif isinstance(t, (ast.Tuple, ast.List)):
+            names += [e.id for e in t.elts if isinstance(e, ast.Name)]
+    return names
+
+
+def symbol_index(src: str) -> dict[str, tuple[int, int]]:
+    """qualname -> (def_line, end_line) for every class/function/constant in ``src``.
+
+    qualname is the dotted nesting of class/def names (``Class.method``,
+    ``outer.inner``) — matching how an anchor is written. def_line is the ``def``/
+    ``class`` line (not a decorator), which is what you want to jump to. Module- and
+    class-level assignments (``_BUILTIN_TAG = …``) are indexed too, since tag/config
+    writers get cited by their constant; a real def/class of the same name wins.
+    """
+    out: dict[str, tuple[int, int]] = {}
+
+    def walk(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                qual = prefix + child.name
+                end = getattr(child, "end_lineno", None) or child.lineno
+                out[qual] = (child.lineno, end)
+                walk(child, qual + ".")
+            elif isinstance(child, (ast.Assign, ast.AnnAssign)) and isinstance(
+                node, (ast.Module, ast.ClassDef)
+            ):
+                # a top-level constant (not a local inside a function body, which
+                # `node` being a FunctionDef would exclude).
+                end = getattr(child, "end_lineno", None) or child.lineno
+                for name in _assign_names(child):
+                    out.setdefault(prefix + name, (child.lineno, end))
+            else:
+                # descend through non-symbol nodes (if/try/with) so a def nested
+                # in a module-level block still registers at the right prefix.
+                walk(child, prefix)
+
+    walk(ast.parse(src), "")
+    return out
+
+
+@cache
+def _index_path(path_str: str) -> dict[str, tuple[int, int]]:
+    return symbol_index(Path(path_str).read_text(encoding="utf-8", errors="ignore"))
+
+
+def _norm_qual(qual: str) -> str:
+    # accept a pytest-style ``Class::method`` too; normalise to dotted.
+    return qual.replace("::", ".")
+
+
+def parse_anchor(token: str) -> tuple[str, str | None]:
+    """``file.py::Qual`` -> (relpath, qual); ``file.py`` -> (relpath, None)."""
+    relpath, sep, qual = token.partition("::")
+    return (relpath, _norm_qual(qual)) if sep else (relpath, None)
+
+
+def resolve(root: Path, relpath: str, qual: str) -> tuple[int | None, str]:
+    p = root / relpath
+    if not p.is_file():
+        return None, "file not found"
+    idx = _index_path(str(p))
+    if qual in idx:
+        return idx[qual][0], ""
+    # unique-suffix fallback: a bare ``method`` resolves iff it's unambiguous.
+    suffix = [q for q in idx if q == qual or q.endswith("." + qual)]
+    if len(suffix) == 1:
+        return idx[suffix[0]][0], f"(matched {suffix[0]})"
+    if len(suffix) > 1:
+        return None, "ambiguous — qualify: " + ", ".join(sorted(suffix))
+    return None, "symbol not found (renamed/removed? re-grep)"
+
+
+def anchor_for(root: Path, relpath: str, line: int) -> tuple[str | None, str]:
+    p = root / relpath
+    if not p.is_file():
+        return None, "file not found"
+    idx = _index_path(str(p))
+    containing = [(q, s) for q, (s, e) in idx.items() if s <= line <= e]
+    if not containing:
+        return None, "module-level (no enclosing symbol)"
+    qual = max(containing, key=lambda qs: qs[1])[0]  # innermost = latest def_line
+    return f"{relpath}::{qual}", ""
+
+
+# code-ref tokens in prose. Boundary lookbehind rejects a path embedded inside a
+# foreign one (`/opt/…/foo.py`, `infra/…/bar.py`) — same trap memory-lint hit.
+_ANCHOR_RE = re.compile(r"(?<![\w/.\-])([\w./\-]+\.py)::([\w.:]+)")
+_LINEREF_RE = re.compile(r"(?<![\w/.\-])([\w./\-]+\.py):(\d+)(?!\d)")
+
+
+def cmd_resolve(root: Path, tokens: list[str]) -> int:
+    rc = 0
+    for tok in tokens:
+        relpath, qual = parse_anchor(tok)
+        if qual is None:
+            print(f"{tok}: not an anchor (need file.py::Qual.name)")
+            rc = 1
+            continue
+        line, note = resolve(root, relpath, qual)
+        if line is None:
+            print(f"{tok}: {note}")
+            rc = 1
+        else:
+            print(f"{relpath}:{line}" + (f"  {note}" if note else ""))
+    return rc
+
+
+def cmd_anchor(root: Path, tokens: list[str]) -> int:
+    rc = 0
+    for tok in tokens:
+        m = re.fullmatch(r"([\w./\-]+\.py):(\d+)", tok)
+        if not m:
+            print(f"{tok}: expected file.py:LINE")
+            rc = 1
+            continue
+        a, note = anchor_for(root, m.group(1), int(m.group(2)))
+        if a is None:
+            print(f"{tok}: {note}")
+            rc = 1
+        else:
+            print(a + (f"  {note}" if note else ""))
+    return rc
+
+
+def _iter_md(paths: list[str]) -> list[Path]:
+    out: list[Path] = []
+    for p in paths:
+        pth = Path(p)
+        if pth.is_dir():
+            out.extend(sorted(pth.rglob("*.md")))
+        elif pth.is_file():
+            out.append(pth)
+    return out
+
+
+def _repo_plausible(root: Path, relpath: str) -> bool:
+    """True iff the ref's top path segment is a real repo entry — filters out
+    illustrative placeholders (`path/file.py`) and `src/precis`-relative shorthand
+    (`alerts.py`) from the drift check, leaving genuine repo-relative refs."""
+    return (root / relpath.split("/", 1)[0]).exists()
+
+
+def cmd_check(root: Path, paths: list[str], *, bare: bool = False) -> int:
+    drift = upgr = 0
+    for f in _iter_md(paths):
+        text = f.read_text(encoding="utf-8", errors="ignore")
+        findings: list[str] = []
+        # (1) DRIFT — the ever-after value: a written anchor whose symbol (or file)
+        #     no longer exists. Only for repo-plausible paths, so placeholders and
+        #     shorthand stay quiet.
+        for m in _ANCHOR_RE.finditer(text):
+            relpath, qual = m.group(1), _norm_qual(m.group(2))
+            if not _repo_plausible(root, relpath):
+                continue
+            line, note = resolve(root, relpath, qual)
+            if line is None:
+                findings.append(f"    ✗ {relpath}::{qual} — {note}")
+                drift += 1
+        # (2) UPGRADE nudges — bare line refs that will rot. Point-of-use only
+        #     (`--bare`), never the tree-wide default: that would be a firehose.
+        if bare:
+            seen: set[tuple[str, int]] = set()
+            for m in _LINEREF_RE.finditer(text):
+                relpath, ln = m.group(1), int(m.group(2))
+                if relpath.startswith("/") or not (root / relpath).is_file():
+                    continue
+                if (relpath, ln) in seen:
+                    continue
+                seen.add((relpath, ln))
+                a, _ = anchor_for(root, relpath, ln)
+                findings.append(
+                    f"    ~ {relpath}:{ln} — bare line ref (rots)"
+                    + (f" → {a}" if a else "")
+                )
+                upgr += 1
+        if findings:
+            print(f"  {f}:")
+            print("\n".join(findings))
+    tail = f", {upgr} bare line ref(s)" if bare else ""
+    if drift == 0 and upgr == 0:
+        print("coderef: ✓ no anchor drift" + (", no bare line refs" if bare else ""))
+    else:
+        print(
+            f"coderef: {drift} drifted anchor(s){tail} — fix the anchor, or "
+            "`scripts/coderef anchor file.py:LINE` to author one"
+        )
+    return 0  # advisory — never a gate
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2 or argv[1] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    root = repo_root()
+    cmd, rest = argv[1], argv[2:]
+    if cmd == "resolve":
+        return cmd_resolve(root, rest)
+    if cmd == "anchor":
+        return cmd_anchor(root, rest)
+    if cmd == "check":
+        bare = "--bare" in rest
+        rest = [a for a in rest if a != "--bare"]
+        return cmd_check(root, rest or ["docs"], bare=bare)
+    print(f"unknown command: {cmd} (resolve | anchor | check)")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

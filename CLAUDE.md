@@ -169,6 +169,13 @@ per-kind reference.
   agent-supplied URL (directly or post-redirect) must use `safe_get` /
   `safe_stream` from `src/precis/utils/safe_fetch.py`. Raw
   `httpx…get(url, follow_redirects=True)` is an SSRF.
+- **Cite code by durable anchor, not line, in docs/memory.** A `file.py:308`
+  written down rots on the next edit; reference the symbol —
+  `path/file.py::Qual.name` (Python `__qualname__` shape). `scripts/coderef
+  anchor file.py:LINE` authors it, `resolve <anchor>` → clickable `file:line`,
+  `check docs` flags drift (advisory, in `/whatneedsdoing`). Convention:
+  `docs/conventions/code-anchors.md`. (Bare `:line` is fine in throwaway
+  chat/terminal — this governs what gets written down to read later.)
 - If another branch left trivial drift (needs `ruff`), just fix it.
 
 ## Agent sizing

@@ -34,6 +34,16 @@ exact-match cull rule.
 
 ### Pile A — MACHINE (migrate to a real namespace/column first)
 
+> **Citation note (2026-07-19 reconsolidation):** the `file:line` writer refs in
+> this table predate the ADR-0047 rollout and are **line-stale**. Before
+> implementing a row, resolve the *current* writer and cite it as a durable
+> anchor — `path/file.py::Qual.name`, per `docs/conventions/code-anchors.md`
+> (`scripts/coderef anchor file.py:LINE` authors it). Rows with a named symbol
+> are converted to anchors below as worked examples; the bare-`line` rows still
+> need re-anchoring at implementation time. Drift already surfaced by
+> `coderef`: `create_alert`→`raise_alert`, `set_severity`→`_set_severity_tag`,
+> and the `routes/drafts.py` topic-seed writer is gone.
+
 Written by deterministic code via `store.add_tag(..., Tag.open(...),
 set_by="system")`, which **bypasses `Tag.parse_strict`** (no
 validation). Each needs a destination namespace (a new UPPERCASE
@@ -43,13 +53,13 @@ closed axis or an existing column) and its writer + every
 | prefix | writer (file:line) | target | readers to update |
 |---|---|---|---|
 | `tier:` | `workers/review.py:308` (values `tier:structural` `workers/structural.py:201`, `tier:deep` `workers/deep_review.py:220`) | `TIER:` closed axis | `deep_review.py:120`, structural filter |
-| `severity:` | `alerts.py:153` `create_alert`, `alerts.py:261` `set_severity` | `ASEV:` closed axis (alert severity — **distinct from `SEV`**, see §collision) | alert reads |
+| `severity:` | `src/precis/alerts.py::raise_alert`, `src/precis/alerts.py::_set_severity_tag` (was `create_alert`/`set_severity` — drifted) | `ASEV:` closed axis (alert severity — **distinct from `SEV`**, see §collision) | alert reads |
 | `alert-state:` | `alerts.py:151,195` (`STATE_OPEN`→resolved) | `ALERT:` axis or a `refs.meta` field | alert lifecycle reads |
 | `alert-source:` | `alerts.py:152` | `ALERT-SRC:` axis / meta | alert dedup |
-| `level:` | `handlers/todo.py:518`, `workers/schedule/worker.py:414`, `schedule/seed.py:81`, `draftimport/build.py:327` (constants `_todo_guards.py:63-70`) | `LEVEL:` closed axis (or `refs.level` column) | **heavy**: `_todo_views.py:170` `LIKE 'level:%'` + exact readers `schedule/worker.py:154`, `structural.py:70`, `deep_review.py:61`, `nursery.py:207,214,441`, `_todo_views.py:209,266,525,558,625,669,1000,1087` |
+| `level:` | `handlers/todo.py:518`, `workers/schedule/worker.py:414`, `workers/schedule/seed.py:81`, `draftimport/build.py:327` (constants `_todo_guards.py:63-70`) | `LEVEL:` closed axis (or `refs.level` column) | **heavy**: `_todo_views.py:170` `LIKE 'level:%'` + exact readers `schedule/worker.py:154`, `structural.py:70`, `deep_review.py:61`, `nursery.py:207,214,441`, `_todo_views.py:209,266,525,558,625,669,1000,1087` |
 | `halt:` | `workers/dispatch.py:103`, `workers/planner_guardrails.py:204` (`halt:tick-cap`/`halt:cost-cap`) | `HALT:` closed axis | `_todo_views.py:1411,1427` (`LIKE`); also agent-writable (`planner_prompt.py:261`) |
 | `child-failed:` | `handlers/_job_bubble.py:81`, `handlers/job.py:443` | `BUBBLE:` axis or job-meta | `LIKE`: `schedule/worker.py:345`, `_todo_views.py:1458`, `_draft_ops.py:742` |
-| `project:` | derived `utils/workspace.py:165`; stamped `handlers/todo.py:483-496`, `executors/claude_inproc.py:564` | keep semantics, move to `PROJECT:` axis | `LIKE`: `_todo_guards.py:599,603,624,628` |
+| `project:` | derived `utils/workspace.py:165`; stamped `handlers/todo.py:483-496`, `workers/executors/claude_inproc.py:564` | keep semantics, move to `PROJECT:` axis | `LIKE`: `_todo_guards.py:599,603,624,628` |
 | `user:` | `workers/review.py:309` (`user:asa`); migration `0028` seeds `user:elmsfeuer` | `OWNER:` axis (already an identity concept) | owner filters |
 | `source:` | `workers/watch_poll.py:223`, `workers/news_poll.py:156` | `SRC:` **exists as a closed axis** (`types.py`) — fold in | verify value overlap |
 | `discovered-via:` | `workers/watch_poll.py:223` (`discovered-via:cite:<seed>`) | `VIA:` axis or watch-meta | provenance reads |
@@ -62,7 +72,7 @@ closed axis or an existing column) and its writer + every
 | `kind:` (patent) | `handlers/_patent_ingest.py:419` (`kind:<docdb.kind_full>`) | `PATENT-KIND:` axis (avoid the `kind:id` handle collision) | patent reads |
 | `country:` | `handlers/_patent_ingest.py:418` | `COUNTRY:` axis | patent facets |
 | `workspace:` | `handlers/plaintext.py:703` | `refs.meta` field | workspace reads |
-| `topic:` (machine leg) | `cli/watch.py:929,936` (`topic:book`, folder-drop), `routes/drafts.py:1026` web seed | **stays `topic:` folksonomy** — but the machine legs should emit a curated axis value, see §topic | — |
+| `topic:` (machine leg) | `cli/watch.py:929,936` (`topic:book`, folder-drop), ~~`routes/drafts.py` web seed~~ (writer gone — re-locate) | **stays `topic:` folksonomy** — but the machine legs should emit a curated axis value, see §topic | — |
 
 **Bare flags with machine writers** (migrate alongside):
 
@@ -71,7 +81,7 @@ closed axis or an existing column) and its writer + every
 | `needs-triage` | `ingest/remediate.py:53,212,223` | `TRIAGE:` axis / meta |
 | `internal-thought` | `workers/review.py:310` (also agent) | keep as folksonomy flag OR `THOUGHT:` — dual-writer, see §dual |
 | `briefing` | `workers/briefing.py:189` | `CATEGORY:briefing` (fold) |
-| `built-in` | `jobs/ingest_oracles.py` (`_BUILTIN_TAG`) | `ORIGIN:built-in` (ORIGIN axis exists) |
+| `built-in` | `src/precis/jobs/ingest_oracles.py::_BUILTIN_TAG` | `ORIGIN:built-in` (ORIGIN axis exists) |
 | `awaiting-fulltext` | `jobs/patent_fulltext_sweep.py` (`_patent_ingest.py:57`) | `FULLTEXT:` axis / meta |
 | `fulltext-unavailable` | `jobs/patent_fulltext_sweep.py:443` | `FULLTEXT:` axis / meta |
 | `subtype:book` | `cli/watch.py:929` | `SUBTYPE:` axis |

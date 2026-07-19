@@ -1,7 +1,7 @@
 ---
 description: One honest "what needs doing" across the two work substrates — repo dev work (OPEN-ITEMS backlog + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · orphan design docs · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
-allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-orphans:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/nightly:*), mcp__precis__get, mcp__precis__search
+allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-orphans:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/nightly:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
@@ -36,7 +36,7 @@ Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summar
 !`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
 
 Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ memory index ⋅ done-gunk ⋅ token-review cadence ⋅ nightly build:
-!`scripts/migration-check --quiet 2>&1 || true; echo '— docs —'; scripts/docs-orphans 2>&1 | sed -n '1,2p;/^ORPHAN/,/^ADR-linked/p' || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true`
+!`scripts/migration-check --quiet 2>&1 || true; echo '— docs —'; scripts/docs-orphans 2>&1 | sed -n '1,2p;/^ORPHAN/,/^ADR-linked/p' || true; echo '— code anchors —'; scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true`
 
 ## Procedure
 
@@ -88,6 +88,13 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ memory ind
    - **Orphan design docs** (`scripts/docs-orphans`) — ORPHAN / ADR-linked
      buckets are candidates for the `docs-triage` skill; load-bearing ones (src
      / anchor / sealed-migration refs) are fine, leave them.
+   - **Code anchors** (`scripts/coderef check docs`, drift-only) — each `✗` = a
+     doc cites a `file.py::Qual.name` whose symbol no longer resolves (renamed/
+     removed → fix the anchor, or if the code was deliberately removed leave it).
+     High-signal, tree-wide. For the bare-`file.py:line`-refs-that-will-rot
+     upgrade nudges, run `scripts/coderef check --bare <file>` on a doc you're
+     editing (kept off the tree-wide run so it isn't a firehose). Advisory.
+     Convention: `docs/conventions/code-anchors.md`.
    - **Memory index** (`scripts/memory-lint`) — a broken link / unindexed file,
      a flagged **landed thread** (a `## Threads` bullet whose cited commits are
      all in main → verify + delete), or over-budget are quick fixes. On
