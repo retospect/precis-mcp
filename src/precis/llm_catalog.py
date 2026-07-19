@@ -68,7 +68,13 @@ OFFERING_KEYS: frozenset[str] = frozenset(
 )
 
 #: Keys one ``served_by`` entry (a local-serving host for an offering) may carry.
-SERVED_BY_KEYS: frozenset[str] = frozenset({"host", "endpoint", "max_parallel"})
+#: ``model`` is the SERVER-SIDE model id the endpoint expects (a llama-swap alias
+#: or ollama tag) — distinct from the card's ``model_id`` (the precis-side handle a
+#: tier resolves to). ``local_serving`` reads it as ``served_model`` and folds it
+#: into the dispatch, defaulting to ``model_id`` when absent.
+SERVED_BY_KEYS: frozenset[str] = frozenset(
+    {"host", "endpoint", "max_parallel", "model"}
+)
 
 #: Keys a reconciled **endpoint** (a bookable provider×quant variant, minted by
 #: ``llm_reconcile`` from OpenRouter ``/models/{slug}/endpoints``) may carry. An
@@ -124,12 +130,14 @@ def _validate_offerings(offerings: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _validate_served_by(served_by: Any) -> None:
+def _validate_served_by(served_by: Any) -> list[dict[str, Any]]:
     """A ``served_by`` list — each entry a local-serving host. ``host`` is
-    required; ``max_parallel`` (if given) is a positive int (the slot capacity)."""
+    required; ``max_parallel`` (if given) is a positive int (the slot capacity);
+    ``model`` (if given) is a non-empty server-side model id (defaults to the
+    card's ``model_id``). Returns the validated list."""
     if not isinstance(served_by, list):
         raise BadInput(
-            "served_by must be a list of {host, endpoint, max_parallel} dicts"
+            "served_by must be a list of {host, endpoint, max_parallel, model} dicts"
         )
     for e in served_by:
         if not isinstance(e, dict):
@@ -147,6 +155,12 @@ def _validate_served_by(served_by: Any) -> None:
             not isinstance(mp, int) or isinstance(mp, bool) or mp < 1
         ):
             raise BadInput(f"served_by max_parallel must be a positive int, got {mp!r}")
+        model = e.get("model")
+        if model is not None and (not isinstance(model, str) or not model):
+            raise BadInput(
+                "served_by model must be a non-empty string (the server-side model id)"
+            )
+    return served_by
 
 
 def _validate_capability(capability: Any) -> dict[str, Any]:
@@ -210,6 +224,7 @@ def build_meta(
     endpoints: Any = None,
     capability: Any = None,
     params: Any = None,
+    served_by: Any = None,
     provenance: Any = None,
 ) -> dict[str, Any]:
     """Validate + assemble the ``meta`` patch for a model card.
@@ -218,6 +233,10 @@ def build_meta(
     (``meta || patch``), so a reconcile refreshing just prices passes only
     ``offerings`` and leaves ``capability`` untouched. ``model_id`` is always
     present (it is the identity + lookup key).
+
+    ``served_by`` is the CARD-LEVEL local-serving declaration (the same shape as
+    an offering's ``served_by``); ``local_serving`` reads both card- and
+    offering-level entries. Set it to route a whole card to a local endpoint.
     """
     if not model_id or not isinstance(model_id, str):
         raise BadInput("model_id must be a non-empty string (the canonical model slug)")
@@ -232,6 +251,8 @@ def build_meta(
         meta["capability"] = _validate_capability(capability)
     if params is not None:
         meta["params"] = _validate_params(params)
+    if served_by is not None:
+        meta["served_by"] = _validate_served_by(served_by)
     if provenance is not None:
         meta["provenance"] = provenance
     return meta
@@ -247,6 +268,7 @@ def upsert_card(
     endpoints: Any = None,
     capability: Any = None,
     params: Any = None,
+    served_by: Any = None,
     provenance: Any = None,
 ) -> tuple[int, bool]:
     """Create or refresh the ``llm`` card for ``model_id``. Returns ``(ref_id, created)``.
@@ -265,6 +287,7 @@ def upsert_card(
         endpoints=endpoints,
         capability=capability,
         params=params,
+        served_by=served_by,
         provenance=provenance,
     )
     existing = store.find_ref_by_meta(kind=LLM_KIND, key="model_id", value=model_id)

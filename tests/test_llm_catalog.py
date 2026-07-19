@@ -115,6 +115,85 @@ class TestMetaValidation:
             )
 
 
+class TestServedBy:
+    """Local-serving declarations (the `served_by.endpoint` routing path)."""
+
+    def test_card_level_served_by_with_model_roundtrips(self, store: Any) -> None:
+        from precis import llm_catalog
+
+        rid, _ = llm_catalog.upsert_card(
+            store,
+            model_id="qwen-local",
+            text="Local big tier served direct by llama-swap.",
+            served_by=[
+                {
+                    "host": "melchior",
+                    "endpoint": "http://127.0.0.1:11445/v1",
+                    "model": "qwen3-next-80b-a3b-q4_k_m",
+                    "max_parallel": 2,
+                }
+            ],
+        )
+        entry = store.get_ref(kind="llm", id=rid).meta["served_by"][0]
+        assert entry["host"] == "melchior"
+        assert entry["endpoint"] == "http://127.0.0.1:11445/v1"
+        assert entry["model"] == "qwen3-next-80b-a3b-q4_k_m"
+        assert entry["max_parallel"] == 2
+
+    def test_offering_nested_served_by_carries_model(self, store: Any) -> None:
+        from precis import llm_catalog
+
+        rid, _ = llm_catalog.upsert_card(
+            store,
+            model_id="spark-local",
+            text="x",
+            offerings=[
+                {
+                    "transport": "litellm",
+                    "served_by": [
+                        {
+                            "host": "spark",
+                            "endpoint": "http://127.0.0.1:11434/v1",
+                            "model": "llama3.3:70b",
+                        }
+                    ],
+                }
+            ],
+        )
+        off = store.get_ref(kind="llm", id=rid).meta["offerings"][0]
+        assert off["served_by"][0]["model"] == "llama3.3:70b"
+
+    def test_rejects_unknown_served_by_key(self, store: Any) -> None:
+        from precis import llm_catalog
+        from precis.errors import BadInput
+
+        with pytest.raises(BadInput):
+            llm_catalog.upsert_card(
+                store, model_id="sb1", text="x", served_by=[{"host": "m", "bogus": 1}]
+            )
+
+    def test_rejects_non_string_model(self, store: Any) -> None:
+        from precis import llm_catalog
+        from precis.errors import BadInput
+
+        with pytest.raises(BadInput):
+            llm_catalog.upsert_card(
+                store, model_id="sb2", text="x", served_by=[{"host": "m", "model": 123}]
+            )
+
+    def test_rejects_missing_host(self, store: Any) -> None:
+        from precis import llm_catalog
+        from precis.errors import BadInput
+
+        with pytest.raises(BadInput):
+            llm_catalog.upsert_card(
+                store,
+                model_id="sb3",
+                text="x",
+                served_by=[{"endpoint": "http://x/v1", "model": "m"}],
+            )
+
+
 class TestHandler:
     def test_get_resolves_by_model_slug(self, store: Any) -> None:
         from precis import llm_catalog
@@ -169,6 +248,28 @@ class TestHandler:
         assert "refreshed" in r2.body
         # slug with slashes/case round-trips through meta lookup (not a tag)
         assert "DeepSeek-V3" in h.get(id="deepseek-ai/DeepSeek-V3").body
+
+    def test_put_threads_served_by(self, store: Any) -> None:
+        # The MCP put surface must forward served_by to the catalog (else a
+        # served_by= lands in **_kw and is silently dropped — no local routing).
+        h = _handler(store)
+        h.put(
+            model_id="local-served",
+            text="Served locally by llama-swap.",
+            served_by=[
+                {
+                    "host": "melchior",
+                    "endpoint": "http://127.0.0.1:11445/v1",
+                    "model": "qwen3-next-80b-a3b-q4_k_m",
+                }
+            ],
+        )
+        existing = store.find_ref_by_meta(
+            kind="llm", key="model_id", value="local-served"
+        )
+        entry = store.get_ref(kind="llm", id=existing.id).meta["served_by"][0]
+        assert entry["endpoint"] == "http://127.0.0.1:11445/v1"
+        assert entry["model"] == "qwen3-next-80b-a3b-q4_k_m"
 
     def test_search_matches_capability_prose(self, store: Any) -> None:
         from precis import llm_catalog

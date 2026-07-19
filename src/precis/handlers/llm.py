@@ -123,6 +123,7 @@ class LlmHandler(NumericRefHandler):
         tier_floor: str | None = None,
         offerings: Any = None,
         capability: Any = None,
+        served_by: Any = None,
         provenance: Any = None,
         entry: str | None = None,
         by: str | None = None,
@@ -183,6 +184,7 @@ class LlmHandler(NumericRefHandler):
             tier_floor=tier_floor,
             offerings=offerings,
             capability=capability,
+            served_by=served_by,
             provenance=provenance,
         )
         handle = handle_registry.try_format(self.kind, ref_id) or f"id={ref_id}"

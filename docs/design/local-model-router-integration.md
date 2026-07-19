@@ -103,10 +103,12 @@ spark worker reaches it on `127.0.0.1` — keep it loopback in the card.)
 - **S0 — inventory + choose targets.** Confirm live model ids per host:
   `ssh <host> 'curl -s 127.0.0.1:<port>/v1/models'` (llama-swap) and
   `ssh <host> ollama list`. Decide llama-swap-only vs also-ollama (see reframe).
-- **S1 — schema fix (code, shippable, dark).** `SERVED_BY_KEYS += "model"`,
-  `_validate_served_by`, `build_meta(served_by=…)` + tests (extend
-  `tests/test_local_serving.py` / `test_llm_catalog`). No behavior change until
-  cards + slots exist. Ship via `scripts/ship`.
+- **S1 — schema fix (code, shippable, dark). ✅ DONE (2026-07-19).** Added
+  `"model"` to `SERVED_BY_KEYS`; `_validate_served_by` validates it + returns the
+  list; `build_meta`/`upsert_card` gained a card-level `served_by` param; the
+  `llm` handler `put()` threads `served_by` (was dropped into `**_kw`). +6 tests
+  in `tests/test_llm_catalog.py` (`TestServedBy` + handler thread). Behavior-neutral
+  until cards + slots exist. **Next = S2.**
 - **S2 — mint the cards (prod data).** For each target model, create/patch the
   `llm` card with `served_by`. **Prod write** — via `precis put(kind='llm', …)`
   from the CLI/agent worker on the cluster (NOT the read-only session MCP), or a
