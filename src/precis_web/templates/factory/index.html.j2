@@ -62,11 +62,21 @@
           {% else %}bg-emerald-50 border-emerald-200 text-emerald-700{% endif %}"
           title="Memory-pressure headroom on {{ h.host }}: {{ sl.free }}/{{ sl.capacity }} ({{ 'under pressure' if sl.pressure == 'crit' else ('low' if sl.pressure == 'warn' else 'plenty') }}). 0 = jetsam risk.">RAM {{ sl.free }}/{{ sl.capacity }}</span>
         {% else %}
-        <span class="rounded bg-white/70 border border-slate-200 px-1 py-0.5 font-mono text-[11px] text-slate-600">{{ sl.resource }} {{ sl.free }}/{{ sl.capacity }}</span>
+        <span class="rounded bg-white/70 border border-slate-200 px-1 py-0.5 font-mono text-[11px] text-slate-600 cursor-help"
+          title="{{ sl.desc }}">{{ sl.resource }} {{ sl.free }}/{{ sl.capacity }}</span>
         {% endif %}
         {% endfor %}
       </div>
       {% endif %}
+      {# ── recent errors (last 6h) — mouse over for the newest few ── #}
+      <div class="mt-1">
+        {% if h.errors %}
+        <span class="rounded px-1 py-0.5 text-[11px] bg-rose-100 border border-rose-300 text-rose-700 cursor-help"
+          title="{% for e in h.errors.samples %}{{ e.ago }} · {{ e.pass }} · {{ e.msg }}&#10;{% endfor %}{% if h.errors.count > h.errors.samples|length %}…and {{ h.errors.count - h.errors.samples|length }} more{% endif %}">⚠ {{ h.errors.count }} error{{ '' if h.errors.count == 1 else 's' }} (6h)</span>
+        {% else %}
+        <span class="text-[11px] text-emerald-600" title="No ERROR/CRITICAL worker logs from {{ h.host }} in the last 6h.">no recent errors</span>
+        {% endif %}
+      </div>
     </div>
     {% endfor %}
   </div>

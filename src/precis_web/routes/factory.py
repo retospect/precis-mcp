@@ -40,6 +40,40 @@ log = logging.getLogger(__name__)
 #: A host silent longer than this reads as "dead worker" in the strip.
 _STALE_AFTER_S = 600
 
+#: How far back the per-host "recent errors" chip looks.
+_ERROR_WINDOW = "6 hours"
+
+#: Human-readable mouseover copy per ``resource_slots.resource``. Keyed by
+#: resource name; ``_slot_desc`` falls back to a generic line for unknowns so a
+#: newly-probed resource still gets *a* tooltip rather than none.
+_RESOURCE_DESC = {
+    "podman": (
+        "Container-runtime capacity — how many agent/sandbox containers this "
+        "host can run in parallel (free/total). 'podman' is the generic slot "
+        "name; on the Macs the runtime is colima/Docker. free drops as a "
+        "container is reserved at claim, and returns when it exits."
+    ),
+    "gpu": (
+        "GPU capacity — parallel GPU jobs this host offers (DFT / ML / "
+        "embeddings), free/total. free drops while a GPU job holds a slot."
+    ),
+    "mem": (
+        "Memory-pressure headroom — a live gauge, NOT a fixed slot count. "
+        "Higher free = more RAM headroom; 0 = under pressure (jetsam risk on a "
+        "Mac). Watch this on any host running a container runtime."
+    ),
+}
+
+
+def _slot_desc(resource: str, free: int, capacity: int, kind: str) -> str:
+    """The mouseover text for one capability/pressure chip."""
+    base = _RESOURCE_DESC.get(
+        resource,
+        f"'{resource}' capacity on this host ({'headroom gauge' if kind == 'soft' else 'parallel slots'}).",
+    )
+    return f"{resource}: {free}/{capacity} — {base}"
+
+
 #: All-hosts wildcard shown first in the host selector.
 _ALL = "*"
 
@@ -124,8 +158,45 @@ def _slots_by_host(store: Any) -> dict[str, list[dict[str, Any]]]:
                 "free": free_i,
                 "kind": kind,
                 "pressure": pressure,
+                "desc": _slot_desc(resource, free_i, cap_i, kind),
             }
         )
+    return out
+
+
+def _errors_by_host(store: Any) -> dict[str, dict[str, Any]]:
+    """host -> {count, samples[]} of recent ERROR/CRITICAL ``worker_logs``.
+
+    A per-machine health readout for the host strip: how many error-level log
+    lines each host emitted in the last :data:`_ERROR_WINDOW`, plus the newest
+    few (time-ago + pass + trimmed message) for the mouseover. Empty on error
+    (the console degrades rather than 500s, same as every other reader here).
+    """
+    try:
+        with store.pool.connection() as conn:
+            cur = conn.execute(
+                "SELECT host, ts, pass, message FROM worker_logs "
+                "WHERE level IN ('ERROR', 'CRITICAL') "
+                "  AND ts > now() - %s::interval "
+                "ORDER BY ts DESC LIMIT 300",
+                (_ERROR_WINDOW,),
+            )
+            rows = cur.fetchall()
+    except Exception:
+        log.warning("factory: worker_logs error read failed", exc_info=True)
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for host, ts, pass_, message in rows:
+        entry = out.setdefault(host, {"count": 0, "samples": []})
+        entry["count"] += 1
+        if len(entry["samples"]) < 5:
+            entry["samples"].append(
+                {
+                    "ago": _ago(ts),
+                    "pass": pass_ or "?",
+                    "msg": (message or "").strip().replace("\n", " ")[:160],
+                }
+            )
     return out
 
 
@@ -250,8 +321,10 @@ async def index(request: Request, host: str = _ALL) -> HTMLResponse:
     store = get_store(request)
     hosts = _hosts(store)
     slots_by_host = _slots_by_host(store)
+    errors_by_host = _errors_by_host(store)
     for h in hosts:
         h["slots"] = slots_by_host.get(h["host"], [])
+        h["errors"] = errors_by_host.get(h["host"])
     config = _config_rows(store)
     activity = _activity(store)
     models = _llm_models(store)

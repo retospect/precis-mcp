@@ -14,8 +14,10 @@ from precis.workers.service_config import set_service_model, set_service_prio
 from precis_web.routes.factory import (
     _activity,
     _config_rows,
+    _errors_by_host,
     _hosts,
     _quests,
+    _slot_desc,
     _slots_by_host,
 )
 
@@ -149,6 +151,44 @@ def test_quests_reports_share_bar(store, monkeypatch) -> None:
     assert rows[b]["spend"] == 0.0 and rows[b]["over"] is False
     # heaviest share-consumer first
     assert out["rows"][0]["id"] == a
+
+
+def test_slots_carry_mouseover_desc(store) -> None:
+    """Each capability chip gets an explanatory mouseover (podman/gpu/mem)."""
+    store.sync_host_resource_slots("melchior", {"podman": 2})
+    by_host = _slots_by_host(store)
+    podman = {s["resource"]: s for s in by_host["melchior"]}["podman"]
+    # the desc names the resource, its free/capacity, and explains it
+    assert podman["desc"].startswith("podman: 2/2")
+    assert "container" in podman["desc"].lower()
+    # unknown resources still get *a* tooltip (generic fallback), never blank
+    assert _slot_desc("frobnicator", 1, 3, "hard")
+    assert "frobnicator: 1/3" in _slot_desc("frobnicator", 1, 3, "hard")
+
+
+def _err(conn, host: str, *, pass_: str, message: str, level: str = "ERROR") -> None:
+    conn.execute(
+        "INSERT INTO worker_logs (host, process, pass, level, logger, message) "
+        "VALUES (%s, 'p', %s, %s, 'l', %s)",
+        (host, pass_, level, message),
+    )
+
+
+def test_errors_by_host_groups_recent_errors(store) -> None:
+    """Per-machine ERROR/CRITICAL readout: count + newest samples, INFO ignored."""
+    with store.pool.connection() as conn:
+        _err(conn, "melchior", pass_="plan_tick", message="boom one")
+        _err(conn, "melchior", pass_="review", message="boom two", level="CRITICAL")
+        _err(conn, "melchior", pass_="x", message="ok", level="INFO")  # ignored
+        _err(conn, "spark", pass_="embed", message="spark boom")
+        conn.commit()
+    by_host = _errors_by_host(store)
+    assert by_host["melchior"]["count"] == 2  # INFO excluded
+    assert by_host["spark"]["count"] == 1
+    # samples carry pass + trimmed message for the mouseover
+    msgs = {s["msg"] for s in by_host["melchior"]["samples"]}
+    assert "boom one" in msgs and "boom two" in msgs
+    assert "ok" not in msgs
 
 
 def test_quests_no_budget_shows_spend_only(store, monkeypatch) -> None:
