@@ -11,6 +11,52 @@ is the historical observation log.
 
 ---
 
+## 🧹 Slice 12a — finish the `deploy/` migration (kill the cluster hybrid)
+
+Status: `open` (deferred to Phase-2 window, task #19) · Severity: `feature` ·
+Owner: `deploy/`, `scripts/deploy`, `~/work/cluster` · Test:
+`tests/test_deploy_tree_no_secrets.py` + a `--check` plan diff.
+
+The repo-rationalization is **~90% built but dark and rotting.** `deploy/` is a
+portable, cluster-agnostic copy of the whole ansible tree (49 roles, 48
+playbooks, `redeploy-precis.yml`, `site.yml`); `deploy/inventory/` (gitignored,
+symlink to the private overlay) + `deploy/inventory.example/` (scrubbed,
+tracked) + the leak-gate + the dark `PRECIS_DEPLOY_FROM_TREE` flag in
+`scripts/deploy` all exist. **Chosen sequencing: deploy-now / migrate-later —
+the pending factory deploy runs from `~/work/cluster` as-is; this cutover is its
+own later job.**
+
+The hybrid is real, not cosmetic — the two trees have **diverged both ways**
+(diffed 2026-07-19):
+- `~/work/cluster` is ahead on live ops edits never mirrored into `deploy/`:
+  the factory Phase-2 role changes (`558379b`), `playbooks/retire-thin-timers.yml`,
+  dozens of playbook/role edits since the 17 Jul snapshot.
+- `deploy/` is ahead on in-repo dark pieces: `20b-precis-worker-collapsed.yml`,
+  the `service_unit` role.
+
+Neither is a superset. Every "quick cluster fix" rots `deploy/` further.
+
+**Cutover (4 steps, Phase-2 window):**
+1. **Re-sync drift into `deploy/`** — drift is now too large to hand-carry
+   file-by-file (README's "never bulk-copy"), so do a *scripted* rsync →
+   scrub → run the leak-gate (`test_deploy_tree_no_secrets.py`) → commit. The
+   gate still vets every tracked file.
+2. **Wire + rehearse** — `ln -s ~/work/cluster/inventory deploy/inventory` +
+   `.vault-pass`; `PRECIS_DEPLOY_FROM_TREE=1 ansible-playbook redeploy-precis.yml
+   --check` and diff the plan against a `~/work/cluster --check`. Must converge
+   identically (the one unchecked README item).
+3. **Flip the default** — make `PRECIS_DEPLOY_FROM_TREE` the default (or delete
+   the branch so `deploy/` is the only path). Repo becomes authoritative.
+4. **Demote `~/work/cluster` to overlay-only** — delete its roles/playbooks
+   (now in-repo); it shrinks to `inventory/` + `.vault-pass` + `.git`. Cluster
+   changes then ride `scripts/ship` through the leak-gate; only placement/secrets
+   ever touch `~/work/cluster`.
+
+Design-of-record: `deploy/README.md` (checklist) +
+`docs/design/factory-console-and-scheduling.md` §15-16.
+
+---
+
 ## 🧵 Track 1 — precis-agent image (built + proven, window-wiring remains)
 
 The §13 container-agent executor's image. **Built, distributed, and smoke-proven
