@@ -6,7 +6,7 @@
   <div class="flex items-center gap-2 text-sm">
     <button type="button" id="open-all-libkey"
             class="hidden px-3 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
-            title="Open every LibKey full-text link on this page in its own tab, one every ~10–30s (randomized). Allow pop-ups for this site the first time.">
+            title="Open every direct-download link on this page in its own tab, all at once. Allow pop-ups for this site if fewer than all open.">
       Open all downloads ↓
     </button>
     <a href="/papers-needed"
@@ -231,13 +231,15 @@
 </section>
 
 {# "Open all downloads" — walks every direct-download link on the page
-   (DOI→LibKey, arXiv→PDF) and opens each in its own *background* tab (a
-   synthesized Cmd/Ctrl-click, so focus stays on this page), staggered by a
-   randomized 10–30s so it's gentle (and less bot-like to the publisher)
-   rather than a 100-tab avalanche. Staggered opens lose the click's
-   user-gesture, so the browser pop-up blocker WILL stop them after the
-   first tab until the user allows pop-ups for this site — the status line
-   says so. Only rows with a direct download carry a data-download link. #}
+   (DOI→LibKey, arXiv→PDF) and window.open()s each one. Browsers only trust
+   a popup as user-initiated when it's opened *synchronously* inside the
+   real click handler — a synthesized Cmd/Ctrl-click or anything deferred
+   via setTimeout loses that trust and gets silently eaten by the pop-up
+   blocker after the first tab (tried both: neither actually backgrounds
+   the tab nor survives past #1). So this fires every open in one
+   synchronous loop instead of staggering them — all N actually open, at
+   the cost of each one briefly stealing focus in turn. Only rows with a
+   direct download carry a data-download link. #}
 <script>
 (function () {
   const btn = document.getElementById("open-all-libkey");
@@ -245,56 +247,17 @@
   const links = Array.from(document.querySelectorAll("a[data-download]"));
   if (!links.length) return;  // no downloadable rows → leave the button hidden
 
-  // Randomized gap between opens: uniform in [MIN_MS, MAX_MS].
-  const MIN_MS = 10000;
-  const MAX_MS = 30000;
-  const nextGap = () => MIN_MS + Math.floor(Math.random() * (MAX_MS - MIN_MS + 1));
-
-  // Open a URL in a *background* tab without stealing focus. A plain
-  // window.open() foregrounds the new tab; instead we synthesize the
-  // Cmd/Ctrl-click a user would do to background-open a link, which every
-  // major browser honors by keeping the current tab focused. metaKey (macOS)
-  // and ctrlKey (Win/Linux) are both set so each platform reads its own.
-  const openBackground = function (url) {
-    const a = document.createElement("a");
-    a.href = url;
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.dispatchEvent(new MouseEvent("click", {
-      bubbles: true, cancelable: true, view: window,
-      ctrlKey: true, metaKey: true,
-    }));
-  };
-
   btn.textContent = "Open all " + links.length + " downloads ↓";
   btn.classList.remove("hidden");
 
-  let running = false;
   btn.addEventListener("click", function () {
-    if (running) return;
-    if (!window.confirm("Open " + links.length + " tabs, one every 10–30s?\n" +
-                        "Allow pop-ups for this site if only the first opens.")) {
+    if (!window.confirm("Open " + links.length + " tabs now?\n" +
+                        "Allow pop-ups for this site if fewer than " + links.length + " open.")) {
       return;
     }
-    running = true;
-    btn.disabled = true;
     const urls = links.map((a) => a.href);
-    let i = 0;
-    const step = function () {
-      if (i >= urls.length) {
-        btn.disabled = false;
-        btn.textContent = "Opened " + urls.length + " ✓ — click to repeat";
-        running = false;
-        return;
-      }
-      openBackground(urls[i]);
-      i += 1;
-      if (i >= urls.length) { step(); return; }
-      const secs = Math.round(nextGap() / 1000);
-      btn.textContent = "Opened " + i + " / " + urls.length + " · next in " + secs + "s…";
-      window.setTimeout(step, secs * 1000);
-    };
-    step();
+    urls.forEach((url) => window.open(url, "_blank", "noopener"));
+    btn.textContent = "Opened " + urls.length + " ✓ — click to repeat";
   });
 })();
 </script>
