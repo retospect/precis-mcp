@@ -11,12 +11,14 @@ cleanly), the ``build_tick_prompt`` context assembly, and the handler's
 
 from __future__ import annotations
 
+import json
 import re
 from types import SimpleNamespace
 from typing import Any
 
 from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
+from precis.quest import tick as tick_mod
 from precis.quest.dossier import (
     dossier_ref_id,
     ensure_dossier,
@@ -265,3 +267,99 @@ class TestReactionContext:
         prompt = build_tick_prompt(store, quest)
         assert "catalyst slab" not in prompt
         assert "Reaction R" not in prompt
+
+    def test_reaction_context_offers_the_full_composition_op_menu(
+        self, store: Any
+    ) -> None:
+        # A local tick + a frontier review must both see set_element/vacancy,
+        # not just the two add_atom examples — the model was stuck hand-doping
+        # adatoms because that was the only op it had ever seen.
+        from precis.quest.catalyst_seed import seed_catalyst_quest
+
+        qid, created = seed_catalyst_quest(store)
+        assert created
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "set_element" in prompt
+        assert "vacancy" in prompt
+
+
+class TestFrontierAlwaysOn:
+    """The Pareto frontier (rung 4c's review-only measurement table) now
+    renders on every tick, local or review — the model reasons from the same
+    numbers either way."""
+
+    def test_frontier_section_appears_on_a_local_tick(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        monkeypatch.setattr(
+            tick_mod, "_frontier_summary", lambda s, q: "SENTINEL-FRONTIER-LOCAL"
+        )
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest, review=False)
+        assert "Current Pareto frontier" in prompt
+        assert "SENTINEL-FRONTIER-LOCAL" in prompt
+
+    def test_review_banner_does_not_duplicate_the_frontier(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        monkeypatch.setattr(
+            tick_mod, "_frontier_summary", lambda s, q: "SENTINEL-FRONTIER-REVIEW"
+        )
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest, review=True)
+        assert prompt.count("Current Pareto frontier") == 1
+        assert prompt.count("SENTINEL-FRONTIER-REVIEW") == 1
+        assert "senior reviewer" in prompt  # the rest of the banner survives
+
+
+class TestServedPapersDetail:
+    """Served papers carry an abstract snippet in the tick prompt, not just a
+    bare title — the model can only judge relevance from real substance."""
+
+    def test_abstract_snippet_and_no_abstract_stub(self, store: Any) -> None:
+        from tests.workers._helpers import seed_ref
+
+        qid = _mk_quest(store, "A striving needing literature")
+
+        with_abstract = seed_ref(store, title="Fe-N4 single-atom catalysts")
+        abstract = (
+            "We report a breakthrough NO reduction pathway using Fe-N4 sites "
+            "embedded in graphene, achieving a markedly lower rate-limiting "
+            "barrier than the bare Pd(111) baseline across a wide potential "
+            "window, with implications for ambient-condition ammonia synthesis."
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = %s::jsonb WHERE ref_id = %s",
+                (json.dumps({"abstract": abstract}), with_abstract),
+            )
+            conn.commit()
+        store.add_link(src_ref_id=with_abstract, dst_ref_id=qid, relation="serves")
+
+        no_abstract = seed_ref(store, title="A stub reference, no abstract yet")
+        store.add_link(src_ref_id=no_abstract, dst_ref_id=qid, relation="serves")
+
+        detail = tick_mod._served_papers_detail(store, qid)
+        assert any("breakthrough NO reduction" in d for d in detail)
+        assert any("no abstract held" in d for d in detail)
+
+    def test_wired_into_the_tick_prompt(self, store: Any) -> None:
+        from tests.workers._helpers import seed_ref
+
+        qid = _mk_quest(store, "A striving needing literature")
+        paper = seed_ref(store, title="A held paper")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = %s::jsonb WHERE ref_id = %s",
+                (json.dumps({"abstract": "A specific measured finding."}), paper),
+            )
+            conn.commit()
+        store.add_link(src_ref_id=paper, dst_ref_id=qid, relation="serves")
+
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "Held literature" in prompt
+        assert "A specific measured finding." in prompt

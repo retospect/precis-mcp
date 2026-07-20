@@ -127,6 +127,68 @@ def _servers_summary(store: Store, quest_id: int) -> list[str]:
     return out
 
 
+#: Cap on how many served papers get an abstract snippet in the tick prompt.
+_MAX_DETAIL_PAPERS = 6
+#: Length bound on a served paper's abstract snippet.
+_PAPER_DETAIL_CHARS = 300
+
+
+def _paper_abstract_snippet(store: Store, ref: Ref) -> str:
+    """A length-bounded snippet of ``ref``'s substance for a paper server.
+
+    Prefers ``meta.abstract`` (the ingest-populated field); falls back to the
+    first non-heading body chunk when the abstract hasn't been fetched yet.
+    Titles alone don't tell the model what a paper *found* — this hands it
+    enough substance to judge relevance, mirroring the depth-first contract
+    in :mod:`precis.reading.briefing_cast`.
+    """
+    meta = getattr(ref, "meta", None) or {}
+    abstract = meta.get("abstract") if isinstance(meta, dict) else None
+    text = abstract.strip() if isinstance(abstract, str) else ""
+    if not text:
+        try:
+            blocks = store.list_blocks_for_ref(ref.id)
+        except Exception:
+            blocks = []
+        for b in blocks:
+            if b.chunk_kind == "heading":
+                continue
+            t = (b.text or "").strip()
+            if t:
+                text = t
+                break
+    if not text:
+        return "(no abstract held — stub awaiting fetch)"
+    try:
+        from precis.handlers._paper_format import _strip_jats
+
+        text = _strip_jats(text).strip()
+    except Exception:  # pragma: no cover - formatter import is best-effort
+        pass
+    if len(text) > _PAPER_DETAIL_CHARS:
+        text = text[:_PAPER_DETAIL_CHARS].rsplit(" ", 1)[0].rstrip() + "…"
+    return text
+
+
+def _served_papers_detail(store: Store, quest_id: int) -> list[str]:
+    """One line per served `paper`: a short title + its abstract snippet."""
+    live = gaps_mod._live_servers(store, quest_id)
+    papers = [r for r in live if r.kind == "paper"][:_MAX_DETAIL_PAPERS]
+    out: list[str] = []
+    for r in papers:
+        title = (r.title or "").splitlines()[0][:80] if r.title else "(untitled)"
+        out.append(f"- {title} — {_paper_abstract_snippet(store, r)}")
+    return out
+
+
+def _literature_section(store: Store, quest_id: int) -> str:
+    """The ``## Held literature (abstracts)`` section, or ``""`` when none."""
+    detail = _served_papers_detail(store, quest_id)
+    if not detail:
+        return ""
+    return "\n## Held literature (abstracts)\n" + "\n".join(detail) + "\n"
+
+
 def _frontier_summary(store: Store, quest_id: int) -> str:
     """A compact rendering of the Pareto frontier for a review prompt."""
     from precis.quest.frontier import quest_frontier
@@ -188,6 +250,32 @@ def _reaction_context(quest: Ref) -> str:
         f'{{"ops": [{slab_op}, '
         f'{{"op": "add_atom", "element": "Cu", "frac": [0.33, 0.33, 0.66]}}]}}'
     )
+    # An illustrative top-layer label for the op menu below — the `slab` op
+    # numbers atoms a<El>1..N in ascending-z (ASE fcc111) order, so the top
+    # surface layer is the highest-numbered labels. This index is just a
+    # plausible central one for the example, not a guarantee for every size.
+    try:
+        nx, ny, nz = int(size[0]), int(size[1]), int(size[2])
+    except Exception:
+        nx, ny, nz = 3, 3, 4
+    top_index = nx * ny * (nz - 1) + -(-(nx * ny) // 2)  # + ceil(nx*ny/2)
+    label = f"a{el}"
+    top_label = f"{label}{top_index}"
+    op_menu = (
+        "\nComposition ops you can use on the slab (the slab op labels atoms "
+        f"{label}1..N in ascending-z order — the TOP surface layer is the "
+        "highest-numbered labels):\n"
+        "- add_atom  — an adatom ON the surface (what you've used): "
+        '{"op":"add_atom","element":"Cu","frac":[0.33,0.33,0.66]}\n'
+        "- set_element — SUBSTITUTE a surface atom (in-plane dopant / "
+        f'single-atom-alloy motif): {{"op":"set_element","atom":"{top_label}",'
+        '"element":"Cu"}\n'
+        "- vacancy — REMOVE a surface atom (defect site): "
+        f'{{"op":"vacancy","atom":"{top_label}"}}\n'
+        "You may combine several ops (e.g. two set_element for a 2-atom alloy, "
+        "or set_element + vacancy). Vary composition; do not hand-enumerate "
+        "atoms.\n"
+    )
     return (
         "\n## Reaction R — this is a catalyst-barrier quest\n"
         f"Every candidate is a **catalyst slab**. catpath places the reactants "
@@ -201,6 +289,7 @@ def _reaction_context(quest: Ref) -> str:
         f"op provides it).\n"
         f"- reference point (propose this verbatim first): `{base}`\n"
         f"- a doped variant (an adatom is the design knob): `{doped}`\n"
+        f"{op_menu}"
     )
 
 
@@ -221,6 +310,10 @@ def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
     gap_lines = [f"- {g.kind}: {g.detail}" for g in gaps] or ["- (none)"]
     tail = _logbook_tail(store, qid) or ["- (no logbook entries yet)"]
     servers = _servers_summary(store, qid) or ["- (nothing serves this quest yet)"]
+    # Always-on measurement table (rung 4c's review banner used to be the only
+    # place this rendered; the local tick reasons from the same numbers now).
+    frontier_text = _frontier_summary(store, qid)
+    literature = _literature_section(store, qid)
 
     if review:
         banner = (
@@ -229,7 +322,6 @@ def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
             "Pareto frontier below, decide what it means, rewrite the dossier, "
             "and set 1–3 strategic **directions** for the next phase (in the "
             "`directions` field). Rule out what's beaten.\n\n"
-            "### Current Pareto frontier\n" + _frontier_summary(store, qid) + "\n"
         )
     else:
         banner = ""
@@ -249,6 +341,8 @@ def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
         gaps="\n".join(gap_lines),
         logbook="\n".join(tail),
         servers="\n".join(servers),
+        frontier=frontier_text,
+        literature=literature,
         reaction_context=_reaction_context(quest),
         entry_types=", ".join(sorted(ENTRY_TYPES)),
     )
@@ -275,7 +369,10 @@ no evidence for.
 
 ## What serves this quest
 {servers}
-{reaction_context}
+
+## Current Pareto frontier (the measurement table — reason from these numbers)
+{frontier}
+{literature}{reaction_context}
 ## Your step
 Do ONE increment of thinking: interpret the state, pick the most promising \
 next direction to close a gap, and note what you'd try. Then rewrite the \
