@@ -8,6 +8,7 @@ per-quest backpressure, and the node-load starvation gate.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -17,20 +18,25 @@ from precis.workers.job_types import quest_tick as qt
 
 
 class _Outcome:
-    def __init__(self, status: str = "succeeded", note: str = "ok") -> None:
+    def __init__(
+        self, status: str = "succeeded", note: str = "ok", *, searches_run: int = 0
+    ) -> None:
         self.status = status
         self.note = note
         self.candidates_created = 0
         self.sims_dispatched = 0
         self.results_harvested = 0
         self.graduated = 0
-        self.searches_run = 0
+        self.searches_run = searches_run
         self.papers_linked = 0
 
 
 class FakeCtx:
     def __init__(self, meta: dict[str, Any], *, cancel: bool = False) -> None:
-        self.store = object()  # helpers are stubbed, so a real store isn't needed
+        # helpers are stubbed, so a real store isn't needed — but Hub(store=...)
+        # (built for the acquiring search_fn) sets `store.hint_bus`, so a bare
+        # `object()` (no __dict__) would blow up; SimpleNamespace accepts it.
+        self.store = SimpleNamespace()
         self.ref_id = 700
         self.title = "quest_tick"
         self.meta = meta
@@ -177,6 +183,135 @@ class TestCancel:
         assert isinstance(out, Done)
         assert out.success is False
         assert out.summary_meta.get("cancelled") is True
+
+
+class TestFallbackLitSearch:
+    """Guaranteed-acquisition fallback: a tick that ran zero `searches` of its
+    own still fires one directly, so the loop asks the literature for
+    something new every slice — not only when the model happens to."""
+
+    def _fake_quest_ref(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            title="NO to NH3 on Pd catalyst quest",
+            meta={"reaction_config": {"substrate": "NO", "target": "NH3"}},
+        )
+
+    def test_zero_searches_run_triggers_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_tick(monkeypatch, _Outcome(searches_run=0))
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])  # idle before and after -> Done
+
+        ctx = FakeCtx(_meta())
+        ctx.store.get_ref = lambda *, kind, id: self._fake_quest_ref()
+
+        calls: list[dict[str, Any]] = []
+
+        def _fake_run_search_step(
+            store: Any, quest_id: int, queries: list[str], **kw: Any
+        ) -> Any:
+            calls.append({"quest_id": quest_id, "queries": queries, **kw})
+
+        monkeypatch.setattr(
+            "precis.quest.search.run_search_step", _fake_run_search_step
+        )
+
+        out = qt._dispatch(ctx, qt.SPEC)
+
+        assert isinstance(out, Done)
+        assert len(calls) == 1
+        assert calls[0]["quest_id"] == 164903
+        assert calls[0]["queries"]  # non-empty query list
+        assert any("fallback lit-search" in text for _kind, text in ctx.chunks)
+
+    def test_nonzero_searches_run_skips_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_tick(monkeypatch, _Outcome(searches_run=2))
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+
+        ctx = FakeCtx(_meta())
+        ctx.store.get_ref = lambda *, kind, id: self._fake_quest_ref()
+
+        calls: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "precis.quest.search.run_search_step",
+            lambda *a, **kw: calls.append(kw),
+        )
+
+        out = qt._dispatch(ctx, qt.SPEC)
+
+        assert isinstance(out, Done)
+        assert calls == []
+        assert not any("fallback lit-search" in text for _kind, text in ctx.chunks)
+
+    def test_fallback_failure_never_fails_the_slice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Even if the fallback machinery blows up, the slice still completes."""
+        _stub_tick(monkeypatch, _Outcome(searches_run=0))
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+
+        ctx = FakeCtx(_meta())
+        ctx.store.get_ref = lambda *, kind, id: self._fake_quest_ref()
+
+        def _boom(*a: Any, **kw: Any) -> Any:
+            raise RuntimeError("acquire pipeline down")
+
+        monkeypatch.setattr("precis.quest.search.run_search_step", _boom)
+
+        out = qt._dispatch(ctx, qt.SPEC)
+        assert isinstance(out, Done)  # did not raise
+
+    def test_force_acquire_false_skips_fallback_even_when_quiet(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_QUEST_FORCE_ACQUIRE", "false")
+        _stub_tick(monkeypatch, _Outcome(searches_run=0))
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+
+        ctx = FakeCtx(_meta())
+        ctx.store.get_ref = lambda *, kind, id: self._fake_quest_ref()
+
+        calls: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "precis.quest.search.run_search_step",
+            lambda *a, **kw: calls.append(kw),
+        )
+
+        out = qt._dispatch(ctx, qt.SPEC)
+
+        assert isinstance(out, Done)
+        assert calls == []
+        assert not any("fallback lit-search" in text for _kind, text in ctx.chunks)
+
+    def test_fallback_query_rotates_by_slice_count(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Consecutive quiet slices should explore different facets, not
+        repeat the same query — the rotation is keyed on `slice_count`."""
+        ctx = FakeCtx(_meta())
+        ctx.store.get_ref = lambda *, kind, id: self._fake_quest_ref()
+
+        q1 = qt._fallback_queries(ctx.store, 164903, 1)
+        q2 = qt._fallback_queries(ctx.store, 164903, 2)
+        q3 = qt._fallback_queries(ctx.store, 164903, 3)
+
+        assert len(q1) == 1 and len(q2) == 1 and len(q3) == 1
+        assert len({q1[0], q2[0], q3[0]}) == 3  # all distinct facets
+        # same slice_count -> same facet (deterministic, not random)
+        assert qt._fallback_queries(ctx.store, 164903, 1) == q1
+
+    def test_fallback_queries_empty_when_no_topic(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ctx = FakeCtx(_meta())
+        ctx.store.get_ref = lambda *, kind, id: SimpleNamespace(title="", meta={})
+        assert qt._fallback_queries(ctx.store, 164903, 1) == []
 
 
 class TestRegistration:

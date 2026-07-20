@@ -44,6 +44,27 @@ def _search_with_retry(sch: SemanticScholar, title: str, limit: int) -> Any:
     return sch.search_paper(title, limit=limit)
 
 
+def search_s2_papers(
+    query: str, limit: int = 3, api_key: str = ""
+) -> list[dict[str, Any]]:
+    """Free-text S2 search, return up to ``limit`` normalized metadata dicts.
+
+    Unlike :func:`lookup_s2` (best match only, used for title-matching an
+    existing paper), this is a quest lit-search primitive: it hands back the
+    whole result page so a caller can acquire several candidates per query.
+    Degrades to ``[]`` on any error (bad query, network hiccup, rate limit
+    exhaustion) — a lit-search step must never blow up a quest tick.
+    """
+    try:
+        sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
+        results = _search_with_retry(sch, query, limit)
+    except Exception:
+        return []
+    if not results or not results.items:
+        return []
+    return [_normalize(paper) for paper in results.items[:limit]]
+
+
 def get_paper_by_id(paper_id: str, api_key: str = "") -> dict[str, Any] | None:
     """Fetch a single paper by S2 paper ID, DOI, or arxiv ID."""
     sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()

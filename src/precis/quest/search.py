@@ -11,20 +11,25 @@ servers + context, and — crucially — acquiring a paper is *external progress
 does not.
 
 The search is an **injectable seam** (``search_fn``) exactly like
-``dispatch_relax`` in :mod:`precis.quest.compute`: the default is a safe,
-embedder-free lexical lookup over held papers (no network, no acquisition), and
-tests / a richer caller can pass a semantic or acquiring search. Fetching
-papers the corpus does *not* hold yet (an OA acquisition serving the quest) is
-the deliberate follow-on — this rung grounds against what we already have and
-makes the un-held case *visible* (an ``observation`` noting acquisition is
-needed) rather than silently missing.
+``dispatch_relax`` in :mod:`precis.quest.compute`: the default
+(``_default_paper_search``) is a safe, embedder-free lexical lookup over held
+papers (no network, no acquisition). Acquisition is now **built**:
+:func:`make_acquiring_search` layers a Semantic Scholar free-text search on top
+— any hit with a DOI is queued via ``PaperHandler.acquire`` (idempotent stub
+mint + ``fetch_oa`` pickup), so a query that misses the held corpus doesn't just
+log an "acquisition needed" observation, it actually requests the paper. Tests
+and other callers may still pass a narrower search (e.g. lexical-only, or a
+semantic reranker) through the same ``search_fn`` seam.
 """
 
 from __future__ import annotations
 
+import logging
+import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from precis.quest.gaps import _handle, _live_servers
 from precis.quest.logbook import append_entry
@@ -32,13 +37,37 @@ from precis.quest.logbook import append_entry
 if TYPE_CHECKING:
     from precis.store import Store
 
+log = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int, *, lo: int = 1, hi: int = 100) -> int:
+    try:
+        n = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return max(lo, min(hi, n))
+
+
 #: Cap the queries honoured per tick (a weak proposer can't flood acquisition).
-MAX_QUERIES = 3
+#: A day at the library beats weeks in the lab — lean hard into lit-search.
+MAX_QUERIES = _env_int("PRECIS_QUEST_MAX_QUERIES", 10)
 #: How many top hits to link per query.
 MAX_LINK_PER_QUERY = 3
 
+
+def _acquire_per_query() -> int:
+    """How many S2 results per query the acquiring search will try to acquire
+    (default 4, clamped 1..10) — a knob on acquisition volume without a
+    redeploy."""
+    return _env_int("PRECIS_QUEST_ACQUIRE_PER_QUERY", 4, lo=1, hi=10)
+
+
 #: (store, query, exclude_ref_ids) -> ranked paper ref_ids (best first).
 SearchFn = Callable[["Store", str, list[int]], list[int]]
+
+#: Parses ``id=N`` out of the ``PaperHandler.acquire`` ack (mirrors
+#: ``_good_search._ID_IN_ACK``).
+_ID_IN_ACK = re.compile(r"\bid=(\d+)\b")
 
 
 @dataclass(frozen=True)
@@ -55,6 +84,69 @@ def _default_paper_search(
     ex = set(exclude_ref_ids)
     rows = store.search_refs_lexical(q=query, kind="paper", limit=10)
     return [r.id for (r, _rank) in rows if r.id not in ex]
+
+
+def make_acquiring_search(quest_id: int, hub: Any) -> SearchFn:
+    """Build a ``search_fn`` that acquires, not just looks up.
+
+    Layers Semantic Scholar over :func:`_default_paper_search`: held-corpus
+    lexical hits come first (free, instant), then each of the top S2 results
+    for the query — anything carrying a DOI — is queued through
+    ``PaperHandler.acquire`` (idempotent stub mint + link ``serves``→quest;
+    ``fetch_oa`` ingests the PDF later, out of band). A bad DOI or a flaky S2 /
+    fetch round-trip is swallowed per-candidate — one dud result must never
+    sink the whole lit-search step.
+    """
+
+    def _search(store: Store, query: str, exclude_ref_ids: list[int]) -> list[int]:
+        from precis.handlers.paper import PaperHandler
+        from precis.ingest.semantic_scholar import search_s2_papers
+
+        held = _default_paper_search(store, query, exclude_ref_ids)
+
+        acquired: list[int] = []
+        try:
+            candidates = search_s2_papers(query, limit=_acquire_per_query())
+        except Exception:
+            log.debug("quest %s: S2 search failed for %r", quest_id, query[:80])
+            candidates = []
+
+        handler = PaperHandler(hub=hub)
+        for paper in candidates:
+            doi = paper.get("doi")
+            if not doi:
+                continue
+            try:
+                resp = handler.acquire(
+                    identifier=f"doi:{doi}",
+                    context_ref_id=quest_id,
+                    reason=f"quest lit-search: {query[:120]}",
+                    verify=True,
+                )
+            except Exception:
+                log.debug(
+                    "quest %s: acquire failed for doi=%s (query=%r)",
+                    quest_id,
+                    doi,
+                    query[:80],
+                )
+                continue
+            m = _ID_IN_ACK.search(resp.body or "")
+            if m is not None:
+                acquired.append(int(m.group(1)))
+
+        ex = set(exclude_ref_ids)
+        ordered = held + acquired
+        seen: set[int] = set()
+        out: list[int] = []
+        for rid in ordered:
+            if rid in ex or rid in seen:
+                continue
+            seen.add(rid)
+            out.append(rid)
+        return out
+
+    return _search
 
 
 def run_search_step(
@@ -128,5 +220,6 @@ __all__ = [
     "MAX_QUERIES",
     "SearchFn",
     "SearchStep",
+    "make_acquiring_search",
     "run_search_step",
 ]

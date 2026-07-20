@@ -68,6 +68,21 @@ def _max_queued_sims() -> int:
     return _env_int("PRECIS_QUEST_TICK_MAX_QUEUED", 6, lo=1, hi=1000)
 
 
+def _force_acquire_enabled() -> bool:
+    """Gate for the guaranteed-acquisition fallback (default ON).
+
+    ``PaperHandler.acquire`` is idempotent (identifier-collapse on an
+    already-held/already-wanted paper is a no-op), so leaving this on is
+    self-limiting long-term — it just keeps nudging a quiet quest with one
+    fresh literature query per slice; re-acquiring the same top hit twice
+    costs nothing. A later dial-down (once a quest's corpus fills, or
+    acquisition volume needs throttling) is just flipping this env var, no
+    redeploy of the fallback logic itself.
+    """
+    raw = os.environ.get("PRECIS_QUEST_FORCE_ACQUIRE", "true").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -191,8 +206,58 @@ def _phase_await(ctx: Any, state: dict[str, Any]) -> Any:
     return _phase_tick(ctx, {"slice_count": int(state.get("slice_count") or 0)})
 
 
+def _quest_topic(store: Any, quest_id: int) -> str:
+    """Short topic string for the quest — ``meta.reaction_config`` (substrate
+    + target + slab element) when present, else the quest's own title."""
+    try:
+        ref = store.get_ref(kind="quest", id=quest_id)
+    except Exception:
+        return ""
+    if ref is None:
+        return ""
+
+    meta = ref.meta or {}
+    rc = meta.get("reaction_config")
+    rc = rc if isinstance(rc, dict) else None
+    if rc:
+        substrate = rc.get("substrate") or ""
+        target = rc.get("target") or ""
+        slab = rc.get("slab")
+        element = (slab or {}).get("element", "") if isinstance(slab, dict) else ""
+        parts = [p for p in (substrate, target, element) if p]
+        if parts:
+            return " ".join(parts)
+
+    return (ref.title or "").strip()
+
+
+def _fallback_queries(store: Any, quest_id: int, slice_count: int) -> list[str]:
+    """One rotating lit-search query for the guaranteed-acquisition fallback
+    (fired when a tick's propose step emitted no ``searches`` of its own — the
+    loop should still ask the literature for something new every slice, not
+    only when the model happens to).
+
+    Rather than repeating the same query every quiet slice, it walks a small
+    facet list keyed on the quest's own topic and picks one by
+    ``slice_count % N`` — so consecutive fallback slices explore mechanism,
+    then dopants, then recent reviews, instead of the same hit over and over.
+    """
+    topic = _quest_topic(store, quest_id)
+    if not topic:
+        return []
+
+    facets = [
+        f"{topic} DFT barrier mechanism",
+        f"{topic} dopant single-atom-alloy catalyst",
+        f"{topic} review 2023 2024",
+    ]
+    return [facets[slice_count % len(facets)]]
+
+
 def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     """Harvest finished sims + review/propose (local LLM) + dispatch a batch."""
+    from precis.dispatch import Hub
+    from precis.quest.search import make_acquiring_search
     from precis.quest.tick import run_quest_tick
 
     params = (ctx.meta or {}).get("params") or {}
@@ -220,7 +285,10 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
             wake_when=WakeWhen("at_time", {"ts": int(now + _heartbeat_s())}),
         )
 
-    outcome = run_quest_tick(ctx.store, quest_id, compute=True, tier=tier)
+    search_fn = make_acquiring_search(quest_id, Hub(store=ctx.store))
+    outcome = run_quest_tick(
+        ctx.store, quest_id, compute=True, tier=tier, search_fn=search_fn
+    )
     status = getattr(outcome, "status", "?")
     note = getattr(outcome, "note", "") or ""
     ctx.append_chunk(
@@ -233,6 +301,32 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
         f"{getattr(outcome, 'searches_run', 0)} search(es) "
         f"(+{getattr(outcome, 'papers_linked', 0)} papers); {note}"[:500],
     )
+
+    # Guaranteed-acquisition fallback: the model's propose step doesn't always
+    # emit `searches` (it might not think of one this tick), but the operator
+    # wants the loop to keep asking the literature for something new every
+    # slice regardless (dial-able via PRECIS_QUEST_FORCE_ACQUIRE). If this
+    # tick ran zero searches of its own, fire a rotating fallback query built
+    # from the quest's own goal — never fails the slice.
+    if _force_acquire_enabled() and not getattr(outcome, "searches_run", 0):
+        try:
+            from precis.quest.search import run_search_step
+
+            fallback_queries = _fallback_queries(ctx.store, quest_id, slice_count)
+            if fallback_queries:
+                run_search_step(
+                    ctx.store,
+                    quest_id,
+                    fallback_queries,
+                    by="agent",
+                    search_fn=make_acquiring_search(quest_id, Hub(store=ctx.store)),
+                )
+                ctx.append_chunk(
+                    "job_event",
+                    f"fallback lit-search: {len(fallback_queries)} query(ies)",
+                )
+        except Exception:
+            log.exception("tick #%s: fallback lit-search failed", slice_count)
 
     # The sims this tick just dispatched (now in flight) are the next wait set.
     pending = _pending_sim_ids(ctx.store, quest_id)
