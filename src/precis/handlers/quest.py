@@ -535,7 +535,10 @@ class QuestHandler(NumericRefHandler):
                 bmeta = b.meta or {}
                 etype = bmeta.get("entry_type", "note")
                 by = bmeta.get("by", "?")
-                stamp = b.created_at.date().isoformat() if b.created_at else "?"
+                # Full timestamp (date + UTC time to the minute) — the logbook
+                # is the quest's append-only lab notebook, so entries want a
+                # real clock, not just a date, to read as a chronological record.
+                stamp = b.created_at.strftime("%Y-%m-%d %H:%M") if b.created_at else "?"
                 cost = bmeta.get("cost")
                 cost_s = f" cost={cost:g}" if cost else ""
                 lines.append(f"\n### {etype} · {stamp} · {by}{cost_s}")

@@ -422,6 +422,13 @@ _REFS_BROWSABLE_KINDS: tuple[str, ...] = (
     "websearch",
     "cron",
     "message",
+    # Quest (the striving/lab-notebook kind) + its candidate `structure`s.
+    # QuestHandler.get(id=N) renders the append-only logbook (the lab
+    # notebook) and StructureHandler.get renders the candidate scene through
+    # the generic detail template; without these the quest page + every
+    # candidate link 400 with "no browse tab" even though they render fine.
+    "quest",
+    "structure",
     # Machine-detected ops/health rows (non-embedded). The /alerts list
     # links each row to /refs/alert/<id>; without this the detail page
     # 400s ("no browse tab for kind='alert'"). AlertHandler.get(id=N)
