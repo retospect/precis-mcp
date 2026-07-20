@@ -97,29 +97,29 @@ class TestBudget:
     def test_over_budget_quest_is_skipped(self, store: Any) -> None:
         a = _mk_quest(store, "A", prio="PRIO:normal")
         b = _mk_quest(store, "B", prio="PRIO:normal")
-        # equal priority → equal shares; total 10 → 5 each. A spends 6.
-        append_entry(store, a, text="sim", entry_type="result", by="agent", cost=6.0)
+        # equal priority → equal shares; total 10 → 5 each. A "spends" 6 chars.
+        append_entry(store, a, text="sim", entry_type="result", by="agent", chars=6)
         pick = alloc.pick_next_quest(store, total_budget=10.0)
         assert pick is not None and pick.quest_id == b
 
     def test_no_budget_means_no_cap(self, store: Any) -> None:
         a = _mk_quest(store, "A", prio="PRIO:urgent")
-        append_entry(store, a, text="sim", entry_type="result", by="agent", cost=999.0)
+        append_entry(store, a, text="sim", entry_type="result", by="agent", chars=999)
         assert alloc.over_budget(store, a, [a], total_budget=None) is False
 
-    def test_weekly_spend_sums_costs(self, store: Any) -> None:
+    def test_weekly_chars_sums(self, store: Any) -> None:
         a = _mk_quest(store, "A")
-        append_entry(store, a, text="x", entry_type="result", by="agent", cost=1.5)
-        append_entry(store, a, text="y", entry_type="cost", by="agent", cost=2.0)
-        assert abs(alloc.weekly_spend(store, a) - 3.5) < 1e-9
+        append_entry(store, a, text="x", entry_type="result", by="agent", chars=150)
+        append_entry(store, a, text="y", entry_type="cost", by="agent", chars=200)
+        assert alloc.weekly_chars(store, a) == 350
 
     def test_window_days_narrows_the_tote(self, store: Any) -> None:
-        # A $6 spend 3 days ago: inside a 7d window (over its $5 share → skip),
-        # outside a 1d window (under → eligible). Proves the window plumbs
-        # through over_budget (design §9: tab tunes 7d → 24/48h).
+        # A 6-char usage 3 days ago: inside a 7d window (over its 5-char
+        # share → skip), outside a 1d window (under → eligible). Proves the
+        # window plumbs through over_budget (design §9: tab tunes 7d → 24/48h).
         a = _mk_quest(store, "A", prio="PRIO:normal")
         b = _mk_quest(store, "B", prio="PRIO:normal")
-        append_entry(store, a, text="old sim", entry_type="cost", by="agent", cost=6.0)
+        append_entry(store, a, text="old sim", entry_type="cost", by="agent", chars=6)
         _backdate_logbook(store, a, days=3)
         assert (
             alloc.over_budget(store, a, [a, b], total_budget=10.0, window_days=7)
@@ -131,11 +131,11 @@ class TestBudget:
         )
 
     def test_window_days_none_uses_env_default(self, store: Any) -> None:
-        # window_days=None resolves to BUDGET_WINDOW_DAYS (7 by default), so a
-        # recent spend is counted exactly as before the param existed.
+        # window_days=None resolves to BUDGET_WINDOW_DAYS (7 by default), so
+        # recent usage is counted exactly as before the param existed.
         a = _mk_quest(store, "A", prio="PRIO:normal")
         b = _mk_quest(store, "B", prio="PRIO:normal")
-        append_entry(store, a, text="sim", entry_type="cost", by="agent", cost=6.0)
+        append_entry(store, a, text="sim", entry_type="cost", by="agent", chars=6)
         assert (
             alloc.over_budget(store, a, [a, b], total_budget=10.0, window_days=None)
             is True

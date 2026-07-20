@@ -2,8 +2,11 @@
 
 The logbook is the quest's append-only, WORM, dated ledger — ``quest_log``
 chunks hanging off the quest ref (the ``gripe`` body+comment pattern, migration
-0065). Lightly-typed entries carry ``entry_type`` + ``by`` (+ optional ``cost``)
-in ``chunk.meta``. A ``milestone`` is a deed; a ``cost`` entry feeds the tote.
+0065). Lightly-typed entries carry ``entry_type`` + ``by`` (+ optional ``cost``
+and/or ``chars``) in ``chunk.meta``. A ``milestone`` is a deed; a ``cost``
+entry feeds the tote — metered in ``chars`` (gr162594: ``cost_usd`` is null
+for the free/quota-bound quest-tick lane, so char count is the unit that's
+actually always populated).
 
 Both the :class:`~precis.handlers.quest.QuestHandler` (the ``put(id=N, text=…,
 entry=…)`` idiom) and the autonomous ``quest_tick`` (slice 4) write through
@@ -54,6 +57,7 @@ def append_entry(
     entry_type: str,
     by: str,
     cost: float | None = None,
+    chars: int | None = None,
 ) -> int:
     """Append one logbook entry; return its 1-based entry number.
 
@@ -70,6 +74,8 @@ def append_entry(
     }
     if cost is not None:
         entry_meta["cost"] = float(cost)
+    if chars is not None:
+        entry_meta["chars"] = int(chars)
     # Next pos = current chunk count. list_blocks_for_ref excludes the synthetic
     # card (ord=-1), so the first logbook entry lands at pos=0.
     next_pos = len(store.list_blocks_for_ref(quest_id))

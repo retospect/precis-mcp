@@ -159,13 +159,13 @@ def test_quests_reports_share_bar(store, monkeypatch) -> None:
 
     a = _mk("Quest A", "PRIO:normal")
     b = _mk("Quest B", "PRIO:normal")
-    append_entry(store, a, text="spend", entry_type="cost", by="agent", cost=6.0)
-    monkeypatch.setenv("PRECIS_QUEST_WEEKLY_BUDGET", "10")
+    append_entry(store, a, text="spend", entry_type="cost", by="agent", chars=6)
+    monkeypatch.setenv("PRECIS_QUEST_WEEKLY_CHARS", "10")
 
     out = _quests(store)
-    assert out["budget"] == 10.0
+    assert out["budget"] == 10
     rows = {r["id"]: r for r in out["rows"]}
-    # equal prio → $5 share each; A spent $6 → over (100%), B nothing.
+    # equal prio → 5-char share each; A used 6 → over (100%), B nothing.
     assert rows[a]["over"] is True and rows[a]["pct"] == 100.0
     assert rows[b]["spend"] == 0.0 and rows[b]["over"] is False
     # heaviest share-consumer first
@@ -216,7 +216,7 @@ def test_quests_no_budget_shows_spend_only(store, monkeypatch) -> None:
     from precis.dispatch import Hub
     from precis.handlers.quest import QuestHandler
 
-    monkeypatch.delenv("PRECIS_QUEST_WEEKLY_BUDGET", raising=False)
+    monkeypatch.delenv("PRECIS_QUEST_WEEKLY_CHARS", raising=False)
     h = QuestHandler(hub=Hub(store=store))
     resp = h.put(text="Lone quest", tags=["PRIO:normal"])
     qid = int(re.search(r"\bqu(\d+)\b", resp.body).group(1))

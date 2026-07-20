@@ -66,9 +66,9 @@ def add_parser(subparsers: Any) -> None:
     )
     r.add_argument(
         "--budget",
-        type=float,
+        type=int,
         default=None,
-        help="Weekly compute budget (overrides PRECIS_QUEST_WEEKLY_BUDGET).",
+        help="Weekly compute budget in chars (overrides PRECIS_QUEST_WEEKLY_CHARS).",
     )
     r.add_argument(
         "--force",

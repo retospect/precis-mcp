@@ -248,21 +248,23 @@ def _errors_by_host(store: Any) -> dict[str, dict[str, Any]]:
 
 
 def _quests(store: Any) -> dict[str, Any]:
-    """Active quests with prio + windowed spend vs proportional share (§9).
+    """Active quests with prio + windowed usage in characters vs proportional share (§9).
 
     The quests tab is the same mental model as services — set a priority, the
     system allocates proportionally — on the striving substrate. Each row
-    carries its trailing-window spend (the tote, now honest per gripe 162594)
-    against its priority-weighted share of the budget, rendered as a bar. A
-    quest at/over 100% is what the allocator's ``over_budget`` skips. Read-only
-    for now (prio + enable/disable reuse the quest handler); empty on error.
+    carries its trailing-window usage in characters (the tote, metered in
+    chars per gripe 162594 — ``cost_usd`` is null for the free/quota-bound
+    quest-tick lane) against its priority-weighted share of the budget,
+    rendered as a bar. A quest at/over 100% is what the allocator's
+    ``over_budget`` skips. Read-only for now (prio + enable/disable reuse the
+    quest handler); empty on error.
     """
     try:
         from precis.quest import allocator as alloc
         from precis.quest import reweight
 
         active = alloc.active_quest_ids(store)
-        budget = alloc._budget_total()
+        budget = alloc._char_budget_total()
         window = alloc.BUDGET_WINDOW_DAYS
         if not active:
             return {"window_days": window, "budget": budget, "rows": []}
@@ -274,7 +276,7 @@ def _quests(store: Any) -> dict[str, Any]:
         rows: list[dict[str, Any]] = []
         for q in active:
             ref = store.get_ref(kind="quest", id=q)
-            spend = alloc.weekly_spend(store, q, days=window)
+            spend = alloc.weekly_chars(store, q, days=window)
             share = (budget * weights[q] / denom) if budget else None
             pct = min(100.0, 100.0 * spend / share) if share and share > 0 else None
             rows.append(
@@ -282,8 +284,8 @@ def _quests(store: Any) -> dict[str, Any]:
                     "id": q,
                     "title": (ref.title if ref else f"quest {q}") or f"quest {q}",
                     "prio": ref.prio if ref else None,
-                    "spend": round(spend, 4),
-                    "share": round(share, 4) if share is not None else None,
+                    "spend": round(spend),
+                    "share": round(share) if share is not None else None,
                     "pct": round(pct, 1) if pct is not None else None,
                     "over": bool(share is not None and spend >= share),
                 }

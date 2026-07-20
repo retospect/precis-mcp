@@ -194,10 +194,10 @@
   <h2 class="text-sm font-semibold mb-1">Quests</h2>
   <p class="text-xs text-slate-500 mb-3">
     Same model as services — set a priority, the system allocates
-    proportionally — on the striving substrate. Each active quest's spend
-    over the trailing {{ quests.window_days }}-day window against its
+    proportionally — on the striving substrate. Each active quest's usage
+    (chars) over the trailing {{ quests.window_days }}-day window against its
     priority-weighted share of the budget
-    {% if quests.budget %}(${{ '%.2f'|format(quests.budget) }}){% else %}(no budget set — spend only){% endif %}.
+    {% if quests.budget %}({{ '{:,}'.format(quests.budget) }} chars){% else %}(no budget set — usage only){% endif %}.
     A quest at 100% is one the allocator skips this round.
   </p>
   {% if not quests.rows %}
@@ -221,7 +221,7 @@
             <span class="text-xs text-slate-400 font-mono">qu{{ q.id }}</span>
           </td>
           <td class="py-1.5 pr-3 font-mono text-xs">{{ q.prio if q.prio is not none else '—' }}</td>
-          <td class="py-1.5 pr-3 font-mono text-xs">${{ '%.4f'|format(q.spend) }}</td>
+          <td class="py-1.5 pr-3 font-mono text-xs">{{ '{:,}'.format(q.spend) }} chars</td>
           <td class="py-1.5 pr-3">
             {% if q.pct is not none %}
             <div class="flex items-center gap-2">

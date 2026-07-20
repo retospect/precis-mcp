@@ -84,8 +84,12 @@
        the gateway's host_vars once the daily cap is raised. #}
     <key>PRECIS_QUEST_LOOP_ENABLED</key>
     <string>{{ '1' if precis_quest_loop_enabled | default(false) else '0' }}</string>
-    <key>PRECIS_QUEST_WEEKLY_BUDGET</key>
-    <string>{{ precis_quest_weekly_budget | default(25) }}</string>
+    {# gr162594: the fair-share meter counts characters, not dollars — the
+       quest lane runs on cloud-small/claude_p, which never reports a $ cost.
+       Default ~= one week's observed quest_tick volume (120 calls x ~18.6K
+       chars), so a reactivated loop at today's cadence stays under cap. #}
+    <key>PRECIS_QUEST_WEEKLY_CHARS</key>
+    <string>{{ precis_quest_weekly_chars | default(2000000) }}</string>
     {# Catalyst-quest barrier lane. dispatch_catpath runs HERE (quest ticks
        are claude_inproc, agent-profile only) and reads this env to pin the
        minted `catpath_explore` job at the GPU node; unset → it force-EMTs

@@ -588,22 +588,30 @@ def run_quest_tick(
     note = (
         (f"frontier-review ({reason})" if is_review else "ok") if did_work else "no-op"
     )
-    # Attribute the tick's *real* measured spend to the tote (gripe 162594).
-    # The per-entry ``cost`` the model may self-declare (above) is almost always
-    # absent, so ``allocator.weekly_spend`` — which sums logbook ``meta.cost`` —
-    # would under-count and the fair-share meter (``over_budget``) could never
-    # fire. One terse ``cost`` deed per tick carries ``res.cost_usd`` into the
-    # dated ledger so the windowed share is honest. Only when a cost was
-    # actually measured (a paused/errored tick returns early above).
-    if isinstance(cost, (int, float)) and cost > 0:
-        append_entry(
-            store,
-            quest_id,
-            text=f"tick spend ${float(cost):.4f} ({'review' if is_review else 'local'})",
-            entry_type="cost",
-            by=by,
-            cost=float(cost),
-        )
+    # Attribute the tick's *real* measured usage to the tote (gripe 162594).
+    # Quest ticks run on the claude_p transport at CLOUD_SMALL, where
+    # ``cost_usd`` is null/0.00 for 100% of prod rows (free/quota-bound lane)
+    # and ``total_tokens`` is never populated either — so metering the tote in
+    # dollars or tokens silently starves ``over_budget`` of any signal. Chars
+    # (prompt + response text) IS always available, so that's the unit: one
+    # terse ``cost`` deed per successful tick carries the char count into the
+    # dated ledger. ``cost`` is still recorded when a transport happens to
+    # report one (future priced lanes), but it no longer gates whether the
+    # deed is written — a paused/errored tick returns early above, so this
+    # only runs on success.
+    resp_text = getattr(res, "text", "") or ""
+    chars = len(prompt) + len(resp_text)
+    cost_val = float(cost) if isinstance(cost, (int, float)) and cost > 0 else None
+    cost_note = f" (${cost_val:.4f})" if cost_val is not None else ""
+    append_entry(
+        store,
+        quest_id,
+        text=f"tick spend {chars:,} chars{cost_note} ({'review' if is_review else 'local'})",
+        entry_type="cost",
+        by=by,
+        cost=cost_val,
+        chars=chars,
+    )
     return QuestTickOutcome(
         quest_id,
         "succeeded",

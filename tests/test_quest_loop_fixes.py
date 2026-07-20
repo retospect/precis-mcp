@@ -157,7 +157,10 @@ class TestTickGrounding:
         }
         out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
         assert out.hypotheses_deduped == 1
-        assert len(store.list_blocks_for_ref(qid)) == before  # nothing appended
+        # +1, not +0: a successful tick always writes one chars-metered `cost`
+        # deed now (gripe 162594), independent of whether the duplicate
+        # hypothesis itself was dropped.
+        assert len(store.list_blocks_for_ref(qid)) == before + 1
 
     def test_distinct_hypothesis_is_kept(self, store: Any) -> None:
         qid = _mk_quest(store, "A quest")

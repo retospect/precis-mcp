@@ -20,10 +20,13 @@ long-running average so it damps on the smoothed trend, not a single result:
   higher-priority strivings simply come up more often (replaces the old
   picks-decay explore, which a much-picked quest could never recover).
 
-A **weekly proportional budget** (``PRECIS_QUEST_WEEKLY_BUDGET``, unset = no cap)
-bounds total draw: each active quest's share ∝ its priority weight, metered
-against the **tote** (the dated `cost` entries in its logbook over the last 7
-days). A quest over its share is skipped this round; one that has gone cold
+A **weekly proportional budget** (``PRECIS_QUEST_WEEKLY_CHARS``, unset = no
+cap) bounds total draw: each active quest's share ∝ its priority weight,
+metered against the **tote** (the dated `cost` entries in its logbook over
+the last 7 days, summed in **characters** — prompt + response text. Quest
+ticks run on the free/quota-bound `claude_p`/`cloud-small` lane, where
+``cost_usd`` and token counts are never populated, gr162594). A quest over
+its share is skipped this round; one that has gone cold
 (no promise, long since the frontier improved, no recent activity) **cools to
 `dormant`** on its own.
 
@@ -182,29 +185,29 @@ def pick_score(store: Store, quest_id: int, *, now_round: int | None = None) -> 
 # ── weekly budget (metered against the tote) ──────────────────────────
 
 
-def weekly_spend(store: Store, quest_id: int, *, days: int = 7) -> float:
-    """The quest's compute cost over the trailing window — a tote slice."""
+def weekly_chars(store: Store, quest_id: int, *, days: int = 7) -> int:
+    """The quest's compute usage (chars) over the trailing window — a tote slice."""
     since = datetime.now(UTC) - timedelta(days=days)
 
     def _aware(dt: datetime) -> datetime:
         return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
-    total = 0.0
+    total = 0
     for b in store.list_blocks_for_ref(quest_id):
         if b.chunk_kind != LOG_KIND or b.created_at is None:
             continue
         if _aware(b.created_at) < since:
             continue
-        total += float((b.meta or {}).get("cost", 0) or 0)
+        total += int((b.meta or {}).get("chars", 0) or 0)
     return total
 
 
-def _budget_total() -> float | None:
-    raw = os.environ.get("PRECIS_QUEST_WEEKLY_BUDGET")
+def _char_budget_total() -> int | None:
+    raw = os.environ.get("PRECIS_QUEST_WEEKLY_CHARS")
     if raw is None or not raw.strip():
         return None
     try:
-        return float(raw)
+        return int(raw)
     except ValueError:
         return None
 
@@ -217,12 +220,13 @@ def over_budget(
     total_budget: float | None,
     window_days: int | None = None,
 ) -> bool:
-    """True when the quest has spent past its proportional share of the window.
+    """True when the quest has used past its proportional share of the window.
 
     The window defaults to :data:`BUDGET_WINDOW_DAYS` (env-configurable, 7d)
-    and is narrowed by the quests tab to 24/48h so a spend burst is felt
+    and is narrowed by the quests tab to 24/48h so a usage burst is felt
     sooner (design §9). ``share`` is the priority-weighted slice of
-    ``total_budget``; the quest is over when its windowed spend meets it.
+    ``total_budget`` (chars); the quest is over when its windowed char usage
+    meets it.
     """
     if total_budget is None or not active:
         return False
@@ -233,7 +237,7 @@ def over_budget(
     }
     denom = sum(weights.values()) or 1.0
     share = total_budget * (weights.get(quest_id, 0.0) / denom)
-    return weekly_spend(store, quest_id, days=_resolve_window(window_days)) >= share
+    return weekly_chars(store, quest_id, days=_resolve_window(window_days)) >= share
 
 
 # ── the pick + the cool ───────────────────────────────────────────────
@@ -249,7 +253,7 @@ def pick_next_quest(
     active = active_quest_ids(store)
     if not active:
         return None
-    budget = total_budget if total_budget is not None else _budget_total()
+    budget = total_budget if total_budget is not None else _char_budget_total()
     eligible = [
         q
         for q in active
@@ -413,5 +417,5 @@ __all__ = [
     "progress_factor",
     "raw_score",
     "run_allocator_pass",
-    "weekly_spend",
+    "weekly_chars",
 ]

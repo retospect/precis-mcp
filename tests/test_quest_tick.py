@@ -85,9 +85,9 @@ class TestDossier:
 
 class TestQuestTick:
     def test_tick_spend_lands_in_the_tote(self, store: Any) -> None:
-        # gripe 162594: the tick's real measured cost is attributed to the
-        # dated ledger (a `cost` logbook entry) so allocator.weekly_spend —
-        # and thus the fair-share meter — is honest, not under-counting.
+        # gripe 162594: the tick's real measured usage (chars) is attributed
+        # to the dated ledger (a `cost` logbook entry) so allocator.weekly_chars
+        # — and thus the fair-share meter — is honest, not under-counting.
         from precis.quest import allocator as alloc
 
         qid = _mk_quest(store, "A NO→NH₃ catalyst")
@@ -96,9 +96,11 @@ class TestQuestTick:
             store, qid, dispatch_fn=_fake_dispatch(payload, cost=0.02), compute=False
         )
         assert out.status == "succeeded"
-        assert abs(alloc.weekly_spend(store, qid) - 0.02) < 1e-9
+        assert alloc.weekly_chars(store, qid) > 0
 
-    def test_zero_cost_tick_writes_no_cost_entry(self, store: Any) -> None:
+    def test_zero_cost_tick_still_meters_chars(self, store: Any) -> None:
+        # gripe 162594: chars are the meter unit, so a deed lands even when
+        # the transport reports no dollar cost (the free/quota-bound lane).
         from precis.quest import allocator as alloc
 
         qid = _mk_quest(store, "Another striving")
@@ -109,7 +111,7 @@ class TestQuestTick:
             compute=False,
         )
         assert out.status == "succeeded"
-        assert alloc.weekly_spend(store, qid) == 0.0
+        assert alloc.weekly_chars(store, qid) > 0
 
     def test_applies_logbook_and_rewrites_dossier(self, store: Any) -> None:
         qid = _mk_quest(store, "A NO→NH₃ catalyst")

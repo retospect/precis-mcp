@@ -92,7 +92,7 @@ values are from the cluster scan.
 | `PRECIS_CLASSIFY_ENABLED` | Chunk-tag classify pass | off | **not set** anywhere | ⚠️ Intentionally dark (CLAUDE.md: default-OFF). Fine — but if you want it live, enable as a trickle on one node like `PRECIS_SUMMARIZE_LLM`. |
 | `PRECIS_PAPER_GLOSSARY_ENABLED` | Per-paper glossary pass | off | **not set** | ⚠️ Dark by design (slice built, not activated). OK. |
 | `PRECIS_SANDBOX_ENABLED` | Register the `sandbox_run` executor pass | off | **not set** anywhere | 🔶 Note: the `code-sandbox` **container** is deployed on balthazar+spark (inventory group), but the *precis pass* that dispatches to it is gated by this env var, which is unset everywhere ⇒ `sandbox_run` never registers. If sandbox execution is meant to be live, set `PRECIS_SANDBOX_ENABLED=1` on the sandbox hosts. Currently dark end-to-end. |
-| `PRECIS_QUEST_LOOP_ENABLED` | Autonomous quest research loop | off | **not set** | 🔶 Intentionally dark — awaiting Reto's go (autonomous GPU/token spend). To go live also set `PRECIS_QUEST_WEEKLY_BUDGET` and enable the struct-relax GPU lane. See the quest memory. |
+| `PRECIS_QUEST_LOOP_ENABLED` | Autonomous quest research loop | off | **not set** | 🔶 Intentionally dark — awaiting Reto's go (autonomous GPU/token spend). To go live also set `PRECIS_QUEST_WEEKLY_CHARS` and enable the struct-relax GPU lane. See the quest memory. |
 | `PRECIS_BACKLOG_GROOM_ENABLED` | Backlog groomer (auto repo-bug fixing) | off | **not set** in the cluster repo | ℹ️ Expected. The fixer/backlog loop runs **locally on `hephaestus` (Reto's laptop)**, outside the cluster ansible — so its env lives in the laptop's local launch/env config, not `~/work/cluster`. Manage it there. |
 | `PRECIS_CHASE_LLM` | LLM finding-chase pass | `0` | not set | ✅ Off — the SQL chase covers prod; LLM chase is opt-in. |
 | `PRECIS_DREAM_AGENT` | Dream agent enable | off | set `1` by `dream-pass.sh` wrapper (melchior) | ✅ Correct — the daemon wrapper sets it at runtime. |
@@ -259,8 +259,10 @@ measured reason (see [`thresholds.md`](../conventions/thresholds.md)).
 
 **Assessment:** all at code defaults ⇒ no per-host drift to reason
 about; the defaults are the CLAUDE.md-documented values. The only
-knob worth a second look is `PRECIS_QUEST_WEEKLY_BUDGET` (unset), which
-**must** be set before flipping `PRECIS_QUEST_LOOP_ENABLED`.
+knob worth a second look is `PRECIS_QUEST_WEEKLY_CHARS` (unset), which
+**must** be set before flipping `PRECIS_QUEST_LOOP_ENABLED` — the meter
+is character-count, not dollars (gr162594: the quest lane never reports
+a $ cost).
 
 ---
 
@@ -293,7 +295,7 @@ deploy-sha memory).
 |-------------------|----------------------|-------------|
 | **Daily audio casts** — reading brief + nidra (`463d0cb8`, `edc99a1d`, `ae37657a`) | `PRECIS_CAST_AUDIO_ENABLED=1` is already set on **spark**, but you must **deploy** then run `precis cast schedule` to install the `level:recurring` watches | TTS render pass; compose is `claude_inproc` on melchior. Not deployed. |
 | **`card_forge` morning card pass** (`ec4b3b4f`, `14890149`) | deploy + `precis cast schedule` + flip `PRECIS_CARD_FORGE_AUTONOMY=act` (default `report` = observe-only) | Mastery-from-Anki + mint 5/day + retire/rework. Shipped `main`, **not deployed**. |
-| **Quest autonomous loop** (`2ce51f5f`…`45f19ef4`, slices 1–4e) | `PRECIS_QUEST_LOOP_ENABLED=1` **+** `PRECIS_QUEST_WEEKLY_BUDGET=<usd>` on the **melchior agent worker** | Deployed dark; also needs the struct-relax GPU lane on spark. Autonomous GPU/token spend — Reto's call. |
+| **Quest autonomous loop** (`2ce51f5f`…`45f19ef4`, slices 1–4e) | `PRECIS_QUEST_LOOP_ENABLED=1` **+** `PRECIS_QUEST_WEEKLY_CHARS=<n>` on the **melchior agent worker** | Deployed dark; also needs the struct-relax GPU lane on spark. Autonomous GPU/token spend — Reto's call. |
 | **Patent FTO authoring loop** (`b9d775db`, `147a984f`, `5c0e9329`, `6a5d829d`) | No env flag — rides `plan_tick` once a patent project drives it; needs a first live-run validation (see `OPEN-ITEMS.md`) | `patent` kind is already live (`PRECIS_PATENT_RAW_ROOT` set). |
 | **Diagram-propose autonomous drawer** (`6585223d`, `f22eccb4`) | `PRECIS_DIAGRAM_AGENTIC=1` (else auto: agentic when an MCP config is present) **+** a todo dispatching the `diagram_propose` job_type | Nothing dispatches to it yet. |
 | **Chem deeper engines** — AiZynth (`9bc2f3c3`), LinChemIn (`fc41d983`), ASKCOS (`866d60b0`) | `route` kind surface is live (`PRECIS_CHEM_ENABLED=1`); the compute engines need their container/service env + deploy on spark | Slices 1b/2/3 shipped dark. |
