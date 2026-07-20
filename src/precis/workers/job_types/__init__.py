@@ -228,6 +228,14 @@ def _load_good_search() -> JobTypeSpec:
     return good_search.SPEC
 
 
+def _load_quest_tick() -> JobTypeSpec:
+    # Perpetual catalyst-quest loop (harvest → review+propose → dispatch sims →
+    # wait → repeat). Runs via plugin dispatch under the coordinator executor.
+    from precis.workers.job_types import quest_tick
+
+    return quest_tick.SPEC
+
+
 def _load_good_search_triage() -> JobTypeSpec:
     # good_search's fan-out child: batched one-shot relevance triage
     # under claude_inproc. Runs via plugin dispatch.
@@ -408,6 +416,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "good_search_triage":
         _REGISTRY["good_search_triage"] = _load_good_search_triage()
         return _REGISTRY["good_search_triage"]
+    if name == "quest_tick":
+        _REGISTRY["quest_tick"] = _load_quest_tick()
+        return _REGISTRY["quest_tick"]
     # Fall through to plugin-discovered specs. Cached on first
     # lookup so subsequent calls are cheap.
     plugins = _get_plugin_specs()
@@ -438,6 +449,7 @@ def known_job_types() -> list[str]:
         "sandbox_run",
         "good_search",
         "good_search_triage",
+        "quest_tick",
     ]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for

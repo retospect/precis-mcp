@@ -32,6 +32,7 @@ the full design rationale.
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -130,9 +131,20 @@ def _claim_jobs(
     ``halt:*`` / ``child-failed:*``) are skipped via
     the shared exclusion clause so the vocabulary stays in sync with the
     dispatcher's candidate query.
+
+    ``node`` pins a coordinator job to its node the same way ssh_node does: a job
+    with ``meta.params.target_node`` set is claimable only by the worker whose
+    ``PRECIS_NODE`` matches (jobs without one — the norm — stay claimable by any
+    ``system`` worker). This lets a coordinator that needs a node-local resource
+    (e.g. ``quest_tick`` reaching the box-local OSS model) run where that
+    resource lives.
     """
     return claim_executor_jobs(
-        conn, executor=_EXECUTOR_NAME, limit=limit, exclude_paused=True
+        conn,
+        executor=_EXECUTOR_NAME,
+        limit=limit,
+        exclude_paused=True,
+        node=os.environ.get("PRECIS_NODE"),
     )
 
 

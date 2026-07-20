@@ -154,6 +154,22 @@ def dispatch_relax(
 _CATPATH_ROUTE_NODE_ENV = "PRECIS_CATPATH_ROUTE_NODE"
 
 
+def _catpath_wall_seconds() -> int:
+    """Expected wall-time hint (s) for a catpath NEB, stamped into the job's
+    ``resources`` so the ssh_node lease outlives a full-network run.
+
+    Env-tunable (``PRECIS_CATPATH_WALL_SECONDS``, default 5400 = 90 min): a
+    3×3×4 full ammonia-network run is ~15-20 min uncontended but can stretch
+    under load. ssh_node leases at ``max(2h floor, wall_seconds + 1h margin)``,
+    so 5400 → a 2.5h lease.
+    """
+    try:
+        n = int(os.environ.get("PRECIS_CATPATH_WALL_SECONDS", "5400"))
+    except ValueError:
+        return 5400
+    return max(60, min(86_400, n))
+
+
 def _catpath_content_key(config: dict[str, Any], slab_extxyz: str) -> str:
     """Stable idempotency key for a (reaction, exported slab) pair.
 
@@ -263,6 +279,12 @@ def dispatch_catpath(
                 "force_backend": force,
                 "content_key": key,
                 "target_node": node,
+                # Lease margin for a full reaction-network NEB: the ssh_node
+                # lease is max(2h floor, wall_seconds + 1h margin), so this lifts
+                # a slow (contended) full-network run's lease clear of its
+                # runtime — otherwise it can lease-expire mid-run and get
+                # stolen/restarted (the churn the autonomous loop must avoid).
+                "resources": {"wall_seconds": _catpath_wall_seconds()},
             },
         )
     except Exception as e:

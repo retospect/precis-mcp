@@ -709,7 +709,17 @@ The master kinds table lives in the `precis-overview` skill.
   **no-op until quests + servers exist**, so it's live without a flag. Coming:
   gap surfacing (slice 3), the autonomous research loop (local grind + frontier
   steering, materials as `structure` servers, slice 4). Skill:
-  `precis-quest-help`.
+  `precis-quest-help`. **Perpetual loop = a `coordinator` job**
+  (`workers/job_types/quest_tick.py`): each slice harvests finished sims, runs
+  the review+propose tick (`run_quest_tick`, tier `local-big` → the node-local
+  OSS model), co-dispatches the batch's barrier/relax sims, and `Yield`s on an
+  `at_time` heartbeat until they land — event-driven, self-paced on sim
+  completion (not a cron), with per-quest backpressure (no new batch while one is
+  in flight) + a node-load starvation gate. The coordinator claim now honours
+  `meta.params.target_node` (`coordinator._claim_jobs` passes `PRECIS_NODE`) so
+  the loop pins to the GPU/model node; catpath sims carry `resources.wall_seconds`
+  so a full reaction-network NEB can't lease-expire mid-run. Runs `Done` (rests)
+  only when a tick proposes nothing new (graduated / out of ideas).
 - **`llm`** — the model catalog (design-of-record `docs/proposals/llm-catalog.md`;
   slice 1 **live, read-only, ships dark**). Turns model choice from hardcoded
   constants (`router._TIER_MODEL` + the `LLM:opus|sonnet|haiku` tag) into a
