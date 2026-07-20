@@ -1,43 +1,80 @@
-# How to work in this project
+# precis-mcp — Devin project brief (port of CLAUDE.md, no worktrees)
 
-This project uses uv, ruff, and hatchling. All commands go through `uv run`.
+> **Two surfaces — don't confuse them.** This repo IS the precis MCP server.
+> The `precis` MCP tools/skills in your session are the PRODUCT's runtime
+> surface — not dev aids. To develop the repo, read: `docs/codebase.md`
+> (orientation) → `docs/architecture/state-map.md` (subsystem status) →
+> `docs/architecture/glossary.md` → `docs/decisions/` (ADRs). Conventions,
+> workflow, definition-of-done: `AGENTS.md`. No CHANGELOG — history is
+> `git log`. Backlog: `OPEN-ITEMS.md` (open work only; delete an entry in
+> the same commit that completes it).
 
-## Common tasks
+## Session workflow (feature branch → ship)
 
-Run tests:           uv run pytest
-Lint:                uv run ruff check .
-Auto-fix lint:       uv run ruff check --fix .
-Format code:         uv run ruff format .
-Type check:          uv run mypy src tests
-Run a script:        uv run python script.py
-Full check:          uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run pytest
+1. Work on a **feature branch** (never directly on `main` — see guards).
+2. Implement, test, iterate (`scripts/test`).
+3. Ship: `scripts/ship "msg"` — commit WIP → sync onto origin/main →
+   container gate (ruff/format/mypy/pytest) → squash-merge to main.
+   Idempotent; fix and re-run on a red gate. Deploy: `scripts/deploy`.
+   Workflows: /land (ship), /go (ship+deploy), /whatneedsdoing.
 
-## Dependencies
+## Token discipline (Claude Code had hooks; here it's manual)
 
-Add a dependency:    uv add <pkg>
-Add a dev dep:       uv add --group dev <pkg>
-Remove a dep:        uv remove <pkg>
-Update lockfile:     uv lock
+- **`rtk` compresses noisy command output** (token-killer proxy;
+  `brew install rtk`). There is NO auto-rewrite hook in Devin sessions —
+  **prefix manually**: `rtk git status`, `rtk psql -- …`, `rtk grep/rg/find`,
+  `rtk err -- <cmd>` (errors only, propagates exit code), `rtk summary --
+  <cmd>` (heuristic digest, always exits 0 — don't gate on it). Output is a
+  DIGEST, not raw: if a detail is missing, re-run raw or read the teed log.
+  Don't wrap `scripts/test` (already terse) or interactive commands.
+  Project filters: `.rtk/filters.toml` (committed). Full guidance: the
+  `quiet-output` skill (served from `.claude/skills/`, picked up here too).
+- **`scripts/coderef callers|deps <file.py::Sym>`** for exact who-calls /
+  what-depends-on before grep — no same-named false positives (also
+  `imports|importers`; `-h` for verbs). Grep stays right for text,
+  non-Python, or a symbol you can't name yet.
+- Cite code by durable anchor in docs/memory: `path/file.py::Qual.name`,
+  not `file.py:LINE` (rots). `scripts/coderef anchor|resolve|check`.
 
-## Versioning
+## Guards (enforced by hooks in Claude Code; hard rules here)
 
-Set version:         uv version X.Y.Z
-Version lives only in pyproject.toml. __init__.py reads it via importlib.metadata.
+- **Never `git commit` on `main`.** Work on a feature branch; `scripts/ship`
+  is the only path to main.
+- **Never edit a sealed migration** (`src/precis/migrations/*.sql` already on
+  origin/main) or `migrations/baseline/*` — forward-only (ADR 0005); ship a
+  NEW migration. Baseline regenerates via `scripts/bump`, never by hand.
+- **Prod SQL is read-only by default.** `scripts/prod-psql "SELECT …"` for
+  peeking at precis_prod; it connects as write-capable `agent_rw`, so any
+  INSERT/UPDATE/DELETE/DDL needs the user's explicit go-ahead.
+- **The session `precis` MCP writes PROD — dogfood READ-ONLY.** DB-backed
+  kinds (todo/gripe/memory/paper/…) target precis_prod; use read verbs only
+  (`search`/`get`/`more`). File-kinds (markdown/plaintext/tex) are sandboxed
+  and fine. Write-path testing: dev-DB precis via `scripts/dev`, never the
+  session MCP.
+- **No bare `git stash` / `stash pop`** (stack is shared with other
+  checkouts). Prefer a WIP commit; else `git stash push -u -m "<tag>"` +
+  `git stash apply <sha>`.
 
-## Releasing
+## Conventions that bite
 
-uv version X.Y.Z
-git commit -am "release X.Y.Z"
-git tag vX.Y.Z
-git push && git push --tags
-Then create a GitHub Release from the tag. CI publishes to PyPI automatically.
-
-## Rules
-
-- Always use `uv run` to run tools. Never use bare `pip`, `python -m pip`, or `python -m pytest`.
-- Never use black, isort, or flake8. Ruff replaces all of them.
-- Source lives in src/<package>/. Tests live in tests/.
-- All tool config goes in pyproject.toml. No .cfg, .ini, or separate .toml files.
-- GitHub Actions must be pinned by commit SHA.
-- Never commit secrets.
-- Always use ssh to git pull/push
+- **Tests via `scripts/test`** (pytest in the dev container, test DB wired,
+  terse output). Don't hand-roll `uv run pytest`: the torch-free host throws
+  spurious ModuleNotFoundError for `marker`, `sentence_transformers`, ….
+  `scripts/test tests/test_x.py -k …` for subsets; `scripts/test --impacted`
+  (testmon) is the tightest loop. Lint/types on host: `uv run ruff check .`,
+  `uv run ruff format --check .`, `uv run mypy src tests`.
+- **`uv` for everything** — never bare pip/pytest/mypy. Ruff replaces
+  black/isort/flake8. All tool config in pyproject.toml.
+- **Container-first ops.** `scripts/dev` → dev shell; `scripts/db` → local
+  psql (dev pgvector at 127.0.0.1:5432, user postgres); never reaches prod.
+- **Don't mutate body chunks** (`ord >= 0` rows are append-only): to
+  "update", DELETE + INSERT so the embedding/summary cascade re-runs.
+- **Embeddings fill via the worker, not ingest** (ADR 0007).
+- **Outbound HTTP through `safe_fetch`** (`src/precis/utils/safe_fetch.py`)
+  — raw `httpx…get(url, follow_redirects=True)` is an SSRF.
+- **Skills are runtime docs**: `src/precis/data/skills/` is the agent-facing
+  channel served via `get(kind='skill')`.
+- Keep docs true: a subsystem change updates `state-map.md` (and
+  `docs/codebase.md` if the shape changed) in the same commit.
+- Always use ssh to git pull/push. Never commit secrets. GitHub Actions
+  pinned by commit SHA.

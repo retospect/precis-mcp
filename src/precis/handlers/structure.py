@@ -97,6 +97,8 @@ class _NeedsDispatch:
     poscar: str
     poscar_labels: list[str]
     requester_id: int | None
+    #: Variable-cell relax mode ('inplane'/'full') or None for atoms-only.
+    cell: str | None = None
 
 
 def _poscar_row_labels(scene: Scene) -> list[str]:
@@ -586,6 +588,22 @@ class StructureHandler(Handler):
         fidelity = str(ro.get("fidelity", "clean"))
         steps = int(ro.get("steps", 200))
         model = str(ro.get("model", "mace_mp"))
+        # Optional variable-cell relax: 'inplane' (slab box, vacuum pinned) or
+        # 'full' (bulk). Validated up front so a bad mode is a retryable BadInput
+        # rather than being swallowed into the dispatch/Unsupported path below.
+        cell_mode = ro.get("cell") or None
+        if cell_mode == "fixed":
+            cell_mode = None
+        if cell_mode is not None and cell_mode not in ("inplane", "full"):
+            raise BadInput(
+                f"relax cell mode {cell_mode!r} not understood "
+                "(use 'inplane', 'full', or omit for an atoms-only relax)"
+            )
+        if cell_mode is not None and fidelity in ("clean", "0"):
+            raise BadInput(
+                "variable-cell relax (cell=…) needs fidelity='ml'; the 'clean' "
+                "geometry repair has no stress to relax the cell against"
+            )
 
         # Cache-first for the expensive energy rungs (ADR §23.16). The rung-0
         # ``clean`` repair is instant + pure + energy-free, so it is never
@@ -596,7 +614,12 @@ class StructureHandler(Handler):
         cache_key = structure_sha = None
         order: list[str] = []
         if cached_rung:
-            params = {"steps": steps}
+            # Only fold ``cell`` into the key when a variable-cell relax is
+            # asked for — an atoms-only relax keeps its historical key so the
+            # existing run-cube stays a hit (a bare {"steps"} vs {"steps","cell"}).
+            params: dict[str, Any] = {"steps": steps}
+            if cell_mode is not None:
+                params["cell"] = cell_mode
             cache_key = relax_cache.run_cache_key(
                 scene, fidelity=fidelity, model=model, params=params
             )
@@ -623,7 +646,9 @@ class StructureHandler(Handler):
                 )
 
         try:
-            res = run_relax(scene, fidelity=fidelity, steps=steps, model=model)
+            res = run_relax(
+                scene, fidelity=fidelity, steps=steps, model=model, cell=cell_mode
+            )
         except RelaxUnsupported as exc:
             # No local backend for this energy rung. If the caller named a
             # parent todo we dispatch it to the GPU node (§23.12); otherwise
@@ -638,6 +663,7 @@ class StructureHandler(Handler):
                 fidelity=fidelity,
                 model=model,
                 steps=steps,
+                cell=cell_mode,
                 cache_key=cache_key,
                 structure_sha=structure_sha or "",
                 order=order,
@@ -734,6 +760,9 @@ class StructureHandler(Handler):
             "fidelity": nd.fidelity,
             "model": nd.model,
             "steps": nd.steps,
+            # Variable-cell relax mode (present only when asked for) — the GPU
+            # container honours it; absent ⇒ atoms-only, the historical default.
+            **({"cell": nd.cell} if nd.cell is not None else {}),
             "cache_key": nd.cache_key,
             "structure_sha": nd.structure_sha,
             "order": nd.order,

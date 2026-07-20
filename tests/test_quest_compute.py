@@ -724,6 +724,41 @@ class TestReactionCoDispatch:
         )
         assert relax_calls == [] and catpath_calls == []  # preview: no compute
 
+    def _stub_relax_cell(self, monkeypatch: Any) -> list[str | None]:
+        """Capture the ``cell`` mode each relax dispatch is asked for."""
+        seen: list[str | None] = []
+
+        def _fake_relax(
+            _s: Any, sid: int, *, cell: str | None = None, **_k: Any
+        ) -> str:
+            seen.append(cell)
+            return f"relax[ml] dispatched for {sid}"
+
+        monkeypatch.setattr(compute_mod, "dispatch_relax", _fake_relax)
+        monkeypatch.setattr(
+            compute_mod, "dispatch_catpath", lambda *a, **k: "catpath[emt] → p"
+        )
+        return seen
+
+    def test_reaction_quest_relaxes_the_slab_box_inplane(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # A barrier (slab) quest evaluates a *relaxed* slab: the relax frees the
+        # box in-plane (vacuum pinned) rather than an atoms-only relax.
+        seen = self._stub_relax_cell(monkeypatch)
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst for NO→NH₃")
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})
+        compute_mod.run_compute_step(store, qid, [{"name": "Pd", "structure": _SPEC}])
+        assert seen == ["inplane"]
+
+    def test_plain_quest_relax_stays_atoms_only(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        seen = self._stub_relax_cell(monkeypatch)
+        qid = _mk_quest(store, "A striving")  # no reaction_config → no slab
+        compute_mod.run_compute_step(store, qid, [{"name": "Fe", "structure": _SPEC}])
+        assert seen == [None]
+
 
 # ── tick integration ──────────────────────────────────────────────────
 

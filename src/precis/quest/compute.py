@@ -121,6 +121,7 @@ def dispatch_relax(
     fidelity: str = _DEFAULT_FIDELITY,
     model: str | None = None,
     steps: int = 200,
+    cell: str | None = None,
 ) -> str:
     """Dispatch a relax on a candidate structure (the derived compute lane).
 
@@ -142,6 +143,8 @@ def dispatch_relax(
     op: dict[str, Any] = {"op": "relax", "fidelity": fidelity, "steps": steps}
     if model is not None:
         op["model"] = model
+    if cell is not None:
+        op["cell"] = cell
     try:
         StructureHandler(hub=hub).edit(id=str(ref.slug), ops=[op])
     except Exception as e:
@@ -530,6 +533,10 @@ def run_compute_step(
     """
     hub = hub or _hub_for(store)
     reaction = _quest_reaction_config(store, quest_id) if dispatch else None
+    # A reaction quest's candidates are catalyst slabs — relax the box in-plane
+    # (the a/b vectors, c-axis/vacuum pinned) so stability is judged on a
+    # *relaxed* slab, not one strained by the bulk-derived lattice constant.
+    relax_cell = "inplane" if reaction is not None else None
     created = dispatched = 0
     notes: list[str] = []
     for p in proposals or []:
@@ -540,7 +547,7 @@ def run_compute_step(
             continue
         created += 1
         if dispatch:
-            note = dispatch_relax(store, sid, hub=hub)
+            note = dispatch_relax(store, sid, hub=hub, cell=relax_cell)
             notes.append(note)
             if note.startswith("relax["):
                 dispatched += 1

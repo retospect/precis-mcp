@@ -68,6 +68,18 @@ def _max_queued_sims() -> int:
     return _env_int("PRECIS_QUEST_TICK_MAX_QUEUED", 6, lo=1, hi=1000)
 
 
+def _max_tick_failures() -> int:
+    """Consecutive *failed* ticks tolerated before the loop rests (default 5).
+
+    A transient LLM error (endpoint 400/502) or a breaker/quota *pause* must not
+    end the perpetual loop — it backs off and retries. But a persistent failure
+    (a real config break) should eventually rest the loop rather than spin every
+    heartbeat forever; after this many consecutive failures it goes ``Done`` and
+    waits to be re-armed by a fresh ``quest_tick`` job.
+    """
+    return _env_int("PRECIS_QUEST_TICK_MAX_FAILURES", 5, lo=1, hi=1000)
+
+
 def _force_acquire_enabled() -> bool:
     """Gate for the guaranteed-acquisition fallback (default ON).
 
@@ -203,7 +215,15 @@ def _phase_await(ctx: Any, state: dict[str, Any]) -> Any:
         f"batch complete ({len(state.get('child_job_ids') or [])} sim(s)) "
         "→ harvest + propose next",
     )
-    return _phase_tick(ctx, {"slice_count": int(state.get("slice_count") or 0)})
+    return _phase_tick(
+        ctx,
+        {
+            "slice_count": int(state.get("slice_count") or 0),
+            # Carry the consecutive-failure count across the await hop so a run of
+            # transient failures can eventually rest the loop (a success resets it).
+            "tick_failures": int(state.get("tick_failures") or 0),
+        },
+    )
 
 
 def _quest_topic(store: Any, quest_id: int) -> str:
@@ -302,6 +322,49 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
         f"(+{getattr(outcome, 'papers_linked', 0)} papers); {note}"[:500],
     )
 
+    # A failed / paused tick is NOT a dry loop — back off and retry rather than
+    # resting. A transient LLM error (endpoint 400/502) or a breaker/quota pause
+    # would otherwise fall through to the "no sims dispatched → Done" branch and
+    # silently end the perpetual loop (the 2026-07-20 failure mode: two loop
+    # instances died on a local-model 400). A *failure* counts toward a bounded
+    # give-up budget so a persistent config break eventually rests; a *pause* is
+    # a wait-for-window, so it retries without consuming the budget. Return early
+    # so a failed/paused tick doesn't also fire the acquisition fallback below.
+    if status in ("failed", "paused"):
+        fails = int(state.get("tick_failures") or 0)
+        if status == "failed":
+            fails += 1
+        if fails >= _max_tick_failures():
+            return Done(
+                summary=(
+                    f"quest {quest_id} loop resting after {fails} consecutive "
+                    f"failed tick(s) (last: {status} — {note}). Re-armed by a "
+                    "fresh quest_tick coordinator job once the cause is fixed."
+                ),
+                success=False,
+                summary_meta={
+                    "slices": slice_count,
+                    "tick_failures": fails,
+                    "last_status": status,
+                },
+            )
+        ctx.append_chunk(
+            "job_event",
+            f"tick #{slice_count}: {status} — backing off "
+            f"{_heartbeat_s()}s then retrying "
+            f"(failure {fails}/{_max_tick_failures()})",
+        )
+        now = time.time()
+        return Yield(
+            state={
+                "phase": "await",
+                "slice_count": slice_count,
+                "tick_failures": fails,
+                "child_job_ids": [],
+            },
+            wake_when=WakeWhen("at_time", {"ts": int(now + _heartbeat_s())}),
+        )
+
     # Guaranteed-acquisition fallback: the model's propose step doesn't always
     # emit `searches` (it might not think of one this tick), but the operator
     # wants the loop to keep asking the literature for something new every
@@ -329,11 +392,13 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
             log.exception("tick #%s: fallback lit-search failed", slice_count)
 
     # The sims this tick just dispatched (now in flight) are the next wait set.
+    # A success resets the consecutive-failure budget (state is rebuilt fresh).
     pending = _pending_sim_ids(ctx.store, quest_id)
     if pending:
         return _await_yield({"slice_count": slice_count}, pending)
 
-    # Nothing dispatched — graduated / no proposals / paused. Rest until re-armed.
+    # Nothing dispatched on a *successful* tick — graduated / no proposals / out
+    # of ideas. Rest until re-armed.
     return Done(
         summary=(
             f"quest {quest_id} loop idle after tick #{slice_count}: no new sims "

@@ -39,8 +39,10 @@ scripts/exercise-mcp/out/
 # command and not useful in version control.
 .test-results.xml
 
-# devin/windsurf
-**/.devin
+# devin/windsurf: ignore session state, but TRACK the shareable
+# workflows (ported from .claude/commands/) so they ship with the repo.
+.devin/*
+!.devin/workflows/
 **/.windsurf
 
 # Claude Code: ignore session state (worktrees, transcripts, todos,

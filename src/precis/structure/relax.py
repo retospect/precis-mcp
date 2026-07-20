@@ -27,6 +27,18 @@ from .scene import Scene
 #: (ASE + an MLIP, the ``[dft-ml]`` extra); ``ff``/``xtb``/``dft-*`` stay gated.
 _RENTED_RUNGS = {"ff", "xtb", "ml", "dft-fast", "dft-tight"}
 
+#: Variable-cell relax modes for an energy rung. ``None`` / ``"fixed"`` relaxes
+#: atoms only (the historical default). ``"inplane"`` frees the in-plane lattice
+#: (the a/b vectors + the γ shear) while pinning the c-axis, so a slab's vacuum
+#: gap can't collapse — "relax the box along with the slab". ``"full"`` frees all
+#: six strain components (a bulk cell relax). Voigt strain-mask order is
+#: (xx, yy, zz, yz, xz, xy), matching ASE's cell-filter ``mask``.
+CELL_MODES: frozenset[str | None] = frozenset({None, "fixed", "inplane", "full"})
+_CELL_MASKS: dict[str, list[bool]] = {
+    "inplane": [True, True, False, False, False, True],
+    "full": [True, True, True, True, True, True],
+}
+
 
 class RelaxUnsupported(RuntimeError):
     """A relax rung whose backend extra isn't installed."""
@@ -66,12 +78,30 @@ def relax(
     steps: int = 200,
     tol: float = 1e-3,
     model: str = "mace_mp",
+    cell: str | None = None,
 ) -> RelaxResult:
-    """Relax ``scene`` at the given ``fidelity`` rung (mutates in place)."""
+    """Relax ``scene`` at the given ``fidelity`` rung (mutates in place).
+
+    ``cell`` opts into a **variable-cell** relax on an energy rung (see
+    :data:`CELL_MODES`): ``"inplane"`` relaxes the box in-plane with a slab (the
+    c-axis / vacuum pinned), ``"full"`` relaxes all six strain components. It is
+    only meaningful for an energy rung — the ``clean`` geometry repair has no
+    stress, so requesting a cell relax there raises.
+    """
+    if cell not in CELL_MODES:
+        raise RelaxUnsupported(
+            f"unknown cell relax mode {cell!r} (use 'inplane', 'full', or omit)"
+        )
+    cell_mode = None if cell == "fixed" else cell
+    if cell_mode is not None and fidelity in ("clean", "0"):
+        raise RelaxUnsupported(
+            "variable-cell relax needs an energy rung (fidelity='ml'); the "
+            "'clean' geometry repair has no stress to relax the cell against"
+        )
     if fidelity in ("clean", "0"):
         return _relax_clean(scene, steps=steps, tol=tol)
     if fidelity == "ml":
-        return _relax_ml(scene, steps=steps, tol=tol, model=model)
+        return _relax_ml(scene, steps=steps, tol=tol, model=model, cell=cell_mode)
     if fidelity in _RENTED_RUNGS:
         raise RelaxUnsupported(
             f"relax rung {fidelity!r} needs a rented backend "
@@ -154,7 +184,28 @@ def _ml_calculator(model: str):  # type: ignore[no-untyped-def]
     raise RelaxUnsupported(f"unknown MLIP model {model!r} (try 'mace_mp' or 'chgnet')")
 
 
-def _relax_ml(scene: Scene, *, steps: int, tol: float, model: str) -> RelaxResult:
+def _cell_filter(atoms, cell: str):  # type: ignore[no-untyped-def]
+    """Wrap ``atoms`` in an ASE strain filter so the optimiser relaxes the
+    lattice alongside the positions, masked per :data:`_CELL_MASKS`.
+
+    Prefers the modern ``FrechetCellFilter`` (ASE ≥ 3.23); falls back to the
+    deprecated ``ExpCellFilter`` on older ASE. The import is isolated here so a
+    stale ASE gives one clean signal rather than a stray ImportError.
+    """
+    mask = _CELL_MASKS[cell]
+    try:
+        from ase.filters import FrechetCellFilter
+
+        return FrechetCellFilter(atoms, mask=mask)
+    except ImportError:
+        from ase.constraints import ExpCellFilter  # type: ignore[attr-defined]
+
+        return ExpCellFilter(atoms, mask=mask)
+
+
+def _relax_ml(
+    scene: Scene, *, steps: int, tol: float, model: str, cell: str | None = None
+) -> RelaxResult:
     """Rung 3: relax on a machine-learned interatomic potential (ASE + MLIP).
 
     Real energies + forces — the cheap-but-physical rung that fixes a hand-built
@@ -162,6 +213,10 @@ def _relax_ml(scene: Scene, *, steps: int, tol: float, model: str) -> RelaxResul
     per-atom Cartesian constraints, records the per-step force convergence curve,
     and writes the relaxed geometry back onto the Scene. Fully ``[dft-ml]``-gated:
     a missing ASE/MLIP raises :class:`RelaxUnsupported`.
+
+    ``cell`` (``"inplane"`` / ``"full"``, see :data:`CELL_MODES`) wraps the atoms
+    in a masked ASE cell filter so the box relaxes with the atoms; the relaxed
+    lattice is written back onto ``scene.cell``.
     """
     if not export.ase_available():
         raise RelaxUnsupported(
@@ -191,10 +246,18 @@ def _relax_ml(scene: Scene, *, steps: int, tol: float, model: str) -> RelaxResul
         f = atoms.get_forces()
         curve.append(round(float(np.sqrt((f**2).sum(axis=1).max())), 4))
 
-    opt = BFGS(atoms, logfile=None)
+    # Variable-cell: the optimiser drives a filter over (positions + strain); the
+    # convergence curve stays the atom-force max so it's comparable across modes.
+    opt_target = _cell_filter(atoms, cell) if cell is not None else atoms
+
+    opt = BFGS(opt_target, logfile=None)
     opt.attach(_record, interval=1)
     converged = bool(opt.run(fmax=max(tol, 0.05), steps=steps))
 
+    if cell is not None:
+        from .cell import Cell
+
+        scene.cell = Cell(np.asarray(atoms.get_cell(), dtype=float), scene.cell.pbc)
     scaled = atoms.get_scaled_positions()
     for idx, la in enumerate(labels):
         scene.atoms[la].frac = scene.cell.wrap(np.asarray(scaled[idx], dtype=float))

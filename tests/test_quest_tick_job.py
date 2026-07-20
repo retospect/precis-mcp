@@ -117,14 +117,62 @@ class TestPhaseTick:
         assert len(calls) == 1 and calls[0]["compute"] is True
         assert calls[0]["tier"] == "local-big"
 
-    def test_nothing_dispatched_is_done(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _stub_tick(monkeypatch, _Outcome(status="paused", note="graduated"))
+    def test_nothing_dispatched_on_success_is_done(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A *successful* tick that dispatches nothing = graduated / out of ideas.
+        _stub_tick(monkeypatch, _Outcome(status="succeeded", note="graduated"))
         _stub_queued(monkeypatch, 0)
         _stub_pending(monkeypatch, [[]])  # idle before AND after → nothing dispatched
         out = qt._dispatch(FakeCtx(_meta()), qt.SPEC)
         assert isinstance(out, Done)
         assert out.success is True
-        assert out.summary_meta.get("last_status") == "paused"
+        assert out.summary_meta.get("last_status") == "succeeded"
+
+    def test_failed_tick_backs_off_and_retries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A transient LLM error (e.g. endpoint 400) must NOT end the loop — it
+        # re-yields on a heartbeat and bumps the consecutive-failure counter.
+        _stub_tick(monkeypatch, _Outcome(status="failed", note="llm error: 400"))
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        out = qt._dispatch(FakeCtx(_meta()), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["phase"] == "await"
+        assert out.state["tick_failures"] == 1
+        assert out.state["child_job_ids"] == []
+        assert out.wake_when.kind == "at_time"
+
+    def test_paused_tick_retries_without_counting_a_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A breaker/quota pause is a wait-for-window, not a failure: it retries
+        # but does not consume the give-up budget.
+        _stub_tick(monkeypatch, _Outcome(status="paused", note="paused: cap"))
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        state = {"phase": "tick", "slice_count": 3, "tick_failures": 2}
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["tick_failures"] == 2  # unchanged by a pause
+
+    def test_failed_tick_rests_after_max_failures(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_tick(monkeypatch, _Outcome(status="failed", note="llm error: 400"))
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        state = {
+            "phase": "tick",
+            "slice_count": 9,
+            "tick_failures": qt._max_tick_failures() - 1,
+        }
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert isinstance(out, Done)
+        assert out.success is False
+        assert out.summary_meta.get("tick_failures") == qt._max_tick_failures()
+        assert out.summary_meta.get("last_status") == "failed"
 
     def test_starvation_gate_defers_without_ticking(
         self, monkeypatch: pytest.MonkeyPatch

@@ -331,6 +331,45 @@ def test_energy_rung_mints_a_struct_relax_job_parented_on_the_structure(
     assert set(params["poscar_labels"]) == {"aPd1", "aPd2"}
 
 
+def test_relax_cell_mode_rides_the_dispatch_and_keys(structure, store, no_local_mlip):
+    """A variable-cell relax carries its ``cell`` mode into the struct_relax job
+    params (the GPU container honours it) and folds into the run-cube cache key,
+    while an atoms-only relax keeps the historical key shape (no ``cell`` param)
+    so the existing cube stays a hit."""
+    structure.put(id="slab_a", text=_PD)
+    ref_a = structure.store.get_ref(kind="structure", id="slab_a")
+    structure.edit(
+        id="slab_a", ops=[{"op": "relax", "fidelity": "ml", "cell": "inplane"}]
+    )
+    params = _child_jobs(store, ref_a.id)[0]["params"]
+    assert params["cell"] == "inplane"
+    key_inplane = params["cache_key"]
+
+    structure.put(id="slab_b", text=_PD)  # same geometry, atoms-only relax
+    ref_b = structure.store.get_ref(kind="structure", id="slab_b")
+    structure.edit(id="slab_b", ops=[{"op": "relax", "fidelity": "ml"}])
+    params_b = _child_jobs(store, ref_b.id)[0]["params"]
+    assert "cell" not in params_b  # historical param shape preserved
+    assert key_inplane != params_b["cache_key"]  # cell folds into the address
+
+
+def test_relax_cell_mode_requires_energy_rung(structure):
+    structure.put(id="pd_pair", text=_PD)
+    with pytest.raises(BadInput):
+        structure.edit(
+            id="pd_pair",
+            ops=[{"op": "relax", "fidelity": "clean", "cell": "inplane"}],
+        )
+
+
+def test_relax_unknown_cell_mode_is_bad_input(structure):
+    structure.put(id="pd_pair", text=_PD)
+    with pytest.raises(BadInput):
+        structure.edit(
+            id="pd_pair", ops=[{"op": "relax", "fidelity": "ml", "cell": "sideways"}]
+        )
+
+
 def test_energy_rung_with_requester_wires_the_wait(structure, store, no_local_mlip):
     """``requested_by=<todo>`` on the relax op links the todo ``requested`` →
     the job and arms a ``derived_job_succeeded`` auto_check so the intentful

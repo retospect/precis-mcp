@@ -231,15 +231,17 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
     model = params.get("model") or "mace_mp"
     steps = int(params.get("steps", 200))
+    cell = params.get("cell") or None
     node = params.get("target_node") or _NODE
 
     in_dir, out_dir = STAGER(structure_ref_id)
     Path(in_dir, "POSCAR").write_text(poscar)
-    Path(in_dir, "params.json").write_text(
-        json.dumps(
-            {"fidelity": fidelity, "model": model, "steps": steps}, sort_keys=True
-        )
-    )
+    run_params: dict[str, Any] = {"fidelity": fidelity, "model": model, "steps": steps}
+    # Variable-cell relax mode passes through to the container contract (absent
+    # ⇒ atoms-only, the historical default the container already assumes).
+    if cell:
+        run_params["cell"] = cell
+    Path(in_dir, "params.json").write_text(json.dumps(run_params, sort_keys=True))
     argv = build_run_argv(ref_id=structure_ref_id, in_dir=in_dir, out_dir=out_dir)
     ctx.append_chunk("job_event", f"relax[{fidelity}] on {node}: {' '.join(argv)}")
 

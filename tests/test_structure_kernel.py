@@ -313,6 +313,52 @@ def test_relax_rented_rungs_are_gated(monkeypatch) -> None:
             relax(scene, fidelity=rung)
 
 
+def test_cell_masks_pin_the_c_axis_inplane() -> None:
+    # In-plane frees a/b + the γ shear (Voigt xx, yy, xy) and pins zz/yz/xz so a
+    # slab's vacuum can't collapse; full frees all six strain components.
+    from precis.structure.relax import _CELL_MASKS
+
+    assert _CELL_MASKS["inplane"] == [True, True, False, False, False, True]
+    assert all(_CELL_MASKS["full"])
+
+
+def test_relax_cell_mode_needs_an_energy_rung() -> None:
+    scene = Scene(cell=_cubic(10.0))
+    apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0, 0, 0]}])
+    with pytest.raises(RelaxUnsupported):  # 'clean' has no stress
+        relax(scene, fidelity="clean", cell="inplane")
+
+
+def test_relax_unknown_cell_mode_raises() -> None:
+    scene = Scene(cell=_cubic(10.0))
+    apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0, 0, 0]}])
+    with pytest.raises(RelaxUnsupported):
+        relax(scene, fidelity="ml", cell="sideways")
+
+
+def test_relax_ml_inplane_relaxes_the_box_but_pins_the_vacuum(monkeypatch) -> None:
+    # A genuine variable-cell relax via the fast EMT calculator (no MACE needed):
+    # the in-plane lattice is free to move off a deliberately-strained value while
+    # the c-axis (the vacuum gap) stays pinned by the mask.
+    pytest.importorskip("ase")
+    import importlib
+
+    from ase.calculators.emt import EMT
+
+    relax_mod = importlib.import_module("precis.structure.relax")
+    monkeypatch.setattr(relax_mod, "_ml_calculator", lambda model: EMT())
+
+    scene = Scene(cell=Cell(np.diag([5.0, 5.0, 12.0]), pbc=(True, True, False)))
+    apply_ops(scene, [{"op": "add_atom", "element": "Cu", "frac": [0.0, 0.0, 0.5]}])
+    c_before = float(scene.cell.lattice[2][2])
+    res = relax(scene, fidelity="ml", cell="inplane", steps=40)
+
+    assert res.rung == "ml" and res.energy is not None
+    assert float(scene.cell.lattice[2][2]) == pytest.approx(c_before)  # vacuum pinned
+    # the in-plane vectors moved off the strained 5.0 Å (the box relaxed)
+    assert float(scene.cell.lattice[0][0]) != pytest.approx(5.0)
+
+
 # -- nav probes: spatial (line / plane / sphere, §6.2) -----------------------
 
 

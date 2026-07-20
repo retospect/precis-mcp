@@ -718,8 +718,14 @@ The master kinds table lives in the `precis-overview` skill.
   in flight) + a node-load starvation gate. The coordinator claim now honours
   `meta.params.target_node` (`coordinator._claim_jobs` passes `PRECIS_NODE`) so
   the loop pins to the GPU/model node; catpath sims carry `resources.wall_seconds`
-  so a full reaction-network NEB can't lease-expire mid-run. Runs `Done` (rests)
-  only when a tick proposes nothing new (graduated / out of ideas).
+  so a full reaction-network NEB can't lease-expire mid-run. A **failed/paused**
+  tick (transient LLM 400/502, breaker/quota pause) backs off on the heartbeat and
+  **retries** — a failure counts toward `PRECIS_QUEST_TICK_MAX_FAILURES` (default
+  5 consecutive) after which the loop rests; a pause retries free. Only a
+  *successful* tick that proposes nothing new runs `Done` (graduated / out of
+  ideas). Reaction (slab) candidates relax the box **in-plane** (`cell="inplane"`
+  — a/b + γ free, c-axis/vacuum pinned) so stability is judged on a relaxed slab
+  (`quest/compute.py`; the `relax` op's variable-cell mode in `structure/relax.py`).
 - **`llm`** — the model catalog (design-of-record `docs/proposals/llm-catalog.md`;
   slice 1 **live, read-only, ships dark**). Turns model choice from hardcoded
   constants (`router._TIER_MODEL` + the `LLM:opus|sonnet|haiku` tag) into a

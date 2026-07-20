@@ -258,6 +258,66 @@ quests paused 2026-07-16). Remaining:
   gated off in prod (`PRECIS_DREAM_AGENT` unset). Owner: `workers/dream_agent.py`
   + `data/prompts/dream-prompt.md`.
 
+### Quest-optimization workstream (live quest 164903 — Pd catalyst NO→NH₃)
+
+Surfaced 2026-07-20 optimizing the first real running quest (**quest 164903**,
+coordinator loop **job 166379**, dossier draft `quest-164903-dossier`). Ordered
+by value.
+
+- **Wrap the recurring "keep tabs on a quest" ops in an opus/skill** *(feature,
+  open — owner a new `precis-quest-ops` skill or `precis quest status <id>`
+  CLI).* Repeated by-hand `scripts/prod-psql` queries I keep re-running to
+  monitor a quest — fold each into one command as they stabilize: **(1)**
+  logbook tail (`chunks WHERE ref_id=<q> AND chunk_kind='quest_log' ORDER BY
+  pos`); **(2)** candidate structures + their measures + `ruled-out:*` tags;
+  **(3)** sim-job status roll (`struct_relax`/`catpath_explore` by `parent_id`
+  → `serves` → quest, with STATUS + created_at, showing cancelled/retried
+  churn); **(4)** coordinator-loop slice events (`quest_tick` job_event
+  chunks); **(5)** per-quest LLM spend + errors (`llm_call_log WHERE
+  ref_id=<q>`, surfacing 400/502 blips). A `precis quest status <id>` that
+  prints all five is the consolidation target.
+- **Extend catpath leases / kill the re-lease churn** *(bug, open — owner
+  `quest/compute.py::dispatch_catpath` + `executors` lease logic).* Every
+  candidate's first `catpath_explore` was cancelled and re-minted ~2.5 h later
+  (164913: 165035/165286→165386; Pt/Cu/Ni: 165611/165614/165617→165824/6/8)
+  before succeeding — lease-expiry churn the `wall_seconds` comment already
+  warns about. Confirm `PRECIS_CATPATH_WALL_SECONDS` (default 5400) actually
+  reaches the ssh_node lease on the routed node; raise the floor if full-network
+  NEBs under load still outlive it.
+- **Relax the slab box along with the atoms** *(feature, in-repo landed;
+  container + bulk-relax follow-ups open — owner `structure/relax.py::_relax_ml`
+  + `slab` op + the `precis-dft` container).* **Done (in-repo):** a `relax` op
+  `cell` param (`"inplane"`/`"full"`) wraps the atoms in a masked ASE
+  `FrechetCellFilter` (in-plane frees a/b + γ, pins the c-axis so the vacuum
+  can't collapse), writes the relaxed lattice back onto the Scene, and folds
+  into the run-cube cache key; plumbed through `StructureHandler.edit` →
+  `_NeedsDispatch` → `struct_relax` job params → the container `params.json`;
+  the quest compute lane (`run_compute_step`) asks for `cell="inplane"` on
+  reaction (slab) candidates. **Remaining:** (1) the `precis-dft` container
+  (`gpaw-relax`, external repo) must actually honour `params.json["cell"]` — the
+  param rides the contract but the container-side variable-cell path is unbuilt;
+  (2) *better for slabs* — relax the **bulk** once per (element, MLIP) with a
+  full cell filter, cache the lattice constant, and have the `slab` op cut the
+  surface at that MLIP-consistent constant (removes the spurious in-plane strain
+  at build time, amortized across all candidates).
+- **Richer structure design ops — holes + hydrogen + subsurface** *(feature,
+  open — owner `structure` op set + `quest/tick.py` proposal rules).* Widen the
+  proposer's design knobs beyond surface substitution: **remove_atom** (surface
+  vacancies / holes), **add H** on the surface *and* subsurface/interstitial
+  (hydride/subsurface-H chemistry), and subsurface dopant placement (not just
+  adatoms). Each needs a compact op the `slab`-based proposal template can emit
+  and catpath can inject.
+- **The one struct_relax lane is dead — and it laundered a wrong conclusion**
+  *(bug, open — owner spark `struct_relax` executor + `quest/compute.py`
+  harvest).* Only one `struct_relax` was ever minted (164914, on clean Pd(111));
+  it **failed on infra** (docker `gpaw-relax` on spark), harvest tagged the
+  baseline `ruled-out:relax-failed`, and the model wrote "Pd(111) is unstable
+  under reaction conditions" into the dossier — a *physical* dead-end laundered
+  from an *infra* failure. Fix the spark relax lane (it should be the stability
+  measurement); until then, don't let a relax-job infra failure auto-`dead-end`
+  a candidate (distinguish non-convergence from executor error). Un-rule-out
+  st164913 once the lane works.
+
 **Open design questions** (resolve as steering matures): cost/credit attribution
 under overlapping quests (pull = max; cost needs a split/shared-pool rule);
 "promise" bid term needs a concrete proxy (frontier-improvement rate); prose
