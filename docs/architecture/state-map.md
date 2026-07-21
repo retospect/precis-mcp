@@ -324,20 +324,30 @@ executor's (`claude_inproc` plan_tick, etc.).
   §Audio). Two standing casts ride one produce→narrate→publish spine, two voice
   profiles: **`reading`** (morning situational-awareness brief, `bm_george`,
   ~20 min — `reading/briefing_cast.py` unions news/activity/recall/quest lanes, each
-  degrade-to-empty; depth-first prompt, papers carry abstracts + leech cards carry
-  bodies, active-only quest report with a decaying dormant nudge; papers/findings
+  degrade-to-empty; depth-first prompt, papers carry abstracts + a `[[pa<id>]]`
+  cite marker (dropped inline per claim → a `§` link in `/drafts`, stripped from
+  audio by `narrate.speakable`) + true overnight paper count (not the naming cap),
+  leech cards carry bodies, active-only quest report with a decaying dormant nudge
+  that links its strivings; papers/findings
   `cites`, news wire `derived-from`, drafts/quests `related-to`) and **`nidra`**
   (evening concept-graph meditation, `af_nicole`, ~45 min segmented walk —
   `reading/meditation.py`; walked concepts `related-to`). Producers
   persist a standalone dated `draft` marked `meta.cast` and **link it back to the
-  sources it drew on** via the shared `cast_common.link_sources` (a cast names its
-  sources but reads no URL aloud, so the edge is the only durable pointer back —
-  `links_for` the cast draft reopens them; best-effort, a bad edge is skipped); `workers/cast_audio.py`
+  sources it drew on** via the shared `cast_common.link_sources` (a cast reads no
+  URL aloud, so these graph edges — plus the morning brief's inline `[[pa…]]`
+  paper citations — are the durable pointer back; `links_for` the cast draft
+  reopens them; best-effort, a bad edge is skipped); `workers/cast_audio.py`
   (spark, default-OFF `PRECIS_CAST_AUDIO_ENABLED` + `PRECIS_TTS_IMAGE`) narrates
   any un-narrated cast draft via `render_narration` → `render_episode` →
   `publish_episode(source=profile.source)` — a **distinct** producer tag per cast
   (`brief` / `meditation`, so a shared feed can subfilter), idempotent on `meta.audio_episode_id`
-  (sibling to `briefing_audio`). Compose is the `reading_brief`/`meditation`
+  (sibling to `briefing_audio`). The episode id + on-demand PDF filename are the
+  human `export_stem` (`morning_brief_<date>` / `evening_meditation_<date>`), not the
+  internal `cast-*` slug (`cast_common.export_stem`). On creation `create_cast_draft`
+  files the draft under a per-cast Drive **folder** ("Morning brief" / "Evening
+  meditation", find-or-create, best-effort) so its text shows in `/drive`; the Drive
+  row surfaces the published mp3 + compiled PDF as download links. Compose is the
+  `reading_brief`/`meditation`
   **`claude_inproc`** job_types (melchior — both casts compose with `claude-opus`
   via the melchior-loopback litellm proxy, same host as the news briefing) on daily
   `level:recurring` watches; **TTS is the separate downstream spark pass**, so the
@@ -728,7 +738,7 @@ The master kinds table lives in the `precis-overview` skill.
   (`quest/compute.py`; the `relax` op's variable-cell mode in `structure/relax.py`).
 - **`llm`** — the model catalog (design-of-record `docs/proposals/llm-catalog.md`;
   slice 1 **live, read-only, ships dark**). Turns model choice from hardcoded
-  constants (`router._TIER_MODEL` + the `LLM:opus|sonnet|haiku` tag) into a
+  constants (`router._TIER_MODEL` + the `LLM:opus|sonnet|haiku|local` tag) into a
   first-class kind: a **catalog** of facts + a **ledger** of observations + a
   **policy** that picks (quest/gripe shape — numeric-ref `handlers/llm.py`, handle
   `lm`, migration 0071, `emits_card` so a card *is a vector*, `corpus_role='none'`).

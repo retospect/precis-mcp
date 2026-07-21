@@ -32,6 +32,13 @@ deploy/*.local.yml
 .DS_Store
 **/.DS_Store
 
+# editor swap files
+*.swp
+*.swo
+
+# audio-feed output artifact (regenerated; not source)
+feed.xml
+
 # usability harness output
 scripts/exercise-mcp/out/
 

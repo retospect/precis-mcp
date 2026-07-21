@@ -128,6 +128,18 @@ class AgentResult:
     duration_s: float
     turns_used: int | None
     tool_calls: int | None = None
+    #: The complete raw stdout stream (every stream-json event: turns + tool
+    #: call/result), preserved verbatim so a caller that stores a debuggable
+    #: transcript or parses the terminal reason itself — the planner tick — can.
+    #: ``final_text`` is the *lifted* answer; this is the whole stream. Empty on
+    #: the text/stub path where there is no stream to keep.
+    raw_stdout: str = ""
+    #: How the run terminated *abnormally* (``stream_terminal_reason``):
+    #: ``'max_turns'`` / a ``'budget'``-class reason / another ``error_*``
+    #: subtype — ``None`` on a clean run. Lets a caller (plan_tick) map a
+    #: recovered exhaustion onto a resumable outcome without re-parsing the
+    #: stream, since the wrapper swallows a recoverable non-zero exit.
+    terminal_reason: str | None = None
 
 
 def call_claude_agent(
@@ -146,6 +158,8 @@ def call_claude_agent(
     envelope: Any | None = None,
     extra_args: tuple[str, ...] = (),
     log_event: tuple[Store, int, str] | None = None,
+    env_overlay: dict[str, str] | None = None,
+    cwd: str | Path | None = None,
 ) -> AgentResult:
     """Run an agentic ``claude -p`` session and return the audit result.
 
@@ -191,6 +205,19 @@ def call_claude_agent(
             provided and the call succeeds, writes a ``ref_events``
             row on ``ref_id`` with the source, event ``agent:done``,
             and a payload carrying cost / model / duration_s.
+        env_overlay: Extra env vars overlaid onto the subprocess's
+            environment (applied over the ``os.environ`` copy, after the
+            OAuth bootstrap). The spawned MCP server inherits them — the
+            planner tick uses this to thread its runtime context
+            (``PRECIS_CURRENT_TODO`` / ``PRECIS_CURRENT_MODEL`` /
+            ``PRECIS_WORKSPACE`` / the agentlog id / ``PRECIS_KINDS_DISABLED``)
+            to the subprocess it can't hand an in-process ContextVar. ``None``
+            inherits the worker env unchanged. NOTE: applies to the in-process
+            subprocess only; the (dark) container path doesn't forward it yet.
+        cwd: Working directory for the subprocess (threaded to
+            :func:`run_claude`). The planner tick passes a CLAUDE.md-free
+            neutral cwd so ``claude -p`` discovers no ambient project persona
+            (ADR 0051 §12). ``None`` inherits the caller's cwd.
 
     Returns:
         :class:`AgentResult` with the raw stdout + telemetry.
@@ -331,6 +358,14 @@ def call_claude_agent(
                 "is falling back to ANTHROPIC_API_KEY, billed per token at API "
                 "rates. Install ~/.claude_oauth_token to use the subscription."
             )
+    if env_overlay:
+        # Tick runtime context (parent todo / model / workspace / agentlog id /
+        # kind-gate) for the spawned MCP server. Applied last so it wins over the
+        # inherited env, but after the OAuth bootstrap so it can't clobber auth.
+        # The subprocess can't read the in-process ContextVar the OSS loop uses,
+        # so these env back-doors are how the claude tick propagates its context.
+        proc_env.update(env_overlay)
+    cwd_str = str(cwd) if cwd is not None else None
 
     started = time.monotonic()
     # ``stdin_devnull`` because Claude Code 2.1.x reads stdin in
@@ -400,6 +435,7 @@ def call_claude_agent(
             error_cls=ClaudeAgentError,
             env=proc_env,
             stdin_devnull=True,
+            cwd=cwd_str,
         )
     except ClaudeAgentError as exc:
         if containerized and _container_infra_failure(exc):
@@ -417,7 +453,7 @@ def call_claude_agent(
                 "level (rc=%s); latching host unhealthy and retrying in-process",
                 getattr(exc, "returncode", None),
             )
-            res = _run_inproc_fallback(binary, args, timeout_s, proc_env)
+            res = _run_inproc_fallback(binary, args, timeout_s, proc_env, cwd_str)
         else:
             # A non-container failure (or a claude/model error inside the
             # container): recover a resumable exhaustion or re-raise enriched.
@@ -489,6 +525,12 @@ def call_claude_agent(
         duration_s=duration_s,
         turns_used=turns_used,
         tool_calls=tool_calls,
+        raw_stdout=res.stdout or "",
+        # How the run ended abnormally, when it did (max_turns / budget / other
+        # error_* subtype). ``None`` on a clean run. Both the clean path and the
+        # recovered-exhaustion path carry the full stream on ``res.stdout``, so
+        # this is a definitive read for a caller that maps it to a resume signal.
+        terminal_reason=stream_terminal_reason(res.stdout or ""),
     )
 
     if log_event is not None:
@@ -555,7 +597,11 @@ def _recover_exhaustion_or_raise(exc: ClaudeAgentError) -> Any:
 
 
 def _run_inproc_fallback(
-    binary: str, args: list[str], timeout_s: float, proc_env: dict[str, str]
+    binary: str,
+    args: list[str],
+    timeout_s: float,
+    proc_env: dict[str, str],
+    cwd: str | None = None,
 ) -> Any:
     """Retry the SAME agentic call in-process after a container-infra failure.
 
@@ -572,6 +618,7 @@ def _run_inproc_fallback(
             error_cls=ClaudeAgentError,
             env=proc_env,
             stdin_devnull=True,
+            cwd=cwd,
         )
     except ClaudeAgentError as exc:
         return _recover_exhaustion_or_raise(exc)

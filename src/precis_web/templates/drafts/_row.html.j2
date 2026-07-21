@@ -546,9 +546,9 @@
           <select name="model" class="rounded border-rose-300 text-[10px] border px-0.5 py-0 bg-white"
                   title="model to retry on (blank = keep the current LLM tier)">
             <option value="">↻ same</option>
-            <option value="opus">opus</option>
-            <option value="sonnet">sonnet</option>
-            <option value="haiku">haiku</option>
+            {% for alias, label in planner_models() %}
+            <option value="{{ alias }}">{{ alias }} · {{ label }}</option>
+            {% endfor %}
           </select>
           <button class="leading-none text-emerald-600 hover:text-emerald-800"
                   title="▶ restart — clear the failure and re-run">▶</button>
@@ -607,9 +607,9 @@
         <label class="flex items-center gap-1">model
           <select name="model" x-model="model"
                   class="rounded border border-slate-200 bg-white px-1 py-0.5 text-[10px]">
-            <option value="opus">opus</option>
-            <option value="sonnet">sonnet</option>
-            <option value="haiku">haiku</option>
+            {% for alias, label in planner_models() %}
+            <option value="{{ alias }}">{{ alias }} · {{ label }}</option>
+            {% endfor %}
           </select>
         </label>
         <button type="button"

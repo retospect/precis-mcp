@@ -126,6 +126,24 @@ _KIND_SKILL_ALIASES: dict[str, str] = {
 }
 
 
+def _tick_disabled_hint(kind: str) -> str | None:
+    """The per-tick disable hint for ``kind``, or ``None``.
+
+    Reads the thread-scoped in-process tick ContextVar
+    (:func:`precis.utils.inproc_context.current`): if the active tick prohibits
+    ``kind``, returns its contextual hint (what to do instead), else ``None``.
+    Unset outside an in-process agent tick — the MCP server / CLI / tests never
+    bind it — so this is a no-op there. The import is local so ``runtime`` keeps
+    no import-time coupling to the loop context (``inproc_context`` is stdlib-
+    only, but the read is per-call and cheap either way)."""
+    from precis.utils.inproc_context import current
+
+    ctx = current()
+    if ctx is None or not ctx.disabled_kinds:
+        return None
+    return dict(ctx.disabled_kinds).get(kind)
+
+
 def _angle_excerpt(text: str) -> str:
     """One-line, length-capped preview of a snapped chunk's text."""
     flat = " ".join((text or "").split())
@@ -518,7 +536,24 @@ class PrecisRuntime:
                 — see broad usability pass 2026-05-30 (#8). The
                 second variant enumerates the verbs this kind *does*
                 support so the recovery hint is sharp.
+            Unsupported: the kind is prohibited *for the duration of the
+                active in-process tick* (the ContextVar gate, below).
         """
+        # Per-tick prohibition (in-process agent loop only): a background pass
+        # may disable a kind for one tick via the tick ContextVar — plan_tick
+        # gates the draft's colliding prose-file kind so the planner writes into
+        # the draft, not a freestanding file. This is the in-process twin of the
+        # claude path's PRECIS_KINDS_DISABLED env entry (the spawned MCP server
+        # honors *that* at construction; the in-process Hub is built once at
+        # boot, so the per-tick prohibition has to be a per-call check). No-op
+        # outside a tick — the ContextVar is unset for the MCP server / CLI /
+        # tests, so this is byte-identical there.
+        tick_hint = _tick_disabled_hint(kind)
+        if tick_hint is not None:
+            raise Unsupported(
+                f"kind {kind!r} is disabled for this tick ({tick_hint})",
+                next=tick_hint,
+            )
         handler = self.hub.handler_for(kind)
         if handler is None:
             # Distinguish "registered-but-disabled in this build" from

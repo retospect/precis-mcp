@@ -80,6 +80,7 @@ def run_claude(
     error_cls: type[ClaudeProcessError],
     env: dict[str, str] | None = None,
     stdin_devnull: bool = False,
+    cwd: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run ``claude -p`` and return the completed process on success.
 
@@ -87,6 +88,11 @@ def run_claude(
     timeout, missing binary, or non-zero exit. ``label`` prefixes the
     timeout / exit error messages (e.g. ``"claude -p"`` vs
     ``"claude -p (agent)"``).
+
+    ``cwd`` runs the subprocess from a specific directory — used by the
+    planner tick to spawn from a CLAUDE.md-free neutral cwd so ``claude -p``
+    discovers no ambient project persona (ADR 0051 §12). ``None`` inherits
+    the caller's working directory (today's behaviour).
     """
     # Bootstrap the long-lived OAuth token from ~/.claude_oauth_token so any
     # ``claude -p`` caller — call_claude_p (figure turn, web follow-up, run as
@@ -104,6 +110,7 @@ def run_claude(
             text=True,
             timeout=timeout_s,
             env=env,
+            cwd=cwd,
             stdin=subprocess.DEVNULL if stdin_devnull else None,
         )
     except subprocess.TimeoutExpired as exc:

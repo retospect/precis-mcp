@@ -159,6 +159,8 @@
                 <a href="/drive/{{ r.ref_id }}" class="hover:underline font-medium">{{ r.title }}</a>
               {% elif r.url %}
                 <a href="{{ r.url }}" class="hover:underline">{{ r.title | truncate(90) }}</a>
+                {% if r.audio_url %}<a href="{{ r.audio_url }}" class="ml-2 text-xs text-sky-600 hover:underline" title="Download the narrated episode">▶ audio</a>{% endif %}
+                {% if r.pdf_url %}<a href="{{ r.pdf_url }}" class="ml-2 text-xs text-sky-600 hover:underline" title="Download the compiled PDF">PDF</a>{% endif %}
               {% else %}
                 {{ r.title | truncate(90) }}
                 <span class="text-xs text-slate-400 font-mono">{{ r.kind }}:{{ r.ident }}</span>

@@ -267,11 +267,6 @@ def _followup_discussions(store: Any, ref_id: int) -> list[dict[str, Any]]:
     return rows
 
 
-#: Model tiers the retry dropdown offers for an LLM-planner job. Matches
-#: the closed vocab ``Tag.parse_strict`` accepts for ``LLM:<model>``.
-_RETRY_MODELS: tuple[str, ...] = ("opus", "sonnet", "haiku")
-
-
 def _job_actions(store: Any, ref: Any, tags: list[Any]) -> dict[str, Any]:
     """Context for the job detail actions strip — retry, transcript, parent.
 
@@ -334,7 +329,6 @@ def _job_actions(store: Any, ref: Any, tags: list[Any]) -> dict[str, Any]:
         ),
         "parent_id": parent_id if parent_kind == "todo" else None,
         "is_llm_planner": is_llm_planner,
-        "retry_models": list(_RETRY_MODELS),
         "has_transcript": bool(meta.get("transcript")),
         "job_type": meta.get("job_type"),
     }

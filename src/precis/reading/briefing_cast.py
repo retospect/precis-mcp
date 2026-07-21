@@ -26,9 +26,15 @@ layers land):
 
 As it renders, each lane also records the source refs it surfaced; the finished
 draft is then linked back to them (papers/findings ``cites``, the news wire
-``derived-from``, drafts/quests ``related-to``). The spoken brief names its
-sources but reads no URL aloud (the voice contract), so nothing is cited inline
-— these edges are the only durable way to reopen the paper the brief mentioned.
+``derived-from``, drafts/quests ``related-to``) — the durable graph edges that
+reopen a source from the Connections panel.
+
+The *paper* lane additionally hands the model a bracketed ``[[pa<id>]]``
+citation token per named paper and asks it to drop that marker inline after any
+claim it draws from that paper. The marker renders as a compact ``§`` citation
+link in the ``/drafts`` reader and is stripped entirely from the spoken/audio
+path (``narrate.speakable`` drops the ``[[…]]`` form), so the cast reads clean
+aloud while the page carries in-text citations back to the paper.
 
 See docs/design/reading-prep-loop.md (§The briefing, Slice 5) and
 docs/proposals/quest-layer.md.
@@ -54,6 +60,7 @@ from precis.reading.cast_common import (
     link_sources,
     voice_skill_preamble,
 )
+from precis.utils import handle_registry
 from precis.workers.briefing import _complete_with_retry
 from precis.workers.llm_summarize import LlmClient, LlmConfig
 
@@ -92,7 +99,12 @@ _MORNING_CONTRACT = (
     "number, a system, a named result — rather than staying general. Cover a few "
     "papers with real depth rather than listing many by title, and ground every "
     "statement in the abstract you are given — never invent a finding that isn't "
-    "there.\n"
+    "there. CITE AS YOU GO: each paper is given with a bracketed citation marker "
+    "like '[[pa1234]]'. When you state a claim, method, or number that comes from "
+    "a paper, place that paper's marker inline immediately after the sentence it "
+    "supports, copied verbatim (brackets and all). These markers are SILENT — "
+    "they become a citation link on the page and are removed entirely from the "
+    "audio — so cite freely; they never disrupt what is read aloud.\n"
     "- RECALL AND FLASHCARDS: for the cards that keep slipping, actually TEACH "
     "the underlying idea — explain the reasoning behind the answer, connect it "
     "to adjacent concepts, and where it helps, name the mistake that is easy to "
@@ -113,9 +125,12 @@ _MORNING_CONTRACT = (
     "material to carry the brief.\n\n"
     "Write for the EAR: describe relationships in plain words, expand "
     "abbreviations and symbols, never read a URL, a slash, a path, a list "
-    "marker, or a formula aloud. If a lane is empty, simply don't mention it. "
-    "Return plain paragraphs separated by blank lines — no headings, no markup, "
-    "no bullet points."
+    "marker, or a formula aloud. The ONE exception is the '[[pa…]]' citation "
+    "markers described above — those are invisible to the ear (stripped from the "
+    "audio), so keep them exactly as given. If a lane is empty, simply don't "
+    "mention it. Return plain paragraphs separated by blank lines — no headings, "
+    "no markup, no bullet points (the '[[pa…]]' citation markers are allowed "
+    "inline)."
 )
 
 #: How many overnight papers get the full claim/method/significance treatment
@@ -229,9 +244,29 @@ def _abstract_snippet(meta: Any, *, limit: int = _PAPER_ABSTRACT_CHARS) -> str:
     return text
 
 
-def _render_papers(papers: list[Any]) -> str:
+def _cite_token(ref: Any) -> str:
+    """The ``[[pa<id>]]`` citation marker for a paper ref, or ``""``.
+
+    Handed to the model beside a paper so it can drop the marker inline after
+    a claim; :func:`precis.utils.handle_registry.try_format` gives the record
+    handle (``pa<ref_id>``), which the ``/drafts`` reader renders as a compact
+    ``§`` citation link and ``narrate.speakable`` strips from the audio.
+    """
+    rid = getattr(ref, "id", None)
+    if rid is None:
+        return ""
+    handle = handle_registry.try_format("paper", int(rid))
+    return f"[[{handle}]]" if handle else ""
+
+
+def _render_papers(papers: list[Any], *, total: int | None = None) -> str:
     """The overnight papers, rendered claim-first: the top few carry their
-    abstracts (so the model can go deep), any tail is named for context."""
+    abstracts (so the model can go deep), any tail is named for context.
+
+    Each named paper carries its ``[[pa<id>]]`` citation marker so the model
+    can cite it inline. ``total`` is the true overnight count (which may exceed
+    the naming cap): the header reports it, and any un-named remainder is noted
+    so the brief never under-counts the night's reading."""
     if not papers:
         return ""
     lines: list[str] = []
@@ -239,14 +274,49 @@ def _render_papers(papers: list[Any]) -> str:
         title = (getattr(r, "title", "") or "").strip()
         if not title:
             continue
+        cite = _cite_token(r)
+        head = f"  * {title}" + (f" — cite as {cite}" if cite else "")
         snippet = _abstract_snippet(getattr(r, "meta", None))
-        lines.append(f"  * {title}" + (f"\n    abstract: {snippet}" if snippet else ""))
-    tail = _titles(papers[_PAPER_DEPTH_CAP:])
+        lines.append(head + (f"\n    abstract: {snippet}" if snippet else ""))
+    tail = [
+        f"{title} {cite}".strip()
+        for r in papers[_PAPER_DEPTH_CAP:]
+        if (title := (getattr(r, "title", "") or "").strip())
+        for cite in (_cite_token(r),)
+    ]
     if tail:
-        lines.append("  * also acquired (titles only): " + "; ".join(tail))
+        lines.append("  * also acquired (title + cite marker): " + "; ".join(tail))
     if not lines:
         return ""
-    return f"Papers acquired or updated ({len(papers)}):\n" + "\n".join(lines)
+    shown = len(papers)
+    count = total if total is not None else shown
+    extra = (
+        f" — and {count - shown} more not listed here"
+        if total is not None and count > shown
+        else ""
+    )
+    return f"Papers acquired or updated ({count}){extra}:\n" + "\n".join(lines)
+
+
+def _count_papers_since(store: Any, cutoff: datetime) -> int:
+    """The true count of papers acquired/updated since ``cutoff``.
+
+    :func:`_render_papers` only *names* up to :data:`_LANE_ITEM_CAP`, so the
+    naming cap is not the night's real total — counting off the capped list
+    under-reported (the ``"12 papers"`` bug). Mirrors the ``list_refs`` filter
+    (``kind='paper'`` · ``updated_at > cutoff`` · not deleted). Best-effort: any
+    read error returns ``0`` so the caller falls back to the named count."""
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM refs "
+                "WHERE kind = 'paper' AND deleted_at IS NULL AND updated_at > %s",
+                (cutoff,),
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
+    except Exception:  # pragma: no cover - a count failure just falls back
+        log.debug("reading brief: paper count unavailable", exc_info=True)
+        return 0
 
 
 def _lane_system_activity(
@@ -256,7 +326,7 @@ def _lane_system_activity(
     parts: list[str] = []
 
     papers = store.list_refs(kind="paper", updated_after=cutoff, limit=_LANE_ITEM_CAP)
-    rendered_papers = _render_papers(papers)
+    rendered_papers = _render_papers(papers, total=_count_papers_since(store, cutoff))
     if rendered_papers:
         parts.append(rendered_papers)
         _collect(sources, papers, "cites")  # open the paper later
@@ -476,7 +546,13 @@ def _clear_nudge_cursor(store: Any) -> None:
         log.debug("reading brief: could not clear dormant-nudge cursor", exc_info=True)
 
 
-def _dormant_nudge(store: Any, dormant: list[Any], *, now: datetime) -> str:
+def _dormant_nudge(
+    store: Any,
+    dormant: list[Any],
+    *,
+    now: datetime,
+    sources: list[Source] | None = None,
+) -> str:
     """A **decaying** reminder that strivings sit dormant with nothing active.
 
     Fires on a doubling cadence (1, 2, 4, 8 … days, capped at
@@ -510,7 +586,13 @@ def _dormant_nudge(store: Any, dormant: list[Any], *, now: datetime) -> str:
         log.debug(
             "reading brief: could not advance dormant-nudge cursor", exc_info=True
         )
-    names = _titles(dormant, cap=_QUEST_DEPTH_CAP)
+    reported = dormant[:_QUEST_DEPTH_CAP]
+    # Link the nudged strivings back from the draft (the same graph edge the
+    # active-quest branch writes) so "the palladium catalyst" et al. are one
+    # click from the report, not just named in prose. Collected only on a
+    # firing morning (a quiet morning returned "" above and wrote nothing).
+    _collect(sources, reported, "related-to")
+    names = _titles(reported)
     return (
         f"DORMANT STRIVINGS ({len(dormant)}) — a fading nudge (this reminder "
         "spaces itself out the longer it's left): no quest is active right now, "
@@ -558,7 +640,7 @@ def _lane_quest(
     except Exception:  # pragma: no cover - quest kind may be unregistered
         log.debug("reading brief: dormant quest read unavailable", exc_info=True)
         return ""
-    return _dormant_nudge(store, dormant, now=now)
+    return _dormant_nudge(store, dormant, now=now, sources=sources)
 
 
 def _gather_lanes(

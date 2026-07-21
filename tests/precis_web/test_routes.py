@@ -3047,9 +3047,12 @@ def test_dashboard_child_failed_shows_reason_and_retry(client, runtime) -> None:
         # …with a ▶ restart form posting to the *job* retry endpoint…
         assert 'action="/tasks/99/retry"' in resp.text
         assert "▶" in resp.text
-        # …and a model picker (opus/sonnet/haiku).
+        # …and a model picker sourced from the router's planner tiers — the
+        # cloud triad plus the cluster's local qwen (each labelled with the
+        # model it resolves to).
         assert 'name="model"' in resp.text
-        assert ">opus<" in resp.text
+        assert 'value="opus"' in resp.text
+        assert 'value="local"' in resp.text
         # The bare chip is not also rendered as a plain removable tag.
         assert ">child-failed:99<" not in resp.text
     finally:

@@ -745,7 +745,10 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # ``executor:<runner>`` (lowercase, open tag) is the parallel
     # namespace for code-path runners — see
     # :data:`precis.handlers._todo_guards._EXECUTOR_TAG_VALUES`.
-    "LLM": frozenset({"opus", "sonnet", "haiku"}),
+    # Mirrors ``router.PLANNER_MODEL_ALIASES`` (kept literal here so this
+    # foundational module stays free of the router import); ``local`` is the
+    # cluster's served OSS tier (qwen-heavy + tools).
+    "LLM": frozenset({"opus", "sonnet", "haiku", "local"}),
     # Provenance axis for on-demand, externally-sourced corpora that
     # should be *namespaced out of default search* rather than mixed
     # into the curated library. ``ORIGIN:wikipedia`` is stamped on

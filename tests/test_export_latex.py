@@ -189,6 +189,23 @@ def test_unicode_superscripts_and_runs_grouped() -> None:
     assert r"\textsubscript{10}" in out
 
 
+def test_cjk_runs_wrapped_in_cjktext() -> None:
+    # A Japanese / Chinese run has no LaTeX-command mapping (pylatexenc keeps
+    # it verbatim) and no glyph in Latin Modern — it would render as a
+    # missing-glyph rule. We wrap contiguous CJK runs in \cjktext{…} so the
+    # preamble's CJK font renders them; ASCII around it is untouched.
+    out, _ = _inline("the material 二酸化炭素 (CO2) and もののあはれ here")
+    assert r"\cjktext{二酸化炭素}" in out
+    assert r"\cjktext{もののあはれ}" in out
+    # ASCII prose is not wrapped.
+    assert r"\cjktext{the}" not in out
+
+
+def test_wrap_cjk_noop_without_cjk() -> None:
+    # No CJK → the encoder adds no \cjktext, leaving ordinary prose alone.
+    assert latex._wrap_cjk("plain ascii and \\approx") == "plain ascii and \\approx"
+
+
 def test_acronym_keymap_dedups_collisions() -> None:
     km = latex._acronym_keymap({"PEI": "polyethyleneimine", "P.E.I.": "place"})
     # both sanitise to "pei"; the map keeps them distinct

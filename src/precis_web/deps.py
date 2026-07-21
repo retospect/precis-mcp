@@ -86,6 +86,25 @@ def _make_jinja_env() -> jinja2.Environment:
     # time the same way. Both tolerate a datetime *or* an ISO string.
     env.filters["ago"] = ago
     env.filters["abs_ts"] = abs_ts
+
+    # ``planner_models()`` → the ordered ``(alias, resolved-model)`` list the
+    # router understands for an ``LLM:<value>`` planner tag. Registered as a
+    # Jinja global so every model-picker dropdown (task retry, draft
+    # change-request, review) renders the SAME options — the capability tiers
+    # available on this cluster (opus/sonnet/haiku + the local qwen), labelled
+    # with the model each currently resolves to — from one source instead of a
+    # hardcoded opus/sonnet/haiku list per template.
+    def _planner_models() -> list[tuple[str, str]]:
+        from precis.utils.llm.router import planner_model_choices
+
+        try:
+            return planner_model_choices()
+        except Exception:  # pragma: no cover - a resolver hiccup must not 500 a page
+            from precis.utils.llm.router import PLANNER_MODEL_ALIASES
+
+            return [(a, a) for a in PLANNER_MODEL_ALIASES]
+
+    env.globals["planner_models"] = _planner_models
     return env
 
 

@@ -41,6 +41,7 @@ import os
 from typing import TYPE_CHECKING
 
 from precis.errors import BadInput, NotFound
+from precis.utils.llm.router import PLANNER_MODEL_ALIASES as _PLANNER_ALIASES
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -82,11 +83,13 @@ _OWNER_ONLY_LEVELS: frozenset[str] = frozenset(
 
 #: Allowed values for the ``LLM:<model>`` open tag. Presence of any
 #: ``LLM:*`` tag flips a todo into the dispatch worker's candidate set
-#: (planner-coroutine slice); the value picks the model
-#: ``claude_inproc`` shells out with. Closed vocab so a typo
-#: (``LLM:opos``) is rejected at write time rather than producing a
-#: silent dispatch miss or a budget burn against a wrong model.
-_LLM_TAG_VALUES: frozenset[str] = frozenset({"opus", "sonnet", "haiku"})
+#: (planner-coroutine slice); the value picks the *capability tier* the tick
+#: runs on (``local`` = the cluster's served OSS model, the cloud triad =
+#: claude). Closed vocab so a typo (``LLM:opos``) is rejected at write time
+#: rather than producing a silent dispatch miss or a budget burn against a
+#: wrong model. Single-sourced from the router's planner alias map so this
+#: guard, ``Tag.parse_strict``, and the web model-picker never drift.
+_LLM_TAG_VALUES: frozenset[str] = frozenset(_PLANNER_ALIASES)
 
 
 #: Allowed values for the ``executor:<runner>`` open tag — runners that

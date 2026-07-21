@@ -94,6 +94,12 @@ from precis.utils.authors import (
 from precis.utils.embed_query import embed_query
 from precis.utils.figure_clearance import draft_figure_clearance
 from precis.utils.figure_source import resolve_figure_source
+
+# Planner tiers a change-request / review can run on, via the ``LLM:<model>``
+# tag. Single-sourced from the router's planner alias map (ADR 0046) so the
+# accepted set — the cloud triad plus the cluster's ``local`` qwen tier — never
+# drifts from ``Tag.parse_strict`` or the ``planner_models()`` dropdown.
+from precis.utils.llm.router import PLANNER_MODEL_ALIASES as _PLANNER_MODELS
 from precis.utils.table_data import Scalar, table_payload
 from precis_web import draft_eyes
 from precis_web.deps import (
@@ -1926,7 +1932,12 @@ async def pdf(request: Request, ident: str) -> Response:
     cache_dir = _pdf_cache_dir(ref.id, cache_token, sources=with_sources)
     pdf_path = cache_dir / "main.pdf"
     suffix = "-with-sources" if with_sources else ""
-    filename = f"{ref.slug or ref.id}{suffix}.pdf"
+    # A cast draft downloads as its human stem (``morning_brief_<date>.pdf``),
+    # matching the mp3 on the feed; other drafts keep their slug.
+    from precis.reading.cast_common import export_basename_for_meta
+
+    base = export_basename_for_meta(getattr(ref, "meta", None)) or (ref.slug or ref.id)
+    filename = f"{base}{suffix}.pdf"
 
     if not pdf_path.exists():
         if not have_latexmk():
@@ -2030,13 +2041,6 @@ async def chunk_blob(request: Request, handle: str) -> Response:
         media_type=mime,
         headers={"Cache-Control": "public, max-age=300"},
     )
-
-
-#: Planner tiers a change-request / review can run on, via the
-#: ``LLM:<model>`` tag (closed set — the same enum ``plan_tick`` accepts).
-#: There is no local-model executor and ``claude -p`` exposes no
-#: temperature flag, so the change box offers model selection only.
-_PLANNER_MODELS: tuple[str, ...] = ("opus", "sonnet", "haiku")
 
 
 @router.post("/drafts/{ident}/request")

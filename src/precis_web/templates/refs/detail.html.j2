@@ -125,8 +125,8 @@
         <select name="model"
                 class="text-xs px-2 py-1.5 rounded border border-slate-300 text-slate-700">
           <option value="">same model</option>
-          {% for m in job_actions.retry_models %}
-          <option value="{{ m }}">retry on {{ m }}</option>
+          {% for alias, label in planner_models() %}
+          <option value="{{ alias }}">retry on {{ alias }} · {{ label }}</option>
           {% endfor %}
         </select>
         {% endif %}

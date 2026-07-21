@@ -119,10 +119,14 @@ drafts/quests `related-to`; the `nidra` walk links each walked concept
 `related-to`. So `links_for` on the cast draft reopens what it mentioned.
 
 Both compose with a **nice model** (`claude-opus`) and persist a standalone dated
-`draft` marked `meta.cast` (+ `meta.voice`). **TTS is a separate downstream step:**
+`draft` marked `meta.cast` (+ `meta.voice`), **filed under a Drive folder** ("Morning
+brief" / "Evening meditation") so the text shows up in `/drive` — the Drive row also
+links the published mp3 + compiled PDF. **TTS is a separate downstream step:**
 the `cast_audio` pass on spark (`PRECIS_CAST_AUDIO_ENABLED=1` + `PRECIS_TTS_IMAGE`)
 narrates any un-narrated cast draft via `render_narration` → `render_episode` →
-the feed (`source="reading"`), idempotent on `meta.audio_episode_id`. Compose runs
+the feed (`source="brief"` / `"meditation"`), idempotent on `meta.audio_episode_id`.
+The published mp3 and the on-demand PDF share a human stem — `morning_brief_<date>`
+/ `evening_meditation_<date>` — not the internal `cast-*` slug. Compose runs
 as the `reading_brief` / `meditation` **`claude_inproc`** job_types on a daily
 `level:recurring` watch — on melchior, where the litellm proxy serving `claude-opus`
 lives (same host as the news briefing); the compose and the narration never block

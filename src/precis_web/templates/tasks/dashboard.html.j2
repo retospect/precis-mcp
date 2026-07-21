@@ -364,9 +364,9 @@
             <select name="model" class="rounded border-slate-300 text-xs border px-1 py-0.5"
                     title="model for the retry (blank = keep the parent's current LLM tier)">
               <option value="">↻ same model</option>
-              <option value="opus">opus</option>
-              <option value="sonnet">sonnet</option>
-              <option value="haiku">haiku</option>
+              {% for alias, label in planner_models() %}
+              <option value="{{ alias }}">{{ alias }} · {{ label }}</option>
+              {% endfor %}
             </select>
             <button class="rounded bg-amber-600 text-white text-xs px-2 py-0.5"
                     title="clear the failure bubble on the parent todo so dispatch re-mints a fresh job">Retry</button>
@@ -436,9 +436,9 @@
               <select name="model" class="rounded border-rose-300 text-xs border px-1 py-0.5 bg-white"
                       title="model to retry on (blank = keep the current LLM tier)">
                 <option value="">↻ same model</option>
-                <option value="opus">opus</option>
-                <option value="sonnet">sonnet</option>
-                <option value="haiku">haiku</option>
+                {% for alias, label in planner_models() %}
+                <option value="{{ alias }}">{{ alias }} · {{ label }}</option>
+                {% endfor %}
               </select>
               <button class="leading-none text-emerald-600 hover:text-emerald-800"
                       title="▶ restart — clear the failure and re-run this job">▶</button>

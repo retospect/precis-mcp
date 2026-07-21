@@ -28,7 +28,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from precis.reading.cast_common import CAST_PROFILES
+from precis.reading.cast_common import CAST_PROFILES, export_stem
 from precis.tts.render import render_episode
 
 log = logging.getLogger(__name__)
@@ -141,7 +141,10 @@ def narrate_cast_ref(
 
     do_publish = publish and podcast_dir is not None
     date_tag = str(meta.get("date") or now.date().isoformat())
-    episode_id = f"{cast}-{date_tag}"
+    # Human episode id — ``morning_brief_<date>`` / ``evening_meditation_<date>``
+    # so the published mp3 shares the export PDF's recognisable stem, not the
+    # internal cast key. Casts with no profile fall back to ``<cast>-<date>``.
+    episode_id = export_stem(profile, date_tag) if profile else f"{cast}-{date_tag}"
     title = f"{profile.title} — {date_tag}" if profile else (ref.title or episode_id)
     source = profile.source if profile else "cast"
     render_kw: dict[str, Any] = {} if encode is None else {"encode": encode}

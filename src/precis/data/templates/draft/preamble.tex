@@ -14,6 +14,28 @@
 % missing-glyph warning rather than a fatal error.
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
+
+% CJK glyph coverage. Latin Modern has no CJK glyphs, so a Japanese / Chinese
+% / Korean character (a paper title, a concept name) would otherwise render as
+% a missing-glyph rule under lualatex. fontspec + \newfontfamily give us a CJK
+% face and the exporter wraps detected CJK runs in \cjktext{...}
+% (export/latex.py::_wrap_cjk). \cjktext defaults to identity, so a host with
+% no CJK font still compiles (the glyph just stays missing) — it never throws
+% an undefined-control-sequence error. HaranoAjiMincho ships with TeX Live
+% (also the luatexja default); Noto Serif CJK is the common system fallback.
+\usepackage{fontspec}
+\newcommand{\cjktext}[1]{#1}
+\IfFontExistsTF{HaranoAjiMincho}{%
+  \newfontfamily\cjkfont{HaranoAjiMincho}%
+  \renewcommand{\cjktext}[1]{{\cjkfont #1}}%
+}{\IfFontExistsTF{Noto Serif CJK SC}{%
+  \newfontfamily\cjkfont{Noto Serif CJK SC}%
+  \renewcommand{\cjktext}[1]{{\cjkfont #1}}%
+}{\IfFontExistsTF{Noto Serif CJK JP}{%
+  \newfontfamily\cjkfont{Noto Serif CJK JP}%
+  \renewcommand{\cjktext}[1]{{\cjkfont #1}}%
+}{}}}
+
 \usepackage[margin=1in]{geometry}
 \usepackage{microtype}
 \usepackage{amsmath,amssymb}

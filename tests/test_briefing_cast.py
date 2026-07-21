@@ -9,9 +9,12 @@ from typing import Any
 
 from precis.reading.briefing_cast import (
     _DORMANT_NUDGE_KEY,
+    _cite_token,
+    _dormant_nudge,
     _lane_news,
     _lane_quest,
     _lane_reading,
+    _render_papers,
     build_reading_briefing,
 )
 
@@ -81,9 +84,64 @@ class TestDormantNudgeDecay:
         assert _lane_quest(st, now=datetime.now(UTC)) == ""
         assert st.kv == {}  # nothing dormant → no cursor written
 
+    def test_dormant_nudge_links_the_named_strivings(self) -> None:
+        # A firing morning collects the nudged quests as ``related-to`` sources
+        # so the report links back to "the palladium catalyst" et al. — the same
+        # graph edge the active-quest branch writes (bug: it never did before).
+        dormant = [
+            SimpleNamespace(id=164903, title="Pd catalyst for NO to ammonia"),
+            SimpleNamespace(id=200, title="Second striving"),
+        ]
+        st = _NudgeStore(active=[], dormant=dormant)
+        src: list[Any] = []
+        text = _dormant_nudge(
+            st, dormant, now=datetime(2026, 7, 21, tzinfo=UTC), sources=src
+        )
+        assert text.startswith("DORMANT")
+        assert (164903, "related-to") in src
+        assert (200, "related-to") in src
+
+    def test_dormant_nudge_quiet_morning_links_nothing(self) -> None:
+        # A quiet (off-cadence) morning returns "" and must write no source.
+        dormant = [SimpleNamespace(id=1, title="Strive")]
+        st = _NudgeStore(active=[], dormant=dormant)
+        base = datetime(2026, 7, 21, tzinfo=UTC)
+        _dormant_nudge(st, dormant, now=base, sources=[])  # first fire → 1-day window
+        src: list[Any] = []
+        # A same-day re-check is inside that quiet window → silent, links nothing.
+        assert _dormant_nudge(st, dormant, now=base, sources=src) == ""
+        assert src == []
+
     def test_news_lane_empty_when_no_briefing(self, store: Any) -> None:
         # A date with no briefing ref → empty (no raise).
         assert _lane_news(store, f"2999-01-{uuid.uuid4().hex[:2]}") == ""
+
+
+class TestPaperLane:
+    def test_render_papers_carries_cite_markers_and_true_total(self) -> None:
+        # Ten named papers but a true overnight total of 23: the header must
+        # report the real count (the "12 papers" under-count bug) and note the
+        # un-named remainder; each deep paper carries its [[pa<id>]] marker.
+        papers = [
+            SimpleNamespace(
+                id=1000 + i,
+                title=f"Paper {i}",
+                meta={"abstract": f"Abstract {i}."},
+            )
+            for i in range(10)
+        ]
+        out = _render_papers(papers, total=23)
+        assert out.startswith("Papers acquired or updated (23)")
+        assert "13 more not listed here" in out  # 23 total − 10 named
+        # The top papers carry a copy-me citation marker for the model.
+        assert _cite_token(papers[0]) == "[[pa1000]]"
+        assert "[[pa1000]]" in out
+
+    def test_render_papers_falls_back_to_named_count(self) -> None:
+        papers = [SimpleNamespace(id=5, title="Solo", meta={})]
+        out = _render_papers(papers)  # no total → the named count
+        assert out.startswith("Papers acquired or updated (1)")
+        assert "more not listed" not in out
 
 
 class TestBuild:

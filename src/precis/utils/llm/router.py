@@ -196,6 +196,39 @@ def resolve_model(tier: Tier) -> str:
     return os.environ.get(env_var, default)
 
 
+# ── planner model aliases (the LLM:<value> dropdown vocab) ─────────────
+#
+# The ``LLM:<value>`` tag a todo carries names a *capability tier*, not a
+# vendor model: the dispatcher synthesizes ``plan_tick``'s ``model`` param
+# from it and the tick resolves the concrete model via :func:`resolve_model`.
+# This is the ONE ordered source the dispatcher (plan_tick), the closed-vocab
+# guards, and the web model-pickers key on, so the tier map and the dropdown
+# never drift. ``local`` is the cluster's served OSS tier (``qwen-heavy`` +
+# tools), reachable now that ADR 0046's ``OPENAI_TOOLS`` loop drives the verbs
+# in-process — a planner tick runs on it just like the cloud tiers.
+PLANNER_TIER_BY_ALIAS: dict[str, Tier] = {
+    "opus": Tier.CLOUD_SUPER,
+    "sonnet": Tier.CLOUD_MID,
+    "haiku": Tier.CLOUD_SMALL,
+    "local": Tier.LOCAL_BIG,
+}
+
+#: Ordered alias vocabulary — dropdown order AND the ``LLM:`` closed-vocab set.
+PLANNER_MODEL_ALIASES: tuple[str, ...] = tuple(PLANNER_TIER_BY_ALIAS)
+
+
+def planner_model_choices() -> list[tuple[str, str]]:
+    """``(alias, resolved-model)`` for each planner tier — the picker source.
+
+    The label is the model the tier *currently* resolves to (env +
+    ``app_settings`` live overrides), so the web dropdown shows the model each
+    tier actually runs on this cluster rather than a hardcoded vendor name.
+    """
+    return [
+        (alias, resolve_model(tier)) for alias, tier in PLANNER_TIER_BY_ALIAS.items()
+    ]
+
+
 # ── transport selection ────────────────────────────────────────────────
 
 
@@ -339,6 +372,22 @@ class LlmResult:
     #: evidence the pass acted: a ``0`` here (not ``None``) is one leg of the
     #: silent-empty conjunction.
     tool_calls: int | None = None
+    #: The complete raw stdout of a ``claude_agent`` stream-json run (every turn
+    #: + tool call/result), preserved so a caller that stores a debuggable
+    #: transcript or parses the terminal reason itself (the planner tick) can.
+    #: ``None`` for the non-agent transports, where ``text`` carries the answer.
+    raw_text: str | None = None
+    #: How a ``claude_agent`` run terminated *abnormally* — ``'max_turns'``, a
+    #: ``'budget'``-class reason, or another ``error_*`` subtype — ``None`` on a
+    #: clean run. Lets a caller map a recovered exhaustion onto a resumable
+    #: outcome without re-parsing the stream. ``None`` for non-agent transports.
+    terminal_reason: str | None = None
+    #: The OSS ``tools=`` loop's raw ``stop_reason`` (``'stop'`` — model
+    #: answered · ``'max_turns'`` — turn ceiling · ``'error'`` — transport
+    #: failure), threaded through so the planner tick can tell a clean answer
+    #: from a resumable exhaustion (mirroring how the claude path reads
+    #: ``terminal_reason``). ``None`` for the non-OSS transports.
+    stop_reason: str | None = None
 
 
 def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
@@ -351,6 +400,8 @@ def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
         tier=tier,
         duration_s=res.duration_s,
         tool_calls=res.tool_calls,
+        raw_text=res.raw_stdout,
+        terminal_reason=res.terminal_reason,
     )
 
 
@@ -484,6 +535,17 @@ class LlmRequest:
     log_event: tuple[Any, int, str] | None = None
     # Extra CLI flags forwarded to the claude_* transports.
     extra_args: tuple[str, ...] = field(default_factory=tuple)
+    #: Extra env vars overlaid onto the ``claude_agent`` subprocess env (the
+    #: planner tick's runtime back-doors: ``PRECIS_CURRENT_TODO`` / ``_MODEL`` /
+    #: ``PRECIS_WORKSPACE`` / the agentlog id / ``PRECIS_KINDS_DISABLED``). The
+    #: spawned MCP server inherits them. Ignored by the other transports (the
+    #: in-process loop carries context in a ContextVar, not env). ``None`` ⇒
+    #: inherit the worker env unchanged.
+    env_overlay: dict[str, str] | None = None
+    #: Working directory for the ``claude_agent`` subprocess — a CLAUDE.md-free
+    #: neutral cwd so ``claude -p`` discovers no ambient project persona (ADR
+    #: 0051 §12). Ignored by the other transports. ``None`` ⇒ the worker's cwd.
+    cwd: str | Path | None = None
 
 
 class LlmProvider(Protocol):
@@ -526,6 +588,8 @@ class ClaudeAgentProvider:
                 disallowed_tools=req.disallowed_tools,
                 extra_args=req.extra_args,
                 log_event=req.log_event,
+                env_overlay=req.env_overlay,
+                cwd=req.cwd,
             )
         except ClaudeProcessError as exc:
             return _error_result(exc, model=model, tier=req.tier)
@@ -1211,6 +1275,9 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
             model=model,
             tier=req.tier,
             error=str(exc),
+            # A failure to *build* the executor/tools is a transport error to a
+            # stop_reason reader (the planner tick), same as an in-loop one.
+            stop_reason="error",
         )
     return LlmResult(
         text=result.final_text,
@@ -1225,6 +1292,9 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
         # tool_calls=None and the guard can never trip (the anchor demands
         # a definitive 0). `tool_calls_made` is the loop's own count.
         tool_calls=result.tool_calls_made,
+        # The loop's stop_reason rides through so the planner tick can tell a
+        # clean answer ('stop') from a resumable exhaustion ('max_turns').
+        stop_reason=result.stop_reason,
     )
 
 

@@ -1,13 +1,21 @@
 """``plan_tick`` job_type — one LLM tick of the planner coroutine.
 
 The dispatcher mints a ``plan_tick`` job under every ``LLM:*``-tagged
-todo that has no live job and no live open children. The job runs
-opus (or sonnet / haiku per the tag) with the planner prompts from
-:mod:`precis.workers.planner_prompt` and exits.
+todo that has no live job and no live open children. The transport is
+the router's decision (``select_transport`` + ``resolve_backend``):
+
+* under the default **ANTHROPIC** backend the tick runs as a real
+  ``claude -p`` agent (MCP tools, OAuth Max subscription) *through the
+  router* (the ``CLAUDE_AGENT`` transport, :func:`_run_claude_tick`) —
+  ``bypassPermissions`` + env-back-door context;
+* under a tools-capable OSS backend (``PRECIS_LLM_BACKEND=openai``) it
+  drives the precis verbs in-process over the OSS ``tools=`` loop (the
+  ``OPENAI_TOOLS`` transport, :func:`_run_oss_tick`, ADR 0024/0046),
+  binding context in a ContextVar.
 
 What the planner does during the tick is its own call (mint
 children, yield to user, halt, or finish). The runner doesn't
-interpret the output — it just shells out, captures stdout as a
+interpret the output — it captures the final text as a
 ``job_summary`` chunk under the job ref, and lets the dispatcher's
 next sweep notice whatever state the planner set.
 
@@ -21,30 +29,24 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from precis.utils.claude_oauth import ensure_oauth_token
-from precis.utils.llm.router import Backend, Tier, resolve_backend, resolve_model
+from precis.utils.llm.router import (
+    PLANNER_MODEL_ALIASES,
+    Tier,
+    Transport,
+    resolve_backend,
+    select_transport,
+)
+from precis.utils.llm.router import (
+    PLANNER_TIER_BY_ALIAS as _TIER_BY_ALIAS,
+)
 
 log = logging.getLogger(__name__)
-
-
-#: Per-tick cost ceiling for the planner subprocess (``--max-budget-usd``).
-#: Set higher than the ``claude_agent`` default ($2) because a plan_tick is
-#: a multi-turn opus agentic run that legitimately spends more than a one-shot
-#: agent call, so a lower cap would truncate normal ticks. It is a
-#: runaway-spend backstop, not a normal-tick limit. A tick cut off by the
-#: cap is treated as a *resumable exhaustion* — the same handling as the
-#: ``--max-turns`` ceiling / wall-clock timeout (see
-#: ``executors/claude_inproc._resume_reason``) — so a legitimately long task
-#: continues on a fresh tick rather than hard-failing. Override via
-#: ``PRECIS_PLAN_TICK_MAX_USD``.
-_DEFAULT_MAX_USD: float = 5.00
 
 
 #: Per-tick ``--max-turns`` ceiling for the planner subprocess. A research +
@@ -58,6 +60,16 @@ _DEFAULT_MAX_USD: float = 5.00
 _DEFAULT_MAX_TURNS: int = 60
 
 
+#: Per-tick cost ceiling for the claude tick (``--max-budget-usd``). Higher than
+#: the ``claude_agent`` default ($2) because a plan_tick is a multi-turn agentic
+#: run that legitimately spends more than a one-shot call, so a lower cap would
+#: truncate normal ticks. It is a runaway-spend backstop, not a normal-tick
+#: limit; a tick cut off by the cap is treated as a *resumable exhaustion* (the
+#: same handling as ``--max-turns`` / timeout). Override via
+#: ``PRECIS_PLAN_TICK_MAX_USD``.
+_DEFAULT_MAX_USD: float = 5.00
+
+
 DESCRIPTION: str = (
     "one LLM planner tick on an LLM:*-tagged todo — reads body + "
     "child summaries, mints children / yields / finishes"
@@ -69,9 +81,10 @@ PARAMS_SCHEMA: dict[str, Any] = {
     "properties": {
         "model": {
             "type": "string",
-            "enum": ["opus", "sonnet", "haiku"],
-            "description": "Which Claude tier to run. Synthesized from the "
-            "parent's LLM:<value> tag at dispatch time.",
+            "enum": list(PLANNER_MODEL_ALIASES),
+            "description": "Which capability tier to run (the router maps it to "
+            "a claude or served OSS model per the active backend). Synthesized "
+            "from the parent's LLM:<value> tag at dispatch time.",
         },
         "timeout_s": {
             "type": "integer",
@@ -88,9 +101,11 @@ PARAMS_SCHEMA: dict[str, Any] = {
 COMPATIBLE_EXECUTORS: frozenset[str] = frozenset({"claude_inproc"})
 
 
-#: ``plan_tick`` needs ``claude_bin`` (the CLI) and an
-#: ``mcp_config`` (so the planner can call back via MCP). Everything
-#: else is read-only.
+#: Under the ANTHROPIC backend the tick spawns ``claude -p`` (needs
+#: ``claude_bin``) with an MCP config so the agent can call back via the precis
+#: tools (needs ``mcp_config``); both are provided by the ``claude_inproc``
+#: executor. The OSS-backend path uses neither (the loopback litellm proxy),
+#: but requiring them is harmless — the executor provides them regardless.
 REQUIRES: frozenset[str] = frozenset({"claude_bin", "mcp_config"})
 
 
@@ -144,10 +159,12 @@ def run(
 
     The runner builds the prompts via
     :func:`precis.workers.planner_prompt.build_planner_prompts`, then
-    shells out to ``claude -p`` with the appropriate ``--model`` /
-    ``--append-system-prompt`` flags. The MCP config is forwarded so
-    the planner can call back via the precis tools (put / tag / link /
-    search / get).
+    drives the precis verbs in-process over the OSS ``tools=`` loop
+    (:func:`_run_oss_tick`). The transport + model are the router's
+    decision (:func:`~precis.utils.llm.router.select_transport` +
+    :func:`~precis.utils.llm.router.resolve_backend`): a served OSS
+    model (``LOCAL_BIG``) by default, or the tag's cloud tier when the
+    backend is flipped to a tools-capable cloud.
     """
     from precis.workers.planner_prompt import build_planner_prompts
 
@@ -162,64 +179,13 @@ def run(
 
     prompts = build_planner_prompts(store, ref_id=parent_ref_id, model=model)
 
-    # Resolve the claude binary + MCP config from env. These are part
-    # of the executor's REQUIRES set; the runner can assume they
-    # exist or fail loudly.
-    claude_bin = os.environ.get("PRECIS_CLAUDE_BIN", "claude")
-    mcp_config = os.environ.get("PRECIS_MCP_CONFIG", "")
-    if not mcp_config:
-        log.warning(
-            "plan_tick: PRECIS_MCP_CONFIG unset; planner won't be able to "
-            "call back via MCP — children/yield/done won't land"
-        )
-
-    # Workspace context propagation: read meta.workspace from the
-    # parent todo and pass its path through PRECIS_WORKSPACE in the
-    # spawned claude -p's env. The MCP server inherits the env from
-    # claude, file-kind handlers read PRECIS_WORKSPACE to route by
-    # the layout convention. Without this, the LLM has to compute
-    # paths manually and can get them wrong.
     workspace = _load_parent_workspace(store, parent_ref_id)
-    subprocess_env = dict(os.environ)
-    # Bootstrap the long-lived OAuth token from ~/.claude_oauth_token when the
-    # env doesn't already carry it — launchd daemons don't source the shell
-    # hook that would, so without this the spawned ``claude -p`` authenticates
-    # off stale keychain creds and 401s (2026-07-12 plan_tick incident). Same
-    # bootstrap ``claude_agent`` already does; shared helper keeps them in sync.
-    ensure_oauth_token(subprocess_env)
-    if workspace is not None:
-        subprocess_env["PRECIS_WORKSPACE"] = workspace.path
-    # Draft-bound tick: gate the colliding prose-file kind off the tool
-    # surface so the agent cannot write the section to a freestanding
-    # `kind='tex'`/`kind='markdown'` file the draft never renders (the
-    # canonical store is the draft's chunks; the file is export-only).
-    # The kind-gate reads PRECIS_KINDS_DISABLED at MCP-server boot — the
-    # server inherits this env — and the inline `kind:reason` hint
-    # surfaces verbatim in the Unsupported error if the agent still
-    # reaches for it, pointing it back at put(kind='draft', …). Covers
-    # both section-writing children and "around here…" anchored ticks.
-    _disable_prose_file_kind(store, parent_ref_id, subprocess_env)
-    # PRECIS_CURRENT_TODO: the runtime parent todo for this tick. The
-    # MCP server reads this via utils/workspace.current_todo_from_env;
-    # TodoHandler.put auto-defaults parent_id= to it when the caller
-    # omits parent_id. So the LLM can mint subtasks via
-    # put(kind='todo', tags=['LLM:sonnet'], text='...') without
-    # remembering its own ref_id every call. Same back-door pattern
-    # as PRECIS_WORKSPACE.
-    subprocess_env["PRECIS_CURRENT_TODO"] = str(parent_ref_id)
-    # PRECIS_CURRENT_MODEL: tells the LLM what tier it's running on.
-    # Lets it make degradation/escalation decisions — too hard for
-    # haiku? mint a child with LLM:opus. Sonnet on a topic needing
-    # external state? call get(kind='perplexity-research', q='...') for a
-    # perplexity research dive. Opus on something straightforward?
-    # do it inline.
-    subprocess_env["PRECIS_CURRENT_MODEL"] = model
-    # PRECIS_CURRENT_AGENTLOG: open a run-attribution record (kind=
-    # 'agentlog') carrying the full assembled prompt, and thread its id
-    # to the subprocess so the MCP server inside it attributes every
-    # draft chunk this tick writes/moves back to this run (a `touched`
-    # link). Same env back-door as PRECIS_CURRENT_TODO. Best-effort: a
-    # failure here must never abort the tick.
+
+    # Open a run-attribution record (kind='agentlog') carrying the full
+    # assembled prompt; the in-process tools loop threads its id via the tick
+    # ContextVar (:func:`precis.utils.inproc_context.tick_context`) so every
+    # draft chunk this tick writes/moves attributes back to this run (a
+    # `touched` link). Best-effort: a failure here must never abort the tick.
     from precis import agentlog
 
     agentlog_id: int | None = None
@@ -233,7 +199,6 @@ def run(
             parent_ref_id=parent_ref_id,
             job_ref_id=job_ref_id,
         )
-        subprocess_env[agentlog.ENV_VAR] = str(agentlog_id)
     except Exception:
         log.warning("plan_tick: failed to open agentlog", exc_info=True)
 
@@ -245,17 +210,14 @@ def run(
         except Exception:
             log.warning("plan_tick: failed to finalize agentlog", exc_info=True)
 
-    # ── ADR 0046 unit-4b: the /factory backend switch (the LLM-independence
-    # lever). Under the default ANTHROPIC backend this tick spawns ``claude -p``
-    # exactly as before (byte-identical — the code below is untouched). When a
-    # deployment flips ``PRECIS_LLM_BACKEND=openai`` (with a base url), the tick
-    # instead drives the precis verbs in-process over the OSS ``tools=`` loop,
-    # binding its runtime context (parent todo / workspace / model / agentlog)
-    # via a thread-isolated ContextVar rather than the subprocess env the OSS
-    # loop can't carry. Ships dark: no deployment sets the backend, so prod is
-    # the claude path.
-    if resolve_backend() is Backend.OPENAI and os.environ.get("PRECIS_LLM_BASE_URL"):
-        outcome = _run_oss_tick(
+    transport = select_transport(
+        _TIER_BY_ALIAS.get(model, Tier.CLOUD_SUPER),
+        tools_needed=True,
+        backend=resolve_backend(),
+    )
+    if transport is Transport.CLAUDE_AGENT:
+        outcome = _run_claude_tick(
+            store=store,
             prompts=prompts,
             model=model,
             parent_ref_id=parent_ref_id,
@@ -266,105 +228,26 @@ def run(
             job_ref_id=job_ref_id,
             log_event=log_event,
         )
-        _finalize("ok" if outcome.exit_code == 0 else f"exit:{outcome.exit_code}")
-        return outcome
-
-    cmd: list[str] = [
-        claude_bin,
-        "-p",
-        prompts.user,
-        "--model",
-        _model_alias(model),
-        "--append-system-prompt",
-        prompts.system,
-        "--max-turns",
-        str(_max_turns()),
-        # Runaway-spend backstop. A tick that hits this cap is a *resumable*
-        # exhaustion (like --max-turns / timeout), not a hard failure — the
-        # executor's _resume_reason detects the budget result event and a
-        # fresh tick continues. Set high so it never truncates a normal tick.
-        "--max-budget-usd",
-        str(_max_budget_usd()),
-        "--permission-mode",
-        "acceptEdits",
-        # Emit the full message stream (every turn + tool call/result) so
-        # the executor can store a debuggable transcript. The final text is
-        # lifted from the trailing ``result`` event; ``--verbose`` is
-        # required alongside ``stream-json`` in ``-p`` mode.
-        "--output-format",
-        "stream-json",
-        "--verbose",
-    ]
-    if mcp_config:
-        # Absolute so the neutral cwd below can't strand a relative path.
-        cmd.extend(["--mcp-config", os.path.abspath(mcp_config), "--strict-mcp-config"])
-
-    # ADR 0051 §12 — the turn-taker owns the entire system prompt. Run from a
-    # neutral cwd so `claude -p` discovers no project CLAUDE.md, and surface
-    # any ambient CLAUDE.md (user file or an unexpected one up the cwd tree)
-    # that would still be prepended outside the assembler and bust the cache
-    # prefix. Warn loudly + signal rather than hard-refuse, so a stray file
-    # degrades observably instead of silently stalling the planner.
-    cwd = _neutral_cwd()
-    ambient = _ambient_claude_md_paths(cwd)
-    if ambient:
-        log.warning(
-            "plan_tick: ambient CLAUDE.md would contaminate the persona floor "
-            "outside the assembler (ADR 0051 §12) — remove it on agent hosts: %s",
-            ambient,
+    else:
+        outcome = _run_oss_tick(
+            store=store,
+            prompts=prompts,
+            model=model,
+            parent_ref_id=parent_ref_id,
+            agentlog_id=agentlog_id,
+            workspace=workspace,
+            timeout_s=timeout_s,
+            started=started,
+            job_ref_id=job_ref_id,
+            log_event=log_event,
         )
-
-    try:
-        if log_event:
-            log_event(
-                "plan_tick.spawn",
-                {
-                    "job_ref_id": job_ref_id,
-                    "parent_ref_id": parent_ref_id,
-                    "model": model,
-                    "system_chars": len(prompts.system),
-                    "user_chars": len(prompts.user),
-                    "cwd": cwd,
-                    "ambient_claude_md": ambient,
-                },
-            )
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-            env=subprocess_env,
-            cwd=cwd,
-        )
-    except subprocess.TimeoutExpired as exc:
-        duration = time.monotonic() - started
-        log.warning(
-            "plan_tick: parent #%d timed out after %ds",
-            parent_ref_id,
-            timeout_s,
-        )
-        _finalize("timeout")
-        return PlanTickOutcome(
-            exit_code=124,
-            stdout=(exc.stdout or "").decode(errors="replace")
-            if isinstance(exc.stdout, bytes)
-            else (exc.stdout or ""),
-            stderr=f"plan_tick: timeout after {timeout_s}s",
-            duration_s=duration,
-        )
-    duration = time.monotonic() - started
-    _finalize("ok" if proc.returncode == 0 else f"exit:{proc.returncode}")
-    return PlanTickOutcome(
-        exit_code=proc.returncode,
-        stdout=proc.stdout,
-        stderr=proc.stderr,
-        duration_s=duration,
-    )
+    _finalize("ok" if outcome.exit_code == 0 else f"exit:{outcome.exit_code}")
+    return outcome
 
 
 def _run_oss_tick(
     *,
+    store: Any,
     prompts: Any,
     model: str,
     parent_ref_id: int,
@@ -378,6 +261,11 @@ def _run_oss_tick(
     """Run one planner tick over the in-process OSS ``tools=`` loop (the
     ``OPENAI_TOOLS`` transport), instead of spawning ``claude -p``.
 
+    Goes *through* ``router.dispatch`` — so the OSS tick gains the same breaker
+    gate + route-log the claude tick does — rather than calling the loop
+    directly. ``dispatch`` runs the provider synchronously in this thread, so
+    the loop still executes inside the ``tick_context`` block below.
+
     The spawned-claude tick hands its runtime context to the subprocess via env
     back-doors (``PRECIS_CURRENT_TODO`` &c.); the OSS loop drives
     ``runtime.dispatch`` *in this process*, so those env vars would resolve
@@ -386,24 +274,38 @@ def _run_oss_tick(
     (:func:`precis.utils.inproc_context.tick_context`) instead, for the
     synchronous span of the loop; the verb readers consult it first. So
     children default under the right parent, file-kinds route by the workspace,
-    and draft writes attribute to this run's agentlog — with no env mutation and
-    no cross-tick bleed.
+    draft writes attribute to this run's agentlog, and the draft-bound
+    prose-file kind is prohibited for the tick (``disabled_kinds`` — the
+    in-process twin of the claude path's ``PRECIS_KINDS_DISABLED``) — with no
+    env mutation and no cross-tick bleed.
 
-    Maps the loop's ``stop_reason`` onto :class:`PlanTickOutcome`: ``stop`` →
-    clean exit 0; ``max_turns`` → a *resumable exhaustion* (exit 1 +
-    ``resume_reason`` so the executor bumps the streak and re-mints, matching
-    the claude ``--max-turns`` path); ``error`` → a real failure.
+    Maps the result onto :class:`PlanTickOutcome` (:func:`_oss_exit_from_result`):
+    a breaker/slot pause → resumable ``paused``; ``stop`` → clean exit 0;
+    ``max_turns`` → a *resumable exhaustion* (exit 1 + ``resume_reason`` so the
+    executor bumps the streak and re-mints, matching the claude ``--max-turns``
+    path); a transport ``error`` → a real failure.
     """
     from precis.utils.inproc_context import TickContext, tick_context
-    from precis.utils.llm.router import run_oss_tool_loop
+    from precis.utils.llm.router import LlmRequest, dispatch
 
-    tier = _TIER_BY_ALIAS.get(model, Tier.CLOUD_SUPER)
-    model_id = resolve_model(tier)
+    tier = _resolve_oss_tier(model)
+    # Tools are advertised iff mcp_config is non-None (router contract); the OSS
+    # loop drives the verbs in-process so it never reads the file, but the tick
+    # needs precis tools to act. PRECIS_MCP_CONFIG is a claude_inproc executor
+    # capability present in the worker env under either backend.
+    mcp_config = os.environ.get("PRECIS_MCP_CONFIG", "")
+    if not mcp_config:
+        log.warning(
+            "plan_tick: PRECIS_MCP_CONFIG unset; the OSS tick advertises no "
+            "precis tools — the planner can't mint children / write / finish"
+        )
+    gate = _draft_prose_kind_gate(store, parent_ref_id)
     ctx = TickContext(
         parent_todo=parent_ref_id,
         workspace=workspace.path if workspace is not None else None,
         model=model,
         agentlog_id=agentlog_id,
+        disabled_kinds=(gate,) if gate is not None else (),
     )
     if log_event:
         log_event(
@@ -419,12 +321,18 @@ def _run_oss_tick(
         )
     try:
         with tick_context(ctx):
-            result = run_oss_tool_loop(
-                prompt=prompts.user,
-                model=model_id,
-                system_prompt=prompts.system,
-                max_turns=_max_turns(),
-                timeout_s=timeout_s,
+            result = dispatch(
+                LlmRequest(
+                    tier=tier,
+                    prompt=prompts.user,
+                    tools_needed=True,
+                    system_prompt=prompts.system,
+                    mcp_config=os.path.abspath(mcp_config) if mcp_config else None,
+                    max_turns=_max_turns(),
+                    timeout_s=timeout_s,
+                    source="plan_tick",
+                    ref_id=parent_ref_id,
+                )
             )
     except (RuntimeError, OSError) as exc:
         duration = time.monotonic() - started
@@ -440,14 +348,29 @@ def _run_oss_tick(
             duration_s=duration,
         )
     duration = time.monotonic() - started
-    exit_code, resume_reason = _oss_exit(result.stop_reason)
+    exit_code, resume_reason = _oss_exit_from_result(result)
     return PlanTickOutcome(
         exit_code=exit_code,
-        stdout=result.final_text,
+        stdout=result.text,
         stderr=result.error or "",
         duration_s=duration,
         resume_reason=resume_reason,
     )
+
+
+def _oss_exit_from_result(result: Any) -> tuple[int, str | None]:
+    """Map the OSS-loop router ``LlmResult`` → ``(exit_code, resume_reason)``.
+
+    A breaker / local-slot pause → a resumable ``'paused'`` (retry when the
+    window clears / a slot frees, bounded by the executor's per-parent streak
+    cap). A transport / build / admission error → a hard failure. Otherwise
+    defer to the loop's ``stop_reason`` (:func:`_oss_exit`).
+    """
+    if result.paused:
+        return 1, "paused"
+    if result.error:
+        return 1, None
+    return _oss_exit(result.stop_reason or "")
 
 
 def _oss_exit(stop_reason: str) -> tuple[int, str | None]:
@@ -466,6 +389,288 @@ def _oss_exit(stop_reason: str) -> tuple[int, str | None]:
     if stop_reason == "max_turns":
         return 1, "max_turns"
     return 1, None
+
+
+def _run_claude_tick(
+    *,
+    store: Any,
+    prompts: Any,
+    model: str,
+    parent_ref_id: int,
+    agentlog_id: int | None,
+    workspace: Any,
+    timeout_s: int,
+    started: float,
+    job_ref_id: int,
+    log_event: Any,
+) -> PlanTickOutcome:
+    """Run one planner tick as a ``claude -p`` agent through the router.
+
+    Selected under the ANTHROPIC backend (:func:`~precis.utils.llm.router.select_transport`
+    → ``CLAUDE_AGENT``): the real Claude Code agent, MCP tools enabled, authed
+    off the OAuth Max subscription. It goes *through* ``router.dispatch`` — so it
+    gains the breaker gate + route-log — rather than hand-building a ``claude``
+    command.
+
+    The spawned subprocess can't read the in-process ContextVar the OSS loop
+    binds, so the tick's runtime context (parent todo / model / workspace /
+    agentlog id / draft kind-gate) is threaded via ``env_overlay`` the subprocess
+    (and its MCP server) inherits, and the run happens from a CLAUDE.md-free
+    neutral cwd (ADR 0051 §12) so no ambient project persona is prepended outside
+    the assembler.
+
+    ``call_claude_agent`` defaults to ``--permission-mode bypassPermissions`` —
+    the fix for the prod incident where the bespoke spawn used ``acceptEdits``
+    (auto-approve *edits* only) and every MCP *tool* call was denied, halting the
+    tick. The outcome mapping (:func:`_claude_exit`) preserves the resumable-
+    exhaustion semantics: ``max_turns`` / ``budget`` / timeout / a breaker pause
+    become a resumable signal rather than a hard failure.
+    """
+    from precis.utils.llm.router import LlmRequest, dispatch
+
+    tier = _TIER_BY_ALIAS.get(model, Tier.CLOUD_SUPER)
+    mcp_config = os.environ.get("PRECIS_MCP_CONFIG", "")
+    if not mcp_config:
+        log.warning(
+            "plan_tick: PRECIS_MCP_CONFIG unset; the claude tick can't call back "
+            "via MCP — children/yield/done won't land"
+        )
+    # ADR 0051 §12 — run from a neutral cwd so `claude -p` discovers no project
+    # CLAUDE.md, and surface any ambient one (user file or up the cwd tree) that
+    # would still be prepended outside the assembler and bust the cache prefix.
+    cwd = _neutral_cwd()
+    ambient = _ambient_claude_md_paths(cwd)
+    if ambient:
+        log.warning(
+            "plan_tick: ambient CLAUDE.md would contaminate the persona floor "
+            "outside the assembler (ADR 0051 §12) — remove it on agent hosts: %s",
+            ambient,
+        )
+    env_overlay = _tick_env_overlay(
+        store=store,
+        parent_ref_id=parent_ref_id,
+        model=model,
+        agentlog_id=agentlog_id,
+        workspace=workspace,
+    )
+    if log_event:
+        log_event(
+            "plan_tick.spawn",
+            {
+                "job_ref_id": job_ref_id,
+                "parent_ref_id": parent_ref_id,
+                "model": model,
+                "transport": "claude_agent",
+                "system_chars": len(prompts.system),
+                "user_chars": len(prompts.user),
+                "cwd": cwd,
+                "ambient_claude_md": ambient,
+            },
+        )
+    result = dispatch(
+        LlmRequest(
+            tier=tier,
+            prompt=prompts.user,
+            tools_needed=True,
+            system_prompt=prompts.system,
+            # Absolute so the neutral cwd can't strand a relative path.
+            mcp_config=os.path.abspath(mcp_config) if mcp_config else None,
+            max_turns=_max_turns(),
+            max_usd=_max_budget_usd(),
+            timeout_s=timeout_s,
+            # Full message stream (every turn + tool call/result) so the executor
+            # can store a debuggable transcript and parse the terminal reason.
+            # ``--verbose`` is required alongside ``stream-json`` in ``-p`` mode.
+            output_format="stream-json",
+            extra_args=("--verbose",),
+            env_overlay=env_overlay,
+            cwd=cwd,
+            source="plan_tick",
+            ref_id=parent_ref_id,
+        )
+    )
+    duration = time.monotonic() - started
+    exit_code, resume_reason = _claude_exit(result)
+    return PlanTickOutcome(
+        exit_code=exit_code,
+        # The full stream-json stdout (``raw_text``) for the executor's transcript
+        # + resume parse; a genuine error carries only the partial ``text``.
+        stdout=result.raw_text or result.text or "",
+        stderr=result.error or "",
+        duration_s=duration,
+        resume_reason=resume_reason,
+    )
+
+
+def _claude_exit(result: Any) -> tuple[int, str | None]:
+    """Map a router ``LlmResult`` from the claude tick → ``(exit_code, resume_reason)``.
+
+    A breaker / quota-window pause → a resumable ``'paused'`` (retry when the
+    window clears, bounded by the executor's per-parent streak cap). A transport
+    timeout → resumable ``'timeout'``. A recovered exhaustion (``max_turns`` / a
+    ``budget``-class reason, surfaced on ``terminal_reason`` because
+    ``call_claude_agent`` swallows the recoverable non-zero exit) → the matching
+    resumable signal. A clean run (or a ``completed`` terminal reason on a
+    process-teardown exit) → clean exit 0. Any other error → a hard failure.
+    """
+    if result.paused:
+        return 1, "paused"
+    if result.error is not None:
+        if "timed out" in result.error.lower():
+            return 1, "timeout"
+        return 1, None
+    tr = result.terminal_reason
+    if tr == "max_turns":
+        return 1, "max_turns"
+    if tr is not None and "budget" in tr:
+        return 1, "budget"
+    if tr is None or tr == "completed":
+        return 0, None
+    return 1, None
+
+
+def _tick_env_overlay(
+    *,
+    store: Any,
+    parent_ref_id: int,
+    model: str,
+    agentlog_id: int | None,
+    workspace: Any,
+) -> dict[str, str]:
+    """The env back-doors the spawned MCP server reads to bind this tick's
+    runtime context — the claude path's equivalent of the OSS loop's ContextVar:
+
+    * ``PRECIS_CURRENT_TODO`` — the parent todo, so ``put(kind='todo', ...)``
+      auto-parents children under it (``utils/workspace.current_todo_from_env``).
+    * ``PRECIS_CURRENT_MODEL`` — the tier the tick runs on, for the LLM's own
+      degrade / escalate decisions.
+    * ``PRECIS_WORKSPACE`` — the parent's workspace path, so file-kinds route by
+      the layout convention.
+    * the agentlog id (``agentlog.ENV_VAR``) — so draft chunks this tick writes /
+      moves attribute back to the run (a ``touched`` link).
+    * ``PRECIS_KINDS_DISABLED`` — the draft-bound prose-file kind-gate.
+    """
+    from precis import agentlog
+
+    overlay: dict[str, str] = {
+        "PRECIS_CURRENT_TODO": str(parent_ref_id),
+        "PRECIS_CURRENT_MODEL": model,
+    }
+    if workspace is not None:
+        overlay["PRECIS_WORKSPACE"] = workspace.path
+    if agentlog_id is not None:
+        overlay[agentlog.ENV_VAR] = str(agentlog_id)
+    _disable_prose_file_kind(store, parent_ref_id, overlay)
+    return overlay
+
+
+def _draft_prose_kind_gate(store: Any, parent_ref_id: int) -> tuple[str, str] | None:
+    """The ``(kind, hint)`` prose-file kind to prohibit for this tick, or ``None``.
+
+    When a draft is bound to the tick, the colliding file kind — the one whose
+    files duplicate the draft body: ``tex`` for a tex-format draft, ``markdown``
+    for a md-format one — is prohibited so the agent can't write the section to a
+    freestanding ``kind='tex'``/``'markdown'`` file the draft never renders (the
+    canonical store is the draft's chunks; the file is export-only). The ``hint``
+    tells the agent what to do instead and surfaces verbatim in the ``Unsupported``
+    error the gated verb raises.
+
+    Shared by both transports: the claude path folds it into the
+    ``PRECIS_KINDS_DISABLED`` env overlay (:func:`_disable_prose_file_kind`);
+    the OSS path folds it into the tick ContextVar's ``disabled_kinds``. Best-
+    effort: any lookup failure returns ``None`` — the ``## Draft`` prompt block
+    still steers the agent, the gate is just the belt to its suspenders.
+    """
+    from precis.workers.planner_prompt import bound_draft
+
+    try:
+        resolved = bound_draft(store, parent_ref_id)
+    except Exception:
+        log.warning("plan_tick: bound_draft lookup failed", exc_info=True)
+        return None
+    if resolved is None:
+        return None
+    ident, _title, fmt = resolved
+    kind = "markdown" if fmt.lower() in ("md", "markdown") else "tex"
+    hint = (
+        f"this project's deliverable is draft '{ident}' — write prose with "
+        f"put(kind='draft' ...) or edit(id='dc<id>') as the '## Draft' block "
+        f"in your prompt describes; the {kind} file kind is export-only output "
+        f"here"
+    )
+    return kind, hint
+
+
+def _disable_prose_file_kind(
+    store: Any, parent_ref_id: int, overlay: dict[str, str]
+) -> None:
+    """Fold the draft prose-file kind-gate into the claude subprocess's
+    ``PRECIS_KINDS_DISABLED`` env overlay (the claude-path side of
+    :func:`_draft_prose_kind_gate`).
+
+    Merges with any operator-set ``PRECIS_KINDS_DISABLED`` in the worker env
+    (the gate reads a comma list); the hint carries no comma. No-op when no
+    draft is bound.
+    """
+    from precis.config import load_config
+
+    gate = _draft_prose_kind_gate(store, parent_ref_id)
+    if gate is None:
+        return
+    kind, hint = gate
+    # Tier-1 config var → read through load_config(), not os.environ
+    # (docs/conventions/env-vars.md); PRECIS_KINDS_DISABLED backs
+    # PrecisConfig.kinds_disabled. The overlay we build here is still an env
+    # entry the *subprocess* MCP server parses at construction.
+    existing = (load_config().kinds_disabled or "").strip()
+    entry = f"{kind}:{hint}"
+    overlay["PRECIS_KINDS_DISABLED"] = f"{existing},{entry}" if existing else entry
+
+
+#: Process-wide neutral cwd for the claude tick (ADR 0051 §12). Lazily created,
+#: reused across ticks (an empty dir needs no per-tick churn).
+_NEUTRAL_CWD: str | None = None
+
+
+def _neutral_cwd() -> str:
+    """A stable, empty working directory the claude tick runs in so ``claude
+    -p``'s *project* ``CLAUDE.md`` auto-discovery finds nothing (ADR 0051 §12).
+
+    The turn-taker must own the entire system prompt: a tick's rendered system
+    prompt has to equal the assembler's bytes. Running from the daemon's cwd lets
+    ``claude`` discover a project ``CLAUDE.md`` up the tree and prepend it
+    *outside* the assembler — a competing uncontrolled persona that also silently
+    busts the cache prefix. A fresh temp dir (ancestors ``/tmp`` → ``/``, none
+    carrying a ``CLAUDE.md``) removes that discovery surface without ``--bare``
+    (which would force API-key auth and break OAuth). The *user* file
+    ``~/.claude/CLAUDE.md`` is discovered regardless of cwd —
+    :func:`_ambient_claude_md_paths` guards that."""
+    global _NEUTRAL_CWD
+    if _NEUTRAL_CWD is not None and os.path.isdir(_NEUTRAL_CWD):
+        return _NEUTRAL_CWD
+    _NEUTRAL_CWD = tempfile.mkdtemp(prefix="precis-plan-tick-cwd-")
+    return _NEUTRAL_CWD
+
+
+def _ambient_claude_md_paths(cwd: str) -> list[str]:
+    """Every ``CLAUDE.md`` ``claude -p`` could auto-discover for a run in ``cwd``
+    and prepend outside the assembler (ADR 0051 §12): the user file
+    ``~/.claude/CLAUDE.md`` plus any project ``CLAUDE.md`` from ``cwd`` up to the
+    filesystem root. An empty list means a clean persona environment — the
+    rendered system prompt is exactly the assembler's bytes."""
+    found: list[str] = []
+    try:
+        home_md = Path.home() / ".claude" / "CLAUDE.md"
+        if home_md.is_file():
+            found.append(str(home_md))
+        base = Path(cwd).resolve()
+        for d in (base, *base.parents):
+            md = d / "CLAUDE.md"
+            if md.is_file():
+                found.append(str(md))
+    except OSError:  # a stat failure must not abort the tick
+        log.warning("plan_tick: CLAUDE.md ambient-scan failed", exc_info=True)
+    return found
 
 
 def _refresh_patent_claims_digest(store: Any, parent_ref_id: int) -> None:
@@ -512,74 +717,20 @@ def _load_parent_workspace(store: Any, parent_ref_id: int):
     return Workspace.from_meta(row[0])
 
 
-def _disable_prose_file_kind(
-    store: Any, parent_ref_id: int, subprocess_env: dict[str, str]
-) -> None:
-    """When a draft is bound to this tick, add the colliding prose-file
-    kind to ``PRECIS_KINDS_DISABLED`` in ``subprocess_env`` with an
-    inline hint, so the spawned MCP server gates it off the tool surface.
+def _resolve_oss_tier(model: str) -> Tier:
+    """Pick the capability tier the in-process tools loop runs on.
 
-    The colliding kind is the one whose files duplicate the draft body:
-    ``tex`` for a tex-format draft, ``markdown`` for a md-format one.
-    Figures / data (``pic`` / ``data``) are left enabled — they are
-    draft-adjacent artefacts the draft references, not a second copy of
-    its prose. Merges with any operator-set value (the gate reads a
-    comma list); the hint carries no comma. Best-effort: any failure
-    leaves the env untouched — the ``## Draft`` prompt block still steers
-    the agent, the gate is just the belt to its suspenders.
+    The ``LLM:<tag>`` maps to a cloud tier (:data:`_TIER_BY_ALIAS`); that tier
+    is used only when the router would actually route it to the OSS ``tools=``
+    loop under the active backend (a tools-capable cloud such as OpenRouter).
+    Otherwise — the default ``ANTHROPIC`` backend, whose cloud tiers route to
+    ``claude -p`` — fall to ``LOCAL_BIG`` (a served OSS model), the tier that
+    always drives the tools loop, so the tick runs on the capability the
+    cluster actually has. Model selection stays in the ADR 0046 resolver.
     """
-    from precis.workers.planner_prompt import bound_draft
-
-    try:
-        resolved = bound_draft(store, parent_ref_id)
-    except Exception:
-        log.warning("plan_tick: bound_draft lookup failed", exc_info=True)
-        return
-    if resolved is None:
-        return
-    ident, _title, fmt = resolved
-    kind = "markdown" if fmt.lower() in ("md", "markdown") else "tex"
-    hint = (
-        f"this project's deliverable is draft '{ident}' — write prose with "
-        f"put(kind='draft' ...) or edit(id='dc<id>') as the '## Draft' block "
-        f"in your prompt describes; the {kind} file kind is export-only output "
-        f"here"
-    )
-    existing = subprocess_env.get("PRECIS_KINDS_DISABLED", "").strip()
-    entry = f"{kind}:{hint}"
-    subprocess_env["PRECIS_KINDS_DISABLED"] = (
-        f"{existing},{entry}" if existing else entry
-    )
-
-
-#: The ``LLM:<value>`` short-name → capability-tier map (ADR 0046). Each
-#: tier resolves (via :func:`~precis.utils.llm.router.resolve_model`) to the
-#: env-var + default in the router table, so a given ``LLM:opus`` tag binds
-#: to the consolidated cloud reasoning generation (override via the env var):
-#:   opus   → CLOUD_SUPER (``PRECIS_MODEL_OPUS``,  ``claude-opus-4-8``)
-#:   sonnet → CLOUD_MID   (``PRECIS_MODEL_SONNET``, ``claude-sonnet-5``)
-#:   haiku  → CLOUD_SMALL (``PRECIS_MODEL_HAIKU``,  ``claude-haiku-4-5-20251001``)
-_TIER_BY_ALIAS: dict[str, Tier] = {
-    "opus": Tier.CLOUD_SUPER,
-    "sonnet": Tier.CLOUD_MID,
-    "haiku": Tier.CLOUD_SMALL,
-}
-
-
-def _model_alias(model: str) -> str:
-    """Translate the short LLM:<value> name to the real Claude model ID.
-
-    Routes through the ADR 0046 resolver so model selection lives in one
-    table. The tier map binds each short name to a router tier, so a
-    ``LLM:opus`` tag resolves to the shared cloud-super default (opus-4.8),
-    overridable via ``PRECIS_MODEL_OPUS=…`` etc.. An unrecognized
-    name passes through unchanged — mirrors the old ``.get(model, model)``
-    fallback (``validate_submit`` already constrains it to opus/sonnet/haiku).
-    """
-    tier = _TIER_BY_ALIAS.get(model)
-    if tier is None:
-        return model
-    return resolve_model(tier)
+    tag_tier = _TIER_BY_ALIAS.get(model, Tier.CLOUD_SUPER)
+    transport = select_transport(tag_tier, tools_needed=True, backend=resolve_backend())
+    return tag_tier if transport is Transport.OPENAI_TOOLS else Tier.LOCAL_BIG
 
 
 def _max_turns() -> int:
@@ -603,59 +754,12 @@ def _max_turns() -> int:
         return _DEFAULT_MAX_TURNS
 
 
-#: Process-wide neutral cwd for the planner subprocess (ADR 0051 §12). Lazily
-#: created, reused across ticks (an empty dir needs no per-tick churn).
-_NEUTRAL_CWD: str | None = None
-
-
-def _neutral_cwd() -> str:
-    """A stable, empty working directory the planner subprocess runs in so
-    ``claude -p``'s *project* ``CLAUDE.md`` auto-discovery finds nothing
-    (ADR 0051 §12).
-
-    The turn-taker must own the entire system prompt: a tick's rendered
-    system prompt has to equal the assembler's bytes. Running from the
-    daemon's cwd lets ``claude`` discover a project ``CLAUDE.md`` up the tree
-    and prepend it *outside* the assembler — a competing uncontrolled persona
-    that also silently busts the "stable" cache prefix (§2/§3). A fresh temp
-    dir (ancestors ``/tmp`` → ``/``, none carrying a ``CLAUDE.md``) removes
-    that discovery surface without ``--bare`` (which would force API-key auth
-    and break OAuth). The *user* file ``~/.claude/CLAUDE.md`` is discovered
-    regardless of cwd — :func:`_ambient_claude_md_paths` guards that."""
-    global _NEUTRAL_CWD
-    if _NEUTRAL_CWD is not None and os.path.isdir(_NEUTRAL_CWD):
-        return _NEUTRAL_CWD
-    _NEUTRAL_CWD = tempfile.mkdtemp(prefix="precis-plan-tick-cwd-")
-    return _NEUTRAL_CWD
-
-
-def _ambient_claude_md_paths(cwd: str) -> list[str]:
-    """Every ``CLAUDE.md`` ``claude -p`` could auto-discover for a run in
-    ``cwd`` and prepend outside the assembler (ADR 0051 §12): the user file
-    ``~/.claude/CLAUDE.md`` plus any project ``CLAUDE.md`` from ``cwd`` up to
-    the filesystem root. An empty list means a clean persona environment —
-    the rendered system prompt is exactly the assembler's bytes."""
-    found: list[str] = []
-    try:
-        home_md = Path.home() / ".claude" / "CLAUDE.md"
-        if home_md.is_file():
-            found.append(str(home_md))
-        base = Path(cwd).resolve()
-        for d in (base, *base.parents):
-            md = d / "CLAUDE.md"
-            if md.is_file():
-                found.append(str(md))
-    except OSError:  # a stat failure must not abort the tick
-        log.warning("plan_tick: CLAUDE.md ambient-scan failed", exc_info=True)
-    return found
-
-
 def _max_budget_usd() -> float:
-    """The planner subprocess's ``--max-budget-usd`` cap.
+    """The claude tick's ``--max-budget-usd`` cap.
 
     Reads ``PRECIS_PLAN_TICK_MAX_USD`` (a float) or falls back to
-    :data:`_DEFAULT_MAX_USD`. A malformed value logs and falls back rather
-    than crashing the tick.
+    :data:`_DEFAULT_MAX_USD`. A malformed value logs and falls back rather than
+    crashing the tick.
     """
     raw = os.environ.get("PRECIS_PLAN_TICK_MAX_USD")
     if not raw:

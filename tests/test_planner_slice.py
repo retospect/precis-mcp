@@ -39,8 +39,8 @@ def _id_of(body: str) -> int:
 
 
 def test_put_accepts_known_llm_models(handler: TodoHandler) -> None:
-    """The three sanctioned models pass the closed-vocab guard."""
-    for model in ["opus", "sonnet", "haiku"]:
+    """The sanctioned planner tiers pass the closed-vocab guard."""
+    for model in ["opus", "sonnet", "haiku", "local"]:
         r = handler.put(text=f"{model} task", tags=[f"LLM:{model}"])
         assert "id=" in r.body
 

@@ -1,14 +1,18 @@
-"""ADR 0046 unit-4b (②) — the ``/factory`` backend switch reaches the planner.
+"""plan_tick's in-process OSS ``tools=`` loop branch (the OpenAI backend).
 
-Under the default ANTHROPIC backend a tick spawns ``claude -p`` (covered by
-``test_plan_tick_routing``); when ``PRECIS_LLM_BACKEND=openai`` (+ a base url)
-the tick drives the precis verbs *in-process* over the OSS ``tools=`` loop,
-binding its runtime context (parent todo / workspace / model / agentlog) via a
-thread-isolated ContextVar instead of the subprocess env the OSS loop can't
-carry. These tests cover: the context override + thread isolation, the
-``stop_reason`` → ``PlanTickOutcome`` mapping, the executor honoring the
-explicit ``resume_reason``, and ``run()`` taking the OSS path (no subprocess)
-with the context bound around the loop.
+Under a tools-capable OSS backend (``PRECIS_LLM_BACKEND=openai``) the tick runs
+in-process over the OSS ``tools=`` loop rather than as ``claude -p`` (the
+ANTHROPIC-backend branch, covered by ``test_plan_tick_claude``).
+The tick goes *through* ``router.dispatch`` (so it gains the breaker gate +
+route-log), which runs the OSS loop synchronously in-thread; the tick binds its
+runtime context (parent todo / workspace / model / agentlog / the draft
+prose-file kind-gate) via a thread-isolated ContextVar around the dispatch call.
+These tests cover: the context override + thread isolation, the per-tick
+kind-gate honored by the runtime, the ``LlmResult`` → ``PlanTickOutcome``
+mapping (pause / stop / max_turns / error), the executor honoring the explicit
+``resume_reason``, and ``run()`` binding the context around the loop.
+The backend is set to ``openai`` here only to pin the tag's cloud tier so the
+resolved model id is deterministic.
 
 DB-free: ``run()``'s planner-prompt / workspace / agentlog helpers are stubbed
 and the OSS loop is a scripted fake, so no ``claude`` binary and no store.
@@ -162,10 +166,16 @@ class _FakeWorkspace:
 
 
 def _run_oss(
-    monkeypatch: pytest.MonkeyPatch, *, stop_reason: str, with_workspace: bool = True
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stop_reason: str,
+    with_workspace: bool = True,
+    draft: tuple[str, str, str] | None = None,
 ) -> tuple[pt.PlanTickOutcome, dict[str, Any]]:
     """Drive ``plan_tick.run`` under the OpenAI backend with the OSS loop
-    scripted; returns the outcome plus what the loop observed."""
+    scripted; returns the outcome plus what the loop observed. ``dispatch`` is
+    NOT stubbed — the real router runs, calling the stubbed ``run_oss_tool_loop``
+    — so the breaker/admission/slot path is exercised (dark without a store)."""
     import precis.workers.planner_prompt as planner_prompt
     from precis.utils.llm import router
 
@@ -173,9 +183,9 @@ def _run_oss(
 
     def fake_loop(**kw: Any) -> AgentLoopResult:
         # The context must be bound on THIS call — else children orphan.
-        ctx = inproc_context.current()
-        seen["ctx"] = ctx
+        seen["ctx"] = inproc_context.current()
         seen["model_id"] = kw["model"]
+        seen["tool_less"] = kw.get("tool_less")
         return AgentLoopResult(
             final_text="tick output",
             turns_used=2,
@@ -184,26 +194,24 @@ def _run_oss(
             stop_reason=stop_reason,
         )
 
-    def boom_run(*_a: Any, **_k: Any) -> Any:  # subprocess must NOT be reached
-        raise AssertionError("OSS path must not spawn claude -p")
-
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://oss.example/v1")
+    # Non-empty so the tick advertises precis tools (tool_less=False).
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", "mcp.json")
     for var in ("PRECIS_MODEL_OPUS", "PRECIS_MODEL_SONNET", "PRECIS_MODEL_HAIKU"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
         planner_prompt, "build_planner_prompts", lambda *a, **k: _FakePrompts()
     )
+    monkeypatch.setattr(planner_prompt, "bound_draft", lambda store, rid: draft)
     monkeypatch.setattr(
         pt,
         "_load_parent_workspace",
         lambda *a, **k: _FakeWorkspace() if with_workspace else None,
     )
-    monkeypatch.setattr(pt, "_disable_prose_file_kind", lambda *a, **k: None)
     monkeypatch.setattr(agentlog, "open_log", lambda *a, **k: 55)
     monkeypatch.setattr(agentlog, "finalize_log", lambda *a, **k: None)
     monkeypatch.setattr(router, "run_oss_tool_loop", fake_loop)
-    monkeypatch.setattr(pt.subprocess, "run", boom_run)
 
     outcome = pt.run(
         store=object(),
@@ -225,6 +233,10 @@ def test_run_oss_binds_context_and_maps_clean(monkeypatch: pytest.MonkeyPatch) -
     assert ctx.agentlog_id == 55
     # Resolved OSS model id (cloud-super default) fed to the loop.
     assert seen["model_id"] == "claude-opus-4-8"
+    # PRECIS_MCP_CONFIG set → precis tools advertised (not a bare completion).
+    assert seen["tool_less"] is False
+    # No draft bound → no per-tick kind prohibition.
+    assert ctx.disabled_kinds == ()
     # Clean answer → exit 0, no resume, final text captured.
     assert outcome.exit_code == 0
     assert outcome.stdout == "tick output"
@@ -244,3 +256,121 @@ def test_run_oss_no_workspace_leaves_ctx_workspace_none(
 ) -> None:
     _, seen = _run_oss(monkeypatch, stop_reason="stop", with_workspace=False)
     assert seen["ctx"].workspace is None
+
+
+def test_run_oss_bound_draft_gates_prose_kind_on_ctx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A tex-format draft bound to the tick → the ctx prohibits the `tex` file
+    # kind for the tick, with the what-to-do-instead hint (the OSS twin of the
+    # claude path's PRECIS_KINDS_DISABLED entry).
+    _, seen = _run_oss(
+        monkeypatch, stop_reason="stop", draft=("frypat", "Title", "tex")
+    )
+    disabled = dict(seen["ctx"].disabled_kinds)
+    assert "tex" in disabled
+    assert "frypat" in disabled["tex"]
+
+
+def test_run_oss_breaker_pause_is_resumable(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A router-level pause (breaker / all-slots-busy) folds into a resumable
+    # `paused` outcome rather than a hard failure — the executor backs off and
+    # re-mints when the window clears. Stub `dispatch` itself to return paused.
+    import precis.workers.planner_prompt as planner_prompt
+    from precis.utils.llm import router
+    from precis.utils.llm.router import LlmResult, Tier
+
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://oss.example/v1")
+    monkeypatch.setattr(
+        planner_prompt, "build_planner_prompts", lambda *a, **k: _FakePrompts()
+    )
+    monkeypatch.setattr(planner_prompt, "bound_draft", lambda store, rid: None)
+    monkeypatch.setattr(pt, "_load_parent_workspace", lambda *a, **k: _FakeWorkspace())
+    monkeypatch.setattr(agentlog, "open_log", lambda *a, **k: 55)
+    monkeypatch.setattr(agentlog, "finalize_log", lambda *a, **k: None)
+    monkeypatch.setattr(
+        router,
+        "dispatch",
+        lambda req: LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model="m",
+            tier=Tier.CLOUD_SUPER,
+            error="daily dollar cap reached",
+            paused=True,
+        ),
+    )
+    outcome = pt.run(
+        store=object(), job_ref_id=1, parent_ref_id=2, params={"model": "opus"}
+    )
+    assert outcome.exit_code == 1
+    assert outcome.resume_reason == "paused"
+
+
+# ── _oss_exit_from_result: LlmResult → (exit_code, resume_reason) ──────
+
+
+def _oss_result(**kw: Any) -> Any:
+    from precis.utils.llm.router import LlmResult, Tier
+
+    base: dict[str, Any] = {
+        "text": "",
+        "cost_usd": None,
+        "turns_used": None,
+        "model": "m",
+        "tier": Tier.CLOUD_SUPER,
+    }
+    base.update(kw)
+    return LlmResult(**base)
+
+
+def test_oss_exit_from_result_pause() -> None:
+    assert pt._oss_exit_from_result(_oss_result(error="capped", paused=True)) == (
+        1,
+        "paused",
+    )
+
+
+def test_oss_exit_from_result_error() -> None:
+    assert pt._oss_exit_from_result(_oss_result(error="boom", stop_reason="error")) == (
+        1,
+        None,
+    )
+
+
+def test_oss_exit_from_result_stop() -> None:
+    assert pt._oss_exit_from_result(_oss_result(stop_reason="stop")) == (0, None)
+
+
+def test_oss_exit_from_result_max_turns() -> None:
+    assert pt._oss_exit_from_result(_oss_result(stop_reason="max_turns")) == (
+        1,
+        "max_turns",
+    )
+
+
+# ── the per-tick kind-gate, honored by the runtime (in-process) ──────
+
+
+def test_inproc_gate_rejects_disabled_kind(runtime: Any) -> None:
+    hint = "write prose into the bound draft instead"
+    with tick_context(TickContext(disabled_kinds=(("tex", hint),))):
+        out = runtime.dispatch("get", {"kind": "tex", "id": "x"})
+    assert "disabled for this tick" in out
+    assert hint in out
+
+
+def test_inproc_gate_is_noop_without_a_tick(runtime: Any) -> None:
+    # No tick bound → the ContextVar gate is inert; whatever tex's normal
+    # resolution says, it is NOT the tick-gate message.
+    out = runtime.dispatch("get", {"kind": "tex", "id": "x"})
+    assert "disabled for this tick" not in out
+
+
+def test_inproc_gate_other_kinds_pass(runtime: Any) -> None:
+    # A tick that gates `tex` must not gate a different kind.
+    with tick_context(TickContext(disabled_kinds=(("tex", "h"),))):
+        out = runtime.dispatch("get", {"kind": "markdown", "id": "x"})
+    assert "disabled for this tick" not in out

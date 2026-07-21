@@ -93,7 +93,9 @@ class TestNarrateTail:
         )
 
         assert r["published"] is True
-        assert r["episode_id"].startswith("reading-")
+        # The reading cast's human episode id is its export stem, not the
+        # internal cast key: ``morning_brief_<date>`` (cast_common.export_stem).
+        assert r["episode_id"].startswith("morning_brief_")
         # The reading cast publishes under the distinct producer tag "brief"
         # (not "reading" — that borrowed tag collided with nidra's episodes).
         assert captured["publish"]["source"] == "brief"

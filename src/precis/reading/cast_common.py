@@ -93,6 +93,14 @@ class CastProfile:
     source: str  # publish_episode producer tag — DISTINCT per cast
     #: ("brief", "meditation", "news"); a shared feed can subfilter by it, so a
     #: cast must not borrow another's tag. Required (no default) for that reason.
+    export_stem: str  # human export basename stem — the mp3 episode-id +
+    #: exported PDF filename become ``<export_stem>_<date>`` (e.g.
+    #: ``morning_brief_2026-07-21.mp3`` / ``.pdf``). Distinct from the internal
+    #: ``slug_prefix`` (``cast-reading``), which stays the DB draft slug so
+    #: idempotency + already-published episodes are undisturbed.
+    folder: str  # Drive folder title the cast draft is auto-placed under
+    #: (e.g. "Morning brief") so its text (and audio/PDF links) show up in
+    #: /drive alongside the other authored artifacts (ADR 0045).
 
 
 CAST_PROFILES: dict[str, CastProfile] = {
@@ -107,6 +115,8 @@ CAST_PROFILES: dict[str, CastProfile] = {
         slug_prefix="cast-reading",
         title="\U0001f305 Morning brief",  # 🌅
         source="brief",
+        export_stem="morning_brief",
+        folder="Morning brief",
     ),
     "nidra": CastProfile(
         cast="nidra",
@@ -119,6 +129,8 @@ CAST_PROFILES: dict[str, CastProfile] = {
         slug_prefix="cast-nidra",
         title="\U0001f319 Evening meditation",  # 🌙
         source="meditation",
+        export_stem="evening_meditation",
+        folder="Evening meditation",
     ),
 }
 
@@ -159,8 +171,58 @@ def voice_skill_preamble() -> str:
 
 
 def cast_slug(profile: CastProfile, date_tag: str) -> str:
-    """The deterministic per-day draft slug (also the episode-id stem)."""
+    """The deterministic per-day draft slug (the internal DB address)."""
     return f"{profile.slug_prefix}-{date_tag}"
+
+
+def export_stem(profile: CastProfile, date_tag: str) -> str:
+    """The human export basename (episode-id + PDF filename stem).
+
+    ``<export_stem>_<date>`` — e.g. ``morning_brief_2026-07-21`` — so the
+    published mp3 and the compiled PDF share a stem a listener recognises,
+    distinct from the internal ``cast-reading-<date>`` DB slug.
+    """
+    return f"{profile.export_stem}_{date_tag}"
+
+
+def export_basename_for_meta(meta: dict[str, Any] | None) -> str | None:
+    """The export stem for a *cast* draft, derived from its ``meta``.
+
+    Returns ``<export_stem>_<date>`` when ``meta`` names a known cast and a
+    date (the shape :func:`create_cast_draft` stamps), else ``None`` so a
+    non-cast draft falls back to its slug for export filenames.
+    """
+    if not meta:
+        return None
+    profile = CAST_PROFILES.get(str(meta.get("cast") or ""))
+    date_tag = str(meta.get("date") or "").strip()
+    if profile is None or not date_tag:
+        return None
+    return export_stem(profile, date_tag)
+
+
+def ensure_cast_folder(store: Any, profile: CastProfile) -> int | None:
+    """Find (or create) the Drive folder this cast files its drafts under.
+
+    Idempotent on the folder title: an existing ``kind='folder'`` with the
+    profile's title is reused; otherwise one is created. Best-effort — a
+    failure logs and returns ``None`` so folder placement never blocks a cast
+    that was already composed and stored.
+    """
+    try:
+        existing = store.folder_ref_ids_by_title(profile.folder)
+        if existing:
+            return int(existing[0])
+        ref = store.insert_ref(kind="folder", slug=None, title=profile.folder)
+        return int(ref.id)
+    except Exception:  # pragma: no cover - placement is a nicety, never fatal
+        log.warning(
+            "cast_common: could not ensure folder %r for cast %s",
+            profile.folder,
+            profile.cast,
+            exc_info=True,
+        )
+        return None
 
 
 def find_cast_draft(store: Any, profile: CastProfile, date_tag: str) -> Any | None:
@@ -214,6 +276,20 @@ def create_cast_draft(
     canonical = store.get_ref(kind="draft", id=draft_slug)
     if canonical is not None and int(canonical.id) != int(ref.id):
         return canonical, False
+    # File the fresh draft under this cast's Drive folder so its text (and the
+    # audio/PDF links the Drive row surfaces) live alongside the other authored
+    # artifacts (ADR 0045). Best-effort: placement never blocks a stored cast.
+    folder_id = ensure_cast_folder(store, profile)
+    if folder_id is not None:
+        try:
+            store.set_parent(int(ref.id), folder_id)
+        except Exception:  # pragma: no cover - placement is a nicety, never fatal
+            log.warning(
+                "cast_common: could not file draft %s under folder %s",
+                ref.id,
+                folder_id,
+                exc_info=True,
+            )
     return ref, True
 
 
@@ -225,6 +301,9 @@ __all__ = [
     "cast_slug",
     "compose_max_tokens",
     "create_cast_draft",
+    "ensure_cast_folder",
+    "export_basename_for_meta",
+    "export_stem",
     "find_cast_draft",
     "link_sources",
     "voice_skill_preamble",

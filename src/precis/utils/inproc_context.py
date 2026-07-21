@@ -48,12 +48,23 @@ class TickContext:
     model the tick runs on, and the agentlog id draft writes attribute to. Any
     field may be ``None`` (no workspace bound, no agentlog opened, …); a reader
     only overrides when its field is present.
+
+    ``disabled_kinds`` is the in-process equivalent of the claude path's
+    ``PRECIS_KINDS_DISABLED`` env back-door: a tuple of ``(kind, hint)`` pairs
+    the runtime rejects *for the duration of this tick only* (plan_tick gates
+    the draft's colliding prose-file kind so the planner writes into the draft,
+    not a freestanding file). It can't be an env var here — the in-process Hub
+    is built once at worker boot and the kind-gate is construction-time, so a
+    per-tick prohibition has to ride the ContextVar and be honored per-call
+    (:meth:`precis.runtime.PrecisRuntime._resolve_handler`). Empty ⇒ no
+    per-tick prohibition.
     """
 
     parent_todo: int | None = None
     workspace: str | None = None
     model: str | None = None
     agentlog_id: int | None = None
+    disabled_kinds: tuple[tuple[str, str], ...] = ()
 
 
 _CURRENT: ContextVar[TickContext | None] = ContextVar(

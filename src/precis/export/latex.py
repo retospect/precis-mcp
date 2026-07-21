@@ -262,17 +262,44 @@ def _normalize_subsup(s: str) -> str:
     )
 
 
+#: Unicode ranges that need a CJK-capable font — Latin Modern has none, so a
+#: bare CJK glyph renders as a missing-glyph rule under lualatex. pylatexenc
+#: has no LaTeX-command mapping for these (``keep`` passes them through), so we
+#: wrap contiguous runs in ``\cjktext{…}`` (a preamble macro backed by a CJK
+#: font, identity when none is installed) *after* pylatexenc runs.
+_CJK_RUN = re.compile(
+    "["
+    "\u3000-\u303f"  # CJK symbols & punctuation
+    "\u3040-\u30ff"  # Hiragana + Katakana
+    "\u3400-\u4dbf"  # CJK Extension A
+    "\u4e00-\u9fff"  # CJK Unified Ideographs
+    "\uf900-\ufaff"  # CJK Compatibility Ideographs
+    "\uff00-\uffef"  # Halfwidth & Fullwidth Forms
+    "\uac00-\ud7af"  # Hangul syllables
+    "]+"
+)
+
+
+def _wrap_cjk(s: str) -> str:
+    """Wrap contiguous CJK runs in ``\\cjktext{…}`` so the preamble's CJK font
+    renders them. Runs on already-encoded LaTeX; the braces it adds are real
+    grouping. A no-op when there is no CJK."""
+    return _CJK_RUN.sub(lambda m: f"\\cjktext{{{m.group(0)}}}", s)
+
+
 def _encode_unicode(escaped: str) -> str:
     """Translate non-ASCII characters to LaTeX commands (``≈`` →
     ``\\approx``, ``α`` → ``\\alpha``), leaving ASCII — including the
     backslash escapes we just emitted — untouched (``non_ascii_only``).
     Sub/superscript digits are transliterated first (pylatexenc has no
-    mapping and would pass them through verbatim). The single biggest
+    mapping and would pass them through verbatim). CJK runs (which pylatexenc
+    also keeps verbatim) are then wrapped in ``\\cjktext{…}`` so a CJK font
+    renders them instead of a missing-glyph rule. The single biggest
     determinism lever: the engine never hits a "missing character" on
     arbitrary scientific prose. Unknown glyphs are kept verbatim — under
     lualatex (the export engine) that's a recoverable missing-glyph
     warning, not a fatal error (the compile-repair loop is the backstop)."""
-    return _U2L.unicode_to_latex(_normalize_subsup(escaped))
+    return _wrap_cjk(_U2L.unicode_to_latex(_normalize_subsup(escaped)))
 
 
 def _glsify(escaped: str, keymap: dict[str, str], seen: set[str] | None = None) -> str:

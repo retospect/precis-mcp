@@ -1,159 +1,82 @@
-"""Unit 4b — plan_tick model selection routes through the ADR 0046 resolver
-and the tick carries a ``--max-budget-usd`` runaway-spend cap.
+"""plan_tick OSS-branch tier selection + turn-cap helpers.
 
-DB-free: the model helpers are pure env reads, and the ``run()`` cmd test
-monkeypatches ``build_planner_prompts`` / the workspace + agentlog helpers /
-``subprocess.run`` so no ``claude`` binary spawns and no store is touched.
-The byte-identity assertions are the behavior-preservation contract: each
-``LLM:<tier>`` tag must resolve to the exact model string the legacy inline
-``_model_alias`` table produced.
+The transport is the router's decision: the ANTHROPIC backend routes the tick
+to ``claude -p`` (``CLAUDE_AGENT`` — covered by ``test_plan_tick_claude``); a
+tools-capable OSS backend routes it to the in-process ``tools=`` loop. On the
+OSS branch :func:`plan_tick._resolve_oss_tier` keeps the ``LLM:<tag>`` cloud
+tier when the router would route it to the OSS loop, else falls to ``LOCAL_BIG``
+(a served OSS model). DB-free: pure env / router reads, no store, no ``claude``
+binary.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
+from precis.utils.llm.router import Tier
 from precis.workers.job_types import plan_tick as pt
 
-# ── _model_alias: byte-identical to the legacy inline table ────────────
+# ── _resolve_oss_tier: tag → served tier, backend-aware ────────────────
 
-# The resolver defaults, kept literal here so a drift in either the resolver
-# table or the plan_tick map is caught as a mismatch. ``opus`` = the
-# consolidated cloud-super tier (opus-4.8) after the ADR 0046 bump.
-_LEGACY_DEFAULTS = {
-    "opus": "claude-opus-4-8",
-    "sonnet": "claude-sonnet-5",
-    "haiku": "claude-haiku-4-5-20251001",
-}
-_ALIAS_ENV = {
-    "opus": "PRECIS_MODEL_OPUS",
-    "sonnet": "PRECIS_MODEL_SONNET",
-    "haiku": "PRECIS_MODEL_HAIKU",
+_TAG_TIER = {
+    "opus": Tier.CLOUD_SUPER,
+    "sonnet": Tier.CLOUD_MID,
+    "haiku": Tier.CLOUD_SMALL,
 }
 
 
 @pytest.mark.parametrize("alias", ["opus", "sonnet", "haiku"])
-def test_model_alias_default_byte_identical(
+def test_resolve_oss_tier_honours_tag_under_tools_capable_cloud(
     alias: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Env unset → the resolver default matches the legacy pinned default."""
-    for var in _ALIAS_ENV.values():
-        monkeypatch.delenv(var, raising=False)
-    assert pt._model_alias(alias) == _LEGACY_DEFAULTS[alias]
+    """Under a tools-capable cloud backend (``openai``) the router routes the
+    tag's cloud tier to the OSS loop, so ``_resolve_oss_tier`` keeps it."""
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    assert pt._resolve_oss_tier(alias) is _TAG_TIER[alias]
 
 
 @pytest.mark.parametrize("alias", ["opus", "sonnet", "haiku"])
-def test_model_alias_env_override(alias: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Env set → the override wins, same as the legacy per-alias env read."""
-    monkeypatch.setenv(_ALIAS_ENV[alias], "pinned-model-z")
-    assert pt._model_alias(alias) == "pinned-model-z"
+def test_resolve_oss_tier_falls_to_local_big_under_anthropic(
+    alias: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default ANTHROPIC backend routes tool-using cloud tiers to ``claude -p``
+    (not the OSS loop), so the tick falls to the served ``LOCAL_BIG`` tier."""
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "anthropic")
+    assert pt._resolve_oss_tier(alias) is Tier.LOCAL_BIG
 
 
-def test_model_alias_unknown_passthrough() -> None:
-    """An unrecognized name passes through unchanged (mirrors the old
-    ``defaults.get(model, model)`` fallback)."""
-    assert pt._model_alias("no-such-tier") == "no-such-tier"
+@pytest.mark.parametrize("backend", ["openai", "anthropic"])
+def test_resolve_oss_tier_local_always_runs_local_big(
+    backend: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``local`` alias names ``LOCAL_BIG`` (the cluster's served qwen +
+    tools) — always the OSS loop, so it runs local under either backend."""
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", backend)
+    assert pt._resolve_oss_tier("local") is Tier.LOCAL_BIG
 
 
-# ── _max_budget_usd: env-overridable cap ───────────────────────────────
-
-
-def test_max_budget_usd_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PRECIS_PLAN_TICK_MAX_USD", raising=False)
-    assert pt._max_budget_usd() == pt._DEFAULT_MAX_USD == 5.00
-
-
-def test_max_budget_usd_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PRECIS_PLAN_TICK_MAX_USD", "12.5")
-    assert pt._max_budget_usd() == 12.5
-
-
-def test_max_budget_usd_malformed_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PRECIS_PLAN_TICK_MAX_USD", "not-a-float")
-    assert pt._max_budget_usd() == pt._DEFAULT_MAX_USD
-
-
-# ── run(): the spawned cmd carries the resolved model + budget cap ─────
-
-
-class _FakeCompleted:
-    def __init__(self) -> None:
-        self.returncode = 0
-        self.stdout = ""
-        self.stderr = ""
-
-
-class _FakePrompts:
-    system = "SYS"
-    user = "USR"
-
-
-def _capture_cmd(monkeypatch: pytest.MonkeyPatch, model: str) -> list[str]:
-    """Run ``plan_tick.run`` with everything DB/subprocess stubbed and
-    return the argv the runner would have spawned."""
-    import precis.agentlog as agentlog
-    import precis.workers.planner_prompt as planner_prompt
-
-    captured: dict[str, list[str]] = {}
-
-    def fake_run(cmd: list[str], **_kw: Any) -> _FakeCompleted:
-        captured["cmd"] = cmd
-        return _FakeCompleted()
-
-    monkeypatch.setattr(
-        planner_prompt, "build_planner_prompts", lambda *a, **k: _FakePrompts()
-    )
-    monkeypatch.setattr(pt, "_load_parent_workspace", lambda *a, **k: None)
-    monkeypatch.setattr(pt, "_disable_prose_file_kind", lambda *a, **k: None)
-    monkeypatch.setattr(agentlog, "open_log", lambda *a, **k: 1)
-    monkeypatch.setattr(agentlog, "finalize_log", lambda *a, **k: None)
-    monkeypatch.setattr(pt.subprocess, "run", fake_run)
-    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude-stub")
-    monkeypatch.delenv("PRECIS_MCP_CONFIG", raising=False)
-
-    pt.run(
-        store=object(),
-        job_ref_id=1,
-        parent_ref_id=2,
-        params={"model": model},
-    )
-    return captured["cmd"]
-
-
-def test_run_passes_resolved_model_and_budget_cap(
+def test_resolve_oss_tier_unknown_tag_defaults_to_cloud_super_family(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    for var in _ALIAS_ENV.values():
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.delenv("PRECIS_PLAN_TICK_MAX_USD", raising=False)
-
-    cmd = _capture_cmd(monkeypatch, "opus")
-
-    # Resolved model is passed to --model (the cloud-super tier default).
-    assert "--model" in cmd
-    assert cmd[cmd.index("--model") + 1] == "claude-opus-4-8"
-    # The runaway-spend backstop is present with the default value.
-    assert "--max-budget-usd" in cmd
-    assert cmd[cmd.index("--max-budget-usd") + 1] == "5.0"
-    # Existing flags untouched.
-    assert cmd[cmd.index("--max-turns") + 1] == "60"
-    assert cmd[cmd.index("--permission-mode") + 1] == "acceptEdits"
+    """An unrecognized tag maps to the cloud-super family, then subject to the
+    same backend gate."""
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    assert pt._resolve_oss_tier("no-such-tier") is Tier.CLOUD_SUPER
 
 
-def test_run_budget_cap_honours_env_override(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("PRECIS_PLAN_TICK_MAX_USD", "9.0")
-    cmd = _capture_cmd(monkeypatch, "sonnet")
-    assert cmd[cmd.index("--max-budget-usd") + 1] == "9.0"
-    assert cmd[cmd.index("--model") + 1] == "claude-sonnet-5"
+# ── _max_turns: env-overridable turn ceiling ───────────────────────────
 
 
-def test_max_turns_honours_env_override(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_max_turns_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_PLAN_TICK_MAX_TURNS", raising=False)
+    assert pt._max_turns() == pt._DEFAULT_MAX_TURNS == 60
+
+
+def test_max_turns_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PRECIS_PLAN_TICK_MAX_TURNS", "90")
-    cmd = _capture_cmd(monkeypatch, "sonnet")
-    assert cmd[cmd.index("--max-turns") + 1] == "90"
+    assert pt._max_turns() == 90
+
+
+def test_max_turns_malformed_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_PLAN_TICK_MAX_TURNS", "not-an-int")
+    assert pt._max_turns() == pt._DEFAULT_MAX_TURNS

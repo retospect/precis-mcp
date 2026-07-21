@@ -138,8 +138,14 @@ def _row(r: tuple, *, kinds_with_slug: bool = True) -> dict[str, Any]:
         r[3],
         r[4],
     )
+    meta = r[5] if len(r) > 5 and isinstance(r[5], dict) else {}
     ident = slug if slug is not None else str(ref_id)
     url = _READER_URL.get(kind)
+    # A cast draft (morning brief / evening meditation) carries its published
+    # episode id in meta once narrated — surface the mp3 + compiled PDF as
+    # download links so the audio "shows up in the Drive" beside its text.
+    episode_id = meta.get("audio_episode_id") if kind == "draft" else None
+    is_cast = kind == "draft" and bool(meta.get("cast"))
     return {
         "ref_id": ref_id,
         "kind": kind,
@@ -149,6 +155,8 @@ def _row(r: tuple, *, kinds_with_slug: bool = True) -> dict[str, Any]:
         # link() addresses slug kinds by slug, numeric kinds by int id.
         "handler_id": ident,
         "url": url.format(ident=ident, ref_id=ref_id) if url else None,
+        "audio_url": f"/podcast/audio/{episode_id}" if episode_id else None,
+        "pdf_url": f"/drafts/{ident}/pdf" if is_cast else None,
         "updated": _ago(updated_at) if updated_at is not None else "",
     }
 
@@ -158,7 +166,7 @@ _CHILD_COLS = """
     (SELECT ri.id_value FROM ref_identifiers ri
       WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key'
       LIMIT 1) AS slug,
-    r.updated_at
+    r.updated_at, r.meta
 """
 
 

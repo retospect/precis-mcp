@@ -132,6 +132,8 @@ def test_result_from_agent() -> None:
         cost_usd=0.42,
         duration_s=3.1,
         turns_used=5,
+        raw_stdout="<stream-json>",
+        terminal_reason="max_turns",
     )
     got = result_from_agent(raw, model="claude-opus-4-7", tier=Tier.CLOUD_SUPER)
     assert got == LlmResult(
@@ -141,6 +143,10 @@ def test_result_from_agent() -> None:
         model="claude-opus-4-7",
         tier=Tier.CLOUD_SUPER,
         duration_s=3.1,  # preserved for dream/review telemetry
+        # The raw stream + terminal reason ride through so a caller (plan_tick)
+        # can keep a debuggable transcript and map an exhaustion to a resume.
+        raw_text="<stream-json>",
+        terminal_reason="max_turns",
     )
     assert got.error is None
 
