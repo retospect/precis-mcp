@@ -28,14 +28,19 @@ llm:
     - "--permission-mode"
     - "bypassPermissions"
     # Hard-block the native web tools so asa can't bypass the
-    # precis(kind='web')/(kind='websearch') cache + embed pipeline.
+    # precis(kind='web')/(kind='websearch') cache + embed pipeline, and
+    # hard-block plain-filesystem write/exec tools so a Discord chat
+    # turn can never write to or run commands on the host — the precis
+    # MCP surface (mcp__precis) is the only sanctioned write path.
     # Even with bypassPermissions, --disallowed-tools forbids the call
-    # entirely. SOUL also steers her away on the soft-rule side.
-    # `--disallowed-tools <tools...>` is variadic. To pass two names
-    # without the next flag absorbing them, use the comma form (which
-    # the help text explicitly accepts: "Comma or space-separated").
+    # entirely; this is authoritative, not the settings.json allowlist
+    # (which bypassPermissions overrides for allow, but not deny).
+    # `--disallowed-tools <tools...>` is variadic. To pass multiple
+    # names without the next flag absorbing them, use the comma form
+    # (which the help text explicitly accepts: "Comma or
+    # space-separated").
     - "--disallowed-tools"
-    - "WebFetch,WebSearch"
+    - "WebFetch,WebSearch,Bash,Edit,Write,NotebookEdit"
   system_prompt_flag: "--append-system-prompt"
   mcp_config_flag: "--mcp-config"
   mcp_config_path: /Users/hermes/.claude/mcp.json

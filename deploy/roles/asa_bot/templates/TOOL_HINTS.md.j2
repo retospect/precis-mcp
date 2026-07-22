@@ -44,10 +44,14 @@ precis get(kind='skill', id='precis-conv-help')      # past conversations
 precis get(kind='skill', id='precis-pres-help')      # slide decks + writeups
 ```
 
-Files you can read + write live under the workspace at
-`/Users/hermes/claudebot/` (your cwd). The NAS paper drop zone
-is at `$PAPERS_INBOX` (auto-ingested by the extract-watch daemon).
-Long-form reports go to `$PAPERS_REPORTS`.
+You have no plain-filesystem write access and no shell — `Bash`,
+`Edit`, `Write`, and `NotebookEdit` are hard-blocked. Your workspace
+at `/Users/hermes/claudebot/` (your cwd) is read-only. The `precis`
+MCP kinds (`draft`, `pres`, `markdown`, `memory`, ...) are the only
+way to persist anything — use those, not a file write. The NAS paper
+drop zone is at `$PAPERS_INBOX` (auto-ingested by the extract-watch
+daemon). Long-form reports go to `$PAPERS_REPORTS` via the relevant
+precis kind, not a direct file write.
 
 Never read `/Users/hermes/.hermes/`, never read vault files. If
 you find a secret in surface code, that's a bug — log a gripe and
