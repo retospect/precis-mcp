@@ -41,6 +41,7 @@ from asa_bot.config import Config, LLMConfig, load_discord_token
 from asa_bot.conv_slug import compute_slug
 from asa_bot.pg_listen import PgListener
 from asa_bot.precis_client import PrecisClient, health_loop
+from precis.utils.msgsplit import split_message
 
 log = logging.getLogger(__name__)
 
@@ -541,25 +542,20 @@ def _strip_leading_ack(body: str, ack: str) -> str:
 
 
 def _split_for_discord(text: str, limit: int) -> list[str]:
-    """Split a long body across Discord-safe chunks at paragraph boundaries."""
-    if len(text) <= limit:
-        return [text]
-    chunks: list[str] = []
-    buf = ""
-    for para in text.split("\n\n"):
-        if len(buf) + len(para) + 2 > limit:
-            if buf:
-                chunks.append(buf.rstrip())
-                buf = ""
-            if len(para) > limit:
-                # Hard split.
-                while len(para) > limit:
-                    chunks.append(para[:limit])
-                    para = para[limit:]
-        buf += para + "\n\n"
-    if buf.strip():
-        chunks.append(buf.rstrip())
-    return chunks
+    """Split a long body across Discord-safe chunks, never mid-line.
+
+    Delegates to :func:`precis.utils.msgsplit.split_message` (line boundary
+    first, so a markdown link is never severed; word boundary only for a
+    single over-long line, so a bare URL still survives whole). The old
+    implementation here packed by ``\\n\\n`` *paragraph* and hard-cut any
+    paragraph over the limit by raw character index — a block of
+    single-newline bullet/link lines with no blank-line separators (exactly
+    the news-briefing digest shape) was one giant "paragraph" to it, so it
+    got chopped mid-URL once it crossed the limit (gr51155's failure mode
+    recurring one layer downstream of ``briefing._deliver``'s own,
+    already-link-safe pre-split).
+    """
+    return split_message(text, limit=limit) or [text]
 
 
 def _extract_message_body(rendering: str) -> str:
