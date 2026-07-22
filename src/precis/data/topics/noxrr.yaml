@@ -1,0 +1,20 @@
+slug: noxrr
+description: >
+  NOx reduction catalysis — catalytic reduction of nitrogen oxides (NO,
+  NO2, N2O) to N2 or NH3, deNOx / SCR chemistry, and the design of
+  catalysts (single-metal, alloy, MOF-supported, or otherwise) for
+  nitrogen-oxide abatement. Feeds the existing catalyst-discovery quest
+  passively; does not replace its own active literature-search tick.
+keywords:
+  - NOx reduction
+  - deNOx
+  - SCR catalyst
+  - nitrogen oxide
+  - NO reduction
+  - N2O decomposition
+  - ammonia synthesis catalyst
+  - denitrification catalyst
+sub_tags:
+  - noxrr-mechanism
+  - noxrr-catalyst-design
+  - noxrr-kinetics

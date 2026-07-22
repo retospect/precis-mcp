@@ -555,6 +555,39 @@ values + prompt + few-shot + `applies_when`); gold sets + accuracy live in
   --cascade` (dry-run default; `--commit` to write). Full design:
   `docs/design/chunk-classifier-cascade.md`.
 
+### Topic-dossier classifier (ADR 0060 cascade) — classifier slice built
+
+Same cascade shape lifted one level, **paper**→topic (not chunk→role), for
+the standing "living topic document" line of work. Taxonomy config
+`src/precis/data/topics/*.yaml` (one file per top-level topic — seed:
+`healthspan`, `molelec`, `noxrr`, `llm-improvements` — each with
+`slug`/`description`/`keywords`/`sub_tags`; the top-level list is **closed**,
+new entries added by Reto, not auto-minted, per ADR 0047's measured
+folksonomy-drift lesson).
+
+- **Tiers.** 0: free keyword/substring screen over title+abstract per topic —
+  a paper matching nothing skips the LLM call entirely. 1: local cheap model
+  confirms/expands the candidate set against the full topic list —
+  **multi-label** (a paper may get 0, 1, or several `topic:` tags; genuinely
+  cross-cutting papers are expected). Tier 2 (escalate on low confidence) is
+  **not yet implemented** — open question in ADR 0060.
+- **Writes** `Tag.open("topic:<slug>")` per confirmed topic (join key already
+  existed — `precis-paper-tag-axes`) + a `Tag.closed("TOPICCASCADE",
+  <CLASSIFY_TOPICS_VERSION>)` marker (written regardless of outcome,
+  including zero matches) so a processed paper isn't re-claimed. No lease
+  table (unlike the chunk cascade) — existence of the marker tag is the
+  'done' check, mirroring `paper_glossary`; the paper corpus is small enough
+  that a claims table isn't needed.
+- **Pass.** `workers/classify_topics.py` `run_classify_topics_pass`,
+  registered in `cli/worker.py` **default-OFF**
+  (`PRECIS_CLASSIFY_TOPICS_ENABLED=1` / `--only classify_topics`).
+  `tests/test_classify_topics.py`.
+- **Not yet built**: the quest-family synthesis tick body (harvest
+  `topic:X`-tagged papers lacking an `integrated-into` link → merge into the
+  topic's dossier `draft`), the weekly digest cast, and the daily-brief lane.
+  Backlog: `OPEN-ITEMS.md` § "Topic dossiers (ADR 0060)". Full design:
+  `docs/decisions/0060-topic-dossiers.md` + `docs/design/topic-dossiers.md`.
+
 ## Other live affordances
 
 One line per affordance — code path + skill for the detail. The

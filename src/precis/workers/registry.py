@@ -504,6 +504,18 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        name="classify_topics",
+        label="Topic-dossier classifier cascade",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_CLASSIFY_TOPICS_ENABLED",
+        uses_model=True,
+        cost_sources=("classify_topics",),
+        one_line="Paper→topic-dossier cascade, multi-label `topic:` tags (ADR 0060).",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="briefing_audio",
         label="Briefing audio (TTS)",
         category="audio",

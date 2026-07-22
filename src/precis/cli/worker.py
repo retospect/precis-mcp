@@ -110,6 +110,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_classify_pass": PassBand.BACKGROUND,
     "_llm_reconcile_pass": PassBand.BACKGROUND,
     "_paper_glossary_pass": PassBand.BACKGROUND,
+    "_classify_topics_pass": PassBand.BACKGROUND,
     "_mail_poll_pass": PassBand.BACKGROUND,
     "_inject_scan_pass": PassBand.BACKGROUND,
     "_structural_pass": PassBand.BACKGROUND,
@@ -230,6 +231,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "classify",
             "llm_reconcile",
             "paper_glossary",
+            "classify_topics",
             "backlog_groom",
             "briefing_audio",
         ),
@@ -838,6 +840,46 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_paper_glossary_pass)
+
+        # classify_topics — paper→topic-dossier cascade (ADR 0060). Tier-0
+        # free keyword screen, tier-1 cheap local model confirms/expands the
+        # candidate set — MULTI-LABEL (a paper can carry several `topic:`
+        # tags). Writes `topic:<slug>` open tags + a `TOPICCASCADE:<version>`
+        # marker (bump CLASSIFY_TOPICS_VERSION to re-tag the corpus lazily,
+        # e.g. when a new topic is added). Default-OFF
+        # (PRECIS_CLASSIFY_TOPICS_ENABLED=1 or --only classify_topics): a
+        # corpus-wide backfill is a deliberate, node-targeted batch, like
+        # classify/paper_glossary. See workers/classify_topics.py +
+        # docs/decisions/0060-topic-dossiers.md.
+        if _pass_enabled("classify_topics"):
+            from precis.utils.llm.router import DispatchClient as _DispatchClient
+            from precis.utils.llm.router import Tier as _Tier
+            from precis.workers.runner import BatchResult as _CtBatchResult
+
+            _ct_client = _DispatchClient(
+                tier=_Tier.LOCAL_SMALL,
+                model=os.environ.get("PRECIS_CLASSIFY_TOPICS_MODEL") or "summarizer",
+                source="classify_topics",
+                log_call=True,
+                log_blobs=False,
+            )
+
+            def _classify_topics_pass(batch_size: int) -> _CtBatchResult:
+                from precis.workers.classify_topics import run_classify_topics_pass
+
+                r = run_classify_topics_pass(
+                    store,
+                    client=_ct_client,
+                    batch_size=min(batch_size, 16),
+                )
+                return _CtBatchResult(
+                    handler="classify_topics",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_classify_topics_pass)
 
         # briefing_audio — narrate the morning news briefing onto the podcast
         # feed (the first automatic audio producer, docs/design/audio-feed.md).

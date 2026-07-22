@@ -241,6 +241,24 @@ Daily reading-brief + nidra casts shipped + live. Owner: `reading/*`,
   and/or a retention GC. Also remove leftover test drafts/episodes
   (`cast-nidra-test-546c21`, `nidra-test-546c21`).
 
+## 📚 Topic dossiers (ADR 0060) — standing paper classification + living syntheses
+
+Classifier slice **SHIPPED** (`src/precis/data/topics/*.yaml` +
+`workers/classify_topics.py`, default-OFF `PRECIS_CLASSIFY_TOPICS_ENABLED`,
+`tests/test_classify_topics.py`) — paper title+abstract → multi-label
+`topic:` tags, no migration needed (marker-tag idempotency, mirrors
+`paper_glossary`, not a claims table). `docs/decisions/0060-topic-dossiers.md`
++ `docs/design/topic-dossiers.md`. Remaining, design-of-record only:
+
+- **Synthesis tick body for topic-quests** *(feature, open)*. New tick body
+  in `workers/job_types/quest_tick.py` alongside catalyst-discovery's
+  propose-experiment body: harvest unintegrated papers (`topic:X` minus
+  `integrated-into` link) → merge into dossier `draft` → log → link.
+  Decide whether `noxrr` adopts it or stays purely active-search-driven.
+- **Weekly digest cast + daily-brief lane** *(feature, open)*. New cast type
+  reusing `briefing_cast.py`'s pattern (shareable, fires only on activity) +
+  a quiet daily lane for Reto's own visibility.
+
 ## 🗺️ Quest layer
 
 All slices (1 structure, 2 reweighting, 3 gaps+health, 4a–4e autonomous loop)

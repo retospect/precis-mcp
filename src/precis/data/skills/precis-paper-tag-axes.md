@@ -165,6 +165,15 @@ to check before coining. Auto-tag axes (`scale:`, `dim:`, …) are
 closed vocabularies above; don't mint new values inside those
 prefixes.
 
+**A curated subset of `topic:` slugs also drives a standing living-document
+loop (ADR 0060)** — `healthspan`, `molelec`, `noxrr`, `llm-improvements` (see
+`src/precis/data/topics/*.yaml`). A background cascade (default-OFF,
+`PRECIS_CLASSIFY_TOPICS_ENABLED`) auto-tags matching papers with these slugs,
+**multi-label** (a paper can carry several). Don't hand-coin a `topic:` value
+that collides with one of these slugs for an unrelated meaning; check
+`data/topics/*.yaml` first. Freely coining any *other* `topic:` slug is still
+fine — only this curated subset feeds the dossier loop.
+
 ## Chunk-level axes (ADR 0047)
 
 A second family of axes tags individual **chunks**, not papers, for

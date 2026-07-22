@@ -1,0 +1,23 @@
+slug: llm-improvements
+description: >
+  Large language model improvements — training methods, alignment/RLHF,
+  inference efficiency, retrieval-augmented generation, agentic tool use,
+  evaluation/benchmarking methodology, and architecture advances for LLMs.
+keywords:
+  - large language model
+  - LLM
+  - RLHF
+  - instruction tuning
+  - retrieval-augmented generation
+  - transformer architecture
+  - agentic
+  - tool use
+  - inference efficiency
+  - model alignment
+  - fine-tuning
+sub_tags:
+  - llm-training
+  - llm-alignment
+  - llm-inference
+  - llm-agents
+  - llm-eval

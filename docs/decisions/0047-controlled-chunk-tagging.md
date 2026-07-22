@@ -16,6 +16,8 @@
   agreement is ~89%, so ~85–90% is the ceiling; the `accept:` sets + the
   query-time agent absorb the rest. `material`/`transport` ref axes pass on
   the free model; the ref-axis production runner is not yet built.
+- **Extended by**: [ADR 0060](./0060-topic-dossiers.md) lifts this cascade
+  pattern one level, from chunks to papers (`topic:` tags, multi-label).
 - **Deciders**: Reto + agent
 - **Builds on**:
   - [ADR 0007 — derived queue, no block jobs](./0007-derived-queue-no-block-jobs.md)

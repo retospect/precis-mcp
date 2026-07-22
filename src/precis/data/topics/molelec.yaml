@@ -1,0 +1,23 @@
+slug: molelec
+description: >
+  Molecular electronics — single-molecule switches, molecular wires and
+  break-junction / STM transport measurements, conductance switching
+  (redox, conformational, or photo-driven), molecular diodes and
+  rectifiers, and the theory of charge transport through individual
+  molecules.
+keywords:
+  - molecular electronics
+  - molecular wire
+  - molecular switch
+  - break junction
+  - single-molecule conductance
+  - molecular junction
+  - molecular diode
+  - molecular rectifier
+  - STM transport
+  - conductance switching
+sub_tags:
+  - molelec-switches
+  - molelec-wires
+  - molelec-junctions
+  - molelec-theory
