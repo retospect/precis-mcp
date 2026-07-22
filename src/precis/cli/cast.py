@@ -66,9 +66,14 @@ def _compose(store: Store, cast: str, *, date_tag: str | None = None) -> int | N
         from precis.reading.briefing_cast import build_reading_briefing
 
         return build_reading_briefing(store, date_tag=date_tag)
+    from precis.reading.cast_common import voice_skill_preamble
     from precis.reading.meditation import build_meditation
 
-    return build_meditation(store, date_tag=date_tag)
+    return build_meditation(
+        store,
+        date_tag=date_tag,
+        skill_preamble=voice_skill_preamble(include_numbers=False),
+    )
 
 
 def _publish(store: Store, draft_id: int, *, speed: float) -> None:

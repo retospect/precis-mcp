@@ -1,7 +1,7 @@
 ---
 id: precis-voice
 title: precis — authoring drafts for the ear (audio narration)
-summary: how to write a draft that narrates well as spoken audio — describe relationships not formulas, avoid slashes and backslashes, keep prose clean and lexicon the hard words; plus the morning-brief and evening-meditation (nidra) voice profiles
+summary: how to write a draft that narrates well as spoken audio — describe relationships not formulas, avoid slashes and backslashes, spell out and round numbers, keep prose clean and lexicon the hard words; plus the morning-brief and evening-meditation (nidra) voice profiles
 applies-to: draft narration (render_narration / export_audio, kind='draft')
 status: active
 ---
@@ -49,6 +49,12 @@ Written shorthand reads badly aloud — spell it out:
 - **Acronyms** read as letters. That's fine when you want it ("R N A"), but if an
   acronym should be spoken as a word or expanded, write the expansion or give it a
   lexicon respelling (rule 5) — don't leave the ear guessing.
+- Some acronyms are conventionally spoken as a **word**, not read out letter by
+  letter — write them the way the field says them: `MOF` (metal-organic
+  framework) → "Mof", not "M O F"; likewise `ZIF`, `LASER`, `SCUBA`. Until
+  there's a lexicon entry for one, just spell the spoken form straight into the
+  prose ("a Mof", "the Zif framework") the first time you use it, then keep
+  using that form.
 
 ### 3. Avoid slashes and backslashes
 
@@ -76,13 +82,40 @@ respelling`), applied out of band: names, acronyms, and jargon like `precis`,
 `arXiv`, `pgvector` get a respelling there while the prose stays clean. Spell out
 an acronym in words the first time only if the ear needs it.
 
-### 6. Pace with sentence length and structure
+### 6. Numbers: spell them out, and round them
+
+Kokoro's digit-to-speech is unreliable — mispronounces long numbers, decimals,
+and dashes — so never hand it raw digits. Write the words you want spoken:
+
+- **Spell it out, no digits**: `500,000` → "five hundred thousand", `2.3` →
+  "two point three", `12` → "twelve". Never leave commas, decimal points, or
+  bare digit strings for the synth to guess at.
+- **Cap it at two significant figures.** More precision than that just reads
+  as noise — round before you speak it: `2.347` → "two point three",
+  `1,482` → "about one thousand five hundred", `3.14159` → "about three
+  point one". Always use the scale-word form (thousand / million / …), not a
+  colloquial variant like "fifteen hundred" — one consistent shape for the
+  ear. If the exact figure matters (a spec, a citation), give the rounded
+  spoken form and let the reader tap through to the number on the page.
+- **Ranges read as "to"**: `2-4` → "two to four", `10–20 nm` → "ten to twenty
+  nanometers" — a dash left in the text reads as "minus" or trips the synth,
+  never as a range.
+- **Units attach as words**: `12 mV` → "twelve millivolts", `500 °C` → "five
+  hundred degrees Celsius", `45%` → "forty-five percent".
+- **Scientific notation**: `1.2×10^19` → "about one point two times ten to
+  the nineteenth" — spell out the exponent, don't read the caret or the "e"
+  notation.
+- **Oxidation states / Roman numerals** in a formula are a number, not
+  letters: `Fe(III)` → "iron three", not "iron eye eye eye".
+- **Dates and times**: `2026-07-22` → "the twenty-second of July", `14:30` →
+  "two thirty" or "half past two" — never read the ISO or 24-hour digits raw.
+
+### 7. Pace with sentence length and structure
 
 Short sentences and full stops slow the voice down; a heading gets a longer
-leading breath. Numbers and units: write them speakable ("about three thousand",
-"twelve millivolts"), not as raw digit-and-symbol strings.
+leading breath.
 
-### 7. Per-chunk voice and language
+### 8. Per-chunk voice and language
 
 A chunk's `meta.voice` / `meta.lang` overrides the draft default — use it for a
 quoted passage in a second voice, or a foreign phrase in its own language, so the
@@ -120,7 +153,7 @@ Again — the word for cat.
 ```
 
 Each line becomes its own segment; the ねこ lines are spoken by the Japanese
-voice automatically. Keep the English clean (rules 1–6) and let the script-split
+voice automatically. Keep the English clean (rules 1–7) and let the script-split
 handle the language switch.
 
 ## The two standing profiles
@@ -153,8 +186,11 @@ second-person, quiet.** Structure:
 
 It **alters daily but retains elements**: the induction, the coda, and a few
 anchor concepts recur (familiar, like a half-known bedtime story); the path
-between them varies night to night. Keep every rule above, but lean especially on
-**relationships-in-words** and gentle pacing — the goal is calm, not rigor.
+between them varies night to night. Keep every rule above except **rule 6
+(numbers)** — nidra's compose prompt deliberately omits it
+(`voice_skill_preamble(include_numbers=False)`), since a precise, rounded
+figure is the wrong texture for exposure at the edge of sleep. Lean especially
+on **relationships-in-words** and gentle pacing — the goal is calm, not rigor.
 
 ## From draft to episode
 

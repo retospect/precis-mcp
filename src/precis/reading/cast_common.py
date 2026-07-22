@@ -25,6 +25,7 @@ This module holds what both producers, the audio pass, and the CLI share:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -154,20 +155,38 @@ def compose_max_tokens(
     return int(word_budget(profile, target_minutes=target_minutes) * _TOKENS_PER_WORD)
 
 
-def voice_skill_preamble() -> str:
+#: Matches a ``### N. <title>`` skill section (up to, not including, the next
+#: ``### `` heading) whose title contains a given marker — used to drop the
+#: numbers/formulas rule for nidra (see ``voice_skill_preamble``).
+_NUMBERS_SECTION = re.compile(
+    r"^###\s+\d+\.[^\n]*Numbers[^\n]*\n.*?(?=^###\s+\d+\.|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+
+
+def voice_skill_preamble(*, include_numbers: bool = True) -> str:
     """The ``precis-voice`` craft skill body, or ``""`` when unavailable.
 
     Prepended to a producer's compose system prompt so the model writes for the
     ear (relationships not formulas, expanded abbreviations, no slashes, …).
     Best-effort — a missing skill degrades to no preamble, never an error.
+
+    ``include_numbers=False`` drops the "spell out and round numbers" rule —
+    the nidra (evening meditation) profile is deliberately soft and
+    relationship-based, not numerically precise, so that rule would push it
+    toward reciting figures rather than staying touchy-feely. The morning
+    brief keeps it (default ``True``).
     """
     try:
         from precis.handlers.skill import _load_skill
 
-        return _load_skill("precis-voice") or ""
+        text = _load_skill("precis-voice") or ""
     except Exception:  # pragma: no cover - skill loading is best-effort
         log.debug("cast_common: precis-voice skill unavailable", exc_info=True)
         return ""
+    if not include_numbers:
+        text = _NUMBERS_SECTION.sub("", text)
+    return text
 
 
 def cast_slug(profile: CastProfile, date_tag: str) -> str:

@@ -84,7 +84,12 @@ class TestMeditationDispatch:
         monkeypatch.setattr(m, "build_meditation", fake_build)
         ctx = _FakeCtx(meta={"params": {"cohort": "waves", "target_minutes": 30}})
         md_jt._dispatch(ctx, md_jt.SPEC)
-        assert seen == {"cohort": "waves", "target_minutes": 30}
+        assert seen["cohort"] == "waves"
+        assert seen["target_minutes"] == 30
+        # nidra gets the voice-craft preamble but not the numbers/formulas rule
+        # (it's deliberately soft, not numerically precise) — see cast_common.
+        assert "skill_preamble" in seen
+        assert "Numbers: spell" not in seen["skill_preamble"]
         assert ctx.metas["draft_ref_id"] == 7
 
 

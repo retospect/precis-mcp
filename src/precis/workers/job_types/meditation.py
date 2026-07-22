@@ -39,6 +39,7 @@ _PARAMS_SCHEMA: dict[str, Any] = {
 
 def _dispatch(ctx: Any, spec: Any) -> None:
     """Plugin dispatcher invoked by ``claude_inproc`` for a claimed job."""
+    from precis.reading.cast_common import voice_skill_preamble
     from precis.reading.meditation import build_meditation
 
     params = (ctx.meta or {}).get("params") or {}
@@ -49,7 +50,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         kwargs["target_minutes"] = int(params["target_minutes"])
 
     try:
-        draft_id = build_meditation(ctx.store, **kwargs)
+        draft_id = build_meditation(
+            ctx.store,
+            skill_preamble=voice_skill_preamble(include_numbers=False),
+            **kwargs,
+        )
     except Exception as exc:
         log.warning("meditation job: pass raised", exc_info=True)
         ctx.record_failure(f"meditation: pass raised: {exc}")
