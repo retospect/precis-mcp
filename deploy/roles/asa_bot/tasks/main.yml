@@ -94,7 +94,7 @@
 
 - name: Deploy SOUL.md
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../../grimoire/agents/asa.md"
+    src: "{{ asa_bot_grimoire_dir }}/agents/asa.md"
     dest: /Users/hermes/.asa/SOUL.md
     owner: hermes
     group: staff
@@ -169,7 +169,7 @@
     group: staff
     mode: "0600"
   with_fileglob:
-    - "{{ playbook_dir }}/../../grimoire/agents/*.md"
+    - "{{ asa_bot_grimoire_dir }}/agents/*.md"
   when: (item | basename) not in ['asa.md', 'mcp-critic.md']
   become: true
 

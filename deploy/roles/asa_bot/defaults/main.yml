@@ -9,10 +9,10 @@
 # Editable sandbox for the markdown / plaintext / tex kinds. precis
 # treats this as the ONLY writable root — every read and write is
 # normalised through Path.resolve() and validated with
-# Path.relative_to(this_dir) so traversal attempts are rejected. Reuse
-# asa's working dir so anything she drops into Bash/Read/Edit/Write
-# (under WorkingDirectory in the LaunchDaemon) is also discoverable
-# via the file kinds.
+# Path.relative_to(this_dir) so traversal attempts are rejected. This
+# precis(kind='markdown'|'plaintext'|'tex') surface is asa's ONLY
+# write path now that Bash/Edit/Write/NotebookEdit are hard-blocked on
+# the Claude session itself (see claude_settings.json.j2 / config.yaml.j2).
 precis_root: "/opt/nas/botshome/precis_root"
 
 # Python repos exposed to the `python` kind. Format:
@@ -25,6 +25,14 @@ precis_python_roots: ""
 # Cache directory for raw patent XML downloaded by the patent kind via
 # EPO OPS. Created (mode 0750, hermes-owned) by the asa_bot role.
 precis_patent_raw_root: "/Users/hermes/claudebot/patents-raw"
+
+# SOUL.md + specialist subagent prompts live outside the repo, in a
+# laptop-local prompt library (predates the monorepo merge, never
+# migrated in). Anchored to the ansible controller's $HOME, not
+# playbook_dir — the install-from-tree cutover moved playbook_dir out
+# from under the old ~/work/cluster layout these prompts were written
+# against.
+asa_bot_grimoire_dir: "{{ lookup('env', 'HOME') }}/work/grimoire"
 
 # Comma-separated list of skill ids the precis MCP surfaces in its
 # serverInfo.instructions on cold-start. Picks are biased toward
