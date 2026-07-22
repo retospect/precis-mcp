@@ -29,6 +29,16 @@
     mode: "0700"
   become: true
 
+- name: Self-heal ownership on mirror-dir contents (state=directory above only touches the dir itself, not files inside — a stray root-owned mirror.anki2 from a manual run silently DBError-crash-looped the daemon for 8 days)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: "{{ anki_mirror_dir }}"
+    state: directory
+    owner: deploy
+    group: staff
+    recurse: true
+  become: true
+
 - name: Ensure precis-anki-sync log file is deploy-writable
   when: os_family == "darwin"
   ansible.builtin.file:
