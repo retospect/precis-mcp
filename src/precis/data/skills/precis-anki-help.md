@@ -19,11 +19,11 @@ recall-rating or interval state in precis; the forgetting curve lives in Anki.
 ## Capture an atomic fact for spaced repetition
 
 ```python
-put(kind='anki', text='Paris is the {{c1::capital}} of France.')
+put(kind='anki', text='{{c1::Paris::city}}: capital of {{c2::France::country}}.')
 # → returns integer id (e.g. 204)
 
 put(kind='anki',
-    text='The mitochondrion is the {{c1::powerhouse}} of the cell.',
+    text='The {{c2::mitochondrion::cellular organelle}} is the {{c1::powerhouse::popculture function name}} of the cell.',
     tags=['topic:cell-bio'],
     link='paper:alberts2015molecular~12', rel='derived-from')
 ```
@@ -37,7 +37,7 @@ For *how to write good cards* (dedup-first, cN ordering, hints, deck naming), se
 - **One deletion, one fact.** `{{c1::…}}` hides the span behind it. Keep the
   deletion minimal and unambiguous — test one idea, not a whole sentence.
 - **Several cards from one note.** Different indices → separate cards:
-  `The {{c1::heart}} pumps {{c2::blood}}.` makes two cards. The *same* index
+  `{{c1::heart::organ}} pumps {{c2::blood}}.` makes two cards. The *same* index
   reveals together: `{{c1::A}} and {{c1::B}}` hides both on one card.
 - **Hints.** `{{c1::answer::hint}}` shows *hint* on the front. The hint is
   dropped from the corpus search text (only the answer is indexed).
@@ -55,6 +55,15 @@ aka the citric-acid / TCA cycle''')
 ```
 
 Everything before `---` is the cloze card; everything after is Back Extra.
+
+## Showing a card in chat
+
+When you tell the user about a cloze card — confirming what you just made,
+answering "what does that card say?" — quote the **raw markup verbatim**:
+`{{c1::^\top::symbol}}: {{c2::transpose::meaning}}`. Don't paraphrase it into a
+`c1: … c2: …` bullet list; that summary hides the actual deletions and syntax
+the user needs to verify. Prose *about* the card (deck, tags, why you chose
+that split) is fine alongside it — just don't substitute for the raw text.
 
 ## Browse existing cards
 ## List recent Anki cards
@@ -101,7 +110,7 @@ Tag `deck-<topic>` to file an authored card under the `Precis::<topic>` sub-deck
 (no tag → the base `Precis` deck):
 
 ```python
-put(kind='anki', text='The {{c1::heart}} pumps blood.', tags=['deck-anatomy'])
+put(kind='anki', text='{{c1::heart}} pumps blood.', tags=['deck-anatomy'])
 tag(kind='anki', id=204, add=['topic:cell-bio'])
 link(kind='anki', id=204, target='paper:alberts2015molecular~12', rel='derived-from')
 ```
