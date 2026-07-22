@@ -210,7 +210,8 @@ guardrails (the Agent tool surfaces those descriptions), so this is just the map
   `tidy`, `cluster-ops`.
 - **Sonnet** — a *decided* change or bounded op (the *how*, not the *what*):
   `coder`, `test-author`, `reviewer`, `documenter`, `dep-bumper`,
-  `cluster-admin`, `forensics`.
+  `cluster-admin`, `forensics`, `housekeeper` (worktree/branch GC via
+  `/workspace-cleanup`).
 - **Opus (main loop)** — the *what/why*: architecture; core API/schema/
   abstraction; CFD/DFT/ML and NOx/catalyst reasoning; mission/voice prose;
   novel prod diagnosis; memory *reconsolidation*.

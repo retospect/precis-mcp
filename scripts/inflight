@@ -28,12 +28,24 @@
 #   scripts/inflight            # the table
 #   scripts/inflight --for-hook # same, with a one-line intro; always exits 0
 #                               # (wired as a SessionStart hook in .claude/settings.json)
+#   scripts/inflight --json     # structured form for /workspace-cleanup: each
+#                               # worktree gets a `bucket` verdict —
+#                               #   base            the primary branch, not a candidate
+#                               #   self            the worktree you're calling from
+#                               #   live_session    a claude session still holds the lock
+#                               #   needs_judgment  dirty tree — includes a capped diffstat
+#                               #   safe_remove     clean + fully merged (ancestor or squash-absorbed)
+#                               #   has_unmerged_work  real commits ahead of base, informational
+#                               # plus a repo-wide stashCount (stash is one ref shared by every
+#                               # worktree, so it's reported once, not per-row).
 #
 # See: CLAUDE.md / "Session workflow" (the .claude/purpose protocol).
 set -uo pipefail
 
 FOR_HOOK=0
+JSON_MODE=0
 [ "${1:-}" = "--for-hook" ] && FOR_HOOK=1
+[ "${1:-}" = "--json" ] && JSON_MODE=1
 
 # Not a git repo (or git absent) → say nothing, never block a session start.
 command -v git >/dev/null 2>&1 || exit 0
@@ -82,13 +94,14 @@ purpose_field() { # purpose_field <path> <head> <branch>
   fi
   files=$(git -C "$path" status --porcelain --untracked-files=no 2>/dev/null \
             | awk '{print $NF}' | while read -r f; do basename "$f"; done | head -2 | paste -sd, -)
-  [ -n "$files" ] && { trunc "(editing $files…)" 58; return; }
+  [ -n "$files" ] && { trunc "(editing ${files}…)" 58; return; }
   [ "$branch" = "$BASE" ] && { printf '—'; return; }
   printf '(no purpose set)'
 }
 
 ROWS=()          # emitted, |-delimited
 REMOVABLE=()     # names safe to reap (merged + clean + no live session)
+JSONROWS=()      # --json only: \x1f-delimited records, joined \x1e at render time
 
 emit() { # emit <path> <head> <branch> <locked>
   local path=$1 head=$2 branch=$3 locked=$4
@@ -114,6 +127,21 @@ emit() { # emit <path> <head> <branch> <locked>
      && [[ "$sess" != live#* ]] && [ "$path" != "$HERE" ] && [ "$branch" != "$BASE" ]; then
     REMOVABLE+=("$name")
   fi
+
+  if [ "$JSON_MODE" = 1 ]; then
+    local bucket diffstat
+    diffstat=''
+    if [ "$branch" = "$BASE" ]; then bucket='base'
+    elif [ "$path" = "$HERE" ]; then bucket='self'
+    elif [[ "$sess" == live#* ]]; then bucket='live_session'
+    elif [ "$dirtyf" != 'clean' ]; then
+      bucket='needs_judgment'
+      diffstat=$(git -C "$path" diff --stat 2>/dev/null | head -10)
+    elif [ "$verd" = 'merged' ] || [[ "$verd" == in-main* ]]; then bucket='safe_remove'
+    else bucket='has_unmerged_work'
+    fi
+    JSONROWS+=("${name}"$'\x1f'"${path}"$'\x1f'"${branch}"$'\x1f'"${bucket}"$'\x1f'"${sess}"$'\x1f'"${dirtyf}"$'\x1f'"${verd}"$'\x1f'"${diffstat}")
+  fi
 }
 
 # Walk the porcelain records (blank-line separated).
@@ -133,6 +161,39 @@ done < <(git worktree list --porcelain 2>/dev/null)
 emit "$path" "$head" "$branch" "$locked"   # trailing record with no blank after it
 
 # --- render ---------------------------------------------------------------
+if [ "$JSON_MODE" = 1 ]; then
+  STASH_COUNT=$(git stash list 2>/dev/null | grep -c .)
+  BLOB=$(IFS=$'\x1e'; printf '%s' "${JSONROWS[*]:-}")
+  printf '%s' "$BLOB" | BASE="$BASE" STASH_COUNT="$STASH_COUNT" python3 -c '
+import json
+import os
+import sys
+
+base = os.environ["BASE"]
+stash_count = int(os.environ["STASH_COUNT"])
+raw = sys.stdin.read()
+worktrees = []
+for rec in raw.split("\x1e") if raw else []:
+    fields = rec.split("\x1f")
+    fields += [""] * (8 - len(fields))
+    name, path, branch, bucket, session, dirty, verdict, diffstat = fields[:8]
+    entry = {
+        "name": name,
+        "path": path,
+        "branch": branch,
+        "bucket": bucket,
+        "session": session,
+        "dirty": dirty,
+        "verdict": verdict,
+    }
+    if diffstat:
+        entry["diffstat"] = diffstat
+    worktrees.append(entry)
+print(json.dumps({"base": base, "stashCount": stash_count, "worktrees": worktrees}, indent=2))
+'
+  exit 0
+fi
+
 if [ "$FOR_HOOK" = 1 ]; then
   echo "🌳 In-flight worktrees on this machine (scan for overlap with your task;"
   echo "   once your task is clear, write one line to .claude/purpose):"

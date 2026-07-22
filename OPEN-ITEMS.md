@@ -10,6 +10,25 @@ is the historical observation log.
 > regression that pins it.
 
 ---
+## Plan for the next big session set
+- (also survey the usual thing from /whatnext)
+- Do token efficiency stuff (like claude.md rules vs rationale, ensure the search tools and so on all work, an audit of (coding) prompts and a review of the last 2-3 days and what lools claude gets into that are wasteful. Lets schedule the efficiency stuff after a few hours afte token reset on THursday noon. 
+- Independent local research. I want the smartest local model we can fit on the big mac to do research with ml-potential on our catalyst (and run the other research processes. Occasional opus consultations are fine and encouraged, but the bulk operational stuff should be local. Right now I don't think it does anything, the local models need some more "encouragement, do things and use tools" system prompts. The nightly and mornign meditationsl also made by this local model, lets put the biggest we can fit. 
+- I want the local backup to work - if it comes to this laptop from the file server, that'll be picked up by backblaze. 
+= In addition to the NO-Ammonia quest, there will be other quests. I believe the natural state is a state of ... followup (maybe that's not right) but many pending jobs for any quest to be followed up when resources allow, in time. So job priorities and sequencing are kind of important, we should discuss and plan. 
+- An additional wrinkle: Local classifiers. We have many papers, we want them classified in many ways. We started a classifier system, let's review it. Should it be hierarchical.  Also, with that classifier system, we can (mcp capability follows: a draft on a topic can "audit the gap" of what classifier finds should be relevant (it's classified atomic transistor relveant) and wether it is in document/subsection where it's relevant. So it is possible to go and add new citations that came in that have been classified relevant continuously and without events - paper identified, ingested, classified for a, b, c and the a, b, c things will see it because of this cite gap analysis. )
+- MS Teams posting account - for new paper summaries. As we ingest them, write a pithy 1 liner and post it to MS Teams. (this requires vandichel cooperation.) We filter by relevance to the team with a classifier too, MOF and Catalysis for macatamo uni limerick.
+- audio cast: we have added a few rules to the audio cast; things like "Write Mof not MOF, write thousandfivehundred instad of 1,500 etc such that the text to speech has an easier time. Discuss if this is an appropriate course of action or if we write the report normally then "pipe it" through a filter (code or LLM?) to the syntheziser. Is there a chemistry helper (Chemistry to international phonetic alphabeth or something)
+- For the no to nh3 converter, we want to see the pareto front in the document, and also, the specific energy diagrams and the atom slabs, and the attached bits at optimum for the ... most relevant cases. 
+- I would expect the natural state of the system is to have many pending todos (followups from earlier tasks that got filed). We should make sure that is so (should we?) and if so, triage that. Also, there are some long running types of ... conventions for a document that should be reapplied if new source material gets added (papers/patents)
+- We generally search papers well, but patents are neglected. Let's see if this can be fixed at a systemic level. 
+- I'd like to have a weekly "new papers" update for: solid catalysis; MOF stuff, atomic transistors, etc.. How do we manage that? We have the paper ingestion date, that may be adequate. Should it just be tacked on to the front of the respective report, then removed when the next one comes out (so, when a new paper gets classified, we go and itegrate it in the body and add that little "weely summary" update in front also); or should we keep a running log of changes? Or should we just update the doc, and programmatically do an eye-focus-like update with only the paras touched in the last week (or an arbitrary selected time span) and their neighbours (like we could make a pdf view (or any view really, do we have a "general view" that includes these eyeballey things that can be seen by robots, pdfs, docs, and the web draft interface)).  << I like the hierarchical view well.
+- I'd like to have the patent package writing (draft feature) mostly run locally, and the patent search working (i think the search is ok now). I also want to prep/check the panel screw holder device this week, you will prompt me for that. And I want to find/add the documents for filing that are supplemental to the patent so it's getting more pushbutton. I think eu/us/cn is generally good; can it be done for reasonable cost. 
+- I'd like to have a few agents that come on once in a while - an ops guy that makes sure no errors are showing up and all services, apis are not causing troubles and propose solutions. That's moslty pulling together the right context automatically, and have the llm judge reasonability/status. Include db load, fs space on all machines, memory load, temperatures, weird log file entries and all that. We should auto-gather that (maybe a precis-mcp kind - the "status" view="all relevant") that sort of thing. Are queus working, are we ingesting, are we categorizign. Also a prioritization thing (are we working on the right things?) What other agents ought we to have?
+- I want to make everything run through the precis-mcp llm router. And wean things off opus if we can, and shift it to local models or cheaper models in the cloud. Even for coding tasks, and also for writing tasks. We can still use claude as the top dog reviewer, but we want to push all the... stupid work down, and out to other models. (Haiku is fine, deepinfra and openrouter and EU variants are good; local is best.)
+- In the flashcards, precis cloze ankin 164388 and 164387: In a general way, if we make flashcards and one defines ESB and the other also, we just need just one, ie "An {{c4::ESB::abbreviation}} ({{c1::Environmental Sustainability Body::organization}}) is a framework dedicated to {{c2::ecological preservation::goal}} and {{c3::sustainable practices::methods}}". (721137 721138 are similarly --- kinda copies of eachother). 164400 is kind of weird, that is true, but what _is_ that photocrhomism, and what _are_ the other thing encompassed? Card 146392 is not a good card. C1 and C2 both are part of a very long list; it is impossible to know which one it is. Also the structure should be {{world heritage sites}} include {{site1}} {{site2}} (terse rule). 164396 is common vocab, don't need it, why did it get added? 164391 is ... not relly needed, we know. Why it is added, or better, how to adjust for more complex vocab. Also, we have precis::xxxx id numbers, lets fold those tags under precis::id::xxxx so they can be collapsed in the gui. 
+
+---
 
 ## 📄 CLAUDE.md "conventions that bite" audit (rule vs rationale)
 
@@ -39,6 +58,31 @@ is the historical observation log.
   Test: existing `tests/test_coderef*.py` (behavior must not change).
 
 ---
+
+## P1 Update routing layer - make sure nothing does not go thru routing layer
+
+- ticks go to claude -p right now, they should go thru routing layer so we can switch
+
+---
+
+## P2 Support EU llm systems
+
+- Support edenai.co, ShareAI – Built in Romania, explicitly marketed as a European alternative to US Big Tech infra, with multi-provider routing and EU data residency emphasis.
+
+Eden AI – Markets itself as a broad AI aggregation platform, and is frequently cited as a “European alternative to OpenRouter” with multi-vendor support beyond just LLMs (image, video, etc.).
+
+Orq.ai – European platform oriented toward governance, observability, and team workflows on top of multi-provider AI routing.
+
+Requesty – EU-based routing layer; CEO statements emphasize that all data processing and routing remain within EU servers (e.g., Frankfurt), with full GDPR compliance and no data leaving the EU.
+
+EUrouter – Hosted router with EU data residency, routing to 100+ models while keeping processing inside EU data centers.
+
+Cortecs AI – European inference gateway with smart routing across EU providers, pitched specifically for sovereign EU-hosted LLM workloads and privacy-sensitive use cases.
+
+Tensorix, IONOS AI Model Hub, evroc – EU-sovereign inference APIs focused on open-source models and EU data centers; they are more “single-API providers” than multi-provider routers, but fill the “EU-hosted inference” niche.
+^ Review and pick best 3?
+
+===
 
 ## 🩹 Containerized-review robustness residuals
 
@@ -726,6 +770,7 @@ built default-OFF; lens seed rehomed to first-class oracle traditions (shipped).
   `active-build` dream mode that kicks a derived-lane job (DFT relax, `cad_propose`,
   structure relax) on a surfaced subject, then connects the result back into a
   memory. Gate behind the load ceiling + a budget cap.
+
 
 ### Paper-dedup / hygiene residuals (ops-gated, not repo bugs)
 - **Run Bucket B on prod** — `precis resolve-metadata` (dry-run) over the 94
