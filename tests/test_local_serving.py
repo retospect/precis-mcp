@@ -55,6 +55,40 @@ def test_acquire_none_for_empty_model(store) -> None:
     assert local_serving.acquire("") is None
 
 
+def test_no_warning_when_host_serves_nothing(store, caplog) -> None:
+    """Fully dark host (no `llm:` resource_slots rows at all) — no warning."""
+    meter.bind_store(store)
+    with caplog.at_level("WARNING", logger="precis.utils.llm.local_serving"):
+        assert local_serving.acquire("unserved-model") is None
+    assert not caplog.records
+
+
+def test_warning_when_host_serves_others_but_not_this_one(store, caplog) -> None:
+    """Host serves ``qwen`` but the dispatch asked for a differently-named
+    resource — a real misconfiguration, must be logged (not fully dark)."""
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen", 2)
+    with caplog.at_level("WARNING", logger="precis.utils.llm.local_serving"):
+        slot = local_serving.acquire("qwen-alias-mismatch")
+    assert slot is None
+    assert len(caplog.records) == 1
+    msg = caplog.records[0].getMessage()
+    assert "testnode" in msg
+    assert "llm:qwen-alias-mismatch" in msg
+    assert "llm:qwen" in msg
+
+
+def test_mismatch_warning_not_repeated_within_cache_window(store, caplog) -> None:
+    """Same (host, resource) mismatch on a second call within the same 60s
+    cache window logs only once — rate-limited, not silent-forever."""
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen", 2)
+    with caplog.at_level("WARNING", logger="precis.utils.llm.local_serving"):
+        assert local_serving.acquire("qwen-alias-mismatch") is None
+        assert local_serving.acquire("qwen-alias-mismatch") is None
+    assert len(caplog.records) == 1
+
+
 # ── active path ───────────────────────────────────────────────────────────
 
 

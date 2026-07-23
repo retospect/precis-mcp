@@ -230,10 +230,25 @@ has no precis consumers left at all. `log_call=True` on all four (low-volume dai
 casts, not per-chunk backfills) — `llm_call_log` captures real data on these
 passes now. Remaining:
 
-- **`served_by` seeding.** A prod ops step, not a code task: seed `served_by` on
-  prod `llm` cards (endpoint llama-swap `:11445`, real model) → local passes
-  reroute off the proxy. The flip that retires litellm's local role; cloud already
-  bypasses litellm regardless (it never reads `served_by`).
+- **`served_by` seeding is live** (`advertise_local_llm()` in
+  `src/precis/workers/llm_serving.py`, wired into every heartbeat) — no manual
+  ops step needed, each host self-advertises its llama-swap models. But it keys
+  `resource_slots` by llama-swap's *real* model ids, so a tier's resolved model
+  name must match one of those ids or the slot-gating silently no-ops back to
+  the litellm proxy. Bit melchior 2026-07-23: `PRECIS_SUMMARIZE_MODEL=qwen` (a
+  litellm alias, not a real id) never matched, so `llm_summarize` never engaged
+  local-serving at all — under concurrent load llama-swap's model-swap
+  thrashing (10-15s/swap) exhausted litellm's worker pool → connection-refused
+  flood (2782+ `worker_logs` ERROR rows in 24h). Fixed live via direct plist
+  edit (`PRECIS_SUMMARIZE_MODEL=qwen3-next-80b-a3b-q4_k_m` +
+  `PRECIS_LOCAL_SERVE_CONFIG=/opt/llamacpp/etc/llama-swap.yaml` on both
+  `com.precis.worker{,-agent}.plist`, restarted, error rate → 0). **Residual:**
+  the cluster ansible repo (unreachable from this dev machine) likely templates
+  these plists — if so the next `redeploy-precis.yml` run will silently revert
+  this fix; someone with `~/work/cluster` access needs to port the same two env
+  vars into its worker-role template. `local_serving.acquire()` now logs a
+  rate-limited warning on this exact mismatch shape so a recurrence surfaces
+  immediately instead of burning silently.
 
 ---
 

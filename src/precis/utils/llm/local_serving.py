@@ -20,6 +20,10 @@ break an LLM call.
 Follows the same dark-gate discipline as :mod:`precis.utils.llm.admit` and the
 budget breaker: read the process store via :func:`precis.budget.meter.active_store`,
 return ``None`` (allow) whenever the machinery has nothing to say.
+
+A host that serves *some* local models but not the one requested (a naming
+mismatch, distinct from serving nothing) logs a rate-limited ``log.warning`` —
+still returns ``None`` (fully dark to the caller), purely for operator visibility.
 """
 
 from __future__ import annotations
@@ -42,6 +46,12 @@ _CACHE_TTL_S = 60.0
 #: (one host), refreshed past the TTL.
 _served: dict[str, set[str]] = {}
 _served_at: float = 0.0
+
+#: {host -> {resource}} already warned-about this cache window — a host that
+#: serves *something* locally but not the requested resource (a real
+#: misconfiguration, unlike the fully-dark "serves nothing" case) logs once per
+#: (host, resource) per :data:`_CACHE_TTL_S` window, cleared alongside ``_served``.
+_mismatch_warned: dict[str, set[str]] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,11 +95,12 @@ _endpoints_at: float = 0.0
 
 def reset_cache() -> None:
     """Drop the served-resource + endpoint caches (tests + after a slot write)."""
-    global _served, _served_at, _endpoints, _endpoints_at
+    global _served, _served_at, _endpoints, _endpoints_at, _mismatch_warned
     _served = {}
     _served_at = 0.0
     _endpoints = {}
     _endpoints_at = 0.0
+    _mismatch_warned = {}
 
 
 def _iter_served_by(meta: dict[str, Any]) -> list[dict[str, Any]]:
@@ -117,7 +128,7 @@ def _local_host() -> str:
 
 
 def _served_resources(store: object, host: str) -> set[str]:
-    global _served, _served_at
+    global _served, _served_at, _mismatch_warned
     now = time.monotonic()
     if host not in _served or now - _served_at > _CACHE_TTL_S:
         try:
@@ -129,6 +140,7 @@ def _served_resources(store: object, host: str) -> set[str]:
                 ).fetchall()
             _served = {host: {str(r[0]) for r in rows}}
             _served_at = now
+            _mismatch_warned = {}  # new window — re-arm the mismatch warning
         except Exception:  # pragma: no cover — a lookup must never break dispatch
             log.warning("local_serving: served-slot lookup failed", exc_info=True)
             return set()
@@ -142,7 +154,10 @@ def acquire(model: str) -> LocalSlot | None:
     model is not served on this host (the dark case for every model today): the
     caller proceeds unreserved, byte-identical to pre-slice-7. Otherwise returns
     a :class:`LocalSlot` with ``reserved=True`` (proceed, then :func:`release`)
-    or ``paused=True`` (host serves it but all slots busy — back off).
+    or ``paused=True`` (host serves it but all slots busy — back off). A host
+    that serves *other* ``llm:`` resources but not this one logs a rate-limited
+    warning (once per cache window) — that combination is a name mismatch, not
+    the ordinary dark case, and would otherwise silently degrade to litellm.
     """
     if not model:
         return None
@@ -153,7 +168,19 @@ def acquire(model: str) -> LocalSlot | None:
         return None
     host = _local_host()
     resource = f"llm:{model}"
-    if resource not in _served_resources(store, host):
+    served_resources = _served_resources(store, host)
+    if resource not in served_resources:
+        if served_resources:  # host serves *something* locally — a name mismatch
+            warned = _mismatch_warned.setdefault(host, set())
+            if resource not in warned:
+                warned.add(resource)
+                log.warning(
+                    "local_serving: host %s serves %s locally but dispatch asked "
+                    "for %s — falling back to litellm (check served_by naming)",
+                    host,
+                    sorted(served_resources),
+                    resource,
+                )
         return None  # not served here — dark no-op, no DB hit
     from precis.store._resource_slots_ops import reserve_resource_slots
 
