@@ -52,16 +52,20 @@ adds one small, symmetric gap-fill on top, not a new subsystem:**
   resilience net that makes flipping to OpenRouter *safe* — a bad
   OpenRouter day degrades to Claude, not to a hard failure. Off by
   default; this proposal turns it on for the tiers it retargets.
-  **Correction (surfaced by the parallel local-stability session,
-  2026-07-23): this ladder is currently unreachable on a *paused local
-  slot*.** `dispatch()` calls `local_serving.acquire()` and, when the
-  slot is `paused` (all capacity busy), returns the paused
-  `LlmResult` **directly** — before `provider.run()` (where the ladder
-  logic lives) is ever invoked. So `FAILOVER` today only protects
-  against a transport-level error from a call that *did* go out, not
-  against local-serving saturation itself. Falling over to OpenRouter
-  *on a busy/paused local slot* (rather than only on a hard transport
-  error) is real, additional work — see item 4 in Open questions.
+  **Built 2026-07-23 (item 3): the paused-slot gap is closed.** The
+  correction below described a real bug (`dispatch()` returned a paused
+  local-serving result *before* `provider.run()` — where the ladder lives
+  — ever ran); it's now fixed: a paused slot retries the ladder's rung 0
+  with no `local_url` override, landing on the hosted OSS endpoint instead
+  of the busy local hardware, falling to claude only if that also errors.
+  Building this also surfaced and fixed an independent latent bug: a
+  `LOCAL_*` tier's claude-fallback rung previously pinned
+  `_TIER_MODEL[tier][1]`, which for `LOCAL_BIG`/`LOCAL_SMALL` is an OSS
+  alias (`qwen-heavy`), not a claude id — nonsense that would have been
+  sent to `claude -p` as `model=`. `_LOCAL_ESCALATION_TIER` now maps
+  `LOCAL_BIG`→`CLOUD_MID` (sonnet) per the roster's "medium" cascade role;
+  `LOCAL_SMALL` gets no claude rung at all, per the roster's "small" row
+  (skip Anthropic entirely).
 - The `kind='llm'` catalog already has a **fully-priced OpenRouter
   frontier ladder** seeded and reconciled (`llm_catalog.seed_frontier_cards`,
   12 cards, `lm162503`–`lm162514`), spanning `cloud-super`/`cloud-mid`/
@@ -85,43 +89,51 @@ without a code change.
 
 ## In scope
 
-1. **A master local-serving bypass switch** — a new env flag (name TBD in
-   review, suggest `PRECIS_LOCAL_SERVING_DISABLED`) that, when set, makes
-   `dispatch()`/`dispatch_async()` skip `local_serving.acquire()`
-   entirely for `local-small`/`local-big` calls, so neither tier ever
-   reaches for local hardware regardless of `served_by`/`resource_slots`
-   state. Dark by default (unset = today's behavior, byte-identical) —
-   this is additive, not a rewrite of the local-serving mechanism the
-   parallel session is stabilizing; it's an independent kill-switch that
-   sits *above* it.
+1. **A master local-serving bypass switch** (`PRECIS_LOCAL_SERVING_DISABLED`
+   or similar) — **not built.** Superseded by item 3: with the paused-slot
+   ladder-fallback in place, there's no known scenario left that needs a
+   separate blunt "never touch local hardware" flag — item 3's automatic
+   degrade-to-OpenRouter covers the same ground without an operator having
+   to remember to flip anything. Revisit only if a future incident needs a
+   hard, unconditional local-hardware quarantine (e.g. a host is actively
+   misbehaving, not just busy) that the ladder's busy/error-driven logic
+   wouldn't catch.
 2. **Give `local-small` the same hosted-backend fallback `local-big`
-   already has.** Add a `backend`-aware branch to `select_transport` for
-   `Tier.LOCAL_SMALL`: when the bypass is active (or, symmetrically, when
-   `backend is Backend.OPENAI`), route to `Transport.OPENAI_COMPAT`
-   instead of `Transport.LITELLM`. This is the one actual code change —
-   small, mirrors the existing `LOCAL_BIG`→`OPENAI_TOOLS` pattern, and
-   makes `local-small` eligible for the `FailoverProvider` ladder for
-   free (today it has zero fallback) — **for transport errors only**
-   (see the correction above; a paused/busy slot is a separate case,
-   below).
+   already has.** **Built 2026-07-23**: `select_transport` now has a
+   `backend`-aware branch for `Tier.LOCAL_SMALL` — `backend is
+   Backend.OPENAI` routes it to `Transport.OPENAI_COMPAT` instead of
+   `Transport.LITELLM`. Mirrors the cloud tiers' existing split (not
+   `LOCAL_BIG`'s pattern, which is unconditional regardless of `backend` —
+   `local-small` needed the conditional form since, unlike `local-big`, it
+   has no tools-loop transport to always fall onto). Makes `local-small`
+   eligible for the `FailoverProvider` ladder for free once `backend=openai`
+   (today it has zero fallback under the default `backend=anthropic`).
 3. **Wire a per-call OpenRouter fallback on local-serving saturation** —
-   the request the parallel local-stability session made explicitly:
-   when `local_serving.acquire()` returns a paused (all-slots-busy)
-   result — or, per the open scope question below, when the
-   litellm/llama-swap endpoint is unreachable — `dispatch()` should feed
-   that case into the `FailoverProvider`/`Rung` ladder (an `OPENAI_COMPAT`
-   rung) instead of returning the paused error immediately. This is
-   **real, non-trivial work**, not a flag flip: it means restructuring
-   `dispatch()`'s paused-slot branch so it degrades into the ladder
-   rather than short-circuiting before it. Distinct from — and
-   complementary to — item 1's manual bypass switch: item 1 is a blunt
-   "never touch local hardware" kill switch (useful for today's
-   incident); this item is the standing, automatic "local is saturated
-   right now, borrow OpenRouter for this one call" resilience behavior
-   that would still be valuable once local serving is stable again.
-   Scope questions (trigger condition, default-on vs opt-in given real
-   $ spend) are open — see below; this item is not committed to build
-   without that direction.
+   **built 2026-07-23** (fixed 2026-07-23 post-review: the first cut
+   over-triggered on `isinstance(provider, FailoverProvider)` alone, which
+   is true for *every* ladder shape whenever the flag is on — including
+   `local-small`'s single-rung `LITELLM` ladder under the default
+   `anthropic` backend, which would've just re-hit the same saturated
+   loopback proxy instead of escaping. Gate is now also `transport in
+   (OPENAI_TOOLS, OPENAI_COMPAT)` — the two transports that actually read
+   `PRECIS_LLM_BASE_URL` when `local_url` is unset). `dispatch()`'s
+   paused-slot branch (all local slots busy) now checks whether the ladder
+   was built as a `FailoverProvider` with a hosted-capable rung 0 (i.e.
+   `PRECIS_LLM_FAILOVER=1` and the tier's primary transport is
+   OSS-eligible); if so, it retries the ladder from rung 0 with the
+   *unmodified* request (no `local_url` override), which lands on the
+   hosted OSS endpoint (`PRECIS_LLM_BASE_URL`) instead of the busy local
+   slot — falling through to the claude rung only if that also errors.
+   `local-small` under the default `anthropic` backend (transport
+   `LITELLM`, no hosted mode) still backs off immediately, unchanged.
+   Gated on the existing `PRECIS_LLM_FAILOVER` flag rather than a new one
+   (settles the "default-on vs opt-in" open question inline — reuses the
+   established off-by-default convention rather than proliferating flags).
+   Trigger condition settled too: only the modeled `paused` (busy) state —
+   "endpoint unreachable" isn't a distinct signal `local_serving.acquire()`
+   produces; a genuinely unreachable local endpoint surfaces as a normal
+   transport error *after* `provider.run()`, which the ladder already
+   handled before this change. Distinct from item 1 (not built, see above).
 4. **A recommended OpenRouter model roster** (below) to bind
    `PRECIS_MODEL_OPUS`/`PRECIS_MODEL_SONNET`/`PRECIS_MODEL_HAIKU`/
    `PRECIS_SUMMARIZE_MODEL`/`PRECIS_LOCAL_BIG_MODEL` to, sourced from the
@@ -167,120 +179,177 @@ without a code change.
 - **Not** containerizing or otherwise changing `plan_tick`'s or
   `fix_gripe`'s own spawn seams — out of scope per `OPEN-ITEMS.md` Track 3.
 
-## Recommended OpenRouter roster (audit of the already-seeded catalog)
+## Recommended OpenRouter roster — DECIDED 2026-07-23
 
 All pricing/capability below is from the live `kind='llm'` catalog,
 pulled 2026-07-23 (`$/M tokens`, in/out; capability axes are 1-5 ordinals,
 **published-benchmark band — vendor claims, not yet measured on our own
-traffic**).
+traffic** — see the golden-eval open question below).
 
-| Tier | What it's for | Recommended default | Price in/out | Window | code / tool / reasoning |
-|---|---|---|---|---|---|
-| **cloud-super** ("opus tier") | Heavy reasoning + tools: structural/deep reviewers, `fix_gripe`, `dream`, generic `claude_agent` default, `LLM:opus` ticks | **`z-ai/glm-5.2`** — the cheap-massive model that comes closest to Opus: 744B MoE, first OSS to beat GPT-5.5 on SWE-bench Pro, 1M context | $0.97 / $3.05 | 1M | 5 / 5 / 5 |
-| — cheaper alternative | Pure-reasoning judge work, less code-shaped | `deepseek/deepseek-v4-pro` | $0.44 / $0.87 | 1M | 4 / 4 / 5 |
-| **cloud-mid** (workhorse) | Planner ticks, tex-fix, general agentic | **`z-ai/glm-4.7`** | $0.40 / $1.75 | 203K | 4 / 4 / 4 |
-| — long-context alternative | Same rung, wider window | `qwen/qwen3.7-max` | $1.48 / $4.43 | 1M | 4 / 4 / 4 |
-| **coder** (specific coding rung) | Coding-shaped tasks (a future `coder`-agent model default, or dep-bumper/mechanical-refactor work) | **`moonshotai/kimi-k2.7-code`** — already coding-specialised, cheaper than the mid workhorses for this shape | $0.75 / $3.50 | 262K | 5 / 5 / 4 |
-| **cloud-small** (triage/judge) | One-shot JSON judges, classification, chase-verifier | **`deepseek/deepseek-v4-flash`** — cheapest model that still reasons | $0.098 / $0.196 | 1M | 3 / 3 / 4 |
-| — floor alternative | Pure lexical classification, no reasoning need | `z-ai/glm-4.7-flash` | $0.06 / $0.40 | 203K | 3 / 3 / 3 |
-| **local-small / local-big bypass target** | `llm_summarize`/`classify`/`paper_glossary` and the local-big tools rung, when the bypass is active | Same as **cloud-small** default above | — | — | — |
+The settled design is a **cascade per tier**: local (this host's resident
+model, free) → OpenRouter open-weight (cheap, cloud) → real Anthropic
+(reserved, deliberate escalation — not the default anymore). Reuses the
+exact `FailoverProvider`/`Rung` ladder already built for the cloud tiers;
+item 3 below extends it with a prepended local rung rather than inventing
+a separate mechanism.
+
+| Tier | What it's for | Local primary | OpenRouter rung | Anthropic escalation rung |
+|---|---|---|---|---|
+| **small** | dispatch/classify/triage — today's "haiku" duty | `a` = qwen3.6-27b-q8_0 (melchior, resident) | **`deepseek/deepseek-v4-flash`** — $0.098/$0.196, 1M window, 3/3/4 | **None — Claude Haiku is skipped entirely.** Low quality-risk, high volume; no reason to pay Anthropic here. |
+| **medium** | planner ticks, tex-fix, general agentic — today's "sonnet" duty | `n` = qwen3-next-80b-a3b (melchior, resident) | **`z-ai/glm-4.7`** — $0.40/$1.75, 203K window, 4/4/4 (long-context alt: `qwen/qwen3.7-max`, $1.48/$4.43, 1M) | **`claude-sonnet-5`** — kept as the failover rung (pinned, ignores model overrides). Quality-sensitive (planning/decomposition) — roll out with `PRECIS_LLM_FAILOVER=1` and watch `view='tote'` before fully trusting it. |
+| **big / biggest-open** | heavy reasoning approaching top-tier, coding-adjacent | — (nothing local fits without evicting `a`/`n`) | **`z-ai/glm-5.2`** — $0.97/$3.05, 1M window, 5/5/5/5, first OSS to beat GPT-5.5 on SWE-bench Pro. This is the new *default* top-of-ladder pick. | **`claude-opus-4-8`** — the failover rung, reached for only if GLM-5.2 doesn't converge. No longer the default agentic driver — deliberate top-dog escalation only. |
+| **coder** (cross-cutting) | coding-shaped tasks at any tier | — | **`moonshotai/kimi-k2.7-code`** — $0.75/$3.50, 262K window, 5/5/4 | (inherits whichever tier it's dispatched under) |
+
+Cheaper reasoning alternative (not the default): `deepseek/deepseek-v4-pro`
+($0.44/$0.87, 4/4/5) — less code-shaped, fine for pure-reasoning judges.
+Absolute floor for small: `z-ai/glm-4.7-flash` ($0.06/$0.40, 3/3/3) — pure
+lexical classification with no reasoning need.
 
 All 12 candidate cards (`lm162503`-`lm162514`) are visible via
-`get(kind='llm', id='<slug>')`; this table is a recommendation, not an
-exhaustive relisting.
+`get(kind='llm', id='<slug>')`.
+
+**Local roster, confirmed 2026-07-23:** melchior already runs the `a`
+(27B)/`n` (80B) split coresident (~106GB/192GB) — no eviction between
+them since the 2026-06-25 consolidation. Balthazar has its own analogous
+small model (`qwen3.6-35b-a3b-ud-q3_k_m`, 3B active MoE) but currently
+carries **zero** local-tier traffic (classify/summarize are melchior-only
+today) — no urgent need to homogenize. Caspar (DB/infra host) and spark
+(compute-only, `llamacpp_models: []`) are correctly excluded from serving
+any model. **Explicitly decided against:** cross-host fallback (melchior
+borrowing balthazar's spare capacity) — `served_by`/`local_serving` is
+host-scoped by design; OpenRouter is the shared-capacity answer instead of
+building cross-host routing.
 
 ## Acceptance criteria
 
-1. With the bypass flag **unset**, every existing test + a live dispatch
-   of `local-small`/`local-big` behaves byte-identically to today (no
-   regression when this ships dark).
-2. With the bypass flag **set** + `PRECIS_LLM_BACKEND=openai` +
-   `PRECIS_LLM_BASE_URL` + a vaulted key: a `local-small` dispatch
-   (`llm_summarize` or an equivalent test harness call) POSTs to
-   OpenRouter, not to the litellm proxy or any `127.0.0.1:114xx` — verified
-   in a worker log or a targeted probe, mirroring the verification recipe
-   in `docs/design/local-model-router-integration.md` §S4.
-3. Same for `local-big` (already has the fallback path — confirm the
-   bypass flag reaches it too, i.e. `local_serving.acquire()` is skipped
-   even when a `served_by` slot *would* otherwise match).
-4. `PRECIS_LLM_FAILOVER=1` + a forced OpenRouter error (e.g. a bad model
-   id or a simulated 5xx) causes the call to fall back to `claude_p` and
-   return a usable, error-free `LlmResult` — a new regression test
-   alongside the existing failover-ladder tests.
-5. `local-small`'s new `OPENAI_COMPAT` branch is covered by
-   `select_transport` unit tests (mirrors the existing `LOCAL_BIG` case)
-   and the resolver totality assert still holds.
-6. Ops recipe (env vars + vault key) is documented in
-   `docs/reference/config-variables.md`, with an explicit note that the
-   fleet-wide values are set via `deploy/inventory`'s host_vars
-   (gitignored/private, not present in a fresh worktree — same place the
-   `served_by`-override values from `9ab8e7a7` still need setting).
-7. (If item 3 is greenlit) a forced "all slots busy" `paused` result
-   degrades into the `OPENAI_COMPAT` rung and returns a usable result,
-   with a log line distinguishing "fell back due to local saturation"
-   from "fell back due to a transport error" — the two are different
-   operationally (one is capacity tuning, the other is an outage).
+1. ✅ **Built + tested.** With `PRECIS_LLM_BACKEND` unset (default
+   `anthropic`) and `PRECIS_LLM_FAILOVER` unset, `local-small`/`local-big`
+   behave byte-identically to before this change — `select_transport`'s new
+   branch only fires under `backend is Backend.OPENAI`, and the paused-slot
+   ladder-retry only fires when `isinstance(provider, FailoverProvider)`
+   (i.e. failover is on). Covered by
+   `test_dispatch_paused_local_slot_without_failover_still_returns_paused`.
+2. Live-cluster verification (POSTs to OpenRouter, not the litellm proxy)
+   is **not yet done** — needs `PRECIS_LLM_BACKEND=openai` +
+   `PRECIS_LLM_BASE_URL` + the vaulted key actually applied via
+   `deploy/inventory` host_vars (still private/gitignored, not present in
+   this worktree). Unit-level coverage (mocked transports) is in place;
+   this criterion is the remaining ops step, not a code gap.
+3. Same as #2 — `local-big`'s existing fallback path is unit-tested; live
+   verification is the same pending ops step.
+4. ✅ **Built + tested** — `test_dispatch_failover_flag_falls_back_to_claude`
+   (pre-existing, cloud tiers) plus the new
+   `test_dispatch_paused_local_slot_still_falls_to_claude_if_hosted_also_fails`
+   (local tier, paused + hosted-rung-also-errors → claude).
+5. ✅ **Built + tested** — `test_select_transport_openai_backend` covers the
+   new `LOCAL_SMALL`/`OPENAI_COMPAT` case; `test_tier_table_is_total` (the
+   resolver totality assert) is unaffected and still passes.
+6. ✅ **Documented** — `docs/reference/config-variables.md` §4 and
+   `docs/architecture/state-map.md`'s LLM-independence section updated in
+   the same commit as the code. The fleet-wide apply (host_vars) remains a
+   separate ops step (see #2).
+7. ✅ **Built + tested** —
+   `test_dispatch_paused_local_slot_falls_back_to_hosted_rung` (paused →
+   hosted rung, no `local_url`, distinct log line
+   `"llm-failover: local slot for %s is saturated…"` vs. the pre-existing
+   `"llm-failover: rung %d … failed"` / `"fell back to rung %d"` transport-
+   error lines).
 
 ## Target + blast radius
 
-- `src/precis/utils/llm/router.py` — `select_transport` (new
-  `local-small` branch), `dispatch()`/`dispatch_async()` (bypass gate
-  before `local_serving.acquire()`; if item 3 is greenlit, also the
-  paused-slot branch that currently returns early instead of entering
-  the `FailoverProvider` ladder).
-- `src/precis/utils/llm/local_serving.py` — read-only reference point for
-  the bypass gate; no internal changes, unless item 3's paused-result
-  shape needs a field to carry "why" (busy vs unreachable) to the ladder.
-- `tests/test_llm_router.py` (or equivalent) — new cases for the
-  `local-small` OpenRouter branch + bypass-flag-on/off + failover +
-  (if item 3 ships) paused-slot-degrades-to-ladder.
-- `docs/reference/config-variables.md`, `docs/architecture/state-map.md`
-  (LLM router section) — document the new flag + roster decision in the
-  same commit (per this repo's doc-freshness convention).
+- ✅ `src/precis/utils/llm/router.py` — `select_transport` (new
+  `local-small` branch), `dispatch()`'s paused-slot branch (degrades into
+  the `FailoverProvider` ladder instead of returning early),
+  `_failover_ladder`/`_claude_default` (`_LOCAL_ESCALATION_TIER` fix for
+  the `LOCAL_*`-tier claude-fallback model id). `dispatch_async()` needed
+  no change — for every non-`CLAUDE_AGENT`+`on_event` case (all local-tier
+  traffic) it already delegates straight to the now-fixed sync `dispatch()`.
+- `src/precis/utils/llm/local_serving.py` — untouched, as planned (no
+  internal changes; `dispatch()` just reads `slot.paused` as before).
+- ✅ `tests/test_llm_router.py` — new cases: the `local-small`
+  `OPENAI_COMPAT` branch, the two `_failover_ladder` local-tier cases
+  (`LOCAL_BIG`→sonnet escalation, `LOCAL_SMALL`→no claude rung), and three
+  `dispatch()` paused-slot cases (falls to hosted rung / falls further to
+  claude / stays byte-identical with failover off).
+- ✅ `docs/reference/config-variables.md` §4, `docs/architecture/state-map.md`
+  (LLM-independence section) — updated in the same commit; the latter
+  also corrected a stale "FailoverProvider not built" note.
 - No migration, no schema change, no new `kind`. All call sites
   (`llm_summarize.py`, `classify.py`, `paper_glossary.py`) are unaffected
   at the source level — they still request `Tier.LOCAL_SMALL`/
   `Tier.LOCAL_BIG`; only the transport resolution changes.
-- Ops-side: `deploy/inventory` host_vars — gitignored/private, not
-  present in this worktree, flagged as a follow-on ops step to apply
-  wherever ansible actually runs from.
+- Ops-side (not done here): `deploy/inventory` host_vars — gitignored/
+  private, not present in this worktree — is the remaining step to
+  actually flip the switch fleet-wide (see Open questions).
 
 ## Open questions / decisions log
 
-- **Exact flag name** for the bypass switch
-  (`PRECIS_LOCAL_SERVING_DISABLED` suggested here) — confirm against
-  house naming before merge.
-- **Per-tier backend override.** Today `PRECIS_LLM_BACKEND` is one
-  fleet-wide switch. If a later decision wants `cloud-super` to stay on
-  Anthropic while `cloud-small`/`local-*` move to OpenRouter, that needs
-  a finer-grained override (`PRECIS_LLM_BACKEND_<TIER>`?) not built here —
-  surfaced but deliberately deferred (this proposal's scope is the local
-  tiers only, which don't yet have *any* backend switch, so the question
-  doesn't block this work).
-- **Roster confirmation.** The table above is a recommendation from
-  published-benchmark data; Reto should confirm (or override) the picks
-  before they're wired into env defaults, especially the `coder` pick
-  (`kimi-k2.7-code`) since no agent def currently names a model override
-  that would consume it — is this proposal expected to also wire that
-  agent-def hookup, or just make the model available in the roster for a
-  later, separate wiring pass?
-- **Item 3's trigger + cost scope (raised verbatim by the parallel
-  local-stability session, 2026-07-23) — awaiting direction before
-  building:**
-  - Trigger only on "busy" (`local_serving.acquire()` returns
-    `paused`), or also on litellm/llama-swap being unreachable
-    (a connection error, not just a capacity gate)? The two are
-    different failure shapes — busy means "healthy but full,"
-    unreachable means "actually down" — and may want different
-    handling (busy → wait-a-beat-then-retry-local is arguably fine;
-    unreachable → OpenRouter immediately is more clearly justified).
-  - Default-on for `llm_summarize` (and the other `local-small`
-    consumers), or opt-in? OpenRouter is real $ spend against a task
-    that's normally free local backfill — worth being deliberate about
-    which passes are allowed to silently start costing money the first
-    time local is merely busy, versus only when it's actually down.
-  - Related: does this want to be a manual, sticky operator flag (item 1
-    covers that shape already, as a full stop) or a scoped, automatic
-    per-call fallback that self-heals once local capacity frees up
-    (item 3 as drafted) — these aren't mutually exclusive, but the
-    build is different work either way.
+**Resolved 2026-07-23 (discussion with Reto):**
+- ~~Roster confirmation~~ — decided, see the roster table above (small
+  skips Anthropic; medium/big keep Sonnet/Opus as failover-only escalation
+  rungs, not defaults).
+- ~~Cross-host fallback (borrow balthazar's spare capacity)~~ — explicitly
+  rejected; OpenRouter is the shared-capacity answer, not cross-host
+  routing (which `served_by`/`local_serving`'s host-scoped design doesn't
+  support today anyway).
+- ~~API key vaulting~~ — already done. `PRECIS_LLM_API_KEY` is present in
+  the DB-backed vault (seeded 2026-07-14, matches the OpenRouter key hint)
+  — no seeding step needed before flipping the switch.
+
+**Resolved 2026-07-23 (settled during the build, per the doc's own
+"can settle inline" invitation):**
+- ~~Item 1's kill-switch, still wanted?~~ — no; not built. Superseded by
+  item 3 (see "In scope" above).
+- ~~Item 3's trigger condition~~ — busy (`paused`) only. "Unreachable" isn't
+  a distinct state `local_serving.acquire()` produces — a genuinely dead
+  endpoint surfaces as an ordinary post-dispatch transport error, which the
+  ladder already handled before this change.
+- ~~Default-on vs. opt-in for item 3~~ — opt-in, gated on the existing
+  `PRECIS_LLM_FAILOVER` flag rather than a new one (one flag, not two; off
+  by default matches that flag's own established rationale).
+- ~~`LOCAL_BIG`'s claude-escalation model~~ — not actually an open
+  question in the doc, but a real bug the build surfaced: fixed via
+  `_LOCAL_ESCALATION_TIER` (`LOCAL_BIG`→`CLOUD_MID`/sonnet;
+  `LOCAL_SMALL`→ no claude rung). See Motivation + item 3 above.
+
+**Still open — blocking further action (code is built and dark; these are
+now pure ops/rollout decisions, not implementation gaps):**
+- **Scope of the live switch, right now.** `PRECIS_LLM_BACKEND` is one
+  fleet-wide switch — flipping it to `openai` moves all three cloud tiers
+  (small/mid/big) at once, not just one. Full coherent flip (all three
+  `PRECIS_MODEL_*` set to their roster picks + `PRECIS_LLM_FAILOVER=1`)
+  vs. a narrower change accepting that an unset tier's model id gets sent
+  to OpenRouter, fails, and falls back to Claude (harmless with FAILOVER
+  on, but a wasted round-trip every call) — awaiting Reto's call.
+- **Sequencing.** The cloud-tier flip (config-only, already-shipped code)
+  and the local-tier fallback (item 3, now also shipped code) can both
+  flip today — the remaining gate is applying `deploy/inventory` host_vars
+  fleet-wide (private/gitignored, not present in this worktree) and
+  running the live-cluster verification in acceptance criteria #2/#3.
+  Flip cloud+local together in one rollout, or cloud first with local
+  behind its own check? Reto's call.
+
+**Smaller — still open, not blocking:**
+- Wire `kimi-k2.7-code` to an actual call site (e.g. a `coder`-agent model
+  override) now, or leave it catalog-available for a later pass?
+- Actually retire `q5` (`qwen3.6-27b-q5_k_m` + its draft-model pairing)
+  from melchior's `llamacpp_models` — discussed as redundant once the
+  OpenRouter fallback covers the same "dispatcher failover" role q5 was
+  for, but not yet executed (config change in `deploy/inventory`).
+- Any explicit watch/revert tripwire once medium-tier moves off Sonnet
+  (e.g. a nursery-style alert on plan_tick spin-rate), or informal
+  `view='tote'` monitoring for now?
+- Balthazar's own local-small duty (enabling `precis_worker_classify`/
+  `precis_worker_summarize_llm` there) — a separate, optional follow-up,
+  independent of the OpenRouter work.
+- **Per-tier backend override — reframed 2026-07-23, see `OPEN-ITEMS.md`
+  §"`Backend` (`PRECIS_LLM_BACKEND`) — residual smell".** Not blocking
+  today's plan (all three tiers are moving together), but the fix isn't
+  "add a third axis for per-tier override" — it's that `Backend` shouldn't
+  exist as its own axis at all: a resolved model id already implies its
+  vendor/transport, so inferring transport from the model id (rather than
+  a separate fleet-wide switch an operator must keep hand-synced with
+  `PRECIS_MODEL_*`) gives per-tier control for free and removes a
+  correctness foot-gun (`backend=openai` + a forgotten `PRECIS_MODEL_*`
+  override POSTs a claude model id to OpenRouter). Raised, not designed —
+  see the OPEN-ITEMS.md entry for the full reasoning.

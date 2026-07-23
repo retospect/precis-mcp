@@ -276,9 +276,18 @@ def select_transport(
     (the in-process ``tools=`` loop). Under ``ANTHROPIC`` both stay on the
     ``claude`` transports. The ``LOCAL_BIG`` tier (a local model + tools)
     always takes the OSS tools loop.
+
+    ``LOCAL_SMALL`` mirrors the cloud split rather than ``LOCAL_BIG``'s
+    unconditional local pin: under ``OPENAI`` it takes
+    :data:`Transport.OPENAI_COMPAT` (a hosted OSS backend — OpenRouter — with
+    no local hardware fallback of its own) instead of the loopback litellm
+    proxy. This is the gap-fill from `docs/proposals/llm-openrouter-bypass.md`
+    item 2: ``LOCAL_SMALL`` previously had no path off local hardware at all.
     """
     if tier is Tier.LOCAL_SMALL:
-        return Transport.LITELLM
+        return (
+            Transport.OPENAI_COMPAT if backend is Backend.OPENAI else Transport.LITELLM
+        )
     if tier is Tier.LOCAL_BIG:
         return Transport.OPENAI_TOOLS
     if tools_needed:
@@ -843,11 +852,23 @@ class FailoverProvider:
         return last
 
 
+#: A ``LOCAL_*`` tier's ``_TIER_MODEL`` default is an OSS alias
+#: (``qwen-heavy``), not a claude id, so it can't back its own claude-fallback
+#: rung the way a ``CLOUD_*`` tier can. Maps a local tier onto the cloud tier
+#: whose claude id it escalates to instead — ``LOCAL_BIG`` plays the "medium"
+#: cascade role in the roster (`docs/proposals/llm-openrouter-bypass.md`), so
+#: it escalates to ``CLOUD_MID`` (sonnet). ``LOCAL_SMALL`` has no entry: per
+#: the roster's "small" row, that tier skips Anthropic entirely — see
+#: :func:`_failover_ladder`, which never calls this for ``LOCAL_SMALL``.
+_LOCAL_ESCALATION_TIER: dict[Tier, Tier] = {Tier.LOCAL_BIG: Tier.CLOUD_MID}
+
+
 def _claude_default(tier: Tier) -> str:
     """The tier's compiled-in claude model id, ignoring any PRECIS_MODEL_*
     override — so a claude fallback rung stays on claude even when the override
-    points the primary at an OSS id."""
-    return _TIER_MODEL[tier][1]
+    points the primary at an OSS id. A ``LOCAL_*`` tier resolves through
+    :data:`_LOCAL_ESCALATION_TIER` first (see its docstring)."""
+    return _TIER_MODEL[_LOCAL_ESCALATION_TIER.get(tier, tier)][1]
 
 
 def _failover_enabled() -> bool:
@@ -862,9 +883,17 @@ def _failover_enabled() -> bool:
 def _failover_ladder(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
     """The default OSS→claude ladder: the backend's primary transport, then the
     claude equivalent as a safety net (only when the primary is an OSS
-    transport — a claude/local primary has nothing to fall back to)."""
+    transport — a claude/local primary has nothing to fall back to).
+
+    ``LOCAL_SMALL`` is the one exception: per the roster cascade
+    (`docs/proposals/llm-openrouter-bypass.md` — "small" skips Anthropic
+    entirely, low-stakes/high-volume dispatch traffic), its ladder stops at
+    the OSS rung with no claude fallback, however this call resolves.
+    """
     primary = select_transport(tier, tools_needed=tools_needed, backend=backend)
     if primary in (Transport.OPENAI_TOOLS, Transport.OPENAI_COMPAT):
+        if tier is Tier.LOCAL_SMALL:
+            return [Rung(primary, label="oss")]
         claude = Transport.CLAUDE_AGENT if tools_needed else Transport.CLAUDE_P
         return [
             Rung(primary, label="oss"),
@@ -892,6 +921,9 @@ def dispatch(req: LlmRequest) -> LlmResult:
     With ``PRECIS_LLM_FAILOVER`` on, an OSS primary is wrapped in a
     :class:`FailoverProvider` that falls back to ``claude`` on error — so a
     flipped backend degrades to claude instead of failing. Off by default.
+    The same ladder also covers a *saturated local slot*: a ``paused``
+    local-serving result retries rung 0 against the hosted OSS endpoint
+    (skipping the busy local hardware) before falling to the claude rung.
     """
     backend = resolve_backend()
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
@@ -958,6 +990,41 @@ def dispatch(req: LlmRequest) -> LlmResult:
 
     slot = _local.acquire(model)
     if slot is not None and slot.paused:
+        # Local capacity is saturated, not down — a different case from a
+        # transport error, and the FailoverProvider ladder built above already
+        # has a rung for exactly this: retrying `req` unmodified (no
+        # `local_url` override) sends rung 0 to the *hosted* OSS endpoint
+        # (`PRECIS_LLM_BASE_URL`, e.g. OpenRouter) instead of the busy local
+        # slot, falling through to the claude rung only if that also fails.
+        # docs/proposals/llm-openrouter-bypass.md item 3 — gated on the
+        # existing PRECIS_LLM_FAILOVER flag rather than a new one. But this
+        # escape only exists when rung 0's transport is one of the two that
+        # read `PRECIS_LLM_BASE_URL` when `local_url` is unset (OPENAI_TOOLS /
+        # OPENAI_COMPAT) — ``Transport.LITELLM`` (e.g. LOCAL_SMALL under the
+        # default ANTHROPIC backend) has no hosted mode at all and would just
+        # re-hit the same saturated loopback proxy, so that case (like
+        # failover-off, or a primary with no fallback rung) stays
+        # byte-identical to the old behavior: return the paused result
+        # immediately so a pinned pass backs off instead of spinning.
+        if isinstance(provider, FailoverProvider) and transport in (
+            Transport.OPENAI_TOOLS,
+            Transport.OPENAI_COMPAT,
+        ):
+            log.warning(
+                "llm-failover: local slot for %s is saturated — trying the "
+                "hosted fallback rung instead of failing the call "
+                "(capacity backoff, not a transport error)",
+                model,
+            )
+            started = time.monotonic()
+            result = provider.run(req, model=model)
+            _record_dispatch(
+                req,
+                result,
+                transport=transport,
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            return result
         return LlmResult(
             text="",
             cost_usd=None,

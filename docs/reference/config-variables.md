@@ -154,9 +154,9 @@ override if you want per-host divergence).
 
 | Var | Controls | Code default | Deployed | Assessment |
 |-----|----------|--------------|----------|------------|
-| `PRECIS_LLM_BACKEND` | `anthropic` vs OpenAI-compat OSS | `anthropic` | not set ⇒ `anthropic` | ✅ OSS backend ships dark (ADR 0046); byte-identical to `claude -p`. Flip per-host to test OSS. |
-| `PRECIS_LLM_BASE_URL` / `PRECIS_LLM_API_KEY` | OSS endpoint + key (vault) | none | not set | ✅ Only needed when backend flips. |
-| `PRECIS_LLM_FAILOVER` | Failover backend ladder | `""` | not set | ✅ Deferred (FailoverProvider not built). |
+| `PRECIS_LLM_BACKEND` | `anthropic` vs OpenAI-compat OSS | `anthropic` | not set ⇒ `anthropic` | ✅ OSS backend ships dark (ADR 0046); byte-identical to `claude -p`. Flip per-host to test OSS. Also gates `LOCAL_SMALL`'s transport (`OPENAI_COMPAT` vs the loopback litellm proxy) — see `llm-openrouter-bypass` below. |
+| `PRECIS_LLM_BASE_URL` / `PRECIS_LLM_API_KEY` | OSS endpoint + key (vault) | none | not set | ✅ Only needed when backend flips. For the OpenRouter recipe: `PRECIS_LLM_BASE_URL=https://openrouter.ai/api/v1`; `PRECIS_LLM_API_KEY` is already vaulted (seeded 2026-07-14) — no seeding step needed. |
+| `PRECIS_LLM_FAILOVER` | Wraps an OSS primary in the `FailoverProvider` claude-fallback ladder | `""` | not set | ✅ Built (`router._failover_ladder`/`FailoverProvider`). Also covers a *saturated local slot*: a paused call retries the ladder's hosted rung instead of failing outright, but only when rung 0's transport actually has a hosted mode (`OPENAI_TOOLS`/`OPENAI_COMPAT` — `LOCAL_BIG` always, `LOCAL_SMALL` only under `PRECIS_LLM_BACKEND=openai`); `LOCAL_SMALL` under the default backend has no hosted escape and still backs off immediately (`llm-openrouter-bypass` item 3). Off by default — real $ once a backend/base-url is configured. |
 | `PRECIS_MODEL_OPUS` | CLOUD_SUPER model id | `claude-opus-4-8` | not set ⇒ default | ✅ Current. |
 | `PRECIS_MODEL_SONNET` | CLOUD_MID model id | `claude-sonnet-5` | not set ⇒ default | ✅ Current — the `_TIER_MODEL[CLOUD_MID]` default now tracks Sonnet 5 (bumped from `claude-sonnet-4-6`). Minor tier (`tex_llm_fix` + `job` retry only). |
 | `PRECIS_MODEL_HAIKU` | CLOUD_SMALL model id | `claude-haiku-4-5-20251001` | not set ⇒ default | ✅ Current. |

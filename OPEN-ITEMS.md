@@ -39,6 +39,50 @@ is the historical observation log.
   for the pilot, write the reset SQL, then hand off to a `cluster-admin`
   session for execution + a deploy watching the pipeline recover.
 
+---
+## `Backend` (`PRECIS_LLM_BACKEND`) — residual smell, candidate for removal
+Status: open · Severity: polish · Owner: `src/precis/utils/llm/router.py` (`Backend`, `resolve_backend`, `select_transport`) · Test: n/a yet
+
+- Surfaced 2026-07-23 while building `docs/proposals/llm-openrouter-bypass.md`'s
+  local-tier ladder fixes. `Backend` is a fleet-wide binary switch
+  (anthropic/openai) that has to be kept in sync **by hand** with each
+  tier's independently-configurable `PRECIS_MODEL_*` id — nothing enforces
+  the pairing. Set `backend=openai` without also repointing
+  `PRECIS_MODEL_OPUS` off its `claude-opus-4-8` default, and the router
+  happily POSTs `model=claude-opus-4-8` to OpenRouter. The exact same
+  hand-sync-or-break shape produced a real bug this session (`LOCAL_BIG`'s
+  claude-fallback rung pinning the OSS alias `qwen-heavy` as a `claude -p`
+  model id — fixed via `_LOCAL_ESCALATION_TIER`).
+- Reto's framing: "it should all go to the router, and we decide where it
+  goes from there" — `Backend` shouldn't exist as a separate axis at all.
+  Confirmed by grep: `resolve_backend()`/`Backend` are consumed *only*
+  inside `select_transport` and `dispatch()`'s base-url coercion — nothing
+  else needs the enum's identity. A resolved model id already fully
+  determines which vendor/transport it needs (`claude-*` → the claude
+  transports, everything else → the OpenAI-compatible ones), so
+  `select_transport` could infer transport from the model id and drop the
+  `Backend` parameter and `PRECIS_LLM_BACKEND` entirely — which, as a side
+  effect, also solves the "per-tier backend override" gap
+  `llm-openrouter-bypass.md` already flagged as unbuilt (each tier's model
+  already resolves independently, so per-tier "backend" falls out for free
+  once transport is inferred from it instead of a parallel global switch).
+- **Not designed or built** — a raised observation, not a decided refactor.
+  Needs: an actual spec for the claude-vs-not detection (a `model.startswith
+  ("claude-")` prefix check is crude but may be sufficient — every compiled
+  `_TIER_MODEL` claude default already fits that shape), a check on whether
+  `live_config.backend_override` (the `/factory` live-switch mirror of the
+  same axis) needs the identical removal, and a look at existing callers
+  that pass `backend=` explicitly (`plan_tick.py`, `dispatch()`/
+  `dispatch_async()`) to confirm none depend on `Backend`'s identity for
+  anything beyond transport selection.
+- **"Are there other switches like it?" — not audited.** One candidate
+  noticed in passing, unverified: `PRECIS_EMBEDDER` /
+  `PRECIS_EMBEDDER_BACKEND` (`docs/reference/config-variables.md` §4) look
+  like a similarly-shaped two-axis (what + which-backend) pair — worth the
+  same "is one of these redundant with the other" check before assuming
+  it's the same smell.
+
+---
 ## Plan for the next big session set
 - (also survey the usual thing from /whatnext)
 - Do token efficiency stuff (like claude.md rules vs rationale, ensure the search tools and so on all work, an audit of (coding) prompts and a review of the last 2-3 days and what lools claude gets into that are wasteful. Lets schedule the efficiency stuff after a few hours afte token reset on THursday noon. 

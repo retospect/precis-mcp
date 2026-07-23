@@ -523,8 +523,21 @@ byte-identical. `max_turns` maps to a resumable `PlanTickOutcome`
 (`resume_reason`) so the executor streak-cap still fires. (Known gap: the
 OSS tick skips the prose-kind gate — boot-time only — so the `## Draft`
 prompt block is its sole steer there.) Still direct `claude -p`:
-`fix_gripe`. Deferred: a `FailoverProvider` ladder (method + model
-failover) over the same port.
+`fix_gripe`. **Built: the `FailoverProvider`/`Rung` ladder**
+(`PRECIS_LLM_FAILOVER`, off by default) wraps an OSS primary transport with
+an automatic claude-fallback rung on a transport error; a `LOCAL_*` tier's
+claude rung resolves through `_LOCAL_ESCALATION_TIER` (its own
+`_TIER_MODEL` default is an OSS alias, not a claude id — `LOCAL_BIG`
+escalates to `CLOUD_MID`'s sonnet id; `LOCAL_SMALL` gets no claude rung at
+all, per the roster below). The ladder also covers a **saturated local
+slot**: `dispatch()`'s paused-slot branch (`local_serving.acquire()` returns
+`paused=True`, all capacity busy) retries the ladder's rung 0 with the
+request's `local_url` override cleared, landing on the hosted OSS endpoint
+instead of the busy local hardware, before falling to claude if that also
+errors (`docs/proposals/llm-openrouter-bypass.md` item 3). `Tier.LOCAL_SMALL`
+also gained a `backend`-aware branch in `select_transport` (`OPENAI_COMPAT`
+under `backend=openai`, item 2) — previously pinned unconditionally to the
+loopback litellm proxy with no hosted-backend escape at all.
 
 ## Discovery layer (F20)
 

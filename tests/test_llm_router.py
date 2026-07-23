@@ -12,6 +12,7 @@ the corresponding call site resolves to today.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import pytest
@@ -843,8 +844,10 @@ def test_resolve_backend(
         # …and tool-using cloud diverts to the OSS tools loop.
         (Tier.CLOUD_SUPER, True, Transport.OPENAI_TOOLS),
         (Tier.CLOUD_MID, True, Transport.OPENAI_TOOLS),
-        # local-small stays on the loopback proxy; local-big is the tools loop.
-        (Tier.LOCAL_SMALL, False, Transport.LITELLM),
+        # local-small now mirrors the cloud split (OPENAI_COMPAT under the
+        # openai backend — docs/proposals/llm-openrouter-bypass.md item 2);
+        # local-big is unconditionally the tools loop either way.
+        (Tier.LOCAL_SMALL, False, Transport.OPENAI_COMPAT),
         (Tier.LOCAL_BIG, True, Transport.OPENAI_TOOLS),
     ],
 )
@@ -979,6 +982,18 @@ class _FakeProv:
         return self._result
 
 
+class _RunFn:
+    """A provider wrapping a plain ``(req, *, model) -> LlmResult`` callable —
+    for tests that need to inspect the request rather than script a fixed
+    result (e.g. checking ``req.local_url`` on a retried rung)."""
+
+    def __init__(self, fn: Callable[..., LlmResult]) -> None:
+        self._fn = fn
+
+    def run(self, req: LlmRequest, *, model: str) -> LlmResult:
+        return self._fn(req, model=model)
+
+
 def _ok(text: str, model: str = "m") -> LlmResult:
     return LlmResult(
         text=text, cost_usd=None, turns_used=None, model=model, tier=Tier.CLOUD_SUPER
@@ -1104,6 +1119,33 @@ def test_failover_ladder_anthropic_has_no_fallback() -> None:
     assert [r.transport for r in ladder] == [Transport.CLAUDE_AGENT]
 
 
+def test_failover_ladder_local_big_escalates_to_sonnet_not_qwen_heavy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LOCAL_BIG's own _TIER_MODEL default ("qwen-heavy") is an OSS alias, not
+    a claude id — its claude-fallback rung must not pin that nonsense model."""
+    monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
+    ladder = router._failover_ladder(
+        Tier.LOCAL_BIG, tools_needed=True, backend=Backend.ANTHROPIC
+    )
+    assert [r.transport for r in ladder] == [
+        Transport.OPENAI_TOOLS,
+        Transport.CLAUDE_AGENT,
+    ]
+    assert ladder[1].model == "claude-sonnet-5"
+
+
+def test_failover_ladder_local_small_has_no_claude_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per the roster ("small" skips Anthropic entirely), LOCAL_SMALL's
+    ladder never grows a claude-fallback rung, even under backend=openai."""
+    ladder = router._failover_ladder(
+        Tier.LOCAL_SMALL, tools_needed=False, backend=Backend.OPENAI
+    )
+    assert [r.transport for r in ladder] == [Transport.OPENAI_COMPAT]
+
+
 def test_claude_default_ignores_model_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1139,6 +1181,189 @@ def test_dispatch_failover_flag_falls_back_to_claude(
     assert out.text == "claude saved it"
     assert out.error is None
     assert calls["model"] == "claude-opus-4-8"  # claude fallback, not the OSS id
+
+
+# ── paused local slot degrades into the ladder (llm-openrouter-bypass item 3) ──
+
+
+def test_dispatch_paused_local_slot_falls_back_to_hosted_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A saturated (paused) local-big slot, with failover on, retries rung 0
+    unmodified — no ``local_url`` override — so it lands on the hosted OSS
+    endpoint (OpenRouter) instead of returning the paused error immediately."""
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h", resource=f"llm:{model}", reserved=False, paused=True
+        ),
+    )
+
+    seen: dict[str, object] = {}
+
+    def fake_tools(req: LlmRequest, *, model: str) -> LlmResult:
+        seen["local_url"] = req.local_url
+        seen["model"] = model
+        return LlmResult(
+            text="hosted rung", cost_usd=0.01, turns_used=1, model=model, tier=req.tier
+        )
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _RunFn(fake_tools))
+    monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
+    monkeypatch.delenv("PRECIS_LOCAL_BIG_MODEL", raising=False)
+
+    out = dispatch(LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True))
+
+    assert out.text == "hosted rung"
+    assert out.error is None
+    assert out.paused is False
+    assert seen["local_url"] is None  # rung 0 retried WITHOUT the busy endpoint
+    assert seen["model"] == "qwen-heavy"
+
+
+def test_dispatch_paused_local_slot_still_falls_to_claude_if_hosted_also_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The paused-slot retry is just rung 0 of the normal ladder — if the
+    hosted OSS rung also errors, it falls to the claude rung same as any
+    other transport failure."""
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h", resource=f"llm:{model}", reserved=False, paused=True
+        ),
+    )
+
+    oss = _FakeProv(_err("hosted endpoint also unreachable"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, oss)
+
+    calls: dict[str, object] = {}
+
+    def fake_agent(prompt: str, **kwargs: object) -> AgentResult:
+        calls["model"] = kwargs.get("model")
+        return AgentResult(
+            final_text="claude saved it", cost_usd=None, duration_s=0.0, turns_used=1
+        )
+
+    monkeypatch.setattr(router, "call_claude_agent", fake_agent)
+    monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
+    monkeypatch.delenv("PRECIS_LOCAL_BIG_MODEL", raising=False)
+    monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
+
+    out = dispatch(LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True))
+
+    assert out.text == "claude saved it"
+    assert out.error is None
+    # LOCAL_BIG has no claude id of its own (_TIER_MODEL's default is the OSS
+    # alias "qwen-heavy") — it escalates through CLOUD_MID's compiled default.
+    assert calls["model"] == "claude-sonnet-5"
+
+
+def test_dispatch_paused_local_slot_local_small_default_backend_still_paused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LOCAL_SMALL under the default (anthropic) backend resolves to
+    Transport.LITELLM, which has no hosted mode — it always reads the local
+    loopback proxy (``LlmConfig.from_env()``), never ``PRECIS_LLM_BASE_URL``.
+    A paused slot must NOT retry through it (that would just re-hit the same
+    saturated loopback), even with failover on: it should fall straight
+    through to the immediate paused result, same as the no-failover case."""
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h", resource=f"llm:{model}", reserved=False, paused=True
+        ),
+    )
+
+    def _boom(*a: object, **kw: object) -> LlmResult:
+        raise AssertionError(
+            "LITELLM transport must not be retried on a paused local slot — "
+            "it has no hosted escape and would just re-hit the busy loopback"
+        )
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.LITELLM, _RunFn(_boom))
+    monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+
+    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", tools_needed=False))
+
+    assert out.paused is True
+    assert "busy" in (out.error or "")
+
+
+def test_dispatch_paused_local_slot_local_small_openai_backend_falls_to_hosted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LOCAL_SMALL under backend=openai resolves to Transport.OPENAI_COMPAT,
+    which DOES have a hosted mode — a paused slot should retry rung 0
+    unmodified and land on the hosted endpoint, same as LOCAL_BIG."""
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h", resource=f"llm:{model}", reserved=False, paused=True
+        ),
+    )
+
+    seen: dict[str, object] = {}
+
+    def fake_compat(req: LlmRequest, *, model: str) -> LlmResult:
+        seen["local_url"] = req.local_url
+        seen["model"] = model
+        return LlmResult(
+            text="hosted rung", cost_usd=0.01, turns_used=1, model=model, tier=req.tier
+        )
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, _RunFn(fake_compat))
+    monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", tools_needed=False))
+
+    assert out.text == "hosted rung"
+    assert out.error is None
+    assert out.paused is False
+    assert seen["local_url"] is None  # rung 0 retried WITHOUT the busy endpoint
+
+
+def test_dispatch_paused_local_slot_without_failover_still_returns_paused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failover off ⇒ byte-identical to today: a paused slot returns the
+    paused result immediately, no ladder to fall back into."""
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h", resource=f"llm:{model}", reserved=False, paused=True
+        ),
+    )
+
+    def _boom(*a: object, **kw: object) -> LlmResult:
+        raise AssertionError("provider must not run on a paused, non-failover slot")
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _RunFn(_boom))
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LOCAL_BIG_MODEL", raising=False)
+
+    out = dispatch(LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True))
+
+    assert out.paused is True
+    assert "busy" in (out.error or "")
 
 
 # ── FailoverProvider warns when a fallback rung runs (cost visibility) ──
