@@ -66,7 +66,22 @@ it, then let it shape the whole handoff:
    where it points. If genuinely nothing is open, say so and stop — don't
    manufacture ceremony.
 
-2. **Anchor to durable artifacts.** The recovery prompt must point at things
+2. **Persist found issues, close fixed ones — same discipline as land/ship/go.**
+   Before anchoring the handoff to durable artifacts, make them actually
+   durable. Anything this session surfaced but never wrote down — a residual
+   bug, a daemon left down, a design gap, a diagnosis not yet re-verified —
+   gets a `kind='todo'` / `gripe` row or an `OPEN-ITEMS.md` entry now, the same
+   "persist first" move `/go` step 8 makes after a ship. Conversely, if this
+   session's work already resolved something durable-list-worthy (a gripe a
+   landed commit fixed, an `OPEN-ITEMS.md` bullet whose fix has merged), close
+   it now — resolution-comment-then-soft-delete for a gripe, delete-the-entry
+   for `OPEN-ITEMS.md` (per `/whatneedsdoing`'s convention) — rather than
+   leaving it dangling for the recovery prompt to route around. Don't
+   persist things that don't need it: a next step you're about to hand off
+   in the recovery prompt anyway, and that only this session need act on, can
+   stay there — this step is for what would otherwise be lost.
+
+3. **Anchor to durable artifacts.** The recovery prompt must point at things
    that survive compaction, not at "as we discussed": the worktree path +
    branch, the files touched, the relevant `OPEN-ITEMS.md` section, any
    `kind='todo'` / `gripe` ids, the design doc or ADR in play. If a next step
@@ -76,7 +91,7 @@ it, then let it shape the whole handoff:
    Emit the two blocks **in the order the user runs them**: the `/compact`
    retention argument first, then the recovery prompt.
 
-3. **Emit the compact retention argument.** Output the first fenced block: a
+4. **Emit the compact retention argument.** Output the first fenced block: a
    `/compact` invocation whose argument protects the un-persisted reasoning —
    everything the recovery prompt's pointers can't reconstruct. Source it from
    the "Watch out" / gap notes above: anything there NOT backed by a file
@@ -92,7 +107,7 @@ it, then let it shape the whole handoff:
    If genuinely nothing lives only in the transcript — every open thread is
    already durable — say so and skip this block rather than padding it.
 
-4. **Emit the recovery prompt.** Output the second fenced block the user can copy
+5. **Emit the recovery prompt.** Output the second fenced block the user can copy
    verbatim. Fill every bracket from real state — no placeholders left in. Keep
    it tight; it is a re-orientation, not a transcript replay. Template:
 
@@ -115,7 +130,7 @@ it, then let it shape the whole handoff:
    Start by reading the "Re-read to reground" pointers, then do step 1.
    ````
 
-5. **Close with the nudge.** After the blocks, one line:
+6. **Close with the nudge.** After the blocks, one line:
    ```
    Copy the /compact line → run it → paste the recovery block as your first message.
    ```

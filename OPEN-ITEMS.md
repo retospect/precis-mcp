@@ -274,6 +274,28 @@ passes now. Remaining:
   `local_serving.acquire()` also logs a rate-limited warning on this exact
   mismatch shape so a recurrence on another host surfaces immediately instead
   of burning silently.
+- **Capacity re-check needed** *(follow-up, open).* Post-fix, `precis-worker`
+  and `precis-worker-agent` now correctly contend for the *same*
+  `resource_slots` row (`llm:qwen3-next-80b-a3b-q4_k_m`, `parallel=1`) instead
+  of one of them silently missing it — seen briefly as
+  `DispatchError: all local serving slots … are busy — backing off` (16/16 on
+  one batch right after a deploy bounce). Judged as the safety net working as
+  intended (graceful backoff, not a bug), but not re-verified once things
+  settled — re-check `llm_summarize` error rate; if it's not just transient
+  bounce contention, `precis_worker_summarize_concurrency` (currently `1` in
+  `host_vars/melchior.yml`) or the llama-swap `--parallel` for that model is
+  the tuning knob.
+- **OpenRouter fallback for local-serving saturation/outage** *(feature,
+  open — needs a design pass first).* Wanted: when a host's local llama-swap
+  slot for a tier is paused/unavailable, fail over to OpenRouter instead of
+  (or as well as) the litellm proxy. The existing `FailoverProvider`/`Rung`
+  ladder in `router.py` (~L756-900, gated by `PRECIS_LLM_FAILOVER`) can't
+  reach this today: `dispatch()` returns early on a paused local slot for
+  `Tier.LOCAL_SMALL` *before* any ladder logic runs, so the flag has nothing
+  to act on for this tier. Open questions: trigger condition (slot-busy vs.
+  host-unreachable), default-on vs. opt-in (cost — OpenRouter isn't free the
+  way local serving is), and whether this is scoped as a `docs/proposals/*.md`
+  first given it touches dispatch semantics (ADR 0048).
 
 ---
 
