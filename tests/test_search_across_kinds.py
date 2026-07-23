@@ -129,6 +129,63 @@ def test_empty_kinds_returns_empty(store: Store) -> None:
     assert store.search_chunks_across_kinds(kinds=[], q="anything") == []
 
 
+def test_offset_pages_past_the_limit_window(store: Store) -> None:
+    """Slice-3 pagination: ``offset`` returns the next window with no
+    overlap and no gap against the first page, for both sort orders."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    ids = [
+        _seed(store, "paper", f"pg-{i}", [f"xenon isotope separation run {i}"], emb)
+        for i in range(5)
+    ]
+    qv = emb.embed_one("xenon isotope separation")
+
+    page1 = store.search_chunks_across_kinds(
+        kinds=["paper"],
+        q="xenon isotope separation",
+        query_vec=qv,
+        max_distance=None,
+        limit=2,
+        offset=0,
+    )
+    page2 = store.search_chunks_across_kinds(
+        kinds=["paper"],
+        q="xenon isotope separation",
+        query_vec=qv,
+        max_distance=None,
+        limit=2,
+        offset=2,
+    )
+    assert len(page1) == 2
+    assert len(page2) == 2
+    p1_ids = {ref.id for _, ref, _ in page1}
+    p2_ids = {ref.id for _, ref, _ in page2}
+    assert p1_ids.isdisjoint(p2_ids)
+    assert p1_ids | p2_ids <= set(ids)
+
+    # Recency sort pages the same relevance-qualified pool by date.
+    r1 = store.search_chunks_across_kinds(
+        kinds=["paper"],
+        q="xenon isotope separation",
+        query_vec=qv,
+        max_distance=None,
+        sort="recency",
+        limit=2,
+        offset=0,
+    )
+    r2 = store.search_chunks_across_kinds(
+        kinds=["paper"],
+        q="xenon isotope separation",
+        query_vec=qv,
+        max_distance=None,
+        sort="recency",
+        limit=2,
+        offset=2,
+    )
+    r1_ids = {ref.id for _, ref, _ in r1}
+    r2_ids = {ref.id for _, ref, _ in r2}
+    assert r1_ids.isdisjoint(r2_ids)
+
+
 def test_recent_refs_newest_first_and_kind_scoped(store: Store) -> None:
     a = store.insert_ref(kind="paper", slug="rr-a", title="A")
     b = store.insert_ref(kind="web", slug="rr-b", title="B")  # inserted later
@@ -180,6 +237,38 @@ def test_recent_refs_stub_filter(store: Store) -> None:
     assert stub.id in stubs and full.id not in stubs
     held = [r.id for r in store.recent_refs(["paper"], has_pdf=True)]
     assert full.id in held and stub.id not in held
+
+
+def test_recent_refs_offset_pages(store: Store) -> None:
+    a = store.insert_ref(kind="paper", slug="ro-a", title="A")
+    b = store.insert_ref(kind="paper", slug="ro-b", title="B")  # newer
+    c = store.insert_ref(kind="paper", slug="ro-c", title="C")  # newest
+
+    page1 = store.recent_refs(["paper"], limit=2, offset=0)
+    page2 = store.recent_refs(["paper"], limit=2, offset=2)
+    assert [r.id for r in page1] == [c.id, b.id]
+    assert [r.id for r in page2] == [a.id]
+
+
+def test_recent_refs_folder_facet(store: Store) -> None:
+    folder = store.insert_ref(kind="folder", slug=None, title="Fld")
+    inside = store.insert_ref(kind="draft", slug="rf-inside", title="Inside")
+    store.set_parent(inside.id, folder.id)
+    outside = store.insert_ref(kind="draft", slug="rf-outside", title="Outside")
+
+    got = [r.id for r in store.recent_refs(["draft"], parent_id=folder.id)]
+    assert inside.id in got
+    assert outside.id not in got
+
+
+def test_list_folders(store: Store) -> None:
+    root = store.insert_ref(kind="folder", slug=None, title="Root")
+    child = store.insert_ref(kind="folder", slug=None, title="Child")
+    store.set_parent(child.id, root.id)
+
+    edges = {ref_id: (title, parent) for ref_id, title, parent in store.list_folders()}
+    assert edges[root.id] == ("Root", None)
+    assert edges[child.id] == ("Child", root.id)
 
 
 def test_paper_identifiers(store: Store) -> None:

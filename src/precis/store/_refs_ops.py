@@ -1670,15 +1670,20 @@ class RefsMixin:
         *,
         tags: list[str] | None = None,
         has_pdf: bool | None = None,
+        parent_id: int | None = None,
         limit: int = 30,
+        offset: int = 0,
     ) -> list[Ref]:
         """Most-recently-created live refs across a *set* of kinds, newest
         first. Backs the ``/items`` default "recent things" browse (the
         no-query landing); ``tags`` narrows it to refs carrying all of them
         (the tag-filter chips with no search query). ``has_pdf=False`` keeps
         only stubs (``pdf_sha256 IS NULL`` — the "papers to get" filter);
-        ``True`` keeps only those with a PDF. Kinds with no rows simply
-        don't appear; an empty ``kinds`` returns nothing.
+        ``True`` keeps only those with a PDF. ``parent_id`` narrows to one
+        folder's *direct* children (the ``/items`` folder facet — same
+        non-recursive semantics as ``/drive``'s per-folder listing). Kinds
+        with no rows simply don't appear; an empty ``kinds`` returns
+        nothing. ``offset`` pages past the first window.
         """
         if not kinds:
             return []
@@ -1688,19 +1693,39 @@ class RefsMixin:
             clauses.append(
                 "r.pdf_sha256 IS NOT NULL" if has_pdf else "r.pdf_sha256 IS NULL"
             )
+        if parent_id is not None:
+            clauses.append("r.parent_id = %s")
+            params.append(parent_id)
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
             clauses.append(tag_frag)
             params.extend(tag_params)
         params.append(limit)
+        params.append(offset)
         with self.pool.connection() as conn:
             rows = conn.execute(
                 f"SELECT {_REFS_COLS_ALIASED} FROM refs r "
                 f"WHERE {' AND '.join(clauses)} "
-                "ORDER BY r.created_at DESC, r.ref_id DESC LIMIT %s",
+                "ORDER BY r.created_at DESC, r.ref_id DESC LIMIT %s OFFSET %s",
                 params,
             ).fetchall()
         return [_row_to_ref(r) for r in rows]
+
+    def list_folders(self) -> list[tuple[int, str, int | None]]:
+        """Every live folder as ``(ref_id, title, parent_id)`` — the raw
+        edges for the ``/items`` folder-facet dropdown. ``/drive`` walks
+        its own tree independently (a richer nested view with child
+        counts); this is the flat edge list a simple picker needs."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, title, parent_id FROM refs "
+                "WHERE kind = 'folder' AND deleted_at IS NULL "
+                "ORDER BY lower(title)"
+            ).fetchall()
+        return [
+            (int(r[0]), r[1] or "", int(r[2]) if r[2] is not None else None)
+            for r in rows
+        ]
 
     def paper_identifiers(self, ref_ids: list[int]) -> dict[int, str]:
         """Best external identifier per ref (DOI > arXiv > S2), for the

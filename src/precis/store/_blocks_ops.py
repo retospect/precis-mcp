@@ -1146,6 +1146,7 @@ class BlocksMixin:
         until: datetime | None = None,
         sort: str = "relevance",
         limit: int = 20,
+        offset: int = 0,
         k: int = 60,
         max_distance: float | None = None,
     ) -> list[tuple[Block, Ref, float]]:
@@ -1158,21 +1159,44 @@ class BlocksMixin:
         best-scoring chunk, the breadth / triage row — optionally bounds by
         ``refs.created_at`` (``since`` / ``until``), and orders by relevance
         (default) or recency (``sort='recency'`` → newest matching ref
-        first). Returns ``(Block, Ref, score)``, one per ref. Kinds with no
+        first). ``offset`` pages past the first window (Slice-3 pagination).
+        Returns ``(Block, Ref, score)``, one per ref. Kinds with no
         embedded chunks simply contribute nothing (the join filters them),
         so an over-broad kind set is harmless.
         """
         if not kinds:
             return []
         recency = (sort or "relevance").strip().lower() == "recency"
-        # Recency re-ranks a *relevance-qualified* pool by date, so
-        # over-fetch beyond the caller's window (the lexical leg still
-        # requires an FTS match and the semantic leg a distance floor —
-        # the pool is query-relevant by construction, so date-sorting it
-        # yields "most recent among the relevant"). Relevance needs no
-        # over-fetch: the fused order is final.
-        pool = max(limit * 5, 100) if recency else limit
-        fused = self.search_blocks_multi(
+        if recency:
+            # Recency re-ranks a *relevance-qualified* pool by date, so
+            # over-fetch beyond the caller's window (the lexical leg still
+            # requires an FTS match and the semantic leg a distance floor —
+            # the pool is query-relevant by construction, so date-sorting it
+            # yields "most recent among the relevant"). The pool must cover
+            # every page up to this ``offset``, so widen by it too.
+            pool = max((offset + limit) * 5, 100)
+            fused = self.search_blocks_multi(
+                q_texts=[q],
+                query_vecs=[query_vec] if query_vec is not None else [],
+                mode=mode,
+                kinds=kinds,
+                created_from=since,
+                created_to=until,
+                tags=tags,
+                limit=pool,
+                k=k,
+                max_distance=max_distance,
+                per_paper=1,  # one best chunk per ref (breadth / triage)
+            )
+            fused.sort(
+                key=lambda t: (t[1].created_at or _EPOCH, t[1].id or 0),
+                reverse=True,
+            )
+            return fused[offset : offset + limit]
+        # Relevance: the fused order is final, so delegate offset/limit
+        # slicing to search_blocks_multi itself (it widens its own pool
+        # by offset+limit internally).
+        return self.search_blocks_multi(
             q_texts=[q],
             query_vecs=[query_vec] if query_vec is not None else [],
             mode=mode,
@@ -1180,18 +1204,12 @@ class BlocksMixin:
             created_from=since,
             created_to=until,
             tags=tags,
-            limit=pool,
+            limit=limit,
+            offset=offset,
             k=k,
             max_distance=max_distance,
-            per_paper=1,  # one best chunk per ref (breadth / triage)
+            per_paper=1,
         )
-        if recency:
-            fused.sort(
-                key=lambda t: (t[1].created_at or _EPOCH, t[1].id or 0),
-                reverse=True,
-            )
-            fused = fused[:limit]
-        return fused
 
     def search_blocks(
         self,

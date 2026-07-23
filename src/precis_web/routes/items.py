@@ -5,12 +5,18 @@ The Slice-3 front-end over the Slice-2 primitive
 chunks of a *set* of kinds at once (semantic + lexical, RRF-fused),
 shows one best-matching chunk per ref, and orders by relevance or
 recency — the human twin of what the LLM gets from the ``search`` verb.
-Each row carries the reading-intent flag buttons and a click-through to
-the kind's own reader.
+Each row carries the reading-intent flag buttons, a hover peek + optional
+thumbnail (the ``ItemPresenter`` contract, ``precis_web/item_view.py``),
+and a click-through to the kind's own reader. ``page=`` pages past the
+30-item window; the kind chips split into a "Source" facet and an
+"Author" facet (``role='artifact'`` kinds); a folder facet narrows the
+no-query landing to one folder's direct children.
 
-Additive: this retires nothing yet. Retiring ``/drive`` /
-``/papers-needed`` / triage / ``/refs`` / ``/tags/refs`` into filters on
-this page is later Slice-3 work (see the proposal). Read-only.
+Additive: this retires nothing yet — none of ``/drive`` /
+``/papers-needed`` / ``/papers/triage`` / ``/refs`` / ``/tags/refs``
+reduce to a clean filter-preset here without losing functionality this
+page doesn't have yet (folder CRUD, per-row quick-actions, watch-dir
+info, deleted-ref visibility — see ``OPEN-ITEMS.md``). Read-only.
 """
 
 from __future__ import annotations
@@ -18,13 +24,14 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis_web.deps import get_runtime, get_store, templates
-from precis_web.item_view import item_row
+from precis_web.item_view import artifact_kinds, item_row
 from precis_web.routes.flags import FLAG_DEFS, FLAG_NAMESPACE, FLAG_VALUE_LIST
 
 router = APIRouter(prefix="/items", tags=["items"])
@@ -92,12 +99,15 @@ def _run_search(
     since: datetime | None,
     until: datetime | None,
     tags: list[str],
-) -> list[dict[str, Any]]:
+    offset: int,
+) -> tuple[list[dict[str, Any]], bool]:
     """Blocking search + row-build; runs in a worker thread.
 
     Embeds the query once (degrading to lexical if the embedder is
     absent or warming), runs the cross-kind primitive filtered by the
     selected ``tags``, then batches the flag/tag state for the whole page.
+    Over-fetches one extra hit past ``_PAGE_SIZE`` to probe "has next
+    page" without a separate count query; returns ``(rows, has_next)``.
     """
     query_vec = None
     if embedder is not None:
@@ -113,15 +123,18 @@ def _run_search(
         since=since,
         until=until,
         tags=tags or None,
-        limit=_PAGE_SIZE,
+        limit=_PAGE_SIZE + 1,
+        offset=offset,
         max_distance=SEMANTIC_DISTANCE_FLOOR,
     )
+    has_next = len(hits) > _PAGE_SIZE
+    hits = hits[:_PAGE_SIZE]
     ref_ids = [ref.id for _, ref, _ in hits]
     flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
     tags_bulk = store.ref_tags_bulk(ref_ids)
     idents = store.paper_identifiers(ref_ids)
     # A search hit matched a chunk, so the ref is ingested by definition.
-    return [
+    rows = [
         item_row(
             ref,
             block,
@@ -133,25 +146,42 @@ def _run_search(
         )
         for block, ref, score in hits
     ]
+    return rows, has_next
 
 
 def _recent_rows(
-    store: Any, kinds: list[str], tags: list[str], has_pdf: bool | None
-) -> list[dict[str, Any]]:
+    store: Any,
+    kinds: list[str],
+    tags: list[str],
+    has_pdf: bool | None,
+    folder_id: int | None,
+    offset: int,
+) -> tuple[list[dict[str, Any]], bool]:
     """The no-query landing: most-recently-added source items, newest
-    first, optionally narrowed by the tag chips and the stub filter
-    (``has_pdf=False`` → only stubs, the "papers to get"). Rows carry no
-    preview (no query) — name, kind, when-added, badges, tags, links,
-    flags."""
+    first, optionally narrowed by the tag chips, the stub filter
+    (``has_pdf=False`` → only stubs, the "papers to get"), and the
+    folder facet (``folder_id`` — one folder's direct children; only
+    artifact kinds carry a ``parent_id``, so this is a no-op for pure
+    source rows). Rows carry no preview (no query) — name, kind,
+    when-added, badges, tags, links, flags. Returns ``(rows, has_next)``
+    via the same over-fetch-one-extra probe as :func:`_run_search`.
+    """
     refs = store.recent_refs(
-        kinds, tags=tags or None, has_pdf=has_pdf, limit=_PAGE_SIZE
+        kinds,
+        tags=tags or None,
+        has_pdf=has_pdf,
+        parent_id=folder_id,
+        limit=_PAGE_SIZE + 1,
+        offset=offset,
     )
+    has_next = len(refs) > _PAGE_SIZE
+    refs = refs[:_PAGE_SIZE]
     ref_ids = [r.id for r in refs]
     flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
     ingested = store.refs_with_body_chunks(ref_ids)
     tags_bulk = store.ref_tags_bulk(ref_ids)
     idents = store.paper_identifiers(ref_ids)
-    return [
+    rows = [
         item_row(
             r,
             None,
@@ -163,6 +193,28 @@ def _recent_rows(
         )
         for r in refs
     ]
+    return rows, has_next
+
+
+def _folder_options(store: Any) -> list[dict[str, Any]]:
+    """Flat, indented folder list for the folder-facet ``<select>`` —
+    the raw ``list_folders()`` edges walked depth-first (mirrors
+    ``/drive``'s own tree flatten, kept separate so this router doesn't
+    couple to Drive's richer per-folder child-count view)."""
+    edges = store.list_folders()
+    by_parent: dict[int | None, list[tuple[int, str]]] = {}
+    for ref_id, title, parent_id in edges:
+        by_parent.setdefault(parent_id, []).append((ref_id, title))
+
+    out: list[dict[str, Any]] = []
+
+    def walk(parent: int | None, depth: int) -> None:
+        for ref_id, title in by_parent.get(parent, []):
+            out.append({"id": ref_id, "label": ("— " * depth) + (title or "")})
+            walk(ref_id, depth + 1)
+
+    walk(None, 0)
+    return out
 
 
 @router.get("/tags/suggest")
@@ -194,16 +246,22 @@ async def index(
     k: list[str] = Query(default_factory=list),
     tag: list[str] = Query(default_factory=list),
     state: str = "all",
+    folder: str = "",
+    page: int = 1,
     submitted: str = "",
 ) -> HTMLResponse:
-    """Unified cross-kind search over the source kinds.
+    """Unified cross-kind search over the source + author kinds.
 
     ``q=`` runs the search; ``k=`` (repeated, one per checked kind)
-    narrows the set; ``tag=`` (repeated) are the tag-filter chips;
-    ``state=stub`` shows only stubs (papers still to get — they behave
-    like a to-do); ``sort=recency`` orders newest-first; ``since=`` /
-    ``until=`` bound the date window. With no ``q`` the landing shows the
-    recent list.
+    narrows the set — both the default "Source" chips and the "Author"
+    facet (artifact kinds: draft/cad/structure/…, per ``KindSpec.role``);
+    ``tag=`` (repeated) are the tag-filter chips; ``state=stub`` shows
+    only stubs (papers still to get — they behave like a to-do);
+    ``folder=`` (a folder ``ref_id``) narrows the no-query landing to one
+    folder's direct children (the Drive-style facet); ``sort=recency``
+    orders newest-first; ``since=`` / ``until=`` bound the date window;
+    ``page=`` pages past the ``_PAGE_SIZE`` cap. With no ``q`` the landing
+    shows the recent list.
 
     Kind selection persists in an ``items_kinds`` cookie: an explicit
     submit (``submitted=1``) sets it; a fresh visit reads it (or defaults
@@ -229,13 +287,21 @@ async def index(
     has_pdf = False if state == "stub" else None
     since_dt = _parse_date(since)
     until_dt = _parse_date(until)
+    folder_raw = (folder or "").strip()
+    folder_id = int(folder_raw) if folder_raw.isdigit() else None
+    page = max(1, page)
+    offset = (page - 1) * _PAGE_SIZE
+
+    runtime = get_runtime(request)
+    hub = getattr(runtime, "hub", None)
+    artifact_kind_defs = artifact_kinds(hub)
 
     rows: list[dict[str, Any]] = []
     recent: list[dict[str, Any]] = []
+    has_next = False
     if q:
-        runtime = get_runtime(request)
-        embedder = getattr(getattr(runtime, "hub", None), "embedder", None)
-        rows = await asyncio.to_thread(
+        embedder = getattr(hub, "embedder", None)
+        rows, has_next = await asyncio.to_thread(
             _run_search,
             store,
             embedder,
@@ -245,18 +311,41 @@ async def index(
             since=since_dt,
             until=until_dt,
             tags=tags,
+            offset=offset,
         )
     else:
-        # Default landing: the recent list (narrowed by the tag chips and
-        # the stub filter) under the search apparatus.
-        recent = await asyncio.to_thread(
-            _recent_rows, store, selected_kinds, tags, has_pdf
+        # Default landing: the recent list (narrowed by the tag chips,
+        # the stub filter, and the folder facet) under the search
+        # apparatus.
+        recent, has_next = await asyncio.to_thread(
+            _recent_rows, store, selected_kinds, tags, has_pdf, folder_id, offset
         )
 
     # Where a flag toggle bounces back to — this exact search.
     return_to = request.url.path + (
         f"?{request.url.query}" if request.url.query else ""
     )
+
+    # Pager links preserve every filter, only ``page`` changes.
+    _pager_params: list[tuple[str, str]] = [("submitted", "1")]
+    if q:
+        _pager_params.append(("q", q))
+    _pager_params.append(("sort", sort))
+    if since:
+        _pager_params.append(("since", since))
+    if until:
+        _pager_params.append(("until", until))
+    if state != "all":
+        _pager_params.append(("state", state))
+    if folder_raw:
+        _pager_params.append(("folder", folder_raw))
+    for kk in selected_kinds:
+        _pager_params.append(("k", kk))
+    for t in tags:
+        _pager_params.append(("tag", t))
+
+    def _page_url(n: int) -> str:
+        return "/items?" + urlencode([*_pager_params, ("page", n)])
 
     resp = templates.TemplateResponse(
         request,
@@ -265,16 +354,23 @@ async def index(
             "active_tab": "items",
             "q": q,
             "kind_defs": list(_DEFAULT_SOURCE_KINDS),
+            "artifact_kind_defs": artifact_kind_defs,
             "selected_kinds": selected_kinds,
             "tags": tags,
             "sort": sort,
             "since": since,
             "until": until,
             "state": state,
+            "folder": folder_raw,
+            "folder_options": await asyncio.to_thread(_folder_options, store),
             "rows": rows,
             "recent": recent,
             "flag_defs": FLAG_DEFS,
             "return_to": return_to,
+            "page": page,
+            "has_next": has_next,
+            "prev_url": _page_url(page - 1) if page > 1 else None,
+            "next_url": _page_url(page + 1) if has_next else None,
         },
     )
     if submitted:

@@ -553,6 +553,100 @@ def test_items_tag_filter_flows_to_recent(runtime, client) -> None:
     assert runtime.store.recent_tags == ["topic:co2-capture"]
 
 
+def test_items_search_page_param_flows_to_offset(runtime, client) -> None:
+    """``page=2`` passes ``offset=_PAGE_SIZE`` down to the search
+    primitive (Slice-3 pagination past the 30-item cap)."""
+    resp = client.get("/items?q=query&page=2")
+    assert resp.status_code == 200
+    assert runtime.store.search_offset == 30
+
+
+def test_items_recent_page_param_flows_to_offset(runtime, client) -> None:
+    resp = client.get("/items?page=2")
+    assert resp.status_code == 200
+    assert runtime.store.recent_offset == 30
+
+
+def test_items_no_next_link_when_only_two_canned_rows(client) -> None:
+    """The canned two-row fixture never overflows ``_PAGE_SIZE`` — no
+    live 'Next' link, and 'Prev' is inert on page 1."""
+    resp = client.get("/items?q=query")
+    assert resp.status_code == 200
+    assert "Next &rarr;</a>" not in resp.text
+    assert "Prev</a>" not in resp.text  # inert (span, not a link) on page 1
+
+
+def test_items_has_next_shows_next_link_with_filters_preserved(runtime, client) -> None:
+    """A ``has_next`` result renders a live 'Next' link carrying the
+    filters + the incremented page number."""
+    from types import SimpleNamespace
+
+    from .conftest import make_ref
+
+    pref = make_ref(id=10, kind="paper", slug="smith2024", title="A paper")
+    blk = SimpleNamespace(id=1001, pos=0, text="passage about the query")
+    # 31 hits so the +1-over-fetch probe reports a next page.
+    runtime.store.cross_kind_hits = [(blk, pref, 0.9)] * 31
+
+    resp = client.get("/items?q=query&submitted=1&k=paper&sort=recency")
+    assert resp.status_code == 200
+    assert (
+        'href="/items?submitted=1&amp;q=query&amp;sort=recency&amp;k=paper&amp;page=2"'
+        in resp.text
+    )
+
+
+def test_items_author_facet_renders_artifact_chips(client) -> None:
+    """The kind chips split into a 'Source' group and an 'Author'
+    (role='artifact') group — the facet from the proposal's decisions
+    log. With ``hub=None`` in tests, the artifact facet falls back to
+    the static kind list."""
+    resp = client.get("/items")
+    assert resp.status_code == 200
+    assert "Source" in resp.text
+    assert "Author" in resp.text
+    assert '"draft"' in resp.text  # artifact chip seed
+
+
+def test_items_folder_facet_dropdown_renders(client) -> None:
+    """The folder-facet ``<select>`` lists the canned folders, indented
+    by nesting depth."""
+    resp = client.get("/items")
+    assert resp.status_code == 200
+    assert 'name="folder"' in resp.text
+    assert "Root folder" in resp.text
+    assert "Sub folder" in resp.text
+
+
+def test_items_folder_filter_flows_to_recent(runtime, client) -> None:
+    resp = client.get("/items?folder=200")
+    assert resp.status_code == 200
+    assert runtime.store.recent_parent_id == 200
+
+
+def test_items_thumbnail_renders_for_youtube_row(runtime, client) -> None:
+    """A row whose presenter has a thumbnail (youtube) renders an
+    ``<img>``; the canned paper/web rows have none."""
+    from types import SimpleNamespace
+
+    from .conftest import make_ref
+
+    yref = make_ref(id=99, kind="youtube", slug="abc123", title="A video")
+    blk = SimpleNamespace(id=2001, pos=0, text="a caption")
+    runtime.store.cross_kind_hits = [(blk, yref, 0.5)]
+
+    resp = client.get("/items?q=query&k=youtube")
+    assert resp.status_code == 200
+    assert "i.ytimg.com/vi/abc123/hqdefault.jpg" in resp.text
+
+
+def test_items_hover_preview_popover_renders(client) -> None:
+    """Each row carries a hover popover with the richer peek text."""
+    resp = client.get("/items?q=query")
+    assert resp.status_code == 200
+    assert "passage about the query" in resp.text
+
+
 def _stub_paging_client(total: int):
     """A TestClient whose store reports ``total`` stubs and pages them.
 

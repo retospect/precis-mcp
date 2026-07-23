@@ -638,13 +638,15 @@ class FakeStore:
                 out[rid] = present
         return out
 
-    def search_chunks_across_kinds(self, *, kinds, q, **_kw):
+    def search_chunks_across_kinds(self, *, kinds, q, offset=0, **_kw):
         """Canned cross-kind hits for the /items page — one paper + one
         web ref, filtered to the requested kinds. Tests override the raw
         triples via ``self.cross_kind_hits`` and read the applied tag
-        filter via ``self.search_tags`` / kind set via ``self.search_kinds``."""
+        filter via ``self.search_tags`` / kind set via ``self.search_kinds``
+        / offset via ``self.search_offset`` (pagination)."""
         self.search_tags = _kw.get("tags")
         self.search_kinds = list(kinds)
+        self.search_offset = offset
         hits = getattr(self, "cross_kind_hits", None)
         if hits is None:
             pref = make_ref(id=10, kind="paper", slug="smith2024", title="A paper")
@@ -655,20 +657,30 @@ class FakeStore:
             blk_w = SimpleNamespace(id=1002, pos=0, text="web snippet about the query")
             hits = [(blk_p, pref, 0.9), (blk_w, wref, 0.8)]
         want = set(kinds)
-        return [(b, r, s) for (b, r, s) in hits if r.kind in want]
+        return [(b, r, s) for (b, r, s) in hits if r.kind in want][offset:]
 
-    def recent_refs(self, kinds, *, tags=None, has_pdf=None, limit=30):
+    def recent_refs(
+        self, kinds, *, tags=None, has_pdf=None, parent_id=None, limit=30, offset=0
+    ):
         """Canned recent source refs for the /items default landing —
         one paper (stub, no pdf) + one web, filtered to requested kinds.
-        ``self.recent_tags`` / ``self.recent_has_pdf`` record the filters."""
+        ``self.recent_tags`` / ``self.recent_has_pdf`` / ``self.recent_parent_id``
+        / ``self.recent_offset`` record the filters."""
         self.recent_tags = tags
         self.recent_has_pdf = has_pdf
+        self.recent_parent_id = parent_id
+        self.recent_offset = offset
         src = [
             make_ref(id=10, kind="paper", slug="smith2024", title="A paper"),
             make_ref(id=70, kind="web", slug="example.com/page", title="A web page"),
         ]
         want = set(kinds)
-        return [r for r in src if r.kind in want][:limit]
+        return [r for r in src if r.kind in want][offset:][:limit]
+
+    def list_folders(self):
+        """Canned folder edges for the /items folder-facet dropdown: a
+        root folder and one nested child."""
+        return [(200, "Root folder", None), (201, "Sub folder", 200)]
 
     def suggest_tags(self, q, *, limit=10):
         """Canned substring tag suggestions for the /items autocomplete."""

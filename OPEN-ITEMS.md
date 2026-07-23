@@ -769,22 +769,47 @@ still chunk-rows.
 ## 🟡 Unified item view (`/items`)
 
 Slices 1–3a shipped + deployed (cross-kind search page + reading-intent flags +
-`Store.search_chunks_across_kinds`). Design
+`Store.search_chunks_across_kinds`). Rest of slice 3 SHIPPED: `ItemPresenter`
+grew the full method contract (`preview`/`hover_preview`/`thumbnail`/`actions`,
+generic defaults + a `youtube` thumbnail override), result pagination
+(`page=` past the 30-item cap, threaded through `search_chunks_across_kinds`
+and `recent_refs`), an author/source kind facet (`role='artifact'` chips
+alongside the source chips), a folder facet (`Store.list_folders` +
+`parent_id` narrowing on the no-query landing), and per-row thumbnails +
+hover popovers in the template. Design
 [`docs/proposals/unified-item-view.md`](docs/proposals/unified-item-view.md).
 Owner `precis_web/routes/items.py`, `precis_web/item_view.py`.
 
-- **Rest of slice 3** *(open).* Promote `ItemPresenter` to the full contract
-  (`preview`/`hover_preview`/`thumbnail`/`actions`, `@abstractmethod` once all
-  kinds adopt); result pagination (capped at 30 today); author/source facet +
-  folders + thumbnails; retire `/drive` / `/papers-needed` / `/papers/triage` /
-  `/refs` / `/tags/refs` into `/items` filters.
+- **`@abstractmethod` promotion** *(open).* The presenter contract has a
+  generic default for every method; flipping to the check-time-totality
+  guarantee (the design doc's acceptance criterion) needs a dedicated
+  presenter per source/artifact kind (~40 kinds) — a separate, larger pass,
+  not a mechanical follow-on. Do this alongside (not instead of) the
+  kind-taxonomy audit below since both touch every kind's declaration.
+- **Legacy-route retirement — investigated, none are a clean 1:1** *(open,
+  each individually scoped)*. `/items` stayed additive; none of the five
+  reduce to a filter-preset without losing real functionality:
+  - `/drive` — folder CRUD (create/rename/move/delete) + child-count tree
+    nav; `/items`' folder facet is read-only browse, no mutation surface.
+  - `/papers-needed` — the watch-dir dropzone paths/descriptions (page-level,
+    not per-row) and the second `acquire` flag axis (`cant-get-uol` /
+    `is-book` / …) have no `/items` equivalent.
+  - `/papers/triage` — per-row quick actions (`✓ Clear flag`, `🗑 Delete`)
+    that `/items`' `actions()` seam is wired for but nothing populates yet.
+  - `/tags/refs` — shows soft-deleted rows and arbitrary kinds (`job`,
+    `conv`, …) with no presenter, both by design invisible on `/items`.
+  - `/refs` (consolidated) — same non-item-kind reach as `/tags/refs`
+    (memory/conv/gripe/todo/job), plus its own detail route
+    (`/refs/{kind}/{id}`) is `/items`' `open_url` default and must stay.
+  Once `actions()` grows a real "clear flag" / "delete" implementation
+  (coupled to the abstractmethod pass above, since that's where per-kind
+  actions get wired), re-check `/papers/triage` — it's the closest to
+  clean.
 - **Kind-taxonomy audit** *(open, coupled).* Reconcile `role`/`corpus_role` drift
   (datasheet, pres); collapse near-dup kinds (perplexity-*/websearch/web/wikipedia;
   calc/math/oracle); rewrite `precis-*-help`. No-legacy-alias license.
 - **Slice 4 — "write a document from this view"** *(open).* A tailored filter is
   a serialized query → mint an authoring job scoped to exactly those refs.
-- **Verification residual** — eyeball the live `/items` filter-bar JS (backend-
-  tested, not visually verified).
 
 ## 🟢 Draft inline editor
 
