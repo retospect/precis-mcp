@@ -13,7 +13,10 @@
 #   3. lock        — mkdir-mutex on the shared .git dir: serialise ships across
 #                    sibling worktrees on this host so a second ship WAITS
 #                    instead of squashing a stale base over the first (the
-#                    shared-index clobber). Released on exit; steals >30-min lock.
+#                    shared-index clobber). Released on exit; steals the lock
+#                    immediately if the holder's pid is dead, else falls back
+#                    to a >30-min age check (holder file missing/unparseable,
+#                    or from another host where the pid can't be checked).
 #   4. loop        — sync → gate → ship, re-running if main moves under us:
 #                    · sync   plain `git fetch origin main` + `git merge
 #                             origin/main` (integrate once; the squash below
@@ -167,18 +170,41 @@ run_gate() {
 # git dir serialises ships: a second ship WAITS instead of squashing a stale
 # base straight over the first (the [[shared-index-ship-race]] clobber that
 # silently reverted shipped work). macOS has no flock(1), so use an atomic
-# mkdir; steal a lock older than 30 min (a crashed ship). Released on exit.
+# mkdir. Two independent ways to reclaim an abandoned lock, checked in order:
+#   1. pid-dead   — the holder file records the holder's worktree + pid; if
+#                   that pid isn't running on this host anymore (crashed,
+#                   killed, machine woke from sleep mid-ship), steal
+#                   immediately — no reason to wait out a timer for a process
+#                   that's already gone.
+#   2. >30-min age — fallback for when the pid check can't tell (holder file
+#                   missing/unparseable, or the lock came from a different
+#                   host where our pid can't be checked at all).
+# Released on exit via the trap below.
 LOCKDIR="$(git rev-parse --git-common-dir)/precis-ship.lock.d"
 _release_ship_lock() { rm -rf "$LOCKDIR" 2>/dev/null || true; }
 trap _release_ship_lock EXIT
 _waited=0
 while ! mkdir "$LOCKDIR" 2>/dev/null; do
-    if find "$LOCKDIR" -maxdepth 0 -mmin +30 2>/dev/null | grep -q .; then
-        say "stealing a stale ship lock (>30 min old)"
+    holder="$(cat "$LOCKDIR/holder" 2>/dev/null || true)"
+    holder_desc="${holder:-<lock present, no holder file — crashed before it could write one>}"
+    holder_pid="$(printf '%s' "$holder" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p')"
+
+    if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
+        say "stealing the ship lock — holder is dead: ${holder_desc} (pid ${holder_pid} not running)"
         rm -rf "$LOCKDIR"
         continue
     fi
-    [[ "$_waited" == 0 ]] && say "another ship is in progress on this host — waiting for the lock…"
+
+    if find "$LOCKDIR" -maxdepth 0 -mmin +30 2>/dev/null | grep -q .; then
+        say "stealing the ship lock — held over 30 min by: ${holder_desc} (assuming crashed or from another host)"
+        rm -rf "$LOCKDIR"
+        continue
+    fi
+
+    if [[ "$_waited" == 0 ]]; then
+        say "waiting for the ship lock — held by: ${holder_desc}"
+        echo "(will steal it immediately if that process dies, or after 30 min regardless)"
+    fi
     _waited=1
     sleep 3
 done
