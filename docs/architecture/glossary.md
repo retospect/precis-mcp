@@ -83,7 +83,7 @@
   `card_combined` chunk (ord=-1) so the ref itself embeds + searches.
   → `src/precis/protocol.py` (`KindSpec.emits_card`)
 - **handle** — a terse per-kind pointer (`qu`/`dc`/`pc`/`me`… + id) that resolves
-  to a ref or chunk. → `src/precis/handlers/_numeric_ref.py` · `src/precis/runtime.py`
+  to a ref or chunk. → `src/precis/handlers/_numeric_ref.py` · `src/precis/runtime/dispatch.py`
 - **admit** — the pre-flight fit-check that refuses a (context, model) pairing
   too big for the model's window, with the numbers. → `src/precis/utils/llm/admit.py`
 
@@ -111,7 +111,7 @@
   `src/precis/reading/briefing_cast.py`
 - **dispatch** — the `dispatch` worker (mints jobs from doable todos) ·
   `runtime.dispatch` (in-process MCP verb call) · `dispatch(LlmRequest)` (the
-  LLM router). → `src/precis/workers/dispatch.py` · `src/precis/runtime.py` ·
+  LLM router). → `src/precis/workers/dispatch.py` · `src/precis/runtime/dispatch.py` ·
   `src/precis/utils/llm/router.py`
 - **plan** — the `plan` kind (a thread's reasoning outline, ADR 0051) vs
   `plan_tick` (the planner-coroutine job).

@@ -145,6 +145,82 @@ def _recipe(
     return call
 
 
+def _require_find_and_text(
+    *,
+    op_kind: str,
+    kind: str,
+    slug: str,
+    find: str | None,
+    text: str | None,
+    before: str,
+    after: str,
+    where: str | None,
+    match: str,
+    nth: int | None,
+) -> str:
+    """Validate the ``find=``/``text=`` pair shared by every anchored edit.
+
+    Raises :class:`BadInput` (with a copy-pasteable :func:`_recipe` hint)
+    when either is missing; otherwise returns the user-facing mode name
+    (``op_kind='edit'`` displays as ``'find-replace'`` — the agent never
+    typed the internal alias, so error text echoes what they actually
+    wrote).
+
+    Shared by :meth:`PlaintextHandler._put_anchored` and
+    :meth:`precis.handlers.python.PythonHandler._put_anchored` — the two
+    ``_put_anchored`` implementations diverge everywhere else (paragraph-
+    block splicing vs. AST symbol-region splicing + the qualname-drop /
+    ruff safety gates), so this front-matter validation is the genuinely
+    duplicated slice (OPEN-ITEMS "Extract EditableFileHandler"; see that
+    entry for why a full shared base class doesn't fit here).
+    """
+    user_mode = "find-replace" if op_kind == "edit" else op_kind
+    if find is None or not find:
+        raise BadInput(
+            f"mode={user_mode!r} requires find= (the exact text to locate)",
+            next=_recipe(
+                kind=kind,
+                slug=slug,
+                mode=user_mode,
+                find="'exact text'",
+                text="'replacement'",
+                before=before,
+                after=after,
+                where=where,
+                match=match,
+                nth=nth,
+            ),
+        )
+    if text is None:
+        # MCP critic 2026-05-03: small models (qwen3:8b) hitting this
+        # error were repeating the byte-identical call, not retrying
+        # with text=. Root cause: the previous message buried the
+        # delete idiom ("'' is allowed for delete-by-edit") in a
+        # parenthetical, and the `next:` hint said "add text='...'"
+        # without a copyable recipe. Invert: lead with the two
+        # choices (delete vs replace), echo every supplied arg in
+        # the recipe so the caller can copy-paste it.
+        raise BadInput(
+            f"mode={user_mode!r} requires text=. "
+            f"Pass text='' to DELETE the matched span; "
+            f"pass text='<replacement>' to REPLACE it.",
+            next=_recipe(
+                kind=kind,
+                slug=slug,
+                mode=user_mode,
+                find=find,
+                text="''",
+                before=before,
+                after=after,
+                where=where,
+                match=match,
+                nth=nth,
+                trailing_comment="# delete",
+            ),
+        )
+    return user_mode
+
+
 class PlaintextHandler(Handler):
     """Slug-addressed read/write handler for ``.txt`` / ``.log`` / ``.bib`` files."""
 
@@ -920,52 +996,25 @@ class PlaintextHandler(Handler):
         # The agent never sees ``edit`` on this verb — surfacing it in
         # errors used to make a 7B caller correct ``mode='find-replace'``
         # to ``mode='edit'`` and re-loop on a fresh BadInput. Echo the
-        # name they actually wrote.
-        user_mode = "find-replace" if op_kind == "edit" else op_kind
+        # name they actually wrote. (Validation shared with
+        # ``PythonHandler._put_anchored`` via ``_require_find_and_text``.)
         dry_mode = normalize_dry_run(dry_run)
-        if find is None or not find:
-            raise BadInput(
-                f"mode={user_mode!r} requires find= (the exact text to locate)",
-                next=_recipe(
-                    kind=self._KIND,
-                    slug=slug,
-                    mode=user_mode,
-                    find="'exact text'",
-                    text="'replacement'",
-                    before=before,
-                    after=after,
-                    where=where,
-                    match=match,
-                    nth=nth,
-                ),
-            )
-        if text is None:
-            # MCP critic 2026-05-03: small models (qwen3:8b) hitting this
-            # error were repeating the byte-identical call, not retrying
-            # with text=. Root cause: the previous message buried the
-            # delete idiom ("'' is allowed for delete-by-edit") in a
-            # parenthetical, and the `next:` hint said "add text='...'"
-            # without a copyable recipe. Invert: lead with the two
-            # choices (delete vs replace), echo every supplied arg in
-            # the recipe so the caller can copy-paste it.
-            raise BadInput(
-                f"mode={user_mode!r} requires text=. "
-                f"Pass text='' to DELETE the matched span; "
-                f"pass text='<replacement>' to REPLACE it.",
-                next=_recipe(
-                    kind=self._KIND,
-                    slug=slug,
-                    mode=user_mode,
-                    find=find,
-                    text="''",
-                    before=before,
-                    after=after,
-                    where=where,
-                    match=match,
-                    nth=nth,
-                    trailing_comment="# delete",
-                ),
-            )
+        _require_find_and_text(
+            op_kind=op_kind,
+            kind=self._KIND,
+            slug=slug,
+            find=find,
+            text=text,
+            before=before,
+            after=after,
+            where=where,
+            match=match,
+            nth=nth,
+        )
+        # _require_find_and_text raises unless both are set; re-assert so
+        # mypy narrows str | None -> str the way it could when this check
+        # was inline (the narrowing doesn't cross a function boundary).
+        assert find is not None and text is not None
         op = EditOp(
             op="edit" if op_kind == "edit" else "insert",
             find=find,

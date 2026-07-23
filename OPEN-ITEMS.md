@@ -1299,12 +1299,22 @@ by `deploy` with no `agent_rw`/`agent_ro` grants — add an ACL diff/re-grant st
   derived-queue (`0007/0017`→`0044`), image/embedder (`0004/0009/0012/0019`→
   `0020/0021`), figure/asset (`0034/0035`→`0057`), keystone kinds
   (`0041/0042/0043`→`0053/0056`), argument/turn-taking (`0051`↔`0054`).
-- **Split `runtime.py`** (2397 lines; `_dispatch_cross_kind` 233 lines) into
-  `runtime/{dispatch,search,angle,hints,error}.py`.
-- **Refactor `handlers/paper.py::search()`** (600 lines) into `BylineSearch`,
-  `FusedBlockSearch`, `GoodSearchCampaign`, `PaperSearchResultRenderer`.
-- **Extract `EditableFileHandler`** from draft/plaintext/python/markdown/tex
-  (the 160+ line `_put_anchored` methods are duplicated + diverging).
+- **Unify anchored-edit region resolution** — investigated as "extract
+  `EditableFileHandler` from draft/plaintext/python/markdown/tex"; corrected
+  premise after reading the code (2026-07-23): only `plaintext.py` and
+  `python.py` define `_put_anchored` — `markdown`/`tex` already inherit
+  `PlaintextHandler`'s for free, and `draft` has none (chunk-native model,
+  not file-based — see ADR re: `tex_vs_draft_authoring`). The two real
+  implementations diverge for most of their body (paragraph-block splicing
+  vs. AST symbol-region splicing + qualname-drop/ruff gates); only the
+  `find=`/`text=` front-matter validation (~45 lines each) was genuinely
+  duplicated, and that's now factored into
+  `plaintext._require_find_and_text` (imported by `python.py`). A real
+  `EditableFileHandler` base class would mean designing a shared region-
+  resolution abstraction across paragraph-blocks vs. AST-symbol-ranges —
+  an actual core-abstraction call, not a mechanical extraction; needs an
+  owner who can make that design call (Opus-tier), not a repeat of this
+  bullet as scoped.
 - **Split `store/_blocks_ops.py` + `_draft_ops.py`** by concern (SQL builders /
   rankers / card writers; `_draft_ops.py` has 72 functions).
 - **Split `precis_web/routes/drafts.py`** (3078 lines) into per-concern modules.

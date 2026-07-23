@@ -23,7 +23,7 @@ from precis.utils.slug import _first_author, mint_slug
 # ── shape consistency: paper search renders score like every block kind ────
 
 
-def test_paper_search_renders_score_like_block_kinds(store: Store) -> None:
+def test_paper_search_renders_score_like_block_kinds() -> None:
     """The MCP critic 2026-05-02 flagged search-render shape drift:
     web/think/markdown/plaintext/conversation/python all annotate
     block hits with ``(score=X.XXXX)`` while paper alone omitted it,
@@ -34,12 +34,16 @@ def test_paper_search_renders_score_like_block_kinds(store: Store) -> None:
     potentially-misleading float per hit, balanced by uniform
     downstream parsing.
     """
-    from precis.handlers.paper import PaperHandler
-
-    handler = PaperHandler(hub=Hub(store=store))
+    # ``PaperHandler.search()`` is a thin dispatcher (OPEN-ITEMS
+    # "Refactor handlers/paper.py::search()"); the actual result
+    # rendering — and the score-shape rationale this test pins — now
+    # lives in ``PaperSearchResultRenderer.render`` (still called by
+    # ``search()`` for every non-byline, non-``good=`` query).
     import inspect
 
-    src = inspect.getsource(handler.search)
+    from precis.handlers._paper_search import PaperSearchResultRenderer
+
+    src = inspect.getsource(PaperSearchResultRenderer.render)
     assert "score=" in src, (
         "paper search must annotate hits with (score=X.XXXX) like every "
         "other block-level handler — drift causes kind-specific parsing"

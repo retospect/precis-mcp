@@ -136,7 +136,7 @@ a kind, or the worker for a pass."
 | Path | What lives there |
 |------|------------------|
 | `server.py` | MCP stdio entry — a thin FastMCP wrapper around the runtime |
-| `runtime.py` | server runtime; renders handler `Response`s to text |
+| `runtime/` | server runtime (package: `dispatch`/`search`/`angle`/`hints`/`error` + `core`/`factory`); renders handler `Response`s to text |
 | `dispatch.py` | handler registration + the flat verb dispatch table + service hub |
 | `protocol.py` | `Handler` ABC + `KindSpec` — the contract every kind implements |
 | `handlers/` | one adapter per kind (~70): get/search/put/edit/delete/tag/link |
