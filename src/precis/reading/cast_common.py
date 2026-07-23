@@ -9,7 +9,7 @@ produce → narrate → publish spine, differing only by a **voice profile**:
 
 This module holds what both producers, the audio pass, and the CLI share:
 
-* :data:`CAST_PROFILES` — the per-cast profile table (voice · rate · model ·
+* :data:`CAST_PROFILES` — the per-cast profile table (voice · rate ·
   target length · cron · slugs · title).
 * the word-budget arithmetic — target minutes ↔ words ↔ ``max_tokens`` via a
   per-voice speaking rate (we never *guess* minutes: the synth reports exact
@@ -85,7 +85,6 @@ class CastProfile:
     cast: str  # id: "reading" | "nidra"
     voice: str  # kokoro voice for the whole cast (per-chunk meta.voice can override)
     wpm: int  # speaking rate — target_minutes → word budget
-    model: str  # litellm alias for the compose call
     target_minutes: int
     cron: str  # daily schedule for the recurring watch
     job_type: str  # the compose job_type that produces this cast
@@ -109,7 +108,6 @@ CAST_PROFILES: dict[str, CastProfile] = {
         cast="reading",
         voice="bm_george",
         wpm=150,
-        model="claude-opus",
         target_minutes=20,
         cron="0 6 * * *",
         job_type="reading_brief",
@@ -123,7 +121,6 @@ CAST_PROFILES: dict[str, CastProfile] = {
         cast="nidra",
         voice="af_nicole",
         wpm=110,
-        model="claude-opus",  # a nice model composes a lovely nidra (once a day)
         target_minutes=45,
         cron="0 21 * * *",
         job_type="meditation",

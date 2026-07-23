@@ -7,8 +7,9 @@ table and a DB-stored prompt, it:
 1. pulls recent ``news`` refs (the last ~26h by default) via
    :meth:`Store.list_refs`;
 2. formats their headlines + sources + links into an LLM context;
-3. asks the summarizer alias (the cluster litellm proxy, reusing
-   :class:`precis.workers.llm_summarize.LlmClient`) for a tight brief;
+3. asks the cloud-super reasoning tier (via the LLM router — ADR 0046 — routed
+   onto ``claude_agent`` / direct Anthropic OAuth, not the litellm proxy) for a
+   tight brief;
 4. persists the brief itself as a pinned ``news`` ref slugged
    ``briefing-<date>`` and tagged ``briefing`` — searchable, dated,
    reread-able like any other ref;
@@ -27,13 +28,13 @@ import os
 import time
 import urllib.error
 from collections.abc import Callable
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from precis.handlers.news import article_blocks
 from precis.store import Store
 from precis.store.types import BlockInsert
+from precis.utils.llm.router import DispatchClient, DispatchError, Tier
 from precis.utils.prompt import (
     AssemblyContext,
     Layer,
@@ -42,29 +43,34 @@ from precis.utils.prompt import (
     Profile,
     assemble,
 )
-from precis.workers.llm_summarize import LlmClient, LlmConfig, LlmResult
 
 log = logging.getLogger(__name__)
 
 _DEFAULT_LOOKBACK_HOURS = 26  # 24h + 2h overlap (lifted from the old job)
-_BRIEF_MAX_TOKENS = 1200
 _MAX_ARTICLES = 200
 
-#: The briefing is a once-a-day call whose US section asks the model to
-#: separate operational signal from spectacle — analytically demanding, so it
-#: runs on a strong model (the litellm ``claude-opus`` alias), not the free
-#: ``summarizer`` the per-chunk glosses use. Override with PRECIS_BRIEFING_MODEL.
-#: NB the bare ``opus`` alias was retired in the model-router consolidation —
-#: the proxy 400s on unknown names, which silently failed every briefing job
-#: from 2026-07-04 until this was pinned to a served alias.
-_DEFAULT_BRIEFING_MODEL = "claude-opus"
+# The briefing is a once-a-day call whose US section asks the model to
+# separate operational signal from spectacle — analytically demanding, so it
+# runs on the router's ``CLOUD_SUPER`` tier (opus-class reasoning), not the
+# free ``LOCAL_SMALL`` tier the per-chunk glosses use (ADR 0046). A
+# ``PRECIS_BRIEFING_MODEL`` override still wins — but it must now name a real
+# model id the ``claude`` CLI accepts (e.g. ``claude-opus-4-8``), not the
+# retired litellm ``claude-opus`` alias: routing folds through
+# :func:`~precis.utils.llm.router.dispatch` onto ``claude_agent`` (direct
+# Anthropic OAuth), so litellm is no longer in the loop for this pass.
+# NB the bare ``opus`` alias was retired in the model-router consolidation —
+# the (now-defunct, for this pass) litellm proxy 400s on unknown names, which
+# silently failed every briefing job from 2026-07-04 until it was pinned to a
+# served alias — the very fragility this router migration removes.
 
-#: A single transient litellm-proxy blip — a dropped connection, a 5xx, a 429 —
-#: must not silently lose a whole day's briefing (the job just bubbles
-#: child-failed with no retry, and the daily cron won't backfill a missed tick).
-#: Retry the completion a few times with exponential backoff. A 4xx (e.g. a
-#: retired model alias) is permanent and is re-raised on the first failure so
-#: real misconfiguration fails fast instead of stalling on backoff.
+#: A single transient dispatch failure — a ``claude_agent`` subprocess hiccup,
+#: a breaker-scoped pause, a dropped connection — must not silently lose a
+#: whole day's briefing (the job just bubbles child-failed with no retry, and
+#: the daily cron won't backfill a missed tick). Retry the completion a few
+#: times with exponential backoff. A permanent 4xx from the (legacy, still
+#: exercised by tests / a directly-injected client) litellm-shaped error is
+#: re-raised on the first failure so real misconfiguration fails fast instead
+#: of stalling on backoff.
 _LLM_RETRY_ATTEMPTS = int(os.environ.get("PRECIS_BRIEFING_RETRY_ATTEMPTS") or 3)
 _LLM_RETRY_BACKOFF_S = float(os.environ.get("PRECIS_BRIEFING_RETRY_BACKOFF_S") or 2.0)
 
@@ -155,26 +161,34 @@ def _format_context(refs: list[Any], max_chars: int = 120_000) -> str:
 
 
 def _is_transient_llm_error(exc: BaseException) -> bool:
-    """Whether an ``LlmClient.complete`` failure is worth retrying.
+    """Whether an ``llm.complete`` failure is worth retrying.
 
-    Transient: a dropped connection, a timeout, or a 5xx/429 from the proxy.
-    Permanent: a 4xx (a bad request / retired model alias won't fix itself) or
-    a malformed-response ``RuntimeError`` — re-raised immediately so real
-    misconfiguration fails fast instead of stalling on backoff.
+    Transient: a :class:`~precis.utils.llm.router.DispatchError` (the router's
+    uniform error contract for a ``claude_agent`` subprocess hiccup or a
+    breaker-scoped pause — it doesn't expose the old litellm-HTTP path's finer
+    4xx/5xx distinction, so any dispatch failure is retried, bounded by
+    ``attempts``) — plus, for a directly-injected legacy litellm-shaped client
+    (still exercised by :mod:`tests.test_briefing_retry`), a dropped
+    connection, a timeout, or a 5xx/429.
+    Permanent: a legacy 4xx (a bad request / retired model alias won't fix
+    itself) or a malformed-response ``RuntimeError`` — re-raised immediately so
+    real misconfiguration fails fast instead of stalling on backoff.
     """
+    if isinstance(exc, DispatchError):
+        return True
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code == 429 or exc.code >= 500
     return isinstance(exc, urllib.error.URLError | ConnectionError | TimeoutError)
 
 
 def _complete_with_retry(
-    llm: LlmClient,
+    llm: Any,
     messages: list[dict[str, str]],
     *,
     attempts: int = _LLM_RETRY_ATTEMPTS,
     backoff_s: float = _LLM_RETRY_BACKOFF_S,
     sleep: Callable[[float], None] = time.sleep,
-) -> LlmResult:
+) -> Any:
     """``llm.complete`` with bounded exponential-backoff retries on transient
     proxy failures; permanent errors propagate on the first attempt."""
     for attempt in range(1, attempts + 1):
@@ -200,7 +214,7 @@ def run_briefing(
     *,
     lookback_hours: int = _DEFAULT_LOOKBACK_HOURS,
     now: datetime | None = None,
-    client: LlmClient | None = None,
+    client: Any = None,
     sink: Callable[[str], None] | None = None,
     deliver_to: str | None = None,
 ) -> dict[str, Any]:
@@ -234,9 +248,19 @@ def run_briefing(
         log.info("briefing: no news in the last %dh — nothing to brief", lookback_hours)
         return {"articles": 0, "brief_chars": 0, "ref_id": None}
 
-    model = os.environ.get("PRECIS_BRIEFING_MODEL") or _DEFAULT_BRIEFING_MODEL
-    llm = client or LlmClient(
-        replace(LlmConfig.from_env(), model=model, max_tokens=_BRIEF_MAX_TOKENS)
+    # Fold through the router (ADR 0046) instead of holding a raw litellm
+    # client — so this cloud-tier call gets the budget breaker + the route-log
+    # (llm_call_log starts capturing real data on this pass). tools_needed=True
+    # lands on claude_agent (free-text final answer + system prompt honored,
+    # no tools advertised since mcp_config is left unset) rather than the
+    # tool-less claude_p judge shape, which would drop the system prompt and
+    # demand a parseable JSON block this pass's prose brief never has.
+    llm = client or DispatchClient(
+        tier=Tier.CLOUD_SUPER,
+        model=os.environ.get("PRECIS_BRIEFING_MODEL") or None,
+        tools_needed=True,
+        source="briefing",
+        log_call=True,
     )
     context = _format_context(refs)
     result = _complete_with_retry(

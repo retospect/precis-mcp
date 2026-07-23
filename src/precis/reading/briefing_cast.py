@@ -46,7 +46,6 @@ import json
 import logging
 import os
 from collections.abc import Callable
-from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -54,15 +53,14 @@ from precis.reading.cast_common import (
     CAST_PROFILES,
     CastProfile,
     Source,
-    compose_max_tokens,
     create_cast_draft,
     find_cast_draft,
     link_sources,
     voice_skill_preamble,
 )
 from precis.utils import handle_registry
+from precis.utils.llm.router import DispatchClient, Tier
 from precis.workers.briefing import _complete_with_retry
-from precis.workers.llm_summarize import LlmClient, LlmConfig
 
 log = logging.getLogger(__name__)
 
@@ -686,7 +684,7 @@ def _gather_lanes(
 
 
 def _compose(
-    llm: LlmClient, lanes: dict[str, str], *, date_tag: str, profile: CastProfile
+    llm: Any, lanes: dict[str, str], *, date_tag: str, profile: CastProfile
 ) -> str:
     """One LLM call → the spoken morning-brief script (plain paragraphs)."""
     from precis.reading.cast_common import word_budget
@@ -736,11 +734,21 @@ def build_reading_briefing(
         log.info("reading brief: no material in any lane — nothing to compose")
         return None
 
-    model = os.environ.get("PRECIS_READING_BRIEF_MODEL") or profile.model
-    llm = client or LlmClient(
-        replace(
-            LlmConfig.from_env(), model=model, max_tokens=compose_max_tokens(profile)
-        )
+    # Fold through the router (ADR 0046) instead of holding a raw litellm
+    # client — so this cloud-tier call gets the budget breaker + the route-log
+    # (llm_call_log starts capturing real data on this pass). tools_needed=True
+    # lands on claude_agent (free-text final answer + system prompt honored,
+    # no tools advertised since mcp_config is left unset) rather than the
+    # tool-less claude_p judge shape, which would drop the system prompt and
+    # demand a parseable JSON block this pass's prose brief never has. A
+    # PRECIS_READING_BRIEF_MODEL override still wins, but must now name a real
+    # model id (e.g. claude-opus-4-8), not the retired litellm claude-opus alias.
+    llm = client or DispatchClient(
+        tier=Tier.CLOUD_SUPER,
+        model=os.environ.get("PRECIS_READING_BRIEF_MODEL") or None,
+        tools_needed=True,
+        source="reading_brief",
+        log_call=True,
     )
     script = _compose(llm, lanes, date_tag=date_tag, profile=profile)
     if not script:

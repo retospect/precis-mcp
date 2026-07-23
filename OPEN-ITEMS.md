@@ -204,24 +204,24 @@ Remaining (window, task #23/#19):
 ## 🧵 Track 2 — litellm-retire transport-collapse
 
 Fold the direct-`LlmClient` consumers that bypassed `router.dispatch` through it
-so litellm loses its precis consumers. **LOCAL passes done + deployed** (main
-`7f24cbf0`): `llm_summarize` / `classify` / `paper_glossary` route via
-`router.DispatchClient` (a `.complete()`-shaped adapter over `dispatch`,
-`Tier.LOCAL_SMALL`); `LlmRequest.max_tokens` (glossary keeps 2000) +
-`log_call=False` (per-chunk backfills add no route-log row) landed with it.
-Byte-identical until `served_by` is seeded — then the call reroutes to the host
-llama-swap endpoint instead of the litellm proxy. Remaining:
+so litellm loses its precis consumers. **LOCAL and CLOUD passes both done**
+(local: main `7f24cbf0`): every former direct-`LlmClient` call site now routes
+through `router.DispatchClient`. Local (`llm_summarize` / `classify` /
+`paper_glossary`, `Tier.LOCAL_SMALL`) — `LlmRequest.max_tokens` (glossary keeps
+2000) + `log_call=False` (per-chunk backfills add no route-log row); byte-identical
+until `served_by` is seeded, then the call reroutes to the host llama-swap
+endpoint instead of the litellm proxy. Cloud (`reading/cards`, `workers/briefing`,
+`reading/meditation`, `reading/briefing_cast`, `Tier.CLOUD_SUPER`,
+`tools_needed=True`) — folds onto `claude_agent` (a `claude -p` subprocess, direct
+Anthropic OAuth) instead of the litellm proxy's `claude-opus` alias; litellm now
+has no precis consumers left at all. `log_call=True` on all four (low-volume daily
+casts, not per-chunk backfills) — `llm_call_log` captures real data on these
+passes now. Remaining:
 
-- **CLOUD passes → decision pending (window).** `reading/cards`, `workers/briefing`,
-  `reading/meditation`, `reading/briefing_cast` build an `LlmClient` at the litellm
-  proxy (model `claude-opus` → Anthropic API, pay-per-token). Targets: (a)
-  `claude_p` (§13 subscription OAuth, melchior-pinned so works today, but competes
-  for the quota that trips the $20/$85 breaker → a capped day ⇒ no morning brief);
-  (b) a new anthropic-direct HTTP transport (keeps API-key billing, adds a vault
-  key). Both need a `messages`→`prompt` flatten. Deferred to the Phase-2 window.
-- **`served_by` seeding.** Once cloud is decided, seed `served_by` on prod `llm`
-  cards (endpoint llama-swap `:11445`, real model) → local passes reroute off the
-  proxy. The flip that retires litellm's local role.
+- **`served_by` seeding.** A prod ops step, not a code task: seed `served_by` on
+  prod `llm` cards (endpoint llama-swap `:11445`, real model) → local passes
+  reroute off the proxy. The flip that retires litellm's local role; cloud already
+  bypasses litellm regardless (it never reads `served_by`).
 - **Latent bug (pre-existing, not a Track-2 regression):** `workers/classify.py`
   reads `PRECIS_CLASSIFY_ESCALATE_MODEL` but the "escalate re-judge" reuses the
   **same** client/model — the env knob only gates *whether* to re-judge, never

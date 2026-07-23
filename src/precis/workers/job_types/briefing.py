@@ -2,9 +2,11 @@
 
 Wrapper so the morning briefing runs as a precis *job* (driven by a
 ``level:recurring`` todo, typically ``meta.schedule={'cron':'0 6 * * *'}``)
-rather than an OS timer. Deterministic, in-process (the LLM call goes to
-the litellm ``summarizer`` alias, not a claude subprocess), registered
-with a plugin ``dispatch`` so ``claude_inproc`` runs it directly.
+rather than an OS timer. Deterministic in the sense that it's a plain
+function call, not agentic tool use — the LLM call itself now folds through
+the router (ADR 0046) onto ``claude_agent`` (a ``claude -p`` subprocess,
+direct Anthropic OAuth) rather than the litellm proxy. Registered with a
+plugin ``dispatch`` so ``claude_inproc`` runs it directly.
 
 Runs :func:`precis.workers.briefing.run_briefing`, which summarizes recent
 ``news`` refs and persists a dated ``briefing-<date>`` ref.

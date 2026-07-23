@@ -516,14 +516,25 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _default_client() -> Any:
-    """The production compose client (a nice model via the litellm proxy),
-    mirroring `build_meditation`'s default-client branch. Tests inject a fake."""
-    from dataclasses import replace
+    """The production compose client — folds through the router (ADR 0046)
+    onto the ``CLOUD_SUPER`` reasoning tier (``claude_agent``, direct Anthropic
+    OAuth) instead of holding a raw litellm client, so this cast-authoring pass
+    gets the budget breaker + the route-log. ``tools_needed=True`` lands on
+    ``claude_agent`` (free-text/JSON final answer, no tools advertised) rather
+    than the tool-less ``claude_p`` judge shape, which drops the system prompt
+    these cloze/rework prompts rely on. A ``PRECIS_CARD_FORGE_MODEL`` override
+    still wins, but must now name a real model id (e.g. ``claude-opus-4-8``),
+    not the retired litellm ``claude-opus`` alias. Mirrors
+    `build_meditation`'s default-client branch. Tests inject a fake."""
+    from precis.utils.llm.router import DispatchClient, Tier
 
-    from precis.workers.llm_summarize import LlmClient, LlmConfig
-
-    model = os.environ.get("PRECIS_CARD_FORGE_MODEL") or "claude-opus"
-    return LlmClient(replace(LlmConfig.from_env(), model=model, max_tokens=1500))
+    return DispatchClient(
+        tier=Tier.CLOUD_SUPER,
+        model=os.environ.get("PRECIS_CARD_FORGE_MODEL") or None,
+        tools_needed=True,
+        source="card_forge",
+        log_call=True,
+    )
 
 
 def run_card_forge(

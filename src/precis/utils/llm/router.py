@@ -907,32 +907,61 @@ def dispatch(req: LlmRequest) -> LlmResult:
     return result
 
 
+class DispatchError(RuntimeError):
+    """Raised by :meth:`DispatchClient.complete` on a dispatch error or a
+    breaker/admission pause — a distinct subclass (not a bare ``RuntimeError``)
+    so a caller's retry policy can tell "the router refused/failed this call"
+    apart from an unrelated ``RuntimeError`` it might raise for its own reasons
+    (e.g. a malformed-response parse failure), without the two collapsing into
+    one undifferentiable type."""
+
+
 @dataclass
 class DispatchClient:
-    """A ``.complete(messages)``-shaped adapter that routes a local completion
+    """A ``.complete(messages)``-shaped adapter that routes a completion
     through :func:`dispatch` instead of holding its own litellm ``LlmClient``.
 
     Drop-in for the summarize / classify / glossary passes' ``client=`` seam:
     the same ``complete(messages, *, extra_body=None) -> LlmResult`` contract
     (``.text`` + ``.total_tokens``), but every call folds through the router — so
-    it gains the breaker gate, the local-serving slot reservation + ``served_by``
-    endpoint routing (the Phase-2 litellm-retire flip: once a card declares
-    ``served_by.endpoint`` the call reroutes to llama-swap instead of the litellm
-    proxy), and the route-log. **Behaviour-preserving until ``served_by`` is
-    seeded** — with no slot the model resolves to today's ``summarizer`` alias on
-    the ``LlmConfig.from_env`` proxy URL, byte-identical to the raw client.
+    it gains the budget breaker gate, the ``served_by`` reroute (local tiers) /
+    ``claude_agent`` transport (cloud tiers), and the route-log.
 
-    Raises ``RuntimeError`` on a dispatch error / breaker-pause so the pass marks
-    the item failed and retries — exactly as the raw ``LlmClient.complete`` raised
-    on a transport error (the passes' ``except`` blocks count it failed). Local
-    tiers are free, so the breaker never trips them; the only pause is
-    all-slots-busy, which correctly backs a batch off.
+    **Local tiers** (the default, ``LOCAL_SMALL``): behaviour-preserving until
+    ``served_by`` is seeded — with no slot the model resolves to today's
+    ``summarizer`` alias on the ``LlmConfig.from_env`` proxy URL, byte-identical
+    to the raw client.
+
+    **Cloud tiers** (``CLOUD_SUPER`` / ``CLOUD_MID``): ``messages`` is split into
+    a ``system_prompt`` (the ``system``-role turn(s), joined) and a ``prompt``
+    (everything else, joined) — the shape ``claude_agent`` / ``claude_p`` need,
+    since those transports read ``LlmRequest.prompt`` / ``.system_prompt``, not
+    ``.messages`` (that field only feeds the local/openai-compat transports).
+    Set ``tools_needed=True`` to land on ``claude_agent`` (free-text final
+    answer + system prompt honored, no tools advertised when ``mcp_config`` is
+    left ``None`` — the established "text-only agent wrapper" idiom used by
+    ``precis_web.ask.generate_answer`` / ``figure.turn`` / ``mermaid.turn``);
+    the tool-less default (``False``) lands on ``claude_p``, which demands a
+    parseable trailing JSON block and drops the system prompt entirely — wrong
+    for a free-text compose call.
+
+    Raises :class:`DispatchError` (a ``RuntimeError`` subclass) on a dispatch
+    error / breaker-pause so the pass marks the item failed and retries —
+    exactly as the raw ``LlmClient.complete`` raised on a transport error (the
+    passes' ``except`` blocks count it failed). Local tiers are free, so the
+    breaker never trips them; the only pause is all-slots-busy, which correctly
+    backs a batch off.
     """
 
     tier: Tier = Tier.LOCAL_SMALL
     model: str | None = None
     max_tokens: int | None = None
     source: str = ""
+    #: Route to ``claude_agent`` (cloud tiers only — local tiers ignore this)
+    #: instead of the tool-less ``claude_p`` judge shape. See the class
+    #: docstring's "Cloud tiers" section for why a free-text compose call needs
+    #: this set.
+    tools_needed: bool = False
     #: Whether to write a route-log row (see :attr:`LlmRequest.log_call`).
     #: Default ``False`` — a bare ``DispatchClient`` stays silent (unchanged
     #: blast radius); a corpus batch pass opts *in* to a lite row below.
@@ -951,10 +980,22 @@ class DispatchClient:
     ) -> LlmResult:
         # ``extra_body`` (OpenRouter booking) is a hosted-backend concern; the
         # local completion path these passes use never sets it, so it is ignored.
+        # ``system_prompt``/``prompt`` are derived so a cloud-tier caller (which
+        # reads these, not ``messages``) works too — harmless for the local/
+        # openai-compat transports, which prefer ``messages`` when set.
+        system_prompt = "\n\n".join(
+            str(m.get("content", "")) for m in messages if m.get("role") == "system"
+        )
+        prompt = "\n\n".join(
+            str(m.get("content", "")) for m in messages if m.get("role") != "system"
+        )
         res = dispatch(
             LlmRequest(
                 tier=self.tier,
                 messages=messages,
+                prompt=prompt,
+                system_prompt=system_prompt or None,
+                tools_needed=self.tools_needed,
                 model=self.model,
                 max_tokens=self.max_tokens,
                 source=self.source,
@@ -963,7 +1004,7 @@ class DispatchClient:
             )
         )
         if res.error is not None:
-            raise RuntimeError(res.error)
+            raise DispatchError(res.error)
         return res
 
 
@@ -1327,6 +1368,7 @@ __all__ = [
     "Backend",
     "ClaudePResult",
     "DispatchClient",
+    "DispatchError",
     "LlmProvider",
     "LlmRequest",
     "LlmResult",

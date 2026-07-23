@@ -556,6 +556,71 @@ def test_dispatch_client_routes_through_dispatch(
     assert seen["messages"] == msgs
 
 
+def test_dispatch_client_cloud_tier_splits_messages_to_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DispatchClient on a cloud tier (``tools_needed=True``) folds a
+    ``.complete(messages)`` call through ``claude_agent`` — the router-migrated
+    shape the four former direct-``LlmClient`` cast passes (``reading/cards``,
+    ``workers/briefing``, ``reading/meditation``, ``reading/briefing_cast``) now
+    share. ``messages`` (an OpenAI-shaped ``[system, user]`` pair) is split into
+    ``system_prompt`` + ``prompt`` — the shape ``claude_agent`` actually reads —
+    and ``model``/``tier``/``source`` thread through unchanged."""
+    from precis.utils.llm.router import DispatchClient
+
+    seen: dict[str, object] = {}
+
+    def fake_agent(prompt: str, **kwargs: object) -> AgentResult:
+        seen["prompt"] = prompt
+        seen["system_prompt"] = kwargs.get("system_prompt")
+        seen["model"] = kwargs.get("model")
+        seen["mcp_config"] = kwargs.get("mcp_config")
+        return AgentResult(
+            final_text="a lovely nidra", cost_usd=0.5, duration_s=2.0, turns_used=1
+        )
+
+    monkeypatch.setattr(router, "call_claude_agent", fake_agent)
+
+    client = DispatchClient(
+        tier=Tier.CLOUD_SUPER,
+        model="claude-opus-4-8",
+        tools_needed=True,
+        source="meditation",
+        log_call=True,
+    )
+    msgs = [
+        {"role": "system", "content": "You are a calm narrator."},
+        {"role": "user", "content": "Walk these ideas: gravity, entropy."},
+    ]
+    out = client.complete(msgs)
+
+    assert out.text == "a lovely nidra"
+    assert seen["prompt"] == "Walk these ideas: gravity, entropy."
+    assert seen["system_prompt"] == "You are a calm narrator."
+    assert seen["model"] == "claude-opus-4-8"
+    assert seen["mcp_config"] is None  # no tools advertised — text-only agent wrapper
+
+
+def test_dispatch_client_cloud_tier_raises_dispatch_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cloud-tier dispatch failure raises :class:`DispatchError` (a
+    ``RuntimeError`` subclass) — same "the pass marks the item failed" contract
+    as the local tier, but distinguishable so a caller's retry policy can treat
+    a router-level failure differently from an unrelated ``RuntimeError``."""
+    from precis.utils.claude_agent import ClaudeAgentError
+    from precis.utils.llm.router import DispatchClient, DispatchError
+
+    def boom(prompt: str, **kwargs: object) -> AgentResult:
+        raise ClaudeAgentError("claude -p (agent) exited 1: kaboom", returncode=1)
+
+    monkeypatch.setattr(router, "call_claude_agent", boom)
+
+    client = DispatchClient(tier=Tier.CLOUD_SUPER, tools_needed=True, source="cast")
+    with pytest.raises(DispatchError, match="kaboom"):
+        client.complete([{"role": "user", "content": "x"}])
+
+
 def test_dispatch_client_raises_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """A dispatch error (transport failure / breaker pause) surfaces as a raise,
     so the pass marks the item failed + retries — the raw-client contract."""

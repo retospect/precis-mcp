@@ -367,19 +367,27 @@ def build_meditation(
         # No injected client (the production path) — build one from the nidra
         # profile. Tests always inject a fake client, so this branch stays out of
         # unit runs and off the cheap MCP import graph.
+        #
+        # Folds through the router (ADR 0046) onto the CLOUD_SUPER reasoning
+        # tier (``claude_agent``, direct Anthropic OAuth) instead of holding a
+        # raw litellm client, so this cast composer gets the budget breaker +
+        # the route-log. ``tools_needed=True`` lands on ``claude_agent``
+        # (free-text final answer, system prompt honored, no tools advertised)
+        # rather than the tool-less ``claude_p`` judge shape, which would drop
+        # the nidra system prompt and demand a parseable JSON block this
+        # prose script never has. A ``PRECIS_MEDITATION_MODEL`` override still
+        # wins, but must now name a real model id (e.g. ``claude-opus-4-8``),
+        # not the retired litellm ``claude-opus`` alias.
         import os
-        from dataclasses import replace
 
-        from precis.reading.cast_common import compose_max_tokens
-        from precis.workers.llm_summarize import LlmClient, LlmConfig
+        from precis.utils.llm.router import DispatchClient, Tier
 
-        model = os.environ.get("PRECIS_MEDITATION_MODEL") or profile.model
-        client = LlmClient(
-            replace(
-                LlmConfig.from_env(),
-                model=model,
-                max_tokens=compose_max_tokens(profile, target_minutes=target),
-            )
+        client = DispatchClient(
+            tier=Tier.CLOUD_SUPER,
+            model=os.environ.get("PRECIS_MEDITATION_MODEL") or None,
+            tools_needed=True,
+            source="meditation",
+            log_call=True,
         )
 
     budget = word_budget(profile, target_minutes=target)

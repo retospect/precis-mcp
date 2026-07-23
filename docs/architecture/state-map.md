@@ -356,9 +356,11 @@ executor's (`claude_inproc` plan_tick, etc.).
   meditation", find-or-create, best-effort) so its text shows in `/drive`; the Drive
   row surfaces the published mp3 + compiled PDF as download links. Compose is the
   `reading_brief`/`meditation`
-  **`claude_inproc`** job_types (melchior — both casts compose with `claude-opus`
-  via the melchior-loopback litellm proxy, same host as the news briefing) on daily
-  `level:recurring` watches; **TTS is the separate downstream spark pass**, so the
+  **`claude_inproc`** job_types (melchior — both casts, `card_forge`, and the news
+  briefing now compose via the LLM router's `Tier.CLOUD_SUPER` (`DispatchClient`,
+  ADR 0046) onto `claude_agent` — a `claude -p` subprocess, direct Anthropic OAuth —
+  not the melchior-loopback litellm proxy; litellm now serves only the local tiers)
+  on daily `level:recurring` watches; **TTS is the separate downstream spark pass**, so the
   nice-model compose and the container narration never block each other. CLI:
   `precis cast run <reading|nidra> [--publish]` + `precis cast schedule [--now]`.
   Skill: `precis-audio-help`. A third daily watch rides the same installer:
