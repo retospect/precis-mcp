@@ -62,7 +62,8 @@ _PROBE_VIEWS = (
 _EXPORT_VIEWS = ("bom", "cpl", "netlist", "dsn", "mechanical")
 #: The rented autorouter round-trip (Slice 6, gated on Freerouting).
 _ROUTE_VIEWS = ("route",)
-_VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS, *_ROUTE_VIEWS)
+_OTHER_VIEWS = ("links",)
+_VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS, *_ROUTE_VIEWS, *_OTHER_VIEWS)
 
 
 class PcbHandler(Handler):
@@ -262,6 +263,15 @@ class PcbHandler(Handler):
             return self._render_export(ref_id, view, args)
         if view in _ROUTE_VIEWS:
             return self._render_route(ref_id, args)
+        if view == "links":
+            # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
+            # every Handler-direct kind alongside the paper fix.
+            from precis.handlers._links_render import render_links_view
+
+            ref = self.store.fetch_refs_by_ids([ref_id]).get(ref_id)
+            if ref is None:
+                raise NotFound(f"pcb id={ref_id} not found")
+            return render_links_view(self.store, ref, sense="pcb")
         graph = self.store.pcb_graph(ref_id)
         if view in ("crossings", "ratsnest", "feasibility"):
             placed = {

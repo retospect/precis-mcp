@@ -83,8 +83,9 @@ class PresentationHandler(Handler):
     def accepted_views(self, *, id: Any = None) -> list[str]:
         # First entry is the conventional default (overview). ``full``
         # renders every slide; ``bibtex`` / ``ris`` export the deck's
-        # attribution for citing slides.
-        return ["full", "bibtex", "ris"]
+        # attribution for citing slides; ``links`` is the F8 graph view
+        # (OPEN-ITEMS.md 🕸️ graph-completeness audit item 1).
+        return ["full", "bibtex", "ris", "links"]
 
     # ── get ─────────────────────────────────────────────────────────
 
@@ -108,6 +109,12 @@ class PresentationHandler(Handler):
             return self._render_full(slug, ref)
         if effective_view in ("bibtex", "ris"):
             return Response(body=_format_pres_citation(ref, style=effective_view))
+        if effective_view == "links":
+            # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
+            # every Handler-direct kind alongside the paper fix.
+            from precis.handlers._links_render import render_links_view
+
+            return render_links_view(self.store, ref, sense="pres")
         if effective_view is not None:
             raise Unsupported(
                 f"unknown pres view {effective_view!r}",

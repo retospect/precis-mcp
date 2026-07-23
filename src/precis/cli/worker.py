@@ -104,6 +104,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_sweeper_pass": PassBand.PLANNER,
     "_nursery_pass": PassBand.HEALTH,
     "_chase_pass": PassBand.BACKGROUND,
+    "_inbound_chase_pass": PassBand.BACKGROUND,
     "_fetch_pass": PassBand.BACKGROUND,
     "_gp_fetch_pass": PassBand.BACKGROUND,
     "_llm_summarize_pass": PassBand.BACKGROUND,
@@ -503,6 +504,31 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_chase_pass)
+
+        # inbound_chase — inbound counterpart to the finding-chase pass
+        # above (docs/design/citation-chunk-grounding.md "Inbound sweep
+        # policy"): exhaustive one-hop citer sweep + chunk-level verdicts
+        # for papers ``PaperHandler.get`` has flagged ``INBOUND:pending``.
+        # Default-OFF (PRECIS_INBOUND_CHASE_ENABLED=1 / --only
+        # inbound_chase) — the exhaustive-no-cap policy leans on the
+        # (unshipped) global spend circuit breaker as its cost backstop;
+        # see workers/inbound_chase.py's module docstring. Always runs
+        # with LLM verification once claiming work — gated by this flag
+        # alone, independent of --with-llm/PRECIS_CHASE_LLM.
+        if _pass_enabled("inbound_chase"):
+            from precis.workers.inbound_chase import run_inbound_chase_pass
+            from precis.workers.runner import BatchResult as _InboundBatchResult
+
+            def _inbound_chase_pass(batch_size: int) -> _InboundBatchResult:
+                r = run_inbound_chase_pass(store, limit=batch_size)
+                return _InboundBatchResult(
+                    handler="inbound_chase",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_inbound_chase_pass)
 
         # Hierarchical SOM cluster maps (precis-web /clusters grid).
         # Time-gated full rebuild per scope; see workers/clusterize.py.

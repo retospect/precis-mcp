@@ -481,6 +481,22 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        name="inbound_chase",
+        label="Inbound citation chase",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_INBOUND_CHASE_ENABLED",
+        uses_model=True,
+        uses_external=("s2",),
+        cost_sources=("inbound_chase",),
+        one_line=(
+            "Exhaustive one-hop inbound citer sweep + chunk-level cites "
+            "verdicts for activated papers (citation-chunk-grounding)."
+        ),
+        doc_skill="precis-search-help",
+    ),
+    ServiceSpec(
         name="llm_reconcile",
         label="LLM catalog reconcile",
         category="review",

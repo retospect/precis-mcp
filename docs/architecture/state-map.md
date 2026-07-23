@@ -305,7 +305,20 @@ executor's (`claude_inproc` plan_tick, etc.).
   `--only llm_summarize`; enabled on melchior as a deliberate trickle.
   `job_claude_docker` is opt-in on top too — env `PRECIS_SANDBOX_ENABLED=1`
   or `--only job_claude_docker`; default-OFF so the slice merges dark,
-  meant only for the `agent_sandbox_host` nodes, **never melchior**.)
+  meant only for the `agent_sandbox_host` nodes, **never melchior**.
+  `inbound_chase` is opt-in on top too — env
+  `PRECIS_INBOUND_CHASE_ENABLED=1`; default-OFF, dark until the global
+  spend circuit breaker ships — see
+  `docs/design/citation-chunk-grounding.md`. When on, it's the inbound
+  counterpart to `chase`: the first read of a paper permanently marks it
+  for a one-time, exhaustive sweep of its S2-known citers, locating +
+  verifying the specific citing chunk in *both* directions
+  — `chase`/`_chase_llm.py`'s `_locate_chunk_in_target`/
+  `_verify_support_with_caveats` hooks, reused, not reinvented. Every
+  `Handler`-direct kind (paper, draft, structure, cad, pcb, plan, pres,
+  patent) also gained `view='links'` in the same slice
+  (`handlers/_links_render.py`), closing the paper-link-blindness gap
+  that pass depended on.)
 * `precis worker --profile=agent` runs the passes that need the
   hermes OAuth / `~/.claude` state on melchior: the LLM-heavy
   reviewers (`structural`, `deep_review`) plus `job_claude_inproc`

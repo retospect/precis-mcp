@@ -795,6 +795,43 @@ def _ref_to_target(s2_ref: dict[str, Any]) -> _NextHopTarget:
     )
 
 
+def _s2_paper_id(identifiers: dict[str, Any]) -> str | None:
+    """Build an S2-queryable paper id from a ref's ``ref_identifiers`` dict."""
+    if identifiers.get("doi"):
+        return f"doi:{identifiers['doi']}"
+    if identifiers.get("arxiv"):
+        return f"arxiv:{identifiers['arxiv']}"
+    if identifiers.get("s2"):
+        return str(identifiers["s2"])
+    return None
+
+
+def load_s2_citation_graph(identifiers: dict[str, Any]) -> dict[str, Any] | None:
+    """Fetch a paper's full S2 citation-graph result: ``references`` +
+    ``cited_by`` in one call (:func:`precis.ingest.citations.citations`).
+
+    Public (no leading underscore) because it's shared beyond this
+    module: :func:`_load_s2_references` below uses the outbound half;
+    ``workers/inbound_chase.py`` (docs/design/citation-chunk-grounding.md
+    "Inbound sweep policy") uses the ``cited_by`` half — previously
+    fetched and silently discarded by :func:`_load_s2_references`, the
+    gap the design doc's "What's actually missing" #1 flagged. One S2
+    call per paper now serves both directions instead of two.
+
+    Returns ``None`` on S2 failure (rate-limit, network, no usable
+    identifier) — callers treat this as "can't resolve" and retry next
+    pass.
+    """
+    paper_id = _s2_paper_id(identifiers)
+    if paper_id is None:
+        return None
+    try:
+        return fetch_s2_citations(paper_id)
+    except Exception as exc:  # pragma: no cover — defensive
+        log.debug("chase: S2 lookup failed for %s: %s", paper_id, exc)
+        return None
+
+
 def _load_s2_references(identifiers: dict[str, Any]) -> list[dict[str, Any]] | None:
     """Fetch the source paper's S2 references list (ordered).
 
@@ -802,19 +839,8 @@ def _load_s2_references(identifiers: dict[str, Any]) -> list[dict[str, Any]] | N
     treats this as "can't resolve" and leaves the finding tracing
     for the next pass.
     """
-    paper_id = None
-    if identifiers.get("doi"):
-        paper_id = f"doi:{identifiers['doi']}"
-    elif identifiers.get("arxiv"):
-        paper_id = f"arxiv:{identifiers['arxiv']}"
-    elif identifiers.get("s2"):
-        paper_id = str(identifiers["s2"])
-    if paper_id is None:
-        return None
-    try:
-        result = fetch_s2_citations(paper_id)
-    except Exception as exc:  # pragma: no cover — defensive
-        log.debug("chase: S2 lookup failed for %s: %s", paper_id, exc)
+    result = load_s2_citation_graph(identifiers)
+    if result is None:
         return None
     refs = result.get("references")
     return refs if isinstance(refs, list) else None
@@ -1066,5 +1092,6 @@ __all__ = [
     "PassResult",
     "advance_finding",
     "claim_tracing_findings",
+    "load_s2_citation_graph",
     "run_finding_chase_pass",
 ]

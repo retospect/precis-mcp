@@ -69,7 +69,8 @@ _PROBE_VIEWS = (
     "volume",
 )
 _EXPORT_VIEWS = ("scad", "stl", "3mf", "step")
-_VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS)
+_OTHER_VIEWS = ("links",)
+_VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS, *_OTHER_VIEWS)
 
 
 def _vec(args: dict[str, Any], key: str) -> Vec3:
@@ -287,6 +288,12 @@ class CadHandler(Handler):
             return Response(body=to_openscad(spec, name=str(ref.slug or s)))
         if view in ("stl", "3mf", "step"):
             return self._render_export(spec, str(ref.slug or s), view, args or {})
+        if view == "links":
+            # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
+            # every Handler-direct kind alongside the paper fix.
+            from precis.handlers._links_render import render_links_view
+
+            return render_links_view(self.store, ref, sense="cad")
         if view not in _PROBE_VIEWS:
             raise BadInput(
                 f"unknown cad view {view!r}",

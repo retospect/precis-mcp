@@ -69,6 +69,7 @@ _SUPPORTED_VIEWS: tuple[str, ...] = (
     "description",
     "claims",
     "bibtex",
+    "links",
 )
 
 # EPO credentials resolve through the secrets vault (ADR 0055) — the one
@@ -581,6 +582,13 @@ class PatentHandler(Handler):
 
         if view == "bibtex":
             return Response(body=_format_bibtex(ref, meta))
+
+        if view == "links":
+            # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
+            # every Handler-direct kind alongside the paper fix.
+            from precis.handlers._links_render import render_links_view
+
+            return render_links_view(self.store, ref, sense="patent")
 
         raise Unsupported(
             f"unknown view {view!r} for kind='patent'",

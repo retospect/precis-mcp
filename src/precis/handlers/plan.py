@@ -99,7 +99,7 @@ class PlanHandler(Handler):
         note_like=True,
         role="artifact",
         corpus_role="none",
-        views=("toc",),
+        views=("toc", "links"),
     )
 
     def __init__(self, *, hub: Hub) -> None:
@@ -142,10 +142,19 @@ class PlanHandler(Handler):
         if _is_plan_chunk_addr(s):
             return self._render_chunk(s)
         ref = resolve_live_slug_ref(self.store, kind="plan", id=s)
+        if view == "links":
+            # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
+            # every Handler-direct kind alongside the paper fix.
+            from precis.handlers._links_render import render_links_view
+
+            return render_links_view(self.store, ref, sense="plan")
         if view is not None and view != "toc":
             raise BadInput(
                 f"unknown plan view {view!r}",
-                next="omit view= for the whole marked outline (view='toc' == the tree)",
+                next=(
+                    "omit view= for the whole marked outline (view='toc' == "
+                    "the tree, view='links' == the link graph)"
+                ),
             )
         return self._render_outline(s, ref)
 

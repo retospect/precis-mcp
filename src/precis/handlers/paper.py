@@ -102,6 +102,7 @@ _SUPPORTED_VIEWS = (
     "bibliography",
     "log",
     "abbrevs",
+    "links",
 )
 
 
@@ -580,6 +581,16 @@ class PaperHandler(Handler):
             next_hint=f"search(kind='{kind}', q='your query') to find existing",
             options=_suggest_paper_slugs(slug, store=self.store, kind=kind),
         )
+
+        # Citation-chunk-grounding "active paper" trigger (docs/design/
+        # citation-chunk-grounding.md "Inbound sweep policy"): the first
+        # time a paper is actually read — any view, any chunk range —
+        # flags it for the inbound-citer sweep, once, permanently. Dark
+        # behind PRECIS_INBOUND_CHASE_ENABLED (no-op check + no tag write
+        # while off); no-op on every later read once tagged.
+        from precis.workers.inbound_chase import mark_paper_active
+
+        mark_paper_active(self.store, ref)
 
         # Path view (`slug/cite/bib`) takes precedence over kwarg `view`,
         # because the agent is being explicit in the id. Whatever wins,
@@ -1246,6 +1257,17 @@ class PaperHandler(Handler):
         if view == "bibliography":
             return self._render_bibliography(ref)
 
+        if view == "links":
+            # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️): paper
+            # had no links view at all — ``related-to`` / ``cites`` /
+            # ``cited-by`` edges on a paper (214 inbound related-to on
+            # some refs, checked in prod) were invisible to an agent
+            # reading it. Shares the render with every numeric-ref kind
+            # (``handlers/_links_render.py``) rather than forking it.
+            from precis.handlers._links_render import render_links_view
+
+            return render_links_view(self.store, ref, sense=self.spec.kind)
+
         # The MCP critic flagged ``view='figures'`` as a silent
         # failure — the agent had no signal that figure retrieval
         # is unsupported. Surface a sharper hint pointing at the
@@ -1489,6 +1511,28 @@ class PaperHandler(Handler):
             )
             lines.append(f"# {b_handle}")
             lines.append(_render_block_body(ref.slug or "???", b.pos, b.text))
+            # Citation-chunk-grounding Part 3 (docs/design/citation-chunk-
+            # grounding.md "sidecar render"): capped, expand-on-request
+            # sidecars of this chunk's verified `cites` verdicts, when any
+            # exist — outbound ("this chunk cites …", src_pos) and inbound
+            # ("this chunk is cited by …", dst_pos) are two small sections,
+            # not one table, since a chunk can carry both at once. Gated
+            # behind the same dark flag as the inbound chase that produces
+            # the data (nothing to show until it's on).
+            from precis.workers.inbound_chase import inbound_chase_enabled
+
+            if inbound_chase_enabled():
+                from precis.handlers._citer_sidecar import (
+                    render_cited_by_sidecar,
+                    render_citer_sidecar,
+                )
+
+                sidecar = render_citer_sidecar(self.store, ref, b.pos)
+                if sidecar:
+                    lines.append(sidecar.lstrip("\n"))
+                cited_by_sidecar = render_cited_by_sidecar(self.store, ref, b.pos)
+                if cited_by_sidecar:
+                    lines.append(cited_by_sidecar.lstrip("\n"))
             lines.append("")
 
         # Next: trailer — adjacent ranges + parent toc + citation.

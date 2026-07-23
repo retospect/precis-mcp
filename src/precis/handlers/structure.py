@@ -72,7 +72,7 @@ _NAV_VIEWS = (
     "pov",
 )
 _EXPORT_VIEWS = ("poscar", "extxyz", "cif")
-_VIEWS = (*_PROBE_VIEWS, *_NAV_VIEWS, "runs", "markers", *_EXPORT_VIEWS)
+_VIEWS = (*_PROBE_VIEWS, *_NAV_VIEWS, "runs", "markers", "links", *_EXPORT_VIEWS)
 
 
 @dataclass
@@ -404,6 +404,12 @@ class StructureHandler(Handler):
             return self._render_runs(ref)
         if view == "markers":
             return self._render_markers(scene)
+        if view == "links":
+            # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
+            # every Handler-direct kind alongside the paper fix.
+            from precis.handlers._links_render import render_links_view
+
+            return render_links_view(self.store, ref, sense="structure")
         if view in _EXPORT_VIEWS:
             return self._render_export(view, scene, str(ref.slug or id))
         if view in _NAV_VIEWS:

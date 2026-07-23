@@ -640,6 +640,28 @@ estimate. Remaining:
 - **Open decisions** (design doc): ledger union without double-count; per-model
   price-table source + upkeep; cheap-band threshold; real cap defaults.
 
+## 🕸️ Citation-chunk grounding — v1 built, dark
+
+Design + full history: [`docs/design/citation-chunk-grounding.md`](docs/design/citation-chunk-grounding.md).
+Built (this ship): paper/draft/structure/cad/pcb/plan/pres/patent all gained
+`view='links'` (closes the prior link-blindness gap); the `inbound_chase`
+worker pass (one-time exhaustive per-paper sweep of S2-known citers,
+auto-ingesting missing ones, chunk-precise in **both** directions — reuses
+`chase.py`'s existing locate/verify hooks); and a capped verdict sidecar on
+chunk reads (`_citer_sidecar.py`, both `cites`/`cited-by` directions). Full
+suite green, ruff/mypy clean, not shipped-and-live — dark behind
+`PRECIS_INBOUND_CHASE_ENABLED` (default off).
+
+- **Decide when to flip the flag** *(needs-decision, owner: Reto)*. The
+  exhaustive-no-cap chase policy leans on the global spend circuit breaker
+  (💰 Budget guardrails Piece B above) as its cost backstop — that's
+  implemented but **unshipped**. Either ship Piece B first, or accept
+  manual-observation risk for an outlier high-citation paper and enable
+  anyway. Not a code blocker — an operator judgment call.
+- **Type-2 (general-content-similarity, non-citation) linking** *(feature,
+  deferred, separate scope)* — `related-to` + `meta.note`, deliberately not
+  built alongside this; do not conflate with the `cites`-relation work above.
+
 ## 🔒 Proprietary / local-only content routing (backlog)
 
 *(feature, open — owner `utils/claude_agent.py`, `utils/claude_p.py`,

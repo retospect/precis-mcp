@@ -162,6 +162,18 @@ no resolvable inline citation. Mark it terminal with
 `pick_candidate='self'`, or — if a fetch never ran — ask the user to
 run `precis worker --only fetch`.
 
+## The inbound counterpart — who cites *this* paper (dark, opt-in)
+
+Everything above is outbound: X cites Y, chase it down to Y's
+supporting chunk. `workers/inbound_chase.py` (dark behind
+`PRECIS_INBOUND_CHASE_ENABLED`, `docs/design/citation-chunk-grounding.md`)
+runs the other direction — once a paper has been read, it exhaustively
+resolves every corpus-intersecting citer at chunk granularity, no
+todo/finding needed. Nothing to register from the agent side; read
+`view='links'` on the cited paper for the paper-level edges, or a
+citing chunk directly for its "Cites (verified):" sidecar. See
+`precis-paper-help`.
+
 ## See also
 
 ```python

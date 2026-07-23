@@ -179,8 +179,8 @@ web reader's Semantic/Keyword sidebar reads the same data); fall back to
 the keyword column where a gloss hasn't been written yet.
 
 Views: `abstract`, `toc`, `summaries`, `bibtex` (`cite/bib`), `ris`
-(`cite/ris`), `endnote` (`cite/endnote`). The `view=` kwarg and
-`slug/<view>` path are equivalent (except for DOIs — see above).
+(`cite/ris`), `endnote` (`cite/endnote`), `links`. The `view=` kwarg
+and `slug/<view>` path are equivalent (except for DOIs — see above).
 
 ## Find a passage in a paper I have
 ## Locate where a topic comes up in a specific paper
@@ -241,6 +241,33 @@ Closed-prefix axes for paper: `SRC:`, `CACHE:`. Open tags
 (`topic:x`, ...) always allowed. Other axes (`STATUS:`, `PRIO:`, ...)
 are rejected. Tag and link operate at the paper level — chunk
 selectors and view paths are rejected.
+
+## See a paper's link graph
+## What is this paper linked to — cites, cited-by, related-to?
+
+```python
+get(kind='paper', id='pa40', view='links')
+```
+
+Every link touching the paper, both directions — outbound
+`cites`/`related-to`/… and inbound rows rendered in passive form
+(`cited by`, `supported by`, …). Each row is expandable via the
+`get(...)` call it prints.
+
+## Chunk-level citation grounding (dark, opt-in)
+## Does this specific claim actually check out against what it cites?
+
+Cluster-side only (`PRECIS_INBOUND_CHASE_ENABLED`, default off — see
+`docs/design/citation-chunk-grounding.md`): once a paper has been read
+at least once, a background pass exhaustively resolves *who cites it*
+at chunk granularity, using an LLM to verify support
+(yes/partial/no + caveats) — the inverse of the `finding`-chase
+machinery (`precis-finding-help`). When live, a chunk that itself
+cites another paper with a resolved verdict shows a capped
+"Cites (verified):" sidecar under its body — best-first, ≤5 rows,
+`no` verdicts dropped, each row a `get(...)` handle, never eagerly
+expanded. Nothing to configure from the agent side; this is a reading
+affordance that either shows up or doesn't.
 
 ## Request a paper the library doesn't have
 ## Get a paper we don't hold yet
