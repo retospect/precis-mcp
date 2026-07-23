@@ -28,12 +28,15 @@ from precis.ingest.add import (
     ArxivInput,
     DoiInput,
     IngestResult,
+    MarkupInput,
     PdfInput,
     _reconcile_orphan_stub,
     _valid_fold_stub,
     precis_add,
 )
 from precis.ingest.db_writer import ChunkToWrite, PaperToWrite
+from precis.ingest.fetch_sidecar import read_sidecar, write_sidecar
+from precis.ingest.markup import MarkupParseError
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -569,3 +572,140 @@ class TestSidecarFold:
         assert stub_row[0] is not None  # stub soft-deleted
         assert stub_row[1] == str(result.ref_id)  # provenance → survivor
         assert doi_owner is not None and doi_owner[0] == result.ref_id  # DOI migrated
+
+
+class TestMarkupParseFailureRecovery:
+    """gr161905: on a MarkupParseError, the companion PDF (tagged
+    ``printable_only`` at fetch time so it never independently races
+    Marker against this markup) is the deterministic OCR fallback,
+    recovered right here in this same process — not via a cross-host
+    race on which trigger a watcher reaches first."""
+
+    def test_clears_printable_only_when_companion_still_in_inbox(
+        self, store, tmp_path: Path
+    ) -> None:
+        stub = store.insert_ref(kind="paper", slug="park83", title="Parked stub")
+        markup = tmp_path / "park83.xml"
+        markup.write_bytes(b"<xml>not real jats</xml>")
+        pdf = tmp_path / "park83.pdf"
+        pdf.write_bytes(b"%PDF-1.4 park")
+
+        write_sidecar(
+            markup,
+            ref_id=stub.id,
+            identifiers={"doi": "10.1000/markup-leg-doi"},
+            source="fetcher:europepmc_jats",
+            source_format="jats",
+            companion_pdf="park83.pdf",
+        )
+        write_sidecar(
+            pdf,
+            ref_id=stub.id,
+            identifiers={"doi": "10.1000/pdf-leg-doi", "arxiv": "2401.99999"},
+            source="fetcher:arxiv",
+            printable_only=True,
+        )
+
+        with patch(
+            "precis.ingest.pipeline.extract_paper_from_markup",
+            side_effect=MarkupParseError("no <body>", fmt="jats"),
+        ):
+            result = precis_add(
+                MarkupInput(markup_path=markup, fmt="jats", fold_ref_id=stub.id),
+                store=store,
+            )
+
+        assert result is None
+        pdf_sc = read_sidecar(pdf)
+        assert pdf_sc is not None
+        assert pdf_sc.printable_only is False
+        # gr161905 recovery must clear printable_only WITHOUT clobbering the
+        # companion's own provenance with the markup trigger's — a re-fetched
+        # Elsevier companion whose source got overwritten to
+        # fetcher:europepmc_jats would silently bypass the gr162364
+        # Elsevier-truncation guard (which gates on sidecar.source).
+        assert pdf_sc.source == "fetcher:arxiv"
+        assert pdf_sc.identifiers == {
+            "doi": "10.1000/pdf-leg-doi",
+            "arxiv": "2401.99999",
+        }
+
+    def test_ocrs_stored_copy_when_companion_already_attached(
+        self, store, tmp_path: Path
+    ) -> None:
+        # The companion PDF already landed as an attach-only printable
+        # (has_body False, pdf_sha256 set) — simulate that state directly,
+        # then confirm a markup parse failure triggers the synchronous OCR
+        # fallback on the stored copy.
+        pdf_bytes = b"%PDF-1.4 already-attached-printable"
+        sha = hashlib.sha256(pdf_bytes).hexdigest()
+        stored_dir = tmp_path / "corpus"
+        stored_dir.mkdir()
+        stored = stored_dir / "stored.pdf"
+        stored.write_bytes(pdf_bytes)
+
+        stub = store.insert_ref(kind="paper", slug="attached83", title="Attached")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+                "size_bytes, storage_path) VALUES (%s, %s, %s, %s, %s)",
+                (sha, sha, 1, len(pdf_bytes), str(stored)),
+            )
+            conn.execute(
+                "UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s",
+                (sha, stub.id),
+            )
+            conn.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                "VALUES ('pdf_sha256', %s, %s, 'fetcher:arxiv')",
+                (sha, stub.id),
+            )
+            conn.commit()
+
+        markup = tmp_path / "attached83.xml"
+        markup.write_bytes(b"<xml>not real jats</xml>")
+        write_sidecar(
+            markup,
+            ref_id=stub.id,
+            identifiers={},
+            source="fetcher:europepmc_jats",
+            source_format="jats",
+            companion_pdf="already-moved.pdf",  # no longer sitting in the inbox
+        )
+
+        full_paper = _fixture_paper(paper_id="attachpid", doi=None, pdf_sha256=sha)
+        with (
+            patch(
+                "precis.ingest.pipeline.extract_paper_from_markup",
+                side_effect=MarkupParseError("no <body>", fmt="jats"),
+            ),
+            patch(
+                "precis.ingest.pipeline.extract_paper",
+                return_value=full_paper,
+            ),
+        ):
+            result = precis_add(
+                MarkupInput(markup_path=markup, fmt="jats", fold_ref_id=stub.id),
+                store=store,
+            )
+
+        assert result is None  # the markup ingest itself still returns None
+        with store.pool.connection() as conn:
+            nchunks = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s", (stub.id,)
+            ).fetchone()[0]
+        assert nchunks == 2  # the OCR fallback populated the body (+ card)
+
+    def test_no_recovery_without_fold_ref_id(self, tmp_path: Path, store) -> None:
+        # A manually-dropped markup file (no sidecar, no fold target) —
+        # nothing to recover, must not raise.
+        markup = tmp_path / "manual.xml"
+        markup.write_bytes(b"<xml>not real jats</xml>")
+        with patch(
+            "precis.ingest.pipeline.extract_paper_from_markup",
+            side_effect=MarkupParseError("no <body>", fmt="jats"),
+        ):
+            result = precis_add(
+                MarkupInput(markup_path=markup, fmt="jats"), store=store
+            )
+        assert result is None

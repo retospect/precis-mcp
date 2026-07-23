@@ -447,6 +447,41 @@ class TestExtractPaper:
         assert cards[0].text == "[no metadata]"
         assert body == []
 
+    def test_printable_only_skips_marker_entirely(self, tmp_path: Path) -> None:
+        """gr161905: a PDF fetched alongside a markup trigger must never
+        run Marker — it's the attach-only printable, never a second,
+        order-dependent body candidate."""
+        pdf = tmp_path / "companion.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n" + b"x" * 200)
+
+        fake_meta = PdfMetadata(
+            pdf_path=pdf, doi="10.1038/s41567-024-1234-5", title="X", year=2024
+        )
+
+        with (
+            patch(
+                "precis.ingest.pipeline.extract_metadata_from_sources",
+                return_value=fake_meta,
+            ),
+            patch(
+                "precis.ingest.pipeline.extract_blocks_marker",
+                side_effect=AssertionError("Marker must not run"),
+            ) as marker,
+            patch(
+                "precis.ingest.pipeline._pdf_page_count",
+                return_value=7,
+            ),
+        ):
+            paper = extract_paper(pdf, printable_only=True)
+
+        assert marker.call_count == 0
+        assert paper.chunks == []
+        assert paper.pdf_sha256 is not None and len(paper.pdf_sha256) == 64
+        assert paper.pdf_page_count == 7
+        assert paper.pdf_pages_first is None
+        assert paper.pdf_pages_last is None
+        assert paper.doi == "10.1038/s41567-024-1234-5"
+
 
 # ---------------------------------------------------------------------------
 # fetch_paper_by_doi — CrossRef stubbed

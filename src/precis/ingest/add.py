@@ -97,6 +97,12 @@ class PdfInput:
     #: sidecar), which fall back to identity re-derivation. Immune to the
     #: filename munging that breaks the ``cite_key``-stem match.
     fold_ref_id: int | None = None
+    #: True when this PDF was fetched *alongside* a markup trigger for the
+    #: same stub (gr161905) — set from the OA-fetch sidecar's
+    #: ``printable_only`` flag. Skips Marker entirely: this PDF is only
+    #: ever an attach-only printable, never a second, order-dependent body
+    #: candidate. See :func:`precis.ingest.pipeline.extract_paper`.
+    printable_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -139,12 +145,15 @@ class MarkupInput:
     is never run**.
 
     On a :class:`precis.ingest.markup.MarkupParseError` the markup ref is
-    left claimable and returns ``None``; recovery is by the companion PDF,
-    which the OA fetcher drops as its *own* inbox trigger (the PDF cascade
-    runs unconditionally after the markup cascade) and which folds into the
-    same stub via the shared sidecar ``ref_id`` — so a markup that won't
-    parse is still OCR'd, without this input carrying the printable. See
-    :func:`precis.workers.fetch_oa._run_markup_cascade`.
+    left claimable and returns ``None`` — but first
+    :func:`_recover_markup_parse_failure` (gr161905) deterministically
+    recovers via the companion PDF the OA fetcher dropped alongside this
+    markup trigger: that PDF is tagged ``printable_only`` at fetch time
+    (see :func:`precis.workers.fetch_oa._run_cascade`) so it never
+    independently races Marker against this markup regardless of which
+    host's watcher reaches it first — a parse failure here either clears
+    that flag (if the PDF is still unprocessed) or OCRs the already-
+    attached stored copy directly (if it already landed as a printable).
     """
 
     markup_path: Path
@@ -714,13 +723,10 @@ def _ingest_markup(
 ) -> IngestResult | None:
     """Run the markup producer and write / fold the resulting paper.
 
-    On a :class:`~precis.ingest.markup.MarkupParseError`, logs and returns
-    ``None`` so the ref stays claimable. Recovery is out-of-band: the OA
-    fetcher drops the companion PDF as its own inbox trigger (the PDF
-    cascade runs unconditionally after the markup cascade), which folds
-    into the same stub via the shared sidecar ``ref_id`` and OCRs the body
-    — so a markup that won't parse is still recovered, without this path
-    re-dispatching a PDF itself.
+    On a :class:`~precis.ingest.markup.MarkupParseError`, logs, attempts
+    the companion-PDF OCR recovery (see
+    :func:`_recover_markup_parse_failure`, gr161905), and returns ``None``
+    so the ref stays claimable.
     """
     from precis.ingest.markup import MarkupParseError
     from precis.ingest.pipeline import extract_paper_from_markup
@@ -733,12 +739,13 @@ def _ingest_markup(
         )
     except MarkupParseError as exc:
         log.error(
-            "precis_add (markup): %s parse failed (%s) for %s; leaving ref "
-            "claimable — the companion PDF trigger recovers it out-of-band",
+            "precis_add (markup): %s parse failed (%s) for %s; attempting "
+            "companion-PDF OCR recovery",
             input.fmt,
             exc,
             input.markup_path.name,
         )
+        _recover_markup_parse_failure(input, store=store)
         return None
 
     if input.as_kind != paper.kind:
@@ -820,6 +827,153 @@ def _ingest_markup(
         identifiers=result.identifiers_written,
         kind=paper.kind,
     )
+
+
+def _recover_markup_parse_failure(input: MarkupInput, *, store: Store) -> None:
+    """gr161905: markup parsing just failed — recover deterministically
+    instead of racing the companion PDF against Marker across hosts.
+
+    The companion PDF (fetched alongside this markup trigger and tagged
+    ``printable_only`` so it never independently races to write a body —
+    see :func:`precis.workers.fetch_oa._run_cascade`) is the intended OCR
+    fallback. Two cases, both resolved *right now*, in this same process,
+    since we've just learned definitively that markup won't produce a body:
+
+    * **Still in the inbox** (no watcher has reached it yet) — clear its
+      ``printable_only`` flag so the next watcher that processes it runs
+      Marker normally. ``has_body`` is still ``False`` (this markup never
+      wrote anything), so that's the correct, unraced fallback.
+    * **Already ingested** (moved out of the inbox — it landed as an
+      attach-only printable, ``pdf_sha256`` set, no body) — re-run the
+      full PDF ingest on the stored corpus copy synchronously, right here.
+
+    Best-effort throughout: any lookup failure just means the pre-fix
+    behavior (parse failure logs, ref stays claimable) — never raises.
+    """
+    if input.fold_ref_id is None:
+        return  # manual drop, no sidecar — nothing to recover
+
+    from precis.ingest.fetch_sidecar import read_sidecar, write_sidecar
+
+    sidecar = read_sidecar(input.markup_path)
+    if sidecar is None or not sidecar.companion_pdf:
+        log.info(
+            "precis_add (markup): no known companion PDF for %s — no "
+            "automatic OCR recovery available",
+            input.markup_path.name,
+        )
+        return
+
+    companion = input.markup_path.parent / sidecar.companion_pdf
+    if companion.is_file():
+        # Read the companion's OWN sidecar and only flip printable_only —
+        # its source/identifiers were recorded independently by whichever
+        # PDF-cascade leg actually fetched it (e.g. fetcher:elsevier), NOT
+        # by this markup trigger's leg (e.g. fetcher:europepmc_jats).
+        # Reusing the markup sidecar's fields here would silently corrupt
+        # the companion's `source`, defeating source-gated checks downstream
+        # (e.g. watch.py's gr162364 Elsevier-truncation guard, which bails
+        # out unless sidecar.source is the Elsevier fetcher).
+        companion_sc = read_sidecar(companion)
+        if companion_sc is None:
+            log.warning(
+                "precis_add (markup): companion %s has no sidecar of its "
+                "own — cannot clear printable_only safely",
+                companion.name,
+            )
+            return
+        write_sidecar(
+            companion,
+            ref_id=companion_sc.ref_id,
+            identifiers=companion_sc.identifiers,
+            source=companion_sc.source,
+            source_format=companion_sc.source_format,
+            printable_only=False,
+        )
+        log.info(
+            "precis_add (markup): cleared printable_only on companion %s "
+            "for ref_id=%s — will OCR when a watcher next reaches it",
+            companion.name,
+            input.fold_ref_id,
+        )
+        return
+
+    # Already left the inbox: it landed as an attach-only printable.
+    # Locate the stored copy and OCR it now.
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT pdf_sha256 FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            (input.fold_ref_id,),
+        ).fetchone()
+    if row is None or row[0] is None:
+        log.warning(
+            "precis_add (markup): companion %s already left the inbox but "
+            "ref_id=%s has no pdf_sha256 — cannot locate the stored copy "
+            "for OCR recovery",
+            sidecar.companion_pdf,
+            input.fold_ref_id,
+        )
+        return
+    storage_path = store.pdf_storage_path(str(row[0]))
+    if not storage_path or not Path(storage_path).is_file():
+        log.warning(
+            "precis_add (markup): no on-disk stored copy for ref_id=%s "
+            "(storage_path=%r) — cannot recover",
+            input.fold_ref_id,
+            storage_path,
+        )
+        return
+    stored = Path(storage_path)
+    stored_sha256 = str(row[0])  # already the ref's recorded pdf_sha256
+    log.info(
+        "precis_add (markup): %s already attached printable-only with no "
+        "body — running OCR fallback on the stored copy for ref_id=%s",
+        stored.name,
+        input.fold_ref_id,
+    )
+    # Call _ingest_pdf directly, NOT precis_add: precis_add's dispatch has
+    # a fast-path pdf_sha256 probe that short-circuits (no Marker) exactly
+    # because this hash is *already* registered (from the earlier
+    # printable-only attach) — that optimization exists to skip re-OCRing
+    # a byte-identical re-drop of an already body-bearing file, which is
+    # the opposite of what we need here: this ref deliberately has no body
+    # yet, and this is the one deliberate re-run of Marker to give it one.
+    # Still claim on the hash, same as every other _ingest_pdf caller: a
+    # second, independent fetch pass for the same stub (e.g. a later pass
+    # landing a different markup leg) could race this same recovery
+    # concurrently on another host.
+    pdf_input = PdfInput(
+        pdf_path=stored,
+        extra_tags=input.extra_tags,
+        as_kind=input.as_kind,
+        fold_ref_id=input.fold_ref_id,
+    )
+    if store.dsn is None:
+        _ingest_pdf(
+            pdf_input,
+            store=store,
+            pdf_sha256=stored_sha256,
+            use_pdf2doi=False,
+            crossref_mailto="",
+            s2_api_key="",
+        )
+        return
+    with Claim(store.dsn, stored_sha256) as claim:
+        if not claim.acquired:
+            log.info(
+                "precis_add (markup): OCR recovery for ref_id=%s already "
+                "claimed by another host — skipping",
+                input.fold_ref_id,
+            )
+            return
+        _ingest_pdf(
+            pdf_input,
+            store=store,
+            pdf_sha256=stored_sha256,
+            use_pdf2doi=False,
+            crossref_mailto="",
+            s2_api_key="",
+        )
 
 
 def _with_kind(result: IngestResult, *, kind: str) -> IngestResult:
@@ -920,7 +1074,11 @@ def _build_paper(
     )
 
     if isinstance(input, PdfInput):
-        paper = extract_paper(input.pdf_path, use_pdf2doi=use_pdf2doi)
+        paper = extract_paper(
+            input.pdf_path,
+            use_pdf2doi=use_pdf2doi,
+            printable_only=input.printable_only,
+        )
         # DRY: the identical pipeline lands the doc under whichever kind
         # the caller asked for (``paper`` default, ``cfp`` for the
         # requirements flow). Only ``refs.kind`` differs downstream.

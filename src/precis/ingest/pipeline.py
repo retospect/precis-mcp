@@ -314,6 +314,7 @@ def extract_paper(
     pdf_path: Path,
     *,
     use_pdf2doi: bool = False,
+    printable_only: bool = False,
 ) -> PaperToWrite:
     """Build a :class:`PaperToWrite` from a local PDF.
 
@@ -327,6 +328,15 @@ def extract_paper(
     5. Synthesize cards from the metadata.
     6. Hash the canonicalised body text → ``content_hash``.
     7. Pack everything into :class:`PaperToWrite`.
+
+    ``printable_only`` (gr161905) skips steps 4-5 entirely — **no Marker
+    run** — and returns a chunkless ``PaperToWrite`` (identity + a cheap
+    PyMuPDF page count only). Used for a PDF fetched alongside a markup
+    trigger for the same stub: it must never become a second, order-
+    dependent body candidate, only ever an attach-only printable. The
+    caller (``add.py``'s attach-only / has_body guard) already no-ops on
+    an empty ``chunks`` list, so this degrades to a pure identity+bytes
+    registration.
 
     Raises :class:`FileNotFoundError` if ``pdf_path`` doesn't exist.
     """
@@ -351,24 +361,30 @@ def extract_paper(
         year=metadata.year,
     )
 
-    blocks = extract_blocks_marker(pdf_path, paper_id)
-    blocks = _repair_mojibake(blocks)
-    body_chunks = _blocks_to_chunks(blocks)
-    body_chunks = _retag_references(body_chunks)
-    cards = _build_cards(
-        title=metadata.title,
-        authors=authors_dict,
-        abstract=metadata.abstract,
-        keywords=metadata.keywords,
-    )
+    if printable_only:
+        blocks: list[dict[str, Any]] = []
+        body_chunks: list[Any] = []
+        cards: list[Any] = []
+        pdf_pages_first = pdf_pages_last = None
+        page_count = _pdf_page_count(pdf_bytes) or 0
+    else:
+        blocks = extract_blocks_marker(pdf_path, paper_id)
+        blocks = _repair_mojibake(blocks)
+        body_chunks = _blocks_to_chunks(blocks)
+        body_chunks = _retag_references(body_chunks)
+        cards = _build_cards(
+            title=metadata.title,
+            authors=authors_dict,
+            abstract=metadata.abstract,
+            keywords=metadata.keywords,
+        )
+        pages = [b.get("page") for b in blocks if b.get("page") is not None]
+        pdf_pages_first = min(pages) if pages else None
+        pdf_pages_last = max(pages) if pages else None
+        page_count = len({p for p in pages if p is not None}) if pages else 0
 
     full_text = "\n\n".join(c.text for c in body_chunks)
     content_hash = make_content_hash(full_text) if full_text else None
-
-    pages = [b.get("page") for b in blocks if b.get("page") is not None]
-    pdf_pages_first = min(pages) if pages else None
-    pdf_pages_last = max(pages) if pages else None
-    page_count = len({p for p in pages if p is not None}) if pages else 0
 
     provider = _PROVIDER_MAP.get(metadata.doi_provenance, "embedded")
 

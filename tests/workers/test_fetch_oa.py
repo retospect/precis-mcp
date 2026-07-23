@@ -779,7 +779,7 @@ class TestRunMarkupCascade:
         landed = fetch_oa._run_markup_cascade(
             store, _stub(ref_id=1, doi="10.1016/j.x.2025.1"), tmp_path, "KEY"
         )
-        assert landed is False
+        assert landed is None
 
     def test_elsevier_landed_writes_sidecar_and_skips_other_legs(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -813,9 +813,8 @@ class TestRunMarkupCascade:
             tmp_path,
             "SECRET",
         )
-        assert landed is True
-
         xml_path = tmp_path / "widgets2025.xml"
+        assert landed == xml_path
         assert xml_path.exists()
         sc = read_sidecar(xml_path)
         assert sc is not None
@@ -844,7 +843,7 @@ class TestRunMarkupCascade:
         landed = fetch_oa._run_markup_cascade(
             store, _stub(ref_id=1, doi="10.1016/j.amf.2025.1"), tmp_path, ""
         )
-        assert landed is False
+        assert landed is None
         assert seen.get("called") is True
 
 
@@ -1606,6 +1605,103 @@ class TestRunCascade:
         )
         result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
         assert result == {"claimed": 1, "ok": 1, "failed": 0}
+
+
+class TestMarkupRacePrintableOnly:
+    """gr161905: a PDF fetched alongside a landed markup trigger must be
+    tagged ``printable_only`` so it never independently races Marker
+    against the markup, regardless of which host's watcher reaches it
+    first — and the markup trigger's own sidecar must record the
+    companion's filename for later parse-failure recovery."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_markup_and_oa_fetch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRECIS_OA_FETCH", "1")
+        monkeypatch.setenv("PRECIS_FETCH_MARKUP", "1")
+        monkeypatch.delenv("PRECIS_ELSEVIER_API_KEY", raising=False)
+        # No DOI on these stubs, so the JATS leg (DOI-only) silently
+        # skips and arXiv HTML is what lands the markup trigger.
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_unpaywall",
+            lambda doi, *, email: {"best_oa_location": None},
+        )
+        monkeypatch.setattr(
+            fetch_oa, "_query_crossref_pdf_links", lambda doi, *, email: []
+        )
+        monkeypatch.setattr(
+            fetch_oa, "_query_openalex_pdf_urls", lambda doi, *, email: []
+        )
+        monkeypatch.setattr(fetch_oa, "_query_europepmc_oa_pmcid", lambda doi: None)
+        monkeypatch.setattr(
+            fetch_oa, "_query_core_fulltext_urls", lambda doi, *, api_key: []
+        )
+        monkeypatch.setattr(fetch_oa, "_query_s2_openaccess", lambda paper_id: None)
+
+    def test_companion_pdf_tagged_printable_only_and_linked(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _seed_paper_stub(
+            store, doi=None, arxiv="2401.88888", cite_key="ax888", title="X"
+        )
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_markup",
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=64),
+        )
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_pdf",
+            lambda url, target: _write_synthetic_pdf(target, size=256),
+        )
+
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+
+        markup = tmp_path / "ax888.html"
+        pdf = tmp_path / "ax888.pdf"
+        assert markup.exists()
+        assert pdf.exists()
+
+        pdf_sc = read_sidecar(pdf)
+        assert pdf_sc is not None
+        assert pdf_sc.printable_only is True
+
+        markup_sc = read_sidecar(markup)
+        assert markup_sc is not None
+        assert markup_sc.companion_pdf == "ax888.pdf"
+
+    def test_no_markup_leaves_pdf_not_printable_only(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Markup gated on but no leg lands (no doi, no arxiv id at all) —
+        # the PDF-only fallback must be a normal, non-printable-only fetch.
+        _seed_paper_stub(store, doi="10.1234/nomatch", cite_key="plain83", title="Y")
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_unpaywall",
+            lambda doi, *, email: {
+                "best_oa_location": {"url_for_pdf": "https://x/y.pdf"}
+            },
+        )
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_pdf",
+            lambda url, target: _write_synthetic_pdf(target, size=256),
+        )
+        run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+
+        pdf = tmp_path / "plain83.pdf"
+        assert pdf.exists()
+        sc = read_sidecar(pdf)
+        assert sc is not None
+        assert sc.printable_only is False
 
 
 class TestOpenAlexBalanceAlert:

@@ -86,7 +86,7 @@ from tenacity import (
 from precis import secrets as _secrets
 from precis.alerts import raise_alert as _raise_alert
 from precis.alerts import resolve_stale_alerts as _resolve_alerts
-from precis.ingest.fetch_sidecar import write_sidecar
+from precis.ingest.fetch_sidecar import read_sidecar, write_sidecar
 
 log = logging.getLogger(__name__)
 
@@ -1455,15 +1455,21 @@ def run_oa_fetch_pass(
             # structured full-text source before the PDF cascade. Best-
             # effort — its failure must never block the PDF fetch, which
             # runs unconditionally afterwards to acquire the printable.
+            markup_path: Path | None = None
             try:
-                _run_markup_cascade(store, stub, inbox_path, api_key)
+                markup_path = _run_markup_cascade(store, stub, inbox_path, api_key)
             except Exception as exc:  # pragma: no cover — defensive
                 log.warning(
                     "fetch_oa: markup pass errored for ref_id=%s: %s",
                     stub.ref_id,
                     exc,
                 )
-            _run_cascade(
+            # gr161905: when markup already landed, the companion PDF this
+            # cascade drops must never be OCR'd as a body candidate — no
+            # matter which host's watcher reaches it first, it's the
+            # printable only. See _run_cascade's `printable_only` and
+            # FetchSidecar.printable_only.
+            pdf_path = _run_cascade(
                 store,
                 stub,
                 inbox_path,
@@ -1472,7 +1478,10 @@ def run_oa_fetch_pass(
                 wiley_token,
                 core_key,
                 openalex_content_key,
+                printable_only=markup_path is not None,
             )
+            if markup_path is not None and pdf_path is not None:
+                _link_markup_companion(markup_path, pdf_path)
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
             log.warning(
@@ -1596,19 +1605,22 @@ _MARKUP_LEGS: tuple[_MarkupLeg, ...] = (
 
 def _run_markup_cascade(
     store: Any, stub: StubRef, inbox_dir: Path, elsevier_api_key: str = ""
-) -> bool:
+) -> Path | None:
     """Try each markup leg; on first hit drop the trigger + sidecar.
 
-    Returns ``True`` when a markup source landed (so the caller knows the
-    chunk source is structured, though it still runs the PDF cascade for
-    the printable). Each leg records its own ``ref_events`` row. Best-
-    effort: any leg exception logs ``api_error`` and falls through.
+    Returns the markup trigger's path when a markup source landed (so the
+    caller knows the chunk source is structured, though it still runs the
+    PDF cascade for the printable — and can mark that PDF attach-only and
+    link it back to this trigger, gr161905). Each leg records its own
+    ``ref_events`` row. Best-effort: any leg exception logs ``api_error``
+    and falls through.
 
     The sidecar carries the stub's ``ref_id`` (the fold target) and the
     leg's ``source_format`` so the watcher builds a ``MarkupInput``; the
     companion PDF the PDF cascade drops later folds into the same ref via
     this same ``ref_id`` and attaches as the printable (see the
-    db_writer attach-only guard).
+    db_writer attach-only guard) — deterministically, never as a second
+    body candidate, since the caller tags it ``printable_only``.
 
     Elsevier is tried first, ahead of the generic ``_MARKUP_LEGS`` list:
     it's key-gated like the PDF leg (not identifier-driven like the other
@@ -1616,7 +1628,7 @@ def _run_markup_cascade(
     share. See :func:`_try_elsevier_markup` for why this leg exists.
     """
     if not _markup_fetch_enabled():
-        return False
+        return None
 
     try:
         elsevier_outcome = _try_elsevier_markup(
@@ -1660,7 +1672,7 @@ def _run_markup_cascade(
                 stub.ref_id,
                 elsevier_outcome.payload.get("size_bytes", 0),
             )
-            return True
+            return target
 
     log.debug(
         "fetch_oa markup: trying %d legs for ref_id=%s (doi=%s arxiv=%s)",
@@ -1734,8 +1746,8 @@ def _run_markup_cascade(
             leg.fmt,
             size,
         )
-        return True
-    return False
+        return target
+    return None
 
 
 def _run_cascade(
@@ -1747,8 +1759,15 @@ def _run_cascade(
     wiley_token: str,
     core_key: str,
     openalex_content_key: str = "",
-) -> None:
-    """Walk providers in order; stop at first fetch_ok.
+    printable_only: bool = False,
+) -> Path | None:
+    """Walk providers in order; stop at first fetch_ok. Returns the PDF path
+    on a landed fetch, else ``None``.
+
+    ``printable_only`` (gr161905) marks the sidecar so the watcher never
+    runs Marker on this PDF — set when a markup source already landed for
+    this stub, so this PDF is only ever the printable companion, never a
+    second, order-dependent body candidate.
 
     Records every attempted provider's outcome via append_event.
     Legs whose credential / identifier is absent are skipped at the
@@ -1882,8 +1901,41 @@ def _run_cascade(
                     "cite_key": stub.cite_key or "",
                 },
                 source=source,
+                printable_only=printable_only,
             )
-            return
+            return pdf_path
+    return None
+
+
+def _link_markup_companion(markup_path: Path, pdf_path: Path) -> None:
+    """Record ``pdf_path``'s name on the markup trigger's own sidecar.
+
+    Best-effort, gr161905: lets ``_ingest_markup`` locate this exact
+    companion PDF (by filename, same inbox dir) if the markup itself later
+    fails to parse — so it can un-mark that PDF's ``printable_only`` flag
+    (if still unprocessed) or, if the PDF already landed as an attach-only
+    printable, re-run OCR on the stored copy as the fallback. A read/write
+    failure here just means that recovery path degrades to the pre-fix
+    behavior (parse failure logs and leaves the ref claimable) — never
+    fails the fetch pass itself.
+    """
+    sidecar = read_sidecar(markup_path)
+    if sidecar is None:
+        log.warning(
+            "fetch_oa: no sidecar found for markup trigger %s — cannot link "
+            "companion %s for parse-failure recovery",
+            markup_path.name,
+            pdf_path.name,
+        )
+        return
+    write_sidecar(
+        markup_path,
+        ref_id=sidecar.ref_id,
+        identifiers=sidecar.identifiers,
+        source=sidecar.source,
+        source_format=sidecar.source_format,
+        companion_pdf=pdf_path.name,
+    )
 
 
 # ── Internals ──────────────────────────────────────────────────────

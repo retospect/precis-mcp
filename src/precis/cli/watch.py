@@ -742,13 +742,19 @@ def process_pdf(
     # a sidecar, so the hint is paper/cfp-only.
     sidecar = read_sidecar(pdf)
     fold_ref_id = sidecar.ref_id if sidecar is not None else None
+    printable_only = bool(sidecar is not None and sidecar.printable_only)
     input_: PdfInput | PresInput | MarkupInput
     if _is_markup(pdf):
         # Markup-first: chunks come from the structured source, no Marker.
-        # The companion PDF (if any) ingests independently through the PDF
-        # path and attaches as the printable via the db_writer has_body
-        # guard; reunification is by DOI or the shared sidecar fold_ref_id,
-        # so no companion-attach / same-stem interlock is needed here.
+        # The companion PDF (if any) is tagged ``printable_only`` in its own
+        # sidecar (gr161905) — it ingests independently through the PDF
+        # path but never runs Marker, so it can never become a second,
+        # order-dependent body candidate; it attaches as the printable via
+        # the db_writer has_body guard regardless of processing order. If
+        # this markup fails to parse, ``add.py::_recover_markup_parse_failure``
+        # un-marks that companion (or OCRs the already-attached copy) as
+        # the deterministic fallback. Reunification is by DOI or the shared
+        # sidecar fold_ref_id.
         fmt = _infer_markup_fmt(pdf, sidecar)
         if fmt is None:
             log.warning(
@@ -780,6 +786,7 @@ def process_pdf(
             extra_tags=routing.extra_tags,
             as_kind="cfp",
             fold_ref_id=fold_ref_id,
+            printable_only=printable_only,
         )
     elif routing.kind == "datasheet":
         input_ = PdfInput(
@@ -787,10 +794,14 @@ def process_pdf(
             extra_tags=routing.extra_tags,
             as_kind="datasheet",
             fold_ref_id=fold_ref_id,
+            printable_only=printable_only,
         )
     else:
         input_ = PdfInput(
-            pdf_path=pdf, extra_tags=routing.extra_tags, fold_ref_id=fold_ref_id
+            pdf_path=pdf,
+            extra_tags=routing.extra_tags,
+            fold_ref_id=fold_ref_id,
+            printable_only=printable_only,
         )
 
     try:

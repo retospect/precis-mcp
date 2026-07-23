@@ -135,3 +135,40 @@ def test_legacy_sidecar_without_format_decodes_as_pdf(tmp_path: Path) -> None:
     assert got.ref_id == 5
     assert got.source_format == "pdf"
     assert got.companion_pdf is None
+
+
+def test_printable_only_defaults_false(tmp_path: Path) -> None:
+    pdf = tmp_path / "plain.pdf"
+    write_sidecar(pdf, ref_id=1, identifiers={"doi": "10.1/p"}, source="fetcher:arxiv")
+    got = read_sidecar(pdf)
+    assert got is not None
+    assert got.printable_only is False
+
+
+def test_printable_only_roundtrips(tmp_path: Path) -> None:
+    # gr161905: a PDF fetched alongside a markup trigger is tagged
+    # printable_only so the watcher never runs Marker on it.
+    pdf = tmp_path / "companion.pdf"
+    write_sidecar(
+        pdf,
+        ref_id=42,
+        identifiers={"doi": "10.1/foo"},
+        source="fetcher:elsevier",
+        printable_only=True,
+    )
+    got = read_sidecar(pdf)
+    assert got is not None
+    assert got.printable_only is True
+
+
+def test_legacy_sidecar_without_printable_only_decodes_as_false(
+    tmp_path: Path,
+) -> None:
+    pdf = tmp_path / "legacy2.pdf"
+    sidecar_path(pdf).write_text(
+        '{"ref_id": 5, "identifiers": {}, "source": "fetcher:s2"}',
+        encoding="utf-8",
+    )
+    got = read_sidecar(pdf)
+    assert got is not None
+    assert got.printable_only is False

@@ -85,8 +85,19 @@ class FetchSidecar:
     source_format: str = "pdf"
     #: Filename (basename, same dir) of the printable PDF fetched
     #: alongside a markup trigger, else ``None``. Lets the watcher attach
-    #: the printable without re-deriving it from the markup.
+    #: the printable without re-deriving it from the markup, and lets a
+    #: markup parse failure locate its companion for OCR recovery (see
+    #: ``printable_only``).
     companion_pdf: str | None = None
+    #: True when this PDF trigger was fetched *alongside* a markup
+    #: trigger for the same stub (gr161905). The watcher must never run
+    #: Marker on it — no matter which host's watcher reaches it first,
+    #: it is attach-only (printable copy, zero chunks) so the markup
+    #: body always wins the race deterministically. Cleared back to
+    #: ``False`` by the markup ingest path itself if that markup later
+    #: fails to parse (see ``add.py::_ingest_markup``), which re-enables
+    #: this PDF as the OCR fallback for a not-yet-processed trigger.
+    printable_only: bool = False
 
 
 def sidecar_path(pdf: Path) -> Path:
@@ -102,6 +113,7 @@ def write_sidecar(
     source: str,
     source_format: str = "pdf",
     companion_pdf: str | None = None,
+    printable_only: bool = False,
 ) -> None:
     """Atomically write the sidecar next to the trigger file ``pdf``.
 
@@ -109,7 +121,8 @@ def write_sidecar(
     the legacy path, or the markup file (``.xml`` / ``.tex`` / ``.tar.gz``)
     on the markup-first path. ``source_format`` selects the producer and
     ``companion_pdf`` names the printable fetched alongside a markup
-    trigger (basename in the same directory), if any.
+    trigger (basename in the same directory), if any. ``printable_only``
+    marks a PDF trigger as attach-only — see :attr:`FetchSidecar.printable_only`.
 
     Best-effort: a sidecar write failure must never fail the fetch (the
     file is already on disk and ingest degrades to identity re-derivation
@@ -132,6 +145,7 @@ def write_sidecar(
         "source": source,
         "source_format": source_format,
         "companion_pdf": companion_pdf,
+        "printable_only": bool(printable_only),
     }
     tmp = target.with_name(f".{target.name}.tmp")
     try:
@@ -178,6 +192,8 @@ def read_sidecar(pdf: Path) -> FetchSidecar | None:
             source_format = "pdf"
         companion_raw = data.get("companion_pdf")
         companion_pdf = str(companion_raw) if companion_raw else None
+        # Back-compat: absent in sidecars written before gr161905.
+        printable_only = bool(data.get("printable_only", False))
     except (ValueError, KeyError, TypeError) as exc:
         log.warning("fetch_sidecar: ignoring malformed %s: %s", path.name, exc)
         return None
@@ -187,6 +203,7 @@ def read_sidecar(pdf: Path) -> FetchSidecar | None:
         source=source,
         source_format=source_format,
         companion_pdf=companion_pdf,
+        printable_only=printable_only,
     )
 
 

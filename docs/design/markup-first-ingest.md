@@ -212,11 +212,16 @@ the input dataclass, so the watcher only builds the right input:
   builds `MarkupInput` (markup suffix, or sidecar `source_format !=
   pdf`) or `PdfInput` (else). The batch subprocess generalizes the
   same way.
-- **Same-stem-sibling rule (the bundle interlock, existence not
-  timing)**: a `.pdf` that has a same-stem markup sibling is
-  **skipped as a standalone trigger** — the markup path consumes it
-  as `companion_pdf`. A lone `.pdf` ingests exactly as today. This
-  avoids the double-ingest race with no new debounce logic.
+- **~~Same-stem-sibling rule~~ — proposed here, never implemented; superseded
+  by `printable_only` (gr161905, see §5).** This section originally proposed
+  skipping a `.pdf` with a same-stem markup sibling as a standalone trigger.
+  What shipped instead never checked for a sibling at all — the companion
+  PDF ingested independently through the normal `PdfInput`/Marker path,
+  racing the markup ingest across the 4-node shared inbox: whichever
+  landed first won the body (gr161905). The actual fix tags the companion
+  PDF `printable_only=True` **at fetch time** (deterministic, single-host,
+  no sibling-existence check needed) so it never runs Marker regardless of
+  processing order; see §5.
 
 `tagging/` segment semantics apply identically. New `MarkupInput`
 dataclass in `add.py` carries `markup_path`, `fmt`, `companion_pdf`,
@@ -249,9 +254,26 @@ pipeline's chunks**. Two cases now exist for an identifier hit:
   a cheap printable/metadata attach instead of a duplicate Marker
   run. Policy encoded: **markup chunks win over Marker chunks**; a
   manual override is a later supersede ADR.
-- **PDF-first edge**: if the PDF genuinely arrives before the markup
-  (odd manual drop), the PDF's Marker chunks are the body and the
-  later markup is a no-op — same append-only punt.
+- **PDF-first edge — fixed (gr161905), no longer a punt.** The race this
+  bullet used to accept (whichever host's watcher reaches the companion
+  PDF first determines the winning body) is closed at fetch time, not
+  write time: `fetch_oa.run_oa_fetch_pass` captures whether the markup
+  cascade landed and tags the companion PDF's `FetchSidecar.printable_only
+  = True` when it did (`_run_cascade`'s `printable_only` param). A
+  `printable_only` PDF skips Marker entirely (`extract_paper(...,
+  printable_only=True)` — no `extract_blocks_marker` call, empty
+  `chunks`) regardless of which host processes it or in what order, so it
+  can never win a body race — this `has_body` guard is now a backstop, not
+  the only line of defense. If the markup later fails to parse
+  (`MarkupParseError`), `add.py::_recover_markup_parse_failure` closes the
+  loop deterministically: if the companion PDF is still sitting unclaimed
+  in the inbox, its `printable_only` flag is cleared so the next watcher
+  runs Marker normally (`has_body` is still `False`); if it already landed
+  as a printable-only attach, the stored copy is OCR'd synchronously,
+  right there, via `_ingest_pdf` (bypassing `precis_add`'s pdf_sha256
+  fast-path, which would otherwise wrongly no-op since the hash is already
+  known). See gripe 161905 and `src/precis/workers/fetch_oa.py`'s
+  `_run_markup_cascade`/`_run_cascade`/`_link_markup_companion`.
 
 ### 6. Idempotency
 
