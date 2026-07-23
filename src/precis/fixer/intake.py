@@ -48,6 +48,8 @@ class WorkItem:
     branch: str
     spec_text: str
     source_path: Path | None = None
+    model: str | None = None  # front-matter "model:" tier (sonnet/opus/haiku)
+    blocked_by: str | None = None  # front-matter "blocked-by:" predecessor slug
 
 
 def parse_front_matter(text: str) -> dict[str, str]:
@@ -55,9 +57,10 @@ def parse_front_matter(text: str) -> dict[str, str]:
 
     Deliberately minimal — flat ``key: value`` lines only, values
     lower-cased-key'd but value-preserved, ``#`` comments and blank
-    lines skipped. We only need ``status`` / ``title``; anything
-    richer belongs in a real YAML load, which the pick path does not
-    warrant. Returns ``{}`` when there is no front-matter block.
+    lines skipped. Consumers read ``status`` / ``title`` / ``model`` /
+    ``blocked-by``; anything richer belongs in a real YAML load, which
+    the pick path does not warrant. Returns ``{}`` when there is no
+    front-matter block.
     """
     m = _FRONT_MATTER_RE.match(text)
     if not m:
@@ -116,6 +119,8 @@ def ready_proposals(proposals_dir: Path) -> list[WorkItem]:
                 branch=f"fix/{slug}",
                 spec_text=text,
                 source_path=path,
+                model=fm.get("model") or None,
+                blocked_by=fm.get("blocked-by") or None,
             )
         )
     return items
@@ -129,9 +134,16 @@ def pick_next(
 
     The re-firing loop must not re-pick something it already branched;
     ``branch_exists`` encapsulates the git check (local/worktree/remote)
-    so this stays pure and testable.
+    so this stays pure and testable. An item with ``blocked_by`` set is
+    also skipped while its predecessor's branch (``fix/<blocked_by>``)
+    still exists — the check is against ``branch_exists`` alone, not
+    against the predecessor still being present in ``items`` (it may
+    have already shipped and dropped out of ``ready_proposals``).
     """
     for item in items:
-        if not branch_exists(item.branch):
-            return item
+        if branch_exists(item.branch):
+            continue
+        if item.blocked_by and branch_exists(f"fix/{item.blocked_by}"):
+            continue
+        return item
     return None

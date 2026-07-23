@@ -59,9 +59,35 @@ def test_ready_proposals_missing_dir(tmp_path: Path) -> None:
     assert ready_proposals(tmp_path / "nope") == []
 
 
-def _item(slug: str) -> WorkItem:
+def test_ready_proposals_model_and_blocked_by_absent_by_default(tmp_path: Path) -> None:
+    _write(tmp_path, "x.md", "---\nstatus: ready\n---\n\n# X\n")
+    (item,) = ready_proposals(tmp_path)
+    assert item.model is None
+    assert item.blocked_by is None
+
+
+def test_ready_proposals_parses_model_and_blocked_by(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "x.md",
+        "---\nstatus: ready\nmodel: opus\nblocked-by: some-earlier-thing\n---\n\n# X\n",
+    )
+    (item,) = ready_proposals(tmp_path)
+    assert item.model == "opus"
+    assert item.blocked_by == "some-earlier-thing"
+
+
+def _item(
+    slug: str, *, blocked_by: str | None = None, model: str | None = None
+) -> WorkItem:
     return WorkItem(
-        kind="proposal", slug=slug, title=slug, branch=f"fix/{slug}", spec_text="x"
+        kind="proposal",
+        slug=slug,
+        title=slug,
+        branch=f"fix/{slug}",
+        spec_text="x",
+        blocked_by=blocked_by,
+        model=model,
     )
 
 
@@ -81,3 +107,23 @@ def test_pick_next_first_when_none_branched() -> None:
     items = [_item("one"), _item("two")]
     picked = pick_next(items, lambda _b: False)
     assert picked is not None and picked.slug == "one"
+
+
+def test_pick_next_skips_blocked_while_predecessor_branch_exists() -> None:
+    items = [_item("two", blocked_by="one")]
+    picked = pick_next(items, lambda b: b == "fix/one")
+    assert picked is None
+
+
+def test_pick_next_picks_blocked_once_predecessor_branch_gone() -> None:
+    # Predecessor already shipped and dropped out of `items` entirely —
+    # the check is against branch_exists alone, not presence in items.
+    items = [_item("two", blocked_by="one")]
+    picked = pick_next(items, lambda _b: False)
+    assert picked is not None and picked.slug == "two"
+
+
+def test_pick_next_blocked_by_does_not_affect_unblocked_items() -> None:
+    items = [_item("blocked", blocked_by="predecessor"), _item("free")]
+    picked = pick_next(items, lambda b: b == "fix/predecessor")
+    assert picked is not None and picked.slug == "free"

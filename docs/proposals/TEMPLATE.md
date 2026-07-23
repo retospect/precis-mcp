@@ -1,6 +1,8 @@
 ---
 status: draft
 title: <one-line intent>
+model: <optional — sonnet | opus | haiku; unset ⇒ fixer default (claude-sonnet-5)>
+blocked-by: <optional — slug of a proposal that must ship first>
 ---
 
 # <one-line intent>

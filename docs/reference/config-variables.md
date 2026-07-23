@@ -162,7 +162,7 @@ override if you want per-host divergence).
 | `PRECIS_MODEL_HAIKU` | CLOUD_SMALL model id | `claude-haiku-4-5-20251001` | not set ⇒ default | ✅ Current. |
 | `PRECIS_LOCAL_BIG_MODEL` | LOCAL_BIG tier alias | `qwen-heavy` | not set ⇒ default | ✅ Resolves via the litellm proxy tier table. |
 | `PRECIS_SUMMARIZE_MODEL` | Summarize LLM alias | `summarizer` | `qwen` (shared-env) | ✅ Explicit prod alias. |
-| Per-pass model overrides | `PRECIS_FIXER_CLAUDE_MODEL` (`claude-opus-4-8`), `PRECIS_FIX_CLAUDE_MODEL`, `PRECIS_{CLASSIFY,PAPER_GLOSSARY,STRUCTURAL,DEEP_REVIEW,STRUCTURE_PROPOSE,CAD_PROPOSE,CAD_DISCUSS,DREAM_AGENT,FIGURE,MERMAID,BRIEFING,MEDITATION,READING_BRIEF,CARD_FORGE,FOLLOWUP}_MODEL` | mostly none ⇒ tier resolver | not set | ✅ Unset ⇒ each falls to its tier default. Set only to pin a specific pass. |
+| Per-pass model overrides | `PRECIS_FIXER_CLAUDE_MODEL` (`claude-sonnet-5`), `PRECIS_FIX_CLAUDE_MODEL`, `PRECIS_{CLASSIFY,PAPER_GLOSSARY,STRUCTURAL,DEEP_REVIEW,STRUCTURE_PROPOSE,CAD_PROPOSE,CAD_DISCUSS,DREAM_AGENT,FIGURE,MERMAID,BRIEFING,MEDITATION,READING_BRIEF,CARD_FORGE,FOLLOWUP}_MODEL` | mostly none ⇒ tier resolver | not set | ✅ Unset ⇒ each falls to its tier default. Set only to pin a specific pass. |
 | `PRECIS_EMBEDDER` | `mock`/`bge-m3`/`remote` | `mock` (config) / `bge-m3` (worker) | `remote` (asa-bot); workers pass `bge-m3`/remote via CLI args | ✅ Correct — daemons point at the loopback `serve-embeddings` at `127.0.0.1:8181`. |
 | `PRECIS_EMBEDDER_BACKEND` | serve-embeddings backend | `bge-m3` | not set ⇒ `bge-m3` | ✅ Default. |
 

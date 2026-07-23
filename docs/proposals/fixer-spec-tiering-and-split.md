@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: Fixer — right-size the model per proposal, allow declared sequencing, make the builder delegate
 ---
 
@@ -66,7 +66,12 @@ when authoring a proposal, not a new automated gate.
    `utils/llm/router.py`'s `claude-haiku-4-5-20251001` — reconciling those is
    a separate, pre-existing inconsistency, not this proposal's job): this
    map uses `sonnet`→`claude-sonnet-5`, `opus`→`claude-opus-4-8`,
-   `haiku`→`claude-haiku-4-5-20251001` (the more specific, current id).
+   `haiku`→`claude-haiku-4-5-20251001` (the more specific, current id). The
+   env var name (`PRECIS_FIXER_CLAUDE_MODEL`) is unchanged — only the Python
+   field it feeds renames (`claude_model`→`default_model`) and its default
+   value flips; `docs/reference/config-variables.md`'s existing row for this
+   var must be updated in the same commit per that file's own drift-warning
+   convention (see Target + blast radius).
 2. **`blocked-by: <slug>` front-matter.** `ready_proposals`/`pick_next`
    (`src/precis/fixer/intake.py::ready_proposals`,
    `src/precis/fixer/intake.py::pick_next`) gain a skip: a proposal naming a
@@ -158,6 +163,10 @@ when authoring a proposal, not a new automated gate.
   new one if none exists).
 - `docs/proposals/README.md` states the split heuristic in a few lines, next
   to the existing lifecycle section.
+- `docs/reference/config-variables.md`'s `PRECIS_FIXER_CLAUDE_MODEL` row
+  shows the code default as `claude-sonnet-5`, not the stale `claude-opus-4-8`
+  — a doc-drift check (grep or the doc-pointer test) confirms the two never
+  disagree.
 - Existing fixer tests stay green; new front-matter keys are additive
   (absent ⇒ current behavior except the model default).
 
@@ -174,6 +183,10 @@ when authoring a proposal, not a new automated gate.
   optional front-matter keys.
 - `docs/proposals/README.md` — split heuristic + a one-line mention of
   `blocked-by` in the conventions list.
+- `docs/reference/config-variables.md` — update `PRECIS_FIXER_CLAUDE_MODEL`'s
+  documented code default (row under "4. Models & LLM backend") from
+  `claude-opus-4-8` to `claude-sonnet-5`, per that file's own same-commit
+  drift-warning convention. Env var name itself is unchanged.
 - Test coverage wherever the fixer is already tested (mirror existing test
   file layout — no new test infra).
 
@@ -196,7 +209,9 @@ when authoring a proposal, not a new automated gate.
   real proposal needs more.
 - Naming: `default_model` vs. keeping `claude_model` and just changing its
   default — either is fine; flagged only so the rename doesn't get bikeshedded
-  mid-build.
+  mid-build. **Resolved (env var half):** the `PRECIS_FIXER_CLAUDE_MODEL` env
+  var name is unaffected either way — only the Python field renames, per
+  scope item 1 and Target + blast radius above.
 
 ### `ready`-agent findings (auto-vetted against ADR 0048 §1)
 
@@ -278,3 +293,48 @@ when authoring a proposal, not a new automated gate.
   option (item 2 could ship on its own timeline from 1/3/4) if you'd rather
   land the uncontroversial pieces sooner. Not done here since it restructures
   the file; say the word and I will.
+
+### `ready`-agent re-check findings (2026-07-23, fresh pass against current text + code)
+
+The three prior blockers and two of the four prior advisories hold up under
+independent re-verification against the current code (`src/precis/fixer/tick.py`,
+`src/precis/fixer/intake.py`) and history (`git log --all -- .claude/agents/ready.md`
+confirms `a0bec75a` added both `.claude/agents/ready.md` and this proposal file
+in one already-merged-to-main commit — the Motivation's "added in this same
+change" claim is literally, not just plausibly, true). The `shipped`-gated
+`git branch -D` design in scope item 2 is internally coherent: `run_tick`'s
+`ship_ok` block runs once, before the `Autonomy.SHIP`/`FULL` branch, so a
+single `shipped = True` set there covers both; `_worktree_remove` (worktree
+teardown) necessarily precedes `git branch -D` in the `finally` block since a
+branch checked out in a linked worktree can't be deleted first, and the spec's
+ordering ("after `_worktree_remove`, additionally runs...") gets this right;
+`-D` over `-d` is the correct call for a squash-merged branch. One new item
+found this pass:
+
+- **blocker** — Target + blast radius omits `docs/reference/config-variables.md`,
+  which documents `PRECIS_FIXER_CLAUDE_MODEL`'s **code default** as
+  `claude-opus-4-8` (line ~165) under an explicit, stated repo convention on
+  that file's own header: "the code default columns... stay true as long as
+  this file is updated in the same commit that changes them." This proposal's
+  own In-scope item 1 and Acceptance Criteria change that exact default
+  (opus→sonnet) but never list this file as touched, and it isn't among the
+  five "agent-context maps" `_compose_prompt` already tells the builder to
+  keep fresh (`CLAUDE.md`, `AGENTS.md`, skills, `OPEN-ITEMS.md`, ADR index) —
+  so nothing in this spec's own delegated hygiene step would catch it either.
+  The file is hand-maintained (no generator script found). Left as scoped,
+  this proposal ships a stale, directly-contradicted reference doc with no
+  test or prompt instruction to catch it — a real post-deploy-check-looks-in-
+  the-wrong-place gap, same class as the now-resolved scope-item-2 blocker.
+  **Resolved:** scope item 1, Target + blast radius, and Acceptance criteria
+  now list `docs/reference/config-variables.md`'s row update explicitly.
+- advisory — Related to the above: it's unstated whether the env var name
+  `PRECIS_FIXER_CLAUDE_MODEL` itself gets renamed alongside the `FixerConfig`
+  field (`claude_model`→`default_model`), or is kept as-is and just re-read
+  into the renamed field. The existing "Naming" open-questions entry covers
+  only the Python field name, not the env var string that `config-variables.md`
+  and any deploy-side env file would need to match. Either choice is workable;
+  whichever is picked should be the same one used when fixing the blocker
+  above.
+  **Resolved:** the env var name stays `PRECIS_FIXER_CLAUDE_MODEL` unchanged
+  (only the Python field renames) — closing the naming open-question's
+  env-var half too (see the "Naming" entry above).

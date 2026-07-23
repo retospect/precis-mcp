@@ -40,6 +40,17 @@ from precis.fixer.report import Report, ReportStatus, emit_report
 log = logging.getLogger("precis.fixer")
 
 
+#: Per-proposal ``model:`` tier → concrete model id. A pinned literal per
+#: tier (not a live lookup) — the repo carries two divergent haiku ids in
+#: different subsystems (``utils/claude_p.py`` vs ``utils/llm/router.py``);
+#: reconciling those is a separate, pre-existing concern, not the fixer's.
+TIER_MODELS: dict[str, str] = {
+    "sonnet": "claude-sonnet-5",
+    "opus": "claude-opus-4-8",
+    "haiku": "claude-haiku-4-5-20251001",
+}
+
+
 class Autonomy(StrEnum):
     """How far down the pipeline a tick is allowed to walk."""
 
@@ -63,7 +74,7 @@ class FixerConfig:
     proposals_dir: Path
     work_dir: Path
     claude_bin: str
-    claude_model: str
+    default_model: str
     autonomy: Autonomy
     build_timeout_s: int
     gate_cmds: tuple[tuple[str, ...], ...]
@@ -74,13 +85,13 @@ class FixerConfig:
     def from_env(cls, repo_root: Path) -> FixerConfig:
         work = os.environ.get("PRECIS_FIXER_WORK_DIR")
         work_dir = Path(work).resolve() if work else repo_root / ".fixer-work"
-        model = os.environ.get("PRECIS_FIXER_CLAUDE_MODEL", "claude-opus-4-8")
+        model = os.environ.get("PRECIS_FIXER_CLAUDE_MODEL", "claude-sonnet-5")
         return cls(
             repo_root=repo_root,
             proposals_dir=repo_root / "docs" / "proposals",
             work_dir=work_dir,
             claude_bin=os.environ.get("PRECIS_FIXER_CLAUDE_BIN", "claude"),
-            claude_model=model,
+            default_model=model,
             autonomy=Autonomy.from_env(os.environ.get("PRECIS_FIXER_AUTONOMY")),
             build_timeout_s=int(os.environ.get("PRECIS_FIXER_BUILD_TIMEOUT_S", "1800")),
             gate_cmds=(
@@ -152,12 +163,29 @@ def _compose_prompt(item: WorkItem) -> str:
         "drift-note is the honest treatment), the schema SVG, or existing "
         "ADR bodies — ADRs are append-only, so a change may *add* an ADR but "
         "never edit a sealed one.\n\n"
+        "## Delegate mechanical substeps\n"
+        "Hand off mechanical substeps to the matching named subagent via the "
+        "Agent tool instead of doing them inline in your own context: running "
+        "the test suite to `test-runner`, lint/format cleanup to `tidy`, "
+        "doc-sync to `documenter`, and code lookup (where-is/how-does) to "
+        "`navigator`. Keep the decided design/implementation work for "
+        "yourself; delegate the bounded, mechanical parts.\n\n"
         f"# SPEC: {item.title}\n\n{item.spec_text}\n"
     )
 
 
+def _resolve_model(cfg: FixerConfig, item: WorkItem) -> str:
+    """The concrete model id a build should use.
+
+    ``item.model`` (a tier name — ``sonnet``/``opus``/``haiku``, from the
+    proposal's front-matter) resolves via :data:`TIER_MODELS`; unset or
+    unrecognised falls back to ``cfg.default_model``.
+    """
+    return TIER_MODELS.get(item.model or "", cfg.default_model)
+
+
 def _spawn_claude(
-    cfg: FixerConfig, cwd: Path, prompt: str
+    cfg: FixerConfig, cwd: Path, prompt: str, item: WorkItem
 ) -> subprocess.CompletedProcess[str]:
     """Run the host ``claude`` in ``cwd`` with OAuth (not ``--bare``).
 
@@ -165,13 +193,14 @@ def _spawn_claude(
     reachable and the builder sees CLAUDE.md + skills. The gate — the
     only thing that needs the container — runs separately.
     """
+    model = _resolve_model(cfg, item)
     return subprocess.run(
         [
             cfg.claude_bin,
             "-p",
             "--dangerously-skip-permissions",
             "--model",
-            cfg.claude_model,
+            model,
             prompt,
         ],
         cwd=str(cwd),
@@ -329,8 +358,9 @@ def run_tick(cfg: FixerConfig) -> TickResult:
         _worktree_remove(cfg.repo_root, worktree)
     _worktree_add(cfg.repo_root, worktree, item.branch)
 
+    shipped = False
     try:
-        build = _spawn_claude(cfg, worktree, _compose_prompt(item))
+        build = _spawn_claude(cfg, worktree, _compose_prompt(item), item)
         if build.returncode != 0:
             tail = "\n".join((build.stderr or build.stdout or "").splitlines()[-10:])
             result.report = Report(
@@ -370,6 +400,7 @@ def run_tick(cfg: FixerConfig) -> TickResult:
                 ReportStatus.NEEDS_YOU, item.title, f"ship gate:\n{ship_tail}"
             )
             return result
+        shipped = True
 
         if cfg.autonomy is Autonomy.SHIP:
             result.report = Report(
@@ -395,6 +426,16 @@ def run_tick(cfg: FixerConfig) -> TickResult:
         # Always clean up the build worktree — ship/full modes were
         # leaking them under .fixer-work (report mode already removed).
         _worktree_remove(cfg.repo_root, worktree)
+        if shipped:
+            # scripts/ship deletes only the REMOTE branch and resets the
+            # LOCAL one to shipped main (deliberate, for interactive
+            # /land /go which reuse the worktree) — never deletes it
+            # locally. Without this, branch_exists() (which checks local
+            # first) would see a shipped predecessor's branch forever,
+            # and blocked-by would never unblock. -D (not -d): a
+            # squash-merged branch's commits aren't ancestors of the
+            # squash commit, so -d would refuse.
+            _git(cfg.repo_root, "branch", "-D", item.branch, check=False)
 
 
 def _run_script_in_worktree(worktree: Path, script: str, msg: str) -> tuple[bool, str]:

@@ -42,3 +42,14 @@ def test_compose_prompt_names_the_do_not_force_update_set() -> None:
     assert "docs/design/" in prompt
     assert "SVG" in prompt
     assert "append-only" in prompt
+
+
+def test_compose_prompt_instructs_delegation_to_named_subagents() -> None:
+    prompt = _compose_prompt(_item())
+    # Mechanical substeps go to named subagents via the Agent tool, not
+    # done inline in the (possibly top-tier) builder context.
+    assert "test-runner" in prompt
+    assert "tidy" in prompt
+    assert "documenter" in prompt
+    assert "navigator" in prompt
+    assert "Agent tool" in prompt
