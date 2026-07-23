@@ -624,6 +624,40 @@ def test_items_folder_filter_flows_to_recent(runtime, client) -> None:
     assert runtime.store.recent_parent_id == 200
 
 
+def test_folder_options_survives_cyclic_parent_chain() -> None:
+    """A corrupted ``folder`` table where a folder is its own ancestor
+    (300 -> parent 301 -> parent 300) must not stack-overflow the
+    /items page — the walk should skip the cyclic branch and return."""
+    from precis_web.routes.items import _folder_options
+
+    class _CyclicStore:
+        def list_folders(self):
+            return [(300, "Loop A", 301), (301, "Loop B", 300)]
+
+    options = _folder_options(_CyclicStore())
+    assert options == []  # neither folder is reachable from the root (None)
+
+
+def test_folder_options_skips_cyclic_branch_below_a_real_root() -> None:
+    """Same corruption, but the cycle hangs off a real root folder — the
+    root and its first descendant are still returned; the cycle itself
+    is skipped rather than recursing forever."""
+    from precis_web.routes.items import _folder_options
+
+    class _CyclicStore:
+        def list_folders(self):
+            return [
+                (200, "Root folder", None),
+                (300, "Loop A", 200),
+                (301, "Loop B", 300),
+                (300, "Loop A (revisit)", 301),  # closes the cycle back to 300
+            ]
+
+    options = _folder_options(_CyclicStore())
+    ids = [o["id"] for o in options]
+    assert ids == [200, 300, 301]  # cyclic re-entry into 300 is skipped
+
+
 def test_items_thumbnail_renders_for_youtube_row(runtime, client) -> None:
     """A row whose presenter has a thumbnail (youtube) renders an
     ``<img>``; the canned paper/web rows have none."""

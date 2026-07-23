@@ -22,6 +22,7 @@ info, deleted-ref visibility — see ``OPEN-ITEMS.md``). Read-only.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode
@@ -35,6 +36,7 @@ from precis_web.item_view import artifact_kinds, item_row
 from precis_web.routes.flags import FLAG_DEFS, FLAG_NAMESPACE, FLAG_VALUE_LIST
 
 router = APIRouter(prefix="/items", tags=["items"])
+log = logging.getLogger(__name__)
 
 
 def _tag_filter_string(ns: str, value: str) -> str:
@@ -207,9 +209,22 @@ def _folder_options(store: Any) -> list[dict[str, Any]]:
         by_parent.setdefault(parent_id, []).append((ref_id, title))
 
     out: list[dict[str, Any]] = []
+    # Guards a corrupted/cyclic parent_id chain (a folder that is its own
+    # ancestor) from recursing forever and stack-overflowing the whole
+    # /items page — mirrors the visited-set style of drive._breadcrumb's
+    # parent walk.
+    seen: set[int] = set()
 
     def walk(parent: int | None, depth: int) -> None:
         for ref_id, title in by_parent.get(parent, []):
+            if ref_id in seen:
+                log.warning(
+                    "folder %s revisits an ancestor in its own parent chain; "
+                    "skipping cyclic branch",
+                    ref_id,
+                )
+                continue
+            seen.add(ref_id)
             out.append({"id": ref_id, "label": ("— " * depth) + (title or "")})
             walk(ref_id, depth + 1)
 
