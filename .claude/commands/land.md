@@ -11,6 +11,11 @@ fast-forward deterministically, which is faster, reproducible, and
 token-cheap. Your job is only to (a) supply a good commit message and
 (b) handle anything the script can't (a real merge conflict or a red gate).
 
+If there's nothing to ship (clean tree, zero commits ahead), say so and stop
+— but note *why* in one line if the session did real work: durable output can
+land entirely outside this repo (personal auto-memory, precis MCP `todo`/
+`gripe` writes), which won't show here and isn't a ship failure.
+
 Live state at invocation:
 
 - Branch + status:
