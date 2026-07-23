@@ -66,6 +66,14 @@ UPDATE refs
    SET pdf_sha256 = NULL, pdf_pages = NULL, pdf_role = NULL
  WHERE ref_id = ANY(%(ref_ids)s);
 
+-- Hygiene: drop stale hash identifiers pointing at the truncated PDF
+-- being replaced. Not confirmed as the cause of the 2026-07-23 pilot's
+-- truncated-worse result (forensics point at gripe:170349 instead), but
+-- these rows are genuinely dangling once the reset above clears the ref's
+-- own pdf_sha256, so clear them regardless.
+DELETE FROM ref_identifiers
+ WHERE ref_id = ANY(%(ref_ids)s) AND id_kind IN ('pdf_sha256', 'content_hash');
+
 DELETE FROM ref_events
  WHERE ref_id = ANY(%(ref_ids)s) AND source LIKE 'fetcher:%%';
 
@@ -93,6 +101,41 @@ tagged `printable_only` so Marker never re-truncates the body.
 watch one fetch pass recover full text, verify (chunk count back to a
 normal range, `pdf_pages` spans the real document, abstract no longer
 truncated mid-sentence) before scaling to the rest.
+
+**2026-07-23 pilot run result: BLOCKED, do not scale.** Reset+fetch (the
+SQL above, `PRECIS_FETCH_MARKUP=1`) worked exactly as documented — all 5
+stubs re-fetched larger companion PDFs. But downstream ingest recovered
+full text for **none** of the 5; 4 ended up more truncated than before the
+reset and one (`168074`) stayed empty. Root cause **confirmed** via
+forensics (sidecar files + watch-log sequence): a markup-companion-PDF
+sidecar race — `elsevier_xml`'s `"no <body>"` parse-failure recovery path
+(gr161905, `add.py:_recover_markup_parse_failure`) gives up permanently if
+the companion PDF's filename hasn't yet been linked onto the markup
+sidecar. `168074`'s companion PDF landed in the shared inbox but was never
+imported because of exactly this race. Filed as its own actionable item,
+fix direction included: `gripe:170349`.
+
+Two secondary findings, neither the primary driver: spark's Marker OCR was
+separately broken (nvidia docker runtime never configured) — **fixed and
+verified 2026-07-23**. `ref_identifiers` stale rows (`id_kind IN
+('pdf_sha256','content_hash')`) do survive the reset SQL, but forensics
+show they are **not** what caused the truncated results.
+
+**2026-07-24: `gripe:170349` fixed** (worktree `sharded-crunching-kite`, not
+yet shipped to `main`). `_run_markup_cascade` (`src/precis/workers/
+fetch_oa.py`) now stages the markup trigger + its sidecar under
+`inbox_dir/.staging/` — unwatched (`watch.py::_MANAGED_DIRS`) — instead of
+writing directly into the watched inbox. `_publish_markup_trigger` replaces
+`_link_markup_companion`: it rewrites the sidecar with the now-known
+`companion_pdf` and `os.replace()`s both files into the real inbox path in
+one atomic step, only after the companion PDF's fate is known. The trigger
+is never watcher-visible with an incomplete sidecar.
+`scripts/test tests/workers/test_fetch_oa.py -k Markup` (11 passed) +
+`scripts/test --impacted` (472 passed) + ruff/mypy clean.
+
+Do not run the reset SQL against the full ~2,796-ref population until this
+fix has **shipped** and a re-run of the 5-ref pilot recovers full text
+end-to-end.
 
 ## Execution boundary — must run on cluster infra
 

@@ -10,6 +10,19 @@ is the historical observation log.
 > regression that pins it.
 
 ---
+## spark: nvidia docker runtime not configured by ansible
+- Status: open · Severity: polish · Owner: `deploy/roles/` (GPU-node
+  provisioning) · Test: n/a yet.
+- 2026-07-23: spark's `nvidia-container-toolkit` was installed but Docker
+  was never configured to register the `nvidia` runtime
+  (`/etc/docker/daemon.json` didn't exist) — broke Marker's OCR path
+  fleet-wide (`docker: unknown or invalid runtime name: nvidia`). Fixed
+  live (`nvidia-ctk runtime configure --runtime=docker` + docker restart),
+  but no ansible role/task runs that command — a fresh bootstrap or a
+  from-scratch redeploy of spark would silently re-break it. Add the task
+  to whichever GPU-node role owns spark's provisioning.
+
+---
 ## 🔵 catpath harvest bookmark — multi-job concurrency edge case
 - Status: open · Severity: polish · Owner: `src/precis/quest/compute.py::harvest_measures`
   · Test: none yet (unconfirmed whether concurrent catpath jobs per candidate
@@ -33,10 +46,34 @@ is the historical observation log.
   high-water mark.
 
 ---
-## 📄 Elsevier preview-PDF remediation — ~2,800 prod papers, pilot-ready
-- Status: open · Severity: feature (data quality, not a bug) · Owner: cluster
+## 📄 Elsevier preview-PDF remediation — ~2,800 prod papers, BLOCKED on pilot findings
+- Status: blocked · Severity: feature (data quality, not a bug) · Owner: cluster
   ops (not this dev session — see below) · Test: manual verification of
   refetched full-text after pilot.
+- **2026-07-23 pilot run: does NOT recover full text, do not scale.** Ran the
+  reset SQL + `PRECIS_FETCH_MARKUP=1` against the 5 pilot ref_ids exactly as
+  documented — reset+fetch worked (all 5 re-fetched larger companion PDFs) —
+  but downstream ingest recovered full text for **none** of them; 4/5 ended
+  up more truncated than before the reset, 1/5 (`168074`) stayed empty.
+  Root cause **confirmed** via forensics (sidecar files + watch-log sequence):
+  a markup-companion-PDF sidecar race, filed as its own actionable item at
+  `gripe:170349` — `elsevier_xml`'s "no `<body>`" parse failure's recovery
+  path gives up permanently if the companion PDF's filename hasn't yet been
+  linked onto the markup sidecar, which is exactly what happened to `168074`
+  (companion PDF landed in the inbox but was never imported). Spark's Marker
+  OCR was separately broken (nvidia docker runtime never configured) —
+  **fixed and verified 2026-07-23**; the durable ansible follow-up is filed
+  above (`spark: nvidia docker runtime not configured by ansible`).
+  `ref_identifiers` stale rows exist post-reset but forensics show they are
+  **not** the primary driver.
+- **2026-07-24: `gripe:170349` fixed, not yet shipped** (this worktree). Root
+  fix: `_run_markup_cascade` now stages a markup trigger + its sidecar under
+  `inbox_dir/.staging/` (unwatched); `_publish_markup_trigger` atomically
+  `os.replace()`s both into the real inbox path only once the companion
+  PDF's fate is known, so the trigger is never watcher-visible with an
+  incomplete sidecar. Tests green (`scripts/test tests/workers/test_fetch_oa.py
+  -k Markup` + `--impacted`), ruff/mypy clean. **Next action:** ship this fix,
+  then re-run the 5-ref pilot.
 - **Scope corrected 2026-07-23.** A prior pass logged 224 affected papers,
   but that count came from a query that was never persisted (only a
   scratchpad list, which didn't survive) and couldn't be reconciled.
@@ -53,21 +90,14 @@ is the historical observation log.
 - **Remediation plan + reset SQL:** documented in the runbook above (chunk
   delete + null `pdf_sha256`/`pdf_pages`/`pdf_role` + clear the
   `fetcher:%` backoff history so the stub retries promptly, same pattern as
-  `paper_hygiene.requeue_stranded_fetches`), then flip
-  `PRECIS_FETCH_MARKUP=1` and let the next OA-fetch pass re-acquire via
-  the Elsevier XML leg. **Pilot 5 papers first** (ref_ids in the runbook,
-  including the reference incident itself), watch the pipeline recover
-  full text live, before scaling to the rest.
+  `paper_hygiene.requeue_stranded_fetches`) — **known incomplete as of the
+  pilot** (missing `ref_identifiers` cleanup, see above).
 - **Must run on cluster infra, not this dev session.** `PRECIS_ELSEVIER_API_KEY`
   lives in the DB-backed vault (`docs/design/secrets-vault.md`); `agent_rw`
   (the only DSN reachable from a dev laptop session) has **zero vault
   grants by design** — "otherwise the boundary is theater." The reset SQL
   can be prepared/reviewed here, but the actual fetch pass must run where a
   real worker's vault-capable DSN is available (melchior/caspar).
-- **Next action:** hand off to a `cluster-admin` session — run the pilot
-  reset SQL from the runbook against the 5 pilot ref_ids, flip
-  `PRECIS_FETCH_MARKUP=1`, deploy, watch one fetch pass recover full text,
-  verify, then re-run the scoping query fresh and scale to the rest.
 
 ---
 ## `Backend` (`PRECIS_LLM_BACKEND`) — residual smell, candidate for removal

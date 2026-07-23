@@ -86,7 +86,7 @@ from tenacity import (
 from precis import secrets as _secrets
 from precis.alerts import raise_alert as _raise_alert
 from precis.alerts import resolve_stale_alerts as _resolve_alerts
-from precis.ingest.fetch_sidecar import read_sidecar, write_sidecar
+from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sidecar
 
 log = logging.getLogger(__name__)
 
@@ -1455,9 +1455,9 @@ def run_oa_fetch_pass(
             # structured full-text source before the PDF cascade. Best-
             # effort — its failure must never block the PDF fetch, which
             # runs unconditionally afterwards to acquire the printable.
-            markup_path: Path | None = None
+            staged_markup: _StagedMarkup | None = None
             try:
-                markup_path = _run_markup_cascade(store, stub, inbox_path, api_key)
+                staged_markup = _run_markup_cascade(store, stub, inbox_path, api_key)
             except Exception as exc:  # pragma: no cover — defensive
                 log.warning(
                     "fetch_oa: markup pass errored for ref_id=%s: %s",
@@ -1478,10 +1478,14 @@ def run_oa_fetch_pass(
                 wiley_token,
                 core_key,
                 openalex_content_key,
-                printable_only=markup_path is not None,
+                printable_only=staged_markup is not None,
             )
-            if markup_path is not None and pdf_path is not None:
-                _link_markup_companion(markup_path, pdf_path)
+            if staged_markup is not None:
+                # gr170349: only now — after the companion PDF's fate is
+                # known, however long that took — does the markup trigger
+                # (and its sidecar) become watcher-visible, atomically.
+                companion_name = pdf_path.name if pdf_path is not None else None
+                _publish_markup_trigger(staged_markup, companion_name)
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
             log.warning(
@@ -1603,17 +1607,33 @@ _MARKUP_LEGS: tuple[_MarkupLeg, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class _StagedMarkup:
+    """A markup trigger + sidecar written to the ``.staging`` subdir.
+
+    Not yet watcher-visible: ``staged_path`` lives under
+    ``inbox_dir / ".staging"``, out of the watched tree. ``final_path`` is
+    where it will be atomically published (``os.replace``) once the
+    companion PDF's fate is known — see :func:`_publish_markup_trigger`.
+    Closes gr170349 (watcher racing a sidecar with ``companion_pdf: null``).
+    """
+
+    staged_path: Path
+    final_path: Path
+
+
 def _run_markup_cascade(
     store: Any, stub: StubRef, inbox_dir: Path, elsevier_api_key: str = ""
-) -> Path | None:
-    """Try each markup leg; on first hit drop the trigger + sidecar.
+) -> _StagedMarkup | None:
+    """Try each markup leg; on first hit drop the trigger + sidecar into
+    ``inbox_dir / ".staging"`` — not yet watcher-visible.
 
-    Returns the markup trigger's path when a markup source landed (so the
-    caller knows the chunk source is structured, though it still runs the
-    PDF cascade for the printable — and can mark that PDF attach-only and
-    link it back to this trigger, gr161905). Each leg records its own
-    ``ref_events`` row. Best-effort: any leg exception logs ``api_error``
-    and falls through.
+    Returns the staged trigger (so the caller knows the chunk source is
+    structured, though it still runs the PDF cascade for the printable —
+    and can then atomically publish this trigger, marking the companion
+    PDF attach-only and linking it back, gr161905/gr170349). Each leg
+    records its own ``ref_events`` row. Best-effort: any leg exception logs
+    ``api_error`` and falls through.
 
     The sidecar carries the stub's ``ref_id`` (the fold target) and the
     leg's ``source_format`` so the watcher builds a ``MarkupInput``; the
@@ -1630,9 +1650,16 @@ def _run_markup_cascade(
     if not _markup_fetch_enabled():
         return None
 
+    # Both legs below stage their content download *and* sidecar under
+    # ``.staging`` — unwatched — so nothing watcher-visible appears until
+    # the caller atomically publishes it once the companion PDF's fate is
+    # known (gr170349).
+    staging_dir = inbox_dir / ".staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
     try:
         elsevier_outcome = _try_elsevier_markup(
-            stub, inbox_dir=inbox_dir, api_key=elsevier_api_key
+            stub, inbox_dir=staging_dir, api_key=elsevier_api_key
         )
     except Exception as exc:  # pragma: no cover — defensive
         elsevier_outcome = None
@@ -1650,9 +1677,10 @@ def _run_markup_cascade(
             duration_ms=elsevier_outcome.duration_ms,
         )
         if elsevier_outcome.event == "fetch_ok":
-            target = inbox_dir / (_stub_filename(stub) + ".xml")
+            final_path = inbox_dir / (_stub_filename(stub) + ".xml")
+            staged_path = staging_dir / final_path.name
             write_sidecar(
-                target,
+                staged_path,
                 ref_id=stub.ref_id,
                 identifiers={
                     k: v
@@ -1672,7 +1700,7 @@ def _run_markup_cascade(
                 stub.ref_id,
                 elsevier_outcome.payload.get("size_bytes", 0),
             )
-            return target
+            return _StagedMarkup(staged_path=staged_path, final_path=final_path)
 
     log.debug(
         "fetch_oa markup: trying %d legs for ref_id=%s (doi=%s arxiv=%s)",
@@ -1696,10 +1724,10 @@ def _run_markup_cascade(
             continue
         if url is None:
             continue  # no identifier for this leg — silent skip
-        target = inbox_dir / (_stub_filename(stub) + leg.suffix)
+        final_path = inbox_dir / (_stub_filename(stub) + leg.suffix)
+        staged_path = staging_dir / final_path.name
         try:
-            inbox_dir.mkdir(parents=True, exist_ok=True)
-            size = _download_markup(url, target)
+            size = _download_markup(url, staged_path)
         except Exception as exc:
             log.warning(
                 "fetch_oa markup: %s leg failed for ref_id=%s (%s): %s",
@@ -1717,7 +1745,7 @@ def _run_markup_cascade(
             )
             continue
         write_sidecar(
-            target,
+            staged_path,
             ref_id=stub.ref_id,
             identifiers={
                 k: v
@@ -1746,7 +1774,7 @@ def _run_markup_cascade(
             leg.fmt,
             size,
         )
-        return target
+        return _StagedMarkup(staged_path=staged_path, final_path=final_path)
     return None
 
 
@@ -1907,35 +1935,40 @@ def _run_cascade(
     return None
 
 
-def _link_markup_companion(markup_path: Path, pdf_path: Path) -> None:
-    """Record ``pdf_path``'s name on the markup trigger's own sidecar.
+def _publish_markup_trigger(staged: _StagedMarkup, companion_pdf: str | None) -> Path:
+    """Atomically publish a staged markup trigger into the watched inbox.
 
-    Best-effort, gr161905: lets ``_ingest_markup`` locate this exact
-    companion PDF (by filename, same inbox dir) if the markup itself later
-    fails to parse — so it can un-mark that PDF's ``printable_only`` flag
-    (if still unprocessed) or, if the PDF already landed as an attach-only
-    printable, re-run OCR on the stored copy as the fallback. A read/write
-    failure here just means that recovery path degrades to the pre-fix
-    behavior (parse failure logs and leaves the ref claimable) — never
-    fails the fetch pass itself.
+    Rewrites the sidecar (still in .staging) with the now-known
+    ``companion_pdf`` name, then os.replace()s both the content file and
+    its sidecar from .staging into the real inbox path in one step — so
+    the trigger never becomes watcher-visible with an incomplete sidecar
+    (gripe:170349). staged.staged_path and staged.final_path are
+    guaranteed to be on the same filesystem (same inbox_dir tree), so
+    both replaces are atomic.
     """
-    sidecar = read_sidecar(markup_path)
+    sidecar = read_sidecar(staged.staged_path)
     if sidecar is None:
         log.warning(
-            "fetch_oa: no sidecar found for markup trigger %s — cannot link "
-            "companion %s for parse-failure recovery",
-            markup_path.name,
-            pdf_path.name,
+            "fetch_oa: no staged sidecar found for %s — publishing without "
+            "companion linkage",
+            staged.staged_path.name,
         )
-        return
+        os.replace(staged.staged_path, staged.final_path)
+        return staged.final_path
     write_sidecar(
-        markup_path,
+        staged.staged_path,
         ref_id=sidecar.ref_id,
         identifiers=sidecar.identifiers,
         source=sidecar.source,
         source_format=sidecar.source_format,
-        companion_pdf=pdf_path.name,
+        companion_pdf=companion_pdf,
     )
+    # Sidecar before content: a watcher debounces on content stability
+    # anyway, but publishing the sidecar first means it's never possibly
+    # missing for a trigger a watcher has already seen.
+    os.replace(sidecar_path(staged.staged_path), sidecar_path(staged.final_path))
+    os.replace(staged.staged_path, staged.final_path)
+    return staged.final_path
 
 
 # ── Internals ──────────────────────────────────────────────────────

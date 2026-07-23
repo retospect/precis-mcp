@@ -91,7 +91,9 @@ DEFAULT_POLL_INTERVAL = 15.0
 # Subdirectories of the watch dir that are managed by precis-watch
 # itself; events on these never trigger ingest. Explicit list so
 # operators can drop cooperative dirs without breaking anything.
-_MANAGED_DIRS: frozenset[str] = frozenset({"errors", "completed"})
+# ``.staging`` (dotted, matching the on-disk name) holds fetch_oa's
+# not-yet-published markup triggers (gr170349) — never watcher-visible.
+_MANAGED_DIRS: frozenset[str] = frozenset({"errors", "completed", ".staging"})
 
 # Inbox sub-trees that select the ingest kind. Files outside any of
 # these go through the paper pipeline (back-compat with the flat
@@ -1128,9 +1130,10 @@ def _infer_markup_fmt(path: Path, sidecar: Any | None) -> str | None:
 
 def _should_skip(path: Path, watch_dir: Path) -> bool:
     """True iff ``path`` is inside one of the watcher-managed
-    subdirectories (``errors/``, ``completed/``). Backfill and live
-    events both use this guard so previously-failed PDFs aren't
-    retried automatically."""
+    subdirectories (``errors/``, ``completed/``, ``.staging/``). Backfill
+    and live events both use this guard so previously-failed PDFs aren't
+    retried automatically, and staged-not-yet-published markup triggers
+    never leak into a scan."""
     try:
         rel = path.resolve().relative_to(watch_dir.resolve())
     except ValueError:

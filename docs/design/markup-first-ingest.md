@@ -273,7 +273,7 @@ pipeline's chunks**. Two cases now exist for an identifier hit:
   right there, via `_ingest_pdf` (bypassing `precis_add`'s pdf_sha256
   fast-path, which would otherwise wrongly no-op since the hash is already
   known). See gripe 161905 and `src/precis/workers/fetch_oa.py`'s
-  `_run_markup_cascade`/`_run_cascade`/`_link_markup_companion`.
+  `_run_markup_cascade`/`_run_cascade`/`_publish_markup_trigger`.
 
 ### 6. Idempotency
 

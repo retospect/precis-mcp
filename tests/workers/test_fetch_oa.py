@@ -813,10 +813,14 @@ class TestRunMarkupCascade:
             tmp_path,
             "SECRET",
         )
-        xml_path = tmp_path / "widgets2025.xml"
-        assert landed == xml_path
-        assert xml_path.exists()
-        sc = read_sidecar(xml_path)
+        staged_path = tmp_path / ".staging" / "widgets2025.xml"
+        final_path = tmp_path / "widgets2025.xml"
+        assert landed == fetch_oa._StagedMarkup(
+            staged_path=staged_path, final_path=final_path
+        )
+        assert staged_path.exists()
+        assert not final_path.exists()
+        sc = read_sidecar(staged_path)
         assert sc is not None
         assert sc.ref_id == ref_id
         assert sc.source == "fetcher:elsevier_xml"
@@ -845,6 +849,55 @@ class TestRunMarkupCascade:
         )
         assert landed is None
         assert seen.get("called") is True
+
+    def test_landed_trigger_never_appears_in_watched_inbox_until_published(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr170349: the race is closed by construction — while a markup
+        trigger is only staged (companion PDF fate still unknown), the
+        watched inbox itself (excluding ``.staging``) has zero markup
+        files for a watcher to race. Publishing then atomically moves the
+        staged copy into place — never duplicates it — with the
+        now-known ``companion_pdf`` recorded on its sidecar."""
+        monkeypatch.setenv("PRECIS_FETCH_MARKUP", "1")
+        ref_id = _seed_paper_stub(
+            store, doi="10.1016/j.amf.2025.200253", cite_key="widgets2025"
+        )
+
+        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"<full-text-retrieval-response/>")
+            return target.stat().st_size
+
+        monkeypatch.setattr(fetch_oa, "_download_markup", _capture)
+
+        staged = fetch_oa._run_markup_cascade(
+            store,
+            _stub(
+                ref_id=ref_id,
+                doi="10.1016/j.amf.2025.200253",
+                cite_key="widgets2025",
+            ),
+            tmp_path,
+            "SECRET",
+        )
+        assert staged is not None
+
+        # Zero markup trigger files in the watched inbox proper — only the
+        # unwatched .staging subdir has anything.
+        top_level_files = [p for p in tmp_path.iterdir() if p.is_file()]
+        assert top_level_files == []
+        assert staged.staged_path.exists()
+        assert not staged.final_path.exists()
+
+        published = fetch_oa._publish_markup_trigger(staged, "widgets2025.pdf")
+
+        assert published == staged.final_path
+        assert published.exists()
+        assert not staged.staged_path.exists()  # moved, not duplicated
+        sc = read_sidecar(published)
+        assert sc is not None
+        assert sc.companion_pdf == "widgets2025.pdf"
 
 
 # ---------------------------------------------------------------------------
