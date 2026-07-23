@@ -181,7 +181,8 @@ guardrails (the Agent tool surfaces those descriptions), so this is just the map
 - **Sonnet** — a *decided* change or bounded op (the *how*, not the *what*):
   `coder`, `test-author`, `reviewer`, `documenter`, `dep-bumper`,
   `cluster-admin`, `forensics`, `housekeeper` (worktree/branch GC via
-  `/workspace-cleanup`).
+  `/workspace-cleanup`), `ready` (the ADR 0048 proposal-readiness judge —
+  vets a `docs/proposals/*.md` spec, not yet wired into an automated gate).
 - **Opus (main loop)** — the *what/why*: architecture; core API/schema/
   abstraction; CFD/DFT/ML and NOx/catalyst reasoning; mission/voice prose;
   novel prod diagnosis; memory *reconsolidation*.

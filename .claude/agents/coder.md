@@ -9,7 +9,7 @@ description: >-
   filling in a design the main loop has fixed. It does NOT make architecture,
   API-shape, or domain-modeling decisions (CFD/DFT/catalyst/core-abstraction) —
   those stay on Opus; if the spec is ambiguous it asks rather than guesses.
-tools: Read, Grep, Glob, Bash, Edit, Write
+tools: Read, Grep, Glob, Bash, Edit, Write, mcp__claude-context__search_code
 model: sonnet
 ---
 
@@ -30,11 +30,13 @@ guess. Those decisions belong on Opus.
 
 ## How to work
 1. **Orient before editing.** For where-is/how-does questions, prefer
-   `search_code` against the MAIN repo path or a quick Grep — don't spelunk with
-   Read. For who-calls / what-depends-on over Python, `scripts/coderef
-   callers|deps <file.py::Sym>` is exact — use it over grepping the bare name.
-   Confirm you're editing the worktree copy, not MAIN (see the path traps in
-   CLAUDE.md).
+   `search_code` against the **MAIN repo path** (`git rev-parse
+   --path-format=absolute --git-common-dir` → its parent — the index is shared
+   and keyed to MAIN, not your worktree; a worktree path silently returns zero
+   hits) or a quick Grep — don't spelunk with Read. For who-calls /
+   what-depends-on over Python, `scripts/coderef callers|deps <file.py::Sym>`
+   is exact — use it over grepping the bare name. Confirm you're editing the
+   worktree copy, not MAIN (see the path traps in CLAUDE.md).
 2. **Make the change** to match the surrounding code — its naming, idiom, comment
    density. Read the file's neighbors, don't invent a new style.
 3. **Verify it.** Run `scripts/test --impacted` (the tightest loop) or the

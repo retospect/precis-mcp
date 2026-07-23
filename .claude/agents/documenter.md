@@ -31,10 +31,12 @@ design or narrative.
   `src/precis/data/skills/` only when the change alters that agent-facing surface.
 
 ## How to work
-1. **Verify against the code first.** Use `search_code` (MAIN repo path) / Grep /
-   Read to confirm what the code actually does *now* — never document from the
-   caller's summary alone or from a stale doc. If the code contradicts the brief,
-   report that; don't paper over it.
+1. **Verify against the code first.** Use `search_code` (**MAIN repo path** —
+   `git rev-parse --path-format=absolute --git-common-dir` → its parent; the
+   index is shared and keyed to MAIN, so a worktree path silently returns zero
+   hits) / Grep / Read to confirm what the code actually does *now* — never
+   document from the caller's summary alone or from a stale doc. If the code
+   contradicts the brief, report that; don't paper over it.
 2. Edit the specific doc(s) that own the fact (see the "Where to find context"
    table in CLAUDE.md). Match the surrounding density and voice.
 3. Confirm you're editing the worktree copy, not MAIN (CLAUDE.md path traps).
