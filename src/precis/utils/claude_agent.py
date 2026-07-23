@@ -140,6 +140,23 @@ class AgentResult:
     #: recovered exhaustion onto a resumable outcome without re-parsing the
     #: stream, since the wrapper swallows a recoverable non-zero exit.
     terminal_reason: str | None = None
+    #: Token telemetry from the stream-json trailing ``result`` event's
+    #: ``usage`` dict (router Phase 1, tracking dispatch's LLM calls onto a
+    #: uniform cost/token ledger). Confirmed empirically (real ``claude -p
+    #: --output-format stream-json`` run, 2026-07-23): the trailing result
+    #: event's ``usage`` is already a **cumulative total across every
+    #: turn/iteration** of the run (its own ``usage.iterations`` breakdown
+    #: sums to the same top-level numbers) — same "only the final event
+    #: carries the totals" shape ``_last_result_event`` already documents for
+    #: ``total_cost_usd``/``num_turns``. So these are read from the ONE
+    #: trailing result event, not summed across every ``assistant`` event
+    #: (that would double-count against a total the CLI already aggregated).
+    #: ``None`` together, on the same text/stub path that leaves
+    #: ``tool_calls`` ``None`` — never a false zero.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
 
 
 def call_claude_agent(
@@ -519,6 +536,8 @@ def call_claude_agent(
         # zero) so the empty-result assertion stays inert on this path.
         tool_calls = None
 
+    usage = _stream_usage(res.stdout or "")
+
     result = AgentResult(
         final_text=final_text,
         cost_usd=cost_usd,
@@ -531,6 +550,10 @@ def call_claude_agent(
         # recovered-exhaustion path carry the full stream on ``res.stdout``, so
         # this is a definitive read for a caller that maps it to a resume signal.
         terminal_reason=stream_terminal_reason(res.stdout or ""),
+        input_tokens=usage["input_tokens"],
+        output_tokens=usage["output_tokens"],
+        cache_read_tokens=usage["cache_read_tokens"],
+        cache_creation_tokens=usage["cache_creation_tokens"],
     )
 
     if log_event is not None:
@@ -863,6 +886,48 @@ def _last_result_event(stdout: str) -> dict[str, Any] | None:
         if isinstance(ev, dict) and ev.get("type") == "result":
             return ev
     return None
+
+
+def _stream_usage(stdout: str) -> dict[str, int | None]:
+    """Token telemetry from the trailing stream-json ``result`` event.
+
+    Reads ``usage.input_tokens`` / ``usage.output_tokens`` /
+    ``usage.cache_read_input_tokens`` / ``usage.cache_creation_input_tokens``
+    off the SAME trailing event ``_last_result_event`` already uses for
+    ``total_cost_usd`` / ``num_turns`` — confirmed empirically (a real
+    ``claude -p --output-format stream-json`` run) that this ``usage`` dict is
+    already a cumulative total across every turn of the run, not a
+    per-event/per-turn delta, so there is nothing to sum: taking any OTHER
+    event's usage (e.g. adding each ``assistant`` event's usage on top) would
+    double-count against a total the CLI already aggregated.
+
+    Returns all four keys ``None`` (never a false ``0``) when there is no
+    result event to parse — the text/stub path, the same condition that
+    already gates ``tool_calls`` to ``None``.
+    """
+    keys = (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_creation_tokens",
+    )
+    empty: dict[str, int | None] = dict.fromkeys(keys)
+    ev = _last_result_event(stdout)
+    if ev is None:
+        return empty
+    usage = ev.get("usage")
+    if not isinstance(usage, dict):
+        return empty
+
+    def _int_or_none(v: Any) -> int | None:
+        return int(v) if isinstance(v, (int, float)) else None
+
+    return {
+        "input_tokens": _int_or_none(usage.get("input_tokens")),
+        "output_tokens": _int_or_none(usage.get("output_tokens")),
+        "cache_read_tokens": _int_or_none(usage.get("cache_read_input_tokens")),
+        "cache_creation_tokens": _int_or_none(usage.get("cache_creation_input_tokens")),
+    }
 
 
 def _cost_from_stdout_result(stdout: str) -> float | None:

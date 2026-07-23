@@ -134,6 +134,10 @@ def test_result_from_agent() -> None:
         turns_used=5,
         raw_stdout="<stream-json>",
         terminal_reason="max_turns",
+        input_tokens=3555,
+        output_tokens=4,
+        cache_read_tokens=0,
+        cache_creation_tokens=46653,
     )
     got = result_from_agent(raw, model="claude-opus-4-7", tier=Tier.CLOUD_SUPER)
     assert got == LlmResult(
@@ -147,8 +151,26 @@ def test_result_from_agent() -> None:
         # can keep a debuggable transcript and map an exhaustion to a resume.
         raw_text="<stream-json>",
         terminal_reason="max_turns",
+        # Token telemetry rides through unchanged — see AgentResult's matching
+        # fields for the "trailing result event, already cumulative" note.
+        input_tokens=3555,
+        output_tokens=4,
+        cache_read_tokens=0,
+        cache_creation_tokens=46653,
     )
     assert got.error is None
+
+
+def test_result_from_agent_usage_defaults_none() -> None:
+    """An ``AgentResult`` built without the new token fields (e.g. the
+    text/stub path) propagates ``None`` for all four onto ``LlmResult`` —
+    never a false zero."""
+    raw = AgentResult(final_text="ok", cost_usd=None, duration_s=0.0, turns_used=None)
+    got = result_from_agent(raw, model="claude-opus-4-7", tier=Tier.CLOUD_SUPER)
+    assert got.input_tokens is None
+    assert got.output_tokens is None
+    assert got.cache_read_tokens is None
+    assert got.cache_creation_tokens is None
 
 
 def test_result_from_claude_p() -> None:

@@ -389,6 +389,16 @@ class LlmResult:
     #: from a resumable exhaustion (mirroring how the claude path reads
     #: ``terminal_reason``). ``None`` for the non-OSS transports.
     stop_reason: str | None = None
+    #: Token telemetry from a ``claude_agent`` stream-json run's trailing
+    #: ``result`` event (:func:`~precis.utils.claude_agent.AgentResult`'s
+    #: matching fields — already a cumulative total for the whole run, not a
+    #: per-turn delta). ``None`` for the non-agent transports and for any
+    #: ``claude_agent`` run without a stream to read (mirrors ``tool_calls``'
+    #: never-a-false-zero discipline).
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
 
 
 def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
@@ -403,6 +413,10 @@ def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
         tool_calls=res.tool_calls,
         raw_text=res.raw_stdout,
         terminal_reason=res.terminal_reason,
+        input_tokens=res.input_tokens,
+        output_tokens=res.output_tokens,
+        cache_read_tokens=res.cache_read_tokens,
+        cache_creation_tokens=res.cache_creation_tokens,
     )
 
 

@@ -67,6 +67,14 @@ is the historical observation log.
 ## P1 Update routing layer - make sure nothing does not go thru routing layer
 
 - ticks go to claude -p right now, they should go thru routing layer so we can switch
+- **`claude_docker` (`sandbox_run` job type, ADR-0048) is a routing blind spot.**
+  It launches an opaque container whose internal `claude -p` invocation never
+  touches `router.dispatch`, so it's invisible to `llm_call_log`
+  (`route_log.py::spend_rollup`'s docstring already flags this: "non-LLM
+  compute (spark DFT / relax / fold, container jobs) never touches dispatch").
+  Deferred — fixing it means instrumenting a container image that lives
+  outside this repo, and `sandbox_run` is currently dark/unused (slice1
+  stub-podman only), so there's nothing running today to lose visibility into.
 
 ---
 

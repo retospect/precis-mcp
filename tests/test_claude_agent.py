@@ -765,6 +765,134 @@ def test_count_tool_use_events_zero_and_robust() -> None:
     assert _count_tool_use_events("not json\n{broken") == 0
 
 
+def test_stream_usage_reads_trailing_result_event_only() -> None:
+    """The trailing ``result`` event's ``usage`` is already a cumulative
+    total for the whole run (empirically confirmed), so an earlier
+    ``assistant`` event's usage must NOT be added on top — only the
+    trailing result event's numbers should surface."""
+    import json
+
+    from precis.utils.claude_agent import _stream_usage
+
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "partial"}],
+                        "usage": {
+                            "input_tokens": 999,
+                            "output_tokens": 999,
+                            "cache_read_input_tokens": 999,
+                            "cache_creation_input_tokens": 999,
+                        },
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "total_cost_usd": 0.29,
+                    "num_turns": 1,
+                    "result": "hello",
+                    "usage": {
+                        "input_tokens": 3555,
+                        "output_tokens": 4,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 46653,
+                    },
+                }
+            ),
+        ]
+    )
+    assert _stream_usage(stdout) == {
+        "input_tokens": 3555,
+        "output_tokens": 4,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 46653,
+    }
+
+
+def test_stream_usage_none_when_no_result_event() -> None:
+    """No stream-json result event (text/stub path) → all four ``None``,
+    matching ``tool_calls``'s never-a-false-zero discipline."""
+    from precis.utils.claude_agent import _stream_usage
+
+    assert _stream_usage("plain text stdout, not json") == {
+        "input_tokens": None,
+        "output_tokens": None,
+        "cache_read_tokens": None,
+        "cache_creation_tokens": None,
+    }
+    assert _stream_usage("") == {
+        "input_tokens": None,
+        "output_tokens": None,
+        "cache_read_tokens": None,
+        "cache_creation_tokens": None,
+    }
+
+
+def test_stream_usage_none_when_result_event_has_no_usage() -> None:
+    """A result event present but with no ``usage`` key at all → ``None``,
+    not ``0`` — an older CLI without token telemetry shouldn't look like a
+    definitively-zero-token run."""
+    import json
+
+    from precis.utils.claude_agent import _stream_usage
+
+    stdout = json.dumps({"type": "result", "total_cost_usd": 0.1, "num_turns": 1})
+    assert _stream_usage(stdout) == {
+        "input_tokens": None,
+        "output_tokens": None,
+        "cache_read_tokens": None,
+        "cache_creation_tokens": None,
+    }
+
+
+def test_call_claude_agent_populates_usage_fields(stub_bin: Path) -> None:
+    """End-to-end: ``call_claude_agent`` threads the trailing result event's
+    ``usage`` dict onto ``AgentResult``'s four token fields."""
+    stdout = _stream(
+        [
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "hello"}]},
+            },
+            {
+                "type": "result",
+                "total_cost_usd": 0.29,
+                "num_turns": 1,
+                "result": "hello",
+                "usage": {
+                    "input_tokens": 3555,
+                    "output_tokens": 4,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 46653,
+                },
+            },
+        ]
+    )
+    _write_stream_stub(stub_bin, stdout=stdout)
+    res = call_claude_agent("do")
+    assert res.input_tokens == 3555
+    assert res.output_tokens == 4
+    assert res.cache_read_tokens == 0
+    assert res.cache_creation_tokens == 46653
+
+
+def test_call_claude_agent_usage_none_on_text_path(stub_bin: Path) -> None:
+    """The text/stub path (no stream-json to parse) leaves all four token
+    fields ``None`` — same gate as ``tool_calls``."""
+    _write_stub(stub_bin, stdout="plain text reply", stderr="")
+    res = call_claude_agent("hi")
+    assert res.input_tokens is None
+    assert res.output_tokens is None
+    assert res.cache_read_tokens is None
+    assert res.cache_creation_tokens is None
+
+
 # Skip the whole module on Windows, where ``shutil.which("bash")``
 # may find ``bash.exe`` (Git Bash) but ``#!/usr/bin/env bash``
 # shebangs can't be invoked directly via ``subprocess.run`` —
