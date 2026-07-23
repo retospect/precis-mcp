@@ -50,7 +50,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from precis.handlers._todo_views import _doable_exclusion_clause
+from precis.handlers._todo_views import (
+    _doable_exclusion_clause,
+    _hard_block_clause,
+    _replan_bypass_clause,
+)
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers import planner_guardrails
@@ -79,6 +83,67 @@ _OPEN_PARENT_STATUSES: frozenset[str] = frozenset({"open", "doing"})
 # closes itself with its own ``STATUS:done`` tag (guarded), or parks on
 # ``ask-user:`` / ``halt`` — so a coroutine parent needs no auto_check.
 _SELF_RESOLVING_JOB_TYPES: frozenset[str] = frozenset({"plan_tick"})
+
+
+# Cooldown before a parent whose only live-child blocker is a *parked*
+# (ask-user: / waiting-for:) child todo becomes a dispatch candidate
+# again. Without this, loosening the child-liveness gate for those two
+# tags would re-tick the planner (a real LLM call) on every dispatch
+# sweep for as long as the child sits parked — review.py's
+# ``_recent_failure`` docstring records what an undamped version of
+# this exact failure mode looks like in practice (124k ERROR log
+# lines/24h on one host, from a re-run-every-sweep loop). ``halt`` /
+# ``halt:`` / ``child-failed:`` are NOT in the bypass registry
+# (``_replan_bypass_clause``), so a child carrying one of those keeps
+# blocking unconditionally — no cooldown ever lifts it.
+_PARKED_CHILD_REPLAN_COOLDOWN = "6 hours"
+
+
+def _parked_child_still_blocks_sql(parent_alias: str, child_alias: str) -> str:
+    """SQL fragment: true when a not-done ``child_alias`` should still
+    block ``parent_alias``'s re-candidacy.
+
+    A not-done child always blocks UNLESS it is *bypassable-parked*
+    AND the cooldown since the parent's last ``plan_tick`` job has
+    elapsed. "Bypassable-parked" means carrying a replan-bypass tag
+    (``ask-user`` / ``waiting-for:``) AND **not** also carrying a hard
+    block tag (``halt`` / ``halt:`` / ``child-failed:``) — a child can
+    carry both at once (e.g. the planner escalates an already-parked
+    child by adding ``halt:`` without first removing ``ask-user:``),
+    and the hard block must always win:
+
+        bypassable = bypass_tag_present AND NOT hard_block_tag_present
+        still_blocks = NOT bypassable OR recent_plan_tick_job_exists
+                      = (NOT bypass_tag_present OR hard_block_tag_present)
+                        OR recent_plan_tick_job_exists
+
+    Embed inside a ``NOT EXISTS`` child-liveness check, ANDed after the
+    existing STATUS filter — see both call sites below. Used
+    identically (same alias convention) in ``_candidate_parent_ids``
+    and ``_claim_and_dispatch`` so the two stay symmetric.
+    """
+    return f"""(
+           NOT EXISTS (
+               SELECT 1 FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                WHERE rt2.ref_id = {child_alias}.ref_id
+                  AND t2.namespace = 'OPEN'
+                  AND {_replan_bypass_clause("t2")}
+           )
+           OR EXISTS (
+               SELECT 1 FROM ref_tags rt3 JOIN tags t3 ON t3.tag_id = rt3.tag_id
+                WHERE rt3.ref_id = {child_alias}.ref_id
+                  AND t3.namespace = 'OPEN'
+                  AND {_hard_block_clause("t3")}
+           )
+           OR EXISTS (
+               SELECT 1 FROM refs j
+                WHERE j.parent_id = {parent_alias}.ref_id
+                  AND j.kind = 'job'
+                  AND j.deleted_at IS NULL
+                  AND j.meta->>'job_type' = 'plan_tick'
+                  AND j.created_at > now() - interval '{_PARKED_CHILD_REPLAN_COOLDOWN}'
+           )
+       )"""
 
 
 def _halt_bad_dispatch(
@@ -186,7 +251,13 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
       are still working). This is the coroutine yield: a parent that
       minted children sits silent until they all resolve, then
       re-becomes a candidate so the planner can read the
-      ``job_summary`` chunks and continue.
+      ``job_summary`` chunks and continue. **Exception:** a child
+      parked on ``ask-user:`` / ``waiting-for:`` (not ``halt`` /
+      ``child-failed:``) stops blocking once ``COOLDOWN`` has elapsed
+      since the parent's last ``plan_tick`` job — see
+      ``_parked_child_still_blocks_sql`` — so the planner keeps periodically
+      re-ticking instead of freezing the whole project on one
+      parked-on-human leaf.
     * No exclusion tag (registry: halt / halt:* / ask-user* /
       waiting-for:* / child-failed:*).
     """
@@ -233,6 +304,9 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
                               WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                             'open'
                           ) NOT IN ('done', 'won''t-do')
+                      AND """
+            + _parked_child_still_blocks_sql("r", "c")
+            + """
                )
                AND NOT EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
@@ -324,6 +398,9 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                               WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                             'open'
                           ) NOT IN ('done', 'won''t-do')
+                      AND """
+            + _parked_child_still_blocks_sql("r", "c")
+            + """
                )
                AND NOT EXISTS (
                    -- Re-check the exclusion registry inside the

@@ -72,7 +72,17 @@ scheduling, execution, and review:
   succeeded-but-non-blocking so `dispatch` re-mints a fresh tick, bounded
   by a per-parent streak cap (`meta.plan_tick_resume_streak`, default 3,
   env `PRECIS_PLAN_TICK_RESUME_CAP`) past which it bubbles as a real
-  failure (the task needs splitting).
+  failure (the task needs splitting). A live child todo only blocks
+  re-candidacy unconditionally when it's a genuine in-flight child or
+  carries a hard-block tag (`halt`/`halt:`/`child-failed:`); a child
+  parked on `ask-user:`/`waiting-for:` alone (no hard-block tag also
+  present) stops blocking once 6h have passed since the parent's last
+  `plan_tick` job (`dispatch._parked_child_still_blocks_sql`,
+  `_todo_views._replan_bypass_clause`/`_hard_block_clause`) — so one
+  human-blocked leaf no longer freezes the whole planner subtree; the
+  re-ticked planner is prompted (`planner_prompt.py`, "Re-ticked while
+  a sibling is parked") to propose autonomous next steps or escalate to
+  `halt:` if the pending answer has become a genuine hard gate.
 * **Views.** `view='tree'` walks `kind IN ('todo','job')` so child
   jobs render with a `⚙` marker; `view='attention'` unions
   `asking-reto` leaves + `child-failed` parents for asa-bot's preamble;

@@ -95,6 +95,77 @@ def _doable_exclusion_clause(tag_alias: str = "t") -> str:
     return "(" + " OR ".join(parts) + ")"
 
 
+#: Narrow subset of ``_DOABLE_EXCLUSION_TAGS`` that a planner-coroutine
+#: parent is allowed to *bypass* (after a cooldown) when it's the only
+#: thing keeping the parent from re-becoming a dispatch candidate — see
+#: ``workers/dispatch.py``'s child-liveness ``NOT EXISTS`` blocks.
+#: ``ask-user`` / ``waiting-for:`` mean "parked, would like an answer",
+#: not "stop everything" — the planner can still judge there's other
+#: useful work to do. Deliberately excludes ``halt`` / ``halt:`` (an
+#: explicit, owner-only-to-lift "robot stay away") and
+#: ``child-failed:`` (needs a retry/give-up decision, not "work
+#: around it") — those keep their current absolute-block behaviour.
+_REPLAN_BYPASS_TAGS: tuple[str, ...] = (
+    "ask-user",
+    "ask-user:",
+    "waiting-for:",
+)
+
+
+def _replan_bypass_clause(tag_alias: str = "t") -> str:
+    """Return the SQL OR clause matching the cooldown-bypassable tags.
+
+    Same shape as :func:`_doable_exclusion_clause` but scoped to
+    :data:`_REPLAN_BYPASS_TAGS` only — used to detect whether a
+    parked child todo is a candidate for the planner-replan cooldown
+    bypass (as opposed to a hard ``halt`` / ``child-failed:`` block).
+
+    Callers MUST also check :func:`_hard_block_clause` is absent before
+    treating a child as bypassable — a child can carry both an
+    ``ask-user:`` tag and a ``halt:`` tag at once (e.g. the planner
+    escalates an existing parked child by adding ``halt:`` without
+    first removing ``ask-user:``), and the hard block must win.
+    """
+    parts: list[str] = []
+    for t in _REPLAN_BYPASS_TAGS:
+        if t.endswith(":"):
+            parts.append(f"{tag_alias}.value LIKE '{t}%%'")
+        else:
+            parts.append(f"{tag_alias}.value = '{t}'")
+    return "(" + " OR ".join(parts) + ")"
+
+
+#: The complement of ``_REPLAN_BYPASS_TAGS`` within ``_DOABLE_EXCLUSION_TAGS``
+#: — tags that must keep blocking a planner's re-candidacy unconditionally,
+#: cooldown or not. Checked separately (not just "absence of a bypass tag")
+#: because a single child can carry BOTH a bypass tag and a hard-block tag
+#: at once (see ``_replan_bypass_clause``'s docstring) — presence of either
+#: of these must always win over any bypass tag on the same child.
+_HARD_BLOCK_TAGS: tuple[str, ...] = (
+    "halt",
+    "halt:",
+    "child-failed:",
+)
+
+
+def _hard_block_clause(tag_alias: str = "t") -> str:
+    """Return the SQL OR clause matching the never-bypassable tags.
+
+    Same shape as :func:`_doable_exclusion_clause` / :func:`_replan_bypass_clause`
+    but scoped to :data:`_HARD_BLOCK_TAGS` — a child carrying one of
+    these always blocks its parent's re-candidacy, regardless of any
+    ``ask-user:``/``waiting-for:`` tag also present and regardless of
+    the replan cooldown.
+    """
+    parts: list[str] = []
+    for t in _HARD_BLOCK_TAGS:
+        if t.endswith(":"):
+            parts.append(f"{tag_alias}.value LIKE '{t}%%'")
+        else:
+            parts.append(f"{tag_alias}.value = '{t}'")
+    return "(" + " OR ".join(parts) + ")"
+
+
 # ── shared helpers ─────────────────────────────────────────────────
 
 

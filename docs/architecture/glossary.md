@@ -122,3 +122,60 @@
 - **source** — an episode's producer tag (`brief` / `meditation` / `news`) · a
   chunk's provenance (`meta.source`) · the OA fetch backoff arms on `fetcher:%`
   events. → `src/precis/audio_feed.py`
+
+## Projects & quests — informal name → canonical pointer
+
+Same start-here discipline as above, but the pointer is a `todo`/`quest` id,
+not a file — these don't have a code home. The point is to survive the
+spoken/informal name (what Reto actually says) not matching what's indexed
+in `search(kind='todo'|'quest', ...)`. One line per item; when a project ships
+or a quest's id changes, edit in place — don't append a status history (live
+`STATUS` is a DB fact, query `get(kind='quest'|'todo', id=…)` for the current
+value, don't trust a snapshot here).
+
+- **catpath** ("lm-potential", "Pd/NO→NH₃", "the palladium catalyst quest",
+  "catalyst-discovery loop") — the autonomous catalyst-discovery loop.
+  "LM-potential" (the catpath/MACE machine-learned-potential barrier step) and
+  "lit" (the literature-grounding step) are two steps *inside* this quest's
+  own compute cycle (setup → LM-potential → review/Pareto → lit → setup-new →
+  maintain front), not separate projects. → quest `164903`
+  (`get(kind='quest', id=164903)`); design docs
+  `docs/design/catpath-integration.md` ·
+  `docs/design/catalyst-discovery-quest.md`; catpath itself is a separate
+  repo, github.com/retospect/catpath, integrated into precis as the `pathway`
+  kind. Sibling quest `161910` shares the Pd/NO→NH₃ theme. Dormant quests
+  auto-cool after stale ticks — not a hard block.
+- **NOx to Ammonia** ("nox2nh3") — the DFT/operando-MS design-loop
+  manuscript project; the write-up, distinct from quest `164903`'s ongoing
+  autonomous-discovery loop. → todo `td34571` (`projects/nox2nh3_auto`).
+- **nanotrans_auto** ("Nano-transistors") — → todo `td6649`
+  (`projects/nanotrans_auto`).
+- **nanotrans2** — survey of the state of carbon-nanoribbon transistors.
+  → todo `td44368` (`projects/nanotrans2`).
+- **dftmodelmcp** — an MCP for DFT modeling. → todo `td44759`
+  (`projects/dftmodelmcp`).
+- **mofs-for-electrodes** — → todo `td48056` (`projects/mofs-for-electrodes`).
+- **gold-sea** / **gold-sea-2** — gold recovery from seawater. → todo
+  `td43250` / `td43578` (`projects/gold-sea` / `projects/gold-sea-2`).
+- **mechacard** — mechanical-cartridge project. → todo `td55666`
+  (`projects/mechacard`).
+- **dream-review** — → todo `td48091` (`projects/dream-review`).
+- **screwholder** — patent application. → todo `td41686`
+  (`projects/screwholder`).
+- **workshop260624-ai** — Bernal Generative AI workshop notes. → todo
+  `td41729` (`projects/workshop260624-ai`).
+
+Other named quests (id → one-line gloss; query `get(kind='quest', id=…)` for
+current `STATUS`):
+
+- `161906` — "a world that runs light on the planet"; the umbrella quest,
+  served by 161907/161908/161910.
+- `161907` — self-assembling, atomically-precise compute substrate (DNA-tile
+  / molecular computing angle).
+- `161908` — "structures lighter than air" (ultralight aerostructures).
+- `161909` — grow atomically-precise structure — switches, boxels, tilings
+  (DNA-tile self-assembly yield research).
+- `169855` — keep scientific-literature integrity practices at the frontier;
+  citation/claim-grounding meta-quest, relates to ADR 0047's ROLE3:own filter.
+- `169953` — "don't let precis get bamboozled by a bad paper"; evidence-
+  grounding meta-quest, same ADR 0047 relation.

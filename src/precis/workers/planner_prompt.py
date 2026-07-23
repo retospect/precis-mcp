@@ -418,6 +418,34 @@ tick (or the last 24h). The guardrail rejects worker-source
 declare victory without evidence. If you're genuinely blocked,
 use `ask-user:<question>` or `halt:<reason>` instead.
 
+## Re-ticked while a sibling is parked
+
+You may get re-invoked while one or more sibling children are still
+tagged `ask-user:<question>` or `waiting-for:<target>` — nobody has
+answered yet. This is expected: the dispatcher periodically re-ticks
+a planner even with a parked child, so it doesn't have to freeze the
+whole project on one leaf. Do **not** re-mint a duplicate ask for the
+same thing, and do **not** treat the phase as blocked just because
+that child is still open.
+
+1. **Judge whether the pending answer actually gates everything
+   else.** If nothing else is possible without it — genuinely, not
+   just "it'd be nice to know first" — it's fine, expected even, to
+   tick a plain "still waiting on X, nothing new this round"
+   conclusion. Don't invent low-value busywork just to look
+   productive.
+2. **Otherwise, propose concrete next steps**, split into:
+   - **autonomous** — spawn immediately, no human needed (another
+     gather cluster, an additional search wave, etc. — the same kind
+     of work Phase 1 already does).
+   - **human-required** — worth surfacing as high-value, but does not
+     gate this tick; describe it, don't force a re-block on it.
+3. **If the pending question has become genuinely essential** —
+   nothing further should happen until it's answered — escalate by
+   tagging that todo `halt:<reason>` instead of leaving it
+   `ask-user:`. `halt:` is the explicit way to opt back into a hard
+   freeze; the dispatcher never bypasses it, cooldown or not.
+
 ## End every tick with a conclusion block
 
 After all your tool calls and before claude -p hands back control,

@@ -298,6 +298,170 @@ def _open_tag_values(store: Store, ref_id: int) -> set[str]:
     return {str(r[0]) for r in rows}
 
 
+def _backdate(store: Store, ref_id: int, hours: float) -> None:
+    """Move ``refs.created_at`` backwards, for cooldown-window tests."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - %s::interval WHERE ref_id = %s",
+            (f"{hours} hours", ref_id),
+        )
+
+
+# ── parked-child replan bypass (cooldown) ───────────────────────────
+
+
+def _mint_planner_with_parked_child(
+    store: Store, handler: TodoHandler, *, child_tags: list[str]
+) -> tuple[int, int]:
+    """Mint an LLM:opus parent, a not-done child todo carrying every tag
+    in ``child_tags``, and a succeeded ``plan_tick`` job child (freshly
+    created — cooldown baseline). Returns ``(parent_id, job_id)``.
+    """
+    from precis.store.types import Tag
+
+    parent = handler.put(text="planner with parked child", tags=["LLM:opus"])
+    pid = id_of(parent.body)
+    child = store.insert_ref(
+        kind="todo", slug=None, title="parked child", meta={}, parent_id=pid
+    )
+    for t in child_tags:
+        store.add_tag(child.id, Tag.open(t), set_by="agent")
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="prior tick",
+        meta={"job_type": "plan_tick"},
+        parent_id=pid,
+    )
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "succeeded"), set_by="system", replace_prefix=True
+    )
+    return pid, job.id
+
+
+def test_ask_user_child_blocks_redispatch_during_cooldown(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A parent parked only on an ask-user child is NOT re-dispatched
+    right after its last plan_tick job — the cooldown holds."""
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    pid, _job_id = _mint_planner_with_parked_child(
+        store, handler, child_tags=["ask-user:please read this paper"]
+    )
+    assert pid not in _candidate_parent_ids(store, limit=10)
+    result = run_dispatch_pass(store)
+    assert result.claimed == 0
+    # Only the pre-seeded succeeded tick — no new job minted.
+    assert len(_child_jobs_under(store, pid)) == 1
+
+
+def test_ask_user_child_allows_redispatch_after_cooldown(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The same parent IS re-dispatched once the cooldown window has
+    elapsed since its last plan_tick job."""
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    pid, job_id = _mint_planner_with_parked_child(
+        store, handler, child_tags=["ask-user:please read this paper"]
+    )
+    _backdate(store, job_id, hours=7)  # past the 6h _PARKED_CHILD_REPLAN_COOLDOWN
+    assert pid in _candidate_parent_ids(store, limit=10)
+    result = run_dispatch_pass(store)
+    assert result.claimed == 1
+    assert result.ok == 1
+    children = _child_jobs_under(store, pid)
+    # The pre-seeded succeeded tick plus the freshly dispatched one.
+    assert len(children) == 2
+
+
+def test_waiting_for_child_allows_redispatch_after_cooldown(
+    handler: TodoHandler, store: Store
+) -> None:
+    """``waiting-for:`` gets the same cooldown bypass as ``ask-user:``."""
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    pid, job_id = _mint_planner_with_parked_child(
+        store, handler, child_tags=["waiting-for:reto"]
+    )
+    _backdate(store, job_id, hours=7)
+    assert pid in _candidate_parent_ids(store, limit=10)
+
+
+def test_normal_open_child_still_blocks_redispatch_regardless_of_cooldown(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A genuinely in-flight (non-parked) open child todo must never be
+    bypassed by the cooldown — unchanged existing behaviour, regression
+    guard against loosening the gate too far."""
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    parent = handler.put(text="planner with live child", tags=["LLM:opus"])
+    pid = id_of(parent.body)
+    store.insert_ref(
+        kind="todo", slug=None, title="still working", meta={}, parent_id=pid
+    )
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="prior tick",
+        meta={"job_type": "plan_tick"},
+        parent_id=pid,
+    )
+    from precis.store.types import Tag
+
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "succeeded"), set_by="system", replace_prefix=True
+    )
+    _backdate(store, job.id, hours=7)
+    assert pid not in _candidate_parent_ids(store, limit=10)
+    result = run_dispatch_pass(store)
+    assert result.claimed == 0
+
+
+def test_halt_child_never_bypassed_by_cooldown(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A parent whose only open child is halt-tagged is NEVER
+    re-dispatched by the new bypass, even past the cooldown window —
+    ``halt:`` stays a true hard stop, distinct from ``ask-user:``."""
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    pid, job_id = _mint_planner_with_parked_child(store, handler, child_tags=["halt"])
+    _backdate(store, job_id, hours=7)
+    assert pid not in _candidate_parent_ids(store, limit=10)
+    result = run_dispatch_pass(store)
+    assert result.claimed == 0
+
+
+def test_halt_plus_ask_user_child_never_bypassed_by_cooldown(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A child carrying BOTH ``halt`` and ``ask-user:`` at once — e.g.
+    the planner escalates an already-parked child by adding ``halt:``
+    without first removing ``ask-user:``, per the ``planner_prompt.py``
+    escalation guidance — must stay a hard block. The hard-block tag
+    wins over the bypass tag regardless of how long the cooldown has
+    elapsed. Regression guard for the dual-tag gap the reviewer found:
+    the original bypass check only asked "is a bypass tag present?"
+    and never checked "is a hard-block tag ALSO present?", so a
+    halted-and-parked child would wrongly stop blocking once 6h had
+    passed."""
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    pid, job_id = _mint_planner_with_parked_child(
+        store,
+        handler,
+        child_tags=["ask-user:please read this paper", "halt:escalated"],
+    )
+    _backdate(store, job_id, hours=7)
+    assert pid not in _candidate_parent_ids(store, limit=10)
+    result = run_dispatch_pass(store)
+    assert result.claimed == 0
+    assert len(_child_jobs_under(store, pid)) == 1
+
+
 def test_unknown_executor_halts_parent_and_stops_re_dispatch(
     handler: TodoHandler, store: Store
 ) -> None:
