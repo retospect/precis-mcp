@@ -1,7 +1,7 @@
 ---
 description: Implement the agreed spec, ship to main, and deploy to the cluster — the dark-factory one-keystroke. Run from inside a feature worktree.
 argument-hint: "[optional ship/commit message]"
-allowed-tools: Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(git:*), Bash(docker:*), Bash(uv:*)
+allowed-tools: Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(git:*), Bash(docker:*), Bash(uv:*), Agent
 ---
 
 You said **go**. Turn the spec we've established this session into shipped,
@@ -36,7 +36,18 @@ Optional ship message from the user: `$ARGUMENTS`
    `_Verified @ <sha>._` stamp to the tip you're shipping. These edits ride
    the same ship commit.
 
-4. **Ship.** `scripts/ship` is idempotent (re-run resumes cleanly): it does
+4. **Review risky diffs before shipping (size/risk-gated, blocking).** Check
+   `git diff --stat origin/main...HEAD` (or `main...HEAD`). Spawn `reviewer`
+   (foreground — you need its findings before continuing) only if the diff
+   touches **more than ~5 files**, or touches a sensitive area (a migration
+   under `src/precis/migrations/`, `safe_fetch.py`, auth/session code, or a
+   schema/ACL change). A small, low-risk diff **skips this entirely** — that's
+   what on-demand `/code-review` is for; don't spend tokens reviewing the
+   common one-line-fix ship. If `reviewer` runs: fix any real finding now,
+   before step 5; if you deliberately don't fix one, note why. `clean`, or
+   under-threshold, means go straight to step 5.
+
+5. **Ship.** `scripts/ship` is idempotent (re-run resumes cleanly): it does
    commit WIP → sync (`git fetch` + `git merge` main) → the container gate
    (auto-fixes ruff, then authoritative `ruff · format · mypy · pytest`) →
    squash-merge to `main` → reset the branch to the shipped `main` →
@@ -45,7 +56,7 @@ Optional ship message from the user: `$ARGUMENTS`
    scripts/ship "<message>"
    ```
 
-5. **Handle a red ship.** The script only exits non-zero on something it can't
+6. **Handle a red ship.** The script only exits non-zero on something it can't
    do mechanically. **Do NOT deploy if ship failed.**
    - **Red gate (mypy/pytest)** — fix the failure printed above the `✖`,
      re-run `scripts/ship`. Iterate locally with `scripts/test <path or -k>`
@@ -57,7 +68,7 @@ Optional ship message from the user: `$ARGUMENTS`
    - A `WARNING:` about the primary main not fast-forwarding is best-effort,
      not a failure — relay it and continue to deploy.
 
-6. **Deploy.** Only after a green ship, push the new `main` to the cluster:
+7. **Deploy.** Only after a green ship, push the new `main` to the cluster:
    ```
    scripts/deploy
    ```
@@ -68,7 +79,7 @@ Optional ship message from the user: `$ARGUMENTS`
    ansible task verbatim — the cluster may be on mixed versions; do not
    declare success.
 
-7. **Confirm — always end with this exact three-line block** (verify each
+8. **Confirm — always end with this exact three-line block** (verify each
    line, don't assume; check `git rev-parse origin/main` for the sha):
    ```
    Merged to main:  ✓ <sha> on origin/main   (or ✗ — ship failed above)
@@ -79,39 +90,50 @@ Optional ship message from the user: `$ARGUMENTS`
    ship but failed deploy → first two ✓, deploy ✗). If the local primary
    `main` didn't fast-forward, add the `WARNING:` line as a fourth line.
 
-8. **Follow through on residuals (tiered).** A green ship+deploy is not the
-   end if this session surfaced latent bugs it parked. **Harvest** every
-   residual whose finder is **Opus 4.7 or better** — *this* session (you
-   qualify) or an opus reviewer memory (`structural` / `deep_review`). A
-   finding from nursery SQL or a haiku planner tick is *filed, never chased*
-   — that is the capability gate doing its job. A residual is a concrete
-   correctness gap — a latent bug, an incomplete fix, a message-only
-   mitigation of a real root cause — **not** a feature extension or a
-   nice-to-have.
-   - **Persist first — it must survive compaction.** Before anything else,
-     record every harvested residual durably: an `OPEN-ITEMS.md` "Residuals"
-     block and/or `kind='todo'` / `gripe` rows. Free-text residuals get
-     summarized away on the next auto-compaction; persisted ones don't. The
-     persisted list — not your memory — is the source of truth for the loop
-     below, so it keeps working after the harness self-compacts.
-   - **Fix the in-reach ones now.** For each residual that is a known,
-     bounded fix, open a fresh worktree cycle, fix it, and run `/go` again
-     (ship+deploy). Each residual is its own cycle so history stays legible.
-   - **File the rest.** Anything that needs investigation before a fix, or is
-     out of reach this session, becomes a `kind='todo'` (with `meta.executor`
-     where a `fix_gripe` job fits) or a `gripe` — the factory's backlog-groomer
-     lane — and you note it; you do not spin on it.
-   - **Stop-and-report guard.** If a residual's fix balloons in scope, or goes
-     red and isn't quickly greenable, stop, file it, and surface it — never
-     chain unbounded ship+deploys.
+9. **Close what this ship resolved (background, non-blocking) — only if step 8
+   confirmed ✓ (merged, regardless of deploy status).** If the ship itself
+   failed (✗ on the "Merged to main" line), skip this step entirely — there
+   is no new shipped sha to check. Otherwise spawn a background
+   `issue-closer` agent with the sha just confirmed in step 8 (not a
+   re-derived `git rev-parse main` — use the same sha you verified against
+   `origin/main`). It checks open gripes and `OPEN-ITEMS.md` against the
+   diff and closes only what it's confident this ship fixed. Don't wait for
+   it — continue to step 10 immediately; relay its one-line note (or
+   "nothing to close") whenever it completes.
 
-9. **Summarize next steps, then hand off a clean restart.** Close by telling
-   the user what — if anything — comes next: the persisted residuals from step
-   8, the next item on a tracked list, or "nothing open." Then, when the session
-   ran long *or* there are next steps to resume, emit a **full handoff block**
-   per `.claude/commands/next.md` step 3 (the copy → `/compact` → paste
-   recovery prompt), drawing its pointers from the **persisted** source
-   (`OPEN-ITEMS.md` / `kind='todo'` / memory), never a recap of this
-   conversation — the durable artifact is what survives compaction. Skip the
-   handoff when the session was short and nothing is open; don't manufacture
-   ceremony.
+10. **Follow through on residuals (tiered).** A green ship+deploy is not the
+    end if this session surfaced latent bugs it parked. **Harvest** every
+    residual whose finder is **Opus 4.7 or better** — *this* session (you
+    qualify) or an opus reviewer memory (`structural` / `deep_review`). A
+    finding from nursery SQL or a haiku planner tick is *filed, never chased*
+    — that is the capability gate doing its job. A residual is a concrete
+    correctness gap — a latent bug, an incomplete fix, a message-only
+    mitigation of a real root cause — **not** a feature extension or a
+    nice-to-have.
+    - **Persist first — it must survive compaction.** Before anything else,
+      record every harvested residual durably: an `OPEN-ITEMS.md` "Residuals"
+      block and/or `kind='todo'` / `gripe` rows. Free-text residuals get
+      summarized away on the next auto-compaction; persisted ones don't. The
+      persisted list — not your memory — is the source of truth for the loop
+      below, so it keeps working after the harness self-compacts.
+    - **Fix the in-reach ones now.** For each residual that is a known,
+      bounded fix, open a fresh worktree cycle, fix it, and run `/go` again
+      (ship+deploy). Each residual is its own cycle so history stays legible.
+    - **File the rest.** Anything that needs investigation before a fix, or is
+      out of reach this session, becomes a `kind='todo'` (with `meta.executor`
+      where a `fix_gripe` job fits) or a `gripe` — the factory's backlog-groomer
+      lane — and you note it; you do not spin on it.
+    - **Stop-and-report guard.** If a residual's fix balloons in scope, or goes
+      red and isn't quickly greenable, stop, file it, and surface it — never
+      chain unbounded ship+deploys.
+
+11. **Summarize next steps, then hand off a clean restart.** Close by telling
+    the user what — if anything — comes next: the persisted residuals from step
+    10, the next item on a tracked list, or "nothing open." Then, when the
+    session ran long *or* there are next steps to resume, emit a **full
+    handoff block** per `.claude/commands/next.md` step 3 (the copy →
+    `/compact` → paste recovery prompt), drawing its pointers from the
+    **persisted** source (`OPEN-ITEMS.md` / `kind='todo'` / memory), never a
+    recap of this conversation — the durable artifact is what survives
+    compaction. Skip the handoff when the session was short and nothing is
+    open; don't manufacture ceremony.

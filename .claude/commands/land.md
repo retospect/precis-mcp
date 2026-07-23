@@ -1,7 +1,7 @@
 ---
 description: End-of-session wrap-up — commit WIP, sync onto main, gate against the worktree, then squash-merge to main. Runs the deterministic scripts/ship. Run from inside a feature worktree.
 argument-hint: "[optional commit/ship message]"
-allowed-tools: Bash(scripts/ship:*), Bash(git:*), Bash(docker:*), Bash(uv:*)
+allowed-tools: Bash(scripts/ship:*), Bash(git:*), Bash(docker:*), Bash(uv:*), Agent
 ---
 
 You are wrapping up a worktree session. The goal of a feature branch is to
@@ -35,7 +35,19 @@ Optional ship message from the user: `$ARGUMENTS`
    `_Verified @ <sha>._` stamp to the tip you're shipping. These edits ride
    the same ship commit (the script auto-commits WIP).
 
-3. **Run the script.** It is idempotent — re-running after a fix resumes
+3. **Review risky diffs before shipping (size/risk-gated, blocking).** Check
+   `git diff --stat origin/main...HEAD` (or `main...HEAD`). Spawn `reviewer`
+   (foreground — you need its findings before continuing) only if the diff
+   touches **more than ~5 files**, or touches a sensitive area (a migration
+   under `src/precis/migrations/`, `safe_fetch.py`, auth/session code, or a
+   schema/ACL change). A small, low-risk diff **skips this entirely** — that's
+   what on-demand `/code-review` is for; don't spend tokens reviewing the
+   common one-line-fix ship. If `reviewer` runs: fix any real finding now,
+   before step 4; if you deliberately don't fix one, note why in the ship
+   message or a comment. `clean`, or under-threshold, means go straight to
+   step 4.
+
+4. **Run the script.** It is idempotent — re-running after a fix resumes
    cleanly.
    ```
    scripts/ship "<message>"
@@ -49,7 +61,7 @@ Optional ship message from the user: `$ARGUMENTS`
    reset the feature branch to the shipped `main` (zero divergence) →
    fast-forward the local `main` → print the new `main` sha.
 
-4. **Handle failures.** The script exits non-zero and prints a `✖` line only
+5. **Handle failures.** The script exits non-zero and prints a `✖` line only
    on something it can't do mechanically:
    - **Merge conflict during sync** — resolve the conflict, then
      `git add -A && git commit`, then re-run `scripts/ship`.
@@ -68,7 +80,7 @@ Optional ship message from the user: `$ARGUMENTS`
      just relay it so the human can `git merge --ff-only origin/main` in the
      primary worktree.
 
-5. **Confirm — always end with this exact three-line block** (verify each
+6. **Confirm — always end with this exact three-line block** (verify each
    line against `git rev-parse origin/main`, don't assume):
    ```
    Merged to main:  ✓ <sha> on origin/main   (or ✗ — ship failed above)
@@ -80,7 +92,17 @@ Optional ship message from the user: `$ARGUMENTS`
    didn't fast-forward, add the `WARNING:` line as a fourth line. Then one
    line summarizing what shipped.
 
-6. **Follow through on residuals (tiered).** A green ship is not the end if
+7. **Close what this ship resolved (background, non-blocking) — only if step 6
+   confirmed ✓.** If the ship failed (any ✗ in step 6), skip this step
+   entirely — there is no new shipped sha to check. Otherwise spawn a
+   background `issue-closer` agent with the sha just confirmed in step 6
+   (not a re-derived `git rev-parse main` — use the same sha you verified
+   against `origin/main`). It checks open gripes and `OPEN-ITEMS.md`
+   against the diff and closes only what it's confident this ship fixed.
+   Don't wait for it — continue to step 8 immediately; relay its one-line
+   note (or "nothing to close") whenever it completes.
+
+8. **Follow through on residuals (tiered).** A green ship is not the end if
    this session surfaced latent bugs it parked. **Harvest** every residual
    whose finder is **Opus 4.7 or better** — *this* session (you qualify) or
    an opus reviewer memory (`structural` / `deep_review`). A finding from
@@ -106,9 +128,9 @@ Optional ship message from the user: `$ARGUMENTS`
      red and isn't quickly greenable, stop, file it, and surface it — never
      chain unbounded ships.
 
-7. **Summarize next steps, then hand off a clean restart.** Close by telling
+9. **Summarize next steps, then hand off a clean restart.** Close by telling
    the user what — if anything — comes next: the persisted residuals from step
-   6, the next item on a tracked list, or "nothing open." Then, when the session
+   8, the next item on a tracked list, or "nothing open." Then, when the session
    ran long *or* there are next steps to resume, emit a **full handoff block**
    per `.claude/commands/next.md` step 3 (the copy → `/compact` → paste
    recovery prompt), drawing its pointers from the **persisted** source

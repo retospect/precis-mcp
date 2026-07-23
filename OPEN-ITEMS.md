@@ -10,6 +10,25 @@ is the historical observation log.
 > regression that pins it.
 
 ---
+## 🗂️ `gripe-filer` agent (haiku, mechanical) — agreed, unbuilt
+Status: open · Severity: polish · Owner: new `.claude/agents/gripe-filer.md` · Test: n/a (prompt/config file, no test suite)
+- Agreed 2026-07-23: a haiku-tier agent that takes an already-decided
+  finding **plus an explicit target** (gripe kind vs. `OPEN-ITEMS.md`) and
+  files it in the standard shape — unloading the mechanical `put`/edit from
+  the Opus main loop. It does NOT decide which of the two targets to use
+  (that's judgment, not formatting) — the caller passes the target.
+- Companion to `issue-closer` (sonnet, shipped this session — closes
+  resolved gripes/items post-ship). `gripe-filer` is the create-direction
+  sibling.
+- Since this session also granted `mcp__precis__search`+`put` directly to
+  every existing agent def (so any agent that surfaces an issue can file it
+  itself without bubbling back), `gripe-filer`'s remaining marginal value is
+  mainly: (a) when the Opus main loop itself notices something and wants to
+  delegate the mechanical filing rather than doing the `put` inline, or
+  (b) a uniform shape/dedup-check step none of the other agents bother with
+  today.
+
+---
 ## Plan for the next big session set
 - (also survey the usual thing from /whatnext)
 - Do token efficiency stuff (like claude.md rules vs rationale, ensure the search tools and so on all work, an audit of (coding) prompts and a review of the last 2-3 days and what lools claude gets into that are wasteful. Lets schedule the efficiency stuff after a few hours afte token reset on THursday noon. 

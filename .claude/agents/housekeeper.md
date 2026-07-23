@@ -9,7 +9,7 @@ description: >-
   on anything not bucketed safe_remove — live sessions, dirty trees, branches
   with real unmerged commits — those go back to the caller, never decided on
   here.
-tools: Bash, Read, AskUserQuestion
+tools: Bash, Read, AskUserQuestion, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---
 
@@ -59,6 +59,12 @@ then remove.
 4. Report, in order: removed (with confirmation of the new `git worktree
    list`), left alone and why, bucketed exactly as: `live_session`,
    `needs_judgment` (include each one's diffstat verbatim), `has_unmerged_work`.
+
+## Filing a gripe
+If you notice something worth tracking that's outside your remit to fix — a
+bug, a gap, a friction point — file it: `search(kind='gripe', q='...')` first
+to check it isn't already open, then `put(kind='gripe', text='...')` if not.
+File it and move on; don't spin on it, and don't duplicate an existing one.
 
 Short leash: confirm-and-remove the clear-cut cases, hand every ambiguous one
 back untouched with enough detail that the caller doesn't need to re-derive it.

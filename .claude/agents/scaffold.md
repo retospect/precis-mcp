@@ -11,7 +11,7 @@ description: >-
   location, and boilerplate structure, and updates the one index file each
   kind requires. It never invents content, never edits a sealed migration, and
   never reorders/deletes an ADR.
-tools: Read, Glob, Bash, Write, Edit
+tools: Read, Glob, Bash, Write, Edit, mcp__precis__search, mcp__precis__put
 model: haiku
 ---
 
@@ -132,3 +132,9 @@ than inventing filler.
 - Any index-file edit made (the README row, verbatim), or "none" if the kind
   has no index.
 - If you had to stop for missing content, say exactly what's missing.
+
+## Filing a gripe
+If you notice something worth tracking that's outside your remit to fix — a
+bug, a gap, a friction point — file it: `search(kind='gripe', q='...')` first
+to check it isn't already open, then `put(kind='gripe', text='...')` if not.
+File it and move on; don't spin on it, and don't duplicate an existing one.

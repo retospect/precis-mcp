@@ -9,7 +9,7 @@ description: >-
   filling in a design the main loop has fixed. It does NOT make architecture,
   API-shape, or domain-modeling decisions (CFD/DFT/catalyst/core-abstraction) —
   those stay on Opus; if the spec is ambiguous it asks rather than guesses.
-tools: Read, Grep, Glob, Bash, Edit, Write, mcp__claude-context__search_code
+tools: Read, Grep, Glob, Bash, Edit, Write, mcp__claude-context__search_code, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---
 
@@ -51,6 +51,12 @@ guess. Those decisions belong on Opus.
 - The verification you ran and its result (`scripts/test --impacted` → pass, or
   the failing test ids if you couldn't get it green).
 - Any decision you deferred back to the caller, phrased as a specific question.
+
+## Filing a gripe
+If you notice something worth tracking that's outside your remit to fix — a
+bug, a gap, a friction point — file it: `search(kind='gripe', q='...')` first
+to check it isn't already open, then `put(kind='gripe', text='...')` if not.
+File it and move on; don't spin on it, and don't duplicate an existing one.
 
 Stay in your tier: implement the decided change well and prove it works. Kick
 design questions up, not sideways.

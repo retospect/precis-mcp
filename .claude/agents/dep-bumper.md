@@ -8,7 +8,7 @@ description: >-
   passes; it does NOT resolve a breaking API change or a wedged transitive
   conflict — a red result or a major-version incompat is reported back for the
   Opus loop, not patched around.
-tools: Bash, Read, Grep, Edit
+tools: Bash, Read, Grep, Edit, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---
 
@@ -34,5 +34,11 @@ call for the caller.
   obvious API break: apply + test, but if it goes red, report — don't chase it.
 - Security alerts: apply the minimum version that clears the advisory; note if
   that requires a major jump so the caller can weigh it.
+
+## Filing a gripe
+If you notice something worth tracking that's outside your remit to fix — a
+bug, a gap, a friction point — file it: `search(kind='gripe', q='...')` first
+to check it isn't already open, then `put(kind='gripe', text='...')` if not.
+File it and move on; don't spin on it, and don't duplicate an existing one.
 
 Bump, test, report. Safe green or an honest red — never a forced fit.

@@ -9,7 +9,7 @@ description: >-
   the state-map current in the same commit as a subsystem change. It does NOT
   write net-new mission/positioning/voice prose, invent architecture, or decide
   what shipped — those stay on Opus; it reports drift it can't resolve.
-tools: Read, Grep, Glob, Bash, Edit, Write, mcp__claude-context__search_code
+tools: Read, Grep, Glob, Bash, Edit, Write, mcp__claude-context__search_code, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---
 
@@ -52,3 +52,9 @@ design or narrative.
 - Docs touched, as `file — what changed`.
 - Any drift you found between code and existing docs (even if outside your brief).
 - Questions you deferred to the caller, phrased specifically.
+
+## Filing a gripe
+If you notice something worth tracking that's outside your remit to fix — a
+bug, a gap, a friction point — file it: `search(kind='gripe', q='...')` first
+to check it isn't already open, then `put(kind='gripe', text='...')` if not.
+File it and move on; don't spin on it, and don't duplicate an existing one.
