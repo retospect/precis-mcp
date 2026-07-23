@@ -10,8 +10,8 @@ note-like handlers (`memory`, `gripe`, `conversation`,
 `flashcard`, `quest`, `todo`, file kinds)
 **Predecessors**:
 - ADR 0003 — shared tool registry (`docs/decisions/0003-shared-tool-registry.md`)
-- `docs/mcp-critic-review-2026-05-02.md` — MAJOR-C cold-start
-  discoverability finding
+- The now-retired mcp-critic review's MAJOR-C cold-start discoverability
+  finding (2026-05-02; doc itself cut as stale, finding captured here)
 
 ## Problem
 
@@ -786,9 +786,8 @@ Phased rollout. Each phase is independently shippable.
    currently scrape the long `search` docstring for examples. After
    the trim, those models must follow the discovery pointer.
    Mitigation: keep the example sentence in `precis-search-help`
-   short and self-contained; verify with the existing critic-review
-   battery (`docs/mcp-critic-review-2026-05-02.md`) on a 7B model
-   before sealing.
+   short and self-contained; verify with a fresh critic-review pass
+   on a 7B model before sealing.
 2. **Discovery latency on first call.** First
    `search(kind='skill')` triggers chunking + embedding (or cache
    read). On a cold container with no skill cache, that's
@@ -877,8 +876,6 @@ Phased rollout. Each phase is independently shippable.
 - ADR 0007 — derived queue / no blocking jobs
   (`docs/decisions/0007-derived-queue-no-block-jobs.md`)
   (background: skill index is a derived artefact, lazy-built)
-- `docs/mcp-critic-review-2026-05-02.md` — MAJOR-C cold-start
-  discoverability finding
 - `src/precis/server.py:53-61` — `_INSTRUCTIONS`
 - `src/precis/server.py:113-166` — `_build_instructions`
 - `src/precis/tools/core.py:178-213` — current `search` docstring

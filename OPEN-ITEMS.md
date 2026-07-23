@@ -1,9 +1,7 @@
 # precis-mcp — Open Items
 
 Durable backlog. Only **open / blocked / deferred** work lives here; done
-items are removed (history is `git log`). The mcp-critic review at
-[`docs/mcp-critic-review-2026-05-02.md`](docs/mcp-critic-review-2026-05-02.md)
-is the historical observation log.
+items are removed (history is `git log`).
 
 > **Convention** — Status: `open`/`blocked`/`deferred` · Severity:
 > `critical`/`feature`/`polish` · Owner: where the fix lives · Test: the
@@ -165,17 +163,28 @@ Status: open · Severity: polish · Owner: `src/precis/utils/llm/router.py` (`Ba
 
 ## 🤖 asa-slack — deploy + first-light (ADR 0062)
 
-- **Code SHIPPED (`src/asa_slack/`), NOT deployed.** Needs, in order: (1) the
-  manual Slack app + Socket Mode setup and vault-token seed
-  (`deploy/roles/asa_slack/README.md`), (2) run `31-asa-bot.yml` on the
-  gateway first if not already (asa-slack reuses its `mcp.json`/`SOUL.md`),
-  (3) `ansible-playbook 48-asa-slack.yml`, (4) a live smoke test in a real
-  Slack channel — confirm threading (never posts to channel root), the
-  identity log line on boot, a paper-search question actually works, a
-  "kick off a job" request is refused (`Unsupported`, not just declined in
-  prose), and a repeat message from the same person shows the per-person
-  `memory` note working. Only unit-tested so far (kind-allowlist, conv_slug,
-  identity, token-loading — no live Slack API exercised).
+- **Actually deployed (this section was stale) — `com.asa.slack` was live on
+  melchior/gateway, but misconfigured.** Found 2026-07-23: the daemon was
+  running and spamming `slack_sdk.errors.SlackApiError:
+  not_allowed_token_type` on every `apps.connections.open` Socket Mode
+  handshake (9,921 occurrences in its retained log) — wrong Slack token type
+  seeded (Socket Mode needs the app-level `xapp-` token, not a bot token, or
+  vice versa). **Manually stopped** (`sudo launchctl bootout
+  system/com.asa.slack` on melchior) to stop the error flood; plist left in
+  place at `/Library/LaunchDaemons/com.asa.slack.plist`. To resume once the
+  Slack app token is redone per `deploy/roles/asa_slack/README.md`: `sudo
+  launchctl bootstrap system /Library/LaunchDaemons/com.asa.slack.plist` on
+  melchior.
+- Remaining before first-light: (1) redo the manual Slack app + Socket Mode
+  token setup (this is what's actually broken — see above), (2) confirm
+  `31-asa-bot.yml` has run on the gateway (asa-slack reuses its
+  `mcp.json`/`SOUL.md`), (3) a live smoke test in a real Slack channel —
+  confirm threading (never posts to channel root), the identity log line on
+  boot, a paper-search question actually works, a "kick off a job" request is
+  refused (`Unsupported`, not just declined in prose), and a repeat message
+  from the same person shows the per-person `memory` note working. Only
+  unit-tested so far (kind-allowlist, conv_slug, identity, token-loading — no
+  live Slack API exercised).
   Status: `open` · Severity: `feature` · Owner: `src/asa_slack/`,
   `deploy/roles/asa_slack/` · Test: manual smoke test above (no automated
   end-to-end harness for a live Slack workspace).

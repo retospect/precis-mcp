@@ -226,4 +226,3 @@ back-compat with any files staged before the routing landed.
 - **External-facing specs**: `docs/user-facing/`
   (`paper_ingest.md`, kind-spec docs, edit-protocol-spec)
 - **Active backlog**: `OPEN-ITEMS.md`
-- **Historical critic review**: `docs/mcp-critic-review-2026-05-02.md`
