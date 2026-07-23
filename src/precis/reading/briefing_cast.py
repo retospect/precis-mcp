@@ -53,6 +53,7 @@ from precis.reading.cast_common import (
     CAST_PROFILES,
     CastProfile,
     Source,
+    compose_max_tokens,
     create_cast_draft,
     find_cast_draft,
     link_sources,
@@ -743,10 +744,15 @@ def build_reading_briefing(
     # demand a parseable JSON block this pass's prose brief never has. A
     # PRECIS_READING_BRIEF_MODEL override still wins, but must now name a real
     # model id (e.g. claude-opus-4-8), not the retired litellm claude-opus alias.
+    # max_tokens restores the pre-migration litellm cap (compose_max_tokens, the
+    # profile's word budget in token terms) — best-effort post-hoc truncation on
+    # claude_agent (no native completion-length flag there), not a real
+    # generation-time stop, but it keeps the cast bounded to its target length.
     llm = client or DispatchClient(
         tier=Tier.CLOUD_SUPER,
         model=os.environ.get("PRECIS_READING_BRIEF_MODEL") or None,
         tools_needed=True,
+        max_tokens=compose_max_tokens(profile),
         source="reading_brief",
         log_call=True,
     )

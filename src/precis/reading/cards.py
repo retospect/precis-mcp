@@ -525,13 +525,21 @@ def _default_client() -> Any:
     these cloze/rework prompts rely on. A ``PRECIS_CARD_FORGE_MODEL`` override
     still wins, but must now name a real model id (e.g. ``claude-opus-4-8``),
     not the retired litellm ``claude-opus`` alias. Mirrors
-    `build_meditation`'s default-client branch. Tests inject a fake."""
+    `build_meditation`'s default-client branch. Tests inject a fake.
+
+    ``max_tokens=1500`` restores the pre-router-migration litellm cap (a
+    ``claude_agent`` call has no native completion-length flag, so this is a
+    best-effort post-hoc truncation — see
+    :class:`~precis.utils.llm.router.ClaudeAgentProvider` — not a real
+    generation-time stop, but it keeps a cloze/rework rewrite bounded rather
+    than running unchecked to the $2 cost ceiling)."""
     from precis.utils.llm.router import DispatchClient, Tier
 
     return DispatchClient(
         tier=Tier.CLOUD_SUPER,
         model=os.environ.get("PRECIS_CARD_FORGE_MODEL") or None,
         tools_needed=True,
+        max_tokens=1500,
         source="card_forge",
         log_call=True,
     )

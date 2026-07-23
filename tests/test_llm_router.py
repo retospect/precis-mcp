@@ -242,6 +242,65 @@ def test_dispatch_agent_forwards_disallowed_tools_and_log_event(
     assert seen["output_format"] == "stream-json"
 
 
+def test_dispatch_agent_max_tokens_truncates_post_hoc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``claude_agent`` has no completion-length flag (``call_claude_agent``
+    accepts no such kwarg — only ``--max-turns`` / ``--max-budget-usd``), so a
+    caller-pinned ``max_tokens`` can't reach a real generation-time stop.
+    :class:`~precis.utils.llm.router.ClaudeAgentProvider` instead truncates the
+    final text post-hoc to (roughly) that word budget — the regression this
+    guards is a migrated cloud pass (meditation/briefing/cards) silently losing
+    its pre-router-migration litellm cap entirely (gripe: post-ship review of
+    8eb59b86)."""
+
+    def fake_agent(prompt: str, **kwargs: object) -> AgentResult:
+        # No max_tokens kwarg reaches call_claude_agent — the CLI has none.
+        assert "max_tokens" not in kwargs
+        return AgentResult(
+            final_text=" ".join(f"word{i}" for i in range(1, 101)),
+            cost_usd=1.0,
+            duration_s=1.0,
+            turns_used=1,
+        )
+
+    monkeypatch.setattr(router, "call_claude_agent", fake_agent)
+
+    out = dispatch(
+        LlmRequest(
+            tier=Tier.CLOUD_SUPER,
+            prompt="hi",
+            tools_needed=True,
+            max_tokens=14,  # ~10 words at the 1.4 tokens/word ratio
+        )
+    )
+
+    assert out.error is None
+    words = out.text.split()
+    assert len(words) <= 10
+    assert words[0] == "word1"  # truncated from the front, not reordered
+
+
+def test_dispatch_agent_no_max_tokens_leaves_text_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``max_tokens=None`` (the default — no call site sets it before this
+    fix) must not truncate — byte-identical to today for every caller that
+    hasn't opted in."""
+    long_text = " ".join(f"word{i}" for i in range(1, 101))
+
+    def fake_agent(prompt: str, **kwargs: object) -> AgentResult:
+        return AgentResult(
+            final_text=long_text, cost_usd=1.0, duration_s=1.0, turns_used=1
+        )
+
+    monkeypatch.setattr(router, "call_claude_agent", fake_agent)
+
+    out = dispatch(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="hi", tools_needed=True))
+
+    assert out.text == long_text
+
+
 def test_dispatch_cloud_helper(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 

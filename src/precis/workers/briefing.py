@@ -48,6 +48,14 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_LOOKBACK_HOURS = 26  # 24h + 2h overlap (lifted from the old job)
 _MAX_ARTICLES = 200
+#: The pre-router-migration litellm ``max_tokens`` cap for this pass. The
+#: ``claude_agent`` transport has no native completion-length flag (only
+#: ``--max-turns`` / ``--max-budget-usd``), so this is now a best-effort
+#: post-hoc truncation (see
+#: :class:`~precis.utils.llm.router.ClaudeAgentProvider`) rather than a real
+#: generation-time stop — but it keeps the daily brief bounded instead of
+#: running unchecked to the $2 cost ceiling.
+_BRIEF_MAX_TOKENS = 1200
 
 # The briefing is a once-a-day call whose US section asks the model to
 # separate operational signal from spectacle — analytically demanding, so it
@@ -259,6 +267,7 @@ def run_briefing(
         tier=Tier.CLOUD_SUPER,
         model=os.environ.get("PRECIS_BRIEFING_MODEL") or None,
         tools_needed=True,
+        max_tokens=_BRIEF_MAX_TOKENS,
         source="briefing",
         log_call=True,
     )

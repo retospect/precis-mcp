@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -482,14 +483,22 @@ class LlmRequest:
     model: str | None = None
     max_usd: float | None = None
     timeout_s: float | None = None
-    #: Completion-length cap for the local / openai-compat transports (the
-    #: ``max_tokens`` field of the underlying ``LlmConfig``). ``None`` keeps
-    #: ``LlmConfig.from_env``'s default (220) — the summarizer's short-gloss
-    #: cap. A pass with a longer structured payload pins its own (e.g.
-    #: paper_glossary needs 2000, else the JSON truncates); this is the knob
-    #: that lets a direct-``LlmClient`` caller fold through ``dispatch`` without
-    #: silently shrinking its budget. Ignored by the ``claude_*`` transports,
-    #: which have their own turn/cost ceilings.
+    #: Completion-length cap. For the local / openai-compat transports this is
+    #: the ``max_tokens`` field of the underlying ``LlmConfig`` — a real,
+    #: generation-time stop. ``None`` keeps ``LlmConfig.from_env``'s default
+    #: (220) — the summarizer's short-gloss cap. A pass with a longer
+    #: structured payload pins its own (e.g. paper_glossary needs 2000, else
+    #: the JSON truncates); this is the knob that lets a direct-``LlmClient``
+    #: caller fold through ``dispatch`` without silently shrinking its budget.
+    #: ``claude_agent`` (the ``claude`` CLI) has no completion-length flag at
+    #: all — only ``--max-turns`` (turn count) and ``--max-budget-usd``
+    #: (dollar cost), neither of which bounds a single response's length —
+    #: so :class:`ClaudeAgentProvider` treats a set ``max_tokens`` as a
+    #: **best-effort post-hoc truncation** of the final text (see
+    #: :func:`_truncate_to_max_tokens`), not a real stop: the full (costly)
+    #: response is still generated. A caller that needs a hard generation-time
+    #: cap must use a local/openai-compat tier instead. ``None`` (the default)
+    #: leaves ``claude_agent`` output untruncated, as before this knob existed.
     max_tokens: int | None = None
     #: A booked OpenRouter variant (a ``meta.endpoints`` dict — provider / quant /
     #: window) + reasoning effort, pinned onto the ``openai_compat`` wire so the
@@ -566,6 +575,47 @@ class LlmProvider(Protocol):
     def run(self, req: LlmRequest, *, model: str) -> LlmResult: ...
 
 
+#: Rough words-per-token ratio for approximating a length cap on a transport
+#: that has no native ``max_tokens`` knob — mirrors
+#: ``precis.reading.cast_common._TOKENS_PER_WORD`` (kept as a local constant
+#: here so this module doesn't reach into the reading layer).
+_APPROX_TOKENS_PER_WORD = 1.4
+
+
+def _truncate_to_max_tokens(text: str, max_tokens: int) -> str:
+    """Best-effort post-hoc length cap for ``claude_agent``.
+
+    The ``claude`` CLI has no completion-length flag (only ``--max-turns`` /
+    ``--max-budget-usd``, neither of which bounds one response), so a caller
+    that pins :attr:`LlmRequest.max_tokens` on a ``claude_agent`` call can't
+    get a real generation-time stop — the model still runs to completion (and
+    is still billed for it). This restores the *output-length* guarantee a
+    duration-targeted pass needs (a nidra/brief that must fit its spoken-time
+    budget) by cutting the text back down after the fact, snapping to the
+    last paragraph break at/before the word budget so the cut isn't a
+    mid-sentence guillotine (falls back to a sentence break, then a hard word
+    cut, if there's no paragraph break early enough).
+    """
+    budget_words = max(1, int(max_tokens / _APPROX_TOKENS_PER_WORD))
+    positions = list(re.finditer(r"\S+", text))
+    if len(positions) <= budget_words:
+        return text
+    cutoff = positions[budget_words - 1].end()
+    para_break = text.rfind("\n\n", 0, cutoff)
+    if para_break > 0:
+        return text[:para_break].rstrip()
+    sentence_break = max(
+        (
+            text.rfind(marker, 0, cutoff)
+            for marker in (". ", "! ", "? ", ".\n", "!\n", "?\n")
+        ),
+        default=-1,
+    )
+    if sentence_break > 0:
+        return text[: sentence_break + 1].rstrip()
+    return text[:cutoff].rstrip()
+
+
 class ClaudeAgentProvider:
     """``claude -p`` multi-turn agent (MCP tools, stream-json result).
 
@@ -593,7 +643,18 @@ class ClaudeAgentProvider:
             )
         except ClaudeProcessError as exc:
             return _error_result(exc, model=model, tier=req.tier)
-        return result_from_agent(res, model=model, tier=req.tier)
+        result = result_from_agent(res, model=model, tier=req.tier)
+        if req.max_tokens is not None and result.error is None:
+            # No CLI flag bounds a single response's length (see
+            # LlmRequest.max_tokens) — truncate post-hoc so a caller that
+            # pinned a budget (a duration-targeted cast) still gets output
+            # that fits it, even though the full (costly) generation ran.
+            from dataclasses import replace as _replace
+
+            result = _replace(
+                result, text=_truncate_to_max_tokens(result.text, req.max_tokens)
+            )
+        return result
 
 
 class ClaudePProvider:
@@ -1042,6 +1103,7 @@ def _serialize_request(req: LlmRequest) -> str:
             "mcp_config": str(req.mcp_config) if req.mcp_config else None,
             "max_turns": req.max_turns,
             "max_usd": req.max_usd,
+            "max_tokens": req.max_tokens,
             "output_format": req.output_format,
             "disallowed_tools": list(req.disallowed_tools),
         },

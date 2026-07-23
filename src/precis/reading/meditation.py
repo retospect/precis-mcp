@@ -24,6 +24,7 @@ from precis.reading.cast_common import (
     CAST_PROFILES,
     SINGLE_CALL_WORD_CEILING,
     cast_slug,
+    compose_max_tokens,
     create_cast_draft,
     link_sources,
     word_budget,
@@ -382,10 +383,18 @@ def build_meditation(
 
         from precis.utils.llm.router import DispatchClient, Tier
 
+        # max_tokens restores the pre-migration litellm cap (compose_max_tokens,
+        # this nidra's word budget in token terms) — best-effort post-hoc
+        # truncation on claude_agent (no native completion-length flag there),
+        # not a real generation-time stop, but it keeps a runaway response from
+        # overshooting the target spoken duration with no stop at all (a
+        # segmented long walk's per-call asks are each well under this ceiling,
+        # so it only bites a genuinely runaway single call).
         client = DispatchClient(
             tier=Tier.CLOUD_SUPER,
             model=os.environ.get("PRECIS_MEDITATION_MODEL") or None,
             tools_needed=True,
+            max_tokens=compose_max_tokens(profile, target_minutes=target),
             source="meditation",
             log_call=True,
         )
