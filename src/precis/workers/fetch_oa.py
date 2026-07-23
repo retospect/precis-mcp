@@ -93,6 +93,9 @@ log = logging.getLogger(__name__)
 
 _SOURCE_PUBLISHER = "fetcher:publisher"
 _SOURCE_ELSEVIER = "fetcher:elsevier"
+#: Markup-first sibling of ``_SOURCE_ELSEVIER`` — same endpoint, XML view
+#: instead of PDF. See :func:`_try_elsevier_markup`.
+_SOURCE_ELSEVIER_XML = "fetcher:elsevier_xml"
 _SOURCE_WILEY = "fetcher:wiley"
 _SOURCE_UNPAYWALL = "fetcher:unpaywall"
 _SOURCE_CROSSREF = "fetcher:crossref"
@@ -707,6 +710,75 @@ def _try_elsevier(
             "size_bytes": size_bytes,
             "host_type": "elsevier_api",
             "filename": filename,
+        },
+        duration_ms=_ms(t0),
+    )
+
+
+def _try_elsevier_markup(
+    stub: StubRef,
+    *,
+    inbox_dir: Path,
+    api_key: str,
+) -> FetchOutcome | None:
+    """Try the Elsevier Article Retrieval API for structured full-text XML.
+
+    Markup-first sibling of :func:`_try_elsevier`: same endpoint, same
+    key, but ``Accept: text/xml`` instead of ``application/pdf`` — a hit
+    lands as an ``elsevier_xml`` markup trigger that
+    :func:`precis.ingest.markup.parse_elsevier` walks section-by-section
+    with the ``ce:``/``ja:`` tag profile, instead of relying on whatever
+    Marker manages to OCR off the PDF view.
+
+    Why this leg exists (gr162364 / gr162363): the PDF view can return a
+    *complete, well-formed* ``%PDF-`` response that is nonetheless only
+    the entitlement-limited preview — title, affiliations, highlights,
+    keywords, a truncated abstract, no article body — with no error and
+    nothing to distinguish it from a genuine full-text fetch, so it
+    silently ingests as a handful of front-matter chunks. The XML view
+    doesn't share that failure mode: a non-entitled DOI answers with an
+    XML error/stub body that has no ``<body>`` (or an empty one), which
+    :func:`~precis.ingest.markup.parse_elsevier` raises
+    :class:`~precis.ingest.markup.MarkupParseError` on — a loud ingest
+    failure instead of a silent short paper.
+
+    Returns ``None`` (silent fall-through, no event) under the same
+    conditions as :func:`_try_elsevier`: no key, no DOI, or a non-Elsevier
+    DOI prefix. Gated by ``PRECIS_FETCH_MARKUP`` at the call site
+    (:func:`_run_markup_cascade`) same as every other markup leg — ships
+    dark until that flag is flipped.
+    """
+    if not api_key or not stub.doi:
+        return None
+    if not _DOI_RE.match(stub.doi) or not _is_elsevier_doi(stub.doi):
+        return None
+
+    t0 = time.perf_counter()
+    url = f"{_ELSEVIER_ARTICLE_BASE}/{stub.doi}"
+    filename = _stub_filename(stub) + ".xml"
+    target = inbox_dir / filename
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        size_bytes = _download_markup(
+            url,
+            target,
+            extra_headers={"X-ELS-APIKey": api_key, "Accept": "text/xml"},
+        )
+    except Exception as exc:
+        return FetchOutcome(
+            event="fetch_failed",
+            payload={"doi": stub.doi, "url": url, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
+        )
+    return FetchOutcome(
+        event="fetch_ok",
+        payload={
+            "doi": stub.doi,
+            "url": url,
+            "size_bytes": size_bytes,
+            "host_type": "elsevier_api",
+            "filename": filename,
+            "format": "elsevier_xml",
         },
         duration_ms=_ms(t0),
     )
@@ -1384,7 +1456,7 @@ def run_oa_fetch_pass(
             # effort — its failure must never block the PDF fetch, which
             # runs unconditionally afterwards to acquire the printable.
             try:
-                _run_markup_cascade(store, stub, inbox_path)
+                _run_markup_cascade(store, stub, inbox_path, api_key)
             except Exception as exc:  # pragma: no cover — defensive
                 log.warning(
                     "fetch_oa: markup pass errored for ref_id=%s: %s",
@@ -1511,8 +1583,10 @@ def _arxiv_source_url(stub: StubRef) -> str | None:
     return f"https://arxiv.org/e-print/{arxiv_id}" if arxiv_id else None
 
 
-#: Markup legs in preference order: JATS (best structure) → arXiv HTML
-#: (LaTeXML, JATS-class) → arXiv source (flatten-and-chunk fallback).
+#: Identifier-driven markup legs, tried in this order after Elsevier
+#: (key-gated, tried separately — see :func:`_run_markup_cascade`): JATS
+#: (best structure) → arXiv HTML (LaTeXML, JATS-class) → arXiv source
+#: (flatten-and-chunk fallback).
 _MARKUP_LEGS: tuple[_MarkupLeg, ...] = (
     _MarkupLeg(_SOURCE_EUROPEPMC_JATS, "jats", ".xml", _europepmc_jats_url),
     _MarkupLeg(_SOURCE_ARXIV_HTML, "arxiv_html", ".html", _arxiv_html_url),
@@ -1520,7 +1594,9 @@ _MARKUP_LEGS: tuple[_MarkupLeg, ...] = (
 )
 
 
-def _run_markup_cascade(store: Any, stub: StubRef, inbox_dir: Path) -> bool:
+def _run_markup_cascade(
+    store: Any, stub: StubRef, inbox_dir: Path, elsevier_api_key: str = ""
+) -> bool:
     """Try each markup leg; on first hit drop the trigger + sidecar.
 
     Returns ``True`` when a markup source landed (so the caller knows the
@@ -1533,9 +1609,59 @@ def _run_markup_cascade(store: Any, stub: StubRef, inbox_dir: Path) -> bool:
     companion PDF the PDF cascade drops later folds into the same ref via
     this same ``ref_id`` and attaches as the printable (see the
     db_writer attach-only guard).
+
+    Elsevier is tried first, ahead of the generic ``_MARKUP_LEGS`` list:
+    it's key-gated like the PDF leg (not identifier-driven like the other
+    three), so it doesn't fit the plain ``url_for(stub)`` shape those
+    share. See :func:`_try_elsevier_markup` for why this leg exists.
     """
     if not _markup_fetch_enabled():
         return False
+
+    try:
+        elsevier_outcome = _try_elsevier_markup(
+            stub, inbox_dir=inbox_dir, api_key=elsevier_api_key
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        elsevier_outcome = None
+        log.warning(
+            "fetch_oa markup: elsevier_xml leg errored for ref_id=%s: %s",
+            stub.ref_id,
+            exc,
+        )
+    if elsevier_outcome is not None:
+        store.append_event(
+            stub.ref_id,
+            source=_SOURCE_ELSEVIER_XML,
+            event=elsevier_outcome.event,
+            payload=elsevier_outcome.payload,
+            duration_ms=elsevier_outcome.duration_ms,
+        )
+        if elsevier_outcome.event == "fetch_ok":
+            target = inbox_dir / (_stub_filename(stub) + ".xml")
+            write_sidecar(
+                target,
+                ref_id=stub.ref_id,
+                identifiers={
+                    k: v
+                    for k, v in {
+                        "doi": stub.doi,
+                        "arxiv": stub.arxiv,
+                        "s2": stub.s2_id,
+                        "cite_key": stub.cite_key,
+                    }.items()
+                    if v
+                },
+                source=_SOURCE_ELSEVIER_XML,
+                source_format="elsevier_xml",
+            )
+            log.info(
+                "fetch_oa markup: elsevier_xml landed for ref_id=%s (%d bytes)",
+                stub.ref_id,
+                elsevier_outcome.payload.get("size_bytes", 0),
+            )
+            return True
+
     log.debug(
         "fetch_oa markup: trying %d legs for ref_id=%s (doi=%s arxiv=%s)",
         len(_MARKUP_LEGS),

@@ -126,6 +126,97 @@ def test_parse_elsevier_metadata_and_body() -> None:
     assert body[0]["section_path"] == ["Introduction"]
 
 
+# gr162364/gr162363: fetcher:elsevier's PDF view silently under-chunked a
+# real article to 9 front-matter-only chunks (title/affiliations/
+# highlights/keywords/a truncated abstract, no body). This fixture mirrors
+# the real ScienceDirect Article Retrieval API shape more closely than
+# ``_ELSEVIER`` above — the ``xocs:doc``/``xocs:serial-item``/``ja:article``
+# wrapper nesting, a ``ja:head`` full of highlights/keywords, and a body
+# with *multiple* sections — to prove the walker reaches every section,
+# not just the first one it finds.
+_ELSEVIER_MULTI_SECTION = b"""<?xml version="1.0"?>
+<full-text-retrieval-response
+    xmlns:ce="http://www.elsevier.com/xml/common/dtd"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:prism="http://prismstandard.org/namespaces/basic/2.0/"
+    xmlns:xocs="http://www.elsevier.com/xml/xocs/dtd"
+    xmlns:ja="http://www.elsevier.com/xml/ja/dtd">
+ <coredata>
+  <dc:title>Hierarchical Widgets</dc:title>
+  <prism:doi>10.1016/j.desal.2026.120449</prism:doi>
+ </coredata>
+ <originalText>
+  <xocs:doc>
+   <xocs:serial-item>
+    <ja:article>
+     <ja:head>
+      <ce:title>Hierarchical Widgets</ce:title>
+      <ce:author-group>
+       <ce:author><ce:surname>Curie</ce:surname><ce:given-name>Marie</ce:given-name></ce:author>
+      </ce:author-group>
+      <ce:abstract><ce:abstract-sec>
+       <ce:simple-para>Given their remarkable durability, cost-effectiveness, and high performance, widgets are widely studied.</ce:simple-para>
+      </ce:abstract-sec></ce:abstract>
+      <ce:highlights>
+       <ce:section-title>Highlights</ce:section-title>
+       <ce:para>Widgets are durable.</ce:para>
+      </ce:highlights>
+      <ce:keywords>
+       <ce:section-title>Keywords</ce:section-title>
+       <ce:keyword><ce:text>widgets</ce:text></ce:keyword>
+      </ce:keywords>
+     </ja:head>
+     <ja:body>
+      <ce:sections>
+       <ce:section>
+        <ce:section-title>Introduction</ce:section-title>
+        <ce:para>Widgets matter a great deal to the field.</ce:para>
+       </ce:section>
+       <ce:section>
+        <ce:section-title>Methods</ce:section-title>
+        <ce:para>We synthesized widgets using a hierarchical process.</ce:para>
+       </ce:section>
+       <ce:section>
+        <ce:section-title>Results</ce:section-title>
+        <ce:para>Widgets performed well under all tested conditions.</ce:para>
+       </ce:section>
+       <ce:section>
+        <ce:section-title>Conclusion</ce:section-title>
+        <ce:para>Widgets are the future.</ce:para>
+       </ce:section>
+      </ce:sections>
+     </ja:body>
+     <ja:tail>
+      <ce:bibliography><ce:para>Ref 1. Ref 2.</ce:para></ce:bibliography>
+     </ja:tail>
+    </ja:article>
+   </xocs:serial-item>
+  </xocs:doc>
+ </originalText>
+</full-text-retrieval-response>"""
+
+
+def test_parse_elsevier_extracts_all_sections_not_just_front_matter() -> None:
+    # Regression for gr162364: the walker must reach every <ce:section>
+    # under <ja:body>, not stop after the first one (the front-matter-only
+    # symptom the gripe describes).
+    ext = parse_elsevier(_ELSEVIER_MULTI_SECTION)
+    assert ext.title == "Hierarchical Widgets"
+    assert ext.doi == "10.1016/j.desal.2026.120449"
+    assert "remarkable durability" in ext.abstract.lower()
+
+    paragraphs = [b for b in ext.blocks if b["type"] == "paragraph"]
+    section_paths = [tuple(b["section_path"]) for b in paragraphs]
+    assert section_paths == [
+        ("Introduction",),
+        ("Methods",),
+        ("Results",),
+        ("Conclusion",),
+    ]
+    assert any("hierarchical process" in b["text"] for b in paragraphs)
+    assert any(b["type"] == "references" for b in ext.blocks)
+
+
 def test_parse_elsevier_no_body_raises() -> None:
     with pytest.raises(MarkupParseError):
         parse_elsevier(
@@ -398,6 +489,41 @@ def test_extract_paper_from_markup_chunks_only(tmp_path: Path) -> None:
     assert any(c.ord < 0 for c in paper.chunks)
     assert any(c.ord >= 0 for c in paper.chunks)
     assert paper.content_hash is not None
+
+
+def test_extract_paper_from_markup_elsevier_multi_section_body(
+    tmp_path: Path,
+) -> None:
+    # Regression for gr162364/gr162363: through the *actual* ingest path
+    # (extract_paper_from_markup -> _blocks_to_chunks, the same downstream
+    # the PDF path uses), a realistic multi-section Elsevier article must
+    # yield body chunks from every section — not just the front-matter
+    # handful (title/affiliations/highlights/keywords/truncated abstract)
+    # the bug produced.
+    pytest.importorskip("habanero")
+    from precis.ingest.pipeline import extract_paper_from_markup
+
+    p = tmp_path / "a.xml"
+    p.write_bytes(_ELSEVIER_MULTI_SECTION)
+    paper = extract_paper_from_markup(
+        p, fmt="elsevier_xml", source_url="https://api.elsevier.com/x"
+    )
+
+    assert paper.title == "Hierarchical Widgets"
+    assert paper.doi == "10.1016/j.desal.2026.120449"
+    assert paper.meta["source_format"] == "elsevier_xml"
+
+    body_chunks = [c for c in paper.chunks if c.ord >= 0]
+    # 4 sections + 1 references chunk — well past the 9-chunks-of-just-
+    # front-matter the gripe reports (that run had 0 real body chunks).
+    assert len(body_chunks) >= 5
+    section_paths = {tuple(c.section_path) for c in body_chunks if c.section_path}
+    assert section_paths == {
+        ("Introduction",),
+        ("Methods",),
+        ("Results",),
+        ("Conclusion",),
+    }
 
 
 def test_extract_paper_from_markup_arxiv_html_no_doi(tmp_path: Path) -> None:

@@ -43,6 +43,7 @@ from precis.workers.fetch_oa import (
     _try_core,
     _try_crossref,
     _try_elsevier,
+    _try_elsevier_markup,
     _try_europepmc,
     _try_openalex,
     _try_publisher,
@@ -684,6 +685,167 @@ class TestTryElsevier:
         )
         assert out is not None
         assert out.event == "fetch_failed"
+
+
+# ---------------------------------------------------------------------------
+# _try_elsevier_markup — markup-first sibling: same endpoint, XML view
+# (gr162364/gr162363 — see docstring for why this leg exists)
+# ---------------------------------------------------------------------------
+
+
+class TestTryElsevierMarkup:
+    def test_none_without_key(self, tmp_path: Path) -> None:
+        assert (
+            _try_elsevier_markup(
+                _stub(doi="10.1016/j.x.2025.1"), inbox_dir=tmp_path, api_key=""
+            )
+            is None
+        )
+
+    def test_none_for_non_elsevier_prefix(self, tmp_path: Path) -> None:
+        assert (
+            _try_elsevier_markup(
+                _stub(doi="10.1186/x"), inbox_dir=tmp_path, api_key="K"
+            )
+            is None
+        )
+
+    def test_none_for_malformed_doi(self, tmp_path: Path) -> None:
+        assert (
+            _try_elsevier_markup(
+                _stub(doi="not-a-doi"), inbox_dir=tmp_path, api_key="K"
+            )
+            is None
+        )
+
+    def test_fetch_ok_sends_xml_accept_header(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, Any] = {}
+
+        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+            seen["url"] = url
+            seen["headers"] = extra_headers
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"<full-text-retrieval-response/>")
+            return target.stat().st_size
+
+        monkeypatch.setattr(fetch_oa, "_download_markup", _capture)
+        out = _try_elsevier_markup(
+            _stub(doi="10.1016/j.amf.2025.200253"),
+            inbox_dir=tmp_path,
+            api_key="SECRET",
+        )
+        assert out is not None
+        assert out.event == "fetch_ok"
+        assert out.payload["format"] == "elsevier_xml"
+        assert seen["url"] == (
+            "https://api.elsevier.com/content/article/doi/10.1016/j.amf.2025.200253"
+        )
+        # The key + XML Accept ride the request as headers — the PDF
+        # leg's %PDF- guard doesn't apply here (_download_markup has none).
+        assert seen["headers"]["X-ELS-APIKey"] == "SECRET"
+        assert seen["headers"]["Accept"] == "text/xml"
+
+    def test_fetch_failed_on_download_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _reject(url: str, target: Path, *, extra_headers: Any = None) -> int:
+            raise ValueError("empty markup response")
+
+        monkeypatch.setattr(fetch_oa, "_download_markup", _reject)
+        out = _try_elsevier_markup(
+            _stub(doi="10.1016/j.x.2025.1"), inbox_dir=tmp_path, api_key="K"
+        )
+        assert out is not None
+        assert out.event == "fetch_failed"
+
+
+# ---------------------------------------------------------------------------
+# _run_markup_cascade — markup-first pass (PRECIS_FETCH_MARKUP-gated)
+# ---------------------------------------------------------------------------
+
+
+class TestRunMarkupCascade:
+    def test_disabled_by_default_short_circuits(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("PRECIS_FETCH_MARKUP", raising=False)
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_markup",
+            lambda *a, **k: pytest.fail("markup pass must not run when gated off"),
+        )
+        landed = fetch_oa._run_markup_cascade(
+            store, _stub(ref_id=1, doi="10.1016/j.x.2025.1"), tmp_path, "KEY"
+        )
+        assert landed is False
+
+    def test_elsevier_landed_writes_sidecar_and_skips_other_legs(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Elsevier is tried first among the markup legs; a hit must stop
+        # the cascade before EuropePMC/arXiv HTML/arXiv source ever run.
+        monkeypatch.setenv("PRECIS_FETCH_MARKUP", "1")
+        ref_id = _seed_paper_stub(
+            store, doi="10.1016/j.amf.2025.200253", cite_key="widgets2025"
+        )
+
+        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"<full-text-retrieval-response/>")
+            return target.stat().st_size
+
+        monkeypatch.setattr(fetch_oa, "_download_markup", _capture)
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_europepmc_oa_pmcid",
+            lambda doi: pytest.fail("EuropePMC must not run"),
+        )
+
+        landed = fetch_oa._run_markup_cascade(
+            store,
+            _stub(
+                ref_id=ref_id,
+                doi="10.1016/j.amf.2025.200253",
+                cite_key="widgets2025",
+            ),
+            tmp_path,
+            "SECRET",
+        )
+        assert landed is True
+
+        xml_path = tmp_path / "widgets2025.xml"
+        assert xml_path.exists()
+        sc = read_sidecar(xml_path)
+        assert sc is not None
+        assert sc.ref_id == ref_id
+        assert sc.source == "fetcher:elsevier_xml"
+        assert sc.source_format == "elsevier_xml"
+
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT source, event FROM ref_events WHERE ref_id = %s ORDER BY ts",
+                (ref_id,),
+            ).fetchall()
+        assert rows == [("fetcher:elsevier_xml", "fetch_ok")]
+
+    def test_no_elsevier_key_falls_through_to_other_legs(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_FETCH_MARKUP", "1")
+        seen: dict[str, Any] = {}
+
+        def _europepmc(doi: str) -> str | None:
+            seen["called"] = True
+            return None  # no OA PMCID → leg is a silent no-op, cascade falls through
+
+        monkeypatch.setattr(fetch_oa, "_query_europepmc_oa_pmcid", _europepmc)
+        landed = fetch_oa._run_markup_cascade(
+            store, _stub(ref_id=1, doi="10.1016/j.amf.2025.1"), tmp_path, ""
+        )
+        assert landed is False
+        assert seen.get("called") is True
 
 
 # ---------------------------------------------------------------------------

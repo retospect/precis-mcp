@@ -50,6 +50,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
+from precis.alerts import notify_critical_alert, raise_alert
 from precis.cli._common import resolve_dsn
 from precis.corpus_layout import corpus_pdf_dest
 from precis.ingest.add import (
@@ -59,7 +60,12 @@ from precis.ingest.add import (
     PresInput,
     precis_add,
 )
-from precis.ingest.fetch_sidecar import SIDECAR_SUFFIX, clear_sidecar, read_sidecar
+from precis.ingest.fetch_sidecar import (
+    SIDECAR_SUFFIX,
+    FetchSidecar,
+    clear_sidecar,
+    read_sidecar,
+)
 from precis.ingest.pres import kebab_slug
 from precis.store import Store
 
@@ -592,6 +598,98 @@ class _PdfHandler(FileSystemEventHandler):
                 self._inflight.discard(path)
 
 
+#: gr162364/gr162363 regression guard: fetcher:elsevier can return a
+#: clean, complete (``%PDF-``-prefixed) response that is nonetheless only
+#: the entitlement-limited preview page — title, affiliations,
+#: highlights, keywords, a truncated abstract, no article body — with no
+#: error anywhere in the pipeline to say so. A paper this thin from a
+#: payload this large is suspicious enough to flag loudly rather than
+#: silently accept as a successful full-text ingest.
+_ELSEVIER_FETCH_SOURCE = "fetcher:elsevier"
+#: gr162364's own reference incident (pa162036) landed 9 chunks from a
+#: 647KB payload — a bar of 5 would let that exact recurrence straight
+#: through with no alert. Set above the observed incident, not just above
+#: a guessed "normal" floor.
+_ELSEVIER_TRUNCATION_MIN_CHUNKS = 15
+_ELSEVIER_TRUNCATION_MIN_PAYLOAD_BYTES = 100_000
+
+
+def _check_elsevier_truncation(
+    pdf: Path,
+    sidecar: FetchSidecar | None,
+    result: IngestResult,
+    *,
+    store: Store,
+) -> None:
+    """Flag a paper that looks like a silently-truncated Elsevier fetch.
+
+    Only fires for a fresh insert (``inserted=True``) whose sidecar
+    names ``fetcher:elsevier`` as the source (the PDF-view leg in
+    :mod:`precis.workers.fetch_oa` — the one implicated in gr162364).
+    Compares the *downloaded* file's size (still on disk at this point,
+    before :func:`_handle_success` moves it) against the paper's
+    resulting chunk count: a payload over 100KB that still produced
+    fewer than ``_ELSEVIER_TRUNCATION_MIN_CHUNKS`` chunks (cards + body)
+    is the signature of that bug class (the reference incident,
+    pa162036, landed exactly 9 — the bar is set above that, not at a
+    guessed "normal" floor) — raises a ``critical`` alert (``kind=
+    'alert'``) and pages once per new occurrence
+    (:func:`precis.alerts.notify_critical_alert`), so it surfaces even
+    if nobody is tailing the worker log or browsing ``/alerts``.
+    Best-effort: any failure here (missing file, alert-raise error) is
+    swallowed — this is a detector, it must never fail the ingest it's
+    checking.
+    """
+    if not result.inserted or sidecar is None:
+        return
+    if sidecar.source != _ELSEVIER_FETCH_SOURCE:
+        return
+    try:
+        size_bytes = pdf.stat().st_size
+    except OSError:
+        return
+    if size_bytes <= _ELSEVIER_TRUNCATION_MIN_PAYLOAD_BYTES:
+        return
+    if result.chunks_written >= _ELSEVIER_TRUNCATION_MIN_CHUNKS:
+        return
+    log.error(
+        "precis watch: fetcher:elsevier ref_id=%s produced only %d chunks "
+        "from a %d-byte payload — looks like a truncated/preview-only "
+        "fetch (gr162364); flagging.",
+        result.ref_id,
+        result.chunks_written,
+        size_bytes,
+    )
+    title = f"Elsevier fetch under-chunked (ref_id={result.ref_id})"
+    detail = (
+        f"fetcher:elsevier produced only {result.chunks_written} "
+        f"chunks from a {size_bytes}-byte cached payload "
+        f"(paper_id={result.paper_id!r}, cite_key={result.cite_key!r}"
+        f"). Looks like an entitlement-limited preview PDF rather "
+        "than the full article body — see gr162364/gr162363."
+    )
+    fingerprint = f"elsevier-truncation:{result.ref_id}"
+    try:
+        _ref, is_new = raise_alert(
+            store,
+            source="watch:elsevier_truncation",
+            fingerprint=fingerprint,
+            title=title,
+            detail=detail,
+            severity="critical",
+            subject_ref_id=result.ref_id,
+        )
+        # Page exactly once per condition (mirrors quota_check/nursery) —
+        # raise_alert alone only writes the alert ref, it does not push.
+        if is_new:
+            notify_critical_alert(store, title, detail, fingerprint=fingerprint)
+    except Exception:  # pragma: no cover — defensive, never fail the ingest
+        log.exception(
+            "precis watch: failed to raise elsevier-truncation alert for ref_id=%s",
+            result.ref_id,
+        )
+
+
 def process_pdf(
     pdf: Path,
     *,
@@ -737,6 +835,8 @@ def process_pdf(
         # its sidecar — in place so the owning host folds correctly and
         # clears the manifest on its own success.
         return None
+
+    _check_elsevier_truncation(pdf, sidecar, result, store=store)
 
     dest = _handle_success(
         pdf,
