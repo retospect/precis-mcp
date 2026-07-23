@@ -124,9 +124,21 @@
        See inventory/group_vars/all/precis_env.yml. Same block in
        every precis-* daemon so capability parity is automatic. #}
     {% for env_key, env_val in precis_shared_env.items() %}
+    {% if not (env_key == 'PRECIS_SUMMARIZE_MODEL' and precis_local_llm_model_override is defined) %}
     <key>{{ env_key }}</key>
     <string>{{ env_val }}</string>
+    {% endif %}
     {% endfor %}
+    {# Host-local served_by bypass (litellm-retire, Track 2) — mirrors
+       precis-worker.plist.j2; see that template for the full rationale. #}
+    {% if precis_local_llm_model_override is defined %}
+    <key>PRECIS_SUMMARIZE_MODEL</key>
+    <string>{{ precis_local_llm_model_override }}</string>
+    {% endif %}
+    {% if precis_local_serve_config is defined %}
+    <key>PRECIS_LOCAL_SERVE_CONFIG</key>
+    <string>{{ precis_local_serve_config }}</string>
+    {% endif %}
   </dict>
 
   <key>RunAtLoad</key>
