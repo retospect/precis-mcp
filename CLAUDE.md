@@ -177,7 +177,10 @@ guardrails (the Agent tool surfaces those descriptions), so this is just the map
   only decide *when* a judgment pass is due (`token-review`, the 7-day
   session-tightness clock).
 - **Haiku** — mechanical, needs a model: `navigator`, `extract`, `test-runner`,
-  `tidy`, `cluster-ops`.
+  `tidy`, `cluster-ops`, `cmd-runner` (generic one-off deterministic-command
+  runner — the long-tail sibling to `test-runner`/`tidy`), `scaffold` (mints a
+  new numbered/templated migration, ADR, proposal, or skill file from the
+  existing convention; never invents content).
 - **Sonnet** — a *decided* change or bounded op (the *how*, not the *what*):
   `coder`, `test-author`, `reviewer`, `documenter`, `dep-bumper`,
   `cluster-admin`, `forensics`, `housekeeper` (worktree/branch GC via
