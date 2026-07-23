@@ -187,7 +187,9 @@ guardrails (the Agent tool surfaces those descriptions), so this is just the map
   `tidy`, `cluster-ops`, `cmd-runner` (generic one-off deterministic-command
   runner — the long-tail sibling to `test-runner`/`tidy`), `scaffold` (mints a
   new numbered/templated migration, ADR, proposal, or skill file from the
-  existing convention; never invents content).
+  existing convention; never invents content), `gripe-filer` (files an
+  already-decided finding at a caller-supplied target — gripe vs
+  OPEN-ITEMS.md — with a dedup check; doesn't decide the target itself).
 - **Sonnet** — a *decided* change or bounded op (the *how*, not the *what*):
   `coder`, `test-author`, `reviewer`, `documenter`, `dep-bumper`,
   `cluster-admin`, `forensics`, `housekeeper` (worktree/branch GC via
