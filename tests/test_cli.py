@@ -37,6 +37,30 @@ def test_serve_invokes_server_main(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# cron
+# ---------------------------------------------------------------------------
+
+
+def test_cron_tick_dry_run_flag_is_gone(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Post-ADR-0061, ``precis cron tick`` delegates to the shared
+    ``run_schedule_pass`` engine, which has no preview mode (it's
+    idempotent per-tick, so a live run is always safe to repeat). A
+    ``--dry-run`` flag that argparse still accepted but the tick body never
+    read would silently run for real (pg_notify deliveries, subtask spawns)
+    while looking like a safe preview — worse than not having the flag at
+    all. It's been removed outright, so passing it now fails loud (argparse
+    error) instead of quietly doing a live run.
+    """
+    monkeypatch.setattr(sys, "argv", ["precis", "cron", "tick", "--dry-run"])
+    with pytest.raises(SystemExit):
+        cli.main()
+    err = capsys.readouterr().err
+    assert "--dry-run" in err
+
+
+# ---------------------------------------------------------------------------
 # migrate
 # ---------------------------------------------------------------------------
 

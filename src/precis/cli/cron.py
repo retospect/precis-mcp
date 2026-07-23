@@ -37,19 +37,12 @@ def add_parser(subparsers: Any) -> None:
         help="Cron operations — tick the scheduled-task scanner.",
     )
     cron_sub = cron.add_subparsers(dest="cron_cmd", required=True)
-    tick = cron_sub.add_parser(
+    cron_sub.add_parser(
         "tick",
         help=(
             "Fire due level:recurring ticks (spawn + push delivery). "
             "Launchd timer runs this every 60s on melchior."
         ),
-    )
-    tick.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="No-op flag kept for CLI back-compat; the schedule pass has no "
-        "dry-run mode (it's idempotent per-tick, so a live run is safe to "
-        "repeat).",
     )
 
 
