@@ -21,5 +21,8 @@ Environment=PRECIS_PROCESS=precis-heartbeat
 {% if precis_heartbeat_temp_cmd %}
 Environment=PRECIS_TEMP_CMD={{ precis_heartbeat_temp_cmd }}
 {% endif %}
+{% if precis_local_serve_config is defined %}
+Environment=PRECIS_LOCAL_SERVE_CONFIG={{ precis_local_serve_config }}
+{% endif %}
 
 ExecStart={{ precis_heartbeat_venv }}/bin/precis heartbeat

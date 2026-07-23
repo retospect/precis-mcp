@@ -42,6 +42,14 @@
     <key>PRECIS_TEMP_CMD</key>
     <string>{{ precis_heartbeat_temp_cmd }}</string>
 {% endif %}
+{% if precis_local_serve_config is defined %}
+    {# advertise_local_llm() (llm_serving.py) runs from THIS daemon and reads
+       --parallel here for accurate resource_slots capacity; the code default
+       (/etc/llama-swap/config.yaml) doesn't exist on the Mac hosts. Mirrors
+       the same var in precis_worker.plist.j2 — see that template. #}
+    <key>PRECIS_LOCAL_SERVE_CONFIG</key>
+    <string>{{ precis_local_serve_config }}</string>
+{% endif %}
   </dict>
 
   <key>StandardOutPath</key>
