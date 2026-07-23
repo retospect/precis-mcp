@@ -18,6 +18,7 @@ from typing import Any
 
 from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
+from precis.quest import compute as compute_mod
 from precis.quest import tick as tick_mod
 from precis.quest.dossier import (
     dossier_ref_id,
@@ -282,6 +283,73 @@ class TestReactionContext:
         prompt = build_tick_prompt(store, quest)
         assert "set_element" in prompt
         assert "vacancy" in prompt
+
+
+def _tick_spec(element: str) -> dict[str, Any]:
+    return {
+        "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+        "ops": [{"op": "add_atom", "element": element, "frac": [0.0, 0.0, 0.5]}],
+    }
+
+
+class TestFrontierSummaryNamesUnevaluated:
+    """The unevaluated band used to report only a bare count — the model
+    inside a tick couldn't see *which* of its own candidates was still
+    awaiting a sim."""
+
+    def test_unevaluated_candidate_handle_appears_in_the_prompt(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        converged = compute_mod.ensure_candidate(
+            store, qid, {"name": "done candidate", "structure": _tick_spec("Fe")}
+        )
+        assert converged is not None
+        store.structure_record_run(
+            converged,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-10.0,
+        )
+        pending = compute_mod.ensure_candidate(
+            store, qid, {"name": "pending candidate", "structure": _tick_spec("Co")}
+        )
+        assert pending is not None and pending != converged
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        from precis.utils import handle_registry
+
+        pending_handle = handle_registry.try_format("structure", pending)
+        assert pending_handle is not None
+        assert pending_handle in prompt
+        assert "awaiting a sim" in prompt
+
+
+class TestReviewLogbookTail:
+    """A frontier review steps back over accumulated history, so it should
+    read a deeper logbook tail than a cheap local tick's trailing-8 window."""
+
+    def test_review_sees_a_deeper_tail_than_a_local_tick(self, store: Any) -> None:
+        from precis.quest.logbook import append_entry
+
+        qid = _mk_quest(store, "A striving")
+        for i in range(12):
+            append_entry(
+                store,
+                qid,
+                text=f"logbook entry number {i}",
+                entry_type="observation",
+                by="agent",
+            )
+        quest = store.get_ref(kind="quest", id=qid)
+        local_prompt = build_tick_prompt(store, quest, review=False)
+        review_prompt = build_tick_prompt(store, quest, review=True)
+        old_entry = "logbook entry number 2"  # outside the trailing-8 window
+        assert old_entry not in local_prompt
+        assert old_entry in review_prompt
 
 
 class TestFrontierAlwaysOn:

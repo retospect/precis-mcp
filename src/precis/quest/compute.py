@@ -477,10 +477,10 @@ def harvest_measures(store: Store, quest_id: int, *, by: str = "agent") -> Compu
         cp_jobs = _fresh_catpath_jobs(store, s.id, cp_upto)
         cp_seen = cp_upto
         for job_id, jmeta in cp_jobs:
-            cp_seen = max(cp_seen, job_id)
             measures = _catpath_measures_from_job(jmeta)
             if not measures:
-                continue  # not finished (no scalar barrier yet)
+                continue  # still running — do not advance the bookmark, retry next tick
+            cp_seen = max(cp_seen, job_id)
             store.stamp_ref_meta(s.id, measures)
             pathway_ref = jmeta.get("pathway_ref")
             if isinstance(pathway_ref, int) and not isinstance(pathway_ref, bool):

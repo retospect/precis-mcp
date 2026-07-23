@@ -340,6 +340,26 @@ class TestGeneralizedFrontier:
         assert [c.ref_id for c in fr.frontier] == [ids[0]]
         assert [c.ref_id for c in fr.dominated] == [ids[1]]
 
+    def test_bookkeeping_meta_keys_excluded_from_measures(self, store: Any) -> None:
+        # `version`/`quest_harvested_upto`/`quest_catpath_harvested_upto` are
+        # structure_save/harvest bookkeeping, not ranking measures — they must
+        # not pollute Candidate.measures alongside a real stamped measure.
+        qid, ids = self._two_candidates(store)
+        store.stamp_ref_meta(
+            ids[0],
+            {
+                "barrier": 0.5,
+                "version": 3,
+                "quest_harvested_upto": 7,
+                "quest_catpath_harvested_upto": 12,
+            },
+        )
+        c = _candidate_from_structure(store, store.fetch_refs_by_ids({ids[0]})[ids[0]])
+        assert c.measures.get("barrier") == 0.5
+        assert "version" not in c.measures
+        assert "quest_harvested_upto" not in c.measures
+        assert "quest_catpath_harvested_upto" not in c.measures
+
     def test_barrier_tradeoff_puts_both_on_front(self, store: Any) -> None:
         # c0 lower energy but higher barrier; c1 the reverse → neither dominates.
         qid, ids = self._two_candidates(store)
@@ -563,6 +583,23 @@ class TestCatpathHarvest:
         step = compute_mod.harvest_measures(store, qid)
         assert step.results_harvested == 0
         assert "barrier" not in (store.fetch_refs_by_ids({sid})[sid].meta or {})
+
+    def test_unfinished_job_is_retried_once_it_completes(self, store: Any) -> None:
+        # The idempotency bookmark (quest_catpath_harvested_upto) used to
+        # advance past a still-running job the moment it was scanned, so its
+        # barrier was permanently lost once the job later finished.
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        job_id = self._catpath_job(store, sid, {})  # no scalar yet
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 0
+        assert "barrier" not in (store.fetch_refs_by_ids({sid})[sid].meta or {})
+        # the job now completes with a scalar barrier
+        store.stamp_ref_meta(job_id, {"result": {"barrier": 0.5}})
+        step2 = compute_mod.harvest_measures(store, qid)
+        assert step2.results_harvested == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.5
 
     def test_pathway_link_created_when_ref_present(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")

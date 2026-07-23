@@ -125,6 +125,16 @@ def _objectives_for(store: Store, quest_id: int) -> list[tuple[str, str]]:
 #: ones we must exclude by name).
 _RUN_NON_MEASURE: frozenset[str] = frozenset({"id", "ref_id", "on_version"})
 
+#: structure.meta bookkeeping keys that are never a ranking measure —
+#: ``version``/``label_hi`` are ``structure_save``'s own housekeeping and
+#: ``quest_harvested_upto``/``quest_catpath_harvested_upto`` are the
+#: idempotency bookmarks ``harvest_measures`` (compute.py) stamps onto the
+#: candidate. ``label_hi``/``lattice``/``pbc`` are non-numeric already
+#: (``_numeric`` filters them), so only the numeric ones need listing here.
+_META_NON_MEASURE: frozenset[str] = frozenset(
+    {"version", "quest_harvested_upto", "quest_catpath_harvested_upto"}
+)
+
 
 def _numeric(v: Any) -> float | None:
     """A measure value, or None. ``bool`` is an ``int`` subclass but never a measure."""
@@ -176,7 +186,7 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
 
     meta = getattr(s, "meta", None) or {}
     for k, v in meta.items():
-        if k == "params":
+        if k == "params" or k in _META_NON_MEASURE:
             continue
         fv = _numeric(v)
         if fv is not None:

@@ -88,6 +88,24 @@ def test_edit_applies_ops_and_persists(structure):
     assert "O1" in structure.get(id="pd_pair").body
 
 
+def test_externally_stamped_meta_survives_an_edit(structure, store):
+    # gr: structure_save's update path used to wholesale-replace refs.meta,
+    # silently erasing anything a quest harvest pass stamped (barrier, span,
+    # quest_harvested_upto, ...) the next time the design is edited.
+    structure.put(id="pd_pair", text=_PD)
+    ref = store.get_ref(kind="structure", id="pd_pair")
+    store.stamp_ref_meta(ref.id, {"barrier": 0.9, "quest_harvested_upto": 3})
+    structure.edit(
+        id="pd_pair",
+        ops=[{"op": "add_atom", "element": "O", "frac": [0.5, 0.5, 0.5]}],
+    )
+    meta = store.get_ref(kind="structure", id="pd_pair").meta or {}
+    assert meta.get("barrier") == 0.9
+    assert meta.get("quest_harvested_upto") == 3
+    # structure_save's own fields still refresh normally
+    assert meta.get("version", 0) >= 1
+
+
 def test_validate_view_flags_overlap(structure):
     bad = json.dumps(
         {

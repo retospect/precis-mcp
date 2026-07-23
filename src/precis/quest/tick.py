@@ -51,6 +51,9 @@ QUEST_LOOP_ENABLED_ENV = "PRECIS_QUEST_LOOP_ENABLED"
 
 #: How many trailing logbook entries to feed the tick as episodic context.
 _LOGBOOK_TAIL = 8
+#: A frontier review steps back over accumulated history — a deeper tail than
+#: a cheap local tick.
+_LOGBOOK_TAIL_REVIEW = 20
 
 
 def quest_loop_enabled() -> bool:
@@ -204,7 +207,9 @@ def _frontier_summary(store: Store, quest_id: int) -> str:
         ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
         lines.append(f"- beaten   {c.handle} {c.name} — {ms}")
     if fr.unevaluated:
-        lines.append(f"- {len(fr.unevaluated)} awaiting a sim")
+        named = ", ".join(f"{c.handle} {c.name}" for c in fr.unevaluated[:5])
+        rest = f" (+{len(fr.unevaluated) - 5} more)" if len(fr.unevaluated) > 5 else ""
+        lines.append(f"- awaiting a sim ({len(fr.unevaluated)}): {named}{rest}")
     return "\n".join(lines)
 
 
@@ -308,7 +313,9 @@ def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
     momentum = gaps_mod.quest_momentum(store, qid)
 
     gap_lines = [f"- {g.kind}: {g.detail}" for g in gaps] or ["- (none)"]
-    tail = _logbook_tail(store, qid) or ["- (no logbook entries yet)"]
+    tail = _logbook_tail(
+        store, qid, n=_LOGBOOK_TAIL_REVIEW if review else _LOGBOOK_TAIL
+    ) or ["- (no logbook entries yet)"]
     servers = _servers_summary(store, qid) or ["- (nothing serves this quest yet)"]
     # Always-on measurement table (rung 4c's review banner used to be the only
     # place this rendered; the local tick reasons from the same numbers now).
@@ -372,6 +379,9 @@ no evidence for.
 
 ## Current Pareto frontier (the measurement table — reason from these numbers)
 {frontier}
+(This table is computed fresh at tick time — treat it as ground truth. If it \
+conflicts with a claim in the dossier above, trust this table and correct the \
+dossier.)
 {literature}{reaction_context}
 ## Your step
 Do ONE increment of thinking: interpret the state, pick the most promising \

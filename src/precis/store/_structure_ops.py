@@ -34,6 +34,14 @@ from precis.structure.scene import Atom, Bond, Measure, Scene
 
 _LABEL_RE = re.compile(r"^a([A-Z][a-z]?)(\d+)$")
 
+#: ``refs.meta`` keys ``structure_save`` itself computes fresh every call —
+#: anything else (e.g. ``barrier``/``span``/``quest_harvested_upto``/
+#: ``quest_catpath_harvested_upto``/``params`` stamped externally via
+#: ``stamp_ref_meta``) must survive an edit, not be wholesale-replaced.
+_STRUCTURE_OWNED_META_KEYS = frozenset(
+    {"lattice", "pbc", "version", "label_hi", "description", "last_relax"}
+)
+
 
 def _label_hi(scene: Scene) -> dict[str, int]:
     """Per-element high-water mark over live atoms, merged with the seed."""
@@ -84,6 +92,12 @@ class StructureMixin:
                 )
             else:
                 ref = existing
+                preserved = {
+                    k: v
+                    for k, v in (existing.meta or {}).items()
+                    if k not in _STRUCTURE_OWNED_META_KEYS
+                }
+                meta = {**preserved, **meta}
                 conn.execute(
                     "UPDATE struct_atoms SET retired_version = %s "
                     "WHERE ref_id = %s AND retired_version IS NULL",
