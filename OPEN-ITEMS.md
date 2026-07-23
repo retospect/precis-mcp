@@ -10,6 +10,35 @@ is the historical observation log.
 > regression that pins it.
 
 ---
+## 📄 Elsevier preview-PDF remediation — 224 prod papers, pilot-ready
+- Status: open · Severity: feature (data quality, not a bug) · Owner: cluster
+  ops (not this dev session — see below) · Test: manual verification of
+  refetched full-text after pilot.
+- **Scope confirmed 2026-07-23.** 224 prod papers matched the gr162364/
+  gr162363 truncation signature (`fetcher:elsevier` source, chunk count far
+  below the ~54.5-chunk fleet average relative to payload size >100KB),
+  spread across 34 days — not a single-incident cluster. The code fix
+  (XML markup leg + truncation alert) shipped in `c838c8e9`; **gr161905
+  (markup-vs-PDF race) was the blocker for safely re-running the fetch —
+  now fixed in `7f3db0cb`.** Nothing else blocks this.
+- **Remediation plan (agreed, not yet executed):** for each affected
+  ref_id, DELETE its `ord >= 0` chunks and null `refs.pdf_sha256` /
+  `pdf_pages` / `pdf_role` (chunk delete alone is not enough —
+  `claim_stubs_to_fetch` selects on `pdf_sha256 IS NULL`), then flip
+  `PRECIS_FETCH_MARKUP=1` and let the next OA-fetch pass re-acquire via
+  the Elsevier XML leg. **Pilot 5 papers first**, watch the pipeline
+  recover full text live, before scaling to all 224.
+- **Must run on cluster infra, not this dev session.** `PRECIS_ELSEVIER_API_KEY`
+  lives in the DB-backed vault (`docs/design/secrets-vault.md`); `agent_rw`
+  (the only DSN reachable from a dev laptop session) has **zero vault
+  grants by design** — "otherwise the boundary is theater." The reset SQL
+  can be prepared/reviewed here, but the actual fetch pass must run where a
+  real worker's vault-capable DSN is available (melchior/caspar).
+- **Next action:** regenerate the 224-paper ref_id list (the original
+  scratchpad file didn't persist) via the signature query above, pick 5
+  for the pilot, write the reset SQL, then hand off to a `cluster-admin`
+  session for execution + a deploy watching the pipeline recover.
+
 ## Plan for the next big session set
 - (also survey the usual thing from /whatnext)
 - Do token efficiency stuff (like claude.md rules vs rationale, ensure the search tools and so on all work, an audit of (coding) prompts and a review of the last 2-3 days and what lools claude gets into that are wasteful. Lets schedule the efficiency stuff after a few hours afte token reset on THursday noon. 
