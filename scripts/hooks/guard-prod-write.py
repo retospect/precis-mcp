@@ -12,6 +12,11 @@ Keyed off the TARGET, not just the verb, to stay quiet on legitimate work:
 - **File-kinds** (`markdown`/`plaintext`/`tex`) are sandboxed to `PRECIS_ROOT`,
   not the DB → allowed silently.
 - A dev-DB session (``PRECIS_DATABASE_URL`` → `precis_test` / localhost) → allowed.
+- **Filing a gripe** (``put(kind='gripe')``) → allowed silently. Gripes are
+  meant to be a cheap, low-friction feedback channel — any session should be
+  able to flag something without a confirm dialog in the way. This does NOT
+  extend to ``edit``/``delete``/``tag`` on an existing gripe (closing/triaging
+  is a more consequential state change and still asks).
 - Everything else (a DB-backed kind on the prod session MCP) → **ask**.
 
 Escape hatch: ``ALLOW_PROD_WRITE=1`` for a session of intentional prod writes.
@@ -46,6 +51,8 @@ def evaluate(tool_name: str, tool_input: dict) -> str | None:
         return None
     kind = (tool_input or {}).get("kind")
     if kind in FILE_KINDS:  # sandbox file write, not prod
+        return None
+    if verb == "put" and kind == "gripe":  # cheap feedback channel, file freely
         return None
     if _dev_dsn():  # a dev-DB session MCP
         return None
