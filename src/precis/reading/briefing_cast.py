@@ -71,6 +71,43 @@ _LOOKBACK_HOURS = 26
 #: Cap how many headline titles a lane names, keeping the compose context tight.
 _LANE_ITEM_CAP = 12
 
+#: How stale an ``info``-severity open alert may be (by its ``updated_at`` —
+#: bumped on every sighting, so it tracks "still actively occurring", not just
+#: "first ever raised") before the "open alerts" lane stops narrating it as
+#: fresh news. ``critical``/``warn`` severities always get named regardless of
+#: age (actionable-now by design — see ``workers/nursery.py``'s ``_SEVERITY``);
+#: only routine ``info`` hygiene nudges (``stuck-doable``/``orphan``/
+#: ``long-wait``) are gated on recency. Confirmed incident: a batch of
+#: ``stuck-doable`` alerts raised 2026-06-26 got re-narrated as if fresh in the
+#: 2026-07-22 cast, a full month stale.
+_ALERT_STALE_HOURS_ENV = "PRECIS_BRIEF_ALERT_STALE_HOURS"
+_ALERT_STALE_HOURS_DEFAULT = 24.0
+
+
+def _alert_stale_hours() -> float:
+    """The configured info-alert staleness window, in hours (env override)."""
+    raw = os.environ.get(_ALERT_STALE_HOURS_ENV)
+    if not raw:
+        return _ALERT_STALE_HOURS_DEFAULT
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning(
+            "reading brief: bad %s=%r, using default", _ALERT_STALE_HOURS_ENV, raw
+        )
+        return _ALERT_STALE_HOURS_DEFAULT
+
+
+def _alert_is_fresh(alert: dict[str, Any], cutoff: datetime) -> bool:
+    """``True`` iff ``alert["updated_at"]`` is at/after ``cutoff``."""
+    ts = alert.get("updated_at")
+    if not isinstance(ts, datetime):
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts >= cutoff
+
+
 # ``Source`` (a ``(ref_id, relation)`` a lane surfaced) + ``link_sources`` live in
 # cast_common — shared with the nidra producer. Lanes collect the sources they
 # render; the composed draft is then linked back to them (nothing is cited inline
@@ -325,7 +362,11 @@ def _count_papers_since(store: Any, cutoff: datetime) -> int:
 
 
 def _lane_system_activity(
-    store: Any, *, cutoff: datetime, sources: list[Source] | None = None
+    store: Any,
+    *,
+    cutoff: datetime,
+    now: datetime,
+    sources: list[Source] | None = None,
 ) -> str:
     """What the untiring collaborator did overnight (LIVE)."""
     parts: list[str] = []
@@ -353,14 +394,26 @@ def _lane_system_activity(
         _collect(sources, findings, "cites")
 
     # Open alerts (health/ops conditions) — machine-raised, best-effort.
+    # ``critical``/``warn`` always narrate (actionable-now); an ``info``
+    # hygiene nudge only narrates if it's still fresh (see
+    # ``_ALERT_STALE_HOURS_ENV``) — otherwise it's an old nudge, not news.
     try:
-        from precis.alerts import STATE_OPEN
+        from precis.alerts import list_open_alerts
 
-        alerts = store.list_refs(kind="alert", tags=[STATE_OPEN], limit=_LANE_ITEM_CAP)
+        alerts = list_open_alerts(store, limit=_LANE_ITEM_CAP)
     except Exception:  # pragma: no cover - alert surface optional
         alerts = []
     if alerts:
-        parts.append(f"Open alerts ({len(alerts)}): " + "; ".join(_titles(alerts)))
+        stale_cutoff = now - timedelta(hours=_alert_stale_hours())
+        fresh = [
+            a
+            for a in alerts
+            if a.get("severity") in ("critical", "warn")
+            or _alert_is_fresh(a, stale_cutoff)
+        ]
+        titles = [t for a in fresh if (t := (a.get("title") or "").strip())]
+        if titles:
+            parts.append(f"Open alerts ({len(titles)}): " + "; ".join(titles))
 
     # "Needs you" / failed-job attention — count only, the detail is a tap away.
     try:
@@ -664,7 +717,7 @@ def _gather_lanes(
         ),
         "system": _safe_lane(
             "system",
-            lambda: _lane_system_activity(store, cutoff=cutoff, sources=src),
+            lambda: _lane_system_activity(store, cutoff=cutoff, now=now, sources=src),
             src,
         ),
         "reading": _safe_lane("reading", lambda: _lane_reading(store)),

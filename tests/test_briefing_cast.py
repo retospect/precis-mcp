@@ -9,11 +9,13 @@ from typing import Any
 
 from precis.reading.briefing_cast import (
     _DORMANT_NUDGE_KEY,
+    _LOOKBACK_HOURS,
     _cite_token,
     _dormant_nudge,
     _lane_news,
     _lane_quest,
     _lane_reading,
+    _lane_system_activity,
     _render_papers,
     build_reading_briefing,
 )
@@ -265,3 +267,91 @@ class TestBuild:
         second = build_reading_briefing(store, client=c2, date_tag=date_tag)
         assert second == first
         assert c2.calls == []  # idempotent — no recompose
+
+
+class _AlertLaneStore:
+    """A minimal store exercising only the alert-recency filter: every other
+    ``list_refs`` call (paper/draft/finding) degrades to empty so the "system
+    activity" lane's output is driven solely by the mocked alert list."""
+
+    def list_refs(self, *, kind: str, **kwargs: Any) -> list[Any]:
+        return []
+
+
+def _alert(title: str, severity: str, updated_at: datetime) -> dict[str, Any]:
+    return {
+        "ref_id": 1,
+        "title": title,
+        "source": "nursery:test",
+        "severity": severity,
+        "detail": "",
+        "subject_ref_id": None,
+        "seen_count": 1,
+        "created_at": updated_at,
+        "updated_at": updated_at,
+    }
+
+
+class TestAlertRecencyLane:
+    """The "open alerts" lane must not re-narrate a month-old hygiene nudge as
+    if it were overnight news (the 2026-06-26 stuck-doable incident) — but a
+    critical/warn alert always narrates regardless of age."""
+
+    _NOW = datetime(2026, 7, 22, tzinfo=UTC)
+    _CUTOFF = _NOW - timedelta(hours=_LOOKBACK_HOURS)
+
+    def test_fresh_critical_included_even_if_old(self, monkeypatch: Any) -> None:
+        old_critical = _alert(
+            "dead-worker: agent on melchior", "critical", self._NOW - timedelta(days=30)
+        )
+        monkeypatch.setattr(
+            "precis.alerts.list_open_alerts", lambda store, limit=200: [old_critical]
+        )
+        out = _lane_system_activity(
+            _AlertLaneStore(), cutoff=self._CUTOFF, now=self._NOW
+        )
+        assert "dead-worker" in out
+
+    def test_fresh_info_included(self, monkeypatch: Any) -> None:
+        fresh_info = _alert(
+            "stuck-doable: recent nudge", "info", self._NOW - timedelta(hours=2)
+        )
+        monkeypatch.setattr(
+            "precis.alerts.list_open_alerts", lambda store, limit=200: [fresh_info]
+        )
+        out = _lane_system_activity(
+            _AlertLaneStore(), cutoff=self._CUTOFF, now=self._NOW
+        )
+        assert "stuck-doable" in out
+
+    def test_stale_info_excluded(self, monkeypatch: Any) -> None:
+        stale_info = _alert(
+            "stuck-doable: month-old nudge", "info", self._NOW - timedelta(days=26)
+        )
+        monkeypatch.setattr(
+            "precis.alerts.list_open_alerts", lambda store, limit=200: [stale_info]
+        )
+        out = _lane_system_activity(
+            _AlertLaneStore(), cutoff=self._CUTOFF, now=self._NOW
+        )
+        assert "stuck-doable" not in out
+        assert out == ""  # nothing else in the lane either
+
+    def test_env_override_widens_the_window(self, monkeypatch: Any) -> None:
+        borderline_info = _alert(
+            "orphan: still counts", "info", self._NOW - timedelta(hours=30)
+        )
+        monkeypatch.setattr(
+            "precis.alerts.list_open_alerts", lambda store, limit=200: [borderline_info]
+        )
+        monkeypatch.delenv("PRECIS_BRIEF_ALERT_STALE_HOURS", raising=False)
+        out_default = _lane_system_activity(
+            _AlertLaneStore(), cutoff=self._CUTOFF, now=self._NOW
+        )
+        assert out_default == ""  # 30h old > the 24h default window
+
+        monkeypatch.setenv("PRECIS_BRIEF_ALERT_STALE_HOURS", "48")
+        out_widened = _lane_system_activity(
+            _AlertLaneStore(), cutoff=self._CUTOFF, now=self._NOW
+        )
+        assert "orphan" in out_widened

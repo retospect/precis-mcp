@@ -385,6 +385,20 @@ We used a \textbf{spectrometer}.
     assert refs and "Foo et al" in refs[0]["text"]
 
 
+def test_parse_latex_title_strips_bare_linebreak_macro(tmp_path: Path) -> None:
+    # Confirmed prod artifact: a bare `\\` (LaTeX forced-linebreak, no brace
+    # arg) survived `_strip_tex` verbatim and leaked into todo titles. It must
+    # become a single space — not vanish (which would glue the neighbouring
+    # words together) and not survive as `\\`.
+    main = (
+        r"\documentclass{article}\title{Foo\\ Bar}\begin{document}"
+        r"\section{Intro} body text with content \end{document}"
+    )
+    tarball = _make_tarball(tmp_path, {"main.tex": main})
+    ext = parse_latex(tarball)
+    assert ext.title == "Foo Bar"
+
+
 def test_parse_latex_macro_density_gate(tmp_path: Path) -> None:
     # A body dominated by unexpanded macros trips the OCR-fallback gate.
     macro_soup = (

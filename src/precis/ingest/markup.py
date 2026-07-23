@@ -851,6 +851,12 @@ def _strip_tex(text: str) -> str:
     noise for retrieval.
     """
     text = _TEX_COMMENT_RE.sub("", text)
+    # Bare forced-linebreak macro (no brace argument, so the brace-unwrap loop
+    # below never sees it) → a space, not a delete: dropping it outright would
+    # glue the words on either side together (``Foo\\Bar`` → ``FooBar``).
+    # Confirmed real artifact — prod todo titles like "Import & edit: \\ to
+    # Ammonia System Manual" carried the macro verbatim into the title.
+    text = re.sub(r"\\\\", " ", text)
     # Drop non-rendering housekeeping commands (keep their absence clean).
     text = re.sub(
         r"\\(label|ref|cite[a-z]*|usepackage|newcommand|renewcommand)"
