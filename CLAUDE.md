@@ -164,6 +164,13 @@ per-kind reference.
   rots on the next edit. → `docs/conventions/code-anchors.md` (authoring,
   resolving, drift-checking).
 - If another branch left trivial drift (needs `ruff`), just fix it.
+- **Commit messages: one-line subject only, no body.** `git log` (no
+  CHANGELOG) is already the record and ADRs/docs carry the "why" — a
+  multi-paragraph body or bullet list is pure token overhead to draft.
+  `/land`/`/go` already ask for a "concise one-line, conventional-commit-style
+  summary"; hold to the same bar committing outside that flow too — subject
+  line plus the required Co-Authored-By/session footer only, skip the
+  1-2-sentence "why" paragraph the default git-commit protocol suggests.
 
 ## Agent sizing
 
@@ -196,3 +203,10 @@ Default: start cheap, hand a decided change to the sonnet tier, keep genuine
 design/domain judgment on Opus. An agent def with no `model:` line inherits the
 session model (= Opus), so a mechanical task runs expensive by accident; use the
 Agent tool's `model:` for one-off downgrades.
+
+For a build too large for one `coder` call to finish cleanly (many files, many
+test-fix cycles), `.claude/workflows/coder-chain.js` chains fresh, small
+`coder` rounds via compact handoffs instead of growing one huge transcript —
+invoke with `Workflow({name: 'coder-chain', args: {task, maxRounds}})`. Ask
+for it by name; only opt in when the task genuinely needs it (`Workflow` is
+billed multi-agent orchestration, gated on explicit opt-in).
