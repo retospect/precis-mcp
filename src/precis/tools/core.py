@@ -844,6 +844,15 @@ def edit(
     table: dict[str, Any] | None = None,
     caption: str | None = None,
     regen: dict[str, Any] | None = None,
+    # diagram kinds (mermaid/figure, ADR 0057, see precis-mermaid-help):
+    # vocab= rewrites the shared vocabulary doc, notes= the implementation
+    # notes doc; viewbox='x y w h' sets the canvas bounds (figure only —
+    # mermaid auto-layouts). Each is mutually exclusive with text= on one
+    # edit call. Declared at the verb level (like pick_candidate above) so
+    # strict-schema MCP clients don't strip them.
+    vocab: str | None = None,
+    notes: str | None = None,
+    viewbox: Any = None,
 ) -> str:
     """Edit a region within an existing ref's content (anchored).
 
@@ -889,6 +898,9 @@ def edit(
         "table": table,
         "caption": caption,
         "regen": regen,
+        "vocab": vocab,
+        "notes": notes,
+        "viewbox": viewbox,
     }
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("edit", payload)
@@ -958,6 +970,11 @@ def link(
     target: str | None = None,
     mode: str = "add",
     rel: str | None = None,
+    # diagram kinds (mermaid/figure, ADR 0057, see precis-mermaid-help):
+    # element=<node/element id> binds it to the chunk it depicts (target=
+    # the chunk handle). Declared at the verb level so strict-schema MCP
+    # clients don't strip it.
+    element: str | None = None,
 ) -> str:
     """Add or remove a typed link between two refs.
 
@@ -974,7 +991,14 @@ def link(
     """
     return _dispatch(
         "link",
-        {"kind": kind, "id": id, "target": target, "mode": mode, "rel": rel},
+        {
+            "kind": kind,
+            "id": id,
+            "target": target,
+            "mode": mode,
+            "rel": rel,
+            "element": element,
+        },
     )
 
 

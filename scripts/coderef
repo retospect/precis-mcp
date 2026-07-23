@@ -56,6 +56,7 @@ import ast
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from functools import cache
 from pathlib import Path
 
@@ -133,20 +134,33 @@ def parse_anchor(token: str) -> tuple[str, str | None]:
     return (relpath, _norm_qual(qual)) if sep else (relpath, None)
 
 
+def _lookup_qual(idx: Mapping[str, object], qual: str) -> tuple[str | None, str]:
+    """Exact qualname match else unique ``.``-suffix match against a symbol
+    index (``symbol_index``'s or ``_symbol_nodes``'s keyspace — only the keys
+    matter here). Returns ``(matched_qual, note)``; ``matched_qual`` is
+    ``None`` on ambiguous/no-match, with ``note`` explaining why. Shared by
+    ``resolve``/``_dep_node``/``cmd_callers`` so the exact/unique-suffix rule
+    lives in exactly one place."""
+    if qual in idx:
+        return qual, ""
+    # unique-suffix fallback: a bare ``method`` resolves iff it's unambiguous.
+    suffix = [q for q in idx if q == qual or q.endswith("." + qual)]
+    if len(suffix) == 1:
+        return suffix[0], f"(matched {suffix[0]})"
+    if len(suffix) > 1:
+        return None, "ambiguous — qualify: " + ", ".join(sorted(suffix))
+    return None, "symbol not found (renamed/removed? re-grep)"
+
+
 def resolve(root: Path, relpath: str, qual: str) -> tuple[int | None, str]:
     p = root / relpath
     if not p.is_file():
         return None, "file not found"
     idx = _index_path(str(p))
-    if qual in idx:
-        return idx[qual][0], ""
-    # unique-suffix fallback: a bare ``method`` resolves iff it's unambiguous.
-    suffix = [q for q in idx if q == qual or q.endswith("." + qual)]
-    if len(suffix) == 1:
-        return idx[suffix[0]][0], f"(matched {suffix[0]})"
-    if len(suffix) > 1:
-        return None, "ambiguous — qualify: " + ", ".join(sorted(suffix))
-    return None, "symbol not found (renamed/removed? re-grep)"
+    matched, note = _lookup_qual(idx, qual)
+    if matched is None:
+        return None, note
+    return idx[matched][0], note
 
 
 def anchor_for(root: Path, relpath: str, line: int) -> tuple[str | None, str]:
@@ -206,14 +220,10 @@ def _dep_node(
     if not p.is_file():
         return None, None, "file not found"
     idx = _node_index(str(p))
-    if qual in idx:
-        return idx[qual], qual, ""
-    suffix = [q for q in idx if q == qual or q.endswith("." + qual)]
-    if len(suffix) == 1:
-        return idx[suffix[0]], suffix[0], f"(matched {suffix[0]})"
-    if len(suffix) > 1:
-        return None, None, "ambiguous — qualify: " + ", ".join(sorted(suffix))
-    return None, None, "symbol not found (renamed/removed? re-grep)"
+    matched, note = _lookup_qual(idx, qual)
+    if matched is None:
+        return None, None, note
+    return idx[matched], matched, note
 
 
 def _bound_names(node: ast.AST) -> set[str]:
@@ -534,11 +544,9 @@ def cmd_callers(root: Path, tokens: list[str]) -> int:
             rc = 1
             continue
         idx = _index_path(str(root / relpath))
-        matched_qual = (
-            qual
-            if qual in idx
-            else next((q for q in idx if q == qual or q.endswith("." + qual)), qual)
-        )
+        matched_qual, _ = _lookup_qual(idx, qual)
+        if matched_qual is None:
+            matched_qual = qual
         leaf = _leaf_name(matched_qual)
         def_path = (root / relpath).resolve()
         target_module = _path_to_module(root, root / relpath)

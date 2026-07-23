@@ -303,6 +303,51 @@ def test_link_remove_unbinds(store, mh, diagram) -> None:
     assert store.element_bindings(node) == []
 
 
+# ── MCP tool surface: vocab=/notes=/viewbox= on edit, element= on link ──────
+#
+# Regression for the OPEN-ITEMS "MCP vocab/notes/element plumbing gap" bug:
+# ``DiagramHandler.edit``/``.link`` (exercised above) always accepted these
+# kwargs, but the *exposed* MCP ``edit``/``link`` tool functions in
+# ``precis.tools.core`` had a fixed parameter list that didn't declare them —
+# so a real MCP client calling ``edit(kind='mermaid', vocab=...)`` had the
+# kwarg silently stripped before it ever reached the handler. These tests go
+# through the actual tool-dispatch path (``precis.tools.core.edit``/``.link``)
+# rather than calling the handler directly, so a regression at the tool-
+# signature layer fails here even though the handler-level tests above stay
+# green.
+
+
+def test_mcp_edit_tool_persists_vocab_and_notes(
+    monkeypatch, store, runtime_with_store, diagram
+) -> None:
+    import precis.tools.core as core
+
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+    out = core.edit(kind="mermaid", id="flow", vocab="intake = the ingress stage")
+    assert isinstance(out, str) and "vocabulary" in out
+    out = core.edit(kind="mermaid", id="flow", notes="draft v2, needs review")
+    assert isinstance(out, str) and "notes" in out
+
+    body = core.get(kind="mermaid", id="flow")
+    assert isinstance(body, str)
+    assert "intake = the ingress stage" in body
+    assert "draft v2, needs review" in body
+
+
+def test_mcp_link_tool_persists_element_binding(
+    monkeypatch, store, runtime_with_store, diagram
+) -> None:
+    import precis.tools.core as core
+
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+    h = _target(store)
+    node = _source_chunk_id(store, diagram.id)
+    out = core.link(kind="mermaid", id="flow", element="intake", target=h)
+    assert isinstance(out, str) and "bound" in out
+    got = {(b["element"], b["handle"]) for b in store.element_bindings(node)}
+    assert got == {("intake", h)}
+
+
 # ── the shared turn loop drives mermaid ─────────────────────────────────────
 
 
