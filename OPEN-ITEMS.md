@@ -261,13 +261,19 @@ passes now. Remaining:
   flood (2782+ `worker_logs` ERROR rows in 24h). Fixed live via direct plist
   edit (`PRECIS_SUMMARIZE_MODEL=qwen3-next-80b-a3b-q4_k_m` +
   `PRECIS_LOCAL_SERVE_CONFIG=/opt/llamacpp/etc/llama-swap.yaml` on both
-  `com.precis.worker{,-agent}.plist`, restarted, error rate → 0). **Residual:**
-  the cluster ansible repo (unreachable from this dev machine) likely templates
-  these plists — if so the next `redeploy-precis.yml` run will silently revert
-  this fix; someone with `~/work/cluster` access needs to port the same two env
-  vars into its worker-role template. `local_serving.acquire()` now logs a
-  rate-limited warning on this exact mismatch shape so a recurrence surfaces
-  immediately instead of burning silently.
+  `com.precis.worker{,-agent}.plist`, restarted, error rate → 0). This repo's
+  own `deploy/roles/` templates those plists (not a separate cluster repo —
+  only `deploy/inventory/` host_vars/secrets are gitignored); the first
+  `redeploy-precis.yml` run after the live fix confirmed this by silently
+  reverting it. **Made durable same-day:** `precis-worker{,-agent}.plist.j2`
+  and the heartbeat plist/service templates now support a
+  `precis_local_llm_model_override` / `precis_local_serve_config` host_var
+  pair (skips the shared-env loop's `PRECIS_SUMMARIZE_MODEL` key when the
+  override is defined, then sets both explicitly), set for melchior only in
+  its `host_vars/melchior.yml`. Shipped + deployed; survives redeploys now.
+  `local_serving.acquire()` also logs a rate-limited warning on this exact
+  mismatch shape so a recurrence on another host surfaces immediately instead
+  of burning silently.
 
 ---
 
