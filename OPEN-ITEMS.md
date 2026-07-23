@@ -273,7 +273,16 @@ passes now. Remaining:
   its `host_vars/melchior.yml`. Shipped + deployed; survives redeploys now.
   `local_serving.acquire()` also logs a rate-limited warning on this exact
   mismatch shape so a recurrence on another host surfaces immediately instead
-  of burning silently.
+  of burning silently. **Second gap found + fixed 2026-07-23 (gripe 170073):**
+  the template support above only takes effect if the heartbeat plist is
+  actually re-templated — `redeploy-precis.yml` never imported
+  `playbooks/40-precis-heartbeat.yml`, so a routine deploy re-templated the
+  worker plists but left `com.precis.heartbeat.plist` on whatever was last
+  hand-applied (confirmed stale since June 15 on melchior, silently missing
+  every host_var override added since). Fixed by adding that import to
+  `redeploy-precis.yml`'s step-1 reinstall block, right after
+  `20-precis-worker.yml` (heartbeat reuses that venv). Takes effect on the
+  next full deploy.
 - **Capacity re-check needed** *(follow-up, open).* Post-fix, `precis-worker`
   and `precis-worker-agent` now correctly contend for the *same*
   `resource_slots` row (`llm:qwen3-next-80b-a3b-q4_k_m`, `parallel=1`) instead
@@ -295,7 +304,8 @@ passes now. Remaining:
   to act on for this tier. Open questions: trigger condition (slot-busy vs.
   host-unreachable), default-on vs. opt-in (cost — OpenRouter isn't free the
   way local serving is), and whether this is scoped as a `docs/proposals/*.md`
-  first given it touches dispatch semantics (ADR 0048).
+  first given it touches dispatch semantics (ADR 0048). A first draft of that
+  proposal exists: `docs/proposals/llm-openrouter-bypass.md`.
 
 ---
 

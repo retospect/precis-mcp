@@ -192,6 +192,18 @@
 - name: "Refresh /opt/precis/venv          (worker, watch, heartbeat, dream)"
   ansible.builtin.import_playbook: playbooks/20-precis-worker.yml
 
+# `precis_heartbeat` reuses /opt/precis/venv (installed by 20 above, hence the
+# ordering) but is its OWN role/playbook — 20 never runs it. Without this
+# import, a standard `/go`/`scripts/deploy` never re-templates
+# com.precis.heartbeat.plist: step 2 below still `kickstart`s the daemon (it
+# matches the generic `com.precis.*.plist` bounce), but kickstarting an
+# unchanged plist doesn't pick up new host_vars. Root cause of a stale
+# plist (mtime months behind HEAD) silently dropping a host-var override
+# (`precis_local_llm_model_override`/`precis_local_serve_config`) meant for
+# the heartbeat daemon — found 2026-07-23, gripe 170073.
+- name: "Re-render the heartbeat plist      (all nodes — picks up host_var overrides)"
+  ansible.builtin.import_playbook: playbooks/40-precis-heartbeat.yml
+
 - name: "Refresh /opt/mcps/venv            (web, worker-agent, watch-poll, cron-tick)"
   ansible.builtin.import_playbook: playbooks/38-precis-web.yml
 
