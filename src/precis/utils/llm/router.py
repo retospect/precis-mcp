@@ -1153,7 +1153,18 @@ class DispatchError(RuntimeError):
     so a caller's retry policy can tell "the router refused/failed this call"
     apart from an unrelated ``RuntimeError`` it might raise for its own reasons
     (e.g. a malformed-response parse failure), without the two collapsing into
-    one undifferentiable type."""
+    one undifferentiable type.
+
+    ``paused`` mirrors :attr:`LlmResult.paused` — ``True`` for a breaker trip
+    or an all-local-slots-busy backoff (an expected, self-clearing condition
+    under contention), ``False`` for a genuine transport/provider failure. A
+    caller can use it to skip the per-item ERROR traceback for the former
+    (see ``llm_summarize._complete``'s empty-summary handling for the same
+    pattern) without resorting to message-string sniffing."""
+
+    def __init__(self, message: str, *, paused: bool = False) -> None:
+        super().__init__(message)
+        self.paused = paused
 
 
 @dataclass
@@ -1244,7 +1255,7 @@ class DispatchClient:
             )
         )
         if res.error is not None:
-            raise DispatchError(res.error)
+            raise DispatchError(res.error, paused=res.paused)
         return res
 
 

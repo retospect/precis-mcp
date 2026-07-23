@@ -54,6 +54,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from precis.utils.llm.router import DispatchError
 from precis.utils.prompt import (
     AssemblyContext,
     Layer,
@@ -1133,6 +1134,7 @@ def run_llm_summarize_pass(
     def _complete(item: tuple[_Claimed, list[dict[str, str]], str]) -> _Outcome:
         claim, messages, prompt_hash = item
         empty_exc: EmptySummaryError | None = None
+        busy_exc: DispatchError | None = None
         # Retry an EMPTY completion in-process: it is a transient backend blank
         # (the shared 80B returns "" under contention), and the same input
         # summarizes on replay — so a momentary blip is recovered here instead
@@ -1151,10 +1153,23 @@ def run_llm_summarize_pass(
                 empty_exc = exc
                 if attempt < EMPTY_RETRY_ATTEMPTS:
                     time.sleep(EMPTY_RETRY_BACKOFF_S * (attempt + 1))
+            except DispatchError as exc:
+                if not exc.paused:
+                    # A genuine dispatch/transport failure — no retry.
+                    log.exception("llm_summarize: chunk_id=%s failed", claim.chunk_id)
+                    return _Outcome(claim, prompt_hash, None, None, exc)
+                # All local serving slots busy — router.DispatchError.paused is
+                # an expected, self-clearing backoff signal under contention,
+                # not a bug. Same "no per-chunk ERROR traceback" treatment as
+                # EmptySummaryError above (it floods the log surface and reads
+                # as an outage on /status even while summaries keep landing).
+                busy_exc = exc
+                if attempt < EMPTY_RETRY_ATTEMPTS:
+                    time.sleep(EMPTY_RETRY_BACKOFF_S * (attempt + 1))
             except Exception as exc:  # a genuine error — no retry, recorded below
                 log.exception("llm_summarize: chunk_id=%s failed", claim.chunk_id)
                 return _Outcome(claim, prompt_hash, None, None, exc)
-        return _Outcome(claim, prompt_hash, None, None, empty_exc)
+        return _Outcome(claim, prompt_hash, None, None, empty_exc or busy_exc)
 
     # The slow phase. ex.map preserves order, so writes stay deterministic.
     # After each completion the MAIN thread heartbeats the batch's leases so
@@ -1219,13 +1234,19 @@ def run_llm_summarize_pass(
         ok += 1 if wrote else 0
         failed += 0 if wrote else 1
     empty = 0
+    busy = 0
     for o in outcomes:
         if o.error is not None or o.summary is None:
             is_empty = isinstance(o.error, EmptySummaryError)
-            _record_failure(o.claim.chunk_id, str(o.error), transient=is_empty)
+            is_busy = isinstance(o.error, DispatchError) and o.error.paused
+            _record_failure(
+                o.claim.chunk_id, str(o.error), transient=is_empty or is_busy
+            )
             failed += 1
             if is_empty:
                 empty += 1
+            elif is_busy:
+                busy += 1
         elif _record_summary(
             o.claim.chunk_id,
             text=o.summary,
@@ -1245,6 +1266,16 @@ def run_llm_summarize_pass(
             "llm_summarize: %d/%d chunks returned an empty summary "
             "(model miss; recorded for retry)",
             empty,
+            len(outcomes),
+        )
+    if busy:
+        # Same treatment for router.DispatchError.paused (all local serving
+        # slots busy) — an expected contention backoff, not a bug; one
+        # aggregated line instead of a per-chunk ERROR traceback.
+        log.warning(
+            "llm_summarize: %d/%d chunks backed off (all local serving "
+            "slots busy; recorded for retry)",
+            busy,
             len(outcomes),
         )
     return {"claimed": claimed, "ok": ok, "failed": failed}

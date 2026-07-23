@@ -249,17 +249,24 @@ passes now. Remaining:
   `redeploy-precis.yml`'s step-1 reinstall block, right after
   `20-precis-worker.yml` (heartbeat reuses that venv). Takes effect on the
   next full deploy.
-- **Capacity re-check needed** *(follow-up, open).* Post-fix, `precis-worker`
-  and `precis-worker-agent` now correctly contend for the *same*
-  `resource_slots` row (`llm:qwen3-next-80b-a3b-q4_k_m`, `parallel=1`) instead
-  of one of them silently missing it — seen briefly as
-  `DispatchError: all local serving slots … are busy — backing off` (16/16 on
-  one batch right after a deploy bounce). Judged as the safety net working as
-  intended (graceful backoff, not a bug), but not re-verified once things
-  settled — re-check `llm_summarize` error rate; if it's not just transient
-  bounce contention, `precis_worker_summarize_concurrency` (currently `1` in
-  `host_vars/melchior.yml`) or the llama-swap `--parallel` for that model is
-  the tuning knob.
+- **Capacity re-check — confirmed NOT transient, log-flood fixed, throughput
+  tuning still open** *(follow-up, open).* Re-checked 2026-07-23: the
+  `DispatchError: all local serving slots … are busy — backing off` contention
+  is sustained (1000-2000/hr, not a one-batch bounce blip) — `precis-worker`
+  and `precis-worker-agent` genuinely contend for the same `resource_slots`
+  row under real corpus-batch load. But prod data shows the pass keeps
+  producing throughout (5785 real `chunk_summaries` written in the same 6h
+  window as 5527 busy-backoff events) — it's the sibling of the already-known
+  `EmptySummaryError` log-flood pattern, not an outage. **Fixed this session**
+  (main, `llm_summarize.py` + `router.py::DispatchError.paused`): a paused
+  busy-backoff no longer logs a per-chunk ERROR traceback (was misreading as a
+  "hot pass" on `/status`) — retried in-process, one aggregated WARNING/batch,
+  `transient=True` so contention can never terminally fail a chunk. **Still
+  open:** the actual throughput question — if `llm_summarize` needs to clear
+  its backlog faster, `precis_worker_summarize_concurrency` (`host_vars/
+  melchior.yml`, cluster repo) or the llama-swap `--parallel` for that model is
+  the tuning knob, weighed against melchior's known RAM/jetsam fragility
+  before bumping (see "De-SPOF the agent worker" / "Co-location relief" below).
 - **OpenRouter fallback for local-serving saturation/outage** *(feature,
   open — needs a design pass first).* Wanted: when a host's local llama-swap
   slot for a tier is paused/unavailable, fail over to OpenRouter instead of
@@ -1192,6 +1199,21 @@ Owner `mcp_modalities.py::register_skill_prompts`; artefact
   embedder; no `trust_remote_code`, no user model path). **Recheck together with
   #44** — one `uv lock --upgrade-package transformers` clears both when marker lifts
   the cap; else bump `Recheck-after` +2 weeks.
+
+- **Dependabot #56–#67 — `pillow` heap-OOB/DoS/decompression-bomb-bypass (11
+  alerts, mostly high).** `Recheck-after: 2026-08-06`. `Unblock-when:`
+  `marker-pdf` drops its `Pillow<11.0.0` cap. **Verified 2026-07-23:**
+  `uv lock --upgrade-package pillow==12.3.0` (the fixed version) fails
+  resolution outright — every published `marker-pdf` (latest `2.0.0`) pins
+  `pillow<11,>=10.1.0`; same shape as #44/#45's `transformers` block, already
+  documented as a known ceiling in `pyproject.toml` lines 86-93. Tolerable:
+  precis only ever feeds Marker/Pillow trusted PDF ingestion behind the
+  `[paper]` extra, none of the specific vectors (PSD/FITS/JPEG2000/TGA/mmap
+  font-loading paths) are reachable from precis's own code. **Recheck:**
+  re-run `uv lock --upgrade-package pillow`; if it reaches ≥12.3.0 take the
+  fix; else bump `Recheck-after` +2 weeks. Cleared in the same pass: GitPython
+  #71-74 → 3.1.55, pyasn1 #69/#70 → 0.6.4, setuptools #68 → 83.0.0 (main
+  `ce531a4c`) — those were not blocked, just needed a lockfile bump.
 
 ## 🔵 Paper-ingest `equation` chunk kind — retire later *(deferred)*
 
