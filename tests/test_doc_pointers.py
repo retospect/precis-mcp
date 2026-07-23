@@ -1,14 +1,20 @@
-"""Dead-pointer guard for the orientation docs.
+"""Dead-pointer guard for the live docs.
 
-The acquaintance path (README + AGENTS + CLAUDE + the docs maps) is a set
-of hand-maintained indexes that drift silently — a fresh agent following a
-stale link burns tokens chasing a file that moved or was deleted. This test
-pins the *live* orientation docs so a dead relative link fails the gate.
+The acquaintance path (README + AGENTS + CLAUDE + the docs maps, plus
+every current-state doc reachable from it) is a set of hand-maintained
+indexes that drift silently — a fresh agent following a stale link burns
+tokens chasing a file that moved or was deleted. This test pins the *live*
+docs so a dead relative link fails the gate.
 
 It deliberately checks only markdown **link targets** (`[text](path)`), not
-prose file mentions, and only the live orientation set — not `docs/design/`
-or `docs/decisions/`, which are frozen historical artefacts that may point
-at since-removed files on purpose. Hermetic: no DB, no model.
+prose file mentions, and only the live doc set — not `docs/design/` or
+`docs/decisions/`, which are frozen historical artefacts that may point at
+since-removed files on purpose (the one exception is `docs/decisions/
+README.md` itself, an index that should stay accurate). Also excludes
+`src/precis/data/skills/` — those docs use `[text](<placeholder>)` link
+syntax to document call patterns, not real file links, so scanning them
+produces false positives rather than catching real drift. Hermetic: no DB,
+no model.
 """
 
 from __future__ import annotations
@@ -21,16 +27,33 @@ import pytest
 # Repo root: this file is <root>/tests/test_doc_pointers.py
 ROOT = Path(__file__).resolve().parent.parent
 
-# The live acquaintance path — the docs a fresh agent actually reads to
-# orient. Add new top-level orientation docs here as they appear.
-LIVE_DOCS = [
-    "README.md",
-    "AGENTS.md",
-    "CLAUDE.md",
-    "OPEN-ITEMS.md",
-    "docs/architecture.md",
-    "docs/README.md",
-]
+_FROZEN_DIRS = ("docs/design/", "docs/decisions/")
+_FROZEN_EXEMPT = {"docs/decisions/README.md"}
+
+
+def _live_docs() -> list[str]:
+    """Every current-state markdown doc, minus the frozen-historical dirs."""
+    globs = [
+        ROOT.glob("*.md"),
+        ROOT.glob("docs/**/*.md"),
+    ]
+    out: set[str] = set()
+    for g in globs:
+        for path in g:
+            rel = path.relative_to(ROOT).as_posix()
+            if rel in _FROZEN_EXEMPT:
+                out.add(rel)
+                continue
+            if rel.startswith(_FROZEN_DIRS):
+                continue
+            out.add(rel)
+    return sorted(out)
+
+
+# The live acquaintance path — every current-state doc a fresh agent might
+# read to orient. Frozen historical docs (docs/design/, docs/decisions/)
+# are excluded on purpose; see module docstring.
+LIVE_DOCS = _live_docs()
 
 # [text](target) — capture the target.
 _LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
