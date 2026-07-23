@@ -47,6 +47,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -57,6 +58,7 @@ from precis.utils._claude_subprocess import (
     extract_cost_usd,
     resolve_binary,
     run_claude,
+    run_claude_async,
     to_str,
 )
 from precis.utils.claude_oauth import ensure_oauth_token, prefer_oauth_over_api_key
@@ -243,6 +245,267 @@ def call_claude_agent(
         ClaudeAgentError: subprocess exited non-zero, timed out, or
             the binary was missing.
     """
+    binary, args, model, timeout_s, max_usd, active_env = _resolve_agent_args(
+        prompt,
+        model=model,
+        system_prompt=system_prompt,
+        mcp_config=mcp_config,
+        max_turns=max_turns,
+        timeout_s=timeout_s,
+        max_usd=max_usd,
+        permission_mode=permission_mode,
+        output_format=output_format,
+        bare=bare,
+        disallowed_tools=disallowed_tools,
+        envelope=envelope,
+        extra_args=extra_args,
+    )
+    proc_env = _prepare_agent_env(
+        active_env=active_env, bare=bare, env_overlay=env_overlay
+    )
+    cwd_str = str(cwd) if cwd is not None else None
+
+    started = time.monotonic()
+    # ``stdin_devnull`` because Claude Code 2.1.x reads stdin in
+    # non-interactive ``-p`` mode and waits up to 3s for data before
+    # proceeding. When this helper is called from a CLI-spawned worker
+    # (precis worker --only dream_agent --once), the parent's stdin
+    # pipe behaviour can cause claude to read garbage / hang, ultimately
+    # producing the "Not logged in" silent-success or zero-MCP-call
+    # pattern observed 2026-06-17. Direct ``-p`` callers want no stdin.
+    # §13 container executor (dark, PRECIS_AGENT_CONTAINER off by default): run
+    # the SAME claude -p in a throwaway container instead of in-process, isolated
+    # by the envelope's tier-2 DB role + tier-3 network. A foreground run whose
+    # stdout we capture exactly as the in-proc subprocess's, so the parsing below
+    # is unchanged. Off ⇒ byte-identical to today. (plan_tick / fix_gripe have
+    # their own spawn seams + env back-doors — containerized in the window, not
+    # here.)
+    run_argv = args
+    run_binary = binary
+    from precis.workers.executors import agent_container as _container
+
+    # Opt-in (``PRECIS_AGENT_CONTAINER``) is necessary but NOT sufficient: gate
+    # it behind the verified-capability probe (runtime live ∧ image resident ∧
+    # auth token resolvable ∧ not health-latched, §15d). An opted-in host that
+    # can't actually containerize runs in-process — byte-identical to today —
+    # instead of failing every agentic pass on a box it can't launch (the spark
+    # DSN retry-storm's failure mode, 2026-07-19).
+    containerized = False
+    if _container.container_agent_enabled() and _container.container_capability_ok():
+        import uuid as _uuid
+
+        from precis import secrets as _secrets
+
+        # ``adopt_process_store`` scrubs ``PRECIS_DATABASE_URL`` from
+        # ``os.environ`` at worker boot (ADR 0059) precisely so host ``claude
+        # -p`` spawns don't inherit the DSN — so ``proc_env`` (a copy of the
+        # scrubbed environ) no longer carries it. The container is an isolation
+        # boundary that *does* need DB access: re-inject the captured DSN so the
+        # by-key ``--env PRECIS_DATABASE_URL`` carries it in (mirrors the OAuth
+        # re-injection above). Without this the container's entrypoint aborts
+        # "PRECIS_DATABASE_URL not set" and every agentic pass fails 1 — the
+        # spark review retry-storm (2026-07-19).
+        _dsn = _secrets.get_adopted_dsn() or proc_env.get("PRECIS_DATABASE_URL")
+        if _dsn:
+            proc_env["PRECIS_DATABASE_URL"] = _dsn
+        from precis.workers import envelope as _envelope
+
+        run_argv = _container.containerize_claude_argv(
+            args,
+            active_env if active_env is not None else _envelope.Envelope(),
+            name=f"precis-agent-{_uuid.uuid4().hex[:12]}",
+            model=model or "",
+            dsn=_dsn,
+        )
+        run_binary = run_argv[0]
+        containerized = True
+    elif _container.container_agent_enabled():
+        # Opted in but this host can't be *verified* to run the container (no
+        # runtime / image / token, or the health latch is tripped after a recent
+        # infra failure). Run in-process rather than failing every pass.
+        _warn_container_incapable_once()
+
+    res: Any
+    try:
+        res = run_claude(
+            run_argv,
+            binary=run_binary,
+            label="claude -p (agent)",
+            timeout_s=timeout_s,
+            error_cls=ClaudeAgentError,
+            env=proc_env,
+            stdin_devnull=True,
+            cwd=cwd_str,
+        )
+    except ClaudeAgentError as exc:
+        if containerized and _container_infra_failure(exc):
+            # The *container* failed to run (image missing, daemon unreachable,
+            # socket perm, OOM 137) — NOT a claude/model error inside it. Latch
+            # the host unhealthy so subsequent passes skip the container for
+            # ~10 min, and retry the SAME call in-process once: one bad box
+            # degrades to in-proc instead of dropping the pass. (A container OOM
+            # exits 137 ≥128, which the router would otherwise mis-read as a
+            # signal 'interrupt' and *skip* — catching it here routes it to the
+            # fallback, not the skip.)
+            _container.trip_container_unhealthy()
+            log.warning(
+                "claude_agent: containerized run failed at the container-infra "
+                "level (rc=%s); latching host unhealthy and retrying in-process",
+                getattr(exc, "returncode", None),
+            )
+            res = _run_inproc_fallback(binary, args, timeout_s, proc_env, cwd_str)
+        else:
+            # A non-container failure (or a claude/model error inside the
+            # container): recover a resumable exhaustion or re-raise enriched.
+            res = _recover_exhaustion_or_raise(exc)
+    duration_s = time.monotonic() - started
+
+    result = _build_agent_result(res, duration_s=duration_s)
+
+    if log_event is not None:
+        _write_log_event(
+            log_event,
+            model=model,
+            cost_usd=result.cost_usd,
+            duration_s=duration_s,
+            turns_used=result.turns_used,
+        )
+
+    return result
+
+
+async def call_claude_agent_async(
+    prompt: str,
+    *,
+    model: str | None = None,
+    system_prompt: str | Path | None = None,
+    mcp_config: str | Path | None = None,
+    max_turns: int = 20,
+    timeout_s: float | None = None,
+    max_usd: float | None = None,
+    permission_mode: str = "bypassPermissions",
+    output_format: str = "text",
+    bare: bool = False,
+    disallowed_tools: tuple[str, ...] = (),
+    envelope: Any | None = None,
+    extra_args: tuple[str, ...] = (),
+    log_event: tuple[Store, int, str] | None = None,
+    env_overlay: dict[str, str] | None = None,
+    cwd: str | Path | None = None,
+    on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+) -> AgentResult:
+    """Streaming async twin of :func:`call_claude_agent`.
+
+    Same keyword surface (see that function's docstring for every arg
+    except ``on_event``) — this is the path a real-time caller (asa_bot's
+    Discord bridge, Phase 3) uses instead of the blocking sync one. Argv
+    building and env/OAuth/envelope setup are shared with the sync path via
+    :func:`_resolve_agent_args` / :func:`_prepare_agent_env` (never
+    duplicated); only the subprocess execution differs, ported from
+    ``asa_bot.claude_invoke``'s proven ``asyncio.create_subprocess_exec`` +
+    incremental-readline approach (:func:`~precis.utils._claude_subprocess.run_claude_async`).
+
+    ``on_event``, when given, is awaited once per parsed ``stream-json``
+    event, in arrival order, as the subprocess runs — e.g. to post live
+    "calling tool X" progress. Omitting it still returns a complete,
+    equivalent :class:`AgentResult` for the same inputs; the accumulated
+    stdout is post-processed with the exact same helpers
+    (:func:`_build_agent_result`) the sync path uses, so a caller can't tell
+    the two apart from the result shape.
+
+    Container-executor support (``PRECIS_AGENT_CONTAINER``) is deliberately
+    OUT OF SCOPE here — asa_bot (the only caller) never runs containerized —
+    so this always runs the in-process subprocess path, unlike the sync
+    function's container-or-in-proc branch.
+
+    Raises:
+        ClaudeAgentError: subprocess exited non-zero, timed out, or the
+            binary was missing — same exception type and message shapes as
+            :func:`call_claude_agent` (see
+            :func:`~precis.utils._claude_subprocess.run_claude_async`).
+    """
+    binary, args, model, timeout_s, max_usd, active_env = _resolve_agent_args(
+        prompt,
+        model=model,
+        system_prompt=system_prompt,
+        mcp_config=mcp_config,
+        max_turns=max_turns,
+        timeout_s=timeout_s,
+        max_usd=max_usd,
+        permission_mode=permission_mode,
+        output_format=output_format,
+        bare=bare,
+        disallowed_tools=disallowed_tools,
+        envelope=envelope,
+        extra_args=extra_args,
+    )
+    proc_env = _prepare_agent_env(
+        active_env=active_env, bare=bare, env_overlay=env_overlay
+    )
+    cwd_str = str(cwd) if cwd is not None else None
+
+    started = time.monotonic()
+    res: Any
+    try:
+        res = await run_claude_async(
+            args,
+            binary=binary,
+            label="claude -p (agent · async)",
+            timeout_s=timeout_s,
+            error_cls=ClaudeAgentError,
+            env=proc_env,
+            stdin_devnull=True,
+            cwd=cwd_str,
+            on_event=on_event,
+        )
+    except ClaudeAgentError as exc:
+        # Same resumable-exhaustion recovery the sync path applies — no
+        # container branch here, so there's no infra-failure leg to check.
+        res = _recover_exhaustion_or_raise(exc)
+    duration_s = time.monotonic() - started
+
+    result = _build_agent_result(res, duration_s=duration_s)
+
+    if log_event is not None:
+        _write_log_event(
+            log_event,
+            model=model,
+            cost_usd=result.cost_usd,
+            duration_s=duration_s,
+            turns_used=result.turns_used,
+        )
+
+    return result
+
+
+# ── helpers ────────────────────────────────────────────────────────
+
+
+def _resolve_agent_args(
+    prompt: str,
+    *,
+    model: str | None,
+    system_prompt: str | Path | None,
+    mcp_config: str | Path | None,
+    max_turns: int,
+    timeout_s: float | None,
+    max_usd: float | None,
+    permission_mode: str,
+    output_format: str,
+    bare: bool,
+    disallowed_tools: tuple[str, ...],
+    envelope: Any | None,
+    extra_args: tuple[str, ...],
+) -> tuple[str, list[str], str, float, float, Any]:
+    """Resolve model/timeout/budget and build the full ``claude -p`` argv.
+
+    Shared by :func:`call_claude_agent` and :func:`call_claude_agent_async`
+    so the flag-building logic (mcp-config / system-prompt+friction-footer /
+    disallowed-tools-via-settings-JSON / extra-args / the prompt itself)
+    lives in exactly one place. Returns ``(binary, args, model, timeout_s,
+    max_usd, active_env)`` — ``active_env`` (the resolved envelope, if any)
+    is threaded to :func:`_prepare_agent_env` so it isn't re-resolved.
+    """
     binary = resolve_binary()
     model = (
         model or os.environ.get("PRECIS_CLAUDE_AGENT_MODEL") or _default_agent_model()
@@ -302,9 +565,10 @@ def call_claude_agent(
     # Per-todo envelope (slice 8): resolve the explicit arg, else the
     # executor-scoped active envelope. Its tier-1 deny list is merged into
     # ``disallowed_tools`` below; its DB role is exported to the subprocess
-    # env further down. Lazy import — this module is imported by the router,
-    # and ``precis.workers.envelope`` is stdlib-only so there's no cycle, but
-    # keeping it local matches the rest of this function's late imports.
+    # env in ``_prepare_agent_env``. Lazy import — this module is imported
+    # by the router, and ``precis.workers.envelope`` is stdlib-only so
+    # there's no cycle, but keeping it local matches the rest of this
+    # module's late imports.
     from precis.workers import envelope as _envelope
 
     active_env = envelope if envelope is not None else _envelope.active_envelope()
@@ -347,7 +611,21 @@ def call_claude_agent(
         timeout_s,
         "yes" if mcp_config else "no",
     )
+    return binary, args, model, timeout_s, max_usd, active_env
 
+
+def _prepare_agent_env(
+    *,
+    active_env: Any | None,
+    bare: bool,
+    env_overlay: dict[str, str] | None,
+) -> dict[str, str]:
+    """Build the ``claude -p`` subprocess env: OAuth bootstrap, the
+    envelope's DB-role export, the OAuth-over-API-key preference, and the
+    caller's env overlay.
+
+    Shared by :func:`call_claude_agent` and :func:`call_claude_agent_async`.
+    """
     # CLAUDE_CODE_OAUTH_TOKEN bootstrap. Interactive shells source
     # ~/.zshrc / ~/.bash_profile which loads the long-lived token
     # from ``~/.claude_oauth_token`` into the env. launchd-spawned
@@ -362,6 +640,8 @@ def call_claude_agent(
     # spawns (§13) binds ``agent_ro`` for a read-only box. Harmless today —
     # the current MCP config ignores it — so this ships dark ahead of §13.
     if active_env is not None:
+        from precis.workers import envelope as _envelope
+
         proc_env["PRECIS_MCP_DB_ROLE"] = _envelope.db_role(active_env)
     ensure_oauth_token(proc_env)
     if not bare:
@@ -382,101 +662,25 @@ def call_claude_agent(
         # The subprocess can't read the in-process ContextVar the OSS loop uses,
         # so these env back-doors are how the claude tick propagates its context.
         proc_env.update(env_overlay)
-    cwd_str = str(cwd) if cwd is not None else None
+    return proc_env
 
-    started = time.monotonic()
-    # ``stdin_devnull`` because Claude Code 2.1.x reads stdin in
-    # non-interactive ``-p`` mode and waits up to 3s for data before
-    # proceeding. When this helper is called from a CLI-spawned worker
-    # (precis worker --only dream_agent --once), the parent's stdin
-    # pipe behaviour can cause claude to read garbage / hang, ultimately
-    # producing the "Not logged in" silent-success or zero-MCP-call
-    # pattern observed 2026-06-17. Direct ``-p`` callers want no stdin.
-    # §13 container executor (dark, PRECIS_AGENT_CONTAINER off by default): run
-    # the SAME claude -p in a throwaway container instead of in-process, isolated
-    # by the envelope's tier-2 DB role + tier-3 network. A foreground run whose
-    # stdout we capture exactly as the in-proc subprocess's, so the parsing below
-    # is unchanged. Off ⇒ byte-identical to today. (plan_tick / fix_gripe have
-    # their own spawn seams + env back-doors — containerized in the window, not
-    # here.)
-    run_argv = args
-    run_binary = binary
-    from precis.workers.executors import agent_container as _container
 
-    # Opt-in (``PRECIS_AGENT_CONTAINER``) is necessary but NOT sufficient: gate
-    # it behind the verified-capability probe (runtime live ∧ image resident ∧
-    # auth token resolvable ∧ not health-latched, §15d). An opted-in host that
-    # can't actually containerize runs in-process — byte-identical to today —
-    # instead of failing every agentic pass on a box it can't launch (the spark
-    # DSN retry-storm's failure mode, 2026-07-19).
-    containerized = False
-    if _container.container_agent_enabled() and _container.container_capability_ok():
-        import uuid as _uuid
+def _build_agent_result(res: Any, *, duration_s: float) -> AgentResult:
+    """Post-process a completed run's stdout/stderr into an
+    :class:`AgentResult`.
 
-        from precis import secrets as _secrets
+    Shared by :func:`call_claude_agent` and :func:`call_claude_agent_async`
+    so the "Not logged in" guard, the stream-json result-event / assistant-
+    text lift, and the token-telemetry read live in exactly one place.
+    ``res`` is anything with ``.stdout`` / ``.stderr`` attributes — a
+    ``subprocess.CompletedProcess``, ``run_claude_async``'s
+    ``SimpleNamespace``, or the recovered-exhaustion
+    ``SimpleNamespace`` from :func:`_recover_exhaustion_or_raise`.
 
-        # ``adopt_process_store`` scrubs ``PRECIS_DATABASE_URL`` from
-        # ``os.environ`` at worker boot (ADR 0059) precisely so host ``claude
-        # -p`` spawns don't inherit the DSN — so ``proc_env`` (a copy of the
-        # scrubbed environ) no longer carries it. The container is an isolation
-        # boundary that *does* need DB access: re-inject the captured DSN so the
-        # by-key ``--env PRECIS_DATABASE_URL`` carries it in (mirrors the OAuth
-        # re-injection above). Without this the container's entrypoint aborts
-        # "PRECIS_DATABASE_URL not set" and every agentic pass fails 1 — the
-        # spark review retry-storm (2026-07-19).
-        _dsn = _secrets.get_adopted_dsn() or proc_env.get("PRECIS_DATABASE_URL")
-        if _dsn:
-            proc_env["PRECIS_DATABASE_URL"] = _dsn
-        run_argv = _container.containerize_claude_argv(
-            args,
-            active_env if active_env is not None else _envelope.Envelope(),
-            name=f"precis-agent-{_uuid.uuid4().hex[:12]}",
-            model=model or "",
-            dsn=_dsn,
-        )
-        run_binary = run_argv[0]
-        containerized = True
-    elif _container.container_agent_enabled():
-        # Opted in but this host can't be *verified* to run the container (no
-        # runtime / image / token, or the health latch is tripped after a recent
-        # infra failure). Run in-process rather than failing every pass.
-        _warn_container_incapable_once()
-
-    res: Any
-    try:
-        res = run_claude(
-            run_argv,
-            binary=run_binary,
-            label="claude -p (agent)",
-            timeout_s=timeout_s,
-            error_cls=ClaudeAgentError,
-            env=proc_env,
-            stdin_devnull=True,
-            cwd=cwd_str,
-        )
-    except ClaudeAgentError as exc:
-        if containerized and _container_infra_failure(exc):
-            # The *container* failed to run (image missing, daemon unreachable,
-            # socket perm, OOM 137) — NOT a claude/model error inside it. Latch
-            # the host unhealthy so subsequent passes skip the container for
-            # ~10 min, and retry the SAME call in-process once: one bad box
-            # degrades to in-proc instead of dropping the pass. (A container OOM
-            # exits 137 ≥128, which the router would otherwise mis-read as a
-            # signal 'interrupt' and *skip* — catching it here routes it to the
-            # fallback, not the skip.)
-            _container.trip_container_unhealthy()
-            log.warning(
-                "claude_agent: containerized run failed at the container-infra "
-                "level (rc=%s); latching host unhealthy and retrying in-process",
-                getattr(exc, "returncode", None),
-            )
-            res = _run_inproc_fallback(binary, args, timeout_s, proc_env, cwd_str)
-        else:
-            # A non-container failure (or a claude/model error inside the
-            # container): recover a resumable exhaustion or re-raise enriched.
-            res = _recover_exhaustion_or_raise(exc)
-    duration_s = time.monotonic() - started
-
+    Raises:
+        ClaudeAgentError: when the stdout carries the "Not logged in"
+            silent-failure marker (see the guard below).
+    """
     # "Not logged in" guard. ``claude -p`` exits 0 with the message
     # "Not logged in · Please run /login" on stdout when the OAuth
     # state is bad — and ``call_claude_agent`` used to treat that as
@@ -538,7 +742,7 @@ def call_claude_agent(
 
     usage = _stream_usage(res.stdout or "")
 
-    result = AgentResult(
+    return AgentResult(
         final_text=final_text,
         cost_usd=cost_usd,
         duration_s=duration_s,
@@ -556,31 +760,38 @@ def call_claude_agent(
         cache_creation_tokens=usage["cache_creation_tokens"],
     )
 
-    if log_event is not None:
-        store, ref_id, source = log_event
-        # Best-effort event log. A failure here shouldn't lose the
-        # agent's work, but we want the operator to notice — the
-        # store's append_event itself is robust; this try/except
-        # catches the case where a stub Store doesn't implement it.
-        try:
-            store.append_event(
-                ref_id,
-                source=source,
-                event="agent:done",
-                payload={
-                    "model": model,
-                    "cost_usd": cost_usd,
-                    "duration_s": round(duration_s, 2),
-                    "turns_used": turns_used,
-                },
-            )
-        except Exception:
-            log.exception("claude_agent: log_event append failed")
 
-    return result
+def _write_log_event(
+    log_event: tuple[Store, int, str],
+    *,
+    model: str,
+    cost_usd: float | None,
+    duration_s: float,
+    turns_used: int | None,
+) -> None:
+    """Best-effort ``ref_events`` audit row on a successful agentic run.
 
-
-# ── helpers ────────────────────────────────────────────────────────
+    Shared by :func:`call_claude_agent` and :func:`call_claude_agent_async`.
+    A failure here shouldn't lose the agent's work, but we want the
+    operator to notice — the store's ``append_event`` itself is robust;
+    this try/except catches the case where a stub Store doesn't implement
+    it.
+    """
+    store, ref_id, source = log_event
+    try:
+        store.append_event(
+            ref_id,
+            source=source,
+            event="agent:done",
+            payload={
+                "model": model,
+                "cost_usd": cost_usd,
+                "duration_s": round(duration_s, 2),
+                "turns_used": turns_used,
+            },
+        )
+    except Exception:
+        log.exception("claude_agent: log_event append failed")
 
 
 def _recover_exhaustion_or_raise(exc: ClaudeAgentError) -> Any:
@@ -962,6 +1173,7 @@ __all__ = [
     "AgentResult",
     "ClaudeAgentError",
     "call_claude_agent",
+    "call_claude_agent_async",
     "stream_final_text",
     "stream_terminal_reason",
 ]

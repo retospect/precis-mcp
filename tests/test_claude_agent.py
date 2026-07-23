@@ -8,6 +8,7 @@ binary required.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import stat
@@ -21,6 +22,7 @@ from precis.utils.claude_agent import (
     AgentResult,
     ClaudeAgentError,
     call_claude_agent,
+    call_claude_agent_async,
 )
 
 
@@ -1056,3 +1058,121 @@ def test_container_model_error_still_raises(monkeypatch, _container_selected):
         ca.call_claude_agent("do it", model="opus")
     assert len(fake.calls) == 1  # no in-proc retry
     assert _container_selected == []  # not an infra failure → no latch trip
+
+
+# ── call_claude_agent_async: streaming twin (router-migration Phase 2) ─
+#
+# No ``pytest-asyncio`` in this repo yet; ``asyncio.run()`` inside a plain
+# sync test is the lightest way to drive the coroutine without adding a new
+# test-time dependency.
+
+
+def test_call_claude_agent_async_streams_events_in_order(stub_bin: Path) -> None:
+    """``on_event`` fires once per stream-json JSON line, in arrival order."""
+    events: list[dict] = [
+        {"type": "system", "subtype": "init"},
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "hi"}]},
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "total_cost_usd": 0.05,
+            "num_turns": 2,
+            "result": "hi",
+        },
+    ]
+    _write_stream_stub(stub_bin, stdout=_stream(events))
+    seen: list[dict] = []
+
+    async def on_event(evt: dict) -> None:
+        seen.append(evt)
+
+    res = asyncio.run(call_claude_agent_async("do", on_event=on_event))
+
+    assert seen == events
+    assert isinstance(res, AgentResult)
+    assert res.final_text == "hi"
+    assert res.cost_usd == 0.05
+    assert res.turns_used == 2
+
+
+def test_call_claude_agent_async_matches_sync_result(stub_bin: Path) -> None:
+    """Same stdout ⇒ the async path's ``AgentResult`` matches the sync path's
+    (every field except ``duration_s``, which is wall-clock and non-
+    deterministic between two separate invocations)."""
+    events: list[dict] = [
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "sync me"}]},
+        },
+        {
+            "type": "result",
+            "total_cost_usd": 0.12,
+            "num_turns": 4,
+            "result": "sync me",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_input_tokens": 1,
+                "cache_creation_input_tokens": 2,
+            },
+        },
+    ]
+    _write_stream_stub(stub_bin, stdout=_stream(events))
+
+    sync_res = call_claude_agent("do")
+    async_res = asyncio.run(call_claude_agent_async("do"))
+
+    assert async_res.final_text == sync_res.final_text
+    assert async_res.cost_usd == sync_res.cost_usd
+    assert async_res.turns_used == sync_res.turns_used
+    assert async_res.tool_calls == sync_res.tool_calls
+    assert async_res.raw_stdout == sync_res.raw_stdout
+    assert async_res.terminal_reason == sync_res.terminal_reason
+    assert async_res.input_tokens == sync_res.input_tokens
+    assert async_res.output_tokens == sync_res.output_tokens
+    assert async_res.cache_read_tokens == sync_res.cache_read_tokens
+    assert async_res.cache_creation_tokens == sync_res.cache_creation_tokens
+
+
+def test_call_claude_agent_async_without_on_event(stub_bin: Path) -> None:
+    """Omitting ``on_event`` still returns a valid, complete result."""
+    _write_stub(stub_bin, stdout="plain reply", stderr="Cost: $0.02")
+
+    res = asyncio.run(call_claude_agent_async("hi"))
+
+    assert isinstance(res, AgentResult)
+    assert res.final_text.strip() == "plain reply"
+    assert res.cost_usd == 0.02
+
+
+def test_call_claude_agent_async_nonzero_exit_raises(stub_bin: Path) -> None:
+    """Same exception contract as the sync path: exit code + stderr surface
+    on the raised ``ClaudeAgentError``."""
+    _write_stub(stub_bin, stdout="partial", stderr="boom: async failure", exit_code=2)
+
+    with pytest.raises(ClaudeAgentError) as exc_info:
+        asyncio.run(call_claude_agent_async("do"))
+
+    err = exc_info.value
+    assert err.returncode == 2
+    assert "boom" in err.stderr
+    assert err.stdout.strip() == "partial"
+
+
+def test_call_claude_agent_async_timeout_raises(stub_bin: Path) -> None:
+    """Same timeout exception contract as the sync path."""
+    stub_bin.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            sleep 5
+            """
+        )
+    )
+    stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
+
+    with pytest.raises(ClaudeAgentError, match="timed out"):
+        asyncio.run(call_claude_agent_async("do", timeout_s=0.5))

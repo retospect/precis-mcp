@@ -51,14 +51,18 @@ import logging
 import os
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from precis.utils._claude_subprocess import ClaudeProcessError
-from precis.utils.claude_agent import AgentResult, call_claude_agent
+from precis.utils.claude_agent import (
+    AgentResult,
+    call_claude_agent,
+    call_claude_agent_async,
+)
 from precis.utils.claude_p import ClaudePResult, call_claude_p
 
 if TYPE_CHECKING:
@@ -569,6 +573,14 @@ class LlmRequest:
     #: neutral cwd so ``claude -p`` discovers no ambient project persona (ADR
     #: 0051 §12). Ignored by the other transports. ``None`` ⇒ the worker's cwd.
     cwd: str | Path | None = None
+    #: Real-time progress callback, awaited once per parsed ``stream-json``
+    #: event as a ``claude_agent`` run streams (asa_bot's Discord "thinking…"
+    #: updates, Phase 3 of the router-migration plan). Only
+    #: :func:`dispatch_async` honors this — the sync :func:`dispatch` ignores
+    #: it entirely (there is no streaming path on the blocking transport).
+    #: ``None`` ⇒ no callback, and :func:`dispatch_async` degrades to calling
+    #: the sync :func:`dispatch` for every transport (today's behavior).
+    on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None
 
 
 class LlmProvider(Protocol):
@@ -971,6 +983,159 @@ def dispatch(req: LlmRequest) -> LlmResult:
     started = time.monotonic()
     try:
         result = provider.run(call_req, model=call_model)
+    finally:
+        _local.release(slot)
+    _record_dispatch(
+        req,
+        result,
+        transport=transport,
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    return result
+
+
+async def _dispatch_claude_agent_async(req: LlmRequest, model: str) -> LlmResult:
+    """Async analog of :class:`ClaudeAgentProvider`'s ``run`` — the streaming
+    leg :func:`dispatch_async` calls when a caller sets ``on_event``. Same
+    post-processing (result normalization + the post-hoc ``max_tokens``
+    truncation) as the sync provider; only the underlying call
+    (:func:`~precis.utils.claude_agent.call_claude_agent_async` vs. the sync
+    ``call_claude_agent``) differs, so the two providers can't drift apart on
+    anything but streaming.
+    """
+    try:
+        res = await call_claude_agent_async(
+            req.prompt,
+            model=model,
+            system_prompt=req.system_prompt,
+            mcp_config=req.mcp_config,
+            max_turns=req.max_turns,
+            timeout_s=req.timeout_s,
+            max_usd=req.max_usd,
+            output_format=req.output_format,
+            disallowed_tools=req.disallowed_tools,
+            extra_args=req.extra_args,
+            log_event=req.log_event,
+            env_overlay=req.env_overlay,
+            cwd=req.cwd,
+            on_event=req.on_event,
+        )
+    except ClaudeProcessError as exc:
+        return _error_result(exc, model=model, tier=req.tier)
+    result = result_from_agent(res, model=model, tier=req.tier)
+    if req.max_tokens is not None and result.error is None:
+        from dataclasses import replace as _replace
+
+        result = _replace(
+            result, text=_truncate_to_max_tokens(result.text, req.max_tokens)
+        )
+    return result
+
+
+async def dispatch_async(req: LlmRequest) -> LlmResult:
+    """Async twin of :func:`dispatch`, for a caller that needs the real-time
+    ``on_event`` stream (asa_bot's Discord bridge, Phase 3 of the
+    router-migration plan — ADR 0046 follow-up).
+
+    Mirrors :func:`dispatch`'s gate sequence — backend fallback, transport
+    resolution, the budget breaker, window admission, the local-serving slot —
+    inline and synchronously (all fast in-memory/DB checks, not blocking I/O
+    of consequence, exactly as the sync function treats them). When the
+    resolved transport is :data:`Transport.CLAUDE_AGENT` **and**
+    ``req.on_event`` is set, this awaits :func:`_dispatch_claude_agent_async`
+    (which calls :func:`~precis.utils.claude_agent.call_claude_agent_async`)
+    instead of the sync :class:`ClaudeAgentProvider`. For any other transport,
+    or when ``on_event`` is unset, it delegates straight to the existing sync
+    :func:`dispatch` — safe to call a sync function from an async one here,
+    since ``dispatch``'s own I/O is either fast (the gate checks) or itself
+    already calls the sync ``call_claude_agent`` (no event loop to block).
+
+    Logs via the same :func:`_record_dispatch` call the sync path uses, so
+    ``llm_call_log`` gets an entry on both branches. The breaker-pause /
+    admission-refusal / all-slots-busy early-outs are **not** logged here
+    either — same as :func:`dispatch`, which only records a call once a
+    provider actually ran.
+
+    Note: when ``PRECIS_LLM_FAILOVER`` is on, this checks only the primary
+    rung's transport to decide whether to stream — it does not wrap the
+    streaming call in the sync path's :class:`FailoverProvider` ladder, so a
+    streaming caller trades the OSS→claude safety net for real-time progress
+    on that one call. Ships dark: the failover ladder is opt-in and a
+    streaming ``on_event`` caller (asa_bot) sits on the cloud claude tiers,
+    where ``_failover_ladder`` returns a single ``[Rung(primary)]`` anyway
+    (nothing to fail over to), so this is a no-op distinction until an OSS
+    tier ever streams.
+    """
+    backend = resolve_backend()
+    if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
+        backend = Backend.ANTHROPIC
+    model = req.model or resolve_model(req.tier)
+    if _failover_enabled():
+        ladder = _failover_ladder(
+            req.tier, tools_needed=req.tools_needed, backend=backend
+        )
+        transport = ladder[0].transport
+    else:
+        transport = select_transport(
+            req.tier, tools_needed=req.tools_needed, backend=backend
+        )
+
+    if transport is not Transport.CLAUDE_AGENT or req.on_event is None:
+        return dispatch(req)
+
+    # Same budget-breaker / window-admission / local-serving-slot gate
+    # dispatch() runs, ahead of the (here: async) provider call.
+    from precis.budget import breaker as _breaker
+
+    trip = _breaker.gate_tier(req.tier, transport=transport.value)
+    if trip is not None:
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=trip,
+            paused=True,
+        )
+
+    from precis.utils.llm import admit as _admit
+
+    refusal = _admit.check_dispatch(req, model=model, transport=transport)
+    if refusal is not None:
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=refusal,
+        )
+
+    from precis.utils.llm import local_serving as _local
+
+    slot = _local.acquire(model)
+    if slot is not None and slot.paused:
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=f"all local serving slots for {model} are busy — backing off",
+            paused=True,
+        )
+    call_req = req
+    call_model = model
+    if slot is not None and slot.reserved and slot.endpoint:
+        from dataclasses import replace as _replace
+
+        call_req = _replace(req, local_url=slot.endpoint)
+        call_model = slot.served_model or model
+
+    started = time.monotonic()
+    try:
+        result = await _dispatch_claude_agent_async(call_req, model=call_model)
     finally:
         _local.release(slot)
     _record_dispatch(
@@ -1451,6 +1616,7 @@ __all__ = [
     "Tier",
     "Transport",
     "dispatch",
+    "dispatch_async",
     "openrouter_routing",
     "provider_for",
     "resolve_backend",

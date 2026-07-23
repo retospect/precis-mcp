@@ -12,9 +12,14 @@ the invocation (new flag, auth tweak) lands in one place.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import re
 import subprocess
+from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
+from typing import Any
 
 from precis.utils.claude_oauth import ensure_oauth_token
 
@@ -135,10 +140,121 @@ def run_claude(
     return res
 
 
+async def run_claude_async(
+    argv: list[str],
+    *,
+    binary: str,
+    label: str,
+    timeout_s: float,
+    error_cls: type[ClaudeProcessError],
+    env: dict[str, str] | None = None,
+    stdin_devnull: bool = False,
+    cwd: str | None = None,
+    on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+) -> SimpleNamespace:
+    """Async analog of :func:`run_claude` — spawns ``argv`` via
+    ``asyncio.create_subprocess_exec`` instead of blocking
+    ``subprocess.run``, reading stdout line-by-line as it arrives and
+    forwarding each parsed ``stream-json`` event to ``on_event`` (if given)
+    in arrival order. Ported from ``asa_bot.claude_invoke``'s proven
+    ``_read_stream_json`` / ``_consume`` shape — the one real caller that
+    already needed real-time streaming (Discord progress updates).
+
+    Same success/failure *contract* as :func:`run_claude` so a caller's
+    ``except error_cls`` handling (notably
+    :func:`~precis.utils.claude_agent._recover_exhaustion_or_raise`'s
+    resumable-exhaustion detection) works identically whether the call went
+    through the sync or async runner:
+
+    * Missing binary → ``error_cls`` with "claude binary not found".
+    * Wall-clock ``timeout_s`` exceeded → the process is killed and
+      ``error_cls`` is raised with "timed out after {timeout_s}s", carrying
+      whatever stdout/stderr was captured before the kill.
+    * Non-zero exit → ``error_cls`` raised with "exited {rc}: {stderr}",
+      carrying the full stdout/stderr + ``returncode``.
+    * Clean (exit 0) run → returns an object with ``.stdout`` / ``.stderr``
+      (mirrors ``subprocess.CompletedProcess`` closely enough for every
+      downstream reader, which only touches those two attributes).
+    """
+    if env is None:
+        env = dict(os.environ)
+    ensure_oauth_token(env)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL if stdin_devnull else None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise error_cls(
+            f"claude binary not found ({binary!r}); "
+            f"set PRECIS_CLAUDE_BIN or install Claude Code"
+        ) from exc
+
+    stdout_lines: list[str] = []
+
+    async def _pump_stdout() -> None:
+        assert proc.stdout is not None
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                return
+            text = line.decode("utf-8", errors="replace")
+            stdout_lines.append(text)
+            if on_event is None:
+                continue
+            stripped = text.strip()
+            if not stripped.startswith("{"):
+                continue
+            try:
+                evt = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            await on_event(evt)
+
+    try:
+        await asyncio.wait_for(_pump_stdout(), timeout=timeout_s)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        stderr_partial = b""
+        if proc.stderr is not None:
+            try:
+                stderr_partial = await asyncio.wait_for(proc.stderr.read(), timeout=1.0)
+            except (TimeoutError, OSError):
+                stderr_partial = b""
+        raise error_cls(
+            f"{label} timed out after {timeout_s}s",
+            stdout="".join(stdout_lines),
+            stderr=to_str(stderr_partial),
+        ) from None
+
+    # Read stderr to EOF (closes when the process exits) *before* ``wait()``
+    # so a chatty stderr can't deadlock against an unread pipe buffer.
+    stderr_bytes = await proc.stderr.read() if proc.stderr is not None else b""
+    returncode = await proc.wait()
+
+    stdout = "".join(stdout_lines)
+    stderr = to_str(stderr_bytes)
+    if returncode != 0:
+        raise error_cls(
+            f"{label} exited {returncode}: {stderr.strip()[:400]}",
+            stdout=stdout,
+            stderr=stderr,
+            returncode=returncode,
+        )
+    return SimpleNamespace(stdout=stdout, stderr=stderr)
+
+
 __all__ = [
     "ClaudeProcessError",
     "extract_cost_usd",
     "resolve_binary",
     "run_claude",
+    "run_claude_async",
     "to_str",
 ]

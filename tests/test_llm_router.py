@@ -1252,3 +1252,150 @@ def test_dispatch_openai_compat_threads_the_pin(
     eb = captured["extra_body"]
     assert eb["provider"]["order"] == ["deepinfra"]  # type: ignore[index]
     assert eb["reasoning"] == {"effort": "high"}  # type: ignore[index]
+
+
+# ── dispatch_async: streaming twin (router-migration Phase 2) ──────────
+#
+# No ``pytest-asyncio`` in this repo yet; ``asyncio.run()`` inside a plain
+# sync test is the lightest way to drive the coroutine without adding a new
+# test-time dependency.
+
+
+def test_dispatch_async_routes_to_streaming_agent_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``tools_needed=True`` (⇒ CLAUDE_AGENT) + ``on_event`` set ⇒
+    ``dispatch_async`` awaits the async agent path instead of the sync
+    ``ClaudeAgentProvider``."""
+    import asyncio
+
+    from precis.utils.llm.router import dispatch_async
+
+    calls: dict[str, object] = {}
+
+    async def fake_agent_async(prompt: str, **kwargs: object) -> AgentResult:
+        calls["prompt"] = prompt
+        calls["on_event"] = kwargs.get("on_event")
+        return AgentResult(
+            final_text="streamed", cost_usd=0.1, duration_s=1.0, turns_used=2
+        )
+
+    monkeypatch.setattr(router, "call_claude_agent_async", fake_agent_async)
+    monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
+
+    async def on_event(evt: dict) -> None:
+        pass
+
+    out = asyncio.run(
+        dispatch_async(
+            LlmRequest(
+                tier=Tier.CLOUD_MID,
+                prompt="hi",
+                tools_needed=True,
+                on_event=on_event,
+            )
+        )
+    )
+    assert out.text == "streamed"
+    assert out.error is None
+    assert calls["prompt"] == "hi"
+    assert calls["on_event"] is on_event
+
+
+def test_dispatch_async_falls_back_to_sync_dispatch_without_on_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``on_event`` ⇒ ``dispatch_async`` delegates straight to the sync
+    ``dispatch()``, even for a tools-needed cloud tier."""
+    import asyncio
+
+    from precis.utils.llm.router import dispatch_async
+
+    seen: dict[str, object] = {}
+
+    def fake_dispatch(req: LlmRequest) -> LlmResult:
+        seen["req"] = req
+        return LlmResult(
+            text="sync path", cost_usd=None, turns_used=None, model="m", tier=req.tier
+        )
+
+    monkeypatch.setattr(router, "dispatch", fake_dispatch)
+
+    out = asyncio.run(
+        dispatch_async(LlmRequest(tier=Tier.CLOUD_MID, prompt="hi", tools_needed=True))
+    )
+    assert out.text == "sync path"
+    assert seen["req"].prompt == "hi"  # type: ignore[attr-defined]
+
+
+def test_dispatch_async_falls_back_to_sync_dispatch_for_non_agent_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``on_event`` is set, but the resolved transport isn't CLAUDE_AGENT (a
+    tool-less tier ⇒ ``claude_p``) ⇒ still delegates to the sync
+    ``dispatch()`` — streaming only exists on the agent transport."""
+    import asyncio
+
+    from precis.utils.llm.router import dispatch_async
+
+    seen: dict[str, object] = {}
+
+    def fake_dispatch(req: LlmRequest) -> LlmResult:
+        seen["called"] = True
+        return LlmResult(
+            text="sync judge", cost_usd=None, turns_used=None, model="m", tier=req.tier
+        )
+
+    monkeypatch.setattr(router, "dispatch", fake_dispatch)
+
+    async def on_event(evt: dict) -> None:
+        pass
+
+    out = asyncio.run(
+        dispatch_async(
+            LlmRequest(
+                tier=Tier.CLOUD_SMALL,
+                prompt="judge",
+                tools_needed=False,
+                on_event=on_event,
+            )
+        )
+    )
+    assert out.text == "sync judge"
+    assert seen.get("called") is True
+
+
+def test_dispatch_async_records_route_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The streaming branch logs via the same ``_record_dispatch`` call the
+    sync path uses."""
+    import asyncio
+
+    from precis.utils.llm.router import dispatch_async
+
+    async def fake_agent_async(prompt: str, **kwargs: object) -> AgentResult:
+        return AgentResult(
+            final_text="streamed", cost_usd=0.1, duration_s=1.0, turns_used=1
+        )
+
+    monkeypatch.setattr(router, "call_claude_agent_async", fake_agent_async)
+
+    recorded: dict[str, object] = {}
+
+    def fake_record(
+        req: object, result: object, *, transport: object, duration_ms: object
+    ) -> None:
+        recorded["transport"] = transport
+
+    monkeypatch.setattr(router, "_record_dispatch", fake_record)
+
+    async def on_event(evt: dict) -> None:
+        pass
+
+    asyncio.run(
+        dispatch_async(
+            LlmRequest(
+                tier=Tier.CLOUD_MID, prompt="hi", tools_needed=True, on_event=on_event
+            )
+        )
+    )
+    assert recorded["transport"] is Transport.CLAUDE_AGENT
