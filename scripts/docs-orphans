@@ -24,7 +24,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ANCHORS=(CLAUDE.md AGENTS.md README.md docs/codebase.md docs/architecture docs/conventions src/precis/data/skills)
+ANCHORS=(CLAUDE.md AGENTS.md README.md OPEN-ITEMS.md docs/codebase.md docs/architecture docs/conventions src/precis/data/skills)
 
 load_bearing=() adr_linked=() doc_only=() orphan=()
 
