@@ -1,23 +1,42 @@
-"""Invoke claude -p as a subprocess and stream the result.
+"""Invoke claude -p via the LLM router and stream the result.
 
 asa_bot spawns a fresh claude per Discord turn. Captures the final
 assistant text + per-turn metadata (stop_reason, token counts).
 Streams progress events out so the Discord progress indicator can
 update.
+
+Phase 3 of the router-migration plan (ADR 0046 follow-up): this used
+to hand-roll ``asyncio.create_subprocess_exec`` directly; it now builds
+a :class:`~precis.utils.llm.router.LlmRequest` and calls
+:func:`~precis.utils.llm.router.dispatch_async`, which streams through
+:func:`~precis.utils.claude_agent.call_claude_agent_async` the same
+way asa_bot's own subprocess used to. The ``on_event`` callback below
+still runs the exact :func:`_handle_event` parsing this module always
+used, so every field on :class:`ClaudeResult` and every ``on_progress``
+event shape is populated off the SAME per-line stream-json events as
+before — ``dispatch_async``'s own aggregated
+:class:`~precis.utils.llm.router.LlmResult` is consulted for only one
+thing it alone knows: whether (and why) the call failed.
+
+``llm_call_log`` now ALSO records every turn's cost/tokens via the
+router (``LlmRequest.log_call=True``) — a second, independent record
+from the Stop-hook capture shim
+(``deploy/roles/asa_bot/files/capture_assistant_turn.py``, keyed off
+``ASA_CONV_SLUG``, untouched by this migration). The two can be
+reconciled, or one retired, later; for now they simply coexist.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import os
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from typing import Any
 
 from asa_bot.config import LLMConfig
 from asa_bot.oauth import ensure_oauth_token
+from precis.utils.llm.router import LlmRequest, LlmResult, Tier, dispatch_async
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +48,17 @@ log = logging.getLogger(__name__)
 # paragraph in pieces.
 _FIRST_SENTENCE_RE = re.compile(r"[.!?](?:\s|$|\n)")
 _FIRST_SENTENCE_MAX_CHARS = 280
+
+# asa_bot's hand-rolled subprocess never capped a turn's dollar cost. The
+# router's claude_agent transport ALWAYS enforces one (``--max-budget-usd``
+# is a fixed CLI flag, not optional) — its own default ($2, sized for a
+# ~20-turn sonnet session, see claude_agent._DEFAULT_MAX_USD) is far too
+# tight for a 100-turn opus Discord conversation, and unlike a worker pass a
+# Discord user has no way to "resume" a turn cut off mid-answer. Pin a
+# generous ceiling here so a turn stays effectively uncapped — this IS a
+# real behavior change from "no cap at all" to "a $50 backstop"; flagged for
+# review/smoke-test rather than silently inheriting the shared $2 default.
+_MAX_USD_CEILING = 50.0
 
 
 class ClaudeResult:
@@ -54,6 +84,23 @@ class ClaudeResult:
         self.first_sentence: str = ""
 
 
+def _flag_value(argv: list[str], flag: str, default: str) -> str:
+    """Pull a ``--flag value`` pair out of ``cfg.command``, falling back to
+    ``default`` when the flag isn't present.
+
+    ``LLMConfig.command`` is the literal argv asa_bot used to hand-roll to
+    the subprocess (including any live ``--model`` override
+    ``bot._llm_with_override`` splices in per-guild); the router wants these
+    as structured :class:`~precis.utils.llm.router.LlmRequest` fields
+    instead of a buried CLI flag, so this recovers them without asa_bot
+    needing a new config field.
+    """
+    for i, tok in enumerate(argv):
+        if tok == flag and i + 1 < len(argv):
+            return argv[i + 1]
+    return default
+
+
 async def invoke(
     cfg: LLMConfig,
     system_prompt: str,
@@ -62,30 +109,28 @@ async def invoke(
     conv_slug: str,
     on_progress: Callable[..., Any] | None = None,
 ) -> ClaudeResult:
-    """Run one claude -p turn. Returns the aggregated ClaudeResult.
+    """Run one claude -p turn via the router. Returns the aggregated ClaudeResult.
 
     ``on_progress`` (if provided) is awaited with each progress event:
-      - ('tool_use', tool_name) — claude is about to call a tool
-      - ('subagent', subagent_type) — Agent() spawned a sub-session
+      - ('tool_use', tool_name, tool_args) — claude is about to call a tool
+      - ('first_sentence', sentence) — the SOUL-mandated opening ack
       - ('text_partial', accumulated_so_far) — periodic text update
 
     Caller posts these to Discord as a single edited "working..."
     message (don't spam new posts).
+
+    Never raises — a router/transport failure lands on
+    :attr:`ClaudeResult.error` instead, exactly like the old hand-rolled
+    subprocess path: bot.py's per-turn queue consumer has no fallback reply
+    if this raised rather than returning a gracefully-errored result.
     """
-    # IMPORTANT: --mcp-config is variadic (--mcp-config <configs...>) and
-    # absorbs every following non-flag arg until the next --flag. So the
-    # user_message must NOT come immediately after it, or it gets read as
-    # a second config path. Order matters: put --mcp-config first, then
-    # --append-system-prompt (single-value flag) which acts as the
-    # terminator, then the positional user_message at the very end.
-    cmd = [
-        *cfg.command,
-        cfg.mcp_config_flag,
-        cfg.mcp_config_path,
-        cfg.system_prompt_flag,
-        system_prompt,
-        user_message,
-    ]
+    model = _flag_value(cfg.command, "--model", "claude-opus-4-8")
+    max_turns_str = _flag_value(cfg.command, "--max-turns", "100")
+    try:
+        max_turns = int(max_turns_str)
+    except ValueError:
+        max_turns = 100
+
     # DEBUG: opt-in dump of the full prompt for inspection. Off unless
     # ``ASA_PROMPT_DUMP`` names a file path; last turn wins (overwritten each
     # invocation). Kept env-gated so no host-specific path lives in source.
@@ -95,16 +140,11 @@ async def invoke(
             from datetime import UTC, datetime
             from pathlib import Path
 
-            redacted = {cmd.index(cfg.system_prompt_flag) + 1, len(cmd) - 1}
-            argv_repr = [
-                a if i not in redacted else f"<{len(a)} chars>"
-                for i, a in enumerate(cmd)
-            ]
             Path(dump_target).write_text(
                 f"=== timestamp: {datetime.now(tz=UTC).isoformat()} ===\n"
                 f"=== conv_slug: {conv_slug} ===\n"
-                f"=== cmd argv (system_prompt + user_message redacted): "
-                f"{argv_repr} ===\n\n"
+                f"=== model: {model}  max_turns: {max_turns}  "
+                f"mcp_config: {cfg.mcp_config_path} ===\n\n"
                 f"=== SYSTEM PROMPT ({len(system_prompt)} chars) ===\n"
                 f"{system_prompt}\n\n"
                 f"=== USER MESSAGE ({len(user_message)} chars) ===\n"
@@ -113,72 +153,78 @@ async def invoke(
             )
         except Exception:
             log.exception("debug prompt dump failed; continuing")
-    env = dict(os.environ)
-    env.update(cfg.env)
-    # Bootstrap the long-lived OAuth token from ~/.claude_oauth_token so the
-    # launchd-spawned claude -p never falls back to the short-lived keychain
-    # credentials (~/.claude/.credentials.json), which lapse in ~a day and
-    # make every turn reply "Failed to authenticate." See asa_bot.oauth.
-    ensure_oauth_token(env)
-    # Hooks read this to attach captures to the right conv ref.
-    env["ASA_CONV_SLUG"] = conv_slug
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cfg.cwd,
-        env=env,
-    )
 
     result = ClaudeResult()
-    try:
-        await asyncio.wait_for(
-            _consume(proc, result, on_progress),
-            timeout=cfg.turn_timeout_seconds,
-        )
-    except TimeoutError:
-        log.error("claude turn timed out after %ds", cfg.turn_timeout_seconds)
-        proc.kill()
-        await proc.wait()
-        result.error = f"turn exceeded {cfg.turn_timeout_seconds}s timeout"
-        return result
 
-    rc = await proc.wait()
-    if rc != 0 and not result.text:
-        stderr = (
-            (await proc.stderr.read()).decode("utf-8", errors="replace")
-            if proc.stderr
-            else ""
-        )
-        result.error = f"claude exited {rc}: {stderr[:500]}"
-    return result
+    # Hooks read ASA_CONV_SLUG to attach a Stop-hook capture to the right
+    # conv ref (see the module docstring — an independent mechanism from the
+    # router's own llm_call_log write below).
+    overlay: dict[str, str] = dict(cfg.env)
+    overlay["ASA_CONV_SLUG"] = conv_slug
+    # asa_bot can run as a bare `deploy` user with no ~/.claude state, in
+    # which case CLAUDE_CODE_OAUTH_TOKEN comes from the vault over asa's OWN
+    # PRECIS_DATABASE_URL connection (asa_bot.secrets.reveal_secret) — NOT
+    # precis.secrets.get_secret's bound-Store vault path that
+    # claude_agent._prepare_agent_env falls back to (asa_bot never binds a
+    # Store in-process; it talks to precis over a subprocess MCP server, so
+    # that path silently no-ops here). Resolve it with asa's own proven
+    # helper and thread it through env_overlay, applied last, so it wins
+    # regardless of whether the router's own vault attempt no-ops.
+    ensure_oauth_token(overlay)
 
-
-async def _consume(
-    proc: asyncio.subprocess.Process,
-    result: ClaudeResult,
-    on_progress: Callable[..., Any] | None,
-) -> None:
-    if proc.stdout is None:
-        return
-    async for evt in _read_stream_json(proc.stdout):
+    async def on_event(evt: dict[str, Any]) -> None:
         await _handle_event(evt, result, on_progress)
 
+    req = LlmRequest(
+        tier=Tier.CLOUD_SUPER,
+        prompt=user_message,
+        tools_needed=True,
+        # Pin the model explicitly (rather than deferring to the tier
+        # default) so a live ``--model`` override applied to ``cfg.command``
+        # (bot._llm_with_override, a per-guild slash-command knob) still
+        # takes effect — the tier default alone can't see that override.
+        model=model,
+        system_prompt=system_prompt,
+        mcp_config=cfg.mcp_config_path,
+        max_turns=max_turns,
+        max_usd=_MAX_USD_CEILING,
+        timeout_s=float(cfg.turn_timeout_seconds),
+        # Required for the on_event stream this whole module is built on —
+        # not read from cfg.command since the parsing below hard-depends on
+        # it (not a user-overridable knob the way --model/--max-turns are).
+        output_format="stream-json",
+        source="asa_bot",
+        env_overlay=overlay,
+        cwd=cfg.cwd,
+        log_call=True,
+        on_event=on_event,
+    )
 
-async def _read_stream_json(
-    stream: asyncio.StreamReader,
-) -> AsyncIterator[dict[str, Any]]:
-    while True:
-        line = await stream.readline()
-        if not line:
-            return
-        try:
-            yield json.loads(line.decode("utf-8"))
-        except json.JSONDecodeError:
-            log.debug("claude stream non-JSON line: %r", line[:200])
-            continue
+    try:
+        llm_result: LlmResult = await dispatch_async(req)
+    except Exception:
+        # Never raise out of invoke() — see the docstring's contract note.
+        log.exception("claude_invoke: dispatch_async raised unexpectedly")
+        result.error = "internal error dispatching to the LLM router"
+        return result
+
+    if llm_result.error is not None:
+        if "timed out after" in llm_result.error:
+            # Preserve the exact message shape the old hand-rolled
+            # asyncio.wait_for(...) timeout produced (some downstream
+            # consumer may already grep logs for it), rather than surfacing
+            # the router transport's own wording.
+            log.error("claude turn timed out after %ds", cfg.turn_timeout_seconds)
+            result.error = f"turn exceeded {cfg.turn_timeout_seconds}s timeout"
+        elif not result.text:
+            # A non-zero exit with SOME text already streamed (a recoverable
+            # exhaustion, or a CLI-teardown quirk) is swallowed as a silent
+            # success — mirrors the old code's identical
+            # `rc != 0 and not result.text` gate. Only a failure with
+            # nothing to show gets surfaced to the user.
+            result.error = llm_result.error
+
+    return result
 
 
 async def _handle_event(

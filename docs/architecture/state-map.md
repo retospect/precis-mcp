@@ -945,9 +945,12 @@ The master kinds table lives in the `precis-overview` skill.
   dehyphenation in `marker._clean_text`; HNSW index on `chunk_embeddings.vector`.
 - **`asa-slack`** — Slack bridge sibling to `asa_bot` (`src/asa_slack/`), Socket
   Mode. Routes each turn through the ADR-0046 router (`Tier.CLOUD_MID` — sonnet
-  forced) instead of asa_bot's hand-rolled `claude -p` subprocess, so the
-  budget breaker/route-log apply for free; blocking `dispatch()` call, no live
-  progress ticker. A hard kind-allowlist (`asa_slack/kind_policy.py`, via
+  forced) via a single blocking `dispatch()` call, no live progress ticker —
+  asa_bot's own Discord bridge also routes through the router now
+  (router-migration Phase 3, `asa_bot/claude_invoke.py`: `Tier.CLOUD_SUPER`,
+  streaming `dispatch_async` + `on_event` so the Discord progress indicator
+  still ticks live), so both bridges get the budget breaker/route-log for
+  free. A hard kind-allowlist (`asa_slack/kind_policy.py`, via
   `LlmRequest.env_overlay`'s `PRECIS_KINDS_DISABLED`) restricts Slack turns to
   research lookups + `memory` — `job`/`quest`/`cron`/`todo` unreachable, not
   just prompt-discouraged. Every conversation is a thread (never the channel
