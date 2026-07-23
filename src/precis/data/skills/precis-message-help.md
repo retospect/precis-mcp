@@ -54,13 +54,13 @@ to asa_bot). The delivery layer uploads them inline.
 put(kind='message',
     text='cluster postmortem deadline tomorrow',
     target='discord/<g>/<c>/<t>',
-    reason='cron:42 fired',
+    reason='recurring:42 fired',
     link='memory:217', rel='derived-from')
 ```
 
 `reason=` is a free-form short trace string. The link to the
-motivating context (a memory, a cron, a conv turn) makes future
-"why did I send this?" debugging instant.
+motivating context (a memory, a recurring todo, a conv turn) makes
+future "why did I send this?" debugging instant.
 
 ## Inspect, cancel, search
 
@@ -95,7 +95,7 @@ You don't see asa_bot. You just see the message land.
 Don't spam. The cost of a wrongly-timed proactive ping is real —
 the user lives with their phone in their pocket. Use messages for:
 
-- Cron fires (you scheduled this; the user expected it)
+- A scheduled recurring fired (you scheduled this; the user expected it)
 - Verified results (researcher came back with the paper you queued)
 - Real-time anomalies (a watch detected drift)
 
@@ -112,7 +112,7 @@ fresh question; you can't unsend a ping.
 ## See also
 
 ```python
-get(kind='skill', id='precis-cron-help')        # schedule future sends
+get(kind='skill', id='precis-recurring-help')   # schedule future sends
 get(kind='skill', id='precis-conv-help')        # captured conversations
 get(kind='skill', id='precis-overview')         # verbs and kinds
 ```

@@ -87,7 +87,6 @@ KIND_CODES: dict[str, str] = {
     "job": "jo",
     "alert": "al",
     "agentlog": "ag",
-    "cron": "cr",
     "message": "ms",
     "gripe": "gr",
     # system / meta
@@ -134,7 +133,6 @@ CHUNK_CODES: dict[str, str] = {
     "pres": "ps",
     "gripe": "gc",
     "message": "mb",
-    "cron": "cp",
     "finding": "fb",
     "job": "jc",
     "cad": "ca",

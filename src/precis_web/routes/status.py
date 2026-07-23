@@ -13,7 +13,6 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -962,30 +961,54 @@ def _background_anomalies(store: Any) -> dict[str, list[dict[str, Any]]]:
 
 
 def _automations(store: Any, limit: int = 20) -> list[dict[str, Any]]:
-    """Standing automations — crons carrying the ``automation`` tag.
+    """Standing automations — ``level:recurring`` todos carrying the
+    ``automation`` tag (ADR 0061 folded the retired ``kind='cron'``
+    push-notification mechanism onto ``level:recurring`` + ``meta.deliver``).
 
     The recurring *agent behaviours* (the morning/evening podcast casts, the
-    news briefing) as opposed to one-shot reminders. For each, surface the
-    schedule (recurrence, next/last fire, fire_count, status) plus the most
-    recent artifact it produced (via a ``derived-into`` link), so the operator
-    can see what runs and what it made. See docs/design/automations-index.md.
+    news briefing) as opposed to plain doable-queue recurrings. For each,
+    surface the schedule + last tick + status plus the most recent artifact
+    it produced (via a ``derived-into`` link), so the operator can see what
+    runs and what it made. See docs/design/automations-index.md.
 
-    Uses ``store.list_refs(tags=['automation'])`` (namespace-agnostic via
-    build_tag_filter) rather than a hand-rolled tag join. Automations are few,
-    so the per-ref tag/link reads are cheap.
+    Uses ``store.list_refs(tags=['level:recurring', 'automation'])``
+    (namespace-agnostic via build_tag_filter) rather than a hand-rolled tag
+    join. Automations are few, so the per-ref tag/link/event reads are cheap.
     """
-    refs = store.list_refs(kind="cron", tags=["automation"], limit=limit)
+    refs = store.list_refs(
+        kind="todo", tags=["level:recurring", "automation"], limit=limit
+    )
     out: list[dict[str, Any]] = []
     for r in refs:
         meta = r.meta or {}
-        # Subtype = any open tag other than the marker itself.
+        schedule = meta.get("schedule") or {}
+        deliver = meta.get("deliver") or {}
+        # Subtype = any open tag other than the two markers.
         subtype = ", ".join(
             t.value
             for t in store.tags_for(r.id)
-            if t.namespace == "open" and t.value != "automation"
+            if t.namespace == "open"
+            and t.value not in ("level:recurring", "automation")
         )
-        produced: dict[str, Any] | None = None
+        status = "open"
+        fire_count = 0
+        last_dt = None
         with _connect(store) as conn:
+            srow = conn.execute(
+                "SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = %s AND t.namespace = 'STATUS' LIMIT 1",
+                (r.id,),
+            ).fetchone()
+            if srow is not None:
+                status = srow[0]
+            crow = conn.execute(
+                "SELECT count(*), max(ts) FROM ref_events "
+                "WHERE ref_id = %s AND source = 'schedule' AND event IN ('spawn', 'deliver')",
+                (r.id,),
+            ).fetchone()
+            if crow is not None:
+                fire_count = int(crow[0] or 0)
+                last_dt = crow[1]
             prow = conn.execute(
                 "SELECT o.ref_id, o.kind, o.title FROM links l "
                 "JOIN refs o ON o.ref_id = l.dst_ref_id "
@@ -994,30 +1017,27 @@ def _automations(store: Any, limit: int = 20) -> list[dict[str, Any]]:
                 "ORDER BY l.created_at DESC LIMIT 1",
                 (r.id,),
             ).fetchone()
+        produced: dict[str, Any] | None = None
         if prow is not None:
             produced = {
                 "ref_id": prow[0],
                 "kind": prow[1] or "?",
                 "title": (prow[2] or "").split("\n", 1)[0][:80] or "—",
             }
-        last_iso = meta.get("last_fired_at")
-        last_dt = None
-        if last_iso:
-            try:
-                last_dt = datetime.fromisoformat(str(last_iso).replace("Z", "+00:00"))
-            except ValueError:
-                last_dt = None
+        recurring = schedule.get("cron") or (
+            f"at:{schedule.get('at')}" if schedule.get("at") else "?"
+        )
         out.append(
             {
                 "ref_id": r.id,
                 "label": subtype or "(untyped)",
                 "payload": (r.title or "").split("\n", 1)[0][:80] or "—",
-                "recurring": meta.get("recurring") or "one-shot",
-                "next_fire": str(meta.get("next_fire_at") or "")[:16],
+                "recurring": recurring,
                 "last_fired": _ago(last_dt) if last_dt is not None else "never",
-                "fire_count": int(meta.get("fire_count") or 0),
-                "status": meta.get("status") or "?",
+                "fire_count": fire_count,
+                "status": status,
                 "produced": produced,
+                "target": deliver.get("target") or "",
             }
         )
     return out

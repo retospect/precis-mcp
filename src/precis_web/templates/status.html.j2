@@ -471,12 +471,14 @@
   </ul>
 </section>
 
-{# Standing automations: recurring crons tagged ``automation`` — the
-   morning/evening podcast casts, the news briefing. The cron payload IS
-   the prompt; edit it to change behaviour. See precis-automations. #}
+{# Standing automations: level:recurring todos tagged ``automation`` — the
+   morning/evening podcast casts, the news briefing. ADR 0061 folded the
+   retired ``kind='cron'`` push mechanism onto ``level:recurring`` +
+   ``meta.deliver``; the recurring's title IS the prompt for a deliver-mode
+   tick — edit it to change behaviour. See precis-automations. #}
 <section class="mt-6">
   <h2 class="text-sm font-semibold mb-2">Automations
-    <span class="font-normal text-xs text-slate-400">(standing crons — the casts, the briefing)</span>
+    <span class="font-normal text-xs text-slate-400">(standing recurrings — the casts, the briefing)</span>
   </h2>
   <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
     {% for a in automations %}
@@ -489,12 +491,12 @@
          href="/refs/{{ a.produced.kind }}/{{ a.produced.ref_id }}">→ {{ a.produced.kind }}: {{ a.produced.title }}</a>
       {% endif %}
       <span class="ml-auto tabular-nums text-slate-500 shrink-0">
-        {% if a.status == 'paused' %}<span class="text-amber-600">paused</span> · {% endif %}next {{ a.next_fire }} · last {{ a.last_fired }} · fired {{ a.fire_count }}
+        {% if a.status == 'paused' %}<span class="text-amber-600">paused</span> · {% endif %}last {{ a.last_fired }} · fired {{ a.fire_count }}
       </span>
     </li>
     {% else %}
     <li class="px-4 py-2 text-sm text-slate-500">no automations tagged yet
-      <span class="text-slate-400">— tag a standing cron with <code>automation</code></span>
+      <span class="text-slate-400">— tag a standing recurring with <code>automation</code></span>
     </li>
     {% endfor %}
   </ul>

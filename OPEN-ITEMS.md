@@ -232,16 +232,24 @@ llama-swap endpoint instead of the litellm proxy. Remaining:
 
 ## 🔴 High-priority
 
-- **Consolidate `kind='cron'` and `level:recurring`** *(feature, open, high —
-  owner `handlers/cron.py` + recurring spawner + `precis_web/routes/refs.py`).*
-  Two unrelated "scheduled thing" concepts confuse everyone: `kind='cron'` (a
-  scheduled wakeup, migration 0010) vs `level:recurring` **todos** ("Watches"
-  with `meta.schedule`, which run the casts/dreamings/card-forge).
-  `/refs?kinds=cron` shows empty while the real schedules live under `todo`.
-  Decide: (a) fold `cron` into the recurring-todo umbrella, or (b) one
-  `/schedules` view unioning both + cross-ref the help skills. Prefer (a) if
-  they're the same concept. *Test:* a view lists both a `cron` ref and a
-  `level:recurring` todo.
+- **Run the `kind='cron'` → `level:recurring` backfill against prod**
+  *(ops, open, high — owner `scripts/migrate_cron_to_recurring.py`).* ADR
+  0061 retired `kind='cron'` in code; the data-migration half
+  (`scripts/migrate_cron_to_recurring.py`, `--commit`-gated, dry-run by
+  default) has **not been run against prod** — it needs a human to review
+  the dry-run report first (the old free-form recurrence vocabulary
+  doesn't map 1:1 onto the new cron grammar for every shape; `weekly`
+  defaults to Monday post-migration and a few `every <N> <unit>` shapes
+  outside the new grammar's range are left as `cron` refs for manual
+  handling). Run `uv run python scripts/migrate_cron_to_recurring.py`
+  (dry-run) against prod, review, then re-run with `--commit`.
+- **Retire the standalone `precis cron tick` launchd timer** *(ops, open,
+  medium — owner cluster ansible, outside this repo).* The timer still
+  works post-ADR-0061 (the CLI subcommand now delegates to
+  `run_schedule_pass`), so this is cleanup, not urgent: flip
+  `PRECIS_SCHEDULER_ENABLED` (the decentralized `scheduler` worker pass,
+  §15i) on across the fleet and remove the `precis-cron-tick` plist once
+  confirmed.
 
 ## 📜 Patent freedom-to-operate authoring loop
 

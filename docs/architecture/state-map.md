@@ -29,10 +29,16 @@ scheduling, execution, and review:
 * **`meta.auto_check` leaves.** Wait-for-condition evaluators under
   `auto_check_evaluators/`: `paper_ingested`, `discord_reply_received`,
   `time_past`, `tag_present`, `child_job_succeeded`.
-* **`level:recurring` umbrella ("Watches").** `meta.schedule` (cron
-  or `every:` shorthand) drives a per-minute spawner. `PRIO` is an
-  int column on refs (1..10); `PRIO:*` tag stays as a back-compat
-  alias.
+* **`level:recurring` umbrella ("Watches").** `meta.schedule` (cron /
+  `every:` shorthand for recurring, or a one-shot `at` timestamp — ADR
+  0061) drives a per-minute spawner. Queue-mode ticks mint a
+  `level:subtask` child (the original Slice-4 behaviour); a recurring
+  carrying `meta.deliver={'target': ...}` instead fires a push
+  notification (`pg_notify('precis.cron', ...)`) asa_bot turns into a
+  synthetic prompt — this is the retired `kind='cron'` mechanism,
+  folded on by ADR 0061 (superseding ADR 0030's cron ruling). `PRIO`
+  is an int column on refs (1..10); `PRIO:*` tag stays as a
+  back-compat alias.
 * **Jobs hang off an owner ref (parent-kind polymorphic, ADR 0044).**
   `JobHandler.put` requires a `parent_id`, but that parent is one of two
   lanes, distinguished by its **kind** (`JOB_PARENT_KINDS`), not a
@@ -314,9 +320,11 @@ executor's (`claude_inproc` plan_tick, etc.).
   stale/revoked OAuth token pages instead of silently 401-ing every
   agentic call for a day; auth recovering auto-resolves it.
 * `dream_agent` keeps its own 15-min cadence via `dream-pass.sh`,
-  and `cron-tick` is the fourth daemon. Each heavy pass dedups on its
-  tier-tagged memory and load-gates on `PRECIS_LOAD_CEILING` (default
-  `os.cpu_count() * 1.5`).
+  and `cron-tick` is the fourth daemon — post-ADR-0061 it fires due
+  `level:recurring` ticks (queue-mode spawn or `meta.deliver` push)
+  via `run_schedule_pass`, not the retired `kind='cron'` engine. Each
+  heavy pass dedups on its tier-tagged memory and load-gates on
+  `PRECIS_LOAD_CEILING` (default `os.cpu_count() * 1.5`).
 
 **Notable passes:**
 

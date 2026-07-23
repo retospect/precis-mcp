@@ -99,7 +99,6 @@ LINKIFY_KINDS: frozenset[str] = frozenset(
         "web",
         "youtube",
         "websearch",
-        "cron",
         "message",
         "math",
         "calc",

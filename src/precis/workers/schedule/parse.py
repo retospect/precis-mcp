@@ -19,6 +19,15 @@ only ever sees one shape (cron). Accepted shapes:
 * ``Nd`` (every N days, at midnight)
 * ``mon|tue|...|sun HH:MM`` (weekly, at HH:MM on that day)
 
+A third shape, ``at`` (an absolute ISO 8601 timestamp), covers the *one-shot*
+case -- "remind me at/in N" -- that used to live on the retired
+``kind='cron'`` (ADR 0061, superseding ADR 0030). Mutually exclusive with
+``cron``/``every``: a schedule either repeats (``cron``) or fires exactly
+once (``at``). ``catch_up`` is the ``at``-only sibling of
+``backfill_missed`` -- whether an overdue one-shot still fires (``True``,
+the default, matching the old cron one-shot default) or is silently marked
+expired (``False``).
+
 This module is the **single point of truth** for both write-time
 validation (called from ``handlers/_todo_guards``) and tick
 expansion (called from ``workers/schedule/worker``).
@@ -29,7 +38,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from precis.errors import BadInput
 
@@ -40,15 +49,31 @@ from precis.errors import BadInput
 class Schedule:
     """Parsed ``meta.schedule`` block.
 
-    ``cron`` is always the canonical 5-field string (``every:``
-    shorthand has been translated). ``backfill_missed`` defaults to
-    ``False``: weather / news / "yesterday's headlines" don't owe
-    the missed tick; opt-in ``True`` for birthdays and anniversaries
-    where the action is still owed.
+    Exactly one of ``cron`` / ``at`` is set -- a schedule either repeats
+    (``cron``, the canonical 5-field string; ``every:`` shorthand already
+    translated) or fires exactly once (``at``, an ISO 8601 timestamp).
+
+    ``backfill_missed`` (``cron`` schedules only) defaults to ``False``:
+    weather / news / "yesterday's headlines" don't owe the missed tick;
+    opt-in ``True`` for birthdays and anniversaries where the action is
+    still owed.
+
+    ``catch_up`` (``at`` schedules only) defaults to ``True`` -- a one-shot
+    reminder missed while the machine was down still fires late (matches
+    the retired ``kind='cron'`` one-shot default); ``False`` means "fire at
+    the moment or not at all."
     """
 
-    cron: str
+    cron: str | None = None
     backfill_missed: bool = False
+    at: str | None = None
+    catch_up: bool = True
+
+
+#: Grace window past ``at`` before an overdue one-shot with ``catch_up=False``
+#: is marked expired instead of fired. Mirrors the retired cron-tick's
+#: ``_MISS_GRACE`` (60s tick cadence + 30s slack).
+ONE_SHOT_GRACE = timedelta(seconds=90)
 
 
 def validate_schedule(spec: Any) -> Schedule:
@@ -64,29 +89,63 @@ def validate_schedule(spec: Any) -> Schedule:
             next=(
                 "meta={'schedule': {'cron': '0 9 * * 1', "
                 "'backfill_missed': false}} "
-                "or {'every': '1d'}"
+                "or {'every': '1d'} or {'at': '2026-06-12T09:00:00Z'}"
             ),
         )
-    extra = set(spec) - {"cron", "every", "backfill_missed"}
+    extra = set(spec) - {"cron", "every", "at", "backfill_missed", "catch_up"}
     if extra:
         raise BadInput(
             f"unknown meta.schedule keys: {sorted(extra)}",
-            options=["cron", "every", "backfill_missed"],
+            options=["cron", "every", "at", "backfill_missed", "catch_up"],
         )
     cron_str = spec.get("cron")
     every_str = spec.get("every")
-    if cron_str is None and every_str is None:
+    at_str = spec.get("at")
+    given = [
+        k
+        for k, v in (("cron", cron_str), ("every", every_str), ("at", at_str))
+        if v is not None
+    ]
+    if not given:
         raise BadInput(
-            "meta.schedule needs either 'cron' or 'every'",
-            next="schedule={'cron': '0 9 * * 1'} or schedule={'every': '1d'}",
+            "meta.schedule needs one of 'cron', 'every', or 'at'",
+            next=(
+                "schedule={'cron': '0 9 * * 1'} or schedule={'every': '1d'} "
+                "or schedule={'at': '2026-06-12T09:00:00Z'} (one-shot)"
+            ),
         )
-    if cron_str is not None and every_str is not None:
+    if len(given) > 1:
         raise BadInput(
-            "meta.schedule cannot carry both 'cron' and 'every'; pick one",
+            f"meta.schedule cannot carry more than one of 'cron'/'every'/'at'; got {given}",
             next=(
                 "every='1d' is shorthand for cron='0 0 * * *'; "
-                "keep only the form you want"
+                "'at' is a one-shot absolute fire time, mutually exclusive "
+                "with the recurring cron/every forms"
             ),
+        )
+    if at_str is not None:
+        if not isinstance(at_str, str):
+            raise BadInput(
+                f"meta.schedule.at must be a string, got {type(at_str).__name__}",
+            )
+        if "backfill_missed" in spec:
+            raise BadInput(
+                "meta.schedule.backfill_missed is not accepted alongside 'at' "
+                "-- use 'catch_up' for one-shot schedules",
+                next="schedule={'at': '...', 'catch_up': true}",
+            )
+        canonical_at = _coerce_iso(at_str.strip())
+        catch_up = spec.get("catch_up", True)
+        if not isinstance(catch_up, bool):
+            raise BadInput(
+                f"meta.schedule.catch_up must be a bool, got {type(catch_up).__name__}",
+            )
+        return Schedule(at=canonical_at, catch_up=catch_up)
+    if "catch_up" in spec:
+        raise BadInput(
+            "meta.schedule.catch_up is not accepted alongside 'cron'/'every' "
+            "-- use 'backfill_missed' for recurring schedules",
+            next="schedule={'cron': '...', 'backfill_missed': false}",
         )
     if cron_str is not None:
         if not isinstance(cron_str, str):
@@ -109,6 +168,43 @@ def validate_schedule(spec: Any) -> Schedule:
             f"{type(backfill).__name__}",
         )
     return Schedule(cron=canonical, backfill_missed=backfill)
+
+
+def _coerce_iso(s: str) -> str:
+    """Parse + re-render an ISO 8601 timestamp to a canonical aware-UTC form.
+
+    Raises :class:`BadInput` on a malformed value.
+    """
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise BadInput(
+            f"unparseable meta.schedule.at timestamp {s!r}",
+            next=(
+                "use ISO 8601: at='2026-06-12T09:00:00Z' or '2026-06-12T09:00:00+00:00'"
+            ),
+        ) from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat()
+
+
+def one_shot_action(
+    at: datetime, *, catch_up: bool, now: datetime
+) -> Literal["wait", "fire", "expire"]:
+    """Decide the action for a one-shot ``at`` schedule at ``now``.
+
+    ``'wait'`` -- not due yet. ``'fire'`` -- due (on time, overdue with
+    ``catch_up=True``, or overdue but within :data:`ONE_SHOT_GRACE`).
+    ``'expire'`` -- overdue past the grace window with ``catch_up=False``:
+    the slot was missed and won't be honoured late.
+    """
+    if now < at:
+        return "wait"
+    overdue_by = now - at
+    if catch_up or overdue_by <= ONE_SHOT_GRACE:
+        return "fire"
+    return "expire"
 
 
 def parse_schedule(spec: dict[str, Any]) -> Schedule:
@@ -293,6 +389,8 @@ def ticks_since(
     (hourly → 60, daily → 1440, weekly → 10k). Caller passes ``now``
     explicitly so tests can pin time.
     """
+    if schedule.cron is None:
+        raise ValueError("ticks_since requires a recurring (cron) schedule, not 'at'")
     fields = parse_cron(schedule.cron)
     if last_tick is None:
         start = now - timedelta(minutes=60)
@@ -336,8 +434,10 @@ def _cron_matches(ts: datetime, fields: tuple[frozenset[int], ...]) -> bool:
 
 
 __all__ = [
+    "ONE_SHOT_GRACE",
     "Schedule",
     "every_to_cron",
+    "one_shot_action",
     "parse_cron",
     "parse_schedule",
     "ticks_since",

@@ -778,6 +778,47 @@ def check_schedule_in_meta(meta: dict[str, object] | None):
     return validate_schedule(spec)
 
 
+# ── deliver (ADR 0061 — folded from kind='cron') ───────────────────
+
+
+def check_deliver_in_meta(meta: dict[str, object] | None) -> dict[str, str] | None:
+    """Validate ``meta.deliver`` if present; return the canonical block.
+
+    ``meta.deliver = {'target': 'conv:discord/<g>/<c>/<t>'}`` marks a
+    ``level:recurring`` todo (or one of its ticks) for **push** delivery —
+    a synthetic prompt fired at asa_bot via ``pg_notify('precis.cron', ...)``
+    — instead of (or as well as, for a folder-level automation) minting a
+    subtask into the doable queue. This is the delivery-address field ADR
+    0061 folds the retired ``kind='cron'`` push mechanism onto.
+
+    Returns ``None`` when no deliver target is set. Raises
+    :class:`BadInput` on a malformed shape.
+    """
+    if not meta:
+        return None
+    spec = meta.get("deliver")
+    if spec is None:
+        return None
+    if not isinstance(spec, dict):
+        raise BadInput(
+            f"meta.deliver must be a dict, got {type(spec).__name__}",
+            next="meta={'deliver': {'target': 'conv:discord/<g>/<c>/<t>'}}",
+        )
+    extra = set(spec) - {"target"}
+    if extra:
+        raise BadInput(
+            f"unknown meta.deliver keys: {sorted(extra)}",
+            options=["target"],
+        )
+    target = spec.get("target")
+    if not isinstance(target, str) or not target.strip():
+        raise BadInput(
+            "meta.deliver.target is required (where to push the synthetic prompt)",
+            next="meta={'deliver': {'target': 'conv:discord/<g>/<c>/<t>'}}",
+        )
+    return {"target": target.strip()}
+
+
 __all__ = [
     "LEVEL_PROPOSED_TACTICAL",
     "LEVEL_RECURRING",
@@ -785,6 +826,7 @@ __all__ = [
     "LEVEL_SUBTASK",
     "LEVEL_TACTICAL",
     "MAX_DEPTH",
+    "check_deliver_in_meta",
     "check_depth_under",
     "check_executor_tag",
     "check_halt_remove",

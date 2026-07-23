@@ -44,7 +44,6 @@ _NUMERIC_KINDS: frozenset[str] = frozenset(
         "gripe",
         "citation",
         "anki",
-        "cron",
         "message",
         "alert",
         "agentlog",

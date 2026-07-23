@@ -296,11 +296,17 @@ a small strategic out of its 1/N share.
 
 #### Soft cutover of existing schedulers
 
-Slice 4 ships additive. The existing `kind='cron'` infra
-(migration 0010) and the dream cron continue to work; new
-scheduled work uses `level:recurring`. The legacy schedulers
-retire when nothing references them — no rewrite, no migration
-risk, rollback is "ignore the recurring rows."
+Slice 4 shipped additive. The existing `kind='cron'` infra
+(migration 0010) and the dream cron continued to work alongside
+`level:recurring`, with the expectation that the legacy scheduler
+would retire by attrition as nothing referenced it. **ADR 0061
+(2026-07-22) short-circuited that attrition**: `kind='cron'` is
+retired outright, its scheduling role absorbed by a third
+`meta.schedule` shape (`at`, a one-shot absolute fire time) and its
+push-delivery role absorbed by `meta.deliver` on the same
+`level:recurring` node. See ADR 0061 and `precis-recurring-help` for
+the current shape; the paragraph above is kept for the historical
+record of how the cutover was originally expected to happen.
 
 ### Priority — a small int column, 1–10
 
@@ -1580,7 +1586,7 @@ cases of "a thing-to-do" with kind-specific execution:
 | Kind | Folds? | Sketch |
 |---|---|---|
 | `job` | **No — Slice 5 made jobs children of todos; further collapse rejected** | See ADR 0030. The lease semantics + FOR UPDATE SKIP LOCKED on the job row + the `child_job_succeeded` auto_check + the failure-bubble (`child-failed:<job_id>`) tag are load-bearing; folding ticks into chunks on the todo trades a clean separate-kind boundary for either lease contention or a second STATUS axis on the same ref. Existing `kind='job'` rows stay as the per-tick execution record. |
-| `cron` | **No — different pattern entirely** | See ADR 0030. `kind='cron'` is the *push* notification system (launchd + pg_notify → asa_bot delivers a synthetic prompt to an external conversation). `level:recurring` is the *pull-into-queue* system (worker mints subtasks into the doable queue). Slice 4 added recurring; it did not replace cron. The `precis-cron-help` skill stays alongside `precis-recurring-help` — both kept on purpose. |
+| `cron` | **Yes — folded (ADR 0061, reverses 0030)** | `kind='cron'` is retired. Its push-notification role (launchd + pg_notify → asa_bot delivers a synthetic prompt) moves onto `level:recurring` via `meta.deliver = {'target': ...}`; its one-shot scheduling role moves onto a third `meta.schedule` shape (`at`). The `precis-cron-help` skill is a redirect stub to `precis-recurring-help`. |
 | `finding` (citation chase) | **No — see ADR 0030** | A finding has a deterministic `pub_id` (hash of body+scope+initial_cite) for content-dedup so two agents recording the same claim collapse to one chase. Todos have no content-dedup. STATUS axis is its own (`tracing`/`established`/`dead_chain`/`multi_candidate`/`cycle`); `meta.chain` is a mutable provenance journal; `precis resolve` substitutes pub_ids into draft prose at finalisation. None of that maps to todos. Keep separate. |
 | `gripe` | **Could fold** | A gripe is "bug Y to triage." Could be a `level:tactical` todo under "Engineering hygiene" with `meta.gripe_state` for the lifecycle. Keep separate for now — the comment-timeline UI is established and the cost of migrating live gripes outweighs the tidiness win. Re-evaluate when the gripe count is small. |
 | `message` (outbound Discord) | **Probably don't fold** | A message is a *side-effect output*, not a workspace item. The producing worker emits the message as part of its job (asa-bot reply, daily digest); a todo for "send this message" is overkill. The kind stays as the delivery substrate. |

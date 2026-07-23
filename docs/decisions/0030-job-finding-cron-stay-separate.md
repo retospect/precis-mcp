@@ -1,6 +1,8 @@
 # ADR 0030 — `job`, `finding`, `cron` stay separate from `todo`
 
-- **Status**: accepted (2026-06-15)
+- **Status**: accepted (2026-06-15); **cron section superseded by
+  [ADR 0061](./0061-fold-cron-into-recurring.md)** (2026-07-22) — the
+  `job` and `finding` rulings below remain in force.
 **Context:** Planner-coroutine cascade work (slices T1–T3) made the
 `kind='todo'` surface look like a generic workspace for "things with
 a STATUS and a worker." Three adjacent kinds — `job`, `finding`,
@@ -72,7 +74,10 @@ mechanisms the destination kind would have to reimplement*.
 - `precis resolve` substitutes pub_ids into draft prose at
   finalisation — a doc-integration loop with no todo analog.
 
-**`kind='cron'` stays.**
+**`kind='cron'` stays.** *(Superseded 2026-07-22 — see
+[ADR 0061](./0061-fold-cron-into-recurring.md): `cron` is retired,
+folded onto `level:recurring` + `meta.deliver`. The reasoning below is
+kept for history.)*
 
 - Cron is a *push* notification system: a launchd timer (`precis
   cron tick`) wakes up, emits `pg_notify('precis.cron', ...)`,

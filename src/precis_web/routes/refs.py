@@ -414,7 +414,6 @@ _REFS_BROWSABLE_KINDS: tuple[str, ...] = (
     "web",
     "youtube",
     "websearch",
-    "cron",
     "message",
     # Quest (the striving/lab-notebook kind) + its candidate `structure`s.
     # QuestHandler.get(id=N) renders the append-only logbook (the lab
@@ -472,9 +471,6 @@ _CACHE_BACKED_KINDS: frozenset[str] = frozenset(
 #: ``search`` verb — ``skill`` over the on-disk skill files, ``tag``
 #: over the tag vocabulary — so the consolidated view dispatches that
 #: verb and renders its markdown result instead of a row grid.
-#: ``cron`` is deliberately absent: crons ARE stored as refs (it just
-#: has no rows until one is scheduled), so the plain DB path serves it
-#: correctly (empty when none exist).
 _HANDLER_SEARCHED_KINDS: frozenset[str] = frozenset({"skill", "tag"})
 
 #: Browsable kinds that can only ever render empty in the consolidated

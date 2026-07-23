@@ -1,11 +1,16 @@
-"""Slice-4 schedule + PRIO tests.
+"""Slice-4 schedule + PRIO tests, extended by ADR 0061 (folding the retired
+``kind='cron'`` onto ``level:recurring``).
 
-Five layers:
+Layers:
 
 * the cron parser + ``every:`` shorthand translator;
+* the one-shot ``at``/``catch_up`` schedule shape + ``one_shot_action``
+  (ADR 0061);
 * the Watches umbrella seed (idempotent on ``meta.builtin``);
 * the per-tick spawn loop (idempotency stamp, collision-skip,
   backfill on/off);
+* the push-delivery tick path (``meta.deliver``, ADR 0061) and the
+  one-shot resolve-and-retire path;
 * the PRIO column wiring (``put(prio=N)``, ``tag(prio=N)``,
   back-compat ``PRIO:*`` tag alias);
 * delete-protection on builtin refs.
@@ -26,6 +31,7 @@ from precis.workers.schedule import (
     WATCHES_BUILTIN,
     Schedule,
     ensure_watches_root,
+    one_shot_action,
     run_schedule_pass,
     ticks_since,
     validate_schedule,
@@ -119,7 +125,7 @@ def test_validate_schedule_translates_every_to_cron() -> None:
 
 
 def test_validate_schedule_rejects_both_cron_and_every() -> None:
-    with pytest.raises(BadInput, match="both 'cron' and 'every'"):
+    with pytest.raises(BadInput, match="more than one of 'cron'/'every'/'at'"):
         validate_schedule({"cron": "0 * * * *", "every": "1h"})
 
 
@@ -131,6 +137,41 @@ def test_validate_schedule_rejects_unknown_key() -> None:
 def test_validate_schedule_rejects_bad_backfill_type() -> None:
     with pytest.raises(BadInput, match="backfill_missed must be a bool"):
         validate_schedule({"cron": "0 * * * *", "backfill_missed": "yes"})
+
+
+# ── validator: one-shot `at` shape (ADR 0061) ───────────────────────
+
+
+def test_validate_schedule_accepts_at_shape() -> None:
+    s = validate_schedule({"at": "2026-06-12T09:00:00Z"})
+    assert s.cron is None
+    assert s.at == "2026-06-12T09:00:00+00:00"
+    assert s.catch_up is True  # default
+
+
+def test_validate_schedule_at_catch_up_false() -> None:
+    s = validate_schedule({"at": "2026-06-12T09:00:00Z", "catch_up": False})
+    assert s.catch_up is False
+
+
+def test_validate_schedule_rejects_at_with_cron() -> None:
+    with pytest.raises(BadInput, match="more than one of 'cron'/'every'/'at'"):
+        validate_schedule({"at": "2026-06-12T09:00:00Z", "cron": "0 9 * * 1"})
+
+
+def test_validate_schedule_rejects_backfill_missed_with_at() -> None:
+    with pytest.raises(BadInput, match="not accepted alongside 'at'"):
+        validate_schedule({"at": "2026-06-12T09:00:00Z", "backfill_missed": True})
+
+
+def test_validate_schedule_rejects_catch_up_with_cron() -> None:
+    with pytest.raises(BadInput, match="not accepted alongside 'cron'/'every'"):
+        validate_schedule({"cron": "0 9 * * 1", "catch_up": True})
+
+
+def test_validate_schedule_rejects_bad_at_timestamp() -> None:
+    with pytest.raises(BadInput, match="unparseable meta.schedule.at"):
+        validate_schedule({"at": "not-a-date"})
 
 
 # ── ticks_since ────────────────────────────────────────────────────
@@ -164,6 +205,38 @@ def test_ticks_since_empty_when_no_match_in_window() -> None:
     # Last tick was the 9:00 fire; nothing new yet.
     last = datetime(2026, 6, 14, 9, 0, tzinfo=UTC)
     assert ticks_since(last, sched, now=now) == []
+
+
+# ── one_shot_action (ADR 0061) ───────────────────────────────────────
+
+
+def test_one_shot_action_waits_before_due() -> None:
+    at = datetime(2026, 6, 14, 12, 0, tzinfo=UTC)
+    now = datetime(2026, 6, 14, 11, 0, tzinfo=UTC)
+    assert one_shot_action(at, catch_up=False, now=now) == "wait"
+
+
+def test_one_shot_action_fires_on_time() -> None:
+    at = datetime(2026, 6, 14, 12, 0, tzinfo=UTC)
+    assert one_shot_action(at, catch_up=False, now=at) == "fire"
+
+
+def test_one_shot_action_fires_within_grace_even_without_catch_up() -> None:
+    at = datetime(2026, 6, 14, 12, 0, tzinfo=UTC)
+    now = at + timedelta(seconds=30)
+    assert one_shot_action(at, catch_up=False, now=now) == "fire"
+
+
+def test_one_shot_action_expires_past_grace_without_catch_up() -> None:
+    at = datetime(2026, 6, 14, 12, 0, tzinfo=UTC)
+    now = at + timedelta(hours=3)
+    assert one_shot_action(at, catch_up=False, now=now) == "expire"
+
+
+def test_one_shot_action_catch_up_fires_however_overdue() -> None:
+    at = datetime(2026, 6, 14, 12, 0, tzinfo=UTC)
+    now = at + timedelta(days=3)
+    assert one_shot_action(at, catch_up=True, now=now) == "fire"
 
 
 # ── Watches umbrella seed (DB) ─────────────────────────────────────
@@ -231,6 +304,52 @@ def test_put_with_bad_schedule_rejected_at_write_time(
             text="bad",
             tags=["level:recurring"],
             meta={"schedule": {"cron": "0 9 * *"}},
+        )
+
+
+# ── put: one-shot `at` schedule + `meta.deliver` (ADR 0061) ─────────
+
+
+def test_put_one_shot_at_schedule_is_canonicalised(
+    handler: TodoHandler, store: Store
+) -> None:
+    resp = handler.put(
+        text="remind me",
+        tags=["level:recurring"],
+        meta={"schedule": {"at": "2026-06-12T09:00:00Z"}},
+    )
+    rid = _id_of(resp.body)
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta["schedule"] == {
+        "at": "2026-06-12T09:00:00+00:00",
+        "catch_up": True,
+    }
+
+
+def test_put_with_deliver_target_is_canonicalised(
+    handler: TodoHandler, store: Store
+) -> None:
+    resp = handler.put(
+        text="check the api monitor",
+        tags=["level:recurring"],
+        meta={
+            "schedule": {"every": "15m"},
+            "deliver": {"target": "  conv:discord/g/c/t  "},
+        },
+    )
+    rid = _id_of(resp.body)
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta["deliver"] == {"target": "conv:discord/g/c/t"}
+
+
+def test_put_with_bad_deliver_rejected_at_write_time(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput, match="meta.deliver.target is required"):
+        handler.put(
+            text="bad",
+            tags=["level:recurring"],
+            meta={"schedule": {"every": "1h"}, "deliver": {}},
         )
 
 
@@ -513,3 +632,137 @@ def test_schedule_pass_skips_paused_recurring(
     assert rows is not None
     assert int(rows[0]) == 0
     _ = result
+
+
+# ── push delivery (ADR 0061 — folded from kind='cron') ──────────────
+
+
+def test_schedule_pass_delivers_instead_of_spawning(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A recurring tick with ``meta.deliver`` set fires the push notify and
+    stamps a ``schedule:deliver`` event — no subtask is minted into the
+    queue (unlike the plain queue-mode path)."""
+    resp = handler.put(
+        text="check the api monitor",
+        tags=["level:recurring"],
+        meta={
+            "schedule": {"cron": "0 0 * * *"},
+            "deliver": {"target": "conv:discord/g/c/t"},
+        },
+    )
+    rid = _id_of(resp.body)
+    yesterday_tick = datetime.now(UTC) - timedelta(hours=25)
+    _set_last_tick(store, rid, yesterday_tick)
+
+    result = run_schedule_pass(store, limit=50)
+    assert result.ok >= 1
+
+    with store.pool.connection() as conn:
+        n_children = conn.execute(
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
+            (rid,),
+        ).fetchone()[0]
+        n_deliver_events = conn.execute(
+            "SELECT count(*) FROM ref_events WHERE ref_id = %s "
+            "AND source = 'schedule' AND event = 'deliver'",
+            (rid,),
+        ).fetchone()[0]
+    assert int(n_children) == 0, "delivery-mode ticks must not mint a subtask"
+    assert int(n_deliver_events) == 1
+
+
+def test_schedule_pass_deliver_tick_is_idempotent_same_minute(
+    handler: TodoHandler, store: Store
+) -> None:
+    resp = handler.put(
+        text="check the api monitor",
+        tags=["level:recurring"],
+        meta={
+            "schedule": {"cron": "0 0 * * *"},
+            "deliver": {"target": "conv:discord/g/c/t"},
+        },
+    )
+    rid = _id_of(resp.body)
+    _set_last_tick(store, rid, datetime.now(UTC) - timedelta(hours=25))
+    run_schedule_pass(store, limit=50)
+    run_schedule_pass(store, limit=50)
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM ref_events WHERE ref_id = %s "
+            "AND source = 'schedule' AND event = 'deliver'",
+            (rid,),
+        ).fetchone()[0]
+    assert int(n) == 1
+
+
+# ── one-shot `at` resolve-and-retire (ADR 0061) ──────────────────────
+
+
+def test_schedule_pass_fires_due_one_shot_and_retires(
+    handler: TodoHandler, store: Store
+) -> None:
+    past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    resp = handler.put(
+        text="ask about the PR status",
+        tags=["level:recurring"],
+        meta={
+            "schedule": {"at": past, "catch_up": True},
+            "deliver": {"target": "conv:discord/g/c/t"},
+        },
+    )
+    rid = _id_of(resp.body)
+
+    result = run_schedule_pass(store, limit=50)
+    assert result.ok >= 1
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "STATUS:done" in tags
+    with store.pool.connection() as conn:
+        n_children = conn.execute(
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
+            (rid,),
+        ).fetchone()[0]
+    assert int(n_children) == 0
+
+    # A second pass is a no-op — the one-shot already retired (STATUS:done
+    # excludes it from the next candidate scan).
+    result2 = run_schedule_pass(store, limit=50)
+    assert result2.claimed == 0
+
+
+def test_schedule_pass_one_shot_not_yet_due_is_untouched(
+    handler: TodoHandler, store: Store
+) -> None:
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    resp = handler.put(
+        text="future reminder",
+        tags=["level:recurring"],
+        meta={"schedule": {"at": future}},
+    )
+    rid = _id_of(resp.body)
+    run_schedule_pass(store, limit=50)
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "STATUS:done" not in tags
+
+
+def test_schedule_pass_expires_overdue_one_shot_without_catch_up(
+    handler: TodoHandler, store: Store
+) -> None:
+    long_overdue = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+    resp = handler.put(
+        text="stale reminder",
+        tags=["level:recurring"],
+        meta={"schedule": {"at": long_overdue, "catch_up": False}},
+    )
+    rid = _id_of(resp.body)
+    run_schedule_pass(store, limit=50)
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "STATUS:done" in tags
+    with store.pool.connection() as conn:
+        action = conn.execute(
+            "SELECT payload->>'action' FROM ref_events WHERE ref_id = %s "
+            "AND source = 'schedule' AND event = 'deliver'",
+            (rid,),
+        ).fetchone()[0]
+    assert action == "expire"

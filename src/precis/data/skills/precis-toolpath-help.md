@@ -45,7 +45,7 @@ native tool and only falling back to precis on failure is the slow path.
 
 `view='raw'` / `view='links'` / `view='log'` work on the **numeric-ref
 kinds** (`todo`, `memory`, `gripe`, `finding`, `job`, `anki`,
-`citation`, `folder`, `alert`, `agentlog`, `cron`, `message`).
+`citation`, `folder`, `alert`, `agentlog`, `message`).
 Slug/file/compute kinds (`paper`, `draft`, `cad`, `structure`, `pcb`,
 `tex`, `markdown`, …) each expose their own view set instead — a bad
 `view=` returns that kind's option list.

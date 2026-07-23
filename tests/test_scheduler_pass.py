@@ -3,15 +3,17 @@
 ``run_scheduler_pass`` claims each due cadence's lease and fires its work
 in-process; an undue cadence (or a lost lease) is a dark no-op. Tests inject
 unique-named cadences (the lease table is a global on the shared DB) and also
-exercise the *real* ``cron_tick`` cadence end to end — which drives the
-``fire_due_cron`` core extracted from ``precis cron tick`` (previously untested).
+exercise the *real* ``cron_tick`` cadence end to end — which, post-ADR-0061,
+drives ``run_schedule_pass`` (the retired ``kind='cron'`` engine's replacement,
+shared with the launchd ``precis cron tick`` timer and the default worker
+rotation).
 """
 
 from __future__ import annotations
 
-import re
 from uuid import uuid4
 
+from precis.store.types import Tag
 from precis.workers.scheduler import Cadence, _run_cron_tick, run_scheduler_pass
 
 
@@ -61,25 +63,33 @@ def test_multiple_cadences_are_independent(store) -> None:
     assert sorted(hits) == ["a", "b"]
 
 
-def test_cron_tick_cadence_fires_a_due_entry(store, hub) -> None:
-    """The real cron_tick cadence advances a due cron entry — end-to-end cover
-    for the extracted ``fire_due_cron`` (the shared cron engine, §15i)."""
-    from precis.handlers.cron import CronHandler
-
-    cron = CronHandler(hub=hub)
-    ack = cron.put(
-        text="a long-overdue one-shot",
-        when="2020-01-01T00:00:00Z",
-        target="conv:discord/g/c/t",
-        catch_up=True,  # missed one-shot fires rather than expiring
-    ).body
-    ref_id = int(re.search(r"id=(\d+)", ack).group(1))
+def test_cron_tick_cadence_fires_a_due_one_shot(store) -> None:
+    """The real ``cron_tick`` cadence resolves a due one-shot recurring —
+    end-to-end cover for ``run_schedule_pass`` (ADR 0061's replacement for the
+    retired ``kind='cron'`` engine, shared here with the §15i decentralized
+    scheduler pass)."""
+    ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="a long-overdue one-shot",
+        meta={
+            "schedule": {"at": "2020-01-01T00:00:00+00:00", "catch_up": True},
+            "deliver": {"target": "conv:discord/g/c/t"},
+        },
+    )
+    store.add_tag(ref.id, Tag.open("level:recurring"), set_by="agent")
 
     _run_cron_tick(store, 32)
 
-    ref = store.get_ref(kind="cron", id=ref_id)
-    assert ref.meta["status"] == "fired"
-    assert int(ref.meta.get("fire_count", 0)) >= 1
+    tags = {str(t) for t in store.tags_for(ref.id)}
+    assert "STATUS:done" in tags  # one-shot resolved, self-retired
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM ref_events WHERE ref_id = %s "
+            "AND source = 'schedule' AND event = 'deliver'",
+            (ref.id,),
+        ).fetchone()
+    assert row is not None and int(row[0]) == 1
 
 
 def test_scheduler_service_is_dark_by_default() -> None:

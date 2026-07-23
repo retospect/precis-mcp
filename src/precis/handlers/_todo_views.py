@@ -339,8 +339,10 @@ def render_roots(store: Store) -> Response:
                 first_line = first_line[:50].rstrip() + "…"
             cron = w["cron"] or "(folder)"
             last = w["last_tick"] or "never"
+            deliver_suffix = f"  → {w['deliver']}" if w.get("deliver") else ""
             lines.append(
-                f"{_h(w['id']):<6} {first_line:<50}  cron: {cron:<14}  last: {last}"
+                f"{_h(w['id']):<6} {first_line:<50}  cron: {cron:<14}  "
+                f"last: {last}{deliver_suffix}"
             )
     body = "\n".join(lines)
     body += render_next_section(
@@ -514,19 +516,25 @@ def _watches_panel_rows(store: Store) -> list[dict[str, Any]]:
 
     * ``id`` — the recurring's ref id
     * ``title`` — for display
-    * ``cron`` — the canonical cron string (None when folder)
-    * ``last_tick`` — ISO timestamp of the most recent ``spawn`` event
-      on this recurring, or ``None`` when it hasn't fired
+    * ``cron`` — the canonical cron string, or ``at:<iso>`` for a
+      one-shot (ADR 0061), or ``None`` when folder
+    * ``deliver`` — the push-delivery target (``meta.deliver.target``),
+      or ``None`` for a queue-mode recurring
+    * ``last_tick`` — ISO timestamp of the most recent ``spawn`` OR
+      ``deliver`` event on this recurring, or ``None`` when it hasn't
+      fired
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
             SELECT r.ref_id, r.title,
-                   r.meta->'schedule'->>'cron' AS cron,
+                   COALESCE(r.meta->'schedule'->>'cron',
+                            'at:' || (r.meta->'schedule'->>'at')) AS cron,
+                   r.meta->'deliver'->>'target' AS deliver,
                    (SELECT max(e.ts)::text FROM ref_events e
                      WHERE e.ref_id = r.ref_id
                        AND e.source = 'schedule'
-                       AND e.event = 'spawn') AS last_tick
+                       AND e.event IN ('spawn', 'deliver')) AS last_tick
               FROM refs r
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
                AND EXISTS (
@@ -544,7 +552,8 @@ def _watches_panel_rows(store: Store) -> list[dict[str, Any]]:
             "id": int(r[0]),
             "title": r[1],
             "cron": r[2],
-            "last_tick": r[3],
+            "deliver": r[3],
+            "last_tick": r[4],
         }
         for r in rows
     ]

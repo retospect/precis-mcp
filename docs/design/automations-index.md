@@ -1,8 +1,18 @@
 # Automations index — make recurring agent tasks discoverable
 
-> **Status: shipped (v8.23.0).** All three slices landed: the `automation`
-> tag convention, the `cron` `/automations` list view, the Status web panel,
-> and the `precis-automations` skill. Additive + default-safe (no migration).
+> **Status: shipped (v8.23.0); mechanism superseded 2026-07-22 (ADR 0061).**
+> All three slices landed as described below against `kind='cron'`: the
+> `automation` tag convention, the `cron` `/automations` list view, the
+> Status web panel, and the `precis-automations` skill. ADR 0061 then
+> retired `kind='cron'` — the `automation` tag convention carries over
+> unchanged onto `level:recurring` todos (`search(kind='todo',
+> tags=['level:recurring', 'automation'])`), the Status panel now queries
+> `kind='todo'`, and the dedicated `/automations` **list view is gone**
+> (no bespoke view needed — the tag-filtered search already does the job).
+> The push-delivery mechanism described below (`pg_notify('precis.cron')`
+> from a fired cron ref) is unchanged in *wire shape*, only in *which row
+> fires it* — see ADR 0061 and `precis-recurring-help` for the current
+> shape. Kept below for the historical record of the original design.
 
 ## Motivation
 

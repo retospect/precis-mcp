@@ -33,7 +33,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
 
 from precis.workers.runner import BatchResult
@@ -53,16 +52,21 @@ class Cadence:
 
 
 def _run_cron_tick(store: Any, batch_size: int) -> None:
-    """Fire due ``cron`` entries — the §15i cron engine, run in-process. Shares
-    :func:`precis.cli.cron.fire_due_cron` with the launchd ``precis cron tick``
-    timer (one implementation, no drift)."""
-    from precis.cli.cron import fire_due_cron
+    """Fire due schedule ticks — the §15i cadence, run in-process.
 
-    now = datetime.now(tz=UTC)
-    with store.pool.connection() as conn:
-        with conn.transaction():
-            with conn.cursor() as cur:
-                fire_due_cron(cur, now)
+    Historically fired the retired ``kind='cron'`` engine
+    (:func:`precis.cli.cron.fire_due_cron`); ADR 0061 folded that push
+    mechanism onto ``level:recurring`` (``meta.deliver`` + one-shot
+    ``meta.schedule.at``), so this cadence now shares
+    :func:`precis.workers.schedule.worker.run_schedule_pass` with the
+    launchd ``precis cron tick`` timer and the default worker rotation
+    (one implementation, no drift). The cadence name is unchanged —
+    it's still "the thing that ticks scheduled work every 60s," the
+    underlying kind just moved.
+    """
+    from precis.workers.schedule.worker import run_schedule_pass
+
+    run_schedule_pass(store, limit=batch_size or 50)
 
 
 def _run_watch_poll(store: Any, batch_size: int) -> None:

@@ -19,6 +19,7 @@ short-lived transactions).
 
 from precis.workers.schedule.parse import (
     Schedule,
+    one_shot_action,
     parse_schedule,
     ticks_since,
     validate_schedule,
@@ -35,6 +36,7 @@ __all__ = [
     "WATCHES_TITLE",
     "Schedule",
     "ensure_watches_root",
+    "one_shot_action",
     "parse_schedule",
     "run_schedule_pass",
     "ticks_since",

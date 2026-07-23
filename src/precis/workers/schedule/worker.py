@@ -1,4 +1,6 @@
-"""Schedule worker — Slice 4 of ``docs/design/todo-tree-plan.md``.
+"""Schedule worker — Slice 4 of ``docs/design/todo-tree-plan.md``, extended
+by ADR 0061 to also fire **push delivery** (the retired ``kind='cron'``
+mechanism, folded onto ``level:recurring``).
 
 Walks every ``level:recurring`` ref whose ``meta.schedule`` is
 non-null, computes ticks since the last spawn event, and mints one
@@ -6,19 +8,37 @@ non-null, computes ticks since the last spawn event, and mints one
 seeded on first run via :func:`ensure_watches_root` so the second
 panel of ``view='roots'`` has somewhere to anchor.
 
+Two schedule shapes, two tick actions
+======================================
+
+* ``meta.schedule.cron`` (recurring) — the existing per-tick spawn loop
+  below. When the recurring ALSO carries ``meta.deliver = {'target': ...}``,
+  a due tick fires a push notify (:func:`_fire_delivery_conn`) instead of
+  minting a subtask — the tick's action *is* the delivery, matching how
+  the retired cron kind never touched the todo queue either.
+* ``meta.schedule.at`` (one-shot) — a single absolute fire time (ADR 0061's
+  "remind me in/at" case). :func:`_process_one_shot` decides fire / wait /
+  expire and, once resolved, tags the recurring root ``STATUS:done`` so it
+  never re-fires — a one-shot is a ``level:recurring`` node that retires
+  itself after its one tick.
+
 Guards (in order, per the plan):
 
 1. **Folder skip** — refs with ``meta.schedule is None`` (the Watches
    umbrella, and any future "folder" recurring) are walked but
    never spawn anything.
-2. **Paused skip** — recurrings with ``STATUS:paused`` are skipped.
-3. **Idempotency** — each candidate tick stamps the spawned child
-   with ``meta.spawned_for_tick='YYYY-MM-DDTHH:MM'``; if a child
-   with the same stamp already exists, the tick is a no-op.
-4. **Collision-skip** — when the previous spawned child is still
-   open (no ``STATUS:done``-class tag), the new tick is skipped.
-   A stalled queue doesn't pile up; the nursery sweep surfaces the
-   stuck leaf.
+2. **Paused / resolved skip** — recurrings tagged ``STATUS:paused`` (or,
+   for a one-shot, already resolved to ``STATUS:done``) are skipped.
+3. **Idempotency** — queue-mode: each candidate tick stamps the spawned
+   child with ``meta.spawned_for_tick='YYYY-MM-DDTHH:MM'``. Delivery-mode
+   (``meta.deliver`` set): the same stamp lives on a ``schedule:deliver``
+   ``ref_events`` row instead (no child to stamp). Either way, a second
+   pass on the same tick is a no-op.
+4. **Collision-skip** (queue-mode only) — when the previous spawned
+   child is still open (no ``STATUS:done``-class tag), the new tick is
+   skipped. A stalled queue doesn't pile up; the nursery sweep surfaces
+   the stuck leaf. Delivery-mode has no queue item to collide with, so
+   this guard doesn't apply there.
 5. **Backfill policy** — when the schedule's ``backfill_missed`` is
    ``False`` (the default), only the most recent tick is considered;
    missed ticks for weather / news are dropped. ``True`` walks every
@@ -56,6 +76,7 @@ from precis.store import Store
 from precis.workers.runner import BatchResult
 from precis.workers.schedule.parse import (
     Schedule,
+    one_shot_action,
     parse_schedule,
     ticks_since,
 )
@@ -65,6 +86,11 @@ from precis.workers.schedule.seed import (
 )
 
 log = logging.getLogger(__name__)
+
+#: STATUS values that make a recurring root ineligible for the next sweep:
+#: paused (operator opt-out) or one of the done-class terminals a resolved
+#: one-shot self-tags after firing/expiring.
+_INELIGIBLE_STATUSES_SQL = "('paused', 'done', 'won''t-do', 'auto-timeout')"
 
 
 def run_schedule_pass(store: Store, *, limit: int = 50) -> BatchResult:
@@ -137,13 +163,14 @@ def _candidate_recurring_ids(store: Store, *, limit: int) -> list[int]:
 
     * ``kind='todo'`` and not deleted
     * carries the ``level:recurring`` open tag
-    * not paused (``STATUS:paused`` excluded)
+    * not paused, and not a resolved one-shot (``STATUS`` in
+      :data:`_INELIGIBLE_STATUSES_SQL` excluded)
     * not the umbrella folder (``meta.builtin = 'watches-root'``)
     * has a ``meta.schedule`` block (not a folder ref by other means)
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id
               FROM refs r
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
@@ -157,7 +184,7 @@ def _candidate_recurring_ids(store: Store, *, limit: int) -> list[int]:
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                        WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                      'open'
-                   ) <> 'paused'
+                   ) NOT IN {_INELIGIBLE_STATUSES_SQL}
                AND COALESCE(r.meta->>'builtin', '') <> %s
                AND r.meta ? 'schedule'
              ORDER BY r.ref_id
@@ -197,13 +224,14 @@ def _claim_and_process(
     """
     with store.tx() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT r.ref_id,
                    r.title,
                    r.meta->'schedule' AS schedule,
                    r.meta->>'executor' AS executor,
                    r.meta->>'job_type' AS job_type,
                    r.meta->'params' AS params,
+                   r.meta->'deliver' AS deliver,
                    (SELECT max(e.ts) FROM ref_events e
                      WHERE e.ref_id = r.ref_id
                        AND e.source = 'schedule'
@@ -218,14 +246,14 @@ def _claim_and_process(
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                        WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                      'open'
-                   ) <> 'paused'
+                   ) NOT IN {_INELIGIBLE_STATUSES_SQL}
              FOR UPDATE OF r SKIP LOCKED
             """,
             (rec_id, WATCHES_BUILTIN),
         ).fetchone()
         if row is None:
             # Either another worker holds the row, or the row was
-            # paused / deleted / un-marked between the enumeration
+            # paused / deleted / resolved between the enumeration
             # pass and now. Both cases: do nothing, return clean.
             return (0, 0, 0)
 
@@ -236,7 +264,8 @@ def _claim_and_process(
             "executor": row[3],
             "job_type": row[4],
             "params": row[5],
-            "last_tick": row[6],
+            "deliver": dict(row[6]) if row[6] else None,
+            "last_tick": row[7],
         }
         spawned, skipped = _spawn_due_ticks(store, rec, now=now, conn=conn)
         return (1, spawned, skipped)
@@ -249,27 +278,49 @@ def _spawn_due_ticks(
     now: datetime,
     conn: Any,
 ) -> tuple[int, int]:
-    """Compute due ticks and mint a child per tick inside the locked tx.
+    """Compute due ticks and act on each, inside the locked tx.
 
     Called only from :func:`_claim_and_process`, which holds the row
-    lock. ``conn`` is the transaction-bound connection so the spawn
-    inserts + event appends share the tx; commit happens when the
-    outer ``with store.tx()`` exits.
+    lock. ``conn`` is the transaction-bound connection so every write
+    (child insert, delivery notify, event append, STATUS tag) shares
+    the tx; commit happens when the outer ``with store.tx()`` exits.
+
+    Branches on the schedule shape (ADR 0061):
+
+    * ``schedule.at`` set — one-shot; delegates to
+      :func:`_process_one_shot`.
+    * ``schedule.cron`` set — recurring; the existing per-tick loop.
+      When ``rec['deliver']`` is set, a due tick fires a push
+      delivery (:func:`_fire_delivery_conn`) instead of minting a
+      subtask — no collision-skip guard applies (there's no queue
+      item to collide with, matching the retired cron kind).
     """
     spec = rec["schedule"]
     if not spec:
         return (0, 0)
     schedule: Schedule = parse_schedule(spec)
+    if schedule.at is not None:
+        return _process_one_shot(store, conn, rec, schedule, now=now)
     last_tick = rec["last_tick"]
     if last_tick is not None and last_tick.tzinfo is None:
         last_tick = last_tick.replace(tzinfo=UTC)
     ticks = ticks_since(last_tick, schedule, now=now)
     if not ticks:
         return (0, 0)
+    deliver = rec.get("deliver")
     spawned = 0
     skipped = 0
     for tick in ticks:
         stamp = tick.isoformat(timespec="minutes")
+        if deliver:
+            if _deliver_stamp_exists_conn(conn, rec["id"], stamp):
+                skipped += 1
+                continue
+            _fire_delivery_conn(
+                conn, rec, stamp=stamp, target=deliver["target"], store=store
+            )
+            spawned += 1
+            continue
         if _child_with_stamp_exists_conn(conn, rec["id"], stamp):
             skipped += 1
             continue
@@ -284,6 +335,137 @@ def _spawn_due_ticks(
         _mint_child_conn(store, conn, rec, tick=tick, stamp=stamp)
         spawned += 1
     return (spawned, skipped)
+
+
+def _process_one_shot(
+    store: Store,
+    conn: Any,
+    rec: dict[str, Any],
+    schedule: Schedule,
+    *,
+    now: datetime,
+) -> tuple[int, int]:
+    """Resolve a one-shot ``meta.schedule.at`` recurring (ADR 0061).
+
+    A one-shot is a ``level:recurring`` node whose schedule fires exactly
+    once: this decides fire / wait / expire via
+    :func:`~precis.workers.schedule.parse.one_shot_action`, fires the
+    delivery notify on a fire (when ``rec['deliver']`` is set), and — on
+    either a fire or an expire — tags the recurring root ``STATUS:done``
+    so it drops out of :func:`_candidate_recurring_ids` for good (no
+    self-inflicted re-fire next pass).
+
+    Returns ``(spawned, skipped)`` where ``spawned`` counts a fire and
+    ``skipped`` counts a not-yet-due wait or an expiry.
+    """
+    from precis.store.types import Tag
+
+    assert schedule.at is not None
+    at = _parse_iso(schedule.at)
+    action = one_shot_action(at, catch_up=schedule.catch_up, now=now)
+    if action == "wait":
+        return (0, 0)
+    stamp = at.isoformat(timespec="minutes")
+    if _deliver_stamp_exists_conn(conn, rec["id"], stamp):
+        # Already resolved this exact tick (shouldn't happen — the
+        # STATUS:done tag below should have excluded it from the next
+        # candidate scan — but stay idempotent regardless).
+        return (0, 0)
+    deliver = rec.get("deliver")
+    if action == "fire":
+        if deliver:
+            _fire_delivery_conn(
+                conn, rec, stamp=stamp, target=deliver["target"], store=store
+            )
+        else:
+            store.append_event(
+                rec["id"],
+                source="schedule",
+                event="deliver",
+                payload={"tick": stamp, "action": "fire"},
+                conn=conn,
+            )
+        result = (1, 0)
+    else:  # "expire"
+        store.append_event(
+            rec["id"],
+            source="schedule",
+            event="deliver",
+            payload={"tick": stamp, "action": "expire"},
+            conn=conn,
+        )
+        log.info(
+            "schedule: rec id=%d one-shot expired (missed, catch_up=False)", rec["id"]
+        )
+        result = (0, 1)
+    store.add_tag(
+        rec["id"],
+        Tag.closed("STATUS", "done"),
+        set_by="system",
+        replace_prefix=True,
+        conn=conn,
+    )
+    return result
+
+
+def _parse_iso(s: str) -> datetime:
+    """Parse an ISO 8601 timestamp into an aware UTC datetime."""
+    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def _deliver_stamp_exists_conn(conn: Any, rec_id: int, stamp: str) -> bool:
+    """True when a ``schedule:deliver`` event already carries this tick stamp.
+
+    Delivery-mode ticks mint no child row (nothing to check
+    ``spawned_for_tick`` against), so idempotency lives directly on
+    ``ref_events`` — the same table :func:`_mint_child_conn` appends
+    ``schedule:spawn`` to for queue-mode ticks.
+    """
+    row = conn.execute(
+        """
+        SELECT 1 FROM ref_events
+         WHERE ref_id = %s AND source = 'schedule' AND event = 'deliver'
+           AND payload->>'tick' = %s
+         LIMIT 1
+        """,
+        (rec_id, stamp),
+    ).fetchone()
+    return row is not None
+
+
+def _fire_delivery_conn(
+    conn: Any, rec: dict[str, Any], *, stamp: str, target: str, store: Store
+) -> None:
+    """Fire the push-delivery notify + stamp the tick (ADR 0061).
+
+    Emits the *exact* wire payload the retired ``kind='cron'`` fired —
+    ``pg_notify('precis.cron', {cron_id, payload, target})`` — so asa_bot's
+    listener (``asa_bot/pg_listen.py`` + ``bot.py::_handle_cron``) needs no
+    change: it never read back a ``kind='cron'`` ref, only the notify
+    payload. ``payload`` is the recurring's own title/text — recurring
+    reminders don't carry a fresh per-tick body, same as the retired cron.
+    """
+    import json
+
+    payload_text = rec.get("title") or ""
+    conn.execute(
+        "SELECT pg_notify('precis.cron', %s)",
+        (
+            json.dumps(
+                {"cron_id": rec["id"], "payload": payload_text, "target": target}
+            ),
+        ),
+    )
+    store.append_event(
+        rec["id"],
+        source="schedule",
+        event="deliver",
+        payload={"tick": stamp, "target": target},
+        conn=conn,
+    )
 
 
 def _child_with_stamp_exists_conn(conn: Any, parent_id: int, stamp: str) -> bool:

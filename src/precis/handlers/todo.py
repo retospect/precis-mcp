@@ -441,13 +441,24 @@ class TodoHandler(NumericRefHandler):
         if meta is not None and "schedule" in meta:
             parsed = guards.check_schedule_in_meta(meta)
             if parsed is not None:
-                meta = {
-                    **meta,
-                    "schedule": {
+                if parsed.at is not None:
+                    schedule_out: dict[str, Any] = {
+                        "at": parsed.at,
+                        "catch_up": parsed.catch_up,
+                    }
+                else:
+                    schedule_out = {
                         "cron": parsed.cron,
                         "backfill_missed": parsed.backfill_missed,
-                    },
-                }
+                    }
+                meta = {**meta, "schedule": schedule_out}
+        # ``meta.deliver`` (ADR 0061) marks a recurring (or its ticks) for
+        # push delivery — a synthetic prompt fired at asa_bot instead of
+        # (or alongside) minting a doable-queue subtask.
+        if meta is not None and "deliver" in meta:
+            parsed_deliver = guards.check_deliver_in_meta(meta)
+            if parsed_deliver is not None:
+                meta = {**meta, "deliver": parsed_deliver}
         # Auto-inject parent_id from the runtime context
         # (PRECIS_CURRENT_TODO env). The runner sets this to the parent
         # todo's ref_id on the claude -p subprocess; the LLM doesn't
