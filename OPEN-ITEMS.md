@@ -10,6 +10,29 @@ is the historical observation log.
 > regression that pins it.
 
 ---
+## 🔵 catpath harvest bookmark — multi-job concurrency edge case
+- Status: open · Severity: polish · Owner: `src/precis/quest/compute.py::harvest_measures`
+  · Test: none yet (unconfirmed whether concurrent catpath jobs per candidate
+  occur in practice).
+- Commit `3e746728` fixed `harvest_measures` advancing its
+  `quest_catpath_harvested_upto` bookmark past a still-unresolved catpath job
+  (permanently losing that job's barrier once it did complete) — but only for
+  the single-in-flight-job case. `_fresh_catpath_jobs` returns *all* jobs
+  newer than the bookmark, oldest-first; the loop still advances `cp_seen` to
+  the newest job that yielded measures even if an *older* job in the same
+  batch is still unresolved. If a candidate ever has two catpath jobs in
+  flight concurrently (e.g. a stale job from a superseded relax version still
+  running alongside a fresh retry) and the newer one resolves first, the
+  older job's `ref_id` falls at-or-below the new `cp_seen` and is permanently
+  skipped once it does complete — same failure mode, now requiring 2+
+  concurrent jobs instead of 1.
+- Not fixed inline: `dispatch_catpath` appears to mint one job per candidate
+  today, so this is unconfirmed as a live scenario. Needs a design call before
+  a fix — track the bookmark as the *min* over any still-pending job's
+  predecessor, or switch to per-job harvested state instead of a single
+  high-water mark.
+
+---
 ## 📄 Elsevier preview-PDF remediation — ~2,800 prod papers, pilot-ready
 - Status: open · Severity: feature (data quality, not a bug) · Owner: cluster
   ops (not this dev session — see below) · Test: manual verification of
