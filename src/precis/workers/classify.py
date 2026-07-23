@@ -182,9 +182,23 @@ def _enrich(conn, rows: list[dict]) -> None:
 
 
 def run_classify_pass(
-    store: Any, *, client: Any, batch_size: int = 16, escalate_model: str | None = None
+    store: Any,
+    *,
+    client: Any,
+    batch_size: int = 16,
+    escalate_client: Any | None = None,
 ) -> dict:
-    """One claim→classify→write cycle. Returns {claimed, ok, failed}."""
+    """One claim→classify→write cycle. Returns {claimed, ok, failed}.
+
+    ``escalate_client`` (Tier 2, optional — ``PRECIS_CLASSIFY_ESCALATE_MODEL``)
+    re-judges chunks the cheap ``client`` calls ``own`` — the
+    citation-critical, error-prone class — with a stronger model. It must be a
+    **distinct** client bound to the escalate model (see ``cli/worker.py``'s
+    wiring); passing ``client`` itself here would silently re-run the
+    identical judgment on the identical model twice, which is a no-op
+    disguised as a re-judge — the env knob would gate *whether* to
+    "escalate" without ever changing *which* model runs.
+    """
     junk_axis = _load_axis("junk")
     role3_axis = _load_axis("role3")
 
@@ -203,8 +217,8 @@ def run_classify_pass(
             val = "furniture"
         else:
             val = _classify_one(client, role3_axis, row)
-            if val == "own" and escalate_model is not None:
-                ev = _classify_one(client, role3_axis, row)  # escalate re-judge
+            if val == "own" and escalate_client is not None:
+                ev = _classify_one(escalate_client, role3_axis, row)  # Tier 2 re-judge
                 if ev in _ROLE3_VALS:
                     val = ev
         if val not in _ROLE3_VALS:

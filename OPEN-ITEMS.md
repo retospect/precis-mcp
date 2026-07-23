@@ -219,11 +219,6 @@ passes now. Remaining:
   prod `llm` cards (endpoint llama-swap `:11445`, real model) → local passes
   reroute off the proxy. The flip that retires litellm's local role; cloud already
   bypasses litellm regardless (it never reads `served_by`).
-- **Latent bug (pre-existing, not a Track-2 regression):** `workers/classify.py`
-  reads `PRECIS_CLASSIFY_ESCALATE_MODEL` but the "escalate re-judge" reuses the
-  **same** client/model — the env knob only gates *whether* to re-judge, never
-  *which* model. Fix: a second `DispatchClient(model=escalate_model)`, or drop the
-  dead knob.
 
 ---
 
@@ -331,26 +326,24 @@ Surfaced 2026-07-20 optimizing the first real running quest (**quest 164903**,
 coordinator loop **job 166379**, dossier draft `quest-164903-dossier`). Ordered
 by value.
 
-- **Wrap the recurring "keep tabs on a quest" ops in an opus/skill** *(feature,
-  open — owner a new `precis-quest-ops` skill or `precis quest status <id>`
-  CLI).* Repeated by-hand `scripts/prod-psql` queries I keep re-running to
-  monitor a quest — fold each into one command as they stabilize: **(1)**
-  logbook tail (`chunks WHERE ref_id=<q> AND chunk_kind='quest_log' ORDER BY
-  pos`); **(2)** candidate structures + their measures + `ruled-out:*` tags;
-  **(3)** sim-job status roll (`struct_relax`/`catpath_explore` by `parent_id`
-  → `serves` → quest, with STATUS + created_at, showing cancelled/retried
-  churn); **(4)** coordinator-loop slice events (`quest_tick` job_event
-  chunks); **(5)** per-quest LLM spend + errors (`llm_call_log WHERE
-  ref_id=<q>`, surfacing 400/502 blips). A `precis quest status <id>` that
-  prints all five is the consolidation target.
-- **Extend catpath leases / kill the re-lease churn** *(bug, open — owner
-  `quest/compute.py::dispatch_catpath` + `executors` lease logic).* Every
-  candidate's first `catpath_explore` was cancelled and re-minted ~2.5 h later
-  (164913: 165035/165286→165386; Pt/Cu/Ni: 165611/165614/165617→165824/6/8)
-  before succeeding — lease-expiry churn the `wall_seconds` comment already
-  warns about. Confirm `PRECIS_CATPATH_WALL_SECONDS` (default 5400) actually
-  reaches the ssh_node lease on the routed node; raise the floor if full-network
-  NEBs under load still outlive it.
+- **`precis quest status <id>` ops CLI** *(feature, SHIPPED).* Consolidates the
+  five by-hand queries into one command: logbook tail, candidate structures +
+  measures + `ruled-out:*` tags, sim-job status roll (`struct_relax`/
+  `catpath_explore` by `parent_id`, STATUS + created_at), coordinator-loop
+  `quest_tick` job_event trail, and per-quest LLM spend/errors (`llm_call_log
+  WHERE ref_id=<q>`). Read-only. Owner: `precis/quest/status.py` + `cli/quest.py`.
+- **catpath lease `wall_seconds` wiring — confirmed correct, churn cause still
+  open** *(investigation, done; underlying churn unexplained)*. Traced
+  `PRECIS_CATPATH_WALL_SECONDS` end-to-end: it reaches the dispatched job's
+  `params.resources.wall_seconds`, which is exactly the field `ssh_node.
+  _lease_seconds` reads — no wiring bug (regression test:
+  `TestDispatchCatpath.test_wall_seconds_env_reaches_the_job_and_the_ssh_node_lease`
+  in `tests/test_quest_compute.py`). The observed ~2.5h re-lease churn (164913:
+  165035/165286→165386; Pt/Cu/Ni: 165611/165614/165617→165824/6/8) is therefore
+  NOT explained by this value being dropped — needs live cluster-log evidence
+  (contention? a slower-than-expected full-network run genuinely outliving even
+  a correctly-applied 2.5h lease?) before raising the default; don't guess a
+  new number without that evidence.
 - **Relax the slab box along with the atoms** *(feature, in-repo landed;
   container + bulk-relax follow-ups open — owner `structure/relax.py::_relax_ml`
   + `slab` op + the `precis-dft` container).* **Done (in-repo):** a `relax` op
@@ -374,16 +367,28 @@ by value.
   (hydride/subsurface-H chemistry), and subsurface dopant placement (not just
   adatoms). Each needs a compact op the `slab`-based proposal template can emit
   and catpath can inject.
-- **The one struct_relax lane is dead — and it laundered a wrong conclusion**
-  *(bug, open — owner spark `struct_relax` executor + `quest/compute.py`
-  harvest).* Only one `struct_relax` was ever minted (164914, on clean Pd(111));
-  it **failed on infra** (docker `gpaw-relax` on spark), harvest tagged the
-  baseline `ruled-out:relax-failed`, and the model wrote "Pd(111) is unstable
-  under reaction conditions" into the dossier — a *physical* dead-end laundered
-  from an *infra* failure. Fix the spark relax lane (it should be the stability
-  measurement); until then, don't let a relax-job infra failure auto-`dead-end`
-  a candidate (distinguish non-convergence from executor error). Un-rule-out
-  st164913 once the lane works.
+- **struct_relax infra failures no longer launder into a dead-end verdict**
+  *(bug, FIXED — owner `workers/job_types/struct_relax.py` +
+  `workers/executors/{_common,ssh_node,claude_inproc}.py` + `quest/compute.py`
+  harvest).* `struct_relax`'s dispatcher now stamps a `failure_class` (`"infra"`
+  vs `"non-convergence"`) on every `record_failure(...)` call — the container/
+  runner/executor dying (crash, OOM, malformed output, crash-loop guard,
+  uncaught dispatcher exception) is `"infra"`; only a completed run whose
+  relax code itself reports `ok: false` is `"non-convergence"`. `quest/compute.
+  py::harvest_measures` reads it: an `"infra"` failure no longer tags
+  `ruled-out:relax-failed` — it stays eligible for retry. Regression tests:
+  `tests/test_struct_relax_job.py` (`test_dispatch_infra_failure_is_classed_
+  infra`, updated `test_dispatch_failure_records_no_cache_row`),
+  `tests/test_ssh_node_executor.py::test_poison_guard_fails_past_max_attempts`,
+  `tests/test_quest_compute.py::TestHarvest` (`test_infra_relax_failure_does_
+  not_rule_out_candidate`, `test_non_convergence_relax_failure_rules_out_
+  candidate`). **Remaining, live-data ops action for Reto** (not done here —
+  deliberately not touched by this fix): un-rule-out the already-poisoned
+  prod candidate **st164913** (drop its `ruled-out:relax-failed` tag +
+  correct the dossier text that called Pd(111) unstable) now that the fix is
+  shipped. Also still open: fix the actual spark `struct_relax`/`gpaw-relax`
+  container lane so relaxes genuinely succeed (this fix only stops a failure
+  from being *misclassified* — it doesn't make the container run).
 
 **Open design questions** (resolve as steering matures): cost/credit attribution
 under overlapping quests (pull = max; cost needs a split/shared-pool rule);

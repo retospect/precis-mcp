@@ -169,6 +169,56 @@ class TestHarvest:
         assert step.ruled_out == 1
         assert any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
 
+    def test_non_convergence_relax_failure_rules_out_candidate(
+        self, store: Any
+    ) -> None:
+        """A relax job that ran to completion and reported a genuine physical
+        failure (``failure_class="non-convergence"``) is a real verdict on the
+        candidate — it still rules out, same as the untagged legacy case
+        above."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="struct_relax",
+            meta={"job_type": "struct_relax", "failure_class": "non-convergence"},
+            parent_id=sid,
+        )
+        store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.ruled_out == 1
+        assert any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+
+    def test_infra_relax_failure_does_not_rule_out_candidate(self, store: Any) -> None:
+        """The real bug this pins: a `struct_relax` job that failed for an
+        INFRA reason (container/docker/executor died — ``failure_class=
+        "infra"``) must NOT be laundered into a dead-end verdict on the
+        candidate's stability. It stays eligible for retry."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="struct_relax",
+            meta={"job_type": "struct_relax", "failure_class": "infra"},
+            parent_id=sid,
+        )
+        store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.ruled_out == 0
+        assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+
 
 # ── frontier over the store ───────────────────────────────────────────
 
@@ -649,6 +699,26 @@ class TestDispatchCatpath:
         assert cfg["mlip"]["device"] == "cuda"
         assert cfg["substrate"] == "NO"  # original keys ride along
         assert "mlip" not in self._RX  # caller's dict untouched
+
+    def test_wall_seconds_env_reaches_the_job_and_the_ssh_node_lease(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """``PRECIS_CATPATH_WALL_SECONDS`` must reach the dispatched job's
+        ``resources.wall_seconds`` (the field ``ssh_node``'s ``_lease_seconds``
+        reads to size the lease) — a wiring regression, not just a unit check
+        of either side in isolation."""
+        from precis.workers.executors import ssh_node
+
+        monkeypatch.setenv(compute_mod._CATPATH_WALL_SECONDS_ENV, "9000")
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_catpath(store, sid, self._RX)
+        _job_id, jmeta = compute_mod._fresh_catpath_jobs(store, sid, 0)[0]
+        params = jmeta.get("params") or {}
+        assert params["resources"]["wall_seconds"] == 9000
+        # the full job meta (as stored) is what ssh_node's claim loop reads
+        full_meta = {"params": params}
+        assert ssh_node._lease_seconds(full_meta) == 9000 + ssh_node._LEASE_MARGIN_S
 
     def test_unrouted_job_leaves_device_unset(
         self, store: Any, monkeypatch: Any

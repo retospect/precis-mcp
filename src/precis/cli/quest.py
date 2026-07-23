@@ -4,6 +4,8 @@
     precis quest tick 7 --dry-run    # assemble + print the tick context, no LLM
     precis quest dossier 7           # print quest 7's living dossier
     precis quest gaps 7              # print quest 7's gaps + health
+    precis quest status 7            # ops roll-up: logbook, candidates, sim
+                                      # jobs, coordinator trail, LLM spend
 
 The autonomous loop (rung 4d) is dark by default; ``tick`` is the manual, one-
 shot driver — explicit human intent, so it runs regardless of
@@ -54,6 +56,23 @@ def add_parser(subparsers: Any) -> None:
     f = qsub.add_parser("frontier", help="Print a quest's Pareto frontier.")
     f.add_argument("id", type=int, help="Quest ref id.")
     f.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+    st = qsub.add_parser(
+        "status",
+        help="Ops roll-up: logbook tail, candidates + measures, sim-job "
+        "status, coordinator tick trail, LLM spend. Read-only.",
+    )
+    st.add_argument("id", type=int, help="Quest ref id.")
+    st.add_argument(
+        "--logbook", type=int, default=10, help="Logbook tail lines (default 10)."
+    )
+    st.add_argument(
+        "--tick-events",
+        type=int,
+        default=10,
+        help="Coordinator job_event tail lines (default 10).",
+    )
+    st.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     sc = qsub.add_parser(
         "seed-catalyst",
@@ -181,6 +200,18 @@ def _cmd_gaps(store: Store, args: argparse.Namespace) -> None:
     print(h.get(id=args.id, view="gaps").body)
 
 
+def _cmd_status(store: Store, args: argparse.Namespace) -> None:
+    from precis.quest.status import gather_quest_status, render_quest_status
+
+    status = gather_quest_status(
+        store, args.id, logbook_n=args.logbook, tick_n=args.tick_events
+    )
+    if status is None:
+        print(f"quest {args.id}: not found")
+        return
+    print(render_quest_status(status))
+
+
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url))
     if args.quest_cmd == "tick":
@@ -191,6 +222,8 @@ def run(args: argparse.Namespace) -> None:
         _cmd_gaps(store, args)
     elif args.quest_cmd == "frontier":
         _cmd_frontier(store, args)
+    elif args.quest_cmd == "status":
+        _cmd_status(store, args)
     elif args.quest_cmd == "seed-catalyst":
         _cmd_seed_catalyst(store, args)
     elif args.quest_cmd == "run":

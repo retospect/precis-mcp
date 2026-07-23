@@ -227,7 +227,9 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         poscar_labels = list(params["poscar_labels"])
         poscar = str(params["poscar"])
     except (KeyError, TypeError, ValueError) as exc:
-        ctx.record_failure(f"struct_relax: malformed params ({exc})")
+        ctx.record_failure(
+            f"struct_relax: malformed params ({exc})", failure_class="infra"
+        )
         return
     model = params.get("model") or "mace_mp"
     steps = int(params.get("steps", 200))
@@ -249,29 +251,42 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         rc, output = RUNNER(argv, node=node, in_dir=in_dir, out_dir=out_dir)
     except Exception as exc:  # pragma: no cover — defensive
         log.warning("struct_relax: runner raised", exc_info=True)
-        ctx.record_failure(f"struct_relax: runner failed: {exc}")
+        ctx.record_failure(f"struct_relax: runner failed: {exc}", failure_class="infra")
         return
     ctx.append_chunk("job_event", f"container rc={rc}\n{output[-2000:]}")
 
     result_path = Path(out_dir) / _RESULT_FILE
     if rc != 0 or not result_path.exists():
+        # The container itself didn't run to completion (crash, OOM-kill,
+        # docker/ssh failure, …) — an INFRA failure, not a physical verdict on
+        # the candidate. A genuine non-convergence still exits 0 and writes a
+        # result.json (``ok: false`` below).
         ctx.record_failure(
-            f"struct_relax: container rc={rc}, no {_RESULT_FILE} — see the log event"
+            f"struct_relax: container rc={rc}, no {_RESULT_FILE} — see the log event",
+            failure_class="infra",
         )
         return
     try:
         result = json.loads(result_path.read_text())
     except json.JSONDecodeError as exc:
-        ctx.record_failure(f"struct_relax: malformed {_RESULT_FILE}: {exc}")
+        ctx.record_failure(
+            f"struct_relax: malformed {_RESULT_FILE}: {exc}", failure_class="infra"
+        )
         return
     if not result.get("ok"):
+        # The container ran to completion and the relax code itself reported
+        # a genuine failure (e.g. non-convergence) — this IS a physical
+        # verdict on the candidate, unlike the infra branches above.
         ctx.record_failure(
-            f"struct_relax: relax reported failure: {result.get('error', 'unknown')}"
+            f"struct_relax: relax reported failure: {result.get('error', 'unknown')}",
+            failure_class="non-convergence",
         )
         return
     scalars = result.get("scalars") or {}
     if "E_tot" not in scalars:
-        ctx.record_failure("struct_relax: result.json missing scalars.E_tot")
+        ctx.record_failure(
+            "struct_relax: result.json missing scalars.E_tot", failure_class="infra"
+        )
         return
 
     curve = list(result.get("curve") or scalars.get("force_curve") or [])

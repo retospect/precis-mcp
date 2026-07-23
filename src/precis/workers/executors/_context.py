@@ -67,8 +67,13 @@ class DispatchContext:
     set_meta: Callable[..., None]
     #: Terminal-failure recorder. Writes a ``job_event`` reason
     #: chunk, transitions to ``STATUS:failed``, and (Slice-5)
-    #: bubbles the failure to the parent todo.
-    record_failure: Callable[[str], None]
+    #: bubbles the failure to the parent todo. Optional
+    #: ``failure_class=`` keyword (e.g. ``"infra"`` vs
+    #: ``"non-convergence"``) stamps ``refs.meta.failure_class`` so a
+    #: downstream harvest can tell "the executor died" apart from
+    #: "the compute ran and genuinely failed" — see
+    #: :func:`precis.workers.executors._common.record_failure`.
+    record_failure: Callable[..., None]
     #: Cooperative cancel check. Returns ``True`` when a
     #: ``STATUS:cancel_requested`` tag has been added since the
     #: job was claimed. Plugins running multi-phase work should

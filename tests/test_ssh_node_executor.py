@@ -313,3 +313,6 @@ def test_poison_guard_fails_past_max_attempts(
     assert result == {"claimed": 1, "ok": 0, "failed": 1}
     assert _status(store, rid) == "failed"
     assert dispatched["n"] == 0  # never dispatched
+    # crash-loop guard is an INFRA failure (the worker died mid-dispatch, not
+    # a physical verdict) — a struct_relax-style harvest must be able to tell.
+    assert _meta(store, rid)["failure_class"] == "infra"

@@ -55,7 +55,7 @@ def _fake_ctx(store, params: dict[str, Any]) -> tuple[DispatchContext, list]:
         set_status=lambda s: events.append(("status", s)),
         append_chunk=lambda k, t: events.append((k, t)),
         set_meta=lambda **kw: events.append(("meta", kw)),
-        record_failure=lambda r: events.append(("fail", r)),
+        record_failure=lambda r, **kw: events.append(("fail", {"reason": r, **kw})),
         is_cancel_requested=lambda: False,
     )
     return ctx, events
@@ -177,6 +177,9 @@ def test_seam_a_later_handler_relax_is_a_zero_compute_hit(
 
 
 def test_dispatch_failure_records_no_cache_row(structure, tmp_path, monkeypatch):
+    """``ok: false`` in ``result.json`` is the relax code itself reporting a
+    genuine (non-convergence) physical failure — a real verdict on the
+    candidate, so ``failure_class="non-convergence"``."""
     structure.put(id="pd_pair", text=_PD)
     params = _build_params(structure)
     monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
@@ -188,7 +191,32 @@ def test_dispatch_failure_records_no_cache_row(structure, tmp_path, monkeypatch)
     ctx, events = _fake_ctx(structure.store, params)
     struct_relax._dispatch(ctx, struct_relax.SPEC)
 
-    assert any(k == "fail" for k, _ in events)
+    fails = [payload for k, payload in events if k == "fail"]
+    assert len(fails) == 1
+    assert fails[0]["failure_class"] == "non-convergence"
+    assert ("status", "succeeded") not in events
+    assert structure.store.structure_find_cached_run(params["cache_key"]) is None
+
+
+def test_dispatch_infra_failure_is_classed_infra(structure, tmp_path, monkeypatch):
+    """The real bug this pins: a runner that dies (container/docker/executor
+    failure — no ``result.json`` at all) must be classed ``"infra"``, NOT
+    laundered into the same bucket as a genuine physical non-convergence —
+    quest ``harvest_measures`` reads this to decide ruled-out vs retry."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure)
+    monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+
+    def _crashing_runner(argv, *, node, in_dir, out_dir, timeout=None):
+        return 137, "OOM-killed"  # no result.json written — container died
+
+    monkeypatch.setattr(struct_relax, "RUNNER", _crashing_runner)
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    fails = [payload for k, payload in events if k == "fail"]
+    assert len(fails) == 1
+    assert fails[0]["failure_class"] == "infra"
     assert ("status", "succeeded") not in events
     assert structure.store.structure_find_cached_run(params["cache_key"]) is None
 

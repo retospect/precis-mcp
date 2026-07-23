@@ -59,6 +59,9 @@ from precis.workers.executors._common import (
     record_failure as _record_failure,
 )
 from precis.workers.executors._common import (
+    set_meta as _set_meta,
+)
+from precis.workers.executors._common import (
     set_status as _set_status,
 )
 
@@ -130,7 +133,11 @@ def run_ssh_node_pass(store: Any, *, limit: int = 1) -> dict[str, int]:
             attempts = int(meta.get("attempts") or 0) + 1
             if attempts > _MAX_ATTEMPTS:
                 # Poison guard: a job re-claimed past the cap keeps crashing its
-                # worker — fail + bubble instead of stealing it yet again.
+                # worker — fail + bubble instead of stealing it yet again. This
+                # is by construction an INFRA failure (the worker/executor died
+                # mid-dispatch, not the compute reporting a physical verdict),
+                # so a `struct_relax`-style harvest reading `failure_class`
+                # must not treat it as a rule-out.
                 _append_chunk(
                     store,
                     ref_id,
@@ -139,6 +146,7 @@ def run_ssh_node_pass(store: Any, *, limit: int = 1) -> dict[str, int]:
                     "(crash-loop guard) — failing",
                     conn=conn,
                 )
+                _set_meta(conn, ref_id, failure_class="infra")
                 _set_status(store, ref_id, _FAILED, conn=conn)
                 bubble_job_failure(store, ref_id, conn=conn)
                 poisoned += 1
@@ -172,6 +180,10 @@ def run_ssh_node_pass(store: Any, *, limit: int = 1) -> dict[str, int]:
                         f"runner: uncaught exception: {exc!r}",
                         conn=conn,
                     )
+                    # An uncaught exception in the dispatcher is the executor
+                    # itself dying, not a physical verdict — INFRA (see
+                    # ``_MAX_ATTEMPTS`` guard above for the same reasoning).
+                    _set_meta(conn, ref_id, failure_class="infra")
                     _set_status(store, ref_id, _FAILED, conn=conn)
                     conn.commit()
             except Exception:  # pragma: no cover
@@ -183,7 +195,13 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
     """Dispatch one claimed job to its plugin ``dispatch(ctx, spec)``."""
     job_type_name = meta.get("job_type")
     if not job_type_name:
-        _record_failure(store, ref_id, "missing meta.job_type", gripe_rollback=None)
+        _record_failure(
+            store,
+            ref_id,
+            "missing meta.job_type",
+            gripe_rollback=None,
+            failure_class="infra",
+        )
         return
     spec = get_job_type(str(job_type_name))
     if spec is None:
@@ -192,6 +210,7 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
             ref_id,
             f"unknown job_type {job_type_name!r}; known: {known_job_types()}",
             gripe_rollback=None,
+            failure_class="infra",
         )
         return
 
@@ -216,6 +235,7 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
             f"job_type {spec.name!r} has no dispatch; ssh_node runs plugin "
             "dispatchers only",
             gripe_rollback=None,
+            failure_class="infra",
         )
         return
 

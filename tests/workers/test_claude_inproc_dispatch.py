@@ -273,6 +273,7 @@ class TestDispatchContextClosures:
             reason: str,
             *,
             gripe_rollback: Any,
+            failure_class: str | None = None,
         ) -> None:
             calls.append((ref_id, reason))
 
@@ -283,6 +284,33 @@ class TestDispatchContextClosures:
         ctx.record_failure("plugin said no")
 
         assert calls == [(9, "plugin said no")]
+
+    def test_record_failure_threads_failure_class(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``ctx.record_failure(reason, failure_class=...)`` must reach the
+        ``_common.record_failure`` helper — the seam
+        ``struct_relax``/``ssh_node`` rely on to distinguish an infra failure
+        from a genuine physical (non-convergence) one."""
+        calls: list[tuple[int, str, str | None]] = []
+
+        def _spy(
+            store: Any,
+            ref_id: int,
+            reason: str,
+            *,
+            gripe_rollback: Any,
+            failure_class: str | None = None,
+        ) -> None:
+            calls.append((ref_id, reason, failure_class))
+
+        monkeypatch.setattr(claude_inproc, "_record_failure", _spy)
+
+        store = _FakeStore()
+        ctx = claude_inproc._build_dispatch_context(store, ref_id=9, title="t", meta={})
+        ctx.record_failure("container died", failure_class="infra")
+
+        assert calls == [(9, "container died", "infra")]
 
     def test_is_cancel_requested_uses_helper(
         self, monkeypatch: pytest.MonkeyPatch

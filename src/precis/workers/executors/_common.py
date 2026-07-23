@@ -530,11 +530,23 @@ def record_failure(
     reason: str,
     *,
     gripe_rollback: int | None,
+    failure_class: str | None = None,
 ) -> None:
-    """Tag a job ``STATUS:failed`` with a reason event chunk."""
+    """Tag a job ``STATUS:failed`` with a reason event chunk.
+
+    ``failure_class`` (optional) distinguishes *why* the job failed — e.g.
+    ``"infra"`` (the runner/container/executor itself died: subprocess
+    exception, non-zero container exit, malformed/missing output) vs
+    ``"non-convergence"`` (the compute actually ran and reported a genuine
+    physical/numeric failure) — stamped onto ``refs.meta.failure_class`` so a
+    downstream harvest can tell "couldn't run" apart from "ran and failed"
+    instead of laundering both into the same bare ``STATUS:failed``.
+    """
     with store.pool.connection() as conn:
         append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
         set_status(store, ref_id, FAILED, conn=conn)
+        if failure_class is not None:
+            set_meta(conn, ref_id, failure_class=failure_class)
         if gripe_rollback is not None:
             set_status(store, gripe_rollback, "open", conn=conn)
         # Slice-5 failure-bubble.

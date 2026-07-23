@@ -757,7 +757,24 @@ def run(args: argparse.Namespace) -> None:
                 log_call=True,
                 log_blobs=False,
             )
-            _cls_escalate = os.environ.get("PRECIS_CLASSIFY_ESCALATE_MODEL") or None
+            # Tier 2 (ADR 0047 §Tiers): a re-judge-only client bound to the
+            # escalate model — must be a *distinct* client from `_cls_client`
+            # (mirrors inject_scan's identical gate/escalate shape), else the
+            # "escalate" call silently re-runs the same model twice.
+            _cls_escalate_model = (
+                os.environ.get("PRECIS_CLASSIFY_ESCALATE_MODEL") or None
+            )
+            _cls_escalate_client = (
+                _DispatchClient(
+                    tier=_Tier.LOCAL_SMALL,
+                    model=_cls_escalate_model,
+                    source="classify",
+                    log_call=True,
+                    log_blobs=False,
+                )
+                if _cls_escalate_model
+                else None
+            )
 
             def _classify_pass(batch_size: int) -> _ClsBatchResult:
                 from precis.workers.classify import run_classify_pass
@@ -766,7 +783,7 @@ def run(args: argparse.Namespace) -> None:
                     store,
                     client=_cls_client,
                     batch_size=min(batch_size, 16),
-                    escalate_model=_cls_escalate,
+                    escalate_client=_cls_escalate_client,
                 )
                 return _ClsBatchResult(
                     handler="classify",

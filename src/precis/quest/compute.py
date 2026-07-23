@@ -157,6 +157,10 @@ def dispatch_relax(
 _CATPATH_ROUTE_NODE_ENV = "PRECIS_CATPATH_ROUTE_NODE"
 
 
+#: Env pin for the catpath NEB wall-time hint (see :func:`_catpath_wall_seconds`).
+_CATPATH_WALL_SECONDS_ENV = "PRECIS_CATPATH_WALL_SECONDS"
+
+
 def _catpath_wall_seconds() -> int:
     """Expected wall-time hint (s) for a catpath NEB, stamped into the job's
     ``resources`` so the ssh_node lease outlives a full-network run.
@@ -164,10 +168,14 @@ def _catpath_wall_seconds() -> int:
     Env-tunable (``PRECIS_CATPATH_WALL_SECONDS``, default 5400 = 90 min): a
     3×3×4 full ammonia-network run is ~15-20 min uncontended but can stretch
     under load. ssh_node leases at ``max(2h floor, wall_seconds + 1h margin)``,
-    so 5400 → a 2.5h lease.
+    so 5400 → a 2.5h lease. Confirmed wired end-to-end (this value lands on
+    the dispatched job's ``params.resources.wall_seconds``, which is exactly
+    the field ``ssh_node._lease_seconds`` reads) by
+    ``TestDispatchCatpath.test_wall_seconds_env_reaches_the_job_and_the_ssh_node_lease``
+    in ``tests/test_quest_compute.py``.
     """
     try:
-        n = int(os.environ.get("PRECIS_CATPATH_WALL_SECONDS", "5400"))
+        n = int(os.environ.get(_CATPATH_WALL_SECONDS_ENV, "5400"))
     except ValueError:
         return 5400
     return max(60, min(86_400, n))
@@ -376,10 +384,19 @@ def _link_pathway(store: Store, structure_ref_id: int, pathway_ref_id: int) -> N
         pass
 
 
-def _latest_relax_job_status(store: Store, structure_ref_id: int) -> str | None:
+def _latest_relax_job(
+    store: Store, structure_ref_id: int
+) -> tuple[str, dict[str, Any]] | None:
+    """The latest ``struct_relax`` job's ``(STATUS, meta)`` under this candidate.
+
+    ``meta`` carries ``failure_class`` when the job failed (``"infra"`` vs
+    ``"non-convergence"`` — see :mod:`precis.workers.job_types.struct_relax`),
+    which the harvest loop below reads to decide whether a failure is a real
+    physical verdict on the candidate or just the executor dying.
+    """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT t.value FROM refs j "
+            "SELECT t.value, j.meta FROM refs j "
             "JOIN ref_tags rt ON rt.ref_id = j.ref_id "
             "JOIN tags t ON t.tag_id = rt.tag_id "
             "WHERE j.parent_id = %s AND j.kind = 'job' AND j.deleted_at IS NULL "
@@ -387,7 +404,9 @@ def _latest_relax_job_status(store: Store, structure_ref_id: int) -> str | None:
             "ORDER BY j.ref_id DESC LIMIT 1",
             (structure_ref_id,),
         ).fetchone()
-    return str(row[0]) if row else None
+    if row is None:
+        return None
+    return str(row[0]), dict(row[1] or {})
 
 
 def _mark_harvested(store: Store, structure_ref_id: int, upto_run_id: int) -> None:
@@ -410,9 +429,13 @@ def harvest_measures(store: Store, quest_id: int, *, by: str = "agent") -> Compu
       **barrier** (and span): lifted onto the candidate's own ``meta`` (where the
       generalised frontier reads it), the evaluating pathway linked into the quest
       graph, logged as a `result`, tracked by ``meta.quest_catpath_harvested_upto``;
-    * a candidate whose latest relax job **failed** gets a one-shot
-      ``ruled-out:relax-failed`` tag + a `dead-end` entry so the proposer stops
-      re-treading it.
+    * a candidate whose latest relax job **failed for a genuine
+      non-convergence reason** gets a one-shot ``ruled-out:relax-failed`` tag +
+      a `dead-end` entry so the proposer stops re-treading it. A failure
+      classed ``failure_class="infra"`` (container/docker/executor died —
+      not a physical verdict on the candidate) does NOT rule it out and stays
+      eligible for retry — otherwise a container hiccup gets laundered into
+      "this material is unstable" in the live dossier.
     """
     from precis.quest.gaps import _live_servers
     from precis.utils import handle_registry
@@ -475,19 +498,29 @@ def harvest_measures(store: Store, quest_id: int, *, by: str = "agent") -> Compu
         if cp_seen > cp_upto:
             store.stamp_ref_meta(s.id, {"quest_catpath_harvested_upto": cp_seen})
 
-        # Rule out a candidate whose relax job failed (once).
+        # Rule out a candidate whose relax job failed for a genuine physical
+        # reason (once) — but NOT an infra failure (container/executor died),
+        # which carries no verdict on the candidate and stays retry-eligible.
         already_out = any(str(t).startswith("ruled-out:") for t in store.tags_for(s.id))
-        if not already_out and _latest_relax_job_status(store, s.id) == "failed":
-            store.add_tag(s.id, Tag.open("ruled-out:relax-failed"), set_by="system")
-            append_entry(
-                store,
-                quest_id,
-                text=f"ruled out {handle} ({name}): relax failed to converge",
-                entry_type="dead-end",
-                by=by,
-            )
-            ruled_out += 1
-            notes.append(f"ruled-out {handle}")
+        relax_job = _latest_relax_job(store, s.id)
+        if not already_out and relax_job is not None and relax_job[0] == "failed":
+            _status, job_meta = relax_job
+            failure_class = job_meta.get("failure_class")
+            if failure_class == "infra":
+                notes.append(
+                    f"infra failure for {handle} (retry-eligible, not ruled out)"
+                )
+            else:
+                store.add_tag(s.id, Tag.open("ruled-out:relax-failed"), set_by="system")
+                append_entry(
+                    store,
+                    quest_id,
+                    text=f"ruled out {handle} ({name}): relax failed to converge",
+                    entry_type="dead-end",
+                    by=by,
+                )
+                ruled_out += 1
+                notes.append(f"ruled-out {handle}")
     return ComputeStep(
         candidates_created=0,
         sims_dispatched=0,
