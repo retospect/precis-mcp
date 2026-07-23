@@ -173,28 +173,35 @@ end-to-end on melchior** (2026-07-18) — the concrete container-executor proof:
   Vaulted `CLAUDE_CODE_OAUTH_TOKEN` (108 ch) resolves via `precis secret get`;
   the colima VM **does** route the tailscale `100.x:6432` DB (no routing gap).
 
-Remaining (window, task #23/#19):
-- **Distribution is melchior-only.** Only melchior runs the agent-profile worker,
-  so only it needs the image today. If a second host gets the agent profile,
-  repeat the `save|ssh|load` (all arm64 → no cross-build).
-- **Worker-daemon env wiring:** launchd PATH lacks `/opt/homebrew/bin`, so set
-  `PRECIS_CONTAINER_BIN=/opt/homebrew/bin/docker` (or `DOCKER_HOST`=the colima
-  sock) in the worker plist env; add a boot LaunchAgent for `colima start`.
-- **Flip is the window action:** `PRECIS_AGENT_CONTAINER=1` (+ pin
-  `PRECIS_AGENT_IMAGE` to a digest) makes the container the default agentic
-  executor. Until then the image is resident but unused (in-proc path unchanged).
-- **⚠ LIVE symptom on spark (found 2026-07-19 `/whatneedsdoing`):** spark runs
-  `review[structural]`, whose agent container exits at `docker-entrypoint.sh`
-  with `PRECIS_DATABASE_URL not set` → **124k ERROR/24h** (100×+ every other
-  host). Root cause is this same env-wiring gap on spark's review-agent (wire
-  `PRECIS_DATABASE_URL`, or don't set `PRECIS_STRUCTURAL_REVIEW` on hosts whose
-  agent container isn't provisioned) — **Phase-2 window, cluster-side.** The
-  repo-side **amplifier is fixed** (`review.py` now backs off a failed dispatch
-  to `min_interval_hours` instead of re-running every tick — 124k/day → ~4/day,
-  each logged + a `review-fail:<name>` cooldown marker); spark's structural
-  review still won't *succeed* until the env is wired, but it no longer floods.
-  Optional follow-up: raise one `alert` on the failure so the (now-quiet) config
-  gap stays visible instead of only ~4 log lines/day.
+**SUPERSEDES the "distribution/flip still pending" framing below — cluster
+has moved well past it (2026-07-18/19, `~/work/cluster` slices 1/2A/B1/B3,
+`PRECIS_DEPLOY_FROM_TREE` now the `scripts/deploy` default main `d41dab63`):**
+the decentralized scheduler (migration 0074 leases) is **live** fleet-wide,
+thin cron-tick/watch-poll timers retired; pure-cloud review passes
+(structural/deep_review/diagram — zero local-model dep) are **relocated to
+spark and live there** (deploy-owned docker, no melchior socket fight), which
+is also *why* the spark DSN retry-storm above got fixed and proven; melchior's
+agent-worker now runs as `deploy` not `hermes` (B1) with colima autostart
+(B3). The old "distribution is melchior-only" / "flip is the window action"
+bullets are stale — superseded by:
+
+- **`PRECIS_AGENT_CONTAINER=1` is flag-ON for melchior but UNPROVEN
+  end-to-end** *(feature, open).* `host_vars/melchior.yml
+  precis_agent_container_enabled: true` is set (cluster repo, uncommitted) —
+  containerizes melchior's remaining `call_claude_agent` passes (diagram +
+  router-agentic; reviews already shed to spark). No agentic pass has actually
+  claimed through the melchior container yet. Needs a live-fire verification,
+  then `scripts/deploy` to make it prod-safe and commit the overlay files.
+- **Capability probe + infra-fallback breaker shipped, not deployed**
+  *(feature, open — owner `workers/executors/agent_container.py`, main
+  `e9c915ba`).* `container_capability_ok()` (auth+bin-info+image-inspect,
+  ~60s cache, fail-safe→in-proc) + a ~10-min `trip_container_unhealthy()`
+  latch that catches OOM 137/image-missing/daemon-unreachable and retries the
+  same call in-proc once — this is the safety net that should go out
+  *before* trusting the melchior B2 flip above. Two follow-ons noted in the
+  design: an empty-result assertion (cost0∧turns0∧0-toolcalls∧no-text ⇒
+  raise+alert) and a `/factory` degraded-render of `capability_ok` (deferred,
+  no clean seam yet).
 
 ---
 
@@ -221,6 +228,75 @@ passes now. Remaining:
   bypasses litellm regardless (it never reads `served_by`).
 
 ---
+
+## 🧵 Track 3 — factory Phase-2 cutover: remaining ops
+
+Design [`docs/design/factory-console-and-scheduling.md`](docs/design/factory-console-and-scheduling.md)
+(11 slices). All buildable-dark code shipped; what's left is cluster-ops —
+state lives partly in `~/work/cluster` (a separate repo), verify against the
+overlay before acting.
+
+- **Tier-2 DB role-enforce (`PRECIS_MCP_DB_ROLE_ENFORCE`) — HELD** *(feature,
+  blocked — owner `store/pool.py::_apply_db_role`).* Session-level `SET ROLE`
+  is only correct on a direct-to-Postgres DSN, not pgbouncer's transaction
+  pool (which the agent DSN uses via `:6432`) — a real fix needs a direct-pg
+  route around pgbouncer, a security-posture decision, not a mechanical flip.
+  `GRANT agent_ro TO agent_rw` prereq is already applied to prod.
+- **Containerize the `plan_tick` + `fix_gripe` spawn seams** *(feature,
+  open).* These two build their own `claude -p` argv with env back-doors
+  (`PRECIS_CURRENT_TODO`/`WORKSPACE`/`AGENTLOG`, `--append-system-prompt`,
+  `--bare` + `_restricted_env`) — separate from the `call_claude_agent`
+  chokepoint that `PRECIS_AGENT_CONTAINER` already covers (dream/review/
+  structural/deep_review/diagram). Needs its own live-container proof before
+  it can containerize.
+- **asa slice-0 ops** *(ops, open).* `asa_bot`'s own OAuth/run-as cutover
+  (vault fallback already shipped, mirrors precis's `utils/claude_oauth`) —
+  live cutover is an ordered ops sequence (seed vault → verify → flip run-as
+  → scope vault read → retire hermes), not yet applied.
+- **Cluster-repo overlay commit + demotion cleanup** *(ops, open — owner
+  Reto, `~/work/cluster`).* `PRECIS_DEPLOY_FROM_TREE` is now the
+  `scripts/deploy` default (in-repo `deploy/` tree is authoritative,
+  proven via a full green fleet redeploy) but several files created during
+  the cutover are still uncommitted in the overlay repo (`roles/
+  precis_worker_agent/*`, `playbooks/retire-thin-timers.yml`, the
+  `postgres_host`/`gateway_host`/`nas_*` inventory aliases) — commit them
+  before demoting/deleting `~/work/cluster`'s now-dead role/playbook copies.
+- **Plist / `service_unit` collapse** *(feature, open — deploy-day op).* The
+  final "~15 daemons → 3 managed units + embedder-subprocess" consolidation;
+  the abstract `service_unit` role (renders launchd|systemd from one spec) is
+  built (`roles/service_unit/examples/collapsed-worker.yml`) but not applied
+  anywhere. Depends on the ops items above settling first.
+- **Deploy factory-console tooltips + per-host errors** *(polish, open).*
+  Shipped main `ac7712fa`, needs a `precis-web` redeploy to actually render
+  on `/factory`.
+
+---
+
+## 🤖 LLM catalog (`kind='llm'`) — wire the policy to call-sites
+
+All 5 catalog slices (facts/reconcile, `admit()`, ledger+reviews+tote,
+`select_offering` policy, task→requirement judge) shipped + deployed, dark
+by construction (empty catalog ⇒ byte-identical to today). The general
+golden-task eval harness (`src/precis/llm_eval/`, `precis llm eval` CLI, 5
+scored axes) and the structure round-trip eval also shipped. Nothing
+consumes the policy yet:
+
+- **Wire `choose_model`/`select_offering` into deliberative call-sites**
+  *(feature, open).* `utils/llm/requirement.py::choose_model` and
+  `utils/llm/policy.py::select_offering` exist and are green, but no
+  production call-site invokes them — every dispatch still resolves a model
+  via the fixed `Tier` table. `Selection.endpoint` (the variant-precise
+  OpenRouter booking) is similarly plumbed but unthreaded.
+- **`/factory` model/backend console is wired to the wrong keys, and has no
+  auth** *(bug + feature, open — owner `precis_web/routes/factory.py`).*
+  `set_model`/`set_prio` write `service_config.model_pref`, not the
+  `app_settings['llm.backend'/'llm.model.<tier>']` keys
+  `utils/llm/live_config.py` actually reads for the live fleet-wide switch —
+  today the switch is DB-driven only via a raw `app_settings` INSERT, not a
+  browser control. No route reads/writes a backend toggle at all. Also: no
+  auth on any `/factory` POST (`src/precis_web/app.py` has no auth
+  middleware) — flag before wiring a control that can flip prod's LLM
+  backend.
 
 ## 🔴 High-priority
 
@@ -284,6 +360,12 @@ Daily reading-brief + nidra casts shipped + live. Owner: `reading/*`,
   'draft'`, `meta.cast`) accumulate + are embedded/searchable; add `meta.no_index`
   and/or a retention GC. Also remove leftover test drafts/episodes
   (`cast-nidra-test-546c21`, `nidra-test-546c21`).
+- **Verify the morning-brief depth rewrite live** *(polish, open —
+  verification, not code).* The depth-first prompt rewrite (papers get
+  context+claim+method+why grounded in the abstract, not a title-only
+  mention; active-only quest report + decaying dormant nudge;
+  `_MORNING_CONTRACT` in `reading/briefing_cast.py`) shipped with the 20-min
+  target bump; confirm it's landed on a deployed brief, not just shipped.
 
 ## 📚 Topic dossiers (ADR 0060) — standing paper classification + living syntheses
 
@@ -432,6 +514,32 @@ proven end-to-end, pLDDT 84.7). Design `docs/design/chem-tools-integration.md`.
   (`sequence`/`engine`) so only `runtime.dispatch`/MCP JSON-RPC can drive a
   plugin-kind `put`. Its own focused pass.
 
+## 🔌 pcb / EDA (ADR 0042)
+
+`pcb` kind shipped to main (squash `b6a749f`, migration `0047_pcb_kind.sql`) —
+store ops, Pcb/Part/Datasheet handlers, jlcparts catalog, the eyes, the
+delta-objective autoplacer, BOM/CPL/netlist/DSN/mechanical exporters,
+Freerouting round-trip, 8 EDA skills, `[pcb]` extra.
+
+- **v1 done-bar (orderable board) blocked on 3 deploy binaries** *(feature,
+  blocked).* `pcb/footprint.py::_easyeda2kicad_fetch` raises `Unsupported`
+  when the optional `easyeda2kicad` dep is absent — real EasyEDA→KiCad
+  footprint conversion isn't wired anywhere yet. Also needs the Freerouting
+  jar, and (Tier 2) `kicad-cli` for gerbers — none installed on any host.
+- **Cluster EDA ansible role — committed, not pushed** *(ops, open — owner
+  Reto, `~/work/cluster` `roles/precis_eda`).* Tier-1 only (JRE + jar +
+  `PRECIS_FREEROUTING_JAR` on gateway/melchior). Three landmines inside it:
+  (1) the role's Freerouting default pins **v1.9.0**, coupled to
+  `pcb/route.py::_cmd`'s 1.x batch CLI (`-de in.dsn -do out.ses -mp 0`) — 2.x
+  reworked the CLI, don't bump without rewriting `_cmd`; (2) the jar's
+  sha256 pin is blank (supply-chain TODO); (3) unverified — the DSN emits a
+  via referencing a padstack never defined in its library section, check on
+  the first real-jar run.
+- **Slice 3 — datasheet lazy ingest** *(feature, open).* Not started.
+- **Slice 8 — web ratsnest SVG + BOM table** *(feature, open).* Not started.
+- **Slice 9 — design-session orchestration (capstone)** *(feature, open).*
+  Not started.
+
 ## 💰 Budget guardrails — global spend circuit breaker
 
 Design [`docs/design/budget-guardrails.md`](docs/design/budget-guardrails.md)
@@ -489,6 +597,20 @@ estimate. Remaining:
     LLM) capacity is the constraint.
 - **Open decisions** (design doc): ledger union without double-count; per-model
   price-table source + upkeep; cheap-band threshold; real cap defaults.
+
+## 🔒 Proprietary / local-only content routing (backlog)
+
+*(feature, open — owner `utils/claude_agent.py`, `utils/claude_p.py`,
+planner writer, reviewers).* No tag axis or routing guard exists yet for
+"this content must stay local" — a corpus tag search finds nothing under
+`proprietary`/`local-only`. Data-governance need: mark refs/chunks that must
+never leave the box via a cloud LLM call, and have the agentic dispatch +
+one-shot judges + planner + reviewers exclude tagged content from cloud
+prompts, routing to a local model instead. Needs a local-model adapter peer
+to the cloud transports (the ADR-0046 router's `Tier.LOCAL_*` already
+exists as a landing spot) plus a guard that refuses to assemble a cloud
+prompt containing any tagged ref. Pairs with per-surface persona work
+(writer/chat/reviewer each with their own role + backend).
 
 ## 🩹 asa storeless-precis incident — residual
 
@@ -598,6 +720,27 @@ Follow-ups:
 - **`wip/backlog-docs` branch (primary repo)** *(polish).* One local-only commit
   `e5643873 docs(backlog)`; ship it or drop it.
 
+## 🟣 Turn-taking fisheye (ADR 0051) — Level 2 residual
+
+Level 1 (fisheye context — policy-chosen eyes, no focus verb) shipped +
+deployed + live, default-ON at both sites it applies to:
+`workers/job_types/plan_tick.py` (planner) and `workers/dream_agent.py`
+(dreams), via `utils/fisheye.py::render_fisheye` +
+`utils/working_set_render.py::render_working_set`. Reviewers stayed
+out-of-scope (they read the strategic todo-tree, not a chunk-tree — a
+different render model). Level 2 (fisheye *curation*) is unbuilt:
+
+- **`focus` verb on the MCP surface** *(feature, open).* Wire
+  `workers/working_set.py`'s `WorkingSet`/`Eye` + `render_fisheye` behind an
+  agent-facing verb so a model can place/remove its own eyes, not just
+  planner/dreams' policy-chosen ones.
+- **`--max-turns 1` render-loop driver** *(feature, open — owner
+  `workers/job_types/plan_tick.py`).* Gate `PRECIS_TURN_LOOP`; the decay
+  ladder + bunched eviction (`WorkingSet.crunch`) already exist but nothing
+  drives a single-turn render→act→re-render cycle yet.
+- **Promote-plan-node→todo** *(feature, deferred).* Needs `TodoHandler`
+  `anchor=` support; belongs with the render-loop work.
+
 ## 🔵 Turn-as-job routing + context DSL *(deferred — design captured, not sliced)*
 
 Design [`docs/proposals/turn-routing-and-context-dsl.md`](docs/proposals/turn-routing-and-context-dsl.md).
@@ -605,6 +748,23 @@ Every turn = `kind='job'`; Part 0 thread persona + cache-ordering + affinity
 scheduling; Part 1 delegate-on-confidence routing; Part 2 stateful context DSL
 (ADR 0036 handles + fidelity ladder). First slice = persist turn-as-job + shadow
 router. Owner: `handlers/job.py` + `workers/dispatch.py` + `utils/prompt/`.
+
+## 🔍 Paper search — `unique_per='paper'` default mode
+
+Tier-1 broad retrieval (RRF fusion, `handlers/paper.py::PaperHandler.search`)
+shipped `per_paper=N` as an opt-in diversity *cap* on fused results —
+useful for breadth-triage but not the resolved design below. Default is
+still chunk-rows.
+
+- **Paper-row default mode** *(feature, open — design resolved
+  2026-06-03, unbuilt).* Make `unique_per='paper'` (one row per paper: best
+  handle + `more` count of additional hits + best-chunk's own keywords) the
+  default; `unique_per='chunk'` (today's shape) becomes the opt-in/drill
+  mode, implicit when `scope=` is set. Mode-aware page sizes (`top_k=25`
+  paper mode / `10` chunk mode) + a top-line "N papers of M matched (K chunk
+  hits)" counter + "refine before paging" guidance in `precis-search-help`
+  ship with it. Known edge from review: with `per_paper=1` a `card_combined`
+  chunk can consume a paper's only slot before body-chunk dedup runs.
 
 ## 🟡 Unified item view (`/items`)
 
@@ -641,6 +801,35 @@ squiggle, split/merge, `[`-autocomplete, reveal-on-cursor chips). Design
   (2026-07-05) found+proved the focus bug — wire a slim version into
   `scripts/ship`: boot the web app on the test DB with a seeded draft, assert a
   clean console + a couple of core interactions. (Also listed in the arch review.)
+
+## 📝 Draft footnotes + annotations (deferred design)
+
+Authors slice shipped (`refs.authors` byline + ROR affiliation, LaTeX/docx
+export, web edit form — mirrors papers, no new kind). Two siblings from the
+same design split are still deferred, unbuilt:
+
+- **Footnotes** *(feature, deferred).* A first-class `footnote` chunk_kind
+  anchored to its block via `meta.anchor`, out-of-flow, embedded+citable,
+  ships in export — parallels `term`/`figure`/`caption`.
+- **Annotations** *(feature, deferred).* A separate editorial layer, NOT in
+  `reading_order`; `draft_annotation` chunk_kind + `meta.anchor` +
+  `meta.author`, append-only via `chunk_events` (the `gripe_comment`
+  idiom), does not export.
+
+## 📓 reMarkable send — device pairing pending
+
+Send-draft-to-reMarkable-2 shipped + deployed (render footnote-cite
+excerpts, container uploader via `ddvk/rmapi`, job `remarkable_send`, web
++ CLI entry points). Runs **dark** — the button stays hidden and the job
+declines until S0-ops device pairing happens:
+
+- **Pair + arm** *(ops, open — owner Reto, `docker/remarkable/README.md` +
+  `deploy/roles/remarkable`).* `rmapi` device pairing (8-char code) →
+  vault `REMARKABLE_RMAPI_CONFIG` → `ansible-playbook playbooks/47-
+  remarkable.yml` → set `PRECIS_REMARKABLE_IMAGE` in `precis_shared_env` +
+  re-run the agent-worker role. First build has 3 unverified externals
+  (exact `ddvk/rmapi` release asset names, the `rmapi.conf` format, colima
+  bind-mount sharing on macOS) — check at first run, not blind-trust.
 
 ## 🔵 Retire the `equation` chunk kind → math as `$…$`/`$$…$$` in prose
 
@@ -687,6 +876,36 @@ North star: `claude -w` → spec → `/go` → implemented/gated/merged/deployed
 - **Deferred:** holdout scenarios (anti-overfit eval outside the repo); digital-
   twin fidelity (richer stubs); auto-deploy as a daemon (vs `/go`-chained).
 
+## 🔧 Autonomous fixer loop (ADR 0048) — residuals
+
+`src/precis/fixer/` — the repo-dev CI scheduler (tick a `docs/proposals/`
+proposal or open gripe → headless `claude -p` in a worktree → gate →
+report/ship/deploy, wraps `/go`) is **built + shipped + running live** on
+Reto's laptop (`com.precis.fixer` LaunchAgent, hephaestus, report mode,
+20-min interval, dodges the redeploy-restarts-itself problem by not being a
+deploy target). Dial: `PRECIS_FIXER_AUTONOMY` = report/ship/full (full-auto
+ship+deploy proven end-to-end).
+
+- **Gripe 49958 — NEEDS_YOU discards a salvageable build** *(bug, open —
+  owner `fixer/tick.py::run_tick`).* On a real gate failure (mypy,
+  non-auto-fixable lint, non-zero `claude -p` exit) the branch is never
+  pushed and the `finally` removes the worktree — an expensive opus build
+  that's 90% right is thrown away with nothing to inspect. Proposal:
+  push-on-NEEDS_YOU too (pair with branch GC so half-built branches don't
+  accumulate), or keep the failing worktree under `.fixer-work/` with a
+  pointer in the report.
+- **Stale branch cleanup** *(polish, open — needs Reto's OK).* `fix/smoke`,
+  `fix/build-prompt-map-freshness`, `fix/fixer-persistent-log`,
+  `fix/launchd-smoke` (origin) + `fix/shippath` (local).
+- **`PRECIS_FIXER_DISCORD_WEBHOOK` unset** *(ops, open).* Loud NEEDS_YOU
+  reports are log-only (`/tmp/precis-fixer.log`), not proactively surfaced.
+- **Agentic post-deploy followup is a `/readyz` stub** *(feature, deferred).*
+  Real look-at-prod-and-fix-forward is just the next review-gated proposal
+  today, not an active post-deploy check.
+- **Deferred (ADR-filed):** groomer write-side (the `whatneedsdoing` half),
+  automated `ready`-on-gripes, a doc-freshness ship judge, a durable
+  `agentlog` record per tick, `sandbox_run` job-type isolation.
+
 ## 🟠 Worker liveness + observability
 
 Slice 1 (observability: boot-event row + `worker-restart`/`dead-worker` nursery
@@ -713,6 +932,15 @@ detectors + Discord webhook) shipped + deployed. Owner `workers/nursery.py`,
 - **Config-drift guard (cluster repo)** *(open).* A deploy assert that deployed
   launchd plists match rendered templates (analogue of the venv-commit assert).
   Owner `redeploy-precis.yml`.
+- **Rationalize the cluster daemon-user model** *(ops, open, deferred — owner
+  `~/work/cluster`, not urgent).* `hermes` (OAuth/`~/.claude` state) vs
+  `deploy` (owns `/opt/homebrew` + the colima docker socket) is a two-user
+  split that already bit the Phase-2 container cutover once (hermes
+  couldn't reach deploy's 0600 docker socket on melchior). The melchior
+  instance was worked around via a run-as cutover; the fleet-wide question
+  — how many daemon users, what each runs, per host — is still open. Scope
+  properly once Phase-2 settles; likely fold hermes→deploy or land on one
+  `precis` service account.
 
 ### docx / EndNote export — validation-pending
 Native EndNote CWYW export shipped (`export/endnote.py`). Round-trip correctness
@@ -742,6 +970,23 @@ Cascade shipped + deployed + validated. Design
 - **Better table detection (polish)** — the free Tier-0 `numeric_ratio` heuristic
   catches only 0.1%; a pipe/tab/repeated-token heuristic would recover the free
   furniture drop.
+
+## 🏷️ `OPEN`-namespace teardown *(design, awaiting Reto's review)*
+
+Design [`docs/design/open-namespace-teardown.md`](docs/design/open-namespace-teardown.md)
+(recovered to main 2026-07-19 from a dangling commit; status: design). The
+free-form `OPEN` tag namespace conflates three things (machine control
+plane, ADR-0047 curated-axis staging, folksonomy) across ~45 prefixes, 52%
+singletons. Not implemented — the doc is the full spec (three piles:
+**MACHINE** — ~20 deterministic prefixes to migrate to real axes/columns;
+**CONSOLIDATE** — `topic:`/`interest:` (~2000 rows) into a curated axis via
+the ADR-0047 minting lifecycle; **DELETE** — junk prefixes) + a migration
+table + the exact-match cull rule (`namespace='OPEN' AND value LIKE 'p:%'`,
+never `namespace LIKE 'OPEN%'` — that eats the ADR-0047 `OPEN-QUESTION`
+axis). Blocks the OA-acquisition roadmap's §G `referenced_works`→topics
+wiring (above). *(design-review, open — owner: whoever reviews the doc's
+open questions with Reto: `level:` axis-vs-column, `internal-thought`
+dual-writer, `sticky:` fate.)*
 
 ## 🔵 `serverInfo.title` not set *(blocked upstream)*
 
@@ -822,6 +1067,31 @@ start", or is the tag client-side only? Read FastMCP `prompts/list` handler +
 MCP §prompts. The answer decides whether we can drop the redundant banner line.
 Owner `mcp_modalities.py::register_skill_prompts`; artefact
 `docs/design/mcp-cold-start-token-budget.md`.
+
+## 🔵 Small backlog asks
+
+- **Stateless `time`/`date` handler** *(feature, open — owner
+  `handlers/`).* No `time`/`date`/`clock` kind exists (`handlers/calc.py`
+  is the only stateless kind today). Mirror `calc.py`'s shape (`KindSpec` +
+  a `get` verb, no DB/embedder): `get(kind='time')` → now UTC+local,
+  `get(kind='time', id=<ts>)` → parse/format/convert. `units`
+  (conversions) and `regex` (test/match/extract) are sibling candidates,
+  same template.
+- **Per-tool-call ledger** *(feature, open — owner `runtime.py`).* Today's
+  telemetry (`agentlog`, `ref_events`, job chunks, worker logs) has no
+  per-tool-call row, so "which verb/kind/arg-shape confuses agents" isn't
+  queryable. Proposed: a `tool_calls` table (sibling of `ref_events`/
+  `alert`; numeric, not embedded — `call_id, ts, agentlog_id, source,
+  verb, kind, arg_shape jsonb, outcome, error_type, result_count,
+  latency_ms`) written from the verb-dispatch chokepoint in `runtime.py`.
+  Feeds an `error-rate GROUP BY (verb,kind)` MCP-improvement backlog; a
+  nursery friction-detector could auto-file a gripe past a threshold.
+- **Universal short codes** *(design, deferred).* ADR 0032's base-62
+  `chunk_id` encoding (manuscript-only, `5BL5`-style) hasn't been promoted
+  beyond that one kind — no `base62` helper exists outside it. Verdict was
+  additive-not-replacement (coexist with meaningful handles for top-level
+  refs); prove on manuscript chunks first, promote in a later ADR only if
+  it earns its keep.
 
 ## ⏸️ Snoozed — blocked upstream
 
@@ -967,6 +1237,15 @@ silently); **187 titleless chunked papers** — `resolve-metadata` re-resolves b
 DOI (32) or S2-title-search (≥0.85 gate) — run the dry-run over the cohort → gold-
 check → `--apply`, then **schedule it** into `paper_reconcile` (manual-only today);
 verify the 7 existing split orphans self-heal post-deploy.
+
+**Markup-first ingest (separate feature, `ingest/markup.py`) — decide the
+PDF-race before flipping the flag** *(design-review, open — owner
+`workers/fetch_oa.py::_run_markup_cascade`/`_markup_fetch_enabled`).*
+JATS/HTML/LaTeX-before-PDF+OCR ships dark behind `PRECIS_FETCH_MARKUP`
+(still default-off). Per-stub, the markup pass runs first (best-effort,
+swallows its own errors) then the PDF cascade runs unconditionally after —
+the live-drop ordering between the two hasn't been decided (which body
+wins when both succeed). Decide before enabling on any host.
 
 ## 🔊 LaTeX → speech for voice drafts
 
