@@ -82,8 +82,15 @@ a **sub-quest** — can serve a quest. It's one relation:
 ```python
 link(kind='todo', id=42, target='quest:7', rel='serves')
 link(kind='concept', id=91, target='quest:7', rel='serves')
+link(kind='draft', id='<slug>', target='quest:7', rel='serves')
 link(kind='quest', id=12, target='quest:7', rel='serves')  # sub-quest → grand quest
 ```
+
+Always link from the server's side with `rel='serves'` — the inverse
+`link(kind='quest', ..., rel='served-by')` "succeeds" but writes the edge
+backwards: the tree rollup's cycle-guard then renders the quest as one of
+its *own* servers (a bogus self-referencing leaf) while the real server
+never appears at all (gripe 161912).
 
 A quest may serve a grander quest — a **DAG of strivings** above the
 ordinary tree of deeds. One concept can serve several quests (m2m); the

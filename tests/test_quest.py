@@ -108,6 +108,63 @@ class TestLogbook:
                 raise AssertionError(f"append should reject {kwargs}")
 
 
+class TestEdit:
+    def test_edit_replace_rewrites_founding_text_keeps_logbook_and_links(
+        self, store: Any
+    ) -> None:
+        """gripe 169979: edit(mode='replace') rewrites the founding striving
+        statement in place — without touching logbook entries or
+        serves/served-by links."""
+        from tests.workers._helpers import seed_ref
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO->NH3 catalyst, first draft wording"))
+        h.put(id=qid, text="Try Fe-N4 single-atom sites", entry="hypothesis")
+        proj = seed_ref(store, title="Screen Fe-N4 candidates")
+        store.add_link(src_ref_id=proj, dst_ref_id=qid, relation="serves")
+
+        resp = h.edit(id=qid, mode="replace", text="A NO->NH3 catalyst, polished")
+        assert "replaced" in resp.body
+
+        ref = store.get_ref(kind="quest", id=qid)
+        assert ref.title.startswith("A NO->NH3 catalyst, polished")
+        assert "first draft wording" not in ref.title
+
+        # logbook entry survives untouched
+        body = h.get(id=qid).body
+        assert "hypothesis" in body
+        assert "Try Fe-N4 single-atom sites" in body
+
+        # serves link survives untouched
+        served = store.links_for(qid, direction="in", relation="serves")
+        assert any(ln.src_ref_id == proj for ln in served)
+
+        # the rewritten statement re-embeds into the card_combined chunk
+        with store.pool.connection() as conn:
+            card = conn.execute(
+                "select text from chunks where ref_id=%s and ord=-1", (qid,)
+            ).fetchone()
+        assert card is not None and "polished" in card[0]
+
+    def test_edit_requires_replace_mode_and_text(self, store: Any) -> None:
+        from precis.errors import BadInput
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="Some striving"))
+        try:
+            h.edit(id=qid, mode="append", text="x")
+        except BadInput:
+            pass
+        else:  # pragma: no cover - guard
+            raise AssertionError("edit should reject mode!='replace'")
+        try:
+            h.edit(id=qid, mode="replace")
+        except BadInput:
+            pass
+        else:  # pragma: no cover - guard
+            raise AssertionError("edit(mode='replace') should require text=")
+
+
 class TestServesAndTree:
     def test_serves_edge_surfaces_in_tree(self, store: Any) -> None:
         from tests.workers._helpers import seed_ref
@@ -124,6 +181,28 @@ class TestServesAndTree:
         # inverse resolves: the quest is served-by the project
         served = store.links_for(qid, direction="out", relation="served-by")
         assert any(proj in (ln.src_ref_id, ln.dst_ref_id) for ln in served)
+
+    def test_draft_links_serves_via_public_link_path(self, store: Any) -> None:
+        """gripe 161912: a draft can be wired as a quest's server through
+        the public ``link()`` verb (not a direct store INSERT), and the
+        tree rollup — which walks ``links_for(direction='in',
+        relation='serves')`` — sees it."""
+        from precis.dispatch import Hub
+        from precis.handlers.draft import DraftHandler
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst"))
+
+        proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+        draft = DraftHandler(hub=Hub(store=store))
+        draft.put(id="serving-doc", title="Serving Doc", project=proj)
+
+        resp = draft.link(id="serving-doc", target=f"quest:{qid}", rel="serves")
+        assert "link" in resp.body
+
+        tree = h.get(id=qid, view="tree").body
+        assert "draft (1) serving" in tree
+        assert "Serving Doc" in tree
 
     def test_sub_quest_recurses_under_grand_quest(self, store: Any) -> None:
         h = _handler(store)

@@ -138,7 +138,9 @@ class QuestHandler(NumericRefHandler):
             "pulls subtasks + knowledge acquisition into its service. Never "
             "`done` — lifecycle is active/dormant/abandoned. Body is the "
             "striving statement (+ criteria). Append logbook entries with "
-            "put(id=N, text=…, entry='hypothesis'); mark serving work with "
+            "put(id=N, text=…, entry='hypothesis'); rewrite the founding "
+            "statement in place with edit(id=N, mode='replace', text=…) "
+            "(logbook/links/tags untouched); mark serving work with "
             "link(target='quest:N', rel='serves'). view='tree' rolls up the "
             "servers + deed ledger + health + gaps; view='gaps' (per quest) or "
             "id='/gaps' (all active quests) surfaces the exploration queue; "
@@ -151,6 +153,7 @@ class QuestHandler(NumericRefHandler):
         supports_search=True,
         supports_search_hits=True,
         supports_put=True,
+        supports_edit=True,
         supports_delete=True,
         supports_tag=True,
         supports_link=True,
@@ -363,6 +366,69 @@ class QuestHandler(NumericRefHandler):
             body=(
                 f"logged {entry_type} on {self._sense()} id={ref.id}{deed} "
                 f"(entry {entry_no})"
+            )
+        )
+
+    # ── edit: in-place rewrite of the founding striving statement ────
+
+    def edit(  # type: ignore[override]
+        self,
+        *,
+        id: str | int | None = None,
+        mode: str = "replace",
+        text: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """In-place rewrite of the founding striving statement (``refs.title``).
+
+        Only ``mode='replace'`` is supported. Mirrors ``memory``/``todo``'s
+        edit: same id, same ``STATUS:``/``PRIO:`` tags, same logbook entries,
+        same ``serves``/``served-by`` links — only the statement text
+        changes. The old wording lands in ``ref_events`` as a
+        ``body_replaced`` row (``view='log'`` for the diff). Distinct from
+        the logbook append (``put(id=N, text=…, entry=…)``), which never
+        touches the founding text; this is the "wordsmith the striving,
+        keep everything else" verb (gripe 169979).
+        """
+        if id is None:
+            raise BadInput(
+                "edit(kind='quest') requires id=",
+                next="edit(kind='quest', id=N, mode='replace', text='new striving statement')",
+            )
+        if mode != "replace":
+            raise BadInput(
+                f"edit(kind='quest') only supports mode='replace', got {mode!r}",
+                next=(
+                    "edit(kind='quest', id=N, mode='replace', "
+                    "text='new striving statement')"
+                ),
+            )
+        if text is None or not text.strip():
+            raise BadInput(
+                "edit(kind='quest', mode='replace') requires text=",
+                next=(
+                    "edit(kind='quest', id=N, mode='replace', "
+                    "text='new striving statement')"
+                ),
+            )
+        ref_id = self._coerce_id(id)
+        ref = self._resolve_live_ref(ref_id)
+        with self.store.tx() as conn:
+            old_text = self.store.replace_ref_text(
+                ref.id, text, source="agent", conn=conn
+            )
+            if self.emits_card:
+                # Re-embed the card so search/alignment reads the rewritten
+                # statement, not the stale one (DELETE+INSERT re-enters the
+                # embed worker's queue).
+                self.store.upsert_card_combined(ref.id, text, conn=conn)
+        old_words = len((old_text or "").split())
+        new_words = len(text.split())
+        return Response(
+            body=(
+                f"replaced striving statement of {self._sense()} id={ref.id} "
+                f"({old_words} → {new_words} words). "
+                "logbook/links/tags untouched. view='log' for the full diff."
             )
         )
 

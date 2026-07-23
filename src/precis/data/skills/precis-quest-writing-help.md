@@ -15,6 +15,12 @@ one is about **what makes a good striving statement**, and where the
 technical detail that inevitably wants to attach to it should actually
 live.
 
+Wordsmithing the statement against the checklists below doesn't require
+delete + recreate — `edit(kind='quest', id=N, mode='replace',
+text='…')` rewrites the founding text in place, keeping the id, the
+logbook, and every `serves`/`served-by` link intact (`put(id=N,
+text=…)` is a different verb: it only ever *appends* a logbook entry).
+
 ## The ladder: vision → BHAG → SMART goal
 
 Borrowed from strategy literature (Collins' BHAG, Google's OKRs), three

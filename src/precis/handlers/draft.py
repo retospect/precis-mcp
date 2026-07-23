@@ -29,6 +29,12 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import toon
+from precis.handlers._link_tag_ops import (
+    apply_link_ops,
+    format_link_tag_ack,
+    require_link_target,
+    validate_link_mode,
+)
 from precis.handlers._slug_ref_shared import (
     render_slug_ref_list,
     resolve_live_slug_ref,
@@ -215,7 +221,17 @@ class DraftHandler(Handler):
         self.store = hub.store
         self.embedder = hub.embedder
 
-    # ── link: placement only (ADR 0045) ─────────────────────────────
+    #: Relations a draft accepts through the generic (non-placement)
+    #: ``apply_link_ops`` path. Deliberately narrow — cross-references
+    #: between drafts still live in prose, not this verb (the autolinker
+    #: on ``edit`` handles those) — but ``serves`` is the one relation
+    #: an outside kind (``quest``) needs materialised as a real edge,
+    #: not a mention: a draft (e.g. a living dossier) put in a quest's
+    #: service (gripe 161912; see ``precis-quest-help``: "Any node ...
+    #: can serve a quest").
+    _GENERIC_LINK_RELS: ClassVar[frozenset[str]] = frozenset({"serves"})
+
+    # ── link: placement + the narrow generic-link allowlist ─────────
 
     def link(  # type: ignore[override]
         self,
@@ -226,11 +242,15 @@ class DraftHandler(Handler):
         rel: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Folder placement via the reserved virtual ``rel='parent'``.
+        """Folder placement (``rel='parent'``) or a ``serves`` edge.
 
-        Drafts have no stored-link surface (yet) — the only accepted
-        relation is ``parent``, a ``refs.parent_id`` write into a
-        ``kind='folder'`` container (ADR 0045).
+        ``rel='parent'`` is the reserved virtual relation — a
+        ``refs.parent_id`` write into a ``kind='folder'`` container
+        (ADR 0045), never a stored ``links`` row. ``rel='serves'`` goes
+        through the shared ``apply_link_ops`` path (the same one
+        paper/structure use), most notably targeting a ``quest:`` ref.
+        Every other relation is rejected — cross-references between
+        drafts still live in prose, not this verb.
         """
         from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
 
@@ -239,11 +259,35 @@ class DraftHandler(Handler):
             return place_ref(
                 self.store, kind="draft", ref=ref, target=target, mode=mode
             )
+        if rel in self._GENERIC_LINK_RELS:
+            ref = resolve_live_slug_ref(self.store, kind="draft", id=str(id).strip())
+            target = require_link_target("draft", target)
+            validate_link_mode(mode)
+            n_added, n_removed = apply_link_ops(
+                self.store,
+                ref.id,
+                link=target if mode == "add" else None,
+                unlink=target if mode == "remove" else None,
+                rel=rel,
+            )
+            return Response(
+                body=format_link_tag_ack(
+                    kind=self.spec.kind,
+                    ref_label=str(ref.slug),
+                    n_links_added=n_added,
+                    n_links_removed=n_removed,
+                    n_tags_added=0,
+                    n_tags_removed=0,
+                )
+            )
         raise BadInput(
-            "draft link supports only rel='parent' (folder placement)",
+            "draft link supports only rel='parent' (folder placement) or "
+            "rel='serves' (mark this draft as serving a quest)",
             next=[
                 "link(kind='draft', id='<slug>', target='folder:N', "
                 "rel='parent') places; mode='remove' unfiles",
+                "link(kind='draft', id='<slug>', target='quest:N', "
+                "rel='serves') marks this draft as serving that quest",
                 "cross-references live in prose, not the link verb: "
                 "edit(kind='draft', id='dc<src>', text='…existing… "
                 "[dc<target>]') and the autolinker materialises the "
