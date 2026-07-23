@@ -1,0 +1,10 @@
+---
+# Persistent daemon (the Slack bridge runs continuously): reload via the
+# shared safe launchd task — same rationale as asa_bot's handler (a bare
+# unload/load -w has no retry/assert against a transient `Load failed: 5`).
+- name: restart asa-slack
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.asa.slack
+    reload_persistent: true
+  when: os_family == "darwin"

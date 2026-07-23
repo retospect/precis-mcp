@@ -1,0 +1,49 @@
+# {{ ansible_managed }}
+# asa-slack config — read once at boot, frozen.
+
+slack:
+  # asa resolves both tokens via env → precis DB vault (ADR 0055) → file.
+  # See roles/asa_slack/README.md for the one-time vault seed.
+  bot_token_env: ASA_SLACK_BOT_TOKEN
+  bot_token_file: /Users/hermes/.secrets/asa-slack-bot-token
+  app_token_env: ASA_SLACK_APP_TOKEN
+  app_token_file: /Users/hermes/.secrets/asa-slack-app-token
+  # No hard identity check by default — see roles/asa_slack/README.md if you
+  # want to pin one. Set asa_slack_expected_bot_user_id in inventory to enable.
+  expected_bot_user_id: "{{ asa_slack_expected_bot_user_id | default('') }}"
+  allowed_channels: {{ asa_slack_allowed_channels | default([]) | to_json }}
+  max_message_chars: 3500
+
+router:
+  max_turns: 8
+  max_usd: 0.75
+  timeout_s: 300.0
+
+precis:
+  # asa-slack's own venv ships the `precis` entry point (monorepo merge),
+  # same as asa-bot.
+  command:
+    - /opt/asa/venv/bin/precis
+    - serve
+  database_url: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  env:
+    ACATOME_PG_HOST: "{{ hostvars[postgres_host]['ansible_host'] }}"
+    ACATOME_PG_PORT: "{{ postgres_port }}"
+    ACATOME_PG_DATABASE: "precis_prod"
+    ACATOME_PG_USER: "agent_rw"
+    ACATOME_PG_PASSWORD: "{{ vault_pg_agent_rw_pass }}"
+  health_check_interval_seconds: 30
+
+preamble:
+  soul_path: /Users/hermes/.asa/SOUL.md
+  tool_hints_path: /Users/hermes/.asa/TOOL_HINTS.md
+  operator_prefs: {{ asa_operator_prefs | default('') | to_json }}
+  recent_turns: 5
+  digest_turns: 20
+  sticky_max_thread: 5
+  sticky_max_global: 5
+  expiry_warn_within_days: 3
+
+mcp_config_path: /Users/hermes/.claude/mcp.json
+soul_path: /Users/hermes/.asa/SOUL.md
+slack_hints_path: /Users/hermes/.asa/SLACK_HINTS.md

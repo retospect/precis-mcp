@@ -1,0 +1,133 @@
+---
+# asa_slack — Slack bridge that runs Asa as a router-dispatched agent on
+# the gateway, sibling to asa_bot. Shares the /opt/asa venv, precis MCP
+# config, and SOUL.md with asa_bot — see roles/asa_slack/README.md for the
+# one-time Slack app + vault-token prep this role does NOT automate.
+
+- name: Ensure asa_slack directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: staff
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - { path: "/opt/asa", owner: "deploy", mode: "0755" }
+    - { path: "/Users/hermes/.asa", owner: "hermes", mode: "0750" }
+
+- name: Detect /opt/asa/venv python mode (symlink-to-brew vs. copy)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    set -u
+    resolved=$(/usr/bin/readlink -f /opt/asa/venv/bin/python3 2>/dev/null || true)
+    case "$resolved" in
+      "")                      echo missing   ;;
+      /opt/homebrew/*|/usr/*)  echo symlinked ;;
+      /opt/asa/venv/*)         echo copied    ;;
+      *)                       echo "other:$resolved" ;;
+    esac
+  register: asa_venv_mode
+  changed_when: false
+  become: true
+
+- name: Create asa venv (symlinked to brew python) if missing
+  when:
+    - os_family == "darwin"
+    - asa_venv_mode.stdout | default('') | trim == "missing"
+  ansible.builtin.command:
+    cmd: /opt/homebrew/bin/python3 -m venv --symlinks /opt/asa/venv
+    creates: /opt/asa/venv/bin/python3
+  become: true
+
+# asa-slack ships in the same precis-mcp wheel as asa-bot (the `asa-slack`
+# extra) — same venv, same install step target as asa_bot's, just with the
+# extra name swapped in.
+- name: Install precis-mcp[asa-slack] into the asa venv
+  ansible.builtin.shell: |
+    /opt/homebrew/bin/uv pip install --python /opt/asa/venv/bin/python --upgrade \
+      --refresh-package precis-mcp \
+      'precis-mcp[asa-slack] @ git+https://github.com/retospect/precis-mcp@{{ asa_git_ref | default("main") }}'
+  become: true
+  register: asa_slack_pip
+  changed_when: >-
+    'Installed' in (asa_slack_pip.stdout + asa_slack_pip.stderr)
+    or 'Updated' in (asa_slack_pip.stdout + asa_slack_pip.stderr)
+  notify: restart asa-slack
+
+- name: Deploy SLACK_HINTS.md
+  ansible.builtin.template:
+    src: SLACK_HINTS.md.j2
+    dest: /Users/hermes/.asa/SLACK_HINTS.md
+    owner: hermes
+    group: staff
+    mode: "0640"
+  become: true
+  notify: restart asa-slack
+
+- name: Deploy asa_slack config
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /Users/hermes/.asa/slack.yaml
+    owner: hermes
+    group: staff
+    mode: "0640"
+  become: true
+  notify: restart asa-slack
+
+- name: Deploy LaunchDaemon
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: com.asa.slack.plist.j2
+    dest: /Library/LaunchDaemons/com.asa.slack.plist
+    mode: "0644"
+    owner: root
+    group: wheel
+  become: true
+  notify: restart asa-slack
+
+- name: Ensure asa-slack log file is writable
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /Users/hermes/.asa/asa-slack.log
+    state: touch
+    owner: hermes
+    group: staff
+    mode: "0640"
+    modification_time: preserve
+    access_time: preserve
+  become: true
+
+- name: Load asa-slack LaunchDaemon
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl load -w /Library/LaunchDaemons/com.asa.slack.plist
+  become: true
+  changed_when: false
+  failed_when: false
+
+# ── Verification (fail red + self-heal a de-domain) — mirrors asa_bot's,
+# same 2026-07-13 jetsam-cull lesson. ──
+- name: Flush handlers before verifying asa-slack
+  when: os_family == "darwin"
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify asa-slack is running (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    set -u
+    unit=com.asa.slack
+    plist="/Library/LaunchDaemons/${unit}.plist"
+    sleep 5
+    for attempt in 1 2 3; do
+      if launchctl print "system/${unit}" 2>/dev/null | grep -qE 'pid = [0-9]+'; then
+        echo "${unit}: running (verify attempt ${attempt})"
+        exit 0
+      fi
+      echo "${unit}: not running on verify ${attempt} — bootstrapping" >&2
+      launchctl bootstrap system "${plist}" 2>/dev/null || true
+      sleep 3
+    done
+    echo "${unit}: FAILED verification — not running after deploy" >&2
+    exit 1
+  become: true
+  changed_when: false

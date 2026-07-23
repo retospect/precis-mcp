@@ -1,0 +1,12 @@
+---
+# Deploy asa_slack — the Slack bridge that runs Asa as a router-dispatched
+# agent backed by precis, sibling to asa_bot. See roles/asa_slack/README.md
+# for the manual prep needed (Slack app + Socket Mode + tokens in the vault).
+# Depends on asa_bot already having deployed /Users/hermes/.claude/mcp.json
+# (shared precis MCP config) and SOUL.md — run 31-asa-bot.yml first on a
+# fresh host.
+- name: Deploy asa_slack
+  hosts: gateway
+  roles:
+    - asa_slack
+  tags: [asa-slack, asa]

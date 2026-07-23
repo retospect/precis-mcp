@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} #}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.asa.slack</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/asa/venv/bin/asa-slack</string>
+  </array>
+
+  <key>UserName</key>
+  <string>hermes</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/hermes/claudebot</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/hermes</string>
+    <key>PATH</key>
+    <string>/opt/asa/venv/bin:/opt/homebrew/bin:/opt/mcps/venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>ASA_SLACK_CONFIG</key>
+    <string>/Users/hermes/.asa/slack.yaml</string>
+    {# ASA_SLACK_BOT_TOKEN / ASA_SLACK_APP_TOKEN are NOT set here — asa-slack
+       resolves each from the precis DB vault (ADR 0055) via
+       load_slack_tokens' env→vault→file order, revealing over
+       PRECIS_DATABASE_URL below. See roles/asa_slack/README.md for the
+       one-time vault seed. #}
+    <key>PRECIS_DATABASE_URL</key>
+    <string>postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod</string>
+    {# Route the spawned precis MCP subprocess at the always-hot embedding
+       service (precis_embedder role, loopback 8181) — same as asa_bot. #}
+    <key>PRECIS_EMBEDDER</key>
+    <string>remote</string>
+    <key>PRECIS_EMBEDDER_URL</key>
+    <string>http://127.0.0.1:8181</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  {# Jetsam protection — same lever as asa_bot (see its plist for the
+     2026-07-13 incident this guards against). #}
+  <key>ProcessType</key>
+  <string>Interactive</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/hermes/.asa/asa-slack.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/hermes/.asa/asa-slack.log</string>
+</dict>
+</plist>

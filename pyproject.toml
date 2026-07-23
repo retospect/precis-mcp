@@ -144,6 +144,16 @@ embed = ["sentence-transformers>=3.0"]
 # over stdio at runtime — the merge shares the code, not the process
 # boundary. Install target: `precis-mcp[asa]` on the asa host (melchior).
 asa = ["discord.py>=2.4", "aiohttp>=3.9"]
+# asa-slack — a Slack bridge to Asa, sibling to `asa` (`src/asa_slack` +
+# the `asa-slack` entry point). Unlike the Discord bridge it doesn't hand-
+# roll its own `claude -p` subprocess: it calls
+# `precis.utils.llm.router.dispatch()` in-process (forced to the sonnet
+# tier + a hard kind-allowlist), so its only extra deps are the Slack SDK
+# itself — psycopg/pyyaml/precis-mcp's own claude wrappers are already
+# core. Socket Mode (a persistent outbound WebSocket), so no HTTP/ingress
+# deps needed. Install target: `precis-mcp[asa-slack]` on the same host
+# `asa` runs on.
+asa-slack = ["slack_bolt>=1.20", "slack_sdk>=3.27"]
 # tts — local text-to-speech for the audio-export renderer (voice drafts +
 # the morning brief). Kokoro (per-language native voices, Apache) via
 # kokoro-onnx; soundfile for WAV I/O; numpy rides along. Heavy + host-specific
@@ -283,6 +293,7 @@ all = ["precis-mcp[embed,paper,docx,tex,calc,plot,external,patent,edgar,web,cad-
 [project.scripts]
 precis = "precis.cli:main"
 asa-bot = "asa_bot.__main__:main"
+asa-slack = "asa_slack.__main__:main"
 
 # Core kinds use an in-tree `BUILTINS` registry (V2 dropped entry-point
 # discovery for them). The three groups below are the THIRD-PARTY / plugin
@@ -339,7 +350,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/precis_chem", "src/precis_bio"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under

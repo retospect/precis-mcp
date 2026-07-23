@@ -30,6 +30,25 @@ is the historical observation log.
 
 ---
 
+## 🤖 asa-slack — deploy + first-light (ADR 0062)
+
+- **Code SHIPPED (`src/asa_slack/`), NOT deployed.** Needs, in order: (1) the
+  manual Slack app + Socket Mode setup and vault-token seed
+  (`deploy/roles/asa_slack/README.md`), (2) run `31-asa-bot.yml` on the
+  gateway first if not already (asa-slack reuses its `mcp.json`/`SOUL.md`),
+  (3) `ansible-playbook 48-asa-slack.yml`, (4) a live smoke test in a real
+  Slack channel — confirm threading (never posts to channel root), the
+  identity log line on boot, a paper-search question actually works, a
+  "kick off a job" request is refused (`Unsupported`, not just declined in
+  prose), and a repeat message from the same person shows the per-person
+  `memory` note working. Only unit-tested so far (kind-allowlist, conv_slug,
+  identity, token-loading — no live Slack API exercised).
+  Status: `open` · Severity: `feature` · Owner: `src/asa_slack/`,
+  `deploy/roles/asa_slack/` · Test: manual smoke test above (no automated
+  end-to-end harness for a live Slack workspace).
+
+---
+
 ## 📄 CLAUDE.md "conventions that bite" audit (rule vs rationale)
 
 - **Compress the ~16 conventions bullets to rule + pointer.** That section is

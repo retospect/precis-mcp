@@ -116,3 +116,6 @@
 
 - name: "42 — nightly gentle reboot of the GPU node (the GPU node — gripe 50907)"
   ansible.builtin.import_playbook: playbooks/42-nightly-reboot.yml
+
+- name: "48 — asa_slack Slack bridge (ADR 0062)"
+  ansible.builtin.import_playbook: playbooks/48-asa-slack.yml

@@ -11,7 +11,7 @@
 > **Reader:** an agent (or human) about to *edit this repo*. Internals —
 > table names, worker names, ADR numbers — are the payload here; name them.
 >
-> _Verified @ `27bf1323`._
+> _Verified @ `f29023e3`._
 
 ## What precis is
 
@@ -81,8 +81,12 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 | **Review tiers** | nursery / structural / deep | `nursery` = SQL/min, only `critical` alerts |
 
 Surfaces on top: the **MCP server** (`precis serve`, the 7 verbs — the
-product), the **CLI** (`precis …`), the **web UI** (`src/precis_web/`), and
-the **Discord bridge** (`src/asa_bot/`, `[asa]` extra, stdio to the server).
+product), the **CLI** (`precis …`), the **web UI** (`src/precis_web/`), the
+**Discord bridge** (`src/asa_bot/`, `[asa]` extra, stdio to the server), and
+the **Slack bridge** (`src/asa_slack/`, `[asa-slack]` extra) — a sibling that
+routes chat turns through the ADR-0046 `dispatch()` seam (forced sonnet + a
+hard per-turn kind-allowlist) instead of a hand-rolled subprocess; see ADR
+0061.
 
 ## Seams — where changes concentrate
 

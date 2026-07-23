@@ -41,12 +41,20 @@ async def build(
     author_handle: str,
     soul: str,
     tool_hints: str,
+    platform: str = "Discord",
 ) -> str:
-    """Build the full preamble for one Discord turn.
+    """Build the full preamble for one turn.
 
     Returns a single string ready to be passed via
     ``--append-system-prompt``. The body of the actual user message
     is appended downstream by the caller.
+
+    ``platform`` names the transport in the rendered "This turn" pointer
+    (``"Discord"`` by default, so the existing caller is unchanged;
+    asa_slack passes ``"Slack"``). Everything else in this module is
+    already transport-agnostic (``guild_name``/``channel_name`` are just
+    display strings, ``author_handle`` is just the per-user memory tag
+    key), so a second platform needs no other change here.
     """
     now = datetime.now(tz=UTC)
 
@@ -95,6 +103,7 @@ async def build(
             channel_name=channel_name,
             thread_name=thread_name,
             author_handle=author_handle,
+            platform=platform,
         ),
         _render_last_turn_signal(last_meta, now),
         _render_digest(digest),
@@ -296,17 +305,19 @@ def _render_conv_pointer(
     channel_name: str,
     thread_name: str | None,
     author_handle: str,
+    platform: str = "Discord",
 ) -> str:
     where = f"guild *{guild_name}* / channel *{channel_name}*"
     if thread_name:
         where += f" / thread *{thread_name}*"
     return (
         "## This turn\n\n"
-        f"You're @asa replying in Discord — {where}. "
+        f"You're @asa replying in {platform} — {where}. "
         f"The user is **{author_handle}**.\n\n"
         f"This conversation is `conv:{conv_slug}` in precis.\n"
         f"- Read it back: `precis get(kind='conv', id='{conv_slug}/transcript')`\n"
-        f"- Search just this thread: `precis search(kind='conv', q='...', scope='{conv_slug}')`\n\n"
+        f"- Search just this thread: `precis search(kind='conv', q='...', "
+        f"scope='{conv_slug}')`\n\n"
         "Memories worth recalling are in precis. Thread-scoped memories\n"
         f"are LINKED to this conv (or tagged `sticky:thread:{conv_slug}`); "
         "globals are unscoped.\n"
