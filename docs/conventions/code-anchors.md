@@ -15,7 +15,7 @@ Examples:
 
 ```
 src/precis/workers/review.py::run_review_pass
-src/precis/alerts.py::AlertManager.create_alert
+src/precis/dispatch.py::Hub.register_ability
 src/precis/store/types.py::Tag.open
 ```
 
@@ -29,9 +29,9 @@ scripts/coderef check --bare <file>      # + UPGRADE nudges: bare file.py:line r
 ```
 
 - **Authoring:** grab the durable form from a line you're looking at —
-  `scripts/coderef anchor src/precis/alerts.py:261` → `…::AlertManager.create_alert`.
-- **Reading/clicking:** `scripts/coderef resolve …::AlertManager.create_alert`
-  → `src/precis/alerts.py:261` (jump to it). A bare `method` resolves too if it's
+  `scripts/coderef anchor src/precis/dispatch.py:174` → `…::Hub.register_ability`.
+- **Reading/clicking:** `scripts/coderef resolve …::Hub.register_ability`
+  → `src/precis/dispatch.py:174` (jump to it). A bare `method` resolves too if it's
   unambiguous; otherwise the tool lists the candidates to qualify.
 - **Keeping it true:** `scripts/coderef check docs` (drift-only, tree-wide) flags
   any written anchor whose symbol no longer resolves — a renamed/removed symbol is

@@ -658,11 +658,17 @@ deletion of the old shape all land in the same commit.
      swallowing, duplicate-register fails loud, missing-dep drops
      kind silently. (The existing `tests/test_registry.py`
      covers the old surface and is deleted with `registry.py`.)
-   - `tests/test_schema.py::test_each_verb_has_flat_schema` —
-     asserts every verb's inputSchema is flat (no `if/then`
-     conditional required fields).
-   - `tests/test_dispatch.py::test_unknown_kind_suggests_precis_help`
-     — the three miss-message shapes from D8.
+   - `tests/test_edit_schema.py::test_edit_schema_has_no_top_level_union_keywords`
+     — the shipped shape dropped `if/then` for description-only
+     mode-coupling (Anthropic's `/v1/messages` rejects a top-level
+     `oneOf`/`allOf`/`anyOf`); this test guards against
+     re-introducing one on `edit`, the only verb with per-mode
+     required fields.
+   - `tests/test_runtime.py::test_unknown_kind` and
+     `tests/test_runtime.py::test_unsupported_verb_for_kind` cover
+     two of the three miss-message shapes from D8 (unknown kind,
+     kind-registered-but-verb-unsupported); the third (invalid mode)
+     has no dedicated regression test today.
 
 7. **Exit criterion**: full suite passes; `tools/list` shows 7
    tools; `move` gone; `put(mode='edit')` raises `BadInput`
@@ -713,7 +719,7 @@ below.
 
 10 skills need substantive changes, 11 are zero-touch.
 
-Regression test: `tests/test_skills.py::test_every_skill_uses_new_surface`
+Regression test: `tests/test_skill.py::test_skills_use_seven_verb_surface`
 greps every skill for `put(mode='edit')` / `put(mode='delete')` /
 `put(mode='append')` / `put(mode='insert')` / `put(..., untags=)` /
 `put(..., unlink=)` / `move(` and fails on any hit. No allowlist
