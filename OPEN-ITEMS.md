@@ -776,6 +776,29 @@ suite green, ruff/mypy clean, not shipped-and-live — dark behind
   deferred, separate scope)* — `related-to` + `meta.note`, deliberately not
   built alongside this; do not conflate with the `cites`-relation work above.
 
+## 👁️ Draft citation-groundwork pre-pass (ADR 0051 Level 2, unscoped)
+
+*(feature, open — owner: `workers/thread_persona.py` + `planner_prompt.py`,
+new thread_type).* Multi-eye-context inspection session confirmed: a draft
+citing a paper at whole-ref granularity (`[pa<id>]`) renders as a keyword-
+cluster map to any later `render_working_set` pass — never verbatim text —
+while a chunk-level citation (`[pc<id>]`) renders real text
+(`utils/eye_render.py::_render_doc_eye`). Shipped: a soft write-time
+warning (`DraftHandler._whole_paper_cite_hint`) + a read-time "## Hygiene"
+footer on the draft outline surfacing undefined abbreviations and
+whole-paper citations anywhere in the draft (gripe 170259 covers a related
+but distinct stale-sync bug found in the same pass). Deliberately **not**
+built: the dedicated pre-pass — a cheap-model tick that reads a section's
+cluster-map-level working set + its `Enhancement`-marked gaps, drills/
+searches the cited papers for the specific supporting chunk, and rewrites
+the citation before the real edit turn runs. Proposed home: a new
+`thread_type` in `workers/thread_persona.py`'s `THREAD_PERSONAS` registry,
+run as a tick ahead of the edit tick — the next concrete instance of the
+already-deferred "Level 2: focus verb + render-loop" ADR-0051 slice, not a
+new initiative. **Hold until the shipped warning proves insufficient in
+live use** — build only if agents keep leaving whole-paper citations
+despite the nudge.
+
 ## 🔒 Proprietary / local-only content routing (backlog)
 
 *(feature, open — owner `utils/claude_agent.py`, `utils/claude_p.py`,

@@ -327,6 +327,54 @@ def test_numeric_paper_ref_hints_chunk_handle_form(
     assert "paper: mention" not in r2.body  # a bare [pc<id>] handle is fine
 
 
+def test_whole_paper_citation_hints_toward_chunk(draft: DraftHandler, hub: Hub) -> None:
+    """A bare whole-paper handle `[pa<id>]` (no chunk) is tolerated but
+    nudged toward `[pc<id>]`; a chunk-level citation trips nothing."""
+    proj = _proj(hub)
+    paper = hub.store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"This follows the approach of [pa{paper.id}].",
+        at={"after": "¶" + th},
+    )
+    assert f"[pa{paper.id}]" in r.body
+    assert "whole-paper citation" in r.body
+    assert "[pc<id>]" in r.body
+
+    r2 = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="A second mechanism is plausible [pc999].",
+        at={"after": "¶" + th},
+    )
+    assert "whole-paper citation" not in r2.body
+
+
+def test_whole_paper_citation_hint_scoped_to_new_write(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Editing a chunk that already carried a `[pa<id>]` citation doesn't
+    re-nag about it — only a *newly introduced* whole-paper cite fires."""
+    proj = _proj(hub)
+    paper = hub.store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"This follows [pa{paper.id}].",
+        at={"after": "¶" + th},
+    )
+    dc = "dc" + str(_order(hub, "nt")[-1].chunk_id)
+
+    r = draft.edit(id=dc, text=f"This follows [pa{paper.id}], with a caveat.")
+    assert "whole-paper citation" not in r.body
+
+
 def test_literal_cite_in_draft_is_flagged(draft: DraftHandler, hub: Hub) -> None:
     r"""Typing a literal ``\cite{}``/``\citequote{}`` into a draft body is
     flagged — in a draft you cite by the ``[pc<id>]`` handle and the
@@ -906,6 +954,36 @@ def test_outline_clean_draft_has_no_work_section(draft: DraftHandler, hub: Hub) 
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     assert "Work in progress" not in draft.get(id="nt").body
+
+
+def test_outline_surfaces_hygiene_debt(draft: DraftHandler, hub: Hub) -> None:
+    """Undefined abbreviations and whole-paper citations anywhere in the
+    draft surface as a Hygiene section on every outline read — not just
+    the write that introduced them — so legacy/bulk-authored content that
+    never passed through an incremental edit still gets flagged."""
+    proj = _proj(hub)
+    paper = hub.store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"The GFET switches slowly, per [pa{paper.id}].",
+        at={"after": "¶" + th},
+    )
+
+    out = draft.get(id="nt").body
+    assert "## Hygiene" in out
+    assert "GFET" in out
+    assert f"[pa{paper.id}]" in out
+
+
+def test_outline_clean_draft_has_no_hygiene_section(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    assert "## Hygiene" not in draft.get(id="nt").body
 
 
 # ── Fix C: dangling [finding #slug] markers are flagged on read ─────

@@ -86,6 +86,31 @@ def _is_draft_chunk_addr(s: str) -> bool:
     return bool(_DRAFT_CHUNK_ADDR_RE.match(s.strip()))
 
 
+def _find_whole_ref_citations(text: str) -> list[str]:
+    """Bare non-chunk ``[pa<id>]``/``[pk<id>]`` handles in ``text`` — a
+    citable-kind (paper/patent) reference to the *whole* document rather
+    than the supporting chunk. Tolerated (a landmark/rhetorical mention of
+    a whole paper is legitimate), but weaker than a ``[pc<id>]`` citation:
+    it never names a specific passage, and later readers of this passage
+    (a human or an editing pass) see it as a keyword-only view, never
+    verbatim. ``[fi<id>]`` (finding) is never flagged — a finding has no
+    internal chunks to drill to."""
+    from precis.utils.mentions import BARE_BRACKET_REF_PATTERN
+
+    out = []
+    for m in BARE_BRACKET_REF_PATTERN.finditer(text or ""):
+        bare = m.group("bare")
+        if bare[0] in "¶§":
+            continue
+        parsed = handle_registry.parse(bare)
+        if parsed is None:
+            continue
+        kind, is_chunk, _id = parsed
+        if kind in ("paper", "patent") and not is_chunk:
+            out.append(bare)
+    return out
+
+
 #: A figure's origin class (ADR 0034) — drives the clearance gate. ``original``
 #: is ours; ``own_graph`` is generated from data (ships a data supplement);
 #: ``third_party`` is reused under a publisher permission (carries the paper-trail).
@@ -809,6 +834,7 @@ class DraftHandler(Handler):
             if kind != "term":
                 body += self._write_abbrev_hints(slug, ref.id, str(text), "")
                 body += self._citation_form_hint(str(text))
+                body += self._whole_paper_cite_hint(str(text), "")
                 body += self._literal_cite_hint(str(text))
                 body += self._temperature_form_hint(str(text))
             return Response(body=body)
@@ -1265,6 +1291,7 @@ class DraftHandler(Handler):
                 slug = ref.slug if ref and ref.slug else str(c.ref_id)
                 body += self._write_abbrev_hints(slug, c.ref_id, new_text, old_text)
                 body += self._citation_form_hint(new_text)
+                body += self._whole_paper_cite_hint(new_text, old_text)
                 body += self._literal_cite_hint(new_text)
                 body += self._temperature_form_hint(new_text)
                 body += self._dangling_edit_hint(new_text, old_text)
@@ -1288,6 +1315,7 @@ class DraftHandler(Handler):
                 slug = ref.slug if ref and ref.slug else str(c.ref_id)
                 body += self._write_abbrev_hints(slug, c.ref_id, str(text), old_text)
                 body += self._citation_form_hint(str(text))
+                body += self._whole_paper_cite_hint(str(text), old_text)
                 body += self._literal_cite_hint(str(text))
                 body += self._temperature_form_hint(str(text))
                 body += self._dangling_edit_hint(str(text), old_text)
@@ -1409,6 +1437,30 @@ class DraftHandler(Handler):
             "\n\n⚠ cite the supporting paper *chunk* by its handle [pc<id>] "
             "(copy it from search/get output), not a bare paper: mention "
             f"(which exports to no \\cite): {offenders}."
+        )
+
+    def _whole_paper_cite_hint(self, new_text: str, old_text: str) -> str:
+        """Nudge toward the specific chunk when a bare whole-ref citation
+        (``[pa<id>]``/``[pk<id>]`` — no chunk) is newly introduced in this
+        write. Tolerated, never blocked — a landmark/rhetorical mention of
+        a whole paper ("the Watson & Crick paper") is legitimate — but
+        weaker than ``[pc<id>]`` for a specific claim: it never names a
+        passage, and a later pass over this text (a reader, an editing
+        agent) sees only the paper's keyword labels, never its text. Scoped
+        to what this write introduced, mirroring the abbrev hint."""
+        offenders = sorted(
+            set(_find_whole_ref_citations(new_text))
+            - set(_find_whole_ref_citations(old_text))
+        )
+        if not offenders:
+            return ""
+        shown = ", ".join(f"[{h}]" for h in offenders[:5])
+        return (
+            f"\n\n⚠ whole-paper citation, not a chunk: {shown}. Fine for a "
+            "landmark/rhetorical mention of the paper itself; for a "
+            "specific claim, cite the supporting chunk instead — [pc<id>] "
+            "copied from search/get output, or drilled via "
+            "get(kind='paper', id='<slug>~lo..hi', view='toc')."
         )
 
     def _literal_cite_hint(self, text: str) -> str:
@@ -1711,7 +1763,57 @@ class DraftHandler(Handler):
             gloss = " ".join(gloss.split())
             lines.append(f"{'  ' * c.depth}{c.dc}  [{c.chunk_kind}] {gloss}")
         lines.extend(self._work_lines(ref.id))
+        lines.extend(self._hygiene_lines(ref.id, chunks))
         return Response(body="\n".join(lines))
+
+    def _hygiene_lines(self, ref_id: int, chunks: list[Any]) -> list[str]:
+        """Whole-draft specificity debt, surfaced on every ``get`` — not
+        just a fresh write — so a legacy/bulk-authored draft that never
+        passed through an incremental ``put``/``edit`` still gets flagged.
+        Two checks, both advisory (never blocking):
+
+        * **undefined abbreviations** — acronym-shaped tokens anywhere in
+          the draft with no glossary ``term``/inline definition/silence.
+          ``undefined_abbrevs`` normally scopes to one write's new text;
+          passing it the whole draft surfaces everything a legacy draft
+          never got hinted about.
+        * **whole-paper citations** — ``[pa<id>]``/``[pk<id>]`` (no chunk)
+          anywhere in the draft, with the ``dc<id>`` they live in so
+          they're locatable.
+        """
+        out: list[str] = []
+        text = "\n\n".join(c.text for c in chunks if c.text)
+
+        undefined = self.store.undefined_abbrevs(ref_id, text)
+        if undefined:
+            shown = ", ".join(undefined[:8])
+            tail = f" (+{len(undefined) - 8} more)" if len(undefined) > 8 else ""
+            out.append(
+                f"⚠ {len(undefined)} undefined abbreviation(s): {shown}{tail}. "
+                "put(kind='draft', chunk_kind='term', text='<expansion>', "
+                "meta={'short': '<ABBR>'}) to define, or "
+                "edit(not_abbrev=['<ABBR>']) to silence."
+            )
+
+        whole_refs: list[str] = []
+        for c in chunks:
+            if not c.text:
+                continue
+            for bare in _find_whole_ref_citations(c.text):
+                whole_refs.append(f"{c.dc}:[{bare}]")
+        if whole_refs:
+            shown = ", ".join(whole_refs[:8])
+            tail = f" (+{len(whole_refs) - 8} more)" if len(whole_refs) > 8 else ""
+            out.append(
+                f"⚠ {len(whole_refs)} whole-paper (non-chunk) citation(s): "
+                f"{shown}{tail}. Drill to the supporting chunk when "
+                "precision matters — [pc<id>] via search(kind='paper', …) "
+                "or get(kind='paper', id='<slug>~lo..hi', view='toc')."
+            )
+
+        if not out:
+            return []
+        return ["", "## Hygiene", *out]
 
     def _work_lines(self, ref_id: int) -> list[str]:
         """Surface stuck / in-flight work on this draft (Fix A): the open

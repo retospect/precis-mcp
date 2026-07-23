@@ -475,6 +475,19 @@ study → tentative; replicated findings / a review / a meta-analysis →
 strong. The reader's cite popover shows the cited chunk verbatim, so a
 mismatch between claim and passage is visible — make them agree.
 
+**Chunk-level citation isn't just tidier — it's what a later pass sees.**
+A bare paper mention (no chunk) only ever surfaces as its keyword labels
+to anything that revisits this passage later — never the sentence
+itself. A `[pc<id>]` citation surfaces the real text. Citing the paper
+instead of the chunk isn't a smaller version of citing the chunk; it's a
+different, much weaker thing.
+
+If you don't already have the right `pc<id>` from a `search(kind='paper',
+q=…)` hit, drill for it: `get(kind='paper', id='<slug>~lo..hi',
+view='toc')` re-clusters just that chunk range into finer groups —
+narrow the range and repeat until a row names the chunk that holds the
+claim.
+
 ## Cite a paper we don't have yet — request it, don't fake it
 
 The right source for a claim is often **not in the corpus yet**. That is
