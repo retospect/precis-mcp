@@ -234,6 +234,31 @@ def test_plan_tick_parent_keeps_non_footgun_auto_check(
     assert ref.meta.get("auto_check") == custom
 
 
+def test_plan_tick_synthesizes_model_with_explicit_executor(
+    handler: TodoHandler, store: Store
+) -> None:
+    """LLM:* still supplies params['model'] even when the filer set
+    meta.executor/job_type explicitly (the precis-job-help canonical
+    pattern) instead of relying on the NULL-executor synthesis path.
+
+    Regression: dispatch used to only synthesize ``model`` when
+    ``executor`` was left unset, so this exact combo minted a plan_tick
+    job with no ``model`` param and it crashed instantly on
+    ``params['model']`` (KeyError).
+    """
+    r = handler.put(
+        text="planner brief with explicit executor",
+        tags=["LLM:sonnet"],
+        meta={"executor": "claude_inproc", "job_type": "plan_tick", "params": {}},
+    )
+    rid = id_of(r.body)
+    run_dispatch_pass(store)
+    children = _child_jobs_under(store, rid)
+    assert len(children) == 1
+    assert children[0]["meta"]["job_type"] == "plan_tick"
+    assert children[0]["meta"]["params"]["model"] == "sonnet"
+
+
 def test_succeeded_child_job_does_not_block_redispatch(
     handler: TodoHandler, store: Store
 ) -> None:

@@ -445,10 +445,8 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
         # ``executor:<runner>`` tags route to code-path runners with a
         # parallel synthesis (job_type = ``executor:<runner>``).
         if not isinstance(executor, str) and llm_tag:
-            model = str(llm_tag).removeprefix("LLM:")
             executor = "claude_inproc"
             job_type = job_type or "plan_tick"
-            params.setdefault("model", model)
         elif not isinstance(executor, str) and executor_tag:
             runner = str(executor_tag).removeprefix("executor:")
             # Reserved; v1 has no registered executor:* values, so
@@ -457,6 +455,16 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
             # job_type by convention.
             executor = runner
             job_type = job_type or runner
+
+        # A todo can also declare ``meta.executor``/``meta.job_type``
+        # explicitly (the documented precis-job-help pattern) while
+        # still carrying an LLM:* tag as the model picker — e.g. a
+        # filer who wants plan_tick but an explicit executor for
+        # clarity. Synthesize the model param in that case too, not
+        # only on the NULL-executor planner-coroutine path above,
+        # else plan_tick crashes on a missing params['model'].
+        if llm_tag and job_type == "plan_tick":
+            params.setdefault("model", str(llm_tag).removeprefix("LLM:"))
 
         # Validate executor + job_type at dispatch time. The TodoHandler
         # doesn't validate ``meta.executor`` / ``meta.job_type`` on
