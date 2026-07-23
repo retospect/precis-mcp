@@ -26,6 +26,7 @@ from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis_web.deps import await_dispatch, get_store, redirect_or_error, templates
+from precis_web.linkify import popover_chip
 
 router = APIRouter(prefix="/asks", tags=["asks"])
 
@@ -92,13 +93,25 @@ def _load_asks(
         questions = [
             q for q in (_ask_value(store, int(ref_id), t) for t in raw_tags) if q
         ]
+        rid = int(ref_id)
+        # The source object the question is about — this row's own todo.
+        # Reuses the shared click-target resolver (``/r/{kind}/{id}``,
+        # ``preview.py``) + hover-preview chip (``popover_chip``, the same
+        # helper the Items/Tags-refs lists use) rather than hand-rolling a
+        # new link, so the reader can jump straight to the todo's full
+        # context (project, body, parent chain) instead of the generic
+        # queue landing the row title used to point at.
+        source_link = popover_chip(
+            f"todo #{rid}", f"/r/todo/{rid}", f"/preview/todo/{rid}"
+        )
         out.append(
             {
-                "id": int(ref_id),
+                "id": rid,
                 "title": title,
                 "created_at": created_at,
                 "questions": questions,
                 "tags": raw_tags,
+                "source_link": source_link,
             }
         )
     return out

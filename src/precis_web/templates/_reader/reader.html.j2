@@ -1,10 +1,11 @@
 {# Shared two-pane document reader — used by the paper reader
    (papers/detail) and the pres slide-deck editor (pres/detail).
 
-   The Navigate (semantic/keyword/TOC) and Jump (text/page/ord) tabs are
+   The Navigate (semantic/keyword/TOC/Raw) and Jump (text/page/ord) tabs are
    fully generic: they are driven entirely by ``paperDoc`` (paper-viewer.js),
-   which fetches the kind-agnostic ``/papers/{id}/{search,toc,chunks,chunk}``
-   endpoints (any ``_DOC_FAMILY`` ref, so pres reuses them). Only the Meta
+   which fetches the kind-agnostic
+   ``/papers/{id}/{search,toc,chunks,rawchunks,chunk}`` endpoints (any
+   ``_DOC_FAMILY`` ref, so pres reuses them). Only the Meta
    tab differs per kind — it ``{% include doc.meta_panel %}``, so a paper
    plugs its bibliographic edit form and a pres plugs its attribution form.
    Both live inside the ``x-data="paperDoc(...)"`` scope, so a meta-panel
@@ -56,7 +57,7 @@
         {# ── Navigate: semantic / keyword search + TOC ──────────── #}
         <div x-show="tab === 'Navigate'">
           <div class="flex gap-1 text-xs">
-            <template x-for="m in [['semantic','Semantic'],['keyword','Keyword'],['toc','TOC']]" :key="m[0]">
+            <template x-for="m in [['semantic','Semantic'],['keyword','Keyword'],['toc','TOC'],['raw','Raw']]" :key="m[0]">
               <button type="button" @click="setMode(m[0])"
                       class="rounded px-2 py-1"
                       :class="mode === m[0] ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
@@ -64,7 +65,7 @@
             </template>
           </div>
 
-          <form x-show="mode !== 'toc'" @submit.prevent="runSearch()" class="mt-2 flex gap-1">
+          <form x-show="mode === 'semantic' || mode === 'keyword'" @submit.prevent="runSearch()" class="mt-2 flex gap-1">
             <input x-model="q" x-ref="qbox" @input="onQueryInput()"
                    :placeholder="mode === 'semantic' ? 'search meaning…' : 'search words…'"
                    class="w-full rounded border border-slate-300 px-2 py-1 text-xs" />
@@ -73,15 +74,15 @@
           </form>
 
           <p x-show="loading" x-cloak class="mt-3 text-xs text-slate-400">searching…</p>
-          <p x-show="!loading && searched && !results.length && mode !== 'toc'" x-cloak
+          <p x-show="!loading && searched && !results.length && (mode === 'semantic' || mode === 'keyword')" x-cloak
              class="mt-3 text-xs text-slate-400">no matches in this document.</p>
-          <p x-show="mode !== 'toc' && !searched && chunksLoaded && !chunks.length" x-cloak
+          <p x-show="(mode === 'semantic' || mode === 'keyword') && !searched && chunksLoaded && !chunks.length" x-cloak
              class="mt-3 text-xs text-slate-400">no chunks ingested yet.</p>
-          <p x-show="mode !== 'toc' && !searched && chunks.length" x-cloak
+          <p x-show="(mode === 'semantic' || mode === 'keyword') && !searched && chunks.length" x-cloak
              class="mt-2 text-[10px] text-slate-400"
              x-text="(mode === 'semantic' ? 'summaries' : 'keywords') + ' — click a row to jump; hover to expand'"></p>
 
-          <ul x-show="mode !== 'toc'" class="mt-2 space-y-1.5">
+          <ul x-show="mode === 'semantic' || mode === 'keyword'" class="mt-2 space-y-1.5">
             <template x-for="(r, i) in navRows()" :key="i">
               <li>
                 <button type="button" @click="gotoNav(r, i)"
@@ -133,6 +134,35 @@
                         <span class="nav-kw" x-text="kw"></span>
                       </template>
                     </div>
+                  </button>
+                </li>
+              </template>
+            </ul>
+          </div>
+
+          {# ── Raw: verbatim chunk-text listing, reading order ────── #
+             No search box (unlike semantic/keyword) — this is a
+             straight read-through of the ingested body, the only in-UI
+             way to browse a chunks-only doc's source text (no PDF to
+             fall back on, e.g. heminamino26). #}
+          <div x-show="mode === 'raw'">
+            <p x-show="!rawLoaded" x-cloak class="mt-3 text-xs text-slate-400">loading…</p>
+            <p x-show="rawLoaded && !rawChunks.length" x-cloak
+               class="mt-3 text-xs text-slate-400">no chunks ingested yet.</p>
+            <p x-show="rawLoaded && rawChunks.length" x-cloak
+               class="mt-2 text-[10px] text-slate-400">verbatim body, reading order — click a row to jump; hover to expand</p>
+            <ul class="mt-1 space-y-1.5">
+              <template x-for="(r, i) in rawChunks" :key="i">
+                <li>
+                  <button type="button" @click="gotoRaw(r, i)"
+                          class="nav-result w-full rounded border border-slate-200 p-2 text-left hover:border-amber-300"
+                          :class="{'active': activeRawIdx === i}"
+                          :title="'chunk ord ' + r.ord">
+                    <div class="flex items-center justify-between text-[10px] text-slate-400">
+                      <span class="font-mono">#<span x-text="r.ord"></span><template x-if="r.page"> · p<span x-text="r.page"></span></template></span>
+                      <span class="nav-kw" x-text="r.chunk_kind"></span>
+                    </div>
+                    <p class="nav-clamp mt-0.5 text-xs leading-snug text-slate-700 whitespace-pre-wrap" x-text="r.text"></p>
                   </button>
                 </li>
               </template>

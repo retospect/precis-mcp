@@ -9,7 +9,7 @@
  * scroll. A page jump is the always-correct fallback when the phrase
  * doesn't match (hyphenation / ligatures / math).
  *
- * The Navigate tab has three modes:
+ * The Navigate tab has four modes:
  *   - semantic / keyword: a search box over the empty-query "rapid nav"
  *     gloss list (every chunk's llm-v1 summary / keyword string, from
  *     /chunks). A query swaps the list for ranked hits (/search). Either
@@ -20,6 +20,10 @@
  *     cluster (re-cluster its ord range, /toc?lo=&hi=). A breadcrumb +
  *     ↑ climb back out — papers have no heading tree, so hierarchy is
  *     recursive keyword clustering.
+ *   - raw: the verbatim chunk-text listing (/rawchunks), no search box —
+ *     for a chunks-only doc (no PDF, e.g. a stub-free ingest with nothing
+ *     to render on the right) this is the only in-UI way to read the
+ *     source text. Click = jump + highlight, same as the other modes.
  *
  * Defined as a plain global so Alpine's `x-data="paperDoc(...)"` can
  * call it (mirrors drafts/detail.html.j2's draftDoc). Loaded before
@@ -41,6 +45,10 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
     // rapid-nav gloss list (empty-query state of semantic / keyword)
     chunks: [],
     chunksLoaded: false,
+    // raw chunk-text listing (verbatim body, reading order)
+    rawChunks: [],
+    rawLoaded: false,
+    activeRawIdx: -1,
     // toc state
     toc: [],
     tocLoaded: false,
@@ -133,6 +141,7 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
     setMode(m) {
       this.mode = m;
       if (m === 'toc') { if (!this.tocLoaded) this.loadToc(); return; }
+      if (m === 'raw') { if (!this.rawLoaded) this.loadRaw(); return; }
       if (!this.chunksLoaded) this.loadChunks();
       this.$nextTick(() => this.$refs.qbox && this.$refs.qbox.focus());
       if (this.q.trim()) this.runSearch();
@@ -147,6 +156,20 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
         this.chunks = data.chunks || [];
       } catch (e) { this.chunks = []; }
       this.chunksLoaded = true;
+    },
+    // Raw mode's verbatim chunk-text listing — each row already carries
+    // its own text, so unlike the gloss list a click needs no follow-up
+    // /chunk/<ord> fetch to highlight.
+    async loadRaw() {
+      try {
+        const data = await (await fetch(`/papers/${this.paperId}/rawchunks`, { cache: 'no-store' })).json();
+        this.rawChunks = data.chunks || [];
+      } catch (e) { this.rawChunks = []; }
+      this.rawLoaded = true;
+    },
+    gotoRaw(r, i) {
+      this.activeRawIdx = i;
+      this.findInPdf(this._phrase(r.text || ''), r.page);
     },
     async runSearch() {
       const q = this.q.trim();

@@ -765,6 +765,39 @@ async def chunks_in_paper(request: Request, ref_id: int) -> JSONResponse:
     return JSONResponse({"chunks": store.chunk_glosses_for_ref(ref.id)})
 
 
+@router.get("/{ref_id}/rawchunks")
+async def raw_chunks_in_paper(request: Request, ref_id: int) -> JSONResponse:
+    """Verbatim chunk-text listing for the sidebar's "Raw" tab.
+
+    Returns every body chunk in reading order as
+    ``{ord, page, chunk_kind, text}``. For a chunks-only ingest with no
+    PDF on disk (e.g. ``heminamino26``) this is the only way to read the
+    source text in the UI — Semantic/Keyword/TOC all key off a gloss or
+    cluster, never the verbatim body. Reuses ``list_blocks_for_ref`` (the
+    same store helper the MCP chunk-range reader calls) rather than a new
+    chunk-listing query.
+    """
+    store = get_store(request)
+    ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
+    if ref is None:
+        return JSONResponse({"chunks": []})
+    blocks = store.list_blocks_for_ref(ref.id)
+    pages = store.chunk_pages(ref.id, [b.pos for b in blocks])
+    return JSONResponse(
+        {
+            "chunks": [
+                {
+                    "ord": b.pos,
+                    "page": pages.get(b.pos),
+                    "chunk_kind": b.chunk_kind,
+                    "text": b.text,
+                }
+                for b in blocks
+            ]
+        }
+    )
+
+
 @router.get("/{ref_id}/chunk/{ord}")
 async def chunk_in_paper(request: Request, ref_id: int, ord: int) -> JSONResponse:
     """Resolve a single chunk ``ord`` → ``{ord, page, text}`` for the

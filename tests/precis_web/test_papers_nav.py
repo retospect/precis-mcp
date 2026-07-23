@@ -179,3 +179,28 @@ def test_chunk_endpoint_returns_chunk_key(client) -> None:
     resp = client.get("/papers/10/chunk/3")
     assert resp.status_code == 200
     assert "chunk" in resp.json()
+
+
+def test_rawchunks_endpoint_lists_verbatim_text_in_reading_order(
+    client, runtime
+) -> None:
+    """The Raw-tab endpoint (gripe 162367) lists every body chunk in
+    reading order, verbatim text + chunk_kind — the only in-UI way to
+    browse a chunks-only doc (no PDF) like heminamino26."""
+    runtime.store._conv_blocks[10] = [
+        SimpleNamespace(pos=0, text="Introduction text.", chunk_kind="paragraph"),
+        SimpleNamespace(pos=1, text="Methods text.", chunk_kind="paragraph"),
+    ]
+    resp = client.get("/papers/10/rawchunks")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [c["ord"] for c in data["chunks"]] == [0, 1]
+    assert data["chunks"][0]["text"] == "Introduction text."
+    assert data["chunks"][0]["chunk_kind"] == "paragraph"
+    assert data["chunks"][0]["page"] is None  # no page provenance in the fake
+
+
+def test_rawchunks_endpoint_empty_for_unknown_paper(client) -> None:
+    resp = client.get("/papers/999999/rawchunks")
+    assert resp.status_code == 200
+    assert resp.json()["chunks"] == []

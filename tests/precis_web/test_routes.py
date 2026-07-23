@@ -2410,19 +2410,25 @@ def test_console_get_blank_does_not_dispatch(client, runtime) -> None:
 
 def test_console_get_deeplink_runs_search(client, runtime) -> None:
     """``GET /console?verb=search&args_text=…`` prefills *and* runs the
-    read-only verb, so a shared link lands on an already-run query."""
+    read-only verb, so a shared link lands on an already-run query.
+
+    Uses ``kind=memory`` (not ``paper``) — a paper-kind search takes the
+    console-only paper-metadata override (below), which never reaches
+    ``runtime.dispatch_with_status``; this test's job is the generic
+    deep-link-runs-search plumbing, so it stays on a kind the override
+    doesn't touch."""
     resp = client.get(
         "/console",
-        params={"verb": "search", "args_text": 'kind=paper q="attention"'},
+        params={"verb": "search", "args_text": 'kind=memory q="attention"'},
     )
     assert resp.status_code == 200
     verb, args = runtime.calls[-1]
     assert verb == "search"
-    assert args["kind"] == "paper"
+    assert args["kind"] == "memory"
     assert args["q"] == "attention"
     # Form is prefilled with the args + the result rendered.
-    assert "value='kind=paper q=\"attention\"'" in resp.text or (
-        "kind=paper q=&#34;attention&#34;" in resp.text
+    assert "value='kind=memory q=\"attention\"'" in resp.text or (
+        "kind=memory q=&#34;attention&#34;" in resp.text
     )
     assert "[search] ok" in resp.text
 
@@ -2458,15 +2464,81 @@ def test_console_get_deeplink_bad_arg_surfaces_error(client, runtime) -> None:
 
 
 def test_console_run_dispatches(client, runtime) -> None:
+    # kind=memory, not paper — see test_console_get_deeplink_runs_search's
+    # docstring: a paper-kind search is intercepted by the console-only
+    # paper-metadata override before it reaches dispatch_with_status.
     resp = client.post(
-        "/console/run", data={"verb": "search", "args_text": "kind=paper q=foo"}
+        "/console/run", data={"verb": "search", "args_text": "kind=memory q=foo"}
     )
     assert resp.status_code == 200
     verb, args = runtime.calls[-1]
     assert verb == "search"
-    assert args["kind"] == "paper"
+    assert args["kind"] == "memory"
     assert args["q"] == "foo"
     assert "[search] ok" in resp.text
+
+
+def test_console_run_search_paper_shows_paper_rows(client, runtime) -> None:
+    """``search(kind='paper', q=...)`` in the console shows one row per
+    paper (title/authors/year), not the MCP-facing chunk-level hit table
+    (gripe 162400) — the console-only override in ``_paper_console_search``
+    never reaches ``dispatch_with_status``, so ``runtime.calls`` stays
+    empty."""
+    from types import SimpleNamespace
+
+    from precis.utils.search_merge import SearchHit
+
+    paper = runtime.store.papers[0]  # id=10, "A paper", Jane Smith, 2024
+
+    class FakeHandler:
+        def search_hits(self, **_kw: object) -> list[SearchHit]:
+            # Two chunk hits on the SAME paper — must collapse to one row.
+            return [
+                SearchHit(
+                    score=1.0,
+                    kind="paper",
+                    title=paper.title,
+                    preview="",
+                    ref_id=paper.id,
+                ),
+                SearchHit(
+                    score=0.5,
+                    kind="paper",
+                    title=paper.title,
+                    preview="",
+                    ref_id=paper.id,
+                ),
+            ]
+
+    runtime.hub = SimpleNamespace(handler_for=lambda kind: FakeHandler())
+    resp = client.post(
+        "/console/run", data={"verb": "search", "args_text": "kind=paper q=x"}
+    )
+    assert resp.status_code == 200
+    assert runtime.calls == []  # override answered directly, no dispatch
+    assert "A paper" in resp.text
+    assert "Jane Smith" in resp.text
+    assert "2024" in resp.text
+    # One row, not two — the two hits on the same paper collapsed.
+    assert resp.text.count("Jane Smith") == 1
+
+
+def test_console_run_search_paper_bails_on_unsupported_param(client, runtime) -> None:
+    """``search(kind='paper', q=..., folder=...)`` must NOT be answered by
+    the paper-row override — it doesn't forward ``folder=`` (or ``scope=``/
+    ``queries=``/etc.) to ``search_hits()``, so silently intercepting would
+    return an unscoped result set that looks like a valid answer to a
+    folder-scoped query. Bail to normal dispatch instead, same as it
+    already does for ``title=``/``author=``/``good=True``."""
+    resp = client.post(
+        "/console/run",
+        data={"verb": "search", "args_text": "kind=paper q=x folder=42"},
+    )
+    assert resp.status_code == 200
+    assert runtime.calls  # fell through to real dispatch, override didn't answer
+    verb, args = runtime.calls[-1]
+    assert verb == "search"
+    assert args.get("folder") == "42" or args.get("folder") == 42
 
 
 def test_console_run_tolerates_comma_separated_args(client, runtime) -> None:

@@ -26,6 +26,7 @@ query.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import shlex
 from typing import Any
@@ -33,9 +34,12 @@ from typing import Any
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from precis.format import render_agent_table
 from precis.tools import TOOL_REGISTRY, get_tool_names
 from precis.tools.cli_adapter import _convert_value
-from precis_web.deps import await_dispatch, get_store, templates
+from precis.utils.handle_registry import format_handle
+from precis.utils.search_header import format_search_headline
+from precis_web.deps import await_dispatch, get_runtime, get_store, templates
 
 router = APIRouter(prefix="/console", tags=["console"])
 
@@ -418,6 +422,164 @@ def _quick_context(**overrides: Any) -> dict[str, Any]:
 _GET_RUNNABLE_VERBS = frozenset({"get", "search"})
 
 
+#: ``kind=`` spellings that mean "paper" for the console search override
+#: below — the bare kind and its ADR-0036 2-char handle code. Matched on
+#: the raw string the operator typed, before the dispatcher's own
+#: ``kind='pa'`` → ``'paper'`` expansion runs (gripe 162400 repro used
+#: both spellings).
+_PAPER_KIND_SPELLINGS = frozenset({"paper", "pa"})
+
+#: Real ``search`` params (``tools/core.py``) that ``_paper_console_search``
+#: does not forward to ``PaperHandler.search_hits()``. Present + truthy on
+#: any of these ⇒ bail to normal dispatch rather than silently returning a
+#: narrower result set than the real MCP call would.
+_PAPER_SEARCH_UNSUPPORTED_PARAMS = frozenset(
+    {
+        "scope",
+        "source",
+        "angle",
+        "n",
+        "like",
+        "view",
+        "status",
+        "queries",
+        "answers",
+        "per_paper",
+        "folder",
+        "sort",
+        "since",
+        "until",
+    }
+)
+
+
+def _paper_console_rows(store: Any, hits: Any, page_size: int) -> list[dict[str, str]]:
+    """Collapse ranked block hits to one row per paper (best rank first).
+
+    ``hits`` is the ``search_hits()`` output — several hits often land
+    on the same paper, so this keeps the first (best-ranked) occurrence
+    of each ``ref_id`` and drops the rest, up to ``page_size`` distinct
+    papers. Reuses ``routes.papers._authors_str`` for the author join
+    rather than re-deriving it from ``ref.meta``.
+    """
+    # Local import — avoids a module-load cycle risk (papers.py is a
+    # sibling route module, not a dependency of console.py otherwise).
+    from precis_web.routes.papers import _authors_str
+
+    seen: set[int] = set()
+    order: list[int] = []
+    for h in hits:
+        rid = h.ref_id
+        if rid is None or rid in seen:
+            continue
+        seen.add(rid)
+        order.append(rid)
+        if len(order) >= page_size:
+            break
+    if not order:
+        return []
+    refs = store.fetch_refs_by_ids(order, include_deleted=False)
+    rows: list[dict[str, str]] = []
+    for rid in order:
+        ref = refs.get(rid)
+        if ref is None:
+            continue
+        meta = getattr(ref, "meta", None) or {}
+        title = (getattr(ref, "title", None) or "").split("\n", 1)[0]
+        rows.append(
+            {
+                "handle": format_handle(ref.kind, ref.id) or f"paper:{ref.id}",
+                "title": title,
+                "authors": _authors_str(ref),
+                "year": str(getattr(ref, "year", None) or meta.get("year") or ""),
+                "venue": str(meta.get("journal") or ""),
+            }
+        )
+    return rows
+
+
+def _paper_console_search(
+    request: Request, payload: dict[str, Any]
+) -> tuple[str, bool] | None:
+    """Console-only override: ``search(kind='paper'/'pa', q=...)`` shows
+    one row per paper (title/authors/year/venue), not the MCP-facing
+    chunk-level hit table.
+
+    ``PaperHandler.search`` deliberately renders ``{handle,
+    chunk_keywords}`` per *chunk* hit — the right shape for an agent,
+    which wants the drill-in handle and would waste tokens re-reading
+    the same title on every hit of a multi-chunk paper (it already has
+    ``get(id=...)`` for that). An operator scanning the console instead
+    wants to *recognise* the paper at a glance, so this collapses the
+    same ranked hits to one row per ref and renders bibliographic
+    fields — reusing the handler's structured ``search_hits()`` (the
+    engine ``search()`` itself calls, built for cross-kind fusion) and
+    the Papers tab's author-formatting helper, rather than a new search
+    path. Scoped to the console: the MCP ``search`` verb's own render is
+    untouched — the bigger ``unique_per='paper'`` MCP-default change is
+    a separate, already-tracked backlog item.
+
+    Returns ``None`` — "not applicable, dispatch normally" — for every
+    shape this override doesn't cover: a different kind, no ``q=``,
+    ``title=``/``author=``/``good=True`` (those already return paper-
+    level output through the ordinary handler path), or any search
+    param this override doesn't forward to ``search_hits()`` (``scope``,
+    ``source``, ``angle``, ``n``, ``like``, ``view``, ``status``,
+    ``queries``, ``answers``, ``per_paper``, ``folder``, ``sort``,
+    ``since``, ``until``) — forwarding only a subset while silently
+    dropping the rest would return a different result set than the real
+    MCP ``search(kind='paper', ...)`` call with no indication anything
+    was ignored, so any of those present bails to normal dispatch
+    instead.
+    """
+    kind = str(payload.get("kind") or "").strip().lower()
+    if kind not in _PAPER_KIND_SPELLINGS:
+        return None
+    if payload.get("title") or payload.get("author") or payload.get("good"):
+        return None
+    if any(payload.get(k) for k in _PAPER_SEARCH_UNSUPPORTED_PARAMS):
+        return None
+    q = str(payload.get("q") or "").strip()
+    if not q:
+        return None
+
+    try:
+        store = get_store(request)
+        handler = get_runtime(request).hub.handler_for("paper")
+        raw_page_size = payload.get("page_size") or 10
+        page_size = max(1, min(int(raw_page_size), 50))
+        hits = handler.search_hits(
+            q=q,
+            tags=payload.get("tags"),
+            # Over-fetch chunk hits so collapsing to distinct papers
+            # still fills a full page — several hits often land on the
+            # same paper.
+            page_size=max(page_size * 5, 50),
+            exclude=payload.get("exclude"),
+            mode=payload.get("mode"),
+        )
+        rows = _paper_console_rows(store, hits, page_size)
+    except (
+        Exception
+    ) as exc:  # pragma: no cover - defensive, mirrors dispatch's catch-all
+        return f"[error] {exc}", True
+
+    if not rows:
+        return f"no paper matches {q!r}", False
+    head = format_search_headline(
+        n_returned=len(rows), total=len(rows), noun="paper", query=q
+    )
+    table_text = render_agent_table(
+        rows, schema=["handle", "title", "authors", "year", "venue"]
+    )
+    body = (
+        f"{head}\n\n{table_text}\n\n"
+        "(console view — one row per paper; MCP search(kind='paper') "
+        "returns chunk-level hits, by design — see precis-search-help)"
+    )
+    return body, False
+
+
 async def _run_verb(request: Request, verb: str, args_text: str) -> tuple[Any, bool]:
     """Parse + dispatch one verb call; return ``(result, is_error)``.
 
@@ -428,6 +590,10 @@ async def _run_verb(request: Request, verb: str, args_text: str) -> tuple[Any, b
         payload = _parse_args(verb, args_text)
     except ValueError as exc:
         return f"[input error] {exc}", True
+    if verb == "search":
+        override = await asyncio.to_thread(_paper_console_search, request, payload)
+        if override is not None:
+            return override
     return await await_dispatch(request, verb, payload)
 
 

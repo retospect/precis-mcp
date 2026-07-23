@@ -20,9 +20,11 @@
   <li class="rounded-lg border border-slate-200 bg-white px-4 py-3">
     <div class="flex items-baseline gap-2">
       <span class="text-xs text-slate-400 w-12 shrink-0 font-mono">#{{ a.id }}</span>
-      <a href="/tasks" class="min-w-0 flex-1 text-sm font-medium text-slate-800 hover:text-emerald-700 break-words">
+      <a href="/r/todo/{{ a.id }}" class="min-w-0 flex-1 text-sm font-medium text-slate-800 hover:text-emerald-700 break-words">
         {{ first_line | linkify_refs }}
       </a>
+      {# The source object this ask is about — the todo itself, hover-previewable. #}
+      {{ a.source_link }}
       {# X — dismiss the ask: close the todo (won't-do) and drop it
          from the queue without answering. #}
       <form method="post" action="/asks/{{ a.id }}/terminate" class="shrink-0"
