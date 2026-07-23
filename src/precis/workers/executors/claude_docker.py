@@ -29,8 +29,14 @@ Each pass does three things:
 
 Reaping is **by container name**, never a host pid — the name survives a
 worker restart (conmon keeps the container alive independent of the
-worker). The container binary is ``PRECIS_PODMAN_BIN`` (default
-``podman``) so tests inject a stub.
+worker). **Launch is deliberately podman-only** (rootless podman is a
+security choice for untrusted compute): ``_podman_bin()`` (default
+``podman``, override ``PRECIS_PODMAN_BIN``) so tests inject a stub. **Poll
+and reap are runtime-agnostic** (``_reap_bin()``, shared
+``capability_probe.container_runtime()`` detector): on a docker-only host
+(no podman on PATH) inspecting/removing an already-launched container falls
+back to docker instead of throwing ``FileNotFoundError`` on every boot
+reconcile.
 
 Slice 1 (``docs/proposals/sandbox-run-substrate.md``): the ``/work/out``
 → folder + tarball artifact projection is **slice 2**. This slice stages
@@ -94,7 +100,32 @@ _reconciled = False
 
 
 def _podman_bin() -> str:
+    """The launch-path container binary — deliberately podman-only.
+
+    Rootless podman is a security choice for the sandbox's untrusted
+    compute, not just a default, so ``_launch`` (the only caller that
+    invokes this) never falls back to docker. Contrast :func:`_reap_bin`,
+    which the poll/reap path uses instead.
+    """
     return os.environ.get("PRECIS_PODMAN_BIN") or "podman"
+
+
+def _reap_bin() -> str:
+    """The poll/reap-path container binary — runtime-agnostic.
+
+    Inspecting/removing an *already-launched* container isn't a security
+    decision the way launching one is, so this mirrors
+    :func:`agent_container._container_bin`: prefer podman, fall back to
+    docker (via the shared :func:`capability_probe.container_runtime`
+    detector) so a docker-only host (no podman on PATH — e.g. spark) can
+    still reap orphaned ``sandbox-*`` containers at boot instead of the
+    reconcile pass throwing ``FileNotFoundError: 'podman'`` every restart.
+    Falls back to ``"podman"`` (today's behavior) only when neither runtime
+    is detected.
+    """
+    from precis.workers.capability_probe import container_runtime
+
+    return container_runtime() or "podman"
 
 
 def _concurrency() -> int:
@@ -217,8 +248,11 @@ def build_run_argv(
 
 
 def _podman(args: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    """Run a poll/reap-path container command via :func:`_reap_bin` — see
+    that function's docstring for why this is runtime-agnostic while the
+    launch path (:func:`_launch`, ``build_run_argv``) stays podman-only."""
     return subprocess.run(
-        [_podman_bin(), *args],
+        [_reap_bin(), *args],
         capture_output=True,
         text=True,
         timeout=timeout,

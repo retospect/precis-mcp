@@ -432,6 +432,39 @@ def test_poll_missing_container_fails(store: Store, sandbox_env: Path) -> None:
 # ── boot reconcile (acceptance #6) ─────────────────────────────────
 
 
+def test_reap_bin_falls_back_to_docker_when_no_podman(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mirrors ``test_capability_probe.py``'s docker-fallback case, scoped to
+    the claude_docker reap path specifically: on a docker-only host (no
+    podman on PATH — e.g. spark) polling/reaping must resolve to docker
+    instead of the boot ``reconcile_orphans`` throwing
+    ``FileNotFoundError('podman')`` every worker restart. The launch path
+    (``_podman_bin``) stays hardcoded podman regardless — rootless podman is
+    a deliberate security choice for the sandbox's untrusted compute, not
+    just a default."""
+    for v in ("PRECIS_CONTAINER_BIN", "PRECIS_PODMAN_BIN", "PRECIS_PODMAN_SLOTS"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setattr(
+        "precis.workers.capability_probe.shutil.which",
+        lambda name: "/usr/bin/docker" if name == "docker" else None,
+    )
+    assert claude_docker._reap_bin() == "docker"
+    assert claude_docker._podman_bin() == "podman"
+
+
+def test_reap_bin_prefers_podman_when_both_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for v in ("PRECIS_CONTAINER_BIN", "PRECIS_PODMAN_BIN", "PRECIS_PODMAN_SLOTS"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setattr(
+        "precis.workers.capability_probe.shutil.which",
+        lambda name: f"/usr/bin/{name}" if name in {"podman", "docker"} else None,
+    )
+    assert claude_docker._reap_bin() == "podman"
+
+
 def test_reconcile_reaps_orphan(store: Store, sandbox_env: Path) -> None:
     # A sandbox-* container with no owning job at all.
     (sandbox_env / "sandbox-999999.state").write_text("running 0")

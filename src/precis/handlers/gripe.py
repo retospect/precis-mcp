@@ -172,11 +172,20 @@ class GripeHandler(NumericRefHandler):
         auto_refresh_days: int | None = None,
         **_kw: Any,
     ) -> Response:
-        # Mirror NumericRefHandler._create but add the body-chunk
-        # write in the same transaction so the gripe + its body
-        # land atomically. The body chunk picks up embeddings +
-        # keywords from the standard workers automatically, which
-        # is what makes the comment timeline searchable.
+        # The base insert (ref + gripe_body chunk + the STATUS:open
+        # default tag) routes through ``file_gripe_readonly()``
+        # (migration 0079) rather than hand-rolled insert_ref/
+        # insert_blocks/add_tag calls. That SQL function is SECURITY
+        # DEFINER — it runs with its owner's privileges regardless of
+        # the calling role — so filing a gripe keeps working even from
+        # an ``agent_ro`` connection (``write:none`` envelope,
+        # ``envelope.py::db_role``), which Postgres would otherwise
+        # refuse outright. Using it unconditionally (not just as an
+        # agent_ro fallback) keeps one code path for both roles and
+        # means the function is exercised on every gripe, not just the
+        # rare read-only one. Any caller-supplied ``tags=``/``link=``
+        # beyond the default are still applied in the same transaction,
+        # same as before.
         from precis.handlers._link_tag_ops import validate_relation
         from precis.handlers._link_target import parse_link_target
 
@@ -187,28 +196,17 @@ class GripeHandler(NumericRefHandler):
             )
         target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
-
-        all_tag_strs: list[str] = list(self.default_tags_on_create)
-        if tags:
-            all_tag_strs.extend(tags)
-        parsed_tags = [Tag.parse_strict(t, kind=self.kind) for t in all_tag_strs]
+        parsed_extra_tags = [Tag.parse_strict(t, kind=self.kind) for t in (tags or [])]
 
         with self.store.tx() as conn:
-            ref = self.store.insert_ref(
-                kind=self.kind,
-                slug=None,
-                title=text,
-                meta={},
-                conn=conn,
-            )
-            self.store.insert_blocks(
-                ref.id,
-                [BlockInsert(pos=0, text=text, meta={"chunk_kind": _BODY_KIND})],
-                conn=conn,
-            )
-            for tag in parsed_tags:
+            row = conn.execute(
+                "SELECT public.file_gripe_readonly(%s)", (text,)
+            ).fetchone()
+            assert row is not None
+            ref_id = int(row[0])
+            for tag in parsed_extra_tags:
                 self.store.add_tag(
-                    ref.id,
+                    ref_id,
                     tag,
                     set_by="agent",
                     replace_prefix=(tag.namespace == "closed"),
@@ -216,13 +214,13 @@ class GripeHandler(NumericRefHandler):
                 )
             if target is not None:
                 self.store.add_link(
-                    src_ref_id=ref.id,
+                    src_ref_id=ref_id,
                     dst_ref_id=target.ref_id,
                     dst_pos=target.pos,
                     relation=relation,
                     conn=conn,
                 )
-        return self._render_create_ack(ref.id)
+        return self._render_create_ack(ref_id)
 
     def _append_comment(self, *, id: str | int, text: str) -> Response:
         ref_id = self._coerce_id(id)

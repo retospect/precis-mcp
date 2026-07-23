@@ -105,33 +105,17 @@ per-kind reference.
   `scripts/bump` / `precis db dump-schema` — never hand-edit it
   (release-time only; it's checked against the files). Dual-track (ADR 0031).
 - **`uv` for everything.** Bare `pip`/`pytest`/`mypy` aren't reproducible.
-- **Run tests via `scripts/test`.** It runs pytest in the dev container
-  against YOUR worktree (bind-mount) with the RAM test DB wired and terse
-  output — the canonical iteration loop. Don't hand-roll `uv run pytest`
-  (torch-free host → spurious `ModuleNotFoundError` for `marker`,
-  `sentence_transformers`, … — not real bugs) or `scripts/dev pytest` (mounts
-  MAIN, not your worktree). The dev image bakes all extras, so no
-  `--with`/`--extra` needed.
+- **Run tests via `scripts/test`, never a bare pytest.** →
+  `docs/conventions/testing.md` for the why + `--impacted` testmon details.
 
       scripts/test                         # full suite (-n6)
       scripts/test tests/test_x.py -k …    # subset; args pass through to pytest
       scripts/test --impacted              # ONLY tests your change affects (testmon)
 
-  `--impacted` is the tightest inner loop: `pytest-testmon` maps test↔code and
-  runs just the tests a working-tree change touches (first run builds the map;
-  later runs are sub-second when nothing relevant changed). `scripts/ship` (via
-  `/land`, `/go`) runs the authoritative full pre-merge gate — everything
-  else is the fast loop before it.
-- **Never `cd` into your own worktree.** The Bash shell already runs in the
-  worktree root and the harness re-anchors cwd there after *every* call, so a
-  `cd <worktree> && …` prefix is pure redundancy — wasted tokens on each call
-  and the exact "`cd` in a compound command can trigger a permission prompt"
-  footgun. Run commands bare; use an **absolute path** to reach another dir
-  (`--git-dir=…`, `ls /Users/reto/work/cluster`), not a `cd`. (Log audit: ~60%
-  of Bash calls carried a redundant `cd` — the top single waste in the fleet.)
+- **Never `cd` into your own worktree** — run commands bare, use an absolute
+  path to reach elsewhere. → `docs/conventions/container-ops.md`.
 - **Container-first ops.** `scripts/dev` → dev shell; `scripts/db` → psql
-  (LOCAL `precis` / `precis_test` only; dev pgvector at `127.0.0.1:5432`,
-  `POSTGRES_USER=postgres`). Compose file: `~/work/infrastructure/compose.yaml`.
+  (LOCAL `precis` / `precis_test` only). → `docs/conventions/container-ops.md`.
 - **Peeking at prod.** `scripts/prod-psql "SELECT …"` — hops through a
   cluster node (caspar/melchior) to the live `precis_prod` behind pgbouncer.
   `agent_rw` is WRITE-capable (prefer read-only); local `scripts/db` doesn't
@@ -146,20 +130,10 @@ per-kind reference.
   MCP with **read verbs only** (`search`/`get`/`more`); `put`/`edit`/`delete`/
   `tag` mutate production. For write-path testing, drive a **dev-DB** precis
   (`scripts/dev`, local test DB) — never the session MCP.
-- **`rtk` compresses noisy command output** (token-killer CLI proxy;
-  `brew install rtk`, a prereq like `uv`/`docker`). A **global PreToolUse hook**
-  (`rtk init --global`, installed on Reto's dev Mac → covers *every* local
-  worktree session) auto-rewrites Bash commands to `rtk <cmd>` transparently —
-  no manual prefix needed. **Consequence: Bash output is a filtered digest, not
-  raw.** If a detail is missing, re-run via `rtk proxy <cmd>` (raw passthrough)
-  or read the teed full log. Only rtk's *known* commands are rewritten
-  (git/psql/grep/find/docker/cargo/pytest…); `scripts/*` wrappers and the
-  already-terse `scripts/test` pass through untouched, and the repo's Bash
-  guards (commit-on-main / git-stash / prod-psql) are prefix-robust so the
-  rewrite can't blind them. **No hook in CI or cluster `claude -p` → prefix
-  manually there:** `rtk git …`, `rtk err -- <cmd>`, `rtk summary -- <cmd>`.
-  Filters: committed `.rtk/filters.toml` overrides the user-global template.
-  Uninstall the hook: `rtk init --global --uninstall` (then restart).
+- **`rtk` compresses noisy Bash output** transparently via a global
+  PreToolUse hook — so output you see is a filtered digest, not raw.
+  → `docs/conventions/rtk.md` (raw passthrough, CI/cluster prefixing,
+  filters, uninstall).
 - **Semantic code search — first move to orient** (repo-dev, not the product).
   For *where-is / how-does / what-calls* questions, `search_code` (or the
   `navigator` subagent) **before** grep/Read — one query → ranked `file:line`
@@ -186,13 +160,9 @@ per-kind reference.
   agent-supplied URL (directly or post-redirect) must use `safe_get` /
   `safe_stream` from `src/precis/utils/safe_fetch.py`. Raw
   `httpx…get(url, follow_redirects=True)` is an SSRF.
-- **Cite code by durable anchor, not line, in docs/memory.** A `file.py:308`
-  written down rots on the next edit; reference the symbol —
-  `path/file.py::Qual.name` (Python `__qualname__` shape). `scripts/coderef
-  anchor file.py:LINE` authors it, `resolve <anchor>` → clickable `file:line`,
-  `check docs` flags drift (advisory, in `/whatneedsdoing`). Convention:
-  `docs/conventions/code-anchors.md`. (Bare `:line` is fine in throwaway
-  chat/terminal — this governs what gets written down to read later.)
+- **Cite code by durable anchor, not line, in docs/memory** — a `file.py:308`
+  rots on the next edit. → `docs/conventions/code-anchors.md` (authoring,
+  resolving, drift-checking).
 - If another branch left trivial drift (needs `ruff`), just fix it.
 
 ## Agent sizing

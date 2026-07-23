@@ -49,20 +49,6 @@ is the historical observation log.
 
 ---
 
-## 📄 CLAUDE.md "conventions that bite" audit (rule vs rationale)
-
-- **Compress the ~16 conventions bullets to rule + pointer.** That section is
-  ~100 lines / ~45% of CLAUDE.md, which loads every session. Several bullets
-  (rtk, code-anchors, container-first, …) keep the full *why* inline even though
-  they already reference a `docs/conventions/*.md` that should own it. Trim each
-  to the terse rule + the pointer; push rationale to the referenced doc. The
-  coderef bullet + the agent-sizing roster were already trimmed in the coderef
-  ship — this is the same pass over the rest.
-  Status: `open` · Severity: `polish` · Owner: CLAUDE.md + docs/conventions/ ·
-  Test: none (prose) — target is a leaner every-session router, no info loss.
-
----
-
 ## 🧹 `scripts/coderef` — factor the exact/unique-suffix matcher
 
 - **`resolve()`, `_dep_node()`, and the inline block in `cmd_callers` each
@@ -113,30 +99,29 @@ The spark *DSN-not-reaching-the-container* retry-storm is **resolved** —
 root-cause is in `git log`. These robustness gaps the incident surfaced remain
 open:
 
-- **claude_docker (sandbox path) hardcodes `podman`, ignoring `PRECIS_CONTAINER_BIN`.**
-  `_podman_bin()` (`claude_docker.py:96`) returns `PRECIS_PODMAN_BIN or "podman"` —
-  it does NOT consult the shared `container_runtime()` detector that the review
-  path uses. On docker-only spark (`PRECIS_CONTAINER_BIN=/usr/bin/docker`, no
-  podman) the unconditional boot-`reconcile_orphans` (`:344`, runs before any
-  sandbox gate) throws `FileNotFoundError: 'podman'` once per worker boot and
-  can never reap `sandbox-*` orphans there. Caught defensively, sandbox is dark,
-  so low severity — but a **judgment call, not a mechanical fix**: routing
-  sandbox launches through docker (rootful daemon) instead of rootless podman is
-  a security downgrade for *untrusted* compute. Options: (a) make reconcile/reap
-  runtime-agnostic via `container_runtime()` while keeping *launch* podman-only
-  and skipping cleanly when podman is absent; (b) don't schedule the pass on
-  hosts lacking podman. File; don't silently docker-fallback the launch path.
 - **`PRECIS_MCP_DB_ROLE=agent_rw` in the review container** — reviews are
-  *mostly* read-only, so the write role looks wrong. **But it is NOT a mechanical
-  flip to `agent_ro`:** the shared reviewer footer (`review.py::_footer_block`)
-  grants a deliberate `put(kind='gripe', …)` carve-out so a reviewer can report
-  tool-friction it hits mid-review — an INSERT that `agent_ro` (writes refused by
-  the DB, `envelope.py::db_role`) would silently break. So the options are a
-  design call, not a fix: (a) keep `agent_rw` (the gripe write is intentional);
-  (b) mint a narrow `agent_review` role that can INSERT `kind='gripe'` and
-  nothing else (a cluster-side role + grant, since these roles live in ansible,
-  not in-repo migrations); (c) drop the gripe carve-out and go pure `agent_ro`.
-  Decide deliberately — don't blind-flip.
+  *mostly* read-only, so the write role looks wrong; the reason it was
+  `agent_rw` is the shared reviewer footer (`review.py::_footer_block`)'s
+  deliberate `put(kind='gripe', …)` carve-out so a reviewer can report
+  tool-friction mid-review, which a straight `agent_ro` flip would silently
+  break (writes refused by the DB, `envelope.py::db_role`). **The DB-layer
+  half of option (b) is now shipped**, in-repo, without a new cluster role:
+  migration `0079_agent_ro_gripe_carveout.sql` adds a `SECURITY DEFINER`
+  function (`public.file_gripe_readonly`) that inserts exactly one gripe
+  (ref + body chunk + `STATUS:open`) and works from *any* connecting role —
+  `GripeHandler._create` (`handlers/gripe.py`) now routes through it
+  unconditionally, so filing a gripe already survives an `agent_ro`
+  connection today; no `agent_review` cluster role needed after all. Still
+  open: (1) actually flip `PRECIS_MCP_DB_ROLE=agent_ro` on the review
+  container — an ops/cluster-side decision, not blocked on code anymore;
+  (2) the **tool-layer** deny (`envelope.py::disallowed_tools`) still drops
+  the whole `mcp__precis__put` verb for a `write:none` envelope, so a
+  *generic* read-only todo/job still can't reach this function even though
+  the DB would now allow it — exposing gripe-filing as its own,
+  distinctly-named MCP tool (so it's simply never in `_PRECIS_WRITE_VERBS`)
+  would close that gap, but adding an eighth top-level tool conflicts with
+  the fixed "seven verbs" invariant asserted in `server.py` — a design call
+  for Opus/Reto, not mechanical. Decide deliberately — don't blind-flip.
 - **OAuth token appears in `docker inspect` `Config.Env`** — the "secret by key,
   never in inspect" goal isn't actually met (docker records inherited `--env`
   values). If that guarantee matters, move secrets to `--env-file`.
@@ -145,31 +130,24 @@ open:
 
 ## 🕯️ Dark-switch audit — orphaned vs staged feature flags
 
-Status: `open` · Severity: `polish` · Owner: repo-wide
+**Audit done** (2026-07-22) — classification table + rationale now lives in
+[`docs/conventions/dark-switches.md`](docs/conventions/dark-switches.md).
+Recommend-only per the original ask: every flag on the starter list turned
+out to be **intentional-staged** (a documented Phase-2 activation step
+elsewhere in this file or in the code's own docstring) except one, so
+nothing was deleted. Also confirmed in the same pass: `budget/breaker.py`'s
+circuit breaker is fully wired on `main`, not a stray dark hook (see the
+"Budget guardrails" section below).
 
-Two related items, surfaced 2026-07-19 during the ADR-0046 unit-4b (factory
-LLM-switch) work when the tex Layer-2 fixer turned out to be a forgotten
-default-off hook.
-
-- **Revisit `PRECIS_LAYER2_FIXER` (tex_llm_fix).** `src/precis/utils/tex_llm_fix.py`
-  (~220 lines, self-contained) is the Layer-2 chktex LLM-fixer on the `kind='tex'`
-  put path, gated behind `PRECIS_LAYER2_FIXER=1` (**default off**), one caller
-  (`handlers/plaintext.py:~650`). Drafts are the authoring source of truth now, so
-  this dark hook is likely superseded — but it's low-complexity and harmless, so
-  **leave it running dark** and decide keep-vs-delete deliberately later (not a
-  mechanical rip: removing it also drops the Layer-2 fix-*hint* on tex puts).
-- **Audit the other dark switches.** Enumerate every default-off feature flag and
-  classify each as **intentional-staged** (Phase-2 provisioning behind unset flags —
-  the deliberate pattern) vs **orphaned/superseded** (like `PRECIS_LAYER2_FIXER`) vs
-  **experimental-abandoned**; decide keep/remove per flag. Starter list to triage:
-  `PRECIS_LAYER2_FIXER`, `PRECIS_BACKLOG_GROOM_ENABLED` (+ the container `fix_gripe`
-  job_type it feeds — never produced a `gripe_*` branch), `PRECIS_FRICTION_REFLECT`,
-  `ROLE3:own`, `PRECIS_AGENT_CONTAINER`, `PRECIS_SCHEDULER_ENABLED`,
-  `PRECIS_MCP_DB_ROLE_ENFORCE`, `PRECIS_LLM_BACKEND`/`PRECIS_LLM_FAILOVER`. (The
-  *intentional* dark flags — the whole factory Phase-2 set — are fine; the goal is
-  to catch the *forgotten* ones.) Note: the **laptop fixer** `PRECIS_FIXER_AUTONOMY`
-  is intentional + documented (report/ship/full), not a candidate for removal.
-
+- **Revisit `PRECIS_LAYER2_FIXER` (tex_llm_fix)** *(still open — the one
+  genuine orphan/superseded candidate)*. `src/precis/utils/tex_llm_fix.py`
+  (~220 lines, self-contained) is the Layer-2 chktex LLM-fixer on the
+  `kind='tex'` put path, gated behind `PRECIS_LAYER2_FIXER=1` (**default
+  off**), one caller (`handlers/plaintext.py:~650`). Drafts are the
+  authoring source of truth now, so this dark hook is likely superseded —
+  but it's low-complexity and harmless, so **leave it running dark** and
+  decide keep-vs-delete deliberately later (not a mechanical rip: removing
+  it also drops the Layer-2 fix-*hint* on tex puts).
 
 ---
 
@@ -451,25 +429,32 @@ proven end-to-end, pLDDT 84.7). Design `docs/design/chem-tools-integration.md`.
 
 ## 💰 Budget guardrails — global spend circuit breaker
 
-Design [`docs/design/budget-guardrails.md`](docs/design/budget-guardrails.md).
-Per-call caps + cost ledger exist; no aggregate ceiling. Devin-merge review
-residuals (breaker gates every paid tier; real-cost capture from OpenRouter
-`usage.cost`; enforcement-seam integration tests) are **implemented + green on
-branch, unshipped** (see memory `budget_oauth_quota_split`). Remaining:
+Design [`docs/design/budget-guardrails.md`](docs/design/budget-guardrails.md)
+(the doc's own "not built" status header is stale — Pieces B and real-cost
+capture are shipped; treat it as historical design-of-record, not
+present-state). **Piece B (the global circuit breaker) and real-cost capture
+are SHIPPED** on `main` (confirmed 2026-07-22 against `tests/test_budget.py`):
+`breaker.gate_tier` is called from `router.dispatch`
+(`utils/llm/router.py:832`) and `breaker.gate_paid` from the cache fetch path
+(`handlers/_cache_base.py:651`); both gate on the rolling dollar meter *or*
+(for the `claude -p` OAuth transport) the subscription-quota snapshot; both
+alert on trip/clear and auto-clear as the window ages; `/budget`
+(`precis_web/routes/budget.py`) exposes web-editable
+`PRECIS_BUDGET_HOURLY_USD`/`_DAILY_USD` overrides plus a "resume now" bypass.
+Real-cost capture is also done end-to-end: Claude reports its own cost;
+`result_from_openai` (`utils/llm/router.py`) prefers OpenRouter's returned
+`usage.cost` over the local price-table estimate; `handlers/perplexity.py`
+prefers the response's own `usage` cost block over its flat `ClassVar`
+estimate. Remaining:
 
-- **Piece A — cost-band affordance** *(feature, open).* Uniform `free · cheap ·
-  expensive` (+ `fast · slow`) words surfaced to the model + a permissive
-  "escalate freely when needful" policy line. No enforcement. Owner
-  `src/precis/budget/` + `utils/llm/router.py` + `_cache_base.py`.
-- **Real-cost capture** *(feature, open).* Sum the provider's actual returned
-  cost, not estimates. Claude reports it; OSS/local + OpenRouter path drops
-  `usage` (needs OpenRouter's `cost` field); perplexity uses a flat ClassVar.
-- **Piece B — global circuit breaker (hourly + daily)** *(feature, open).* Two
-  web-editable numbers (`PRECIS_BUDGET_HOURLY_USD`/`_DAILY_USD`) bounding router
-  LLMs + paid fetch kinds; on trip refuse new *expensive* work (graceful
-  `LlmResult.error`), auto-clear as the window ages, emit a Discord `alert`.
-  Owner `src/precis/budget/breaker.py` + `router.dispatch` + cache `_fetch` +
-  `/budget`.
+- **Piece A — cost-band affordance** *(feature, open — machinery only).*
+  `src/precis/budget/bands.py` has the `Cost`/`Pace` enums, the tier→band
+  table, and `Band.label()` (`'free · fast'` etc.) — but nothing outside
+  `bands.py`/`breaker.py` imports `band_for_tier`/`is_expensive`, so the bands
+  are **not actually surfaced to any model** yet (no prompt/skill references
+  them). Still open: wire the label + a permissive "escalate freely when
+  needful" policy line into the relevant system prompts. Owner
+  `src/precis/budget/bands.py` + wherever agent system prompts are assembled.
 - **Piece C — per-entity cost attribution** *(partly shipped).* `LlmRequest.ref_id`
   now stamps `llm_call_log.ref_id` (was never wired → 100% null in prod), so spend
   is attributable to an *entity*, not just a `source` pass — **cannot be
@@ -479,10 +464,11 @@ branch, unshipped** (see memory `budget_oauth_quota_split`). Remaining:
   [--days N] [--by transport|source|ref|model] [--source X]` (read-only rollup —
   calls · real-$ · char volume · wall-clock, units kept *separate*). *Remaining
   follow-ups:*
-  - **Stamp the rest of the attributable callsites** — `handlers/ask.py`
-    (`conv_ref_id`) + `utils/_chase_llm.py` ×3 (`finding.ref_id`, needs threading
-    from callers). Pass-level passes (dream, review) legitimately carry no single
-    ref — leave them.
+  - **Stamp the rest of the attributable callsites** — `precis_web/ask.py`
+    (`generate_answer`'s `conv_ref_id` param is accepted but not threaded onto
+    the `LlmRequest`) + `workers/_chase_llm.py` ×3 (`dispatch(LlmRequest(...))`
+    calls carry no `ref_id` — needs threading from callers). Pass-level passes
+    (dream, review) legitimately carry no single ref — leave them.
   - **Local-lane visibility** *(shipped — lite logging).* The corpus batch passes
     (`llm_summarize` / `classify` / `paper_glossary`) previously ran
     `log_call=False` (invisible). They now write a **lite** `llm_call_log` row —
