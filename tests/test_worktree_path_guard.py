@@ -18,6 +18,7 @@ assert _spec and _spec.loader
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 evaluate = _mod.evaluate
+main = _mod.main
 
 MAIN = "/repo"
 WT = "/repo/.claude/worktrees/wt1"
@@ -31,16 +32,16 @@ def _never(_: str) -> bool:
     return False
 
 
-def test_main_path_with_worktree_twin_is_denied() -> None:
-    reason = evaluate(
+def test_main_path_with_worktree_twin_is_corrected() -> None:
+    twin = evaluate(
         f"{MAIN}/src/precis/handlers/x.py", WT, MAIN, exists=_always, isdir=_always
     )
-    assert reason is not None
-    # The corrected worktree path is offered in the message.
-    assert f"{WT}/src/precis/handlers/x.py" in reason
+    # evaluate() now returns the corrected worktree-twin path (auto-correct,
+    # not a deny reason).
+    assert twin == f"{WT}/src/precis/handlers/x.py"
 
 
-def test_worktree_path_is_allowed() -> None:
+def test_worktree_path_is_allowed_untouched() -> None:
     assert (
         evaluate(
             f"{WT}/src/precis/handlers/x.py", WT, MAIN, exists=_always, isdir=_always
@@ -82,10 +83,99 @@ def test_sibling_worktree_path_is_allowed() -> None:
     assert evaluate(sib, WT, MAIN, exists=_never, isdir=_never) is None
 
 
-def test_new_file_in_existing_worktree_dir_is_denied() -> None:
+def test_new_file_in_existing_worktree_dir_is_corrected() -> None:
     # Creating a new file via the main path, where the worktree dir exists:
-    # still a mis-target — deny and suggest the twin.
-    reason = evaluate(
-        f"{MAIN}/src/precis/new.py", WT, MAIN, exists=_never, isdir=_always
+    # still a mis-target — correct to the twin rather than deny.
+    twin = evaluate(f"{MAIN}/src/precis/new.py", WT, MAIN, exists=_never, isdir=_always)
+    assert twin == f"{WT}/src/precis/new.py"
+
+
+def _run_main(monkeypatch, payload, capsys):
+    import io
+    import json as _json
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(_json.dumps(payload)))
+    rc = main()
+    out = capsys.readouterr().out
+    return rc, (_json.loads(out) if out.strip() else None)
+
+
+def test_main_emits_allow_with_updated_input_for_file_path(monkeypatch, capsys) -> None:
+    # Isolate main()'s payload-parsing / JSON-construction from evaluate()'s
+    # path logic (already covered above) by stubbing _git and evaluate directly.
+    monkeypatch.setattr(
+        _mod,
+        "_git",
+        lambda cwd, *args: (
+            WT if args == ("rev-parse", "--show-toplevel") else f"{MAIN}/.git"
+        ),
     )
-    assert reason is not None
+    monkeypatch.setattr(
+        _mod, "evaluate", lambda *a, **k: f"{WT}/src/precis/handlers/x.py"
+    )
+
+    payload = {
+        "cwd": WT,
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": f"{MAIN}/src/precis/handlers/x.py",
+            "old_string": "a",
+            "new_string": "b",
+        },
+    }
+    rc, out = _run_main(monkeypatch, payload, capsys)
+    assert rc == 0
+    assert out is not None
+    hso = out["hookSpecificOutput"]
+    assert hso["permissionDecision"] == "allow"
+    assert hso["updatedInput"]["file_path"] == f"{WT}/src/precis/handlers/x.py"
+    # Sibling keys (old_string/new_string) survive the rewrite.
+    assert hso["updatedInput"]["old_string"] == "a"
+    assert f"{WT}/src/precis/handlers/x.py" in hso["permissionDecisionReason"]
+
+
+def test_main_reads_notebook_path_for_notebook_edit(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        _mod,
+        "_git",
+        lambda cwd, *args: (
+            WT if args == ("rev-parse", "--show-toplevel") else f"{MAIN}/.git"
+        ),
+    )
+    monkeypatch.setattr(_mod, "evaluate", lambda *a, **k: f"{WT}/notebooks/foo.ipynb")
+
+    payload = {
+        "cwd": WT,
+        "tool_name": "NotebookEdit",
+        "tool_input": {
+            "notebook_path": f"{MAIN}/notebooks/foo.ipynb",
+            "new_source": "print(1)",
+        },
+    }
+    rc, out = _run_main(monkeypatch, payload, capsys)
+    assert rc == 0
+    assert out is not None
+    hso = out["hookSpecificOutput"]
+    assert hso["permissionDecision"] == "allow"
+    assert hso["updatedInput"]["notebook_path"] == f"{WT}/notebooks/foo.ipynb"
+    assert hso["updatedInput"]["new_source"] == "print(1)"
+
+
+def test_main_no_op_when_no_correction_needed(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        _mod,
+        "_git",
+        lambda cwd, *args: (
+            WT if args == ("rev-parse", "--show-toplevel") else f"{MAIN}/.git"
+        ),
+    )
+    monkeypatch.setattr(_mod, "evaluate", lambda *a, **k: None)
+
+    payload = {
+        "cwd": WT,
+        "tool_name": "Edit",
+        "tool_input": {"file_path": f"{WT}/src/precis/handlers/x.py"},
+    }
+    rc, out = _run_main(monkeypatch, payload, capsys)
+    assert rc == 0
+    assert out is None

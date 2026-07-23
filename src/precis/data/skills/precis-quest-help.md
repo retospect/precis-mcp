@@ -219,6 +219,11 @@ CLI runs regardless).
   (`concept --serves--> quest`) but they're distinct graphs.
 - **Not a memory.** A memory is the stateless baseline node; a quest adds
   a lifecycle, the serves-DAG, and the logbook.
+- **Not a skill.** A quest is a striving, not a procedure — "how to
+  evaluate a paper" is a rubric/how-to, filed as a **`skill`**, not a quest.
+- **Not a paper-specific finding.** A best-practice result or evaluation
+  tied to one paper is a **`finding`** (citation-linked, kind='finding'),
+  not a quest — a quest is generic and never paper-specific.
 
 ## Roadmap (what's live vs. coming)
 

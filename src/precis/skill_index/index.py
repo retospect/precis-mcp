@@ -25,8 +25,11 @@ import hashlib
 import logging
 import math
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from precis.skill_index.cache import (
     CachedChunk,
@@ -35,6 +38,47 @@ from precis.skill_index.cache import (
     default_cache_dir,
 )
 from precis.skill_index.chunker import CHUNKER_VERSION, Chunk, chunk_by_h2
+
+#: Wall-clock cap on a single embedder call (query embed or a per-slug
+#: build embed) made from inside :class:`FileCorpusIndex`. ``is_ready()``
+#: already gates *cold* BgeM3 loads (see ``_build``'s docstring and
+#: ``embedder.BgeM3Embedder._raise_if_warming``) so once a call reaches
+#: here the embedder believes itself loaded — this guard is for the
+#: *other* failure mode: a hung/deadlocked encode (stuck native thread,
+#: a RemoteEmbedder whose transport ignores its own timeout) that would
+#: otherwise block the MCP transport indefinitely (observed: one
+#: ``search(kind='skill', ...)`` call idle for the full 1800s
+#: client-side timeout before being force-aborted). 30s comfortably
+#: covers a real encode of a handful of skill chunks; a wedge past that
+#: is failed fast into the same "semantic unavailable, lexical carries
+#: on" path a cold embedder already produces, rather than dropping
+#: dead silent for half an hour.
+_EMBED_CALL_TIMEOUT_S = 30.0
+
+#: Sentinel: the embedder call exceeded :data:`_EMBED_CALL_TIMEOUT_S`.
+_TIMED_OUT: Any = object()
+
+
+def _bounded(fn: Callable[..., Any], *args: Any, timeout: float) -> Any:
+    """Run ``fn(*args)`` with a wall-clock cap.
+
+    Mirrors ``ingest.metadata_resolve._bounded`` (same shape, different
+    subsystem — that one bounds Crossref/S2 network lookups, this one
+    bounds embedder calls). Returns :data:`_TIMED_OUT` if the call
+    overran; the underlying thread is abandoned, not force-killed — it
+    dies on its own once/if the embedder call eventually returns.
+    """
+    if timeout <= 0:
+        return fn(*args)
+    ex = ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(fn, *args)
+    try:
+        return fut.result(timeout=timeout)
+    except FuturesTimeout:
+        return _TIMED_OUT
+    finally:
+        ex.shutdown(wait=False)
+
 
 #: The index embeds body-only twins (v3) in addition to the
 #: structural per-heading chunks — extra embedding surface costs a
@@ -150,9 +194,20 @@ class FileCorpusIndex:
             return []
 
         try:
-            qv = self._embedder.embed_one(q)  # type: ignore[union-attr]
+            qv = _bounded(
+                self._embedder.embed_one,  # type: ignore[union-attr]
+                q,
+                timeout=_EMBED_CALL_TIMEOUT_S,
+            )
         except Exception as exc:  # pragma: no cover — embedder failure
             log.warning("skill_index: query embed failed: %s", exc)
+            return []
+        if qv is _TIMED_OUT:
+            log.warning(
+                "skill_index: query embed exceeded %.0fs wall-clock cap — "
+                "treating semantic search as unavailable this call",
+                _EMBED_CALL_TIMEOUT_S,
+            )
             return []
 
         hits: list[SearchHit] = []
@@ -234,11 +289,20 @@ class FileCorpusIndex:
             return None
 
         try:
-            vectors = self._embedder.embed(  # type: ignore[union-attr]
-                [c.text for c in chunks]
+            vectors = _bounded(
+                self._embedder.embed,  # type: ignore[union-attr]
+                [c.text for c in chunks],
+                timeout=_EMBED_CALL_TIMEOUT_S,
             )
         except Exception as exc:
             log.warning("skill_index: embed failed for %s: %s", slug, exc)
+            return None
+        if vectors is _TIMED_OUT:
+            log.warning(
+                "skill_index: embed for %s exceeded %.0fs wall-clock cap",
+                slug,
+                _EMBED_CALL_TIMEOUT_S,
+            )
             return None
         if len(vectors) != len(chunks):
             log.warning(

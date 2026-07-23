@@ -36,6 +36,23 @@ rtk err -- <cmd>       # just the error signal
 rtk summary -- <cmd>   # condensed summary
 ```
 
+## Known gaps
+
+- **`find` with a compound predicate.** The global hook rewrites *any*
+  `find …` invocation to `rtk find …` before it runs — the rewrite step
+  doesn't inspect arguments. But `rtk find` itself then refuses `-not`,
+  `-exec`, and likely other compound predicates/actions ("rtk find does not
+  support compound predicates or actions … Use find directly"), so the
+  first attempt always burns a round trip. Skip the retry: if your `find`
+  needs `-not`, `-exec`, `-prune` combined with an action, etc., write it as
+  `rtk proxy find …` up front — same command, raw passthrough, still
+  tracked, no rejection. (Confirmed against rtk 0.43.0; `rtk rewrite
+  "find … -not …"` happily emits the doomed `rtk find …` rewrite, so this
+  is a real upstream gap in the rewrite/subcommand split, not something
+  `.rtk/filters.toml` can patch — that file only shapes *output* filtering
+  for commands rtk already decided to run, not the pre-execution
+  rewrite-vs-passthrough decision.)
+
 ## Filters and uninstall
 
 - Filters live in a committed `.rtk/filters.toml`, which overrides the

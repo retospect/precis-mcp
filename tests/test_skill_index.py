@@ -396,6 +396,60 @@ def test_index_returns_hits_with_mock_embedder(
     assert all(h.score > 0 for h in hits if h.slug == "alpha")
 
 
+def test_index_query_embed_hang_fails_fast(
+    files: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wedged embedder call must not block ``search`` indefinitely.
+
+    Regression for an observed incident: ``search(kind='skill', ...)``
+    idled for the full 1800s MCP client timeout before being force-
+    aborted, shaped like the ``embedder_wedged_warming`` bug (a stuck
+    in-process embedder call with no bound). ``_bounded`` in
+    ``skill_index.index`` caps any single embedder call at
+    ``_EMBED_CALL_TIMEOUT_S``; shrink that cap here so the test itself
+    doesn't take 30s to prove the guard fires.
+    """
+    import time
+
+    from precis.skill_index import index as index_mod
+
+    monkeypatch.setattr(index_mod, "_EMBED_CALL_TIMEOUT_S", 0.2)
+
+    class _HangingEmbedder:
+        @property
+        def dim(self) -> int:  # pragma: no cover — unused
+            return 32
+
+        @property
+        def model(self) -> str:
+            return "hanging"
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return MockEmbedder(dim=32).embed(texts)
+
+        def embed_one(self, text: str) -> list[float]:
+            # Simulate a wedged in-process call (e.g. a deadlocked
+            # encode) — sleeps far longer than the shrunk cap above.
+            time.sleep(5)
+            return MockEmbedder(dim=32).embed_one(text)  # pragma: no cover
+
+    idx = FileCorpusIndex(
+        files=files,
+        embedder=_HangingEmbedder(),
+        cache_dir=tmp_path,
+        cache_namespace="test",
+    )
+    start = time.monotonic()
+    hits = idx.search("apples")
+    elapsed = time.monotonic() - start
+    # Query embed hangs, but the per-slug build embeds happily (build
+    # doesn't call embed_one) — so we only exercise the query-side cap
+    # here. It must return promptly (well under the 5s sleep) with no
+    # hits, rather than blocking until the embedder call returns.
+    assert hits == []
+    assert elapsed < 2.0, f"search() blocked for {elapsed:.2f}s past its cap"
+
+
 def test_index_caches_to_disk(files: dict[str, str], tmp_path: Path) -> None:
     embedder = MockEmbedder(dim=32)
     idx = FileCorpusIndex(

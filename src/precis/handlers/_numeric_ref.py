@@ -1064,9 +1064,20 @@ class NumericRefHandler(Handler):
         try:
             return int(s)
         except (ValueError, TypeError):
+            # gr48523-adjacent: agents repeatedly pass a slug/filename-style
+            # id (e.g. a local memory-file stem like 'backlog_foo') here —
+            # this kind has no slug column (ADR 0008 dropped slug
+            # normalisation; ADR 0036 computes the handle from the integer
+            # id, e.g. `me158`). Spell the recovery path explicitly instead
+            # of just naming the constraint, so a caller who guessed wrong
+            # doesn't have to discover `search` by trial and error.
             raise BadInput(
                 f"{cls._sense()} id must be an integer, got {id!r}",
-                next=f"{cls._sense()} ids are integers - see search(kind={cls.kind!r}, q='...')",
+                next=(
+                    f"{cls.kind} has no slug lookup - ids are integers assigned "
+                    f"on create. Use search(kind={cls.kind!r}, q='...') to find "
+                    "the numeric id first, then retry with that id."
+                ),
             ) from None
 
     # ── rendering hooks (subclasses may override) ─────────────────
