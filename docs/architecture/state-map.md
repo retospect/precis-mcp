@@ -71,8 +71,14 @@ scheduling, execution, and review:
   **resumable, not a failure**: the executor (`_resume_reason`) marks it
   succeeded-but-non-blocking so `dispatch` re-mints a fresh tick, bounded
   by a per-parent streak cap (`meta.plan_tick_resume_streak`, default 3,
-  env `PRECIS_PLAN_TICK_RESUME_CAP`) past which it bubbles as a real
-  failure (the task needs splitting). A live child todo only blocks
+  env `PRECIS_PLAN_TICK_RESUME_CAP`) past which — gripe 168886 tier 2 —
+  `claude_inproc` auto-mints one narrowly-scoped `plan_tick` follow-up in
+  `decompose` mode (forcing prompt: split into 2-5 subtasks, don't attempt
+  the task) instead of bubbling immediately, guarded by a permanent
+  per-parent `meta.plan_tick_decompose_attempted` flag; a *second*
+  streak-exhaustion after that bubbles for real as `child-failed:<job_id>`
+  (the task needs splitting further than the auto-decompose could manage).
+  A live child todo only blocks
   re-candidacy unconditionally when it's a genuine in-flight child or
   carries a hard-block tag (`halt`/`halt:`/`child-failed:`); a child
   parked on `ask-user:`/`waiting-for:` alone (no hard-block tag also
@@ -127,7 +133,10 @@ cheap-but-real pass is never flagged.
   spins** (a planner parent minting > `PLAN_TICK_REMINT_24H` (16)
   `plan_tick` jobs in 24h — the coroutine "succeeds" each tick but never
   converges, which the resume-streak cap doesn't catch since it only
-  guards exhaustion loops), and **worker health** (daemon liveness, not
+  guards exhaustion loops), **child-failed-parked** (gripe 168886 tier 1
+  — a todo carrying an open `child-failed:*` tag past
+  `CHILD_FAILED_PARKED_HOURS` (6h), the blind spot `stuck-doable` misses
+  since it excludes anything with open tags), and **worker health** (daemon liveness, not
   the todo graph): **worker-restart** (a `(host, process)` emitting >
   `WORKER_RESTART_STORM_1H` (8) `worker: started` boot rows in 1h — the
   jetsam-cull signature that was invisible for 1.5 days; the boot row is

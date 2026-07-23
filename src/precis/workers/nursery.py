@@ -34,6 +34,16 @@ finding rows):
 * **plan-tick spins** — a planner parent minting more than
   ``PLAN_TICK_REMINT_24H`` ``plan_tick`` jobs in 24h (a coroutine that
   "succeeds" every tick but never converges).
+* **child-failed parked** — a todo carrying an open ``child-failed:*``
+  tag (the failure-bubble, see :mod:`precis.handlers._job_bubble`) for
+  more than ``CHILD_FAILED_PARKED_HOURS=6``. ``stuck-doable`` explicitly
+  *excludes* anything with an open tag, so a parent parked behind a
+  self-diagnosed "split me" failure was invisible on ``/alerts`` until
+  this detector (gripe 168886 tier 1) — the executor's auto-decompose
+  guardrail (tier 2) resolves most of these in one tick, so a parent
+  still parked past the threshold means auto-recovery already gave up
+  (a hard crash/infra error, or a repeat streak-exhaustion after the one
+  decompose attempt) and a human needs to look.
 
 Worker-health detectors (daemon liveness / work flow, not the todo
 graph) — all ``critical``, so a *new* one pages once via
@@ -100,6 +110,18 @@ SPIN_LOOP_EVENTS_24H = 200
 #: sustained across a day (≈16) is already pathological.
 PLAN_TICK_REMINT_24H = 16
 
+#: A todo carrying an open ``child-failed:<job_id>`` tag longer than this is
+#: parked behind a failure-bubble with nothing acting on it. ``stuck-doable``
+#: excludes anything with an open tag by construction, so without this
+#: detector such a parent is invisible on ``/alerts`` — the blind spot
+#: gripe 168886 was filed for. Short relative to ``STALE_CLAIM_HOURS`` /
+#: ``LONG_WAIT_DAYS``: the executor's auto-decompose guardrail (tier 2)
+#: resolves the common case (a resumable-exhaustion streak) within one
+#: tick, so a parent still parked past a few hours is either a hard
+#: crash/infra failure or a repeat streak-exhaustion post-decompose —
+#: both need a human, promptly.
+CHILD_FAILED_PARKED_HOURS = 6
+
 #: A daemon relaunching more than this many times in an hour is in a
 #: restart storm — abnormal churn, whatever the cause. The motivating
 #: incident was macOS jetsam culling the agent worker ~50-200x/day under
@@ -148,6 +170,7 @@ _SEVERITY: dict[str, str] = {
     "stale-claim": "warn",
     "long-wait": "info",
     "stuck-doable": "info",
+    "child-failed-parked": "warn",
     "stalled-recurring": "warn",
     "worker-restart": "critical",
     "dead-worker": "critical",
@@ -183,6 +206,7 @@ _DETECTORS: tuple[tuple[str, Callable[[Store], list[Finding]]], ...] = (
     ("stale-claim", lambda s: _detect_stale_claims(s)),
     ("long-wait", lambda s: _detect_long_waits(s)),
     ("stuck-doable", lambda s: _detect_stuck_doable(s)),
+    ("child-failed-parked", lambda s: _detect_child_failed_parked(s)),
     ("stalled-recurring", lambda s: _detect_stalled_recurrings(s)),
     ("worker-restart", lambda s: _detect_worker_restart_storms(s)),
     ("dead-worker", lambda s: _detect_dead_workers(s)),
@@ -487,6 +511,64 @@ def _detect_stuck_doable(store: Store) -> list[Finding]:
         )
         for r in rows
     ]
+
+
+# ── child-failed parked ────────────────────────────────────────────
+
+
+def _detect_child_failed_parked(store: Store) -> list[Finding]:
+    """Todos carrying an open ``child-failed:<job_id>`` tag longer than
+    ``CHILD_FAILED_PARKED_HOURS``.
+
+    ``bubble_job_failure`` (:mod:`precis.handlers._job_bubble`) tags the
+    parent and pulls it out of dispatch/doable rotation on any job
+    failure; nothing else automated ever clears it. A parent can carry
+    more than one ``child-failed:<job_id>`` tag over time (each failed
+    child job adds its own), so this groups by ``ref_id`` and reports the
+    *oldest* one — how long the parent has been parked overall.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT ON (r.ref_id)
+                   r.ref_id, r.title, t.value AS tag, rt.created_at
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+               AND t.namespace = 'OPEN'
+               AND t.value LIKE 'child-failed:%%'
+               AND rt.created_at < now() - %s::interval
+               AND COALESCE(
+                     (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                       WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+             ORDER BY r.ref_id, rt.created_at ASC
+             LIMIT 50
+            """,
+            (f"{CHILD_FAILED_PARKED_HOURS} hours",),
+        ).fetchall()
+    out: list[Finding] = []
+    for r in rows:
+        tag = str(r[2])
+        hours = _hours_since(r[3])
+        out.append(
+            Finding(
+                category="child-failed-parked",
+                ref_id=int(r[0]),
+                title=_first_line(r[1]),
+                detail=(
+                    f"parked {hours:.0f}h behind {tag} — a hard failure, a "
+                    f"streak-exhaustion past its one auto-decompose attempt "
+                    f"(gripe 168886 tier 2), or a decompose tick still "
+                    f"queued/running behind a busy dispatch backlog; check "
+                    f"the job's job_result / job_event chunks or "
+                    f"view='attention' for the recovery options"
+                ),
+            )
+        )
+    return out
 
 
 # ── stalled recurrings ────────────────────────────────────────────

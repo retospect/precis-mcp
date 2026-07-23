@@ -509,17 +509,51 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
                 )
             _set_status(store, ref_id, _SUCCEEDED, conn=conn)
         else:
-            # A real failure, or a resumable exhaustion past the cap:
-            # bubble so the parent parks until the owner decides retry /
-            # split / drop.
+            # A real failure, or a resumable exhaustion past the cap. The
+            # latter (resume_reason is not None) is a *structured,
+            # self-diagnosed* signal — "this leaf is too wide for one
+            # tick" — distinct from a hard crash/tool error, so it gets one
+            # shot at auto-recovery before parking (gripe 168886 tier 2):
+            # mint a single narrowly-scoped decompose tick instead of
+            # bubbling. A hard failure (resume_reason is None) always
+            # bubbles immediately, same as before; a *repeat*
+            # streak-exhaustion after the decompose attempt also bubbles
+            # (the guardrail is one attempt per parent, not a loop).
+            if resume_reason is not None and not _decompose_already_attempted(
+                conn, parent_id
+            ):
+                child_id = _mint_auto_decompose(
+                    store,
+                    conn,
+                    parent_id,
+                    model=str(params.get("model") or "sonnet"),
+                    streak=streak,
+                    cap=cap,
+                )
+                _append_chunk(
+                    store,
+                    ref_id,
+                    _JOB_EVENT_KIND,
+                    f"runner: tick hit {resume_reason} {streak} consecutive "
+                    f"times (cap {cap}) — not bubbling yet; auto-minted a "
+                    f"narrowly-scoped decompose tick (job #{child_id}) to "
+                    f"split this leaf into smaller subtasks instead. One "
+                    f"auto-decompose attempt per parent — a repeat failure "
+                    f"escalates to a real park.",
+                    conn=conn,
+                )
+                _set_status(store, ref_id, _FAILED, conn=conn)
+                conn.commit()
+                return
             if resume_reason is not None:
                 _append_chunk(
                     store,
                     ref_id,
                     _JOB_EVENT_KIND,
                     f"runner: tick hit {resume_reason} {streak} consecutive "
-                    f"times (cap {cap}) — bubbling as a real failure. The "
-                    f"task likely needs splitting into smaller subtasks.",
+                    f"times (cap {cap}) — bubbling as a real failure "
+                    f"(auto-decompose already attempted for this parent). "
+                    f"The task likely needs splitting into smaller subtasks.",
                     conn=conn,
                 )
             _set_status(store, ref_id, _FAILED, conn=conn)
@@ -760,6 +794,118 @@ def _reset_resume_streak(conn: Connection, parent_ref_id: int) -> None:
         "AND meta ? 'plan_tick_resume_streak'",
         (parent_ref_id,),
     )
+
+
+#: ``refs.meta`` key on a plan_tick parent marking that one auto-decompose
+#: attempt (gripe 168886 tier 2) has already been minted for it. Read
+#: before minting a second one — the guardrail is ONE attempt per parent,
+#: ever, so a leaf that stalls again after decomposing escalates straight
+#: to a real ``child-failed`` park instead of looping on the same "split
+#: it up" prompt.
+_DECOMPOSE_ATTEMPTED_KEY = "plan_tick_decompose_attempted"
+
+
+def _decompose_already_attempted(conn: Connection, parent_ref_id: int) -> bool:
+    """True once ``parent_ref_id`` has already had an auto-decompose tick
+    minted for it (see :data:`_DECOMPOSE_ATTEMPTED_KEY`).
+
+    Unlocked read-then-write, same as :func:`_bump_resume_streak` just above
+    it: safe only because dispatch guarantees exactly one live job per
+    parent at a time. A future change that lets multiple ``claude_inproc``
+    workers claim ticks for the same parent concurrently would need to add
+    locking here too.
+    """
+    row = conn.execute(
+        "SELECT COALESCE((meta->>%s)::boolean, false) FROM refs WHERE ref_id = %s",
+        (_DECOMPOSE_ATTEMPTED_KEY, parent_ref_id),
+    ).fetchone()
+    return bool(row[0]) if row else False
+
+
+def _mint_auto_decompose(
+    store: Any,
+    conn: Connection,
+    parent_ref_id: int,
+    *,
+    model: str,
+    streak: int,
+    cap: int,
+) -> int:
+    """Mint one narrowly-scoped ``plan_tick`` follow-up tick under
+    ``parent_ref_id`` with ``params.decompose=True``, instead of bubbling a
+    streak-exhaustion failure (gripe 168886 tier 2).
+
+    Reuses the ``plan_tick`` job_type as-is — no new registry entry, no
+    executor wiring — the decompose tick is just a normal plan_tick job the
+    ``claude_inproc`` executor claims and runs like any other; the only
+    difference is ``plan_tick.run`` prepending a forcing instruction to the
+    user prompt (see :data:`~precis.workers.job_types.plan_tick._DECOMPOSE_INSTRUCTION`)
+    that tells the planner to read the brief + the prior failed attempts
+    (already visible in the normal prompt's "Children status" block — every
+    earlier plan_tick job under this parent carries a ``job_result`` chunk)
+    and mint 2-5 child subtasks instead of attempting the task itself.
+
+    Stamps :data:`_DECOMPOSE_ATTEMPTED_KEY` on the parent (the guardrail)
+    and resets the resume streak so the decompose tick starts clean.
+    Shares ``conn`` with the caller's transaction so the mint, the flag,
+    and the streak reset commit atomically with the failed job's own
+    status flip.
+    """
+    from precis.store.types import Tag
+
+    # Propagate the parent's prio onto the minted job, same as the normal
+    # dispatch.py mint path (``_claim_and_dispatch``) — otherwise a
+    # high-prio parent's decompose tick lands at the claim-order default
+    # (COALESCE(prio, 5), _common.py::claim_executor_jobs) and queues behind
+    # every other prio-5+ job, defeating the point of an urgent auto-recovery.
+    parent_prio_row = conn.execute(
+        "SELECT prio FROM refs WHERE ref_id = %s", (parent_ref_id,)
+    ).fetchone()
+    parent_prio = (
+        int(parent_prio_row[0])
+        if parent_prio_row and parent_prio_row[0] is not None
+        else None
+    )
+
+    child = store.insert_ref(
+        kind="job",
+        slug=None,
+        title=f"plan_tick decompose (auto-mint under todo:{parent_ref_id})",
+        meta={
+            "job_type": "plan_tick",
+            "executor": _EXECUTOR_NAME,
+            "params": {"model": model, "decompose": True},
+            "dispatched_from_todo": parent_ref_id,
+        },
+        parent_id=parent_ref_id,
+        prio=parent_prio,
+        conn=conn,
+    )
+    store.add_tag(
+        child.id,
+        Tag.closed("STATUS", "queued"),
+        set_by="system",
+        replace_prefix=True,
+        conn=conn,
+    )
+    _set_meta(conn, parent_ref_id, **{_DECOMPOSE_ATTEMPTED_KEY: True})
+    _reset_resume_streak(conn, parent_ref_id)
+    store.append_event(
+        parent_ref_id,
+        source="claude_inproc",
+        event="auto-decompose-minted",
+        payload={"job_id": int(child.id), "streak": streak, "cap": cap},
+        conn=conn,
+    )
+    log.info(
+        "claude_inproc: parent #%d hit resume-streak exhaustion %d/%d — "
+        "auto-minted decompose job #%d instead of bubbling",
+        parent_ref_id,
+        streak,
+        cap,
+        child.id,
+    )
+    return int(child.id)
 
 
 def _job_params(store: Any, job_ref_id: int) -> dict[str, Any]:

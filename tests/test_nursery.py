@@ -28,6 +28,7 @@ from precis.handlers.todo import TodoHandler
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.nursery import (
+    CHILD_FAILED_PARKED_HOURS,
     DEAD_WORKER_SILENCE_MIN,
     DISPATCH_STALL_MINUTES,
     LONG_WAIT_DAYS,
@@ -36,6 +37,7 @@ from precis.workers.nursery import (
     STALE_CLAIM_HOURS,
     STUCK_DOABLE_HOURS,
     WORKER_RESTART_STORM_1H,
+    _detect_child_failed_parked,
     _detect_dead_workers,
     _detect_dispatch_stalls,
     _detect_long_waits,
@@ -272,6 +274,66 @@ def test_stuck_doable_detector_skips_recurring_umbrella(
     titles = {f.title for f in findings}
     assert "Watcher" not in titles
     assert "Watches" not in titles
+
+
+# ── child-failed parked ────────────────────────────────────────────
+
+
+def test_child_failed_parked_detector_flags_old_bubble(
+    handler: TodoHandler, store: Store
+) -> None:
+    r = handler.put(text="Stuck leaf")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("child-failed:999"), set_by="system")
+    _backdate_tag(store, rid, "child-failed:999", CHILD_FAILED_PARKED_HOURS + 1)
+
+    findings = _detect_child_failed_parked(store)
+    ids = {f.ref_id for f in findings}
+    assert rid in ids
+
+
+def test_child_failed_parked_detector_ignores_fresh_bubble(
+    handler: TodoHandler, store: Store
+) -> None:
+    r = handler.put(text="Just parked")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("child-failed:999"), set_by="system")
+    # No backdate — bubble is fresh.
+    findings = _detect_child_failed_parked(store)
+    ids = {f.ref_id for f in findings}
+    assert rid not in ids
+
+
+def test_child_failed_parked_detector_ignores_done_leaf(
+    handler: TodoHandler, store: Store
+) -> None:
+    r = handler.put(text="Old + done despite bubble")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("child-failed:999"), set_by="system")
+    _backdate_tag(store, rid, "child-failed:999", CHILD_FAILED_PARKED_HOURS + 1)
+    handler.tag(id=rid, add=["STATUS:done"])
+
+    findings = _detect_child_failed_parked(store)
+    ids = {f.ref_id for f in findings}
+    assert rid not in ids
+
+
+def test_child_failed_parked_detector_dedups_multiple_bubbles(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A parent can carry more than one child-failed:<job_id> tag (each
+    failed child job adds its own) — one Finding per ref_id, not per tag."""
+    r = handler.put(text="Twice-bubbled leaf")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("child-failed:111"), set_by="system")
+    _backdate_tag(store, rid, "child-failed:111", CHILD_FAILED_PARKED_HOURS + 5)
+    store.add_tag(rid, Tag.open("child-failed:222"), set_by="system")
+    _backdate_tag(store, rid, "child-failed:222", CHILD_FAILED_PARKED_HOURS + 1)
+
+    findings = [f for f in _detect_child_failed_parked(store) if f.ref_id == rid]
+    assert len(findings) == 1
+    # Reports the oldest bubble — the parent has been parked ~5h, not ~1h.
+    assert "child-failed:111" in findings[0].detail
 
 
 # ── stalled recurrings ────────────────────────────────────────────

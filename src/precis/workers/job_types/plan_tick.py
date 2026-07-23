@@ -20,9 +20,15 @@ interpret the output — it captures the final text as a
 next sweep notice whatever state the planner set.
 
 Closed vocab: ``meta.params`` carries ``model`` (one of
-``opus|sonnet|haiku``) plus an optional ``timeout_s``. The model is
-synthesized from the parent's ``LLM:<value>`` tag at dispatch time;
-callers normally don't write ``params`` directly.
+``opus|sonnet|haiku``) plus an optional ``timeout_s`` and an optional
+``decompose`` bool. The model is synthesized from the parent's
+``LLM:<value>`` tag at dispatch time; callers normally don't write
+``params`` directly. ``decompose=True`` is the one exception: it's set
+only by :func:`precis.workers.executors.claude_inproc._mint_auto_decompose`
+when a tick's resume-streak exceeds its cap (gripe 168886 tier 2) — same
+job_type, same transport, but the user prompt gets a forcing instruction
+(:data:`_DECOMPOSE_INSTRUCTION`) telling the planner to split the stuck
+leaf into subtasks instead of attempting it.
 """
 
 from __future__ import annotations
@@ -47,6 +53,26 @@ from precis.utils.llm.router import (
 )
 
 log = logging.getLogger(__name__)
+
+
+#: Forcing instruction prepended to the user prompt for an auto-decompose
+#: tick (``params.decompose=True`` — gripe 168886 tier 2). The stalled
+#: leaf's prior attempts are already visible in the normal prompt's
+#: "Children status" block (every earlier ``plan_tick`` job under this
+#: parent carries a ``job_result`` chunk, including the "failed (hit
+#: {reason} {streak} times, cap {cap}) — split this into smaller
+#: subtasks" verdict that triggered this tick), so the instruction only
+#: needs to redirect the planner's *action* — split, don't retry.
+_DECOMPOSE_INSTRUCTION: str = (
+    "## Decompose mode\n\n"
+    "This leaf has repeatedly hit its turn/budget ceiling without "
+    "converging — see the failed attempts below (each prior plan_tick "
+    'job\'s result, under "Children"). Your ONLY job this tick is to '
+    "read the brief and those failed attempts, then mint 2-5 concrete "
+    "child subtasks, each completable in a single tick. Do NOT attempt "
+    "the original task yourself — no writing, no research beyond what's "
+    "needed to scope the split. Mint the children, then stop.\n"
+)
 
 
 #: Per-tick ``--max-turns`` ceiling for the planner subprocess. A research +
@@ -91,6 +117,13 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "minimum": 30,
             "maximum": 3600,
             "description": "Wall-clock cap on the tick. Default 1800s (30 min).",
+        },
+        "decompose": {
+            "type": "boolean",
+            "description": "Auto-decompose recovery tick (gripe 168886 tier 2): "
+            "prepends a forcing instruction telling the planner to split the "
+            "stalled leaf into 2-5 subtasks instead of attempting it. Set only "
+            "by the executor's streak-exhaustion guardrail, never by a caller.",
         },
     },
     "required": ["model"],
@@ -146,6 +179,23 @@ def validate_submit(
     return None
 
 
+def _apply_decompose_mode(prompts: Any, params: dict[str, Any]) -> Any:
+    """Prepend :data:`_DECOMPOSE_INSTRUCTION` to the user prompt when
+    ``params.decompose`` is set — a no-op otherwise.
+
+    Only the variable user layer changes; the cached system prompt is
+    returned byte-identical so the Anthropic prompt-cache prefix (ADR
+    0038 §1 / 0051 §12) still hits across a decompose tick."""
+    if not params.get("decompose"):
+        return prompts
+    from precis.workers.planner_prompt import PlannerPrompts
+
+    return PlannerPrompts(
+        system=prompts.system,
+        user=f"{_DECOMPOSE_INSTRUCTION}\n{prompts.user}",
+    )
+
+
 def run(
     *,
     store: Any,
@@ -178,6 +228,7 @@ def run(
     _refresh_patent_claims_digest(store, parent_ref_id)
 
     prompts = build_planner_prompts(store, ref_id=parent_ref_id, model=model)
+    prompts = _apply_decompose_mode(prompts, params)
 
     workspace = _load_parent_workspace(store, parent_ref_id)
 

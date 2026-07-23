@@ -223,9 +223,13 @@ def test_budget_exhaustion_resumes_without_bubbling(store: Store) -> None:
     assert any("resumed (hit budget" in r[0] for r in results)
 
 
-def test_repeated_max_turns_past_cap_bubbles(store: Store, monkeypatch) -> None:
-    """Past the cap, a max-turns tick bubbles as a real failure so the
-    owner can split the task."""
+def test_repeated_max_turns_past_cap_auto_decomposes_instead_of_bubbling(
+    store: Store, monkeypatch
+) -> None:
+    """Past the cap, the FIRST streak-exhaustion escalation auto-mints one
+    narrowly-scoped decompose tick instead of bubbling (gripe 168886 tier
+    2) — the parent stays out of ``child-failed`` while the recovery tick
+    runs."""
     monkeypatch.setenv("PRECIS_PLAN_TICK_MAX_TURNS_RESUMES", "1")
     parent_id = _mk_parent(store)
 
@@ -234,13 +238,81 @@ def test_repeated_max_turns_past_cap_bubbles(store: Store, monkeypatch) -> None:
     parent_tags = {str(t) for t in store.tags_for(parent_id)}
     assert not any(t.startswith("child-failed:") for t in parent_tags)
 
-    # tick 2: streak 2 > cap 1 → bubble
+    # tick 2: streak 2 > cap 1 → auto-decompose, NOT a child-failed bubble.
     job2 = _mk_job(store, parent_id)
     _run(store, job2, _MAX_TURNS, exit_code=1)
     job_tags = {str(t) for t in store.tags_for(job2)}
+    assert "STATUS:failed" in job_tags  # this tick itself still failed
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert not any(t.startswith("child-failed:") for t in parent_tags)
+
+    # Guardrail flag stamped on the parent.
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'plan_tick_decompose_attempted' FROM refs WHERE ref_id = %s",
+            (parent_id,),
+        ).fetchone()
+    assert row[0] == "true"
+
+    # A decompose follow-up job was minted under the parent.
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE parent_id = %s AND kind = 'job' "
+            "ORDER BY ref_id",
+            (parent_id,),
+        ).fetchall()
+    decompose_jobs = [r for r in rows if (r[1].get("params") or {}).get("decompose")]
+    assert len(decompose_jobs) == 1
+    decompose_job_id = int(decompose_jobs[0][0])
+    assert decompose_jobs[0][1]["job_type"] == "plan_tick"
+    decompose_tags = {str(t) for t in store.tags_for(decompose_job_id)}
+    assert "STATUS:queued" in decompose_tags
+
+    # Streak reset so the decompose tick (and whatever follows) starts clean.
+    with store.pool.connection() as conn:
+        present = conn.execute(
+            "SELECT meta ? 'plan_tick_resume_streak' FROM refs WHERE ref_id = %s",
+            (parent_id,),
+        ).fetchone()[0]
+    assert present is False
+
+
+def test_second_streak_exhaustion_after_decompose_bubbles_for_real(
+    store: Store, monkeypatch
+) -> None:
+    """One auto-decompose attempt per parent, not a loop: once the guardrail
+    flag is set, a SECOND past-cap escalation bubbles as a real
+    ``child-failed`` park instead of minting another decompose tick."""
+    monkeypatch.setenv("PRECIS_PLAN_TICK_MAX_TURNS_RESUMES", "1")
+    parent_id = _mk_parent(store)
+
+    # First past-cap escalation: auto-decomposes (see test above).
+    _run(store, _mk_job(store, parent_id), _MAX_TURNS, exit_code=1)
+    _run(store, _mk_job(store, parent_id), _MAX_TURNS, exit_code=1)
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert not any(t.startswith("child-failed:") for t in parent_tags)
+
+    # tick 3: streak 1 <= cap 1 → resume (still no escalation).
+    _run(store, _mk_job(store, parent_id), _MAX_TURNS, exit_code=1)
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert not any(t.startswith("child-failed:") for t in parent_tags)
+
+    # tick 4: streak 2 > cap 1, decompose already attempted → real bubble.
+    job4 = _mk_job(store, parent_id)
+    _run(store, job4, _MAX_TURNS, exit_code=1)
+    job_tags = {str(t) for t in store.tags_for(job4)}
     assert "STATUS:failed" in job_tags
     parent_tags = {str(t) for t in store.tags_for(parent_id)}
-    assert f"child-failed:{job2}" in parent_tags
+    assert f"child-failed:{job4}" in parent_tags
+
+    # Only ONE decompose job was ever minted for this parent.
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT meta FROM refs WHERE parent_id = %s AND kind = 'job'",
+            (parent_id,),
+        ).fetchall()
+    decompose_jobs = [r for r in rows if (r[0].get("params") or {}).get("decompose")]
+    assert len(decompose_jobs) == 1
 
 
 def test_real_failure_still_bubbles_and_resets_streak(store: Store) -> None:

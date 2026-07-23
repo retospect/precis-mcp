@@ -56,3 +56,28 @@ def test_refresh_patent_digest_noop_for_non_patent(
     monkeypatch.setattr(pd, "refresh_claims_digest", lambda *a, **k: calls.append(1))
     pt._refresh_patent_claims_digest(object(), 999)
     assert calls == []
+
+
+# ── _apply_decompose_mode (gripe 168886 tier 2) ─────────────────────
+
+
+class _Prompts:
+    def __init__(self, system: str, user: str) -> None:
+        self.system = system
+        self.user = user
+
+
+def test_apply_decompose_mode_noop_without_flag() -> None:
+    prompts = _Prompts(system="SYS", user="USR")
+    out = pt._apply_decompose_mode(prompts, {"model": "sonnet"})
+    assert out is prompts
+
+
+def test_apply_decompose_mode_prepends_forcing_instruction() -> None:
+    prompts = _Prompts(system="SYS", user="USR")
+    out = pt._apply_decompose_mode(prompts, {"model": "sonnet", "decompose": True})
+    # System (cached) layer is byte-identical — the cache prefix survives.
+    assert out.system == "SYS"
+    assert out.user.startswith(pt._DECOMPOSE_INSTRUCTION)
+    assert out.user.endswith("USR")
+    assert "mint 2-5 concrete child subtasks" in out.user
