@@ -24,6 +24,11 @@ below it is the todo world you already have.
 The canonical address is the **handle** `qu<id>` (e.g. `qu7`) — copy it
 from search/get output. Logbook entries have their own handle `ql<id>`.
 
+This doc is the **verb reference** — put/tag/link/get mechanics. For
+the judgment call on *writing* a good striving (vision vs. BHAG vs.
+SMART goal, keeping jargon and paper detail out, keeping quests few),
+see [[precis-quest-writing-help]].
+
 ## Mint a striving
 
 ```python
@@ -87,7 +92,8 @@ shared spine floats up as the highest-value work.
 **Sub-quest vs. achievable goal — the rule of thumb:** open-ended
 *"the best / a … "* → a **quest** (it can never be finished); a
 completable deliverable (*"screen these 20 candidates", "write the
-review"*) → an ordinary **project/todo that `serves`** the quest.
+review"*) → an ordinary **project/todo that `serves`** the quest. On
+*how* to phrase the striving itself, see [[precis-quest-writing-help]].
 
 ## The logbook — a WORM ledger of the journey
 
