@@ -284,6 +284,60 @@ def test_invoke_without_on_progress(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.error is None
 
 
+def test_invoke_denies_bash_and_write_tools_in_real_settings_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Security regression (router-migration follow-up): the router's
+    claude_agent transport hardcodes ``--permission-mode bypassPermissions``
+    for every call, which auto-approves any tool NOT explicitly denied.
+    asa_bot's deployed ``~/.claude/settings.json`` only ever pre-approved
+    ``mcp__precis``/``Read``/``Glob``/``Grep``/``Agent`` (no TTY to approve
+    anything else), so ``invoke()`` must thread an explicit
+    ``disallowed_tools`` deny list through to the ACTUAL ``--settings``
+    JSON string that reaches ``claude_agent.run_claude_async``'s argv — the
+    real subprocess boundary, not just the Python-level ``LlmRequest``
+    field. A prompt-injected "run `rm -rf`" or "edit this file" instruction
+    from Discord must be denied by the CLI itself, not merely by asa_bot's
+    own tool selection.
+
+    This stubs ``run_claude_async`` (same lowest-real-boundary idiom as
+    the other tests in this module) and inspects the ``argv`` it's called
+    with — built for real by ``call_claude_agent_async`` ->
+    ``_resolve_agent_args`` -> the ``--settings`` JSON blob — rather than
+    asserting anything about the ``LlmRequest`` object itself.
+    """
+    import json
+
+    captured_argv: list[str] = []
+
+    async def fake_run_claude_async(argv: list[str], **kwargs: Any) -> SimpleNamespace:
+        captured_argv.extend(argv)
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(claude_agent, "run_claude_async", fake_run_claude_async)
+
+    cfg = _cfg()
+    result = asyncio.run(invoke(cfg, "sys", "hi", conv_slug="conv-8", on_progress=None))
+
+    assert result.error is None
+
+    assert "--settings" in captured_argv
+    settings_idx = captured_argv.index("--settings")
+    settings_json = captured_argv[settings_idx + 1]
+    settings_payload = json.loads(settings_json)
+    deny = settings_payload["permissions"]["deny"]
+
+    for tool in ("Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch"):
+        assert tool in deny, f"{tool} missing from real --settings deny list: {deny}"
+
+    # Sanity: --permission-mode is untouched (still the router's
+    # bypassPermissions default) — the deny list is the enforcement
+    # mechanism here, not a permission-mode change.
+    assert "--permission-mode" in captured_argv
+    pm_idx = captured_argv.index("--permission-mode")
+    assert captured_argv[pm_idx + 1] == "bypassPermissions"
+
+
 def test_invoke_parses_model_and_max_turns_from_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -60,6 +60,29 @@ _FIRST_SENTENCE_MAX_CHARS = 280
 # review/smoke-test rather than silently inheriting the shared $2 default.
 _MAX_USD_CEILING = 50.0
 
+# The router's claude_agent transport ALWAYS passes
+# ``--permission-mode bypassPermissions`` (no per-caller override wired
+# through the router yet) — before this migration, asa_bot's hand-rolled
+# subprocess never passed ``--permission-mode`` at all, so with no TTY to
+# approve anything, only the tools pre-approved in its deployed
+# ``~/.claude/settings.json`` (``deploy/roles/asa_bot/templates/
+# claude_settings.json.j2``: ``mcp__precis``, ``Read``, ``Glob``, ``Grep``,
+# ``Agent``) were ever reachable. ``bypassPermissions`` auto-approves
+# everything NOT explicitly denied, so without this list the migration
+# would silently hand Asa live ``Bash``/``Write``/``Edit`` access over
+# Discord. This is a HARD deny (``--settings`` → ``permissions.deny``,
+# built in ``claude_agent._resolve_agent_args``) that applies regardless of
+# ``permission_mode`` — restores the pre-migration tool boundary exactly,
+# rather than reducing anything Asa could actually do before.
+_ASA_DISALLOWED_TOOLS: tuple[str, ...] = (
+    "Bash",
+    "Write",
+    "Edit",
+    "NotebookEdit",
+    "WebFetch",
+    "WebSearch",
+)
+
 
 class ClaudeResult:
     """The aggregated result of one claude -p invocation."""
@@ -189,6 +212,7 @@ async def invoke(
         max_turns=max_turns,
         max_usd=_MAX_USD_CEILING,
         timeout_s=float(cfg.turn_timeout_seconds),
+        disallowed_tools=_ASA_DISALLOWED_TOOLS,
         # Required for the on_event stream this whole module is built on —
         # not read from cfg.command since the parsing below hard-depends on
         # it (not a user-overridable knob the way --model/--max-turns are).
