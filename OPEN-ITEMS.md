@@ -562,9 +562,24 @@ Classifier slice **SHIPPED** (`src/precis/data/topics/*.yaml` +
 `paper_glossary`, not a claims table). `docs/decisions/0060-topic-dossiers.md`
 + `docs/design/topic-dossiers.md`. Full authoring pipeline (rungs, gap
 analysis, build order): `docs/design/paper-writing-pipeline.md`. **Pipeline
-rungs shipped:** rung 1 (5 new topics + patent sweep via gist fallback), rung 2
-(4 disposition relations + `view='integration'` + `unintegrated_papers`
-minus-query, mig 0085). Remaining, design-of-record only:
+rungs shipped (1–4):** rung 1 (5 new topics + patent sweep via gist fallback);
+rung 2 (4 disposition relations + `view='integration'` + `unintegrated_papers`
+minus-query, mig 0085); rung 3 (`chunk_review` memoized approval ledger — mig
+0086, `edit(review=)`, `view='review'`/`'review-diff'`, diff-since renderer);
+rung 4 (`edit(scaffold=)` MCP-expose + `book`/`summary` classes +
+`get(kind='draft', project=)`, `_SCAFFOLDS`→`src/precis/draft/scaffolds.py`).
+**Cost-attribution (`quest_tick cost=null`) is NOT a rung-6 pre-req** — the
+per-quest breaker meters on chars (gr162594); null cost is cosmetic (design doc
+failure-mode 7, corrected). Remaining, design-of-record only:
+
+- **Rung 5 — claims (`citation` + demand-scoped `ROLE3:own` extractor)**
+  *(feature, open — gated)*. v0 is inline *at weave*, so it lands with rung 6,
+  not before; the v1 background table waits on the v0 measurement (Decision 3).
+- **Rung 6 — section-batch weave over `dc` edits + phase machine + per-weave
+  reviewers (flow + cites, ledger-gated)** *(feature, open)* — the core loop;
+  the ledger (rung 3) + integration view (rung 2) + scaffold (rung 4) are its
+  substrate. Then rung 7 (weekly/deep review + batching), rung 8 (freshness +
+  contradiction).
 
 - **Stamp `topic:<slug>` on the dossier `draft` at creation/quest-binding**
   *(feature, open — rung-2 residual)*. `view='integration'`'s PENDING/gap half

@@ -243,8 +243,15 @@ mechanism above eliminates it.
 4. **Review↔weave thrash.** *Solved:* the ledger + `review_attempts` soft gate.
 5. **Gate stalls the tick.** *Solved:* gate the disposition, not the prose.
 6. **Maintain pays per-paper.** *Fix:* weekly-window batching.
-7. **Cost blind.** *Fix:* attribute per-call cost (the `quest_tick cost=null`
-   bug makes the budget breaker inert — pre-req before frontier weave at scale).
+7. **Cost blind.** *Mostly solved (corrected 2026-07-24):* the per-quest
+   allocator breaker meters on **char-count**, not dollars (gr162594), so it is
+   live regardless of null `cost_usd`; the global $20 dollar breaker
+   deliberately excludes OAuth/subscription transports (`budget/meter.py`
+   `OAUTH_TRANSPORTS`) because those draw down rate-limit quota, gated in
+   `budget/quota.py`. So `quest_tick cost=null` is **cosmetic** (status shows
+   $0), *not* an inert breaker — **not a weave pre-req.** *Optional:* a
+   `cost_from_tokens` fallback in `router.result_from_claude_p` for a dollar
+   estimate (needs token counts out of `claude -p`, absent today).
 8. **Dry-spin at T0–T1.** *Fix:* phase machine + `auto_check` gate.
 9. **Accretion without re-org.** *Fix:* split/prune in the deep tier + wire
    `contradicts`; executing a split is itself a place→weave on the subtree.
@@ -273,7 +280,7 @@ ledger makes verification incremental.**
 | Freshness `since=` + appendix | chunk timestamps, `ref_events` | the view + regenerated appendix |
 | Phase gate (blocked-on-human) | `blocked-by` + `auto_check` | wire the gate (DB signal) |
 | Dedup pre-placement | exact (`probe_existing`); trigram sweep | mostly subsumed by claim-clustering; opt. read-only `near_duplicates(paper)` |
-| Cost attribution | quest budget breaker | fix `quest_tick cost=null` |
+| Cost attribution | char-based per-quest breaker (live, gr162594); $ breaker excludes OAuth by design | optional cosmetic $ estimate — **not** a weave pre-req |
 | Digest cast + quiet lane | `briefing_cast.py` | 0060 §5 |
 | Per-draft binary classifier | — | **do not build** — resolved as topic-tag |
 
@@ -296,9 +303,10 @@ Multi-label. Per-domain separate; tooling topics cover **all** tooling (AI + non
 
 ## Document classes
 
-Existing `_SCAFFOLDS`: paper, review(=survey), report, article, patent,
-proposal. Add **`book`** (multi-chapter) and **`summary`/`brief`** (short digest,
-distinct from the comprehensive `review`).
+Existing `_SCAFFOLDS`: paper, review(=survey), report, patent, manufacturing
+(`article` has an empty brief; `proposal` is deliberately scaffold-less — the
+linked CFP dictates its sections). Add **`book`** (multi-chapter) and
+**`summary`/`brief`** (short digest, distinct from the comprehensive `review`).
 
 ## Build order
 
@@ -313,9 +321,12 @@ Each rung standalone-useful:
    existing draft.
 4. **MCP-expose scaffold (+`book`/`summary`) + `draft(project=…)`.**
 5. **Claims v0 (inline at weave)** → measure → **v1 background extractor.**
+   v0 is inline *at weave*, so it lands **with** rung 6, not before it; the v1
+   background table waits on the v0 measurement.
 6. **Section-batch weave over `dc` edits + phase machine + per-weave reviewers
    (flow + cites, ledger-gated)** — the core; weave without its guards produces
-   the garbage. Requires cost-attribution fixed first.
+   the garbage. (Cost-attribution is **not** a blocker — the per-quest breaker
+   already meters on chars; see failure-mode 7.)
 7. **Weekly + deep review wiring + auto-aggregation; weekly-window batching.**
 8. **Freshness view + appendix + digest; contradiction + re-org.** Follow-ons:
    coverage matrix, figure-binary persistence, `near_duplicates`.
