@@ -149,6 +149,36 @@ past ad-hoc search.
 - `quest_log` entry-type mapping for synthesis ticks — reuse existing types
   vs. add one (e.g. `integration`); default to reuse.
 
+## Extension — dossier as a Map of Content (migrated from gripes 51224, 51225, 2026-07-24)
+
+Two related asks extend the dossier `draft` beyond a running synthesis into a
+structured **entry point** to the topic's slice of the library. Captured here
+as open extensions (unbuilt); the gripes are retired into this ADR.
+
+- **Evaluated-but-excluded axis (51224).** Beyond the `integrated-into` link
+  (§3), a dossier should also record papers that were *considered and set
+  aside*, each with a reason ("out of scope", "superseded by X"). This is the
+  novel half of the "Map of Content" (Zettelkasten structure note) /
+  subject-pathfinder framing: the exclusion record prevents redundant
+  re-evaluation as the corpus grows. Candidate shape: a second link relation
+  (`excluded-from`/`considered-for`) carrying the reason in edge `meta`,
+  keeping the "no new field" discipline of §3.
+
+- **Controlled vocabulary as a first-class object (51225).** Each topic
+  carries a domain thesaurus — preferred term, synonyms, acronyms, near-miss
+  variants that appear in papers but aren't the canonical label. Today it
+  could live as a freeform section in the dossier draft; the ask is to promote
+  it to a *queryable* ref (a `kind='tag'` extension or a dedicated
+  `kind='vocab'` linked to its topic) so it can (a) expand a user query with
+  known synonyms before the vector index — recall lift for niche topics;
+  (b) let asa cite the preferred term over a colloquial variant; (c) onboard a
+  new user/agent to the topic's language. SKOS SimpleThesaurus is the prior
+  art. Lowest-friction start: a freeform vocab section in the dossier,
+  promoted to structured refs once the shape stabilizes.
+
+Both are deferred extensions, not part of the shipped classifier slice; each
+graduates to its own proposal when picked up.
+
 ## See also
 
 - `docs/design/topic-dossiers.md` — mechanics: cascade tiers, taxonomy file
