@@ -8,26 +8,12 @@ items are removed (history is `git log`).
 > regression that pins it.
 
 ---
-## 🩹 Marker 2.0 defeats ADR 0015 leak-reclamation — surya inference servers orphan + thrash
-- Status: open · Severity: bug (cluster memory thrash) · Owner: `src/precis/cli/watch.py::_run_one_batch` · Test: none yet
-- Root cause (2026-07-24): the dep sweep's marker-pdf 1.x→2.0 bump moved surya out of
-  the per-batch `_watch_batch_ingest` subprocess into **persistent detached inference
-  servers** (`surya.fast_layout.server`/`surya.ocr_error.server`). ADR 0015 bounds
-  Marker/surya leaks by exiting that subprocess to reclaim heap — but the 2.0 server
-  survives it: marker's own "shut down on exit" runs only on a CLEAN exit, and an
-  OOM-SIGKILL of the batch child bypasses it → server orphans (ppid=1) and accumulates
-  → slow creep to swap thrash on every watch node. Drove balthazar to 93% swap (now
-  dropped from the rotation + rebooted, `6a637a00`); prime suspect for spark's
-  thrash-lockouts (gripe 171249). Narrow symptom: gripe 171254.
-- Fix (Reto doing externally): restore ADR 0015 under marker 2.0 — spawn the batch
-  child with `start_new_session=True` and `os.killpg` its group on exit so surya dies
-  with its batch even on SIGKILL (+ PID-list fallback if surya self-detaches). Upstream
-  knobs: marker `--keep_server`/`--disable_ocr` (marker #205/#561/#583). Once landed,
-  balthazar can optionally re-join the rotation (it stays out for LLM-tenancy reasons
-  regardless).
-- Low-pri residual: deploy doesn't actively `state: absent` the watcher on excluded
-  hosts — a `precis_watch_enabled` flag would enforce it; today relies on the plist-move
-  + playbook hosts-list omission (both reboot-validated on balthazar).
+## deploy doesn't actively disable the watcher on excluded hosts (e.g. balthazar)
+- Status: open · Severity: polish · Owner: `deploy/roles/` (precis_watch) · Test: n/a yet.
+- Low-pri residual from the marker-2.0/surya-leak fix (shipped `8ebbae27`): deploy
+  doesn't actively `state: absent` the watcher on excluded hosts — a
+  `precis_watch_enabled` flag would enforce it; today relies on the plist-move +
+  playbook hosts-list omission (both reboot-validated on balthazar).
 
 ---
 ## spark: nvidia docker runtime not configured by ansible
