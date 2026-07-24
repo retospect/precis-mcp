@@ -1744,6 +1744,16 @@ async def reader(request: Request, ident: str) -> Response:
     _, owner_ws = _owner_workspace(store, ref)
     from precis.export.remarkable import remarkable_configured
 
+    # /env link (Part 3B): "what would the planner actually see next tick on
+    # this draft's project?" — scoped to the owning project todo when linked
+    # (job_claude_inproc's plan_tick dry-run); with no project, fall back to
+    # the agent's generic (unscoped) dry-run rather than pointing at the
+    # draft ref itself (the planner assembler expects a todo, not a draft).
+    project_id = _project_id(store, ref.id)
+    assembled_context_href = "/env?agent=job_claude_inproc" + (
+        f"&target_ref_id={project_id}" if project_id is not None else ""
+    )
+
     return templates.TemplateResponse(
         request,
         "drafts/detail.html.j2",
@@ -1767,6 +1777,7 @@ async def reader(request: Request, ident: str) -> Response:
             "doctypes": _DOC_TYPES,
             "cur_doctype": str(owner_ws.get("doc_type") or ""),
             "cur_brief": str(owner_ws.get("brief") or ""),
+            "assembled_context_href": assembled_context_href,
         },
     )
 

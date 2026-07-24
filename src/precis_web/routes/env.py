@@ -14,6 +14,11 @@ The page:
 * For the picked agent, shows the resolved system prompt, directive
   prompt, MCP server list (parsed from the MCP config JSON), model,
   deny rules, env vars consulted, and gating flags.
+* An **Assembled context** panel (:mod:`precis_web.env_context`, Part
+  3B — the read side of Part 3A's ``meta.assembled_context`` capture):
+  "last real" (the most recent captured prompt input for this agent,
+  wherever it landed) and "dry-run" (a fresh, zero-LLM-call preview
+  assembled right now via the same builders the real pass calls).
 
 Pure read-only — never invokes anything. The view is what *would*
 run if the agent fired right now.
@@ -29,6 +34,7 @@ irrelevant to that question.
 from __future__ import annotations
 
 import json
+import logging
 import plistlib
 from pathlib import Path
 from typing import Any
@@ -37,9 +43,12 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from precis.workers.registry import ServiceSpec, agent_specs
-from precis_web.deps import templates
+from precis_web import env_context
+from precis_web.deps import get_store, templates
 
 router = APIRouter(prefix="/env", tags=["env"])
+
+log = logging.getLogger(__name__)
 
 #: Where macOS LaunchDaemon plists live. Read-only access is enough
 #: for the env inspector — we never write or load anything.
@@ -292,17 +301,42 @@ def _env_snapshot(spec: ServiceSpec, plist_env: dict[str, str]) -> list[dict[str
     return rows
 
 
+def _assembled_context_panel(
+    request: Request, spec: ServiceSpec, *, target_ref_id: int | None
+) -> env_context.AssembledContextPanel:
+    """Build the Assembled-context panel for ``spec``, never raising.
+
+    Reaching the store itself can fail (no ``PRECIS_DATABASE_URL``); that's
+    a distinct, coarser failure than the panel's own internal lookups
+    (already defensive inside :func:`env_context.build_panel`), so it gets
+    its own note instead of silently rendering "no captured context yet".
+    """
+    try:
+        store = get_store(request)
+    except Exception:
+        log.exception("assembled-context: no store available")
+        return env_context.empty_panel("assembled-context panel unavailable (no store)")
+    return env_context.build_panel(store, spec, target_ref_id=target_ref_id)
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def index(
     request: Request,
     agent: str | None = None,
+    target_ref_id: int | None = None,
 ) -> HTMLResponse:
     """Render the env-inspector page; ``?agent=KEY`` selects the row.
 
     Without ``agent=``, just the dropdown + a short description per
     row. With it, the full detail block for that agent — env read
     from the agent's plist, not the web process's env.
+
+    ``target_ref_id`` scopes the planner dry-run to a specific todo
+    (e.g. a draft's owning project) instead of an auto-picked
+    representative one — the draft reader's "assembled context" link
+    threads it through so the preview matches what THAT draft's
+    project would actually get on its next tick.
     """
     spec = _BY_KEY.get(agent) if agent else None
     detail: dict[str, Any] | None = None
@@ -330,6 +364,9 @@ async def index(
             "plist_found": plist_path.exists(),
             "wrapper_path": intro.wrapper or None,
             "wrapper_found": (Path(intro.wrapper).exists() if intro.wrapper else False),
+            "assembled_context": _assembled_context_panel(
+                request, spec, target_ref_id=target_ref_id
+            ),
         }
     return templates.TemplateResponse(
         request,

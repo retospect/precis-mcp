@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from precis.handlers._todo_guards import todo_root_sql
 from precis.store import Store
+from precis.utils import handle_registry
 from precis.utils.llm.router import Tier, resolve_model
 from precis.utils.prompt import AssemblyContext, Layer, Module
 from precis.workers.review import (
@@ -81,11 +82,13 @@ def _strategic_layer_snapshot(store: Store) -> str:
         s_id = int(s_id)
         if s_id != last_strategic_id:
             lines.append("")
-            lines.append(f"#{s_id} {(s_title or '').splitlines()[0]}")
+            s_handle = handle_registry.format_handle("todo", s_id)
+            lines.append(f"[{s_handle}] {(s_title or '').splitlines()[0]}")
             last_strategic_id = s_id
         if t_id is not None:
+            t_handle = handle_registry.format_handle("todo", int(t_id))
             lines.append(
-                f"  └─ #{int(t_id)} {(t_title or '').splitlines()[0]} "
+                f"  └─ [{t_handle}] {(t_title or '').splitlines()[0]} "
                 f"({int(t_children or 0)} direct children)"
             )
     return "\n".join(lines).lstrip("\n")

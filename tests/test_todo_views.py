@@ -111,6 +111,27 @@ def test_doable_lists_open_leaf(handler: TodoHandler) -> None:
     assert f"td{leaf_id}" in out.body
 
 
+def test_doable_header_singular_leaf(handler: TodoHandler) -> None:
+    """1 doable leaf → singular 'leaf', not the 'leafves' typo."""
+    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root_id = _id_of(root.body)
+    handler.put(text="Only one.", parent_id=root_id)
+    out = handler.search(view="doable")
+    assert "# 1 doable leaf" in out.body
+    assert "leafves" not in out.body
+
+
+def test_doable_header_plural_leaves(handler: TodoHandler) -> None:
+    """2+ doable leaves → 'leaves', not the 'leafves' typo."""
+    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root_id = _id_of(root.body)
+    handler.put(text="First.", parent_id=root_id)
+    handler.put(text="Second.", parent_id=root_id)
+    out = handler.search(view="doable")
+    assert "# 2 doable leaves" in out.body
+    assert "leafves" not in out.body
+
+
 def test_doable_skips_done_leaves(handler: TodoHandler) -> None:
     root = handler.put(text="Strategic.", tags=["level:strategic"])
     root_id = _id_of(root.body)

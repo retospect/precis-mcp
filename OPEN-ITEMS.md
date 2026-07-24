@@ -1709,3 +1709,36 @@ memory `repo_dev_claude_tooling.md`. Remaining:
 
 _Last compacted 2026-07-18: removed all done/shipped entries (history in
 `git log`), condensed open items. Prior detail is recoverable from git._
+
+---
+## 🔵 context-audit round-2 findings (2026-07-24) — agent-facing render bugs
+Surfaced by `scripts/context-audit` (round-2, 27 real-prod contexts, sonnet judge).
+Precisely root-caused; not yet fixed. See memory `context_quality_eval_build`.
+
+- **Halted-todo reason dropped in attention view** · Status: open · Severity: feature
+  · Owner: `src/precis/handlers/_todo_views.py::render_attention` (halted loop) —
+  `_attention_halted` builds `h['reasons']` from `halt:<reason>` tags but the loop
+  only prints id+title (the sibling child-failed loop shows its reason). · Test:
+  attention render with a `halt:<reason>`-tagged leaf shows the reason inline.
+- **Cross-kind / `view='keywords'` TOON tables drop the universal handle for
+  numeric-ref kinds** (memory/orcid/gripe/finding/job/… render a bare integer) ·
+  Status: open · Severity: feature · Owner: `src/precis/handlers/_numeric_ref.py::_body_search_hits`
+  (missing `uhandle=`) + `src/precis/utils/search_merge.py` `_render_toon_table`/
+  `_render_keywords_table` (bare `str(ref_id)` fallback; align to `hit.handle`) +
+  `src/precis/utils/handle_registry.py` `CHUNK_CODES` (missing `"orcid"`). · Test:
+  `search(kind='*')` + `view='keywords'` render `m<id>`/`oi<id>` not bare ints.
+- **quest-frontier shows default `objective: energy (min)` for non-materials quests**
+  · Status: open · Severity: polish · Owner: `src/precis/handlers/quest.py::_render_frontier`
+  + `src/precis/quest/frontier.py` `DEFAULT_OBJECTIVES` — suppress/qualify the
+  objective line when no candidates and `meta.rubric_objectives` unset.
+- **`sort='recency'` source-search omits `N of K` total + per-kind breakdown** (present
+  on plain cross-kind search) · Status: open · Severity: polish · Owner:
+  `src/precis/runtime/search.py::_dispatch_source_search` — pass `total=`/per-kind to
+  `merge_and_render`. · Test: `search(sort='recency')` headline shows `N of K` + per-kind.
+- **`view='strategic'` has no scoping/pagination** (unconditional full dump; `doable`
+  has `args={'under':N}`) · Status: deferred · Severity: polish · Owner:
+  `src/precis/handlers/_todo_views.py::render_strategic`. Possibly intentional dashboard.
+- Note: the quest_tick "materials-discovery frame forced onto every quest" finding
+  (classifier gap — no pass tags a quest's domain) is already tracked by open gripe
+  **gr170252**; not re-filed. The round-1 `precis-overview`/registry drift class
+  appears already fixed (`skill-overview` footer matches the live kind roster).

@@ -230,6 +230,17 @@ def run(
     prompts = build_planner_prompts(store, ref_id=parent_ref_id, model=model)
     prompts = _apply_decompose_mode(prompts, params)
 
+    # The FULL assembled prompt INPUT (ADR 0038), the twin of the
+    # ``meta.transcript`` output capture in ``claude_inproc`` — lets a
+    # debugging surface show "what the LLM actually saw last time" on this
+    # job ref. ``getattr`` tolerates a bare stand-in prompts object (tests
+    # monkeypatch ``build_planner_prompts`` with one that carries no
+    # ``blocks``); never-fatal internally, so a capture bug can't sink the
+    # tick.
+    from precis.utils.prompt import persist_assembled_context
+
+    persist_assembled_context(store, job_ref_id, getattr(prompts, "blocks", ()))
+
     workspace = _load_parent_workspace(store, parent_ref_id)
 
     # Open a run-attribution record (kind='agentlog') carrying the full

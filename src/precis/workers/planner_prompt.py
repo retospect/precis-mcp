@@ -38,12 +38,13 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from precis.handlers._skill_common import parse_frontmatter
 from precis.utils.prompt import (
     AssemblyContext,
+    Block,
     ClaudeAgentAdapter,
     Layer,
     Module,
@@ -87,11 +88,16 @@ class PlannerPrompts:
     ``system`` is identical across every tick of every parent todo —
     same cache prefix lands hits across the whole fleet.
     ``user`` is per-tick: ancestry + body + accumulated child
-    summaries.
+    summaries. ``blocks`` is every assembled :class:`~precis.utils.prompt.Block`
+    (cached ++ variable, in assembly order) — the FULL prompt input, kept
+    alongside the rendered strings so a caller can persist it for debugging
+    (:func:`precis.utils.prompt.persist_assembled_context`). Defaults empty
+    for callers/tests that construct a bare stand-in.
     """
 
     system: str
     user: str
+    blocks: list[Block] = field(default_factory=list)
 
 
 def build_planner_prompts(store: Store, *, ref_id: int, model: str) -> PlannerPrompts:
@@ -102,12 +108,26 @@ def build_planner_prompts(store: Store, *, ref_id: int, model: str) -> PlannerPr
     tier it's working in (cheaper model → fewer children, simpler
     output).
     """
-    system = _build_system_prompt(store)
-    user = _build_user_prompt(store, ref_id=ref_id, model=model)
-    return PlannerPrompts(system=system, user=user)
+    cached_blocks = _assemble_cached_blocks(store)
+    system, _ = ClaudeAgentAdapter.render(cached_blocks)
+    variable_blocks = _assemble_variable_blocks(store, ref_id=ref_id, model=model)
+    _, user = ClaudeAgentAdapter.render(variable_blocks)
+    return PlannerPrompts(
+        system=system, user=user, blocks=[*cached_blocks, *variable_blocks]
+    )
 
 
 # ── cached layer ──────────────────────────────────────────────────
+
+
+def _assemble_cached_blocks(store: Store | None) -> list[Block]:
+    """Assemble :data:`_CACHED_MODULES` against a bare (``ref_id=0``) context.
+
+    Factored out of :func:`_build_system_prompt` so :func:`build_planner_prompts`
+    can also capture the raw block list (for persistence) without assembling
+    twice. Tolerates ``store=None`` (no cached module dereferences it)."""
+    ctx = AssemblyContext(store=store, ref_id=0, model="")
+    return assemble(_CACHED_MODULES, ctx)
 
 
 def _build_system_prompt(store: Store) -> str:
@@ -120,8 +140,7 @@ def _build_system_prompt(store: Store) -> str:
     per-tick ids, no body text — the prefix stays long-lived so the
     cache hits on every tick. Tolerates ``store=None`` (no cached module
     dereferences it)."""
-    ctx = AssemblyContext(store=store, ref_id=0, model="")
-    system, _ = ClaudeAgentAdapter.render(assemble(_CACHED_MODULES, ctx))
+    system, _ = ClaudeAgentAdapter.render(_assemble_cached_blocks(store))
     return system
 
 
@@ -556,6 +575,15 @@ for novel territory.
 # ── variable layer ────────────────────────────────────────────────
 
 
+def _assemble_variable_blocks(store: Store, *, ref_id: int, model: str) -> list[Block]:
+    """Assemble :data:`_VARIABLE_MODULES` against this tick's context.
+
+    Factored out of :func:`_build_user_prompt` so :func:`build_planner_prompts`
+    can also capture the raw block list without assembling twice."""
+    ctx = AssemblyContext(store=store, ref_id=ref_id, model=model)
+    return assemble(_VARIABLE_MODULES, ctx)
+
+
 def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
     """Build the per-tick user message.
 
@@ -582,8 +610,9 @@ def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
     drops — and a new ``doc_context`` table rides after the anchor when
     one is set.
     """
-    ctx = AssemblyContext(store=store, ref_id=ref_id, model=model)
-    _, user = ClaudeAgentAdapter.render(assemble(_VARIABLE_MODULES, ctx))
+    _, user = ClaudeAgentAdapter.render(
+        _assemble_variable_blocks(store, ref_id=ref_id, model=model)
+    )
     return user
 
 

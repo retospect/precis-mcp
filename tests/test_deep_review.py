@@ -99,9 +99,12 @@ def test_strategic_dashboard_renders_picks(handler: TodoHandler, store: Store) -
     handler.tag(id=aid, add=["STATUS:done"])
 
     snap = _strategic_dashboard(store)
-    assert f"#{root_id} Main" in snap
+    assert f"[td{root_id}] Main" in snap
     # 2 descendants under root (a + the done marker on a), 1 pick in 7d.
     assert "picks in 7d" in snap
+    # gripe: bare `#<id>` neither round-trips as a copyable handle nor
+    # triggers memory auto-linking — must be the bracketed td-handle.
+    assert f"#{root_id} " not in snap
 
 
 def test_build_prompt_has_all_directive_sections(store: Store) -> None:

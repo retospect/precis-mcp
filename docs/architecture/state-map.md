@@ -189,7 +189,15 @@ derives `system_passes`/`agent_passes` via `service_names_for_profile()`
 and folds the old inline `or env_flag(...)` gates into `_pass_enabled`
 (reading `spec.enable_env`); the `/env` inspector derives its agent list
 from the rows carrying an `AgentIntrospect` (the old `AgentSpec` tuple is
-gone). `tests/test_worker_registry.py` AST-parses `cli/worker.py` and
+gone). **Assembled context (Part 3B, `precis_web/env_context.py`):** `/env`
+now also renders the FULL assembled prompt input (ADR 0038) per agent —
+"last real" (the most recent `meta.assembled_context` capture, wherever
+Part 3A's `persist_assembled_context` landed it: the plan_tick job ref for
+`job_claude_inproc`, the digest memory for `structural`/`deep_review`) and
+"dry-run" (a fresh zero-LLM-call preview via `build_planner_prompts` /
+`_assemble_reviewer_blocks`); dream degrades to a "hand-rolled, not
+captured" note (no assembler on its path). `tests/test_worker_registry.py`
+AST-parses `cli/worker.py` and
 fails CI if a wired pass has no spec (or a `ref_pass=True` spec has no
 wiring site), so the four parallel lists can no longer drift.
 

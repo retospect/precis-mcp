@@ -22,12 +22,16 @@ Public surface:
 * :class:`LiteLLMAdapter` — render blocks to an OpenAI ``messages`` list.
 * the computed table builders (``tools_table``, ``kinds_table``,
   ``doc_context_table``, ``glossary_table``).
+* :func:`persist_assembled_context` — the input-side twin of
+  ``meta.transcript``: write the assembled block list onto a ref's meta so a
+  debugging surface can render "what the LLM actually saw last time".
 """
 
 from __future__ import annotations
 
 from precis.utils.prompt.adapters import ClaudeAgentAdapter, LiteLLMAdapter
 from precis.utils.prompt.assembler import assemble
+from precis.utils.prompt.capture import persist_assembled_context
 from precis.utils.prompt.model import (
     AssemblyContext,
     Block,
@@ -55,6 +59,7 @@ __all__ = [
     "doc_context_table",
     "glossary_table",
     "kinds_table",
+    "persist_assembled_context",
     "section_review_block",
     "tools_table",
 ]

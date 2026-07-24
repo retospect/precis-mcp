@@ -261,8 +261,13 @@ def _transcript_retention_days() -> int:
 
 
 def _gc_transcripts(store: Store) -> int:
-    """Strip ``meta.transcript`` from job refs older than the retention
-    window. Cheap single UPDATE; returns the number reaped."""
+    """Strip ``meta.transcript`` (job refs) and the ADR-0038 input-capture
+    pair ``meta.assembled_context`` / ``meta.assembled_context_at`` — the
+    latter lands on a plan_tick's ``kind='job'`` ref or on the digest memory
+    a structural/deep-review pass wrote (see
+    :func:`precis.utils.prompt.persist_assembled_context`) — once older than
+    the retention window. Two cheap UPDATEs on the same clock; returns the
+    combined row count reaped."""
     days = _transcript_retention_days()
     with store.pool.connection() as conn:
         cur = conn.execute(
@@ -271,8 +276,17 @@ def _gc_transcripts(store: Store) -> int:
             "  AND created_at < now() - %s::interval",
             (f"{days} days",),
         )
+        reaped = cur.rowcount or 0
+        cur2 = conn.execute(
+            "UPDATE refs SET meta = meta - 'assembled_context' - 'assembled_context_at' "
+            "WHERE kind IN ('job', 'memory') "
+            "  AND (meta ? 'assembled_context' OR meta ? 'assembled_context_at') "
+            "  AND created_at < now() - %s::interval",
+            (f"{days} days",),
+        )
+        reaped += cur2.rowcount or 0
         conn.commit()
-        return cur.rowcount or 0
+        return reaped
 
 
 def _agentlog_retention_days() -> int:
@@ -470,7 +484,8 @@ def _alert_unschedulable_jobs(store: Store) -> int:
 def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     """Detect orphans, lock-and-transition each, return BatchResult.
 
-    Also GCs stale LLM transcripts (``meta.transcript`` older than the
+    Also GCs stale LLM transcripts + assembled-context captures
+    (``meta.transcript`` / ``meta.assembled_context`` older than the
     retention window) and stale agentlogs (run-attribution records +
     their ``touched`` links, never the chunks) — cheap piggy-backs on
     the per-minute sweep.
@@ -484,7 +499,10 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     """
     reaped = _gc_transcripts(store)
     if reaped:
-        log.info("sweeper: GC'd %d stale job transcript(s)", reaped)
+        log.info(
+            "sweeper: GC'd %d stale job transcript / assembled-context row(s)",
+            reaped,
+        )
     from precis import agentlog
 
     reaped_logs = agentlog.gc_stale_logs(

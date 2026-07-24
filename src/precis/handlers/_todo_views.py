@@ -1020,7 +1020,7 @@ def render_doable(
             ]
         )
         return Response(body=body)
-    lines = [f"# {len(leaves)} doable leaf{'' if len(leaves) == 1 else 'ves'}"]
+    lines = [f"# {len(leaves)} doable {'leaf' if len(leaves) == 1 else 'leaves'}"]
     for leaf in leaves:
         first_line = (leaf["title"] or "").split("\n", 1)[0]
         if len(first_line) > 76:

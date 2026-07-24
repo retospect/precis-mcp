@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from precis.handlers._todo_guards import todo_root_sql
 from precis.store import Store
+from precis.utils import handle_registry
 from precis.utils.llm.router import Tier, resolve_model
 from precis.utils.prompt import AssemblyContext, Layer, Module
 from precis.workers.review import (
@@ -84,8 +85,9 @@ def _strategic_dashboard(store: Store) -> str:
     lines: list[str] = []
     for s_id, title, size, picks in rows:
         first = (title or "").splitlines()[0]
+        handle = handle_registry.format_handle("todo", int(s_id))
         lines.append(
-            f"#{int(s_id)} {first}  ({int(size or 0)} descendants, "
+            f"[{handle}] {first}  ({int(size or 0)} descendants, "
             f"{int(picks or 0)} picks in 7d)"
         )
     return "\n".join(lines)

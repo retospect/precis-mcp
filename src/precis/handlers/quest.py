@@ -693,17 +693,20 @@ class QuestHandler(NumericRefHandler):
             # exploration queue (slice 3, precis.quest.gaps).
             lines += self._render_health_and_gaps(ref, live_servers)
             if not server_ids:
-                lines += render_next_section(
-                    [
-                        (
-                            f"link(kind='todo', id=N, target={handle!r}, rel='serves')",
-                            "put a project/goal in this quest's service",
-                        ),
-                        (
-                            f"put(kind={self.kind!r}, id={ref.id}, text='…', entry='observation')",
-                            "record a logbook entry",
-                        ),
-                    ]
+                lines.append(
+                    render_next_section(
+                        [
+                            (
+                                f"link(kind='todo', id=N, target={handle!r}, rel='serves')",
+                                "put a project/goal in this quest's service",
+                            ),
+                            (
+                                f"put(kind={self.kind!r}, id={ref.id}, text='…', "
+                                "entry='observation')",
+                                "record a logbook entry",
+                            ),
+                        ]
+                    )
                 )
         return "\n".join(lines)
 

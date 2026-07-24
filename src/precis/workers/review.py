@@ -58,11 +58,13 @@ from precis.utils.llm.router import LlmRequest, LlmResult, Tier, dispatch
 from precis.utils.load_gate import skip_if_high_load
 from precis.utils.prompt import (
     AssemblyContext,
+    Block,
     ClaudeAgentAdapter,
     Layer,
     Module,
     Profile,
     assemble,
+    persist_assembled_context,
 )
 from precis.workers.runner import BatchResult
 
@@ -203,7 +205,8 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
             reviewer.min_interval_hours,
         )
         return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
-    prompt = _build_prompt(reviewer, store)
+    blocks = _assemble_reviewer_blocks(reviewer, store)
+    _system, prompt = ClaudeAgentAdapter.render(blocks)
     # Routed through the LLM seam (ADR 0046 unit 4b): the reviewer's tier
     # resolves the model at dispatch time, so PRECIS_LLM_BACKEND / PRECIS_MODEL_*
     # can switch it. A per-reviewer PRECIS_<NAME>_MODEL still pins one (None ⇒
@@ -281,6 +284,11 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         _raise_empty_pass_alert(store, reviewer)
         return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
     digest_id = _write_digest(store, reviewer, res.text, res.cost_usd)
+    # The FULL assembled prompt INPUT (ADR 0038), the twin of the
+    # ``meta.transcript`` output capture on a plan_tick job ref — reviewers
+    # mint no job ref, so the digest memory itself is the closest per-run
+    # artifact to attach it to. Never-fatal internally.
+    persist_assembled_context(store, digest_id, blocks)
     # A real digest landed — clear any empty-pass alert this reviewer left open.
     _resolve_empty_pass_alert(store, reviewer)
     log.info(
@@ -440,14 +448,15 @@ def _write_failure_marker(store: Store, reviewer: Reviewer, error: str | None) -
             store.add_tag(ref.id, tag, set_by="system", conn=conn)
 
 
-def _build_prompt(reviewer: Reviewer, store: Store) -> str:
-    """Assemble ``reviewer.modules`` into the single directive prompt.
+def _assemble_reviewer_blocks(reviewer: Reviewer, store: Store) -> list[Block]:
+    """Assemble ``reviewer.modules`` into ordered blocks (ADR 0038 step 3).
 
     The context-builder's live strings (plus ``today`` and ``tier_tag``)
     ride the :class:`AssemblyContext` ``extras``; every module reads what
-    it needs from there. :class:`ClaudeAgentAdapter` packages the blocks —
-    all ``VARIABLE`` on this path — into one user string in authored order
-    (the ``CACHED`` half is always empty for reviewers).
+    it needs from there. Factored out of :func:`_build_prompt` so
+    :func:`run_review_pass` can also capture the raw block list (for
+    :func:`~precis.utils.prompt.persist_assembled_context`) without
+    re-running the context-builder SQL a second time.
     """
     today = datetime.now(UTC).date().isoformat()
     ctx = AssemblyContext(
@@ -461,7 +470,19 @@ def _build_prompt(reviewer: Reviewer, store: Store) -> str:
             **reviewer.context_builder(store),
         },
     )
-    _system, user = ClaudeAgentAdapter.render(assemble(reviewer.modules, ctx))
+    return assemble(reviewer.modules, ctx)
+
+
+def _build_prompt(reviewer: Reviewer, store: Store) -> str:
+    """Assemble ``reviewer.modules`` into the single directive prompt.
+
+    :class:`ClaudeAgentAdapter` packages the blocks — all ``VARIABLE`` on
+    this path — into one user string in authored order (the ``CACHED``
+    half is always empty for reviewers).
+    """
+    _system, user = ClaudeAgentAdapter.render(
+        _assemble_reviewer_blocks(reviewer, store)
+    )
     return user
 
 

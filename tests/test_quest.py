@@ -219,6 +219,31 @@ class TestServesAndTree:
         assert "quest (1) serving" not in tree
 
 
+class TestTreeNextBlock:
+    def test_no_servers_renders_intact_next_block(self, store: Any) -> None:
+        """Regression: ``lines += render_next_section(...)`` iterated the
+        returned str character-by-character (list += str appends one
+        element per char), exploding the breadcrumb into one char per
+        line. The tree render for a quest with no linked servers must
+        keep the "Next:" hint as real lines, not shredded characters."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="A lone striving with no servers yet"))
+        tree = h.get(id=qid, view="tree").body
+
+        assert "Next:" in tree
+        # The literal call text survives as one contiguous line, not
+        # scattered one character per line.
+        assert "put a project/goal in this quest's service" in tree
+        assert "record a logbook entry" in tree
+        lines = tree.split("\n")
+        # A char-by-char explosion would produce dozens of single/blank
+        # lines; sanity-cap total line count for a tiny quest body.
+        assert len(lines) < 40, f"suspiciously many lines ({len(lines)}): {lines!r}"
+        # No line should be a single stray character (the char-by-char
+        # failure mode), aside from legitimate short glyphs.
+        assert not any(len(ln) == 1 and ln not in ("", "…") for ln in lines)
+
+
 class TestListViews:
     def test_active_list_view(self, store: Any) -> None:
         h = _handler(store)

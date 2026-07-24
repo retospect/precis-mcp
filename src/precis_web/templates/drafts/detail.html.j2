@@ -161,6 +161,13 @@
         </form>
         {% endif %}
       </span>
+      {# Part 3B: what the planner would actually see assembling this
+         draft's project on its next tick (last-real capture + a
+         zero-LLM-call dry-run), scoped to the owning project todo. #}
+      <a href="{{ assembled_context_href }}"
+         class="text-slate-500 underline hover:text-slate-800"
+         title="see the planner's assembled prompt context for this draft's project">
+        assembled context</a>
       <a href="/drafts" class="text-slate-500 underline hover:text-slate-800">all drafts</a>
       {# Author byline editor — the web twin of edit(kind='draft',
          authors=…). One author per line, "Name | Affiliation | ROR"

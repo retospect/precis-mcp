@@ -226,8 +226,12 @@ def test_strategic_layer_snapshot_renders_tree(
     handler.put(text="Subtask 2", parent_id=aid)
 
     snap = _strategic_layer_snapshot(store)
-    assert f"#{root_id} Main goal" in snap
-    assert f"#{aid} Tactic A (2 direct children)" in snap
+    assert f"[td{root_id}] Main goal" in snap
+    assert f"[td{aid}] Tactic A (2 direct children)" in snap
+    # gripe: bare `#<id>` neither round-trips as a copyable handle nor
+    # triggers memory auto-linking — must be the bracketed td-handle.
+    assert f"#{root_id} " not in snap
+    assert f"#{aid} " not in snap
 
 
 def test_build_prompt_includes_directive_sections(
