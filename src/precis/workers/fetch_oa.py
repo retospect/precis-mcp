@@ -169,6 +169,18 @@ _RETRY_WINDOW_HOURS = 24
 # stop, we just slow to monthly. 720h = 30 days.
 _RETRY_BACKOFF_MAX_HOURS = 720
 
+# gr170366: how long a staged markup trigger + sidecar (or a stray
+# ``.part`` partial download) may sit under ``inbox_dir / ".staging"``
+# before ``_sweep_stale_staging`` treats it as abandoned. Must comfortably
+# exceed the slowest plausible per-stub loop iteration — the markup leg
+# plus the full PDF cascade (up to ~11 network legs, each capped at
+# ``_DOWNLOAD_TIMEOUT_S`` = 120s) — so the sweep never races a stub that's
+# genuinely still mid-flight. A re-claim of the same stub self-heals the
+# entry within this window (deterministic filename); the sweep only
+# matters for a stub that stops being reclaimed (identifier change,
+# manual resolution elsewhere).
+_STAGING_GC_MAX_AGE_HOURS = 6.0
+
 # DOI shape validation. Loose but rejects obviously-broken inputs
 # before paying for an HTTP roundtrip.
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
@@ -1436,6 +1448,14 @@ def run_oa_fetch_pass(
         )
         return {"claimed": 0, "ok": 0, "failed": 0}
 
+    # gr170366: once per pass, sweep any ``.staging`` entries orphaned by an
+    # outer exception that fired between a markup stage and its publish
+    # (see _sweep_stale_staging). Best-effort — never blocks the fetch.
+    try:
+        _sweep_stale_staging(inbox_path)
+    except Exception as exc:  # pragma: no cover — defensive
+        log.warning("fetch_oa: staging sweep errored: %s", exc)
+
     with store.pool.connection() as conn:
         stubs = claim_stubs_to_fetch(conn, limit=limit)
 
@@ -1969,6 +1989,67 @@ def _publish_markup_trigger(staged: _StagedMarkup, companion_pdf: str | None) ->
     os.replace(sidecar_path(staged.staged_path), sidecar_path(staged.final_path))
     os.replace(staged.staged_path, staged.final_path)
     return staged.final_path
+
+
+def _sweep_stale_staging(
+    inbox_dir: Path, *, max_age_hours: float = _STAGING_GC_MAX_AGE_HOURS
+) -> int:
+    """Remove ``.staging`` entries abandoned before :func:`_publish_markup_trigger`
+    ever ran (gr170366).
+
+    ``_publish_markup_trigger`` only fires when the per-stub loop in
+    :func:`run_oa_fetch_pass` reaches it; an outer, un-caught exception
+    between a successful markup stage and that publish step (something in
+    ``_run_cascade`` / ``store.append_event`` beyond the per-leg
+    try/excepts) silently strands the staged content + sidecar under
+    ``inbox_dir / ".staging"`` — nothing else globs or GCs that directory.
+    A re-claim of the same stub self-heals the entry (deterministic
+    filename), but a stub that stops being reclaimed (identifier change,
+    manual resolution elsewhere) would otherwise leak it forever.
+
+    Deliberately files-not-pairs: every direct child of ``.staging`` —
+    staged content, its sidecar, or a stray ``.part`` partial from an
+    interrupted download — is considered independently by mtime, so no
+    pairing logic can miss a half-written orphan. Conservative by
+    construction: only entries older than ``max_age_hours`` are removed,
+    well past any plausible in-flight duration (see
+    :data:`_STAGING_GC_MAX_AGE_HOURS`), so a concurrent stub mid-write is
+    never touched. Best-effort — a listing or per-file failure is logged
+    and skipped, never raised. Returns the count removed.
+    """
+    staging_dir = inbox_dir / ".staging"
+    if not staging_dir.is_dir():
+        return 0
+    cutoff = time.time() - max_age_hours * 3600
+    try:
+        entries = list(staging_dir.iterdir())
+    except OSError as exc:
+        log.warning("fetch_oa: staging sweep couldn't list %s: %s", staging_dir, exc)
+        return 0
+    removed = 0
+    for path in entries:
+        try:
+            if not path.is_file():
+                continue
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime >= cutoff:
+            continue
+        try:
+            path.unlink()
+        except OSError as exc:
+            log.warning(
+                "fetch_oa: staging sweep failed to remove %s: %s", path.name, exc
+            )
+            continue
+        removed += 1
+        log.info(
+            "fetch_oa: staging sweep removed stale %s (age > %.1fh)",
+            path.name,
+            max_age_hours,
+        )
+    return removed
 
 
 # ── Internals ──────────────────────────────────────────────────────

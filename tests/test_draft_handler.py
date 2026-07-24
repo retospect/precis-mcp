@@ -92,6 +92,43 @@ def test_dry_run_previews_text_edit_without_writing(
     assert hub.store.get_draft_chunk(para_h).text == "Committed text."
 
 
+def test_put_claim_chunk_kind_inserts_without_fk_violation(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gripe 57812: put(kind='draft', chunk_kind='claim', ...) into a Claims
+    heading (or a bare batched multi-claim write) used to fail with a raw
+    ForeignKeyViolation — 'claim' was never registered in chunk_kinds, so the
+    INSERT tripped chunks_chunk_kind_fkey (migration 0083 registers it,
+    mirroring the 0031 table/aside/listing/term additions). Users had to fall
+    back to chunk_kind='paragraph'; now a single claim and a batch both land."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+
+    r1 = draft.put(
+        id="nt",
+        chunk_kind="claim",
+        text="1. A widget comprising a frobnicator.",
+        at={"after": "¶" + title_h},
+    )
+    assert "added 1 chunk" in r1.body
+    dc1 = _dc(r1.body)
+    chunk1 = hub.store.get_draft_chunk(dc1)
+    assert chunk1 is not None
+    assert chunk1.chunk_kind == "claim"
+
+    # a second claim, batched right after the first
+    r2 = draft.put(
+        id="nt",
+        chunk_kind="claim",
+        text="2. The widget of claim 1, wherein the frobnicator is annular.",
+        at={"after": dc1},
+    )
+    assert "added 1 chunk" in r2.body
+    order = _order(hub, "nt")
+    assert sum(1 for c in order if c.chunk_kind == "claim") == 2
+
+
 def test_dry_run_rejected_on_structural_op(draft: DraftHandler, hub: Hub) -> None:
     """dry_run has no diff semantics for structural ops (e.g. move) — it must
     reject rather than silently write."""

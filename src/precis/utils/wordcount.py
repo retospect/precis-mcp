@@ -31,7 +31,11 @@ from typing import Any, Protocol
 #: are structural / markup / reference, not body prose, so they are
 #: excluded — counting them would make a section's "length" disagree with
 #: what a human (or a call-for-proposal's limit) means by word count.
-PROSE_CHUNK_KINDS: frozenset[str] = frozenset({"paragraph", "aside", "callout"})
+#: ``claim`` (gripe 57812) is a Claims-heading assertion — prose like
+#: ``paragraph``, counted the same way.
+PROSE_CHUNK_KINDS: frozenset[str] = frozenset(
+    {"paragraph", "aside", "callout", "claim"}
+)
 
 # A draft cross-reference is a bracketed handle (``[¶ab12]`` / ``[§foo~3]``
 # / ``[dc42]`` / ``[me7]`` / ``[[surface]]``) or the link-target half of a

@@ -1479,6 +1479,136 @@ def test_dispatch_openai_compat_threads_the_pin(
     assert eb["reasoning"] == {"effort": "high"}  # type: ignore[index]
 
 
+# ── _provider_api_key: host→vault-key mapping (gripe 159988) ───────────
+#
+# A provider switch should be a *single* PRECIS_LLM_BASE_URL edit, not also a
+# re-copy of the matching key into PRECIS_LLM_API_KEY.
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected_secret"),
+    [
+        ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+        ("https://api.deepinfra.com/v1/openai", "DEEPINFRA_API_KEY"),
+        # a real subdomain of a known host still routes to that host's key.
+        ("https://eu.openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+        # NOT a subdomain of openrouter.ai (a spoof-y lookalike domain) — the
+        # host check is anchored, so this must fall through to the generic key.
+        ("https://openrouter.ai.evil.example.com/v1", None),
+    ],
+)
+def test_provider_api_key_routes_by_host(
+    monkeypatch: pytest.MonkeyPatch, base_url: str, expected_secret: str | None
+) -> None:
+    import precis.secrets as secrets
+    from precis.utils.llm.router import _provider_api_key
+
+    seen: list[str] = []
+
+    def fake_get_secret(name: str, **kw: object) -> str | None:
+        seen.append(name)
+        return f"key-for-{name}"
+
+    monkeypatch.setattr(secrets, "get_secret", fake_get_secret)
+
+    key = _provider_api_key(base_url)
+
+    if expected_secret is not None:
+        assert seen == [expected_secret]
+        assert key == f"key-for-{expected_secret}"
+    else:
+        assert seen == ["PRECIS_LLM_API_KEY"]
+        assert key == "key-for-PRECIS_LLM_API_KEY"
+
+
+def test_provider_api_key_unlisted_host_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import precis.secrets as secrets
+    from precis.utils.llm.router import _provider_api_key
+
+    seen: list[str] = []
+
+    def fake_get_secret(name: str, **kw: object) -> str | None:
+        seen.append(name)
+        return "vault-key" if name == "PRECIS_LLM_API_KEY" else None
+
+    monkeypatch.setattr(secrets, "get_secret", fake_get_secret)
+
+    # a self-hosted vLLM / proxy host isn't in the provider table.
+    assert _provider_api_key("http://vllm.internal:8000/v1") == "vault-key"
+    assert seen == ["PRECIS_LLM_API_KEY"]
+
+
+def test_provider_api_key_falls_back_when_provider_secret_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A listed host (OpenRouter) whose specific secret isn't in the vault
+    still falls back to PRECIS_LLM_API_KEY — an existing single-key
+    deployment keeps working unchanged."""
+    import precis.secrets as secrets
+    from precis.utils.llm.router import _provider_api_key
+
+    def fake_get_secret(name: str, **kw: object) -> str | None:
+        return "generic-key" if name == "PRECIS_LLM_API_KEY" else None
+
+    monkeypatch.setattr(secrets, "get_secret", fake_get_secret)
+
+    assert _provider_api_key("https://openrouter.ai/api/v1") == "generic-key"
+
+
+def test_provider_api_key_no_host_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    import precis.secrets as secrets
+    from precis.utils.llm.router import _provider_api_key
+
+    monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "fallback-key")
+
+    assert _provider_api_key("") == "fallback-key"
+
+
+def test_dispatch_openai_compat_uses_openrouter_key_for_openrouter_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: pointing PRECIS_LLM_BASE_URL at OpenRouter alone (no other
+    env change) resolves OPENROUTER_API_KEY, not PRECIS_LLM_API_KEY."""
+    import precis.secrets as secrets
+    import precis.workers.llm_summarize as summ
+    from precis.utils.llm.router import _dispatch_openai_compat
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["api_key"] = getattr(config, "api_key", None)
+
+        def complete(self, messages: list[dict[str, str]]) -> object:
+            return summ.LlmResult(text="oss out", total_tokens=3)
+
+    def fake_get_secret(name: str, **kw: object) -> str | None:
+        return {
+            "OPENROUTER_API_KEY": "or-key",
+            "DEEPINFRA_API_KEY": "di-key",
+            "PRECIS_LLM_API_KEY": "generic-key",
+        }.get(name)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.setattr(secrets, "get_secret", fake_get_secret)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+    req = LlmRequest(tier=Tier.CLOUD_SUPER, prompt="hi")
+    res = _dispatch_openai_compat(req, "z-ai/glm-5.2")
+
+    assert res.error is None
+    assert seen["api_key"] == "or-key"
+
+    # Flip the base url to DeepInfra with NOTHING else changed — the key
+    # follows automatically.
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://api.deepinfra.com/v1/openai")
+    res2 = _dispatch_openai_compat(req, "z-ai/glm-5.2")
+    assert res2.error is None
+    assert seen["api_key"] == "di-key"
+
+
 # ── dispatch_async: streaming twin (router-migration Phase 2) ──────────
 #
 # No ``pytest-asyncio`` in this repo yet; ``asyncio.run()`` inside a plain

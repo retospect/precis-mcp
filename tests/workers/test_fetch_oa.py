@@ -900,6 +900,90 @@ class TestRunMarkupCascade:
         assert sc.companion_pdf == "widgets2025.pdf"
 
 
+class TestSweepStaleStaging:
+    """gr170366: orphaned ``.staging`` entries (a staged markup trigger +
+    sidecar whose ``_publish_markup_trigger`` never ran because an outer
+    exception fired first) must be reclaimed by a periodic age-based sweep,
+    without touching anything a concurrent stub could still be mid-writing.
+    """
+
+    def _age(self, path: Path, *, hours_ago: float) -> None:
+        """Backdate ``path``'s mtime (and atime) by ``hours_ago`` hours."""
+        import os
+        import time
+
+        old = time.time() - hours_ago * 3600
+        os.utime(path, (old, old))
+
+    def test_no_staging_dir_is_noop(self, tmp_path: Path) -> None:
+        assert fetch_oa._sweep_stale_staging(tmp_path) == 0
+
+    def test_removes_old_orphaned_pair_keeps_fresh_one(self, tmp_path: Path) -> None:
+        staging_dir = tmp_path / ".staging"
+        staging_dir.mkdir()
+
+        # An old, abandoned trigger + sidecar (companion PDF's fate was
+        # never learned — no _publish_markup_trigger call ever happened).
+        stale_content = staging_dir / "old_stub2024.xml"
+        stale_content.write_bytes(b"<article/>")
+        stale_sidecar = staging_dir / "old_stub2024.xml.precis-fetch.json"
+        stale_sidecar.write_text('{"ref_id": 1}')
+        self._age(stale_content, hours_ago=fetch_oa._STAGING_GC_MAX_AGE_HOURS + 1)
+        self._age(stale_sidecar, hours_ago=fetch_oa._STAGING_GC_MAX_AGE_HOURS + 1)
+
+        # A fresh entry for a stub that (as far as the sweep can tell) may
+        # still be mid-flight — must survive.
+        fresh_content = staging_dir / "new_stub2025.xml"
+        fresh_content.write_bytes(b"<article/>")
+        fresh_sidecar = staging_dir / "new_stub2025.xml.precis-fetch.json"
+        fresh_sidecar.write_text('{"ref_id": 2}')
+
+        removed = fetch_oa._sweep_stale_staging(tmp_path)
+
+        assert removed == 2
+        assert not stale_content.exists()
+        assert not stale_sidecar.exists()
+        assert fresh_content.exists()
+        assert fresh_sidecar.exists()
+
+    def test_removes_stray_old_part_file(self, tmp_path: Path) -> None:
+        """An interrupted download can leave a ``.part`` behind too."""
+        staging_dir = tmp_path / ".staging"
+        staging_dir.mkdir()
+        part = staging_dir / "abandoned2024.xml.part"
+        part.write_bytes(b"partial")
+        self._age(part, hours_ago=fetch_oa._STAGING_GC_MAX_AGE_HOURS + 1)
+
+        removed = fetch_oa._sweep_stale_staging(tmp_path)
+
+        assert removed == 1
+        assert not part.exists()
+
+    def test_ignores_subdirectories(self, tmp_path: Path) -> None:
+        staging_dir = tmp_path / ".staging"
+        nested = staging_dir / "nested"
+        nested.mkdir(parents=True)
+        self._age(nested, hours_ago=fetch_oa._STAGING_GC_MAX_AGE_HOURS + 1)
+
+        assert fetch_oa._sweep_stale_staging(tmp_path) == 0
+        assert nested.exists()
+
+    def test_custom_max_age_hours_respected(self, tmp_path: Path) -> None:
+        staging_dir = tmp_path / ".staging"
+        staging_dir.mkdir()
+        entry = staging_dir / "half_hour_old.xml"
+        entry.write_bytes(b"x")
+        self._age(entry, hours_ago=0.5)
+
+        # Default threshold (hours) leaves a 30-minute-old file alone...
+        assert fetch_oa._sweep_stale_staging(tmp_path) == 0
+        assert entry.exists()
+
+        # ...but a caller-supplied tighter threshold reclaims it.
+        assert fetch_oa._sweep_stale_staging(tmp_path, max_age_hours=0.25) == 1
+        assert not entry.exists()
+
+
 # ---------------------------------------------------------------------------
 # _try_wiley — token-gated TDM leg
 # ---------------------------------------------------------------------------

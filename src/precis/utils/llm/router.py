@@ -56,6 +56,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+from urllib.parse import urlparse
 
 from precis.utils._claude_subprocess import ClaudeProcessError
 from precis.utils.claude_agent import (
@@ -721,7 +722,8 @@ class OpenAICompatProvider:
     """A *hosted* OpenAI-compatible OSS backend — OpenRouter / DeepInfra /
     a remote vLLM — over the same ``/v1/chat/completions`` wire as the
     loopback proxy, but at ``PRECIS_LLM_BASE_URL`` and authed with a
-    vault-resolved key (``get_secret('PRECIS_LLM_API_KEY')``).
+    vault-resolved key (:func:`_provider_api_key`, keyed off that url's
+    host — see gripe 159988).
 
     Tool-less (the one-shot / completion / JSON-judge path) — the
     summarize/classify/judge calls. Tool-using calls take
@@ -1480,25 +1482,58 @@ def openrouter_routing(
     return body
 
 
+#: Vault secret name per OSS provider host, keyed by ``PRECIS_LLM_BASE_URL``'s
+#: hostname — so switching provider is a *single* env edit
+#: (``PRECIS_LLM_BASE_URL``) instead of also re-copying the matching key into
+#: ``PRECIS_LLM_API_KEY`` (gripe 159988). An unlisted host (self-hosted vLLM,
+#: a proxy) falls back to the generic ``PRECIS_LLM_API_KEY``, as does a listed
+#: host whose provider-specific secret isn't set — so an existing deployment
+#: that only sets ``PRECIS_LLM_API_KEY`` keeps working unchanged.
+_PROVIDER_KEY_BY_HOST: dict[str, str] = {
+    "openrouter.ai": "OPENROUTER_API_KEY",
+    "deepinfra.com": "DEEPINFRA_API_KEY",
+}
+
+
+def _provider_api_key(base_url: str) -> str:
+    """Resolve the vault-backed API key for ``base_url``'s host.
+
+    Looks up :data:`_PROVIDER_KEY_BY_HOST` by hostname (exact match or a
+    subdomain of it) and resolves that secret; falls back to
+    ``PRECIS_LLM_API_KEY`` when the host is unlisted, has no matching secret
+    set, or ``base_url`` doesn't parse to a host at all.
+    """
+    from precis.secrets import get_secret
+
+    host = urlparse(base_url).hostname or ""
+    for provider_host, secret_name in _PROVIDER_KEY_BY_HOST.items():
+        if host == provider_host or host.endswith(f".{provider_host}"):
+            key = get_secret(secret_name)
+            if key:
+                return key
+            break
+    return get_secret("PRECIS_LLM_API_KEY") or ""
+
+
 def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
     """Drive a hosted OpenAI-compatible OSS backend (the ``OPENAI`` backend).
 
     Same OpenAI ``/v1/chat/completions`` client as :func:`_dispatch_local`,
     but pointed at ``PRECIS_LLM_BASE_URL`` and authed with a vault-resolved
-    key (``get_secret('PRECIS_LLM_API_KEY')`` — env-override-wins, so a key
-    in the environment still works during transition). When the request carries
+    key chosen by :func:`_provider_api_key` from that url's host (falling
+    back to ``PRECIS_LLM_API_KEY`` — env-override-wins, so a key in the
+    environment still works during transition). When the request carries
     a booked ``endpoint`` (gripe 162624), the OpenRouter ``provider:{}`` /
     ``reasoning:{}`` pin is merged into the body so the call hits that exact
-    provider×quant. Imports the summarizer client + the secrets resolver lazily
-    to keep this module out of the worker/DB import chain.
+    provider×quant. Imports the summarizer client lazily to keep this module
+    out of the worker/DB import chain.
     """
     from dataclasses import replace
 
-    from precis.secrets import get_secret
     from precis.workers.llm_summarize import LlmClient, LlmConfig
 
     base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
-    api_key = get_secret("PRECIS_LLM_API_KEY") or ""
+    api_key = _provider_api_key(base_url)
     cfg = replace(
         LlmConfig.from_env(),
         url=base_url,
@@ -1567,11 +1602,12 @@ def run_oss_tool_loop(
     answer (``stop``) from a ``max_turns`` cutoff (resumable, not failed) —
     reuses the exact client-build + verb-wiring instead of the collapsed
     :class:`LlmResult`. Builds the client from ``PRECIS_LLM_BASE_URL`` + the
-    vault key, UNLESS ``local_url`` is given — a local-serving slot's pinned
-    llama-swap endpoint — in which case it routes there directly with an authless
-    dummy key (a loopback model has no auth; the vault key is for the hosted OSS
-    backend). This is what makes the ``LOCAL_BIG`` tier dispatch to a per-host
-    local endpoint, mirroring :func:`_dispatch_local`'s ``local_url`` override.
+    vault key chosen by :func:`_provider_api_key` from that url's host, UNLESS
+    ``local_url`` is given — a local-serving slot's pinned llama-swap endpoint
+    — in which case it routes there directly with an authless dummy key (a
+    loopback model has no auth; the vault key is for the hosted OSS backend).
+    This is what makes the ``LOCAL_BIG`` tier dispatch to a per-host local
+    endpoint, mirroring :func:`_dispatch_local`'s ``local_url`` override.
     Runs the precis verbs in-process via ``runtime.dispatch`` unless
     ``tool_less``. May raise ``RuntimeError`` / ``OSError`` if the executor /
     tools can't be built (an unavailable runtime); the loop itself folds a
@@ -1579,7 +1615,6 @@ def run_oss_tool_loop(
     rather than raising. Imports the loop + bridge lazily so the router stays
     DB-free.
     """
-    from precis.secrets import get_secret
     from precis.utils.llm.openai_tools import ToolChatClient, run_tool_loop
     from precis.utils.llm.precis_tools import precis_tool_specs, runtime_executor
 
@@ -1588,7 +1623,7 @@ def run_oss_tool_loop(
         api_key = "dummy"
     else:
         base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
-        api_key = get_secret("PRECIS_LLM_API_KEY") or ""
+        api_key = _provider_api_key(base_url)
     timeout = timeout_s if timeout_s is not None else 600.0
     client = ToolChatClient(url=base_url, api_key=api_key, model=model, timeout=timeout)
     return run_tool_loop(
