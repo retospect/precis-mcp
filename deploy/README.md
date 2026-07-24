@@ -68,6 +68,45 @@ overlay stored in exactly one place and no per-worktree secret copies.
 > `vault.yml`; it has no git history and no remote. Keep a copy in your password
 > manager — if the main checkout is lost, the vault is unrecoverable without it.
 
+## Sharing the overlay between operators
+
+When more than one operator drives deploys, sync `inventory/` through a
+**private git repo on shared cluster infra** (a bare remote on the NAS or a
+node you both SSH to — never GitHub; a public push of real IPs/hostnames is
+irreversible), and distribute `.vault-pass` **out-of-band** through 1Password.
+Ciphertext (the already-vault-encrypted `vault.yml`) lives in git; the plaintext
+key that unlocks it never does — so an exposed remote alone can't decrypt the
+vault.
+
+The overlay repo is laid out to match `scripts/deploy`'s resolution: its root
+holds `inventory/` (what `$PRECIS_OVERLAY_DIR` points at) with `.vault-pass`
+as `inventory/`'s sibling.
+
+```sh
+# 1. Create the bare remote once, on a host you both SSH to:
+ssh node-gateway 'git init --bare ~/precis-overlay.git'
+
+# 2. Operator with the live files seeds it:
+mkdir ~/precis-overlay && cd ~/precis-overlay
+cp -R /path/to/main/deploy/inventory ./inventory   # NOT .vault-pass
+git init && git add -A && git commit -m 'cluster overlay'
+git remote add origin node-gateway:precis-overlay.git
+git push -u origin main
+
+# 3. Each operator points deploys at the clone (shell profile):
+git clone node-gateway:precis-overlay.git ~/precis-overlay   # 2nd operator
+export PRECIS_OVERLAY_DIR=$HOME/precis-overlay/inventory
+
+# 4. Each operator drops the key from 1Password (out-of-band, once):
+#    → ~/precis-overlay/.vault-pass
+chmod 600 ~/precis-overlay/.vault-pass
+```
+
+Thereafter `git pull` in `~/precis-overlay` is the whole sync. `.vault-pass`
+changes only on a vault re-key — hand it over through 1Password, not the repo.
+(The second operator also needs `~/.ssh/cluster`, the deploy key `ansible.cfg`
+references — likewise shared out-of-band, not here.)
+
 ## Migration status
 
 Populated so far:
