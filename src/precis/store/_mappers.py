@@ -15,6 +15,8 @@ by :mod:`precis.store.store` and never leaks through
 
 from __future__ import annotations
 
+from typing import Any
+
 from psycopg import Connection
 
 from precis.store.types import (
@@ -23,6 +25,29 @@ from precis.store.types import (
     Link,
     Ref,
 )
+
+
+def _coerce_vector(value: Any) -> list[float] | None:
+    """Coerce a fetched pgvector ``vector`` column into a plain ``list[float]``.
+
+    pgvector returns different Python shapes across library versions when the
+    type is registered — a ``numpy.ndarray`` (pgvector-python <0.5) or a
+    pgvector ``Vector`` object (>=0.5, which is **not** iterable via ``for`` /
+    ``map``) — plus a ``"[..]"`` string when the type isn't registered at all.
+    Every raw-vector read routes through here so a library bump can't silently
+    break one call site: the >=0.5 ``Vector`` regressed ``get_chunk_vector``
+    (a bare ``[float(x) for x in row[0]]``) while the Block mapper, which
+    already coerced, kept working. ``None`` passes through unchanged.
+    """
+    if value is None or isinstance(value, list):
+        return value
+    if hasattr(value, "to_list"):  # pgvector Vector (>=0.5)
+        return list(value.to_list())
+    if hasattr(value, "tolist"):  # numpy.ndarray (<0.5)
+        return value.tolist()  # type: ignore[no-any-return]
+    if isinstance(value, str):  # unregistered text form "[a,b,c]"
+        return [float(x) for x in value.strip("[]").split(",") if x.strip()]
+    return list(map(float, value))
 
 
 def _upsert_tag(conn: Connection, namespace: str, value: str) -> int:
@@ -183,22 +208,7 @@ def _row_to_block(row: tuple) -> Block:
                      created_at by the SQL projection so the dataclass
                      contract stays stable)
     """
-    embedding = row[6]
-    if embedding is not None and not isinstance(embedding, list):
-        # pgvector returns different shapes across versions when registered — a
-        # numpy.ndarray (older) OR a pgvector ``Vector`` (newer, NOT iterable via
-        # map) — and a ``"[..]"`` string when the type isn't registered. Coerce
-        # all of them to a plain float list for stable cross-version output.
-        if hasattr(embedding, "to_list"):  # pgvector Vector
-            embedding = list(embedding.to_list())
-        elif hasattr(embedding, "tolist"):  # numpy.ndarray
-            embedding = embedding.tolist()
-        elif isinstance(embedding, str):  # unregistered text form
-            embedding = [
-                float(x) for x in embedding.strip("[]").split(",") if x.strip()
-            ]
-        else:
-            embedding = list(map(float, embedding))
+    embedding = _coerce_vector(row[6])
     # ``section_path`` lives in its own TEXT[] column on ``chunks``
     # (v2; ADR 0018). For compatibility with code that still reads
     # ``block.meta['section_path']`` (oracle entry-title resolver,

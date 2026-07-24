@@ -53,6 +53,7 @@ from precis.store._mappers import (
     _REFS_COLS_ALIASED,
     _REFS_COLS_LEN,
     _block_noise_clauses,
+    _coerce_vector,
     _row_to_block,
     _row_to_ref,
     _upsert_tag,
@@ -2007,7 +2008,9 @@ class BlocksMixin:
             ).fetchone()
         if row is None or row[0] is None:
             return None
-        return [float(x) for x in row[0]]
+        # Route through the shared coercion: pgvector-python >=0.5 returns a
+        # non-iterable ``Vector`` here, <0.5 a numpy array. See _coerce_vector.
+        return _coerce_vector(row[0])
 
     def seed_chunk_for_ref(self, ref_id: int) -> int | None:
         """Pick a ref's representative chunk id for ``like=<ref id>``.

@@ -57,6 +57,12 @@ def test_get_chunk_vector_round_trips(store: Store) -> None:
     cid, vec = _embed_chunk(store, ref.id, 0, "copper nitrate")
     got = store.get_chunk_vector(cid)
     assert got is not None
+    # Contract: a plain list[float], never a pgvector ``Vector`` / numpy array.
+    # pgvector-python >=0.5 returns a non-iterable ``Vector`` from the driver;
+    # _coerce_vector must normalise it here (a regression would surface as
+    # ``'Vector' object is not iterable`` or a leaked non-list type).
+    assert type(got) is list
+    assert all(type(x) is float for x in got)
     # pgvector stores float4 — compare with single-precision tolerance.
     assert got == pytest.approx(vec, abs=1e-5)
 
