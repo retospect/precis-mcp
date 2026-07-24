@@ -117,17 +117,75 @@ class TestPhaseTick:
         assert len(calls) == 1 and calls[0]["compute"] is True
         assert calls[0]["tier"] == "local-big"
 
-    def test_nothing_dispatched_on_success_is_done(
+    def test_nothing_dispatched_on_success_backs_off_and_retries(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A *successful* tick that dispatches nothing = graduated / out of ideas.
+        # A single *successful* tick that dispatches nothing is NOT proof the
+        # quest graduated / the model is out of ideas — a local-model punt on
+        # one slice must not permanently end the perpetual loop. It backs off
+        # and retries like the failed/paused budget, bumping dry_ticks.
         _stub_tick(monkeypatch, _Outcome(status="succeeded", note="graduated"))
         _stub_queued(monkeypatch, 0)
         _stub_pending(monkeypatch, [[]])  # idle before AND after → nothing dispatched
         out = qt._dispatch(FakeCtx(_meta()), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["phase"] == "await"
+        assert out.state["dry_ticks"] == 1
+        assert out.state["child_job_ids"] == []
+        assert out.wake_when.kind == "at_time"
+
+    def test_dry_tick_rests_after_max_dry_ticks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_tick(monkeypatch, _Outcome(status="succeeded", note="graduated"))
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        state = {
+            "phase": "tick",
+            "slice_count": 9,
+            "dry_ticks": qt._max_dry_ticks() - 1,
+        }
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
         assert isinstance(out, Done)
         assert out.success is True
+        assert out.summary_meta.get("dry_ticks") == qt._max_dry_ticks()
         assert out.summary_meta.get("last_status") == "succeeded"
+
+    def test_productive_tick_after_dry_resets_counter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A tick that DOES dispatch sims rebuilds state fresh (no dry_ticks
+        # carried), so the await hop resets the counter to 0.
+        _stub_tick(monkeypatch, _Outcome())
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[], [901]])
+        state = {"phase": "tick", "slice_count": 4, "dry_ticks": 2}
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["child_job_ids"] == [901]
+        assert "dry_ticks" not in out.state
+
+
+class TestPhaseAwaitDryTicks:
+    def test_await_hop_carries_dry_ticks_into_next_tick(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mirrors how tick_failures is carried across the await→tick hop
+        # (_phase_await): a dry_ticks=1 in the await state should surface as
+        # dry_ticks=2 if the next tick is dry again (still below the default
+        # budget of 3, so it yields rather than resting).
+        _stub_tick(monkeypatch, _Outcome(status="succeeded", note="graduated"))
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        state = {
+            "phase": "await",
+            "child_job_ids": [],
+            "slice_count": 4,
+            "dry_ticks": 1,
+        }
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["dry_ticks"] == 2
 
     def test_failed_tick_backs_off_and_retries(
         self, monkeypatch: pytest.MonkeyPatch
@@ -197,6 +255,37 @@ class TestPhaseTick:
         assert out.state["child_job_ids"] == [901]
         assert calls == []
 
+    def test_starvation_defer_preserves_giveup_budgets(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A defer (node queue full) is NOT a tick outcome, so it must not reset
+        # the consecutive-dry / consecutive-failed budgets — else recurring
+        # defers under multi-quest load would zero the streak and an out-of-
+        # ideas quest could never reach its rest condition.
+        calls = _stub_tick(monkeypatch, _Outcome())
+        _stub_pending(monkeypatch, [[]])  # this quest idle...
+        _stub_queued(monkeypatch, qt._max_queued_sims())  # ...but node queue full
+        state = {"phase": "tick", "slice_count": 3, "dry_ticks": 2, "tick_failures": 1}
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert calls == []  # deferred, no tick ran
+        assert out.state["dry_ticks"] == 2  # preserved, not reset to 0
+        assert out.state["tick_failures"] == 1  # preserved, not reset to 0
+
+    def test_backpressure_defer_preserves_giveup_budgets(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same invariant on the defensive in-flight-sims backpressure path.
+        calls = _stub_tick(monkeypatch, _Outcome())
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[901]])  # sims already in flight → defer
+        state = {"phase": "tick", "slice_count": 3, "dry_ticks": 2, "tick_failures": 1}
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert calls == []
+        assert out.state["dry_ticks"] == 2
+        assert out.state["tick_failures"] == 1
+
 
 class TestPhaseAwait:
     def test_still_pending_reyields_heartbeat(
@@ -249,7 +338,7 @@ class TestFallbackLitSearch:
     ) -> None:
         _stub_tick(monkeypatch, _Outcome(searches_run=0))
         _stub_queued(monkeypatch, 0)
-        _stub_pending(monkeypatch, [[]])  # idle before and after -> Done
+        _stub_pending(monkeypatch, [[]])  # idle before and after -> dry Yield
 
         ctx = FakeCtx(_meta())
         ctx.store.get_ref = lambda *, kind, id: self._fake_quest_ref()
@@ -267,7 +356,9 @@ class TestFallbackLitSearch:
 
         out = qt._dispatch(ctx, qt.SPEC)
 
-        assert isinstance(out, Done)
+        # A single dry tick backs off and retries rather than resting — the
+        # fallback fires regardless (it runs before the dry-budget check).
+        assert isinstance(out, Yield)
         assert len(calls) == 1
         assert calls[0]["quest_id"] == 164903
         assert calls[0]["queries"]  # non-empty query list
@@ -291,7 +382,7 @@ class TestFallbackLitSearch:
 
         out = qt._dispatch(ctx, qt.SPEC)
 
-        assert isinstance(out, Done)
+        assert isinstance(out, Yield)
         assert calls == []
         assert not any("fallback lit-search" in text for _kind, text in ctx.chunks)
 
@@ -312,7 +403,7 @@ class TestFallbackLitSearch:
         monkeypatch.setattr("precis.quest.search.run_search_step", _boom)
 
         out = qt._dispatch(ctx, qt.SPEC)
-        assert isinstance(out, Done)  # did not raise
+        assert isinstance(out, Yield)  # did not raise
 
     def test_force_acquire_false_skips_fallback_even_when_quiet(
         self, monkeypatch: pytest.MonkeyPatch
@@ -333,7 +424,7 @@ class TestFallbackLitSearch:
 
         out = qt._dispatch(ctx, qt.SPEC)
 
-        assert isinstance(out, Done)
+        assert isinstance(out, Yield)
         assert calls == []
         assert not any("fallback lit-search" in text for _kind, text in ctx.chunks)
 

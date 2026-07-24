@@ -23,9 +23,12 @@ operator asked for — **no new batch is proposed while the previous one is stil
 in flight** (per-quest backpressure), and a slice **defers** rather than piling
 on when spark's compute queue is already deep (starvation gate).
 
-The loop only reaches ``Done`` when a tick proposes **nothing new** (the quest
-graduated, or the model is out of ideas): it then rests until a fresh coordinator
-job re-awakens it.
+The loop only reaches ``Done`` after ``_max_dry_ticks()`` **consecutive** ticks
+propose nothing new (the quest graduated, or the model is out of ideas) — a
+single dry tick backs off and retries instead, mirroring the failed/paused
+budget (``_max_tick_failures()``), so one punt from the local model can't
+permanently end a perpetual loop. It then rests until a fresh coordinator job
+re-awakens it.
 """
 
 from __future__ import annotations
@@ -78,6 +81,20 @@ def _max_tick_failures() -> int:
     waits to be re-armed by a fresh ``quest_tick`` job.
     """
     return _env_int("PRECIS_QUEST_TICK_MAX_FAILURES", 5, lo=1, hi=1000)
+
+
+def _max_dry_ticks() -> int:
+    """Consecutive *dry* ticks tolerated before the loop rests (default 3).
+
+    A dry tick is a *successful* tick that proposed/dispatched zero new sims.
+    A single dry tick isn't proof the quest is out of ideas — the local model
+    can punt on any given slice, and the rotating fallback lit-search that
+    already ran this tick (see ``_fallback_queries``) injects fresh evidence
+    for the *next* propose. So one empty tick backs off and retries rather
+    than ending the loop; only after this many *consecutive* dry ticks does it
+    go ``Done`` and wait to be re-armed by a fresh ``quest_tick`` job.
+    """
+    return _env_int("PRECIS_QUEST_TICK_MAX_DRY", 3, lo=1, hi=1000)
 
 
 def _force_acquire_enabled() -> bool:
@@ -189,6 +206,24 @@ def _await_yield(state: dict[str, Any], pending: list[int]) -> Yield:
     )
 
 
+def _carry_budgets(state: dict[str, Any]) -> dict[str, Any]:
+    """The give-up counters that must survive a *defer* — a Yield where no tick
+    actually ran (starvation gate / backpressure).
+
+    A defer is not a tick outcome, so it must reset neither the consecutive-
+    *failed* nor the consecutive-*dry* budget; otherwise recurring defers under
+    node-wide queue load would silently zero a quest's streak and a genuinely
+    out-of-ideas quest could never reach its rest condition. (A *productive*
+    tick deliberately rebuilds fresh state without these — that reset is
+    correct; a *failed* tick carries only ``tick_failures`` — a failure legit-
+    imately breaks a dry streak, and vice versa.)
+    """
+    return {
+        "tick_failures": int(state.get("tick_failures") or 0),
+        "dry_ticks": int(state.get("dry_ticks") or 0),
+    }
+
+
 def _dispatch(ctx: Any, spec: Any) -> Any:
     """Coordinator phase machine. Returns ``Done`` | ``Yield``."""
     state = (ctx.meta or {}).get("coordinator_state") or {}
@@ -222,6 +257,10 @@ def _phase_await(ctx: Any, state: dict[str, Any]) -> Any:
             # Carry the consecutive-failure count across the await hop so a run of
             # transient failures can eventually rest the loop (a success resets it).
             "tick_failures": int(state.get("tick_failures") or 0),
+            # Same for consecutive *dry* ticks (a success with zero new
+            # proposals) — a productive tick rebuilds state fresh, so it
+            # naturally resets to 0.
+            "dry_ticks": int(state.get("dry_ticks") or 0),
         },
     )
 
@@ -286,10 +325,13 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     slice_count = int(state.get("slice_count") or 0) + 1
 
     # Backpressure: never dispatch a new batch while this quest's sims are still
-    # in flight (defensive — _phase_await only routes here when idle).
+    # in flight (defensive — _phase_await only routes here when idle). No tick
+    # ran, so carry the give-up budgets forward unchanged.
     pending = _pending_sim_ids(ctx.store, quest_id)
     if pending:
-        return _await_yield({"slice_count": slice_count}, pending)
+        return _await_yield(
+            {"slice_count": slice_count, **_carry_budgets(state)}, pending
+        )
 
     # Starvation gate: don't stack a batch onto an already-deep compute queue.
     queued = _queued_sim_count(ctx.store)
@@ -301,7 +343,13 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
         )
         now = time.time()
         return Yield(
-            state={"phase": "await", "slice_count": slice_count, "child_job_ids": []},
+            state={
+                "phase": "await",
+                "slice_count": slice_count,
+                "child_job_ids": [],
+                # A defer is not a tick — preserve both give-up budgets.
+                **_carry_budgets(state),
+            },
             wake_when=WakeWhen("at_time", {"ts": int(now + _heartbeat_s())}),
         )
 
@@ -397,16 +445,40 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     if pending:
         return _await_yield({"slice_count": slice_count}, pending)
 
-    # Nothing dispatched on a *successful* tick — graduated / no proposals / out
-    # of ideas. Rest until re-armed.
-    return Done(
-        summary=(
-            f"quest {quest_id} loop idle after tick #{slice_count}: no new sims "
-            f"dispatched (status={status}). Loop rests until re-awakened by a "
-            "fresh quest_tick coordinator job."
-        ),
-        success=True,
-        summary_meta={"slices": slice_count, "last_status": status},
+    # Nothing dispatched on a *successful* tick — graduated / no proposals / a
+    # local-model punt. Same shape as the failed/paused budget above: a single
+    # dry tick backs off and retries (the fallback lit-search above already
+    # injected fresh evidence for the next propose); only N *consecutive* dry
+    # ticks rest the loop. This subsumes "genuinely out of ideas" — no separate
+    # graduation special-case needed.
+    dry = int(state.get("dry_ticks") or 0) + 1
+    if dry >= _max_dry_ticks():
+        return Done(
+            summary=(
+                f"quest {quest_id} loop resting after {dry} consecutive dry "
+                f"tick(s) (last: {status}, no new sims dispatched). Re-armed by "
+                "a fresh quest_tick coordinator job."
+            ),
+            success=True,
+            summary_meta={
+                "slices": slice_count,
+                "dry_ticks": dry,
+                "last_status": status,
+            },
+        )
+    ctx.append_chunk(
+        "job_event",
+        f"tick #{slice_count}: dry (no new proposals) — backing off "
+        f"{_heartbeat_s()}s then retrying (dry {dry}/{_max_dry_ticks()})",
+    )
+    return Yield(
+        state={
+            "phase": "await",
+            "slice_count": slice_count,
+            "dry_ticks": dry,
+            "child_job_ids": [],
+        },
+        wake_when=WakeWhen("at_time", {"ts": int(time.time() + _heartbeat_s())}),
     )
 
 

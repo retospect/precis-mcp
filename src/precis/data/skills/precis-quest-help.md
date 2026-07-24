@@ -55,6 +55,13 @@ tag(kind='quest', id=7, add=['STATUS:abandoned'])  # renounced
 quest — completing it would delete the "% done" axis as the wrong
 measure. Progress is a **ledger of deeds**, not a percentage.
 
+Tagging a quest `active` is also the affordance that **starts its
+autonomous loop**: a reconciler pass ensures every active quest has one
+live `quest_tick` coordinator loop and re-arms it if it rests (gated on
+`PRECIS_QUEST_LOOP_ENABLED`, see Roadmap below). Moving to `dormant` /
+`abandoned` just stops new loops from being minted — the current one
+winds down on its own.
+
 ## Priority — how hard it steers
 
 A quest's **striving weight** is its priority, set with a `PRIO:` tag
@@ -212,11 +219,11 @@ converged candidates form a **Pareto frontier** over the quest's
 objective vector (default: minimise energy; override via
 `meta.rubric_objectives`), shown by `view='frontier'`.
 
-The autonomous *scheduling* of ticks (which quest advances when compute
-frees) is a later rung. Dark by default: nothing mints a tick
-automatically, and compute is off unless you pass `--compute`
-(`PRECIS_QUEST_LOOP_ENABLED` gates the future auto-dispatcher; the manual
-CLI runs regardless).
+The autonomous *scheduling* of ticks (a perpetual per-quest coordinator loop,
+not a single step) is a later rung — see Roadmap below. Dark by default:
+nothing mints a loop automatically, and compute is off unless you pass
+`--compute` (`PRECIS_QUEST_LOOP_ENABLED` gates the autonomous loop; the
+manual CLI runs regardless).
 
 ## What this is *not*
 
@@ -242,12 +249,22 @@ tree rollup (slice 1); **reweighting** (slice 2); **gaps + health** (slice 3,
 cheap+local and *escalates to a frontier review* on a signal; and the
 **allocator** (slice 4d) — `precis quest run` picks the highest-scoring active
 quest by an EWMA bandit (priority × momentum × promise + exploration) under a
-weekly budget, ticks it, and cools cold quests to `dormant`; and **graduation**
-(slice 4e) — a candidate that crosses the quest's declared ceiling
-(`meta.graduation = {key, sense, threshold}`) is tagged `needs-experiment`,
-logged as a `milestone` deed, and surfaced as a `needs-experiment` gap (★ in
-`view='frontier'`) — the in-silico ceiling, a call to a human/lab. The whole
-autonomous loop runs on the melchior agent worker **only when
+weekly budget, ticks it once, and cools cold quests to `dormant` (manual /
+CLI-only now — see below); and **graduation** (slice 4e) — a candidate that
+crosses the quest's declared ceiling (`meta.graduation = {key, sense,
+threshold}`) is tagged `needs-experiment`, logged as a `milestone` deed, and
+surfaced as a `needs-experiment` gap (★ in `view='frontier'`) — the in-silico
+ceiling, a call to a human/lab.
+
+The **background** autonomy is no longer the allocator picking one quest per
+pass — it's a **reconciler** (`precis.quest.loop`) that runs every agent-worker
+cycle and ensures each active quest has one live `quest_tick` **coordinator
+loop** (not a single scored step): the loop harvests finished sims,
+reviews+proposes via the local model, dispatches the next batch, and yields
+until they land — self-paced by sim completion, not a timer. A loop that rests
+(a bounded run of dry/unproductive slices) is transparently re-armed on the
+next reconcile pass. Runs on the melchior agent worker **only when
 `PRECIS_QUEST_LOOP_ENABLED` is set** (dark by default); `precis quest run
---force` runs one step by hand. The quest layer is complete. Design of record:
+--force` still runs one manual allocator tick by hand, independent of the
+loop. The quest layer is complete. Design of record:
 `docs/proposals/quest-layer.md`.

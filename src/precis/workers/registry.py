@@ -436,13 +436,16 @@ SERVICES: tuple[ServiceSpec, ...] = (
     ),
     # ── Autonomous / cron / default-off passes (no default profile) ──
     ServiceSpec(
-        name="quest_dispatch",
-        label="Quest allocator",
+        name="quest_loop_reconcile",
+        label="Quest loop reconciler",
         category="jobs",
         kind=ServiceKind.PASS,
         ref_pass=True,
         uses_model=True,
-        one_line="Autonomous quest-loop allocator (agent profile, dark gate).",
+        one_line=(
+            "Ensures each active quest has one live quest_tick coordinator "
+            "loop, re-arming a rested one (agent profile, dark gate)."
+        ),
         doc_skill="precis-quest-help",
     ),
     ServiceSpec(

@@ -125,7 +125,8 @@ by `kind`):
   schedule, nursery, dispatch, sweeper, job_coordinator, wake_runner,
   job_ssh_node, clusterize, corpus_reconcile, paper_reconcile.
 * **Agent-worker passes** (melchior/hermes/OAuth) — structural,
-  deep_review, job_claude_inproc, quota_check, quest_dispatch, dream_agent.
+  deep_review, job_claude_inproc, quota_check, quest_loop_reconcile,
+  dream_agent.
 * **Job types** — fix_gripe, plan_tick, reading_brief, meditation,
   card_forge, news_poll, briefing, cad/structure/diagram_propose,
   cad_discuss, good_search(+triage), draft_export, sandbox_run.

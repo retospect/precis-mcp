@@ -824,6 +824,16 @@ The master kinds table lives in the `precis-overview` skill.
   ideas). Reaction (slab) candidates relax the box **in-plane** (`cell="inplane"`
   — a/b + γ free, c-axis/vacuum pinned) so stability is judged on a relaxed slab
   (`quest/compute.py`; the `relax` op's variable-cell mode in `structure/relax.py`).
+  **Loop existence is reconciled, not allocated**: the old rung-4d
+  `quest_dispatch` worker pass picked one active quest per cycle and ran an
+  **inline** `run_quest_tick` (a single scored step) — replaced by
+  `quest.loop.reconcile_quest_loops` (the `quest_loop_reconcile` agent-worker
+  pass, same `PRECIS_QUEST_LOOP_ENABLED` gate): every cycle it cools stalled
+  quests, then `ensure_quest_loop`s each remaining active quest — an
+  idempotent mint (`idem_key=quest_tick:<id>`) that leaves a sleeping
+  coordinator alone and re-arms one that rested. `quest.allocator` (the
+  bandit/EWMA scoring + `pick_next_quest`) still backs the **manual** `precis
+  quest run` CLI one-shot tick; it no longer drives the background loop.
 - **`llm`** — the model catalog (design-of-record `docs/proposals/llm-catalog.md`;
   slice 1 **live, read-only, ships dark**). Turns model choice from hardcoded
   constants (`router._TIER_MODEL` + the `LLM:opus|sonnet|haiku|local` tag) into a

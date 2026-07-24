@@ -56,8 +56,15 @@ _JOB_EVENT_KIND = "job_event"
 # lane — a derived, cache-fillable build step (DFT relax / route / mesh /
 # compile) owned by its subject ref, not a task. Behaviour branches on the
 # resolved parent kind, not on a declared job-class flag: the distinction is
-# emergent from the parent pointer the caller sets anyway.
-JOB_PARENT_KINDS: frozenset[str] = frozenset({"todo", "structure", "cad", "draft"})
+# emergent from the parent pointer the caller sets anyway. ``quest`` is the
+# perpetual-loop case: its ``quest_tick`` coordinator job (the reconciler in
+# precis.quest.loop) parents directly on the quest it drives — added to the
+# core set (not the plugin ``can_own_jobs`` extension) because the reconciler
+# runs from a worker pass with a bare, unbooted ``Hub(store=store)`` that
+# never populates the plugin-lookup path.
+JOB_PARENT_KINDS: frozenset[str] = frozenset(
+    {"todo", "structure", "cad", "draft", "quest"}
+)
 
 #: ADR 0044 extension (good-search-coordinator §Substrate fixes #3): a
 #: ``kind='job'`` parent is additionally allowed, but ONLY when that
@@ -563,10 +570,14 @@ class JobHandler(NumericRefHandler):
     def _lookup_idem(self, idem: str, *, conn: Any = None) -> int | None:
         """Return an active job id for ``idem_key=idem`` if one exists.
 
-        "Active" = `STATUS:queued` or `STATUS:running`. Terminal
-        jobs (succeeded / failed / cancelled) don't block a fresh
-        attempt — the caller asked for a retry and the substrate
-        delivers it.
+        "Active" = any **non-terminal** status — not just `queued` /
+        `running`, but also e.g. `waiting_time` / `waiting_children` (a
+        coordinator parked between phases). Only the terminal statuses
+        (succeeded / failed / cancelled) don't block a fresh attempt — the
+        caller asked for a retry and the substrate delivers it. This is what
+        makes ``idem_key`` alone a sufficient single-loop guard for a
+        perpetual coordinator (e.g. ``quest_tick``): a sleeping loop still
+        blocks a re-mint, while a rested (terminal) one doesn't.
 
         When ``conn`` is supplied the lookup runs inside that
         transaction. Used by :meth:`put` after taking the

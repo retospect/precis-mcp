@@ -606,28 +606,32 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_job_claude_inproc_pass)
 
-        # quest_dispatch — the autonomous quest-loop allocator (rung 4d).
-        # Ships DARK: only runs when PRECIS_QUEST_LOOP_ENABLED is set, and
-        # only on the agent profile (a tick calls the frontier model through
-        # the OAuth'd router, which lives on melchior). One pick + tick per
-        # pass; the tick is naturally I/O-bound so quests interleave.
+        # quest_loop_reconcile — the autonomous quest-loop reconciler (rung 4d,
+        # replacing the old inline-tick allocator pass). Ships DARK: only runs
+        # when PRECIS_QUEST_LOOP_ENABLED is set, and only on the agent profile.
+        # It does NOT tick a quest itself — each active quest owns a perpetual
+        # `quest_tick` coordinator campaign (workers/job_types/quest_tick.py)
+        # that harvests/reviews/proposes/dispatches on its own event-driven
+        # cadence; this pass just guarantees that loop exists, self-healing one
+        # that rested (a coordinator job idem-keyed `quest_tick:<id>` re-mints
+        # once its predecessor reaches a terminal status). See
+        # precis.quest.loop.reconcile_quest_loops.
         from precis.quest.tick import quest_loop_enabled as _quest_loop_enabled
 
         if args.profile == "agent" and _quest_loop_enabled():
-            from precis.quest.allocator import run_allocator_pass
+            from precis.quest.loop import reconcile_quest_loops
             from precis.workers.runner import BatchResult as _QBatchResult
 
-            def _quest_dispatch_pass(batch_size: int) -> _QBatchResult:
-                r = run_allocator_pass(store, enabled=True)
-                picked = r.get("picked") is not None
+            def _quest_loop_reconcile_pass(batch_size: int) -> _QBatchResult:
+                r = reconcile_quest_loops(store, enabled=True)
                 return _QBatchResult(
-                    handler="quest_dispatch",
-                    claimed=1 if picked else 0,
-                    ok=1 if (picked and r.get("status") == "succeeded") else 0,
-                    failed=1 if (picked and r.get("status") == "failed") else 0,
+                    handler="quest_loop_reconcile",
+                    claimed=int(r.get("ensured", 0)),
+                    ok=int(r.get("minted", 0)),
+                    failed=0,
                 )
 
-            ref_passes.append(_quest_dispatch_pass)
+            ref_passes.append(_quest_loop_reconcile_pass)
 
         # job_coordinator — drains the `kind='job'` queue for jobs
         # whose meta.executor=='coordinator'. These are long-running
