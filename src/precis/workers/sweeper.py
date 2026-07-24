@@ -32,6 +32,22 @@ The sweeper:
    the store level (the handler isn't in scope here), so the bubble
    is called explicitly.
 5. Appends a ``job-swept`` event so the audit trail is intact.
+6. **Active container reap (gripe 50905).** Failing the DB row does not by
+   itself stop whatever OS process/container the job launched. Two
+   best-effort hooks close that gap, for two different situations:
+   * ``_kill_job_container`` fires right here, in this same timeout
+     transition, for whatever job it's sweeping — but ``ssh_node`` jobs
+     (which is what a ``struct_relax`` DFT relax runs under) are excluded
+     from this transition entirely (see :func:`_enumerate_orphans`), so in
+     practice this immediate path is defense-in-depth for *other*
+     compute-lane executors this sweep does reach (today: ``claude_docker``),
+     not the DFT relax that motivated the gripe.
+   * ``_reap_stale_dft_containers`` is a separate, unconditional watchdog
+     run every pass on the DFT node: it force-removes any ``precis-job-*``
+     container past a safe age regardless of any job's DB-row state. Since
+     ``struct_relax`` never reaches the immediate-kill path above, this
+     watchdog is what actually recovers a stuck relax — e.g. the ~56h
+     ``gpaw-relax`` that held a GPU after its row was already swept.
 
 The transition is what wakes the cascade — the operator sees the
 stuck parent in the nursery's "child-failed" surfacing and can
@@ -243,6 +259,7 @@ class _Orphan:
     ref_id: int
     title: str | None
     running_since: datetime
+    meta: dict
 
 
 def _transcript_retention_days() -> int:
@@ -545,6 +562,13 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
             "sweeper: %d queued job(s) require a capability no host advertises",
             unschedulable,
         )
+    reaped_dft = _reap_stale_dft_containers()
+    if reaped_dft:
+        log.warning(
+            "sweeper: reaped %d stale DFT compute container(s) past the "
+            "safety threshold (gripe 50905)",
+            reaped_dft,
+        )
     threshold_hours = _stuck_job_hours()
     candidates = _enumerate_orphans(store, threshold_hours, limit=limit)
     if not candidates:
@@ -590,7 +614,7 @@ def _enumerate_orphans(
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT r.ref_id, r.title, rt.created_at
+            SELECT r.ref_id, r.title, rt.created_at, r.meta
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
@@ -614,9 +638,55 @@ def _enumerate_orphans(
             ref_id=int(r[0]),
             title=r[1],
             running_since=r[2],
+            meta=dict(r[3] or {}),
         )
         for r in rows
     ]
+
+
+def _kill_job_container(ref_id: int, meta: dict) -> None:
+    """Best-effort, immediate reap of a compute-lane job's container the
+    moment the sweeper fails its DB row (gripe 50905) — instead of leaving a
+    live container (and, for a DFT relax, the GPU it holds) to a lazy
+    per-boot reconcile. Matches only a known container-naming convention
+    keyed off ``meta`` (never a blanket kill); a docker/ssh failure is
+    logged and swallowed so it can never abort the sweep."""
+    try:
+        job_type = meta.get("job_type")
+        if job_type == "struct_relax":
+            from precis.workers.job_types import struct_relax
+
+            target_node = (meta.get("params") or {}).get("target_node")
+            struct_relax.kill_container(ref_id, node=target_node)
+        elif meta.get("executor") == "claude_docker":
+            from precis.workers.executors import claude_docker
+
+            claude_docker._reap(claude_docker.container_name(ref_id))
+    except Exception:  # pragma: no cover - defensive
+        log.warning("sweeper: container kill for job #%d raised", ref_id, exc_info=True)
+
+
+def _reap_stale_dft_containers() -> int:
+    """Belt-and-suspenders for gripe 50905: on the DFT compute node itself,
+    force-remove any ``precis-job-*`` container past the stale-age
+    threshold, independent of its owning job's DB row (covers a container
+    whose row was already swept/deleted, or any other way a container
+    outlives its row — e.g. the ``ssh_node`` executor is excluded from the
+    generic timeout sweep above, so ``_kill_job_container`` never fires for
+    it). Gated to the DFT node so the scan doesn't ssh-fan-out from every
+    cluster node on every per-minute sweep. Best-effort, never raises —
+    including the import itself, so a broken/missing job_type module can
+    never abort the rest of the sweeper pass (timeout sweep, embed
+    re-open, log GC, …)."""
+    try:
+        from precis.workers.job_types import struct_relax
+
+        if os.environ.get("PRECIS_NODE") != struct_relax._NODE:
+            return 0
+        return struct_relax.reap_stale_containers()
+    except Exception:  # pragma: no cover - defensive
+        log.warning("sweeper: reap_stale_containers raised", exc_info=True)
+        return 0
 
 
 def _transition_to_failed(
@@ -696,6 +766,10 @@ def _transition_to_failed(
     # doesn't race with anything the JobHandler.tag path may do
     # later if the operator re-tags by hand.
     bubble_job_failure(store, orphan.ref_id)
+    # Immediate active reap (gripe 50905) — kill the job's container (by the
+    # naming convention its executor/job_type uses), instead of leaving an
+    # orphaned OS process/container for a lazy per-boot reconcile.
+    _kill_job_container(orphan.ref_id, orphan.meta)
     return True
 
 

@@ -10,6 +10,8 @@ positions. Compute happens once, ever; everything after is a lookup.
 from __future__ import annotations
 
 import json
+import shlex
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -219,6 +221,164 @@ def test_dispatch_infra_failure_is_classed_infra(structure, tmp_path, monkeypatc
     assert fails[0]["failure_class"] == "infra"
     assert ("status", "succeeded") not in events
     assert structure.store.structure_find_cached_run(params["cache_key"]) is None
+
+
+# ── container reap (gripe 50905) ──────────────────────────────────────────
+
+
+def test_kill_container_local_runs_docker_rm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When this worker *is* the DFT node, ``kill_container`` shells out to
+    ``docker rm -f precis-job-<ref_id>`` directly (no ssh hop)."""
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
+    monkeypatch.setattr(struct_relax, "_NODE", "spark")
+
+    ok = struct_relax.kill_container(42, node="spark")
+
+    assert ok is True
+    assert calls == [["docker", "rm", "-f", "precis-job-42"]]
+
+
+def test_kill_container_remote_hops_via_ssh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the job's node isn't this worker, the kill is ssh'd to the node —
+    the container runs on the remote GPU box, not the sweeper's host. The
+    remote command is a single shell-quoted argv element (not exploded into
+    separate ssh argv items) so the remote shell's IFS re-split can't break
+    a token apart."""
+    monkeypatch.setenv("PRECIS_NODE", "caspar")
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
+
+    ok = struct_relax.kill_container(42, node="spark")
+
+    assert ok is True
+    assert calls == [["ssh", "spark", "docker rm -f precis-job-42"]]
+
+
+def test_kill_container_never_raises_on_subprocess_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A docker/ssh failure (binary missing, node unreachable, …) is
+    swallowed — the sweeper must never crash on a best-effort kill."""
+
+    def raising_run(argv, **kw):
+        raise OSError("no such host")
+
+    monkeypatch.setattr(struct_relax.subprocess, "run", raising_run)
+
+    assert struct_relax.kill_container(42, node="spark") is False
+
+
+def test_parse_docker_created_handles_docker_format() -> None:
+    dt = struct_relax._parse_docker_created("2026-07-22 10:15:32 +0000 UTC")
+    assert dt is not None
+    assert dt.year == 2026 and dt.month == 7 and dt.day == 22
+    assert struct_relax._parse_docker_created("garbage") is None
+
+
+def test_reap_stale_containers_kills_old_not_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The watchdog force-removes a ``precis-job-*`` container past the age
+    threshold and leaves a fresh one alone — never touches anything else."""
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setattr(struct_relax, "_NODE", "spark")
+
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    old_ts = (now - timedelta(hours=60)).strftime("%Y-%m-%d %H:%M:%S +0000 UTC")
+    fresh_ts = (now - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S +0000 UTC")
+    ps_output = f"precis-job-1\t{old_ts}\nprecis-job-2\t{fresh_ts}\n"
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if argv[1] == "ps":
+            return subprocess.CompletedProcess(argv, 0, ps_output, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
+
+    reaped = struct_relax.reap_stale_containers(max_age_hours=6.0)
+
+    assert reaped == 1
+    rm_calls = [c for c in calls if c[1] == "rm"]
+    assert rm_calls == [["docker", "rm", "-f", "precis-job-1"]]
+
+
+def test_remote_argv_quotes_a_token_containing_a_tab() -> None:
+    """``ssh host a b c`` re-joins args with a plain space and the remote
+    shell re-splits on IFS (which includes tab) — so a raw tab inside a
+    ``--format`` token silently breaks it in two once it crosses the ssh
+    hop. ``_remote_argv`` must shell-quote so the round trip through the
+    remote shell reconstructs the exact original tokens."""
+    argv = ["docker", "ps", "--format", "{{.Names}}\t{{.CreatedAt}}"]
+    remote = struct_relax._remote_argv("spark", argv)
+
+    assert remote[:2] == ["ssh", "spark"]
+    assert len(remote) == 3  # the whole remote command is ONE argv element
+    # Simulate the remote shell's word-split — it must reconstruct exactly
+    # the original tokens, tab and all.
+    assert shlex.split(remote[2]) == argv
+
+
+def test_reap_stale_containers_over_ssh_kills_old_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stale-container watchdog also works over the remote (ssh) branch
+    — listing and killing both survive the remote shell's word-split now
+    that the command is shell-quoted (gripe 50905 follow-up)."""
+    monkeypatch.setenv("PRECIS_NODE", "caspar")  # this worker is NOT spark
+
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    old_ts = (now - timedelta(hours=60)).strftime("%Y-%m-%d %H:%M:%S +0000 UTC")
+    ps_output = f"precis-job-9\t{old_ts}\n"
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        assert argv[0] == "ssh" and argv[1] == "spark"
+        assert len(argv) == 3  # one shell-quoted remote command string
+        remote_argv = shlex.split(argv[2])
+        if remote_argv[1] == "ps":
+            return subprocess.CompletedProcess(argv, 0, ps_output, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
+
+    reaped = struct_relax.reap_stale_containers(max_age_hours=6.0, node="spark")
+
+    assert reaped == 1
+    assert len(calls) == 2  # one ps, one rm
+    rm_argv = shlex.split(calls[1][2])
+    assert rm_argv == ["docker", "rm", "-f", "precis-job-9"]
+
+
+def test_reap_stale_containers_never_raises_on_listing_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raising_run(argv, **kw):
+        raise OSError("docker not found")
+
+    monkeypatch.setattr(struct_relax.subprocess, "run", raising_run)
+
+    assert struct_relax.reap_stale_containers(max_age_hours=6.0, node="spark") == 0
 
 
 def _stage(tmp_path, ref_id: int) -> tuple[str, str]:

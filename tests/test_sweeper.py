@@ -96,6 +96,8 @@ def _mint_running_job(
     backdate_hours: float,
     lease_offset_hours: float | None = None,
     executor: str = "claude_inproc",
+    job_type: str = "plan_tick",
+    params: dict | None = None,
 ) -> int:
     """Insert a ``kind='job'`` ref, tag STATUS:running, backdate the tag.
 
@@ -108,11 +110,14 @@ def _mint_running_job(
     from the sweep (that executor reclaims its own expired-lease running
     jobs), so this parameter drives the exclusion test.
     """
+    meta: dict = {"job_type": job_type, "executor": executor}
+    if params is not None:
+        meta["params"] = params
     job = store.insert_ref(
         kind="job",
         slug=None,
         title="plan_tick test job",
-        meta={"job_type": "plan_tick", "executor": executor},
+        meta=meta,
         parent_id=parent_id,
     )
     store.add_tag(
@@ -246,6 +251,107 @@ def test_ssh_node_job_is_never_swept(handler: TodoHandler, store: Store) -> None
     assert "STATUS:failed" not in job_tags
     parent_tags = {str(t) for t in store.tags_for(rid)}
     assert f"child-failed:{job_id}" not in parent_tags
+
+
+def test_swept_job_kills_its_claude_docker_container(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A swept ``claude_docker``-executor job's container is force-removed
+    immediately (gripe 50905), not left for the lazy per-boot reconcile."""
+    from precis.workers.executors import claude_docker
+
+    killed: list[str] = []
+    monkeypatch.setattr(claude_docker, "_reap", lambda name: killed.append(name))
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(store, rid, backdate_hours=2.0, executor="claude_docker")
+
+    result = run_sweeper_pass(store, limit=10)
+
+    assert result.ok == 1
+    assert killed == [claude_docker.container_name(job_id)]
+
+
+def test_swept_struct_relax_job_kills_its_compute_container(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A swept ``struct_relax`` job's ``precis-job-<id>`` container is killed
+    on its ``target_node`` (gripe 50905)."""
+    from precis.workers.job_types import struct_relax
+
+    killed: list[tuple[int, str | None]] = []
+    monkeypatch.setattr(
+        struct_relax,
+        "kill_container",
+        lambda ref_id, *, node=None, **kw: killed.append((ref_id, node)),
+    )
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    # executor left at the default (claude_inproc) so this reaches the
+    # generic timeout path — a real struct_relax job runs under ssh_node,
+    # which is excluded above; this pins the job_type→kill_container wiring
+    # itself, independent of that exclusion (belt-and-suspenders is the
+    # stale-container watchdog, tested separately).
+    job_id = _mint_running_job(
+        store,
+        rid,
+        backdate_hours=2.0,
+        job_type="struct_relax",
+        params={"target_node": "spark"},
+    )
+
+    result = run_sweeper_pass(store, limit=10)
+
+    assert result.ok == 1
+    assert killed == [(job_id, "spark")]
+
+
+def test_kill_job_container_never_raises(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A container-kill failure (docker/ssh down) must not crash the sweep —
+    the DB-row transition already succeeded and must stay that way."""
+    from precis.workers.job_types import struct_relax
+
+    def _raise(*a, **kw):
+        raise OSError("no docker")
+
+    monkeypatch.setattr(struct_relax, "kill_container", _raise)
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(store, rid, backdate_hours=2.0, job_type="struct_relax")
+
+    result = run_sweeper_pass(store, limit=10)
+
+    assert result.ok == 1  # the DB transition still succeeded
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:failed" in job_tags
+
+
+def test_stale_dft_container_watchdog_runs_only_on_dft_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stale-container watchdog is gated to the DFT node itself — it
+    must not ssh-fan-out from every cluster node on every sweep."""
+    from precis.workers.sweeper import _reap_stale_dft_containers
+
+    calls: list[int] = []
+    from precis.workers.job_types import struct_relax
+
+    def _fake_reap(**kw: object) -> int:
+        calls.append(1)
+        return 3
+
+    monkeypatch.setattr(struct_relax, "reap_stale_containers", _fake_reap)
+    monkeypatch.setattr(struct_relax, "_NODE", "spark")
+
+    monkeypatch.delenv("PRECIS_NODE", raising=False)
+    assert _reap_stale_dft_containers() == 0
+    assert calls == []
+
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    assert _reap_stale_dft_containers() == 3
+    assert calls == [1]
 
 
 def test_already_failed_job_is_skipped(handler: TodoHandler, store: Store) -> None:

@@ -28,6 +28,13 @@ spark node runs ``docker`` with the NVIDIA Container Toolkit and the
 matches reality. ``PRECIS_DFT_CONTAINER_CMD`` (``docker`` | ``podman``) flips
 the GPU flag (``--gpus all`` vs CDI ``--device nvidia.com/gpu=all``) when the
 node migrates.
+
+**Container reap.** :func:`kill_container` (active reap) and
+:func:`reap_stale_containers` (stale-container watchdog, both invoked from
+the sweeper) close gripe 50905 — the container is deterministically named
+(``precis-job-<ref_id>``) so it can be found and force-removed by name even
+after its owning job's DB row is gone, rather than holding the GPU
+indefinitely.
 """
 
 from __future__ import annotations
@@ -35,7 +42,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +108,27 @@ _CONTAINER_CMD = os.environ.get("PRECIS_DFT_CONTAINER_CMD", "docker")
 _CONTAINER_IN = "/work/in"
 _CONTAINER_OUT = "/work/out"
 _RESULT_FILE = "result.json"
+#: Deterministic container-name prefix (see :func:`build_run_argv`) — the
+#: convention both the active reap (:func:`kill_container`, called from the
+#: sweeper on a DB-row timeout) and the stale-container watchdog
+#: (:func:`reap_stale_containers`) match on, so neither ever touches a
+#: container that isn't a ``struct_relax`` compute job (gripe 50905).
+_CONTAINER_PREFIX = "precis-job-"
+
+#: Age past which an orphaned ``precis-job-*`` container is force-removed
+#: regardless of its owning job's DB row — belt-and-suspenders for a
+#: container that outlives its row (row already swept, deleted, or the
+#: worker that would have reaped it never came back). Well past any
+#: legitimate relax wall-clock. ``PRECIS_DFT_STALE_CONTAINER_HOURS``.
+_STALE_CONTAINER_HOURS_DEFAULT = 6.0
+
+
+def _stale_container_hours() -> float:
+    raw = os.environ.get("PRECIS_DFT_STALE_CONTAINER_HOURS")
+    try:
+        return max(0.5, float(raw)) if raw else _STALE_CONTAINER_HOURS_DEFAULT
+    except ValueError:
+        return _STALE_CONTAINER_HOURS_DEFAULT
 
 
 def _gpu_flags(container_cmd: str) -> list[str]:
@@ -119,9 +149,10 @@ def build_run_argv(
     gpus: int = 1,
 ) -> list[str]:
     """The container ``run`` argv ssh'd to the node (pure). Deterministic
-    ``--name precis-job-<ref_id>`` so the sweeper can kill it by name (§23 #6).
+    ``--name precis-job-<ref_id>`` so the sweeper can kill it by name (§23 #6;
+    see :func:`kill_container` / :func:`reap_stale_containers`, gripe 50905).
     ``gpus=0`` omits the GPU flag (CPU fallback — same image)."""
-    argv = [container_cmd, "run", "--rm", "--name", f"precis-job-{ref_id}"]
+    argv = [container_cmd, "run", "--rm", "--name", f"{_CONTAINER_PREFIX}{ref_id}"]
     argv += container_limit_flags()
     if gpus:
         argv += _gpu_flags(container_cmd)
@@ -139,6 +170,157 @@ def build_run_argv(
         _CONTAINER_OUT,
     ]
     return argv
+
+
+# ── container reap (gripe 50905) ──────────────────────────────────────────
+#
+# The relax runs on a remote GPU node (``ssh <node> docker run …``), so
+# neither a dead ``ssh_node`` worker nor a swept DB row ever touches the
+# actual container — the sweeper excludes ``ssh_node`` jobs from its
+# timeout sweep entirely (that executor owns its own lease-steal recovery),
+# which is exactly how a stuck ``gpaw-relax`` kept holding the GPU for ~56h
+# after its row was already failed out. Two best-effort, never-raising
+# hooks close the gap:
+#
+# * :func:`kill_container` — called immediately wherever a job's DB row
+#   *is* transitioned to failed (the sweeper's generic timeout path, for
+#   any executor it does sweep) instead of leaving the container for a
+#   lazy per-boot reconcile.
+# * :func:`reap_stale_containers` — a watchdog independent of any job row:
+#   force-removes any ``precis-job-*`` container on the DFT node past a
+#   safe age, covering the ``ssh_node``-exclusion gap above and any other
+#   way a container could outlive its row.
+
+
+def _remote_argv(target: str, argv: list[str]) -> list[str]:
+    """Build an ``ssh`` argv that survives the remote shell's word-split.
+
+    ``ssh host a b c`` re-joins its trailing args with a plain space and
+    hands the result to the remote login shell, which then re-splits on
+    IFS (space/tab/newline) — so any argv item containing whitespace (e.g.
+    a ``--format`` string with an embedded tab) silently breaks in two once
+    it crosses the ssh hop, even though it was one argv element locally.
+    Shell-quoting each token before joining makes the remote re-split a
+    no-op regardless of what's inside a token."""
+    return ["ssh", target, shlex.join(argv)]
+
+
+def kill_container(
+    ref_id: int, *, node: str | None = None, container_cmd: str = _CONTAINER_CMD
+) -> bool:
+    """Best-effort force-remove of job ``ref_id``'s compute container by its
+    deterministic ``precis-job-<ref_id>`` name (see :func:`build_run_argv`).
+
+    Runs on ``node`` (default :data:`_NODE`) — locally when this worker
+    *is* that node, over ``ssh`` otherwise, mirroring :func:`_default_runner`.
+    Never raises: any ``docker``/``ssh`` failure is logged and swallowed so a
+    caller (the sweeper) can invoke this unconditionally. Returns ``True``
+    when the command was issued (not a guarantee the container existed —
+    ``rm -f`` on a missing name is a harmless no-op)."""
+    name = f"{_CONTAINER_PREFIX}{ref_id}"
+    target = node or _NODE
+    local = target == os.environ.get("PRECIS_NODE")
+    argv = [container_cmd, "rm", "-f", name]
+    cmd = argv if local else _remote_argv(target, argv)
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+        log.info("struct_relax: killed container %s on %s", name, target)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        log.warning(
+            "struct_relax: kill_container %s on %s failed", name, target, exc_info=True
+        )
+        return False
+
+
+def _parse_docker_created(raw: str) -> datetime | None:
+    """Parse a ``docker ps --format '{{.CreatedAt}}'`` timestamp (e.g.
+    ``"2026-07-22 10:15:32 +0000 UTC"``) into an aware ``datetime``. Only the
+    date/time/numeric-offset tokens are used; the trailing tz abbreviation is
+    ignored. Returns ``None`` on anything unparseable (that container is
+    skipped, never force-matched)."""
+    parts = raw.strip().split()
+    if len(parts) < 3:
+        return None
+    try:
+        return datetime.strptime(
+            f"{parts[0]} {parts[1]} {parts[2]}", "%Y-%m-%d %H:%M:%S %z"
+        )
+    except ValueError:
+        return None
+
+
+def reap_stale_containers(
+    *,
+    max_age_hours: float | None = None,
+    node: str | None = None,
+    container_cmd: str = _CONTAINER_CMD,
+) -> int:
+    """Force-remove every ``precis-job-*`` container on ``node`` (default
+    :data:`_NODE`) older than ``max_age_hours`` (default
+    :func:`_stale_container_hours`) — independent of its owning job's DB
+    row. Belt-and-suspenders for gripe 50905. Never raises: a ``docker``/
+    ``ssh`` failure (listing or removing) is logged and swallowed. Returns
+    the count force-removed."""
+    threshold = max_age_hours if max_age_hours is not None else _stale_container_hours()
+    target = node or _NODE
+    local = target == os.environ.get("PRECIS_NODE")
+    list_argv = [
+        container_cmd,
+        "ps",
+        "-a",
+        "--filter",
+        f"name={_CONTAINER_PREFIX}",
+        "--format",
+        "{{.Names}}\t{{.CreatedAt}}",
+    ]
+    cmd = list_argv if local else _remote_argv(target, list_argv)
+    try:
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        log.warning(
+            "struct_relax: reap_stale_containers: listing on %s failed",
+            target,
+            exc_info=True,
+        )
+        return 0
+    if res.returncode != 0:
+        return 0
+    now = datetime.now(UTC)
+    reaped = 0
+    for line in (res.stdout or "").splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        name = parts[0].strip()
+        if not name.startswith(_CONTAINER_PREFIX):
+            continue  # defensive — the --filter already scopes this
+        created = _parse_docker_created(parts[1])
+        if created is None:
+            continue
+        age_hours = (now - created).total_seconds() / 3600.0
+        if age_hours < threshold:
+            continue
+        rm_argv = [container_cmd, "rm", "-f", name]
+        rm_cmd = rm_argv if local else _remote_argv(target, rm_argv)
+        try:
+            subprocess.run(
+                rm_cmd, capture_output=True, text=True, timeout=30, check=False
+            )
+            reaped += 1
+            log.warning(
+                "struct_relax: reaped stale container %s (age %.1fh > %.1fh threshold)",
+                name,
+                age_hours,
+                threshold,
+            )
+        except (OSError, subprocess.SubprocessError):
+            log.warning(
+                "struct_relax: rm -f %s on %s failed", name, target, exc_info=True
+            )
+    return reaped
 
 
 def _default_runner(
@@ -348,4 +530,10 @@ def load() -> JobTypeSpec:
     return SPEC
 
 
-__all__ = ["SPEC", "build_run_argv", "load"]
+__all__ = [
+    "SPEC",
+    "build_run_argv",
+    "kill_container",
+    "load",
+    "reap_stale_containers",
+]
