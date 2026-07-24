@@ -134,6 +134,24 @@
   ansible.builtin.set_fact:
     ansible_python_interpreter: /opt/postgres-admin-venv/bin/python
 
+- name: Wait for PostgreSQL to accept connections on the /tmp socket
+  # The restart handler above (launchctl kickstart -k / systemctl restart)
+  # returns BEFORE the postmaster has re-created its /tmp socket and begun
+  # accepting connections. The DB-management tasks below connect over that
+  # socket via peer auth, so without this gate they race the restart and
+  # fail "connection refused" on /tmp/.s.PGSQL.<port>. That race — not a
+  # socket-dir drift — is the recurring RED in gripe 160582 (the pin in
+  # postgresql.conf.j2 makes the socket path deterministic; this makes the
+  # play wait for it). pg_isready ships with the server at pg_bin.
+  ansible.builtin.command: "{{ pg_bin }}/pg_isready -h /tmp -p {{ postgres_port }}"
+  become: true
+  become_user: "{{ pg_user }}"
+  register: pg_ready
+  until: pg_ready.rc == 0
+  retries: 30
+  delay: 2
+  changed_when: false
+
 - name: Create precis_prod database
   community.postgresql.postgresql_db:
     name: precis_prod
