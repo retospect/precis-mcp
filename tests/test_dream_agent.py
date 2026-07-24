@@ -291,6 +291,7 @@ def test_run_dream_pass_opens_and_finalizes_agentlog(
 
     def _fake(*args, **kw) -> AgentResult:
         captured["env_overlay"] = kw.get("env_overlay")
+        captured["blob"] = f"{args!r}{kw!r}"
         return AgentResult(
             final_text="dreamed.", cost_usd=0.05, duration_s=12.5, turns_used=4
         )
@@ -310,6 +311,10 @@ def test_run_dream_pass_opens_and_finalizes_agentlog(
 
     # env_overlay threads PRECIS_CURRENT_AGENTLOG onto the dispatched request.
     assert captured["env_overlay"] == {agentlog.ENV_VAR: str(log_id)}
+
+    # The provenance-handle footer is injected into the dispatched prompt so
+    # each memory cites `agentlog:<id>` and auto-links back to the tick node.
+    assert f"agentlog:{log_id}" in captured["blob"]
 
     # finalize_log: status + cost/turn telemetry.
     assert finalized["log_id"] == log_id

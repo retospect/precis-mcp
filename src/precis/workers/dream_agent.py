@@ -152,6 +152,26 @@ def run_dream_pass(store: Store) -> BatchResult:
         log.warning("dream_agent: failed to open agentlog", exc_info=True)
     env_overlay = {agentlog.ENV_VAR: str(log_id)} if log_id is not None else None
 
+    # Reliable provenance edge — rides the write-time auto-mention linkifier
+    # (confirmed live), NOT the env-scoped `touched` path above (which depends
+    # on PRECIS_CURRENT_AGENTLOG reaching the MCP server and is currently
+    # dormant cluster-wide). Tell the dream to cite this tick's handle in each
+    # memory, so a `memory --related-to--> agentlog` edge forms and the node
+    # links to everything the dream connected (its websearches are reachable
+    # one hop further via the memory's own citations). `agentlog` is on
+    # LINKIFY_KINDS so the token resolves. No-op when the node failed to open.
+    # (meta.prompt above captures the pre-footer prompt — the substance; this
+    # provenance footer is deliberately not folded back in.)
+    if log_id is not None:
+        prompt += (
+            f"\n\n## This tick's provenance handle\n\n"
+            f"This dream cycle is recorded as `agentlog:{log_id}`. In EACH memory "
+            f"you write this cycle, include the token `agentlog:{log_id}` inline "
+            f"(alongside your other cited handles) so the memory — and through it "
+            f"the websearches/papers it draws on — links back to the run that "
+            f"produced it."
+        )
+
     # Routed through the LLM seam (ADR 0046 unit 4b): CLOUD_SUPER + tools,
     # so ``PRECIS_LLM_BACKEND`` can move the whole dream pass onto an OSS
     # model. ``model=`` keeps the per-pass ``PRECIS_DREAM_AGENT_MODEL`` pin

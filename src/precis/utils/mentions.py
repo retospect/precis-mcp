@@ -90,6 +90,7 @@ LINKIFY_KINDS: frozenset[str] = frozenset(
         "patent",
         "todo",
         "job",
+        "agentlog",
         "finding",
         "citation",
         "draft",

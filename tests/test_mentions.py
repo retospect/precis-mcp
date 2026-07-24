@@ -144,6 +144,14 @@ def test_resolve_targets_numeric_slug_and_chunk() -> None:
     assert pairs == {(6134, None), (7, 3)}
 
 
+def test_resolve_targets_agentlog_handle() -> None:
+    """agentlog is on LINKIFY_KINDS so a dream memory can cite its tick's
+    provenance node (``agentlog:<id>``) and auto-link back to it."""
+    store = _FakeStore(refs={171286: _FakeRef(171286, kind="agentlog")}, cite_keys={})
+    targets = mentions.resolve_link_targets(store, "I notice … (agentlog:171286)")
+    assert {(t.dst_ref_id, t.dst_pos) for t in targets} == {(171286, None)}
+
+
 def test_resolve_skips_missing_deleted_and_self() -> None:
     store = _FakeStore(
         refs={
