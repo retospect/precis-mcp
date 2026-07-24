@@ -16,4 +16,5 @@
     daemon_reload: true
     state: restarted
   become: true
+  when: os_family == "linux"
   listen: restart precis embedder watchdog (linux)
