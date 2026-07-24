@@ -52,11 +52,7 @@ def main() -> int:
 
     # Subagent identity. Claude Code's SubagentStop payload should
     # carry the subagent_type; falls back to 'unknown' if absent.
-    subagent = (
-        payload.get("subagent_type")
-        or payload.get("agent")
-        or "unknown"
-    )
+    subagent = payload.get("subagent_type") or payload.get("agent") or "unknown"
 
     body = {
         "conv_slug": conv_slug,

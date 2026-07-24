@@ -188,10 +188,17 @@ def _fetch_cron_rows(conn: Any) -> list[Row]:
             (ref_id,),
         ).fetchall()
         tags = [
-            f"{ns}:{val}" if ns not in ("open", "OPEN") else val
-            for ns, val in tag_rows
+            f"{ns}:{val}" if ns not in ("open", "OPEN") else val for ns, val in tag_rows
         ]
-        out.append(Row(ref_id=int(ref_id), title=title or "", meta=meta or {}, body=body, tags=tags))
+        out.append(
+            Row(
+                ref_id=int(ref_id),
+                title=title or "",
+                meta=meta or {},
+                body=body,
+                tags=tags,
+            )
+        )
     return out
 
 
@@ -310,7 +317,9 @@ def main(argv: list[str] | None = None) -> int:
             watches_root = ensure_watches_root(store)
         n_migrated = n_skipped = 0
         for row in rows:
-            report = _migrate_one(store, row, commit=args.commit, watches_root=watches_root)
+            report = _migrate_one(
+                store, row, commit=args.commit, watches_root=watches_root
+            )
             log.info(report)
             if "SKIPPED" in report:
                 n_skipped += 1
