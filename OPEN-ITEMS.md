@@ -175,30 +175,17 @@ Status: open · Severity: polish · Owner: `src/precis/utils/llm/router.py` (`Ba
 
 ---
 
-## 🤖 asa-slack — connected, needs live smoke test (ADR 0062)
+## 🤖 asa-slack — live smoke test (ADR 0062)
 
-- **Code SHIPPED + DEPLOYED.** `com.asa.slack` runs on melchior (the
-  gateway) via `ansible-playbook deploy/playbooks/48-asa-slack.yml` (run
-  directly — **not** covered by routine `scripts/deploy`/`redeploy-precis.yml`,
-  which only bounces the `com.precis.*` fleet by name; `asa_bot`/`asa_slack`
-  both need their own explicit playbook run for any future config/role
-  change too). `site.yml` also imports it (play "48") for full-host bootstrap.
-- **RESOLVED 2026-07-24: connected to Slack for the first time.** The prior
-  `not_allowed_token_type` blocker was a bad `ASA_SLACK_APP_TOKEN` value (not
-  a genuine `xapp-...` Socket Mode app-level token). User re-seeded the
-  vault secret with a correct one; after `sudo launchctl kickstart -k
-  system/com.asa.slack` on melchior (tokens resolve once at boot, so a vault
-  write alone never takes effect on a running process — always kickstart
-  after a token change), the log shows a clean connect:
-  `asa_slack.identity: connected as 'jordanhubbard' (user_id=UPEFYH5S4) in
-  workspace 'offtera'`, followed by `Bolt app is running!`, no errors since.
-- **Next**: the live smoke test — confirm threading (never posts to channel
-  root), a paper-search question actually works, a "kick off a job" request
-  is refused (`Unsupported`, not just declined in prose), and a repeat
-  message from the same person shows the per-person `memory` note working.
-  Status: `open` · Severity: `feature` · Owner: `src/asa_slack/`,
-  `deploy/roles/asa_slack/` · Test: manual smoke test above (no automated
-  end-to-end harness for a live Slack workspace).
+- Status: `open` · Severity: `feature` · Owner: `src/asa_slack/`,
+  `deploy/roles/asa_slack/` · Test: manual (no automated end-to-end harness
+  for a live Slack workspace). Code shipped + deployed + connected to Slack
+  (`com.asa.slack` on melchior, playbook `48-asa-slack.yml` — run directly,
+  NOT part of `scripts/deploy`); the remaining work is the smoke test.
+- **Smoke test**: confirm threading (never posts to channel root), a
+  paper-search question actually works, a "kick off a job" request is refused
+  (`Unsupported`, not just declined in prose), and a repeat message from the
+  same person shows the per-person `memory` note working.
 
 ---
 
