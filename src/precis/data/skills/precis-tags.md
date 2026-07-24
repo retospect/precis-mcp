@@ -23,11 +23,15 @@ UPPERCASE replaces within its prefix. Lowercase and bare accumulate.
 ## How do I mark a todo as high priority?
 
 ```python
-tag(kind='todo', id=48, add=[
-    'PRIO:high',           # replaces any other PRIO:* on this ref
-    'topic:co2-capture',   # adds (lowercase tags accumulate)
-    'star',                # bare flag set
-])
+tag(
+    kind="todo",
+    id=48,
+    add=[
+        "PRIO:high",  # replaces any other PRIO:* on this ref
+        "topic:co2-capture",  # adds (lowercase tags accumulate)
+        "star",  # bare flag set
+    ],
+)
 ```
 
 Closed prefixes are **kind-gated** — `PRIO:` and `STATUS:` only apply
@@ -39,11 +43,15 @@ free-form kinds reject them. See the per-kind axis matrix below.
 ## How do I clear STATUS:done on a todo?
 
 ```python
-tag(kind='todo', id=48, remove=[
-    'topic:co2-capture',  # remove this lowercase tag
-    'star',               # clear the flag
-    'STATUS:done',        # remove only if STATUS is currently 'done'
-])
+tag(
+    kind="todo",
+    id=48,
+    remove=[
+        "topic:co2-capture",  # remove this lowercase tag
+        "star",  # clear the flag
+        "STATUS:done",  # remove only if STATUS is currently 'done'
+    ],
+)
 ```
 
 `remove=` is value-matched for closed prefixes — `remove=['STATUS:open']`
@@ -61,15 +69,15 @@ listed tags (AND semantics). Combine with `q=` for ranked search
 inside the filtered set:
 
 ```python
-search(kind='paper', q='photocatalysis', tags=['topic:co2-capture'])
+search(kind="paper", q="photocatalysis", tags=["topic:co2-capture"])
 ```
 
 ```python
-search(kind='todo', q='write', tags=['STATUS:open', 'PRIO:high'])
+search(kind="todo", q="write", tags=["STATUS:open", "PRIO:high"])
 ```
 
 ```python
-search(kind='memory', q='kwargs vs modes', tags=['confidence-strong'])
+search(kind="memory", q="kwargs vs modes", tags=["confidence-strong"])
 ```
 
 `tags=` runs the same canonical-form validation as `tag(add=)` — an
@@ -80,10 +88,10 @@ search(kind='memory', q='kwargs vs modes', tags=['confidence-strong'])
 ## What tags exist across the corpus?
 
 ```python
-get(kind='tag')                            # most-used first, paginated
-get(kind='tag', page=2)                    # next page (default 50 per page)
-get(kind='tag', page_size=20)              # smaller page
-get(kind='tag', scope='paper')             # tags used on papers only
+get(kind="tag")  # most-used first, paginated
+get(kind="tag", page=2)  # next page (default 50 per page)
+get(kind="tag", page_size=20)  # smaller page
+get(kind="tag", scope="paper")  # tags used on papers only
 ```
 
 Output is a TOON table with `tag / count / axis`. Each row is
@@ -94,9 +102,9 @@ addressable — paste the `tag` slug back as `id=` to drill in.
 ## Is there already a tag for "sustainability"?
 
 ```python
-search(kind='tag', q='carbon capture')     # hybrid lexical + semantic
-search(kind='tag', q='sustainability')
-search(kind='tag', q='photocatalysis', page=2)
+search(kind="tag", q="carbon capture")  # hybrid lexical + semantic
+search(kind="tag", q="sustainability")
+search(kind="tag", q="photocatalysis", page=2)
 ```
 
 **Before coining a new tag, search for an existing one.** Fragmentation
@@ -113,9 +121,9 @@ than inventing a new neighbour.
 ## Who uses topic:co2-capture?
 
 ```python
-get(kind='tag', id='topic:co2-capture')    # count, first/last seen, sample refs
-get(kind='tag', id='STATUS:done')          # closed axis — also shows sibling values
-get(kind='tag', id='pinned')               # bare flag (probes FLAG and OPEN)
+get(kind="tag", id="topic:co2-capture")  # count, first/last seen, sample refs
+get(kind="tag", id="STATUS:done")  # closed axis — also shows sibling values
+get(kind="tag", id="pinned")  # bare flag (probes FLAG and OPEN)
 ```
 
 Shows usage count, when the tag was first/last attached, up to 5
@@ -185,7 +193,7 @@ Free-form kinds (`memory` etc.) express the same semantics with open
 tags:
 
 ```python
-tag(kind='memory', id=48, add=['prio:high'])      # lowercase = OK
+tag(kind="memory", id=48, add=["prio:high"])  # lowercase = OK
 ```
 
 (`PRIO:high` on memory would be rejected — the runtime error names the
@@ -214,11 +222,11 @@ tag(kind='todo', id=40, add=['STATUS:bogus'])
 `put` accepts `tags=[...]` on creation:
 
 ```python
-put(kind='memory', text='...', tags=['topic:co2-capture', 'confidence-strong'])
+put(kind="memory", text="...", tags=["topic:co2-capture", "confidence-strong"])
 ```
 
 ```python
-put(kind='todo', text='...', tags=['PRIO:high', 'project:precis-v2'])
+put(kind="todo", text="...", tags=["PRIO:high", "project:precis-v2"])
 ```
 
 After creation, use `tag(...)` to mutate.
@@ -243,10 +251,10 @@ closed form).
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')        # verbs and kinds
-get(kind='skill', id='precis-tag-help')        # the tag verb mechanics
-get(kind='skill', id='precis-search-help')     # tags= filter inside search
-get(kind='skill', id='precis-cache')           # CACHE:* and the pinned flag
-get(kind='skill', id='precis-todo-help')       # STATUS:/PRIO: lifecycle
-get(kind='skill', id='precis-memory-help')     # open-tag categorisation
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-tag-help")  # the tag verb mechanics
+get(kind="skill", id="precis-search-help")  # tags= filter inside search
+get(kind="skill", id="precis-cache")  # CACHE:* and the pinned flag
+get(kind="skill", id="precis-todo-help")  # STATUS:/PRIO: lifecycle
+get(kind="skill", id="precis-memory-help")  # open-tag categorisation
 ```

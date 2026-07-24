@@ -161,18 +161,17 @@ equivalents.
 
 ```python
 _TAG_TO_CQL: dict[str, str] = {
-    "cpc:":       "cpc",     # cpc:b01j27/24 → cpc=B01J27/24
-    "ipc:":       "ipc",     # ipc:h01m      → ipc=H01M
-    "applicant:": "pa",      # applicant:hewlett-packard → pa="Hewlett-Packard"
-                              # (looked up from meta.applicants — see below)
-    "country:":   "pact",    # country:ep    → pact=EP
-    "kind:":      "kind",    # kind:b1       → kind=B1
-    "family:":    "famn",    # family:12345678 → famn=12345678
+    "cpc:": "cpc",  # cpc:b01j27/24 → cpc=B01J27/24
+    "ipc:": "ipc",  # ipc:h01m      → ipc=H01M
+    "applicant:": "pa",  # applicant:hewlett-packard → pa="Hewlett-Packard"
+    # (looked up from meta.applicants — see below)
+    "country:": "pact",  # country:ep    → pact=EP
+    "kind:": "kind",  # kind:b1       → kind=B1
+    "family:": "famn",  # family:12345678 → famn=12345678
 }
 
 
-def build_cql(*, q: str | None, tags: list[str] | None,
-              store: Store) -> str:
+def build_cql(*, q: str | None, tags: list[str] | None, store: Store) -> str:
     parts: list[str] = []
     if q is not None and q.strip():
         parts.append(_promote_or_passthrough(q))
@@ -180,13 +179,13 @@ def build_cql(*, q: str | None, tags: list[str] | None,
         prefix, _, val = tag.partition(":")
         cql_field = _TAG_TO_CQL.get(prefix + ":")
         if cql_field is None:
-            continue   # open-prefix tag (e.g. topic:) — local-only filter
+            continue  # open-prefix tag (e.g. topic:) — local-only filter
         if prefix == "applicant":
             phrase = _resolve_applicant(val, store)
         elif prefix in ("country", "kind"):
-            phrase = val.upper()      # ISO codes / kind codes are uppercase in CQL
+            phrase = val.upper()  # ISO codes / kind codes are uppercase in CQL
         elif prefix in ("cpc", "ipc"):
-            phrase = _cpc_to_canonical(val)   # b01j27/24 → B01J27/24
+            phrase = _cpc_to_canonical(val)  # b01j27/24 → B01J27/24
         else:
             phrase = val
         parts.append(f'{cql_field}="{_escape(phrase)}"')
@@ -213,7 +212,9 @@ def _resolve_applicant(slug: str, store: Store) -> str:
     forgiving on case + punctuation).
     """
     refs = store.find_refs_by_tag(
-        kind="patent", tag=f"applicant:{slug}", limit=1,
+        kind="patent",
+        tag=f"applicant:{slug}",
+        limit=1,
     )
     if refs:
         for app in refs[0].meta.get("applicants", []):
@@ -540,6 +541,7 @@ silent partial functionality is more confusing than a clean
 ```python
 class _OPSClient:
     """Lazy-loaded singleton over python-epo-ops-client."""
+
     def search(self, cql: str, range_: tuple[int, int]) -> bytes: ...
     def biblio(self, docdb_id: DocDbId) -> bytes: ...
     def description(self, docdb_id: DocDbId) -> bytes: ...

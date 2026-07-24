@@ -154,6 +154,7 @@ tested.
 ```python
 SERIALIZERS: dict[str, Callable[..., str]]  # name -> serializer
 
+
 def serialize(data, *, format: str = "toon", **kwargs) -> str: ...
 def register(name: str, fn: Callable[..., str]) -> None: ...
 ```
@@ -176,8 +177,7 @@ def serialize(data, *, format="toon", **kwargs):
     try:
         fn = SERIALIZERS[format]
     except KeyError:
-        raise ValueError(f"unknown format {format!r}; "
-                         f"known: {sorted(SERIALIZERS)}")
+        raise ValueError(f"unknown format {format!r}; known: {sorted(SERIALIZERS)}")
     return fn(data, **kwargs)
 ```
 
@@ -190,6 +190,7 @@ line in `__init__.py`, not a sweep across every caller.
 
 ```python
 def add_format_argument(parser: argparse.ArgumentParser) -> None: ...
+
 
 def resolve_format(
     args: argparse.Namespace,

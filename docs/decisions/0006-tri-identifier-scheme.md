@@ -52,6 +52,7 @@ def make_pub_id(paper_id: str) -> str:
     digest = hashlib.sha256(paper_id.encode("utf-8")).digest()
     return base64.b32encode(digest)[:6].decode("ascii").lower()
 
+
 # cite_key (new)
 def make_cite_key(authors, year, *, taken: set[str]) -> str:
     """First author last name + 2-digit year + letter suffix on collision.

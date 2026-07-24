@@ -14,9 +14,9 @@ no API, no cost. It is *not* a four-function calculator: it integrates,
 solves, factors, and does linear algebra.
 
 ```python
-get(kind='calc', q='2+3*4')            # → 14
-get(kind='calc', q='sqrt(2)')          # → sqrt(2)   (exact, not 1.4142…)
-get(kind='calc', q='Rational(1,3)+Rational(1,6)')   # → 1/2
+get(kind="calc", q="2+3*4")  # → 14
+get(kind="calc", q="sqrt(2)")  # → sqrt(2)   (exact, not 1.4142…)
+get(kind="calc", q="Rational(1,3)+Rational(1,6)")  # → 1/2
 ```
 
 `calc` vs `math`: `calc` is **local SymPy** — symbolic, exact, free. The
@@ -48,10 +48,10 @@ you say otherwise — and a result that actually used trig is stamped with
 a note:
 
 ```python
-get(kind='calc', q='sin(30)')          # → 1/2
-                                       #   (trig evaluated in degrees — pass view='rad' for radians)
-get(kind='calc', q='tan(45)')          # → 1
-get(kind='calc', q='N(atan2(1,1))')    # → 45.0   (inverse trig returns degrees too)
+get(kind="calc", q="sin(30)")  # → 1/2
+#   (trig evaluated in degrees — pass view='rad' for radians)
+get(kind="calc", q="tan(45)")  # → 1
+get(kind="calc", q="N(atan2(1,1))")  # → 45.0   (inverse trig returns degrees too)
 ```
 
 Pass `view='rad'` for SymPy's native **radians** — what you want for
@@ -59,8 +59,8 @@ symbolic calculus, where a degree wrapper would turn the integrand into
 `sin(pi*x/180)`:
 
 ```python
-get(kind='calc', q='sin(pi/6)',          view='rad')   # → 1/2
-get(kind='calc', q='integrate(sin(x), x)', view='rad') # → -cos(x)
+get(kind="calc", q="sin(pi/6)", view="rad")  # → 1/2
+get(kind="calc", q="integrate(sin(x), x)", view="rad")  # → -cos(x)
 ```
 
 `view='deg'` is an explicit synonym for the default. No note appears in

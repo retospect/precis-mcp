@@ -16,20 +16,35 @@ instead of hiding it in coordinates. Add them in the `measures` array of `put`
 ([[precis-pcb-help]]).
 
 ```python
-put(kind='pcb', id='s', args={'measures':[
-  {'metric':'separation',
-   'operands':[{'role':'sensitive'},{'role':'noisy'}],
-   'goal':10, 'strength':'soft',
-   'reason':'keep the mic preamp off the switching regulator'},
-  {'metric':'proximity',
-   'operands':[{'instance':'C1'},{'instance':'U1'}],
-   'goal':2, 'strength':'hard',
-   'reason':'VDD bypass must sit right at the pin'},
-  {'metric':'height',
-   'operands':[{'role':'under_lid'}],
-   'goal':3.0, 'strength':'gauge',
-   'reason':'clearance under the enclosure lid'},
-]})
+put(
+    kind="pcb",
+    id="s",
+    args={
+        "measures": [
+            {
+                "metric": "separation",
+                "operands": [{"role": "sensitive"}, {"role": "noisy"}],
+                "goal": 10,
+                "strength": "soft",
+                "reason": "keep the mic preamp off the switching regulator",
+            },
+            {
+                "metric": "proximity",
+                "operands": [{"instance": "C1"}, {"instance": "U1"}],
+                "goal": 2,
+                "strength": "hard",
+                "reason": "VDD bypass must sit right at the pin",
+            },
+            {
+                "metric": "height",
+                "operands": [{"role": "under_lid"}],
+                "goal": 3.0,
+                "strength": "gauge",
+                "reason": "clearance under the enclosure lid",
+            },
+        ]
+    },
+)
 ```
 
 ## Anatomy
@@ -74,7 +89,7 @@ later.
 ## Evaluate — `get(view='measures')`
 
 ```python
-get(kind='pcb', id='s', view='measures')
+get(kind="pcb", id="s", view="measures")
 # metric · strength · goal · value · verdict(ok/violated/pending) · reason
 ```
 

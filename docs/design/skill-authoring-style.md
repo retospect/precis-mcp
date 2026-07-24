@@ -217,8 +217,8 @@ the example (the LLM needs to see what a real slug looks like, what
 a DOI looks like), use a concrete value:
 
 ```python
-get(kind='paper', id='abazari2024design')
-get(kind='paper', id='10.1038/nature10352')
+get(kind="paper", id="abazari2024design")
+get(kind="paper", id="10.1038/nature10352")
 ```
 
 When the slug is incidental and the code is varying the view, the
@@ -226,9 +226,9 @@ selector, or the argument shape, use `<slug>` to make the slug
 visually disappear:
 
 ```python
-get(kind='paper', id='<slug>', view='toc')
-get(kind='paper', id='<slug>~63..89')
-get(kind='paper', id='<slug>~38..42')
+get(kind="paper", id="<slug>", view="toc")
+get(kind="paper", id="<slug>~63..89")
+get(kind="paper", id="<slug>~38..42")
 ```
 
 LLMs handle the `<...>` convention fine (it's standard in tech
@@ -281,7 +281,7 @@ status: active
 ## See also
 
 ```python
-get(kind='skill', id='precis-<sibling>')   # <why you'd hop there>
+get(kind="skill", id="precis-<sibling>")  # <why you'd hop there>
 ```
 ```
 

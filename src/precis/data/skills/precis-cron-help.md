@@ -29,7 +29,9 @@ rationale for the fold.
 ## See also
 
 ```python
-get(kind='skill', id='precis-recurring-help')   # the unified mechanism
-get(kind='skill', id='precis-automations')      # find/edit standing automations
-get(kind='skill', id='precis-message-help')     # proactive posts (verbatim, not a synthetic prompt)
+get(kind="skill", id="precis-recurring-help")  # the unified mechanism
+get(kind="skill", id="precis-automations")  # find/edit standing automations
+get(
+    kind="skill", id="precis-message-help"
+)  # proactive posts (verbatim, not a synthetic prompt)
 ```

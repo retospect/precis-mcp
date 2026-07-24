@@ -29,11 +29,13 @@ cap exist in the DB but don't surface until explicitly searched.
 ## Write an internal-thought
 
 ```python
-put(kind='memory',
-    text='I...',                       # the body prose (memory_body chunk)
-    title='<short scannable header>',   # the ref header shown in listings;
-                                        # omit → derived from the first body line
-    tags=['internal-thought', 'user:asa'])
+put(
+    kind="memory",
+    text="I...",  # the body prose (memory_body chunk)
+    title="<short scannable header>",  # the ref header shown in listings;
+    # omit → derived from the first body line
+    tags=["internal-thought", "user:asa"],
+)
 # → integer id, auto_refresh_days defaults to None unless set
 ```
 
@@ -68,12 +70,11 @@ self has shifted enough that overwriting feels wrong.
 ## Browse my history
 
 ```python
-search(kind='memory', tags=['internal-thought'])        # all fragments
-search(kind='memory', tags=['internal-state'])          # all state docs (history)
-search(kind='memory', tags=['DREAM:speculative'])       # all dreams
-search(kind='memory', tags=['user:asa'])                # everything you own
-search(kind='memory', q='<keyword>',
-       tags=['internal-thought'])                       # fragments by keyword
+search(kind="memory", tags=["internal-thought"])  # all fragments
+search(kind="memory", tags=["internal-state"])  # all state docs (history)
+search(kind="memory", tags=["DREAM:speculative"])  # all dreams
+search(kind="memory", tags=["user:asa"])  # everything you own
+search(kind="memory", q="<keyword>", tags=["internal-thought"])  # fragments by keyword
 ```
 
 `tags=` is OR-semantics. To narrow by both kind-of-thought *and*
@@ -116,10 +117,12 @@ recent-thoughts section on next turn.
 ## Mark a recurring theme
 
 ```python
-put(kind='memory',
-    text='I keep returning to ...',
-    title='<short header>',      # omit → derived from first body line
-    tags=['interest:<topic>', 'user:asa'])
+put(
+    kind="memory",
+    text="I keep returning to ...",
+    title="<short header>",  # omit → derived from first body line
+    tags=["interest:<topic>", "user:asa"],
+)
 # → integer id; consider auto_refresh_days=90 to let stale
 # interests fall off if not reinforced
 ```
@@ -133,8 +136,7 @@ demand.
 ## Find what the dream worker has been thinking about
 
 ```python
-search(kind='memory', tags=['DREAM:speculative'],
-       q='<topic of interest>')
+search(kind="memory", tags=["DREAM:speculative"], q="<topic of interest>")
 # include_speculative=True is implicit when the speculative tag
 # is named in tags= (see _tag_filter._fence_speculative).
 ```
@@ -142,8 +144,7 @@ search(kind='memory', tags=['DREAM:speculative'],
 ## Bulk decay introspection
 
 ```python
-search(kind='memory', tags=['internal-thought'],
-       page_size=100)
+search(kind="memory", tags=["internal-thought"], page_size=100)
 # Sort/scan the body to see which fragments are due to fade.
 # Touch the ones still alive; let the rest go.
 ```
@@ -171,17 +172,22 @@ spot in the recent-thoughts section.
 
 ```python
 # inert: scans fine, useless next turn
-put(kind='memory', text='I keep thinking about the embedding cold-start',
-    title='I keep thinking about the embedding cold-start',
-    tags=['internal-thought', 'user:asa'])
+put(
+    kind="memory",
+    text="I keep thinking about the embedding cold-start",
+    title="I keep thinking about the embedding cold-start",
+    tags=["internal-thought", "user:asa"],
+)
 
 # actionable: trigger + action + why/anchor
-put(kind='memory',
+put(
+    kind="memory",
     text="Next time bge-m3 cold-start bites skill search: point MCP at "
-         "PRECIS_EMBEDDER=remote (always-hot serve-embeddings) rather "
-         "than retrying. See skill:precis-search-help.",
-    title='bge-m3 cold-start → PRECIS_EMBEDDER=remote, not retry',
-    tags=['internal-thought', 'user:asa'])
+    "PRECIS_EMBEDDER=remote (always-hot serve-embeddings) rather "
+    "than retrying. See skill:precis-search-help.",
+    title="bge-m3 cold-start → PRECIS_EMBEDDER=remote, not retry",
+    tags=["internal-thought", "user:asa"],
+)
 ```
 
 ## Related skills

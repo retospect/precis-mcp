@@ -146,10 +146,10 @@ option list).
 ## How do I find the right skill?
 
 ```python
-get(kind='skill', id='toc')                  # browse every skill, one-line synopsis
-search(kind='skill', q='your goal')          # fuzzy lookup, e.g. 'spaced repetition'
-get(kind='skill', id='precis-help')          # what kinds + verbs are live in this build
-get(kind='skill')                            # list every active skill
+get(kind="skill", id="toc")  # browse every skill, one-line synopsis
+search(kind="skill", q="your goal")  # fuzzy lookup, e.g. 'spaced repetition'
+get(kind="skill", id="precis-help")  # what kinds + verbs are live in this build
+get(kind="skill")  # list every active skill
 ```
 
 `precis-toc` is the long-form alias for `id='toc'`.
@@ -192,24 +192,23 @@ on top. See `docs/design/todo-tree-plan.md` for the full design.
 
 ```python
 # Find a paper, read its abstract.
-search(kind='paper', q='photocatalytic NOx reduction')
-get(kind='paper', id='abazari2024design', view='abstract')
+search(kind="paper", q="photocatalytic NOx reduction")
+get(kind="paper", id="abazari2024design", view="abstract")
 
 # Already have a DOI? Address by DOI directly.
-get(kind='paper', id='10.1038/nature10352')
-get(kind='paper', id='10.1038/nature10352', view='bibtex')
+get(kind="paper", id="10.1038/nature10352")
+get(kind="paper", id="10.1038/nature10352", view="bibtex")
 
 # Paginate.
-search(kind='paper', q='photocatalysis', page=2)
+search(kind="paper", q="photocatalysis", page=2)
 
 # Make a todo, mark a different one done.
-put(kind='todo', text='Review section 3 of abazari2024design.',
-    tags=['PRIO:high'])
-tag(kind='todo', id=122, add=['STATUS:done'])
+put(kind="todo", text="Review section 3 of abazari2024design.", tags=["PRIO:high"])
+tag(kind="todo", id=122, add=["STATUS:done"])
 
 # Quick calculation; real-world fact.
-get(kind='calc', q='42 * 365')                # → 15330        (free)
-get(kind='math', q='speed of light in km/h')  # → 1.079e9 km/h (paid)
+get(kind="calc", q="42 * 365")  # → 15330        (free)
+get(kind="math", q="speed of light in km/h")  # → 1.079e9 km/h (paid)
 ```
 
 ## Overloaded words — which one do you mean?
@@ -233,16 +232,22 @@ its source file.)
 ## See also
 
 ```python
-get(kind='skill', id='precis-search-help')   # search mechanics
-get(kind='skill', id='precis-tags')          # axis vocabulary
-get(kind='skill', id='precis-relations')     # link vocabulary
-get(kind='skill', id='precis-cache')         # paid-tool caching, TTLs
-get(kind='skill', id='precis-paper-help')    # paper views, citation export
-get(kind='skill', id='precis-files-help')    # shared file-backed address grammar
-get(kind='skill', id='precis-toc-help')      # TOC navigation, sub-range zoom
-get(kind='skill', id='precis-random-help')   # random corpus pick
-get(kind='skill', id='precis-folder-help')   # folders, placement, folder= search scope
-get(kind='skill', id='precis-gripe-help')    # hit a bug / tool friction? file a gripe (search existing first)
-get(kind='skill', id='precis-audio-help')    # narrate a draft to audio: voice score + pronunciation lexicon
-get(kind='skill', id='precis-lab-help')      # in-silico lab: chain route/protein/structure/literature toward a research goal
+get(kind="skill", id="precis-search-help")  # search mechanics
+get(kind="skill", id="precis-tags")  # axis vocabulary
+get(kind="skill", id="precis-relations")  # link vocabulary
+get(kind="skill", id="precis-cache")  # paid-tool caching, TTLs
+get(kind="skill", id="precis-paper-help")  # paper views, citation export
+get(kind="skill", id="precis-files-help")  # shared file-backed address grammar
+get(kind="skill", id="precis-toc-help")  # TOC navigation, sub-range zoom
+get(kind="skill", id="precis-random-help")  # random corpus pick
+get(kind="skill", id="precis-folder-help")  # folders, placement, folder= search scope
+get(
+    kind="skill", id="precis-gripe-help"
+)  # hit a bug / tool friction? file a gripe (search existing first)
+get(
+    kind="skill", id="precis-audio-help"
+)  # narrate a draft to audio: voice score + pronunciation lexicon
+get(
+    kind="skill", id="precis-lab-help"
+)  # in-silico lab: chain route/protein/structure/literature toward a research goal
 ```

@@ -108,7 +108,7 @@ Alternatives considered and rejected:
 ### D3 — Create-with-initial-labels shortcut stays on `put`
 
 ```python
-put(kind='todo', text='Review section 3.', tags=['PRIO:high'])
+put(kind="todo", text="Review section 3.", tags=["PRIO:high"])
 ```
 
 - `tags=` accepted on `put` only during creation.
@@ -209,11 +209,11 @@ class Python:
         self.index = PythonIndex(fh, self.roots)
 
         # 2. register LAST, after everything is ready
-        r.register_ability("python", "get",    None,      self.get)
-        r.register_ability("python", "put",    "create",  self.put_create)
-        r.register_ability("python", "put",    "replace", self.put_replace)
-        r.register_ability("python", "edit",   None,      self.edit)
-        r.register_ability("python", "delete", None,      self.delete)
+        r.register_ability("python", "get", None, self.get)
+        r.register_ability("python", "put", "create", self.put_create)
+        r.register_ability("python", "put", "replace", self.put_replace)
+        r.register_ability("python", "edit", None, self.edit)
+        r.register_ability("python", "delete", None, self.delete)
         r.register_skill("precis-python-help", _PY_HELP_MD)
         r.register_overview("python", "Python source files with AST + qualname graph.")
 ```
@@ -225,7 +225,7 @@ def boot(env: Env) -> Registry:
     r = Registry()
 
     fh = _try(FileReader, r, env)
-    py = _try(Python,   r, env, fh) if fh else None
+    py = _try(Python, r, env, fh) if fh else None
     md = _try(Markdown, r, env, fh) if fh else None
     em = _try(Embedder, r, env)
     ss = _try(SearchService, r, env, em) if em else None
@@ -319,10 +319,10 @@ Every MCP tool function in `server.py` does one lookup and one call:
 
 ```python
 @mcp.tool
-def edit(kind, id, mode='find-replace', **kw) -> Response:
-    fn = r.abilities.get((kind, 'edit', mode))
+def edit(kind, id, mode="find-replace", **kw) -> Response:
+    fn = r.abilities.get((kind, "edit", mode))
     if fn is None:
-        return _dispatch_error(r, kind, 'edit', mode)
+        return _dispatch_error(r, kind, "edit", mode)
     return fn(id=id, **kw)
 ```
 
@@ -366,13 +366,13 @@ are the shared infrastructure handlers reach at request time:
 @dataclass
 class Hub:
     abilities: dict[AbilityKey, Ability]
-    skills:    dict[str, str]
-    overview:  dict[str, str]
-    handlers:  dict[str, Any]
+    skills: dict[str, str]
+    overview: dict[str, str]
+    handlers: dict[str, Any]
 
-    store:     Store | None       # DB pool wrapper
-    embedder:  Embedder | None    # vector backend
-    hints:     HintBus            # per-request hint collector
+    store: Store | None  # DB pool wrapper
+    embedder: Embedder | None  # vector backend
+    hints: HintBus  # per-request hint collector
 
     def embed_one(self, text: str) -> list[float]: ...
     def embed(self, texts: list[str]) -> list[list[float]]: ...
@@ -622,10 +622,10 @@ deletion of the old shape all land in the same commit.
 
    ```python
    @mcp.tool
-   def edit(kind, id, mode='find-replace', **kw) -> Response:
-       fn = r.abilities.get((kind, 'edit', mode))
+   def edit(kind, id, mode="find-replace", **kw) -> Response:
+       fn = r.abilities.get((kind, "edit", mode))
        if fn is None:
-           return _dispatch_error(r, kind, 'edit', mode)
+           return _dispatch_error(r, kind, "edit", mode)
        return fn(id=id, **kw)
    ```
 

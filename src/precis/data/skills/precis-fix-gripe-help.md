@@ -23,14 +23,15 @@ dispatch worker mints the job under it.**
 ```python
 # 1) Create the intent under whichever strategic owns code
 #    quality (or a one-off if there's no strategic home).
-parent_id = put(kind='todo',
-                text='Fix gripe:42 (rate-limit edge case)',
-                parent_id=engineering_hygiene_strategic_id,
-                meta={'executor': 'claude_inproc',
-                      'job_type':  'fix_gripe'})  # → returns the new ref
+parent_id = put(
+    kind="todo",
+    text="Fix gripe:42 (rate-limit edge case)",
+    parent_id=engineering_hygiene_strategic_id,
+    meta={"executor": "claude_inproc", "job_type": "fix_gripe"},
+)  # → returns the new ref
 
 # 2) Link the todo to the gripe so the lineage is queryable.
-link(kind='todo', id=parent_id, target='gripe:42', rel='fixes')
+link(kind="todo", id=parent_id, target="gripe:42", rel="fixes")
 
 # 3) Walk away. Within ~1 minute the dispatch worker mints a
 #    kind='job' under the todo; claude_inproc claims it and
@@ -83,8 +84,8 @@ time with a clear message — no zombie queued jobs.
 Tag the gripe before submitting if you need a non-default repo:
 
 ```python
-tag(kind='gripe', id=42, add=['repo:my-other-project'])
-put(kind='job', job_type='fix_gripe', link='gripe:42', rel='fixes')
+tag(kind="gripe", id=42, add=["repo:my-other-project"])
+put(kind="job", job_type="fix_gripe", link="gripe:42", rel="fixes")
 ```
 
 ## What the fix worker actually does
@@ -110,7 +111,7 @@ put(kind='job', job_type='fix_gripe', link='gripe:42', rel='fixes')
 ## Has the fix worker finished yet?
 
 ```python
-search(kind='job', link='gripe:42')
+search(kind="job", link="gripe:42")
 # most recent first; check STATUS on the top result
 ```
 
@@ -145,8 +146,8 @@ gripe_comment so you can verify which commit you're looking at.
 Merge the branch in your normal flow. Once merged:
 
 ```python
-put(kind='gripe', id=42, text='merged in <sha>')
-delete(kind='gripe', id=42)
+put(kind="gripe", id=42, text="merged in <sha>")
+delete(kind="gripe", id=42)
 ```
 
 ## Reject the fix and ask for another pass
@@ -155,8 +156,12 @@ delete(kind='gripe', id=42)
 Append a comment describing what's wrong; re-submit:
 
 ```python
-put(kind='gripe', id=42, text='wrong approach — the issue is the chunker, not the search verb')
-put(kind='job', job_type='fix_gripe', link='gripe:42', rel='fixes')
+put(
+    kind="gripe",
+    id=42,
+    text="wrong approach — the issue is the chunker, not the search verb",
+)
+put(kind="job", job_type="fix_gripe", link="gripe:42", rel="fixes")
 ```
 
 The new job sees the new comment because the worker re-reads
@@ -173,9 +178,12 @@ clarifying comment and re-submit, or escalate to a human via a
 `todo`:
 
 ```python
-put(kind='todo',
-    text='Manual fix needed for gripe:42 — agent can\'t reach upstream',
-    link='gripe:42', rel='resolves')
+put(
+    kind="todo",
+    text="Manual fix needed for gripe:42 — agent can't reach upstream",
+    link="gripe:42",
+    rel="resolves",
+)
 ```
 
 The clone dir is retained on failure (under
@@ -186,7 +194,7 @@ it and see exactly what the agent left behind.
 ## Kill a hung fix attempt
 
 ```python
-tag(kind='job', id=101, add=['STATUS:cancel_requested'])
+tag(kind="job", id=101, add=["STATUS:cancel_requested"])
 ```
 
 Worker SIGTERMs the subprocess at the next safe point; final
@@ -240,6 +248,6 @@ No accidental fan-out.
 ## See also
 
 ```python
-get(kind='skill', id='precis-gripe-help')   # the bug tracker
-get(kind='skill', id='precis-job-help')     # jobs in general
+get(kind="skill", id="precis-gripe-help")  # the bug tracker
+get(kind="skill", id="precis-job-help")  # jobs in general
 ```

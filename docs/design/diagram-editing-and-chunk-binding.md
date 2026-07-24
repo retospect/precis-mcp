@@ -181,12 +181,13 @@ Pull the shared machinery into `src/precis/diagram/` behind a small
 
 ```python
 class DiagramLang(Protocol):
-    name: str                                   # "svg" | "mermaid"
-    def compile_error(self, src: str) -> str | None: ...      # None if valid
-    def sanitize(self, src: str) -> str: ...                  # safe to inline
+    name: str  # "svg" | "mermaid"
+
+    def compile_error(self, src: str) -> str | None: ...  # None if valid
+    def sanitize(self, src: str) -> str: ...  # safe to inline
     def lint(self, src: str, *, viewbox=None) -> list[LintFinding]: ...
-    def elements(self, src: str) -> list[Element]: ...        # id, shape, coords/edges
-    def render_inline(self, src: str) -> str: ...             # SVG string for <img>
+    def elements(self, src: str) -> list[Element]: ...  # id, shape, coords/edges
+    def render_inline(self, src: str) -> str: ...  # SVG string for <img>
 ```
 
 - **`figure` = the SVG instance.** `figure/svg.py` already *is* this — its

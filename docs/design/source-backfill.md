@@ -437,30 +437,45 @@ handle-write-guard: catch the typo now, not a cycle later in a worker log).
 Assembly defers to the next dispatch cycle.
 
 ```python
-put(kind='todo',
-    title='Source-backfill — dr17 §3.2', tags=['LLM:source-backfill'],
-    link='draft:dr17', rel='plan-of',
-    meta={'source_backfill': {
-        'targets':  ['dc3243x', 'dc5349'],   # list; each handle sets its own span
-        'lenses':   ['text','keyword','number','finding','citation-graph'],
-        'budget_tok': 32000,
-        'integrate': 'weave',                 # report | link | weave
-    }})
+put(
+    kind="todo",
+    title="Source-backfill — dr17 §3.2",
+    tags=["LLM:source-backfill"],
+    link="draft:dr17",
+    rel="plan-of",
+    meta={
+        "source_backfill": {
+            "targets": ["dc3243x", "dc5349"],  # list; each handle sets its own span
+            "lenses": ["text", "keyword", "number", "finding", "citation-graph"],
+            "budget_tok": 32000,
+            "integrate": "weave",  # report | link | weave
+        }
+    },
+)
 # → accepted · td9001 · 2/2 targets live · runs next dispatch cycle
 ```
 
 **Explicit assembly (the working_set write — render path live today).**
 
 ```python
-edit(kind='todo', id='td9001', meta={'working_set': {
-    'eyes': [
-        'dc3243x',                                  # edit target → mode policy: verbatim/fisheye
-        'dc8891',                                   # cross-ref → opens IN-PLACE, doc order
-        'pa234',                                     # cited paper → summary/cluster-TOC, ★ auto-expand
-        {'handle': 'pc7710', 'extent': 'verbatim'}, # candidate chunk — force-open (a deviation)
-    ],
-    'edit_hint': ['dc3243x'],
-}})
+edit(
+    kind="todo",
+    id="td9001",
+    meta={
+        "working_set": {
+            "eyes": [
+                "dc3243x",  # edit target → mode policy: verbatim/fisheye
+                "dc8891",  # cross-ref → opens IN-PLACE, doc order
+                "pa234",  # cited paper → summary/cluster-TOC, ★ auto-expand
+                {
+                    "handle": "pc7710",
+                    "extent": "verbatim",
+                },  # candidate chunk — force-open (a deviation)
+            ],
+            "edit_hint": ["dc3243x"],
+        }
+    },
+)
 ```
 
 **Minimal (intent in, workspace out).** Point at 2–3 paragraphs; the
@@ -469,10 +484,20 @@ neighbourhoods, every paper they cite (`★`-expanded), linked notes,
 recall candidates, positional cross-refs, the coverage tail:
 
 ```python
-edit(kind='todo', id='td9001', meta={'working_set': {
-    'eyes': ['dc3243x', 'dc3250', 'dc3251'],   # three paragraphs — the rest assembles
-    'edit_hint': ['dc3243x'],
-}})
+edit(
+    kind="todo",
+    id="td9001",
+    meta={
+        "working_set": {
+            "eyes": [
+                "dc3243x",
+                "dc3250",
+                "dc3251",
+            ],  # three paragraphs — the rest assembles
+            "edit_hint": ["dc3243x"],
+        }
+    },
+)
 ```
 
 **Sync-inline** is the alternative to async kickoff: an interactive read

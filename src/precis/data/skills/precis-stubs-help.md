@@ -18,8 +18,8 @@ add new ones.
 ## Show the acquisition backlog
 
 ```python
-search(kind='paper', view='stubs')
-search(kind='paper', view='stubs', n=50)   # default 25
+search(kind="paper", view="stubs")
+search(kind="paper", view="stubs", n=50)  # default 25
 ```
 
 Each row shows the ref id, the best external identifier, the cite key,
@@ -30,7 +30,7 @@ and a one-line state (`awaiting fetch`, `no OA version available`,
 ## See just the papers a dream decided to chase
 
 ```python
-search(kind='paper', tags=['DREAM:acquire'])
+search(kind="paper", tags=["DREAM:acquire"])
 ```
 
 `view='stubs'` is the whole backlog (chase-worker stubs included);
@@ -51,10 +51,10 @@ the finding or paper that cited it lives on the other end of a
 ## Request a paper the library doesn't have
 
 ```python
-put(kind='paper', doi='10.1038/nature10352')           # best — resolvable id
-put(kind='paper', arxiv='2401.00001', title='…')       # or an arXiv id
-put(kind='paper', identifier='s2:<id>')                # or a Semantic Scholar id
-put(kind='paper', title='Some Paper With No DOI Yet')  # title-only backlog stub
+put(kind="paper", doi="10.1038/nature10352")  # best — resolvable id
+put(kind="paper", arxiv="2401.00001", title="…")  # or an arXiv id
+put(kind="paper", identifier="s2:<id>")  # or a Semantic Scholar id
+put(kind="paper", title="Some Paper With No DOI Yet")  # title-only backlog stub
 ```
 
 `put(kind='paper', …)` mints a **stub only** — it requests the paper
@@ -77,15 +77,15 @@ the DOI before you request. Walk a held paper's citation graph or
 search by topic on Semantic Scholar — each hit carries a DOI to stub:
 
 ```python
-get(kind='semanticscholar', id='refs:<held-doi>')    # papers it cites
-get(kind='semanticscholar', id='cites:<held-doi>')   # papers citing it
-get(kind='semanticscholar', id='<title or topic>')   # search → ranked hits + DOIs
+get(kind="semanticscholar", id="refs:<held-doi>")  # papers it cites
+get(kind="semanticscholar", id="cites:<held-doi>")  # papers citing it
+get(kind="semanticscholar", id="<title or topic>")  # search → ranked hits + DOIs
 ```
 
 ## See also
 
 ```python
-get(kind='skill', id='precis-paper-help')      # read, cite, search held papers (+ S2 nav)
-get(kind='skill', id='precis-finding-help')    # chasing un-ingested DOIs
-get(kind='skill', id='precis-search-help')     # search args incl. view=
+get(kind="skill", id="precis-paper-help")  # read, cite, search held papers (+ S2 nav)
+get(kind="skill", id="precis-finding-help")  # chasing un-ingested DOIs
+get(kind="skill", id="precis-search-help")  # search args incl. view=
 ```

@@ -29,24 +29,42 @@ playbook for the `pcb` kind ([[precis-pcb-help]]).
 ## Capture it
 
 ```python
-put(kind='pcb', id='s', args={
-  'components':[
-    {'refdes':'R1','label':'4.7k 0402','part':'C25900','pins':[{'name':'1'},{'name':'2'}]},  # SCL pull-up
-    {'refdes':'R2','label':'4.7k 0402','part':'C25900','pins':[{'name':'1'},{'name':'2'}]},  # SDA pull-up
-    # U1 = master (MCU), U2 = a sensor — both already have SCL/SDA pins
-  ],
-  'nets':[
-    {'name':'I2C_SCL','class':'i2c'},
-    {'name':'I2C_SDA','class':'i2c'},
-    {'name':'VCC3V3','class':'power'},
-  ],
-  'connections':[
-    {'net':'I2C_SCL','refdes':'U1','pin':'SCL'}, {'net':'I2C_SDA','refdes':'U1','pin':'SDA'},
-    {'net':'I2C_SCL','refdes':'U2','pin':'SCL'}, {'net':'I2C_SDA','refdes':'U2','pin':'SDA'},
-    {'net':'I2C_SCL','refdes':'R1','pin':'1'},   {'net':'VCC3V3','refdes':'R1','pin':'2'},
-    {'net':'I2C_SDA','refdes':'R2','pin':'1'},   {'net':'VCC3V3','refdes':'R2','pin':'2'},
-  ],
-})
+put(
+    kind="pcb",
+    id="s",
+    args={
+        "components": [
+            {
+                "refdes": "R1",
+                "label": "4.7k 0402",
+                "part": "C25900",
+                "pins": [{"name": "1"}, {"name": "2"}],
+            },  # SCL pull-up
+            {
+                "refdes": "R2",
+                "label": "4.7k 0402",
+                "part": "C25900",
+                "pins": [{"name": "1"}, {"name": "2"}],
+            },  # SDA pull-up
+            # U1 = master (MCU), U2 = a sensor — both already have SCL/SDA pins
+        ],
+        "nets": [
+            {"name": "I2C_SCL", "class": "i2c"},
+            {"name": "I2C_SDA", "class": "i2c"},
+            {"name": "VCC3V3", "class": "power"},
+        ],
+        "connections": [
+            {"net": "I2C_SCL", "refdes": "U1", "pin": "SCL"},
+            {"net": "I2C_SDA", "refdes": "U1", "pin": "SDA"},
+            {"net": "I2C_SCL", "refdes": "U2", "pin": "SCL"},
+            {"net": "I2C_SDA", "refdes": "U2", "pin": "SDA"},
+            {"net": "I2C_SCL", "refdes": "R1", "pin": "1"},
+            {"net": "VCC3V3", "refdes": "R1", "pin": "2"},
+            {"net": "I2C_SDA", "refdes": "R2", "pin": "1"},
+            {"net": "VCC3V3", "refdes": "R2", "pin": "2"},
+        ],
+    },
+)
 ```
 
 Add more devices by adding two more `connections` (their SCL/SDA → the same two

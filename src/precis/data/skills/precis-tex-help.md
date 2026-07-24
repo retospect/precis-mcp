@@ -18,14 +18,16 @@ against LaTeX syntax.
 ## Path form vs slug — what's the difference?
 
 ```python
-get(kind='tex', id='chapters/intro.tex')        # path form
-get(kind='tex', id='chapters--intro')           # slug form (path / → --)
-get(kind='tex', id='chapters/intro.tex~3')      # block by pos (output shows handle xc<id>; get(id='xc<id>') works too)
-get(kind='tex', id='chapters/intro.tex~kinetics')   # block by name
-get(kind='tex', id='chapters/intro.tex~L42-58') # block by line range
-get(kind='tex', id='chapters/intro.tex/toc')    # TOC view
-get(kind='tex', id='chapters/intro.tex/raw')    # full source
-get(kind='tex')                                 # index of all .tex files
+get(kind="tex", id="chapters/intro.tex")  # path form
+get(kind="tex", id="chapters--intro")  # slug form (path / → --)
+get(
+    kind="tex", id="chapters/intro.tex~3"
+)  # block by pos (output shows handle xc<id>; get(id='xc<id>') works too)
+get(kind="tex", id="chapters/intro.tex~kinetics")  # block by name
+get(kind="tex", id="chapters/intro.tex~L42-58")  # block by line range
+get(kind="tex", id="chapters/intro.tex/toc")  # TOC view
+get(kind="tex", id="chapters/intro.tex/raw")  # full source
+get(kind="tex")  # index of all .tex files
 ```
 
 **The `.tex` extension is load-bearing in path form.** `id='chapters/intro.tex'`
@@ -87,9 +89,9 @@ import it here: editing a `.tex` file is editing literal LaTeX.
 ## What sections does main.tex contain?
 
 ```python
-get(kind='tex', id='main.tex', view='toc')
-get(kind='tex', id='main.tex', view='outline')   # headings only
-get(kind='tex', id='main.tex/toc')               # path form
+get(kind="tex", id="main.tex", view="toc")
+get(kind="tex", id="main.tex", view="outline")  # headings only
+get(kind="tex", id="main.tex/toc")  # path form
 ```
 
 The TOC walks sections in source order. When it hits `\input{path}`
@@ -121,8 +123,8 @@ Views: `toc` (sections + keywords, recursive across `\input`),
 ## Drill into part of a file with a sub-TOC
 
 ```python
-get(kind='tex', id='<slug>~Methods', view='toc')   # TOC of one section
-get(kind='tex', id='<slug>~L100-300', view='toc')  # TOC of a line range
+get(kind="tex", id="<slug>~Methods", view="toc")  # TOC of one section
+get(kind="tex", id="<slug>~L100-300", view="toc")  # TOC of a line range
 ```
 
 Same shape as the file-level TOC, scoped to one section or range.
@@ -130,9 +132,9 @@ Same shape as the file-level TOC, scoped to one section or range.
 ## Search across the project
 
 ```python
-search(kind='tex', q='activation energy')
-search(kind='tex', q='kcat', scope='chapters--intro')   # one file
-search(q='activation energy')                           # cross-kind
+search(kind="tex", q="activation energy")
+search(kind="tex", q="kcat", scope="chapters--intro")  # one file
+search(q="activation energy")  # cross-kind
 ```
 
 Hybrid lexical + semantic. Each hit row carries the block's `xc<id>`
@@ -145,10 +147,13 @@ it is a legacy form, not the handle); order is the relevance signal.
 work directly.
 
 ```python
-edit(kind='tex', id='chapters/intro.tex',
-     mode='find-replace',
-     find=r'\citep{Smith2020}',
-     text=r'\citep{Smith2020,Jones2021}')
+edit(
+    kind="tex",
+    id="chapters/intro.tex",
+    mode="find-replace",
+    find=r"\citep{Smith2020}",
+    text=r"\citep{Smith2020,Jones2021}",
+)
 ```
 
 ## Strip a single command without rewriting the paragraph
@@ -156,10 +161,13 @@ edit(kind='tex', id='chapters/intro.tex',
 `text=''` is the canonical span-delete.
 
 ```python
-edit(kind='tex', id='chapters/intro.tex',
-     mode='find-replace',
-     find=r'\todo{check this}',
-     text='')
+edit(
+    kind="tex",
+    id="chapters/intro.tex",
+    mode="find-replace",
+    find=r"\todo{check this}",
+    text="",
+)
 ```
 
 ## Create a new .tex file
@@ -171,13 +179,16 @@ layout routes it to the right path for you (a `tex` section lands under
 `name=` form:
 
 ```python
-put(kind='tex', name='discussion',
-    text=r'''\section{Discussion}
+put(
+    kind="tex",
+    name="discussion",
+    text=r"""\section{Discussion}
 
 Our results corroborate \citet{Smith2020}, but extend the operating
-window from 5 to 25 bar.''')
+window from 5 to 25 bar.""",
+)
 # read it back by slug (the layout prefix is part of the slug):
-get(kind='tex', id='tex--discussion')
+get(kind="tex", id="tex--discussion")
 ```
 
 Common mistakes (all observed in prod):
@@ -192,17 +203,20 @@ Common mistakes (all observed in prod):
 pass `mode='create'`):
 
 ```python
-put(kind='tex', id='chapters/discussion.tex',
-    text=r'\section{Discussion} ...',
-    mode='create')
+put(
+    kind="tex",
+    id="chapters/discussion.tex",
+    text=r"\section{Discussion} ...",
+    mode="create",
+)
 ```
 
 ## See also
 
 ```python
-get(kind='skill', id='precis-files-help')       # shared address grammar, write modes
-get(kind='skill', id='precis-edit-help')        # find-replace + insert grammar
-get(kind='skill', id='precis-plaintext-help')   # block grammar tex extends
-get(kind='skill', id='precis-paper-help')       # citation-graph navigation
-get(kind='skill', id='precis-markdown-help')    # .md block grammar for prose notes
+get(kind="skill", id="precis-files-help")  # shared address grammar, write modes
+get(kind="skill", id="precis-edit-help")  # find-replace + insert grammar
+get(kind="skill", id="precis-plaintext-help")  # block grammar tex extends
+get(kind="skill", id="precis-paper-help")  # citation-graph navigation
+get(kind="skill", id="precis-markdown-help")  # .md block grammar for prose notes
 ```

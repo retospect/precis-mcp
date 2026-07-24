@@ -18,9 +18,9 @@ citation-graph filters. For the friendly `q=` form see
 ## Send EPO CQL through the patent verb
 
 ```python
-search(kind='patent', q='cpc=B01J27/24 and pd within "2020 2025"')
-search(kind='patent', q='ti=graphene and ab=membrane')
-search(kind='patent', q='pa=siemens and not pa=basf')
+search(kind="patent", q='cpc=B01J27/24 and pd within "2020 2025"')
+search(kind="patent", q="ti=graphene and ab=membrane")
+search(kind="patent", q="pa=siemens and not pa=basf")
 ```
 
 The string is forwarded to OPS verbatim and merged with local
@@ -63,35 +63,39 @@ Dates: `pd=YYYY`, `pd=YYYY-MM-DD`, `pd within "YYYY YYYY"`,
 
 ```python
 # Title-or-abstract topic, 5-year window, exclude one applicant
-search(kind='patent', q='''
+search(
+    kind="patent",
+    q="""
     (ti="metal-organic framework" OR ab="MOF synthesis")
     and pd within "2020 2025"
     and not pa=basf
-''')
+""",
+)
 
 # CPC subclass + inventor + freshness
-search(kind='patent',
-       q='cpc=B01J27/24 and in="smith j" and pd within "2020 2026"')
+search(kind="patent", q='cpc=B01J27/24 and in="smith j" and pd within "2020 2026"')
 
 # Granted EP only (B-suffix kind codes)
-search(kind='patent', q='pn=EP* and kind="B*"')
+search(kind="patent", q='pn=EP* and kind="B*"')
 
 # Citation-graph: prior art that cites a known publication
-search(kind='patent', q='ct=EP1234567 and pd within "2024 2026"')
+search(kind="patent", q='ct=EP1234567 and pd within "2024 2026"')
 
 # Joint patents — single-applicant queries miss these
-search(kind='patent', q='pa="university of limerick" and pa=intel')
+search(kind="patent", q='pa="university of limerick" and pa=intel')
 
 # Specific family member
-search(kind='patent', q='pn=EP1234567 and kind="B*"')
+search(kind="patent", q='pn=EP1234567 and kind="B*"')
 ```
 
 ## Combine CQL with tag filters
 
 ```python
-search(kind='patent',
-       q='ti=graphene and pd within "2020 2025"',
-       tags=['cpc:B01J27/24', 'country:ep'])
+search(
+    kind="patent",
+    q='ti=graphene and pd within "2020 2025"',
+    tags=["cpc:B01J27/24", "country:ep"],
+)
 # effective CQL sent to OPS:
 #   ti=graphene and pd within "2020 2025"
 #   and cpc=B01J27/24 and pact=EP
@@ -156,8 +160,8 @@ precis jobs watch-patents --name limerick-cat --delete
 ## See also
 
 ```python
-get(kind='skill', id='precis-patent-search-help')   # friendly q= form, source= matrix
-get(kind='skill', id='precis-patent-help')          # read patents (get, views, slugs)
-get(kind='skill', id='precis-search-help')          # cross-kind search mechanics
-get(kind='skill', id='precis-tags')                 # tag axes that lift to CQL
+get(kind="skill", id="precis-patent-search-help")  # friendly q= form, source= matrix
+get(kind="skill", id="precis-patent-help")  # read patents (get, views, slugs)
+get(kind="skill", id="precis-search-help")  # cross-kind search mechanics
+get(kind="skill", id="precis-tags")  # tag axes that lift to CQL
 ```

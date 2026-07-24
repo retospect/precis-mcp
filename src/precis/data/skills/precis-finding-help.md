@@ -21,14 +21,22 @@ back; drop it in your draft as a placeholder and run
 ## I have a claim and a citation — log it for sourcing
 
 ```python
-put(kind='finding',
-    title='gate-bias 2.4 kV / 30 s on Si/SiO2',
-    body=('Device prep: 2.4 kV applied across the 50 nm gate oxide '
-          'for 30 s on Si/SiO2 MOSCAPs with a Cu top contact '
-          '(sputtered), N2 ambient, room temp.'),
-    scope={'electrode': 'Cu', 'ambient': 'N2',
-           'technique': 'DC ramp', 'substrate': 'Si/SiO2'},
-    cited_in='miller23a~42')
+put(
+    kind="finding",
+    title="gate-bias 2.4 kV / 30 s on Si/SiO2",
+    body=(
+        "Device prep: 2.4 kV applied across the 50 nm gate oxide "
+        "for 30 s on Si/SiO2 MOSCAPs with a Cu top contact "
+        "(sputtered), N2 ambient, room temp."
+    ),
+    scope={
+        "electrode": "Cu",
+        "ambient": "N2",
+        "technique": "DC ramp",
+        "substrate": "Si/SiO2",
+    },
+    cited_in="miller23a~42",
+)
 # → created finding id=42
 #   placeholder: [42]   (drop in draft; precis resolve substitutes
 #                        the primary cite_key once established)
@@ -46,10 +54,10 @@ re-submissions so two agents writing the same claim collapse).
 claim. Bare forms assume `paper:` kind:
 
 ```python
-cited_in='miller23a'                   # bare cite_key (paper)
-cited_in='miller23a~42'                # bare cite_key + chunk
-cited_in='paper:miller23a~42'          # explicit-kind prefix
-cited_in='patent:ep1234567b1'          # patent target
+cited_in = "miller23a"  # bare cite_key (paper)
+cited_in = "miller23a~42"  # bare cite_key + chunk
+cited_in = "paper:miller23a~42"  # explicit-kind prefix
+cited_in = "patent:ep1234567b1"  # patent target
 ```
 
 **A bare `doi:`/`arxiv:` is NOT accepted** — `cited_in='doi:10.1234/xyz'`
@@ -87,7 +95,7 @@ same `put` — it will keep failing. Instead:
 ## Has someone already chased this claim?
 
 ```python
-search(kind='finding', q='2.4 kV gate dielectric 30 s')
+search(kind="finding", q="2.4 kV gate dielectric 30 s")
 ```
 
 Read the `setup` column of every hit. If one matches, reuse its
@@ -101,10 +109,10 @@ with `put(kind='memory', link='finding:<id>')`.
 All three work — handle `id='fi42'`, bare `id=42`, and legacy `id='finding:42'`:
 
 ```python
-get(id='fi42')                              # by handle (prefix infers kind)
-get(kind='finding', id=42)
-get(kind='finding', id='finding:42')        # legacy form, still resolves
-get(kind='finding', id=42, view='log')      # chase event history
+get(id="fi42")  # by handle (prefix infers kind)
+get(kind="finding", id=42)
+get(kind="finding", id="finding:42")  # legacy form, still resolves
+get(kind="finding", id=42, view="log")  # chase event history
 ```
 
 ```text
@@ -124,9 +132,9 @@ status: STATUS:established
 ```
 
 ```python
-search(kind='finding', q='...')              # default: established only
-search(kind='finding', q='...', status='tracing')
-search(kind='finding', q='...', status='*')  # all states
+search(kind="finding", q="...")  # default: established only
+search(kind="finding", q="...", status="tracing")
+search(kind="finding", q="...", status="*")  # all states
 ```
 
 ## Use a finding in your draft
@@ -153,8 +161,8 @@ unicode ⏳ for `*` on non-xetex/luatex engines.
 multi-cites the chase can't disambiguate. Pick the right one:
 
 ```python
-edit(kind='finding', id=42, pick_candidate='miller23a')
-edit(kind='finding', id=42, pick_candidate='self')   # mark terminal
+edit(kind="finding", id=42, pick_candidate="miller23a")
+edit(kind="finding", id=42, pick_candidate="self")  # mark terminal
 ```
 
 If the chase stalls with `STATUS:dead_chain`, the frontier chunk had
@@ -177,9 +185,9 @@ citing chunk directly for its "Cites (verified):" sidecar. See
 ## See also
 
 ```python
-get(kind='skill', id='precis-citation-help')   # verifier-write side of citations
-get(kind='skill', id='precis-paper-help')      # chunk-handle grammar (~N, ~A..B)
-get(kind='skill', id='precis-search-help')     # query mechanics
-get(kind='skill', id='precis-bibliography-help')  # who cites this paper
-get(kind='skill', id='precis-overview')        # verbs and kinds
+get(kind="skill", id="precis-citation-help")  # verifier-write side of citations
+get(kind="skill", id="precis-paper-help")  # chunk-handle grammar (~N, ~A..B)
+get(kind="skill", id="precis-search-help")  # query mechanics
+get(kind="skill", id="precis-bibliography-help")  # who cites this paper
+get(kind="skill", id="precis-overview")  # verbs and kinds
 ```

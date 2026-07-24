@@ -44,13 +44,14 @@ dispatch worker should turn into a job."**
 
 ```python
 # 1) Mint the intent under whichever strategic owns the work.
-todo = put(kind='todo',
-           text='Fix gripe:42 — rate-limit edge case',
-           parent_id=engineering_hygiene_strategic_id,
-           meta={'executor': 'claude_inproc',
-                 'job_type':  'fix_gripe'})
+todo = put(
+    kind="todo",
+    text="Fix gripe:42 — rate-limit edge case",
+    parent_id=engineering_hygiene_strategic_id,
+    meta={"executor": "claude_inproc", "job_type": "fix_gripe"},
+)
 # 2) Link to whatever the job operates on, if anything.
-link(kind='todo', id=todo.id, target='gripe:42', rel='fixes')
+link(kind="todo", id=todo.id, target="gripe:42", rel="fixes")
 # 3) That's it. Within one dispatch tick (≤ 1 min) you'll see:
 #    - a kind='job' child of todo.id with STATUS:queued
 #    - meta.auto_check={'type':'child_job_succeeded'} on the todo
@@ -60,7 +61,7 @@ link(kind='todo', id=todo.id, target='gripe:42', rel='fixes')
 You can verify by reading the todo:
 
 ```python
-get(kind='todo', id=todo.id, view='tree')
+get(kind="todo", id=todo.id, view="tree")
 # → todo + the spawned job under it (job rendered with ⚙ marker)
 ```
 
@@ -114,13 +115,13 @@ parent, decides:
 
 ```python
 # Read the failure context.
-parent  = get(kind='todo', id=98)        # ancestry + tags
-the_job = get(kind='job',  id=143)       # status + job_event chunks
+parent = get(kind="todo", id=98)  # ancestry + tags
+the_job = get(kind="job", id=143)  # status + job_event chunks
 # the chunks tell you what claude saw before failing.
 
 # Option A — same executor, fresh attempt.
-tag(kind='todo', id=98, remove=['child-failed:143'])
-delete(kind='job', id=143)
+tag(kind="todo", id=98, remove=["child-failed:143"])
+delete(kind="job", id=143)
 # Dispatch worker mints a fresh kind='job' on the next tick because
 # the "no existing child job" check now passes.
 
@@ -128,19 +129,26 @@ delete(kind='job', id=143)
 # Edit the parent's meta.executor, then clear + delete as above.
 
 # Option C — ask the owner.
-ask = put(kind='todo',
-          parent_id=98,
-          text='Job jo143 failed with X — retry / switch / skip?',
-          tags=['ask-user'],
-          meta={'auto_check': {
-              'type': 'discord_reply_received',
-              'ask_message_id': '<discord msg id>'}})
-put(kind='message',
-    target='discord/<guild>/<channel>/<thread>',
-    text='Hey, td98 needs your call: ...')
+ask = put(
+    kind="todo",
+    parent_id=98,
+    text="Job jo143 failed with X — retry / switch / skip?",
+    tags=["ask-user"],
+    meta={
+        "auto_check": {
+            "type": "discord_reply_received",
+            "ask_message_id": "<discord msg id>",
+        }
+    },
+)
+put(
+    kind="message",
+    target="discord/<guild>/<channel>/<thread>",
+    text="Hey, td98 needs your call: ...",
+)
 
 # Option D — give up.
-tag(kind='todo', id=98, add=["STATUS:won't-do"])
+tag(kind="todo", id=98, add=["STATUS:won't-do"])
 ```
 
 **The substrate does not auto-retry.** Every retry is a deliberate
@@ -175,8 +183,8 @@ OF r SKIP LOCKED` per candidate parent.
 ## See also
 
 ```python
-get(kind='skill', id='precis-job-help')           # the kind='job' surface
-get(kind='skill', id='precis-fix-gripe-help')     # the first concrete job_type
-get(kind='skill', id='precis-auto-tasks-help')    # the child_job_succeeded evaluator
-get(kind='skill', id='precis-tasks-help')         # the todo tree shape
+get(kind="skill", id="precis-job-help")  # the kind='job' surface
+get(kind="skill", id="precis-fix-gripe-help")  # the first concrete job_type
+get(kind="skill", id="precis-auto-tasks-help")  # the child_job_succeeded evaluator
+get(kind="skill", id="precis-tasks-help")  # the todo tree shape
 ```

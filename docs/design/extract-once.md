@@ -137,8 +137,7 @@ The existing slow-path call site updates to call the same helper:
 
 ```python
 if existing is not None:
-    return _hit_result_from_db(existing, conn=conn,
-                               pdf_sha256_hint=paper.pdf_sha256)
+    return _hit_result_from_db(existing, conn=conn, pdf_sha256_hint=paper.pdf_sha256)
 ```
 
 The DoI / arxiv paths also use the same helper. Single code path

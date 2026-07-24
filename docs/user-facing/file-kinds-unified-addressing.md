@@ -119,21 +119,21 @@ empty for the index view):
 
 ```python
 # markdown
-get(kind='markdown')                                    # index of all files
-get(kind='markdown', id='notes/meeting.md')             # file overview
-get(kind='markdown', id='notes/meeting.md~conclusion')  # block by slug
-get(kind='markdown', id='notes/meeting.md~L42-58')      # blocks at lines 42-58
-get(kind='markdown', id='notes/meeting.md~3')           # block at pos 3
-get(kind='markdown', id='notes/meeting.md/toc')         # TOC view
-get(kind='markdown', id='notes/meeting.md/raw')         # source view
+get(kind="markdown")  # index of all files
+get(kind="markdown", id="notes/meeting.md")  # file overview
+get(kind="markdown", id="notes/meeting.md~conclusion")  # block by slug
+get(kind="markdown", id="notes/meeting.md~L42-58")  # blocks at lines 42-58
+get(kind="markdown", id="notes/meeting.md~3")  # block at pos 3
+get(kind="markdown", id="notes/meeting.md/toc")  # TOC view
+get(kind="markdown", id="notes/meeting.md/raw")  # source view
 
 # python
-get(kind='python', id='precis/src/precis/registry.py')             # file overview
-get(kind='python', id='precis/src/precis/registry.py~Registry')    # symbol (local)
-get(kind='python', id='precis/src/precis/registry.py~Registry.get')# nested symbol
-get(kind='python', id='precis/src/precis/registry.py~L42-100')     # line range
-get(kind='python', id='precis/src/precis/registry.py/outline')     # outline view
-get(kind='python', id='precis/src/precis/registry.py/callgraph')   # call graph
+get(kind="python", id="precis/src/precis/registry.py")  # file overview
+get(kind="python", id="precis/src/precis/registry.py~Registry")  # symbol (local)
+get(kind="python", id="precis/src/precis/registry.py~Registry.get")  # nested symbol
+get(kind="python", id="precis/src/precis/registry.py~L42-100")  # line range
+get(kind="python", id="precis/src/precis/registry.py/outline")  # outline view
+get(kind="python", id="precis/src/precis/registry.py/callgraph")  # call graph
 ```
 
 ### Single-root shortcut (token efficiency)
@@ -142,12 +142,12 @@ When a kind has only one root configured, its alias may be omitted:
 
 ```python
 # config: PRECIS_MARKDOWN_ROOTS=notes:/Users/bots/notes  (one root)
-get(kind='markdown', id='meeting.md')          # alias inferred → "notes"
-get(kind='markdown', id='notes/meeting.md')    # explicit, also valid
+get(kind="markdown", id="meeting.md")  # alias inferred → "notes"
+get(kind="markdown", id="notes/meeting.md")  # explicit, also valid
 
 # config: PRECIS_MARKDOWN_ROOTS=notes:/path,work:/other  (two roots)
-get(kind='markdown', id='meeting.md')          # ERROR: ambiguous, hint with options
-get(kind='markdown', id='notes/meeting.md')    # required
+get(kind="markdown", id="meeting.md")  # ERROR: ambiguous, hint with options
+get(kind="markdown", id="notes/meeting.md")  # required
 ```
 
 ### Why `/` for path AND view
@@ -286,7 +286,7 @@ The id parser accepts an absolute filesystem path and normalises
 it against configured roots:
 
 ```python
-get(kind='markdown', id='/Users/bots/notes/meeting.md')
+get(kind="markdown", id="/Users/bots/notes/meeting.md")
 # → normalised to canonical 'notes/meeting.md' (alias 'notes')
 ```
 
@@ -434,16 +434,23 @@ The unified key insight: **`replace` accepts any selector form**.
 
 ```python
 # replace by block slug (durable, preferred)
-put(kind='markdown', id='notes/meeting.md~conclusion',
-    text='## Final thoughts\n\nNew content.', mode='replace')
+put(
+    kind="markdown",
+    id="notes/meeting.md~conclusion",
+    text="## Final thoughts\n\nNew content.",
+    mode="replace",
+)
 
 # replace by line range (when slug isn't known)
-put(kind='markdown', id='notes/meeting.md~L42-58',
-    text='Replacement text.', mode='replace')
+put(
+    kind="markdown",
+    id="notes/meeting.md~L42-58",
+    text="Replacement text.",
+    mode="replace",
+)
 
 # replace by pos (when iterating)
-put(kind='markdown', id='notes/meeting.md~3',
-    text='Updated paragraph.', mode='replace')
+put(kind="markdown", id="notes/meeting.md~3", text="Updated paragraph.", mode="replace")
 ```
 
 All three forms resolve to the same `(line_start, line_end)`; the

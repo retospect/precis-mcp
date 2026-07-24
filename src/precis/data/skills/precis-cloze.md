@@ -24,8 +24,8 @@ Your **whole** Anki collection is searchable in precis (it's projected in). So
 before creating anything, check for an existing card:
 
 ```python
-search(kind='anki', q='powerhouse of the cell')
-search(kind='anki', q='mitochondrion ATP')   # a couple of angles
+search(kind="anki", q="powerhouse of the cell")
+search(kind="anki", q="mitochondrion ATP")  # a couple of angles
 ```
 
 If a card already covers the fact, **don't add another** — extend or improve the
@@ -97,8 +97,11 @@ auto-creates it); no tag → the base `Precis` deck. Keep authored cards under t
 `Precis::` namespace, away from hand-made decks:
 
 ```python
-put(kind='anki', text='{{c1::Mitochondrion::term}} makes {{c2::ATP::molecule}}.',
-    tags=['deck-cell-biology'])          # → deck Precis::cell-biology
+put(
+    kind="anki",
+    text="{{c1::Mitochondrion::term}} makes {{c2::ATP::molecule}}.",
+    tags=["deck-cell-biology"],
+)  # → deck Precis::cell-biology
 ```
 
 ## What goes in Back Extra
@@ -169,6 +172,6 @@ the **raw LaTeX** (what you'd type) at the highest index, hinted `::latex`.
 ## See also
 
 ```python
-get(kind='skill', id='precis-anki-help')     # verbs, sync, precis-fix, /leeches
-get(kind='skill', id='precis-tags')          # tag conventions (incl. deck-<topic>)
+get(kind="skill", id="precis-anki-help")  # verbs, sync, precis-fix, /leeches
+get(kind="skill", id="precis-tags")  # tag conventions (incl. deck-<topic>)
 ```

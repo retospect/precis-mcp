@@ -22,54 +22,73 @@ same `paper_id` and the same `pub_id` byte-for-byte.
 ```python
 # Identifier normalisers ---------------------------------------------------
 
-def normalize_doi(s: str | None) -> str | None: ...
+
+def normalize_doi(s: str | None) -> str | None:
+    ...
     # Strip leading "doi:", "DOI:", "https://doi.org/", "http://dx.doi.org/",
     # "doi.org/". Lowercase. Empty / None → None.
 
-def normalize_arxiv(s: str | None) -> str | None: ...
+
+def normalize_arxiv(s: str | None) -> str | None:
+    ...
     # Strip "arXiv:" / "arxiv:" prefix and "https://arxiv.org/abs/" URL form.
     # Strip trailing "v\d+" version suffix (so paper_id is version-stable).
     # Old-style ids ("cs.LG/0501001") preserve their case in the slash-free
     # part; new-style ids stay digits.
 
+
 # Hashes -------------------------------------------------------------------
 
-def make_pdf_sha256(pdf_bytes: bytes) -> str: ...
+
+def make_pdf_sha256(pdf_bytes: bytes) -> str:
+    ...
     # Hex SHA-256 of the raw file bytes. 64 chars.
 
-def normalize_text_for_hash(text: str) -> str: ...
+
+def normalize_text_for_hash(text: str) -> str:
+    ...
     # NFKD-fold, lowercase, collapse ASCII whitespace runs to single space,
     # strip leading/trailing whitespace. Returns the canonical form used
     # by content_hash; useful in tests as a debugging probe.
 
-def make_content_hash(text: str) -> str: ...
+
+def make_content_hash(text: str) -> str:
+    ...
     # Hex SHA-256 of normalize_text_for_hash(text). 64 chars.
+
 
 # Primary identifiers ------------------------------------------------------
 
-def make_paper_id(*, arxiv: str | None = None,
-                  doi: str | None = None,
-                  pdf_sha256: str | None = None) -> str: ...
+
+def make_paper_id(
+    *, arxiv: str | None = None, doi: str | None = None, pdf_sha256: str | None = None
+) -> str:
+    ...
     # Priority: arxiv > doi > sha256 (storage-v2.md §"Identity & naming").
     # Returns "arxiv:<id>" / "doi:<id>" / "sha256:<hex>".
     # Raises ValueError if all three are None / empty.
     # Inputs are normalized first (caller may pass raw forms).
 
-def make_pub_id(paper_id: str) -> str: ...
+
+def make_pub_id(paper_id: str) -> str:
+    ...
     # base32(sha256(paper_id))[:6].lower(). 6 chars, [a-z2-7].
     # Pinned at first ingest; re-ingest of same paper_id → same pub_id.
 
-def make_cite_key(authors: list[str | dict] | None,
-                  year: int | None,
-                  *,
-                  taken: set[str] = frozenset()) -> str: ...
+
+def make_cite_key(
+    authors: list[str | dict] | None, year: int | None, *, taken: set[str] = frozenset()
+) -> str:
+    ...
     # firstauthor + 2-digit year + collision-letter suffix.
     # No suffix when base is free; "a" on first collision; "b", ... on next.
     # Raises CiteKeyOverflow if 'a'..'z' are all taken.
     # Surname extraction reuses precis.utils.slug._first_author.
     # Missing first author → "anon"; missing year → "00".
 
-def make_node_id(paper_id: str, page: int | None, block_index: int) -> str: ...
+
+def make_node_id(paper_id: str, page: int | None, block_index: int) -> str:
+    ...
     # base32(sha256("{paper_id}:p{page}:b{block_index}"))[:8].lower().
     # 8 chars, opaque. Stable across DB rebuilds; used as a deterministic
     # handle for blocks/chunks within a paper independent of BIGSERIAL ids.
@@ -91,6 +110,7 @@ identifier we have.
 
 ```python
 import base64, hashlib
+
 digest = hashlib.sha256(paper_id.encode("utf-8")).digest()
 pub_id = base64.b32encode(digest)[:6].decode("ascii").lower()
 ```
@@ -139,16 +159,16 @@ their archive prefix case (some are `cs.LG`, some `q-bio.NC`).
 
 ```python
 surname = first_author_surname_lowercased_ascii()  # reuse slug._first_author
-yy      = "%02d" % (year % 100) if year is not None else "00"
-base    = f"{surname or 'anon'}{yy}"               # e.g. "miller23"
+yy = "%02d" % (year % 100) if year is not None else "00"
+base = f"{surname or 'anon'}{yy}"  # e.g. "miller23"
 
-if base not in taken:                              # most common case
+if base not in taken:  # most common case
     return base
 for letter in "abcdefghijklmnopqrstuvwxyz":
     candidate = base + letter
     if candidate not in taken:
         return candidate
-raise CiteKeyOverflow(base, taken)                 # 27th paper edge case
+raise CiteKeyOverflow(base, taken)  # 27th paper edge case
 ```
 
 `taken` is the set of cite_keys already in the corpus that share
@@ -174,7 +194,7 @@ opaque handle* that survives rebuild. Use cases:
 Algorithm:
 
 ```python
-key = f"{paper_id}:p{page}:b{block_index}"   # page=None → literal "pNone"
+key = f"{paper_id}:p{page}:b{block_index}"  # page=None → literal "pNone"
 digest = hashlib.sha256(key.encode("utf-8")).digest()
 node_id = base64.b32encode(digest)[:8].decode("ascii").lower()
 ```

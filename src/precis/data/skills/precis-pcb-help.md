@@ -37,31 +37,55 @@ connections in one transaction; re-`put`ting the same slug **extends** it
 (existing refdes/net names are reused, not duplicated).
 
 ```python
-put(kind='pcb', id='sensor-node', args={
-  'components': [
-    {'refdes':'U1', 'label':'ESP32-C3', 'part':'C2838500', 'footprint':'QFN-32',
-     'roles':['noisy'],
-     'pins':[{'name':'VDD','tags':['power','3v3']}, {'name':'GND','tags':['gnd']},
-             {'name':'SCL','tags':['i2c']}, {'name':'SDA','tags':['i2c']}]},
-    {'refdes':'C1', 'label':'100nF 0402', 'part':'C1525', 'footprint':'0402',
-     'pins':[{'name':'1'},{'name':'2'}], 'note':'VDD bypass for U1'},
-    {'refdes':'R1', 'label':'4.7k 0402', 'part':'C25900', 'footprint':'0402',
-     'pins':[{'name':'1'},{'name':'2'}]},
-  ],
-  'nets': [
-    {'name':'VCC3V3', 'class':'power', 'current':0.5},
-    {'name':'GND',    'class':'gnd'},
-    {'name':'I2C_SCL','class':'i2c'},
-  ],
-  'connections': [
-    {'net':'VCC3V3', 'refdes':'U1','pin':'VDD'},
-    {'net':'VCC3V3', 'refdes':'C1','pin':'1', 'note':'bypass hi side'},
-    {'net':'GND',    'refdes':'U1','pin':'GND'},
-    {'net':'GND',    'refdes':'C1','pin':'2'},
-    {'net':'I2C_SCL','refdes':'U1','pin':'SCL'},
-    {'net':'I2C_SCL','refdes':'R1','pin':'1'},
-  ],
-})
+put(
+    kind="pcb",
+    id="sensor-node",
+    args={
+        "components": [
+            {
+                "refdes": "U1",
+                "label": "ESP32-C3",
+                "part": "C2838500",
+                "footprint": "QFN-32",
+                "roles": ["noisy"],
+                "pins": [
+                    {"name": "VDD", "tags": ["power", "3v3"]},
+                    {"name": "GND", "tags": ["gnd"]},
+                    {"name": "SCL", "tags": ["i2c"]},
+                    {"name": "SDA", "tags": ["i2c"]},
+                ],
+            },
+            {
+                "refdes": "C1",
+                "label": "100nF 0402",
+                "part": "C1525",
+                "footprint": "0402",
+                "pins": [{"name": "1"}, {"name": "2"}],
+                "note": "VDD bypass for U1",
+            },
+            {
+                "refdes": "R1",
+                "label": "4.7k 0402",
+                "part": "C25900",
+                "footprint": "0402",
+                "pins": [{"name": "1"}, {"name": "2"}],
+            },
+        ],
+        "nets": [
+            {"name": "VCC3V3", "class": "power", "current": 0.5},
+            {"name": "GND", "class": "gnd"},
+            {"name": "I2C_SCL", "class": "i2c"},
+        ],
+        "connections": [
+            {"net": "VCC3V3", "refdes": "U1", "pin": "VDD"},
+            {"net": "VCC3V3", "refdes": "C1", "pin": "1", "note": "bypass hi side"},
+            {"net": "GND", "refdes": "U1", "pin": "GND"},
+            {"net": "GND", "refdes": "C1", "pin": "2"},
+            {"net": "I2C_SCL", "refdes": "U1", "pin": "SCL"},
+            {"net": "I2C_SCL", "refdes": "R1", "pin": "1"},
+        ],
+    },
+)
 ```
 
 Field notes:
@@ -86,10 +110,14 @@ Field notes:
 ## Read it as a graph — `get`
 
 ```python
-get(kind='pcb')                       # list designs
-get(kind='pcb', id='sensor-node')     # netlist TOC: parts table + nets table (fanout, class, I, width)
-get(kind='pcb', id='sensor-node#U1')  # ONE instance: each pin → its net → the neighbour instances
-get(kind='pcb', id='sensor-node@I2C_SCL')  # ONE net: every (refdes, pin) on it
+get(kind="pcb")  # list designs
+get(
+    kind="pcb", id="sensor-node"
+)  # netlist TOC: parts table + nets table (fanout, class, I, width)
+get(
+    kind="pcb", id="sensor-node#U1"
+)  # ONE instance: each pin → its net → the neighbour instances
+get(kind="pcb", id="sensor-node@I2C_SCL")  # ONE net: every (refdes, pin) on it
 ```
 
 `#REFDES` is the **hop** — the core traversal move. `@NET` is the membership
@@ -100,13 +128,23 @@ view. Walk the design instance-by-instance instead of ingesting it whole.
 You never look at a render. You ask numeric questions:
 
 ```python
-get(kind='pcb', id='s', view='crossings')   # crossed airwires — THE pre-routing objective (planes excluded)
-get(kind='pcb', id='s', view='ratsnest')    # the MST airwires + total length (mm)
-get(kind='pcb', id='s', view='feasibility') # coarse H/V Manhattan via-count estimate (NOT real routing)
-get(kind='pcb', id='s', view='drc')         # DRC-lite findings (unplaced, off-board, overlaps…)
-get(kind='pcb', id='s', view='proximity', args={'a':'U1','b':'C1'})   # centroid gap (mm)
-get(kind='pcb', id='s', view='trace',     args={'net':'I2C_SCL'})     # logical hop through 2-pin series R/C
-get(kind='pcb', id='s', view='measures')    # evaluate the design's measuring tapes
+get(
+    kind="pcb", id="s", view="crossings"
+)  # crossed airwires — THE pre-routing objective (planes excluded)
+get(kind="pcb", id="s", view="ratsnest")  # the MST airwires + total length (mm)
+get(
+    kind="pcb", id="s", view="feasibility"
+)  # coarse H/V Manhattan via-count estimate (NOT real routing)
+get(
+    kind="pcb", id="s", view="drc"
+)  # DRC-lite findings (unplaced, off-board, overlaps…)
+get(
+    kind="pcb", id="s", view="proximity", args={"a": "U1", "b": "C1"}
+)  # centroid gap (mm)
+get(
+    kind="pcb", id="s", view="trace", args={"net": "I2C_SCL"}
+)  # logical hop through 2-pin series R/C
+get(kind="pcb", id="s", view="measures")  # evaluate the design's measuring tapes
 ```
 
 - **crossings** is the objective the placer minimises — fewer crossed wires =
@@ -120,7 +158,7 @@ get(kind='pcb', id='s', view='measures')    # evaluate the design's measuring ta
 ## Place it — `put(args={'autoplace':{…}})`
 
 ```python
-put(kind='pcb', id='s', args={'autoplace':{'iters':2000, 'seed':0}})
+put(kind="pcb", id="s", args={"autoplace": {"iters": 2000, "seed": 0}})
 ```
 
 Simulated-annealing placement that minimises `crossings + ratsnest-length +
@@ -135,12 +173,18 @@ Export is the only place the design leaves the graph. Artifacts land under
 `<PRECIS_CORPUS_DIR>/pcb/<slug>/` (override with `args={'dir':'…'}`).
 
 ```python
-get(kind='pcb', id='s', view='bom')        # JLCPCB BOM CSV (grouped designators)
-get(kind='pcb', id='s', view='cpl')        # JLCPCB pick-and-place CSV (rotation converted to CCW)
-get(kind='pcb', id='s', view='netlist')    # KiCad s-expr netlist
-get(kind='pcb', id='s', view='dsn')        # Specctra .dsn (the autorouter's input)
-get(kind='pcb', id='s', view='mechanical') # outline + mounting holes + height-blocks → a cad enclosure (ADR 0041)
-get(kind='pcb', id='s', view='route', args={'max_passes':3})  # Freerouting place↔route round-trip
+get(kind="pcb", id="s", view="bom")  # JLCPCB BOM CSV (grouped designators)
+get(
+    kind="pcb", id="s", view="cpl"
+)  # JLCPCB pick-and-place CSV (rotation converted to CCW)
+get(kind="pcb", id="s", view="netlist")  # KiCad s-expr netlist
+get(kind="pcb", id="s", view="dsn")  # Specctra .dsn (the autorouter's input)
+get(
+    kind="pcb", id="s", view="mechanical"
+)  # outline + mounting holes + height-blocks → a cad enclosure (ADR 0041)
+get(
+    kind="pcb", id="s", view="route", args={"max_passes": 3}
+)  # Freerouting place↔route round-trip
 ```
 
 `view='route'` runs the §9 hand-off: place → `.dsn` → Freerouting → on an
@@ -154,10 +198,19 @@ manual escape hatch). `bom`/`cpl` warn about unplaced or non-assemblable
 Add non-electrical geometry so the board can drive an enclosure:
 
 ```python
-put(kind='pcb', id='s', args={'features':[
-  {'ftype':'outline', 'geom':{'path':[[0,0],[30,0],[30,20],[0,20]]}},
-  {'ftype':'mounting_hole', 'x':2, 'y':2, 'geom':{'diameter':3.2}},
-]})
+put(
+    kind="pcb",
+    id="s",
+    args={
+        "features": [
+            {
+                "ftype": "outline",
+                "geom": {"path": [[0, 0], [30, 0], [30, 20], [0, 20]]},
+            },
+            {"ftype": "mounting_hole", "x": 2, "y": 2, "geom": {"diameter": 3.2}},
+        ]
+    },
+)
 ```
 
 `view='mechanical'` emits a JSON profile (outline + holes + component
@@ -166,8 +219,8 @@ height-blocks) a `cad` enclosure references (see [[precis-cad-help]]).
 ## Find a design — `search`
 
 ```python
-search(kind='pcb', q='I2C sensor node')              # by intent (hybrid)
-search(kind='pcb', q='esp32 board', mode='semantic')
+search(kind="pcb", q="I2C sensor node")  # by intent (hybrid)
+search(kind="pcb", q="esp32 board", mode="semantic")
 ```
 
 Each design carries one embeddable card (parts + net names), so search lands
@@ -176,7 +229,7 @@ on intent. `pcb` joins the cross-kind fan-out `search(kind='*', q='…')`.
 ## Delete
 
 ```python
-delete(kind='pcb', id='sensor-node')   # soft-retire the whole design (recoverable)
+delete(kind="pcb", id="sensor-node")  # soft-retire the whole design (recoverable)
 ```
 
 ## Canonical end-to-end (the v1 loop)

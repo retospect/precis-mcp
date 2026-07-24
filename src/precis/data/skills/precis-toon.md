@@ -78,6 +78,7 @@ Stdlib only:
 
 ```python
 import csv, io
+
 rows = list(csv.DictReader(io.StringIO(text), delimiter="\t"))
 # Header still carries the {…} markers — strip if needed:
 if rows:
@@ -89,7 +90,8 @@ Or the precis helper, which strips the brace markers for you:
 
 ```python
 from precis.format import toon
-rows = toon.load(text)   # list[dict[str, str]]
+
+rows = toon.load(text)  # list[dict[str, str]]
 ```
 
 Cells always come back as `str`. Type recovery is the caller's job.
@@ -108,7 +110,7 @@ records or nested structures; TOON is for homogeneous row lists.
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')        # verbs and kinds
-get(kind='skill', id='precis-search-help')     # search response shape
-get(kind='skill', id='precis-toc-help')        # TOC machinery + drill-in
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-search-help")  # search response shape
+get(kind="skill", id="precis-toc-help")  # TOC machinery + drill-in
 ```

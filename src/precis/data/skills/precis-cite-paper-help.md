@@ -62,8 +62,10 @@ scoped search and read the chunk to confirm support before you write it
 (the *reader* side — [[precis-check-source-help]]):
 
 ```python
-search(kind='paper', q='<claim or key phrase>', scope='<slug>')  # → returns pc<id> handles
-get(id='pc234')                                                   # read it; the chunk IS the evidence
+search(
+    kind="paper", q="<claim or key phrase>", scope="<slug>"
+)  # → returns pc<id> handles
+get(id="pc234")  # read it; the chunk IS the evidence
 ```
 
 The author never types `\cite{}` or `\citequote{}` — both are retired
@@ -85,9 +87,9 @@ the inline handles. When you do want a formatted reference string,
 address the paper by its `pa<id>` handle:
 
 ```python
-get(id='pa<id>', view='bibtex')    # \bibitem / BibTeX
-get(id='pa<id>', view='ris')        # RIS
-get(id='pa<id>', view='endnote')    # EndNote
+get(id="pa<id>", view="bibtex")  # \bibitem / BibTeX
+get(id="pa<id>", view="ris")  # RIS
+get(id="pa<id>", view="endnote")  # EndNote
 ```
 
 Copy the `pa<id>` handle from `search(kind='paper', q='…')` or
@@ -104,10 +106,10 @@ it lands.**
 open-access PDF for any stub carrying a resolvable id:
 
 ```python
-put(kind='paper', doi='10.1038/nature10352')         # best — resolvable id
-put(kind='paper', arxiv='2401.00001', title='…')     # or an arXiv id
-put(kind='paper', identifier='s2:<id>')              # or a Semantic Scholar id
-put(kind='paper', title='Some paper with no DOI yet') # title-only backlog stub
+put(kind="paper", doi="10.1038/nature10352")  # best — resolvable id
+put(kind="paper", arxiv="2401.00001", title="…")  # or an arXiv id
+put(kind="paper", identifier="s2:<id>")  # or a Semantic Scholar id
+put(kind="paper", title="Some paper with no DOI yet")  # title-only backlog stub
 ```
 
 This mints a **stub only** — it never writes a body (bodies are
@@ -153,10 +155,12 @@ finding, cite it inline as `[fi<id>]`, and let the worker walk the
 chain:
 
 ```python
-put(kind='finding',
-    title='gate-bias 2.4 kV / 30 s on Si/SiO2',
-    body='2.4 kV across the 50 nm gate oxide for 30 s, Cu top contact, N2.',
-    cited_in='miller23a~42')     # the chunk where YOU read it (corpus handle)
+put(
+    kind="finding",
+    title="gate-bias 2.4 kV / 30 s on Si/SiO2",
+    body="2.4 kV across the 50 nm gate oxide for 30 s, Cu top contact, N2.",
+    cited_in="miller23a~42",
+)  # the chunk where YOU read it (corpus handle)
 # → cite [fi<id>] inline; the chase swaps it for the primary [pc<id>] once resolved
 ```
 
@@ -184,12 +188,22 @@ stub the missing source, wait, then drop its `[pc<id>]` handle inline.
 ## See also
 
 ```python
-get(kind='skill', id='precis-citation-help')     # the inline [pc<id>] cite + optional verification record
-get(kind='skill', id='precis-check-source-help') # find the chunk, read its surrounds, judge support
-get(kind='skill', id='precis-finding-help')      # chase a claim to its primary source
-get(kind='skill', id='precis-stubs-help')        # request a paper we don't hold
-get(kind='skill', id='precis-auto-tasks-help')   # a todo that waits for the paper to appear
-get(kind='skill', id='precis-paper-help')        # find/read papers; pa<id>/pc<id> handles; bibtex/ris views
-get(kind='skill', id='precis-write-paper-help')  # claim-level citation density discipline
-get(kind='skill', id='precis-bibliography-help') # read side: who cites this paper
+get(
+    kind="skill", id="precis-citation-help"
+)  # the inline [pc<id>] cite + optional verification record
+get(
+    kind="skill", id="precis-check-source-help"
+)  # find the chunk, read its surrounds, judge support
+get(kind="skill", id="precis-finding-help")  # chase a claim to its primary source
+get(kind="skill", id="precis-stubs-help")  # request a paper we don't hold
+get(
+    kind="skill", id="precis-auto-tasks-help"
+)  # a todo that waits for the paper to appear
+get(
+    kind="skill", id="precis-paper-help"
+)  # find/read papers; pa<id>/pc<id> handles; bibtex/ris views
+get(
+    kind="skill", id="precis-write-paper-help"
+)  # claim-level citation density discipline
+get(kind="skill", id="precis-bibliography-help")  # read side: who cites this paper
 ```

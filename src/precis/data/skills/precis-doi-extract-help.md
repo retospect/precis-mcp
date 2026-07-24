@@ -19,15 +19,17 @@ for fetch.
 
 ```python
 # After a gather tick that produced perplexity-research notes:
-notes = get(kind='perplexity-research', id='<id>')
+notes = get(kind="perplexity-research", id="<id>")
 
 # You (the planner) read the notes and identify cited papers — DOIs,
 # arXiv IDs, paper titles with authors. For each one not yet in
 # corpus, call acquire so the fetch_oa worker enriches it:
-paper.acquire(identifier='10.1038/nature10352',
-              title='Graphene field-effect transistors',
-              reason='cited by perplexity-research:847 on CNT mobility',
-              context_ref_id=847)
+paper.acquire(
+    identifier="10.1038/nature10352",
+    title="Graphene field-effect transistors",
+    reason="cited by perplexity-research:847 on CNT mobility",
+    context_ref_id=847,
+)
 ```
 
 `acquire` accepts:
@@ -98,7 +100,9 @@ collapse into the existing ref.
 ## See also
 
 ```python
-get(kind='skill', id='precis-paper-help')       # corpus read / search side
-get(kind='skill', id='precis-citation-help')    # using fetched papers as cite sources
-get(kind='skill', id='precis-draft-help')       # cite a paper inline by its [pc<id>] chunk handle
+get(kind="skill", id="precis-paper-help")  # corpus read / search side
+get(kind="skill", id="precis-citation-help")  # using fetched papers as cite sources
+get(
+    kind="skill", id="precis-draft-help"
+)  # cite a paper inline by its [pc<id>] chunk handle
 ```

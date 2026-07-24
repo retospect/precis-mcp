@@ -39,7 +39,7 @@ lane rather than falsely claiming a baked identity it doesn't have.
 To see it:
 
 ```python
-get(kind='skill', id='precis-status')
+get(kind="skill", id="precis-status")
 ```
 
 That's it — no args, no setup. The rest of this skill is a search

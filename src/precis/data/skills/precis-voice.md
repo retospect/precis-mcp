@@ -210,7 +210,9 @@ profiles). For the **mechanism** — audio as a cross-cutting export layer, the
 pronunciation lexicon — see `precis-audio-help`.
 
 ```python
-get(kind='skill', id='precis-audio-help')  # the mechanism: narrate a draft, lexicon, feed
-get(kind='skill', id='precis-cloze')       # authoring recall cards (the active complement)
-get(kind='skill', id='precis-overview')    # kinds + skills index
+get(
+    kind="skill", id="precis-audio-help"
+)  # the mechanism: narrate a draft, lexicon, feed
+get(kind="skill", id="precis-cloze")  # authoring recall cards (the active complement)
+get(kind="skill", id="precis-overview")  # kinds + skills index
 ```

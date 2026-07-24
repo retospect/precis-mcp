@@ -139,7 +139,11 @@ cited once actually ingested — not described from memory.
 ## See also
 
 ```python
-get(kind='skill', id='precis-quest-help')       # verbs, lifecycle, logbook, dossier mechanics
-get(kind='skill', id='precis-cite-paper-help')  # citing a paper properly in the dossier
-get(kind='skill', id='precis-perplexity-help')  # research a technique before writing it up
+get(
+    kind="skill", id="precis-quest-help"
+)  # verbs, lifecycle, logbook, dossier mechanics
+get(kind="skill", id="precis-cite-paper-help")  # citing a paper properly in the dossier
+get(
+    kind="skill", id="precis-perplexity-help"
+)  # research a technique before writing it up
 ```

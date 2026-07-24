@@ -318,9 +318,9 @@ COMMIT;
 ## Handles (`utils/handle_registry.py`)
 
 ```python
-KIND_CODES        += { 'pcb': 'pb', 'part': 'pn', 'datasheet': 'da' }
-CHUNK_CODES       += { 'datasheet': 'dk' }
-_OTHER_TABLE_KINDS |= { 'part' }   # addressed by C-number, not a decimal handle
+KIND_CODES += {"pcb": "pb", "part": "pn", "datasheet": "da"}
+CHUNK_CODES += {"datasheet": "dk"}
+_OTHER_TABLE_KINDS |= {"part"}  # addressed by C-number, not a decimal handle
 ```
 - `pb` (pcb) / `da` (datasheet) refs-backed → full resolution. `pn` (part)
   reserved; addressed by **LCSC C-number**.

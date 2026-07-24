@@ -50,16 +50,22 @@ source?**
   `kind:lemma`.**
 
 ```python
-put(kind='memory',
-    text='pc893 (Nature, unretracted) claims the reaction proceeds via a '
-         'three-electron pathway.',
-    tags=['kind:lemma'],
-    link='pc893', rel='cites')
+put(
+    kind="memory",
+    text="pc893 (Nature, unretracted) claims the reaction proceeds via a "
+    "three-electron pathway.",
+    tags=["kind:lemma"],
+    link="pc893",
+    rel="cites",
+)
 
-put(kind='memory',
-    text='pc999 claims the same intermediate is observed under N2 ambient.',
-    tags=['kind:lemma'],
-    link='pc999', rel='cites')
+put(
+    kind="memory",
+    text="pc999 claims the same intermediate is observed under N2 ambient.",
+    tags=["kind:lemma"],
+    link="pc999",
+    rel="cites",
+)
 ```
 
 `rel='cites'` records *what this lemma rests on* — the "cited paper" the
@@ -77,26 +83,30 @@ the conclusion:
 
 ```python
 # 1. the inference node — rule + warrant go straight on put()
-infer = put(kind='memory',
-            text='From X (pc893) and Y (pc999), the shared intermediate '
-                 'implies a common three-electron mechanism.',
-            tags=['kind:inference'],
-            rule='and-intro',
-            warrant='both lemmas hold under the same ambient (N2), so the '
-                    'shared-intermediate claim composes cleanly')
+infer = put(
+    kind="memory",
+    text="From X (pc893) and Y (pc999), the shared intermediate "
+    "implies a common three-electron mechanism.",
+    tags=["kind:inference"],
+    rule="and-intro",
+    warrant="both lemmas hold under the same ambient (N2), so the "
+    "shared-intermediate claim composes cleanly",
+)
 # → memory id=501
 
 # 2. attach the premises (each lemma "derived-into" the inference)
-link(kind='memory', id=501, target='me<lemma-A-id>', rel='derived-from')
-link(kind='memory', id=501, target='me<lemma-B-id>', rel='derived-from')
+link(kind="memory", id=501, target="me<lemma-A-id>", rel="derived-from")
+link(kind="memory", id=501, target="me<lemma-B-id>", rel="derived-from")
 
 # 3. the conclusion — a fresh, reusable lemma
-concl = put(kind='memory',
-            text='The reaction proceeds via a common three-electron '
-                 'mechanism under N2 ambient.',
-            tags=['kind:lemma'])
+concl = put(
+    kind="memory",
+    text="The reaction proceeds via a common three-electron "
+    "mechanism under N2 ambient.",
+    tags=["kind:lemma"],
+)
 # → memory id=502
-link(kind='memory', id=501, target='me502', rel='entails')
+link(kind="memory", id=501, target="me502", rel="entails")
 ```
 
 Read it back as: *"L_A `derived-into` I, L_B `derived-into` I, I `entails`
@@ -124,7 +134,7 @@ defaults, so prefer one when it fits:
 ## Read the argument
 
 ```python
-get(kind='memory', id=501, view='argument')
+get(kind="memory", id=501, view="argument")
 ```
 
 Renders the proof tree begat-style (like `finding`'s claim → begat chain):
@@ -165,7 +175,7 @@ at the inference with `see-also` (a writer's-aide pointer, not a
 citation):
 
 ```python
-link(kind='draft', id='dc123', target='me501', rel='see-also')
+link(kind="draft", id="dc123", target="me501", rel="see-also")
 ```
 
 ## When NOT to use it
@@ -194,7 +204,7 @@ retraction-edge add *or* remove, so it always matches current
 reachability. Read it, don't set it:
 
 ```python
-search(kind='memory', tags=['STALE:retracted-premise'])
+search(kind="memory", tags=["STALE:retracted-premise"])
 ```
 
 For the corpus-wide sweep (every stale inference + every inference
@@ -212,11 +222,14 @@ A caveat is the *negative/limiting* complement to `finding.scope` — not
 **State a caveat.**
 
 ```python
-put(kind='memory',
-    text='The three-electron pathway was only validated for n < 100 '
-         'cycles — long-run behaviour is untested.',
-    tags=['kind:caveat'],
-    link='me<lemma-or-finding-id>', rel='qualifies')
+put(
+    kind="memory",
+    text="The three-electron pathway was only validated for n < 100 "
+    "cycles — long-run behaviour is untested.",
+    tags=["kind:caveat"],
+    link="me<lemma-or-finding-id>",
+    rel="qualifies",
+)
 ```
 
 **What propagates.** `view='argument'` surfaces every caveat a
@@ -230,9 +243,13 @@ forget it's there (ADR 0054 §7/§8).
 ## See also
 
 ```python
-get(kind='skill', id='precis-finding-help')      # grounded (single-source) lemma
-get(kind='skill', id='precis-citation-help')     # verified quote + verifier confidence
-get(kind='skill', id='precis-relations')         # entails/qualifies + the retracts/raises-concern-about pair
-get(kind='skill', id='precis-provenance-help')   # retraction/correction/concern checks
-get(kind='skill', id='precis-memory-help')       # kind:lemma/kind:inference sub-kinds, meta.rule/warrant
+get(kind="skill", id="precis-finding-help")  # grounded (single-source) lemma
+get(kind="skill", id="precis-citation-help")  # verified quote + verifier confidence
+get(
+    kind="skill", id="precis-relations"
+)  # entails/qualifies + the retracts/raises-concern-about pair
+get(kind="skill", id="precis-provenance-help")  # retraction/correction/concern checks
+get(
+    kind="skill", id="precis-memory-help"
+)  # kind:lemma/kind:inference sub-kinds, meta.rule/warrant
 ```

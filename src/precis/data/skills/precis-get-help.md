@@ -24,10 +24,10 @@ status: active
   `perplexity-research`, `perplexity-reasoning`, `websearch`.
 
 ```python
-get(id='pa5')                                            # read by handle (prefix infers kind)
-get(kind='paper', id='pa5', view='abstract')             # read + view
-get(kind='paper', id='wang2020state')                    # legacy slug, still resolves
-get(kind='math', q='population of Ireland')              # compute
+get(id="pa5")  # read by handle (prefix infers kind)
+get(kind="paper", id="pa5", view="abstract")  # read + view
+get(kind="paper", id="wang2020state")  # legacy slug, still resolves
+get(kind="math", q="population of Ireland")  # compute
 ```
 
 ## What knobs does get have?
@@ -47,13 +47,13 @@ get(kind='math', q='population of Ireland')              # compute
 ## How do I supply structured arguments?
 
 ```python
-get(kind='python', view='callgraph',
-    args={'entry': 'pkg.mod:func', 'depth': 3})
+get(kind="python", view="callgraph", args={"entry": "pkg.mod:func", "depth": 3})
 
-get(kind='python', view='runtrace',
-    args={'entry': 'pkg.mod:main',
-          'argv': ['--flag', 'value'],
-          'timeout': 10})
+get(
+    kind="python",
+    view="runtrace",
+    args={"entry": "pkg.mod:main", "argv": ["--flag", "value"], "timeout": 10},
+)
 ```
 
 Reserved keys (`kind`, `id`, `view`, `q`) inside `args=` raise
@@ -64,10 +64,10 @@ Reserved keys (`kind`, `id`, `view`, `q`) inside `args=` raise
 ## What if I don't have a slug yet?
 
 ```python
-get(kind='skill')      # every active skill — discovery starts here
-get(kind='paper')      # recent papers (one page)
-get(kind='patent')     # recent patents
-get(kind='memory')     # recent memories
+get(kind="skill")  # every active skill — discovery starts here
+get(kind="paper")  # recent papers (one page)
+get(kind="patent")  # recent patents
+get(kind="memory")  # recent memories
 ```
 
 Default pages return a slice of recent refs. On a large corpus this is
@@ -78,13 +78,13 @@ not "all of them" — use `search` for content-driven discovery.
 ## What's the `/<filter>` shape in id=?
 
 ```python
-get(kind='todo', id='/open')        # open + doing + blocked
-get(kind='todo', id='/doing')       # by literal STATUS
-get(kind='todo', id='/done')
-get(kind='gripe', id='/wontfix')    # STATUS:wontfix retrospect view
-get(kind='memory', id='/sticky')    # sticky:thread ∪ sticky:global
-search(kind='todo', view='roots')   # recurring schedules panel (cron/at, last tick)
-get(kind='<any>', id='/recent')     # universal — most-recent-N
+get(kind="todo", id="/open")  # open + doing + blocked
+get(kind="todo", id="/doing")  # by literal STATUS
+get(kind="todo", id="/done")
+get(kind="gripe", id="/wontfix")  # STATUS:wontfix retrospect view
+get(kind="memory", id="/sticky")  # sticky:thread ∪ sticky:global
+search(kind="todo", view="roots")  # recurring schedules panel (cron/at, last tick)
+get(kind="<any>", id="/recent")  # universal — most-recent-N
 ```
 
 `id='/<filter>'` is a kind-specific virtual selector. `recent` works
@@ -97,7 +97,7 @@ errors with the supported set as `options`).
 ## What if there are more refs than fit on one page?
 
 ```python
-search(kind='paper', q='perovskite', offset=20)   # next page of hits
+search(kind="paper", q="perovskite", offset=20)  # next page of hits
 ```
 
 `get(kind='paper')` does not paginate — only `search` does, via
@@ -108,11 +108,11 @@ search(kind='paper', q='perovskite', offset=20)   # next page of hits
 ## What does slug~N mean?
 
 ```python
-get(id='pc38')                            # one block by handle (prefix infers kind)
-get(kind='paper', id='<slug>~38')         # legacy single-block form, still resolves
-get(kind='paper', id='<slug>~38..42')     # block range (ranges keep the slug form)
-get(kind='paper', id='<slug>', view='toc')
-get(kind='paper', id='<slug>~38..42', view='toc')   # sub-TOC of a range
+get(id="pc38")  # one block by handle (prefix infers kind)
+get(kind="paper", id="<slug>~38")  # legacy single-block form, still resolves
+get(kind="paper", id="<slug>~38..42")  # block range (ranges keep the slug form)
+get(kind="paper", id="<slug>", view="toc")
+get(kind="paper", id="<slug>~38..42", view="toc")  # sub-TOC of a range
 ```
 
 A single chunk is addressed by its handle `pc<chunk_id>` (e.g. `pc38`) — what
@@ -125,16 +125,16 @@ Ranges stay `slug~A..B`. The grammar is shared across TOC-capable kinds — see
 ## What's the difference between id='slug/abstract' and view='abstract'?
 
 ```python
-get(kind='paper', id='wang2020state/abstract')
-get(kind='paper', id='wang2020state', view='abstract')   # equivalent
-get(kind='paper', id='wang2020state/cite/bib')           # nested view path
+get(kind="paper", id="wang2020state/abstract")
+get(kind="paper", id="wang2020state", view="abstract")  # equivalent
+get(kind="paper", id="wang2020state/cite/bib")  # nested view path
 ```
 
 Exception: bare-DOI ids don't take a view path (DOI suffixes contain
 `/`). Use the kwarg:
 
 ```python
-get(kind='paper', id='10.1038/nature10352', view='toc')
+get(kind="paper", id="10.1038/nature10352", view="toc")
 ```
 
 ## Address a paper by DOI instead of slug
@@ -142,8 +142,8 @@ get(kind='paper', id='10.1038/nature10352', view='toc')
 ## Skip the slug lookup when I already know the identifier
 
 ```python
-get(kind='paper', id='10.1038/nature10352')
-get(kind='paper', id='10.1038/nature10352', view='bibtex')
+get(kind="paper", id="10.1038/nature10352")
+get(kind="paper", id="10.1038/nature10352", view="bibtex")
 ```
 
 The DOI resolves to its slug transparently. If the DOI isn't ingested,
@@ -154,10 +154,10 @@ the call raises — register a finding via `precis-finding-help`.
 ## When do I pass q= instead of id=?
 
 ```python
-get(kind='calc', q='42 * 365')                # local arithmetic, free
-get(kind='math', q='speed of light in km/h')  # Wolfram, paid
-get(kind='web', q='https://example.com/page') # fetch + extract a URL
-get(kind='youtube', q='dQw4w9WgXcQ')          # transcript
+get(kind="calc", q="42 * 365")  # local arithmetic, free
+get(kind="math", q="speed of light in km/h")  # Wolfram, paid
+get(kind="web", q="https://example.com/page")  # fetch + extract a URL
+get(kind="youtube", q="dQw4w9WgXcQ")  # transcript
 ```
 
 Results cache durably per kind. See `precis-cache` for TTLs and the
@@ -167,7 +167,7 @@ cost trailer.
 ## Where do I read about kind X?
 
 ```python
-search(kind='skill', q='<kind>')
+search(kind="skill", q="<kind>")
 ```
 
 `paper` → `precis-paper-help` (views, DOI shortcuts, selectors).
@@ -179,10 +179,10 @@ grammar).
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')      # verbs and kinds
-get(kind='skill', id='precis-search-help')   # the discovery verb
-get(kind='skill', id='precis-edit-help')     # region edits
-get(kind='skill', id='precis-files-help')    # file-backed address grammar
-get(kind='skill', id='precis-cache')         # paid-tool caching, TTLs
-get(kind='skill', id='precis-finding-help')  # chasing un-ingested DOIs
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-search-help")  # the discovery verb
+get(kind="skill", id="precis-edit-help")  # region edits
+get(kind="skill", id="precis-files-help")  # file-backed address grammar
+get(kind="skill", id="precis-cache")  # paid-tool caching, TTLs
+get(kind="skill", id="precis-finding-help")  # chasing un-ingested DOIs
 ```

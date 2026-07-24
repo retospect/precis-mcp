@@ -23,7 +23,7 @@ still resolve on input.
 ## Drop a complaint about precis behaviour
 
 ```python
-put(kind='gripe', text='paper slug NotFound does not surface near-match options')
+put(kind="gripe", text="paper slug NotFound does not surface near-match options")
 # → created gripe id=42 (STATUS:open)
 ```
 
@@ -38,8 +38,8 @@ The cost of a wrong gripe is one `delete` call. File freely.
 ## Search the bug tracker
 
 ```python
-search(kind='gripe', q='near-match suggestions')
-search(kind='gripe', q='HNSW duplicates')
+search(kind="gripe", q="near-match suggestions")
+search(kind="gripe", q="HNSW duplicates")
 ```
 
 Search before you file. Duplicates are OK but the existing thread
@@ -50,25 +50,25 @@ every comment chunk are searchable.
 ## Show me the inbox of new gripes
 
 ```python
-search(kind='gripe', tags=['STATUS:open'])
+search(kind="gripe", tags=["STATUS:open"])
 ```
 
 ## Find gripes that are ready for a fix attempt
 
 ```python
-search(kind='gripe', tags=['STATUS:ready_for_fix'])
+search(kind="gripe", tags=["STATUS:ready_for_fix"])
 ```
 
 ## Find gripes that have a candidate fix in review
 
 ```python
-search(kind='gripe', tags=['STATUS:in_review'])
+search(kind="gripe", tags=["STATUS:in_review"])
 ```
 
 ## Find gripes marked won't-fix
 
 ```python
-search(kind='gripe', tags=['STATUS:wontfix'])
+search(kind="gripe", tags=["STATUS:wontfix"])
 ```
 
 ## Show me a specific gripe
@@ -76,7 +76,7 @@ search(kind='gripe', tags=['STATUS:wontfix'])
 ## What's the full thread on this bug?
 
 ```python
-get(kind='gripe', id=42)
+get(kind="gripe", id=42)
 # → header + body + comment timeline (human + worker) + STATUS
 #   tags + linked jobs
 ```
@@ -89,7 +89,7 @@ creation order, so the whole conversation is one read.
 ## Reply to a gripe thread
 
 ```python
-put(kind='gripe', id=42, text='only triggers when the slug has a hyphen')
+put(kind="gripe", id=42, text="only triggers when the slug has a hyphen")
 ```
 
 Putting to an *existing* gripe appends a `gripe_comment` chunk —
@@ -102,13 +102,17 @@ There is no separate `comment=` field.
 Comments are append-only. Don't try to edit; append a follow-up:
 
 ```python
-put(kind='gripe', id=42, text='retracting my earlier note — trigger is the hyphen, not the underscore')
+put(
+    kind="gripe",
+    id=42,
+    text="retracting my earlier note — trigger is the hyphen, not the underscore",
+)
 ```
 
 ## Triage a gripe — I've reviewed it and it's real
 
 ```python
-tag(kind='gripe', id=42, add=['STATUS:triaged'])
+tag(kind="gripe", id=42, add=["STATUS:triaged"])
 ```
 
 Use when the gripe is confirmed but not yet ready to act on
@@ -118,7 +122,7 @@ is closed-prefix and replaces atomically.
 ## Mark a gripe ready for someone to fix
 
 ```python
-tag(kind='gripe', id=42, add=['STATUS:ready_for_fix'])
+tag(kind="gripe", id=42, add=["STATUS:ready_for_fix"])
 ```
 
 The signal that flips it from "thinking about it" to "available
@@ -130,7 +134,7 @@ it auto-tags ready_for_fix; see below.
 ## Auto-fix this bug
 
 ```python
-put(kind='job', job_type='fix_gripe', link='gripe:42', rel='fixes')
+put(kind="job", job_type="fix_gripe", link="gripe:42", rel="fixes")
 # → created job id=101
 # gripe auto-tagged STATUS:ready_for_fix as a side effect.
 ```
@@ -145,15 +149,19 @@ See `precis-fix-gripe-help` for the full review / iterate loop.
 ## Show me which agent fixes are running for this gripe
 
 ```python
-search(kind='job', link='gripe:42')
+search(kind="job", link="gripe:42")
 ```
 
 ## Mark a gripe as won't-fix
 ## Decided not to fix this bug
 
 ```python
-tag(kind='gripe', id=42, add=['STATUS:wontfix'])
-put(kind='gripe', id=42, text='not fixing — root cause is upstream in marker; tracking there instead')
+tag(kind="gripe", id=42, add=["STATUS:wontfix"])
+put(
+    kind="gripe",
+    id=42,
+    text="not fixing — root cause is upstream in marker; tracking there instead",
+)
 ```
 
 Leave a final comment with the reason. `wontfix` is a kept final
@@ -167,14 +175,14 @@ Leave it at `STATUS:open` (or `STATUS:triaged`) and append a
 comment with the reason:
 
 ```python
-put(kind='gripe', id=42, text='parking until after the F20 freeze')
+put(kind="gripe", id=42, text="parking until after the F20 freeze")
 ```
 
 ## Retire a gripe that's been resolved
 ## Delete a gripe after the fix is merged
 
 ```python
-delete(kind='gripe', id=42)
+delete(kind="gripe", id=42)
 # soft-delete: history preserved, excluded from default search
 ```
 
@@ -184,8 +192,8 @@ relevant. Leaving a final comment first is good manners.
 ## Soft-delete a duplicate I filed by mistake
 
 ```python
-put(kind='gripe', id=42, text='duplicate of gripe:38')
-delete(kind='gripe', id=42)
+put(kind="gripe", id=42, text="duplicate of gripe:38")
+delete(kind="gripe", id=42)
 ```
 
 ## Who filed this gripe?
@@ -198,8 +206,8 @@ session label. No separate verb needed.
 ## Link a gripe to a related paper or chunk
 
 ```python
-link(kind='gripe', id=42, target='paper:abazari2024design', rel='related-to')
-link(kind='gripe', id=42, target='gripe:38', rel='supersedes')
+link(kind="gripe", id=42, target="paper:abazari2024design", rel="related-to")
+link(kind="gripe", id=42, target="gripe:38", rel="supersedes")
 ```
 
 The supersession/related graph shows up in the `Links:` section of
@@ -218,14 +226,26 @@ unit. Split it into focused children and record the relationship as a
 
 ```python
 # child carries the supersedes link from birth
-put(kind='gripe', text='embedder health signals lie — nothing can auto-heal a wedged embedder',
-    link='gripe:50906', rel='supersedes')
-put(kind='gripe', text='decouple spark embedder from the compute GPU',
-    link='gripe:50906', rel='supersedes')
+put(
+    kind="gripe",
+    text="embedder health signals lie — nothing can auto-heal a wedged embedder",
+    link="gripe:50906",
+    rel="supersedes",
+)
+put(
+    kind="gripe",
+    text="decouple spark embedder from the compute GPU",
+    link="gripe:50906",
+    rel="supersedes",
+)
 
 # then park (or wontfix / delete) the broad parent
-put(kind='gripe', id=50906, text='split into gr51394 (health signals) + gr51395 (GPU contention)')
-tag(kind='gripe', id=50906, add=['STATUS:wontfix'])   # kept on record, superseded
+put(
+    kind="gripe",
+    id=50906,
+    text="split into gr51394 (health signals) + gr51395 (GPU contention)",
+)
+tag(kind="gripe", id=50906, add=["STATUS:wontfix"])  # kept on record, superseded
 ```
 
 Use `rel='supersedes'` when the child *replaces* the parent's scope,
@@ -241,16 +261,19 @@ instance, tag the gripe with the repo name so `fix_gripe` knows
 which tree to clone:
 
 ```python
-put(kind='gripe', text='auth handler chokes on empty cookies',
-    tags=['repo:my-other-project'])
+put(
+    kind="gripe",
+    text="auth handler chokes on empty cookies",
+    tags=["repo:my-other-project"],
+)
 # or after the fact:
-tag(kind='gripe', id=42, add=['repo:my-other-project'])
+tag(kind="gripe", id=42, add=["repo:my-other-project"])
 ```
 
 Filter by repo when triaging:
 
 ```python
-search(kind='gripe', tags=['repo:my-other-project', 'STATUS:open'])
+search(kind="gripe", tags=["repo:my-other-project", "STATUS:open"])
 ```
 
 Gripes with no `repo:` tag fall back to the deployment's
@@ -308,8 +331,8 @@ citation audit emits findings and todos, not gripes.
 ## See also
 
 ```python
-get(kind='skill', id='precis-fix-gripe-help')   # the agent-fix recipe
-get(kind='skill', id='precis-job-help')         # monitor/cancel fix attempts
-get(kind='skill', id='precis-search-help')      # search across kinds
-get(kind='skill', id='precis-todo-help')        # promote a gripe to a todo
+get(kind="skill", id="precis-fix-gripe-help")  # the agent-fix recipe
+get(kind="skill", id="precis-job-help")  # monitor/cancel fix attempts
+get(kind="skill", id="precis-search-help")  # search across kinds
+get(kind="skill", id="precis-todo-help")  # promote a gripe to a todo
 ```

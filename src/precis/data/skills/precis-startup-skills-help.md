@@ -80,8 +80,8 @@ Zero banner bytes are paid when the config is valid.
 ## Pick the right slugs to pin
 
 ```python
-get(kind='skill', id='toc')                     # browse every skill, one-line synopsis
-search(kind='skill', q='patent search prior art')   # fuzzy lookup for a workflow
+get(kind="skill", id="toc")  # browse every skill, one-line synopsis
+search(kind="skill", q="patent search prior art")  # fuzzy lookup for a workflow
 ```
 
 Pin the skills agents in this deployment will hit first and most
@@ -91,7 +91,9 @@ helpers central to the workspace.
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')         # verbs and kinds
-get(kind='skill', id='precis-search-help')      # default cold-start action
-get(kind='skill', id='precis-kinds-disabled-help')   # PRECIS_KINDS_DISABLED sibling env var
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-search-help")  # default cold-start action
+get(
+    kind="skill", id="precis-kinds-disabled-help"
+)  # PRECIS_KINDS_DISABLED sibling env var
 ```

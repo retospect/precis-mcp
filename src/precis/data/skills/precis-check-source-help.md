@@ -27,8 +27,8 @@ survives review.
 Scope the search to the one paper and query the claim:
 
 ```python
-search(kind='paper', q='Faradaic efficiency CO2 reduction', scope='<slug>')
-search(kind='paper', q='<claim or key phrase>', scope='<slug>', page=2)
+search(kind="paper", q="Faradaic efficiency CO2 reduction", scope="<slug>")
+search(kind="paper", q="<claim or key phrase>", scope="<slug>", page=2)
 ```
 
 Hybrid lexical + semantic, restricted to that paper's blocks. Each hit
@@ -47,18 +47,18 @@ selector** `~A..B` — *not* `view='chunks'`, *not* `args={'chunk_range':…}`
 (those don't exist):
 
 ```python
-get(id='pc7')                              # the hit itself, one block
-get(kind='paper', id='<slug>~5..9')        # blocks 5–9: the hit + its surrounds
-get(kind='paper', id='<slug>~38')          # a single block by position
+get(id="pc7")  # the hit itself, one block
+get(kind="paper", id="<slug>~5..9")  # blocks 5–9: the hit + its surrounds
+get(kind="paper", id="<slug>~38")  # a single block by position
 ```
 
 If the search returned `pc7` and you don't know its position, open the
 paper's TOC to place it, then drill the range:
 
 ```python
-get(kind='paper', id='<slug>', view='toc')   # the reading map
-get(kind='paper', id='<slug>~63..89')        # drill a TOC range
-get(kind='paper', id='<slug>~63..89', view='toc')  # sub-TOC of a range
+get(kind="paper", id="<slug>", view="toc")  # the reading map
+get(kind="paper", id="<slug>~63..89")  # drill a TOC range
+get(kind="paper", id="<slug>~63..89", view="toc")  # sub-TOC of a range
 ```
 
 Read a few blocks on each side. You're checking for a leading
@@ -124,10 +124,12 @@ pass is [[precis-review-citation-faithfulness]].
 ## See also
 
 ```python
-get(kind='skill', id='precis-citation-help')             # write side: the inline [pc<id>] cite + optional record
-get(kind='skill', id='precis-cite-paper-help')           # the cite-a-paper router
-get(kind='skill', id='precis-paper-help')                # ~A..B grammar, TOC, scoped search
-get(kind='skill', id='precis-finding-help')              # chase a claim to its primary source
-get(kind='skill', id='precis-review-citation-faithfulness') # batch faithfulness review
-get(kind='skill', id='precis-search-help')               # search mechanics, excerpt vs chunk
+get(
+    kind="skill", id="precis-citation-help"
+)  # write side: the inline [pc<id>] cite + optional record
+get(kind="skill", id="precis-cite-paper-help")  # the cite-a-paper router
+get(kind="skill", id="precis-paper-help")  # ~A..B grammar, TOC, scoped search
+get(kind="skill", id="precis-finding-help")  # chase a claim to its primary source
+get(kind="skill", id="precis-review-citation-faithfulness")  # batch faithfulness review
+get(kind="skill", id="precis-search-help")  # search mechanics, excerpt vs chunk
 ```

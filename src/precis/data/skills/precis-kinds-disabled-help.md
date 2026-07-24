@@ -57,8 +57,8 @@ absent they report `store required` in the boot banner.
 ## What's wired right now?
 
 ```python
-get(kind='skill', id='precis-help')        # live kinds + verbs in this build
-get(kind='skill', id='precis-overview')    # full kind topology + Needs column
+get(kind="skill", id="precis-help")  # live kinds + verbs in this build
+get(kind="skill", id="precis-overview")  # full kind topology + Needs column
 ```
 
 The cold-start banner already names every absent kind:
@@ -92,7 +92,7 @@ enable the kind or remove the skill from `PRECIS_STARTUP_SKILLS`.
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')              # Needs column maps kinds to env vars
-get(kind='skill', id='precis-startup-skills-help')   # sibling env var for pinned skills
-get(kind='skill', id='precis-preflight')             # health probe before calling unfamiliar kinds
+get(kind="skill", id="precis-overview")  # Needs column maps kinds to env vars
+get(kind="skill", id="precis-startup-skills-help")  # sibling env var for pinned skills
+get(kind="skill", id="precis-preflight")  # health probe before calling unfamiliar kinds
 ```

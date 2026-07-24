@@ -30,10 +30,12 @@ recurring lands under it by default — leave `parent_id` off your
 `put` and the handler wires `parent_id=<watches-root>` for you.
 
 ```python
-put(kind='todo',
-    text='Check arxiv weekly',
-    tags=['level:recurring'],
-    meta={'schedule': {'cron': '0 9 * * 1'}})
+put(
+    kind="todo",
+    text="Check arxiv weekly",
+    tags=["level:recurring"],
+    meta={"schedule": {"cron": "0 9 * * 1"}},
+)
 # → parent_id = the Watches root
 ```
 
@@ -44,12 +46,13 @@ remove it — orphaning every recurring is a real footgun.
 Recurring work that serves a goal can nest under a strategic:
 
 ```python
-put(kind='todo',
-    text='Birthday reminders',
-    parent_id=56,            # under "Personal life"
-    tags=['level:recurring'],
-    meta={'schedule': {'every': 'mon 09:00',
-                       'backfill_missed': True}})
+put(
+    kind="todo",
+    text="Birthday reminders",
+    parent_id=56,  # under "Personal life"
+    tags=["level:recurring"],
+    meta={"schedule": {"every": "mon 09:00", "backfill_missed": True}},
+)
 ```
 
 ## Schedule format
@@ -72,12 +75,12 @@ Three shapes:
 
 ```python
 # These three are equivalent (recurring):
-meta={'schedule': {'every': '1h'}}
-meta={'schedule': {'every': '60m'}}            # invalid — m capped at 59
-meta={'schedule': {'cron':  '0 * * * *'}}      # canonical form
+meta = {"schedule": {"every": "1h"}}
+meta = {"schedule": {"every": "60m"}}  # invalid — m capped at 59
+meta = {"schedule": {"cron": "0 * * * *"}}  # canonical form
 
 # One-shot ("remind me at/in N"):
-meta={'schedule': {'at': '2026-06-12T09:00:00Z'}}
+meta = {"schedule": {"at": "2026-06-12T09:00:00Z"}}
 ```
 
 A bad cron string (or a malformed `at=`) raises `BadInput` at `put`
@@ -107,16 +110,26 @@ delivery-mode tick; the tick's action *is* the delivery.
 
 ```python
 # Recurring reminder, pushed rather than queued:
-put(kind='todo', text='check the api monitor',
-    tags=['level:recurring'],
-    meta={'schedule': {'every': '15m'},
-          'deliver': {'target': 'conv:discord/<g>/<c>/<t>'}})
+put(
+    kind="todo",
+    text="check the api monitor",
+    tags=["level:recurring"],
+    meta={
+        "schedule": {"every": "15m"},
+        "deliver": {"target": "conv:discord/<g>/<c>/<t>"},
+    },
+)
 
 # One-shot reminder ("in 10 minutes"):
-put(kind='todo', text='ask about the PR status',
-    tags=['level:recurring'],
-    meta={'schedule': {'at': '2026-06-12T09:10:00Z'},
-          'deliver': {'target': 'conv:discord/<g>/<c>/<t>'}})
+put(
+    kind="todo",
+    text="ask about the PR status",
+    tags=["level:recurring"],
+    meta={
+        "schedule": {"at": "2026-06-12T09:10:00Z"},
+        "deliver": {"target": "conv:discord/<g>/<c>/<t>"},
+    },
+)
 ```
 
 Omit `meta.deliver` for the original Slice-4 behaviour (spawn a

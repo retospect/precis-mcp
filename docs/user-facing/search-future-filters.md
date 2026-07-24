@@ -111,8 +111,8 @@ That makes "show me the prior art for ep1234567b1" expressible
 as a `links`-table walk:
 
 ```python
-get(kind='patent', id='ep1234567b1', view='cites')      # what this cites
-get(kind='patent', id='ep1234567b1', view='cited-by')   # what cites this
+get(kind="patent", id="ep1234567b1", view="cites")  # what this cites
+get(kind="patent", id="ep1234567b1", view="cited-by")  # what cites this
 ```
 
 Defer to v2; it's a separate ingest pass and a real graph problem.
@@ -162,9 +162,9 @@ ask for an opinion-knob:
 **Proposal**: a single optional kwarg
 
 ```python
-search(kind='patent', q='...', source='local')   # skip OPS leg
-search(kind='patent', q='...', source='remote')  # skip local leg
-search(kind='patent', q='...', source='both')    # explicit default
+search(kind="patent", q="...", source="local")  # skip OPS leg
+search(kind="patent", q="...", source="remote")  # skip local leg
+search(kind="patent", q="...", source="both")  # explicit default
 ```
 
 One branch in `PatentHandler.search` (skip the corresponding leg

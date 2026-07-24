@@ -31,11 +31,13 @@ q='<topic>')` first, then use the integer id from the hit.
 ## Jot something down before I forget
 
 ```python
-put(kind='memory',
-    text='Wang2020 chunk 38 has the cleanest Z-scheme diagram.',
-    title='Wang2020 has the cleanest Z-scheme diagram',   # short header
-    tags=['topic:noxrr'],
-    link='pc38')                       # chunk handle (legacy paper:wang2020state~38 still resolves)
+put(
+    kind="memory",
+    text="Wang2020 chunk 38 has the cleanest Z-scheme diagram.",
+    title="Wang2020 has the cleanest Z-scheme diagram",  # short header
+    tags=["topic:noxrr"],
+    link="pc38",
+)  # chunk handle (legacy paper:wang2020state~38 still resolves)
 # → returns integer id (e.g. 73)
 ```
 
@@ -56,9 +58,11 @@ old body kept in `view='log'`.
 ## Pin a decision so I can find it later
 
 ```python
-put(kind='memory',
-    text='Dropped mode-driven tag/link in favour of typed kwargs.',
-    tags=['confidence-strong', 'project:precis-v2', 'topic:api-design'])
+put(
+    kind="memory",
+    text="Dropped mode-driven tag/link in favour of typed kwargs.",
+    tags=["confidence-strong", "project:precis-v2", "topic:api-design"],
+)
 ```
 
 Decisions are conventionally tagged with `confidence-*` and the
@@ -69,9 +73,11 @@ relevant `project:`. Add `pinned` to suppress any future archival.
 ## Note something I'm unsure about
 
 ```python
-put(kind='memory',
-    text='Does CACHE: pinning play well with re-ingest?',
-    tags=['confidence-tentative', 'topic:caching', 'wip'])
+put(
+    kind="memory",
+    text="Does CACHE: pinning play well with re-ingest?",
+    tags=["confidence-tentative", "topic:caching", "wip"],
+)
 ```
 
 `confidence-tentative` + `wip` is the convention for unresolved
@@ -82,9 +88,9 @@ questions. Drop `wip` and bump confidence when you settle it.
 ## Look up what I decided about X
 
 ```python
-search(kind='memory', q='kwargs vs modes')
-search(kind='memory', q='kwargs vs modes', tags=['topic:api-design'])
-search(kind='memory', tags=['project:precis-v2', 'confidence-strong'])
+search(kind="memory", q="kwargs vs modes")
+search(kind="memory", q="kwargs vs modes", tags=["topic:api-design"])
+search(kind="memory", tags=["project:precis-v2", "confidence-strong"])
 ```
 
 `q=` is hybrid lexical + semantic over memory text. `tags=` narrows
@@ -95,9 +101,9 @@ tag slice.
 ## Open a memory by id
 
 ```python
-get(id='me73')                       # handle — prefix infers kind=
-get(kind='memory', id=73)
-get(kind='memory', id='memory:73')   # link-target form also works
+get(id="me73")  # handle — prefix infers kind=
+get(kind="memory", id=73)
+get(kind="memory", id="memory:73")  # link-target form also works
 ```
 
 ## Link a memory to the paper or patent it came from
@@ -108,20 +114,25 @@ Set the link at creation time when the memory exists *because of*
 another ref:
 
 ```python
-put(kind='memory',
-    text='Three-electron pathway — see §2.',
-    tags=['topic:noxrr'],
-    link='pc38', rel='cites')          # chunk handle (legacy paper:wang2020state~38 still resolves)
+put(
+    kind="memory",
+    text="Three-electron pathway — see §2.",
+    tags=["topic:noxrr"],
+    link="pc38",
+    rel="cites",
+)  # chunk handle (legacy paper:wang2020state~38 still resolves)
 ```
 
 After the fact, use `link()`:
 
 ```python
-link(kind='memory', id=73,
-     target='pa<id>', rel='related-to')    # ref handle (legacy paper:wang2020state still resolves)
+link(
+    kind="memory", id=73, target="pa<id>", rel="related-to"
+)  # ref handle (legacy paper:wang2020state still resolves)
 
-link(kind='memory', id=73,
-     target='pa<id>', rel='contradicts')   # the chen2021critique handle
+link(
+    kind="memory", id=73, target="pa<id>", rel="contradicts"
+)  # the chen2021critique handle
 ```
 
 Targets lead with the ref/chunk **handle** (`pa<id>`, `pc38`); the
@@ -139,9 +150,11 @@ side too — not just by its own text. A handle is a ref to *something*, so
 one rule covers every kind:
 
 ```python
-put(kind='memory',
+put(
+    kind="memory",
     text="[pa812] free-energy bound mirrors [pt913] clamp circuit.",
-    tags=['topic:thermo'])
+    tags=["topic:thermo"],
+)
 # → related-to links to pa812 and pt913, materialised from the text
 ```
 
@@ -161,12 +174,15 @@ the handle form.
 durable distillation is a memory linked back to the cache:
 
 ```python
-get(kind='perplexity-research', q='mechanism of NOxRR')   # populates cache
+get(kind="perplexity-research", q="mechanism of NOxRR")  # populates cache
 
-put(kind='memory',
-    text='Distilled mechanism: three-electron pathway via *NO → *N₂O₂ → N₂.',
-    tags=['topic:noxrr', 'confidence-moderate'],
-    link='perplexity-research:mechanism-of-noxrr', rel='derived-from')
+put(
+    kind="memory",
+    text="Distilled mechanism: three-electron pathway via *NO → *N₂O₂ → N₂.",
+    tags=["topic:noxrr", "confidence-moderate"],
+    link="perplexity-research:mechanism-of-noxrr",
+    rel="derived-from",
+)
 ```
 
 The memory survives the cache's TTL and carries your own framing.
@@ -179,9 +195,7 @@ The memory survives the cache's TTL and carries your own framing.
 than replace, so untag the old value and add the new in one call:
 
 ```python
-tag(kind='memory', id=73,
-    add=['confidence-certain'],
-    remove=['confidence-moderate'])
+tag(kind="memory", id=73, add=["confidence-certain"], remove=["confidence-moderate"])
 ```
 
 Levels: `confidence-tentative` → `confidence-moderate` →
@@ -194,20 +208,20 @@ turn until they don't. Tag them sticky:
 
 ```python
 # Pin to this thread for 30 days (the default TTL)
-tag(kind='memory', id=42, add=['sticky:thread'])
+tag(kind="memory", id=42, add=["sticky:thread"])
 
 # Pin globally — visible in every conv — for 90 days (default)
-tag(kind='memory', id=42, add=['sticky:global'])
+tag(kind="memory", id=42, add=["sticky:global"])
 
 # Pin for a specific TTL — re-tag bumps it back to that window
-tag(kind='memory', id=42, add=['sticky:thread'], ttl_days=7)
-tag(kind='memory', id=42, add=['sticky:global'], ttl_days=180)
+tag(kind="memory", id=42, add=["sticky:thread"], ttl_days=7)
+tag(kind="memory", id=42, add=["sticky:global"], ttl_days=180)
 
 # Refresh — re-tagging resets the expiry to a fresh window
-tag(kind='memory', id=42, add=['sticky:thread'])    # TTL → 30d again
+tag(kind="memory", id=42, add=["sticky:thread"])  # TTL → 30d again
 
 # Actively unpin (before expiry)
-tag(kind='memory', id=42, remove=['sticky:thread'])
+tag(kind="memory", id=42, remove=["sticky:thread"])
 ```
 
 **Memory survives forever.** The sticky tag is a view-state — when
@@ -231,10 +245,15 @@ step that combines premises into a conclusion. An inference carries
 (free-text "why this step holds") — accepted on `put()` and `edit()`:
 
 ```python
-put(kind='memory', text='...', tags=['kind:inference'],
-    rule='and-intro', warrant='both premises hold under the same ambient')
+put(
+    kind="memory",
+    text="...",
+    tags=["kind:inference"],
+    rule="and-intro",
+    warrant="both premises hold under the same ambient",
+)
 
-edit(kind='memory', id=501, warrant='refined: …')   # no text= required
+edit(kind="memory", id=501, warrant="refined: …")  # no text= required
 ```
 
 Read the proof tree with `get(kind='memory', id=<inference-or-lemma-id>,
@@ -272,12 +291,16 @@ See `precis-tags` for the full axis vocabulary and per-kind matrix.
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')       # verbs and kinds
-get(kind='skill', id='precis-tags')           # open-tag axes, bare flags
-get(kind='skill', id='precis-relations')      # rel= vocabulary
-get(kind='skill', id='precis-link-help')      # link verb mechanics
-get(kind='skill', id='precis-cache')          # perplexity-research/perplexity-reasoning/web TTLs
-get(kind='skill', id='precis-search-help')    # hybrid search mechanics
-get(kind='skill', id='precis-put-help')       # put-verb arg shapes
-get(kind='skill', id='precis-argument-help')  # kind:lemma/kind:inference workflow, view='argument'
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-tags")  # open-tag axes, bare flags
+get(kind="skill", id="precis-relations")  # rel= vocabulary
+get(kind="skill", id="precis-link-help")  # link verb mechanics
+get(
+    kind="skill", id="precis-cache"
+)  # perplexity-research/perplexity-reasoning/web TTLs
+get(kind="skill", id="precis-search-help")  # hybrid search mechanics
+get(kind="skill", id="precis-put-help")  # put-verb arg shapes
+get(
+    kind="skill", id="precis-argument-help"
+)  # kind:lemma/kind:inference workflow, view='argument'
 ```

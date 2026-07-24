@@ -19,13 +19,17 @@ The mechanism is one JSON dict on the existing
 `refs.meta` column — no schema work needed.
 
 ```python
-put(kind='todo',
-    text='[auto] wait for paper 10.x/y1 ingested+indexed',
+put(
+    kind="todo",
+    text="[auto] wait for paper 10.x/y1 ingested+indexed",
     parent_id=98,
-    meta={'auto_check': {
-        'type': 'paper_ingested',
-        'doi': '10.x/y1',
-    }})
+    meta={
+        "auto_check": {
+            "type": "paper_ingested",
+            "doi": "10.x/y1",
+        }
+    },
+)
 ```
 
 The handler validates the `type` against the registered evaluators
@@ -54,20 +58,24 @@ A discovery worker finds three DOIs, queues each for ingest, then
 parks consumer work behind them:
 
 ```python
-for doi in ['10.x/y1', '10.x/y2', '10.x/y3']:
-    put(kind='paper', ref={'doi': doi})            # queue ingest
-    wait = put(kind='todo',
-               parent_id=98,
-               text=f'[auto] wait for paper {doi} ingested+indexed',
-               meta={'auto_check': {
-                   'type': 'paper_ingested',
-                   'doi': doi,
-                   # Surface stalled fetches after a week.
-                   'timeout_at': '2026-06-20T00:00:00+00:00',
-               }})
-    link(kind='todo', id=108, target=f'todo:{wait.id}', rel='blocked-by')
+for doi in ["10.x/y1", "10.x/y2", "10.x/y3"]:
+    put(kind="paper", ref={"doi": doi})  # queue ingest
+    wait = put(
+        kind="todo",
+        parent_id=98,
+        text=f"[auto] wait for paper {doi} ingested+indexed",
+        meta={
+            "auto_check": {
+                "type": "paper_ingested",
+                "doi": doi,
+                # Surface stalled fetches after a week.
+                "timeout_at": "2026-06-20T00:00:00+00:00",
+            }
+        },
+    )
+    link(kind="todo", id=108, target=f"todo:{wait.id}", rel="blocked-by")
 
-tag(kind='todo', id=103, add=['STATUS:done'])     # discovery is done
+tag(kind="todo", id=103, add=["STATUS:done"])  # discovery is done
 ```
 
 The consumer leaf (`td108`) drops out of `view='doable'` until every
@@ -76,22 +84,27 @@ linked `wait` resolves.
 ## Pattern 2 — ask the owner on Discord
 
 ```python
-msg = put(kind='message',
-          text='Owner: should §3 cite Tanaka 2024, or skip?',
-          target='discord/<guild>/<channel>/<thread>')
+msg = put(
+    kind="message",
+    text="Owner: should §3 cite Tanaka 2024, or skip?",
+    target="discord/<guild>/<channel>/<thread>",
+)
 
-ask = put(kind='todo',
-          parent_id=98,
-          text='Decide: cite Tanaka 2024 in §3 — asked the owner',
-          tags=['ask-user'],
-          meta={'auto_check': {
-              'type': 'discord_reply_received',
-              'ask_message_id': str(msg.id),
-              'thread': 'discord/<guild>/<channel>/<thread>',
-          }})
+ask = put(
+    kind="todo",
+    parent_id=98,
+    text="Decide: cite Tanaka 2024 in §3 — asked the owner",
+    tags=["ask-user"],
+    meta={
+        "auto_check": {
+            "type": "discord_reply_received",
+            "ask_message_id": str(msg.id),
+            "thread": "discord/<guild>/<channel>/<thread>",
+        }
+    },
+)
 
-link(kind='todo', id=consumer_leaf, target=f'todo:{ask.id}',
-     rel='blocked-by')
+link(kind="todo", id=consumer_leaf, target=f"todo:{ask.id}", rel="blocked-by")
 ```
 
 The chatter side detects the owner's in-thread reply and stamps a
@@ -103,12 +116,16 @@ ask on the next tick.
 A leaf that should reappear next week:
 
 ```python
-put(kind='todo',
-    text='Revisit the API rate-limit decision',
-    meta={'auto_check': {
-        'type': 'time_past',
-        'at': '2026-06-20T09:00:00+00:00',
-    }})
+put(
+    kind="todo",
+    text="Revisit the API rate-limit decision",
+    meta={
+        "auto_check": {
+            "type": "time_past",
+            "at": "2026-06-20T09:00:00+00:00",
+        }
+    },
+)
 ```
 
 The leaf carries `STATUS:open` until the timestamp passes — and
@@ -124,22 +141,27 @@ write a todo with `meta.executor` set and no `meta.auto_check`,
 the dispatch worker auto-injects this:
 
 ```python
-put(kind='todo',
-    text='Fix gripe:42',
+put(
+    kind="todo",
+    text="Fix gripe:42",
     parent_id=engineering_hygiene_strategic,
-    meta={'executor': 'claude_inproc',
-          'job_type':  'fix_gripe',
-          # auto_check auto-injected by dispatch worker:
-          # 'auto_check': {'type': 'child_job_succeeded'}
-          })
+    meta={
+        "executor": "claude_inproc",
+        "job_type": "fix_gripe",
+        # auto_check auto-injected by dispatch worker:
+        # 'auto_check': {'type': 'child_job_succeeded'}
+    },
+)
 ```
 
 You can write it explicitly to make the wait visible:
 
 ```python
-meta={'auto_check': {'type': 'child_job_succeeded'},
-      'executor': 'claude_inproc',
-      'job_type':  'fix_gripe'}
+meta = {
+    "auto_check": {"type": "child_job_succeeded"},
+    "executor": "claude_inproc",
+    "job_type": "fix_gripe",
+}
 ```
 
 When the dispatched job hits `STATUS:succeeded`, the parent flips
@@ -162,7 +184,7 @@ in the default rotation. Polling cadence matches the worker's
 ## See also
 
 ```python
-get(kind='skill', id='precis-tasks-help')         # the tree itself
-get(kind='skill', id='precis-tags')               # STATUS / PRIO / open tag rules
-get(kind='skill', id='precis-relations')          # blocked-by + note-for links
+get(kind="skill", id="precis-tasks-help")  # the tree itself
+get(kind="skill", id="precis-tags")  # STATUS / PRIO / open tag rules
+get(kind="skill", id="precis-relations")  # blocked-by + note-for links
 ```

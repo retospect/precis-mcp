@@ -46,12 +46,18 @@ placement *without* those adds to an existing plan.
 
 ```python
 # Minimal create — title + owning project todo.
-put(kind='plan', id='nanotrans-plan', title='Nanotrans build', project=412)
+put(kind="plan", id="nanotrans-plan", title="Nanotrans build", project=412)
 #   → created plan 'nanotrans-plan' (root pe88); linked plan-of project 412
 
 # Create AND seed the first node in one call (text= becomes node 1).
-put(kind='plan', id='nanotrans-plan', title='Nanotrans build', project=412,
-    text='survey the prior art', status='open')
+put(
+    kind="plan",
+    id="nanotrans-plan",
+    title="Nanotrans build",
+    project=412,
+    text="survey the prior art",
+    status="open",
+)
 #   → created plan 'nanotrans-plan' (root pe88); added node pe89
 ```
 
@@ -59,8 +65,13 @@ put(kind='plan', id='nanotrans-plan', title='Nanotrans build', project=412,
 it, default `last`):
 
 ```python
-put(kind='plan', id='nanotrans-plan', text='draft the intro',
-    at={'last': True}, status='open')
+put(
+    kind="plan",
+    id="nanotrans-plan",
+    text="draft the intro",
+    at={"last": True},
+    status="open",
+)
 #   → added 1 node to nanotrans-plan: pe90
 ```
 
@@ -73,7 +84,7 @@ exist yet* no longer misfires — you get an actionable error, not a
 misleading "slug not found":
 
 ```python
-put(kind='plan', id='ghost', text='a node', at={'last': True})
+put(kind="plan", id="ghost", text="a node", at={"last": True})
 #   → BadInput: plan 'ghost' doesn't exist yet — create it before adding
 #     nodes (a create needs project=, the owning project todo id)
 ```
@@ -83,10 +94,10 @@ So: **create with `project=` first, then add nodes.**
 ## get — list, render the tree, read one node
 
 ```python
-get(kind='plan')                       # list every plan
-get(kind='plan', id='nanotrans-plan')  # render the WHOLE marked outline
-get(kind='plan', id='pe89')            # one node verbatim + a small window
-get(kind='plan', id='pe89-2..3')       # relative window around pe89
+get(kind="plan")  # list every plan
+get(kind="plan", id="nanotrans-plan")  # render the WHOLE marked outline
+get(kind="plan", id="pe89")  # one node verbatim + a small window
+get(kind="plan", id="pe89-2..3")  # relative window around pe89
 ```
 
 The whole-tree render is one line per node —
@@ -100,13 +111,13 @@ other `view=` errors.)
 ## edit — text, move, markers, cursor
 
 ```python
-edit(kind='plan', id='pe90', text='draft the intro (2 paras)')  # rewrite a node
-edit(kind='plan', id='pe90', move={'after': 'pe91'})            # reorder / reparent
-edit(kind='plan', id='pe90', status='wip')                      # set the todo state
-edit(kind='plan', id='pe90', belief='⚠')                        # flag caution (or '?')
-edit(kind='plan', id='pe90', status='')                         # '' clears the marker
-edit(kind='plan', id='nanotrans-plan', cursor='pe90')           # set the ▸ you-are-here
-edit(kind='plan', id='nanotrans-plan', cursor='')               # clear it
+edit(kind="plan", id="pe90", text="draft the intro (2 paras)")  # rewrite a node
+edit(kind="plan", id="pe90", move={"after": "pe91"})  # reorder / reparent
+edit(kind="plan", id="pe90", status="wip")  # set the todo state
+edit(kind="plan", id="pe90", belief="⚠")  # flag caution (or '?')
+edit(kind="plan", id="pe90", status="")  # '' clears the marker
+edit(kind="plan", id="nanotrans-plan", cursor="pe90")  # set the ▸ you-are-here
+edit(kind="plan", id="nanotrans-plan", cursor="")  # clear it
 ```
 
 - `status` ∈ `open | wip | done`; `belief` ∈ `? | ⚠`. On `edit` an empty
@@ -121,9 +132,9 @@ edit(kind='plan', id='nanotrans-plan', cursor='')               # clear it
 ## delete — soft-retire a node
 
 ```python
-delete(kind='plan', id='pe90')                   # defaults per the store
-delete(kind='plan', id='pe90', mode='cascade')   # retire the whole subtree
-delete(kind='plan', id='pe90', mode='promote')   # retire the node, splice children up
+delete(kind="plan", id="pe90")  # defaults per the store
+delete(kind="plan", id="pe90", mode="cascade")  # retire the whole subtree
+delete(kind="plan", id="pe90", mode="promote")  # retire the node, splice children up
 ```
 
 Deletes target a **node** (`pe<id>`), never the plan slug, and are
@@ -134,7 +145,7 @@ children into its slot.
 ## link — folder placement only
 
 ```python
-link(kind='plan', id='nanotrans-plan', target='folder:7', rel='parent')
+link(kind="plan", id="nanotrans-plan", target="folder:7", rel="parent")
 ```
 
 The only accepted relation is `rel='parent'` (a folder placement, ADR
@@ -145,16 +156,22 @@ The only accepted relation is `rel='parent'` (a folder placement, ADR
 
 ```python
 # 1) Create the plan under its project todo, seeding the first thought.
-p = put(kind='plan', id='nanotrans-plan', title='Nanotrans build',
-        project=412, text='survey the prior art', status='open')
+p = put(
+    kind="plan",
+    id="nanotrans-plan",
+    title="Nanotrans build",
+    project=412,
+    text="survey the prior art",
+    status="open",
+)
 # 2) Add the next steps as nodes.
-put(kind='plan', id='nanotrans-plan', text='draft the intro',   at={'last': True})
-put(kind='plan', id='nanotrans-plan', text='pick the baseline', at={'last': True})
+put(kind="plan", id="nanotrans-plan", text="draft the intro", at={"last": True})
+put(kind="plan", id="nanotrans-plan", text="pick the baseline", at={"last": True})
 # 3) As you work: flip status, park the cursor where you are.
-edit(kind='plan', id='pe89', status='done')      # prior-art survey done
-edit(kind='plan', id='nanotrans-plan', cursor='pe90')  # now on 'draft the intro'
+edit(kind="plan", id="pe89", status="done")  # prior-art survey done
+edit(kind="plan", id="nanotrans-plan", cursor="pe90")  # now on 'draft the intro'
 # 4) Read it whole any time — markers + ▸ show the state at a glance.
-get(kind='plan', id='nanotrans-plan')
+get(kind="plan", id="nanotrans-plan")
 ```
 
 See `precis-overview` for the master kinds table, `precis-tasks-help` for

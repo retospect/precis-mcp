@@ -36,6 +36,7 @@ class FooHandler(Handler):
         # directly; a defensive re-check is OK as a guard against
         # drift between the gate's tuple and what __init__ consumes.
         import os
+
         self.api_key = os.environ["FOO_API_KEY"]
         self.tenant = os.environ["FOO_TENANT_ID"]
         ...

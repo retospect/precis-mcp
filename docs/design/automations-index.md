@@ -70,8 +70,8 @@ of open tag ADR 0047 leaves alone.
 Query surface (already supported — open tags are filterable):
 
 ```python
-search(kind='cron', tags=['automation'])              # all standing automations
-search(kind='cron', tags=['automation', 'cast-morning'])
+search(kind="cron", tags=["automation"])  # all standing automations
+search(kind="cron", tags=["automation", "cast-morning"])
 ```
 
 `cron` has no restricted-axis gate, so `add=['automation', 'cast-morning']`
@@ -88,8 +88,7 @@ A cron that produces a draft/episode links to it with the existing
 `Relation` literal and the `relations` seed — **no migration**:
 
 ```python
-link(kind='cron', id=42, target='draft:cast-reading-2026-07-16',
-     rel='derived-into')
+link(kind="cron", id=42, target="draft:cast-reading-2026-07-16", rel="derived-into")
 # surfaced from the draft end too, via the auto-mirrored derived-from
 ```
 

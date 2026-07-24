@@ -298,8 +298,9 @@ skill-content insertion as one atomic edit.
 Target ~5 lines per verb. Concrete shape, illustrated for `search`:
 
 ```python
-def search(q, kind=None, scope=None, top_k=10, tags=None,
-           source=None, exclude=None) -> str:
+def search(
+    q, kind=None, scope=None, top_k=10, tags=None, source=None, exclude=None
+) -> str:
     """Hybrid lexical + semantic search across kinds.
 
     top_k must be a positive int <= 100. Omit kind (or pass '*') for

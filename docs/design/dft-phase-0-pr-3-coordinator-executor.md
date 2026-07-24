@@ -85,14 +85,16 @@ class Done:
     success: bool = True
     summary_meta: dict[str, Any] = field(default_factory=dict)
 
+
 @dataclass(frozen=True)
 class Yield:
     state: dict[str, Any]
     wake_when: WakeWhen
 
+
 @dataclass(frozen=True)
 class WakeWhen:
-    kind: str      # 'children_done' | 'at_time' | 'tag_cleared' | 'tag_added'
+    kind: str  # 'children_done' | 'at_time' | 'tag_cleared' | 'tag_added'
     # children_done: {'child_job_ids': [int, ...]}
     # at_time:       {'ts': int}  (unix seconds)
     # tag_cleared:   {'tag': str} (matches exactly OR glob ending in ':*')
@@ -228,10 +230,13 @@ Coordinator-style human pauses use the existing
 ```python
 ctx.add_tag(f"ask-user:propose:approve_batch_n=3")
 ctx.set_status("waiting_ask_user")
-return Yield(state={...}, wake_when=WakeWhen(
-    kind="tag_cleared",
-    payload={"tag": "ask-user:propose:*"},
-))
+return Yield(
+    state={...},
+    wake_when=WakeWhen(
+        kind="tag_cleared",
+        payload={"tag": "ask-user:propose:*"},
+    ),
+)
 ```
 
 The `ask-user:propose:*` tag:

@@ -24,9 +24,9 @@ subscribers can paste a free web-UI answer at $0.
 ## I need an answer from Perplexity
 
 ```python
-get(kind='websearch',            q='who is the CEO of Anthropic')
-get(kind='perplexity-reasoning', q='compare DAC and BECCS for net-negative emissions')
-get(kind='perplexity-research',  q='landscape of post-quantum signature schemes')
+get(kind="websearch", q="who is the CEO of Anthropic")
+get(kind="perplexity-reasoning", q="compare DAC and BECCS for net-negative emissions")
+get(kind="perplexity-research", q="landscape of post-quantum signature schemes")
 ```
 
 `id=` and `q=` are equivalent. The response body carries the answer
@@ -53,9 +53,13 @@ Cache keys are `<model>:<query>`. The same `q=` under `websearch`,
 rows. Switching kinds on the same question issues a fresh paid call each time.
 
 ```python
-get(kind='websearch',            q='post-quantum signature schemes')   # cached as websearch:...
-get(kind='perplexity-reasoning', q='post-quantum signature schemes')   # NEW paid call (perplexity-reasoning:...)
-get(kind='perplexity-research',  q='post-quantum signature schemes')   # NEW paid call (perplexity-research:...)
+get(kind="websearch", q="post-quantum signature schemes")  # cached as websearch:...
+get(
+    kind="perplexity-reasoning", q="post-quantum signature schemes"
+)  # NEW paid call (perplexity-reasoning:...)
+get(
+    kind="perplexity-research", q="post-quantum signature schemes"
+)  # NEW paid call (perplexity-research:...)
 ```
 
 Pick the tier first, then call. If you must escalate, accept the
@@ -69,10 +73,12 @@ Pro subscribers run answers free in the browser. Paste the result
 to populate the same cache row a paid `get` would create:
 
 ```python
-put(kind='perplexity-research',
-    id='landscape of post-quantum signature schemes',
-    text='<paste the report markdown>',
-    mode='import')
+put(
+    kind="perplexity-research",
+    id="landscape of post-quantum signature schemes",
+    text="<paste the report markdown>",
+    mode="import",
+)
 ```
 
 `get(kind='perplexity-research', id='landscape of post-quantum signature
@@ -93,8 +99,8 @@ granular block handles, not the whole report.
 ## What have I asked Perplexity lately?
 
 ```python
-get(kind='perplexity-research')                # same as id='/recent'
-get(kind='perplexity-research', id='/recent')
+get(kind="perplexity-research")  # same as id='/recent'
+get(kind="perplexity-research", id="/recent")
 ```
 
 Returns up to 20 refs newest-first with slug, title, provenance
@@ -106,8 +112,8 @@ without `PERPLEXITY_API_KEY`.
 ## How do I re-run a stale answer?
 
 ```python
-delete(kind='perplexity-reasoning', id='<canonical-query>')
-get(kind='perplexity-reasoning', q='<query>')
+delete(kind="perplexity-reasoning", id="<canonical-query>")
+get(kind="perplexity-reasoning", q="<query>")
 ```
 
 `perplexity-research` is pinned by default; `perplexity-reasoning` has
@@ -144,9 +150,9 @@ Imports, `/recent`, and cache hits never need it.
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')        # verbs and kinds
-get(kind='skill', id='precis-cache')           # TTLs, force-refresh, CACHE:* axis
-get(kind='skill', id='precis-math-help')       # facts and world data (Wolfram)
-get(kind='skill', id='precis-web-help')        # direct page fetch
-get(kind='skill', id='precis-markdown-help')   # block parser used by imports
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-cache")  # TTLs, force-refresh, CACHE:* axis
+get(kind="skill", id="precis-math-help")  # facts and world data (Wolfram)
+get(kind="skill", id="precis-web-help")  # direct page fetch
+get(kind="skill", id="precis-markdown-help")  # block parser used by imports
 ```

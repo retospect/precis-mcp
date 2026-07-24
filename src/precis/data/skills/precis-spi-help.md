@@ -27,22 +27,36 @@ Pattern playbook for the `pcb` kind ([[precis-pcb-help]]).
 ## Capture it
 
 ```python
-put(kind='pcb', id='s', args={
-  'nets':[
-    {'name':'SPI_SCK','class':'spi'}, {'name':'SPI_MOSI','class':'spi'},
-    {'name':'SPI_MISO','class':'spi'},
-    {'name':'CS_FLASH','class':'spi'}, {'name':'CS_ADC','class':'spi'},
-  ],
-  'connections':[
-    # shared lines to master U1 + both peripherals U2 (flash), U3 (adc)
-    {'net':'SPI_SCK','refdes':'U1','pin':'SCK'},  {'net':'SPI_SCK','refdes':'U2','pin':'SCK'},  {'net':'SPI_SCK','refdes':'U3','pin':'SCK'},
-    {'net':'SPI_MOSI','refdes':'U1','pin':'MOSI'},{'net':'SPI_MOSI','refdes':'U2','pin':'SI'},  {'net':'SPI_MOSI','refdes':'U3','pin':'DIN'},
-    {'net':'SPI_MISO','refdes':'U1','pin':'MISO'},{'net':'SPI_MISO','refdes':'U2','pin':'SO'},  {'net':'SPI_MISO','refdes':'U3','pin':'DOUT'},
-    # one CS per device
-    {'net':'CS_FLASH','refdes':'U1','pin':'GPIO5'},{'net':'CS_FLASH','refdes':'U2','pin':'CS'},
-    {'net':'CS_ADC','refdes':'U1','pin':'GPIO6'},  {'net':'CS_ADC','refdes':'U3','pin':'CS'},
-  ],
-})
+put(
+    kind="pcb",
+    id="s",
+    args={
+        "nets": [
+            {"name": "SPI_SCK", "class": "spi"},
+            {"name": "SPI_MOSI", "class": "spi"},
+            {"name": "SPI_MISO", "class": "spi"},
+            {"name": "CS_FLASH", "class": "spi"},
+            {"name": "CS_ADC", "class": "spi"},
+        ],
+        "connections": [
+            # shared lines to master U1 + both peripherals U2 (flash), U3 (adc)
+            {"net": "SPI_SCK", "refdes": "U1", "pin": "SCK"},
+            {"net": "SPI_SCK", "refdes": "U2", "pin": "SCK"},
+            {"net": "SPI_SCK", "refdes": "U3", "pin": "SCK"},
+            {"net": "SPI_MOSI", "refdes": "U1", "pin": "MOSI"},
+            {"net": "SPI_MOSI", "refdes": "U2", "pin": "SI"},
+            {"net": "SPI_MOSI", "refdes": "U3", "pin": "DIN"},
+            {"net": "SPI_MISO", "refdes": "U1", "pin": "MISO"},
+            {"net": "SPI_MISO", "refdes": "U2", "pin": "SO"},
+            {"net": "SPI_MISO", "refdes": "U3", "pin": "DOUT"},
+            # one CS per device
+            {"net": "CS_FLASH", "refdes": "U1", "pin": "GPIO5"},
+            {"net": "CS_FLASH", "refdes": "U2", "pin": "CS"},
+            {"net": "CS_ADC", "refdes": "U1", "pin": "GPIO6"},
+            {"net": "CS_ADC", "refdes": "U3", "pin": "CS"},
+        ],
+    },
+)
 ```
 
 Pin names differ per part (`SI`/`MOSI`/`DIN` all mean master-out) — read each

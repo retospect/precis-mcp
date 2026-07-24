@@ -19,13 +19,16 @@ recall-rating or interval state in precis; the forgetting curve lives in Anki.
 ## Capture an atomic fact for spaced repetition
 
 ```python
-put(kind='anki', text='{{c1::Paris::city}}: capital of {{c2::France::country}}.')
+put(kind="anki", text="{{c1::Paris::city}}: capital of {{c2::France::country}}.")
 # → returns integer id (e.g. 204)
 
-put(kind='anki',
-    text='The {{c2::mitochondrion::cellular organelle}} is the {{c1::powerhouse::popculture function name}} of the cell.',
-    tags=['topic:cell-bio'],
-    link='paper:alberts2015molecular~12', rel='derived-from')
+put(
+    kind="anki",
+    text="The {{c2::mitochondrion::cellular organelle}} is the {{c1::powerhouse::popculture function name}} of the cell.",
+    tags=["topic:cell-bio"],
+    link="paper:alberts2015molecular~12",
+    rel="derived-from",
+)
 ```
 
 Every card needs **at least one** `{{cN::…}}` deletion, or the put is rejected.
@@ -48,10 +51,13 @@ Add a short answer-side note — a source, a mnemonic, a gotcha — after a lone
 `---` line at the end of the body. Keep it terse, or omit it:
 
 ```python
-put(kind='anki', text='''\
+put(
+    kind="anki",
+    text="""\
 The {{c1::Krebs}} cycle occurs in the mitochondrial matrix.
 ---
-aka the citric-acid / TCA cycle''')
+aka the citric-acid / TCA cycle""",
+)
 ```
 
 Everything before `---` is the cloze card; everything after is Back Extra.
@@ -69,9 +75,9 @@ that split) is fine alongside it — just don't substitute for the raw text.
 ## List recent Anki cards
 
 ```python
-get(kind='anki')                  # /recent (default)
-get(kind='anki', id='/recent')    # 20 newest
-get(kind='anki', id=204)          # one card — body + note meta
+get(kind="anki")  # /recent (default)
+get(kind="anki", id="/recent")  # 20 newest
+get(kind="anki", id=204)  # one card — body + note meta
 ```
 
 ## Search across cards
@@ -81,8 +87,8 @@ get(kind='anki', id=204)          # one card — body + note meta
 ## Check whether I already made a card about X
 
 ```python
-search(kind='anki', q='capital of france')
-search(kind='anki', q='citric acid cycle', tags=['topic:cell-bio'])
+search(kind="anki", q="capital of france")
+search(kind="anki", q="citric acid cycle", tags=["topic:cell-bio"])
 ```
 
 Your **whole** Anki collection is searchable here — cards you authored in precis
@@ -96,7 +102,7 @@ duplicates (see `precis-cloze`).
 ## What should I fix or restudy?
 
 ```python
-get(kind='anki', id='/leeches')   # high-lapse / collapsed-ease cards, worst first
+get(kind="anki", id="/leeches")  # high-lapse / collapsed-ease cards, worst first
 ```
 
 Reads the recall stats (`meta.anki_stats`, refreshed each sync) across the whole
@@ -110,16 +116,16 @@ Tag `deck-<topic>` to file an authored card under the `Precis::<topic>` sub-deck
 (no tag → the base `Precis` deck):
 
 ```python
-put(kind='anki', text='{{c1::heart}} pumps blood.', tags=['deck-anatomy'])
-tag(kind='anki', id=204, add=['topic:cell-bio'])
-link(kind='anki', id=204, target='paper:alberts2015molecular~12', rel='derived-from')
+put(kind="anki", text="{{c1::heart}} pumps blood.", tags=["deck-anatomy"])
+tag(kind="anki", id=204, add=["topic:cell-bio"])
+link(kind="anki", id=204, target="paper:alberts2015molecular~12", rel="derived-from")
 ```
 
 ## Edit or remove a card
 
 ```python
-tag(kind='anki', id=204, add=['topic:cell-bio'])
-link(kind='anki', id=204, target='paper:alberts2015molecular~12', rel='derived-from')
+tag(kind="anki", id=204, add=["topic:cell-bio"])
+link(kind="anki", id=204, target="paper:alberts2015molecular~12", rel="derived-from")
 ```
 
 ## Edit or remove a card
@@ -178,9 +184,9 @@ the next sync — own-guid lookups only, so your hand-made cards are unreachable
 ## See also
 
 ```python
-get(kind='skill', id='precis-cloze')        # HOW to write good cards (the craft)
-get(kind='skill', id='precis-overview')     # verbs and kinds
-get(kind='skill', id='precis-memory-help')  # prose notes that aren't recall targets
-get(kind='skill', id='precis-tags')         # tag axis conventions
-get(kind='skill', id='precis-relations')    # link relations (derived-from, …)
+get(kind="skill", id="precis-cloze")  # HOW to write good cards (the craft)
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-memory-help")  # prose notes that aren't recall targets
+get(kind="skill", id="precis-tags")  # tag axis conventions
+get(kind="skill", id="precis-relations")  # link relations (derived-from, …)
 ```

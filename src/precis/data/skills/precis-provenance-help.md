@@ -18,7 +18,7 @@ references a DOI.
 ## Preflight a single DOI before quoting it
 
 ```python
-get(kind='provenance', id='10.1038/nature05095')
+get(kind="provenance", id="10.1038/nature05095")
 ```
 
 URL forms and `doi:` prefixes are canonicalised before lookup.
@@ -29,7 +29,7 @@ URL forms and `doi:` prefixes are canonicalised before lookup.
 ## Run provenance over many DOIs in one call
 
 ```python
-get(kind='provenance', q='10.1038/nature05095, 10.5678/foo, 10.9999/bar')
+get(kind="provenance", q="10.1038/nature05095, 10.5678/foo, 10.9999/bar")
 ```
 
 Comma, whitespace, or newline-separated. Every result carries a
@@ -52,11 +52,11 @@ hallucinated or mistyped. The tool never silently substitutes.
 ## Pick a view for the output
 
 ```python
-get(kind='provenance', q='...')                       # full triaged markdown
-get(kind='provenance', q='...', view='blockers')      # only 🔴 + 🟠
-get(kind='provenance', q='...', view='json')          # structured payload
-get(kind='provenance', q='...', view='exists')        # compact ✓/✗ per DOI
-get(kind='provenance', view='verify', q='<bib>')      # adds metadata-mismatch section
+get(kind="provenance", q="...")  # full triaged markdown
+get(kind="provenance", q="...", view="blockers")  # only 🔴 + 🟠
+get(kind="provenance", q="...", view="json")  # structured payload
+get(kind="provenance", q="...", view="exists")  # compact ✓/✗ per DOI
+get(kind="provenance", view="verify", q="<bib>")  # adds metadata-mismatch section
 ```
 
 `view='blockers'` shows a count of hidden 🟡/🟢 entries at the
@@ -68,12 +68,16 @@ bottom. `view='json'` carries every field including raw scores and
 ## My LLM-generated bibliography has DOIs — are they right?
 
 ```python
-get(kind='provenance', view='verify', q='''
+get(
+    kind="provenance",
+    view="verify",
+    q="""
   [{"doi": "10.1038/nature05095", "title": "...",
     "authors": ["Hwang"], "year": 2005},
    {"doi": "10.1234/foo",         "title": "Quantum widgets",
     "authors": ["Smith"],  "year": 2019}]
-''')
+""",
+)
 ```
 
 A real DOI pointing to a *different* paper than the bib claims is
@@ -84,8 +88,12 @@ diff: title (fuzzy match), first-author surname, year ±1.
 ## Surface candidate DOIs when one 404s
 
 ```python
-get(kind='provenance', view='verify', suggest_candidates=True,
-    q='[{"doi": "10.x/typo", "title": "...", "authors": [...], "year": 2019}]')
+get(
+    kind="provenance",
+    view="verify",
+    suggest_candidates=True,
+    q='[{"doi": "10.x/typo", "title": "...", "authors": [...], "year": 2019}]',
+)
 ```
 
 On a 404 DOI with bib hints, shows Crossref candidate matches as
@@ -94,7 +102,7 @@ advisory only — the supplied DOI's status stays `unknown`.
 ## Chase retractions one level deep
 
 ```python
-get(kind='provenance', q='...', transitive=True)
+get(kind="provenance", q="...", transitive=True)
 ```
 
 For each parent, also checks its references. A clean paper that
@@ -162,8 +170,10 @@ manuscript-release recipe.
 ## See also
 
 ```python
-get(kind='skill', id='precis-preflight')          # manuscript-release recipe
-get(kind='skill', id='precis-paper-help')         # ingest a paper so writes-through take effect
-get(kind='skill', id='precis-doi-resolution')     # DOI canonicalisation rules
-get(kind='skill', id='precis-overview')           # verbs and kinds
+get(kind="skill", id="precis-preflight")  # manuscript-release recipe
+get(
+    kind="skill", id="precis-paper-help"
+)  # ingest a paper so writes-through take effect
+get(kind="skill", id="precis-doi-resolution")  # DOI canonicalisation rules
+get(kind="skill", id="precis-overview")  # verbs and kinds
 ```

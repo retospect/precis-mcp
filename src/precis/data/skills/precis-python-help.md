@@ -39,13 +39,15 @@ specific and goes straight to a dotted qualname; `/` introduces a
 file path and `~` introduces a selector inside it.
 
 ```python
-get(kind='python', id='precis')                                       # repo overview
-get(kind='python', id='precis/src/precis/cli.py')                     # file outline
-get(kind='python', id='precis/src/precis/cli.py~L120')                # one line (Track A)
-get(kind='python', id='precis/src/precis/cli.py~L96-130')             # line range
-get(kind='python', id='precis/src/precis/dispatch.py~Hub')            # local symbol (Track B)
-get(kind='python', id='precis/src/precis/dispatch.py~Hub.register_ability')
-get(kind='python', id='precis::precis.dispatch.Hub.register_ability') # qualname shortcut
+get(kind="python", id="precis")  # repo overview
+get(kind="python", id="precis/src/precis/cli.py")  # file outline
+get(kind="python", id="precis/src/precis/cli.py~L120")  # one line (Track A)
+get(kind="python", id="precis/src/precis/cli.py~L96-130")  # line range
+get(kind="python", id="precis/src/precis/dispatch.py~Hub")  # local symbol (Track B)
+get(kind="python", id="precis/src/precis/dispatch.py~Hub.register_ability")
+get(
+    kind="python", id="precis::precis.dispatch.Hub.register_ability"
+)  # qualname shortcut
 ```
 
 Ambiguous qualnames return `BadInput` with `options=` listing every
@@ -56,8 +58,8 @@ matching qualname.
 ## Orient in an unfamiliar Python codebase
 
 ```python
-search(kind='python', q='cache attribution', scope='precis')
-search(kind='python', q='where do we handle stale data', scope='precis', page=2)
+search(kind="python", q="cache attribution", scope="precis")
+search(kind="python", q="where do we handle stale data", scope="precis", page=2)
 ```
 
 Hits embed qualname + signature + docstring; results come back as
@@ -67,14 +69,18 @@ canonical addresses you can paste as `id=`. `page=1` is the default.
 ## Open Python source
 
 ```python
-get(kind='python', id='<alias>')                              # repo overview
-get(kind='python', id='<alias>', view='toc')                  # module/package tree
-get(kind='python', id='<alias>', view='entries')              # console scripts + __main__
-get(kind='python', id='<alias>/<path>.py')                    # file outline (default)
-get(kind='python', id='<alias>/<path>.py', view='outline')    # outline w/ type annotations
-get(kind='python', id='<alias>/<path>.py', view='source')     # raw source
-get(kind='python', id='<alias>::<qualname>')                  # signature + docstring + callers + callees
-get(kind='python', id='<alias>::<qualname>', view='source')   # body verbatim
+get(kind="python", id="<alias>")  # repo overview
+get(kind="python", id="<alias>", view="toc")  # module/package tree
+get(kind="python", id="<alias>", view="entries")  # console scripts + __main__
+get(kind="python", id="<alias>/<path>.py")  # file outline (default)
+get(
+    kind="python", id="<alias>/<path>.py", view="outline"
+)  # outline w/ type annotations
+get(kind="python", id="<alias>/<path>.py", view="source")  # raw source
+get(
+    kind="python", id="<alias>::<qualname>"
+)  # signature + docstring + callers + callees
+get(kind="python", id="<alias>::<qualname>", view="source")  # body verbatim
 ```
 
 Every symbol view shows parent, callers, callees, raises — one call,
@@ -98,9 +104,9 @@ many edges traversable.
 ## I have a line number — what symbol is it in?
 
 ```python
-get(kind='python', id='precis/src/precis/dispatch.py~L444')
+get(kind="python", id="precis/src/precis/dispatch.py~L444")
 # Response resolves L444 → boot (lines 444-612). Then:
-get(kind='python', id='precis::precis.dispatch.boot')
+get(kind="python", id="precis::precis.dispatch.boot")
 ```
 
 ## Trace a boot path
@@ -108,11 +114,15 @@ get(kind='python', id='precis::precis.dispatch.boot')
 ## Walk the call graph from a console script
 
 ```python
-get(kind='python', id='precis', view='entries')
+get(kind="python", id="precis", view="entries")
 # → entry: precis.cli:main  (setuptools shorthand)
 
-get(kind='python', id='precis', view='callgraph',
-    args={'entry': 'precis.cli.main:main', 'depth': 3})
+get(
+    kind="python",
+    id="precis",
+    view="callgraph",
+    args={"entry": "precis.cli.main:main", "depth": 3},
+)
 ```
 
 `callgraph` resolves on the fully-qualified form
@@ -139,7 +149,7 @@ Don't put reserved kwargs (`kind` / `id` / `view` / `q`) inside
 ## Who calls this symbol?
 
 ```python
-get(kind='python', id='precis::precis.dispatch.Hub.register_ability')
+get(kind="python", id="precis::precis.dispatch.Hub.register_ability")
 # Default symbol view includes Called by: and Calls: sections.
 ```
 
@@ -147,12 +157,14 @@ get(kind='python', id='precis::precis.dispatch.Hub.register_ability')
 ## Replace a function body — preferred edit form
 
 ```python
-edit(kind='python',
-    id='precis::precis.dispatch.Hub.handler_for',
+edit(
+    kind="python",
+    id="precis::precis.dispatch.Hub.handler_for",
     text='''    def handler_for(self, kind: str) -> Any | None:
         """Return the handler registered for ``kind``, or None."""
         return self.handlers.get(kind)''',
-    mode='replace')
+    mode="replace",
+)
 ```
 
 ```text
@@ -170,10 +182,12 @@ follow-ups.
 ## Replace lines when I have line numbers
 
 ```python
-edit(kind='python',
-    id='precis/src/precis/dispatch.py~L204-206',
-    text='        return self.handlers.get(kind)',
-    mode='replace')
+edit(
+    kind="python",
+    id="precis/src/precis/dispatch.py~L204-206",
+    text="        return self.handlers.get(kind)",
+    mode="replace",
+)
 ```
 
 ```text
@@ -192,31 +206,44 @@ permalink convention). `L120-128` is 9 lines; `L120` is one.
 
 ```python
 # Anchored rename within one symbol.
-edit(kind='python',
-    id='precis::precis.dispatch.boot',
-    mode='find-replace',
-    find='deprecated_call(', text='new_call(',
-    match='all')
+edit(
+    kind="python",
+    id="precis::precis.dispatch.boot",
+    mode="find-replace",
+    find="deprecated_call(",
+    text="new_call(",
+    match="all",
+)
 
 # Disambiguate via surrounding context.
-edit(kind='python',
-    id='precis/src/precis/dispatch.py',
-    mode='find-replace',
-    find='name', before='len(', after=')',
-    text='full_name')
+edit(
+    kind="python",
+    id="precis/src/precis/dispatch.py",
+    mode="find-replace",
+    find="name",
+    before="len(",
+    after=")",
+    text="full_name",
+)
 
 # Insert adjacent to an anchor.
-edit(kind='python',
-    id='precis/src/precis/dispatch.py',
-    mode='insert',
-    find='    return x + 1\n', where='after',
-    text='\n\ndef twice(x: int) -> int:\n    return x * 2\n')
+edit(
+    kind="python",
+    id="precis/src/precis/dispatch.py",
+    mode="insert",
+    find="    return x + 1\n",
+    where="after",
+    text="\n\ndef twice(x: int) -> int:\n    return x * 2\n",
+)
 
 # Span delete — text='' is the delete idiom.
-edit(kind='python',
-    id='precis::precis.dispatch.Hub.handler_for',
-    mode='find-replace',
-    find='    # TODO: revisit\n', text='')
+edit(
+    kind="python",
+    id="precis::precis.dispatch.Hub.handler_for",
+    mode="find-replace",
+    find="    # TODO: revisit\n",
+    text="",
+)
 ```
 
 The selector decides the search region: `~L20-L40` scopes the
@@ -233,8 +260,9 @@ emits the post-edit region. Full grammar in `precis-edit-help`.
 
 ```python
 # Create.
-put(kind='python',
-    id='precis/src/precis/handlers/audit.py',
+put(
+    kind="python",
+    id="precis/src/precis/handlers/audit.py",
     text='''"""Audit handler."""
 from precis.protocol import Handler
 
@@ -242,18 +270,21 @@ from precis.protocol import Handler
 class AuditHandler(Handler):
     pass
 ''',
-    mode='create')
+    mode="create",
+)
 
 # Append a top-level function.
-edit(kind='python',
-    id='precis/src/precis/dispatch.py',
+edit(
+    kind="python",
+    id="precis/src/precis/dispatch.py",
     text='''
 
 def registered_kinds(hub: Hub) -> list[str]:
     """Snapshot of every kind currently registered on ``hub``."""
     return sorted(hub.kinds)
 ''',
-    mode='append')
+    mode="append",
+)
 ```
 
 `mode='create'` refuses to overwrite; use `mode='replace'` on a
@@ -263,7 +294,7 @@ bare file id to swap a whole file.
 ## Drop a symbol from a class
 
 ```python
-delete(kind='python', id='precis::precis.dispatch.Hub.deprecated')
+delete(kind="python", id="precis::precis.dispatch.Hub.deprecated")
 ```
 
 ```text
@@ -320,8 +351,8 @@ commits (working tree is left dirty).
 ## See also
 
 ```python
-get(kind='skill', id='precis-files-help')        # shared file address grammar
-get(kind='skill', id='precis-edit-help')         # anchored find-replace + insert grammar
-get(kind='skill', id='precis-markdown-help')     # .md block grammar
-get(kind='skill', id='precis-overview')          # verbs and kinds
+get(kind="skill", id="precis-files-help")  # shared file address grammar
+get(kind="skill", id="precis-edit-help")  # anchored find-replace + insert grammar
+get(kind="skill", id="precis-markdown-help")  # .md block grammar
+get(kind="skill", id="precis-overview")  # verbs and kinds
 ```

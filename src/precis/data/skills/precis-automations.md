@@ -35,8 +35,8 @@ text/params *are* the prompt that shapes the output.
 ## Find the automations
 
 ```python
-search(kind='todo', tags=['level:recurring', 'automation'])
-search(kind='todo', tags=['level:recurring', 'automation', 'cast-morning'])
+search(kind="todo", tags=["level:recurring", "automation"])
+search(kind="todo", tags=["level:recurring", "automation", "cast-morning"])
 ```
 
 A recurring is an automation when it carries the **`automation`** tag. A
@@ -47,7 +47,7 @@ subtype short and kebab-cased.
 ## Mark a recurring as an automation
 
 ```python
-tag(kind='todo', id=42, add=['automation', 'cast-morning'])
+tag(kind="todo", id=42, add=["automation", "cast-morning"])
 ```
 
 Un-mark with `remove=['automation']`. Marking is additive and needs no
@@ -72,8 +72,9 @@ becomes a navigable hub — from the recurring you can reach its episodes, and
 from an episode its editable prompt:
 
 ```python
-link(kind='todo', id=42, target='draft:cast-reading-2026-07-16',
-     rel='derived-into')       # inverse derived-from surfaces from the draft
+link(
+    kind="todo", id=42, target="draft:cast-reading-2026-07-16", rel="derived-into"
+)  # inverse derived-from surfaces from the draft
 ```
 
 Put this instruction *in the recurring's payload* (push-mode) so it happens
@@ -82,7 +83,9 @@ on every fire.
 ## See also
 
 ```python
-get(kind='skill', id='precis-recurring-help')  # the unified schedule mechanism (cron/every/at, deliver)
-get(kind='skill', id='precis-voice')           # how to author a cast payload for the ear
-get(kind='skill', id='precis-audio-help')      # the narration + podcast-feed mechanism
+get(
+    kind="skill", id="precis-recurring-help"
+)  # the unified schedule mechanism (cron/every/at, deliver)
+get(kind="skill", id="precis-voice")  # how to author a cast payload for the ear
+get(kind="skill", id="precis-audio-help")  # the narration + podcast-feed mechanism
 ```

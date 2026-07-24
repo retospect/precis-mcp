@@ -74,15 +74,14 @@ class WikipediaHandler(Handler):
         try:
             import wikipedia
         except ImportError as e:
-            raise InitError(
-                "wikipedia plugin needs the 'wikipedia' package"
-            ) from e
+            raise InitError("wikipedia plugin needs the 'wikipedia' package") from e
         self._wikipedia = wikipedia
         _ = hub  # populated automatically by _register_with
 
     def get(self, *, id: str | None = None, **_: Any) -> Response:
         if not id:
             from precis.errors import BadInput
+
             raise BadInput(
                 "wikipedia requires an article title as id=",
                 next="get(kind='wikipedia', id='Python (programming language)')",
@@ -183,11 +182,14 @@ from precis.dispatch import PLUGIN_GROUP, boot
 def test_plugin_registers(monkeypatch):
     class FakeEP:
         name = "wiki"
+
         def load(self_):  # noqa: N805
             from precis_wikipedia import WikipediaHandler
+
             return WikipediaHandler
 
     from precis import dispatch
+
     monkeypatch.setattr(
         dispatch,
         "_entry_points",

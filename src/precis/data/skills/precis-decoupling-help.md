@@ -26,26 +26,58 @@ nothing. This is a pattern playbook for the `pcb` kind ([[precis-pcb-help]]).
 ## Capture it
 
 ```python
-put(kind='pcb', id='s', args={
-  'components':[
-    # one bypass cap per VDD pin
-    {'refdes':'C1','label':'100nF 0402','part':'C1525','pins':[{'name':'1'},{'name':'2'}]},
-    {'refdes':'C2','label':'100nF 0402','part':'C1525','pins':[{'name':'1'},{'name':'2'}]},
-    # bulk on the 3V3 rail
-    {'refdes':'C3','label':'10uF 0805','part':'C15850','pins':[{'name':'1'},{'name':'2'}]},
-  ],
-  'connections':[
-    {'net':'VCC3V3','refdes':'C1','pin':'1'}, {'net':'GND','refdes':'C1','pin':'2'},
-    {'net':'VCC3V3','refdes':'C2','pin':'1'}, {'net':'GND','refdes':'C2','pin':'2'},
-    {'net':'VCC3V3','refdes':'C3','pin':'1'}, {'net':'GND','refdes':'C3','pin':'2'},
-  ],
-  'measures':[
-    {'metric':'proximity','operands':[{'instance':'C1'},{'instance':'U1'}],
-     'goal':2,'strength':'hard','reason':'VDD bypass at U1 pin'},
-    {'metric':'proximity','operands':[{'instance':'C2'},{'instance':'U1'}],
-     'goal':2,'strength':'hard','reason':'second VDD bypass at U1'},
-  ],
-})
+put(
+    kind="pcb",
+    id="s",
+    args={
+        "components": [
+            # one bypass cap per VDD pin
+            {
+                "refdes": "C1",
+                "label": "100nF 0402",
+                "part": "C1525",
+                "pins": [{"name": "1"}, {"name": "2"}],
+            },
+            {
+                "refdes": "C2",
+                "label": "100nF 0402",
+                "part": "C1525",
+                "pins": [{"name": "1"}, {"name": "2"}],
+            },
+            # bulk on the 3V3 rail
+            {
+                "refdes": "C3",
+                "label": "10uF 0805",
+                "part": "C15850",
+                "pins": [{"name": "1"}, {"name": "2"}],
+            },
+        ],
+        "connections": [
+            {"net": "VCC3V3", "refdes": "C1", "pin": "1"},
+            {"net": "GND", "refdes": "C1", "pin": "2"},
+            {"net": "VCC3V3", "refdes": "C2", "pin": "1"},
+            {"net": "GND", "refdes": "C2", "pin": "2"},
+            {"net": "VCC3V3", "refdes": "C3", "pin": "1"},
+            {"net": "GND", "refdes": "C3", "pin": "2"},
+        ],
+        "measures": [
+            {
+                "metric": "proximity",
+                "operands": [{"instance": "C1"}, {"instance": "U1"}],
+                "goal": 2,
+                "strength": "hard",
+                "reason": "VDD bypass at U1 pin",
+            },
+            {
+                "metric": "proximity",
+                "operands": [{"instance": "C2"}, {"instance": "U1"}],
+                "goal": 2,
+                "strength": "hard",
+                "reason": "second VDD bypass at U1",
+            },
+        ],
+    },
+)
 ```
 
 The `proximity` `hard` measures are what survive autoplace — without them the

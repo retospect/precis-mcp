@@ -26,8 +26,8 @@ API key, no quotas (within YouTube's rate limits). Cached for 30 days.
 ## I want to read what was said in this video
 
 ```python
-get(kind='youtube', id='dQw4w9WgXcQ')                    # 11-char id
-get(kind='youtube', id='https://youtu.be/dQw4w9WgXcQ')   # any URL form
+get(kind="youtube", id="dQw4w9WgXcQ")  # 11-char id
+get(kind="youtube", id="https://youtu.be/dQw4w9WgXcQ")  # any URL form
 ```
 
 Response body is the transcript text; a `Watch: https://…` deep-link
@@ -41,11 +41,11 @@ The id is the 11-character video ID (`dQw4w9WgXcQ`). You can also
 paste any YouTube URL form — the handler extracts the ID:
 
 ```python
-get(kind='youtube', id='dQw4w9WgXcQ')
-get(kind='youtube', id='https://www.youtube.com/watch?v=dQw4w9WgXcQ')
-get(kind='youtube', id='https://youtu.be/dQw4w9WgXcQ')
-get(kind='youtube', id='https://www.youtube.com/shorts/dQw4w9WgXcQ')
-get(kind='youtube', id='https://www.youtube.com/embed/dQw4w9WgXcQ')
+get(kind="youtube", id="dQw4w9WgXcQ")
+get(kind="youtube", id="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+get(kind="youtube", id="https://youtu.be/dQw4w9WgXcQ")
+get(kind="youtube", id="https://www.youtube.com/shorts/dQw4w9WgXcQ")
+get(kind="youtube", id="https://www.youtube.com/embed/dQw4w9WgXcQ")
 ```
 
 All forms collapse to the same cache row keyed on the video ID.
@@ -56,8 +56,8 @@ Default is English (`en`). The `languages=` param rides inside the
 top-level `args=` dict (the tool surface is `kind/id/view/q/args`):
 
 ```python
-get(kind='youtube', id='dQw4w9WgXcQ', args={'languages': 'de'})
-get(kind='youtube', id='dQw4w9WgXcQ', args={'languages': 'en,es'})  # fallback list
+get(kind="youtube", id="dQw4w9WgXcQ", args={"languages": "de"})
+get(kind="youtube", id="dQw4w9WgXcQ", args={"languages": "en,es"})  # fallback list
 ```
 
 Different language requests cache separately — a German fetch doesn't
@@ -66,7 +66,7 @@ invalidate the English one.
 ## See what languages a video has
 
 ```python
-get(kind='youtube', id='dQw4w9WgXcQ', view='languages')
+get(kind="youtube", id="dQw4w9WgXcQ", view="languages")
 ```
 
 Lists every available transcript (manual + auto-generated). Use this
@@ -84,7 +84,7 @@ before committing to a fetch when you're unsure which codes work.
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')   # verbs and kinds
-get(kind='skill', id='precis-cache')      # TTL and freshness
-get(kind='skill', id='precis-web-help')   # fetch arbitrary URLs
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-cache")  # TTL and freshness
+get(kind="skill", id="precis-web-help")  # fetch arbitrary URLs
 ```

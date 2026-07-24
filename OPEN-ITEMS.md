@@ -1308,29 +1308,6 @@ Owner `mcp_modalities.py::register_skill_prompts`; artefact
 
 ## ⏸️ Snoozed — blocked upstream
 
-- **Dependabot #44 — `transformers` <5.3.0 RCE (high).** `Recheck-after:
-  2026-08-01`. `Unblock-when:` `marker-pdf` drops its `transformers<5.0.0` cap.
-  Today every `marker-pdf` (≤1.10.2) pins `transformers<5.0.0` and precis needs
-  marker (`[paper]`), so `>=5.3.0` is unsatisfiable as a lockfile bump alone.
-  Tolerable: exploit surface ~nil (precis only loads the trusted bge-m3 embedder,
-  never a user model path or `trust_remote_code`). **Recheck:** re-run `uv lock
-  --upgrade-package transformers`; if it reaches ≥5.3.0 take the fix + validate a
-  sample re-embed for cosine drift; else bump `Recheck-after` +2 weeks.
-  **Re-verified 2026-07-18 (still blocked):** PyPI shows `marker-pdf` latest is
-  still `1.10.2` (no new release), capping `transformers<5.0.0`. Note a *second*
-  lock has appeared — `surya-ocr` moved to `0.22.0` requiring `transformers>=5.12.1`,
-  but marker also caps `surya-ocr<0.18.0`, so the newer surya can't be used either.
-  Both locks release only when marker-pdf ships a version that lifts them. → +2wk.
-
-- **Dependabot #45 — `transformers` LightGlue-load RCE (high).** `Recheck-after:
-  2026-08-01`. `Unblock-when:` same block as #44 — `marker-pdf` (≤1.10.2) caps
-  `transformers<5.0.0`, so the fixed `transformers` is unsatisfiable as a lockfile
-  bump while precis needs marker (`[paper]`). Exploit surface ~nil: the RCE is in
-  the LightGlue model-init path, which precis never loads (only the trusted bge-m3
-  embedder; no `trust_remote_code`, no user model path). **Recheck together with
-  #44** — one `uv lock --upgrade-package transformers` clears both when marker lifts
-  the cap; else bump `Recheck-after` +2 weeks.
-
 - **Dependabot #56–#67 — `pillow` heap-OOB/DoS/decompression-bomb-bypass (11
   alerts, mostly high).** `Recheck-after: 2026-08-06`. `Unblock-when:`
   `marker-pdf` drops its `Pillow<11.0.0` cap. **Verified 2026-07-23:**

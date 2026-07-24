@@ -148,27 +148,27 @@ another attempt.
 ## Show me the active queue
 
 ```python
-search(kind='job', tags=['STATUS:running'])
+search(kind="job", tags=["STATUS:running"])
 ```
 
 ## Show me everything queued up
 
 ```python
-search(kind='job', tags=['STATUS:queued'])
+search(kind="job", tags=["STATUS:queued"])
 ```
 
 ## Show me failed jobs
 ## Find jobs that need attention
 
 ```python
-search(kind='job', tags=['STATUS:failed'])
+search(kind="job", tags=["STATUS:failed"])
 ```
 
 ## Show me a specific job
 ## How did this job go?
 
 ```python
-get(kind='job', id=101)
+get(kind="job", id=101)
 # → header + current status + summary chunk (when finished) +
 #   recent job_event chunks (telemetry, kept for forensics)
 ```
@@ -186,7 +186,7 @@ excludes them so they don't pollute results.
 ## History of fix attempts for a gripe
 
 ```python
-search(kind='job', link='gripe:42')   # most recent first
+search(kind="job", link="gripe:42")  # most recent first
 ```
 
 ## What jobs have run on this paper / ref / parent?
@@ -197,7 +197,7 @@ Same shape: `search(kind='job', link='<kind>:<id>')`.
 ## Stop a job that's taking too long
 
 ```python
-tag(kind='job', id=101, add=['STATUS:cancel_requested'])
+tag(kind="job", id=101, add=["STATUS:cancel_requested"])
 # worker SIGTERMs at the next safe point; final tag is STATUS:cancelled
 ```
 
@@ -306,7 +306,7 @@ the wake condition fires.)
 ## See also
 
 ```python
-get(kind='skill', id='precis-gripe-help')         # the bug tracker
-get(kind='skill', id='precis-fix-gripe-help')     # fix_gripe recipe
-get(kind='skill', id='precis-search-help')        # find jobs by link/status
+get(kind="skill", id="precis-gripe-help")  # the bug tracker
+get(kind="skill", id="precis-fix-gripe-help")  # fix_gripe recipe
+get(kind="skill", id="precis-search-help")  # find jobs by link/status
 ```

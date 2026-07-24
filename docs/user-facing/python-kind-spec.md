@@ -24,59 +24,68 @@ gives drill-down. Same mental model as `paper`, different corpus.
 
 ```python
 # Top-level: a registered repo
-get(kind='python', id='precis-mcp')                  # repo overview
-get(kind='python', id='precis-mcp', view='toc')      # package tree
-get(kind='python', id='precis-mcp', view='entries')  # CLI/scripts/__main__
+get(kind="python", id="precis-mcp")  # repo overview
+get(kind="python", id="precis-mcp", view="toc")  # package tree
+get(kind="python", id="precis-mcp", view="entries")  # CLI/scripts/__main__
 
 # Drill into a file
-get(kind='python', id='precis-mcp/src/precis/registry.py')
-get(kind='python', id='precis-mcp/src/precis/registry.py', view='outline')
-get(kind='python', id='precis-mcp/src/precis/registry.py', view='source')
-get(kind='python', id='precis-mcp/src/precis/registry.py~42-100')
+get(kind="python", id="precis-mcp/src/precis/registry.py")
+get(kind="python", id="precis-mcp/src/precis/registry.py", view="outline")
+get(kind="python", id="precis-mcp/src/precis/registry.py", view="source")
+get(kind="python", id="precis-mcp/src/precis/registry.py~42-100")
 
 # Drill into a symbol (slug = qualified dotted path)
-get(kind='python', id='precis-mcp::precis.registry.Registry')
-get(kind='python', id='precis-mcp::precis.registry.Registry.get')
+get(kind="python", id="precis-mcp::precis.registry.Registry")
+get(kind="python", id="precis-mcp::precis.registry.Registry.get")
 
 # Composition from an entry point
-get(kind='python', id='precis-mcp', view='callgraph',
-    entry='precis.cli:main')
-get(kind='python', id='precis-mcp', view='callgraph',
-    entry='precis.cli:main', depth=3)
+get(kind="python", id="precis-mcp", view="callgraph", entry="precis.cli:main")
+get(kind="python", id="precis-mcp", view="callgraph", entry="precis.cli:main", depth=3)
 
 # Runtime overlay (opt-in; runs the code under sys.setprofile)
-get(kind='python', id='precis-mcp', view='runtrace',
-    entry='precis.cli:main', argv=['--help'])
+get(
+    kind="python",
+    id="precis-mcp",
+    view="runtrace",
+    entry="precis.cli:main",
+    argv=["--help"],
+)
 
 # Search
-search(kind='python', q='attribution footer rendering', scope='precis-mcp')
-search(kind='python', q='cache TTL handling',
-       scope='precis-mcp::precis.handlers')
+search(kind="python", q="attribution footer rendering", scope="precis-mcp")
+search(kind="python", q="cache TTL handling", scope="precis-mcp::precis.handlers")
 
 # Edit a method (Track B — preferred, durable across edits)
-put(kind='python', id='precis-mcp::precis.registry.Registry.get',
+put(
+    kind="python",
+    id="precis-mcp::precis.registry.Registry.get",
     text='''    def get(self, kind: str) -> Handler:
         """Look up a handler by kind name."""
         if kind not in self._handlers:
             raise NotFound(f"unknown kind: {kind}",
                            options=list(self._handlers))
         return self._handlers[kind]''',
-    mode='replace')
+    mode="replace",
+)
 
 # Edit a line range (Track A — when you have line numbers)
-put(kind='python',
-    id='precis-mcp/src/precis/registry.py~L120-128',
-    text='        return self._handlers[kind]', mode='replace')
+put(
+    kind="python",
+    id="precis-mcp/src/precis/registry.py~L120-128",
+    text="        return self._handlers[kind]",
+    mode="replace",
+)
 
 # Append a new top-level function
-put(kind='python', id='precis-mcp/src/precis/registry.py',
+put(
+    kind="python",
+    id="precis-mcp/src/precis/registry.py",
     text='\n\ndef reset_registry() -> None:\n    """Clear handlers."""\n    global _GLOBAL\n    _GLOBAL = None\n',
-    mode='append')
+    mode="append",
+)
 
 # Delete a deprecated method
-put(kind='python',
-    id='precis-mcp::precis.registry.Registry.deprecated',
-    mode='delete')
+put(kind="python", id="precis-mcp::precis.registry.Registry.deprecated", mode="delete")
 ```
 
 Roots are configured at startup via `PRECIS_PYTHON_ROOTS`; there are
@@ -88,13 +97,29 @@ subcommand for operators.
 
 ```python
 KindSpec(
-    kind='python', title='Python code navigator',
-    supports_get=True, supports_search=True, supports_put=True,
-    is_numeric=False, id_required=True,
-    views=('toc', 'entries', 'outline', 'source', 'callgraph',
-           'runtrace', 'imports', 'symbols',
-           'blame', 'log', 'churn', 'owners', 'diff'),
-    modes=('create', 'append', 'replace', 'delete'),
+    kind="python",
+    title="Python code navigator",
+    supports_get=True,
+    supports_search=True,
+    supports_put=True,
+    is_numeric=False,
+    id_required=True,
+    views=(
+        "toc",
+        "entries",
+        "outline",
+        "source",
+        "callgraph",
+        "runtrace",
+        "imports",
+        "symbols",
+        "blame",
+        "log",
+        "churn",
+        "owners",
+        "diff",
+    ),
+    modes=("create", "append", "replace", "delete"),
     requires_env=(),  # local; no API keys
 )
 ```
@@ -280,7 +305,7 @@ Next:
 ### `outline` on a symbol — drill-down
 
 ```python
-get(kind='python', id='precis-mcp::precis.registry.Registry')
+get(kind="python", id="precis-mcp::precis.registry.Registry")
 ```
 
 ```
@@ -321,8 +346,7 @@ can read code without falling back to `read_file`.
 The flagship view. Tree (not graphviz) rooted at `entry=`.
 
 ```python
-get(kind='python', id='precis-mcp', view='callgraph',
-    entry='precis.cli:main', depth=3)
+get(kind="python", id="precis-mcp", view="callgraph", entry="precis.cli:main", depth=3)
 ```
 
 ```
@@ -373,8 +397,14 @@ imported by any module in `a`), `view='callgraph'` resolves calls
 into `b` instead of marking them `[ext]`. Off by default; opt in:
 
 ```python
-get(kind='python', id='a', view='callgraph',
-    entry='a.cli:main', depth=4, cross_repo=True)
+get(
+    kind="python",
+    id="a",
+    view="callgraph",
+    entry="a.cli:main",
+    depth=4,
+    cross_repo=True,
+)
 ```
 
 Mechanism: build the symbol index per repo as today; on every
@@ -400,8 +430,13 @@ Opt-in. Runs the entry point in a subprocess under `sys.setprofile`
 counts and elapsed time, and overlays it on the static graph.
 
 ```python
-get(kind='python', id='precis-mcp', view='runtrace',
-    entry='precis.cli:main', argv=['--version'])
+get(
+    kind="python",
+    id="precis-mcp",
+    view="runtrace",
+    entry="precis.cli:main",
+    argv=["--version"],
+)
 ```
 
 ```
@@ -447,11 +482,13 @@ index:
 
 `scope=` accepts repo, package, or file:
 ```python
-search(kind='python', q='cache attribution', scope='precis-mcp')
-search(kind='python', q='cache attribution',
-       scope='precis-mcp::precis.handlers')
-search(kind='python', q='cache attribution',
-       scope='precis-mcp/src/precis/handlers/_cache_base.py')
+search(kind="python", q="cache attribution", scope="precis-mcp")
+search(kind="python", q="cache attribution", scope="precis-mcp::precis.handlers")
+search(
+    kind="python",
+    q="cache attribution",
+    scope="precis-mcp/src/precis/handlers/_cache_base.py",
+)
 ```
 
 ## Write surface
@@ -578,13 +615,18 @@ construction.
 
 ```python
 fixed = subprocess.run(
-    ['ruff', 'check', '--fix', '--exit-zero',
-     '--stdin-filename', str(path)],
-    input=buffer, capture_output=True, text=True, check=True,
+    ["ruff", "check", "--fix", "--exit-zero", "--stdin-filename", str(path)],
+    input=buffer,
+    capture_output=True,
+    text=True,
+    check=True,
 ).stdout
 formatted = subprocess.run(
-    ['ruff', 'format', '--stdin-filename', str(path)],
-    input=fixed, capture_output=True, text=True, check=True,
+    ["ruff", "format", "--stdin-filename", str(path)],
+    input=fixed,
+    capture_output=True,
+    text=True,
+    check=True,
 ).stdout
 ```
 
@@ -688,12 +730,13 @@ behind `python_index/git.py` (~100 LOC) so we can swap to `dulwich`
 ### New `python` views (symbol-scoped)
 
 ```python
-get(kind='python', id='...::Registry.get', view='blame')
-get(kind='python', id='...::Registry.get', view='log')
-get(kind='python', id='...::Registry.get', view='churn', days=90)
-get(kind='python', id='...::Registry.get', view='owners')
-get(kind='python', id='...::Registry.get',
-    view='diff', ref_from='v0.3.0', ref_to='HEAD')
+get(kind="python", id="...::Registry.get", view="blame")
+get(kind="python", id="...::Registry.get", view="log")
+get(kind="python", id="...::Registry.get", view="churn", days=90)
+get(kind="python", id="...::Registry.get", view="owners")
+get(
+    kind="python", id="...::Registry.get", view="diff", ref_from="v0.3.0", ref_to="HEAD"
+)
 ```
 
 - `blame` — per-line author/sha for the symbol's line range
@@ -728,16 +771,14 @@ Some questions aren't symbol-scoped and should work on non-Python
 repos too (ansible, cluster itself):
 
 ```python
-get(kind='git', id='precis-mcp')                          # head, branch, dirty?
-get(kind='git', id='precis-mcp', view='log', n=20)
-get(kind='git', id='precis-mcp', view='hot', days=30)     # hottest files
-get(kind='git', id='precis-mcp', view='owners')           # ownership map
-get(kind='git', id='precis-mcp',
-    view='diff', ref_from='main', ref_to='HEAD')
-get(kind='git', id='precis-mcp', view='branches')
-get(kind='git', id='precis-mcp',
-    view='blame', file='src/precis/registry.py')
-search(kind='git', q='cache attribution', scope='precis-mcp')  # commit messages
+get(kind="git", id="precis-mcp")  # head, branch, dirty?
+get(kind="git", id="precis-mcp", view="log", n=20)
+get(kind="git", id="precis-mcp", view="hot", days=30)  # hottest files
+get(kind="git", id="precis-mcp", view="owners")  # ownership map
+get(kind="git", id="precis-mcp", view="diff", ref_from="main", ref_to="HEAD")
+get(kind="git", id="precis-mcp", view="branches")
+get(kind="git", id="precis-mcp", view="blame", file="src/precis/registry.py")
+search(kind="git", q="cache attribution", scope="precis-mcp")  # commit messages
 ```
 
 Read-only. No `mode='checkout'`, no `mode='commit'` — that's

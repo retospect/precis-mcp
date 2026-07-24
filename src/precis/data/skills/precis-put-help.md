@@ -18,13 +18,18 @@ and `link`.
 ## How do I record something for later?
 
 ```python
-put(kind='memory', text='Wang20 cites our 2024 result indirectly.')
-put(kind='memory',
-    text='Schedule the next sortie review for 2026-Q3.',
-    tags=['topic:sortie', 'pinned'])
-put(kind='memory',
-    text='Heterojunction comparison aligns with our hypothesis.',
-    link='paper:wang2020state', rel='cites')
+put(kind="memory", text="Wang20 cites our 2024 result indirectly.")
+put(
+    kind="memory",
+    text="Schedule the next sortie review for 2026-Q3.",
+    tags=["topic:sortie", "pinned"],
+)
+put(
+    kind="memory",
+    text="Heterojunction comparison aligns with our hypothesis.",
+    link="paper:wang2020state",
+    rel="cites",
+)
 ```
 
 Omit `id=` to mint a fresh numeric ref. The response returns the new
@@ -36,10 +41,12 @@ prefix infers the kind) or `get(kind='memory', id=<N>)`.
 ## I need to remember to do X
 
 ```python
-put(kind='todo', text='Review section 3 of abazari2024design.')
-put(kind='todo',
-    text='Sweep open patents for cpc B01J27.',
-    tags=['PRIO:high', 'project:noxrr'])
+put(kind="todo", text="Review section 3 of abazari2024design.")
+put(
+    kind="todo",
+    text="Sweep open patents for cpc B01J27.",
+    tags=["PRIO:high", "project:noxrr"],
+)
 ```
 
 `STATUS:open` is the implicit default; flip with
@@ -50,10 +57,12 @@ put(kind='todo',
 ## How do I record a niggle?
 
 ```python
-put(kind='gripe', text='Search misses on exact CPC codes — needs a lexical floor.')
-put(kind='gripe',
-    text='TOC excerpts feel too short on very long segments.',
-    tags=['area:search'])
+put(kind="gripe", text="Search misses on exact CPC codes — needs a lexical floor.")
+put(
+    kind="gripe",
+    text="TOC excerpts feel too short on very long segments.",
+    tags=["area:search"],
+)
 ```
 
 Gripes feed the retrieval-misses channel; one sentence per gripe.
@@ -63,11 +72,15 @@ Gripes feed the retrieval-misses channel; one sentence per gripe.
 ## How do I queue something to review?
 
 ```python
-put(kind='anki',
-    text='The bare-DOI form of get(kind=paper) resolves via {{c1::metadata}}, then fetches the paper.')
-put(kind='anki',
-    text='RRF fuses {{c1::lexical}} and {{c2::semantic}} search legs.',
-    tags=['topic:precis'])
+put(
+    kind="anki",
+    text="The bare-DOI form of get(kind=paper) resolves via {{c1::metadata}}, then fetches the paper.",
+)
+put(
+    kind="anki",
+    text="RRF fuses {{c1::lexical}} and {{c2::semantic}} search legs.",
+    tags=["topic:precis"],
+)
 ```
 
 Cloze cards (`{{cN::…}}`) sync to AnkiWeb; Anki owns scheduling — see `precis-anki-help`.
@@ -77,12 +90,15 @@ Cloze cards (`{{cN::…}}`) sync to AnkiWeb; Anki owns scheduling — see `preci
 ## How do I write the verifier output back?
 
 ```python
-put(kind='citation',
-    text='Z-scheme NOxRR achieves 78% selectivity at 1.2 V.',
-    source_handle='wang2020state~38..42',
-    source_quote='...selectivity reached 78% at 1.2 V vs RHE...',
+put(
+    kind="citation",
+    text="Z-scheme NOxRR achieves 78% selectivity at 1.2 V.",
+    source_handle="wang2020state~38..42",
+    source_quote="...selectivity reached 78% at 1.2 V vs RHE...",
     verifier_confidence=0.92,
-    link='paper:wang2020state', rel='cites')
+    link="paper:wang2020state",
+    rel="cites",
+)
 ```
 
 Citation is the verifier's output kind. See `precis-citation-help`
@@ -93,9 +109,12 @@ for the verifier loop and the named-kwarg shape.
 ## How do I make a new .md file?
 
 ```python
-put(kind='markdown', mode='create',
-    id='notes/proj-fbproj.md',
-    text='# fbproj — project notes\n\n## Goals\n- ...\n')
+put(
+    kind="markdown",
+    mode="create",
+    id="notes/proj-fbproj.md",
+    text="# fbproj — project notes\n\n## Goals\n- ...\n",
+)
 ```
 
 `mode='create'` is required for file kinds and is the only accepted
@@ -107,12 +126,14 @@ replace, and find-replace live on `edit`.
 ## Same shape, different kind
 
 ```python
-put(kind='plaintext', mode='create',
-    id='logs/2026-06-05.txt', text='...')
-put(kind='tex', mode='create',
-    id='chapters/intro.tex', text='\\section{Intro}\n...')
-put(kind='python', mode='create',
-    id='precis::precis.utils.demo', text='def demo():\n    ...')
+put(kind="plaintext", mode="create", id="logs/2026-06-05.txt", text="...")
+put(kind="tex", mode="create", id="chapters/intro.tex", text="\\section{Intro}\n...")
+put(
+    kind="python",
+    mode="create",
+    id="precis::precis.utils.demo",
+    text="def demo():\n    ...",
+)
 ```
 
 Same `mode='create'` discipline as `markdown`. The `id=` form for
@@ -123,13 +144,14 @@ Same `mode='create'` discipline as `markdown`. The `id=` form for
 ## How do I avoid double-paying for a Perplexity query I already ran?
 
 ```python
-put(kind='websearch', mode='import',
-    q='latest perovskite tandem efficiencies',
-    text='<paste the answer body>')
-put(kind='perplexity-reasoning', mode='import',
-    q='compare DAC and BECCS', text='...')
-put(kind='perplexity-research', mode='import',
-    q='mechanism of NOxRR', text='...')
+put(
+    kind="websearch",
+    mode="import",
+    q="latest perovskite tandem efficiencies",
+    text="<paste the answer body>",
+)
+put(kind="perplexity-reasoning", mode="import", q="compare DAC and BECCS", text="...")
+put(kind="perplexity-research", mode="import", q="mechanism of NOxRR", text="...")
 ```
 
 `mode='import'` lands the report in the cache keyed on `q=`; the
@@ -141,9 +163,9 @@ next `get(kind='websearch', q='...')` hits cache at $0. See
 ## How do I avoid a second tag() call?
 
 ```python
-put(kind='memory', text='...', tags=['pinned', 'topic:sortie'])
+put(kind="memory", text="...", tags=["pinned", "topic:sortie"])
 
-put(kind='todo', text='...', tags=['PRIO:high'])
+put(kind="todo", text="...", tags=["PRIO:high"])
 ```
 
 `tags=` runs only at creation. For retroactive tag changes use
@@ -156,10 +178,13 @@ tags are universal. See `precis-tag-help`.
 ## How do I cite a paper from a new memory?
 
 ```python
-put(kind='memory', text='Anchors our claim.',
-    link='paper:wang2020state', rel='cites')
-put(kind='memory', text='Touches the same idea.',
-    link='paper:wang2020state~38..42', rel='discusses')
+put(kind="memory", text="Anchors our claim.", link="paper:wang2020state", rel="cites")
+put(
+    kind="memory",
+    text="Touches the same idea.",
+    link="paper:wang2020state~38..42",
+    rel="discusses",
+)
 ```
 
 `link=` takes a single target `kind:identifier[~selector]` and `rel=`
@@ -174,9 +199,12 @@ Patents are read-only via OPS — `put(kind='patent', ...)` is
 rejected. Hang a memory off the patent instead:
 
 ```python
-put(kind='memory',
-    text='Verification batch — see patent.',
-    link='patent:ep4123456a1', rel='annotates')
+put(
+    kind="memory",
+    text="Verification batch — see patent.",
+    link="patent:ep4123456a1",
+    rel="annotates",
+)
 ```
 
 Same trick works for any read-only kind.
@@ -184,12 +212,14 @@ Same trick works for any read-only kind.
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')         # seven verbs, address grammar
-get(kind='skill', id='precis-edit-help')        # sub-region rewrites of existing refs
-get(kind='skill', id='precis-delete-help')      # soft-delete numeric refs, region delete on files
-get(kind='skill', id='precis-tag-help')         # tag vocabulary and axis gating
-get(kind='skill', id='precis-link-help')        # relation vocabulary
-get(kind='skill', id='precis-citation-help')    # verifier-workflow citation shape
-get(kind='skill', id='precis-perplexity-help')  # mode='import' for paid kinds
-get(kind='skill', id='precis-files-help')       # file-kind addressing
+get(kind="skill", id="precis-overview")  # seven verbs, address grammar
+get(kind="skill", id="precis-edit-help")  # sub-region rewrites of existing refs
+get(
+    kind="skill", id="precis-delete-help"
+)  # soft-delete numeric refs, region delete on files
+get(kind="skill", id="precis-tag-help")  # tag vocabulary and axis gating
+get(kind="skill", id="precis-link-help")  # relation vocabulary
+get(kind="skill", id="precis-citation-help")  # verifier-workflow citation shape
+get(kind="skill", id="precis-perplexity-help")  # mode='import' for paid kinds
+get(kind="skill", id="precis-files-help")  # file-kind addressing
 ```

@@ -40,7 +40,10 @@ The payload is JSON: a **cell** + a list of **ops**. Atoms wrap into the
 cell, so you can place one *outside* `[0,1)` and it folds back in.
 
 ```python
-put(kind='structure', id='pd111', text='''{
+put(
+    kind="structure",
+    id="pd111",
+    text="""{
   "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [true, true, false]},
   "description": "Pd(111) 3-layer slab for OH adsorption screening",
   "ops": [
@@ -51,7 +54,8 @@ put(kind='structure', id='pd111', text='''{
     {"op": "add_bond", "i": "aO1", "j": "aH1", "order": 1},
     {"op": "constrain", "atoms": ["aPd1"], "kind": "fixed-all"}
   ]
-}''')
+}""",
+)
 ```
 
 - **`cell`** is either `{a,b,c,alpha?,beta?,gamma?,pbc}` (lengths/angles, °)
@@ -91,9 +95,14 @@ probes tagged `inferred` — you always see the best picture of reality.
 ## Edit — `edit(id=<slug>, ops=[…])`
 
 ```python
-edit(kind='structure', id='pd111',
-     ops=[{"op": "add_atom", "element": "O", "frac": [0.5, 0.5, 0.55]},
-          {"op": "add_bond", "i": "aO2", "j": "aPd2"}])
+edit(
+    kind="structure",
+    id="pd111",
+    ops=[
+        {"op": "add_atom", "element": "O", "frac": [0.5, 0.5, 0.55]},
+        {"op": "add_bond", "i": "aO2", "j": "aPd2"},
+    ],
+)
 ```
 
 Each edit bumps the design version. A graph edit invalidates any prior relax.
@@ -101,8 +110,10 @@ Each edit bumps the design version. A graph edit invalidates any prior relax.
 ## Read the TOC — `get(id=<slug>)`
 
 ```python
-get(kind='structure')               # list all designs
-get(kind='structure', id='pd111')   # the TOC: formula · natoms · pbc · bonds · per-atom rows
+get(kind="structure")  # list all designs
+get(
+    kind="structure", id="pd111"
+)  # the TOC: formula · natoms · pbc · bonds · per-atom rows
 ```
 
 The TOC is the **one round-trip overview**: cell card, composition, pbc,
@@ -118,11 +129,17 @@ and angles are **minimum-image** (MIC) — they see across cell walls.
 ### Graph & coordination
 
 ```python
-get(..., view='atom',         args={'atom': 'aPd2'})                  # config + neighbour shell + coordination + fixed
-get(..., view='neighborhood', args={'center': 'aPd2', 'radius': 3.0}) # the coordination shell within R Å
-get(..., view='bonds')                                               # the whole bond list (order · kind · provenance · image)
-get(..., view='find',         args={'element': 'Pd', 'undercoordinated': true})  # select atoms by predicate
-get(..., view='validate')                                           # the DRC gate: overlaps + over-valence + fixes
+get(
+    ..., view="atom", args={"atom": "aPd2"}
+)  # config + neighbour shell + coordination + fixed
+get(
+    ..., view="neighborhood", args={"center": "aPd2", "radius": 3.0}
+)  # the coordination shell within R Å
+get(..., view="bonds")  # the whole bond list (order · kind · provenance · image)
+get(
+    ..., view="find", args={"element": "Pd", "undercoordinated": true}
+)  # select atoms by predicate
+get(..., view="validate")  # the DRC gate: overlaps + over-valence + fixes
 ```
 
 ### Spatial — the CAD ray / plane, retargeted to atoms (§6.2)
@@ -132,25 +149,29 @@ comma-string `"0,0,5"`.
 
 ```python
 # 1D — a ray: atoms within `radius` of the line, ordered along it (channels, columns)
-get(..., view='line', args={'origin': [0,0,0], 'direction': [0,0,1], 'radius': 1.5})
+get(..., view="line", args={"origin": [0, 0, 0], "direction": [0, 0, 1], "radius": 1.5})
 
 # 2D — a layer slice: atoms within `thickness` of a plane, as labelled in-plane (u,v) coords
-get(..., view='plane', args={'point': [0,0,5], 'normal': [0,0,1], 'thickness': 1.0})
+get(..., view="plane", args={"point": [0, 0, 5], "normal": [0, 0, 1], "thickness": 1.0})
 
 # bonds that cross a plane — what stitches two layers (cleavage reasoning), image-aware
-get(..., view='bonds_through_plane', args={'point': [0,0,5], 'normal': [0,0,1]})
+get(..., view="bonds_through_plane", args={"point": [0, 0, 5], "normal": [0, 0, 1]})
 
 # bonds inside/crossing a sphere — the local bonding environment around a point
-get(..., view='bonds_in_sphere', args={'center': [4.2,4.2,6.0], 'radius': 3.0})
+get(..., view="bonds_in_sphere", args={"center": [4.2, 4.2, 6.0], "radius": 3.0})
 ```
 
 ### Graph topology & diff (§6.1/§6.3/§6.5)
 
 ```python
-get(..., view='path',      args={'a': 'aO1', 'b': 'aPd2'})  # shortest bond path (or "disconnected")
-get(..., view='rings',     args={'max_size': 8})            # smallest cycles — find sp² 6-rings
-get(..., view='fragments')                                 # connected components: "slab + 3 adsorbates"
-get(..., view='diff',      args={'other': 'pd111_v0'})     # vs another design: RMSD · per-atom move · bonds/atoms broken/formed
+get(
+    ..., view="path", args={"a": "aO1", "b": "aPd2"}
+)  # shortest bond path (or "disconnected")
+get(..., view="rings", args={"max_size": 8})  # smallest cycles — find sp² 6-rings
+get(..., view="fragments")  # connected components: "slab + 3 adsorbates"
+get(
+    ..., view="diff", args={"other": "pd111_v0"}
+)  # vs another design: RMSD · per-atom move · bonds/atoms broken/formed
 ```
 
 `fragments` answers "did this edit break the structure apart?"; `diff` is
@@ -162,8 +183,12 @@ One uniform readout regardless of *what* you focus on — an atom or a
 fragment (a ring from `rings`, a molecule from `fragments`):
 
 ```python
-get(..., view='pov', args={'support': 'aO1', 'reach': 3.0})          # i_am=atom
-get(..., view='pov', args={'support': ['aC1','aC2','aC3','aC4','aC5','aC6'], 'reach': 3.0})  # i_am=fragment
+get(..., view="pov", args={"support": "aO1", "reach": 3.0})  # i_am=atom
+get(
+    ...,
+    view="pov",
+    args={"support": ["aC1", "aC2", "aC3", "aC4", "aC5", "aC6"], "reach": 3.0},
+)  # i_am=fragment
 ```
 
 Returns **`i_am`** (atom/fragment) · **`i_include`** (the support) ·
@@ -179,17 +204,40 @@ survives an edit.
 
 ```python
 # a named navigation handle over a support set
-edit(kind='structure', id='pd111',
-     ops=[{"op": "eye", "name": "active_site", "atoms": ["aPd12"],
-           "reach": 3.0, "for": "the reactive Pd"}])
+edit(
+    kind="structure",
+    id="pd111",
+    ops=[
+        {
+            "op": "eye",
+            "name": "active_site",
+            "atoms": ["aPd12"],
+            "reach": 3.0,
+            "for": "the reactive Pd",
+        }
+    ],
+)
 
 # a pinned measurement with a graded goal
-edit(kind='structure', id='pd111',
-     ops=[{"op": "measure", "kind": "distance", "atoms": ["aH1", "aPd12"],
-           "direction": "target", "goal": {"target": 2.4, "tol": 0.1},
-           "strength": "soft", "for": "keep the H bound"}])
+edit(
+    kind="structure",
+    id="pd111",
+    ops=[
+        {
+            "op": "measure",
+            "kind": "distance",
+            "atoms": ["aH1", "aPd12"],
+            "direction": "target",
+            "goal": {"target": 2.4, "tol": 0.1},
+            "strength": "soft",
+            "for": "keep the H bound",
+        }
+    ],
+)
 
-get(kind='structure', id='pd111', view='markers')   # all eyes + measures, live value + verdict
+get(
+    kind="structure", id="pd111", view="markers"
+)  # all eyes + measures, live value + verdict
 ```
 
 - **measure `kind`**: `distance` / `bond_length` (2 atoms) · `angle` (3) ·
@@ -204,7 +252,7 @@ get(kind='structure', id='pd111', view='markers')   # all eyes + measures, live 
 
 ```python
 # a derived design points back to its parent
-link(kind='structure', id='pd111_h', target='structure:pd111', rel='derived-from')
+link(kind="structure", id="pd111_h", target="structure:pd111", rel="derived-from")
 ```
 
 `derived-from` (⇄ `derived-into`) records that one design came from another —
@@ -224,8 +272,10 @@ the design and **every run is recorded** (see `view='runs'`).
 | `ff` · `xtb` · `dft-fast` · `dft-tight` | rented | (later) | progressively more correct |
 
 ```python
-edit(kind='structure', id='pd111', ops=[{"op": "relax", "fidelity": "clean"}])
-edit(kind='structure', id='pd111', ops=[{"op": "relax", "fidelity": "ml", "steps": 200}])
+edit(kind="structure", id="pd111", ops=[{"op": "relax", "fidelity": "clean"}])
+edit(
+    kind="structure", id="pd111", ops=[{"op": "relax", "fidelity": "ml", "steps": 200}]
+)
 ```
 
 `clean` is always available and **has no energy** — asking for its energy
@@ -236,7 +286,9 @@ host** doesn't crash — it dispatches to the GPU node as a `struct_relax` job
 honours `fixed` constraints — a frozen atom never moves.
 
 ```python
-get(kind='structure', id='pd111', view='runs')   # the compute history: fidelity · converged · steps · energy · max_force
+get(
+    kind="structure", id="pd111", view="runs"
+)  # the compute history: fidelity · converged · steps · energy · max_force
 ```
 
 ### Energy rungs run on the GPU node — no todo needed (ADR 0044)
@@ -250,7 +302,9 @@ completion; poll `view='runs'`. An identical relax — same geometry, same
 rung — is a **zero-compute cache hit** (returns synchronously, mints no job).
 
 ```python
-edit(kind='structure', id='pd111', ops=[{"op": "relax", "fidelity": "dft"}])  # dispatches, then poll view='runs'
+edit(
+    kind="structure", id="pd111", ops=[{"op": "relax", "fidelity": "dft"}]
+)  # dispatches, then poll view='runs'
 ```
 
 **Want an intentful task to block on the build?** Pass `requested_by=<todo_id>`
@@ -260,16 +314,19 @@ converges and gets a `child-failed` bubble if it fails. Two tasks that
 request the *same* relax share one job (idempotent on the cache key).
 
 ```python
-edit(kind='structure', id='pd111',
-     ops=[{"op": "relax", "fidelity": "dft", "requested_by": 4821}])
+edit(
+    kind="structure",
+    id="pd111",
+    ops=[{"op": "relax", "fidelity": "dft", "requested_by": 4821}],
+)
 ```
 
 ## Find a design — `search`
 
 ```python
-search(kind='structure', q='OH on Pd(111)')                 # by intent (hybrid)
-search(kind='structure', q='catalyst surface', mode='semantic')
-search(kind='structure', q='palladium', mode='lexical')     # keyword
+search(kind="structure", q="OH on Pd(111)")  # by intent (hybrid)
+search(kind="structure", q="catalyst surface", mode="semantic")
+search(kind="structure", q="palladium", mode="lexical")  # keyword
 ```
 
 Each design carries **one** embeddable card (title + composition + your
@@ -282,9 +339,13 @@ the cross-kind fan-out `search(kind='*', q='…')`. Hits are design-level
 The output side; bonds are dropped (DFT consumes positions + cell).
 
 ```python
-get(kind='structure', id='pd111', view='poscar')   # VASP POSCAR (pure; Selective dynamics iff any atom is fixed)
-get(kind='structure', id='pd111', view='extxyz')   # extended XYZ (pure; carries cell + pbc + our labels — lossless round-trip)
-get(kind='structure', id='pd111', view='cif')      # CIF via ASE — needs precis-mcp[dft]
+get(
+    kind="structure", id="pd111", view="poscar"
+)  # VASP POSCAR (pure; Selective dynamics iff any atom is fixed)
+get(
+    kind="structure", id="pd111", view="extxyz"
+)  # extended XYZ (pure; carries cell + pbc + our labels — lossless round-trip)
+get(kind="structure", id="pd111", view="cif")  # CIF via ASE — needs precis-mcp[dft]
 ```
 
 POSCAR and extXYZ are pure (zero deps); CIF needs the `[dft]` extra. A
@@ -293,7 +354,9 @@ missing extra returns Unsupported with the install hint.
 ## Delete
 
 ```python
-delete(kind='structure', id='pd111')   # soft-retire the whole design (atoms/bonds retired, recoverable)
+delete(
+    kind="structure", id="pd111"
+)  # soft-retire the whole design (atoms/bonds retired, recoverable)
 ```
 
 ## Scope (v1)

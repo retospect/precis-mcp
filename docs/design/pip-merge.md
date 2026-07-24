@@ -95,15 +95,17 @@ From `acatome-meta/tests/`:
 Single source of truth for IDs (per ADR 0006). Public surface:
 
 ```python
-def make_paper_id(*, doi: str | None = None, arxiv_id: str | None = None,
-                  pdf_hash: str | None = None) -> str: ...
-def make_pub_id(paper_id: str) -> str: ...           # 6-char base32 lowercase
-def make_cite_key(authors: Any, year: int | None,
-                  taken: set[str]) -> str: ...       # miller23a (ADR 0006)
+def make_paper_id(
+    *, doi: str | None = None, arxiv_id: str | None = None, pdf_hash: str | None = None
+) -> str: ...
+def make_pub_id(paper_id: str) -> str: ...  # 6-char base32 lowercase
+def make_cite_key(
+    authors: Any, year: int | None, taken: set[str]
+) -> str: ...  # miller23a (ADR 0006)
 # (no make_slug; dropped per ADR 0008)
 def make_node_id(paper_id: str, page: int, block_index: int) -> str: ...
-def make_pdf_hash(pdf_bytes: bytes) -> str: ...      # sha256 hex
-def make_content_hash(normalized_text: str) -> str: ...   # sha256 hex
+def make_pdf_hash(pdf_bytes: bytes) -> str: ...  # sha256 hex
+def make_content_hash(normalized_text: str) -> str: ...  # sha256 hex
 ```
 
 All ID derivation lives here. Deterministic, no I/O, no model loads.

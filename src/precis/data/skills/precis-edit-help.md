@@ -22,14 +22,23 @@ slug, …). The legacy `<slug>~<selector>` form still resolves on input.
 ## Swap a word inside a paragraph
 
 ```python
-edit(kind='markdown', id='mc512',                 # the block handle from get/search
-     mode='find-replace',
-     find='the', before='over ', after=' fence',
-     text='a')
+edit(
+    kind="markdown",
+    id="mc512",  # the block handle from get/search
+    mode="find-replace",
+    find="the",
+    before="over ",
+    after=" fence",
+    text="a",
+)
 
-edit(kind='markdown', id='notes--foo~intro',      # legacy slug~selector, still resolves
-     mode='find-replace',
-     find='the', text='a')
+edit(
+    kind="markdown",
+    id="notes--foo~intro",  # legacy slug~selector, still resolves
+    mode="find-replace",
+    find="the",
+    text="a",
+)
 ```
 
 `find=` is literal text. `before=` / `after=` are optional anchors —
@@ -41,12 +50,15 @@ ambiguous. `mode='find-replace'` is the default.
 ## Drop one field from a structured entry
 
 ```python
-edit(kind='plaintext', id='refs.bib',
-     mode='find-replace',
-     find='doi     = {10.1111/ejn.12125}',
-     before='@article{tritsch2012dopaminergic,',
-     after='volume  = {35},',
-     text='')
+edit(
+    kind="plaintext",
+    id="refs.bib",
+    mode="find-replace",
+    find="doi     = {10.1111/ejn.12125}",
+    before="@article{tritsch2012dopaminergic,",
+    after="volume  = {35},",
+    text="",
+)
 ```
 
 Pass `text=''` to delete the match. The `delete` verb is for whole
@@ -57,13 +69,14 @@ files and whole blocks — not lines or tokens.
 ## Overwrite one section of a file
 
 ```python
-edit(kind='markdown', id='<slug>~intro',
-     mode='replace',
-     text='<new region body>')
+edit(kind="markdown", id="<slug>~intro", mode="replace", text="<new region body>")
 
-edit(kind='python', id='precis::precis.cli.main',
-     mode='replace',
-     text='def main():\n    ...\n')
+edit(
+    kind="python",
+    id="precis::precis.cli.main",
+    mode="replace",
+    text="def main():\n    ...\n",
+)
 ```
 
 `mode='replace'` with `id='<slug>~<selector>'` rewrites one block.
@@ -73,11 +86,14 @@ With a bare `id='<slug>'` (no selector), it rewrites the whole file.
 ## Insert before or after a known string
 
 ```python
-edit(kind='markdown', id='notes--foo~intro',
-     mode='insert',
-     find='## Background',
-     where='before',
-     text='## Motivation\n\nWhy this matters.\n\n')
+edit(
+    kind="markdown",
+    id="notes--foo~intro",
+    mode="insert",
+    find="## Background",
+    where="before",
+    text="## Motivation\n\nWhy this matters.\n\n",
+)
 ```
 
 `mode='insert'` requires `find=`, `text=`, and `where='before'|'after'`.
@@ -85,19 +101,26 @@ edit(kind='markdown', id='notes--foo~intro',
 ## Append to the end of a file
 
 ```python
-edit(kind='markdown', id='notes--log',
-     mode='append',
-     text='\n## 2026-06-05\n\nAnother entry.\n')
+edit(
+    kind="markdown",
+    id="notes--log",
+    mode="append",
+    text="\n## 2026-06-05\n\nAnother entry.\n",
+)
 ```
 
 ## Rename an identifier across a file
 ## Bulk-change every occurrence
 
 ```python
-edit(kind='python', id='r/src/precis/cli.py',
-     mode='find-replace',
-     find='deprecated_call(', text='new_call(',
-     match='all')
+edit(
+    kind="python",
+    id="r/src/precis/cli.py",
+    mode="find-replace",
+    find="deprecated_call(",
+    text="new_call(",
+    match="all",
+)
 ```
 
 `match='unique'` (default) requires exactly one hit. `match='first'`
@@ -108,11 +131,9 @@ with `nth=N` picks the Nth (1-indexed).
 ## Target a region by line number
 
 ```python
-edit(kind='plaintext', id='<slug>~L42',
-     mode='replace', text='replacement line\n')
+edit(kind="plaintext", id="<slug>~L42", mode="replace", text="replacement line\n")
 
-edit(kind='markdown', id='<slug>~L42-58',
-     mode='replace', text='<new region body>')
+edit(kind="markdown", id="<slug>~L42-58", mode="replace", text="<new region body>")
 ```
 
 `~L<n>` selects one line; `~L<n>-<m>` selects an inclusive line range.
@@ -122,13 +143,20 @@ Available on every file kind.
 ## Rewrite one symbol without touching neighbours
 
 ```python
-edit(kind='python', id='precis::precis.cli.main',
-     mode='replace',
-     text='def main():\n    ...\n')
+edit(
+    kind="python",
+    id="precis::precis.cli.main",
+    mode="replace",
+    text="def main():\n    ...\n",
+)
 
-edit(kind='python', id='precis::precis.cli.MyClass.method',
-     mode='find-replace',
-     find='return x', text='return x + 1')
+edit(
+    kind="python",
+    id="precis::precis.cli.MyClass.method",
+    mode="find-replace",
+    find="return x",
+    text="return x + 1",
+)
 ```
 
 Python edits run `ast.parse` on the post-edit buffer. A `def`/`class`
@@ -139,15 +167,24 @@ check --fix` + `ruff format` run on the result.
 ## Dry-run before committing a risky change
 
 ```python
-edit(kind='python', id='r/src/precis/cli.py',
-     mode='find-replace',
-     find='deprecated_call(', text='new_call(', match='all',
-     dry_run=True)
+edit(
+    kind="python",
+    id="r/src/precis/cli.py",
+    mode="find-replace",
+    find="deprecated_call(",
+    text="new_call(",
+    match="all",
+    dry_run=True,
+)
 
-edit(kind='markdown', id='notes--foo',
-     mode='find-replace',
-     find='draft', text='final',
-     dry_run='full')
+edit(
+    kind="markdown",
+    id="notes--foo",
+    mode="find-replace",
+    find="draft",
+    text="final",
+    dry_run="full",
+)
 ```
 
 `dry_run=True` (or `'diff'`) returns a unified diff. `dry_run='full'`
@@ -215,10 +252,10 @@ Per-kind gates:
 ## See also
 
 ```python
-get(kind='skill', id='precis-files-help')       # shared address grammar (~L, ~N, qualnames)
-get(kind='skill', id='precis-markdown-help')    # markdown recipes
-get(kind='skill', id='precis-python-help')      # python AST gates + ruff
-get(kind='skill', id='precis-plaintext-help')   # plaintext quirks
-get(kind='skill', id='precis-put-help')         # creating new files
-get(kind='skill', id='precis-delete-help')      # whole-file and whole-block removal
+get(kind="skill", id="precis-files-help")  # shared address grammar (~L, ~N, qualnames)
+get(kind="skill", id="precis-markdown-help")  # markdown recipes
+get(kind="skill", id="precis-python-help")  # python AST gates + ruff
+get(kind="skill", id="precis-plaintext-help")  # plaintext quirks
+get(kind="skill", id="precis-put-help")  # creating new files
+get(kind="skill", id="precis-delete-help")  # whole-file and whole-block removal
 ```

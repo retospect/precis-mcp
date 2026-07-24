@@ -160,7 +160,7 @@ verification — only fires when bibliographic hints exist.
 For "is this DOI real?" without the full provenance check:
 
 ```python
-get(kind='provenance', id='10.x/foo', view='exists')
+get(kind="provenance", id="10.x/foo", view="exists")
 # → { status: 'ok' | 'unknown' | 'malformed', canonical_doi, title, ... }
 ```
 
@@ -177,9 +177,9 @@ Crossref + local RW cache, writes through to `refs.retraction_*` and
 `links` when the DOI matches a local paper ref.
 
 ```python
-get(kind='provenance', id='10.1038/s41586-021-03819-2')
-get(kind='provenance', q='10.x/a, 10.x/b, 10.x/c')
-get(kind='provenance', q='manuscript.bib', view='from-bibfile')
+get(kind="provenance", id="10.1038/s41586-021-03819-2")
+get(kind="provenance", q="10.x/a, 10.x/b, 10.x/c")
+get(kind="provenance", q="manuscript.bib", view="from-bibfile")
 ```
 
 **Views:**
@@ -210,7 +210,7 @@ section rather than as its own view.
 ### `paper` kind gains `view='health'`
 
 ```python
-get(kind='paper', id='smith2019gene', view='health')
+get(kind="paper", id="smith2019gene", view="health")
 ```
 
 Thin shim: resolves slug → DOI → calls into provenance. Lets agents

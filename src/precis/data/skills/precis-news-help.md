@@ -19,10 +19,10 @@ tag), so you filter it in or out of search by tag.
 ## Reading news
 
 ```python
-get(kind='news')                          # list ingested articles
-search(kind='news', q='semiconductors')   # search inside article bodies
-search(q='...', tags=['source:bbc'])      # scope to one source
-search(q='...', tags=['category:news'])   # news only, across the corpus
+get(kind="news")  # list ingested articles
+search(kind="news", q="semiconductors")  # search inside article bodies
+search(q="...", tags=["source:bbc"])  # scope to one source
+search(q="...", tags=["category:news"])  # news only, across the corpus
 ```
 
 Each ingested article has a handle — `nw<id>` (the 2-char `news` code +
@@ -32,13 +32,13 @@ the address** (kept on the ref for dedup / re-fetch / citation). Search
 output shows the handle; copy it back into `get`, no `kind=` needed:
 
 ```python
-get(id='nw42')               # handle infers kind=news; see precis-addressing-help
+get(id="nw42")  # handle infers kind=news; see precis-addressing-help
 ```
 
 A single article on demand by URL (fetches + extracts the live page):
 
 ```python
-get(kind='news', id='https://www.bbc.com/news/articles/abc123')
+get(kind="news", id="https://www.bbc.com/news/articles/abc123")
 ```
 
 On-demand page fetch needs the `[external]` extra (trafilatura/httpx). The
@@ -104,15 +104,30 @@ launchd/cron job. The schedule + dispatch passes tick them; the
 
 ```python
 # poll feeds every 30 minutes
-put(kind='todo', text='news poll', tags=['level:recurring'],
-    meta={'schedule': {'every': '30m'},
-          'executor': 'claude_inproc', 'job_type': 'news_poll', 'params': {}})
+put(
+    kind="todo",
+    text="news poll",
+    tags=["level:recurring"],
+    meta={
+        "schedule": {"every": "30m"},
+        "executor": "claude_inproc",
+        "job_type": "news_poll",
+        "params": {},
+    },
+)
 
 # brief every morning at 07:00 UTC, delivered into a Discord conv thread
-put(kind='todo', text='morning briefing', tags=['level:recurring'],
-    meta={'schedule': {'cron': '0 7 * * *'},
-          'executor': 'claude_inproc', 'job_type': 'briefing',
-          'params': {'deliver_to': 'conv:discord/<guild>/<channel>/<thread>'}})
+put(
+    kind="todo",
+    text="morning briefing",
+    tags=["level:recurring"],
+    meta={
+        "schedule": {"cron": "0 7 * * *"},
+        "executor": "claude_inproc",
+        "job_type": "briefing",
+        "params": {"deliver_to": "conv:discord/<guild>/<channel>/<thread>"},
+    },
+)
 ```
 
 Prefer a thread/conv target (`conv:discord/<g>/<c>/<t>`): a

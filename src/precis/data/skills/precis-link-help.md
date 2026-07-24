@@ -17,8 +17,7 @@ another. The relation vocabulary (`cites`, `blocks`, `contradicts`,
 ## How do I record that ref A cites ref B?
 
 ```python
-link(kind='memory', id=42,
-     target='paper:wang2020state', rel='cites')
+link(kind="memory", id=42, target="paper:wang2020state", rel="cites")
 ```
 
 Source is `(kind, id)`. Target is a canonical address. `rel=`
@@ -52,13 +51,13 @@ won't guess.
 ## Undo a link
 
 ```python
-link(kind='memory', id=42,
-     target='paper:wang2020state', rel='cites',
-     mode='remove')                                  # one specific (target, rel)
+link(
+    kind="memory", id=42, target="paper:wang2020state", rel="cites", mode="remove"
+)  # one specific (target, rel)
 
-link(kind='memory', id=42,
-     target='paper:wang2020state',
-     mode='remove')                                  # every edge to this target
+link(
+    kind="memory", id=42, target="paper:wang2020state", mode="remove"
+)  # every edge to this target
 ```
 
 With `rel=` set, `mode='remove'` deletes that exact pair. Omit
@@ -81,9 +80,12 @@ When a fresh ref ships with one outbound edge, attach it on the
 `put` call rather than a follow-up `link`:
 
 ```python
-put(kind='memory',
-    text='Counter-evidence to Wang.',
-    link='paper:wang2020state', rel='contradicts')
+put(
+    kind="memory",
+    text="Counter-evidence to Wang.",
+    link="paper:wang2020state",
+    rel="contradicts",
+)
 ```
 
 Use `link` directly for removal, for second edges, or when adding
@@ -92,15 +94,13 @@ to a ref that already exists.
 ## Block-level link to a paper paragraph
 
 ```python
-link(kind='memory', id=42,
-     target='paper:wang2020state~38', rel='annotates')
+link(kind="memory", id=42, target="paper:wang2020state~38", rel="annotates")
 ```
 
 ## Workflow blocker between tasks
 
 ```python
-link(kind='todo', id=158,
-     target='gripe:7', rel='blocks')
+link(kind="todo", id=158, target="gripe:7", rel="blocks")
 ```
 
 ## Reparent a todo (`rel='parent'`)
@@ -110,8 +110,8 @@ Todos form a tree. `rel='parent'` places one todo under another;
 relation applies to `kind='todo'`.
 
 ```python
-link(kind='todo', id=141, target='todo:158', rel='parent')   # move 141 under 158
-link(kind='todo', id=141, rel='parent', mode='remove')        # detach 141 to a root
+link(kind="todo", id=141, target="todo:158", rel="parent")  # move 141 under 158
+link(kind="todo", id=141, rel="parent", mode="remove")  # detach 141 to a root
 ```
 
 A move that would form a cycle or nest deeper than the tree's depth
@@ -122,8 +122,8 @@ the full tree workflow.
 ## See also
 
 ```python
-get(kind='skill', id='precis-relations')     # relation vocabulary, per-kind constraints
-get(kind='skill', id='precis-put-help')      # link= on creation
-get(kind='skill', id='precis-tags')          # tags vs links — when to reach for which
-get(kind='skill', id='precis-overview')      # verbs and address grammar
+get(kind="skill", id="precis-relations")  # relation vocabulary, per-kind constraints
+get(kind="skill", id="precis-put-help")  # link= on creation
+get(kind="skill", id="precis-tags")  # tags vs links — when to reach for which
+get(kind="skill", id="precis-overview")  # verbs and address grammar
 ```

@@ -30,8 +30,8 @@ Every file ingested via `markdown` / `plaintext` / `tex` carries a
 system-applied `workspace` tag. Use it to scope:
 
 ```python
-search(q='kinetics', tags=['workspace'])                # working dir only
-search(kind='markdown', q='meeting', tags=['workspace'])
+search(q="kinetics", tags=["workspace"])  # working dir only
+search(kind="markdown", q="meeting", tags=["workspace"])
 ```
 
 The tag is system-applied (`set_by='system'`), idempotent on
@@ -72,13 +72,15 @@ The walker is mtime-gated — unchanged files are skipped.
 | `<view>` | `toc`, `outline`, `raw`, `source`, `callgraph` |
 
 ```python
-get(kind='markdown', id='notes/meeting.md')             # overview
-get(kind='markdown', id='notes/meeting.md~conclusion')  # one block by name
-get(kind='markdown', id='notes/meeting.md~L42-58')      # by line range
-get(kind='markdown', id='notes/meeting.md~3')           # by block pos (output shows the handle mc<id>; get(id='mc<id>') works too)
-get(kind='markdown', id='notes/meeting.md/toc')         # full TOC
-get(kind='markdown', id='notes/meeting.md/raw')         # source
-get(kind='markdown', id='/Users/bots/notes/meeting.md') # absolute path also works
+get(kind="markdown", id="notes/meeting.md")  # overview
+get(kind="markdown", id="notes/meeting.md~conclusion")  # one block by name
+get(kind="markdown", id="notes/meeting.md~L42-58")  # by line range
+get(
+    kind="markdown", id="notes/meeting.md~3"
+)  # by block pos (output shows the handle mc<id>; get(id='mc<id>') works too)
+get(kind="markdown", id="notes/meeting.md/toc")  # full TOC
+get(kind="markdown", id="notes/meeting.md/raw")  # source
+get(kind="markdown", id="/Users/bots/notes/meeting.md")  # absolute path also works
 ```
 
 ## Coordinate-form vs name-form addressing
@@ -105,12 +107,12 @@ does not.
 ## Open a file and see its contents
 
 ```python
-get(kind='markdown')                                    # index of all files
-get(kind='markdown', id='notes/meeting.md')             # overview + TOC preview
-get(kind='markdown', id='notes/meeting.md~conclusion')  # one block
-get(kind='markdown', id='notes/meeting.md~L42-58')      # by lines
-search(kind='markdown', q='deadline')                   # all files
-search(kind='markdown', q='deadline', scope='notes/meeting.md')
+get(kind="markdown")  # index of all files
+get(kind="markdown", id="notes/meeting.md")  # overview + TOC preview
+get(kind="markdown", id="notes/meeting.md~conclusion")  # one block
+get(kind="markdown", id="notes/meeting.md~L42-58")  # by lines
+search(kind="markdown", q="deadline")  # all files
+search(kind="markdown", q="deadline", scope="notes/meeting.md")
 ```
 
 ## How do I create or rewrite a file?
@@ -124,25 +126,36 @@ Available on R/W kinds (`markdown`, `plaintext`, `python`).
 
 ```python
 # Create a new file.
-put(kind='markdown', id='notes/new-file.md',
-    text='# Title\n\nFirst paragraph.', mode='create')
+put(
+    kind="markdown",
+    id="notes/new-file.md",
+    text="# Title\n\nFirst paragraph.",
+    mode="create",
+)
 
 # Append to the end.
-edit(kind='markdown', id='notes/meeting.md',
-    text='Final thought.', mode='append')
+edit(kind="markdown", id="notes/meeting.md", text="Final thought.", mode="append")
 
 # Replace one region — by slug, lines, or pos.
-edit(kind='markdown', id='notes/meeting.md~note-on-reagents',
-    text='Rewritten paragraph.', mode='replace')
-edit(kind='markdown', id='notes/meeting.md~L42-58',
-    text='Rewritten paragraph.', mode='replace')
+edit(
+    kind="markdown",
+    id="notes/meeting.md~note-on-reagents",
+    text="Rewritten paragraph.",
+    mode="replace",
+)
+edit(
+    kind="markdown",
+    id="notes/meeting.md~L42-58",
+    text="Rewritten paragraph.",
+    mode="replace",
+)
 
 # Delete a region.
-delete(kind='markdown', id='notes/meeting.md~note-on-reagents')
+delete(kind="markdown", id="notes/meeting.md~note-on-reagents")
 
 # Whole-file delete via edit (the delete verb only handles regions
 # with a selector in id=). Clear the file in one call:
-edit(kind='markdown', id='notes/meeting.md', mode='replace', text='')
+edit(kind="markdown", id="notes/meeting.md", mode="replace", text="")
 ```
 
 A block is one paragraph, one heading, one fenced code, one table, or
@@ -167,28 +180,49 @@ Two sub-region modes for surgical changes:
 
 ```python
 # Surgical replacement: content selects, anchors disambiguate.
-edit(kind='markdown', id='notes--foo~intro',
-     mode='find-replace',
-     find='the', before='over ', after=' fence',
-     text='a', match='unique')
+edit(
+    kind="markdown",
+    id="notes--foo~intro",
+    mode="find-replace",
+    find="the",
+    before="over ",
+    after=" fence",
+    text="a",
+    match="unique",
+)
 
 # Insert adjacent to an anchor.
-edit(kind='markdown', id='notes--foo',
-     mode='insert',
-     find='## Conclusion', where='before',
-     text='\n## TL;DR\n\nQuick summary.\n\n')
+edit(
+    kind="markdown",
+    id="notes--foo",
+    mode="insert",
+    find="## Conclusion",
+    where="before",
+    text="\n## TL;DR\n\nQuick summary.\n\n",
+)
 
 # Bulk rename across one file (Python's AST + ruff gates apply).
-edit(kind='python', id='r/src/precis/cli.py',
-     mode='find-replace',
-     find='X.legacy_method(', text='X.method(',
-     match='all')
+edit(
+    kind="python",
+    id="r/src/precis/cli.py",
+    mode="find-replace",
+    find="X.legacy_method(",
+    text="X.method(",
+    match="all",
+)
 
 # Delete a matched span without rewriting the block.
-edit(kind='markdown', id='notes--foo~intro',
-     mode='find-replace',
-     find='(draft) ', text='')
+edit(
+    kind="markdown",
+    id="notes--foo~intro",
+    mode="find-replace",
+    find="(draft) ",
+    text="",
+)
 ```
+
+`text=''` (empty string) is the span-delete idiom above: `find-replace`
+with no replacement text removes the matched span outright.
 
 **Content selects, range bounds.** `id`-selector narrows where the
 search runs (one block, one function, one line range); `find=` +
@@ -216,11 +250,11 @@ nearest matches.
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')          # verbs and kinds
-get(kind='skill', id='precis-edit-help')         # universal find-replace + insert grammar
-get(kind='skill', id='precis-markdown-help')     # .md block grammar and recipes
-get(kind='skill', id='precis-plaintext-help')    # .txt / .log specifics
-get(kind='skill', id='precis-tex-help')          # .tex section-aware blocks
-get(kind='skill', id='precis-python-help')       # Python navigation + AST-gated edits
-get(kind='skill', id='precis-relations')         # typed links (file ↔ paper ↔ memory)
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-edit-help")  # universal find-replace + insert grammar
+get(kind="skill", id="precis-markdown-help")  # .md block grammar and recipes
+get(kind="skill", id="precis-plaintext-help")  # .txt / .log specifics
+get(kind="skill", id="precis-tex-help")  # .tex section-aware blocks
+get(kind="skill", id="precis-python-help")  # Python navigation + AST-gated edits
+get(kind="skill", id="precis-relations")  # typed links (file ↔ paper ↔ memory)
 ```

@@ -30,8 +30,8 @@ Address the paper by its `pa<id>` handle (the slug still resolves as a
 legacy form):
 
 ```python
-get(kind='paper', id='pa312', view='bibliography')      # pa<id> handle
-get(kind='paper', id='collins06', view='bibliography')  # slug (legacy)
+get(kind="paper", id="pa312", view="bibliography")  # pa<id> handle
+get(kind="paper", id="collins06", view="bibliography")  # slug (legacy)
 ```
 
 ```text
@@ -61,16 +61,16 @@ cited yet — that's the normal state for a freshly-ingested paper.
 ## Drill into one citation
 
 ```python
-get(id='ci42')                       # full record, by handle
-get(kind='citation', id=42)          # equivalent
-get(kind='citation', id='citation:42')   # legacy link-target form, equivalent
+get(id="ci42")  # full record, by handle
+get(kind="citation", id=42)  # equivalent
+get(kind="citation", id="citation:42")  # legacy link-target form, equivalent
 ```
 
 ## Find citations across all papers
 
 ```python
-search(kind='citation', q='CO2 reduction Faradaic efficiency')
-get(kind='citation', id='/recent')
+search(kind="citation", q="CO2 reduction Faradaic efficiency")
+get(kind="citation", id="/recent")
 ```
 
 The bibliography view is scoped to one paper. To browse citations
@@ -85,8 +85,8 @@ the export engine renders `\cite{}` + one bibliography entry per paper
 at compile time. To fetch a short-form entry for external use:
 
 ```python
-get(kind='paper', id='pa312', view='bibtex')
-get(kind='paper', id='pa312', view='ris')
+get(kind="paper", id="pa312", view="bibtex")
+get(kind="paper", id="pa312", view="ris")
 ```
 
 ## Re-verification appears as a new row
@@ -98,8 +98,10 @@ appear in the bibliography so the audit trail survives.
 ## See also
 
 ```python
-get(kind='skill', id='precis-draft-help')      # write-side: inline [pc<id>] citations in a draft
-get(kind='skill', id='precis-citation-help')   # the citation kind + verifier loop
-get(kind='skill', id='precis-paper-help')      # paper views, pa<id> handle, short-form cite
-get(kind='skill', id='precis-link-help')       # the cites relation in the graph
+get(
+    kind="skill", id="precis-draft-help"
+)  # write-side: inline [pc<id>] citations in a draft
+get(kind="skill", id="precis-citation-help")  # the citation kind + verifier loop
+get(kind="skill", id="precis-paper-help")  # paper views, pa<id> handle, short-form cite
+get(kind="skill", id="precis-link-help")  # the cites relation in the graph
 ```

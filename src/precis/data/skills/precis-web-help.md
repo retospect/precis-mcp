@@ -17,9 +17,9 @@ canonical URL.
 ## I have a link — how do I read it?
 
 ```python
-get(kind='web', id='https://blog.langchain.com/agentic-rag/')
-get(kind='web', q='https://blog.langchain.com/agentic-rag/')      # q= also works
-get(kind='web', id='https://arxiv.org/abs/2207.09327')
+get(kind="web", id="https://blog.langchain.com/agentic-rag/")
+get(kind="web", q="https://blog.langchain.com/agentic-rag/")  # q= also works
+get(kind="web", id="https://arxiv.org/abs/2207.09327")
 ```
 
 Returns the article body as markdown — chrome (nav, sidebar, footer,
@@ -80,9 +80,9 @@ with and without `?utm_source=x` is always the same cache entry.
 ## Where did I read about X?
 
 ```python
-search(kind='web', q='retrieval-augmented generation')
-search(kind='web', q='dopamine D1 D2', page_size=20)
-search(kind='web', q='RAG', page=2)
+search(kind="web", q="retrieval-augmented generation")
+search(kind="web", q="dopamine D1 D2", page_size=20)
+search(kind="web", q="RAG", page=2)
 ```
 
 Hybrid lexical + semantic over the bodies of pages already in the
@@ -96,8 +96,8 @@ pages are searchable — `search` does not crawl.
 ## Find something across papers and bookmarked pages
 
 ```python
-search(q='Z-scheme photocatalysis')                # all kinds
-search(kind='paper,web', q='retrieval augmentation')
+search(q="Z-scheme photocatalysis")  # all kinds
+search(kind="paper,web", q="retrieval augmentation")
 ```
 
 Each hit is tagged with its source kind.
@@ -107,16 +107,17 @@ Each hit is tagged with its source kind.
 ## Annotate a fetched URL
 
 ```python
-get(kind='web', id='https://example.com/article')      # fetch to populate cache
+get(kind="web", id="https://example.com/article")  # fetch to populate cache
 
-tag(kind='web', id='https://example.com/article',
-    add=['bookmark', 'topic:rag', 'read-later'])
+tag(
+    kind="web",
+    id="https://example.com/article",
+    add=["bookmark", "topic:rag", "read-later"],
+)
 
-tag(kind='web', id='https://example.com/article',
-    add=['CACHE:pinned'])                              # never expire
+tag(kind="web", id="https://example.com/article", add=["CACHE:pinned"])  # never expire
 
-tag(kind='web', id='https://example.com/article',
-    remove=['read-later'])
+tag(kind="web", id="https://example.com/article", remove=["read-later"])
 ```
 
 Closed-prefix axes for web: `CACHE:` only. Open tags
@@ -127,28 +128,31 @@ Closed-prefix axes for web: `CACHE:` only. Open tags
 ## Connect a web page to other refs
 
 ```python
-put(kind='memory', text='Need this for the RAG review')
+put(kind="memory", text="Need this for the RAG review")
 # → memory ref id=42
 
-link(kind='web', id='https://example.com/article',
-     target='memory:42')                              # rel defaults to related-to
+link(
+    kind="web", id="https://example.com/article", target="memory:42"
+)  # rel defaults to related-to
 
-link(kind='web', id='https://example.com/article',
-     target='paper:wang2020state', rel='cites')
+link(
+    kind="web",
+    id="https://example.com/article",
+    target="paper:wang2020state",
+    rel="cites",
+)
 
-link(kind='web', id='https://example.com/article',
-     target='todo:158', rel='supports')
+link(kind="web", id="https://example.com/article", target="todo:158", rel="supports")
 
-link(kind='web', id='https://example.com/article',
-     target='memory:42', mode='remove')
+link(kind="web", id="https://example.com/article", target="memory:42", mode="remove")
 ```
 
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')        # verbs and kinds
-get(kind='skill', id='precis-search-help')     # search mechanics
-get(kind='skill', id='precis-tags')            # axis vocabulary
-get(kind='skill', id='precis-relations')       # link relation slugs
-get(kind='skill', id='precis-memory-help')     # capturing why you kept a page
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-search-help")  # search mechanics
+get(kind="skill", id="precis-tags")  # axis vocabulary
+get(kind="skill", id="precis-relations")  # link relation slugs
+get(kind="skill", id="precis-memory-help")  # capturing why you kept a page
 ```

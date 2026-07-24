@@ -38,11 +38,13 @@ line (~12 words). The body stays terse for the same reason: no preamble,
 no "here's a memory about…". For a memory, split the two explicitly:
 
 ```python
-put(kind='memory',
-    text='bge-m3 beat e5 on our retrieval set; e5 lost most on the '
-         'long-context youtube transcripts. Kept bge-m3 as default.',
-    title='bge-m3 beat e5 on our retrieval set (nDCG 0.71 vs 0.64)',
-    tags=['memory:finding', 'user:asa'])
+put(
+    kind="memory",
+    text="bge-m3 beat e5 on our retrieval set; e5 lost most on the "
+    "long-context youtube transcripts. Kept bge-m3 as default.",
+    title="bge-m3 beat e5 on our retrieval set (nDCG 0.71 vs 0.64)",
+    tags=["memory:finding", "user:asa"],
+)
 ```
 
 ## Per-shape patterns
@@ -78,7 +80,7 @@ No dangling "this / that / it" — name the thing.
 ## See also
 
 ```python
-get(kind='skill', id='precis-memory-help')   # memory capture mechanics
-get(kind='skill', id='precis-tasks-help')    # todo shapes + GTD next-action
-get(kind='skill', id='precis-gripe-help')    # the bug tracker
+get(kind="skill", id="precis-memory-help")  # memory capture mechanics
+get(kind="skill", id="precis-tasks-help")  # todo shapes + GTD next-action
+get(kind="skill", id="precis-gripe-help")  # the bug tracker
 ```

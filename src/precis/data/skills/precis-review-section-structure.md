@@ -83,8 +83,9 @@ Failure modes:
 ## Output: one finding per structural break
 
 ```python
-put(kind='finding',
-    text='''Structure finding: intro promises a comparison of CNT vs
+put(
+    kind="finding",
+    text="""Structure finding: intro promises a comparison of CNT vs
 GNR mobility but §4 only covers CNTs. The promised GNR comparison
 is missing.
 
@@ -94,8 +95,9 @@ Specifically:
 - §4 (Mobility): only CNTs covered. No GNR mobility data presented.
 
 Severity: SUBSTANTIVE — the intro contract is broken. Either add a
-§4.2 GNR mobility subsection, or trim the intro's promise.''',
-    rel='section-structure-finding')
+§4.2 GNR mobility subsection, or trim the intro's promise.""",
+    rel="section-structure-finding",
+)
 ```
 
 Severity guide:
@@ -131,8 +133,8 @@ Recommended order — saves time if an early check fails badly:
 ## See also
 
 ```python
-get(kind='skill', id='precis-review-paragraph-flow')         # paragraph-level
-get(kind='skill', id='precis-review-citation-faithfulness')  # claim ↔ source
-get(kind='skill', id='precis-polish-paper')                  # runbook tying review passes together
-get(kind='skill', id='precis-finding-help')                  # finding shape
+get(kind="skill", id="precis-review-paragraph-flow")  # paragraph-level
+get(kind="skill", id="precis-review-citation-faithfulness")  # claim ↔ source
+get(kind="skill", id="precis-polish-paper")  # runbook tying review passes together
+get(kind="skill", id="precis-finding-help")  # finding shape
 ```

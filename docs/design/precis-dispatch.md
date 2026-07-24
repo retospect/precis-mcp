@@ -226,20 +226,24 @@ job_type's `PARAMS_SCHEMA`). Backend-free by construction.
 class ResourceRequest:
     """What the workload NEEDS — a small, portable, backend-neutral
     vocabulary. NOT the union of every scheduler's knobs (see §6.2)."""
+
     gpus: int = 0
-    gpu_min_vram_gb: float = 0.0   # 0 = any; else a quantitative floor
-    gpu_arch: str | None = None    # optional, e.g. "blackwell" / "hopper"
+    gpu_min_vram_gb: float = 0.0  # 0 = any; else a quantitative floor
+    gpu_arch: str | None = None  # optional, e.g. "blackwell" / "hopper"
     cpus: int = 1
     mem_gb: float = 4.0
     walltime_s: int = 3600
+
 
 @dataclass(frozen=True)
 class WorkloadShape:
     """The TEMPORAL shape — orthogonal to footprint (§6.6). Drives the
     dispatch *strategy* (pack vs single, spot vs on-demand)."""
-    est_duration_s: float = 60.0   # per-task runtime (refined by estimate_resources)
-    cardinality: int = 1           # how many of these tasks (1 … millions)
-    resumable: bool = False        # can checkpoint/restart — distinct from interruptible
+
+    est_duration_s: float = 60.0  # per-task runtime (refined by estimate_resources)
+    cardinality: int = 1  # how many of these tasks (1 … millions)
+    resumable: bool = False  # can checkpoint/restart — distinct from interruptible
+
 
 @dataclass(frozen=True)
 class DispatchPolicy:
@@ -248,29 +252,33 @@ class DispatchPolicy:
     Note: `interruptible` (spot eligibility) is normally *derived* from
     shape — spot-unsafe iff (long AND not resumable), see §6.6 — not
     set by hand. Override only for exceptions."""
+
     interruptible: bool | None = None  # None ⇒ derive from WorkloadShape
     max_cost: float | None = None  # ceiling; defaults from campaign budget
     deadline_s: int | None = None  # spill to paid capacity to meet it
-    prefer_local: bool = True      # exhaust free cluster capacity first
+    prefer_local: bool = True  # exhaust free cluster capacity first
+
 
 @dataclass(frozen=True)
 class WorkloadSpec:
-    workload: str              # catalog key (= job_type name), §8.6
-    image: str                 # registry ref, e.g. "caspar:5000/precis-dft@sha256:…"
-    command: list[str]         # argv inside the container
+    workload: str  # catalog key (= job_type name), §8.6
+    image: str  # registry ref, e.g. "caspar:5000/precis-dft@sha256:…"
+    command: list[str]  # argv inside the container
     resources: ResourceRequest = ResourceRequest()
     # opaque per-backend passthrough — used ONLY if that backend is
     # chosen, ignored otherwise. The escape hatch that keeps the core
     # portable without losing backend power (§6.2).
-    backend_hints: dict[str, dict] = {}   # {"slurm": {...}, "aws": {...}}
+    backend_hints: dict[str, dict] = {}  # {"slurm": {...}, "aws": {...}}
     # placement policy — HOW to place, not how big (§6.5). Cost ceiling
     # defaults from the campaign's existing `budget`.
-    policy: DispatchPolicy = DispatchPolicy()   # interruptible, max_cost, deadline
+    policy: DispatchPolicy = DispatchPolicy()  # interruptible, max_cost, deadline
     # data plane — LOGICAL refs, NOT host paths. The Stager (§8.2)
     # materializes them for the chosen backend (mount / archive / object).
-    inputs: list[InputRef] = ()     # content-addressed blob OR artifact://job/N/name
-    datasets: list[DatasetRef] = () # named+versioned shared assets (PAW, AF-DB), §8.1
-    outputs: list[OutputDecl] = ()  # {name, container_path} — collected back as artifacts
+    inputs: list[InputRef] = ()  # content-addressed blob OR artifact://job/N/name
+    datasets: list[DatasetRef] = ()  # named+versioned shared assets (PAW, AF-DB), §8.1
+    outputs: list[
+        OutputDecl
+    ] = ()  # {name, container_path} — collected back as artifacts
     env: dict[str, str] = {}
     # identity / provenance
     run_as: str = "precis-compute"  # shared cluster compute user (§10)
@@ -306,7 +314,9 @@ first; extract this interface only when a second backend exists._
 class Runner(Protocol):
     def submit(self, spec: WorkloadSpec) -> Handle: ...
     def submit_batch(self, specs: list[WorkloadSpec]) -> Handle: ...  # pack/array, §6.6
-    def poll(self, handle: Handle) -> RunState: ...   # PENDING/RUNNING/SUCCEEDED/FAILED/CANCELLED
+    def poll(
+        self, handle: Handle
+    ) -> RunState: ...  # PENDING/RUNNING/SUCCEEDED/FAILED/CANCELLED
     def logs(self, handle: Handle, *, follow=False) -> Iterator[str]: ...
     def cancel(self, handle: Handle) -> None: ...
 ```
@@ -544,9 +554,9 @@ A *dataset* is a named, versioned, content-addressed, **read-only**
 asset shared across jobs. PAW is just one:
 
 ```python
-DatasetRef("gpaw-paw", "0.9.20000")       # hundreds of MB
-DatasetRef("alphafold-db", "2.3-reduced") # MULTI-TERABYTE
-DatasetRef("openfoam-meshes", "…")        # CFD
+DatasetRef("gpaw-paw", "0.9.20000")  # hundreds of MB
+DatasetRef("alphafold-db", "2.3-reduced")  # MULTI-TERABYTE
+DatasetRef("openfoam-meshes", "…")  # CFD
 ```
 
 The **scale spread is the design driver**: kilobyte POSCARs ↔
@@ -567,7 +577,7 @@ Stager materializes them, picked by backend:
 
 ```python
 class Stager(Protocol):
-    def stage_in(self, spec: WorkloadSpec) -> Mounts: ...   # → concrete paths/binds
+    def stage_in(self, spec: WorkloadSpec) -> Mounts: ...  # → concrete paths/binds
     def collect_out(self, spec, handle) -> list[Artifact]: ...
 ```
 
@@ -639,10 +649,10 @@ What's added is **dispatch metadata** per entry — a `WorkloadProfile`:
 ```python
 @dataclass(frozen=True)
 class WorkloadProfile:
-    image: str                          # which container
-    datasets: list[DatasetRef]          # what shared assets it needs
-    shape: WorkloadShape                # temporal shape → strategy (§6.6)
-    estimate_resources: Callable        # structure/params → ResourceRequest (§6.4)
+    image: str  # which container
+    datasets: list[DatasetRef]  # what shared assets it needs
+    shape: WorkloadShape  # temporal shape → strategy (§6.6)
+    estimate_resources: Callable  # structure/params → ResourceRequest (§6.4)
 ```
 
 A *workload* is then exactly "a job_type that emits a WorkloadSpec."
@@ -752,10 +762,14 @@ to-be-stubbed in advance:
 WorkloadSpec(
     image="caspar:5000/precis-dft@sha256:…",
     command=["precis-dft-run", "gpaw-relax", "--in", "/work/in", "--out", "/work/out"],
-    resources=ResourceRequest(            # from estimate_resources(structure, params), §6.4
-        gpus=1, gpu_min_vram_gb=40, cpus=8, mem_gb=32, walltime_s=43200,
+    resources=ResourceRequest(  # from estimate_resources(structure, params), §6.4
+        gpus=1,
+        gpu_min_vram_gb=40,
+        cpus=8,
+        mem_gb=32,
+        walltime_s=43200,
     ),
-    backend_hints={"slurm": {"partition": "gpu"}},   # ignored under ssh_node
+    backend_hints={"slurm": {"partition": "gpu"}},  # ignored under ssh_node
     inputs=[
         Mount("/opt/nfs/dft/inputs/job_512", "/work/in", ro=True),
         Mount("/opt/nfs/dft/potentials/0.9.20000", "/opt/gpaw-setups", ro=True),

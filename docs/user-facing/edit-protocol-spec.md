@@ -99,45 +99,55 @@ and want to add adjacent text without rewriting the anchor."
 ## Schema
 
 ```python
-EditOp = TypedDict("EditOp", {
-    # required
-    "op": Literal["create", "append", "replace", "delete", "edit", "insert"],
-    "id": str,                      # standard precis id grammar
-
-    # for `edit` and `insert`
-    "find": NotRequired[str],       # exact text to locate (or regex when regex=True)
-    "before": NotRequired[str],     # anchor immediately preceding `find`
-    "after": NotRequired[str],      # anchor immediately following `find`
-
-    # for replacement-like ops
-    "text": NotRequired[str],       # new text to write
-
-    # `insert` only
-    "where": NotRequired[Literal["before", "after"]],
-
-    # match policy (default: "unique")
-    "match": NotRequired[Literal["unique", "first", "all", "nth"]],
-    "nth": NotRequired[int],        # 1-indexed when match="nth"
-
-    # advanced
-    "regex": NotRequired[bool],     # default False
-    "flags": NotRequired[list[Literal["i", "m", "s", "x"]]],
-
-    # safety / preview
-    "dry_run": NotRequired[bool],   # show diff, don't write
-    "expect_lines": NotRequired[int],  # assert resolved span line count
-})
+EditOp = TypedDict(
+    "EditOp",
+    {
+        # required
+        "op": Literal["create", "append", "replace", "delete", "edit", "insert"],
+        "id": str,  # standard precis id grammar
+        # for `edit` and `insert`
+        "find": NotRequired[str],  # exact text to locate (or regex when regex=True)
+        "before": NotRequired[str],  # anchor immediately preceding `find`
+        "after": NotRequired[str],  # anchor immediately following `find`
+        # for replacement-like ops
+        "text": NotRequired[str],  # new text to write
+        # `insert` only
+        "where": NotRequired[Literal["before", "after"]],
+        # match policy (default: "unique")
+        "match": NotRequired[Literal["unique", "first", "all", "nth"]],
+        "nth": NotRequired[int],  # 1-indexed when match="nth"
+        # advanced
+        "regex": NotRequired[bool],  # default False
+        "flags": NotRequired[list[Literal["i", "m", "s", "x"]]],
+        # safety / preview
+        "dry_run": NotRequired[bool],  # show diff, don't write
+        "expect_lines": NotRequired[int],  # assert resolved span line count
+    },
+)
 ```
 
 The handler accepts a single op or a list:
 
 ```python
-put(kind='markdown', id='notes/foo.md', edits=[
-    {"op": "edit", "find": "the", "before": "over ", "after": " fence",
-     "text": "a"},
-    {"op": "insert", "find": "## Conclusion", "where": "after",
-     "text": "\n\nThis was edited atomically."},
-])
+put(
+    kind="markdown",
+    id="notes/foo.md",
+    edits=[
+        {
+            "op": "edit",
+            "find": "the",
+            "before": "over ",
+            "after": " fence",
+            "text": "a",
+        },
+        {
+            "op": "insert",
+            "find": "## Conclusion",
+            "where": "after",
+            "text": "\n\nThis was edited atomically.",
+        },
+    ],
+)
 ```
 
 A list is applied **in order, atomically**: all edits succeed and
@@ -265,13 +275,16 @@ Regex stays available behind `regex=True` for the genuine cases
 (version bumps, structured renames, rg-style scrubs):
 
 ```python
-put(kind='python', id='precis/src/precis/__init__.py',
-    op='edit',
+put(
+    kind="python",
+    id="precis/src/precis/__init__.py",
+    op="edit",
     regex=True,
     find=r'^__version__ = "[^"]+"',
-    flags=['m'],
+    flags=["m"],
     text='__version__ = "0.3.0"',
-    match='unique')
+    match="unique",
+)
 ```
 
 The handler validates the regex compiles before searching and
@@ -299,63 +312,95 @@ benchmarks reward and that aligns with the unified addressing spec
 
 ```python
 # Single-token swap inside one block, with anchors. Track-B addressing.
-put(kind='markdown', id='notes/foo.md~intro',
-    op='edit',
-    find='the', before='over ', after=' fence',
-    text='a')
+put(
+    kind="markdown",
+    id="notes/foo.md~intro",
+    op="edit",
+    find="the",
+    before="over ",
+    after=" fence",
+    text="a",
+)
 
 # Bounded by line range. The lines are guardrails; content selects.
-put(kind='markdown', id='notes/foo.md~L40-80',
-    op='edit',
-    find='draft', text='final',
-    match='unique')
+put(
+    kind="markdown",
+    id="notes/foo.md~L40-80",
+    op="edit",
+    find="draft",
+    text="final",
+    match="unique",
+)
 
 # Insert a new paragraph before a heading.
-put(kind='markdown', id='notes/foo.md',
-    op='insert',
-    find='## Conclusion', where='before',
-    text='\n## TL;DR\n\nQuick summary here.\n\n')
+put(
+    kind="markdown",
+    id="notes/foo.md",
+    op="insert",
+    find="## Conclusion",
+    where="before",
+    text="\n## TL;DR\n\nQuick summary here.\n\n",
+)
 ```
 
 ### python
 
 ```python
 # Rename one call site. AST + ruff gates run automatically.
-put(kind='python', id='precis/src/precis/cli.py~_cmd_serve',
-    op='edit',
-    find='deprecated_call(', text='new_call(',
-    match='all')
+put(
+    kind="python",
+    id="precis/src/precis/cli.py~_cmd_serve",
+    op="edit",
+    find="deprecated_call(",
+    text="new_call(",
+    match="all",
+)
 
 # Bump a version string with regex.
-put(kind='python', id='precis/src/precis/__init__.py',
-    op='edit',
+put(
+    kind="python",
+    id="precis/src/precis/__init__.py",
+    op="edit",
     regex=True,
     find=r'^__version__ = "[\d.]+"',
-    flags=['m'],
+    flags=["m"],
     text='__version__ = "0.3.0"',
-    match='unique')
+    match="unique",
+)
 
 # Multi-edit transaction — both succeed or neither.
-put(kind='python', id='precis/src/precis/cli.py', edits=[
-    {"op": "edit", "find": "from .old import X", "text": "from .new import X"},
-    {"op": "edit", "find": "X.legacy_method(", "text": "X.method(", "match": "all"},
-])
+put(
+    kind="python",
+    id="precis/src/precis/cli.py",
+    edits=[
+        {"op": "edit", "find": "from .old import X", "text": "from .new import X"},
+        {"op": "edit", "find": "X.legacy_method(", "text": "X.method(", "match": "all"},
+    ],
+)
 ```
 
 ### tex
 
 ```python
 # Citation key swap, range-bounded.
-put(kind='tex', id='paper.tex~L120-200',
-    op='edit',
-    find='\\cite{foo2020}', text='\\cite{foo2024}',
-    match='all')
+put(
+    kind="tex",
+    id="paper.tex~L120-200",
+    op="edit",
+    find="\\cite{foo2020}",
+    text="\\cite{foo2024}",
+    match="all",
+)
 
 # Insert a new \section after an existing one.
-put(kind='tex', id='paper.tex',
-    op='insert',
-    find='\\section{Background}', where='after',
-    text='\n\n\\section{Related Work}\n\nText here.\n')
+put(
+    kind="tex",
+    id="paper.tex",
+    op="insert",
+    find="\\section{Background}",
+    where="after",
+    text="\n\n\\section{Related Work}\n\nText here.\n",
+)
 ```
 
 ### docx
@@ -363,20 +408,28 @@ put(kind='tex', id='paper.tex',
 ```python
 # Word: anchor + replacement, MUST stay within one paragraph.
 # Cross-paragraph edits are rejected to preserve run formatting.
-put(kind='docx', id='draft.docx~p42',
-    op='edit',
-    find='2020', text='2024',
-    match='unique')
+put(
+    kind="docx",
+    id="draft.docx~p42",
+    op="edit",
+    find="2020",
+    text="2024",
+    match="unique",
+)
 ```
 
 ### plaintext
 
 ```python
 # Whole-file edit, content-resolved.
-put(kind='plaintext', id='scratch/notes.txt',
-    op='edit',
-    find='Reto Stam', text='Reto Stamm',
-    match='all')
+put(
+    kind="plaintext",
+    id="scratch/notes.txt",
+    op="edit",
+    find="Reto Stam",
+    text="Reto Stamm",
+    match="all",
+)
 ```
 
 ## Per-kind validation matrix
@@ -418,8 +471,15 @@ response shape matches a successful write but the body is a unified
 diff of the proposed change. No re-ingest. No fsync.
 
 ```python
-put(kind='python', id='cli.py', op='edit',
-    find='old', text='new', match='all', dry_run=True)
+put(
+    kind="python",
+    id="cli.py",
+    op="edit",
+    find="old",
+    text="new",
+    match="all",
+    dry_run=True,
+)
 ```
 
 Use it before any large multi-edit batch.
@@ -431,9 +491,14 @@ resolved span (Track A line range) covers. Mismatch → `BadInput`.
 Catches "I thought I was editing one line but my id covered ten."
 
 ```python
-put(kind='markdown', id='foo.md~L42-58',
-    op='edit', find='draft', text='final',
-    expect_lines=17)   # 58 - 42 + 1
+put(
+    kind="markdown",
+    id="foo.md~L42-58",
+    op="edit",
+    find="draft",
+    text="final",
+    expect_lines=17,
+)  # 58 - 42 + 1
 ```
 
 Nice-to-have. Skip on a first cut if too costly.

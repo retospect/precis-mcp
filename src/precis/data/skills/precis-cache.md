@@ -37,9 +37,9 @@ key, so the same `q=` under different kinds is a different row and a
 fresh paid call:
 
 ```python
-get(kind='websearch', q='post-quantum signature schemes')               # websearch:...
-get(kind='perplexity-reasoning', q='post-quantum signature schemes')    # NEW paid call
-get(kind='perplexity-research',  q='post-quantum signature schemes')    # NEW paid call
+get(kind="websearch", q="post-quantum signature schemes")  # websearch:...
+get(kind="perplexity-reasoning", q="post-quantum signature schemes")  # NEW paid call
+get(kind="perplexity-research", q="post-quantum signature schemes")  # NEW paid call
 ```
 
 Per-kind canonicalisation:
@@ -66,8 +66,8 @@ The `CACHE:` axis is system-applied, closed-vocab:
 Filter on it:
 
 ```python
-search(kind='perplexity-reasoning', q='photocatalysis', tags=['CACHE:fresh'])
-search(kind='web',   q='reactor design',  tags=['CACHE:stale'])
+search(kind="perplexity-reasoning", q="photocatalysis", tags=["CACHE:fresh"])
+search(kind="web", q="reactor design", tags=["CACHE:stale"])
 ```
 
 The response footer also reports it inline:
@@ -85,8 +85,8 @@ Soft-delete the row, then re-query. The next `get` misses and
 refetches:
 
 ```python
-delete(kind='perplexity-reasoning', id='<canonical-query>')
-get(kind='perplexity-reasoning', q='<query>')
+delete(kind="perplexity-reasoning", id="<canonical-query>")
+get(kind="perplexity-reasoning", q="<query>")
 ```
 
 Works on every cache kind. For `web` and `youtube`, `id=` is the
@@ -97,8 +97,8 @@ canonical URL / video ID.
 ## Stop a useful answer from going stale
 
 ```python
-tag(kind='perplexity-reasoning', id='photocat-mechanism', add=['pinned'])
-tag(kind='perplexity-reasoning', id='photocat-mechanism', remove=['pinned'])
+tag(kind="perplexity-reasoning", id="photocat-mechanism", add=["pinned"])
+tag(kind="perplexity-reasoning", id="photocat-mechanism", remove=["pinned"])
 ```
 
 `pinned` is a system-recognised flag — it suppresses `CACHE:*` decay
@@ -108,10 +108,12 @@ and the row reports as `CACHE:pinned`. Imported entries (e.g.
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')          # verbs and kinds
-get(kind='skill', id='precis-tags')              # CACHE:* axis, pinned flag
-get(kind='skill', id='precis-perplexity-help')   # websearch / perplexity-reasoning / perplexity-research
-get(kind='skill', id='precis-math-help')         # Wolfram Alpha
-get(kind='skill', id='precis-web-help')          # direct page fetch
-get(kind='skill', id='precis-youtube-help')      # transcript fetch
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-tags")  # CACHE:* axis, pinned flag
+get(
+    kind="skill", id="precis-perplexity-help"
+)  # websearch / perplexity-reasoning / perplexity-research
+get(kind="skill", id="precis-math-help")  # Wolfram Alpha
+get(kind="skill", id="precis-web-help")  # direct page fetch
+get(kind="skill", id="precis-youtube-help")  # transcript fetch
 ```

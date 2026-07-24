@@ -97,9 +97,9 @@ class DispatchContext:
     meta: dict[str, Any]
     # Helpers re-exported so dispatchers don't import executor internals:
     set_status: Callable[[str], None]
-    append_chunk: Callable[[str, str], None]   # (chunk_kind, text)
-    set_meta: Callable[..., None]              # **fields
-    record_failure: Callable[..., None]        # (reason, *, gripe_rollback)
+    append_chunk: Callable[[str, str], None]  # (chunk_kind, text)
+    set_meta: Callable[..., None]  # **fields
+    record_failure: Callable[..., None]  # (reason, *, gripe_rollback)
     is_cancel_requested: Callable[[], bool]
     linked_gripe_id: Callable[[], int | None]
 ```

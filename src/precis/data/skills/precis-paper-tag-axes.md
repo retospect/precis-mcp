@@ -20,9 +20,11 @@ see `precis-tags`. Paper allows `SRC:` and `CACHE:` only.
 ## Combine topic search with auto-tag filters
 
 ```python
-search(kind='paper', q='transport', tags=['scale:nano', 'studytype:experimental'])
-search(kind='paper', q='photocatalysis', tags=['domain:materials', 'material:metal-oxide'])
-search(kind='paper', tags=['studytype:review'])               # tag-only, no q=
+search(kind="paper", q="transport", tags=["scale:nano", "studytype:experimental"])
+search(
+    kind="paper", q="photocatalysis", tags=["domain:materials", "material:metal-oxide"]
+)
+search(kind="paper", tags=["studytype:review"])  # tag-only, no q=
 ```
 
 Axis tags AND together. Combine freely with `topic:`, `SRC:`, `CACHE:`.
@@ -153,11 +155,15 @@ The `topic:` *values* stay slugs — they are content tags, not an
 address:
 
 ```python
-tag(kind='paper', id='pa812', add=[      # handle (id='<slug>' still resolves)
-    'topic:co2-capture',           # good
-    'topic:noxrr',                 # good (compact acronym)
-    'topic:z-scheme-photocatalysis',
-])
+tag(
+    kind="paper",
+    id="pa812",
+    add=[  # handle (id='<slug>' still resolves)
+        "topic:co2-capture",  # good
+        "topic:noxrr",  # good (compact acronym)
+        "topic:z-scheme-photocatalysis",
+    ],
+)
 ```
 
 Reuse existing slugs when one fits — `search(kind='paper', tags=['topic:<guess>'])`
@@ -191,8 +197,8 @@ listings) · `boilerplate` (publisher furniture — excludable) ·
 Filter chunks the same way (`tags=` matches chunk-level tags too):
 
 ```python
-search(kind='paper', q='co2 adsorption capacity', tags=['role:result'])
-search(kind='paper', q='gcmc setup', tags=['role:method'])
+search(kind="paper", q="co2 adsorption capacity", tags=["role:result"])
+search(kind="paper", q="gcmc setup", tags=["role:method"])
 ```
 
 Second chunk axis: `open-question:` (`axes/open-question.yaml`) — a
@@ -203,7 +209,7 @@ Cross-cutting by design — leads live in `future-work`, `limitation`,
 `result`, and even `motivation` chunks:
 
 ```python
-search(kind='paper', q='mof water stability', tags=['open-question:yes'])
+search(kind="paper", q="mof water stability", tags=["open-question:yes"])
 ```
 
 The load-bearing boundary is `result` vs `related-work`: a
@@ -225,7 +231,7 @@ citation-grounding actually needs:
 - `ROLE3:furniture` — references, tables, boilerplate.
 
 ```python
-search(kind='paper', q='co2 adsorption capacity', tags=['ROLE3:own'])
+search(kind="paper", q="co2 adsorption capacity", tags=["ROLE3:own"])
 ```
 
 `ROLE3:own` is ~91% precision — use it to *narrow candidates*, then
@@ -236,8 +242,8 @@ chunks. Design: `docs/design/chunk-classifier-cascade.md`.
 ## See also
 
 ```python
-get(kind='skill', id='precis-tags')             # closed axes (SRC, CACHE), validation
-get(kind='skill', id='precis-paper-help')       # find, read, cite papers
-get(kind='skill', id='precis-search-help')      # tags= filter mechanics
-get(kind='skill', id='precis-tag-help')         # the tag verb itself
+get(kind="skill", id="precis-tags")  # closed axes (SRC, CACHE), validation
+get(kind="skill", id="precis-paper-help")  # find, read, cite papers
+get(kind="skill", id="precis-search-help")  # tags= filter mechanics
+get(kind="skill", id="precis-tag-help")  # the tag verb itself
 ```

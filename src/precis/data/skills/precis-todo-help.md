@@ -17,10 +17,13 @@ The legacy forms `id=122` and `id='todo:122'` still resolve on input.
 ## How do I file something I need to do?
 
 ```python
-put(kind='todo', text='Review section 3 of abazari2024design.')
-put(kind='todo', text='Draft the abstract.', tags=['PRIO:high'])
-put(kind='todo', text='Wait on reviewer feedback.',
-    tags=['PRIO:normal', 'project:precis-v2'])
+put(kind="todo", text="Review section 3 of abazari2024design.")
+put(kind="todo", text="Draft the abstract.", tags=["PRIO:high"])
+put(
+    kind="todo",
+    text="Wait on reviewer feedback.",
+    tags=["PRIO:normal", "project:precis-v2"],
+)
 ```
 
 Server assigns the integer id and defaults to `STATUS:open`. Pass
@@ -31,13 +34,13 @@ Server assigns the integer id and defaults to `STATUS:open`. Pass
 ## Show me the queue
 
 ```python
-get(kind='todo')                  # alias for /recent
-get(kind='todo', id='/recent')    # most recent 20, any status
-get(kind='todo', id='/open')      # open + doing + blocked (the queue)
-get(kind='todo', id='/queue')     # alias for /open
-get(kind='todo', id='/doing')     # in-progress only
-get(kind='todo', id='/blocked')   # waiting on something
-get(kind='todo', id='/done')      # completed
+get(kind="todo")  # alias for /recent
+get(kind="todo", id="/recent")  # most recent 20, any status
+get(kind="todo", id="/open")  # open + doing + blocked (the queue)
+get(kind="todo", id="/queue")  # alias for /open
+get(kind="todo", id="/doing")  # in-progress only
+get(kind="todo", id="/blocked")  # waiting on something
+get(kind="todo", id="/done")  # completed
 ```
 
 ## Start work on a todo
@@ -45,7 +48,7 @@ get(kind='todo', id='/done')      # completed
 ## How do I move a todo to doing?
 
 ```python
-tag(kind='todo', id=122, add=['STATUS:doing'])
+tag(kind="todo", id=122, add=["STATUS:doing"])
 ```
 
 `STATUS:` is closed-prefix and replaces atomically — setting a new
@@ -56,8 +59,8 @@ value removes the previous one. No separate remove needed.
 ## How do I close out a finished task?
 
 ```python
-tag(kind='todo', id=122, add=['STATUS:done'])
-tag(kind='todo', id=122, add=["STATUS:won't-do"])   # decided not to do it
+tag(kind="todo", id=122, add=["STATUS:done"])
+tag(kind="todo", id=122, add=["STATUS:won't-do"])  # decided not to do it
 ```
 
 ## Change priority
@@ -65,8 +68,8 @@ tag(kind='todo', id=122, add=["STATUS:won't-do"])   # decided not to do it
 ## Bump a todo to urgent
 
 ```python
-tag(kind='todo', id=141, add=['PRIO:urgent'])
-tag(kind='todo', id=141, add=['PRIO:low'])
+tag(kind="todo", id=141, add=["PRIO:urgent"])
+tag(kind="todo", id=141, add=["PRIO:low"])
 ```
 
 Values: `low` / `normal` / `high` / `urgent`. Overwrite is atomic
@@ -77,9 +80,9 @@ within the `PRIO:` prefix.
 ## How do I say this is blocked by another todo?
 
 ```python
-tag(kind='todo', id=141, add=['STATUS:blocked'])
-link(kind='todo', id=141, target='todo:158', rel='blocked-by')
-link(kind='todo', id=141, target='paper:wang2020state', rel='blocked-by')
+tag(kind="todo", id=141, add=["STATUS:blocked"])
+link(kind="todo", id=141, target="todo:158", rel="blocked-by")
+link(kind="todo", id=141, target="paper:wang2020state", rel="blocked-by")
 ```
 
 `STATUS:blocked` marks the state; `link(... rel='blocked-by')`
@@ -94,8 +97,8 @@ Todos form a tree. Move an existing todo with the `parent` relation
 on the `link` verb:
 
 ```python
-link(kind='todo', id=141, target='todo:158', rel='parent')   # 141 becomes a child of 158
-link(kind='todo', id=141, rel='parent', mode='remove')        # detach 141 to a top-level root
+link(kind="todo", id=141, target="todo:158", rel="parent")  # 141 becomes a child of 158
+link(kind="todo", id=141, rel="parent", mode="remove")  # detach 141 to a top-level root
 ```
 
 A move that would form a cycle, nest deeper than the tree's depth
@@ -109,7 +112,12 @@ on `put` instead. The current parent shows under `## parent` in
 ## How do I change what a todo says without losing its place?
 
 ```python
-edit(kind='todo', id=122, mode='replace', text='Review section 3 of abazari2024design (focus on the kinetics).')
+edit(
+    kind="todo",
+    id=122,
+    mode="replace",
+    text="Review section 3 of abazari2024design (focus on the kinetics).",
+)
 ```
 
 In-place rewrite: the id, parent, links, and tags all stay attached —
@@ -126,8 +134,8 @@ nodes (same authority as delete / reparent).
 There is no built-in due-date field. Use a lowercase tag:
 
 ```python
-tag(kind='todo', id=122, add=['due:2026-06-15'])
-search(kind='todo', tags=['due:2026-06-15', 'STATUS:open'])
+tag(kind="todo", id=122, add=["due:2026-06-15"])
+search(kind="todo", tags=["due:2026-06-15", "STATUS:open"])
 ```
 
 Date-driven views (`/today`, `/overdue`, `/due`) are not exposed —
@@ -138,9 +146,9 @@ filter via `search(tags=['due:<date>'])`.
 ## Look up todos matching a phrase
 
 ```python
-search(kind='todo', q='abstract draft')
-search(kind='todo', q='precis-v2 review', tags=['STATUS:open'])
-search(kind='todo', q='reviewer', tags=['STATUS:open', 'PRIO:high'])
+search(kind="todo", q="abstract draft")
+search(kind="todo", q="precis-v2 review", tags=["STATUS:open"])
+search(kind="todo", q="reviewer", tags=["STATUS:open", "PRIO:high"])
 ```
 
 `tags=` filters with AND semantics. Combine with `q=` to rank
@@ -151,7 +159,7 @@ inside the filtered set.
 ## See the executor / schedule / auto_check / workspace
 
 ```python
-get(kind='todo', id=40266, view='raw')
+get(kind="todo", id=40266, view="raw")
 ```
 
 The default `get(kind='todo', id=N)` shows the curated summary —
@@ -178,7 +186,7 @@ inspectable.
 ## Remove a todo I no longer want
 
 ```python
-delete(kind='todo', id=122)
+delete(kind="todo", id=122)
 ```
 
 Prefer `STATUS:won't-do` over delete when the decision itself is
@@ -187,8 +195,8 @@ worth keeping a record of.
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')      # verbs and kinds
-get(kind='skill', id='precis-tags')          # STATUS:/PRIO: vocabulary, validation
-get(kind='skill', id='precis-relations')     # blocked-by / blocks and other rels
-get(kind='skill', id='precis-search-help')   # tags= filter, q= ranking
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-tags")  # STATUS:/PRIO: vocabulary, validation
+get(kind="skill", id="precis-relations")  # blocked-by / blocks and other rels
+get(kind="skill", id="precis-search-help")  # tags= filter, q= ranking
 ```

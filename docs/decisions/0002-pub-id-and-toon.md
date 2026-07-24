@@ -97,6 +97,7 @@ resolver tries `pub_id` first, then slug.
 ```python
 import base64, hashlib
 
+
 def make_pub_id(paper_id: str) -> str:
     digest = hashlib.sha256(paper_id.encode("utf-8")).digest()
     return base64.b32encode(digest)[:6].decode("ascii").lower()

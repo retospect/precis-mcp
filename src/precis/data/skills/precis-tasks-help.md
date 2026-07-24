@@ -33,8 +33,11 @@ also covers the depth-10 wall and how to recover from it.
 ## Add a strategic root (owner only)
 
 ```python
-put(kind='todo', text='Build the nanocube AI compute platform.',
-    tags=['level:strategic'])
+put(
+    kind="todo",
+    text="Build the nanocube AI compute platform.",
+    tags=["level:strategic"],
+)
 ```
 
 Strategic and tactical tiers are gated: workers (`PRECIS_SOURCE`
@@ -45,15 +48,18 @@ Workers may **propose** a tactical via the open
 `level:proposed-tactical` tag for owner triage:
 
 ```python
-put(kind='todo', text='Write the boxel paper',
-    parent_id=42, tags=['level:proposed-tactical'])
+put(
+    kind="todo",
+    text="Write the boxel paper",
+    parent_id=42,
+    tags=["level:proposed-tactical"],
+)
 ```
 
 ## Add a child under an existing todo
 
 ```python
-put(kind='todo', text='Draft setup paragraph (4-6 sentences).',
-    parent_id=98)
+put(kind="todo", text="Draft setup paragraph (4-6 sentences).", parent_id=98)
 ```
 
 `parent_id` validates: the parent must exist, live (not soft-
@@ -71,21 +77,24 @@ searchable) and renders under the task line on `get(kind='todo', id=N)`.
 The tree / doable / attention views still show only the task line.
 
 ```python
-put(kind='todo', text='Wire the export endpoint.',
-    body='Accept ?format=csv|json. 404 on unknown format. '
-         'Stream for >10k rows. See the design note in me812.')
+put(
+    kind="todo",
+    text="Wire the export endpoint.",
+    body="Accept ?format=csv|json. 404 on unknown format. "
+    "Stream for >10k rows. See the design note in me812.",
+)
 # rewrite it later:
-edit(kind='todo', id=N, mode='replace', body='updated acceptance criteria')
+edit(kind="todo", id=N, mode="replace", body="updated acceptance criteria")
 # or rewrite both at once:
-edit(kind='todo', id=N, mode='replace', text='new task line', body='new body')
+edit(kind="todo", id=N, mode="replace", text="new task line", body="new body")
 ```
 
 ## Dashboard: strategic roots and 7d accounting
 
 ```python
-search(kind='todo', view='roots')         # one row per strategic
-search(kind='todo', view='strategic')     # strategic + tactical layer
-search(kind='todo', view='projects')      # strategics that own a workspace
+search(kind="todo", view="roots")  # one row per strategic
+search(kind="todo", view="strategic")  # strategic + tactical layer
+search(kind="todo", view="projects")  # strategics that own a workspace
 ```
 
 `view='roots'` shows past-tense accounting only: how many leaves
@@ -103,14 +112,20 @@ descendant via the put-time inheritance, so you set them once at the
 root.
 
 ```python
-put(kind='todo', text='Write the nanotrans review.',
-    tags=['level:strategic', 'LLM:opus'],
-    meta={'workspace': {
-        'path': 'projects/nanotrans_auto',   # relative to PRECIS_ROOT
-        'format': 'tex',                     # 'tex' | 'md'
-        'entrypoint': 'main.tex',
-        'brief': 'Terse, IEEE voice. Cite primary sources only. '
-                 'Do NOT speculate beyond the corpus.'}})
+put(
+    kind="todo",
+    text="Write the nanotrans review.",
+    tags=["level:strategic", "LLM:opus"],
+    meta={
+        "workspace": {
+            "path": "projects/nanotrans_auto",  # relative to PRECIS_ROOT
+            "format": "tex",  # 'tex' | 'md'
+            "entrypoint": "main.tex",
+            "brief": "Terse, IEEE voice. Cite primary sources only. "
+            "Do NOT speculate beyond the corpus.",
+        }
+    },
+)
 ```
 
 What you get for free:
@@ -132,7 +147,7 @@ new descendants inherit the updated block.
 ## Drill into a subtree
 
 ```python
-get(kind='todo', id=42, view='tree')      # ASCII subtree under td42
+get(kind="todo", id=42, view="tree")  # ASCII subtree under td42
 ```
 
 Tree icons: `○` doable · `▶` doing · `◀ claimed-by:<x>` claimed ·
@@ -142,8 +157,8 @@ Tree icons: `○` doable · `▶` doing · `◀ claimed-by:<x>` claimed ·
 ## Doable leaves — what to pull next
 
 ```python
-search(kind='todo', view='doable')
-search(kind='todo', view='doable', args={'under': 67})  # within a subtree
+search(kind="todo", view="doable")
+search(kind="todo", view="doable", args={"under": 67})  # within a subtree
 ```
 
 "Doable" = leaf with no live children, status open / doing, no
@@ -158,8 +173,8 @@ preempts the 1/N rotation; cron-spawned subtasks default to PRIO 2.
 ## Pausing a subtree
 
 ```python
-tag(kind='todo', id=98, add=['STATUS:paused'])
-tag(kind='todo', id=98, add=["STATUS:open"])   # unpause
+tag(kind="todo", id=98, add=["STATUS:paused"])
+tag(kind="todo", id=98, add=["STATUS:open"])  # unpause
 ```
 
 Pause propagates at query time — every doable / strategic / picks
@@ -169,9 +184,9 @@ Nothing in the subtree gets touched; counts and decay continue.
 ## Waiting, blocked, and asks
 
 ```python
-search(kind='todo', view='waiting')     # any waiting-for:* tagged leaf
-search(kind='todo', view='blocked')     # any open blocked-by link
-search(kind='todo', view='ask-user')    # parked-on-owner-reply leaves
+search(kind="todo", view="waiting")  # any waiting-for:* tagged leaf
+search(kind="todo", view="blocked")  # any open blocked-by link
+search(kind="todo", view="ask-user")  # parked-on-owner-reply leaves
 ```
 
 - `waiting-for:reviewer-x` — generic external wait. Open tag; any
@@ -226,14 +241,20 @@ Worker authority is the constraint; the rest is unconstrained.
 ## See also
 
 ```python
-get(kind='skill', id='precis-todo-help')          # flat todo surface
-get(kind='skill', id='precis-decomposition-help') # GTD interrogation, split rule (Slice 2)
-get(kind='skill', id='precis-auto-tasks-help')    # meta.auto_check leaves (Slice 1b/5)
-get(kind='skill', id='precis-recurring-help')     # level:recurring + Watches umbrella (Slice 4)
-get(kind='skill', id='precis-dispatch-help')      # meta.executor + dispatch worker (Slice 5)
-get(kind='skill', id='precis-job-help')           # the kind='job' substrate
-get(kind='skill', id='precis-nursery-help')       # hourly review digest tier (Slice 3)
-get(kind='skill', id='precis-tags')               # STATUS / PRIO vocabulary
-get(kind='skill', id='precis-relations')          # blocked-by / blocks / note-for
-search(kind='skill', q='your goal')               # if none of the above fit
+get(kind="skill", id="precis-todo-help")  # flat todo surface
+get(
+    kind="skill", id="precis-decomposition-help"
+)  # GTD interrogation, split rule (Slice 2)
+get(kind="skill", id="precis-auto-tasks-help")  # meta.auto_check leaves (Slice 1b/5)
+get(
+    kind="skill", id="precis-recurring-help"
+)  # level:recurring + Watches umbrella (Slice 4)
+get(
+    kind="skill", id="precis-dispatch-help"
+)  # meta.executor + dispatch worker (Slice 5)
+get(kind="skill", id="precis-job-help")  # the kind='job' substrate
+get(kind="skill", id="precis-nursery-help")  # hourly review digest tier (Slice 3)
+get(kind="skill", id="precis-tags")  # STATUS / PRIO vocabulary
+get(kind="skill", id="precis-relations")  # blocked-by / blocks / note-for
+search(kind="skill", q="your goal")  # if none of the above fit
 ```

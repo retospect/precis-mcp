@@ -18,10 +18,10 @@ of a `pcb` component ([[precis-pcb-help]]).
 ## Search the catalog — `search(kind='part', q=…)`
 
 ```python
-search(kind='part', q='0.1uF 0402 X7R 16V')      # a bypass cap
-search(kind='part', q='ESP32-C3 module')
-search(kind='part', q='10k 0402 resistor')
-search(kind='part', q='3.3V LDO 500mA SOT-23')
+search(kind="part", q="0.1uF 0402 X7R 16V")  # a bypass cap
+search(kind="part", q="ESP32-C3 module")
+search(kind="part", q="10k 0402 resistor")
+search(kind="part", q="3.3V LDO 500mA SOT-23")
 ```
 
 The selector **hard-filters to assemblable parts** and ranks them:
@@ -46,7 +46,9 @@ $ea`. Pick the top Basic row that matches your parametrics + footprint.
 ## Read one part — `get(kind='part', id='C…')`
 
 ```python
-get(kind='part', id='C25804')   # mfr part, assemblable, basic, stock, package, height, datasheet, restocks
+get(
+    kind="part", id="C25804"
+)  # mfr part, assemblable, basic, stock, package, height, datasheet, restocks
 ```
 
 Use this to confirm a candidate before committing it to a design — especially
@@ -59,10 +61,20 @@ footprint / height / courtyard from the catalog onto the component, so the
 design stays self-contained even if the catalog later churns:
 
 ```python
-put(kind='pcb', id='s', args={'components':[
-  {'refdes':'C1', 'label':'100nF 0402', 'part':'C1525',
-   'pins':[{'name':'1'},{'name':'2'}]},   # footprint '0402' + height copied from C1525
-]})
+put(
+    kind="pcb",
+    id="s",
+    args={
+        "components": [
+            {
+                "refdes": "C1",
+                "label": "100nF 0402",
+                "part": "C1525",
+                "pins": [{"name": "1"}, {"name": "2"}],
+            },  # footprint '0402' + height copied from C1525
+        ]
+    },
+)
 ```
 
 You can still pass an explicit `footprint`/`height_mm`/`courtyard` to override.

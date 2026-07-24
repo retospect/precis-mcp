@@ -245,26 +245,27 @@ rejected — both hide problems behind extra writes.)
 # Schedule worker pseudocode — runs as a precis worker --only schedule pass.
 for recurring in level_recurring_refs(active=True):
     if recurring.meta.schedule is None:
-        continue                       # folder, not a schedule
+        continue  # folder, not a schedule
     schedule = parse(recurring.meta.schedule)
-    for tick_ts in ticks_since(recurring.last_tick(), schedule,
-                                backfill=schedule.backfill_missed):
-        tick_stamp = tick_ts.isoformat(timespec='minutes')
+    for tick_ts in ticks_since(
+        recurring.last_tick(), schedule, backfill=schedule.backfill_missed
+    ):
+        tick_stamp = tick_ts.isoformat(timespec="minutes")
         if child_with_tick_exists(recurring.id, tick_stamp):
-            continue                   # idempotency
+            continue  # idempotency
         if has_open_previous_tick(recurring.id):
-            log.info('skipping tick: previous still open')
-            continue                   # collision = skip
-        precis.put(kind='todo',
-                   parent_id=recurring.id,
-                   text=render_title(recurring, tick_ts),
-                   prio=2,             # cron-spawned default
-                   meta={'spawned_for_tick': tick_stamp,
-                         'executor': recurring.meta.executor})
-        store.append_event(recurring.id,
-                           source='schedule',
-                           event='spawn',
-                           payload={'tick': tick_stamp})
+            log.info("skipping tick: previous still open")
+            continue  # collision = skip
+        precis.put(
+            kind="todo",
+            parent_id=recurring.id,
+            text=render_title(recurring, tick_ts),
+            prio=2,  # cron-spawned default
+            meta={"spawned_for_tick": tick_stamp, "executor": recurring.meta.executor},
+        )
+        store.append_event(
+            recurring.id, source="schedule", event="spawn", payload={"tick": tick_stamp}
+        )
 ```
 
 `source='schedule'` on the event is the provenance answer to "what
@@ -386,17 +387,16 @@ consumer to each auto-task:
 ```python
 # in worker, after finding candidates
 for doi in candidates:
-    precis.put(kind='paper', ref={'doi': doi})              # queue ingest
-    wait_id = precis.put(kind='todo',
-                         parent_id=98,
-                         text=f'[auto] wait for paper {doi} ingested+indexed',
-                         meta={'auto_check': {
-                             'type': 'paper_ingested',
-                             'doi': doi
-                         }}).id
-    precis.link(source_id=108, target_id=wait_id, relation='blocks')
+    precis.put(kind="paper", ref={"doi": doi})  # queue ingest
+    wait_id = precis.put(
+        kind="todo",
+        parent_id=98,
+        text=f"[auto] wait for paper {doi} ingested+indexed",
+        meta={"auto_check": {"type": "paper_ingested", "doi": doi}},
+    ).id
+    precis.link(source_id=108, target_id=wait_id, relation="blocks")
 
-precis.edit(kind='todo', id=103, status='done')
+precis.edit(kind="todo", id=103, status="done")
 ```
 
 Why siblings, not children of #103: the discovery is genuinely
@@ -409,12 +409,14 @@ specific judgment to pass forward, it writes a memory **linked to
 the consumer leaf** via the existing links table:
 
 ```python
-precis.put(kind='memory',
-           text='thompson is the strongest cite for §3 — lead with '
-                'it. lee supporting, chen background.',
-           tags=['internal-thought', 'user:asa'],
-           link='todo:108',
-           rel='note-for')
+precis.put(
+    kind="memory",
+    text="thompson is the strongest cite for §3 — lead with "
+    "it. lee supporting, chen background.",
+    tags=["internal-thought", "user:asa"],
+    link="todo:108",
+    rel="note-for",
+)
 ```
 
 Uses `links` infrastructure (the same one `blocked-by` rides on)
@@ -439,19 +441,25 @@ See Modes section.
 The worker asks via the existing message kind and parks the work:
 
 ```python
-msg = precis.put(kind='message',
-                 text='Reto: should §3 cite Tanaka 2024, or skip?',
-                 target='discord/<guild>/<channel>/<thread>')
-ask_id = precis.put(kind='todo',
-                    parent_id=98,
-                    text='Decide: cite Tanaka 2024 in §3 — asked Reto',
-                    tags=['asking-reto'],
-                    meta={'auto_check': {
-                        'type': 'discord_reply_received',
-                        'ask_message_id': msg.id,
-                        'thread': 'discord/<guild>/<channel>/<thread>'
-                    }}).id
-precis.link(source_id=consumer_leaf_id, target_id=ask_id, relation='blocks')
+msg = precis.put(
+    kind="message",
+    text="Reto: should §3 cite Tanaka 2024, or skip?",
+    target="discord/<guild>/<channel>/<thread>",
+)
+ask_id = precis.put(
+    kind="todo",
+    parent_id=98,
+    text="Decide: cite Tanaka 2024 in §3 — asked Reto",
+    tags=["asking-reto"],
+    meta={
+        "auto_check": {
+            "type": "discord_reply_received",
+            "ask_message_id": msg.id,
+            "thread": "discord/<guild>/<channel>/<thread>",
+        }
+    },
+).id
+precis.link(source_id=consumer_leaf_id, target_id=ask_id, relation="blocks")
 ```
 
 **Chatter side** (when Reto replies):
@@ -975,38 +983,41 @@ is a new module + a new addon file, no config to maintain.
 ```python
 # asa_bot/preamble/modes.py
 
+
 @dataclass
 class Mode:
     name: str
     addon_path: Path
     context: list[ContextSlot]
 
+
 class ContextSlot(Protocol):
     def render(self, ctx: RenderContext) -> str | None: ...
 
+
 CHATTER = Mode(
-    name='chatter',
-    addon_path=GRIMOIRE / 'agents/asa-chatter.md',
+    name="chatter",
+    addon_path=GRIMOIRE / "agents/asa-chatter.md",
     context=[
-        ActiveStack(taper='leaf-only'),
+        ActiveStack(taper="leaf-only"),
         DoableQueue(top_n=5),
         AskingReto(),
         RecentDreams(n=3),
         InnerState(),
         RecentThoughts(n=5),
-        UserPinned(user='reto'),
+        UserPinned(user="reto"),
         DiscordThread(),
         Time(),
     ],
 )
 
 WORKER = Mode(
-    name='worker',
-    addon_path=GRIMOIRE / 'agents/asa-worker.md',
+    name="worker",
+    addon_path=GRIMOIRE / "agents/asa-worker.md",
     context=[
-        ActiveStack(taper='leaf-plus-outcomes'),
-        UnblockedVia(),       # completed blocking-siblings (auto)
-        NotesForMe(),         # memories tagged for-task:<self.id>
+        ActiveStack(taper="leaf-plus-outcomes"),
+        UnblockedVia(),  # completed blocking-siblings (auto)
+        NotesForMe(),  # memories tagged for-task:<self.id>
         # DoableQueue(...),   # worker picks one, doesn't browse
         # AskingReto(),
         # RecentDreams(...),
@@ -1019,16 +1030,16 @@ WORKER = Mode(
 )
 
 DREAMER = Mode(
-    name='dreamer',
-    addon_path=GRIMOIRE / 'agents/asa-dreamer.md',
+    name="dreamer",
+    addon_path=GRIMOIRE / "agents/asa-dreamer.md",
     context=[
         # ActiveStack(...),                     # would bias dreams
         # DoableQueue(...),
         # AskingReto(),
-        RecentDreams(n=10),                     # avoid repeats
+        RecentDreams(n=10),  # avoid repeats
         InnerState(brief=True),
-        RecentWorkerActivity(window='24h'),     # fresh substrate
-        RandomCorpusRegion(window='7d', size=10),
+        RecentWorkerActivity(window="24h"),  # fresh substrate
+        RandomCorpusRegion(window="7d", size=10),
     ],
 )
 ```
@@ -1113,13 +1124,15 @@ convention, clean cascade behavior on task deletion.
 
 ```python
 # in a discovery worker, after queuing candidates:
-precis.put(kind='memory',
-           text='queued 3 candidates on MOF photocatalysis. thompson '
-                'is the strongest cite for §3 — lead with it. lee is '
-                'supporting; chen is mostly background.',
-           tags=['internal-thought', 'user:asa'],
-           link='todo:108',
-           rel='note-for')
+precis.put(
+    kind="memory",
+    text="queued 3 candidates on MOF photocatalysis. thompson "
+    "is the strongest cite for §3 — lead with it. lee is "
+    "supporting; chen is mostly background.",
+    tags=["internal-thought", "user:asa"],
+    link="todo:108",
+    rel="note-for",
+)
 ```
 
 Renders for the #108 worker as:

@@ -70,16 +70,19 @@ by category and `search(kind='todo', tags=['AUDIT:missing-citation'])`
 enumerates the backlog:
 
 ```python
-put(kind='todo',
-    text='dc1518518: algD operon claim for alginate EPS lacks a '
-         'gene-discovery citation — find + cite the foundational paper.',
-    meta={'anchor': 'dc1518518'},
-    tags=['AUDIT:missing-citation'])
+put(
+    kind="todo",
+    text="dc1518518: algD operon claim for alginate EPS lacks a "
+    "gene-discovery citation — find + cite the foundational paper.",
+    meta={"anchor": "dc1518518"},
+    tags=["AUDIT:missing-citation"],
+)
 ```
 
 ```python
-put(kind='finding',
-    text='''Citation drift in dc207 (Results > Kinetics):
+put(
+    kind="finding",
+    text="""Citation drift in dc207 (Results > Kinetics):
 
 The claim "we observed 12% Faradaic efficiency..." cites [pc1843].
 
@@ -87,9 +90,10 @@ pc1843's actual text reads:
 "a Faradaic efficiency of approximately 10% was measured"
 
 Severity: SUBSTANTIVE — the cited chunk supports ~10%, not 12%. The
-claim's quantitative core breaks.''',
-    link='pc1843',
-    rel='cited-without-support')
+claim's quantitative core breaks.""",
+    link="pc1843",
+    rel="cited-without-support",
+)
 ```
 
 Findings stay open until the writer's next tick resolves them.
@@ -133,9 +137,11 @@ unsupported citation that survives review is expensive.
 ## See also
 
 ```python
-get(kind='skill', id='precis-draft-help')             # write side: inline [pc<id>] citations
-get(kind='skill', id='precis-bibliography-help')      # read side: who cites a paper
-get(kind='skill', id='precis-review-paper-help')      # full adversarial review including claim-support
-get(kind='skill', id='precis-common-reviewer')        # shared reviewer discipline
-get(kind='skill', id='precis-finding-help')           # how to write a finding
+get(kind="skill", id="precis-draft-help")  # write side: inline [pc<id>] citations
+get(kind="skill", id="precis-bibliography-help")  # read side: who cites a paper
+get(
+    kind="skill", id="precis-review-paper-help"
+)  # full adversarial review including claim-support
+get(kind="skill", id="precis-common-reviewer")  # shared reviewer discipline
+get(kind="skill", id="precis-finding-help")  # how to write a finding
 ```

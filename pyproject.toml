@@ -58,12 +58,24 @@ classifiers = [
 dependencies = [
     "mcp[cli]>=1.0",
     "psycopg[binary,pool]>=3.2",
-    "pgvector>=0.3.0",
+    # Capped <0.5: pgvector 0.5.0 returns fetched vector columns as a
+    # non-iterable ``Vector`` object instead of a list, breaking every
+    # Python-side ``[float(x) for x in row[0]]`` / ``list(row[0])`` read
+    # (get_chunk_vector, _draft_ops embedding reads, …) with "'Vector'
+    # object is not iterable". Lifting the cap requires auditing + adapting
+    # ALL raw vector-read sites to ``.to_list()`` — its own change, not a
+    # freshness bump, since a missed site silently breaks prod cosine search.
+    "pgvector>=0.3.0,<0.5",
     # Numerics for the hierarchical-SOM cluster maps (clusterize worker
     # + precis-web /clusters grid). Already present transitively via the
     # embed/paper stacks; promoted to a direct dep so the always-on
     # system worker can import it without the heavy optional extras.
-    "numpy>=1.24",
+    # Capped <2.5: numpy 2.5 drops py3.11 and ships PEP 695 `type`-statement
+    # stubs that mypy rejects under our `python_version = "3.11"` target
+    # ("Type statement is only supported in Python 3.12 and greater"). 2.4.6
+    # is current-enough and resolves uniformly across 3.11–3.13; lift the cap
+    # only when the mypy target moves to >=3.12.
+    "numpy>=1.24,<2.5",
     "pydantic-settings>=2.0",
     "platformdirs>=4.0",
     "pyyaml>=6.0",
@@ -83,14 +95,15 @@ dependencies = [
     # image doesn't ship it, so the prior readline-based REPL silently
     # fell back to no-editing input()).
     "prompt-toolkit>=3.0",
-    # Transitive-dep security floor — DO NOT add Pillow>=12.2.0 or
-    # markdownify>=1.2 here without first bumping marker-pdf upstream.
-    # As of 2026-05, marker-pdf 1.10.2 hard-caps Pillow<11.0.0 and
-    # pulls markdownify<0.13.1; trying to pin Pillow>=12.2.0 here
-    # makes precis-mcp[all] unresolvable. The pillow alerts (PSD,
-    # FITS, PDF) and markdownify headline-DoS aren't reachable from
-    # precis-mcp directly — paper ingestion sandboxes Marker behind
-    # the ``[paper]`` extra. Tracked in dependabot.
+    # Transitive-dep security floor — DO NOT add Pillow>=12.2.0 here
+    # without first bumping marker-pdf upstream. As of 2026-07,
+    # marker-pdf 2.0.0 still hard-caps Pillow<11.0.0 (the markdownify
+    # cap it used to carry alongside is gone — markdownify now
+    # resolves freely); trying to pin Pillow>=12.2.0 here still makes
+    # precis-mcp[all] unresolvable. The pillow alerts (PSD, FITS, PDF —
+    # need >=12.3.0) aren't reachable from precis-mcp directly — paper
+    # ingestion sandboxes Marker behind the ``[paper]`` extra. Knowingly
+    # accepted/unreachable; tracked in dependabot.
     # LaTeX export determinism: unicode→LaTeX-command translation so
     # arbitrary scientific prose (≈, →, α, ™, …) never throws a
     # "missing character" on pdflatex. Pure-Python, tiny; also backs the
@@ -170,14 +183,15 @@ tts = ["kokoro-onnx>=0.4", "soundfile>=0.12"]
 # the install resolves but PDF layout extraction will error out at
 # call time with a clear ``ModuleNotFoundError: marker``.
 #
-# ⚠️ SECURITY PIN — DO NOT hand-bump ``transformers`` to fix Dependabot #44
-# (transformers <5.3.0 RCE, high). ``marker-pdf`` (≤1.10.2, the PDF OCR/layout
-# toolkit below) hard-caps ``transformers<5.0.0``, so ``>=5.3.0`` is
-# **unsatisfiable** — a lockfile-only bump WILL fail to resolve. The alert is
-# knowingly accepted (precis only loads the trusted local bge-m3 embedder, never
-# ``trust_remote_code`` / a user model path). Full risk note + recheck date:
-# SECURITY.md "Known / accepted open alerts" and OPEN-ITEMS.md "Snoozed —
-# blocked upstream". Unblocks only when marker-pdf lifts its transformers<5 cap.
+# Dependabot #44/#45 (transformers <5.3.0 RCE) are FIXED as of 2026-07:
+# ``marker-pdf`` 2.0.0 lifted its ``transformers<5.0.0`` cap, so
+# ``transformers`` now resolves freely (currently 5.14.x) — no pin needed
+# here anymore. Note ``anthropic``/``openai``/``google-genai`` also ride in
+# transitively via marker-pdf (its own LLM-assisted-OCR fallback path) —
+# precis never imports them directly (``router.dispatch`` talks to LLM
+# backends over raw ``httpx``/``urllib``), so their versions float freely
+# too. See SECURITY.md "Known / accepted open alerts" and OPEN-ITEMS.md
+# "Snoozed — blocked upstream" for the remaining (Pillow) entry.
 paper = [
     "marker-pdf>=1.0; sys_platform != 'win32'",
     "pymupdf>=1.24.10",     # ``fitz`` — page-level PDF text + metadata.

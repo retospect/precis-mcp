@@ -97,11 +97,14 @@ call so an agent can append a paragraph and immediately link it to
 the paper that motivated it:
 
 ```python
-put(kind='goal', id='ship-v2~implementation-notes',
-    text='Adopt async psycopg per benchmark in §3 of @paper:thompson2025.',
-    mode='replace',
-    link='paper:thompson2025~s3',
-    rel='supported-by')
+put(
+    kind="goal",
+    id="ship-v2~implementation-notes",
+    text="Adopt async psycopg per benchmark in §3 of @paper:thompson2025.",
+    mode="replace",
+    link="paper:thompson2025~s3",
+    rel="supported-by",
+)
 ```
 
 The inverse direction — pointing **at** a specific chunk of a goal
@@ -109,10 +112,12 @@ from a memory or todo — works through the same plumbing and becomes
 useful once blocks are small:
 
 ```python
-put(kind='memory',
-    text='Decided: async psycopg for goal ship-v2.',
-    link='goal:ship-v2~implementation-notes',
-    rel='derived-from')
+put(
+    kind="memory",
+    text="Decided: async psycopg for goal ship-v2.",
+    link="goal:ship-v2~implementation-notes",
+    rel="derived-from",
+)
 ```
 
 ## Shared improvement #1 — `view='check'` link-health generator

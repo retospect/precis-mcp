@@ -40,8 +40,10 @@ The handle is a value you **copy from search / get output** — never
 construct or guess it. There is no slug to assemble:
 
 ```python
-search(kind='paper', q='<claim or key phrase>', scope='<slug>')  # → returns pc<id> handles
-get(id='pc234')                                                   # read it; the chunk IS the evidence
+search(
+    kind="paper", q="<claim or key phrase>", scope="<slug>"
+)  # → returns pc<id> handles
+get(id="pc234")  # read it; the chunk IS the evidence
 ```
 
 **The author never hand-writes LaTeX citation commands** — they are
@@ -68,13 +70,15 @@ that a verifier confirmed the chunk supports the claim.
 ## Store a citation record for a claim
 
 ```python
-put(kind='citation',
-    text='MOF X improves CO2 reduction by 12%',          # the claim
-    source_handle='pc7',                                  # the chunk it points at
+put(
+    kind="citation",
+    text="MOF X improves CO2 reduction by 12%",  # the claim
+    source_handle="pc7",  # the chunk it points at
     #                  (legacy 'collins06~7' also resolves)
     verifier_confidence=0.95,
-    link='paper:collins06',
-    rel='cites')
+    link="paper:collins06",
+    rel="cites",
+)
 # → created citation id=42
 ```
 
@@ -95,9 +99,9 @@ trail.
 ## Show me citation 42
 
 ```python
-get(id='ci42')                           # by handle (prefix infers kind)
-get(kind='citation', id=42)              # equivalent
-get(kind='citation', id='citation:42')   # legacy link-target form, equivalent
+get(id="ci42")  # by handle (prefix infers kind)
+get(kind="citation", id=42)  # equivalent
+get(kind="citation", id="citation:42")  # legacy link-target form, equivalent
 ```
 
 ```text
@@ -112,8 +116,8 @@ verified_at: 2026-05-31T14:23:00Z
 ## Browse recent or matching citations
 
 ```python
-search(kind='citation', q='MOF CO2 reduction')
-get(kind='citation', id='/recent')
+search(kind="citation", q="MOF CO2 reduction")
+get(kind="citation", id="/recent")
 ```
 
 ## How does this become LaTeX? (you don't write the citation commands)
@@ -149,11 +153,17 @@ cite a different chunk or chase a finding.
 ## See also
 
 ```python
-get(kind='skill', id='precis-cite-paper-help')  # the cite-a-paper router (in/out of corpus, which branch)
-get(kind='skill', id='precis-check-source-help') # reader side: find the chunk, read surrounds, judge support
-get(kind='skill', id='precis-finding-help')    # chase side: claim → primary source, cite [fi<id>] meanwhile
-get(kind='skill', id='precis-search-help')     # find the chunk handle to cite
-get(kind='skill', id='precis-paper-help')      # fetch chunks; pc<id> / ~N grammar
-get(kind='skill', id='precis-link-help')       # cites and other graph relations
-get(kind='skill', id='precis-overview')        # verbs and kinds
+get(
+    kind="skill", id="precis-cite-paper-help"
+)  # the cite-a-paper router (in/out of corpus, which branch)
+get(
+    kind="skill", id="precis-check-source-help"
+)  # reader side: find the chunk, read surrounds, judge support
+get(
+    kind="skill", id="precis-finding-help"
+)  # chase side: claim → primary source, cite [fi<id>] meanwhile
+get(kind="skill", id="precis-search-help")  # find the chunk handle to cite
+get(kind="skill", id="precis-paper-help")  # fetch chunks; pc<id> / ~N grammar
+get(kind="skill", id="precis-link-help")  # cites and other graph relations
+get(kind="skill", id="precis-overview")  # verbs and kinds
 ```

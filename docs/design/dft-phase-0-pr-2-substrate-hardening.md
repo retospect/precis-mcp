@@ -111,6 +111,7 @@ typical stdio limits) checked at the end of `dispatch_with_status`:
 ```python
 MAX_BODY_BYTES = int(os.environ.get("PRECIS_MAX_BODY_BYTES", 24576))
 
+
 def dispatch_with_status(self, verb, args):
     body, is_error = self._do(verb, args)
     if len(body.encode("utf-8")) <= MAX_BODY_BYTES:

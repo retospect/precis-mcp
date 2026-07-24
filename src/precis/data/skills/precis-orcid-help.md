@@ -25,9 +25,9 @@ cache-evicted — it is a link hub whose `authored` edges must persist.
 ## Resolve an author by iD
 
 ```python
-get(kind='orcid', id='0000-0002-1825-0097')
-get(kind='orcid', id='orcid:0000-0002-1825-0097')       # handle form ok
-get(kind='orcid', id='https://orcid.org/0000-0002-1825-0097')  # URL ok
+get(kind="orcid", id="0000-0002-1825-0097")
+get(kind="orcid", id="orcid:0000-0002-1825-0097")  # handle form ok
+get(kind="orcid", id="https://orcid.org/0000-0002-1825-0097")  # URL ok
 ```
 
 On resolve the handler:
@@ -53,9 +53,9 @@ Resolving **links** every work you already hold (`authored` edge) and
 decide how many, if any, to pull:
 
 ```python
-get(kind='orcid', id='0000-0002-1825-0097')                 # resolve + counts
-get(kind='orcid', id='0000-0002-1825-0097', args={'enqueue': 10})  # mint 10 stubs
-get(kind='orcid', id='0000-0002-1825-0097', args={'enqueue': 'all'})  # all of them
+get(kind="orcid", id="0000-0002-1825-0097")  # resolve + counts
+get(kind="orcid", id="0000-0002-1825-0097", args={"enqueue": 10})  # mint 10 stubs
+get(kind="orcid", id="0000-0002-1825-0097", args={"enqueue": "all"})  # all of them
 ```
 
 A render reports e.g. *"In corpus: 9 linked; missing: 31 with a
@@ -82,10 +82,11 @@ a *paper*, not a paragraph). Both endpoints are ref-level.
 
 ```python
 # who authored this paper? (inverse auto-mirrors)
-get(id='pa42', view='links')
+get(id="pa42", view="links")
 # manually assert authorship
-link(kind='orcid', id='0000-0002-1825-0097',
-     target='paper:wang2020state', rel='authored')
+link(
+    kind="orcid", id="0000-0002-1825-0097", target="paper:wang2020state", rel="authored"
+)
 ```
 
 Co-authorship is a **2-hop walk** (`orcid → paper → orcid`), not a
@@ -94,8 +95,8 @@ stored edge.
 ## Search authors
 
 ```python
-search(kind='orcid', q='spintronics group leader')
-search(kind='orcid', q='single-molecule magnetism PI')
+search(kind="orcid", q="spintronics group leader")
+search(kind="orcid", q="single-molecule magnetism PI")
 ```
 
 Hybrid lexical + semantic over the embedded author cards — finds the
@@ -104,8 +105,8 @@ people in your corpus by topic, not just by name.
 ## Classify / cross-link
 
 ```python
-tag(kind='orcid', id='0000-0002-1825-0097', add=['watchlist', 'topic:mofs'])
-link(kind='orcid', id='0000-0002-1825-0097', target='memory:42')
+tag(kind="orcid", id="0000-0002-1825-0097", add=["watchlist", "topic:mofs"])
+link(kind="orcid", id="0000-0002-1825-0097", target="memory:42")
 ```
 
 The canonical record mirrors an external source of truth, so there is
@@ -130,7 +131,7 @@ blocks the rest of the surface).
 ## See also
 
 ```python
-get(kind='skill', id='precis-author-discovery-help')   # the BFS recipe
-get(kind='skill', id='precis-overview')                # verbs and kinds
-get(kind='skill', id='precis-stubs-help')              # the stub → fetch pipeline
+get(kind="skill", id="precis-author-discovery-help")  # the BFS recipe
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-stubs-help")  # the stub → fetch pipeline
 ```

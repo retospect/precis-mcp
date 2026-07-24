@@ -23,24 +23,24 @@ several** (see Frontier scoring) — you choose whom to expand.
 ```python
 # 1. From a high-value paper, list its authors. The last author is
 #    flagged "senior"; each row carries the author's ORCID + S2 id.
-get(kind='semanticscholar', id='authors:10.1038/nature12373')
+get(kind="semanticscholar", id="authors:10.1038/nature12373")
 
 # 2. Resolve the senior (then co-) authors by their ORCID iD. This
 #    stores the author node, links the works you already hold, and
 #    REPORTS how many are missing — it does not auto-fetch.
-get(kind='orcid', id='0000-0002-1825-0097')
+get(kind="orcid", id="0000-0002-1825-0097")
 
 # 2b. Opt in to fetching: enqueue as many of the missing works as the
 #     frontier budget allows (or 'all'). LLM-gated — see precis-orcid-help.
-get(kind='orcid', id='0000-0002-1825-0097', args={'enqueue': 20})
+get(kind="orcid", id="0000-0002-1825-0097", args={"enqueue": 20})
 
 # 3. The fetch_oa worker grabs open-access PDFs for the new stubs
 #    out-of-band. Read what landed, score the frontier, expand.
-search(kind='paper', q='your topic')
+search(kind="paper", q="your topic")
 
 # 4. Widen the frontier with the author's top S2 papers (each row's
 #    DOI feeds another put(kind='paper', doi=...) / authors: hop).
-get(kind='semanticscholar', id='author:1741101')
+get(kind="semanticscholar", id="author:1741101")
 ```
 
 ## Frontier scoring
@@ -76,7 +76,7 @@ scoring heuristic, then promote to a recurring planner.
 ## See also
 
 ```python
-get(kind='skill', id='precis-orcid-help')          # the ORCID node + LLM-gated enqueue
-get(kind='skill', id='precis-stubs-help')          # the stub → fetch pipeline
-get(kind='skill', id='precis-decomposition-help')  # when to split / block / wait
+get(kind="skill", id="precis-orcid-help")  # the ORCID node + LLM-gated enqueue
+get(kind="skill", id="precis-stubs-help")  # the stub → fetch pipeline
+get(kind="skill", id="precis-decomposition-help")  # when to split / block / wait
 ```

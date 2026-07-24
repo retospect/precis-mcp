@@ -17,9 +17,9 @@ shape (`page=`, `page_size=`, `tags=`, `scope=`, `exclude=`).
 ## Discover patents about a subject
 
 ```python
-search(kind='patent', q='photocatalytic NOx reduction')
-search(kind='patent', q='Z-scheme photocatalysis', page_size=20)
-search(kind='patent', q='amine carbon capture', page=2)
+search(kind="patent", q="photocatalytic NOx reduction")
+search(kind="patent", q="Z-scheme photocatalysis", page_size=20)
+search(kind="patent", q="amine carbon capture", page=2)
 ```
 
 Default `source='both'` — merges local + remote, deduped by DOCDB
@@ -30,9 +30,9 @@ id. Order is the relevance signal.
 ## When do I use source='local' vs source='remote'?
 
 ```python
-search(kind='patent', q='amine carbon capture')                       # both (default)
-search(kind='patent', q='amine carbon capture', source='local')       # local only
-search(kind='patent', q='amine carbon capture', source='remote')      # OPS, minus local
+search(kind="patent", q="amine carbon capture")  # both (default)
+search(kind="patent", q="amine carbon capture", source="local")  # local only
+search(kind="patent", q="amine carbon capture", source="remote")  # OPS, minus local
 ```
 
 | `source=` | Returns | Use when |
@@ -70,10 +70,9 @@ one.
 ## Narrow patent search by tag axis
 
 ```python
-search(kind='patent', q='photocatalysis', tags=['cpc:B01J27/24'])
-search(kind='patent', tags=['cpc:B01J27/24', 'country:ep'])
-search(kind='patent', q='MOF synthesis',
-       tags=['applicant:siemens-ag', 'kind:b1'])
+search(kind="patent", q="photocatalysis", tags=["cpc:B01J27/24"])
+search(kind="patent", tags=["cpc:B01J27/24", "country:ep"])
+search(kind="patent", q="MOF synthesis", tags=["applicant:siemens-ag", "kind:b1"])
 ```
 
 Closed-prefix tag axes for patents: `cpc:`, `ipc:`, `applicant:`,
@@ -85,7 +84,9 @@ narrow the local leg.
 ## Where does this patent mention X?
 
 ```python
-search(kind='patent', q='Z-scheme', scope='pt812')   # handle (pub-number ep4123456a1 also resolves)
+search(
+    kind="patent", q="Z-scheme", scope="pt812"
+)  # handle (pub-number ep4123456a1 also resolves)
 ```
 
 `scope=` restricts to one already-ingested patent's blocks. Lead with
@@ -118,8 +119,7 @@ chase can resume when the publication propagates.
 ## Boolean operators, date windows, applicant exclusions
 
 ```python
-search(kind='patent',
-       q='cpc=B01J27/24 and pd within "2020 2025" and not pa=basf')
+search(kind="patent", q='cpc=B01J27/24 and pd within "2020 2025" and not pa=basf')
 ```
 
 The handler accepts raw OPS CQL in `q=` when Boolean operators,
@@ -128,15 +128,15 @@ numbers are needed. Bare keywords are auto-promoted; explicit CQL
 is passed through.
 
 ```python
-get(kind='skill', id='precis-patent-power')   # full CQL grammar + saved watches
+get(kind="skill", id="precis-patent-power")  # full CQL grammar + saved watches
 ```
 
 ## See also
 
 ```python
-get(kind='skill', id='precis-search-help')      # cross-kind search mechanics
-get(kind='skill', id='precis-patent-help')      # read patents (get, views, slugs)
-get(kind='skill', id='precis-patent-power')     # OPS CQL grammar, saved watches
-get(kind='skill', id='precis-finding-help')     # register a chase target on a miss
-get(kind='skill', id='precis-tags')             # tag axis vocabulary
+get(kind="skill", id="precis-search-help")  # cross-kind search mechanics
+get(kind="skill", id="precis-patent-help")  # read patents (get, views, slugs)
+get(kind="skill", id="precis-patent-power")  # OPS CQL grammar, saved watches
+get(kind="skill", id="precis-finding-help")  # register a chase target on a miss
+get(kind="skill", id="precis-tags")  # tag axis vocabulary
 ```

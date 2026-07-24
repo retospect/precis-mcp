@@ -130,9 +130,9 @@ what you read. Plugin kinds (`route`/`protein`), on where the tool-pack is enabl
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')   # kinds table + address scheme
-get(kind='skill', id='precis-help')       # verb table from the live registry
-get(kind='skill', id='toc')               # every skill, one-line synopsis
+get(kind="skill", id="precis-overview")  # kinds table + address scheme
+get(kind="skill", id="precis-help")  # verb table from the live registry
+get(kind="skill", id="toc")  # every skill, one-line synopsis
 ```
 
 ---

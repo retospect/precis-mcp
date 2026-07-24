@@ -20,12 +20,14 @@ views, and slug stability under edits.
 Either form works; the handler accepts both.
 
 ```python
-get(kind='markdown', id='notes/meeting.md')        # path form
-get(kind='markdown', id='notes--meeting')          # slug form ('/' ↔ '--')
-get(kind='markdown', id='notes/meeting.md~L42-58') # line range (1-indexed inclusive)
-get(kind='markdown', id='notes/meeting.md~conclusion')  # name selector
-get(kind='markdown', id='notes/meeting.md~3')      # by block pos (output shows the handle mc<id>; get(id='mc<id>') works too)
-get(kind='markdown', id='/Users/me/notes/meeting.md')   # absolute path also accepted
+get(kind="markdown", id="notes/meeting.md")  # path form
+get(kind="markdown", id="notes--meeting")  # slug form ('/' ↔ '--')
+get(kind="markdown", id="notes/meeting.md~L42-58")  # line range (1-indexed inclusive)
+get(kind="markdown", id="notes/meeting.md~conclusion")  # name selector
+get(
+    kind="markdown", id="notes/meeting.md~3"
+)  # by block pos (output shows the handle mc<id>; get(id='mc<id>') works too)
+get(kind="markdown", id="/Users/me/notes/meeting.md")  # absolute path also accepted
 ```
 
 `/` and `--` are interchangeable in the file portion. `..` parent
@@ -64,10 +66,10 @@ get(kind='markdown', id='notes/meeting.md~old-intro')
 ## What's in this note?
 
 ```python
-get(kind='markdown', id='<slug>', view='toc')   # heading-driven TOC
-get(kind='markdown', id='<slug>/toc')           # path form is equivalent
-get(kind='markdown', id='<slug>/raw')           # untouched source text
-get(kind='markdown', id='<slug>')               # overview with TOC preview
+get(kind="markdown", id="<slug>", view="toc")  # heading-driven TOC
+get(kind="markdown", id="<slug>/toc")  # path form is equivalent
+get(kind="markdown", id="<slug>/raw")  # untouched source text
+get(kind="markdown", id="<slug>")  # overview with TOC preview
 ```
 
 Views: `toc`, `raw`. The overview already shows a heading-TOC preview;
@@ -78,14 +80,26 @@ Views: `toc`, `raw`. The overview already shows a heading-TOC preview;
 ## How do I rewrite just one paragraph?
 
 ```python
-edit(kind='markdown', id='notes/meeting.md~conclusion',
-     text='## Final thoughts\n\nReplaced.', mode='replace')
+edit(
+    kind="markdown",
+    id="notes/meeting.md~conclusion",
+    text="## Final thoughts\n\nReplaced.",
+    mode="replace",
+)
 
-edit(kind='markdown', id='notes/meeting.md~L42-58',   # from grep -n
-     text='Updated paragraph.', mode='replace')
+edit(
+    kind="markdown",
+    id="notes/meeting.md~L42-58",  # from grep -n
+    text="Updated paragraph.",
+    mode="replace",
+)
 
-edit(kind='markdown', id='notes/meeting.md',
-     text='Action item: review the plan.', mode='append')
+edit(
+    kind="markdown",
+    id="notes/meeting.md",
+    text="Action item: review the plan.",
+    mode="append",
+)
 ```
 
 Block kinds (paragraph / heading / code / table / list) are addressed
@@ -103,20 +117,36 @@ file with the heading as an anchor.
 ## How do I change one word without rewriting the paragraph?
 
 ```python
-edit(kind='markdown', id='notes--foo~intro',
-     mode='find-replace',
-     find='the', before='over ', after=' fence',
-     text='a')
+edit(
+    kind="markdown",
+    id="notes--foo~intro",
+    mode="find-replace",
+    find="the",
+    before="over ",
+    after=" fence",
+    text="a",
+)
 
-edit(kind='markdown', id='notes--foo',
-     mode='insert',
-     find='## Conclusion', where='before',
-     text='\n## TL;DR\n\nQuick summary.\n\n')
+edit(
+    kind="markdown",
+    id="notes--foo",
+    mode="insert",
+    find="## Conclusion",
+    where="before",
+    text="\n## TL;DR\n\nQuick summary.\n\n",
+)
 
-edit(kind='markdown', id='notes--foo~intro',
-     mode='find-replace',
-     find='(draft) ', text='')   # empty text = delete the span
+edit(
+    kind="markdown",
+    id="notes--foo~intro",
+    mode="find-replace",
+    find="(draft) ",
+    text="",
+)  # empty text = delete the span
 ```
+
+`text=''` (empty string) is the span-delete idiom: `find-replace` with no
+replacement text removes the matched span outright.
 
 Selector bounds the search region: `id='notes--foo'` searches the
 whole file; `id='notes--foo~intro'` searches just that block. Full
@@ -125,9 +155,12 @@ find-replace + insert grammar lives in `precis-edit-help`.
 ## Drafting a new file
 
 ```python
-put(kind='markdown', id='notes/proposal.md',
-    text='# Proposal\n\nFirst cut.\n\n## Goals\n\n- One\n- Two\n',
-    mode='create')
+put(
+    kind="markdown",
+    id="notes/proposal.md",
+    text="# Proposal\n\nFirst cut.\n\n## Goals\n\n- One\n- Two\n",
+    mode="create",
+)
 ```
 
 ## Limits
@@ -141,10 +174,10 @@ put(kind='markdown', id='notes/proposal.md',
 ## See also
 
 ```python
-get(kind='skill', id='precis-files-help')      # shared address grammar, write modes
-get(kind='skill', id='precis-edit-help')       # find-replace + insert grammar
-get(kind='skill', id='precis-plaintext-help')  # .txt / .log — no block grammar
-get(kind='skill', id='precis-tex-help')        # .tex section-aware blocks
-get(kind='skill', id='precis-python-help')     # code navigation, AST-gated edits
-get(kind='skill', id='precis-relations')       # typed links between files and refs
+get(kind="skill", id="precis-files-help")  # shared address grammar, write modes
+get(kind="skill", id="precis-edit-help")  # find-replace + insert grammar
+get(kind="skill", id="precis-plaintext-help")  # .txt / .log — no block grammar
+get(kind="skill", id="precis-tex-help")  # .tex section-aware blocks
+get(kind="skill", id="precis-python-help")  # code navigation, AST-gated edits
+get(kind="skill", id="precis-relations")  # typed links between files and refs
 ```

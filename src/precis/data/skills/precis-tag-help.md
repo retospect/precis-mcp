@@ -18,9 +18,9 @@ which axis), see `precis-tags`. This file is the verb mechanics.
 ## I need to update tags on a ref
 
 ```python
-tag(kind='todo', id=158, add=['STATUS:done'], remove=['STATUS:open'])
-tag(kind='paper', id='wang2020state', add=['topic:noxrr'])
-tag(kind='memory', id=42, remove=['pinned'])
+tag(kind="todo", id=158, add=["STATUS:done"], remove=["STATUS:open"])
+tag(kind="paper", id="wang2020state", add=["topic:noxrr"])
+tag(kind="memory", id=42, remove=["pinned"])
 ```
 
 `add=` and `remove=` are both lists. Either can be omitted; both
@@ -32,9 +32,12 @@ doesn't have is a no-op.
 ## How do I transition state without a stale tag lingering?
 
 ```python
-tag(kind='todo', id=42,
-    add=['STATUS:done', 'PRIO:low'],
-    remove=['STATUS:open', 'PRIO:high'])
+tag(
+    kind="todo",
+    id=42,
+    add=["STATUS:done", "PRIO:low"],
+    remove=["STATUS:open", "PRIO:high"],
+)
 ```
 
 Pair `add=` + `remove=` in one call to flip state cleanly. With
@@ -44,7 +47,7 @@ closed UPPERCASE prefixes the explicit `remove=` is belt-and-braces
 ## UPPERCASE prefixes replace within their axis
 
 ```python
-tag(kind='todo', id=158, add=['STATUS:done'])
+tag(kind="todo", id=158, add=["STATUS:done"])
 # implicitly removes any prior STATUS:* on this todo
 ```
 
@@ -57,8 +60,11 @@ it won't double-remove.
 ## Add a topic without disturbing others
 
 ```python
-tag(kind='paper', id='wang2020state',
-    add=['topic:noxrr', 'topic:photocatalysis', 'project:foo'])
+tag(
+    kind="paper",
+    id="wang2020state",
+    add=["topic:noxrr", "topic:photocatalysis", "project:foo"],
+)
 ```
 
 Lowercase / open tags (`topic:x`, `cpc:B01J27/24`,
@@ -71,8 +77,8 @@ canonical separator for open prefixes is `:` (not `-`) — see
 ## Pin or unpin
 
 ```python
-tag(kind='memory', id=42, add=['pinned'])
-tag(kind='memory', id=42, remove=['pinned'])
+tag(kind="memory", id=42, add=["pinned"])
+tag(kind="memory", id=42, remove=["pinned"])
 ```
 
 Bare lowercase flags (`pinned`, `draft`, `awaiting-fulltext`) are
@@ -81,8 +87,11 @@ on/off. Add to set, remove to clear.
 ## Tag a ref at creation time
 
 ```python
-put(kind='todo', text='Review section 3 of abazari2024design.',
-    tags=['PRIO:high', 'topic:photocatalysis'])
+put(
+    kind="todo",
+    text="Review section 3 of abazari2024design.",
+    tags=["PRIO:high", "topic:photocatalysis"],
+)
 ```
 
 `put(..., tags=[...])` applies tags as part of the create. Use the
@@ -101,9 +110,11 @@ kinds, `SRC:`/`CACHE:` on provenance kinds). The matrix lives in
 ## See also
 
 ```python
-get(kind='skill', id='precis-tags')              # axis vocabulary + per-kind matrix
-get(kind='skill', id='precis-paper-tag-axes')    # paper-specific axes
-get(kind='skill', id='precis-put-help')          # tags= at creation
-get(kind='skill', id='precis-relations')         # link verb (typed cross-refs, distinct from tags)
-get(kind='skill', id='precis-session-context-help')  # PRECIS_DEFAULT_TAGS hint surface
+get(kind="skill", id="precis-tags")  # axis vocabulary + per-kind matrix
+get(kind="skill", id="precis-paper-tag-axes")  # paper-specific axes
+get(kind="skill", id="precis-put-help")  # tags= at creation
+get(
+    kind="skill", id="precis-relations"
+)  # link verb (typed cross-refs, distinct from tags)
+get(kind="skill", id="precis-session-context-help")  # PRECIS_DEFAULT_TAGS hint surface
 ```

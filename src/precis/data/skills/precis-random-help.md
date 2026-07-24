@@ -17,7 +17,7 @@ inspiration, sanity-checking a fresh corpus.
 ## Warm up by sampling whatever's in here
 
 ```python
-get(kind='random')
+get(kind="random")
 ```
 
 Returns the handle of one undeleted embedded block, a short preview,
@@ -51,9 +51,9 @@ store is alive and at least one block has an embedding.
 ## Get a unique opaque handle for a tag or correlation id
 
 ```python
-get(kind='random', view='slug')                              # 4-char default
-get(kind='random', view='slug', args={'len': 8})             # longer
-get(kind='random', view='slug', args={'alphabet': 'alnum'})  # a-z + 0-9
+get(kind="random", view="slug")  # 4-char default
+get(kind="random", view="slug", args={"len": 8})  # longer
+get(kind="random", view="slug", args={"alphabet": "alnum"})  # a-z + 0-9
 ```
 
 Returns a fresh short string — no markdown wrapper. Use it as a tag
@@ -68,7 +68,7 @@ of ≥ 2 distinct characters.
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')      # verbs and kinds
-get(kind='skill', id='precis-paper-help')    # where most picks land
-get(kind='skill', id='precis-oracle-help')   # tradition-scoped pick
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-paper-help")  # where most picks land
+get(kind="skill", id="precis-oracle-help")  # tradition-scoped pick
 ```

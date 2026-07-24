@@ -16,12 +16,12 @@ Paid (~$0.002/call); cached automatically so repeats are free.
 ## I need a number Wolfram would know
 
 ```python
-get(kind='math', q='population of Ireland')
-get(kind='math', q='speed of light in km/h')
-get(kind='math', q='orbital period of Jupiter')
-get(kind='math', q='10000 BTC in USD')
-get(kind='math', q='integrate sin(x)*cos(x) dx')
-get(kind='math', q='eigenvalues of [[2,1],[1,3]]')
+get(kind="math", q="population of Ireland")
+get(kind="math", q="speed of light in km/h")
+get(kind="math", q="orbital period of Jupiter")
+get(kind="math", q="10000 BTC in USD")
+get(kind="math", q="integrate sin(x)*cos(x) dx")
+get(kind="math", q="eigenvalues of [[2,1],[1,3]]")
 ```
 
 `id=` and `q=` are equivalent. Queries are canonicalised (lowercase
@@ -42,8 +42,8 @@ never asked before returns nothing. Use `get` to compute.
 | Paid (~$0.002/call, cached) | Free, local |
 
 ```python
-get(kind='calc', q='42 * 365')                # local SymPy, free
-get(kind='math', q='speed of light in km/h')  # Wolfram, paid
+get(kind="calc", q="42 * 365")  # local SymPy, free
+get(kind="math", q="speed of light in km/h")  # Wolfram, paid
 ```
 
 If the answer doesn't need world data, prefer `calc`.
@@ -56,8 +56,8 @@ Math results are pinned (deterministic for a fixed query), so
 `get` never re-fetches on its own. To force a fresh call:
 
 ```python
-delete(kind='math', id='<canonicalised-query>')
-get(kind='math', q='<query>')
+delete(kind="math", id="<canonicalised-query>")
+get(kind="math", q="<query>")
 ```
 
 The canonicalised id is the lowercased, whitespace-collapsed query
@@ -80,7 +80,9 @@ link and a paste-ready citation.
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')        # verbs and kinds
-get(kind='skill', id='precis-cache')           # TTLs, pinning, force-refresh
-get(kind='skill', id='precis-perplexity-help') # websearch / perplexity-reasoning / perplexity-research
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-cache")  # TTLs, pinning, force-refresh
+get(
+    kind="skill", id="precis-perplexity-help"
+)  # websearch / perplexity-reasoning / perplexity-research
 ```

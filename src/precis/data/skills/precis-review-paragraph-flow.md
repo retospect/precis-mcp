@@ -30,11 +30,11 @@ Walk the manuscript paragraph by paragraph. Easiest path:
 
 ```python
 # Get the toc to find every section, then drill into each.
-get(kind='tex', id='main.tex', view='toc')
+get(kind="tex", id="main.tex", view="toc")
 
 # For each section file, fetch it block by block:
 for handle in section_handles:
-    block = get(kind='tex', id=handle)
+    block = get(kind="tex", id=handle)
     # Block bodies in tex are paragraphs (see precis-tex-help block
     # grammar — blank line is the boundary). Equation environments
     # and figure floats are paragraphs too; skip them — flow doesn't
@@ -79,8 +79,9 @@ that's a missing subhead — finding.
 Mint `kind='finding'` refs against the manuscript ref. Body shape:
 
 ```python
-put(kind='finding',
-    text='''Paragraph-flow finding in chapters--intro~motivation block 4:
+put(
+    kind="finding",
+    text="""Paragraph-flow finding in chapters--intro~motivation block 4:
 
 Sentence 1: "Carbon nanotubes have been studied since the 1990s."
 Sentence 3 carries the actual claim: "Their ballistic transport at
@@ -89,8 +90,9 @@ room temperature is what makes them candidate transistors."
 Severity: MODERATE — the topic sentence is generic background;
 the paragraph's actual point is buried mid-paragraph. Lift sentence
 3 to the lead and re-paragraph the historical context as a separate
-"Background" paragraph or trim it.''',
-    rel='paragraph-flow-finding')
+"Background" paragraph or trim it.""",
+    rel="paragraph-flow-finding",
+)
 ```
 
 Severity guide:
@@ -124,8 +126,8 @@ Severity guide:
 ## See also
 
 ```python
-get(kind='skill', id='precis-review-section-structure')   # section-level structure
-get(kind='skill', id='precis-tex-help')                   # block grammar
-get(kind='skill', id='precis-common-reviewer')            # shared reviewer discipline
-get(kind='skill', id='precis-finding-help')               # finding shape
+get(kind="skill", id="precis-review-section-structure")  # section-level structure
+get(kind="skill", id="precis-tex-help")  # block grammar
+get(kind="skill", id="precis-common-reviewer")  # shared reviewer discipline
+get(kind="skill", id="precis-finding-help")  # finding shape
 ```

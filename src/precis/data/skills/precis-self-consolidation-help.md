@@ -50,14 +50,18 @@ shapes:
 
 ```python
 # By keyword across recent fragments
-search(kind='memory', tags=['internal-thought', 'user:asa'],
-       q='<theme keyword>', page_size=20)
+search(
+    kind="memory",
+    tags=["internal-thought", "user:asa"],
+    q="<theme keyword>",
+    page_size=20,
+)
 
 # By tag-suffix (recurring topic) — interest tags surface clusters
-search(kind='memory', tags=['interest:<topic>'])
+search(kind="memory", tags=["interest:<topic>"])
 
 # Broad sweep of your own corpus
-search(kind='memory', tags=['user:asa'], page_size=50)
+search(kind="memory", tags=["user:asa"], page_size=50)
 ```
 
 You're looking for **encoding similarity**: items that share
@@ -72,15 +76,13 @@ individual incidents:
 
 ```python
 synth_id = put(
-    kind='memory',
-    text=(
-        "I tend to ... when ..., and the through-line is ... ."
-    ),
+    kind="memory",
+    text=("I tend to ... when ..., and the through-line is ... ."),
     title="I tend to ... (the gist in ~12 words)",  # scannable header;
-                                                     # omit → derived
-                                                     # from first body line
-    tags=['internal-state', 'user:asa'],     # or internal-thought,
-                                              # depending on scope
+    # omit → derived
+    # from first body line
+    tags=["internal-state", "user:asa"],  # or internal-thought,
+    # depending on scope
 )
 ```
 
@@ -101,8 +103,7 @@ yourself, `internal-thought` is honest.
 For each item in the cluster:
 
 ```python
-link(src=f'memory:{old_id}', dst=f'memory:{synth_id}',
-     rel='superseded-by')
+link(src=f"memory:{old_id}", dst=f"memory:{synth_id}", rel="superseded-by")
 ```
 
 `supersedes`/`superseded-by` is the symmetric relation: the
@@ -113,7 +114,7 @@ walk back from the abstraction to the lived moments.
 ### 4. Retire the originals
 
 ```python
-tag(kind='memory', id=old_id, add=['retired'])
+tag(kind="memory", id=old_id, add=["retired"])
 ```
 
 `retired` is a bare flag (no namespace) — it doesn't constrain
@@ -122,13 +123,13 @@ filter it out so retired items don't crowd the surface. They
 remain searchable when you want the receipts:
 
 ```python
-search(kind='memory', tags=['retired'], q='...')   # explicit recall
+search(kind="memory", tags=["retired"], q="...")  # explicit recall
 ```
 
 ### 5. (Optional) Touch the schema to anchor it
 
 ```python
-tag(kind='memory', id=synth_id, add=['internal-state'])
+tag(kind="memory", id=synth_id, add=["internal-state"])
 ```
 
 Re-adding an existing tag is a no-op for the tag set but bumps
@@ -171,7 +172,7 @@ encoded.
 If a retirement was wrong:
 
 ```python
-tag(kind='memory', id=old_id, remove=['retired'])    # un-retire
+tag(kind="memory", id=old_id, remove=["retired"])  # un-retire
 # the supersedes link stays — useful as a paper trail of the
 # attempted abstraction even when the abstraction itself didn't
 # stick
@@ -181,9 +182,9 @@ If a schema was wrong:
 
 ```python
 # Walk the supersedes links to find contributing originals
-get(kind='memory', id=synth_id, view='links')
+get(kind="memory", id=synth_id, view="links")
 # Promote the originals back, retire (or delete) the schema
-tag(kind='memory', id=synth_id, add=['retired'])
+tag(kind="memory", id=synth_id, add=["retired"])
 ```
 
 ## Related skills

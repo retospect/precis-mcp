@@ -67,11 +67,15 @@ matching DOI to locate the citation.
 Requires structured input (DOI + title + authors + year):
 
 ```python
-get(kind='provenance', view='verify', q='''
+get(
+    kind="provenance",
+    view="verify",
+    q="""
 [{"doi": "10.1234/foo", "title": "Quantum widgets in surface codes",
   "authors": ["Smith"], "year": 2019},
  {"doi": "10.5678/bar", "title": "...", "authors": ["Doe"], "year": 2023}]
-''')
+""",
+)
 ```
 
 Flags any DOI whose Crossref title or first author doesn't match
@@ -87,7 +91,7 @@ precis jobs check-provenance --refs preflight.txt --transitive depth=1
 ```
 
 ```python
-get(kind='provenance', q='10.x/a, 10.x/b, ...', transitive=True)
+get(kind="provenance", q="10.x/a, 10.x/b, ...", transitive=True)
 ```
 
 Clean-itself papers that cite retracted sources get promoted to 🟠.
@@ -95,10 +99,12 @@ Clean-itself papers that cite retracted sources get promoted to 🟠.
 ## Get candidate suggestions for unknown DOIs
 
 ```python
-get(kind='provenance',
-    view='verify',
+get(
+    kind="provenance",
+    view="verify",
     q='[{"doi": "10.1234/typo", "title": "..."}]',
-    suggest_candidates=True)
+    suggest_candidates=True,
+)
 ```
 
 The 404'd DOI stays `unknown` — no auto-substitution. The report lists
@@ -135,8 +141,8 @@ paragraph) and decide.
 ## See also
 
 ```python
-get(kind='skill', id='precis-provenance-help')   # full provenance kind docs
-get(kind='skill', id='precis-paper-help')        # ingest notice DOIs as papers
-get(kind='skill', id='precis-doi-resolution')    # DOI canonicalisation rules
-get(kind='skill', id='precis-citation-help')     # verifier workflow for writing
+get(kind="skill", id="precis-provenance-help")  # full provenance kind docs
+get(kind="skill", id="precis-paper-help")  # ingest notice DOIs as papers
+get(kind="skill", id="precis-doi-resolution")  # DOI canonicalisation rules
+get(kind="skill", id="precis-citation-help")  # verifier workflow for writing
 ```

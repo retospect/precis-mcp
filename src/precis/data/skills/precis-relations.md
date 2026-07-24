@@ -45,11 +45,13 @@ without a second `link()`.
 ## How do I capture a citation edge?
 
 ```python
-link(kind='memory', id=42,
-     target='pa<id>', rel='cites')                   # ref handle (paper:wang2020state still resolves)
+link(
+    kind="memory", id=42, target="pa<id>", rel="cites"
+)  # ref handle (paper:wang2020state still resolves)
 
-link(kind='memory', id=42,
-     target='pc38', rel='cites')                     # chunk handle — cite a specific block
+link(
+    kind="memory", id=42, target="pc38", rel="cites"
+)  # chunk handle — cite a specific block
 ```
 
 Use `cites` for any reference edge — bibliographic citation, in-body
@@ -63,11 +65,9 @@ one paragraph. Lead targets with the ref/chunk **handle** (`pa<id>`,
 ## I have a memory that agrees (or argues against) a paper
 
 ```python
-link(kind='memory', id=89,
-     target='paper:wang2020state', rel='supports')
+link(kind="memory", id=89, target="paper:wang2020state", rel="supports")
 
-link(kind='memory', id=89,
-     target='paper:chen2021critique', rel='contradicts')
+link(kind="memory", id=89, target="paper:chen2021critique", rel="contradicts")
 ```
 
 `supports` / `contradicts` carry an evidential claim — stronger than
@@ -79,11 +79,9 @@ findings. Both work between any two ref kinds.
 ## Mark one ref as derived from another
 
 ```python
-link(kind='memory', id=12,
-     target='paper:wang2020state', rel='derived-from')
+link(kind="memory", id=12, target="paper:wang2020state", rel="derived-from")
 
-link(kind='perplexity-research', id=88,
-     target='todo:14', rel='derived-from')
+link(kind="perplexity-research", id=88, target="todo:14", rel="derived-from")
 ```
 
 `derived-from` records that A's content was produced from B —
@@ -94,11 +92,13 @@ extracted from a passage.
 ## A is broader / narrower than B
 
 ```python
-link(kind='memory', id=51,
-     target='memory:23', rel='generalises')          # 51 is the broader claim
+link(
+    kind="memory", id=51, target="memory:23", rel="generalises"
+)  # 51 is the broader claim
 
-link(kind='memory', id=23,
-     target='memory:51', rel='specialises')          # equivalent edge from the other side
+link(
+    kind="memory", id=23, target="memory:51", rel="specialises"
+)  # equivalent edge from the other side
 ```
 
 Use between concept-bearing refs (memory, anki, paper). The auto-mirror
@@ -109,11 +109,9 @@ means writing one direction makes the other queryable.
 ## A can't start until B is done
 
 ```python
-link(kind='todo', id=141,
-     target='todo:158', rel='blocked-by')
+link(kind="todo", id=141, target="todo:158", rel="blocked-by")
 
-link(kind='todo', id=158,
-     target='gripe:7', rel='blocks')
+link(kind="todo", id=158, target="gripe:7", rel="blocks")
 ```
 
 `blocks` / `blocked-by` is the workflow-filter pair. Targets are
@@ -123,14 +121,11 @@ usually `todo` or `gripe`. The `todo` list view filters on these.
 ## A retracts / corrects / raises concern about B
 
 ```python
-link(kind='memory', id=7,
-     target='paper:badpaper2020', rel='retracts')
+link(kind="memory", id=7, target="paper:badpaper2020", rel="retracts")
 
-link(kind='paper', id='corrigendum-slug',
-     target='paper:original-slug', rel='corrects')
+link(kind="paper", id="corrigendum-slug", target="paper:original-slug", rel="corrects")
 
-link(kind='memory', id=8,
-     target='paper:disputed2021', rel='raises-concern-about')
+link(kind="memory", id=8, target="paper:disputed2021", rel="raises-concern-about")
 ```
 
 These attach a provenance notice to the affected ref. The renderer
@@ -143,18 +138,19 @@ surfaces the inverse (`retracted-by`, `corrected-by`,
 ```python
 # premises attach to the inference with derived-from (reused, not a new
 # relation — "the inference was produced from its premises")
-link(kind='memory', id=501,          # the kind:inference node
-     target='me<lemma-A-id>', rel='derived-from')
-link(kind='memory', id=501,
-     target='me<lemma-B-id>', rel='derived-from')
+link(
+    kind="memory",
+    id=501,  # the kind:inference node
+    target="me<lemma-A-id>",
+    rel="derived-from",
+)
+link(kind="memory", id=501, target="me<lemma-B-id>", rel="derived-from")
 
 # the inference entails its conclusion — a fresh, reusable kind:lemma
-link(kind='memory', id=501,
-     target='me502', rel='entails')
+link(kind="memory", id=501, target="me502", rel="entails")
 
 # a caveat qualifies the claim it limits
-link(kind='memory', id='<caveat-id>',
-     target='me<lemma-or-finding-id>', rel='qualifies')
+link(kind="memory", id="<caveat-id>", target="me<lemma-or-finding-id>", rel="qualifies")
 ```
 
 Both pairs auto-mirror like every other directed relation here —
@@ -167,8 +163,7 @@ caveat propagation): `precis-argument-help`.
 ## I want to nudge a reader toward B without claiming a stronger edge
 
 ```python
-link(kind='memory', id=42,
-     target='paper:wang2020state', rel='see-also')
+link(kind="memory", id=42, target="paper:wang2020state", rel="see-also")
 ```
 
 `see-also` is the only asymmetric relation with **no** inverse. Use
@@ -179,8 +174,7 @@ for "while reading A, you might want B" hints that don't fit
 ## I just want a generic link, no specific claim
 
 ```python
-link(kind='memory', id=47,
-     target='paper:wang2020state')                  # rel='related-to' by default
+link(kind="memory", id=47, target="paper:wang2020state")  # rel='related-to' by default
 ```
 
 `related-to` is symmetric — querying from either side surfaces the
@@ -189,11 +183,13 @@ edge without a separate inverse row. Omit `rel=` to get it.
 ## See also
 
 ```python
-get(kind='skill', id='precis-link-help')        # link verb mechanics, target=, mode=
-get(kind='skill', id='precis-tags')             # tag vocabulary (axes vs relations)
-get(kind='skill', id='precis-overview')         # verbs and kinds
-get(kind='skill', id='precis-todo-help')        # blocks/blocked-by workflow filter
-get(kind='skill', id='precis-citation-help')    # verifier workflow for cites
-get(kind='skill', id='precis-provenance-help')  # retraction/correction notices
-get(kind='skill', id='precis-argument-help')    # entails/qualifies workflow, meta.rule/warrant
+get(kind="skill", id="precis-link-help")  # link verb mechanics, target=, mode=
+get(kind="skill", id="precis-tags")  # tag vocabulary (axes vs relations)
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-todo-help")  # blocks/blocked-by workflow filter
+get(kind="skill", id="precis-citation-help")  # verifier workflow for cites
+get(kind="skill", id="precis-provenance-help")  # retraction/correction notices
+get(
+    kind="skill", id="precis-argument-help"
+)  # entails/qualifies workflow, meta.rule/warrant
 ```

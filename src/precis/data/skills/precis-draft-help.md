@@ -25,12 +25,12 @@ refs embedded in prose, and the per-chunk autolinker materialises a
 ## Search a draft (lexical / semantic)
 
 ```python
-search(kind='draft', q='direct air capture')                  # across ALL drafts
-search(kind='draft', q='direct air capture', scope='test01')  # one draft
-search(kind='draft', q='amine sites', scope='dc8')        # subtree under a heading
-search(kind='draft', q='capture', mode='lexical')             # verbatim / keyword
-search(kind='draft', q='capture', mode='semantic')            # by meaning (default: hybrid)
-search(kind='draft', q='methods', headings_only=True)         # jump to a section heading
+search(kind="draft", q="direct air capture")  # across ALL drafts
+search(kind="draft", q="direct air capture", scope="test01")  # one draft
+search(kind="draft", q="amine sites", scope="dc8")  # subtree under a heading
+search(kind="draft", q="capture", mode="lexical")  # verbatim / keyword
+search(kind="draft", q="capture", mode="semantic")  # by meaning (default: hybrid)
+search(kind="draft", q="methods", headings_only=True)  # jump to a section heading
 ```
 
 `mode=` is the same axis as everywhere else: `lexical` (exact / keyword),
@@ -52,9 +52,9 @@ spaces, a bare `paper:123` cite.
 **Find — `search(mode='regex')`:**
 
 ```python
-search(kind='draft', mode='regex', q=r'\*\*\w+\*\*', scope='nanotrans')  # find **bold**
-search(kind='draft', mode='regex', q='—', scope='nanotrans')             # find em-dashes
-search(kind='draft', mode='regex', q='TODO', scope='nanotrans', flags='i')  # case-fold
+search(kind="draft", mode="regex", q=r"\*\*\w+\*\*", scope="nanotrans")  # find **bold**
+search(kind="draft", mode="regex", q="—", scope="nanotrans")  # find em-dashes
+search(kind="draft", mode="regex", q="TODO", scope="nanotrans", flags="i")  # case-fold
 ```
 
 Each hit shows `draft:<slug>  dc<id>  [kind]` and, per match, `L<line>:<col>`
@@ -66,16 +66,21 @@ table/figure text too (read-only).
 
 ```python
 # dry-run: reports counts + a before→after sample per chunk, writes nothing
-edit(kind='draft', id='nanotrans', sub={'find': '—', 'replace': ', '})
+edit(kind="draft", id="nanotrans", sub={"find": "—", "replace": ", "})
 
 # commit it
-edit(kind='draft', id='nanotrans', sub={'find': '—', 'replace': ', '}, apply=True)
+edit(kind="draft", id="nanotrans", sub={"find": "—", "replace": ", "}, apply=True)
 
 # backreferences work — strip bold to plain text
-edit(kind='draft', id='nanotrans', sub={'find': r'\*\*(\w+)\*\*', 'replace': r'\1'}, apply=True)
+edit(
+    kind="draft",
+    id="nanotrans",
+    sub={"find": r"\*\*(\w+)\*\*", "replace": r"\1"},
+    apply=True,
+)
 
 # the s/// string form is accepted too (delimiter is the char after s)
-edit(kind='draft', id='nanotrans', sub='s/  / /', apply=True)   # collapse double spaces
+edit(kind="draft", id="nanotrans", sub="s/  / /", apply=True)  # collapse double spaces
 ```
 
 `replace` is a Python regex template, so `\1` / `\g<name>` resolve.
@@ -106,8 +111,8 @@ A draft carries **no `project:` tag** — that tag lives on the project
 *todo*, and the draft is bound to it 1:1 by a `draft-of` link. So:
 
 ```python
-get(kind='draft')                         # list ALL drafts (no project filter yet)
-get(kind='todo', id='<project>', view='links')   # → follow the draft-of link to the slug
+get(kind="draft")  # list ALL drafts (no project filter yet)
+get(kind="todo", id="<project>", view="links")  # → follow the draft-of link to the slug
 ```
 
 To go project → draft, resolve the project todo and follow its
@@ -133,17 +138,31 @@ project's `meta.workspace.brief`; the draft carries `path`/`format`.
 
 ```python
 # 1 — create the draft (returns the draft + its title heading dc1)
-put(kind='draft', id='nanotrans', project='<project-todo-id>',
-    title='Nanoscale Transistors',
-    meta={'workspace': {'path': 'projects/nanotrans', 'format': 'tex'}})
+put(
+    kind="draft",
+    id="nanotrans",
+    project="<project-todo-id>",
+    title="Nanoscale Transistors",
+    meta={"workspace": {"path": "projects/nanotrans", "format": "tex"}},
+)
 
 # 2 — add a section heading after the title
-put(kind='draft', id='nanotrans', chunk_kind='heading',
-    text='Introduction', at={'after': 'dc1'})       # → returns dc12
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="heading",
+    text="Introduction",
+    at={"after": "dc1"},
+)  # → returns dc12
 
 # 3 — a paragraph under it
-put(kind='draft', id='nanotrans', chunk_kind='paragraph',
-    text='Nanoscale transistors …', at={'into': 'dc12', 'last': True})
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="paragraph",
+    text="Nanoscale transistors …",
+    at={"into": "dc12", "last": True},
+)
 ```
 
 `at` places the new chunk (all parts optional): `{'first'|'last': True}`,
@@ -156,12 +175,19 @@ whole document, never of a paragraph). Set it with `edit(authors=…)`;
 `id` is the draft slug, not a chunk handle:
 
 ```python
-edit(kind='draft', id='nanotrans', authors=[
-    {'name': 'Doe, Jane', 'affiliation': 'Massachusetts Institute of Technology',
-     'ror': 'https://ror.org/042nb2s44'},
-    {'name': 'Roe, John', 'affiliation': 'Caltech'},   # affiliation/ror optional
-    'Solo Author',                                      # a bare string is fine too
-])
+edit(
+    kind="draft",
+    id="nanotrans",
+    authors=[
+        {
+            "name": "Doe, Jane",
+            "affiliation": "Massachusetts Institute of Technology",
+            "ror": "https://ror.org/042nb2s44",
+        },
+        {"name": "Roe, John", "affiliation": "Caltech"},  # affiliation/ror optional
+        "Solo Author",  # a bare string is fine too
+    ],
+)
 ```
 
 Each entry is `{'name', 'affiliation'?, 'ror'?}` (or `{'family','given', …}`,
@@ -184,8 +210,13 @@ boundaries (blank lines; lists/code/tables stay whole) and returns one
 handle per chunk:
 
 ```python
-put(kind='draft', id='nanotrans', chunk_kind='paragraph',
-    text='First para.\n\nSecond para.', at={'after': 'dc12'})
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="paragraph",
+    text="First para.\n\nSecond para.",
+    at={"after": "dc12"},
+)
 # → returns [dc13, dc14]
 ```
 
@@ -225,25 +256,45 @@ caption as `text`, the image **base64** in `image=`, and an `origin=`:
 
 ```python
 # our own diagram / schematic
-put(kind='draft', id='nanotrans', chunk_kind='figure',
-    text='Fig 1. Device cross-section.', image='<base64>',
-    origin='original', at={'after': 'dc12'})
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="figure",
+    text="Fig 1. Device cross-section.",
+    image="<base64>",
+    origin="original",
+    at={"after": "dc12"},
+)
 
 # a plot we generated from data (ships a data supplement — see graphs)
-put(kind='draft', id='nanotrans', chunk_kind='figure',
-    text='Fig 2. I–V curves.', image='<base64>', origin='own_graph')
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="figure",
+    text="Fig 2. I–V curves.",
+    image="<base64>",
+    origin="own_graph",
+)
 
 # reused from another paper — REQUIRES the publisher paper-trail
-put(kind='draft', id='nanotrans', chunk_kind='figure',
-    text='Fig 3 (after Smith 2019).', image='<base64>',
-    origin='third_party',
-    permission={'publisher': 'Springer Nature',
-                'permission_id': 'SNCSC-2026-0451',
-                'status': 'granted',            # requested|granted|denied
-                'requested_at': '2026-06-10', 'granted_at': '2026-06-18',
-                'scope': 'this manuscript, print + electronic',
-                'required_credit': 'Reprinted by permission …',
-                'source_paper': 'smith19'})     # cite-key of the source
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="figure",
+    text="Fig 3 (after Smith 2019).",
+    image="<base64>",
+    origin="third_party",
+    permission={
+        "publisher": "Springer Nature",
+        "permission_id": "SNCSC-2026-0451",
+        "status": "granted",  # requested|granted|denied
+        "requested_at": "2026-06-10",
+        "granted_at": "2026-06-18",
+        "scope": "this manuscript, print + electronic",
+        "required_credit": "Reprinted by permission …",
+        "source_paper": "smith19",
+    },
+)  # cite-key of the source
 ```
 
 `origin` ∈ `{original, own_graph, third_party}` records where the figure
@@ -295,12 +346,18 @@ hand-edited), so the numbers stay the single source of truth and stay
 searchable / numerics-indexable.
 
 ```python
-put(kind='draft', id='nanotrans', chunk_kind='table',
-    table={'header': ['element', 'gap_eV'],
-           'rows': [['Si', 1.12], ['Ge', 0.67]]},
-    caption='Measured band gaps',          # the legend (optional)
-    regen={'source': 'dft', 'cmd': 'vasp relax'},  # how the data was made (optional, inert)
-    at={'last': True})
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="table",
+    table={"header": ["element", "gap_eV"], "rows": [["Si", 1.12], ["Ge", 0.67]]},
+    caption="Measured band gaps",  # the legend (optional)
+    regen={
+        "source": "dft",
+        "cmd": "vasp relax",
+    },  # how the data was made (optional, inert)
+    at={"last": True},
+)
 ```
 
 * **`caption=`** is the table's legend — it rides in the derived text so the
@@ -311,9 +368,11 @@ put(kind='draft', id='nanotrans', chunk_kind='table',
   on a table chunk.
 
   ```python
-  edit(kind='draft', id='dc42', table={'header': [...], 'rows': [...]})  # re-derives markdown
-  edit(kind='draft', id='dc42', caption='New legend')   # caption only; data kept
-  edit(kind='draft', id='dc42', regen={'source': 'manual'})  # provenance only
+  edit(
+      kind="draft", id="dc42", table={"header": [...], "rows": [...]}
+  )  # re-derives markdown
+  edit(kind="draft", id="dc42", caption="New legend")  # caption only; data kept
+  edit(kind="draft", id="dc42", regen={"source": "manual"})  # provenance only
   ```
   (`dc<chunk_id>` is the chunk's address — `put` returns it; legacy `¶<handle>`
   still resolves on input.)
@@ -326,13 +385,19 @@ from data*, not uploaded — `origin='own_graph'`. Instead of `image=`, give it
 chunks it reads). The caption is `text=`, like any figure.
 
 ```python
-put(kind='draft', id='nanotrans', chunk_kind='figure',
-    text='Fig 2. Band gap vs lattice constant.',
-    plots=['dc42'],                       # the data/table chunk(s) it renders
-    render=('import matplotlib.pyplot as plt\n'
-            't = data["tables"][0]\n'      # plotted chunks arrive as data["tables"]
-            'plt.scatter([r[0] for r in t["rows"]], [r[1] for r in t["rows"]])'),
-    at={'last': True})
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="figure",
+    text="Fig 2. Band gap vs lattice constant.",
+    plots=["dc42"],  # the data/table chunk(s) it renders
+    render=(
+        "import matplotlib.pyplot as plt\n"
+        't = data["tables"][0]\n'  # plotted chunks arrive as data["tables"]
+        'plt.scatter([r[0] for r in t["rows"]], [r[1] for r in t["rows"]])'
+    ),
+    at={"last": True},
+)
 ```
 
 - The render code runs **sandboxed, out-of-band** (never at `put` time): it
@@ -349,9 +414,9 @@ put(kind='draft', id='nanotrans', chunk_kind='figure',
 ## Read the document
 
 ```python
-get(kind='draft', id='nanotrans')          # outline: handle | §-path | gist
-get(id='dc12')                           # one chunk, verbatim source
-get(id='dc12-5..3')                      # that chunk + 5 before, 3 after
+get(kind="draft", id="nanotrans")  # outline: handle | §-path | gist
+get(id="dc12")  # one chunk, verbatim source
+get(id="dc12-5..3")  # that chunk + 5 before, 3 after
 ```
 
 Navigate the **outline** first (cheap — one line per chunk), then pull
@@ -371,12 +436,16 @@ silently stalling.
 ## Change a chunk's text
 
 ```python
-edit(id='dc12', text='Nanoscale transistors, defined as …')      # whole-chunk rewrite
-edit(id='dc12', mode='find-replace', find='60°C', text='65°C')   # substitute within the chunk
-edit(id='dc12', find='60°C', text='65°C')                        # find= alone implies find-replace
-edit(id='dc12', find='typo phrase', text='')                     # delete a span (text='')
-edit(id='dc12', text='… big rewrite …', dry_run=True)            # PREVIEW the diff, write nothing
-edit(id='dc12', text='… big rewrite …', dry_run='full')          # preview the whole post-edit text
+edit(id="dc12", text="Nanoscale transistors, defined as …")  # whole-chunk rewrite
+edit(
+    id="dc12", mode="find-replace", find="60°C", text="65°C"
+)  # substitute within the chunk
+edit(id="dc12", find="60°C", text="65°C")  # find= alone implies find-replace
+edit(id="dc12", find="typo phrase", text="")  # delete a span (text='')
+edit(id="dc12", text="… big rewrite …", dry_run=True)  # PREVIEW the diff, write nothing
+edit(
+    id="dc12", text="… big rewrite …", dry_run="full"
+)  # preview the whole post-edit text
 ```
 
 Plain `text=` **replaces the whole chunk**. To change only part of a chunk,
@@ -399,9 +468,9 @@ keywords / gist re-derive automatically.
 ## Reorder / move (structure, not a new verb)
 
 ```python
-edit(id='dc16', move={'before': 'dc15'})                  # reorder among siblings
-edit(id='dc17', move={'parent': 'dc20', 'after': 'dc18'}) # move into another section
-edit(id='dc19', move={'into': 'dc20', 'last': True}) # to a section's end
+edit(id="dc16", move={"before": "dc15"})  # reorder among siblings
+edit(id="dc17", move={"parent": "dc20", "after": "dc18"})  # move into another section
+edit(id="dc19", move={"into": "dc20", "last": True})  # to a section's end
 ```
 
 Send the *intent* with handles; the system computes the ordering and
@@ -411,9 +480,9 @@ carries its whole subtree.
 ## Soft-delete (retire) — `delete`, reversible
 
 ```python
-delete(id='dc12')                       # retire a chunk (un-delete restores)
-delete(id='dc20', mode='promote')         # remove heading, keep contents (lift to parent)
-delete(id='dc20', mode='cascade')         # delete heading AND its contents
+delete(id="dc12")  # retire a chunk (un-delete restores)
+delete(id="dc20", mode="promote")  # remove heading, keep contents (lift to parent)
+delete(id="dc20", mode="cascade")  # delete heading AND its contents
 ```
 
 A **heading with children requires a `mode`** — `promote` (keep
@@ -507,15 +576,15 @@ highest-precision first:
    Scholar — this hands you a real DOI, no guessing:
 
    ```python
-   get(kind='semanticscholar', id='refs:<held-paper-doi>')   # papers it cites
-   get(kind='semanticscholar', id='cites:<held-paper-doi>')  # papers citing it
+   get(kind="semanticscholar", id="refs:<held-paper-doi>")  # papers it cites
+   get(kind="semanticscholar", id="cites:<held-paper-doi>")  # papers citing it
    ```
 3. **Find the canonical source by topic — as a pointer-finder, never the
    citation.** When no held paper points the way:
 
    ```python
-   get(kind='semanticscholar', id='<title or topic>')   # structured hits → DOIs
-   get(kind='perplexity-research', q='<question>')       # fills the gap, names the work
+   get(kind="semanticscholar", id="<title or topic>")  # structured hits → DOIs
+   get(kind="perplexity-research", q="<question>")  # fills the gap, names the work
    ```
 
    Use S2 search first (it returns a structured DOI you can act on);
@@ -527,20 +596,27 @@ highest-precision first:
 
    ```python
    # a — request the paper (stub-only put; idempotent, DOI/arXiv preferred)
-   put(kind='paper', doi='10.1038/nature10352')   # → fetch_oa grabs an OA PDF, watcher ingests, embedder indexes
+   put(
+       kind="paper", doi="10.1038/nature10352"
+   )  # → fetch_oa grabs an OA PDF, watcher ingests, embedder indexes
    # (or arxiv='2401.00001' / identifier='s2:<id>'; title-only parks with no auto-fetch)
 
    # b — park a leaf that waits until that paper is ingested + embedded
-   wait = put(kind='todo',
-              text='[auto] wait for 10.1038/nature10352 ingested+indexed',
-              meta={'auto_check': {'type': 'paper_ingested',
-                                   'doi': '10.1038/nature10352',
-                                   'timeout_at': '<ISO-8601, e.g. +7d>'}})
+   wait = put(
+       kind="todo",
+       text="[auto] wait for 10.1038/nature10352 ingested+indexed",
+       meta={
+           "auto_check": {
+               "type": "paper_ingested",
+               "doi": "10.1038/nature10352",
+               "timeout_at": "<ISO-8601, e.g. +7d>",
+           }
+       },
+   )
 
    # c — block the citing change-request on the wait so it leaves the
    #     doable rotation until the paper lands
-   link(kind='todo', id='<your citing todo>', target=f'todo:{wait.id}',
-        rel='blocked-by')
+   link(kind="todo", id="<your citing todo>", target=f"todo:{wait.id}", rel="blocked-by")
    ```
 
    The wait is a plain **todo leaf** (not a job): the `auto_check` worker
@@ -774,9 +850,13 @@ the draft. The draft keeps evolving. (Operational verb TBD.)
 ## See also
 
 ```python
-get(kind='skill', id='precis-citation-help')   # citation kind + verifier workflow
-get(kind='skill', id='precis-paper-help')       # read, cite, search held papers
-get(kind='skill', id='precis-stubs-help')       # request a paper we don't have (acquisition backlog)
-get(kind='skill', id='precis-finding-help')     # flag a claim / chase an un-ingested DOI
-get(kind='skill', id='precis-auto-tasks-help')  # wait-on-ingest (paper_ingested) leaf pattern
+get(kind="skill", id="precis-citation-help")  # citation kind + verifier workflow
+get(kind="skill", id="precis-paper-help")  # read, cite, search held papers
+get(
+    kind="skill", id="precis-stubs-help"
+)  # request a paper we don't have (acquisition backlog)
+get(kind="skill", id="precis-finding-help")  # flag a claim / chase an un-ingested DOI
+get(
+    kind="skill", id="precis-auto-tasks-help"
+)  # wait-on-ingest (paper_ingested) leaf pattern
 ```

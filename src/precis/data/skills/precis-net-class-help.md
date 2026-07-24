@@ -48,8 +48,8 @@ an arbitrary value. Override with explicit `width` (mm) when you have a reason
 mm/A on external 1 oz copper for a ~10 °C rise; bump up for inner layers.
 
 ```python
-{'name':'VBUS', 'class':'power', 'current':2.0}     # ~1 mm trace, stepped
-{'name':'ANT',  'class':'rf',    'width':0.43}      # explicit for 50 Ω on the stack
+{"name": "VBUS", "class": "power", "current": 2.0}  # ~1 mm trace, stepped
+{"name": "ANT", "class": "rf", "width": 0.43}  # explicit for 50 Ω on the stack
 ```
 
 ## Planes & the ratsnest

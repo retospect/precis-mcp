@@ -23,8 +23,8 @@ live model feed); you *read* the catalog, you don't hand-author it.
 ## Compare models / see a model's window, price, capability
 
 ```python
-search(kind='llm', q='careful SQL and multi-file refactors')
-get(kind='llm', id='claude-opus-4-8')
+search(kind="llm", q="careful SQL and multi-file refactors")
+get(kind="llm", id="claude-opus-4-8")
 ```
 
 `search` matches your phrasing against each card's capability prose. `get` shows
@@ -37,8 +37,8 @@ window, price), the coarse **1–5 capability axes** (`code`,
 ## See a model's realized cost + error rate + reviews
 
 ```python
-get(kind='llm', id='claude-opus-4-8', view='tote')
-get(kind='llm', id='claude-opus-4-8', view='reviews')
+get(kind="llm", id="claude-opus-4-8", view="tote")
+get(kind="llm", id="claude-opus-4-8", view="reviews")
 ```
 
 `view='tote'` rolls up `llm_call_log` — realized calls, cost, error rate, p50
@@ -52,7 +52,13 @@ never blend — a vendor MMLU score never outweighs a measured result.
 ## Record that a model was great / weak at something
 
 ```python
-put(kind='llm', id='claude-opus-4-8', text='excellent at SQL-migration reasoning', entry='agent-review', by='agent')
+put(
+    kind="llm",
+    id="claude-opus-4-8",
+    text="excellent at SQL-migration reasoning",
+    entry="agent-review",
+    by="agent",
+)
 ```
 
 Appends one WORM review entry. `entry=` is one of `agent-review` (a subjective

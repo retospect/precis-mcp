@@ -511,7 +511,7 @@ def watch(dir_path: Path):
     for pdf in observe(dir_path):
         try:
             pub_id = precis_add(pdf)
-            move_to_corpus(pdf, pub_id)        # only on success
+            move_to_corpus(pdf, pub_id)  # only on success
         except Exception as e:
             move_to_errors(pdf, e)
 ```
@@ -525,20 +525,30 @@ own thread with its own loaded model).
 ```python
 ARTIFACTS = [
     # (name, claim_query, handler)
-    ('embed:bge-m3',       claim_chunks_missing_embedding('bge-m3'),     embed_handler('bge-m3')),
-    ('summarize:rake',     claim_chunks_missing_summary('rake'),         rake_handler()),
-    ('summarize:gpt-4-mini', claim_chunks_missing_summary('gpt-4-mini'), llm_handler('gpt-4-mini')),
-    ('check_retraction:crossmark', claim_refs_missing_retraction_check(), crossmark_handler()),
+    ("embed:bge-m3", claim_chunks_missing_embedding("bge-m3"), embed_handler("bge-m3")),
+    ("summarize:rake", claim_chunks_missing_summary("rake"), rake_handler()),
+    (
+        "summarize:gpt-4-mini",
+        claim_chunks_missing_summary("gpt-4-mini"),
+        llm_handler("gpt-4-mini"),
+    ),
+    (
+        "check_retraction:crossmark",
+        claim_refs_missing_retraction_check(),
+        crossmark_handler(),
+    ),
 ]
+
 
 def worker(artifacts: list[str], poll_interval: float = 1.0):
     while not stop_event.is_set():
         had_work = False
         for name, claim_q, handler in ARTIFACTS:
-            if name not in artifacts: continue
+            if name not in artifacts:
+                continue
             for row in claim_q(limit=64):
                 try:
-                    handler(row)               # writes ok row
+                    handler(row)  # writes ok row
                 except Exception as e:
                     handler.write_failed(row, e)  # writes status='failed' row
                 had_work = True
@@ -806,7 +816,9 @@ can lazy-invalidate on chunker upgrades.
 A new module `precis.format.toon` ships with:
 
 ```python
-def dump(data: dict | list, *, sep: str = "\t", schema: list[str] | None = None) -> str: ...
+def dump(
+    data: dict | list, *, sep: str = "\t", schema: list[str] | None = None
+) -> str: ...
 def load(text: str) -> dict | list: ...
 ```
 

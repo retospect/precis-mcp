@@ -19,13 +19,19 @@ If you want headings or code fences, use `kind='markdown'` instead.
 ## How do I point at a paragraph in a log?
 
 ```python
-get(kind='plaintext', id='lc481')                      # one paragraph by handle — canonical (prefix infers kind)
-get(kind='plaintext', id='logs/2026-05.txt')           # whole file by path (file-backed address)
-get(kind='plaintext', id='logs--2026-05')              # whole file by slug (legacy input)
-get(kind='plaintext', id='logs/2026-05.txt~3')         # paragraph by pos (legacy input; output shows the lc<id> handle to paste)
-get(kind='plaintext', id='logs/2026-05.txt~opened-laptop-at-0915')  # by content slug (legacy input)
-get(kind='plaintext', id='logs/2026-05.txt~L42-58')    # by line range
-get(kind='plaintext', id='logs/2026-05.txt/raw')       # full source
+get(
+    kind="plaintext", id="lc481"
+)  # one paragraph by handle — canonical (prefix infers kind)
+get(kind="plaintext", id="logs/2026-05.txt")  # whole file by path (file-backed address)
+get(kind="plaintext", id="logs--2026-05")  # whole file by slug (legacy input)
+get(
+    kind="plaintext", id="logs/2026-05.txt~3"
+)  # paragraph by pos (legacy input; output shows the lc<id> handle to paste)
+get(
+    kind="plaintext", id="logs/2026-05.txt~opened-laptop-at-0915"
+)  # by content slug (legacy input)
+get(kind="plaintext", id="logs/2026-05.txt~L42-58")  # by line range
+get(kind="plaintext", id="logs/2026-05.txt/raw")  # full source
 ```
 
 A paragraph's canonical address is its **handle** `lc<chunk_id>` (e.g.
@@ -59,12 +65,13 @@ current handle to paste next time.
 ## Open a log and see its contents
 
 ```python
-get(kind='plaintext')                                  # index of all files
-get(kind='plaintext', id='logs/2026-05.txt')           # overview
-get(kind='plaintext', id='logs/2026-05.txt~3')         # one paragraph (output shows handle lc<id>; get(id='lc<id>') works too)
-search(kind='plaintext', q='deployment issue')
-search(kind='plaintext', q='deployment issue',
-       scope='logs/2026-05.txt')                       # one file
+get(kind="plaintext")  # index of all files
+get(kind="plaintext", id="logs/2026-05.txt")  # overview
+get(
+    kind="plaintext", id="logs/2026-05.txt~3"
+)  # one paragraph (output shows handle lc<id>; get(id='lc<id>') works too)
+search(kind="plaintext", q="deployment issue")
+search(kind="plaintext", q="deployment issue", scope="logs/2026-05.txt")  # one file
 ```
 
 ## How do I write a plaintext file?
@@ -72,16 +79,23 @@ search(kind='plaintext', q='deployment issue',
 ## Drop a log capture into the corpus
 
 ```python
-put(kind='plaintext', id='captures/session-2026-05-01',
-    text='''Opened laptop at 09:15.
+put(
+    kind="plaintext",
+    id="captures/session-2026-05-01",
+    text="""Opened laptop at 09:15.
 
 Investigated the PRECIS_ROOT gating issue.
 
-Wrapped up at 11:00.''',
-    mode='create')
+Wrapped up at 11:00.""",
+    mode="create",
+)
 
-edit(kind='plaintext', id='captures/session-2026-05-01',
-     text='Follow-ups filed.', mode='append')
+edit(
+    kind="plaintext",
+    id="captures/session-2026-05-01",
+    text="Follow-ups filed.",
+    mode="append",
+)
 ```
 
 Writes go through verbatim after a UTF-8 encode check — no parse
@@ -92,18 +106,25 @@ gate, no formatter. Whatever bytes you send are what lands on disk.
 ## Fix a timestamp without rewriting the block
 
 ```python
-edit(kind='plaintext', id='captures/session-2026-05-01~opened-laptop-at-0915',
-     mode='find-replace',
-     find='09:15', text='09:20')
+edit(
+    kind="plaintext",
+    id="captures/session-2026-05-01~opened-laptop-at-0915",
+    mode="find-replace",
+    find="09:15",
+    text="09:20",
+)
 
 # Delete one line by replacing it with empty text. Anchors disambiguate
 # in case the same find= text appears elsewhere in the file.
-edit(kind='plaintext', id='refs.bib',
-     mode='find-replace',
-     find='doi     = {10.1111/ejn.12125}',
-     before='@article{tritsch2012dopaminergic,',
-     after='volume  = {35},',
-     text='')
+edit(
+    kind="plaintext",
+    id="refs.bib",
+    mode="find-replace",
+    find="doi     = {10.1111/ejn.12125}",
+    before="@article{tritsch2012dopaminergic,",
+    after="volume  = {35},",
+    text="",
+)
 ```
 
 Scope the edit by passing `~<slug>` or `~L<n>-<m>` in `id=` so the
@@ -116,9 +137,9 @@ Full edit grammar lives in `precis-edit-help`.
 ## See also
 
 ```python
-get(kind='skill', id='precis-files-help')       # shared address grammar, write modes
-get(kind='skill', id='precis-edit-help')        # find-replace + insert
-get(kind='skill', id='precis-markdown-help')    # use this for structured notes
-get(kind='skill', id='precis-tex-help')         # .tex files
-get(kind='skill', id='precis-overview')         # verbs and kinds
+get(kind="skill", id="precis-files-help")  # shared address grammar, write modes
+get(kind="skill", id="precis-edit-help")  # find-replace + insert
+get(kind="skill", id="precis-markdown-help")  # use this for structured notes
+get(kind="skill", id="precis-tex-help")  # .tex files
+get(kind="skill", id="precis-overview")  # verbs and kinds
 ```

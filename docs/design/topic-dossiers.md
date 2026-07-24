@@ -116,7 +116,7 @@ link(kind='paper', id=<paper>, target='draft:<dossier-ref>', rel='integrated-int
 "Unintegrated for topic X":
 
 ```python
-candidates = search(kind='paper', tags=['topic:X'])
+candidates = search(kind="paper", tags=["topic:X"])
 # minus any paper already linked integrated-into → X's dossier draft
 ```
 

@@ -19,11 +19,13 @@ still resolve on input and as link targets.
 ## I have a date-stamped slug — show me the conversation
 
 ```python
-get(kind='conv', id='co73')                              # overview + turn count (handle; prefix infers kind)
-get(kind='conv', id='co73/transcript')                   # full transcript
-get(kind='conv', id='2026-04-26-spec')                   # legacy slug, still resolves
-get(kind='conv', id='2026-04-26-spec~14')                # single turn (output shows the cc<id> handle)
-get(kind='conv', id='conv:2026-04-26-spec')              # prefix form (link-target shape)
+get(kind="conv", id="co73")  # overview + turn count (handle; prefix infers kind)
+get(kind="conv", id="co73/transcript")  # full transcript
+get(kind="conv", id="2026-04-26-spec")  # legacy slug, still resolves
+get(
+    kind="conv", id="2026-04-26-spec~14"
+)  # single turn (output shows the cc<id> handle)
+get(kind="conv", id="conv:2026-04-26-spec")  # prefix form (link-target shape)
 ```
 
 Turn selector is `~N` (single turn). Path view is `/transcript`. No
@@ -34,8 +36,8 @@ range selector — for a span, fetch `/transcript` and scan.
 ## What conversations are in the store?
 
 ```python
-get(kind='conv')                  # 20 most recent
-get(kind='conv', id='/recent')    # explicit
+get(kind="conv")  # 20 most recent
+get(kind="conv", id="/recent")  # explicit
 ```
 
 ## Find a past decision or discussion
@@ -43,9 +45,9 @@ get(kind='conv', id='/recent')    # explicit
 ## What did we decide about X?
 
 ```python
-search(kind='conv', q='why we dropped mode=')
-search(kind='conv', q='tag axis', scope='2026-04-28-tag-axes')   # scope to one conv
-search(kind='conv', q='register endpoint', page_size=20)
+search(kind="conv", q="why we dropped mode=")
+search(kind="conv", q="tag axis", scope="2026-04-28-tag-axes")  # scope to one conv
+search(kind="conv", q="register endpoint", page_size=20)
 ```
 
 Lexical search over turn text. Each result is a turn chunk handle
@@ -59,14 +61,15 @@ matches when a question spans both.
 ## How do I reference a past discussion?
 
 ```python
-put(kind='memory',
-    text='Dropped mode= in favour of typed kwargs.',
-    tags=['topic:api-design'],
-    link='conv:2026-04-26-spec~14',
-    rel='derived-from')
+put(
+    kind="memory",
+    text="Dropped mode= in favour of typed kwargs.",
+    tags=["topic:api-design"],
+    link="conv:2026-04-26-spec~14",
+    rel="derived-from",
+)
 
-link(kind='conv', id='2026-04-26-spec~14',
-     target='memory:88', rel='derived-into')
+link(kind="conv", id="2026-04-26-spec~14", target="memory:88", rel="derived-into")
 ```
 
 Use a turn handle (`cc<chunk_id>`, or the legacy `slug~pos`) as the
@@ -78,8 +81,8 @@ to point at the conversation.
 ## Categorise a transcript
 
 ```python
-tag(kind='conv', id='2026-04-26-spec', add=['topic:api-design', 'pivotal'])
-tag(kind='conv', id='2026-04-26-spec', remove=['pivotal'])
+tag(kind="conv", id="2026-04-26-spec", add=["topic:api-design", "pivotal"])
+tag(kind="conv", id="2026-04-26-spec", remove=["pivotal"])
 ```
 
 Open tags only. Closed workflow axes (`STATUS:`, `PRIO:`) are
@@ -93,16 +96,21 @@ calls `put(kind='conv', ...)` once per inbound user message and
 once per outbound assistant reply:
 
 ```python
-put(kind='conv',
-    id='discord/<guild>/<channel>/<thread>',     # slug — stable per thread
-    text='hi, what do we know about X?',         # message body
-    author='alice#1234',                         # who said it
-    msg_id='1185923456789012345',                # platform id — idempotency key
-    title='X discussion',                        # optional, set on first call only
-    ref_meta={'platform': 'discord',
-              'guild_id': '...', 'channel_id': '...',
-              'thread_id': '...'},               # set on first call only
-    meta={'ts': '2026-06-11T10:00:00Z'})         # per-turn extras
+put(
+    kind="conv",
+    id="discord/<guild>/<channel>/<thread>",  # slug — stable per thread
+    text="hi, what do we know about X?",  # message body
+    author="alice#1234",  # who said it
+    msg_id="1185923456789012345",  # platform id — idempotency key
+    title="X discussion",  # optional, set on first call only
+    ref_meta={
+        "platform": "discord",
+        "guild_id": "...",
+        "channel_id": "...",
+        "thread_id": "...",
+    },  # set on first call only
+    meta={"ts": "2026-06-11T10:00:00Z"},
+)  # per-turn extras
 ```
 
 The first call mints the conv ref; later calls append a turn
@@ -117,9 +125,9 @@ capturing the same turn).
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')         # verbs and kinds
-get(kind='skill', id='precis-search-help')      # search mechanics
-get(kind='skill', id='precis-memory-help')      # annotate a conversation
-get(kind='skill', id='precis-relations')        # derived-from, supports, cites
-get(kind='skill', id='precis-tags')             # tag vocabulary
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-search-help")  # search mechanics
+get(kind="skill", id="precis-memory-help")  # annotate a conversation
+get(kind="skill", id="precis-relations")  # derived-from, supports, cites
+get(kind="skill", id="precis-tags")  # tag vocabulary
 ```

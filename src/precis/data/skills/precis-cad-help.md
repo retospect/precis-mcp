@@ -45,12 +45,16 @@ millimetres. (The `calc` kind defaults to degrees too — see the tip
 below.)
 
 ```python
-put(kind='cad', id='flange', text='''
+put(
+    kind="cad",
+    id="flange",
+    text="""
 component flange
 plate     add  cyl:r25h8
 hub_bore  cut  cyl:r8h10    @0,0,-1
 bolts     cut  cyl:r2.5h10  @18,0,-1  polar:n6r18
-''')
+""",
+)
 ```
 
 ### Describe what it's *for* — `desc:` / `use:`
@@ -59,13 +63,17 @@ Add free-text lines so the design is findable by purpose, not just by
 shape (they're folded into the one search card, ADR 0041 Amendment 1):
 
 ```python
-put(kind='cad', id='bracket', text='''
+put(
+    kind="cad",
+    id="bracket",
+    text="""
 desc: L-shaped mounting bracket for a temperature sensor
 use:  bolts the sensor housing to the reactor backplate
 component bracket
 base  add  box:w40d40h5
 hole  cut  cyl:r3h6  @10,10,-1
-''')
+""",
+)
 ```
 
 `desc:` = what it is; `use:` = what it's for. Both are optional and may
@@ -97,9 +105,9 @@ All are placed base-at-`z=0`, centred on the local axis; `@x,y,z` and
 ## Read the design — `get`
 
 ```python
-get(kind='cad')                       # list all designs
-get(kind='cad', id='flange')          # the node tree (TOON: handle name part op config pose)
-get(kind='cad', id='ca7')             # one node as JSON (handle = ca<chunk_id>)
+get(kind="cad")  # list all designs
+get(kind="cad", id="flange")  # the node tree (TOON: handle name part op config pose)
+get(kind="cad", id="ca7")  # one node as JSON (handle = ca<chunk_id>)
 ```
 
 A node is addressed by its **`ca<chunk_id>` handle** (shown in the tree).
@@ -112,19 +120,24 @@ whole design).
 
 ```python
 # 0D — classify a point: containing node(s), or (if carved) the blocker + nearest
-get(kind='cad', id='flange', view='point',   args={'p': [0,0,4]})
+get(kind="cad", id="flange", view="point", args={"p": [0, 0, 4]})
 
 # 1D — ray: material/void intervals, each void attributed to the node that removed it
-get(kind='cad', id='flange', view='ray',     args={'o': [-30,0,4], 'd': [1,0,0]})
+get(kind="cad", id="flange", view="ray", args={"o": [-30, 0, 4], "d": [1, 0, 0]})
 
 # 1D — arc: angular intervals around an axis (bolt circles, radial features)
-get(kind='cad', id='flange', view='arc',     args={'c': [0,0,4], 'axis': [0,0,1], 'r': 18})
+get(
+    kind="cad",
+    id="flange",
+    view="arc",
+    args={"c": [0, 0, 4], "axis": [0, 0, 1], "r": 18},
+)
 
 # 2D — section at z=const: feature-attributed loops (outer / hole)
-get(kind='cad', id='flange', view='section', args={'z': 4})
+get(kind="cad", id="flange", view="section", args={"z": 4})
 
 # bulk — geometric volume + centroid (SAMPLED, labelled with ±error)
-get(kind='cad', id='flange', view='volume')
+get(kind="cad", id="flange", view="volume")
 ```
 
 A carved region reads **empty** and **names the blocking node** ("empty;
@@ -139,10 +152,10 @@ intended is your call):
 
 ```python
 # signed min gap between two components: + clear, ≈0 line-to-line, − interference
-get(kind='cad', id='asm', view='clearance', args={'a': 'shaft', 'b': 'hub'})
+get(kind="cad", id="asm", view="clearance", args={"a": "shaft", "b": "hub"})
 
 # how far one part can translate along ±x/±y/±z before hitting another
-get(kind='cad', id='asm', view='dof', args={'moving': 'shaft', 'fixed': 'hub'})
+get(kind="cad", id="asm", view="dof", args={"moving": "shaft", "fixed": "hub"})
 ```
 
 Clearance is measured against the *material* — a shaft sitting in a bored
@@ -157,16 +170,16 @@ material touches or overlaps (signed gap ≤ tol). It answers three questions:
 
 ```python
 # full report: the connected bodies + every contact + the one-solid verdict
-get(kind='cad', id='wheel', view='connectivity')
+get(kind="cad", id="wheel", view="connectivity")
 
 # what touches this part? (empty ⇒ a floating body)
-get(kind='cad', id='wheel', view='connectivity', args={'of': 'hub'})
+get(kind="cad", id="wheel", view="connectivity", args={"of": "hub"})
 
 # is there a contact path between two parts? (e.g. hub → rim through spokes)
-get(kind='cad', id='wheel', view='connectivity', args={'a': 'hub', 'b': 'rim'})
+get(kind="cad", id="wheel", view="connectivity", args={"a": "hub", "b": "rim"})
 
 # loosen/tighten what counts as "touching" (mm)
-get(kind='cad', id='wheel', view='connectivity', args={'tol': 0.05})
+get(kind="cad", id="wheel", view="connectivity", args={"tol": 0.05})
 ```
 
 Because contact is tested on the **folded CSG** (cuts already applied),
@@ -208,9 +221,9 @@ not yet caught; keep distinct bodies as distinct components.)
 ## Find a design — `search`
 
 ```python
-search(kind='cad', q='6-bolt flange')                 # by intent (hybrid)
-search(kind='cad', q='sensor bracket', mode='semantic')  # by meaning
-search(kind='cad', q='flange', mode='lexical')           # keyword
+search(kind="cad", q="6-bolt flange")  # by intent (hybrid)
+search(kind="cad", q="sensor bracket", mode="semantic")  # by meaning
+search(kind="cad", q="flange", mode="lexical")  # keyword
 ```
 
 Each design carries **one** embeddable summary card (title + component +
@@ -226,10 +239,16 @@ is. Path defaults to a temp file named after the design — override with
 `args={'path': '/abs/out.<ext>'}`.
 
 ```python
-get(kind='cad', id='flange', view='scad')                        # OpenSCAD source (text; always available)
-get(kind='cad', id='flange', view='stl',  args={'path': '/tmp/flange.stl'})  # printable mesh
-get(kind='cad', id='flange', view='3mf',  args={'path': '/tmp/flange.3mf'})  # printable (modern slicer fmt)
-get(kind='cad', id='flange', view='step', args={'path': '/tmp/flange.step'}) # exact B-rep for CAD apps
+get(kind="cad", id="flange", view="scad")  # OpenSCAD source (text; always available)
+get(
+    kind="cad", id="flange", view="stl", args={"path": "/tmp/flange.stl"}
+)  # printable mesh
+get(
+    kind="cad", id="flange", view="3mf", args={"path": "/tmp/flange.3mf"}
+)  # printable (modern slicer fmt)
+get(
+    kind="cad", id="flange", view="step", args={"path": "/tmp/flange.step"}
+)  # exact B-rep for CAD apps
 ```
 
 - **`scad`** — pure text, zero deps; drop into the OpenSCAD GUI.
@@ -275,7 +294,7 @@ landing page). It mirrors the DFT editor (`/structure`):
 ## Delete
 
 ```python
-delete(kind='cad', id='flange')       # soft-retire the whole design (recoverable)
+delete(kind="cad", id="flange")  # soft-retire the whole design (recoverable)
 ```
 
 ## Scope (v1)

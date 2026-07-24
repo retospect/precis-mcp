@@ -90,7 +90,7 @@ When the survey matters enough to spend agent time, fire the **deep
 campaign** instead and keep working while it runs:
 
 ```python
-search(kind='paper', q='<question>', good=True)
+search(kind="paper", q="<question>", good=True)
 # → {job: <id>, poll: "get(kind='job', id=…)"} — triage agents fan
 #   out over the fused pool; the finished job carries a curated,
 #   relevance-ranked shortlist in meta.result.
@@ -103,14 +103,15 @@ job is durable). Details: `precis-search-help` → Broad retrieval.
 ## Mint citations as you go
 
 ```python
-put(kind='citation',
-    text='Peak QY 68 ± 4 % for CdSe/ZnS aqueous synthesis at 290 K',
-    source_handle='pc456',        # the paper-chunk handle, copied from search/get (a legacy slug~pos also resolves)
-    source_quote='We measured a peak quantum yield of 68 ± 4 % '
-                 'across n=12 batches…',
+put(
+    kind="citation",
+    text="Peak QY 68 ± 4 % for CdSe/ZnS aqueous synthesis at 290 K",
+    source_handle="pc456",  # the paper-chunk handle, copied from search/get (a legacy slug~pos also resolves)
+    source_quote="We measured a peak quantum yield of 68 ± 4 % across n=12 batches…",
     verifier_confidence=0.95,
-    link='paper:liu2024',
-    rel='cites')
+    link="paper:liu2024",
+    rel="cites",
+)
 ```
 
 A finding without a `kind='citation'` ref is unsupported — don't

@@ -356,9 +356,12 @@ schema as an opt-in **curator surface**: a human (or a separate
 analysis tool) can flag mis-citation by hand:
 
 ```python
-link(src='miller23a~42', dst='fischer13~17',
-     rel='misattributes',
-     meta={"src_says": "Cu foil", "dst_actual": "Cu top contact"})
+link(
+    src="miller23a~42",
+    dst="fischer13~17",
+    rel="misattributes",
+    meta={"src_says": "Cu foil", "dst_actual": "Cu top contact"},
+)
 ```
 
 Surfaced via `search(relation='misattributes')` or

@@ -42,8 +42,8 @@ Pinned skills (load via prompts/get): precis-search-help,
 Pre-fetch the bodies:
 
 ```python
-get(kind='skill', id='precis-search-help')
-get(kind='skill', id='precis-paper-help')
+get(kind="skill", id="precis-search-help")
+get(kind="skill", id="precis-paper-help")
 ```
 
 `PRECIS_STARTUP_SKILLS=<comma-list>` pins them. A cap
@@ -112,9 +112,9 @@ Read the cold-start banner. It carries:
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')              # verbs and kinds
-get(kind='skill', id='precis-startup-skills-help')   # PRECIS_STARTUP_SKILLS detail
-get(kind='skill', id='precis-kinds-disabled-help')   # PRECIS_KINDS_DISABLED detail
-get(kind='skill', id='precis-tags')                  # tag axis matrix, closed prefixes
-get(kind='skill', id='precis-files-help')            # PRECIS_ROOT and file-rooted kinds
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-startup-skills-help")  # PRECIS_STARTUP_SKILLS detail
+get(kind="skill", id="precis-kinds-disabled-help")  # PRECIS_KINDS_DISABLED detail
+get(kind="skill", id="precis-tags")  # tag axis matrix, closed prefixes
+get(kind="skill", id="precis-files-help")  # PRECIS_ROOT and file-rooted kinds
 ```

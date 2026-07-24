@@ -29,9 +29,9 @@ already pulled. No API key; free (bandwidth only); always current.
 ## Resolve a query to one article
 
 ```python
-get(kind='wikipedia', id='CRISPR gene editing')
-get(kind='wikipedia', q='attention mechanism transformer')   # q= also works
-get(kind='wikipedia', id='Claude Shannon')
+get(kind="wikipedia", id="CRISPR gene editing")
+get(kind="wikipedia", q="attention mechanism transformer")  # q= also works
+get(kind="wikipedia", id="Claude Shannon")
 ```
 
 You pass a **query**, not an exact title — CirrusSearch picks the
@@ -65,16 +65,16 @@ top-k slots.
 The fence **lifts** in exactly two cases:
 
 ```python
-search(kind='wikipedia', q='soft attention weights')   # explicit scope → wiki hits
-search(q='soft attention', tags=['ORIGIN:wikipedia'])  # explicit opt-in → wiki included
+search(kind="wikipedia", q="soft attention weights")  # explicit scope → wiki hits
+search(q="soft attention", tags=["ORIGIN:wikipedia"])  # explicit opt-in → wiki included
 ```
 
 By contrast these **exclude** Wikipedia content:
 
 ```python
-search(q='soft attention weights')                     # default → fenced
-search(kind='*', q='soft attention weights')           # cross-kind fan → fenced
-search(kind='paper,wikipedia', q='...')                # multi-kind incl. wikipedia → fenced*
+search(q="soft attention weights")  # default → fenced
+search(kind="*", q="soft attention weights")  # cross-kind fan → fenced
+search(kind="paper,wikipedia", q="...")  # multi-kind incl. wikipedia → fenced*
 ```
 
 \* a multi-kind fan that *names* `wikipedia` still fences unless you also
@@ -87,8 +87,8 @@ is ignored. It is provenance, not a user label.
 ## Search across fetched articles
 
 ```python
-search(kind='wikipedia', q='retrieval augmented generation')
-search(kind='wikipedia', q='dopamine receptor', page_size=20)
+search(kind="wikipedia", q="retrieval augmented generation")
+search(kind="wikipedia", q="dopamine receptor", page_size=20)
 ```
 
 Hybrid lexical + semantic over the bodies of articles already in the
@@ -101,10 +101,10 @@ use `get` (which runs the live search + extract).
 ## Keep / annotate an article
 
 ```python
-get(kind='wikipedia', id='Photosynthesis')             # populate cache first
+get(kind="wikipedia", id="Photosynthesis")  # populate cache first
 
-tag(kind='wikipedia', id='photosynthesis', add=['bookmark', 'topic:co2'])
-tag(kind='wikipedia', id='photosynthesis', add=['CACHE:pinned'])   # never expire
+tag(kind="wikipedia", id="photosynthesis", add=["bookmark", "topic:co2"])
+tag(kind="wikipedia", id="photosynthesis", add=["CACHE:pinned"])  # never expire
 ```
 
 Open tags (`bookmark`, `topic:x`, …) and `CACHE:` always allowed. The
@@ -113,11 +113,16 @@ Open tags (`bookmark`, `topic:x`, …) and `CACHE:` always allowed. The
 ## Cross-link an article to a paper / memory / todo
 
 ```python
-link(kind='wikipedia', id='photosynthesis',
-     target='paper:wang2020state', rel='related-to')
+link(
+    kind="wikipedia",
+    id="photosynthesis",
+    target="paper:wang2020state",
+    rel="related-to",
+)
 
-link(kind='wikipedia', id='photosynthesis',
-     target='memory:42')                               # rel defaults to related-to
+link(
+    kind="wikipedia", id="photosynthesis", target="memory:42"
+)  # rel defaults to related-to
 ```
 
 Use Wikipedia as a **grounding / definition layer** the curated corpus
@@ -127,8 +132,8 @@ fetch (text is CC BY-SA, a tertiary summary).
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')        # verbs and kinds
-get(kind='skill', id='precis-web-help')        # arbitrary URL fetch (kind='web')
-get(kind='skill', id='precis-search-help')     # search mechanics, fencing
-get(kind='skill', id='precis-tags')            # axis vocabulary (ORIGIN, …)
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-web-help")  # arbitrary URL fetch (kind='web')
+get(kind="skill", id="precis-search-help")  # search mechanics, fencing
+get(kind="skill", id="precis-tags")  # axis vocabulary (ORIGIN, …)
 ```

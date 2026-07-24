@@ -63,13 +63,16 @@ def precis_add(
 class PdfInput:
     pdf_path: Path
 
+
 @dataclass(frozen=True)
 class DoiInput:
     doi: str
 
+
 @dataclass(frozen=True)
 class ArxivInput:
     arxiv_id: str
+
 
 PrecisAddInput = PdfInput | DoiInput | ArxivInput
 ```
@@ -80,14 +83,14 @@ PrecisAddInput = PdfInput | DoiInput | ArxivInput
 @dataclass(frozen=True)
 class IngestResult:
     ref_id: int
-    inserted: bool                # False if any identifier already known
-    paper_id: str                 # canonical hash-based ID (ADR 0006)
-    pub_id: str | None            # arxiv:XXXX | doi:YYYY (None if neither)
-    cite_key: str                 # human-readable, with collision suffix
-    pdf_sha256: str | None        # None if input wasn't a PDF
-    content_hash: str | None      # canonical text hash; None if no PDF
-    chunks_written: int           # 0 if inserted=False
-    identifiers: dict[str, str]   # {id_kind: id_value} written to ref_identifiers
+    inserted: bool  # False if any identifier already known
+    paper_id: str  # canonical hash-based ID (ADR 0006)
+    pub_id: str | None  # arxiv:XXXX | doi:YYYY (None if neither)
+    cite_key: str  # human-readable, with collision suffix
+    pdf_sha256: str | None  # None if input wasn't a PDF
+    content_hash: str | None  # canonical text hash; None if no PDF
+    chunks_written: int  # 0 if inserted=False
+    identifiers: dict[str, str]  # {id_kind: id_value} written to ref_identifiers
 ```
 
 ### CLI: `precis/cli/add.py`

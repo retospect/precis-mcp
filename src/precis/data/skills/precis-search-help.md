@@ -18,18 +18,27 @@ numeric score.
 ## How do I call search?
 
 ```python
-search(q='photocatalysis')                          # fan out across all kinds
-search(kind='paper', q='photocatalysis')            # one kind
-search(kind='paper,patent', q='photocatalysis')     # several kinds
-search(kind='paper', q='X', page=2, page_size=20)       # paginate
-search(kind='paper', q='X', tags=['topic:noxrr'])   # tag-filter
-search(kind='paper', q='X', scope='pa5')            # search inside one ref (handle; slug still resolves)
-search(kind='paper', q='X', exclude=['pa5', 'pa12'])    # skip refs by handle (slugs still resolve)
-search(kind='patent', q='X', source='remote')       # patent-only knob
-search(kind='paper', q='1.523 eV', mode='lexical')  # exact string, no embedding
-search(kind='paper', q='X', queries=['rephrase 1','rephrase 2'],
-       answers=['a passage an ideal source would contain'],
-       per_paper=2, page_size=30)                   # broad / high-recall (see below)
+search(q="photocatalysis")  # fan out across all kinds
+search(kind="paper", q="photocatalysis")  # one kind
+search(kind="paper,patent", q="photocatalysis")  # several kinds
+search(kind="paper", q="X", page=2, page_size=20)  # paginate
+search(kind="paper", q="X", tags=["topic:noxrr"])  # tag-filter
+search(
+    kind="paper", q="X", scope="pa5"
+)  # search inside one ref (handle; slug still resolves)
+search(
+    kind="paper", q="X", exclude=["pa5", "pa12"]
+)  # skip refs by handle (slugs still resolve)
+search(kind="patent", q="X", source="remote")  # patent-only knob
+search(kind="paper", q="1.523 eV", mode="lexical")  # exact string, no embedding
+search(
+    kind="paper",
+    q="X",
+    queries=["rephrase 1", "rephrase 2"],
+    answers=["a passage an ideal source would contain"],
+    per_paper=2,
+    page_size=30,
+)  # broad / high-recall (see below)
 ```
 
 ## Ranking mode — hybrid (default), lexical, semantic, or verbatim
@@ -47,9 +56,11 @@ the ranking with `mode=`:
 | `'verbatim'` | Chunks whose per-chunk **KeyBERT keywords** contain **all** your query words (GIN `@>` containment; embedder-independent). No relevance gradient — newest chunk first. | You want only chunks a topic model actually tagged with your term(s) — a topical filter tighter than FTS. Each query word must appear as a *distinct* keyword, so it's terms, not phrases (`'oxygen evolution'` = both words present, not the 2-gram). Empty query returns nothing. |
 
 ```python
-search(kind='paper', q='MoS2 monolayer', mode='lexical')   # exact term recall
-search(q='ways to stop catalyst poisoning', mode='semantic') # paraphrase recall
-search(kind='paper', q='perovskite stability', mode='verbatim') # chunks keyworded BOTH terms
+search(kind="paper", q="MoS2 monolayer", mode="lexical")  # exact term recall
+search(q="ways to stop catalyst poisoning", mode="semantic")  # paraphrase recall
+search(
+    kind="paper", q="perovskite stability", mode="verbatim"
+)  # chunks keyworded BOTH terms
 ```
 
 `mode=` works on a single kind **and** across the cross-kind fan-out.
@@ -100,21 +111,21 @@ Two knobs, both paper-side, both fused with `q` by reciprocal-rank fusion:
 
 ```python
 search(
-    kind='paper',
-    q='does single-atom Cu help nitrate-to-ammonia selectivity?',
+    kind="paper",
+    q="does single-atom Cu help nitrate-to-ammonia selectivity?",
     queries=[
-        'single-atom copper catalyst NO3RR selectivity',
-        'Cu coordination environment ammonia faradaic efficiency',
-        'isolated Cu sites suppress hydrogen evolution nitrate',
+        "single-atom copper catalyst NO3RR selectivity",
+        "Cu coordination environment ammonia faradaic efficiency",
+        "isolated Cu sites suppress hydrogen evolution nitrate",
     ],
     answers=[
-        'Isolating Cu as single atoms on an N-doped carbon support '
-        'raises NH3 faradaic efficiency to ~90% by weakening *NO '
-        'binding and suppressing the competing hydrogen-evolution '
-        'reaction, shifting selectivity toward ammonia.',
+        "Isolating Cu as single atoms on an N-doped carbon support "
+        "raises NH3 faradaic efficiency to ~90% by weakening *NO "
+        "binding and suppressing the competing hydrogen-evolution "
+        "reaction, shifting selectivity toward ammonia.",
     ],
-    per_paper=2,        # at most 2 chunks per paper → broader spread
-    page_size=30,       # widen the net so the fused set surfaces
+    per_paper=2,  # at most 2 chunks per paper → broader spread
+    page_size=30,  # widen the net so the fused set surfaces
 )
 ```
 
@@ -153,9 +164,12 @@ merges their keep/relevance verdicts into one ranked list. You get an
 async handle back immediately:
 
 ```python
-search(kind='paper', q='oxygen evolution overpotential on NiFe',
-       queries=['NiFe oxyhydroxide OER overpotential'],  # optional seeds
-       good=True)
+search(
+    kind="paper",
+    q="oxygen evolution overpotential on NiFe",
+    queries=["NiFe oxyhydroxide OER overpotential"],  # optional seeds
+    good=True,
+)
 # → deep search queued: job=8123 status=queued
 #   poll: get(kind='job', id=8123)
 ```
@@ -181,9 +195,9 @@ winners via their handles as usual.
 ## Cross-kind search — let the runtime pick
 
 ```python
-search(q='Z-scheme photocatalysis')             # all kinds
-search(kind='*', q='topic:x')                   # explicit wildcard
-search(kind='paper,patent', q='Z-scheme')       # subset via comma-list
+search(q="Z-scheme photocatalysis")  # all kinds
+search(kind="*", q="topic:x")  # explicit wildcard
+search(kind="paper,patent", q="Z-scheme")  # subset via comma-list
 ```
 
 When `kind=` is omitted (or `'*'` / `'all'` / `'any'` / `''`), search
@@ -196,8 +210,8 @@ in `memory` can out-rank a weaker hit in `paper`.
 ## What if there are more hits than I see?
 
 ```python
-search(kind='paper', q='photocatalysis', page=2)
-search(kind='paper', q='photocatalysis', page=3, page_size=20)
+search(kind="paper", q="photocatalysis", page=2)
+search(kind="paper", q="photocatalysis", page=3, page_size=20)
 ```
 
 `page=1` is the default. Bump `page=` to walk results. `page_size=` sets
@@ -214,13 +228,13 @@ single-query ordering mid-walk.
 ## Combine search with a tag axis
 
 ```python
-search(kind='paper', q='photocatalysis', tags=['topic:noxrr'])
+search(kind="paper", q="photocatalysis", tags=["topic:noxrr"])
 
-search(kind='patent', tags=['cpc:B01J27/24', 'country:ep'])
+search(kind="patent", tags=["cpc:B01J27/24", "country:ep"])
 
-search(kind='todo', tags=['STATUS:open', 'PRIO:high'])
+search(kind="todo", tags=["STATUS:open", "PRIO:high"])
 
-search(kind='memory', q='', tags=['pinned'])
+search(kind="memory", q="", tags=["pinned"])
 ```
 
 AND semantics — `tags=['A', 'B']` matches refs carrying *both* tags.
@@ -233,9 +247,9 @@ open tags (`topic:`, `project:`, `pinned`, ...) are universal. See
 ## Scope a search to one ref's contents
 
 ```python
-search(kind='paper', q='Z-scheme', scope='pa5')              # handle from get/search output
-search(kind='paper', q='Z-scheme', scope='wang2020state')    # legacy slug, still resolves
-search(kind='patent', q='heterojunction', scope='ep4123456a1')
+search(kind="paper", q="Z-scheme", scope="pa5")  # handle from get/search output
+search(kind="paper", q="Z-scheme", scope="wang2020state")  # legacy slug, still resolves
+search(kind="patent", q="heterojunction", scope="ep4123456a1")
 ```
 
 `scope=` restricts to one ref's blocks. Useful for "where in this
@@ -246,10 +260,10 @@ paper does X come up?"
 ## Search but ignore these refs
 
 ```python
-search(kind='paper', q='photocatalysis',
-       exclude=['pa5', 'pa12'])                       # handles from output
-search(kind='paper', q='photocatalysis',
-       exclude=['wang2020state', 'kim2024electro'])   # legacy slugs, still resolve
+search(kind="paper", q="photocatalysis", exclude=["pa5", "pa12"])  # handles from output
+search(
+    kind="paper", q="photocatalysis", exclude=["wang2020state", "kim2024electro"]
+)  # legacy slugs, still resolve
 ```
 
 Ref-level — a handle (`pa<id>`), slug, chunk selector, or DOI all resolve to
@@ -261,9 +275,9 @@ known-irrelevant refs, not a paging mechanism — use `page=` for that.
 ## Discover a skill by topic
 
 ```python
-search(kind='skill', q='how do I edit a markdown file')
-search(kind='skill', q='paginate paper search')
-search(kind='skill', q='patent prior art')
+search(kind="skill", q="how do I edit a markdown file")
+search(kind="skill", q="paginate paper search")
+search(kind="skill", q="patent prior art")
 ```
 
 Natural-language queries work — phrase your query the way you'd ask
@@ -276,8 +290,8 @@ This is the standard first move on any non-trivial task.
 ## How do I find a patent that isn't ingested yet?
 
 ```python
-search(kind='patent', q='photocatalysis', source='remote')
-search(kind='patent', tags=['cpc:B01J27/24'], source='remote')
+search(kind="patent", q="photocatalysis", source="remote")
+search(kind="patent", tags=["cpc:B01J27/24"], source="remote")
 ```
 
 `source=` is patent-only. `'both'` (default) merges local + remote;
@@ -287,10 +301,10 @@ in the local store. CQL details in `precis-patent-search-help`.
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')             # verbs and kinds
-get(kind='skill', id='precis-paper-help')           # paper-specific search shape
-get(kind='skill', id='precis-patent-search-help')   # CQL + source= matrix
-get(kind='skill', id='precis-tags')                 # axis vocabulary
-get(kind='skill', id='precis-relations')            # link vocabulary
-get(kind='skill', id='precis-toc-help')             # drilling into hits via /toc
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-paper-help")  # paper-specific search shape
+get(kind="skill", id="precis-patent-search-help")  # CQL + source= matrix
+get(kind="skill", id="precis-tags")  # axis vocabulary
+get(kind="skill", id="precis-relations")  # link vocabulary
+get(kind="skill", id="precis-toc-help")  # drilling into hits via /toc
 ```

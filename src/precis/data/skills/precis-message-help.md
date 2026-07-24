@@ -20,9 +20,11 @@ Body lives as a `message_body` chunk.
 ## Post a message to a Discord channel/thread
 
 ```python
-put(kind='message',
-    text='Hey, you said you would ship that PR today — still on track?',
-    target='discord/<guild>/<channel>/<thread>')
+put(
+    kind="message",
+    text="Hey, you said you would ship that PR today — still on track?",
+    target="discord/<guild>/<channel>/<thread>",
+)
 ```
 
 The target points at the same conversation slug shape used by
@@ -32,17 +34,23 @@ channel and delivers immediately.
 ## Post with attachments
 
 ```python
-put(kind='message',
-    text='here is the lit-review I drafted',
-    target='discord/<guild>/<channel>/<thread>',
+put(
+    kind="message",
+    text="here is the lit-review I drafted",
+    target="discord/<guild>/<channel>/<thread>",
     attachments=[
-        {'filename': 'lit-review.md',
-         'content_type': 'text/markdown',
-         'archive_path': '/opt/nfs/.../reports/lit-review.md'},
-        {'filename': 'diagram.png',
-         'content_type': 'image/png',
-         'archive_path': '/opt/nfs/.../reports/diagram.png'},
-    ])
+        {
+            "filename": "lit-review.md",
+            "content_type": "text/markdown",
+            "archive_path": "/opt/nfs/.../reports/lit-review.md",
+        },
+        {
+            "filename": "diagram.png",
+            "content_type": "image/png",
+            "archive_path": "/opt/nfs/.../reports/diagram.png",
+        },
+    ],
+)
 ```
 
 Attachments must already exist at `archive_path` (on NFS, visible
@@ -51,11 +59,14 @@ to asa_bot). The delivery layer uploads them inline.
 ## Annotate why you're pinging (audit trail)
 
 ```python
-put(kind='message',
-    text='cluster postmortem deadline tomorrow',
-    target='discord/<g>/<c>/<t>',
-    reason='recurring:42 fired',
-    link='memory:217', rel='derived-from')
+put(
+    kind="message",
+    text="cluster postmortem deadline tomorrow",
+    target="discord/<g>/<c>/<t>",
+    reason="recurring:42 fired",
+    link="memory:217",
+    rel="derived-from",
+)
 ```
 
 `reason=` is a free-form short trace string. The link to the
@@ -65,11 +76,11 @@ future "why did I send this?" debugging instant.
 ## Inspect, cancel, search
 
 ```python
-get(kind='message', id=42)              # full message + status + reason
-get(kind='message', id='/recent')       # recent sends across all targets
-search(kind='message', q='PR status')   # find past sends by content
+get(kind="message", id=42)  # full message + status + reason
+get(kind="message", id="/recent")  # recent sends across all targets
+search(kind="message", q="PR status")  # find past sends by content
 
-delete(kind='message', id=42)           # cancel before delivery
+delete(kind="message", id=42)  # cancel before delivery
 ```
 
 A message that hasn't yet been delivered (`meta.status='queued'`)
@@ -112,7 +123,7 @@ fresh question; you can't unsend a ping.
 ## See also
 
 ```python
-get(kind='skill', id='precis-recurring-help')   # schedule future sends
-get(kind='skill', id='precis-conv-help')        # captured conversations
-get(kind='skill', id='precis-overview')         # verbs and kinds
+get(kind="skill", id="precis-recurring-help")  # schedule future sends
+get(kind="skill", id="precis-conv-help")  # captured conversations
+get(kind="skill", id="precis-overview")  # verbs and kinds
 ```

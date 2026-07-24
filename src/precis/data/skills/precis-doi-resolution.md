@@ -17,10 +17,10 @@ you do not need a separate resolve step.
 ## I have a DOI — how do I read the paper?
 
 ```python
-get(kind='paper', id='10.1038/nature10352')                     # full overview
-get(kind='paper', id='10.1038/nature10352', view='abstract')    # DOI + view = kwarg only
-get(kind='paper', id='10.1038/nature10352', view='toc')
-get(kind='paper', id='10.1038/nature10352', view='bibtex')
+get(kind="paper", id="10.1038/nature10352")  # full overview
+get(kind="paper", id="10.1038/nature10352", view="abstract")  # DOI + view = kwarg only
+get(kind="paper", id="10.1038/nature10352", view="toc")
+get(kind="paper", id="10.1038/nature10352", view="bibtex")
 ```
 
 The DOI resolves to the same paper a slug would. The response shows the
@@ -36,8 +36,8 @@ for slugs: `id='abazari2024design/toc'`) is ambiguous for DOIs. Use
 the `view=` kwarg:
 
 ```python
-get(kind='paper', id='10.1038/nature10352', view='toc')         # works
-get(kind='paper', id='10.1038/nature10352/toc')                 # ambiguous — don't
+get(kind="paper", id="10.1038/nature10352", view="toc")  # works
+get(kind="paper", id="10.1038/nature10352/toc")  # ambiguous — don't
 ```
 
 Same rule for chunk selectors: `id='<DOI>~38..42'` is fine because
@@ -51,7 +51,9 @@ collides — use `view='bibtex'`.
 Strip the URL prefix and pass the bare DOI:
 
 ```python
-get(kind='paper', id='10.1038/s41531-025-01018-8')   # from https://doi.org/10.1038/s41531-025-01018-8
+get(
+    kind="paper", id="10.1038/s41531-025-01018-8"
+)  # from https://doi.org/10.1038/s41531-025-01018-8
 ```
 
 `https://doi.org/`, `http://doi.org/`, `dx.doi.org/` prefixes all
@@ -63,9 +65,9 @@ to the same paper as the bare arXiv id.
 ## DOI → BibTeX in one call
 
 ```python
-get(kind='paper', id='10.1038/nature10352', view='bibtex')
-get(kind='paper', id='10.1038/nature10352', view='ris')
-get(kind='paper', id='10.1038/nature10352', view='endnote')
+get(kind="paper", id="10.1038/nature10352", view="bibtex")
+get(kind="paper", id="10.1038/nature10352", view="ris")
+get(kind="paper", id="10.1038/nature10352", view="endnote")
 ```
 
 ## Handle a DOI that isn't in the corpus
@@ -75,10 +77,12 @@ get(kind='paper', id='10.1038/nature10352', view='endnote')
 The DOI isn't ingested. Register a finding so the worker chases it:
 
 ```python
-put(kind='finding',
-    title='<one-line claim from the citing context>',
-    body='<the surrounding sentence(s)>',
-    cited_in='doi:10.1038/nature10352')
+put(
+    kind="finding",
+    title="<one-line claim from the citing context>",
+    body="<the surrounding sentence(s)>",
+    cited_in="doi:10.1038/nature10352",
+)
 # → created finding id=N
 ```
 
@@ -92,7 +96,7 @@ mechanics in `precis-finding-help`.
 ## Who cites 10.x/y?
 
 ```python
-search(kind='paper', q='10.1038/nature10352')
+search(kind="paper", q="10.1038/nature10352")
 ```
 
 Searching a DOI string finds papers that *mention* it in body text
@@ -102,8 +106,8 @@ Searching a DOI string finds papers that *mention* it in body text
 ## See also
 
 ```python
-get(kind='skill', id='precis-paper-help')       # slug grammar, views, chunk selectors
-get(kind='skill', id='precis-finding-help')     # chase pipeline for un-ingested DOIs
-get(kind='skill', id='precis-search-help')      # query mechanics
-get(kind='skill', id='precis-citation-help')    # verifier workflow for writing
+get(kind="skill", id="precis-paper-help")  # slug grammar, views, chunk selectors
+get(kind="skill", id="precis-finding-help")  # chase pipeline for un-ingested DOIs
+get(kind="skill", id="precis-search-help")  # query mechanics
+get(kind="skill", id="precis-citation-help")  # verifier workflow for writing
 ```

@@ -45,43 +45,50 @@ cache-backed on `get(q=...)`, ref-backed on `put(link=...)` and
 
 ```python
 # ── TTS: synthesize, cache-backed ────────────────────────────────────
-get(kind='voice', q='Hello, world.')
-get(kind='voice', q='Hello, world.', view='af_bella')
-get(kind='voice', q='Hello.', view='af_bella:mp3')
+get(kind="voice", q="Hello, world.")
+get(kind="voice", q="Hello, world.", view="af_bella")
+get(kind="voice", q="Hello.", view="af_bella:mp3")
 # → "[audio: /opt/nfs/shared/voice/synth/hello-a3f9.wav, 1.2s]
 #    URL: https://melchior.local/voice/synth/hello-a3f9.wav
 #    Voice: af_bella · Model: kokoro-v1.0 · Cached"
 
 # ── STT: transcribe and persist ──────────────────────────────────────
-put(kind='voice', link='file:/path/to/recording.m4a')
-put(kind='voice', link='file:/path/to/meeting.wav',
-    tags=['speaker:reto', 'topic:precis'])
+put(kind="voice", link="file:/path/to/recording.m4a")
+put(
+    kind="voice",
+    link="file:/path/to/meeting.wav",
+    tags=["speaker:reto", "topic:precis"],
+)
 # → "voice/shipping-prototype-tomorrow-a3f9
 #    47s · en · whisper-large-v3-turbo
 #    > I think we should ship the prototype tomorrow…"
 
 # ── Retrieve a stored transcript ─────────────────────────────────────
-get(kind='voice', id='shipping-prototype-tomorrow-a3f9')
+get(kind="voice", id="shipping-prototype-tomorrow-a3f9")
 # → full transcript, segments with timestamps, audio path/URL, metadata
 
-get(kind='voice', id='shipping-prototype-tomorrow-a3f9', view='segments')
+get(kind="voice", id="shipping-prototype-tomorrow-a3f9", view="segments")
 # → [{start: 0.0, end: 4.2, text: "I think we should…"}, …]
 
 # ── List ─────────────────────────────────────────────────────────────
-get(kind='voice', id='/recent')
-get(kind='voice', id='/recent?source=stt')
-get(kind='voice', id='/voices')          # available TTS voices
+get(kind="voice", id="/recent")
+get(kind="voice", id="/recent?source=stt")
+get(kind="voice", id="/voices")  # available TTS voices
 
 # ── Search transcripts (free, via existing semantic search) ──────────
-search(q='ship the prototype', kind='voice')
+search(q="ship the prototype", kind="voice")
 
 # ── Re-tag / annotate a transcript ───────────────────────────────────
-put(kind='voice', id='shipping-prototype-tomorrow-a3f9',
-    tags=['speaker:matthias'], mode='note',
-    text='Recorded during 2026-04-28 sync.')
+put(
+    kind="voice",
+    id="shipping-prototype-tomorrow-a3f9",
+    tags=["speaker:matthias"],
+    mode="note",
+    text="Recorded during 2026-04-28 sync.",
+)
 
 # ── Delete a transcript ──────────────────────────────────────────────
-put(kind='voice', id='shipping-prototype-tomorrow-a3f9', mode='delete')
+put(kind="voice", id="shipping-prototype-tomorrow-a3f9", mode="delete")
 ```
 
 ### Disambiguation rules

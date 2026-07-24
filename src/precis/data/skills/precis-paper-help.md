@@ -19,12 +19,12 @@ search/get output back into `get`/`tag`/`link`. The legacy slug
 ## I have a DOI — how do I read the paper?
 
 ```python
-get(kind='paper', id='pa40')                                    # full overview, by handle
-get(kind='paper', id='pa40', view='toc')                        # TOC — the reading entry point
-get(kind='paper', id='abazari2024design')                       # legacy slug still resolves
-get(kind='paper', id='10.1038/nature10352')                     # bare DOI resolves via metadata
-get(kind='paper', id='10.1038/nature10352', view='abstract')    # DOI + view = kwarg only
-get(kind='paper', id='10.1038/nature10352', view='toc')
+get(kind="paper", id="pa40")  # full overview, by handle
+get(kind="paper", id="pa40", view="toc")  # TOC — the reading entry point
+get(kind="paper", id="abazari2024design")  # legacy slug still resolves
+get(kind="paper", id="10.1038/nature10352")  # bare DOI resolves via metadata
+get(kind="paper", id="10.1038/nature10352", view="abstract")  # DOI + view = kwarg only
+get(kind="paper", id="10.1038/nature10352", view="toc")
 ```
 
 The handle is the thing to keep. The DOI is a *fetch key* — once the
@@ -40,8 +40,8 @@ paste it back into the next call. Don't reconstruct a slug from an
 author + year + title; search for the paper and copy the handle:
 
 ```python
-search(kind='paper', q='<author or topic>')        # → rows carry pa<id>/pc<id>
-get(kind='paper', id='<DOI>')                      # DOI → fetches the paper, then use its handle
+search(kind="paper", q="<author or topic>")  # → rows carry pa<id>/pc<id>
+get(kind="paper", id="<DOI>")  # DOI → fetches the paper, then use its handle
 ```
 
 ## Find a paper by topic
@@ -49,8 +49,10 @@ get(kind='paper', id='<DOI>')                      # DOI → fetches the paper, 
 ## I don't know any slugs — find papers by keyword
 
 ```python
-search(kind='paper', q='photocatalytic NOx reduction')
-search(kind='paper', q='photocatalytic NOx reduction', page_size=20)   # default 10, max 100
+search(kind="paper", q="photocatalytic NOx reduction")
+search(
+    kind="paper", q="photocatalytic NOx reduction", page_size=20
+)  # default 10, max 100
 ```
 
 Hybrid lexical + semantic. Each result is a chunk handle `pc<chunk_id>`
@@ -62,9 +64,9 @@ When one phrasing isn't finding it, escalate (details in
 
 ```python
 # Broad: fuse rephrasings + hypothetical-answer passages in one call (RRF)
-search(kind='paper', q='…', queries=['…', '…'], answers=['…'], per_paper=1)
+search(kind="paper", q="…", queries=["…", "…"], answers=["…"], per_paper=1)
 # Deep: async triage campaign — returns a job handle, poll for the curated result
-search(kind='paper', q='…', good=True)   # → poll get(kind='job', id=…)
+search(kind="paper", q="…", good=True)  # → poll get(kind='job', id=…)
 ```
 
 The default free-text `q=` search matches paper **bodies** and folds
@@ -77,8 +79,8 @@ author, use the targeted byline lookup below — it's more reliable.
 ## I know the title (or an author) — get the record, not body hits
 
 ```python
-search(kind='paper', title='attention is all you need')   # → the paper record
-search(kind='paper', author='Vaswani')                     # → papers with that author
+search(kind="paper", title="attention is all you need")  # → the paper record
+search(kind="paper", author="Vaswani")  # → papers with that author
 ```
 
 `title=` / `author=` return paper **records** — one row per paper, each
@@ -102,9 +104,11 @@ lines. The byline lookup sidesteps both.
 ## Where does any paper mention this specific string?
 
 ```python
-search(kind='paper', q='LiBF4', mode='lexical')  # exact token, FTS only — no embedding
-search(kind='paper', q='LiBF4')                  # hybrid also floats rare tokens high
-search(kind='paper', q='10.1038/nature10352')    # finds papers citing this DOI in body text
+search(kind="paper", q="LiBF4", mode="lexical")  # exact token, FTS only — no embedding
+search(kind="paper", q="LiBF4")  # hybrid also floats rare tokens high
+search(
+    kind="paper", q="10.1038/nature10352"
+)  # finds papers citing this DOI in body text
 ```
 
 `mode='lexical'` pins the search to the Postgres full-text leg (no
@@ -123,8 +127,8 @@ authors=[…], year=…)`, which rebuilds the card.
 ## What if there are more hits than I see?
 
 ```python
-search(kind='paper', q='photocatalytic NOx reduction', page=2)
-search(kind='paper', q='photocatalytic NOx reduction', page=3, page_size=20)
+search(kind="paper", q="photocatalytic NOx reduction", page=2)
+search(kind="paper", q="photocatalytic NOx reduction", page=3, page_size=20)
 ```
 
 `page=1` is the default. Bump `page=` to walk results; `page_size=` sets
@@ -135,9 +139,9 @@ the page size (default 10, max 100).
 ## Only papers published after / before a year
 
 ```python
-search(kind='paper', q='solid-state batteries', after=2019)              # 2019→present
-search(kind='paper', q='solid-state batteries', before=2015)             # up to 2015
-search(kind='paper', q='solid-state batteries', after=2019, before=2023) # 2019–2023
+search(kind="paper", q="solid-state batteries", after=2019)  # 2019→present
+search(kind="paper", q="solid-state batteries", before=2015)  # up to 2015
+search(kind="paper", q="solid-state batteries", after=2019, before=2023)  # 2019–2023
 ```
 
 `after=` / `before=` are **inclusive publication-year bounds** (the
@@ -155,15 +159,15 @@ sparse result isn't mistaken for "nothing exists" — fix missing years via
 Start with the TOC — it's the entry point for any non-trivial paper.
 
 ```python
-get(kind='paper', id='pa40', view='toc')             # start here
-get(kind='paper', id='pa40', view='summaries')       # per-chunk gloss + keywords
-get(id='pc512')                                      # single block by chunk handle
-get(kind='paper', id='pa40', view='abstract')
-get(kind='paper', id='pa40')                         # full overview
-get(kind='paper', id='pa40/toc')                     # path form = view='toc'
-get(kind='paper', id='<slug>~63..89')                # legacy: drill a slug range
-get(kind='paper', id='<slug>~63..89', view='toc')    # legacy: sub-TOC of a range
-get(kind='paper', id='<slug>~38')                    # legacy slug~pos still resolves
+get(kind="paper", id="pa40", view="toc")  # start here
+get(kind="paper", id="pa40", view="summaries")  # per-chunk gloss + keywords
+get(id="pc512")  # single block by chunk handle
+get(kind="paper", id="pa40", view="abstract")
+get(kind="paper", id="pa40")  # full overview
+get(kind="paper", id="pa40/toc")  # path form = view='toc'
+get(kind="paper", id="<slug>~63..89")  # legacy: drill a slug range
+get(kind="paper", id="<slug>~63..89", view="toc")  # legacy: sub-TOC of a range
+get(kind="paper", id="<slug>~38")  # legacy slug~pos still resolves
 ```
 
 TOC rows are drillable: each row leads with the block handle (`pc<id>`,
@@ -187,9 +191,9 @@ and `slug/<view>` path are equivalent (except for DOIs — see above).
 ## Where does this paper discuss X?
 
 ```python
-search(kind='paper', q='Z-scheme', scope='pa40')             # scope by handle
-search(kind='paper', q='Z-scheme', scope='pa40', page=2)
-search(kind='paper', q='Z-scheme', scope='<slug>')           # legacy slug still resolves
+search(kind="paper", q="Z-scheme", scope="pa40")  # scope by handle
+search(kind="paper", q="Z-scheme", scope="pa40", page=2)
+search(kind="paper", q="Z-scheme", scope="<slug>")  # legacy slug still resolves
 ```
 
 Same hybrid search as cross-corpus, scoped to one paper's blocks.
@@ -199,9 +203,9 @@ Same hybrid search as cross-corpus, scoped to one paper's blocks.
 ## I need to cite this in my manuscript
 
 ```python
-get(kind='paper', id='pa40', view='bibtex')
-get(kind='paper', id='pa40', view='ris')
-get(kind='paper', id='pa40', view='endnote')
+get(kind="paper", id="pa40", view="bibtex")
+get(kind="paper", id="pa40", view="ris")
+get(kind="paper", id="pa40", view="endnote")
 ```
 
 ## Cite a figure (caption only — no image binaries)
@@ -212,8 +216,8 @@ Image files aren't served. The figure block holds a markdown image
 marker; the legend is on the next block.
 
 ```python
-get(id='pc517')                                # the figure block, by handle
-get(kind='paper', id='<slug>~45')              # legacy slug~pos still resolves
+get(id="pc517")  # the figure block, by handle
+get(kind="paper", id="<slug>~45")  # legacy slug~pos still resolves
 ```
 
 ```text
@@ -229,12 +233,13 @@ don't invent URLs.
 ## How do I mark this paper as topic:X?
 
 ```python
-tag(kind='paper', id='pa40', add=['topic:photocatalysis'])
-tag(kind='paper', id='pa40', add=['SRC:primary'])
-tag(kind='paper', id='pa40', remove=['topic:photocatalysis'])
+tag(kind="paper", id="pa40", add=["topic:photocatalysis"])
+tag(kind="paper", id="pa40", add=["SRC:primary"])
+tag(kind="paper", id="pa40", remove=["topic:photocatalysis"])
 
-link(kind='paper', id='pa40',
-     target='pa57', rel='cites')             # target is also a handle (legacy paper:<slug> resolves)
+link(
+    kind="paper", id="pa40", target="pa57", rel="cites"
+)  # target is also a handle (legacy paper:<slug> resolves)
 ```
 
 Closed-prefix axes for paper: `SRC:`, `CACHE:`. Open tags
@@ -246,7 +251,7 @@ selectors and view paths are rejected.
 ## What is this paper linked to — cites, cited-by, related-to?
 
 ```python
-get(kind='paper', id='pa40', view='links')
+get(kind="paper", id="pa40", view="links")
 ```
 
 Every link touching the paper, both directions — outbound
@@ -277,9 +282,9 @@ affordance that either shows up or doesn't.
 any stub carrying an identifier:
 
 ```python
-put(kind='paper', doi='10.1038/nature10352')           # best — resolvable id
-put(kind='paper', arxiv='2401.00001', title='…')       # or an arXiv id
-put(kind='paper', title='Some Paper With No DOI Yet')  # title-only backlog stub
+put(kind="paper", doi="10.1038/nature10352")  # best — resolvable id
+put(kind="paper", arxiv="2401.00001", title="…")  # or an arXiv id
+put(kind="paper", title="Some Paper With No DOI Yet")  # title-only backlog stub
 ```
 
 Idempotent (already-held / already-wanted is a no-op). Full contract +
@@ -293,9 +298,15 @@ citation graph via Semantic Scholar. Each row carries the neighbour's
 DOI — feed it straight into a `put(kind='paper', doi=…)` request:
 
 ```python
-get(kind='semanticscholar', id='refs:10.1038/nature10352')   # papers it cites (its bibliography)
-get(kind='semanticscholar', id='cites:10.1038/nature10352')  # papers citing it (forward citations)
-get(kind='semanticscholar', id='<title or topic>')           # or search by topic → ranked hits + DOIs
+get(
+    kind="semanticscholar", id="refs:10.1038/nature10352"
+)  # papers it cites (its bibliography)
+get(
+    kind="semanticscholar", id="cites:10.1038/nature10352"
+)  # papers citing it (forward citations)
+get(
+    kind="semanticscholar", id="<title or topic>"
+)  # or search by topic → ranked hits + DOIs
 ```
 
 `<paper-id>` is any S2-resolvable handle — a bare DOI, an arXiv id
@@ -308,15 +319,17 @@ per hop.)
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')         # verbs and kinds
-get(kind='skill', id='precis-search-help')      # search mechanics
-get(kind='skill', id='precis-relations')        # related-to, contradicts between papers
-get(kind='skill', id='precis-tags')             # axis vocabulary
-get(kind='skill', id='precis-paper-tag-axes')   # paper-specific axes
-get(kind='skill', id='precis-finding-help')     # chasing un-ingested DOIs
-get(kind='skill', id='precis-stubs-help')       # papers we still need to get
-get(kind='skill', id='precis-cite-paper-help')  # how do I cite a paper? (the router)
-get(kind='skill', id='precis-check-source-help') # find a citation, read surrounds, judge support
-get(kind='skill', id='precis-citation-help')    # verifier workflow for writing
-get(kind='skill', id='precis-memory-help')      # capturing thoughts from a paper
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-search-help")  # search mechanics
+get(kind="skill", id="precis-relations")  # related-to, contradicts between papers
+get(kind="skill", id="precis-tags")  # axis vocabulary
+get(kind="skill", id="precis-paper-tag-axes")  # paper-specific axes
+get(kind="skill", id="precis-finding-help")  # chasing un-ingested DOIs
+get(kind="skill", id="precis-stubs-help")  # papers we still need to get
+get(kind="skill", id="precis-cite-paper-help")  # how do I cite a paper? (the router)
+get(
+    kind="skill", id="precis-check-source-help"
+)  # find a citation, read surrounds, judge support
+get(kind="skill", id="precis-citation-help")  # verifier workflow for writing
+get(kind="skill", id="precis-memory-help")  # capturing thoughts from a paper
 ```

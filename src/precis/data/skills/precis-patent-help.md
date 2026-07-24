@@ -21,13 +21,13 @@ durable external identity, but `pt<id>` is what you copy back into
 ## I have a publication number — how do I read the patent?
 
 ```python
-get(kind='patent', id='ep1234567b1')                    # fetch by DOCDB id (first time)
-get(kind='patent', id='pt40')                           # held patent, by handle
-get(kind='patent', id='pt40', view='abstract')
-get(kind='patent', id='pt40', view='claims')
-get(kind='patent', id='pt40', view='biblio')            # bibliographic table
-get(kind='patent', id='pt40', view='description')
-get(kind='patent', id='pt40', view='bibtex')
+get(kind="patent", id="ep1234567b1")  # fetch by DOCDB id (first time)
+get(kind="patent", id="pt40")  # held patent, by handle
+get(kind="patent", id="pt40", view="abstract")
+get(kind="patent", id="pt40", view="claims")
+get(kind="patent", id="pt40", view="biblio")  # bibliographic table
+get(kind="patent", id="pt40", view="description")
+get(kind="patent", id="pt40", view="bibtex")
 ```
 
 First `get` for an unknown DOCDB id fetches from OPS, persists, embeds,
@@ -45,9 +45,9 @@ Patent ids only accept the `~` chunk separator. Pass `view=` as a
 kwarg; there is no `slug/view` path form.
 
 ```python
-get(id='pk<chunk_id>')                         # single block by handle
-get(kind='patent', id='ep1234567b1~5')         # legacy id~pos still resolves
-get(kind='patent', id='ep1234567b1~5..12')     # block range (ranges stay id~N..M)
+get(id="pk<chunk_id>")  # single block by handle
+get(kind="patent", id="ep1234567b1~5")  # legacy id~pos still resolves
+get(kind="patent", id="ep1234567b1~5..12")  # block range (ranges stay id~N..M)
 ```
 
 ## What does a DOCDB fetch key look like?
@@ -59,9 +59,9 @@ output. But to pull a patent the first time you supply its DOCDB
 number, shape `<cc><digits><letter>[<digit>]`, lowercased:
 
 ```python
-get(kind='patent', id='ep1234567b1')       # EP grant
-get(kind='patent', id='us20240123456a1')   # US application
-get(kind='patent', id='wo2023123456a1')    # PCT
+get(kind="patent", id="ep1234567b1")  # EP grant
+get(kind="patent", id="us20240123456a1")  # US application
+get(kind="patent", id="wo2023123456a1")  # PCT
 ```
 
 Country code (`ep`, `us`, `wo`, `cn`, `jp`, ...) is validated
@@ -77,9 +77,9 @@ retry, so trust it and re-issue.
 ## I don't know any ids — find patents by keyword
 
 ```python
-search(kind='patent', q='photocatalytic NOx reduction')
-search(kind='patent', q='Z-scheme photocatalysis', page_size=20)
-search(kind='patent', q='amine carbon capture', source='remote')
+search(kind="patent", q="photocatalytic NOx reduction")
+search(kind="patent", q="Z-scheme photocatalysis", page_size=20)
+search(kind="patent", q="amine carbon capture", source="remote")
 ```
 
 Returns local + remote hits merged by DOCDB id; locally-stored
@@ -96,8 +96,8 @@ points at `get(kind='patent', id=...)` to fetch it, or
 ## What if there are more hits than I see?
 
 ```python
-search(kind='patent', q='photocatalysis', page=2)
-search(kind='patent', q='photocatalysis', page=3, page_size=20)
+search(kind="patent", q="photocatalysis", page=2)
+search(kind="patent", q="photocatalysis", page=3, page_size=20)
 ```
 
 `page=1` is the default. `page_size=` sets page size (default 10,
@@ -108,8 +108,8 @@ max 100).
 ## Where does this patent discuss X?
 
 ```python
-search(kind='patent', q='heterojunction', scope='pt40')          # scope by handle
-search(kind='patent', q='heterojunction', scope='ep1234567b1')   # DOCDB id also resolves
+search(kind="patent", q="heterojunction", scope="pt40")  # scope by handle
+search(kind="patent", q="heterojunction", scope="ep1234567b1")  # DOCDB id also resolves
 ```
 
 Same hybrid search, scoped to one patent's blocks.
@@ -119,9 +119,11 @@ Same hybrid search, scoped to one patent's blocks.
 ## Browse locally-stored patents
 
 ```python
-get(kind='patent')                   # default page (by ingest time)
-get(kind='patent', id='/recent')     # newest by ingest time (when YOU added it)
-get(kind='patent', id='/published')  # newest by publication date (when EPO published it)
+get(kind="patent")  # default page (by ingest time)
+get(kind="patent", id="/recent")  # newest by ingest time (when YOU added it)
+get(
+    kind="patent", id="/published"
+)  # newest by publication date (when EPO published it)
 ```
 
 `/recent` and `/published` differ: a patent filed in 2002 but
@@ -131,7 +133,7 @@ ingested last week is recent-new but published-old.
 ## Get a BibTeX entry for a patent
 
 ```python
-get(kind='patent', id='pt40', view='bibtex')        # or the DOCDB id
+get(kind="patent", id="pt40", view="bibtex")  # or the DOCDB id
 ```
 
 ## Annotate a patent or cross-link it
@@ -139,14 +141,16 @@ get(kind='patent', id='pt40', view='bibtex')        # or the DOCDB id
 ## Link a patent to a paper or memory
 
 ```python
-tag(kind='patent', id='pt40', add=['topic:photocatalysis'])
-tag(kind='patent', id='pt40', add=['cpc:B01J27/24'])
-tag(kind='patent', id='pt40', remove=['topic:photocatalysis'])
+tag(kind="patent", id="pt40", add=["topic:photocatalysis"])
+tag(kind="patent", id="pt40", add=["cpc:B01J27/24"])
+tag(kind="patent", id="pt40", remove=["topic:photocatalysis"])
 
-link(kind='patent', id='pt40',
-     target='pa57', rel='cited-by')              # target handle (legacy paper:<slug> resolves)
-link(kind='patent', id='pt40',
-     target='me88', rel='annotates')             # memory handle (legacy memory:<id> resolves)
+link(
+    kind="patent", id="pt40", target="pa57", rel="cited-by"
+)  # target handle (legacy paper:<slug> resolves)
+link(
+    kind="patent", id="pt40", target="me88", rel="annotates"
+)  # memory handle (legacy memory:<id> resolves)
 ```
 
 Closed-prefix axes for patent: `SRC:`, `CACHE:`, `cpc:`, `ipc:`,
@@ -163,18 +167,20 @@ Patents are read-only — `put(kind='patent', ...)` raises
 `Unsupported`. Park notes on a `memory` and link it to the patent:
 
 ```python
-put(kind='memory', text='<note>', link='pt40', rel='annotates')   # legacy patent:<docdb> resolves
+put(
+    kind="memory", text="<note>", link="pt40", rel="annotates"
+)  # legacy patent:<docdb> resolves
 ```
 
 ## See also
 
 ```python
-get(kind='skill', id='precis-overview')             # verbs and kinds
-get(kind='skill', id='precis-patent-search-help')   # source=, CQL, watches
-get(kind='skill', id='precis-patent-power')         # raw OPS CQL grammar
-get(kind='skill', id='precis-search-help')          # search mechanics
-get(kind='skill', id='precis-paper-help')           # sibling kind, same ~N..M syntax
-get(kind='skill', id='precis-tags')                 # axis vocabulary
-get(kind='skill', id='precis-finding-help')         # register a chase target
-get(kind='skill', id='precis-memory-help')          # notes attached to a patent
+get(kind="skill", id="precis-overview")  # verbs and kinds
+get(kind="skill", id="precis-patent-search-help")  # source=, CQL, watches
+get(kind="skill", id="precis-patent-power")  # raw OPS CQL grammar
+get(kind="skill", id="precis-search-help")  # search mechanics
+get(kind="skill", id="precis-paper-help")  # sibling kind, same ~N..M syntax
+get(kind="skill", id="precis-tags")  # axis vocabulary
+get(kind="skill", id="precis-finding-help")  # register a chase target
+get(kind="skill", id="precis-memory-help")  # notes attached to a patent
 ```

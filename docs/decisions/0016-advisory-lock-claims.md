@@ -45,7 +45,7 @@ Postgres releases the lock automatically.
 ```python
 with Claim(dsn, pdf_sha256) as claim:
     if not claim.acquired:
-        return None    # another host owns the work
+        return None  # another host owns the work
     # ... run Marker, write_paper, etc.
 ```
 

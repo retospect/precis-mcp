@@ -113,7 +113,7 @@ def extract_reply_json(text: str) -> dict[str, Any]:
 def build_agentic_claude_fn(
     *,
     source: str = "figure:agentic",
-    mcp_config: Path | None | str = "auto",
+    mcp_config: Path | str | None = "auto",
     max_turns: int | None = None,
     max_usd: float | None = None,
     timeout_s: float | None = None,

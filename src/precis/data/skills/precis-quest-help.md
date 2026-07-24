@@ -32,9 +32,11 @@ see [[precis-quest-writing-help]].
 ## Mint a striving
 
 ```python
-put(kind='quest',
+put(
+    kind="quest",
     text="A NO→NH₃ catalyst with no external energy\n\n"
-         "Rubric: NH₃ selectivity · yield · stability")
+    "Rubric: NH₃ selectivity · yield · stability",
+)
 # → created quest qu7 (STATUS:active).
 ```
 
@@ -47,8 +49,8 @@ is criteria / rubric. Both embed (a quest *is a vector*). A quest is born
 A quest has **no achieved state**. It moves along a perpetual lifecycle:
 
 ```python
-tag(kind='quest', id=7, add=['STATUS:dormant'])    # set aside (may reawaken)
-tag(kind='quest', id=7, add=['STATUS:abandoned'])  # renounced
+tag(kind="quest", id=7, add=["STATUS:dormant"])  # set aside (may reawaken)
+tag(kind="quest", id=7, add=["STATUS:abandoned"])  # renounced
 ```
 
 `STATUS:done` (and every other workflow value) is **rejected** on a
@@ -68,8 +70,8 @@ A quest's **striving weight** is its priority, set with a `PRIO:` tag
 (synced to the canonical `prio` column, 1 = hottest … 10):
 
 ```python
-tag(kind='quest', id=7, add=['PRIO:urgent'])   # prio 1 → weight 1.0
-put(kind='quest', text='…', tags=['PRIO:high'])  # at birth → prio 3 → 0.8
+tag(kind="quest", id=7, add=["PRIO:urgent"])  # prio 1 → weight 1.0
+put(kind="quest", text="…", tags=["PRIO:high"])  # at birth → prio 3 → 0.8
 ```
 
 Only **active** quests exert pull. From slice 2 this weight flows *down*
@@ -87,10 +89,10 @@ Any node — a project/todo, a concept, a paper, a draft, a structure, or
 a **sub-quest** — can serve a quest. It's one relation:
 
 ```python
-link(kind='todo', id=42, target='quest:7', rel='serves')
-link(kind='concept', id=91, target='quest:7', rel='serves')
-link(kind='draft', id='<slug>', target='quest:7', rel='serves')
-link(kind='quest', id=12, target='quest:7', rel='serves')  # sub-quest → grand quest
+link(kind="todo", id=42, target="quest:7", rel="serves")
+link(kind="concept", id=91, target="quest:7", rel="serves")
+link(kind="draft", id="<slug>", target="quest:7", rel="serves")
+link(kind="quest", id=12, target="quest:7", rel="serves")  # sub-quest → grand quest
 ```
 
 Always link from the server's side with `rel='serves'` — the inverse
@@ -115,10 +117,10 @@ A quest keeps an **append-only, dated logbook** (like a lab notebook):
 what happened, when, immutable. Append an entry with a type:
 
 ```python
-put(kind='quest', id=7, text="Try Fe–N₄ single-atom sites", entry='hypothesis')
-put(kind='quest', id=7, text="Second PCET barrier too high", entry='dead-end')
-put(kind='quest', id=7, text="Dual-metal site clears both barriers", entry='milestone')
-put(kind='quest', id=7, text="relax batch A", entry='result', by='agent', cost=1.5)
+put(kind="quest", id=7, text="Try Fe–N₄ single-atom sites", entry="hypothesis")
+put(kind="quest", id=7, text="Second PCET barrier too high", entry="dead-end")
+put(kind="quest", id=7, text="Dual-metal site clears both barriers", entry="milestone")
+put(kind="quest", id=7, text="relax batch A", entry="result", by="agent", cost=1.5)
 ```
 
 - `entry=` is one of **note · observation · hypothesis · result ·
@@ -138,15 +140,17 @@ The append path takes only `text`/`entry`/`by`/`cost`; use `tag()` /
 ## Read a quest
 
 ```python
-get(kind='quest', id=7)               # statement + logbook timeline + tote (the logbook IS here)
-get(kind='quest', id=7, view='tree')  # rollup: servers + deed ledger + health + gaps
-get(kind='quest', id=7, view='gaps')  # just this quest's exploration queue
-get(kind='quest', id=7, view='dossier')  # the living research synthesis (slice 4)
-get(kind='quest', id=7, view='frontier') # Pareto frontier of candidate materials
-get(kind='quest', id=7, view='leaderboard') # ranked servers by deeds contributed
-get(kind='quest', id=7, view='log')   # raw append-only ledger (every logbook entry, dated)
-get(kind='quest', id='/active')       # every active striving
-get(kind='quest', id='/gaps')         # gaps across ALL active quests
+get(kind="quest", id=7)  # statement + logbook timeline + tote (the logbook IS here)
+get(kind="quest", id=7, view="tree")  # rollup: servers + deed ledger + health + gaps
+get(kind="quest", id=7, view="gaps")  # just this quest's exploration queue
+get(kind="quest", id=7, view="dossier")  # the living research synthesis (slice 4)
+get(kind="quest", id=7, view="frontier")  # Pareto frontier of candidate materials
+get(kind="quest", id=7, view="leaderboard")  # ranked servers by deeds contributed
+get(
+    kind="quest", id=7, view="log"
+)  # raw append-only ledger (every logbook entry, dated)
+get(kind="quest", id="/active")  # every active striving
+get(kind="quest", id="/gaps")  # gaps across ALL active quests
 ```
 
 **The complete `view=` set is** `tree · gaps · dossier · frontier ·
@@ -190,7 +194,7 @@ leads, what's ruled out, open questions — **rewritten each cycle**. It
 doubles as the loop's rolling context.
 
 ```python
-get(kind='quest', id=7, view='dossier')   # read the synthesis
+get(kind="quest", id=7, view="dossier")  # read the synthesis
 ```
 
 A **research tick** is one bounded step of the (future) autonomous loop:

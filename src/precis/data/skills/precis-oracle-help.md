@@ -20,7 +20,7 @@ with `or<id>~N` (or at random). The legacy slug (`stoic`) and the
 ## What wisdom traditions are loaded?
 
 ```python
-get(kind='oracle')                              # list all traditions live in this build
+get(kind="oracle")  # list all traditions live in this build
 ```
 
 The list is build-specific — call it to see what's available. Each row
@@ -31,10 +31,10 @@ leads with the tradition's `or<id>` handle; copy it for the calls below.
 ## Get a random Stoic / Zen / I-Ching passage
 
 ```python
-get(id='or7')                                   # one random entry, by handle
-get(kind='oracle', id='stoic')                  # legacy slug still resolves
-get(kind='oracle', id='zen')
-get(kind='oracle', id='iching')
+get(id="or7")  # one random entry, by handle
+get(kind="oracle", id="stoic")  # legacy slug still resolves
+get(kind="oracle", id="zen")
+get(kind="oracle", id="iching")
 ```
 
 Calling a tradition with no selector returns one entry chosen
@@ -52,9 +52,9 @@ Same move, made legitimate by putting the check *after* the roll.
 ## Consult a persona — think as a scientist, leader, or artist
 
 ```python
-get(kind='oracle', id='scientists')             # a random scientist's stance
-get(kind='oracle', id='leadership')             # a commander/statesman stance
-get(kind='oracle', id='artists')                # an artist/composer stance
+get(kind="oracle", id="scientists")  # a random scientist's stance
+get(kind="oracle", id="leadership")  # a commander/statesman stance
+get(kind="oracle", id="artists")  # an artist/composer stance
 ```
 
 The `scientists` / `leadership` / `artists` traditions are *stances* to
@@ -65,8 +65,8 @@ connect — the same steps in a different register.
 ## Consult with a lens — bias the draw across traditions
 
 ```python
-get(kind='oracle', args={'lens': ['sci']})      # 50% scientists, 50% the rest
-get(kind='oracle', args={'lens': ['sci', 'art']})   # union the favoured sets
+get(kind="oracle", args={"lens": ["sci"]})  # 50% scientists, 50% the rest
+get(kind="oracle", args={"lens": ["sci", "art"]})  # union the favoured sets
 ```
 
 A **lens** biases *which* tradition the random draw favours without
@@ -81,9 +81,9 @@ three). The dream cycle uses `sci` for its per-pass stance.
 ## What entries does the I-Ching contain?
 
 ```python
-get(id='or7', view='index')                     # titled catalogue, by handle
-get(id='or7/index')                             # path form
-get(kind='oracle', id='iching/index')           # legacy slug path → 64 hexagrams
+get(id="or7", view="index")  # titled catalogue, by handle
+get(id="or7/index")  # path form
+get(kind="oracle", id="iching/index")  # legacy slug path → 64 hexagrams
 ```
 
 Rows are drillable: paste the entry selector (`or7~N`, or the legacy
@@ -94,9 +94,9 @@ Rows are drillable: paste the entry selector (`or7~N`, or the legacy
 ## Get I-Ching hexagram 49
 
 ```python
-get(id='or7~4')                                 # entry 4 of stoic (or7), by handle
-get(kind='oracle', id='stoic~4')                # legacy slug~N still resolves
-get(kind='oracle', id='iching~49')              # Hexagram 49
+get(id="or7~4")  # entry 4 of stoic (or7), by handle
+get(kind="oracle", id="stoic~4")  # legacy slug~N still resolves
+get(kind="oracle", id="iching~49")  # Hexagram 49
 ```
 
 Positions are 1-indexed; I-Ching numbers match the standard hexagram
@@ -107,8 +107,8 @@ sequence. The response trailer carries prev/next/index hops.
 ## Which passage talks about impermanence?
 
 ```python
-search(kind='oracle', q='impermanence')                       # all traditions
-search(kind='oracle', q='timely change', scope='iching')      # within one
+search(kind="oracle", q="impermanence")  # all traditions
+search(kind="oracle", q="timely change", scope="iching")  # within one
 ```
 
 Searches entry **bodies**, not just tradition titles — a query for
@@ -126,11 +126,15 @@ still resolves).
 ## Record that this principle informed a decision
 
 ```python
-get(id='or7~9')                                 # fetch the entry text, by handle
-put(kind='citation', text='The impediment to action advances action.',
-    source_handle='or7~9',
-    source_quote='The impediment to action advances action.',
-    link='me88', rel='supports')               # legacy memory:88 still resolves
+get(id="or7~9")  # fetch the entry text, by handle
+put(
+    kind="citation",
+    text="The impediment to action advances action.",
+    source_handle="or7~9",
+    source_quote="The impediment to action advances action.",
+    link="me88",
+    rel="supports",
+)  # legacy memory:88 still resolves
 ```
 
 Cite by the entry handle `or<id>~N` (the legacy `oracle:<slug>~N` still
@@ -142,9 +146,10 @@ header.
 ## Mark this passage as the one that decided X
 
 ```python
-tag(kind='oracle', id='or7', add=['topic:decision-aid'])
-link(kind='oracle', id='or7',
-     target='me88', rel='supports')             # legacy memory:88 still resolves
+tag(kind="oracle", id="or7", add=["topic:decision-aid"])
+link(
+    kind="oracle", id="or7", target="me88", rel="supports"
+)  # legacy memory:88 still resolves
 ```
 
 Open tags (`topic:*`, `project:*`) work freely. Tradition bodies are
@@ -166,8 +171,8 @@ The oracle perturbs; the decision is still yours.
 ## See also
 
 ```python
-get(kind='skill', id='precis-random-help')      # random pick from the whole corpus
-get(kind='skill', id='precis-citation-help')    # quote oracle entries with provenance
-get(kind='skill', id='precis-memory-help')      # log the decision an oracle helped make
-get(kind='skill', id='precis-overview')         # verbs and kinds
+get(kind="skill", id="precis-random-help")  # random pick from the whole corpus
+get(kind="skill", id="precis-citation-help")  # quote oracle entries with provenance
+get(kind="skill", id="precis-memory-help")  # log the decision an oracle helped make
+get(kind="skill", id="precis-overview")  # verbs and kinds
 ```
