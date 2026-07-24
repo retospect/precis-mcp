@@ -120,6 +120,18 @@ def test_open_url_routes_artifact_kinds_to_rich_editor() -> None:
     assert ItemPresenter("web").open_url(_ref(kind="web", id=7)) == "/refs/web/7"
 
 
+def test_open_url_routes_id_addressed_readers() -> None:
+    """The id-addressed rich readers (paper/draft/datasheet) land in their
+    dedicated page, not the generic /refs reader — which 400s for `draft`
+    since it isn't a browsable-tab kind (the Drive click-through bug)."""
+    for kind, expected in (
+        ("paper", "/papers/7"),
+        ("draft", "/drafts/7"),
+        ("datasheet", "/datasheets/7"),
+    ):
+        assert ItemPresenter(kind).open_url(_ref(kind=kind, id=7)) == expected
+
+
 def test_item_row_carries_hover_thumbnail_actions() -> None:
     ref = _ref(kind="youtube", slug="abc123", title="A video")
     row = item_row(ref, _block("a caption line"), 0.5, set())
