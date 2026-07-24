@@ -360,6 +360,12 @@ class DraftHandler(Handler):
                 return self._render_toc(root_handle=s)
             if view == "wordcount":  # word counts for this heading's subtree
                 return self._render_wordcount(root_handle=s)
+            if view == "review-diff":
+                # Paper-writing pipeline rung 3 — the human checker's
+                # approved→current diff for this one chunk.
+                from precis.handlers._review_view import render_review_diff_view
+
+                return render_review_diff_view(self.store, s)
             return self._render_chunk(s)
         ref = resolve_live_slug_ref(self.store, kind="draft", id=s)
         if view == "backfill":
@@ -387,6 +393,19 @@ class DraftHandler(Handler):
             from precis.handlers._integration_view import render_integration_view
 
             return render_integration_view(self.store, ref)
+        if view == "review":
+            # Paper-writing pipeline rung 3 (docs/design/
+            # paper-writing-pipeline.md §"Review — the memoized approval
+            # ledger") — per-chunk checker status, dirty-for-human flagged.
+            from precis.handlers._review_view import render_review_view
+
+            return render_review_view(self.store, ref)
+        if view == "review-diff":
+            raise BadInput(
+                "review-diff targets a chunk (dc<id>), not a whole draft",
+                next="point it at a chunk handle: "
+                "get(kind='draft', id='dc123', view='review-diff')",
+            )
         if view is not None:
             raise BadInput(
                 f"unknown draft view {view!r}",
@@ -394,7 +413,8 @@ class DraftHandler(Handler):
                     "view='toc' for the heading skeleton, view='wordcount' for "
                     "per-section word counts vs targets, view='links' for the "
                     "link graph, view='integration' for the integration ledger "
-                    "(a topic dossier only), or omit for the outline"
+                    "(a topic dossier only), view='review' for the approval "
+                    "ledger, or omit for the outline"
                 ),
             )
         return self._render_outline(s, ref)
@@ -1075,6 +1095,8 @@ class DraftHandler(Handler):
         meta: dict[str, Any] | None = None,
         voice: str | None = None,
         lang: str | None = None,
+        review: str | None = None,
+        verdict: str = "approved",
         dry_run: bool | str = False,
         **_kw: Any,
     ) -> Response:
@@ -1160,9 +1182,21 @@ class DraftHandler(Handler):
             or regen is not None
             or voice is not None
             or lang is not None
+            or review is not None
             or _base.chunk_kind == "table"
         ):
             _reject_dry_run("structural")
+        if review is not None:
+            # Review ledger (paper-writing pipeline rung 3, docs/design/
+            # paper-writing-pipeline.md §"Review — the memoized approval
+            # ledger"): records that `review=` (the checker, e.g. 'human',
+            # 'cites', 'flow') evaluated this chunk at its *current*
+            # content_sha, with `verdict=` (free text, default 'approved').
+            # Metadata-only — no re-embed, no text touched.
+            sha = self.store.record_review(_base.chunk_id, review, verdict=verdict)
+            return Response(
+                body=f"recorded {review} review on {_base.dc} @ {sha[:12]}… → {verdict}"
+            )
         if permission is not None or origin is not None:
             # Edit a figure's provenance (ADR 0034) — caption/bytes untouched.
             if origin is not None and origin not in _FIGURE_ORIGINS:

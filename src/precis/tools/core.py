@@ -844,6 +844,12 @@ def edit(
     table: dict[str, Any] | None = None,
     caption: str | None = None,
     regen: dict[str, Any] | None = None,
+    # draft review ledger (paper-writing pipeline rung 3, see
+    # precis-draft-help): review='human'|'cites'|'flow'|… records that
+    # checker's approval of this chunk at its current content_sha;
+    # verdict= is free text (default 'approved').
+    review: str | None = None,
+    verdict: str = "approved",
     # diagram kinds (mermaid/figure, ADR 0057, see precis-mermaid-help):
     # vocab= rewrites the shared vocabulary doc, notes= the implementation
     # notes doc; viewbox='x y w h' sets the canvas bounds (figure only —
@@ -898,6 +904,8 @@ def edit(
         "table": table,
         "caption": caption,
         "regen": regen,
+        "review": review,
+        "verdict": verdict,
         "vocab": vocab,
         "notes": notes,
         "viewbox": viewbox,

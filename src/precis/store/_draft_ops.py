@@ -12,6 +12,7 @@ land alongside as the handler grows.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import io
 import re
@@ -2071,6 +2072,249 @@ class DraftMixin:
                 (row[0], sha, row[5], Jsonb(source or {})),
             )
         return self.get_draft_chunk(handle, kind=kind)
+
+    # -- review ledger (paper-writing pipeline rung 3) --------------------
+    #
+    # A per-(chunk, checker) approval watermark keyed on `content_sha`
+    # (migration 0086). "Requires review" is a derived query — current
+    # content_sha != the approved_sha the checker last recorded (or no row
+    # at all) — never a loop; see `chunks_requiring_review`.
+
+    def record_review(
+        self, chunk_id: int, checker: str, *, verdict: str = "approved"
+    ) -> str:
+        """Record that ``checker`` evaluated ``chunk_id`` at its *current*
+        content_sha, with the given ``verdict`` (free text). Upserts on
+        ``(chunk_id, checker)`` — a re-review overwrites the prior
+        approved_sha/verdict/at. Returns the recorded sha.
+
+        Only draft-family chunks (non-NULL ``content_sha``) are reviewable
+        — a body/paper chunk invalidates by row identity, not by sha, so
+        this ledger doesn't apply to it."""
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT content_sha FROM chunks WHERE chunk_id = %s", (chunk_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"no chunk {chunk_id}")
+            sha = row[0]
+            if sha is None:
+                raise BadInput(
+                    f"chunk {chunk_id} has no content_sha — the review ledger "
+                    "only tracks draft-family chunks (a body/paper chunk "
+                    "invalidates by row identity, not content_sha)",
+                    next="review a draft chunk: edit(kind='draft', "
+                    "id='dc<id>', review='human')",
+                )
+            conn.execute(
+                """INSERT INTO chunk_review (chunk_id, checker, approved_sha, verdict)
+                        VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (chunk_id, checker) DO UPDATE
+                          SET approved_sha = EXCLUDED.approved_sha,
+                              verdict = EXCLUDED.verdict,
+                              at = now()""",
+                (chunk_id, checker, sha, verdict),
+            )
+        return str(sha)
+
+    def chunks_requiring_review(
+        self, ref_id: int, checker: str
+    ) -> list[dict[str, Any]]:
+        """Live draft chunks of ``ref_id`` that are dirty for ``checker`` —
+        never reviewed, or reviewed at a sha other than the chunk's current
+        one. Same NOT-EXISTS shape as the workers' fresh-claim predicate
+        (``workers/base.py:_claim_fresh``), keyed on `chunk_review` instead
+        of a typed artifact table."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.chunk_id, c.handle, c.chunk_kind, c.text
+                  FROM chunks c
+                 WHERE c.ref_id = %(ref_id)s
+                   AND c.content_sha IS NOT NULL
+                   AND c.retired_at IS NULL
+                   AND NOT EXISTS (
+                           SELECT 1 FROM chunk_review r
+                            WHERE r.chunk_id = c.chunk_id
+                              AND r.checker = %(checker)s
+                              AND r.approved_sha IS NOT DISTINCT FROM c.content_sha
+                       )
+                 ORDER BY c.chunk_id
+                """,
+                {"ref_id": ref_id, "checker": checker},
+            ).fetchall()
+        return [
+            {
+                "chunk_id": int(r[0]),
+                "handle": r[1],
+                "chunk_kind": r[2],
+                "text": r[3] or "",
+            }
+            for r in rows
+        ]
+
+    def review_status_for_chunk(self, chunk_id: int) -> list[dict[str, Any]]:
+        """Every checker's ledger row for ``chunk_id`` — ``checker``,
+        ``approved_sha``, ``verdict``, ``at``, and a derived ``dirty`` bit
+        (``approved_sha`` no longer matches the chunk's current
+        content_sha). A checker with no row simply doesn't appear — the
+        caller treats "no row" as dirty too (never reviewed)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT content_sha FROM chunks WHERE chunk_id = %s", (chunk_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"no chunk {chunk_id}")
+            current_sha = row[0]
+            rows = conn.execute(
+                """SELECT checker, approved_sha, verdict, at
+                     FROM chunk_review
+                    WHERE chunk_id = %s
+                    ORDER BY checker""",
+                (chunk_id,),
+            ).fetchall()
+        return [
+            {
+                "checker": r[0],
+                "approved_sha": r[1],
+                "verdict": r[2],
+                "at": r[3],
+                "dirty": r[1] != current_sha,
+            }
+            for r in rows
+        ]
+
+    def review_status_for_draft(self, ref_id: int) -> list[dict[str, Any]]:
+        """Every checker's ledger row for every live, reviewable chunk of
+        ``ref_id`` — the whole-draft counterpart to
+        :meth:`review_status_for_chunk`, in **one** query instead of one
+        per chunk (a large dossier has thousands of chunks; see
+        ``render_review_view``, which used to call ``review_status_for_chunk``
+        in a loop).
+
+        A single flat fetch (``chunks`` LEFT JOIN ``chunk_review``), with
+        the reading-order DFS done in Python — same technique as
+        :meth:`reading_order` and for the same reason: a recursive SQL CTE
+        re-scans the whole ref at every depth (≈O(N·depth), ~5.5s on a
+        9,700-chunk draft; see that method's docstring). Rows are ordered by
+        chunk reading position (DFS pre-order, siblings by ``pos``) then
+        ``checker``. A chunk with no review rows still appears once, with
+        ``checker=None`` (LEFT JOIN) — ``dirty`` is then ``True`` (never
+        reviewed). Chunks reachable only through a retired/absent parent are
+        excluded, matching ``reading_order``."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.chunk_id, c.handle, c.chunk_kind,
+                       c.parent_chunk_id, c.pos,
+                       cr.checker, cr.approved_sha, cr.verdict, cr.at,
+                       (cr.approved_sha IS DISTINCT FROM c.content_sha) AS dirty
+                  FROM chunks c
+             LEFT JOIN chunk_review cr ON cr.chunk_id = c.chunk_id
+                 WHERE c.ref_id = %s
+                   AND c.content_sha IS NOT NULL
+                   AND c.retired_at IS NULL
+                   AND c.pos IS NOT NULL
+                """,
+                (ref_id,),
+            ).fetchall()
+        # group ledger rows by chunk_id, keep each chunk's own fields once
+        by_chunk: dict[int, dict[str, Any]] = {}
+        for r in rows:
+            chunk_id = int(r[0])
+            entry = by_chunk.setdefault(
+                chunk_id,
+                {
+                    "handle": r[1],
+                    "chunk_kind": r[2],
+                    "parent_chunk_id": r[3],
+                    "pos": r[4],
+                    "reviews": [],
+                },
+            )
+            entry["reviews"].append(
+                {
+                    "checker": r[5],
+                    "approved_sha": r[6],
+                    "verdict": r[7],
+                    "at": r[8],
+                    "dirty": bool(r[9]),
+                }
+            )
+        # DFS pre-order over the chunks (not a per-checker row), same shape
+        # as `reading_order`: children keyed by parent_chunk_id, siblings by
+        # pos (byte order), roots-first stack walk.
+        children: dict[Any, list[int]] = {}
+        for chunk_id, entry in by_chunk.items():
+            children.setdefault(entry["parent_chunk_id"], []).append(chunk_id)
+        for lst in children.values():
+            lst.sort(key=lambda cid: by_chunk[cid]["pos"])
+        out: list[dict[str, Any]] = []
+        stack = list(reversed(children.get(None, [])))
+        while stack:
+            chunk_id = stack.pop()
+            entry = by_chunk[chunk_id]
+            for review in sorted(entry["reviews"], key=lambda rv: rv["checker"] or ""):
+                out.append(
+                    {
+                        "chunk_id": chunk_id,
+                        "handle": entry["handle"],
+                        "chunk_kind": entry["chunk_kind"],
+                        **review,
+                    }
+                )
+            kids = children.get(chunk_id, [])
+            stack.extend(reversed(kids))
+        return out
+
+    def review_diff_since(self, chunk_id: int, since_sha: str) -> str:
+        """Unified diff of ``chunk_id``'s text from ``since_sha`` to its
+        current text, reconstructed by walking the `chunk_events` version
+        chain (`created`/`edited` rows retain `prev_text` per edit — schema
+        0031). Empty string when ``since_sha`` already matches the current
+        content_sha (no change)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT text, content_sha FROM chunks WHERE chunk_id = %s",
+                (chunk_id,),
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"no chunk {chunk_id}")
+            current_text, current_sha = row[0], row[1]
+            if since_sha == current_sha:
+                return ""
+            events = conn.execute(
+                """SELECT content_sha, prev_text FROM chunk_events
+                    WHERE chunk_id = %s AND event_kind IN ('created', 'edited')
+                    ORDER BY ts ASC, event_id ASC""",
+                (chunk_id,),
+            ).fetchall()
+        # text_at[sha] = the chunk's text while it carried that sha. Each
+        # event's own text isn't in the row — it's the *next* event's
+        # prev_text (the snapshot taken just before that later edit). The
+        # last (current) sha's text comes from `chunks.text` instead, since
+        # there is no later edit to have snapshotted it.
+        text_at: dict[str, str] = {}
+        for i in range(len(events) - 1):
+            sha_i, _ = events[i]
+            _, next_prev_text = events[i + 1]
+            if sha_i is not None and next_prev_text is not None:
+                text_at[sha_i] = next_prev_text
+        if events and events[-1][0] is not None:
+            text_at[events[-1][0]] = current_text or ""
+        since_text = text_at.get(since_sha)
+        if since_text is None:
+            raise NotFound(
+                f"no recorded text at content_sha {since_sha[:12]}… for chunk "
+                f"{chunk_id} — the version chain doesn't reach that far back"
+            )
+        diff = difflib.unified_diff(
+            since_text.splitlines(keepends=True),
+            (current_text or "").splitlines(keepends=True),
+            fromfile=f"approved@{since_sha[:8]}",
+            tofile="current",
+        )
+        return "".join(diff)
 
     def move_chunk(
         self,
