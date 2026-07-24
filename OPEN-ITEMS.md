@@ -183,7 +183,7 @@ Status: open · Severity: polish · Owner: `src/precis/utils/llm/router.py` (`Ba
 
 ---
 
-## 🤖 asa-slack — blocked on Slack app-level token (ADR 0062)
+## 🤖 asa-slack — connected, needs live smoke test (ADR 0062)
 
 - **Code SHIPPED + DEPLOYED.** `com.asa.slack` runs on melchior (the
   gateway) via `ansible-playbook deploy/playbooks/48-asa-slack.yml` (run
@@ -191,38 +191,19 @@ Status: open · Severity: polish · Owner: `src/precis/utils/llm/router.py` (`Ba
   which only bounces the `com.precis.*` fleet by name; `asa_bot`/`asa_slack`
   both need their own explicit playbook run for any future config/role
   change too). `site.yml` also imports it (play "48") for full-host bootstrap.
-- **BLOCKED: never yet connected to Slack.** `ASA_SLACK_APP_TOKEN` (env→vault
-  →file, `asa_slack/config.py`) is being rejected by Slack's
-  `apps.connections.open` as `not_allowed_token_type` — the vault value
-  isn't a valid `xapp-...` app-level token (Socket Mode requires one,
-  generated separately from the OAuth bot/user tokens under the Slack app's
-  **Settings → Socket Mode** page, `connections:write` scope). User
-  initially had only `xoxb`/`xoxp` OAuth tokens, no `xapp` one; was walked
-  through generating it, but **as of 2026-07-24 the daemon is still hitting
-  the exact same error** (verified live on melchior: running, log still
-  spamming `not_allowed_token_type` on every retry, no `asa_slack.identity`
-  "connected" line has ever appeared) — so either the fix wasn't actually
-  completed/seeded yet, or the newly-generated token is still wrong. A
-  separate concurrent session independently found the same error (9,921+
-  occurrences in the log) and logged intent to `launchctl bootout` the
-  daemon to quiet it — **verified 2026-07-24 that is NOT the current
-  state**: the daemon is still loaded and running (retrying harmlessly, not
-  resource-leaking), just not connected.
-- **Gotcha discovered**: tokens are resolved ONCE at process boot
-  (`bot.run()` calls `load_slack_tokens` a single time) — a vault fix
-  needs `sudo launchctl kickstart -k system/com.asa.slack` on melchior to
-  actually take effect. Confirmed via one restart already (fresh pid, same
-  error persisted) — the retry timing itself was not the blocker.
-- **Next**: (1) confirm the vault's `ASA_SLACK_APP_TOKEN` is genuinely the
-  `xapp-...` value from Socket Mode's App-Level Tokens section (not swapped
-  with the bot token, no stray whitespace/newline), (2) `sudo launchctl
-  kickstart -k system/com.asa.slack` on melchior, (3) tail
-  `/Users/hermes/.asa/asa-slack.log` for a logger-`asa_slack.identity`
-  "connected as ... in workspace ..." line, (4) once connected, the full
-  live smoke test: confirm threading (never posts to channel root), a
-  paper-search question actually works, a "kick off a job" request is
-  refused (`Unsupported`, not just declined in prose), and a repeat message
-  from the same person shows the per-person `memory` note working.
+- **RESOLVED 2026-07-24: connected to Slack for the first time.** The prior
+  `not_allowed_token_type` blocker was a bad `ASA_SLACK_APP_TOKEN` value (not
+  a genuine `xapp-...` Socket Mode app-level token). User re-seeded the
+  vault secret with a correct one; after `sudo launchctl kickstart -k
+  system/com.asa.slack` on melchior (tokens resolve once at boot, so a vault
+  write alone never takes effect on a running process — always kickstart
+  after a token change), the log shows a clean connect:
+  `asa_slack.identity: connected as 'jordanhubbard' (user_id=UPEFYH5S4) in
+  workspace 'offtera'`, followed by `Bolt app is running!`, no errors since.
+- **Next**: the live smoke test — confirm threading (never posts to channel
+  root), a paper-search question actually works, a "kick off a job" request
+  is refused (`Unsupported`, not just declined in prose), and a repeat
+  message from the same person shows the per-person `memory` note working.
   Status: `open` · Severity: `feature` · Owner: `src/asa_slack/`,
   `deploy/roles/asa_slack/` · Test: manual smoke test above (no automated
   end-to-end harness for a live Slack workspace).
