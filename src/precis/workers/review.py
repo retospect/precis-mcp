@@ -527,12 +527,45 @@ def _write_digest(
 
 
 def _mcp_config_path() -> Path | None:
-    """Resolve ``PRECIS_MCP_CONFIG`` env var to a Path, if set."""
+    """Resolve the MCP config the reviewer's ``claude -p`` should advertise.
+
+    ``PRECIS_MCP_CONFIG`` (a host path) when set. On an agent-container host
+    (``PRECIS_AGENT_CONTAINER=1`` — the spark review node, Phase-2 slice 2)
+    that var is deliberately UNSET: setting it would un-gate the in-proc
+    ``claude_inproc`` passes (plan_tick / fix_gripe) that self-skip there. So
+    when this dispatch will *actually* containerize
+    (:func:`~precis.workers.executors.agent_container.container_capability_ok`,
+    the same probe :func:`~precis.utils.claude_agent.call_claude_agent` gates
+    on — cached per-process so this doesn't double-probe), fall back to the
+    image's baked container-internal config
+    (:func:`~precis.workers.executors.agent_container.default_agent_mcp_config`),
+    which the containerize seam rebases the review's ``--mcp-config`` onto. That
+    path exists only *inside* the container, so it skips the host ``.exists()``
+    gate. Without this the containerized reviewer runs tool-less (``mcp_config
+    is None`` ⇒ no ``--mcp-config`` to rebase) and can't drill into subtrees or
+    file gripes — the "MCP tools not available" snapshot digests of gripe
+    171107.
+
+    Gating on the *verified capability*, not just the opt-in, is load-bearing:
+    if the host opted in but can't launch the container (runtime down / image
+    absent / health-latched), ``call_claude_agent`` runs the review in-process
+    — where the container-internal path does NOT exist and claude would abort
+    "MCP config file not found". Returning ``None`` there keeps that fallback a
+    tool-less in-proc run (unchanged from today), not a hard failure.
+    """
     raw = os.environ.get("PRECIS_MCP_CONFIG")
-    if not raw:
-        return None
-    p = Path(raw)
-    return p if p.exists() else None
+    if raw:
+        p = Path(raw)
+        return p if p.exists() else None
+    from precis.workers.executors.agent_container import (
+        container_agent_enabled,
+        container_capability_ok,
+        default_agent_mcp_config,
+    )
+
+    if container_agent_enabled() and container_capability_ok():
+        return Path(default_agent_mcp_config())
+    return None
 
 
 __all__ = [
