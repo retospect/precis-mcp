@@ -39,6 +39,14 @@ Environment=PRECIS_SANDBOX_ENABLED=1
 Environment={{ env_key }}={{ env_val }}
 {% endfor %}
 
+# surya-ocr-2 memory cap — insurance for any marker/OCR path a job spawns
+# here (the primary OCR path is precis-watch). Keeps the vLLM container
+# bounded and pinned to the same reused singleton port as the watcher, so a
+# worker-spawned OCR can't grab the GPU node's whole 121 GiB unified pool
+# (gripe 171249). Inert on non-GPU/non-docker hosts.
+Environment=VLLM_GPU_MEMORY_UTILIZATION={{ surya_vllm_gpu_mem_util | default('0.25') }}
+Environment=SURYA_INFERENCE_PORT={{ surya_inference_port | default('8912') }}
+
 ExecStart={{ precis_worker_venv }}/bin/precis worker \
   --profile system \
   --batch-size {{ precis_worker_batch_size }} \

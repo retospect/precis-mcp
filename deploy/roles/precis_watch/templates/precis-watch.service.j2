@@ -30,6 +30,26 @@ Environment=HF_HOME={{ precis_worker_hf_home | default('/var/lib/precis/hf-cache
 Environment={{ env_key }}={{ env_val }}
 {% endfor %}
 
+# Cap the surya-ocr-2 OCR footprint on GPU nodes. marker-pdf 2.0 / surya-2
+# docker-run `vllm/vllm-openai` for OCR; its default
+# --gpu-memory-utilization=0.85 grabbed ~103 GiB of the GPU node's 121 GiB
+# unified pool and OOM-locked the box (kernel global-OOM + NVRM exhaustion,
+# gripe 171249). 0.25 ≈ 30 GiB — above surya's own ~24 GiB baseline, far below
+# catastrophe. SURYA_INFERENCE_PORT pins the server so it's a reused
+# singleton (deterministic container name `surya-vllm-<port>`) instead of
+# one unbounded container per worker process. Both are read by surya's
+# pydantic Settings verbatim (no env prefix) and reach the OCR subprocess
+# via `os.environ.copy()` in `precis watch`. Inert on non-GPU/non-docker
+# hosts (surya only uses the vllm backend when CUDA+docker are present).
+Environment=VLLM_GPU_MEMORY_UTILIZATION={{ surya_vllm_gpu_mem_util | default('0.25') }}
+Environment=SURYA_INFERENCE_PORT={{ surya_inference_port | default('8912') }}
+
+# Reclaim any orphaned surya vLLM container from a prior hard-kill before a
+# fresh watch cycle: surya registers its docker cleanup via atexit, which is
+# skipped on SIGKILL/OOM, so a `-d --rm` container can survive its parent.
+# Leading '-' makes it non-fatal when docker or the container is absent.
+ExecStartPre=-/usr/bin/env docker rm -f surya-vllm-{{ surya_inference_port | default('8912') }}
+
 ExecStart={{ precis_watch_venv }}/bin/precis watch \
   --polling \
   --debounce {{ precis_watch_debounce }} \
