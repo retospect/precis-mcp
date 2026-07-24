@@ -15,16 +15,20 @@
   # race". Each node ~adds a Marker's worth of capacity at the cost of
   # some duplicated NFS chatter + a persistent surya/torch residency.
   #
-  # The scheduler node is deliberately EXCLUDED: on its 32G it already
-  # co-hosts the embedder service + a system worker + a llama-server, and
-  # adding the watcher's persistent surya/torch tipped it into ~93% swap
-  # thrash (2026-07-24). The advisory-lock design means the remaining
-  # watchers still cover the inbox — we lose one Marker's parallelism, not
-  # correctness. Re-add the scheduler group here (and bootstrap
-  # com.precis.watch there) if it is later given headroom or sheds a role.
+  # Two 32G nodes are deliberately EXCLUDED — scheduler and data. Each
+  # co-hosts the embedder service + a system worker (and `data` is the prod
+  # Postgres host besides), so the watcher's persistent surya/torch
+  # residency + Marker peak spikes tip them into swap thrash on 32G:
+  # scheduler hit ~93% swap (2026-07-24); data — the DB host — was pulled
+  # out (2026-07-24, gripe 51406) since it was holding ~435M of surya OCR
+  # models resident + a polling core mostly to LOSE the advisory-lock race
+  # to better-placed hosts. The advisory-lock design means the remaining
+  # watchers — gateway + inference (the GPU node with ample RAM) — still
+  # cover the inbox: we lose Marker parallelism, not correctness. Re-add a
+  # group here (and bootstrap com.precis.watch there) if it later gets
+  # headroom or sheds a role.
   hosts:
     - gateway
-    - data
     - inference
   become: true
   roles:
