@@ -854,6 +854,26 @@ The master kinds table lives in the `precis-overview` skill.
   coordinator alone and re-arms one that rested. `quest.allocator` (the
   bandit/EWMA scoring + `pick_next_quest`) still backs the **manual** `precis
   quest run` CLI one-shot tick; it no longer drives the background loop.
+  **Reboot self-heal (`_reap_orphaned_loop`)**: a coordinator slice killed
+  mid-run (node reboot / worker restart) strands its job at a *non-terminal*
+  status, and its `idem_key` then blocks the re-mint — before, only the sweeper
+  freed it, after its ~1h stuck-job threshold (a manual `STATUS:cancelled` was
+  the fast path). Each reconcile pass now first cancels a *provably orphaned*
+  loop — non-terminal, `meta.lease_until` non-null and expired **beyond a grace
+  margin** (`PRECIS_QUEST_LOOP_ORPHAN_GRACE_S`, default 600 s) — so
+  `ensure_quest_loop` re-mints in the same pass (~15 min recovery). The grace
+  margin is load-bearing: unlike the ~1h ssh_node lease, a coordinator lease is
+  5 min and *not renewed mid-slice*, so a live-but-slow `local-big`
+  review/propose slice can outlive its lease while genuinely running — bare
+  `lease < now()` (the ssh_node steal predicate) would false-positive and
+  double-drive. Reap terminalizes to `cancelled` (tag `reaped:reboot-orphan`),
+  never `failed`, so it recovers only *reboot* orphans — a loop a real error
+  rested `STATUS:failed` is out of scope (the unbounded-failed-re-mint question,
+  RC1, is untouched here). **Division of labor:** the reconciler owns
+  quest-coordinator orphans (quest context + every-pass cadence); the sweeper
+  stays the general coordinator/`claude_inproc` backstop (and covers quest loops
+  if the reconciler is gated off). Both terminalize under `FOR UPDATE`, so a
+  rare double-fire just leaves the job terminal either way.
 - **`llm`** — the model catalog (design-of-record `docs/proposals/llm-catalog.md`;
   slice 1 **live, read-only, ships dark**). Turns model choice from hardcoded
   constants (`router._TIER_MODEL` + the `LLM:opus|sonnet|haiku|local` tag) into a
