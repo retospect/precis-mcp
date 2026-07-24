@@ -379,13 +379,22 @@ class DraftHandler(Handler):
             from precis.handlers._links_render import render_links_view
 
             return render_links_view(self.store, ref, sense="draft")
+        if view == "integration":
+            # Paper-writing pipeline rung 2 (docs/design/
+            # paper-writing-pipeline.md §"The integration ledger") — a topic
+            # dossier's woven-in papers (INTEGRATED) vs its topic:-tagged
+            # papers with no disposition edge yet (PENDING).
+            from precis.handlers._integration_view import render_integration_view
+
+            return render_integration_view(self.store, ref)
         if view is not None:
             raise BadInput(
                 f"unknown draft view {view!r}",
                 next=(
                     "view='toc' for the heading skeleton, view='wordcount' for "
                     "per-section word counts vs targets, view='links' for the "
-                    "link graph, or omit for the outline"
+                    "link graph, view='integration' for the integration ledger "
+                    "(a topic dossier only), or omit for the outline"
                 ),
             )
         return self._render_outline(s, ref)

@@ -155,6 +155,19 @@ Relation = Literal[
     "entailed-by",
     "qualifies",
     "qualified-by",
+    # Integration ledger — migration 0085 (paper-writing pipeline rung 2,
+    # docs/design/paper-writing-pipeline.md §"The integration ledger").
+    # Disposition of a paper's relationship to a topic dossier `draft`,
+    # ridden on the paper→dossier link edge (src=paper, dst=dossier,
+    # optionally its section chunk). All four are asymmetric with NO
+    # inverse (like `see-also`) — dossier→papers traversal reads
+    # `links_for(dossier, direction='in', relation=<one of these>)`.
+    # Keep in sync with the `relations` seed in
+    # 0085_integration_disposition_relations.sql.
+    "cited-in",
+    "corroborates",
+    "superseded-in",
+    "off-topic-for",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 

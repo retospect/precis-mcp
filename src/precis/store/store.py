@@ -50,6 +50,7 @@ from precis.store._email_ops import EmailAccountMixin
 from precis.store._events_ops import EventsMixin
 from precis.store._heartbeat_ops import HeartbeatMixin
 from precis.store._identifiers_ops import IdentifiersMixin
+from precis.store._integration_ops import IntegrationLedgerMixin
 from precis.store._kinds_ops import KindsMixin
 from precis.store._links_ops import LinksMixin
 from precis.store._mappers import (
@@ -94,6 +95,7 @@ class Store(
     LinksMixin,
     CacheMixin,
     IdentifiersMixin,
+    IntegrationLedgerMixin,
     EventsMixin,
     HeartbeatMixin,
     ResourceSlotsMixin,

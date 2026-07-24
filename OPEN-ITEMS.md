@@ -593,8 +593,18 @@ Classifier slice **SHIPPED** (`src/precis/data/topics/*.yaml` +
 `tests/test_classify_topics.py`) — paper title+abstract → multi-label
 `topic:` tags, no migration needed (marker-tag idempotency, mirrors
 `paper_glossary`, not a claims table). `docs/decisions/0060-topic-dossiers.md`
-+ `docs/design/topic-dossiers.md`. Remaining, design-of-record only:
++ `docs/design/topic-dossiers.md`. Full authoring pipeline (rungs, gap
+analysis, build order): `docs/design/paper-writing-pipeline.md`. **Pipeline
+rungs shipped:** rung 1 (5 new topics + patent sweep via gist fallback), rung 2
+(4 disposition relations + `view='integration'` + `unintegrated_papers`
+minus-query, mig 0085). Remaining, design-of-record only:
 
+- **Stamp `topic:<slug>` on the dossier `draft` at creation/quest-binding**
+  *(feature, open — rung-2 residual)*. `view='integration'`'s PENDING/gap half
+  reads the dossier's own `topic:` tags to drive `unintegrated_papers`, but no
+  producer stamps them today (the classifier tags papers only) — so the gap
+  list needs the operator to `tag(draft, topic:X)` manually until the
+  dossier-creation/synthesis-tick rung stamps it automatically. Owed by that rung.
 - **Synthesis tick body for topic-quests** *(feature, open)*. New tick body
   in `workers/job_types/quest_tick.py` alongside catalyst-discovery's
   propose-experiment body: harvest unintegrated papers (`topic:X` minus

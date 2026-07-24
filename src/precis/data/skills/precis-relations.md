@@ -35,10 +35,18 @@ options list. Link verb mechanics and target grammar live in
 | `parent` | (children) | A is placed under B in the todo tree (todo only). `mode='remove'` detaches A to a root. |
 | `entails` | `entailed-by` | A (an inference node) logically yields B (its conclusion lemma) — asserted, not proven. Premises attach to the inference with `derived-from`; see "Record a reasoning step" below. |
 | `qualifies` | `qualified-by` | A (a caveat node) limits/bounds B (the claim it caveats). Surfaced — never auto-discharged — by `get(view='argument')`. |
+| `cited-in` | (none) | Paper A is woven into and cited by document B (a topic dossier `draft`) — a `citation` exists. |
+| `corroborates` | (none) | Paper A supports an existing point already woven into document B, grouped with it. |
+| `superseded-in` | (none) | Paper A is subsumed by a later/review paper already integrated into document B; recorded, not separately woven. |
+| `off-topic-for` | (none) | Paper A was considered for document B and rejected as out of scope. |
 
 All relations except `related-to` and `see-also` auto-mirror: writing
 `cites` from A→B makes A→B queryable as `cited-by` from B's side
-without a second `link()`.
+without a second `link()`. `cited-in` / `corroborates` / `superseded-in` /
+`off-topic-for` are the exception among the *non*-`related-to`/`see-also`
+set — asymmetric with NO inverse (like `see-also`): a paper's disposition
+toward a dossier reads from the dossier side via `get(kind='draft',
+id=<dossier-slug>, view='integration')`, not a mirrored `link()` read.
 
 ## Cite a paper from a memory or another paper
 ## Record that A cites B
@@ -166,9 +174,32 @@ caveat propagation): `precis-argument-help`.
 link(kind="memory", id=42, target="paper:wang2020state", rel="see-also")
 ```
 
-`see-also` is the only asymmetric relation with **no** inverse. Use
-for "while reading A, you might want B" hints that don't fit
-`related-to`, `cites`, or any evidential edge.
+`see-also` is asymmetric with **no** inverse. Use for "while reading A,
+you might want B" hints that don't fit `related-to`, `cites`, or any
+evidential edge. (The four `cited-in`/`corroborates`/`superseded-in`/
+`off-topic-for` integration-disposition relations, below, are the same
+shape — no inverse — but a different semantic.)
+
+## Record a paper's disposition toward a topic dossier
+## Mark a paper as woven-in / corroborating / superseded / rejected
+
+```python
+link(
+    kind="paper",
+    id="wang2020state",
+    target="draft:mof-review~current-state",
+    rel="cited-in",
+)  # woven into that section, cited
+link(kind="paper", id="miller23", target="draft:mof-review", rel="off-topic-for")
+```
+
+Direction is always **paper → dossier** (the `draft`); the optional
+target selector (`~<section>`) anchors the disposition to one section.
+No inverse — read a dossier's ledger from the dossier side:
+`get(kind='draft', id='mof-review', view='integration')` (INTEGRATED,
+grouped by section, vs PENDING — `topic:`-tagged papers with no
+disposition edge yet). See `docs/design/paper-writing-pipeline.md`
+§"The integration ledger".
 
 ## Default — symmetric "see also"
 ## I just want a generic link, no specific claim
