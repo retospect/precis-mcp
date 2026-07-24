@@ -8,7 +8,7 @@ version = "8.28.0"
 description = "MCP server giving LLM agents a seven-verb API over papers, documents, code, personal state, patents, and cached web/Wolfram/YouTube tool calls — backed by PostgreSQL + pgvector"
 readme = "README.md"
 license = "GPL-3.0-or-later"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 authors = [{ name = "Reto Stamm", email = "reto@retostamm.com" }]
 keywords = [
     "mcp",
@@ -43,7 +43,6 @@ keywords = [
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Intended Audience :: Developers",
@@ -70,12 +69,10 @@ dependencies = [
     # + precis-web /clusters grid). Already present transitively via the
     # embed/paper stacks; promoted to a direct dep so the always-on
     # system worker can import it without the heavy optional extras.
-    # Capped <2.5: numpy 2.5 drops py3.11 and ships PEP 695 `type`-statement
-    # stubs that mypy rejects under our `python_version = "3.11"` target
-    # ("Type statement is only supported in Python 3.12 and greater"). 2.4.6
-    # is current-enough and resolves uniformly across 3.11–3.13; lift the cap
-    # only when the mypy target moves to >=3.12.
-    "numpy>=1.24,<2.5",
+    # Cap lifted with the py3.12 floor (requires-python >=3.12 + mypy
+    # python_version = "3.12"): numpy 2.5 dropped py3.11 and ships PEP 695
+    # `type`-statement stubs that only parse under a >=3.12 mypy target.
+    "numpy>=1.24",
     "pydantic-settings>=2.0",
     "platformdirs>=4.0",
     "pyyaml>=6.0",
@@ -450,7 +447,7 @@ ignore = [
 "src/**" = ["E402", "RUF059"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 warn_unused_configs = true
 check_untyped_defs = true
 ignore_missing_imports = true

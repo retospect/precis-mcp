@@ -17,10 +17,11 @@
 # Run  :  podman run --rm -v <scratch>/in:/work/in:ro -v <scratch>/out:/work/out \
 #           precis-tts        # reads /work/in/segments.json -> /work/out/out.m4a
 #
-# Base is 3.11 (not 3.12): precis-mcp needs only >=3.11, and 3.11-slim is already
-# cached on the compute node (shared with docker/aizynth), so the build skips the
-# flaky spark→Docker Hub pull entirely.
-FROM python:3.11-slim-bookworm
+# Base is 3.12: precis-mcp requires >=3.12 (numpy 2.5 dropped 3.11). This image
+# installs the precis-mcp[tts] package, so its base must satisfy requires-python
+# — the standalone aizynth/normalizer tool images (which don't install precis)
+# stay on 3.11-slim.
+FROM python:3.12-slim-bookworm
 
 ARG PRECIS_REF=main
 ARG KOKORO_MODEL_URL=https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
