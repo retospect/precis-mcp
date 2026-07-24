@@ -320,13 +320,17 @@ agent-worker now runs as `deploy` not `hermes` (B1) with colima autostart
 (B3). The old "distribution is melchior-only" / "flip is the window action"
 bullets are stale — superseded by:
 
-- **`PRECIS_AGENT_CONTAINER=1` is flag-ON for melchior but UNPROVEN
-  end-to-end** *(feature, open).* `host_vars/melchior.yml
-  precis_agent_container_enabled: true` is set (cluster repo, uncommitted) —
-  containerizes melchior's remaining `call_claude_agent` passes (diagram +
-  router-agentic; reviews already shed to spark). No agentic pass has actually
-  claimed through the melchior container yet. Needs a live-fire verification,
-  then `scripts/deploy` to make it prod-safe and commit the overlay files.
+- **`PRECIS_AGENT_CONTAINER=1` is flag-ON for melchior — live-fire proven
+  2026-07-24, one bug found + fixed en route.** *(ops, open).* A 2026-07-23
+  daemon restart activated `containerize_claude_argv()` for the first time
+  live; it forwarded the host `--mcp-config` path into the container verbatim
+  instead of rebasing onto the image's baked-in config, so every `plan_tick`
+  pass on melchior 404'd (gripe 170996, root-caused + fixed as main `09449a8e`
+  — `agent_container.py`'s `_rebase_mcp_config()`). Retried post-deploy:
+  `jo171083`/`jo171094` both cleanly claimed through the melchior container
+  and did real work. Remaining: `host_vars/melchior.yml
+  precis_agent_container_enabled: true` is still uncommitted in the cluster
+  repo — commit the overlay file there (out of this repo's scope).
 - **Capability probe + infra-fallback breaker shipped, not deployed**
   *(feature, open — owner `workers/executors/agent_container.py`, main
   `e9c915ba`).* `container_capability_ok()` (auth+bin-info+image-inspect,
