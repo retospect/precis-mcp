@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+# earlyoom kills the memory hog BEFORE swap-thrash starves the box (and sshd)
+# into unresponsiveness. Args + rationale: roles/hardening/defaults/main.yml.
+EARLYOOM_ARGS="{{ earlyoom_args | trim }}"

@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+# Optional hard memory ceiling on the compute worker. Written only when
+# linux_compute_memory_max is set (roles/hardening/defaults/main.yml). MemoryMax
+# is a hard cgroup limit: the worker is OOM-killed within its own cgroup if it
+# exceeds it, sparing the rest of the box (and sshd). It restarts via
+# Restart=always. Keep this comfortably above a real NEB's working set.
+[Service]
+MemoryMax={{ linux_compute_memory_max }}

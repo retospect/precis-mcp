@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+# Protect sshd from the kernel OOM killer. On a shared compute node, heavy
+# MACE/NEB + llama + PDF-ingest load has repeatedly thrashed the box into swap,
+# starving sshd so it stops answering banner-exchange while the host still
+# pings — with no remote recovery path. -1000 makes the kernel OOM killer never
+# select sshd (or its forked login sessions), so we can always get in to
+# recover. See docs/runbooks/oom-lockout-hardening.md.
+[Service]
+OOMScoreAdjust=-1000

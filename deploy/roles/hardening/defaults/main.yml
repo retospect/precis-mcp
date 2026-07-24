@@ -1,0 +1,37 @@
+---
+# hardening role defaults.
+#
+# ── Linux OOM lockout guard (the shared compute node) ──────────────────────
+# On a single shared compute node, heavy MACE/NEB + llama + PDF-ingest load has
+# repeatedly thrashed the box into swap, starving sshd so it stops answering
+# banner-exchange while the host still pings — with no remote recovery path.
+# Two layers defend it:
+#   1. sshd is made un-killable by the kernel OOM killer (OOMScoreAdjust=-1000,
+#      always applied on Linux) so we can always get in to recover.
+#   2. earlyoom kills the memory hog early — before swap-thrash locks us out.
+# See docs/runbooks/oom-lockout-hardening.md.
+
+# earlyoom thresholds + targeting. `-m 10,5` SIGTERMs the biggest --prefer
+# match when free memory drops below 10% (SIGKILL below 5%); `-s 10,5` does the
+# same on free swap. `--avoid` matches are never touched — sshd and the
+# network/tunnel daemons stay up so the box is always reachable. `--prefer`
+# biases the kill toward the compute hogs (the precis worker restarts via
+# systemd Restart=always, so culling it is the recoverable sacrifice).
+# Regexes match the (15-char-truncated) process comm, anchored.
+#
+# NB: NOT shell-quoted. earlyoom.service runs `ExecStart=/usr/bin/earlyoom
+# $EARLYOOM_ARGS` with no shell, so systemd only word-splits on whitespace and
+# passes any quotes verbatim — wrapping a regex in quotes would make earlyoom
+# match a literal leading quote char. The regexes contain no whitespace, so
+# they stand alone as single arguments unquoted.
+earlyoom_args: >-
+  -r 3600 -m 10,5 -s 10,5
+  --avoid ^(sshd|systemd|systemd-.*|dbus-daemon|tailscaled|autossh|cron)$
+  --prefer ^(python[0-9.]*|precis|llama-server|llama-swap|ollama|marker.*)$
+
+# Optional HARD memory ceiling on the compute worker (precis-worker.service).
+# Empty = off (the drop-in is not written). An over-tight cap OOM-kills
+# legitimate NEB runs, so this stays off until a value is measured on the box —
+# e.g. "96G". The sshd backstop + earlyoom already carry the lockout guarantee;
+# this is a belt-and-suspenders cap, not required.
+linux_compute_memory_max: ""

@@ -9,3 +9,26 @@
     name: ssh
     state: restarted
   become: true
+
+# The OOMScoreAdjust drop-in needs a daemon-reload before the restart re-execs
+# sshd with the new oom_score_adj. Restarting ssh.service does not drop live
+# sessions on Debian/Ubuntu (the listener re-execs; forked sessions survive).
+- name: reload systemd and restart sshd linux
+  ansible.builtin.systemd:
+    name: ssh
+    daemon_reload: true
+    state: restarted
+  become: true
+
+- name: restart earlyoom
+  ansible.builtin.systemd:
+    name: earlyoom
+    state: restarted
+  become: true
+
+- name: reload systemd and restart precis-worker linux
+  ansible.builtin.systemd:
+    name: precis-worker
+    daemon_reload: true
+    state: restarted
+  become: true
