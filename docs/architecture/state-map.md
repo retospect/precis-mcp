@@ -196,7 +196,11 @@ Part 3A's `persist_assembled_context` landed it: the plan_tick job ref for
 `job_claude_inproc`, the digest memory for `structural`/`deep_review`) and
 "dry-run" (a fresh zero-LLM-call preview via `build_planner_prompts` /
 `_assemble_reviewer_blocks`); dream degrades to a "hand-rolled, not
-captured" note (no assembler on its path). `tests/test_worker_registry.py`
+captured" note (no assembler on its path). The `/env` view is the live
+companion to the **context-quality audit** — `docs/design/context-quality-eval.md`
+(durable catalog of every context precis assembles + the 6-dimension
+inspection rubric) and its Sonnet-runnable sampler under
+`scripts/context-audit/`. `tests/test_worker_registry.py`
 AST-parses `cli/worker.py` and
 fails CI if a wired pass has no spec (or a `ref_pass=True` spec has no
 wiring site), so the four parallel lists can no longer drift.
