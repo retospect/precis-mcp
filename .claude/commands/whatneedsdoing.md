@@ -105,7 +105,13 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code ancho
      or **promote** a decision to an ADR/doc — plus the compact+delete-landed
      pass, then append a dated line to `memory_consolidation_log.md`; on "done
      today", skip the heavy pass (**once/day at most** — constant re-auditing
-     churns without benefit).
+     churns without benefit). The same `scripts/memory-lint` call also runs a
+     **sibling-repo path check** (weekly, self-gated, no judgment pass needed —
+     `~/work/<name>` / `~/work/projects/code/<name>` paths memory cites,
+     verified to still exist on disk) and self-stamps its own log
+     (`docs/runbooks/memory-sibling-repos.md`); a finding there is a suspect
+     for the SAME resolve step above (adjust / kill / promote), not a
+     separate action.
    - **Token-review cadence** (`scripts/token-review`) — on **DUE** (last pass
      >7 days ago) run the session-tightness scan: read recent large local
      transcripts for repeated token-waste (context bloat, wrong-tier agents,
