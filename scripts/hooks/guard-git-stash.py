@@ -51,7 +51,7 @@ def evaluate(command: str) -> str | None:
                 "Refusing bare `git stash` — the stash stack is SHARED across "
                 "worktrees/sessions, so an untagged entry is unfindable and pop-able "
                 "by another session. Prefer a throwaway WIP commit; if you must "
-                "stash, use `git stash push -u -m \"<unique-tag>\"`, then restore "
+                'stash, use `git stash push -u -m "<unique-tag>"`, then restore '
                 "with `git stash apply <sha>`. Or set ALLOW_GIT_STASH=1."
             )
     return None

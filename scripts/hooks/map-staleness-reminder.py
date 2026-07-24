@@ -43,9 +43,15 @@ def _migration_collision(path: str) -> str:
     if "src/precis/migrations/" not in path.replace("\\", "/"):
         return ""
     root = os.environ.get("CLAUDE_PROJECT_DIR", "")
-    check = os.path.join(root, "scripts", "migration-check") if root else "scripts/migration-check"
+    check = (
+        os.path.join(root, "scripts", "migration-check")
+        if root
+        else "scripts/migration-check"
+    )
     try:
-        r = subprocess.run([check, "--quiet"], capture_output=True, text=True, timeout=15)
+        r = subprocess.run(
+            [check, "--quiet"], capture_output=True, text=True, timeout=15
+        )
         if r.returncode != 0 and r.stdout.strip():
             return " ⚠ " + " ".join(r.stdout.split())
     except Exception:

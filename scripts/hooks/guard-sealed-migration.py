@@ -37,7 +37,9 @@ def _sealed(path: str) -> bool:
     try:
         top = subprocess.run(
             ["git", "-C", os.path.dirname(path) or ".", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         rel = os.path.relpath(path, top)
         # exists on origin/main? (the shipped tree). Missing ref → not sealed.

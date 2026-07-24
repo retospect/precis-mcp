@@ -59,7 +59,9 @@ def _branch(cwd: str) -> str:
 
 
 def _resolve(base: str, path: str) -> str:
-    path = os.path.expanduser(path.strip())  # strip: a `cd /x && …` split leaves a trailing space
+    path = os.path.expanduser(
+        path.strip()
+    )  # strip: a `cd /x && …` split leaves a trailing space
     return path if os.path.isabs(path) else os.path.normpath(os.path.join(base, path))
 
 
