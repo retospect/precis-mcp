@@ -45,6 +45,26 @@ def add_parser(subparsers: Any) -> None:
     )
     t.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    w = qsub.add_parser(
+        "weave",
+        help="Run one weave tick (rung 6e-1): place + weave the dossier's "
+        "unintegrated papers, scaffolding new sections for any residual.",
+    )
+    w.add_argument("id", type=int, help="Quest ref id.")
+    w.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Compute placements/proposed titles + call the model, but write "
+        "nothing (no sections, citations, links, or logbook entry).",
+    )
+    w.add_argument(
+        "--tier",
+        default="cloud-mid",
+        help="LLM tier for the weave/title-judgment calls (default cloud-mid — "
+        "the mid agentic rung; see --tier on `quest tick` for the full set).",
+    )
+    w.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
     d = qsub.add_parser("dossier", help="Print a quest's dossier.")
     d.add_argument("id", type=int, help="Quest ref id.")
     d.add_argument("--database-url", default=None, help="Postgres DSN override.")
@@ -132,6 +152,51 @@ def _cmd_tick(store: Store, args: argparse.Namespace) -> None:
     print(f"{msg} ({outcome.note})")
 
 
+def _cmd_weave(store: Store, args: argparse.Namespace) -> None:
+    from precis.quest.weave_tick import weave_tick
+    from precis.utils.llm.router import DispatchClient, Tier
+
+    client = DispatchClient(
+        tier=Tier(args.tier), source="quest_weave", tools_needed=True
+    )
+    result = weave_tick(store, client, args.id, dry_run=args.dry_run)
+
+    if not result.get("ok"):
+        print(f"quest {args.id}: weave tick failed — {result.get('error')}")
+        return
+    if result.get("note"):
+        print(f"quest {args.id}: weave tick — {result['note']}")
+        return
+
+    woven = result["woven"]
+    ok_sections = sum(1 for w in woven if w.get("ok"))
+    failed_sections = len(woven) - ok_sections
+    dispositions: dict[str, int] = {}
+    citations = 0
+    for w in woven:
+        if not w.get("ok"):
+            continue
+        for p in w.get("papers", []):
+            disp = p.get("disposition")
+            if disp:
+                dispositions[disp] = dispositions.get(disp, 0) + 1
+            citations += len(p.get("citation_ids") or [])
+
+    mode = "dry-run" if args.dry_run else "applied"
+    print(
+        f"quest {args.id}: weave tick ({mode}) — batch {result['batch_size']}, "
+        f"{ok_sections} section(s) woven, {failed_sections} failed, "
+        f"{len(result['new_sections'])} new section(s), {citations} citation(s), "
+        f"dispositions {dispositions}, {len(result['residual_unplaced'])} residual "
+        "unplaced"
+    )
+    if result["new_sections"]:
+        for ns in result["new_sections"]:
+            print(f"  new section: {ns['title']!r} ({len(ns['paper_ref_ids'])} papers)")
+    if not args.dry_run and result.get("log_entry"):
+        print(f"  logbook entry #{result['log_entry']}")
+
+
 def _cmd_seed_catalyst(store: Store, args: argparse.Namespace) -> None:
     from precis.quest.catalyst_seed import seed_catalyst_quest
 
@@ -216,6 +281,8 @@ def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url))
     if args.quest_cmd == "tick":
         _cmd_tick(store, args)
+    elif args.quest_cmd == "weave":
+        _cmd_weave(store, args)
     elif args.quest_cmd == "dossier":
         _cmd_dossier(store, args)
     elif args.quest_cmd == "gaps":
