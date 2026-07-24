@@ -830,7 +830,11 @@ The master kinds table lives in the `precis-overview` skill.
   silently re-open ruled-out ground (the catpath dead-3-days spin; distinct
   from the per-*candidate* `ruled-out:` structure tags). The model pins entries
   via a `ledger_add` output field; a pre-0064 dossier heals its ledger lazily
-  (`ensure_ledger_chunk`). **Slice 2 (reweighting) live**
+  (`ensure_ledger_chunk`). The dossier **owner is any process**, not just a quest
+  (ADR 0064 §B, built 2026-07-24): `dossier.py`'s functions take `owner_id` (any
+  ref) via the owner-agnostic `dossier-of` edge, so a non-quest living-review
+  process can own — and export — one (migration-free; legacy `dossier_of_quest`
+  meta resolves unchanged). **Slice 2 (reweighting) live**
   (`src/precis/quest/reweight.py`): priority flows down the `serves` DAG
   (max-agg, `STRIVING_DECAY` per quest→quest ladder hop; only **active** quests
   pull; canonical priority = `refs.prio`, set via a `PRIO:` tag synced in the

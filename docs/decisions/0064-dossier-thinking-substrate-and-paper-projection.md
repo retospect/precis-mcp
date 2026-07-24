@@ -111,10 +111,19 @@ is continuously fed frontier results). A shareable "paper" is therefore a
 **rendered snapshot of the dossier on demand**, *not* a separately-maintained
 second artifact. The periodic **"bundle up and share"** (weekly/monthly
 digest/newsletter) is a **separate process** — 0060's digest cast — out of scope
-here. Remaining work if pursued: generalize `dossier.py`'s owner beyond quest so
-a non-quest living-review process can own one. Its own proposal —
-`docs/proposals/dossier-owner-generalization.md` (drafted + `ready`-gated
-2026-07-24; build deferred).
+here.
+
+**Built (2026-07-24).** The one enabling generalization — `dossier.py`'s owner
+widened from a quest to any process — is done, migration-free: every public
+function takes `owner_id` (any ref) instead of `quest_id`; the owner title seed
+reads `refs` directly (a kind-agnostic `_owner_title`, replacing the
+`get_ref(kind="quest", …)` coupling); the back-pointer meta key is
+`dossier_of_owner`, with resolution via the owner-agnostic `dossier-of` edge so
+legacy `dossier_of_quest` dossiers resolve with no backfill. A non-quest
+living-review process can now own — and therefore export — a dossier. See
+`docs/proposals/dossier-owner-generalization.md` (its own proposal;
+`ready`-gated 2026-07-24, blockers resolved in-body) +
+`src/precis/quest/dossier.py`.
 
 ### C — Sim-level infra failures must not read as "dry" (follow-on)
 

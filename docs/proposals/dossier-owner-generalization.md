@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: Generalize the dossier owner from quest to any process (ADR 0064 §B)
 model: sonnet
 ---
@@ -219,6 +219,10 @@ having a dossier to export.
   dual-read = `coder` tier); the `project_ref_id=None` escape hatch removed from
   OQ#2 (`create_draft` requires `int`), with the real build-time options noted.
 
-**Status: draft (build deferred).** Blockers are resolved in the spec, but this
-is a deferred deliverable — flip to `status: ready` (turning the human's key)
-only when the owner-generalization is actually scheduled to build.
+**Status: built (ADR 0064 §B).** Shipped as a migration-free owner rename
+(`quest_id`→`owner_id`), a kind-agnostic `_owner_title` `refs` read replacing the
+`get_ref(kind="quest", …)` lookup, and the `dossier_of_quest`→`dossier_of_owner`
+meta key (resolution is link-based, so legacy-key dossiers resolve unchanged —
+no backfill). The three callers passed positionally and needed no edits. See
+`src/precis/quest/dossier.py` + `tests/test_quest_tick.py`
+(`TestDossierOwnerGeneralization`).

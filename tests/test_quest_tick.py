@@ -190,6 +190,72 @@ class TestDossierLedger:
         assert append_ledger_entry(store, qid, "open", "   ") is False
 
 
+# ── owner generalization (ADR 0064 §B) ──────────────────────────────────
+
+
+class TestDossierOwnerGeneralization:
+    """The dossier owner is any process, not just a quest (ADR 0064 §B —
+    docs/proposals/dossier-owner-generalization.md). The coupling was Python
+    only; the ``dossier-of`` edge is already owner-agnostic."""
+
+    def test_non_quest_owner_full_round_trip(self, store: Any) -> None:
+        # A non-quest process (a `memory` ref stands in for any living-review
+        # owner) can own a dossier: create → rewrite → append ledger → read
+        # narrative + ledger back, all succeed, and the `dossier-of` edge
+        # points at the non-quest owner.
+        owner = store.insert_ref(
+            kind="memory", slug=None, title="A living review process"
+        )
+        did = ensure_dossier(store, owner.id)
+        assert did is not None
+        assert dossier_ref_id(store, owner.id) == did
+        # title seed derives from the owner's title via the kind-agnostic read
+        oref = store.get_ref(kind="draft", id=did)
+        assert "A living review process" in (oref.title or "")
+
+        rewrite_dossier(store, owner.id, "# Understanding\n\nMOF linkers look apt.")
+        assert append_ledger_entry(store, owner.id, "ruled-out", "zeolite Y") is True
+
+        _did, _h, body = read_dossier(store, owner.id)
+        assert "MOF linkers look apt." in read_narrative(store, owner.id)
+        assert "zeolite Y" in read_ledger(store, owner.id)
+        assert "MOF linkers" in body and "zeolite Y" in body
+
+        # the dossier-of edge points at the NON-quest owner
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT dst_ref_id FROM links "
+                "WHERE src_ref_id = %s AND relation = 'dossier-of'",
+                (did,),
+            ).fetchone()
+        assert row is not None and int(row[0]) == owner.id
+
+    def test_legacy_dossier_of_quest_key_still_resolves(self, store: Any) -> None:
+        # A prod dossier stamped with only the OLD meta.dossier_of_quest key
+        # (no dossier_of_owner) must still resolve through every read path —
+        # resolution is link-based, so the meta-key rename needs no backfill.
+        qid = _mk_quest(store, "A striving with a pre-§B dossier")
+        ref, _heading = store.create_draft(
+            name=f"quest-{qid}-dossier",  # the old naming, too
+            title="Dossier — legacy",
+            project_ref_id=qid,
+            meta={"dossier_of_quest": qid},  # only the LEGACY owner key
+            relation="dossier-of",
+        )
+        store.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="paragraph",
+            text="Legacy narrative.",
+            split=False,
+        )
+        assert dossier_ref_id(store, qid) == ref.id
+        did, _h, text = read_dossier(store, qid)
+        assert did == ref.id and "Legacy narrative." in text
+        # ensure_* is idempotent on the legacy ref — no second dossier minted
+        assert ensure_dossier(store, qid) == ref.id
+        assert "Legacy narrative." in read_narrative(store, qid)
+
+
 # ── the tick ──────────────────────────────────────────────────────────
 
 

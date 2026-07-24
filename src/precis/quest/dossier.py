@@ -1,9 +1,18 @@
-"""Quest dossier — the living research synthesis a quest owns.
+"""Dossier — the living research synthesis a *process* owns.
 
-Slice 4a of the quest layer (docs/proposals/quest-layer.md §Two memories). A
-quest keeps *two* records: the append-only ``quest_log`` LOGBOOK (episodic —
-what happened, when, immutable; :mod:`precis.quest.logbook`) and the DOSSIER — a
-``draft`` the quest owns via ``dossier-of`` (semantic — the current
+Slice 4a of the quest layer (docs/proposals/quest-layer.md §Two memories),
+generalized per ADR 0064 §B (docs/proposals/dossier-owner-generalization.md):
+a dossier belongs to a **process, never an artifact**. A quest is the process
+that owns one today, but the owner is now **any ref** (``owner_id``) — a
+standing topic review or a paper-writing pipeline can own a dossier by the same
+rule, and a "paper" is just a render/export of a process's dossier. The owner
+coupling lived entirely in this module's Python (the ``dossier-of`` /
+``has-dossier`` relation is already owner-agnostic — migration 0067, no kind
+constraint), so widening it is migration-free.
+
+An owning process keeps *two* records: the append-only ``quest_log`` LOGBOOK
+(episodic — what happened, when, immutable; :mod:`precis.quest.logbook`) and the
+DOSSIER — a ``draft`` the owner holds via ``dossier-of`` (semantic — the current
 understanding, best leads, what's ruled out, open questions), **rewritten every
 research cycle**. The dossier doubles as the autonomous loop's *rolling
 context*: each tick reads the compact dossier rather than replaying the whole
@@ -36,7 +45,7 @@ _RELATION = "dossier-of"
 
 _SEED = (
     "_(No synthesis yet — this dossier is rewritten each research cycle. The "
-    "first quest tick will replace this seed with the current understanding, "
+    "first tick will replace this seed with the current understanding, "
     "the best leads so far, what's been ruled out, and the open questions.)_"
 )
 
@@ -92,15 +101,37 @@ def _render_ledger(sections: dict[str, list[str]]) -> str:
 _LEDGER_SEED = _render_ledger({k: [] for k in _SECTION_ORDER})
 
 
-def dossier_ref_id(store: Store, quest_id: int) -> int | None:
-    """The ref id of the quest's dossier draft, or ``None`` if it has none."""
+def dossier_ref_id(store: Store, owner_id: int) -> int | None:
+    """The ref id of the owner's dossier draft, or ``None`` if it has none.
+
+    Resolution is via the ``dossier-of`` edge, **not** the denormalized
+    ``meta.dossier_of_owner`` back-pointer — so a pre-0064-§B dossier carrying
+    only the legacy ``meta.dossier_of_quest`` key resolves identically, with no
+    migration or backfill (ADR 0064 §B).
+    """
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT src_ref_id FROM links "
             "WHERE dst_ref_id = %s AND relation = %s LIMIT 1",
-            (quest_id, _RELATION),
+            (owner_id, _RELATION),
         ).fetchone()
     return int(row[0]) if row else None
+
+
+def _owner_title(store: Store, owner_id: int) -> str:
+    """The owner ref's title (any kind), used only as the dossier's default name.
+
+    A direct ``refs`` read rather than ``store.get_ref(kind=…, id=…)`` — the
+    latter requires a hardcoded ``kind`` (that was the quest coupling ADR 0064
+    §B removes), and the title is only a cosmetic seed, so no ``Store``
+    abstraction is warranted.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT title FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            (owner_id,),
+        ).fetchone()
+    return str(row[0]) if row and row[0] else f"ref {owner_id}"
 
 
 def _find_ledger_chunk(chunks: list[Any]) -> Any | None:
@@ -129,39 +160,39 @@ def _ensure_ledger_chunk_for_ref(store: Store, dossier_id: int) -> str:
     return handle
 
 
-def ensure_ledger_chunk(store: Store, quest_id: int) -> str:
-    """Return the handle of the quest's pinned ledger chunk.
+def ensure_ledger_chunk(store: Store, owner_id: int) -> str:
+    """Return the handle of the owner's pinned ledger chunk.
 
     Idempotent, and heals a dossier that predates ADR 0064 §A (narrative-only,
-    no ledger chunk yet) by creating+pinning one lazily — a live quest grows
+    no ledger chunk yet) by creating+pinning one lazily — a live owner grows
     its ledger on its next read/append rather than needing a migration.
-    Creates the dossier itself (via :func:`ensure_dossier`) if the quest has
+    Creates the dossier itself (via :func:`ensure_dossier`) if the owner has
     none yet.
     """
-    did = ensure_dossier(store, quest_id)
+    did = ensure_dossier(store, owner_id)
     return _ensure_ledger_chunk_for_ref(store, did)
 
 
-def ensure_dossier(store: Store, quest_id: int, *, title: str | None = None) -> int:
-    """Return the quest's dossier ref id, creating a seeded draft if absent.
+def ensure_dossier(store: Store, owner_id: int, *, title: str | None = None) -> int:
+    """Return the owner's dossier ref id, creating a seeded draft if absent.
 
-    Idempotent: the ``create_draft`` dup-guard enforces one dossier per quest,
-    but we look up first so a concurrent/second call returns the existing id
-    rather than raising. A fresh dossier is seeded with BOTH the narrative
-    body and the pinned ledger; an *existing* dossier is returned as-is (a
-    pre-A dossier heals its ledger lazily via :func:`ensure_ledger_chunk`, not
-    here — see the module docstring).
+    ``owner_id`` is any ref — a quest today, or any other process that owns a
+    living synthesis (ADR 0064 §B). Idempotent: the ``create_draft`` dup-guard
+    enforces one dossier per owner, but we look up first so a concurrent/second
+    call returns the existing id rather than raising. A fresh dossier is seeded
+    with BOTH the narrative body and the pinned ledger; an *existing* dossier
+    is returned as-is (a pre-A dossier heals its ledger lazily via
+    :func:`ensure_ledger_chunk`, not here — see the module docstring).
     """
-    existing = dossier_ref_id(store, quest_id)
+    existing = dossier_ref_id(store, owner_id)
     if existing is not None:
         return existing
-    qref = store.get_ref(kind="quest", id=quest_id)
-    stmt = (qref.title if qref and qref.title else f"quest {quest_id}").splitlines()[0]
+    stmt = _owner_title(store, owner_id).splitlines()[0]
     ref, _heading = store.create_draft(
-        name=f"quest-{quest_id}-dossier",
+        name=f"dossier-{owner_id}",
         title=title or f"Dossier — {stmt[:80]}",
-        project_ref_id=quest_id,
-        meta={"dossier_of_quest": quest_id},
+        project_ref_id=owner_id,
+        meta={"dossier_of_owner": owner_id},
         relation=_RELATION,
     )
     store.add_chunks(ref_id=ref.id, chunk_kind="paragraph", text=_SEED, split=False)
@@ -169,16 +200,16 @@ def ensure_dossier(store: Store, quest_id: int, *, title: str | None = None) -> 
     return int(ref.id)
 
 
-def read_dossier(store: Store, quest_id: int) -> tuple[int | None, str | None, str]:
-    """``(dossier_ref_id, body_handle, body_text)`` for the quest.
+def read_dossier(store: Store, owner_id: int) -> tuple[int | None, str | None, str]:
+    """``(dossier_ref_id, body_handle, body_text)`` for the owner.
 
-    Returns ``(None, None, "")`` when the quest has no dossier yet. The body
+    Returns ``(None, None, "")`` when the owner has no dossier yet. The body
     is every non-heading chunk in reading order (narrative + pinned ledger,
     once both exist), joined — the ``view='dossier'`` handler + history read
     this whole-body join; only the tick *prompt* separates narrative from
     ledger (:func:`read_narrative`, :func:`read_ledger`).
     """
-    did = dossier_ref_id(store, quest_id)
+    did = dossier_ref_id(store, owner_id)
     if did is None:
         return None, None, ""
     chunks = store.reading_order(did)
@@ -188,14 +219,14 @@ def read_dossier(store: Store, quest_id: int) -> tuple[int | None, str | None, s
     return did, handle, text
 
 
-def read_narrative(store: Store, quest_id: int) -> str:
+def read_narrative(store: Store, owner_id: int) -> str:
     """The model-rewritten narrative only (no pinned ledger, no heading).
 
     Feeds the tick prompt's ``{dossier}`` slot — the ledger is surfaced
     separately (:func:`read_ledger`) as an explicit constraint, not folded
-    into the rewritable prose. Returns ``""`` when the quest has no dossier.
+    into the rewritable prose. Returns ``""`` when the owner has no dossier.
     """
-    did = dossier_ref_id(store, quest_id)
+    did = dossier_ref_id(store, owner_id)
     if did is None:
         return ""
     chunks = store.reading_order(did)
@@ -207,15 +238,15 @@ def read_narrative(store: Store, quest_id: int) -> str:
     return "\n\n".join(c.text for c in body)
 
 
-def read_ledger(store: Store, quest_id: int) -> str:
+def read_ledger(store: Store, owner_id: int) -> str:
     """The pinned ledger chunk's raw markdown text.
 
     Heals a pre-A dossier with no ledger yet (:func:`ensure_ledger_chunk`),
     so this always returns a well-formed (if empty) ledger for any live
-    quest, migration-free.
+    owner, migration-free.
     """
-    handle = ensure_ledger_chunk(store, quest_id)
-    did = dossier_ref_id(store, quest_id)
+    handle = ensure_ledger_chunk(store, owner_id)
+    did = dossier_ref_id(store, owner_id)
     assert did is not None  # ensure_ledger_chunk just guaranteed a dossier
     for c in store.reading_order(did):
         if c.handle == handle:
@@ -223,7 +254,7 @@ def read_ledger(store: Store, quest_id: int) -> str:
     return ""  # pragma: no cover - handle was just resolved above
 
 
-def append_ledger_entry(store: Store, quest_id: int, section: str, text: str) -> bool:
+def append_ledger_entry(store: Store, owner_id: int, section: str, text: str) -> bool:
     """Append one bullet under ``section``'s heading in the pinned ledger.
 
     ``section`` is one of ``tried`` / ``ruled-out`` / ``open``; an
@@ -238,8 +269,8 @@ def append_ledger_entry(store: Store, quest_id: int, section: str, text: str) ->
     if not stripped_text:
         return False
     key = section if section in _SECTION_HEADINGS else "open"
-    handle = ensure_ledger_chunk(store, quest_id)
-    did = dossier_ref_id(store, quest_id)
+    handle = ensure_ledger_chunk(store, owner_id)
+    did = dossier_ref_id(store, owner_id)
     assert did is not None  # ensure_ledger_chunk just guaranteed a dossier
     chunk = next(c for c in store.reading_order(did) if c.handle == handle)
     sections = _parse_ledger(chunk.text)
@@ -250,8 +281,8 @@ def append_ledger_entry(store: Store, quest_id: int, section: str, text: str) ->
     return True
 
 
-def rewrite_dossier(store: Store, quest_id: int, markdown: str) -> int:
-    """Whole-rewrite the quest's dossier NARRATIVE to ``markdown``; return its
+def rewrite_dossier(store: Store, owner_id: int, markdown: str) -> int:
+    """Whole-rewrite the owner's dossier NARRATIVE to ``markdown``; return its
     ref id.
 
     Ensures the dossier exists, then edits the narrative body chunk in place
@@ -260,7 +291,7 @@ def rewrite_dossier(store: Store, quest_id: int, markdown: str) -> int:
     every rewrite byte-identical (ADR 0064 §A). If somehow there is no
     narrative chunk yet, one is added.
     """
-    did = ensure_dossier(store, quest_id)
+    did = ensure_dossier(store, owner_id)
     chunks = store.reading_order(did)
     body = [
         c
