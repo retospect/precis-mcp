@@ -1677,32 +1677,6 @@ memory `repo_dev_claude_tooling.md`. Remaining:
   The per-test TRUNCATE base (~40 ms × ~3000 DB tests ≈ 128 s CPU / ~21 s wall)
   is the other aggregate; TRUNCATE is already the cheap isolation choice.
   No coverage is measured anywhere (no `pytest-cov`/`--cov`) — a separate gap.
-- **Worktree lifecycle — two leaks** *(bug/workflow, open — from 2026-07-24
-  cleanup session that reaped 27 dead worktrees + 6 orphan branches)*.
-  1. **Shipped worktrees never self-remove.** `scripts/ship` (steps 5-6) resets
-     the feature branch to shipped `main` and ff's the primary's `main`, but
-     never removes the worktree — it *can't*, it runs from inside its own
-     `$PWD`. So every agent/session ship leaves a clean+merged
-     `.claude/worktrees/<name>` + `worktree-<name>` behind; only
-     `/workspace-cleanup` reaps them → unbounded pile-up. Fix belongs in the
-     `/land` + `/go` orchestration (`.claude/commands/{land,go}.md`) or a
-     post-ship detached step: after `scripts/ship` returns green, remove the
-     just-shipped worktree and (per the steer) hand back a fresh empty one. An
-     interactive session can't `rm` its own cwd, so this needs the harness /
-     `EnterWorktree` swap-or-exit flow designed, not just an `rm` appended.
-  2. **Primary checkout drifts onto a feature branch.** The primary
-     `~/work/projects/code/precis-mcp` keeps landing on a feature branch
-     (`devin-port`, then `chore-drop-dead-cluster-dir`) instead of `main`. NOT
-     `scripts/ship` — it updates `main` via commit-tree + CAS-push, never a
-     `git checkout` in the primary (its header calls this the "worktree-safe
-     workaround"). Cause: sessions/agents working *directly in the primary* (no
-     `-w`) that check out a branch there — candidates: devin runs
-     (`.devin/workflows/`) or a bare `claude` started in the primary dir. Fix
-     directions: (a) a guard/hook pinning the primary to `main`
-     (auto-restore/reject a feature-branch checkout there), or (b) enforce
-     "all work in worktrees, never the primary." Symptom: `git branch -d` in
-     the primary mis-measures merge status against the wrong HEAD (blocked 6
-     branch deletes this session until the primary was moved back to `main`).
 
 ---
 

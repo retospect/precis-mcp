@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# scripts/reap-worktrees — SessionStart backstop that removes worktrees
+# already safe to remove, so a shipped worktree never lingers forever.
+#
+# The leak this closes: scripts/ship (steps 5-6) resets the branch to shipped
+# main and ff's the primary, but can't remove the worktree it's running
+# FROM — that has to happen from outside it, on a later session. This walks
+# `scripts/inflight --json` (the single source of truth for liveness/merge
+# bucketing — never reimplemented here) and removes every worktree whose
+# `bucket` is exactly `safe_remove` (merged + clean + no live session). Every
+# other bucket (`self`, `live_session`, `needs_judgment`, `has_unmerged_work`,
+# `base`) is left untouched.
+#
+# Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op.
+# Usage: scripts/reap-worktrees [--dry-run]
+#
+# Wired in .claude/settings.json (SessionStart), after `inflight --for-hook`.
+set -uo pipefail
+
+[ -n "${PRECIS_NO_AUTOREAP:-}" ] && exit 0
+
+DRY_RUN=0
+[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+
+cd "$(dirname "$0")/.." || exit 0
+command -v git >/dev/null 2>&1 || exit 0
+git rev-parse --git-dir >/dev/null 2>&1 || exit 0
+[ -x scripts/inflight ] || exit 0
+
+JSON=$(scripts/inflight --json 2>/dev/null) || exit 0
+[ -z "$JSON" ] && exit 0
+
+REAPED=()
+while IFS=$'\t' read -r name path branch; do
+    [ -z "$path" ] && continue
+    if [ "$DRY_RUN" = 1 ]; then
+        REAPED+=("$name")
+        continue
+    fi
+    if git worktree remove "$path" 2>/dev/null; then
+        # safe_remove already means the bucket vetted mergedness (either a
+        # true ancestor merge or squash-absorbed); -D deletes both, -d would
+        # refuse the squash case despite it being safe.
+        git branch -D "$branch" >/dev/null 2>&1 || true
+        REAPED+=("$name")
+    fi
+done < <(printf '%s' "$JSON" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+for wt in data.get("worktrees", []):
+    if wt.get("bucket") == "safe_remove":
+        print("\t".join([wt.get("name", ""), wt.get("path", ""), wt.get("branch", "")]))
+')
+
+if [ "${#REAPED[@]}" -eq 0 ]; then
+    echo "reap-worktrees: nothing to reap"
+elif [ "$DRY_RUN" = 1 ]; then
+    echo "reap-worktrees --dry-run: would reap ${#REAPED[@]}: ${REAPED[*]}"
+else
+    echo "reap-worktrees: reaped ${#REAPED[@]}: ${REAPED[*]}"
+fi
+exit 0

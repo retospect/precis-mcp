@@ -40,9 +40,16 @@ repo has no `master`.
 **scan for overlap**: `scripts/inflight` prints a live per-worktree table
 (session, dirty, ahead/behind, PURPOSE, last commit); a `SessionStart` hook
 injects it. **Once your task is clear, write one line to `.claude/purpose`**
-(gitignored, self-cleaning) — git derives everything except intent. The
-footer lists removable candidates (merged+clean+no session) but only
-reports — never auto-remove.
+(gitignored, self-cleaning) — git derives everything except intent. A
+worktree that's merged + clean + has no live session (`inflight`'s
+`safe_remove` bucket) is auto-reaped — on this session's `SessionEnd` if it's
+the one closing, and as a `SessionStart` backstop otherwise
+(`scripts/reap-worktrees`, `scripts/hooks/session-end-reap.sh`;
+`PRECIS_NO_AUTOREAP=1` opts out). The primary checkout is likewise
+auto-pinned back to `main` when it's drifted onto a merged+clean branch
+(`scripts/hooks/heal-primary-branch.sh`, `PRECIS_NO_HEAL_PRIMARY=1` opts
+out), and a `PreToolUse` guard blocks checking out a branch there in the
+first place (`ALLOW_CHECKOUT_IN_PRIMARY=1` opts out).
 
 ## Subsystem map (detail on demand)
 
