@@ -100,7 +100,7 @@ class WikipediaHandler(CacheBackedHandler):
 
     # ── cache key + slug ──────────────────────────────────────────────
 
-    def _canonical_key(self, query: str) -> str:
+    def _canonical_key(self, query: str, *, literal: bool = False) -> str:
         q = " ".join((query or "").lower().split())
         if not q:
             raise BadInput(

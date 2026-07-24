@@ -233,7 +233,7 @@ class NewsHandler(CacheBackedHandler):
 
     # ── cache key + slug ──────────────────────────────────────────────
 
-    def _canonical_key(self, query: str) -> str:
+    def _canonical_key(self, query: str, *, literal: bool = False) -> str:
         return canonical_url(query)
 
     def _slug_for(self, key: str) -> str:

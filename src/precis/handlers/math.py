@@ -105,7 +105,7 @@ class MathHandler(CacheBackedHandler):
         """
         return (cache.meta or {}).get("input_query")
 
-    def _canonical_key(self, query: str) -> str:
+    def _canonical_key(self, query: str, *, literal: bool = False) -> str:
         """Lowercase + collapse internal whitespace.
 
         Wolfram itself is case-insensitive and whitespace-tolerant, so

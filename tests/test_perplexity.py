@@ -219,6 +219,90 @@ def test_empty_query_via_q_still_raises(websearch: WebsearchHandler) -> None:
     assert "recent websearch refs" in resp.body.lower()
 
 
+# ── bare-number (ref-id) guard ───────────────────────────────────────
+# A digits-only query is almost always a ref-id an agent tried to
+# retrieve, misrouted through a query-addressed kind — not a web search.
+# It must NOT fire a paid Sonar call. (The 171157 incident.)
+
+
+def test_bare_number_id_rejected_without_fetch(
+    websearch: WebsearchHandler,
+) -> None:
+    with pytest.raises(BadInput, match="bare number"):
+        websearch.get(id="171157")
+    # The guard fires before any upstream call — nothing was spent.
+    assert _StubClient.last_payload is None
+
+
+def test_bare_number_q_rejected_without_fetch(
+    websearch: WebsearchHandler,
+) -> None:
+    with pytest.raises(BadInput, match="bare number"):
+        websearch.get(q="171")
+    assert _StubClient.last_payload is None
+
+
+def test_unquoted_int_id_rejected_with_hint(
+    websearch: WebsearchHandler,
+) -> None:
+    """The literal incident shape — get(kind='websearch', id=171157) with
+    an *unquoted* int — reaches the bare-number hint (not the generic
+    "requires a query"), and fires no paid call."""
+    with pytest.raises(BadInput, match="bare number"):
+        websearch.get(id=171157)
+    assert _StubClient.last_payload is None
+
+
+def test_reasoning_tier_also_guards_bare_number(think: ThinkHandler) -> None:
+    """The guard lives on the shared base, so the pricier tiers — where
+    a stray number would cost more — are protected too."""
+    with pytest.raises(BadInput, match="bare number"):
+        think.get(id="171157")
+    assert _StubClient.last_payload is None
+
+
+def test_literal_flag_allows_bare_number_search(
+    websearch: WebsearchHandler,
+) -> None:
+    """``args={'literal': True}`` (threaded as ``literal=``) opts back
+    into a verbatim search of the number."""
+    resp = websearch.get(q="171", literal=True)
+    assert _StubClient.last_payload is not None  # a real call fired
+    assert "Dario Amodei" in resp.body  # stub body returned
+
+
+def test_numeric_slug_ref_served_free_on_retrieval(
+    websearch: WebsearchHandler,
+) -> None:
+    """When a websearch ref's own slug *is* the number, base ``get``'s
+    slug fallback serves it from cache for free — no new paid call and
+    no rejection — so the guard never strands an existing ref."""
+    # Create a ref whose slug is "171" via an explicit literal search.
+    websearch.get(q="171", literal=True)
+    _StubClient.last_payload = None  # forget the creating call
+    # Non-literal retrieval by the numeric slug hits cache.
+    resp = websearch.get(id="171")
+    assert "Dario Amodei" in resp.body
+    assert _StubClient.last_payload is None  # served from cache, no fetch
+
+
+def test_non_numeric_query_unaffected(websearch: WebsearchHandler) -> None:
+    resp = websearch.get(id="who is the CEO of Anthropic")
+    assert "Dario Amodei" in resp.body
+    assert _StubClient.last_payload is not None
+
+
+def test_import_of_numeric_query_not_blocked(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """The import path passes ``literal=True`` — a legitimately numeric
+    query can still be hydrated at $0 without tripping the guard."""
+    h = research_with_embedder
+    h.put(id="171", text="# n\n\nthe number one seven one", mode="import")
+    resp = h.get(id="171")  # served from the imported cache row, free
+    assert "one seven one" in resp.body
+
+
 # ── env / availability ───────────────────────────────────────────────
 
 

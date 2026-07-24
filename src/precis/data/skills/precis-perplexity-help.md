@@ -29,9 +29,47 @@ get(kind="perplexity-reasoning", q="compare DAC and BECCS for net-negative emiss
 get(kind="perplexity-research", q="landscape of post-quantum signature schemes")
 ```
 
-`id=` and `q=` are equivalent. The response body carries the answer
-with inline `[N]` citations and a trailing `Sources:` block. Cache
-hits return the same body for free.
+`id=` and `q=` are equivalent, and **both are the search query itself,
+not a lookup key** — see the next section before you paste a number in.
+The response body carries the answer with inline `[N]` citations and a
+trailing `Sources:` block. Cache hits return the same body for free.
+
+## `id=` is the QUERY, not a ref-id — don't paste a number
+## How do I retrieve an existing websearch ref by its number?
+## Why did get(kind='websearch', id=171157) run a paid search?
+
+These kinds are **addressed by query text**. There is no "fetch ref
+#N" path through `get` here: whatever you pass as `id=`/`q=` is sent
+to Perplexity as a fresh **paid** search on a cache miss. So a bare
+number — a gripe id, a prior ref-id, the `cite as websearch:<id>`
+handle in a result footer — does **not** round-trip. `get(id=171157)`
+would web-search the literal string `"171157"` and cache junk ("171 is
+a composite number").
+
+To stop that footgun, a query that is **nothing but digits is
+rejected** with a hint instead of spending:
+
+```python
+get(kind="websearch", id="171157")
+# BadInput: '171157' is a bare number — reads as a ref-id, not a query.
+```
+
+- **To retrieve an existing ref by its number**, that number is a
+  *ref-id* — name the kind it belongs to:
+  `get(id="gripe:171157")`, `get(id="todo:171157")`, or `search(q="…")`
+  to find it. (If a *websearch* ref's own slug happens to be that
+  number, `get(kind="websearch", id="171157")` serves it for free from
+  cache — no new call.)
+- **To genuinely web-search a bare number** (rare — you almost never
+  want this), pass the literal escape:
+
+```python
+get(kind="websearch", q="171", args={"literal": True})
+```
+
+`args={"literal": True}` also lets `perplexity-reasoning` /
+`perplexity-research` search a bare number, and the `put(mode='import')`
+path is exempt (imports are explicit).
 
 ## Pick the right kind
 ## Which model do I want — websearch, perplexity-reasoning, or perplexity-research?
@@ -135,6 +173,9 @@ queries without writing.
 ## When Perplexity fails
 
 - `BadInput: <kind> requires a non-empty query` — empty `id=`.
+- `BadInput: '<n>' is a bare number …` — a digits-only `id=`/`q=` looks
+  like a misrouted ref-id; retrieve it as `get(id='<kind>:<n>')`, or
+  pass `args={'literal': True}` to search the number for real.
 - `BadInput: <kind> only supports mode='import' for put` — `put` is
   scoped to imports.
 - `BadInput: import requires text=` — empty body.

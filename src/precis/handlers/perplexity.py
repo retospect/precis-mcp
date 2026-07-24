@@ -40,6 +40,10 @@ log = logging.getLogger(__name__)
 
 _SONAR_URL = "https://api.perplexity.ai/chat/completions"
 
+# A query that is nothing but digits reads as a ref-id an agent meant to
+# retrieve, not a web-search query — see ``_canonical_key``'s guard.
+_BARE_REFID_RE = re.compile(r"^\d+$")
+
 # Per https://www.perplexity.ai/hub/legal/terms-of-service: every
 # public / shared output must disclose AI use; Standard/Pro tiers are
 # restricted to personal / non-commercial. Footer text intentionally
@@ -84,16 +88,57 @@ class _PerplexityBase(CacheBackedHandler):
 
     # ── canonicalize: trim + include model so kinds don't collide ────
 
-    def _canonical_key(self, query: str) -> str:
+    def _canonical_key(self, query: str, *, literal: bool = False) -> str:
         q = (query or "").strip()
         if not q:
             raise BadInput(
                 f"{self.spec.kind} requires a non-empty query",
                 next=f"get(kind={self.spec.kind!r}, id='your question')",
             )
+        # A bare integer is almost never a real web-search query — it's a
+        # ref-id an agent tried to *retrieve* (a gripe number, a prior
+        # websearch ref) misrouted through a query-addressed kind, which
+        # keys on TEXT. Left alone it fires a paid Sonar call and caches
+        # junk ("171 is a composite number"). Reject with a retrieval
+        # hint. Because base ``get`` catches this BadInput and falls back
+        # to a slug lookup, a ref whose slug *is* that number is still
+        # served for free; only an un-cached bare number reaches the
+        # agent as the hint. ``literal=True`` (agent passed
+        # ``args={'literal': True}``, or the import path) opts back in to
+        # a verbatim search. (The 171157 incident.)
+        if not literal and _BARE_REFID_RE.match(q):
+            raise BadInput(
+                f"{self.spec.kind}: {q!r} is a bare number — it reads as a "
+                f"ref-id, not a web-search query. {self.spec.kind} is keyed "
+                f"by query TEXT, so this would fire a paid Sonar call for the "
+                f'literal number and cache junk (e.g. "{q} is a composite '
+                f'number").',
+                next=(
+                    f"to RETRIEVE an existing ref by that number, it is a "
+                    f"ref-id — get(id='<kind>:{q}') with the right kind (e.g. "
+                    f"gripe:{q}, todo:{q}), or search(q='…') to find it",
+                    "to REALLY web-search the literal number, pass "
+                    "args={'literal': True}",
+                ),
+            )
         # Cache key includes the model so same query under different
         # tiers cache separately.
         return f"{self.model}:{q}"
+
+    def _coerce_query(self, id: str | int | None, q: str | None) -> str:
+        # The literal incident shape is ``get(kind='websearch', id=171157)``
+        # with an *unquoted* int (the MCP ``get`` schema accepts
+        # ``id: str | int``). The base coercer only reads ``str`` ids, so an
+        # int id would be rejected with the generic "requires a query"
+        # message *before* the bare-number guard in ``_canonical_key`` runs.
+        # Stringify it here so it flows into the guard and gets the
+        # actionable ref-id hint instead. Perplexity-local: other cache
+        # kinds keep the base behaviour (a bare int is not a URL / video-id /
+        # Wolfram query worth firing).
+        if isinstance(id, int) and not isinstance(id, bool):
+            if not (isinstance(q, str) and q.strip()):
+                return str(id)
+        return super()._coerce_query(id, q)
 
     def _slug_for(self, key: str) -> str:
         # Strip the "<model>:" prefix added by _canonical_key when
@@ -402,7 +447,10 @@ class _PerplexityBase(CacheBackedHandler):
 
         query = id.strip()
         body = text.strip()
-        key = self._canonical_key(query)
+        # Import is an explicit, user-supplied cache write — bypass the
+        # bare-ref-id retrieval guard so a legitimately numeric query can
+        # still be hydrated at $0.
+        key = self._canonical_key(query, literal=True)
         request_hash = self._hash(key)
 
         body_blocks = self._blocks_from_report(body)

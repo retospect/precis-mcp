@@ -157,7 +157,7 @@ class YouTubeHandler(CacheBackedHandler):
 
     # ── canonicalization & cache key ──────────────────────────────────
 
-    def _canonical_key(self, query: str) -> str:
+    def _canonical_key(self, query: str, *, literal: bool = False) -> str:
         """Cache key = bare video id + optional language tag.
 
         Variants like ``https://youtu.be/X``, ``youtube.com/watch?v=X``,

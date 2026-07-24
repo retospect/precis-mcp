@@ -78,7 +78,7 @@ class WebHandler(CacheBackedHandler):
 
     # ── canonicalization & cache key ──────────────────────────────────
 
-    def _canonical_key(self, query: str) -> str:
+    def _canonical_key(self, query: str, *, literal: bool = False) -> str:
         """The canonical URL is the cache key. Reject non-http(s) input."""
         try:
             url = canonical_url(query)

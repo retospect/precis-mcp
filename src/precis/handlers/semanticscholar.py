@@ -152,7 +152,7 @@ class SemanticScholarHandler(CacheBackedHandler):
 
     # ── cache key + slug ──────────────────────────────────────────────
 
-    def _canonical_key(self, query: str) -> str:
+    def _canonical_key(self, query: str, *, literal: bool = False) -> str:
         q = (query or "").strip()
         if not q:
             raise BadInput(

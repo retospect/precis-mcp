@@ -327,7 +327,7 @@ def test_fetch_guarded_raises_upstream_and_skips_fetch_on_trip(
         def __init__(self) -> None:  # bypass Hub wiring for the unit
             self.store = None
 
-        def _canonical_key(self, query: str) -> str:
+        def _canonical_key(self, query: str, *, literal: bool = False) -> str:
             return query
 
         def _fetch(self, key: str) -> FetchResult:

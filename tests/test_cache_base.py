@@ -45,7 +45,7 @@ class _FakeCacheKind(CacheBackedHandler):
         self.fetch_calls: list[str] = []
         self.canned: dict[str, FetchResult] = {}
 
-    def _canonical_key(self, query: str) -> str:
+    def _canonical_key(self, query: str, *, literal: bool = False) -> str:
         return query.strip().lower()
 
     def _fetch(self, key: str) -> FetchResult:
@@ -90,7 +90,7 @@ class _FakeSlugAddressedKind(_FakeCacheKind):
 
     model: ClassVar[str] = "fake-model"
 
-    def _canonical_key(self, query: str) -> str:
+    def _canonical_key(self, query: str, *, literal: bool = False) -> str:
         q = (query or "").strip()
         if not q:
             raise BadInput("needs a query")

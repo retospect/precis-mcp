@@ -313,6 +313,7 @@ class CacheBackedHandler(Handler):
         ttl_days: int | None = None,
         refresh: bool = False,
         no_fetch: bool = False,
+        literal: bool = False,
         **_kw: Any,
     ) -> Response:
         # Bare get / "/" / "/recent" → listing of the most recent refs.
@@ -381,7 +382,7 @@ class CacheBackedHandler(Handler):
         # 2026-05-02.)
         try:
             query = self._coerce_query(id, q)
-            key = self._canonical_key(query)
+            key = self._canonical_key(query, literal=literal)
         except BadInput as canonical_err:
             if isinstance(id, str) and not (isinstance(q, str) and q.strip()):
                 slug = id.strip()
@@ -613,13 +614,18 @@ class CacheBackedHandler(Handler):
     # ── subclass hooks ────────────────────────────────────────────────
 
     @abstractmethod
-    def _canonical_key(self, query: str) -> str:
+    def _canonical_key(self, query: str, *, literal: bool = False) -> str:
         """Normalize the user's query into a stable cache key.
 
         Examples:
             math:     'population of Ireland' → 'population of ireland'
             youtube:  'https://youtu.be/X' → 'X'
             web:      URL → canonicalize_url(URL)
+
+        ``literal`` tells a kind that also *rejects* unaddressable input
+        (query-addressed kinds treat a bare ref-id number as a misrouted
+        retrieval, not a query) to skip that rejection and take the input
+        verbatim. Base impls that never reject ignore it.
         """
 
     @abstractmethod
