@@ -1,8 +1,11 @@
 # 0050 — The `fluidics` kind: a microfluidic network + constraint IR the LLM can *reason* over
 
 - **Status**: proposed (2026-07-09) · **v1 draft / discussion — OPEN, not
-  closed**. Five of six forks decided (see *Fork decisions*); only **constraints
-  storage (fork 4)** remains open. (The
+  closed**. **All six forks now decided** (see *Fork decisions*); the framing
+  trilogy (§0a–c) + tolerances are settled and **constraints storage (fork 4)**
+  is locked (§6). The ADR stays open on the branch: the still-exploratory threads
+  are the **candidate** pcb-route seam (§8c) and the **working** multi-facet /
+  multi-plane footprint model (§8d). (The
   microfluidics sibling of [ADR 0041](./0041-cad-kind-analytic-ir.md) /
   [ADR 0042](./0042-pcb-kind-netlist-placement-ir.md) /
   [ADR 0043](./0043-structure-kind-atomistic-ir.md); same philosophy — **own a
@@ -80,7 +83,7 @@ composed from them, so the LLM invents a new element / stackup / actuation with
 | attributed graph (`node`/`edge` + free `type` + `attrs`) | **element library** (valve/pump/well/adapter…) = **clonable template footprints stored as data** — the `pcb` parts-catalog pattern (a *table*, not an enum) — + how-to-compose prose |
 | plane stack (`{material, thickness, bond-type, role, export}`; count/roles = data) | **stackup recipes** (film-film … film-adhesive-moldedpart-adhesive-film) |
 | footprint + facets (`{anchor, facet[]}`, place-once-stamps-all); a facet's only **code-visible roles** are **has-net→router / solid-op add\|subtract→cad / part-link→BOM** (§8d's five kinds are *skill interpretation*) | **actuation patterns** (peristaltic 6-phase, metering) over the generic state+sequence primitive |
-| the **constraint** entity (fork 4): handle-targeting, graded, re-evaluated | **bubble heuristics** + **tooling/DRC rule-sets** = constraint *templates* the skill instantiates |
+| the **constraint** entity (fork 4, decided §6): standalone handle-targeting rows, graded **hard/soft/gauge**, re-evaluated; carries the tolerance policy; router/sizer/DRC each read a disjoint subset | **bubble heuristics** + **tooling/DRC rule-sets** = constraint *templates* the skill instantiates |
 | probe/observer library; route + geometry/export seams; derive/variation; generic **state+sequence** | — |
 
 So **§3–§8d read as the *content of the skill*, not the tool surface** — all
@@ -102,6 +105,12 @@ source-of-truth* vs *derived output*, and that sort **is** the mental model.
   cad solid; **derivative parts / fab** = project/CAM(geometry) → DXF, G-code,
   BOM, core, actuator-plate; **analyses** = observe(geometry + graph + rules) →
   DRC, bubble, volumes, throughput.
+
+*(This subsumes the earlier "three-layer IR": **topology / netlist** + **intent /
+constraints** + **realization / geometry** are exactly authored graph+rules vs.
+derived geometry. Don't fuse the three — topology, intent, and geometry stay
+separately legible. "**Layer 3**" and "**layers 1–2**" as used throughout below
+name the derived geometry facet and the authored graph+rules respectively.)*
 
 Governing principles: **(1) author small, derive big** — edit only
 graph+anchors+rules. **(2) coordinates at two grains** — author coarse *anchors*,
@@ -153,27 +162,21 @@ data, §0a]; its pads + bodies + facets are **expanded from the template at the
 anchor** [engine, derived]. "A component" is a *placement of a template*; the
 geometry it becomes is derived, not drawn.
 
-### 1. Three-layer IR (the key structural call)
-
-Do **not** fuse topology, intent, and geometry. Three legible layers in the
-`fluidics` kind:
-
-1. **Netlist (topology).** Nodes (reservoir / port / junction / via), edges
-   (channel), elements (valve, pump, …), layer assignment. Pure graph;
-   hand- or LLM-authored; stable; cheap to reason over.
-2. **Constraints (intent).** Declarative, grouped, ranged — the "argue"
-   surface (§6).
-3. **Placement / geometry (realization).** Coordinates, routed paths,
-   cross-sections, via positions. *Derived*, re-solvable, checked against
-   layers 1–2, consumed by the exporters.
-
-Layers 1–2 are what you fork to vary a design; layer 3 is a derived-lane job.
-
 ### 2. The stack model, bond-types, and stackup taxonomy
 
 A design targets a **layer stack**: an ordered sequence of layers, each
-`{material, thickness, bond-type}`. **Adhesive is just a layer with
+`{material, thickness, bond-type, role}`. **Adhesive is just a layer with
 thickness > 0** — that is how "the adhesive has a height" enters for free.
+
+**Each plane carries a `role`** (data-driven, open-ended per §0a — not a fixed
+enum): `fluidic` / `structural` / `actuator` / `part-mount`. The role, alongside
+bond-type, selects the exporter: **fluidic** → channel DXF/G-code; **actuator**
+→ hole-pattern DXF/G-code (the stepper poky-bit plate whose holes register to
+the valve centers, §8d); **structural** → outline / mount; **part-mount** →
+BOM. A non-fluidic plane — an actuator plate, a clamp — is **just another slab
+layer with its features subtracted**: same stack model, same cad export path,
+different role. This is where §8d's actuator/mount planes live; the stack model
+is the one home for "how many planes, of what role."
 
 The **fab route is a property of how layers join and how features are
 formed** — carried by bond-type:
@@ -221,7 +224,23 @@ volume = width × depth × length            # rectangular approximation
 A "single- vs bi-layer core" milled design is a degenerate stackup: one `mill`
 layer, channels on one or both faces + through-vias.
 
-### 3. Valves are servo-actuated pinch fingers (fork 2, decided)
+---
+
+### Skill-layer elaboration (§3–§8d) — read per §0(a)
+
+Everything from here to §8d is the **content of the skill + template catalog**,
+not the code surface (§0a): fluidic **vocabulary** (valves, pumps, wells,
+adapters), the compositions that name it, and the engine **seams** the skill
+composes over (the cad export lane §8a, the link relations §8b, the pcb route
+seam §8c). The **code-visible substrate** is only what §0's tables name — the
+attributed graph, the plane stack (§2), the generic footprint + its **three**
+code-visible facet roles (**net / solid-op / part-link**), the **constraint
+entity** (§6, fork 4), and the probe/route/export seams. Where a section below
+coins a fluidic noun or a facet *kind*, that is skill interpretation *over* those
+atoms, not a new code primitive — correctness comes from the probe/lint layer,
+reuse from cloning data templates (§0a).
+
+### 3. Valves are servo-actuated pinch fingers (fork 2, decided · skill vocab)
 
 The valve is a **mechanical pinch**: a servo-driven rubber finger presses down
 on a channel and occludes it by deforming a compliant cap over the channel.
@@ -249,7 +268,7 @@ Consequences of pinch/servo (vs a Quake pneumatic membrane):
 
 **Rotary/selector valves remain out of scope** (§8).
 
-### 4. Logical groupings + the behavioral layer (the pump)
+### 4. Logical groupings + the behavioral layer (the pump · skill vocab)
 
 The pseudo-peristaltic pump forces two additions a flat netlist lacks:
 
@@ -305,19 +324,44 @@ volume constraint is really a constraint on the router/sizer. Split by cost:
 - **DRC** (post-placement, geometric): §6.1.
 - **Auto-routing** (the hard piece): deferred; assisted-first.
 
-**Storage of a constraint (fork 4 — open, working note).** For the assisted
-turn-taking loop (fork 3, ADR 0051) to *raise* a constraint, a constraint must
-be an **addressable object**, not a field buried in the design's JSONB. The
-leaning is the `pcb` **`measure` model**: each constraint is a first-class row
-(`{class, target(s), predicate, value/range, note, status}`) with a **handle**,
-graded from hard (a tooling limit that must hold) to soft (a preference), and
-**re-evaluated like a 0041 observer** on every geometry change. That gives, for
-free: a constraint can pick up a **salience eye** when it binds/violates (so the
-persona "raises" it), it is searchable ("show designs where a volume constraint
-is underdetermined"), and the emergent grouping constraints (§4 fork 5) are just
-more rows. The alternative — inline JSONB + a render — is simpler to slice-0 but
-loses the per-constraint handle the turn loop wants. **Not a new kind either
-way.** To settle next.
+**Storage of a constraint (fork 4 — DECIDED).** A constraint is a **standalone,
+first-class, addressable entity** — its own relational rows, **not** fields
+nested in the netlist/placement tables' JSONB, and **not** a new kind (it stays
+inside `fluidics`). It follows the **`pcb` `measure` *pattern*** — a graded,
+targeted, re-evaluated design-intent row — but is a **fluidics-owned entity, not
+a reuse of pcb's `measure` table**. Shape: `{class, target-handle(s), predicate,
+value/range, grade, tolerance?, note, status}`, each row with its own **handle**
+(ADR 0036).
+
+Three properties make it the **substrate keystone** of the rule layer:
+
+- **Handle-targeting.** A constraint points at other objects *by handle* —
+  authored (a channel edge, a valve) *or* derived (a routed centerline, a via)
+  *or* **cross-kind** (a `cad` datum on a `realized-by` part, §8b). It is not
+  owned by its target and not nested inside it; it is a **relation over
+  handles**, which is exactly what lets one constraint span authored, derived,
+  and cad objects at once.
+- **Graded — hard / soft / gauge.** `hard` = a bound that must hold (a tooling
+  limit, a min wall); `soft` = a preference the loop trades off (shorter path,
+  tighter pitch); `gauge` = a pure **observer** that reports a measured value
+  with no pass/fail (a 0041 probe made persistent — "what *is* this
+  compartment's volume?"). The grade tells the fork-3 loop how hard to push and
+  what is even falsifiable.
+- **Re-evaluated like a 0041 observer** on every geometry change → a `status`
+  (met / violated / underdetermined) that lets a **binding** constraint pick up
+  a **salience eye** so the fork-3 persona **raises** it, and makes the whole
+  set **searchable** ("show designs where a volume constraint is
+  underdetermined").
+
+It also **carries the tolerance policy** (§0c): the global design-rule default
+set lives as constraint-layer defaults, and any single constraint may **override
+its band locally** — the checker's met/violated verdict *is* the tolerance test.
+And it is **read by disjoint engines**: the **router** consumes only
+width/clearance/layer, the **sizer** only volume, **DRC/bubble** the rest (§8c).
+One entity, disjoint subsets — the standalone row (vs. inline JSONB) is precisely
+what lets three engines each read their slice without parsing a design blob, and
+what lets the loop *raise* one constraint without touching the design. The
+emergent grouping constraints (§4 fork 5) are just more rows.
 
 Taxonomy:
 
@@ -340,7 +384,7 @@ Taxonomy:
 
 Both signs from the start (mirror `pcb` truism lint and `cad` `/analysis`).
 
-### 7. Bubbles are a *predicted* hazard, not a graph element
+### 7. Bubbles are a *predicted* hazard, not a graph element (skill vocab)
 
 Bubbles are **not authored into the netlist** and **not a node/annotation you
 place** — they are **emergent, and predictable**. So they live as a **derived
@@ -527,16 +571,25 @@ A footprint is **not** a single 2D pad pattern — it is a **type + one placemen
 anchor + a set of facets**, and every facet shares that one anchor, so **placing
 the footprint once registers all its facets across every plane by
 construction** (the master generalization of §8a.4 projection-registration and
-§8b realized-by). "How many facets" is **per-type and open-ended**; the *kinds*
-of facet are fixed:
+§8b realized-by). "How many facets" is **per-type and open-ended**; the skill
+names **five facet *kinds***, but the **substrate sees only §0(a)'s three
+code-visible roles** — the five collapse to `net` / `solid-op` / `part-link`:
 
-| facet | lives on | consumed by |
-|---|---|---|
-| **port/pad** (position, shape, net role in/out) | a fluidic layer | the router (§8c) |
-| **body/geometry** (2D/2.5D shape) | a fluidic layer / the core | cad export (§8a) |
-| **actuator** (poky-bit hole / clearance) | the **actuator plane** | actuator-plane export + registration |
-| **part** (realized-by a physical/cad part + bond) | a mount plane | BOM + export (§8b) |
-| **behavior** (port roles, flow direction, orientation) | — (non-geometric) | bubble prediction (§7), metering, compartments (§5) |
+| facet (skill kind) | lives on | consumed by | code-visible role (§0a) |
+|---|---|---|---|
+| **port/pad** (position, shape, net role in/out) | a fluidic layer | the router (§8c) | **has-net** |
+| **body/geometry** (2D/2.5D shape) | a fluidic layer / the core | cad export (§8a) | **solid-op** (add\|subtract) |
+| **actuator** (poky-bit hole / clearance) | an `actuator`-role plane (§2) | actuator-plane export + registration | **solid-op** (subtract, on an actuator plane) |
+| **part** (realized-by a physical/cad part + bond) | a `part-mount` plane (§2) | BOM + export (§8b) | **part-link** |
+| **behavior** (port roles, flow direction, orientation) | — (non-geometric) | bubble prediction (§7), metering, compartments (§5) | **none** — graph attrs, *not a footprint facet* in code |
+
+**The reconciliation:** `port → has-net`; `body` **and** `actuator → solid-op`
+(an actuator hole is just a `subtract` on an `actuator`-role plane, §2 — not a
+distinct code primitive); `part → part-link`; and **behavior is not a footprint
+facet at all** in code — it is graph-level attributes (intent) carried on the
+node/edge and read by §5/§7, never stamped by the anchor. So the skill *names*
+five, the substrate *implements* three. The master invariant is unchanged: **one
+anchor, all facets registered.**
 
 A plain channel is 2 port facets. A **valve** = coincident in/out port facets
 (§8c) + a body circle + **an actuator facet** (the stepper hole). A
@@ -549,10 +602,10 @@ steppers whose poky bits pass through an actuator plate whose holes **must align
 to the valve centers**. Because the hole is an *actuator facet of the same
 footprint* as the valve's fluidic pads, alignment is **automatic** — one anchor,
 nothing authored twice, nothing to drift (the §8a.4/§8b registration guarantee,
-now spanning a mechanical plane). So the stack model (§2) gains a **plane role**
-— fluidic / structural / **actuator** / part-mount — and each role exports
-differently (fluidic → channel DXF/G-code; actuator → hole-pattern DXF/G-code;
-part → BOM). The plate is just another cad layer (a slab with hole
+now spanning a mechanical plane). This is exactly why the stack model (§2) now
+carries a **plane role** — `fluidic` / `structural` / `actuator` / `part-mount`,
+each exporting differently (folded into §2, not owned here): the actuator plate
+is simply a plane with `role=actuator`, another cad layer (a slab with hole
 subtractions). *Caveat:* the shared anchor gives the **nominal** center; the
 poky-bit-vs-hole **clearance** (the bit has slop) is still a real constraint
 (fork 4), not removed by registration.
@@ -573,11 +626,14 @@ adhesive adapter is the fluidic analog of a soldered PCB component — it feeds 
 **BOM** (adapters, films, adhesives, core, actuator plate, steppers): a
 `pcb`-style BOM view over the part facets.
 
-**Open** (you flagged "need to think this through"): the facet *set* per
-footprint type is open-ended (this is what "how many facets" resolves to —
-zero-or-more of each kind); the master invariant is **one anchor, all facets
-registered**. Marked working — revisit once the plane-role taxonomy (fluidic /
-structural / actuator / part-mount) firms.
+**Still open (working)** (you flagged "need to think this through"): the facet
+*set* per footprint type is open-ended (this is what "how many facets" resolves
+to — zero-or-more of each *skill* kind, over the three code roles above); the
+master invariant is **one anchor, all facets registered**. The plane-role
+taxonomy (fluidic / structural / actuator / part-mount) is now **seated in §2**
+and the 5→3 facet reconciliation is settled; what stays working is only the
+per-type facet-set catalogue (a skill-side data question), so §8d rides as a
+**working** section, not a locked one.
 
 ### 9. Slice plan (each merges dark)
 
@@ -630,12 +686,17 @@ derive a new slug → re-check → re-route.
    / turn moves (the fluidic lint/checker piped through the render), human in
    the loop. **Auto-routing stays deferred** (§8); constraint-raising is the
    collaboration surface, not a solver verdict.
-4. **Constraints storage — UNDER DISCUSSION** (only open fork). Leaning: not
-   opaque inline JSONB and not a whole new kind, but **first-class addressable
-   rows in the `pcb` `measure` mold** — graded design intent, re-evaluated like
-   0041 observers, each a **handle** so a constraint can be *raised* and argued
-   in the 0051 turn loop (fork 3) and pick up a salience eye when it binds. See
-   the working note in §6. To be settled next.
+4. **Constraints storage — DECIDED: a standalone, handle-targeting, graded,
+   re-evaluated constraint entity** (§6). Not opaque inline JSONB, **not nested
+   in the fluidics tables**, and **not a new kind** — a **fluidics-owned
+   first-class entity in the `pcb` `measure` *pattern*** (a graded/targeted/
+   re-evaluated row, *not* a reuse of pcb's entity). Graded **hard / soft /
+   gauge**; targets objects **by handle** (authored, derived, or cross-kind cad
+   datums, §8b); **re-evaluated like a 0041 observer** so it picks up a salience
+   eye and the fork-3 persona *raises* it. It is the **substrate keystone** of
+   the rule layer: it **carries the tolerance policy** (§0c) and is read by
+   **disjoint engines** (router: width/clearance/layer · sizer: volume ·
+   DRC/bubble: the rest).
 5. **Macros — just logical groupings + graph-level claims** (§4, rewritten).
    *Not* a shared parameterized library, *not* an expandable part: a named
    grouping over existing primitives + logical claims. Emergent distance
