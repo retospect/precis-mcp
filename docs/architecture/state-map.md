@@ -821,7 +821,16 @@ The master kinds table lives in the `precis-overview` skill.
   entries `note·observation·hypothesis·result·decision·dead-end·milestone·
   reflection·cost` + `by`; a `milestone` is a deed, `cost` feeds the **tote** =
   a query over the dated log, no separate cost store), and a dossier `draft`
-  (arrives with the loop, slice 4). **Slice 2 (reweighting) live**
+  (arrives with the loop, slice 4). The dossier body is **two chunks** (ADR
+  0064 §A, `quest/dossier.py`): a whole-rewritten **narrative** + a **pinned
+  ledger** (`meta.pinned='ledger'`, generic `paragraph` + `patch_chunk_meta`,
+  no migration) of strategic *tried/ruled-out/open* directions that survives
+  every `rewrite_dossier` byte-identical and injects into the tick prompt as a
+  "do NOT re-propose" constraint — so a rewrite that drops a rule-out can't
+  silently re-open ruled-out ground (the catpath dead-3-days spin; distinct
+  from the per-*candidate* `ruled-out:` structure tags). The model pins entries
+  via a `ledger_add` output field; a pre-0064 dossier heals its ledger lazily
+  (`ensure_ledger_chunk`). **Slice 2 (reweighting) live**
   (`src/precis/quest/reweight.py`): priority flows down the `serves` DAG
   (max-agg, `STRIVING_DECAY` per quest→quest ladder hop; only **active** quests
   pull; canonical priority = `refs.prio`, set via a `PRIO:` tag synced in the

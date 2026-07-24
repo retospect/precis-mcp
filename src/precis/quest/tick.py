@@ -237,6 +237,31 @@ def _frontier_summary(store: Store, quest_id: int) -> str:
     return "\n".join(lines)
 
 
+def _ledger_constraints(ledger_text: str) -> str:
+    """Bullet lines from the pinned ledger's Tried + Ruled-out sections.
+
+    This is ADR 0064 §A's structural "do not re-propose" constraint —
+    strategic *directions* the ledger has pinned as tried/dead, distinct from
+    :func:`_ruled_out_handles`'s per-candidate `structure` tags. The Open
+    section is a to-do list, not a constraint, so it's excluded.
+    """
+    keep_headings = {
+        dossier_mod._SECTION_HEADINGS["tried"],
+        dossier_mod._SECTION_HEADINGS["ruled-out"],
+    }
+    placeholder = f"- {dossier_mod._LEDGER_PLACEHOLDER}"
+    lines: list[str] = []
+    keep = False
+    for line in ledger_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            keep = stripped in keep_headings
+            continue
+        if keep and stripped.startswith("- ") and stripped != placeholder:
+            lines.append(stripped)
+    return "\n".join(lines) if lines else "(nothing pinned yet)"
+
+
 def _reaction_context(quest: Ref) -> str:
     """Proposal rules for a **barrier quest** that declares a reaction (catpath).
 
@@ -341,7 +366,8 @@ def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
     qid = quest.id
     stmt = quest.title or f"quest {qid}"
     prio = quest.prio if quest.prio is not None else "unset"
-    _did, _h, dossier_text = dossier_mod.read_dossier(store, qid)
+    dossier_text = dossier_mod.read_narrative(store, qid)
+    ledger_text = dossier_mod.read_ledger(store, qid)
     gaps = gaps_mod.quest_gaps(store, qid)
     momentum = gaps_mod.quest_momentum(store, qid)
 
@@ -378,6 +404,7 @@ def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
             f"{momentum.blocked_todo_servers} blocked"
         ),
         dossier=dossier_text or "(no dossier yet)",
+        ledger_constraints=_ledger_constraints(ledger_text),
         gaps="\n".join(gap_lines),
         logbook="\n".join(tail),
         servers="\n".join(servers),
@@ -400,6 +427,9 @@ no evidence for.
 
 ## Current dossier (the living synthesis — you will rewrite it)
 {dossier}
+
+## Ruled-out ledger (do NOT re-propose these directions)
+{ledger_constraints}
 
 ## Gaps (the exploration queue — what is thin or unanswered)
 {gaps}
@@ -435,6 +465,10 @@ When the answer lies in the literature you don't yet hold (a `no-literature` or 
 `thin-support` gap, or a hypothesis that points at "published data"), emit \
 `searches` to go get it instead of hypothesising in a vacuum.
 
+When you rule out or complete a *direction* that must never be revisited, add \
+it to `ledger_add` (permanently preserved); `dossier_markdown` is rewritten \
+every tick, so a rule-out placed only there is forgotten.
+
 Respond with EXACTLY ONE JSON object and nothing else:
 {{
   "logbook": [
@@ -444,6 +478,11 @@ Respond with EXACTLY ONE JSON object and nothing else:
 linked as servers and feed the next step>"],
   "dossier_markdown": "<the FULL rewritten dossier in markdown: current \
 understanding, best leads so far, what's ruled out, open questions>",
+  "ledger_add": [
+    {{"section": "<tried|ruled-out|open>", "text": "<one durable, \
+permanently-pinned ledger entry — a direction tried/killed/still open, not a \
+single candidate material>"}}
+  ],
   "proposals": [
     {{"name": "<candidate material>", "rationale": "<why test it>",
       "structure": {{"cell": {{"a": 8.4, "b": 8.4, "c": 24.0, \
@@ -691,6 +730,19 @@ def run_quest_tick(
         if etype == "hypothesis":
             open_hyps.append(text)
         added += 1
+
+    # Ledger — pin any tried/ruled-out/open *directions* the model wants to
+    # survive the whole-rewrite below. Applied BEFORE `rewrite_dossier` so a
+    # same-tick rule-out is pinned even if the fresh narrative drops it
+    # (ADR 0064 §A — the structural fix for the catpath dead-3-days spin).
+    for e in payload.get("ledger_add") or []:
+        if not isinstance(e, dict):
+            continue
+        text = str(e.get("text") or "").strip()
+        if not text:
+            continue
+        section = str(e.get("section") or "").strip()
+        dossier_mod.append_ledger_entry(store, quest_id, section, text)
 
     # Rewrite the dossier (the rolling context) if the model produced one.
     md = str(payload.get("dossier_markdown") or "").strip()

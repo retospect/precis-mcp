@@ -21,9 +21,13 @@ from precis.handlers.quest import QuestHandler
 from precis.quest import compute as compute_mod
 from precis.quest import tick as tick_mod
 from precis.quest.dossier import (
+    append_ledger_entry,
     dossier_ref_id,
     ensure_dossier,
+    ensure_ledger_chunk,
     read_dossier,
+    read_ledger,
+    read_narrative,
     rewrite_dossier,
 )
 from precis.quest.tick import build_tick_prompt, run_quest_tick
@@ -81,6 +85,109 @@ class TestDossier:
         _did2, _h2, text = read_dossier(store, qid)
         assert "Understanding" in text and "promising" in text
         assert "No synthesis yet" not in text  # wholesale replaced
+
+
+# ── the pinned ledger (ADR 0064 §A) ─────────────────────────────────────
+
+
+class TestDossierLedger:
+    def test_ensure_dossier_creates_a_pinned_ledger_chunk(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving that needs a ledger")
+        did = ensure_dossier(store, qid)
+        chunks = store.reading_order(did)
+        ledger_chunks = [c for c in chunks if (c.meta or {}).get("pinned") == "ledger"]
+        assert len(ledger_chunks) == 1
+        assert "## Tried" in ledger_chunks[0].text
+        assert "## Ruled out" in ledger_chunks[0].text
+        assert "## Open" in ledger_chunks[0].text
+
+    def test_rewrite_dossier_leaves_ledger_byte_identical(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        added = append_ledger_entry(
+            store, qid, "ruled-out", "Pt/Al2O3 — barrier too high"
+        )
+        assert added is True
+        before = read_ledger(store, qid)
+        rewrite_dossier(store, qid, "# Understanding\n\nFresh synthesis.")
+        rewrite_dossier(store, qid, "# Understanding v2\n\nAnother pass entirely.")
+        after = read_ledger(store, qid)
+        assert after == before  # untouched by two whole-rewrites
+        assert "Pt/Al2O3 — barrier too high" in after
+
+    def test_ensure_ledger_chunk_heals_an_old_narrative_only_dossier(
+        self, store: Any
+    ) -> None:
+        from precis.quest import dossier as dossier_mod
+
+        qid = _mk_quest(store, "A striving with a pre-ADR-0064 dossier")
+        # Build the dossier the OLD way — a single narrative chunk, no pinned
+        # ledger — the shape a live prod quest is in pre-migration.
+        qref = store.get_ref(kind="quest", id=qid)
+        ref, _heading = store.create_draft(
+            name=f"quest-{qid}-dossier",
+            title=f"Dossier — {qref.title}",
+            project_ref_id=qid,
+            meta={"dossier_of_quest": qid},
+            relation=dossier_mod._RELATION,
+        )
+        store.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="paragraph",
+            text="Pre-existing narrative synthesis.",
+            split=False,
+        )
+        did = ref.id
+        assert dossier_ref_id(store, qid) == did
+        before = store.reading_order(did)
+        assert not any((c.meta or {}).get("pinned") == "ledger" for c in before)
+
+        handle = ensure_ledger_chunk(store, qid)
+
+        after = store.reading_order(did)
+        ledger_chunks = [c for c in after if (c.meta or {}).get("pinned") == "ledger"]
+        assert len(ledger_chunks) == 1
+        assert ledger_chunks[0].handle == handle
+        assert "Pre-existing narrative synthesis." in read_narrative(store, qid)
+        # idempotent — a second heal doesn't create a duplicate
+        assert ensure_ledger_chunk(store, qid) == handle
+        assert (
+            len(
+                [
+                    c
+                    for c in store.reading_order(did)
+                    if (c.meta or {}).get("pinned") == "ledger"
+                ]
+            )
+            == 1
+        )
+
+    def test_append_ledger_entry_appends_under_heading_and_dedups(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert (
+            append_ledger_entry(store, qid, "tried", "Fe–N4 single-atom sites") is True
+        )
+        ledger = read_ledger(store, qid)
+        assert "## Tried\n- Fe–N4 single-atom sites" in ledger
+        # a byte-identical bullet under the same heading is deduped
+        assert (
+            append_ledger_entry(store, qid, "tried", "Fe–N4 single-atom sites") is False
+        )
+        assert read_ledger(store, qid).count("Fe–N4 single-atom sites") == 1
+
+    def test_append_ledger_entry_clamps_unknown_section_to_open(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert append_ledger_entry(store, qid, "bogus", "clamped entry") is True
+        ledger = read_ledger(store, qid)
+        open_block = ledger.split("## Open", 1)[1]
+        assert "clamped entry" in open_block
+
+    def test_append_ledger_entry_skips_blank_text(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert append_ledger_entry(store, qid, "open", "   ") is False
 
 
 # ── the tick ──────────────────────────────────────────────────────────
@@ -210,6 +317,28 @@ class TestQuestTick:
         out = run_quest_tick(store, 999999, dispatch_fn=_fake_dispatch({"logbook": []}))
         assert out.status == "failed" and "not found" in out.note
 
+    def test_ledger_add_is_pinned_and_survives_a_later_rewrite(
+        self, store: Any
+    ) -> None:
+        # ADR 0064 §A: a model-emitted `ledger_add` is applied BEFORE the
+        # dossier rewrite, so it's pinned even though this same tick also
+        # whole-rewrites the narrative — and it must still be there after a
+        # SUBSEQUENT rewrite too (the loop-breaker the whole feature is for).
+        qid = _mk_quest(store, "A striving")
+        payload = {
+            "logbook": [],
+            "dossier_markdown": "# Understanding\n\nFirst pass.",
+            "ledger_add": [
+                {"section": "ruled-out", "text": "Cu single-atom — relax fails"}
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.status == "succeeded"
+        assert "Cu single-atom — relax fails" in read_ledger(store, qid)
+
+        rewrite_dossier(store, qid, "# Understanding v2\n\nSomething else.")
+        assert "Cu single-atom — relax fails" in read_ledger(store, qid)
+
 
 class TestModelCannotFabricateResults:
     """gripes 171148/171149: a local model proposer fabricated a numeric
@@ -301,6 +430,19 @@ class TestPromptAndView:
         )
         body = h.get(id=qid, view="dossier").body
         assert "Living" in body and "synthesis here" in body
+
+    def test_prompt_shows_ledger_ruled_out_entries_not_open(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        append_ledger_entry(store, qid, "ruled-out", "Pd(111) bare — beaten on barrier")
+        append_ledger_entry(store, qid, "tried", "Fe-N4 single atom sites")
+        append_ledger_entry(store, qid, "open", "Does co-adsorbed H help?")
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "Ruled-out ledger (do NOT re-propose these directions)" in prompt
+        assert "Pd(111) bare — beaten on barrier" in prompt
+        assert "Fe-N4 single atom sites" in prompt
+        # the Open section is a to-do list, not a "do not re-propose" constraint
+        assert "Does co-adsorbed H help?" not in prompt
 
 
 def test_dossier_relation_registered() -> None:
