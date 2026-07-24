@@ -47,6 +47,7 @@ import time
 from typing import Any
 
 from precis.quest.allocator import active_quest_ids
+from precis.quest.weave_tick import QUEST_BODY_META_KEY, QUEST_BODY_WEAVE
 from precis.workers.executors._yield import Done, WakeWhen, Yield
 from precis.workers.job_types import JobTypeSpec
 
@@ -267,6 +268,27 @@ def _quest_status(store: Any, quest_id: int) -> str:
     return "unknown"
 
 
+def _quest_body(store: Any, quest_id: int) -> str | None:
+    """The quest's ``meta.quest_body`` marker (rung 6e-2), or ``None``.
+
+    ``"weave"`` (:data:`precis.quest.weave_tick.QUEST_BODY_WEAVE`) routes
+    ``_phase_tick`` to the paper-writing weave body instead of the default
+    catalyst ``run_quest_tick`` — see :func:`precis.quest.weave_tick.
+    mark_weave_quest`. Same defensive shape as ``_quest_status`` (a missing/
+    exception-raising ``get_ref`` — the common case in unit tests that don't
+    stub it — degrades to the catalyst default, not a crash).
+    """
+    try:
+        ref = store.get_ref(kind="quest", id=quest_id)
+    except Exception:
+        return None
+    if ref is None:
+        return None
+    meta = ref.meta or {}
+    val = meta.get(QUEST_BODY_META_KEY)
+    return str(val) if val is not None else None
+
+
 def _dispatch(ctx: Any, spec: Any) -> Any:
     """Coordinator phase machine. Returns ``Done`` | ``Yield``."""
     state = (ctx.meta or {}).get("coordinator_state") or {}
@@ -375,6 +397,122 @@ def _fallback_queries(store: Any, quest_id: int, slice_count: int) -> list[str]:
     return [facets[slice_count % len(facets)]]
 
 
+def _phase_weave_tick(
+    ctx: Any,
+    quest_id: int,
+    params: dict[str, Any],
+    state: dict[str, Any],
+    slice_count: int,
+) -> Any:
+    """Weave-quest leg of ``_phase_tick`` (rung 6e-2): one ``weave_tick`` call
+    (place + weave the topic dossier's unintegrated papers) instead of the
+    catalyst ``run_quest_tick``.
+
+    Unlike the catalyst path there are no async sim children to await — a
+    weave tick writes sections/citations synchronously — so a productive tick
+    simply heartbeats before the next one (still via the shared ``await``
+    phase/``at_time`` wake, so the loop paces itself the same way; ``_phase_
+    await``'s ``_pending_sim_ids`` query naturally returns empty for a weave
+    quest, since it never mints ``catpath_explore``/``struct_relax`` jobs, so
+    the very next wake falls straight through to another tick). The give-up
+    budgets are reused verbatim (consecutive-*failed* / consecutive-*punt*)
+    so the loop still winds down + rests exactly like the catalyst path on
+    sustained trouble, rather than spinning forever.
+    """
+    from precis.quest.weave_tick import weave_tick
+    from precis.utils.llm.router import DispatchClient, Tier
+
+    tier = params.get("tier") or "cloud-mid"
+    client = DispatchClient(tier=Tier(tier), source="quest_weave", tools_needed=True)
+
+    try:
+        result = weave_tick(ctx.store, client, quest_id)
+    except Exception as exc:  # defensive — mirrors run_quest_tick's own
+        # internal try/except-to-"failed" shape; a weave_tick bug must back
+        # off the loop, not crash the coordinator.
+        log.exception("tick #%s: weave_tick raised", slice_count)
+        result = {"ok": False, "error": f"weave_tick exception: {exc}"}
+
+    if not result.get("ok"):
+        error = result.get("error", "?")
+        ctx.append_chunk("job_event", f"tick #{slice_count}: weave error — {error}")
+        fails = int(state.get("tick_failures") or 0) + 1
+        if fails >= _max_tick_failures():
+            return Done(
+                summary=(
+                    f"quest {quest_id} weave loop resting after {fails} "
+                    f"consecutive failed tick(s) (last: {error}). Re-armed by "
+                    "a fresh quest_tick coordinator job once the cause is "
+                    "fixed."
+                ),
+                success=False,
+                summary_meta={
+                    "slices": slice_count,
+                    "tick_failures": fails,
+                    "last_status": error,
+                },
+            )
+        ctx.append_chunk(
+            "job_event",
+            f"tick #{slice_count}: weave error — backing off {_heartbeat_s()}s "
+            f"then retrying (failure {fails}/{_max_tick_failures()})",
+        )
+        return Yield(
+            state={
+                "phase": "await",
+                "slice_count": slice_count,
+                "tick_failures": fails,
+                "child_job_ids": [],
+            },
+            wake_when=WakeWhen("at_time", {"ts": int(time.time() + _heartbeat_s())}),
+        )
+
+    woven = result.get("woven") or []
+    new_sections = result.get("new_sections") or []
+    ok_sections = sum(1 for w in woven if w.get("ok"))
+    engaged = bool(ok_sections or new_sections)
+    ctx.append_chunk(
+        "job_event",
+        f"tick #{slice_count}: weave — batch {result.get('batch_size', 0)}, "
+        f"{ok_sections}/{len(woven)} section(s) woven, {len(new_sections)} "
+        f"new; {result.get('note', '')}"[:500],
+    )
+
+    if not engaged:
+        punts = int(state.get("punt_ticks") or 0) + 1
+        if punts >= _max_punt_ticks():
+            return Done(
+                summary=(
+                    f"quest {quest_id} weave loop resting after {punts} "
+                    "consecutive empty tick(s) (nothing to weave). Re-armed "
+                    "by a fresh quest_tick coordinator job."
+                ),
+                success=True,
+                summary_meta={"slices": slice_count, "punt_ticks": punts},
+            )
+        ctx.append_chunk(
+            "job_event",
+            f"tick #{slice_count}: weave punt (nothing to weave) — retrying "
+            f"(punt {punts}/{_max_punt_ticks()})",
+        )
+        return Yield(
+            state={
+                "phase": "await",
+                "slice_count": slice_count,
+                "punt_ticks": punts,
+                "child_job_ids": [],
+            },
+            wake_when=WakeWhen("at_time", {"ts": int(time.time() + _heartbeat_s())}),
+        )
+
+    # A productive weave tick rebuilds state fresh — resets the give-up
+    # budgets, mirroring the catalyst path's "a success resets" convention.
+    return Yield(
+        state={"phase": "await", "slice_count": slice_count, "child_job_ids": []},
+        wake_when=WakeWhen("at_time", {"ts": int(time.time() + _heartbeat_s())}),
+    )
+
+
 def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     """Harvest finished sims + review/propose (local LLM) + dispatch a batch."""
     from precis.dispatch import Hub
@@ -414,6 +552,14 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
             },
             wake_when=WakeWhen("at_time", {"ts": int(now + _heartbeat_s())}),
         )
+
+    # Rung 6e-2: a quest marked ``meta.quest_body == "weave"`` (a paper-writing/
+    # topic-dossier quest — see ``precis.quest.weave_tick.mark_weave_quest``)
+    # runs the weave body instead of the catalyst propose-experiment tick
+    # below. Checked here (not up-front in ``_dispatch``) so it still benefits
+    # from the backpressure/starvation-gate checks above unchanged.
+    if _quest_body(ctx.store, quest_id) == QUEST_BODY_WEAVE:
+        return _phase_weave_tick(ctx, quest_id, params, state, slice_count)
 
     search_fn = make_acquiring_search(quest_id, Hub(store=ctx.store))
     outcome = run_quest_tick(

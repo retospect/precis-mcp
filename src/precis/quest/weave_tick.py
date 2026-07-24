@@ -47,6 +47,31 @@ from precis.utils import handle_registry
 
 _TOPIC_PREFIX = "topic:"
 
+#: The quest ``meta`` key the autonomous coordinator (rung 6e-2,
+#: :mod:`precis.workers.job_types.quest_tick`) checks to decide which tick
+#: body a quest's loop runs — ``meta[QUEST_BODY_META_KEY] == QUEST_BODY_WEAVE``
+#: routes to :func:`weave_tick` instead of the default catalyst
+#: ``run_quest_tick``. Unmarked (the vast majority — every catalyst quest
+#: seeded by :mod:`precis.quest.catalyst_seed`) keeps the existing path.
+QUEST_BODY_META_KEY = "quest_body"
+
+#: The marker value for a paper-writing / topic-dossier quest.
+QUEST_BODY_WEAVE = "weave"
+
+
+def mark_weave_quest(store: Any, quest_id: int) -> None:
+    """Flag ``quest_id`` as a weave-body quest — the coordinator's ``_phase_tick``
+    will run :func:`weave_tick` for it instead of ``run_quest_tick``.
+
+    Mirrors :func:`precis.quest.catalyst_seed.seed_catalyst_quest`'s own
+    ``store.stamp_ref_meta`` config-stamping pattern. This is the minimal
+    marker-setter for an *already-minted* quest — a full topic-dossier-quest
+    creation flow (seed + dossier scaffold + this marker, all at once) is a
+    later rung.
+    """
+    store.stamp_ref_meta(quest_id, {QUEST_BODY_META_KEY: QUEST_BODY_WEAVE})
+
+
 _TITLE_SYS = (
     "You name sections for a living research review. Given a cluster of "
     "papers that didn't fit any existing section, propose ONE short, plain "
@@ -307,4 +332,9 @@ def weave_tick(
     }
 
 
-__all__ = ["weave_tick"]
+__all__ = [
+    "QUEST_BODY_META_KEY",
+    "QUEST_BODY_WEAVE",
+    "mark_weave_quest",
+    "weave_tick",
+]
