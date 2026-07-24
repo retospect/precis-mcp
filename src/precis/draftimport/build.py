@@ -448,7 +448,14 @@ def run_import(
                         for lab in labels_in(raw):
                             labels[lab] = parent_dc
                     continue
-                meta = {"flag": child.meta["flag"]} if child.meta.get("flag") else None
+                meta_out: dict[str, Any] = {}
+                if child.meta.get("flag"):
+                    meta_out["flag"] = child.meta["flag"]
+                if child.meta.get("table") is not None:
+                    meta_out["table"] = child.meta["table"]
+                if child.meta.get("caption") is not None:
+                    meta_out["caption"] = child.meta["caption"]
+                meta = meta_out or None
                 # `equation` is an internal plan marker only — math is stored as
                 # a `$$…$$` paragraph (normalised above). Every other kind is
                 # stored as-is.

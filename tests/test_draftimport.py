@@ -16,7 +16,7 @@ from precis.draftimport.demacro import (
     resolve_deferred,
     strip_annotations,
 )
-from precis.draftimport.tex import Chunk, walk_document
+from precis.draftimport.tex import Chunk, plan_blocks, walk_document
 
 
 def _kinds(node: Chunk) -> list[str]:
@@ -54,6 +54,25 @@ def test_bare_tabular_becomes_table_not_paragraph() -> None:
     kinds = _kinds(walk_document(body))
     assert "table" in kinds
     assert "tabular" not in " ".join(kinds)
+
+
+def test_ragged_gfm_table_body_degrades_to_raw_flagged_not_raises() -> None:
+    """A `tabular` body that happens to be GFM-shaped but ragged (a row
+    narrower than the header) used to crash `normalize_table` (BadInput)
+    and abort the whole `.tex` import; it must instead degrade — per
+    chunk, never propagating — to the same raw-body + needs-table-review
+    chunk a genuinely unparsable table gets (pre-ship review regression)."""
+    ragged_gfm = "| A | B | C |\n| --- | --- | --- |\n| x | y |"
+    body = "\\begin{tabular}{lll}\n" + ragged_gfm + "\n\\end{tabular}"
+
+    chunks = plan_blocks(body)  # must not raise
+
+    assert [c.kind for c in chunks] == ["table"]
+    tbl = chunks[0]
+    assert tbl.meta.get("flag") == "needs-table-review"
+    assert "table" not in tbl.meta
+    assert "caption" not in tbl.meta
+    assert ragged_gfm in tbl.text
 
 
 def test_bib_paths_in_reads_declared_bibs(tmp_path) -> None:

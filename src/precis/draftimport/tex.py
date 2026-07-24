@@ -28,6 +28,13 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from precis.utils.table_data import (
+    normalize_table,
+    parse_latex_table,
+    parse_markdown_table,
+    table_to_markdown,
+)
+
 # --------------------------------------------------------------------------
 # 1. flatten \input / \include
 # --------------------------------------------------------------------------
@@ -438,7 +445,9 @@ def build_tree(body: str) -> tuple[Node, list[Cite]]:
 # - equation/align/\[..\] -> an internal `equation` plan marker (raw LaTeX);
 #   the writer (build.py) normalises it to a `$$…$$` `paragraph` chunk. There
 #   is no stored `equation` chunk kind — math is just KaTeX in prose.
-# - table                -> `table` chunk (best-effort), needs-table-review.
+# - table                -> `table` chunk with a parsed `meta.table` when
+#   `parse_latex_table`/`parse_markdown_table` succeed, else raw LaTeX
+#   flagged needs-table-review.
 # - figure               -> dropped.
 
 _LIST_KIND = {"itemize": "ulist", "enumerate": "olist", "description": "ulist"}
@@ -585,11 +594,40 @@ def plan_blocks(body: str) -> list[Chunk]:
         elif seg[1] in _MATH_ENVS:
             chunks.append(Chunk("equation", seg[2].strip()))
         elif seg[1] in _TABLE_BLOCK_ENVS:
-            # keep the FULL tabular (raw LaTeX) — flagged for later review; the
-            # dry-run report truncates for display, the stored chunk must not.
-            chunks.append(
-                Chunk("table", seg[2].strip(), meta={"flag": "needs-table-review"})
-            )
+            body_raw = seg[2].strip()
+            # try cheap GFM first (a table body that's already
+            # markdown-shaped, from the gripe's interim case), then the
+            # LaTeX table parser; on success store the canonical table +
+            # derived text and drop the review flag — on ANY failure
+            # (including a ragged parse — e.g. GFM rows whose width
+            # disagrees with the header — that `normalize_table` rejects)
+            # keep the FULL tabular (raw LaTeX) flagged for later review
+            # (the dry-run report truncates for display, the stored chunk
+            # must not). Per-chunk: one malformed table must never abort
+            # the whole import.
+            parsed = parse_markdown_table(body_raw) or parse_latex_table(body_raw)
+            table_chunk: Chunk | None = None
+            if parsed:
+                try:
+                    norm = normalize_table(
+                        {"header": parsed["header"], "rows": parsed["rows"]}
+                    )
+                    cap = parsed.get("caption")
+                    table_meta: dict = {"table": norm}
+                    if cap:
+                        table_meta["caption"] = cap
+                    table_chunk = Chunk(
+                        "table",
+                        table_to_markdown(norm, caption=cap),
+                        meta=table_meta,
+                    )
+                except Exception:
+                    table_chunk = None
+            if table_chunk is None:
+                table_chunk = Chunk(
+                    "table", body_raw, meta={"flag": "needs-table-review"}
+                )
+            chunks.append(table_chunk)
         elif seg[1] in _FIGURE_BLOCK_ENVS:
             continue  # dropped
         else:
