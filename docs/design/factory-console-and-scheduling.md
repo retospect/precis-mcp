@@ -711,12 +711,13 @@ model choice without touching the scheduler or daemons.
     *Follow-up (11b):* the web "compare" button on the model picker; wire the
     heavy-axis scorers; curated `scripts/llm_eval/gold_set/` drawn from real
     historical gripes/papers + endpoint-scoped `record_eval(quant=)`.
-12. **Fleet-repo consolidation (§14).** Fold `~/work/cluster` into the
-    monorepo as an excluded `deploy/` tree; real inventory + vault become a
-    private overlay; deploy installs from the tree, retiring the
-    `*_git_ref` indirection. Enables slice 10 (the plists it renders now
-    live beside the code) and shares slice 0's `populate-secrets-vault`
-    playbook. Independent of 6–9; do when the cross-repo drift bites.
+12. **Fleet-repo consolidation (§14).** *[BUILT]* — the old `~/work/cluster`
+    repo is retired; its roles/playbooks live as the in-repo `deploy/` tree,
+    real inventory + vault as a gitignored local overlay
+    (`deploy/inventory/` + `deploy/.vault-pass`); `scripts/deploy` installs
+    from the tree by default. See `deploy/README.md`. Enables slice 10 (the
+    plists it renders now live beside the code) and shares slice 0's
+    `populate-secrets-vault` playbook.
 
 ## 11. Decisions taken / remaining
 
@@ -939,7 +940,12 @@ envelope tiers it enforces), so we never run a container that can't auth.
 
 ## 14. Fleet-repo consolidation — the cluster IS precis's deploy substrate
 
-The `~/work/cluster` Ansible repo has no purpose but running precis: asa
+*[BUILT — 2026-07-19]* The design below is executed; see `deploy/README.md`
+for the actual shape (it diverges in one detail: the overlay lives as
+gitignored files directly under the main checkout's `deploy/inventory/`,
+not cloned from a separate private repo). Kept here for the rationale.
+
+The old `~/work/cluster` Ansible repo had no purpose but running precis: asa
 merged in and hermes retires (no second tenant); the compute stacks
 (aizynth / alphafold / dft / tts / llamacpp / ollama / litellm) exist only
 to feed precis; postgres / redis / pgbouncer / backups have precis as sole
@@ -1491,9 +1497,10 @@ worker as the decentralized `scheduler` pass (slice 10), like everything else.
 
 ## 16. Build plan — 12 · 10 · 7 · 13 in one maintenance window
 
-**Decisions locked (2026-07-17):** overlay stays **local-only** (`~/work/cluster`
-keeps its inventory/vault/`.vault-pass`, gitignore-cloned into
-`deploy/inventory/`; push to a private remote is a deferred follow-up); the
+**Decisions locked (2026-07-17):** overlay stays **local-only** (its
+inventory/vault/`.vault-pass` live as gitignored files directly under
+`deploy/inventory/` — the plan to clone them from `~/work/cluster` was
+superseded; see §14. Push to a private remote is a deferred follow-up); the
 **container is the default agentic executor** (§13, fleet-wide, not opt-in);
 `scripts/deploy` **flips to install-from-tree inside the window**. The cluster
 **goes offline** for the cutover — a maintenance window, not a live cutover, so

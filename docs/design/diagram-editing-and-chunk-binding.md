@@ -361,7 +361,7 @@ The `mermaid` kind is **first-class**: registered unconditionally in
 `dispatch.py` (no env gate — the `PRECIS_MERMAID_ENABLED` flag was removed),
 and `mermaid` added to the `[all]` extra. The engine ships via the `[mermaid]`
 extra on the hosts that need it — the cluster install specs
-(`~/work/cluster/roles/`) carry it: `mcps` (`[patent,mermaid]`, the MCP serve
+(`deploy/roles/`) carry it: `mcps` (`[patent,mermaid]`, the MCP serve
 host), `precis_web` (`[web,docx,pcb,external,mermaid]`, the `/mermaid` render
 host), and `precis_worker` (`[paper,patent,external,mermaid]`, the
 `diagram_propose` tick host). A host without the extra still advertises the

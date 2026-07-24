@@ -687,7 +687,7 @@ users proliferate for no benefit):
 - **If real isolation is ever needed** (untrusted code, per-workload
   quotas), split into per-workload users *then*. YAGNI now.
 
-## 11. Provisioning (cluster repo, `~/work/cluster`)
+## 11. Provisioning (in-repo `deploy/` tree)
 
 Ansible work, separate from this doc's code but pinned here so it's
 not forgotten:
@@ -700,9 +700,9 @@ not forgotten:
   Targets `inference` group.
 - `roles/nfs_client` — fix the `/shared` mount on spark (§8).
 
-(CLAUDE.md in precis-dft points at `../precis-mcp/cluster/` for this —
-**that path is wrong**; the Ansible lives at `~/work/cluster`. Worth a
-one-line fix in precis-dft's CLAUDE.md.)
+(CLAUDE.md in precis-dft points at `../precis-mcp/cluster/` for this — close
+now but not quite: the Ansible lives at `../precis-mcp/deploy/` (in-repo,
+`~/work/cluster` is retired). Worth a one-line fix in precis-dft's CLAUDE.md.)
 
 ## 12. Phased plan
 

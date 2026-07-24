@@ -190,12 +190,13 @@ Two tiers (ADR 0007 / 0044 no-block compute lane):
   our hostnames/secrets. Because engines are containers, this compose file
   *is* the shareable install recipe — someone cloning precis can run the
   chem tools without our fleet. This satisfies "so others can use it."
-* **`~/work/cluster` (private, never pushes):** inventory, `topology.yml`
-  (the single capability→node map — which of *our* nodes runs what),
-  secrets, and the playbooks that wire *our* launchd/systemd units +
-  install podman + install the GPU-native in-process stack (AlphaFold/DFT
-  roles). This *references* the precis-side artifacts but supplies the
-  private topology.
+* **The gitignored `deploy/inventory/` overlay (private, never pushes,
+  local-only in the main checkout):** inventory, `topology.yml` (the single
+  capability→node map — which of *our* nodes runs what), secrets. The
+  playbooks that wire *our* launchd/systemd units + install podman + install
+  the GPU-native in-process stack (AlphaFold/DFT roles) are the portable,
+  public `deploy/playbooks/` + `deploy/roles/`, driven by that private
+  overlay.
 
 This is exactly how catpath split: `catpath.precis` plugin (shareable) vs
 `roles/catpath` + `topology.yml` + `44-catpath.yml` (cluster-private). The
@@ -223,8 +224,8 @@ machine-specific glue.
    (`Dockerfile` `FROM python:3.11-slim` + `pip aizynthfinder`, the
    `precis-aizynth-run` shim → `aizynthcli --config --smiles` → `trees.json`).
    Image = code; the policy/stock **models mount from the NAS at `/models`**,
-   not baked. **Remaining (cluster / `~/work/cluster`):** per-node `podman build
-   docker/aizynth`, a `config.yml` + model files on the NAS,
+   not baked. **Remaining (cluster ops, via the `deploy/` tree):** per-node
+   `podman build docker/aizynth`, a `config.yml` + model files on the NAS,
    `PRECIS_CHEM_ROUTE_NODE` (+ `PRECIS_CHEM_MODELS_DIR`) on a Linux node, and
    flipping `PRECIS_CHEM_ENABLED`. Until then the stub inline path is the only
    live engine.
@@ -423,8 +424,9 @@ exists, ASKCOS reuses it unchanged — its container's normalize step just passe
   mounted from NAS.
 * **podman on Linux compute nodes; Macs orchestrate only.** Runtime install
   is a shared prereq with `sandbox_run`.
-* **Repo split:** shareable (plugin + Dockerfiles + compose) in precis-mcp;
-  fleet-private (inventory + topology + secrets + roles) in `~/work/cluster`.
+* **Repo split:** shareable (plugin + Dockerfiles + compose + portable
+  `deploy/roles`) in precis-mcp; fleet-private (inventory + topology +
+  secrets) in the gitignored `deploy/inventory/` overlay.
 * **Two core seams landed** to enable all of the above: `can_own_jobs` and
   the open relation vocabulary (`Store.valid_relations()` +
   `validate_relation(store=…)`).

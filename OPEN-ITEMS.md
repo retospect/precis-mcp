@@ -320,17 +320,6 @@ agent-worker now runs as `deploy` not `hermes` (B1) with colima autostart
 (B3). The old "distribution is melchior-only" / "flip is the window action"
 bullets are stale — superseded by:
 
-- **`PRECIS_AGENT_CONTAINER=1` is flag-ON for melchior — live-fire proven
-  2026-07-24, one bug found + fixed en route.** *(ops, open).* A 2026-07-23
-  daemon restart activated `containerize_claude_argv()` for the first time
-  live; it forwarded the host `--mcp-config` path into the container verbatim
-  instead of rebasing onto the image's baked-in config, so every `plan_tick`
-  pass on melchior 404'd (gripe 170996, root-caused + fixed as main `09449a8e`
-  — `agent_container.py`'s `_rebase_mcp_config()`). Retried post-deploy:
-  `jo171083`/`jo171094` both cleanly claimed through the melchior container
-  and did real work. Remaining: `host_vars/melchior.yml
-  precis_agent_container_enabled: true` is still uncommitted in the cluster
-  repo — commit the overlay file there (out of this repo's scope).
 - **Capability probe + infra-fallback breaker shipped, not deployed**
   *(feature, open — owner `workers/executors/agent_container.py`, main
   `e9c915ba`).* `container_capability_ok()` (auth+bin-info+image-inspect,
@@ -432,8 +421,9 @@ passes now. Remaining:
 
 Design [`docs/design/factory-console-and-scheduling.md`](docs/design/factory-console-and-scheduling.md)
 (11 slices). All buildable-dark code shipped; what's left is cluster-ops —
-state lives partly in `~/work/cluster` (a separate repo), verify against the
-overlay before acting.
+state lives in the in-repo `deploy/` tree (`~/work/cluster` was retired
+2026-07-19, see `deploy/README.md`), verify against the gitignored
+`deploy/inventory` overlay before acting.
 
 - **Tier-2 DB role-enforce (`PRECIS_MCP_DB_ROLE_ENFORCE`) — HELD** *(feature,
   blocked — owner `store/pool.py::_apply_db_role`).* Session-level `SET ROLE`
@@ -452,14 +442,6 @@ overlay before acting.
   (vault fallback already shipped, mirrors precis's `utils/claude_oauth`) —
   live cutover is an ordered ops sequence (seed vault → verify → flip run-as
   → scope vault read → retire hermes), not yet applied.
-- **Cluster-repo overlay commit + demotion cleanup** *(ops, open — owner
-  Reto, `~/work/cluster`).* `PRECIS_DEPLOY_FROM_TREE` is now the
-  `scripts/deploy` default (in-repo `deploy/` tree is authoritative,
-  proven via a full green fleet redeploy) but several files created during
-  the cutover are still uncommitted in the overlay repo (`roles/
-  precis_worker_agent/*`, `playbooks/retire-thin-timers.yml`, the
-  `postgres_host`/`gateway_host`/`nas_*` inventory aliases) — commit them
-  before demoting/deleting `~/work/cluster`'s now-dead role/playbook copies.
 - **Plist / `service_unit` collapse** *(feature, open — deploy-day op).* The
   final "~15 daemons → 3 managed units + embedder-subprocess" consolidation;
   the abstract `service_unit` role (renders launchd|systemd from one spec) is
@@ -688,7 +670,7 @@ proven end-to-end, pLDDT 84.7). Design `docs/design/chem-tools-integration.md`.
   aizynth image on spark so the shim emits `route.json` (metrics + engine-
   agnostic steps): `ansible-playbook playbooks/43-aizynth.yml`; `scripts/deploy`
   for the precis-side `parse_syngraph`/`view='metrics'`. Owner:
-  `~/work/cluster/roles/aizynth`, `docker/aizynth`.
+  `deploy/roles/aizynth`, `docker/aizynth`.
 - **ASKCOS (slice 3) live-verification** *(feature, open).* Built + stub-tested,
   inert in prod. Stand up ASKCOS v2 (`PRECIS_ASKCOS_URL`) + a `roles/normalizer`
   play; **verify the Tree-Builder request/response schema against the instance's
@@ -725,8 +707,8 @@ Freerouting round-trip, 8 EDA skills, `[pcb]` extra.
   when the optional `easyeda2kicad` dep is absent — real EasyEDA→KiCad
   footprint conversion isn't wired anywhere yet. Also needs the Freerouting
   jar, and (Tier 2) `kicad-cli` for gerbers — none installed on any host.
-- **Cluster EDA ansible role — committed, not pushed** *(ops, open — owner
-  Reto, `~/work/cluster` `roles/precis_eda`).* Tier-1 only (JRE + jar +
+- **Cluster EDA ansible role — in-repo, not yet applied** *(ops, open —
+  `deploy/roles/precis_eda`).* Tier-1 only (JRE + jar +
   `PRECIS_FREEROUTING_JAR` on gateway/melchior). Three landmines inside it:
   (1) the role's Freerouting default pins **v1.9.0**, coupled to
   `pcb/route.py::_cmd`'s 1.x batch CLI (`-de in.dsn -do out.ses -mp 0`) — 2.x
@@ -880,7 +862,7 @@ Shipped + cut over. Remaining are small/by-design:
   `precis-research-help` + asa's SOUL: exhaust free corpus before spending on
   `perplexity-research`.
 
-### Cluster residuals (ops, `~/work/cluster`)
+### Cluster residuals (ops, `deploy/`)
 - **daily_briefing references a dead `cluster` DB** — `roles/daily_briefing` runs
   `psql -d cluster` (renamed/retired); repoint at `precis_prod` or remove.
 - **extract_watch uv-cache perm error on balthazar** — `~deploy/.cache/uv` has a
@@ -898,18 +880,18 @@ present-state: `docs/design/email-kind.md`, `state-map.md` `email` bullet.
 
 - **DEPLOY slice-4 code + ENABLE mail_poll — Reto's Phase-2 window.** Slice-4
   code is shipped but **not deployed** (dark, so harmless to lag). The
-  `mail_poll` enable flag for melchior is **prepared, uncommitted** in the
-  cluster working tree (`~/work/cluster`): `inventory/host_vars/melchior.yml`
-  (`precis_worker_mail_poll: true`) + a `PRECIS_MAIL_POLL_ENABLED` /
-  `PRECIS_INJECT_SCAN_ENABLED` gate block in
-  `roles/precis_worker/templates/precis-worker.plist.j2` (mirrors
-  `precis_worker_classify`). **Not deployed on purpose:** the cluster repo has
-  another session's in-flight Phase-2 `precis_worker_agent` provisioning (new
-  `tasks/main.yml` steps + a colima plist) that a full `scripts/deploy` would
-  sweep in. Sequence with that Phase-2 deploy: a normal `scripts/deploy` picks
-  up slice-4 code + the mail_poll flag together and starts polling
-  `rs@retostamm.com` from melchior. (Reto's session-guard also blocked me
-  committing the cluster edit; commit + deploy is yours.)
+  `mail_poll` enable flag for melchior was prepared once (`~/work/cluster`
+  era) but got `git restore`d 2026-07-19 (Reto: "don't want them just yet")
+  and the cluster repo has since been retired — **verified 2026-07-24: the
+  current in-repo `deploy/inventory/host_vars/melchior.yml` overlay has no
+  `precis_worker_mail_poll` key, and `deploy/roles/precis_worker/templates/
+  precis-worker.plist.j2` has no `PRECIS_MAIL_POLL_ENABLED`/
+  `PRECIS_INJECT_SCAN_ENABLED` gate block** — the prep needs to be redone
+  from scratch in the in-repo tree, not just committed. When ready: add
+  `precis_worker_mail_poll: true` to the melchior overlay + the gate block
+  to the plist template (mirrors `precis_worker_classify`), then
+  `scripts/deploy` picks up slice-4 code + the flag together and starts
+  polling `rs@retostamm.com` from melchior.
 - **Enable slice-4 `inject_scan` after verifying mail_poll's tier-0 rows** —
   set `precis_worker_inject_scan: true` on melchior (gate block already added);
   it runs on the local `summarizer` proxy there. Kept dark until the tier-0
@@ -1115,8 +1097,6 @@ decision; LaTeX export of `$$…$$`. **Interim** if not scheduled: just make
 North star: `claude -w` → spec → `/go` → implemented/gated/merged/deployed. Owner
 `scripts/`, `.claude/commands/`, `CLAUDE.md`. Remaining:
 
-- **Token-lean session boot** *(partly done).* CLAUDE.md compressed; next: apply
-  the same discipline to `~/work/cluster` CLAUDE.md, measure boot token delta.
 - **Backlog groomer — OPEN-ITEMS half** *(open).* The gripe→`fix_gripe`-todo
   groomer shipped (`workers/backlog_groom.py`, default-OFF). The OPEN-ITEMS half
   is blocked on two prereqs: (1) `OPEN-ITEMS.md` isn't packaged into the wheel, so
@@ -1194,11 +1174,11 @@ detectors + Discord webhook) shipped + deployed. Owner `workers/nursery.py`,
 - **Sandbox substrate** *(open, big lift).* The `sandbox_run`/`claude_docker`
   substrate (ADR 0048, `docs/proposals/sandbox-run-substrate.md`) runs ticks in
   isolated containers — subsumes the SPOF + co-location. The durable north star.
-- **Config-drift guard (cluster repo)** *(open).* A deploy assert that deployed
+- **Config-drift guard (`deploy/`)** *(open).* A deploy assert that deployed
   launchd plists match rendered templates (analogue of the venv-commit assert).
   Owner `redeploy-precis.yml`.
 - **Rationalize the cluster daemon-user model** *(ops, open, deferred — owner
-  `~/work/cluster`, not urgent).* `hermes` (OAuth/`~/.claude` state) vs
+  `deploy/`, not urgent).* `hermes` (OAuth/`~/.claude` state) vs
   `deploy` (owns `/opt/homebrew` + the colima docker socket) is a two-user
   split that already bit the Phase-2 container cutover once (hermes
   couldn't reach deploy's 0600 docker socket on melchior). The melchior

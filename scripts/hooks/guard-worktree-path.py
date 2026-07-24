@@ -16,7 +16,7 @@ path to the worktree twin and lets it proceed (``permissionDecision: "allow"``
 Only fires inside a worktree (``git rev-parse --show-toplevel`` differs from the
 main root) and only corrects a main-root path whose *worktree twin exists* (or
 whose parent dir exists) — i.e. a genuine mis-target of a repo file, never an
-external root (``~/work/cluster``, the scratchpad, ``~/.claude``) or a
+external root (a sibling repo, the scratchpad, ``~/.claude``) or a
 deliberate main-only path. Anything outside that unambiguous case is left
 alone (return ``None`` → allow, untouched).
 
@@ -80,7 +80,7 @@ def evaluate(
     if fp == wt_root or fp.startswith(wt_root + os.sep):
         return None
     # Only guard paths inside the MAIN checkout root. External roots
-    # (~/work/cluster, scratchpad, ~/.claude) are legitimately elsewhere.
+    # (a sibling repo, scratchpad, ~/.claude) are legitimately elsewhere.
     if not (fp == main_root or fp.startswith(main_root + os.sep)):
         return None
     rel = os.path.relpath(fp, main_root)

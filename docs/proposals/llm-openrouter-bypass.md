@@ -25,8 +25,9 @@ symptom doesn't remove tomorrow's.
 Reto's ask: stop depending on local-serving stability *right now* — route
 that traffic through OpenRouter instead, as a resilience/cost-bearing
 substitute, while the local-cluster stability work (a parallel session is
-already porting the `served_by`/litellm-alias fix into `~/work/cluster`'s
-ansible) proceeds as its own, separate optimization. This proposal is
+already porting the `served_by`/litellm-alias fix into the in-repo
+`deploy/` tree's ansible) proceeds as its own, separate optimization. This
+proposal is
 scoped to that bypass — **not** to the fleet-wide "wean off Opus" ambition
 in `OPEN-ITEMS.md`'s todo list (though it reuses the same mechanism and
 sets up that follow-on cleanly).
@@ -147,7 +148,8 @@ without a code change.
    `PRECIS_LLM_API_KEY` (already present locally at
    `~/.secrets/pw/openrouter_api_key` — needs vaulting for the cluster) +
    `PRECIS_LLM_FAILOVER=1` + the new bypass flag, applied fleet-wide via
-   the (unreachable-from-here) `~/work/cluster` overlay — same ops
+   the `deploy/` tree's per-host templates + the gitignored
+   `deploy/inventory/` overlay (local-only to the main checkout) — same ops
    pattern as the `served_by` env-var port already tracked in
    `OPEN-ITEMS.md`.
 

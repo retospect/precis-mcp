@@ -30,7 +30,7 @@ the "`cd` in a compound command can trigger a permission prompt" footgun
 for no benefit.
 
 Run commands bare; reach another directory with an **absolute path**
-instead of `cd` (`--git-dir=…`, `ls /Users/reto/work/cluster`,
+instead of `cd` (`--git-dir=…`, `ls /Users/reto/work/infrastructure`,
 `scripts/prod-psql` with an explicit host var). A log audit found ~60% of
 Bash calls carried a redundant `cd` prefix — the single largest source of
 wasted tokens across the fleet, which is why this is called out explicitly

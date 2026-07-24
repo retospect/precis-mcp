@@ -11,11 +11,11 @@ default**, its **deployed value per cluster service**, and an
   gating: [`docs/conventions/kind-enablement.md`](../conventions/kind-enablement.md).
 - **Authoritative sources.** Code defaults live in
   `src/precis/config.py` (Tier-1) and each subsystem's `from_env()` /
-  `cli/worker.py` reader (Tier-2). Deployed values live in the cluster
-  ansible repo (`~/work/cluster`): the shared-env dict
-  `inventory/group_vars/all/precis_env.yml`, the capability→host map
-  `inventory/group_vars/all/topology.yml`, the per-daemon templates
-  under `roles/*/templates/`, and `inventory/host_vars/*.yml`.
+  `cli/worker.py` reader (Tier-2). Deployed values live in the in-repo
+  `deploy/` tree: the per-daemon templates under `deploy/roles/*/templates/`
+  (public), plus the gitignored `deploy/inventory/` overlay for the
+  shared-env dict `group_vars/all/precis_env.yml`, the capability→host map
+  `group_vars/all/topology.yml`, and `host_vars/*.yml`.
 - **Truthiness.** Boolean toggles use `env_flag`/`env_truthy`
   (`src/precis/utils/env.py`): truthy = `1/true/yes/on`
   (case-insensitive). "unset" ⇒ the code default applies.
@@ -93,7 +93,7 @@ values are from the cluster scan.
 | `PRECIS_PAPER_GLOSSARY_ENABLED` | Per-paper glossary pass | off | **not set** | ⚠️ Dark by design (slice built, not activated). OK. |
 | `PRECIS_SANDBOX_ENABLED` | Register the `sandbox_run` executor pass | off | **not set** anywhere | 🔶 Note: the `code-sandbox` **container** is deployed on balthazar+spark (inventory group), but the *precis pass* that dispatches to it is gated by this env var, which is unset everywhere ⇒ `sandbox_run` never registers. If sandbox execution is meant to be live, set `PRECIS_SANDBOX_ENABLED=1` on the sandbox hosts. Currently dark end-to-end. |
 | `PRECIS_QUEST_LOOP_ENABLED` | Autonomous quest research loop | off | **not set** | 🔶 Intentionally dark — awaiting Reto's go (autonomous GPU/token spend). To go live also set `PRECIS_QUEST_WEEKLY_CHARS` and enable the struct-relax GPU lane. See the quest memory. |
-| `PRECIS_BACKLOG_GROOM_ENABLED` | Backlog groomer (auto repo-bug fixing) | off | **not set** in the cluster repo | ℹ️ Expected. The fixer/backlog loop runs **locally on `hephaestus` (Reto's laptop)**, outside the cluster ansible — so its env lives in the laptop's local launch/env config, not `~/work/cluster`. Manage it there. |
+| `PRECIS_BACKLOG_GROOM_ENABLED` | Backlog groomer (auto repo-bug fixing) | off | **not set** in the `deploy/` tree | ℹ️ Expected. The fixer/backlog loop runs **locally on `hephaestus` (Reto's laptop)**, outside the cluster ansible — so its env lives in the laptop's local launch/env config, not the `deploy/` overlay. Manage it there. |
 | `PRECIS_CHASE_LLM` | LLM finding-chase pass | `0` | not set | ✅ Off — the SQL chase covers prod; LLM chase is opt-in. |
 | `PRECIS_DREAM_AGENT` | Dream agent enable | off | set `1` by `dream-pass.sh` wrapper (melchior) | ✅ Correct — the daemon wrapper sets it at runtime. |
 | `PRECIS_FRICTION_REFLECT` | Friction-reflection pass | off | not set | ⚠️ Dark. Fine if unused; revisit if you want the tool-confusion auto-file loop. |
@@ -123,7 +123,7 @@ everywhere; only `python` stays hidden (no `PRECIS_PYTHON_ROOTS`).
 | Var | Controls | Code default | Deployed | Assessment |
 |-----|----------|--------------|----------|------------|
 | `PRECIS_CARD_FORGE_AUTONOMY` | Card-forge: `report` (observe) vs `act` | `report` | not set ⇒ `report` | ✅ Observe-first is the intended safe default (CLAUDE.md). Flip to `act` once the forge is trusted. |
-| `PRECIS_FIXER_AUTONOMY` | Fixer autonomy level | none | not set in this repo | ℹ️ Fixer runs **locally on `hephaestus` (Reto's laptop)**, not the cluster — its autonomy is set in the laptop's local env, outside `~/work/cluster`. |
+| `PRECIS_FIXER_AUTONOMY` | Fixer autonomy level | none | not set in this repo | ℹ️ Fixer runs **locally on `hephaestus` (Reto's laptop)**, not the cluster — its autonomy is set in the laptop's local env, outside the `deploy/` overlay. |
 | `PRECIS_DREAM_LENS` | Dream lens list | `sci` | not set ⇒ `sci` | ✅ Matches the oracle-lens design. |
 | `PRECIS_AGENT_TABLE_FORMAT` | Agent table render | `toon` | not set | ✅ Default fine. |
 
@@ -337,8 +337,9 @@ gates off). Items worth a decision, ranked:
 
 **Not issues** (resolved during review): the fixer/backlog-groom runs
 **locally on `hephaestus` (Reto's laptop)**, outside the cluster ansible
-— its env lives there, not in `~/work/cluster`. `PRECIS_LOAD_CEILING`
+— its env lives there, not in the `deploy/` overlay. `PRECIS_LOAD_CEILING`
 is correctly left at default (wrong lever for RAM-driven jetsam).
 
-> Deployment values are a scan snapshot of `~/work/cluster` at the time
-> of writing. Re-verify against live daemons before an incident.
+> Deployment values are a scan snapshot of the `deploy/` tree (roles +
+> the gitignored `deploy/inventory/` overlay) at the time of writing.
+> Re-verify against live daemons before an incident.

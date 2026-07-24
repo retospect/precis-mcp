@@ -3,10 +3,11 @@
 > Design-of-record for the `sandbox_run` job_type (the piece ADR 0048
 > deferred). The **buildable units** are carved into `docs/proposals/`:
 > `sandbox-run-substrate.md` (slice 1, ready), with harvest and run-mode as
-> fast-follows. The **cluster/ops half** lives in `~/work/cluster`
-> (`roles/code_task_image` + `playbooks/40-code-task-image.yml`) — the fixer
-> can't reach it, so it is a human prerequisite, not intake. This file is the
-> full picture the slices reference; keep it true.
+> fast-follows. The **cluster/ops half** is unbuilt — it lands as a
+> `code_task_image` role + a `code-task-image` playbook under the in-repo
+> `deploy/` tree (not a separate cluster repo) when someone does it — the
+> fixer can't reach it, so it is a human prerequisite, not intake. This file
+> is the full picture the slices reference; keep it true.
 
 ## Why
 
@@ -138,9 +139,10 @@ not blocking. The one genuinely backend-specific axis is **staging** (NFS local
    round-trip, the failure taxonomy in `job_summary`.
 3. **`mode:run` + recurring** (fast-follow proposal) — stored-tarball staging,
    `uv sync`, `RUN.json.cmd`, recurring umbrella.
-4. **Cluster ops** (human, `~/work/cluster`) — prerequisites for a *live* run;
-   see `roles/code_task_image/README.md`. Note **podman is not currently
-   installed on balthazar/spark** (the `services:[…podman]` + `agent_sandbox`
+4. **Cluster ops** (human, in-repo `deploy/` tree, unbuilt) — prerequisites for
+   a *live* run; see `roles/code_task_image/README.md` once it exists. Note
+   **podman is not currently installed on balthazar/spark** (the
+   `services:[…podman]` + `agent_sandbox`
    layer is unrealized — `podman_installed` is set nowhere, so the `mcps`
    image tasks are dormant too), so **install-podman is prerequisite zero**.
    Then: `code_task_image` build-in-place play; **enable the pass in

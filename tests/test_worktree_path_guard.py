@@ -51,10 +51,14 @@ def test_worktree_path_is_allowed_untouched() -> None:
 
 
 def test_external_root_is_allowed() -> None:
-    # ~/work/cluster and friends live outside the main checkout — never guarded.
+    # A sibling repo and friends live outside the main checkout — never guarded.
     assert (
         evaluate(
-            "/Users/reto/work/cluster/foo.yml", WT, MAIN, exists=_always, isdir=_always
+            "/Users/reto/work/infrastructure/foo.yml",
+            WT,
+            MAIN,
+            exists=_always,
+            isdir=_always,
         )
         is None
     )

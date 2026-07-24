@@ -7,8 +7,8 @@ title: sandbox_run slice 1 — the container-execution substrate (stub-gated, da
 > (`workers/job_types/sandbox_run.py`) + `claude_docker` poll executor
 > (`workers/executors/claude_docker.py`), registered default-OFF under
 > `PRECIS_SANDBOX_ENABLED`. Merges dark. Harvest (folder+tarball) is slice 2;
-> `mode:run` is slice 3; the cluster ops half (`~/work/cluster`) remains a human
-> prerequisite for a live run.
+> `mode:run` is slice 3; the cluster ops half (in-repo `deploy/` tree,
+> unbuilt) remains a human prerequisite for a live run.
 
 # sandbox_run slice 1 — the container-execution substrate
 
@@ -73,9 +73,9 @@ and reach a terminal status with a failure bubble — all without a live host.
   `RUN.json`) — slice 2.
 - **`mode:run`, recurring, `precis_access:read`, `secrets`** — later slices;
   all rejected fail-closed here.
-- **Cluster ops** (`~/work/cluster`: `code_task_image` play, dedicated OAuth
-  token, read-only DB role, network mode) — human prerequisites for a *live*
-  run; irrelevant to this slice's stub-podman gate.
+- **Cluster ops** (in-repo `deploy/` tree, unbuilt: `code_task_image` play,
+  dedicated OAuth token, read-only DB role, network mode) — human
+  prerequisites for a *live* run; irrelevant to this slice's stub-podman gate.
 - **The `code-task` Dockerfile target** — belongs with the ops slice; this
   slice only references the image tag.
 
