@@ -176,4 +176,6 @@ point **truthfully**, no retry, no fabricated number. Its own proposal.
 - `src/precis/quest/{dossier,logbook,tick,cascade}.py` — the shipped mechanism.
 - `src/precis/store/_draft_ops.py` `patch_chunk_meta` — the migration-free pin precedent (0051).
 - the RC1/RC2 residual thread (reboot-reap shipped `8815d396`); A is the RC1
-  root-cause fix, one level deeper than the re-mint guard.
+  root-cause fix, one level deeper than the re-mint guard —
+  [0065](./0065-quest-loop-failed-rest-backoff-and-surfacing.md) is that
+  re-mint guard (failed-rest backoff + nursery surfacing).

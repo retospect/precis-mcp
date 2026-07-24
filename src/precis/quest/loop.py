@@ -86,6 +86,17 @@ _DEFAULT_NODE_ENV = "PRECIS_QUEST_LOOP_NODE"
 _ORPHAN_GRACE_ENV = "PRECIS_QUEST_LOOP_ORPHAN_GRACE_S"
 _DEFAULT_ORPHAN_GRACE_S = 600
 
+#: RC1 (ADR 0065) — a loop that rested on real *failure* (STATUS:failed,
+#: distinct from a reboot-orphan's ``cancelled`` or a dry/punt/RC2 rest's
+#: ``succeeded``) is not re-minted immediately: it backs off for an
+#: exponentially-growing window keyed on how many consecutive failed rests
+#: precede it, so a permanently-broken quest retries at a 30 min → 6 h cadence
+#: instead of every worker pass. ``BASE * 2^(n-1)`` capped at ``MAX``.
+_FAIL_BACKOFF_BASE_ENV = "PRECIS_QUEST_LOOP_FAIL_BACKOFF_S"
+_DEFAULT_FAIL_BACKOFF_BASE_S = 1800  # 30 min
+_FAIL_BACKOFF_MAX_ENV = "PRECIS_QUEST_LOOP_FAIL_BACKOFF_MAX_S"
+_DEFAULT_FAIL_BACKOFF_MAX_S = 21600  # 6 h
+
 #: Terminal job statuses — a job carrying one of these no longer blocks a
 #: re-mint (mirrors ``JobHandler._lookup_idem``), so it is never an orphan.
 _TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
@@ -103,6 +114,83 @@ def _orphan_grace_s() -> int:
         return max(0, int(raw))
     except ValueError:
         return _DEFAULT_ORPHAN_GRACE_S
+
+
+def _env_int(name: str, default: int) -> int:
+    """A non-negative int env override, else ``default`` (bad value → default)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
+
+
+def _failed_rest_cooldown_active(
+    store: Any, quest_id: int, *, base_s: int, max_s: int
+) -> bool:
+    """RC1 (ADR 0065): is ``quest_id``'s loop inside its failed-rest backoff?
+
+    Reads the quest's ``quest_tick:<id>`` coordinator loops most-recent-first.
+    The **most recent** loop's terminal STATUS is the rest-reason discriminator
+    the reconciler otherwise ignores:
+
+    - non-terminal (queued/running/waiting_*) → a live loop exists; the idem
+      dedup handles it, no cooldown.
+    - ``cancelled`` (reboot-orphan reap) or ``succeeded`` (dry / punt / RC2
+      self-rest) → re-mint immediately, exactly as before RC1.
+    - ``failed`` (``_max_tick_failures`` budget, or a crashed slice) → back off.
+      The window is ``min(base_s * 2^(n-1), max_s)`` where ``n`` is the trailing
+      run of consecutive ``failed`` terminal loops (the job history *is* the
+      counter — nothing stamped). ``True`` iff that window hasn't elapsed since
+      the most-recent failure, so the pass skips the re-mint.
+
+    Never raises — a single quest's read failure must not crash the reconcile
+    cycle; on error it returns ``False`` (fail open → mint, the pre-RC1
+    behavior) rather than silently starving a healthy quest.
+    """
+    try:
+        idem = f"quest_tick:{quest_id}"
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                      LIMIT 1) AS status,
+                    (SELECT EXTRACT(EPOCH FROM (now() - rt.created_at))::float
+                       FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                      LIMIT 1) AS age_s
+                  FROM refs r
+                 WHERE r.kind = 'job'
+                   AND r.deleted_at IS NULL
+                   AND r.meta->>'idem_key' = %s
+                   AND r.meta->>'executor' = 'coordinator'
+                 ORDER BY r.ref_id DESC
+                 LIMIT 50
+                """,
+                (idem,),
+            ).fetchall()
+        if not rows or rows[0][0] != "failed":
+            return False
+        failed_age_s = float(rows[0][1] or 0.0)
+        # Trailing run of consecutive failed terminal loops = the escalation
+        # exponent. A cooldown-spaced permanent break grows this by one each
+        # window; a re-mint that finally succeeds makes rows[0] != 'failed', so
+        # it resets to 0 by construction.
+        n = 0
+        for status, _age in rows:
+            if status == "failed":
+                n += 1
+            else:
+                break
+        window_s = min(base_s * (2 ** min(n - 1, 20)), max_s)
+        return failed_age_s < window_s
+    except Exception:
+        log.exception("_failed_rest_cooldown_active: failed to read quest %s", quest_id)
+        return False
 
 
 def _loop_params(store: Any, quest_id: int) -> tuple[str, str]:
@@ -251,21 +339,41 @@ def reconcile_quest_loops(
     loop in the same cycle. For each remaining active quest a *reap* step runs
     before the ensure: a reboot-orphaned loop (non-terminal, lease provably
     expired) is cancelled so its idem no longer blocks the re-mint below, and
-    the quest self-heals in this pass. Returns a summary dict: ``cooled``
-    (quests cooled to dormant), ``reaped`` (orphaned loops cancelled this pass),
-    ``ensured`` (active quests confirmed to have a live loop, minted or
-    pre-existing), ``minted`` (of those, how many were freshly created).
+    the quest self-heals in this pass. A quest whose most-recent loop rested
+    ``failed`` (RC1, ADR 0065) is instead held out of the re-mint for an
+    escalating cooldown (:func:`_failed_rest_cooldown_active`). Returns a summary
+    dict: ``cooled`` (quests cooled to dormant), ``reaped`` (orphaned loops
+    cancelled this pass), ``backoff`` (active quests whose re-mint was skipped
+    this pass because a failed rest is still cooling down), ``ensured`` (active
+    quests confirmed to have a live loop, minted or pre-existing), ``minted``
+    (of those, how many were freshly created).
     """
     on = quest_loop_enabled() if enabled is None else enabled
     if not on:
-        return {"enabled": False, "cooled": 0, "reaped": 0, "ensured": 0, "minted": 0}
+        return {
+            "enabled": False,
+            "cooled": 0,
+            "reaped": 0,
+            "backoff": 0,
+            "ensured": 0,
+            "minted": 0,
+        }
 
     cooled = cool_stalled(store)
     grace_s = _orphan_grace_s()
-    reaped = ensured = minted = 0
+    base_s = _env_int(_FAIL_BACKOFF_BASE_ENV, _DEFAULT_FAIL_BACKOFF_BASE_S)
+    max_s = _env_int(_FAIL_BACKOFF_MAX_ENV, _DEFAULT_FAIL_BACKOFF_MAX_S)
+    reaped = backoff = ensured = minted = 0
     for qid in active_quest_ids(store):
+        # A reboot-orphan reap terminalizes to ``cancelled`` and re-mints in this
+        # same pass — it is never a failed rest, so the RC1 backoff can't apply.
+        # A loop that rested ``failed`` (and wasn't reaped) waits out its
+        # escalating cooldown before the re-mint below.
         if _reap_orphaned_loop(store, qid, grace_s=grace_s) is not None:
             reaped += 1
+        elif _failed_rest_cooldown_active(store, qid, base_s=base_s, max_s=max_s):
+            backoff += 1
+            continue
         job_id, created = ensure_quest_loop(store, qid, hub=hub)
         if job_id is not None:
             ensured += 1
@@ -275,6 +383,7 @@ def reconcile_quest_loops(
         "enabled": True,
         "cooled": len(cooled),
         "reaped": reaped,
+        "backoff": backoff,
         "ensured": ensured,
         "minted": minted,
     }

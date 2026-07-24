@@ -894,9 +894,22 @@ The master kinds table lives in the `precis-overview` skill.
   review/propose slice can outlive its lease while genuinely running — bare
   `lease < now()` (the ssh_node steal predicate) would false-positive and
   double-drive. Reap terminalizes to `cancelled` (tag `reaped:reboot-orphan`),
-  never `failed`, so it recovers only *reboot* orphans — a loop a real error
-  rested `STATUS:failed` is out of scope (the unbounded-failed-re-mint question,
-  RC1, is untouched here). **Division of labor:** the reconciler owns
+  never `failed`, so it recovers only *reboot* orphans. **Failed-rest backoff +
+  surfacing (RC1, ADR 0065):** the four coordinator rest-reasons are now fully
+  distinguished by the loop's terminal STATUS — `cancelled` (reboot reap) and
+  `succeeded` (dry/punt/RC2) re-mint immediately, but a loop that rested
+  `STATUS:failed` (the `_max_tick_failures` budget — ≥5 consecutive hard
+  failures = a persistent break, or a crashed slice) is held out of the re-mint
+  by `_failed_rest_cooldown_active`: an **escalating cooldown**
+  `min(BASE·2^(n-1), CEIL)` (`PRECIS_QUEST_LOOP_FAIL_BACKOFF_S`/`_MAX_S`, 30 min
+  → 6 h), `n` = the trailing run of consecutive failed rests read from job
+  history (no stamped counter). A permanently-broken quest thus retries at a
+  30 min → 6 h cadence instead of every worker pass — self-healing a transient
+  outage, throttling a real break; `reconcile_quest_loops` tallies it as
+  `backoff`. The nursery surfaces it: a `quest-loop-failing` detector (`warn`,
+  > `QUEST_LOOP_FAIL_24H`=3 failed loops/24 h, mirrors `plan-tick-spin`) raises a
+  `/alerts` warning so a human fixes the config or pauses the quest rather than
+  letting it burn compute invisibly. **Division of labor:** the reconciler owns
   quest-coordinator orphans (quest context + every-pass cadence); the sweeper
   stays the general coordinator/`claude_inproc` backstop (and covers quest loops
   if the reconciler is gated off). Both terminalize under `FOR UPDATE`, so a

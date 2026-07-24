@@ -77,6 +77,23 @@ def _set_lease(store: Store, job_id: int, lease_sql: str) -> None:
         conn.commit()
 
 
+def _age_status(store: Store, job_id: int, age_sql: str) -> None:
+    """Backdate the job's current STATUS tag row's ``created_at`` server-side
+    (e.g. ``'40 minutes'``) so the failed-rest cooldown sees an aged failure
+    without tests fighting DB/Python tz."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            """
+            UPDATE ref_tags rt SET created_at = (now() - (%s)::interval)
+              FROM tags t
+             WHERE rt.tag_id = t.tag_id AND t.namespace = 'STATUS'
+               AND rt.ref_id = %s
+            """,
+            (age_sql, job_id),
+        )
+        conn.commit()
+
+
 def _non_terminal_loop_ids(store: Store, quest_id: int) -> list[int]:
     """Every non-terminal ``quest_tick`` coordinator job for ``quest_id``."""
     with store.pool.connection() as conn:
@@ -180,6 +197,7 @@ class TestReconcileQuestLoops:
             "enabled": False,
             "cooled": 0,
             "reaped": 0,
+            "backoff": 0,
             "ensured": 0,
             "minted": 0,
         }
@@ -210,6 +228,7 @@ class TestReconcileQuestLoops:
             "enabled": True,
             "cooled": 1,
             "reaped": 0,
+            "backoff": 0,
             "ensured": 3,
             "minted": 2,
         }
@@ -224,6 +243,7 @@ class TestReconcileQuestLoops:
             "enabled": True,
             "cooled": 0,
             "reaped": 0,
+            "backoff": 0,
             "ensured": 0,
             "minted": 0,
         }
@@ -249,6 +269,7 @@ class TestReconcileQuestLoops:
             "enabled": True,
             "cooled": 0,
             "reaped": 0,
+            "backoff": 0,
             "ensured": 1,
             "minted": 1,
         }
@@ -337,3 +358,132 @@ class TestReapOrphanedLoop:
         assert out["minted"] == 0
         assert _current_status(store, live_id) == "running"
         assert _non_terminal_loop_ids(store, q) == [live_id]
+
+
+class TestFailedRestBackoff:
+    """RC1 (ADR 0065): a loop that rested ``STATUS:failed`` is held out of the
+    re-mint for an escalating cooldown (``BASE * 2^(n-1)`` capped at ``MAX``,
+    ``n`` = trailing failed-rest count); ``cancelled`` (reboot) / ``succeeded``
+    (dry/punt/RC2) / non-terminal tops are not failed rests and re-mint now."""
+
+    def _active_quest(self, store: Store) -> int:
+        q = _mk_quest(store, "A striving")
+        _set_status(store, q, "active")
+        return q
+
+    def _failed_loop(self, store: Store, quest_id: int, *, age: str) -> int:
+        """Mint a loop, rest it ``STATUS:failed``, and backdate that failure."""
+        job_id, _ = loop_mod.ensure_quest_loop(store, quest_id)
+        assert job_id is not None
+        _set_status(store, job_id, "failed")
+        _age_status(store, job_id, age)
+        return job_id
+
+    def test_recent_failed_rest_is_cooling_down(self, store: Store) -> None:
+        q = self._active_quest(store)
+        self._failed_loop(store, q, age="1 minute")  # n=1 → 30-min window
+        assert (
+            loop_mod._failed_rest_cooldown_active(store, q, base_s=1800, max_s=21600)
+            is True
+        )
+
+    def test_elapsed_failed_rest_re_mints(self, store: Store) -> None:
+        q = self._active_quest(store)
+        self._failed_loop(store, q, age="40 minutes")  # > 30-min window at n=1
+        assert (
+            loop_mod._failed_rest_cooldown_active(store, q, base_s=1800, max_s=21600)
+            is False
+        )
+
+    def test_second_consecutive_failure_widens_the_window(self, store: Store) -> None:
+        # n=2 → 60-min window: a 40-min-old failure that would have re-minted at
+        # n=1 (30-min window) is still cooling once a second failed rest precedes.
+        q = self._active_quest(store)
+        self._failed_loop(store, q, age="90 minutes")  # older failed rest
+        self._failed_loop(store, q, age="40 minutes")  # most-recent failed rest
+        assert (
+            loop_mod._failed_rest_cooldown_active(store, q, base_s=1800, max_s=21600)
+            is True
+        )
+
+    def test_max_caps_the_window(self, store: Store) -> None:
+        # The cap bounds the window regardless of n: with a tiny max, a failure
+        # older than it re-mints even with a trailing failed run.
+        q = self._active_quest(store)
+        self._failed_loop(store, q, age="10 minutes")
+        self._failed_loop(store, q, age="5 minutes")
+        assert (
+            loop_mod._failed_rest_cooldown_active(store, q, base_s=1800, max_s=60)
+            is False
+        )
+
+    def test_cancelled_top_is_not_a_failed_rest(self, store: Store) -> None:
+        # A reboot-orphan reap terminalizes to cancelled → re-mint now, no cooldown.
+        q = self._active_quest(store)
+        job_id, _ = loop_mod.ensure_quest_loop(store, q)
+        assert job_id is not None
+        _set_status(store, job_id, "cancelled")
+        _age_status(store, job_id, "1 minute")
+        assert (
+            loop_mod._failed_rest_cooldown_active(store, q, base_s=1800, max_s=21600)
+            is False
+        )
+
+    def test_succeeded_top_is_not_a_failed_rest(self, store: Store) -> None:
+        # A dry/punt/RC2 rest succeeds → re-mint now, no cooldown.
+        q = self._active_quest(store)
+        job_id, _ = loop_mod.ensure_quest_loop(store, q)
+        assert job_id is not None
+        _set_status(store, job_id, "succeeded")
+        _age_status(store, job_id, "1 minute")
+        assert (
+            loop_mod._failed_rest_cooldown_active(store, q, base_s=1800, max_s=21600)
+            is False
+        )
+
+    def test_non_terminal_top_is_not_cooling(self, store: Store) -> None:
+        # A freshly-minted queued (or live running) loop is not a rest at all.
+        q = self._active_quest(store)
+        loop_mod.ensure_quest_loop(store, q)  # queued, no terminal STATUS
+        assert (
+            loop_mod._failed_rest_cooldown_active(store, q, base_s=1800, max_s=21600)
+            is False
+        )
+
+    def test_no_loops_yet_is_not_cooling(self, store: Store) -> None:
+        q = self._active_quest(store)
+        assert (
+            loop_mod._failed_rest_cooldown_active(store, q, base_s=1800, max_s=21600)
+            is False
+        )
+
+    def test_reconcile_tallies_backoff_and_skips_the_mint(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        q = self._active_quest(store)
+        self._failed_loop(store, q, age="1 minute")
+        monkeypatch.setattr(loop_mod, "cool_stalled", lambda _s: [])
+        monkeypatch.setattr(loop_mod, "active_quest_ids", lambda _s: [q])
+
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["backoff"] == 1
+        assert out["minted"] == 0
+        assert out["ensured"] == 0
+        # The re-mint was skipped: the failed loop stays terminal, no fresh loop.
+        assert _non_terminal_loop_ids(store, q) == []
+
+    def test_reconcile_re_mints_once_the_cooldown_elapses(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        q = self._active_quest(store)
+        self._failed_loop(store, q, age="40 minutes")  # past the 30-min n=1 window
+        monkeypatch.setattr(loop_mod, "cool_stalled", lambda _s: [])
+        monkeypatch.setattr(loop_mod, "active_quest_ids", lambda _s: [q])
+
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["backoff"] == 0
+        assert out["minted"] == 1
+        assert out["ensured"] == 1
+        assert len(_non_terminal_loop_ids(store, q)) == 1

@@ -33,6 +33,7 @@ from precis.workers.nursery import (
     DISPATCH_STALL_MINUTES,
     LONG_WAIT_DAYS,
     PLAN_TICK_REMINT_24H,
+    QUEST_LOOP_FAIL_24H,
     SPIN_LOOP_EVENTS_24H,
     STALE_CLAIM_HOURS,
     STUCK_DOABLE_HOURS,
@@ -43,6 +44,7 @@ from precis.workers.nursery import (
     _detect_long_waits,
     _detect_orphans,
     _detect_plan_tick_spins,
+    _detect_quest_loop_failures,
     _detect_spin_loops,
     _detect_stale_claims,
     _detect_stalled_recurrings,
@@ -453,6 +455,60 @@ def test_plan_tick_spin_detector_ignores_healthy_parent(store: Store) -> None:
 
     findings = _detect_plan_tick_spins(store)
     assert parent.id not in {f.ref_id for f in findings}
+
+
+def _mint_quest_loops(store: Store, quest_id: int, n: int, *, status: str) -> None:
+    """Insert ``n`` terminal ``quest_tick`` coordinator loops for ``quest_id``,
+    each carrying the given closed STATUS (fresh ``created_at`` → within 24h)."""
+    for i in range(n):
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title=f"quest_tick loop {i}",
+            meta={
+                "job_type": "quest_tick",
+                "executor": "coordinator",
+                "idem_key": f"quest_tick:{quest_id}",
+            },
+            parent_id=quest_id,
+        )
+        store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="system")
+
+
+def test_quest_loop_failing_detector_flags_repeatedly_failing_loop(
+    store: Store,
+) -> None:
+    """A quest whose ``quest_tick`` loop rests ``STATUS:failed`` more than
+    QUEST_LOOP_FAIL_24H times in 24h surfaces as a ``quest-loop-failing``
+    finding (RC1, ADR 0065)."""
+    q = store.insert_ref(kind="quest", slug=None, title="Stuck quest\nmore")
+    _mint_quest_loops(store, q.id, QUEST_LOOP_FAIL_24H + 2, status="failed")
+
+    findings = _detect_quest_loop_failures(store)
+    hits = [f for f in findings if f.ref_id == q.id]
+    assert len(hits) == 1
+    assert hits[0].category == "quest-loop-failing"
+    assert "STATUS:failed" in hits[0].detail
+    assert hits[0].title == "Stuck quest"  # one line
+
+
+def test_quest_loop_failing_detector_ignores_occasional_failure(store: Store) -> None:
+    """A couple of failures in a day is tolerable, not a standing break."""
+    q = store.insert_ref(kind="quest", slug=None, title="Mostly-healthy quest")
+    _mint_quest_loops(store, q.id, QUEST_LOOP_FAIL_24H, status="failed")
+
+    findings = _detect_quest_loop_failures(store)
+    assert q.id not in {f.ref_id for f in findings}
+
+
+def test_quest_loop_failing_detector_ignores_succeeded_rests(store: Store) -> None:
+    """A quest whose loops rest ``succeeded`` (dry / punt) is healthy — never
+    flagged, however many times it re-arms."""
+    q = store.insert_ref(kind="quest", slug=None, title="Busy healthy quest")
+    _mint_quest_loops(store, q.id, QUEST_LOOP_FAIL_24H + 3, status="succeeded")
+
+    findings = _detect_quest_loop_failures(store)
+    assert q.id not in {f.ref_id for f in findings}
 
 
 def test_spin_loop_detector_ignores_quiet_ref(store: Store) -> None:

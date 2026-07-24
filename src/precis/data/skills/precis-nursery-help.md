@@ -1,7 +1,7 @@
 ---
 id: precis-nursery-help
 title: precis — nursery detector of todo-tree incoherence
-summary: per-minute tree-incoherence detectors — orphans, stale claims, long waits, stuck doable, spin loops, plan-tick spins — raised as alerts
+summary: per-minute tree-incoherence detectors — orphans, stale claims, long waits, stuck doable, spin loops, plan-tick spins, quest-loop failures — raised as alerts
 applies-to: precis worker --only nursery; kind='alert' (alert-source:nursery:*)
 status: active
 ---
@@ -37,6 +37,7 @@ Alerts dedup per *condition* instead.
 | `stalled-recurring` | recurring's most recent spawned child has been open >1 h | 1 h floor |
 | `spin-loop` | one `(ref_id, source)` emits >threshold `ref_events` in 24 h | 200 / 24 h |
 | `plan-tick-spin` | a planner parent mints >threshold `plan_tick` jobs in 24 h without converging | 16 / 24 h |
+| `quest-loop-failing` | a quest's `quest_tick` loop rests `STATUS:failed` >threshold times in 24 h (RC1 backoff throttles but can't fix a persistent break) | 3 / 24 h |
 | `worker-restart` | a `(host, process)` emits >threshold `worker: started` boot rows in 1 h (restart storm) | 8 / 1 h · **critical** |
 | `dead-worker` | a continuous daemon (`precis-worker` / `precis-worker-agent`) silent >threshold while its host is alive | 10 min · **critical** |
 | `dispatch-stall` | `claude_inproc` jobs `STATUS:queued` >threshold with **zero** live-lease jobs running (executor stopped claiming) | 15 min · **critical** |

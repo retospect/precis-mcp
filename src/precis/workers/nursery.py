@@ -34,6 +34,13 @@ finding rows):
 * **plan-tick spins** — a planner parent minting more than
   ``PLAN_TICK_REMINT_24H`` ``plan_tick`` jobs in 24h (a coroutine that
   "succeeds" every tick but never converges).
+* **quest-loop failing** — a quest whose ``quest_tick`` coordinator loop has
+  rested ``STATUS:failed`` more than ``QUEST_LOOP_FAIL_24H`` times in 24h
+  (RC1, ADR 0065). The reconciler now backs the re-mint off on an escalating
+  cooldown, but a persistent break (bad config, dead endpoint) keeps failing at
+  the ceiling cadence — this surfaces it so a human fixes or abandons the quest
+  rather than letting it burn compute invisibly. The re-mint spin sibling of
+  ``plan-tick-spin``.
 * **child-failed parked** — a todo carrying an open ``child-failed:*``
   tag (the failure-bubble, see :mod:`precis.handlers._job_bubble`) for
   more than ``CHILD_FAILED_PARKED_HOURS=6``. ``stuck-doable`` explicitly
@@ -110,6 +117,15 @@ SPIN_LOOP_EVENTS_24H = 200
 #: sustained across a day (≈16) is already pathological.
 PLAN_TICK_REMINT_24H = 16
 
+#: A quest whose ``quest_tick`` coordinator loop has rested ``STATUS:failed``
+#: more than this many times in 24h is stuck on a persistent break — the
+#: reconciler's RC1 backoff (ADR 0065) throttles the re-mint to a 30 min → 6 h
+#: cadence, so a quest still crossing this threshold is failing at (or near) the
+#: ceiling and needs a human. A healthy quest loop rests ``succeeded`` (dry /
+#: punt), never ``failed``; a couple of transient failures in a day is
+#: tolerable, so 3 keeps it above the noise while catching the standing break.
+QUEST_LOOP_FAIL_24H = 3
+
 #: A todo carrying an open ``child-failed:<job_id>`` tag longer than this is
 #: parked behind a failure-bubble with nothing acting on it. ``stuck-doable``
 #: excludes anything with an open tag by construction, so without this
@@ -166,6 +182,7 @@ DISPATCH_STALL_MINUTES = 15
 _SEVERITY: dict[str, str] = {
     "spin-loop": "warn",
     "plan-tick-spin": "warn",
+    "quest-loop-failing": "warn",
     "orphan": "info",
     "stale-claim": "warn",
     "long-wait": "info",
@@ -202,6 +219,7 @@ class Finding:
 _DETECTORS: tuple[tuple[str, Callable[[Store], list[Finding]]], ...] = (
     ("spin-loop", lambda s: _detect_spin_loops(s)),
     ("plan-tick-spin", lambda s: _detect_plan_tick_spins(s)),
+    ("quest-loop-failing", lambda s: _detect_quest_loop_failures(s)),
     ("orphan", lambda s: _detect_orphans(s)),
     ("stale-claim", lambda s: _detect_stale_claims(s)),
     ("long-wait", lambda s: _detect_long_waits(s)),
@@ -739,6 +757,67 @@ def _detect_plan_tick_spins(store: Store) -> list[Finding]:
     ]
 
 
+# ── quest-loop failing (coordinator re-mint spin on real failure) ──
+
+
+def _detect_quest_loop_failures(store: Store) -> list[Finding]:
+    """Quests whose ``quest_tick`` loop keeps resting ``STATUS:failed`` (RC1).
+
+    A quest's coordinator loop rests ``failed`` only after ``_max_tick_failures``
+    consecutive hard failures (``workers/job_types/quest_tick.py``) — a
+    persistent break, not a transient blip (``paused`` states don't count). The
+    reconciler's RC1 backoff (ADR 0065, ``quest/loop.py``) now spaces the re-mint
+    out to a 30 min → 6 h cadence instead of every worker pass, but it cannot
+    *fix* the break — so a genuinely-broken quest keeps failing at the ceiling
+    cadence. This counts distinct ``quest_tick`` loops per quest that became
+    ``STATUS:failed`` in the last 24h; more than :data:`QUEST_LOOP_FAIL_24H`
+    surfaces the quest so a human resolves or abandons it. Mirrors
+    ``_detect_plan_tick_spins`` (the same "coordinator succeeds/fails every tick
+    but the work never resolves" shape, on the quest lane).
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT j.parent_id, q.title, count(*)::int AS n,
+                   max(rt.created_at) AS last_failed
+              FROM refs j
+              JOIN refs q ON q.ref_id = j.parent_id
+              JOIN ref_tags rt ON rt.ref_id = j.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE j.kind = 'job'
+               AND j.deleted_at IS NULL
+               AND j.meta->>'job_type' = 'quest_tick'
+               AND j.parent_id IS NOT NULL
+               AND q.deleted_at IS NULL
+               AND t.namespace = 'STATUS'
+               AND t.value = 'failed'
+               AND rt.created_at > now() - interval '24 hours'
+             GROUP BY j.parent_id, q.title
+            HAVING count(*) > %s
+             ORDER BY count(*) DESC
+             LIMIT 50
+            """,
+            (QUEST_LOOP_FAIL_24H,),
+        ).fetchall()
+    return [
+        Finding(
+            category="quest-loop-failing",
+            ref_id=int(r[0]),
+            title=_first_line(r[1]),
+            detail=(
+                f"quest #{int(r[0])}'s quest_tick loop rested STATUS:failed "
+                f"{int(r[2])}× in 24h (> {QUEST_LOOP_FAIL_24H}, last "
+                f"{_hours_since(r[3]):.0f}h ago) — a persistent break the RC1 "
+                "backoff (ADR 0065) is throttling but can't fix: check the "
+                "loop's job_summary / job_event chunks for the failing tick "
+                "(bad tier/endpoint config, a code error, or spark down), then "
+                "fix the cause or pause the quest"
+            ),
+        )
+        for r in rows
+    ]
+
+
 # ── worker health (daemon liveness, not the todo graph) ───────────
 
 
@@ -998,6 +1077,7 @@ def _days_since(ts: datetime | None) -> float:
 __all__ = [
     "DISPATCH_STALL_MINUTES",
     "LONG_WAIT_DAYS",
+    "QUEST_LOOP_FAIL_24H",
     "SPIN_LOOP_EVENTS_24H",
     "STALE_CLAIM_HOURS",
     "STUCK_DOABLE_HOURS",
