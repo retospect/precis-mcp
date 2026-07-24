@@ -15,7 +15,7 @@ from psycopg.conninfo import make_conninfo
 
 from precis import secrets as vault
 from precis.store import Store
-from tests.conftest import _active_dsn
+from tests.conftest import PG_TEST_DSN, _active_dsn, _pg_available
 
 _TEST_KEY = "test-vault-key-0123456789"
 
@@ -23,8 +23,15 @@ _TEST_KEY = "test-vault-key-0123456789"
 @pytest.fixture
 def vault_store() -> Iterator[Store]:
     """A Store whose connections carry app.secret_key as a session-local
-    startup option (no shared-DB mutation — safe under xdist). Skips if
-    pgcrypto is unavailable and uncreatable here."""
+    startup option (no shared-DB mutation — safe under xdist). Skips when
+    no postgres is reachable (e.g. the macOS/Windows CI legs), matching the
+    shared ``store``/``hub`` fixtures, and again if pgcrypto is unavailable
+    and uncreatable here."""
+    if not _pg_available():
+        pytest.skip(
+            f"postgres unreachable at {PG_TEST_DSN}; set PRECIS_TEST_PG_URL "
+            "or start a server to run db-tagged tests"
+        )
     dsn = _active_dsn()
     with psycopg.connect(dsn, autocommit=True) as admin:
         try:
