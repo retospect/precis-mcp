@@ -108,7 +108,7 @@ def require_link_target(kind: str, target: str | None) -> str:
     if target is None:
         raise BadInput(
             f"link(kind={kind!r}, id=...) requires target=",
-            next=f"link(kind={kind!r}, id=<id>, target='paper:slug')",
+            next=f"link(kind={kind!r}, id=<id>, target='pa5')",
         )
     return target
 

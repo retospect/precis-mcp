@@ -134,7 +134,7 @@ class CitationHandler(NumericRefHandler):
                 next=(
                     "put(kind='citation', text='claim summary', "
                     "source_handle='collins06~7', source_quote='...', "
-                    "verifier_confidence=0.95, link='paper:collins06', rel='cites')"
+                    "verifier_confidence=0.95, link='pa5', rel='cites')"
                 ),
             )
         if not source_handle or not str(source_handle).strip():

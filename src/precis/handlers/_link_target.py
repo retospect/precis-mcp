@@ -78,7 +78,7 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
     if not isinstance(target, str) or not target.strip():
         raise BadInput(
             "link target must be a non-empty string",
-            next="link='kind:identifier' (e.g. 'paper:wang2020state')",
+            next="link='pa5' (a handle) or 'kind:identifier'",
         )
 
     # ADR 0036: accept a bare universal handle (``pc40``, ``me73``, …) —
@@ -110,8 +110,8 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
         raise BadInput(
             f"link target {target!r} missing required 'kind:' prefix",
             next=(
-                "use canonical 'kind:identifier' form "
-                "(e.g. 'paper:wang2020state' or 'todo:158')"
+                "use a bare handle like 'pa5', or the canonical "
+                "'kind:identifier' form (e.g. 'todo:158')"
             ),
         )
 

@@ -640,10 +640,7 @@ class NumericRefHandler(Handler):
         if rel is not None and link is None:
             raise BadInput(
                 "rel= requires link= on create",
-                next=(
-                    f"put(kind={self.kind!r}, text='...', "
-                    "link='paper:slug', rel='cites')"
-                ),
+                next=(f"put(kind={self.kind!r}, text='...', link='pa5', rel='cites')"),
             )
 
     def put(  # type: ignore[override]

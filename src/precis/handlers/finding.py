@@ -187,10 +187,10 @@ class FindingHandler(NumericRefHandler):
                     "body='Device prep: 2.4 kV applied for 30 s on Si/SiO2 "
                     "MOSCAPs with Cu top contact, N2 ambient.', "
                     "scope={'electrode':'Cu','ambient':'N2'}, "
-                    "cited_in='miller23a~42')  "
+                    "cited_in='pc42')  "
                     "— cited_in is the frontier paper chunk the claim "
-                    "starts from (ref-level 'miller23a', chunk-level "
-                    "'miller23a~42', or 'paper:miller23a')"
+                    "starts from: a chunk handle like 'pc42' (legacy "
+                    "'miller23a~42' / 'paper:miller23a' still resolve)"
                 )
             raise BadInput(
                 "put(kind='finding') requires " + ", ".join(missing),
