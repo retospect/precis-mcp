@@ -1574,6 +1574,53 @@ by `deploy` with no `agent_rw`/`agent_ro` grants — add an ACL diff/re-grant st
 - **Recheck `transformers>=5.3.0` / `marker-pdf` pin** (Dependabot #44, snoozed).
 - **Re-evaluate `ruff` ignores `RUF012` + `B905`** (can hide real bugs).
 
+## 🕸️ Graph completeness — still-open findings *(2026-07-23 audit)*
+
+Link-blindness item shipped `885bd1ea`; ADR 0054 argument-graph shipped
+`2d19290e`. The remaining findings stay open:
+
+1. **`MemoryHandler.supersede()` never fires on near-duplicate memories**
+   *(bug/wiring, open)*. Supersede machinery exists for papers/runs
+   (`collapse_superseded_chains`), but memory-dedup isn't wired — prod
+   `superseded_by` was **0** at audit; ~80% of live memories (~6.3k/7.9k) are
+   `DREAM`-tagged synthetic insight with near-duplicate clusters it should
+   collapse. Wire the dream/review pass to call `supersede`, or surface a
+   "candidate duplicate" nudge. Re-confirm `superseded_by=0` before building.
+2. **No isolated-memory nursery check** *(polish, open)*. ~10% of live
+   memories (778/7,893 at audit) have zero links either direction — findable
+   only by tag/text. Widen `autolink_mentions` adoption and/or add an
+   "isolated memory" nursery finding.
+3. **No two-ref intersection query** *(feature, open)*. Nothing answers "does
+   ref A share links/tags with ref B" — `view='shared'`? a `compare` verb? The
+   SQL (`INTERSECT` over each ref's link-target/tag-set) is trivial once the
+   verb shape is picked.
+4. **No aggregate/fan-in graph view** *(feature, open — biggest lift)*.
+   `links_for` is one-ref/one-hop; no multi-hop or fan-in summary exists.
+
+## 🖥️ Web quest editor *(feature, open)*
+
+Create/reprioritize the hierarchical quest tree from `precis_web` (with
+linting) — no dedicated quest route on main today. Owner `precis_web/routes/`
++ the quest layer.
+
+## 📰 News: Reddit / Mastodon sources *(feature, partially open)*
+
+The framework exists (`news_sources` registry + `news_poll` worker,
+`handlers/news.py`). Reddit subreddits and Mastodon accounts expose public
+`.rss` feeds → ingestible **with no credentials**, just `news_sources` rows.
+A bespoke API client (a few accounts + summaries) is unbuilt and *would* need
+API credentials — only build that if the RSS path proves insufficient.
+
+## 🕸️ Graph-locality architecture — held *(design, needs a framing pass)*
+
+`docs/design/graph-based.md` proposes conditioning one agent's admissible
+tools/context on *where it is* in the quest/document/citation graph, instead
+of today's zoo of per-`job_type` passes. **Held** (2026-07-23): before
+prototyping, resolve which passes are "mechanical prep" (LLM as a
+narrow/checkable retrieval utility) vs. "actual work" (judgment-laden
+synthesis where graph-locality might change behavior) — that determines
+whether the framing even applies to a given pass.
+
 ## 🛠️ Repo-dev Claude tooling — backlog
 
 Tooling for developing precis-mcp (not the product). Bulk shipped (prose
