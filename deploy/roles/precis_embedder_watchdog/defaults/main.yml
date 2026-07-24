@@ -1,0 +1,36 @@
+---
+# precis_embedder_watchdog — external health-kicker for the per-node
+# embedder (gripe 51394 pt2). precis_embedder's KeepAlive/Restart=always
+# only restart the service on process EXIT; a wedged-but-alive embedder
+# (pt1 made /readyz truthfully 503 on a genuine wedge) is never restarted.
+# This periodic probe curls /readyz and, after N consecutive failures,
+# restarts the embedder daemon. Coexists with precis_embedder on every
+# node; reuses that role's host/port so there is one source of truth.
+
+# Probe cadence. 60s matches precis_heartbeat.
+precis_embedder_watchdog_interval_seconds: 60
+
+# Consecutive failed probes before a restart is issued. 5 * 60s = 5min,
+# comfortably longer than a bge-m3 cold-load warmup (during which /readyz
+# legitimately 503s) so a fresh boot is never mistaken for a wedge, while
+# a genuine wedge is cleared within ~5min. Overridable per host_var.
+precis_embedder_watchdog_fail_threshold: 5
+
+# Endpoint to probe — mirror precis_embedder's loopback bind + port so the
+# watchdog and the service can never disagree on where it listens.
+precis_embedder_watchdog_host: "{{ precis_embedder_host | default('127.0.0.1') }}"
+precis_embedder_watchdog_port: "{{ precis_embedder_port | default(embedder_port | default(8181)) }}"
+
+# Max seconds a single /readyz probe waits before counting as a failure.
+precis_embedder_watchdog_curl_timeout: 5
+
+# launchd label / systemd unit of the embedder this watchdog kicks.
+precis_embedder_watchdog_launchd_unit: com.precis.embedder
+precis_embedder_watchdog_systemd_unit: precis-embedder
+
+# Cross-tick consecutive-failure counter. /tmp is fine: cleared on reboot
+# (when the embedder also restarts), root-writable, off NFS.
+precis_embedder_watchdog_statefile: /tmp/precis-embedder-watchdog.fails
+
+# Where the probe script is installed (both platforms).
+precis_embedder_watchdog_script: /opt/precis/bin/precis-embedder-watchdog.sh

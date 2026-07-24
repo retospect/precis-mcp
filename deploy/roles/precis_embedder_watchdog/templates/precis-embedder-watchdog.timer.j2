@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+# Fires precis-embedder-watchdog.service every
+# ${precis_embedder_watchdog_interval_seconds}. OnBootSec is a touch later
+# than the heartbeat timer's so the embedder gets a head start on cold-load
+# before the first probe can accumulate a failure.
+
+[Unit]
+Description=precis-mcp embedder health-kicker timer
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec={{ precis_embedder_watchdog_interval_seconds }}s
+AccuracySec=5s
+Unit=precis-embedder-watchdog.service
+
+[Install]
+WantedBy=timers.target

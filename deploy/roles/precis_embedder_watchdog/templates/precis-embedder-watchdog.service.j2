@@ -1,0 +1,26 @@
+# {{ ansible_managed }}
+# precis-embedder-watchdog (gripe 51394 pt2) — probes precis_embedder's
+# /readyz and, after N consecutive failures, restarts it. Runs as root:
+# the restart command is `systemctl restart precis-embedder`, which a
+# non-root user cannot issue.
+
+[Unit]
+Description=precis-mcp embedder health-kicker (probes /readyz, restarts on wedge)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/tmp
+
+Environment=PRECIS_EMBEDDER_WATCHDOG_URL=http://{{ precis_embedder_watchdog_host }}:{{ precis_embedder_watchdog_port }}/readyz
+Environment=PRECIS_EMBEDDER_WATCHDOG_FAIL_THRESHOLD={{ precis_embedder_watchdog_fail_threshold }}
+Environment=PRECIS_EMBEDDER_WATCHDOG_STATEFILE={{ precis_embedder_watchdog_statefile }}
+Environment=PRECIS_EMBEDDER_WATCHDOG_CURL_TIMEOUT={{ precis_embedder_watchdog_curl_timeout }}
+Environment=PRECIS_EMBEDDER_WATCHDOG_RESTART_CMD=systemctl restart {{ precis_embedder_watchdog_systemd_unit }}
+
+ExecStart=/bin/sh {{ precis_embedder_watchdog_script }}
+
+StandardOutput=append:/var/log/precis-embedder-watchdog.log
+StandardError=append:/var/log/precis-embedder-watchdog.log

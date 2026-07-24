@@ -1,0 +1,18 @@
+---
+# 41-precis-embedder-watchdog.yml — external health-kicker companion to
+# precis_embedder (gripe 51394 pt2). pt1 made /readyz truthfully return
+# 503 on a genuine wedge, but launchd KeepAlive / systemd Restart=always
+# only restart the embedder on process EXIT — a wedged-but-alive process
+# is never restarted. This role probes /readyz on a timer and, after N
+# consecutive failures, restarts the embedder daemon.
+
+- name: Deploy precis embedder watchdog (probes /readyz, restarts on wedge) on all cluster nodes
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: true
+  roles:
+    - precis_embedder_watchdog
+  tags: [precis-embedder-watchdog, precis]

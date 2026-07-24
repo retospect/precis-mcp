@@ -204,6 +204,12 @@
 - name: "Re-render the heartbeat plist      (all nodes — picks up host_var overrides)"
   ansible.builtin.import_playbook: playbooks/40-precis-heartbeat.yml
 
+# External embedder health-kicker (gripe 51394 pt2) — probes /readyz and
+# restarts a wedged-but-alive embedder that KeepAlive/Restart=always would
+# never catch (those only fire on process exit).
+- name: "Re-render the embedder watchdog plist (all nodes — kicks a wedged embedder)"
+  ansible.builtin.import_playbook: playbooks/41-precis-embedder-watchdog.yml
+
 - name: "Refresh /opt/mcps/venv            (web, worker-agent, watch-poll, cron-tick)"
   ansible.builtin.import_playbook: playbooks/38-precis-web.yml
 

@@ -1,0 +1,102 @@
+---
+# precis_embedder_watchdog — external health-kicker for precis_embedder
+# (gripe 51394 pt2). A single POSIX-sh probe script is templated onto
+# every host and fired on a timer by launchd (macOS) / systemd (Linux);
+# after precis_embedder_watchdog_fail_threshold consecutive /readyz
+# failures it restarts the embedder daemon.
+#
+# Coexists with precis_embedder on every host. Runs as root (unlike
+# precis_heartbeat/precis_embedder, which run as `deploy`) — the restart
+# command needs root to kickstart/restart a system-domain daemon.
+
+- name: Ensure /opt/precis/bin exists (probe script destination)
+  ansible.builtin.file:
+    path: /opt/precis/bin
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Render precis-embedder-watchdog probe script
+  ansible.builtin.template:
+    src: precis-embedder-watchdog.sh.j2
+    dest: "{{ precis_embedder_watchdog_script }}"
+    mode: "0755"
+    owner: root
+  become: true
+  notify:
+    - restart precis embedder watchdog (macos)
+    - restart precis embedder watchdog (linux)
+
+# ── macOS: launchd ─────────────────────────────────────────────────
+
+- name: Ensure precis-embedder-watchdog log file is writable
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-embedder-watchdog.log
+    state: touch
+    mode: "0664"
+    owner: deploy
+    group: staff
+    modification_time: preserve
+    access_time: preserve
+  become: true
+
+- name: Ensure precis-embedder-watchdog LaunchDaemon plist
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: precis-embedder-watchdog.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.embedder-watchdog.plist
+    mode: "0644"
+    owner: root
+    group: wheel
+  become: true
+  notify: restart precis embedder watchdog (macos)
+
+- name: Unload any prior precis-embedder-watchdog before bootstrap (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl bootout system/com.precis.embedder-watchdog
+  become: true
+  register: eaw_bootout
+  changed_when: eaw_bootout.rc == 0
+  failed_when: false
+
+- name: Bootstrap precis-embedder-watchdog LaunchDaemon (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl bootstrap system /Library/LaunchDaemons/com.precis.embedder-watchdog.plist
+  become: true
+  register: eaw_bootstrap
+  changed_when: eaw_bootstrap.rc == 0
+  failed_when:
+    - eaw_bootstrap.rc != 0
+    - "'service already loaded' not in eaw_bootstrap.stderr"
+    - "'Bootstrap failed: 17' not in eaw_bootstrap.stderr"
+    - "'Bootstrap failed: 5' not in eaw_bootstrap.stderr"
+
+# ── Linux: systemd timer ───────────────────────────────────────────
+
+- name: Render precis-embedder-watchdog systemd service (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: precis-embedder-watchdog.service.j2
+    dest: /etc/systemd/system/precis-embedder-watchdog.service
+    mode: "0644"
+  become: true
+  notify: restart precis embedder watchdog (linux)
+
+- name: Render precis-embedder-watchdog systemd timer (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: precis-embedder-watchdog.timer.j2
+    dest: /etc/systemd/system/precis-embedder-watchdog.timer
+    mode: "0644"
+  become: true
+  notify: restart precis embedder watchdog (linux)
+
+- name: Enable + start precis-embedder-watchdog timer (Linux)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: precis-embedder-watchdog.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true

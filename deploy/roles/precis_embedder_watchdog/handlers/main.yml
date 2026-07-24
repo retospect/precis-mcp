@@ -1,0 +1,19 @@
+---
+# Periodic timer. macOS: reload via the shared safe launchd task with
+# reload_persistent=false (asserts the unit is LOADED, not a pid) — mirrors
+# precis_heartbeat's handler (gripe #48490).
+- name: reload precis embedder watchdog (macos)
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.precis.embedder-watchdog
+    reload_persistent: false
+  when: os_family == "darwin"
+  listen: restart precis embedder watchdog (macos)
+
+- name: reload precis embedder watchdog (linux)
+  ansible.builtin.systemd:
+    name: precis-embedder-watchdog.timer
+    daemon_reload: true
+    state: restarted
+  become: true
+  listen: restart precis embedder watchdog (linux)

@@ -1,0 +1,37 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Embedder health-kicker (gripe 51394 pt2). Probes /readyz; after
+# $FAIL_THRESHOLD consecutive failures restarts the embedder via
+# $RESTART_CMD, then resets the counter. pt1 made /readyz truthfully 503
+# on a wedge; KeepAlive / Restart=always only cover process exit, so a
+# wedged-but-alive embedder needs this external kick. Never exits nonzero
+# (a periodic job that errored would just noise the logs); the restart is
+# best-effort.
+set -u
+URL="${PRECIS_EMBEDDER_WATCHDOG_URL}"
+THRESHOLD="${PRECIS_EMBEDDER_WATCHDOG_FAIL_THRESHOLD}"
+STATEFILE="${PRECIS_EMBEDDER_WATCHDOG_STATEFILE}"
+RESTART_CMD="${PRECIS_EMBEDDER_WATCHDOG_RESTART_CMD}"
+TIMEOUT="${PRECIS_EMBEDDER_WATCHDOG_CURL_TIMEOUT:-5}"
+ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+if curl -sf --max-time "$TIMEOUT" "$URL" >/dev/null 2>&1; then
+  # healthy — clear any accumulated failures
+  [ -f "$STATEFILE" ] && rm -f "$STATEFILE"
+  exit 0
+fi
+
+fails=0
+[ -f "$STATEFILE" ] && fails=$(cat "$STATEFILE" 2>/dev/null || echo 0)
+case "$fails" in '' | *[!0-9]*) fails=0 ;; esac
+fails=$((fails + 1))
+
+if [ "$fails" -ge "$THRESHOLD" ]; then
+  echo "$(ts) precis-embedder-watchdog: /readyz failed ${fails}x (>= ${THRESHOLD}) — restarting embedder: ${RESTART_CMD}"
+  rm -f "$STATEFILE"
+  sh -c "$RESTART_CMD" || echo "$(ts) precis-embedder-watchdog: restart command FAILED"
+else
+  echo "$fails" >"$STATEFILE"
+  echo "$(ts) precis-embedder-watchdog: /readyz failed ${fails}x (< ${THRESHOLD}) — waiting"
+fi
+exit 0

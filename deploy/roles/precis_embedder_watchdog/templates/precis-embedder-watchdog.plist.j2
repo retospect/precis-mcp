@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} #}
+{# precis-embedder-watchdog (gripe 51394 pt2) — probes precis_embedder's
+   /readyz on a timer and, after N consecutive failures, kicks it back to
+   life. Runs as root (NO UserName key, unlike precis-heartbeat/embedder):
+   the restart command is `launchctl kickstart -k system/com.precis.embedder`,
+   and kickstarting a system-domain daemon requires root privilege — a
+   `deploy`-scoped LaunchDaemon would fail the restart with "Operation not
+   permitted" right when it matters most (a genuinely wedged embedder). #}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.embedder-watchdog</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>{{ precis_embedder_watchdog_script }}</string>
+  </array>
+
+  <!-- Fire every ${precis_embedder_watchdog_interval_seconds}. Each probe
+       is a single curl to /readyz plus, rarely, a launchctl kickstart. -->
+  <key>StartInterval</key>
+  <integer>{{ precis_embedder_watchdog_interval_seconds }}</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>WorkingDirectory</key>
+  <string>/tmp</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PRECIS_EMBEDDER_WATCHDOG_URL</key>
+    <string>http://{{ precis_embedder_watchdog_host }}:{{ precis_embedder_watchdog_port }}/readyz</string>
+    <key>PRECIS_EMBEDDER_WATCHDOG_FAIL_THRESHOLD</key>
+    <string>{{ precis_embedder_watchdog_fail_threshold }}</string>
+    <key>PRECIS_EMBEDDER_WATCHDOG_STATEFILE</key>
+    <string>{{ precis_embedder_watchdog_statefile }}</string>
+    <key>PRECIS_EMBEDDER_WATCHDOG_CURL_TIMEOUT</key>
+    <string>{{ precis_embedder_watchdog_curl_timeout }}</string>
+    <key>PRECIS_EMBEDDER_WATCHDOG_RESTART_CMD</key>
+    <string>launchctl kickstart -k system/{{ precis_embedder_watchdog_launchd_unit }}</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/precis-embedder-watchdog.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/precis-embedder-watchdog.log</string>
+</dict>
+</plist>
