@@ -73,9 +73,9 @@ one paragraph. Lead targets with the ref/chunk **handle** (`pa<id>`,
 ## I have a memory that agrees (or argues against) a paper
 
 ```python
-link(kind="memory", id=89, target="paper:wang2020state", rel="supports")
+link(kind="memory", id=89, target="pa5", rel="supports")
 
-link(kind="memory", id=89, target="paper:chen2021critique", rel="contradicts")
+link(kind="memory", id=89, target="pa6", rel="contradicts")
 ```
 
 `supports` / `contradicts` carry an evidential claim — stronger than
@@ -87,7 +87,7 @@ findings. Both work between any two ref kinds.
 ## Mark one ref as derived from another
 
 ```python
-link(kind="memory", id=12, target="paper:wang2020state", rel="derived-from")
+link(kind="memory", id=12, target="pa5", rel="derived-from")
 
 link(kind="perplexity-research", id=88, target="todo:14", rel="derived-from")
 ```
@@ -129,11 +129,11 @@ usually `todo` or `gripe`. The `todo` list view filters on these.
 ## A retracts / corrects / raises concern about B
 
 ```python
-link(kind="memory", id=7, target="paper:badpaper2020", rel="retracts")
+link(kind="memory", id=7, target="pa7", rel="retracts")
 
-link(kind="paper", id="corrigendum-slug", target="paper:original-slug", rel="corrects")
+link(kind="paper", id="corrigendum-slug", target="pa8", rel="corrects")
 
-link(kind="memory", id=8, target="paper:disputed2021", rel="raises-concern-about")
+link(kind="memory", id=8, target="pa9", rel="raises-concern-about")
 ```
 
 These attach a provenance notice to the affected ref. The renderer
@@ -171,7 +171,7 @@ caveat propagation): `precis-argument-help`.
 ## I want to nudge a reader toward B without claiming a stronger edge
 
 ```python
-link(kind="memory", id=42, target="paper:wang2020state", rel="see-also")
+link(kind="memory", id=42, target="pa5", rel="see-also")
 ```
 
 `see-also` is asymmetric with **no** inverse. Use for "while reading A,
@@ -205,7 +205,7 @@ disposition edge yet). See `docs/design/paper-writing-pipeline.md`
 ## I just want a generic link, no specific claim
 
 ```python
-link(kind="memory", id=47, target="paper:wang2020state")  # rel='related-to' by default
+link(kind="memory", id=47, target="pa5")  # rel='related-to' by default
 ```
 
 `related-to` is symmetric — querying from either side surfaces the

@@ -138,7 +138,7 @@ link(
 link(
     kind="web",
     id="https://example.com/article",
-    target="paper:wang2020state",
+    target="pa5",
     rel="cites",
 )
 

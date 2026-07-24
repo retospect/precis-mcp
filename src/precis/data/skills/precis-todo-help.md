@@ -82,7 +82,7 @@ within the `PRIO:` prefix.
 ```python
 tag(kind="todo", id=141, add=["STATUS:blocked"])
 link(kind="todo", id=141, target="todo:158", rel="blocked-by")
-link(kind="todo", id=141, target="paper:wang2020state", rel="blocked-by")
+link(kind="todo", id=141, target="pa5", rel="blocked-by")
 ```
 
 `STATUS:blocked` marks the state; `link(... rel='blocked-by')`

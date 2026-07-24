@@ -109,7 +109,7 @@ put(
     source_handle="pc456",  # the paper-chunk handle, copied from search/get (a legacy slug~pos also resolves)
     source_quote="We measured a peak quantum yield of 68 ± 4 % across n=12 batches…",
     verifier_confidence=0.95,
-    link="paper:liu2024",
+    link="pa5",
     rel="cites",
 )
 ```

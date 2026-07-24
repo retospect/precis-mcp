@@ -116,7 +116,7 @@ memory matches when a question spans both.
 link(
     kind="pres",
     id="2026-06-talk-precis-architecture",
-    target="paper:vaswani2017attention",
+    target="pa5",
     rel="cites",
 )
 

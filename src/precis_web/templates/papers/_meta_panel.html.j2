@@ -43,6 +43,18 @@
   {% else %}
   <span class="text-[10px] italic text-slate-400">no tags yet</span>
   {% endfor %}
+  <form method="post" action="/papers/{{ paper.id }}/tags" class="inline">
+    <input type="hidden" name="add" value="read-later" />
+    <button type="submit"
+            class="rounded bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-100"
+            title="quick-tag: read-later">+ read later</button>
+  </form>
+  <form method="post" action="/papers/{{ paper.id }}/tags" class="inline">
+    <input type="hidden" name="add" value="starred" />
+    <button type="submit"
+            class="rounded bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-100"
+            title="quick-tag: starred">+ starred</button>
+  </form>
   <form method="post" action="/papers/{{ paper.id }}/tags" class="inline-flex items-center gap-1">
     <input name="add" placeholder="+ tag"
            class="w-20 rounded border border-slate-300 px-1.5 py-0.5 text-[10px]" />

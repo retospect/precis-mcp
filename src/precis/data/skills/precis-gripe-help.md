@@ -206,7 +206,7 @@ session label. No separate verb needed.
 ## Link a gripe to a related paper or chunk
 
 ```python
-link(kind="gripe", id=42, target="paper:abazari2024design", rel="related-to")
+link(kind="gripe", id=42, target="pa5", rel="related-to")
 link(kind="gripe", id=42, target="gripe:38", rel="supersedes")
 ```
 

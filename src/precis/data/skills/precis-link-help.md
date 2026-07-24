@@ -17,7 +17,7 @@ another. The relation vocabulary (`cites`, `blocks`, `contradicts`,
 ## How do I record that ref A cites ref B?
 
 ```python
-link(kind="memory", id=42, target="paper:wang2020state", rel="cites")
+link(kind="memory", id=42, target="pa5", rel="cites")
 ```
 
 Source is `(kind, id)`. Target is a canonical address. `rel=`
@@ -52,12 +52,10 @@ won't guess.
 
 ```python
 link(
-    kind="memory", id=42, target="paper:wang2020state", rel="cites", mode="remove"
+    kind="memory", id=42, target="pa5", rel="cites", mode="remove"
 )  # one specific (target, rel)
 
-link(
-    kind="memory", id=42, target="paper:wang2020state", mode="remove"
-)  # every edge to this target
+link(kind="memory", id=42, target="pa5", mode="remove")  # every edge to this target
 ```
 
 With `rel=` set, `mode='remove'` deletes that exact pair. Omit
@@ -83,7 +81,7 @@ When a fresh ref ships with one outbound edge, attach it on the
 put(
     kind="memory",
     text="Counter-evidence to Wang.",
-    link="paper:wang2020state",
+    link="pa5",
     rel="contradicts",
 )
 ```
@@ -94,7 +92,7 @@ to a ref that already exists.
 ## Block-level link to a paper paragraph
 
 ```python
-link(kind="memory", id=42, target="paper:wang2020state~38", rel="annotates")
+link(kind="memory", id=42, target="pa5~38", rel="annotates")
 ```
 
 ## Workflow blocker between tasks

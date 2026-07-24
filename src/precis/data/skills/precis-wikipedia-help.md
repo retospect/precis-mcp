@@ -116,7 +116,7 @@ Open tags (`bookmark`, `topic:x`, …) and `CACHE:` always allowed. The
 link(
     kind="wikipedia",
     id="photosynthesis",
-    target="paper:wang2020state",
+    target="pa5",
     rel="related-to",
 )
 

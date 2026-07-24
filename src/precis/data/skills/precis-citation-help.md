@@ -76,7 +76,7 @@ put(
     source_handle="pc7",  # the chunk it points at
     #                  (legacy 'collins06~7' also resolves)
     verifier_confidence=0.95,
-    link="paper:collins06",
+    link="pa5",
     rel="cites",
 )
 # → created citation id=42
@@ -86,7 +86,7 @@ This is optional — the inline `[pc7]` in your prose is what cites the
 paper. The record just captures that a verifier judged chunk `pc7` to
 support the claim. `verifier_confidence` is a float in `[0.0, 1.0]` —
 use any precise value the verifier emits, or stick to conventions
-(0.95 strong, 0.8 moderate, 0.5 weak). The `link='paper:<slug>'` +
+(0.95 strong, 0.8 moderate, 0.5 weak). The `link='pa5'` (paper handle) +
 `rel='cites'` makes the source paper findable via the graph and
 surfaces "who cites me?" on the paper itself.
 

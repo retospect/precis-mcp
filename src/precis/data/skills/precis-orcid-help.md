@@ -84,9 +84,7 @@ a *paper*, not a paragraph). Both endpoints are ref-level.
 # who authored this paper? (inverse auto-mirrors)
 get(id="pa42", view="links")
 # manually assert authorship
-link(
-    kind="orcid", id="0000-0002-1825-0097", target="paper:wang2020state", rel="authored"
-)
+link(kind="orcid", id="0000-0002-1825-0097", target="pa5", rel="authored")
 ```
 
 Co-authorship is a **2-hop walk** (`orcid → paper → orcid`), not a

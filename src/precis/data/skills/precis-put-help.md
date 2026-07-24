@@ -27,7 +27,7 @@ put(
 put(
     kind="memory",
     text="Heterojunction comparison aligns with our hypothesis.",
-    link="paper:wang2020state",
+    link="pa5",
     rel="cites",
 )
 ```
@@ -96,7 +96,7 @@ put(
     source_handle="wang2020state~38..42",
     source_quote="...selectivity reached 78% at 1.2 V vs RHE...",
     verifier_confidence=0.92,
-    link="paper:wang2020state",
+    link="pa5",
     rel="cites",
 )
 ```
@@ -178,11 +178,11 @@ tags are universal. See `precis-tag-help`.
 ## How do I cite a paper from a new memory?
 
 ```python
-put(kind="memory", text="Anchors our claim.", link="paper:wang2020state", rel="cites")
+put(kind="memory", text="Anchors our claim.", link="pa5", rel="cites")
 put(
     kind="memory",
     text="Touches the same idea.",
-    link="paper:wang2020state~38..42",
+    link="pa5~38..42",
     rel="discusses",
 )
 ```

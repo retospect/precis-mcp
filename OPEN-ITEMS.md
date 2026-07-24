@@ -216,6 +216,19 @@ Tensorix, IONOS AI Model Hub, evroc – EU-sovereign inference APIs focused on o
 
 ===
 
+## 🏷️ Corpus auto-tagging cadence (gr51220) — design, not a bug
+
+Re-scoped from gripe 51220 (kept open in prod). This is a *standing
+operational process*, not a code fix: "one taxonomy axis per week — pick an
+axis (`topic:`, `area:`, `status:`…), sweep under-tagged refs, review, apply"
+to keep the corpus navigable without a big-bang effort. Two open design
+questions before any build: (a) **mechanism** — a `level:recurring` watch / a
+`job` that *proposes* tags for one axis and files them for human review, vs a
+manually-kicked periodic sweep; (b) **review gate** — auto-tagging writes to
+the prod corpus, so proposals must land in a review queue, not apply blind.
+Deferred pending Reto picking a mechanism; until then no agent work is scoped
+here.
+
 ## 🩹 Containerized-review robustness residuals
 
 The spark *DSN-not-reaching-the-container* retry-storm is **resolved** —

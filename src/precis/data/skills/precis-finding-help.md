@@ -35,7 +35,7 @@ put(
         "technique": "DC ramp",
         "substrate": "Si/SiO2",
     },
-    cited_in="miller23a~42",
+    cited_in="pc42",
 )
 # → created finding id=42
 #   placeholder: [42]   (drop in draft; precis resolve substitutes
@@ -50,13 +50,14 @@ re-submissions so two agents writing the same claim collapse).
 ## Pointer formats for the source of the claim
 ## How do I reference the paper or patent I'm citing?
 
-`cited_in=` is a **corpus handle** — the chunk where you read the
-claim. Bare forms assume `paper:` kind:
+`cited_in=` takes a **handle** — the chunk where you read the claim.
+Legacy bare/prefixed forms still resolve:
 
 ```python
-cited_in = "miller23a"  # bare cite_key (paper)
-cited_in = "miller23a~42"  # bare cite_key + chunk
-cited_in = "paper:miller23a~42"  # explicit-kind prefix
+cited_in = "pc42"  # chunk handle — what output hands you back
+cited_in = "miller23a"  # legacy bare cite_key (paper), still resolves
+cited_in = "miller23a~42"  # legacy bare cite_key + chunk, still resolves
+cited_in = "paper:miller23a~42"  # legacy explicit-kind prefix, still resolves
 cited_in = "patent:ep1234567b1"  # patent target
 ```
 
