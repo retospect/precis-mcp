@@ -43,6 +43,7 @@ from precis.quest.logbook import append_entry
 from precis.quest.placement import place_papers, residual_paper_ids
 from precis.quest.residual_cluster import cluster_residual
 from precis.quest.weave import weave_section
+from precis.quest.weave_review import mint_weave_reviews
 from precis.utils import handle_registry
 
 _TOPIC_PREFIX = "topic:"
@@ -188,6 +189,15 @@ def weave_tick(
     how many section batches — Maintain + newly-scaffolded Make — this
     call actually weaves; anything past the cap is simply left for the
     next tick.
+
+    **Rung 6f — the review trigger** (docs/design/paper-writing-pipeline.md
+    §"Review — the memoized approval ledger"): every successful, applied
+    ``weave_section`` call (``ok=True``, ``applied=True``, carrying a
+    ``body_handle``) mints its ``flow``/``cites`` review-todos via
+    :func:`~precis.quest.weave_review.mint_weave_reviews`. Skipped for
+    ``dry_run`` (nothing was applied) and for a failed/conflicted section
+    (no ``body_handle`` to anchor on). IDs land in the returned
+    ``review_todos`` list.
     """
     did = dossier_ref_id(store, quest_id)
     if did is None:
@@ -203,6 +213,7 @@ def weave_tick(
             "ok": True,
             "applied": not dry_run,
             "woven": [],
+            "review_todos": [],
             "note": "nothing unintegrated",
         }
 
@@ -228,25 +239,33 @@ def weave_tick(
         bucket["pids"].append(pid)
 
     woven: list[dict[str, Any]] = []
+    review_todos: list[int] = []
     processed = 0
 
     def _budget_ok() -> bool:
         return max_sections is None or processed < max_sections
 
+    def _mint_reviews_if_applied(result: dict[str, Any]) -> None:
+        # dry_run never applies (nothing to anchor a review on); a
+        # failed/conflicted weave has no body_handle either.
+        body_handle = result.get("body_handle")
+        if not dry_run and result.get("ok") and result.get("applied") and body_handle:
+            review_todos.extend(mint_weave_reviews(store, quest_id, body_handle))
+
     for bucket in sections.values():
         if not _budget_ok():
             break
-        woven.append(
-            weave_section(
-                store,
-                client,
-                did,
-                bucket["handle"],
-                bucket["pids"],
-                claims_client=claims_client,
-                dry_run=dry_run,
-            )
+        result = weave_section(
+            store,
+            client,
+            did,
+            bucket["handle"],
+            bucket["pids"],
+            claims_client=claims_client,
+            dry_run=dry_run,
         )
+        woven.append(result)
+        _mint_reviews_if_applied(result)
         processed += 1
 
     # ── Make/residual leg ────────────────────────────────────────────────
@@ -271,17 +290,17 @@ def weave_tick(
                 )
                 continue
             handle = store.scaffold_sections(did, [(title, "sci-survey-section")])[0]
-            woven.append(
-                weave_section(
-                    store,
-                    client,
-                    did,
-                    handle,
-                    digest["paper_ref_ids"],
-                    claims_client=claims_client,
-                    dry_run=dry_run,
-                )
+            result = weave_section(
+                store,
+                client,
+                did,
+                handle,
+                digest["paper_ref_ids"],
+                claims_client=claims_client,
+                dry_run=dry_run,
             )
+            woven.append(result)
+            _mint_reviews_if_applied(result)
             new_sections.append(
                 {
                     "title": title,
@@ -326,6 +345,7 @@ def weave_tick(
         "topics": topics,
         "batch_size": len(batch),
         "woven": woven,
+        "review_todos": review_todos,
         "new_sections": new_sections,
         "residual_unplaced": residual_unplaced,
         "log_entry": log_entry,

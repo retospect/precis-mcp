@@ -578,20 +578,32 @@ cosine over residual gists, keyword labels + exemplars, lazy sklearn); 6c
 on chars (gr162594); null cost is cosmetic (design doc failure-mode 7,
 corrected). Remaining, design-of-record only:
 
-- **Rung 6d — the frontier weave-apply** *(feature, open — the core)*. For a
-  `(section, batch-of-placed-papers)`: render the section at `fisheye+1hop` +
-  the papers' extracted claims → frontier model recomposes the section →
-  section-scoped `edit_text`/`add_chunks` + mint `citation`s + `add_link`
-  disposition edges + log. Needs a **code-callable citation minter** (only the
-  MCP handler exists today) and the recompose prompt. Consumes 6a/6b/6c.
-- **Rung 6e — the weave tick body + phase machine** *(feature, open)*. Wire
-  place→weave→residual→cluster as a new phase/job_type beside `quest_tick`'s
-  coordinator machine; phase gate via `blocked-by` + `auto_check`; batch
-  regime-scoped (Make = residual, Maintain = weekly window + manual trigger).
-- **Rung 6f — per-weave reviewers (flow + cites, ledger-gated)** *(feature,
-  open)*. Mint review-todos post-weave; the `chunk_review` ledger (rung 3) gates
-  the `cited-in` disposition. Then rung 7 (weekly/deep review + batching), rung 8
-  (freshness + contradiction).
+**Rung 6 loop SHIPPED (6d–6f), dark:** 6d-1 `quest/citation_mint.py` (code-callable
+citation minter); 6d-2 `quest/weave.py` (`weave_section` — frontier section recompose
+→ source-verified citations + disposition links, safe re-weave); 6e-1
+`quest/weave_tick.py` (`weave_tick`: place→weave→residual→scaffold) + `precis quest
+weave <qid>` CLI; 6e-2 `quest_tick.py` `_phase_weave_tick` branch (autonomous
+coordinator routes `meta.quest_body='weave'` quests, budget/backoff-mirrored, dark
+behind `PRECIS_QUEST_LOOP_ENABLED`); 6f `quest/weave_review.py` (`mint_weave_reviews`
+— flow+cites review-todos post-weave). **Loop is runnable end-to-end** (`precis quest
+weave`); nothing deployed. Remaining:
+
+- **Wire reviewer PASS → `chunk_review` ledger** *(feature, open — closes 6f's
+  ledger-gating)*. `store.record_review` is called ONLY from `edit(kind='draft',
+  review=…)` (rung 3, manual/agent verb); a passing `flow`/`cites` review-tick does
+  NOT auto-clear "requires review". So "cited-in = the cites checker passed at this
+  sha" is not auto-closed. Needs the `precis-draft-reviewer` persona (or the
+  review-todo resolution path) to call `record_review` on a clean pass.
+- **Topic-dossier weave-quest creation flow** *(feature, open)*. `mark_weave_quest`
+  flags an existing quest, but nothing creates one end-to-end (mint quest +
+  `ensure_dossier` + `topic:` tag + `mark_weave_quest`). The ADR-0060 synthesis-tick
+  path is the home.
+- **Weave v1 refinements** *(feature, open)*: multi-place (6e-1 is top-1 only);
+  claim-clustering dedup (bounds re-weave citation duplication, design §Claims);
+  review-todos parented on the quest lack a `level:strategic` ancestor (hygiene may
+  flag as orphan).
+- **Rung 7** (weekly/deep review + batching) and **Rung 8** (freshness + digest +
+  contradiction/re-org) remain design-of-record.
 
 - **Stamp `topic:<slug>` on the dossier `draft` at creation/quest-binding**
   *(feature, open — rung-2 residual)*. `view='integration'`'s PENDING/gap half
