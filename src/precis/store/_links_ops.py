@@ -39,6 +39,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput
+from precis.store._argument_ops import retracted_endpoint
 from precis.store._mappers import _lookup_chunk_id, _row_to_link
 from precis.store.types import ActorSlug, Link, Relation
 
@@ -94,6 +95,10 @@ class LinksMixin:
 
     pool: ConnectionPool
     soft_delete_ref: Any  # provided by RefsMixin (used by merge_refs)
+    # Provided by ArgumentGraphMixin. Called after a retraction / concern
+    # edge is added or removed so the argument-graph STALE: flag stays a
+    # pure function of current graph reachability (ADR 0054 §5).
+    argument_ripple_retraction: Any
 
     def valid_relations(self, *, refresh: bool = False) -> frozenset[str]:
         """All relation slugs registered in the ``relations`` table.
@@ -233,6 +238,17 @@ class LinksMixin:
                 (link_id,),
             ).fetchone()
             assert fetched is not None
+
+            # Argument-graph retraction push hook (ADR 0054 §5, build order
+            # step 4) — a link-write hook, not a background sweep. Runs
+            # inside the same connection/transaction as the INSERT above so
+            # the STALE: recompute is atomic with the edge that triggered
+            # it. Cheap no-op for the overwhelming majority of links
+            # (anything but the 4 retraction/concern relation forms).
+            distrusted = retracted_endpoint(relation, src_ref_id, dst_ref_id)
+            if distrusted is not None:
+                self.argument_ripple_retraction(c, distrusted)
+
             return _row_to_link(fetched)
 
         if conn is not None:
@@ -281,7 +297,20 @@ class LinksMixin:
                 params.append(relation)
             sql = f"DELETE FROM links WHERE {' AND '.join(clauses)}"
             cur = c.execute(sql, params)
-            return cur.rowcount or 0
+            n = cur.rowcount or 0
+
+            # Argument-graph retraction push hook, remove side (ADR 0054
+            # §5/R5: "every retraction-edge add *or* remove reruns the
+            # bounded walk"). Only fires when the caller named the exact
+            # relation removed (the common ``unlink(rel=...)`` shape) — a
+            # wildcard ``relation=None`` removal doesn't tell us which
+            # relation(s) it deleted, so it's out of scope for the hook.
+            if n and relation is not None:
+                distrusted = retracted_endpoint(relation, src_ref_id, dst_ref_id)
+                if distrusted is not None:
+                    self.argument_ripple_retraction(c, distrusted)
+
+            return n
 
         if conn is not None:
             return _do(conn)

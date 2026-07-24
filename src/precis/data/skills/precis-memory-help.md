@@ -220,13 +220,43 @@ refresh or let it go.
 Use sparingly — every sticky memory eats prompt budget every turn.
 ~5 thread-scoped + ~5 global is the soft cap.
 
+## The argument graph — kind:lemma / kind:inference sub-kinds
+
+A memory can be a node in the reasoning shadow beside a draft (ADR
+0054): `tags=['kind:lemma']` for a derived/composite claim (no single
+corpus source — a claim pinned to *one* source is a `finding` instead,
+see `precis-finding-help`), `tags=['kind:inference']` for a reasoning
+step that combines premises into a conclusion. An inference carries
+`meta.rule` (the operator, e.g. `'and-intro'`) and `meta.warrant`
+(free-text "why this step holds") — accepted on `put()` and `edit()`:
+
+```python
+put(kind='memory', text='...', tags=['kind:inference'],
+    rule='and-intro', warrant='both premises hold under the same ambient')
+
+edit(kind='memory', id=501, warrant='refined: …')   # no text= required
+```
+
+Read the proof tree with `get(kind='memory', id=<inference-or-lemma-id>,
+view='argument')` — premises, rule/warrant, conclusion, plus two graph-only
+flags (a premise citing a retracted/concerned source; an inherited,
+unaddressed caveat). Full workflow: `precis-argument-help`.
+
 ## Tag axes available on memory
 
-The only closed UPPERCASE axis accepted on memory is `DREAM:`
-(`consolidated` / `speculative` / `acquire`) — written by the
-dreaming worker, not by agent code. Every other closed axis
-(`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`, `WATCH:`) is rejected.
-Express the same intent with open tags:
+Two closed UPPERCASE axes are accepted on memory, both **system-set**
+(the agent-facing `tag()` verb refuses to add/remove either):
+
+- `DREAM:` (`consolidated` / `speculative` / `acquire`) — written by
+  the dreaming worker.
+- `STALE:` (`retracted-premise`) — written by the argument-graph
+  retraction-ripple hook (ADR 0054 §5) on a `kind:inference` memory
+  when it rests on a source that now carries a `retracts` /
+  `raises-concern-about` edge. Derived, not toggled — recomputed on
+  every retraction-edge add or remove.
+
+Every other closed axis (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`,
+`WATCH:`) is rejected. Express the same intent with open tags:
 
 | Want | Use |
 |---|---|
@@ -249,4 +279,5 @@ get(kind='skill', id='precis-link-help')      # link verb mechanics
 get(kind='skill', id='precis-cache')          # perplexity-research/perplexity-reasoning/web TTLs
 get(kind='skill', id='precis-search-help')    # hybrid search mechanics
 get(kind='skill', id='precis-put-help')       # put-verb arg shapes
+get(kind='skill', id='precis-argument-help')  # kind:lemma/kind:inference workflow, view='argument'
 ```

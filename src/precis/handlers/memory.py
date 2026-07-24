@@ -27,8 +27,9 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from precis.errors import BadInput
-from precis.handlers._numeric_ref import NumericRefHandler
+from precis.errors import BadInput, Unsupported
+from precis.handlers._argument_view import render_argument_view
+from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -108,6 +109,14 @@ class MemoryHandler(NumericRefHandler):
     #: can pick up an explicit ``title=`` the base ``put`` signature drops.
     _pending_title: str | None = None
 
+    #: Same trick as ``_pending_title`` for the argument-graph fields (ADR
+    #: 0054 §3/build order step 2) — ``meta.rule`` (the operator label,
+    #: e.g. ``'and-intro'``) and ``meta.warrant`` (free-text "why this step
+    #: holds") on a ``kind:inference`` memory. Author assertions, never
+    #: validated by precis (ADR 0054 §3).
+    _pending_rule: str | None = None
+    _pending_warrant: str | None = None
+
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
@@ -152,6 +161,36 @@ class MemoryHandler(NumericRefHandler):
         )
         return Response(body=f"{header}\n{self._render_hits_table(refs)}")
 
+    # ── get: default single-ref + view='argument' (ADR 0054 §3) ─────
+
+    def get(  # type: ignore[override]
+        self,
+        *,
+        id: str | int | None = None,
+        view: str | None = None,
+        q: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        # view='argument' on a concrete id renders the kind-scoped argument
+        # graph (proof tree + stale-premise + inherited-caveat flags).
+        # Path-views (id='/recent', id='/sticky') and the base views
+        # (links/log/raw) fall through to NumericRefHandler.get unchanged
+        # — same dispatch shape as QuestHandler.get's view='tree'.
+        concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
+        if view == "argument" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
+            return render_argument_view(self.store, ref)
+        if concrete and view is not None and view not in _BASE_VIEWS:
+            raise Unsupported(
+                f"unknown view {view!r} for kind='memory'",
+                options=["argument", *_BASE_VIEWS],
+                next=(
+                    "view='argument' (kind:lemma/kind:inference proof tree) "
+                    "· links, log, raw (generic)"
+                ),
+            )
+        return super().get(id=id, view=view, q=q, **_kw)
+
     # ── put / create: ref (title) + memory_body chunk ───────────────
 
     def put(  # type: ignore[override]
@@ -167,6 +206,8 @@ class MemoryHandler(NumericRefHandler):
         unlink: str | None = None,
         rel: str | None = None,
         auto_refresh_days: int | None = None,
+        rule: str | None = None,
+        warrant: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Create a memory. ``text=`` is the body prose, ``title=`` the short
@@ -176,9 +217,22 @@ class MemoryHandler(NumericRefHandler):
         (capped at 80 chars) — but an explicit title reads better and is
         easier to navigate, so pass one. The body lands in a ``memory_body``
         chunk (embedded + keyworded); ``refs.title`` carries the header.
+
+        ``rule=`` / ``warrant=`` (ADR 0054 §3, the argument graph) label a
+        ``kind:inference`` memory's reasoning step — ``rule`` the operator
+        (e.g. ``'and-intro'``, ``'modus-ponens'``, free text allowed),
+        ``warrant`` free-text prose for *why* the step holds. Author
+        assertions; precis stores and surfaces them, never verifies
+        validity. Meaningless (but harmless) on a non-inference memory.
         """
         self._pending_title = (
             title.strip() if isinstance(title, str) and title.strip() else None
+        )
+        self._pending_rule = (
+            rule.strip() if isinstance(rule, str) and rule.strip() else None
+        )
+        self._pending_warrant = (
+            warrant.strip() if isinstance(warrant, str) and warrant.strip() else None
         )
         try:
             return super().put(
@@ -194,6 +248,8 @@ class MemoryHandler(NumericRefHandler):
             )
         finally:
             self._pending_title = None
+            self._pending_rule = None
+            self._pending_warrant = None
 
     def _create(
         self,
@@ -223,6 +279,16 @@ class MemoryHandler(NumericRefHandler):
         target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
 
+        # meta.rule / meta.warrant (ADR 0054 §3) — stamped at create time
+        # when the D3-shortcut kwargs were passed; omitted keys entirely
+        # when absent (an inference gains them incrementally via edit()
+        # too, so a rule-first / warrant-later authoring order works).
+        meta: dict[str, Any] = {}
+        if self._pending_rule is not None:
+            meta["rule"] = self._pending_rule
+        if self._pending_warrant is not None:
+            meta["warrant"] = self._pending_warrant
+
         all_tag_strs: list[str] = list(self.default_tags_on_create)
         if tags:
             all_tag_strs.extend(tags)
@@ -232,7 +298,7 @@ class MemoryHandler(NumericRefHandler):
                 kind=self.kind,
                 slug=None,
                 title=title,
-                meta={},
+                meta=meta,
                 auto_refresh_days=auto_refresh_days,
                 conn=conn,
             )
@@ -291,9 +357,12 @@ class MemoryHandler(NumericRefHandler):
         mode: str = "replace",
         text: str | None = None,
         title: str | None = None,
+        rule: str | None = None,
+        warrant: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """In-place rewrite of a memory's body prose.
+        """In-place rewrite of a memory's body prose, and/or its argument-graph
+        ``meta.rule`` / ``meta.warrant`` (ADR 0054 §3).
 
         Only ``mode='replace'`` is supported. ``text=`` carries the new body;
         ``title=`` optionally updates the header (omit to keep the existing
@@ -302,6 +371,12 @@ class MemoryHandler(NumericRefHandler):
         The ``memory_body`` chunk is delete+reinserted so semantic search +
         keywords re-derive from the new prose (an in-place UPDATE would leave
         a stale embedding).
+
+        ``rule=`` / ``warrant=`` patch a ``kind:inference`` memory's
+        reasoning-step label / free-text justification without requiring a
+        body rewrite — pass either (or both) alone to refine the warrant as
+        understanding sharpens, no ``text=`` required. At least one of
+        ``text=``, ``rule=``, ``warrant=`` must be given.
 
         Distinct from ``supersede`` (the consolidate-into-new verb): replace
         keeps the same id and every inbound link — the "polish the wording"
@@ -317,20 +392,54 @@ class MemoryHandler(NumericRefHandler):
                 f"edit(kind='memory') only supports mode='replace', got {mode!r}",
                 next=("edit(kind='memory', id=N, mode='replace', text='new body')"),
             )
-        if text is None or not text.strip():
+        has_text = text is not None and text.strip()
+        rule_clean = rule.strip() if isinstance(rule, str) and rule.strip() else None
+        warrant_clean = (
+            warrant.strip() if isinstance(warrant, str) and warrant.strip() else None
+        )
+        if not has_text and rule_clean is None and warrant_clean is None:
             raise BadInput(
-                "edit(kind='memory', mode='replace') requires text=",
-                next="edit(kind='memory', id=N, mode='replace', text='new body')",
+                "edit(kind='memory', mode='replace') requires text=, rule=, "
+                "or warrant=",
+                next=(
+                    "edit(kind='memory', id=N, mode='replace', text='new body') "
+                    "or edit(kind='memory', id=N, mode='replace', "
+                    "warrant='updated justification')"
+                ),
             )
         ref_id = self._coerce_id(id)
         # _resolve_live_ref raises NotFound/Gone with the right taxonomy if
         # the memory doesn't exist or was soft-deleted.
         ref = self._resolve_live_ref(ref_id)
         new_title = title.strip() if isinstance(title, str) and title.strip() else None
+        meta_patch: dict[str, Any] = {}
+        if rule_clean is not None:
+            meta_patch["rule"] = rule_clean
+        if warrant_clean is not None:
+            meta_patch["warrant"] = warrant_clean
+        if not has_text:
+            # Meta-only patch (rule=/warrant=, no body rewrite) — skip the
+            # chunk delete+reinsert and mention re-sync entirely; nothing
+            # in the prose changed.
+            with self.store.tx() as conn:
+                self.store.update_ref(ref.id, meta_patch=meta_patch, conn=conn)
+                if new_title is not None:
+                    self.store.set_ref_title(
+                        ref.id, new_title, source="agent", conn=conn
+                    )
+            changed = ", ".join(k for k in ("rule", "warrant") if k in meta_patch)
+            out = f"updated {self._sense()} id={ref.id} meta: {changed}"
+            if new_title is not None:
+                out += f". title now: {new_title!r}"
+            return Response(body=out)
+
         with self.store.tx() as conn:
+            assert text is not None
             old_body = self.store.replace_body_chunk(
                 ref.id, text, chunk_kind=_BODY_KIND, source="agent", conn=conn
             )
+            if meta_patch:
+                self.store.update_ref(ref.id, meta_patch=meta_patch, conn=conn)
             if new_title is not None:
                 self.store.set_ref_title(ref.id, new_title, source="agent", conn=conn)
             # Re-sync auto-mention links to the rewritten body: drop the old
@@ -349,6 +458,42 @@ class MemoryHandler(NumericRefHandler):
         if nudge:
             body += f"\n\nhint: {nudge}"
         return Response(body=body)
+
+    # ── tag: refuse author add/remove of the system-set STALE: axis ──
+
+    def tag(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add/remove tags — same as the base, except ``STALE:`` is refused.
+
+        ``STALE:retracted-premise`` (ADR 0054 §5/R5) is a system-set,
+        derived flag: the retraction-ripple hook recomputes and
+        sets/clears it on every retraction-edge add or remove. An author
+        `tag(add=['STALE:...'])` or `tag(remove=['STALE:...'])` would fight
+        that recompute (the next ripple silently overwrites it anyway), so
+        reject at the write boundary with a pointer at the real mechanism —
+        mirrors how ``SRC:`` / ``CACHE:`` / ``DENSITY:`` are system-only
+        elsewhere in the corpus.
+        """
+        for t in (*(add or []), *(remove or [])):
+            if isinstance(t, str) and t.split(":", 1)[0] == "STALE":
+                raise BadInput(
+                    f"tag(kind='memory') cannot add/remove {t!r} — "
+                    "STALE: is system-set, not author-writable",
+                    next=(
+                        "STALE:retracted-premise is derived and recomputed "
+                        "automatically by the retraction-ripple hook "
+                        "(ADR 0054 §5) whenever a retracts/raises-concern-about "
+                        "edge is added or removed — see get(kind='memory', "
+                        "id=N, view='argument') to read it, not tag() to set it"
+                    ),
+                )
+        return super().tag(id=id, add=add, remove=remove, **_kw)
 
     # ── read: title header + body chunk ─────────────────────────────
 
@@ -370,6 +515,19 @@ class MemoryHandler(NumericRefHandler):
         if title:
             header += f": {title}"
         out = [header, "", self._body_text(ref)]
+        # meta.rule / meta.warrant (ADR 0054 §3) — a kind:inference memory's
+        # reasoning-step label + free-text justification, rendered right
+        # after the body so a proof-tree reader sees the operator + the
+        # "why" without a separate call.
+        meta = ref.meta or {}
+        rule = meta.get("rule")
+        warrant = meta.get("warrant")
+        if rule or warrant:
+            out.append("")
+            if rule:
+                out.append(f"rule: {rule}")
+            if warrant:
+                out.append(f"warrant: {warrant}")
         if tags:
             out.append("")
             out.append("tags: " + " ".join(str(t) for t in tags))

@@ -141,6 +141,20 @@ Relation = Literal[
     # seed in 0067_dossier_relation.sql.
     "dossier-of",
     "has-dossier",
+    # Argument graph — migration 0080 (ADR 0054). `entails` is the typed
+    # logical edge from an inference node (`memory` tagged `kind:inference`)
+    # to its conclusion lemma (`memory` tagged `kind:lemma`) — "A logically
+    # yields B, asserted not proven." Premises attach to the inference via
+    # the reused `derived-from` (inference derived-from each premise); no
+    # new relation needed there (ADR 0054 §2, §Risks R2). `qualifies` is the
+    # caveat → claim-it-bounds edge (a `kind:caveat` memory qualifies the
+    # claim it limits); `view='argument'` walks `qualified-by` to surface
+    # inherited caveats, never auto-discharging them (ADR 0054 §7). Keep in
+    # sync with the `relations` seed in 0080_argument_graph_relations.sql.
+    "entails",
+    "entailed-by",
+    "qualifies",
+    "qualified-by",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -218,6 +232,11 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "served-by": "serves",
     "dossier-of": "has-dossier",
     "has-dossier": "dossier-of",
+    # Argument graph (0080 / ADR 0054).
+    "entails": "entailed-by",
+    "entailed-by": "entails",
+    "qualifies": "qualified-by",
+    "qualified-by": "qualifies",
 }
 
 
@@ -778,6 +797,18 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "missing-data",
         }
     ),
+    # Argument graph (ADR 0054 §5/R5) — retraction-ripple marker. Set by the
+    # write-time link hook (`store._argument_ops`) when an inference is
+    # reachable, via the kind-scoped `entailed-from`/`entails` walk, from a
+    # premise citing a paper that carries an inbound `retracts` /
+    # `raises-concern-about` edge. System-set (`_SYSTEM_WRITABLE_PREFIXES`
+    # in `_mappers.py`, mirroring SRC/CACHE/DENSITY) — the agent-facing
+    # `tag()` verb refuses author add/remove (MemoryHandler.tag). Derived,
+    # not toggled: every retraction-edge add *or* remove recomputes and
+    # sets/clears the flag to match current reachability. Advisory, never a
+    # blocking STATUS: transition. No author-facing `TRUST:` axis in v1 —
+    # trust is the absence of a concern edge (§4, R3).
+    "STALE": frozenset({"retracted-premise"}),
 }
 
 # Bare flag values that collide with a closed-vocab value. Maintained as
@@ -822,10 +853,11 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # demand; if you want one prioritised, just submit it later).
     "job": frozenset({"STATUS"}),
     # Free-form notes: confidence, topic, project, etc. are open tags
-    # (``confidence-strong``, ``topic-noxrr``). The only closed axis is
-    # DREAM: — provenance for agent-authored (dreamed) memories
-    # (consolidated survivors + speculative inspirations).
-    "memory": frozenset({"DREAM"}),
+    # (``confidence-strong``, ``topic-noxrr``). ``DREAM:`` is provenance for
+    # agent-authored (dreamed) memories (consolidated survivors + speculative
+    # inspirations). ``STALE:`` is the argument-graph retraction-ripple
+    # marker (ADR 0054 §5) — system-set only, see ``_SYSTEM_WRITABLE_PREFIXES``.
+    "memory": frozenset({"DREAM", "STALE"}),
     # Anki cloze cards carry no closed axes — Anki owns scheduling, so
     # there is no STATUS / EASE / DUE review state here.
     "anki": frozenset(),

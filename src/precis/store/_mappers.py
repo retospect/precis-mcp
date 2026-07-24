@@ -72,7 +72,12 @@ def _lookup_chunk_id(conn: Connection, ref_id: int, ord_: int) -> int | None:
 # ``0001_initial.sql``.
 # ---------------------------------------------------------------------------
 _AGENT_WRITABLE_PREFIXES: frozenset[str] = frozenset({"STATUS", "PRIO", "CONFIDENCE"})
-_SYSTEM_WRITABLE_PREFIXES: frozenset[str] = frozenset({"SRC", "CACHE", "DENSITY"})
+# STALE: (ADR 0054 §5/R5, argument graph) — the retraction-ripple marker,
+# recomputed by the link-write hook in ``store._argument_ops``, never
+# author-toggled (``MemoryHandler.tag`` refuses agent add/remove of it).
+_SYSTEM_WRITABLE_PREFIXES: frozenset[str] = frozenset(
+    {"SRC", "CACHE", "DENSITY", "STALE"}
+)
 
 
 # Sentinel: pos = -1 in the DB means "ref-level"; callers see None.

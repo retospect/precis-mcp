@@ -40,6 +40,7 @@ from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput
 from precis.hints import Hint, HintBus
+from precis.store._argument_ops import ArgumentGraphMixin
 from precis.store._blocks_ops import BlocksMixin
 from precis.store._cache_ops import CacheMixin
 from precis.store._cad_ops import CadMixin
@@ -83,6 +84,7 @@ log = logging.getLogger(__name__)
 class Store(
     RefsMixin,
     BlocksMixin,
+    ArgumentGraphMixin,
     CadMixin,
     StructureMixin,
     PcbMixin,

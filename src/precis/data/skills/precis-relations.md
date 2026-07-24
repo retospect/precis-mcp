@@ -33,6 +33,8 @@ options list. Link verb mechanics and target grammar live in
 | `fixes` | `fixed-by` | A workflow job resolves a gripe / todo (job → gripe is the canonical pair; pairs with `job_type='fix_gripe'`). |
 | `supersedes` | `superseded-by` | A subsumes B; B is soft-deleted but graph-reachable via the inverse. Used by `memory.supersede` consolidation (survivor → originals). |
 | `parent` | (children) | A is placed under B in the todo tree (todo only). `mode='remove'` detaches A to a root. |
+| `entails` | `entailed-by` | A (an inference node) logically yields B (its conclusion lemma) — asserted, not proven. Premises attach to the inference with `derived-from`; see "Record a reasoning step" below. |
+| `qualifies` | `qualified-by` | A (a caveat node) limits/bounds B (the claim it caveats). Surfaced — never auto-discharged — by `get(view='argument')`. |
 
 All relations except `related-to` and `see-also` auto-mirror: writing
 `cites` from A→B makes A→B queryable as `cited-by` from B's side
@@ -135,6 +137,32 @@ These attach a provenance notice to the affected ref. The renderer
 surfaces the inverse (`retracted-by`, `corrected-by`,
 `concern-raised-by`) when displaying the target.
 
+## Record a reasoning step (argument graph)
+## Chain lemmas into an inference; state a conclusion that follows
+
+```python
+# premises attach to the inference with derived-from (reused, not a new
+# relation — "the inference was produced from its premises")
+link(kind='memory', id=501,          # the kind:inference node
+     target='me<lemma-A-id>', rel='derived-from')
+link(kind='memory', id=501,
+     target='me<lemma-B-id>', rel='derived-from')
+
+# the inference entails its conclusion — a fresh, reusable kind:lemma
+link(kind='memory', id=501,
+     target='me502', rel='entails')
+
+# a caveat qualifies the claim it limits
+link(kind='memory', id='<caveat-id>',
+     target='me<lemma-or-finding-id>', rel='qualifies')
+```
+
+Both pairs auto-mirror like every other directed relation here —
+`entailed-by` and `qualified-by` are queryable from the target's side
+without a second `link()` call. Full workflow (stating lemmas, the
+`meta.rule`/`meta.warrant` operator vocabulary, reading the proof tree,
+caveat propagation): `precis-argument-help`.
+
 ## One-way "for context" pointer
 ## I want to nudge a reader toward B without claiming a stronger edge
 
@@ -167,4 +195,5 @@ get(kind='skill', id='precis-overview')         # verbs and kinds
 get(kind='skill', id='precis-todo-help')        # blocks/blocked-by workflow filter
 get(kind='skill', id='precis-citation-help')    # verifier workflow for cites
 get(kind='skill', id='precis-provenance-help')  # retraction/correction notices
+get(kind='skill', id='precis-argument-help')    # entails/qualifies workflow, meta.rule/warrant
 ```
