@@ -17,7 +17,14 @@
         "PRECIS_PATENT_RAW_ROOT": "{{ precis_patent_raw_root | default('') }}",
         "PRECIS_ROOT": "{{ precis_root | default('') }}",
         "PRECIS_PYTHON_ROOTS": "{{ precis_python_roots | default('') }}",
-        "PRECIS_STARTUP_SKILLS": "{{ precis_startup_skills | default('') }}"
+        "PRECIS_STARTUP_SKILLS": "{{ precis_startup_skills | default('') }}",
+{# Claude Code gives a stdio MCP server ONLY this env block, NOT the parent
+   `claude -p` env — so a per-run var must be an explicit ${VAR} pass-through
+   or it never reaches `serve`. This carries the run's agentlog id so writes
+   (draft/memory/websearch) attribute back via touch_from_env (a `touched`
+   link). `:-` ⇒ empty when not a tick; agentlog.current_from_env treats empty
+   as unset (no-op), so it's safe for asa / non-tick runs. #}
+        "PRECIS_CURRENT_AGENTLOG": "${PRECIS_CURRENT_AGENTLOG:-}"
       }
     }
   }
