@@ -411,13 +411,33 @@ def test_drive_rows_show_per_item_tags(client) -> None:
 
 def test_drive_has_new_button(client) -> None:
     """The /drive header carries the '+ New' dropdown (cad/structure/
-    figure/draft), reusing the existing /drafts/new + /drive/new creation
-    flows."""
+    figure/mermaid/draft), reusing the existing /drafts/new + /drive/new
+    creation flows."""
     resp = client.get("/drive")
     assert "+ New" in resp.text
     assert "/drafts/new" in resp.text
     assert "/drive/new" in resp.text
     assert "Draft (document)" in resp.text
+    # Mermaid is a placeable artifact kind with its own editor — it must be
+    # offered here, not silently missing (gripe 171151).
+    assert 'value="mermaid"' in resp.text
+
+
+def test_drive_new_mermaid_dispatches_put_and_redirects_to_editor(
+    runtime, client
+) -> None:
+    """Creating a mermaid from the '+ New' dropdown slugifies the title,
+    dispatches its ``put`` starter (id-only — mermaid is born empty), and
+    lands the operator in the /mermaid editor rather than dropping the title
+    on /drive (gripe 171151)."""
+    resp = client.post(
+        "/drive/new",
+        data={"kind": "mermaid", "title": "System Flow"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/mermaid/system-flow"
+    assert ("put", {"kind": "mermaid", "id": "system-flow"}) in runtime.calls
 
 
 def test_drive_search_renders_cross_kind_rows(client) -> None:

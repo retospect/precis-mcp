@@ -11,8 +11,8 @@
       flag what you want to read, move / tag / delete inline.
     </p>
   </div>
-  {# + New — cad/structure/figure ride /drive/new; draft reuses /drafts/new
-     so its genre picker + richer flow stay single-sourced there. #}
+  {# + New — cad/structure/figure/mermaid ride /drive/new; draft reuses
+     /drafts/new so its genre picker + richer flow stay single-sourced there. #}
   <div class="ml-auto relative shrink-0">
     <button type="button" @click="open = !open"
             class="rounded bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700">
@@ -29,6 +29,7 @@
           <option value="cad">CAD (3D solid)</option>
           <option value="structure">DFT (atomistic cell)</option>
           <option value="figure">Figure (SVG canvas)</option>
+          <option value="mermaid">Mermaid (diagram)</option>
           <option value="draft">Draft (document)</option>
         </select>
       </div>

@@ -43,6 +43,10 @@ _WS_RE = re.compile(r"\s+")
 _OPEN_URL_OVERRIDES: dict[str, str] = {
     "paper": "/papers/{id}",
     "datasheet": "/datasheets/{id}",
+    "cad": "/cad/{slug}",
+    "structure": "/structure/{slug}",
+    "figure": "/figure/{slug}",
+    "mermaid": "/mermaid/{slug}",
 }
 
 #: Kinds whose ingest runs a fetch→PDF→chunk pipeline, so the

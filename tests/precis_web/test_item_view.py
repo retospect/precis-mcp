@@ -86,6 +86,21 @@ def test_presenter_for_unregistered_kind_is_generic() -> None:
     assert type(p) is ItemPresenter
 
 
+def test_open_url_routes_artifact_kinds_to_rich_editor() -> None:
+    """Drive click-through for the slug-addressed artifact kinds lands in
+    their dedicated editor, not the generic /refs reader (gripe 171150)."""
+    for kind, expected in (
+        ("cad", "/cad/hex-block"),
+        ("structure", "/structure/hex-block"),
+        ("figure", "/figure/hex-block"),
+        ("mermaid", "/mermaid/hex-block"),
+    ):
+        ref = _ref(kind=kind, slug="hex-block", id=7)
+        assert ItemPresenter(kind).open_url(ref) == expected
+    # A kind with no override still falls back to the generic browser.
+    assert ItemPresenter("web").open_url(_ref(kind="web", id=7)) == "/refs/web/7"
+
+
 def test_item_row_carries_hover_thumbnail_actions() -> None:
     ref = _ref(kind="youtube", slug="abc123", title="A video")
     row = item_row(ref, _block("a caption line"), 0.5, set())

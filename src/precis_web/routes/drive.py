@@ -74,6 +74,8 @@ _READER_URL = {
     "draft": "/drafts/{ident}",
     "structure": "/structure/{ident}",
     "cad": "/cad/{ident}",
+    "figure": "/figure/{ident}",
+    "mermaid": "/mermaid/{ident}",
     "datasheet": "/datasheets/{ident}",
     "todo": "/tasks?focus={ref_id}",
 }
@@ -453,8 +455,9 @@ async def index(
 
 
 #: Starter sources for the "+ New" dropdown (kind → put args builder). Draft
-#: has its own richer flow (``/drafts/new``); this covers cad + structure so a
-#: fresh artifact lands the operator straight in its editor.
+#: has its own richer flow (``/drafts/new``); this covers cad / structure /
+#: figure / mermaid so a fresh artifact lands the operator straight in its
+#: editor.
 _NEW_STARTERS = {
     "cad": lambda slug: (
         "cad",
@@ -472,6 +475,9 @@ _NEW_STARTERS = {
     # A figure is born with a default empty canvas (no starter source needed);
     # the operator then draws it in the /figure turn loop.
     "figure": lambda slug: ("figure", {"id": slug}, f"/figure/{slug}"),
+    # Mermaid is likewise born empty (id_required=False, text optional); the
+    # operator writes the diagram source in the /mermaid turn loop.
+    "mermaid": lambda slug: ("mermaid", {"id": slug}, f"/mermaid/{slug}"),
 }
 
 
@@ -481,11 +487,14 @@ async def create_artifact(
     kind: str = Form(...),
     title: str = Form(""),
 ) -> Response:
-    """Create a new cad / structure artifact from the Drive "+ New" dropdown.
+    """Create a new cad / structure / figure / mermaid artifact from the
+    Drive "+ New" dropdown.
 
     Slugifies ``title`` → slug, dispatches the kind's ``put`` with a valid
     *starter* source, and redirects into its editor (where the operator edits
-    by prompt). Draft creation is handled by ``/drafts/new``, not here."""
+    by prompt). Draft creation is handled by ``/drafts/new``, not here. A kind
+    with no starter falls through to the handler's canonical BadInput rather
+    than silently landing on ``/drive``."""
     from precis.utils.slug import slug_from_text
 
     builder = _NEW_STARTERS.get(kind)
