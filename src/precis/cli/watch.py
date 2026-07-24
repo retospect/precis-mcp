@@ -977,6 +977,36 @@ def _handle_success(
     return dest
 
 
+def _run_in_process_group(cmd: list[str], env: dict[str, str]) -> int:
+    """Spawn *cmd* in its own session/process group and reap the whole
+    group on every exit path, returning the child's exit code.
+
+    marker-pdf 2.0 runs ``surya`` as a *detached* inference server. If
+    this batch subprocess is OOM-killed, that detached surya server is
+    reparented to init (ppid=1) and keeps holding ~19 GB of unified
+    memory — an unbounded leak that thrash-locks the host and breaks
+    ADR 0015's per-batch-reclaim assumption (root-caused on spark:
+    global kernel OOM + NVRM GPU-memory exhaustion). ``start_new_session
+    =True`` makes *cmd* (and any grandchildren it spawns, including a
+    detached surya) a new session/group leader, so the group id equals
+    its pid — a ``killpg`` on that id always reaps the whole tree,
+    orphaned surya included, on every exit path (clean, killed, or
+    crashed).
+    """
+    proc = subprocess.Popen(cmd, env=env, start_new_session=True)
+    pgid = proc.pid  # stable identifier for the group even after the leader dies
+    try:
+        proc.wait()
+    finally:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # empty group = clean exit, nothing leaked (the happy path)
+        except PermissionError:
+            log.debug("precis watch: killpg(%d) denied permission", pgid)
+    return proc.returncode
+
+
 def _spawn_batch_subprocess(
     pdfs: list[Path],
     *,
@@ -1033,13 +1063,13 @@ def _spawn_batch_subprocess(
         env["PRECIS_DATABASE_URL"] = database_url
 
     log.info("precis watch: spawning batch subprocess for %d PDF(s)", len(pdfs))
-    result = subprocess.run(cmd, env=env, check=False)
-    if result.returncode != 0:
+    returncode = _run_in_process_group(cmd, env)
+    if returncode != 0:
         log.warning(
             "precis watch: batch subprocess exited with code %d "
             "(advisory-lock claim auto-released; the next watcher run "
             "will retry any unmoved files)",
-            result.returncode,
+            returncode,
         )
 
 

@@ -212,16 +212,12 @@ class TestBackfillSubprocess:
 
         captured: dict[str, Any] = {}
 
-        def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        def fake_run(cmd: list[str], env: dict[str, str]) -> int:
             captured["cmd"] = cmd
-            captured["kwargs"] = kwargs
+            captured["env"] = env
+            return 0
 
-            class _R:
-                returncode = 0
-
-            return _R()
-
-        with patch("precis.cli.watch.subprocess.run", side_effect=fake_run):
+        with patch("precis.cli.watch._run_in_process_group", side_effect=fake_run):
             _spawn_batch_subprocess(
                 [tmp_path / "a.pdf", tmp_path / "b.pdf"],
                 watch_dir=tmp_path / "watch",
@@ -242,10 +238,65 @@ class TestBackfillSubprocess:
         # /proc/<pid>/cmdline was an SSRF / leak risk. It now flows
         # through the subprocess environment instead.
         assert "--database-url" not in cmd
-        env = captured["kwargs"].get("env") or {}
+        env = captured["env"] or {}
         assert env.get("PRECIS_DATABASE_URL") == "postgresql://x/y"
         # PDFs trail the flags.
         assert cmd[-2:] == [str(tmp_path / "a.pdf"), str(tmp_path / "b.pdf")]
+
+
+class TestRunInProcessGroup:
+    """marker-pdf 2.0 runs ``surya`` as a *detached* inference server.
+
+    If the batch subprocess is OOM-killed, that detached surya server
+    is reparented to init and keeps holding ~19 GB of unified memory —
+    an unbounded leak (ADR 0015). ``_run_in_process_group`` puts the
+    whole batch in its own process group and unconditionally
+    ``killpg``s it on every exit path, so any grandchild orphan dies
+    with the batch. This is proven with a synthetic (marker-free)
+    child/grandchild pair so it stays hermetic on hosts without the
+    ``paper`` extra installed.
+    """
+
+    def test_reaps_detached_grandchild(self, tmp_path: Path) -> None:
+        import os
+        import sys
+        import time
+
+        from precis.cli.watch import _run_in_process_group
+
+        pidfile = tmp_path / "grandchild.pid"
+        # The "batch": spawns a grandchild that outlives it (simulating
+        # a detached surya server), records the grandchild's pid, then
+        # exits immediately — no setsid of its own, so it inherits the
+        # batch's process group.
+        script = (
+            "import subprocess, sys\n"
+            "gc = subprocess.Popen([sys.executable, '-c', "
+            "'import time; time.sleep(30)'])\n"
+            f"with open({str(pidfile)!r}, 'w') as f:\n"
+            "    f.write(str(gc.pid))\n"
+        )
+        cmd = [sys.executable, "-c", script]
+
+        returncode = _run_in_process_group(cmd, env=os.environ.copy())
+        assert returncode == 0
+
+        grandchild_pid = int(pidfile.read_text().strip())
+
+        deadline = time.monotonic() + 5.0
+        dead = False
+        while time.monotonic() < deadline:
+            try:
+                os.kill(grandchild_pid, 0)
+            except ProcessLookupError:
+                dead = True
+                break
+            time.sleep(0.05)
+
+        assert dead, (
+            f"grandchild pid {grandchild_pid} still alive after "
+            "_run_in_process_group returned — orphan reap failed"
+        )
 
 
 class TestBackfillOrder:
