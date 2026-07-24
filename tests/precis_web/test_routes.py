@@ -4028,39 +4028,55 @@ def test_answer_edit_failure_skips_tag_remove(client, runtime) -> None:
 # ── refs title preview ─────────────────────────────────────────────
 
 
-def test_title_preview_first_two_nonempty_lines() -> None:
-    from precis_web.routes.refs import _title_preview
+def test_display_title_collapses_multiline_to_one_line() -> None:
+    """A title that is really a document body collapses to a single line
+    (no newline), so a Drive row stays one line."""
+    from precis_web.item_view import display_title
 
     md = (
         "# Structural review digest — 2026-06-15\n"
         "\n"
         "Strategic root #6649 (Nano-transistors) is mislabelled.\n"
-        "\n"
-        "## Branches missing an outcome line\n"
     )
-    out = str(_title_preview(md))
-    assert (
-        out == "# Structural review digest — 2026-06-15"
-        "<br>"
-        "Strategic root #6649 (Nano-transistors) is mislabelled."
-    )
+    out = display_title(md)
+    assert "\n" not in out
+    assert out.startswith("# Structural review digest — 2026-06-15 Strategic")
 
 
-def test_title_preview_escapes_per_line_html() -> None:
-    """Per-line content is HTML-escaped; only the <br> is raw."""
-    from precis_web.routes.refs import _title_preview
+def test_display_title_truncates_long_single_line() -> None:
+    """A long single-line title (websearch query / citation claim) is
+    capped with an ellipsis — the storage keeps the whole thing."""
+    from precis_web.item_view import DISPLAY_TITLE_LIMIT, display_title
 
-    out = str(_title_preview("<script>x</script>\nplain"))
-    assert "<script>" not in out
-    assert "&lt;script&gt;" in out
-    assert "<br>" in out
+    long_q = "why " * 80 + "does electrocatalytic CO2 reduction favour C2"
+    out = display_title(long_q)
+    assert out.endswith("…")
+    assert len(out) <= DISPLAY_TITLE_LIMIT
 
 
-def test_title_preview_handles_empty() -> None:
-    from precis_web.routes.refs import _title_preview
+def test_display_title_noop_for_short_title() -> None:
+    """The common case — a short, already-scannable title — passes through
+    verbatim."""
+    from precis_web.item_view import display_title
 
-    assert str(_title_preview("")) == "(untitled)"
-    assert str(_title_preview("\n\n")) == "(untitled)"
+    assert display_title("Collins 2006 CO2 study") == "Collins 2006 CO2 study"
+
+
+def test_display_title_returns_plain_text_escaping_left_to_template() -> None:
+    """The helper is a pure text transform — it does NOT escape (Jinja
+    autoescape is the XSS boundary, same as every other title field)."""
+    from precis_web.item_view import display_title
+
+    assert display_title("<b>x</b> y") == "<b>x</b> y"
+
+
+def test_display_title_handles_empty() -> None:
+    """Empty in → empty out; each caller supplies its own fallback label."""
+    from precis_web.item_view import display_title
+
+    assert display_title("") == ""
+    assert display_title("\n\n") == ""
+    assert display_title(None) == ""
 
 
 # ---- Papers presence filters (has_pdf / has_chunks) -----------------

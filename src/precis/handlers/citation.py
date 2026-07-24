@@ -31,8 +31,9 @@ Storage details:
 
 * ``kind='citation'`` is seeded in ``0001_initial.sql`` (originally
   added in the archived ``0007_citation_kind.sql``).
-* The claim summary (``text=`` on put) lives in ``refs.title`` for
-  list-view scannability.
+* The claim (``text=`` on put) is stored **in full** in ``refs.title``
+  — truncation is a *display* concern (the Drive list caps it via
+  ``_display_title``), never a storage one.
 * The full record sits in ``refs.meta`` as a JSON object.
 * ``link='paper:<slug>'`` + ``rel='cites'`` connects each citation
   to its source paper via the existing ``links`` machinery, so
@@ -235,16 +236,16 @@ class CitationHandler(NumericRefHandler):
             ref = self.store.insert_ref(
                 kind=self.kind,
                 slug=None,
-                title=text.strip()[:200],  # cap title at sane scannable length
+                title=text.strip(),  # full claim — truncation is display-only
                 meta=record,
                 conn=conn,
             )
-            # The claim is novel, agent-authored prose, but refs.title
-            # holds only a 200-char truncation of it and refs.meta isn't
-            # indexed at all. Mirror the *full* claim into a card_combined
-            # chunk (ord=-1) so the embed + chunk_keywords workers index
-            # it — citations become semantically searchable, not just a
-            # lexical-prefix match on the truncated title. Citations are
+            # The claim is novel, agent-authored prose. refs.title now
+            # holds it in full, but the title column isn't embedded and
+            # refs.meta isn't indexed at all. Mirror the claim into a
+            # card_combined chunk (ord=-1) so the embed + chunk_keywords
+            # workers index it — citations become semantically searchable,
+            # not just a lexical match on the title. Citations are
             # write-once, so the card never needs re-syncing.
             #
             # source_quote is deliberately NOT chunked: it's a verbatim

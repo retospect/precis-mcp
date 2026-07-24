@@ -27,7 +27,6 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
-from markupsafe import Markup, escape
 
 from precis.errors import NotFound
 from precis.utils import mentions
@@ -41,6 +40,7 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
+from precis_web.item_view import display_title
 
 router = APIRouter(prefix="/refs", tags=["refs"])
 
@@ -104,24 +104,6 @@ def _parse_tags(raw: str | None) -> list[str]:
     return [p for p in parts if p]
 
 
-def _title_preview(title: str) -> Markup:
-    """First two non-empty lines of ``title``, joined by ``<br>``.
-
-    Memory / digest titles can be the whole document body — a row that
-    bare-prints the title fills the list with one giant entry. Picking
-    the first two non-empty lines is enough to recognise the entry
-    (the leading ``# heading`` plus the first prose line), and the
-    explicit ``<br>`` keeps both visible without paragraph spacing.
-
-    Per-line content is HTML-escaped (XSS guard) and the ``<br>`` is
-    emitted raw — returns ``Markup`` so Jinja honours the mix.
-    """
-    lines = [ln for ln in (title or "").splitlines() if ln.strip()]
-    if not lines:
-        return Markup("(untitled)")
-    return Markup("<br>").join(escape(ln) for ln in lines[:2])
-
-
 def _row(ref: Any) -> dict[str, Any]:
     updated = getattr(ref, "updated_at", None)
     created = getattr(ref, "created_at", None)
@@ -132,7 +114,9 @@ def _row(ref: Any) -> dict[str, Any]:
         "id": ref.id,
         "slug": ref.slug or "",
         "title": title,
-        "title_preview": _title_preview(title),
+        # Single-sourced Drive-wide display cap (item_view.display_title);
+        # ``title`` above stays full for the detail-page header.
+        "display_title": display_title(title),
         "updated": updated.strftime("%Y-%m-%d %H:%M") if updated else "",
         # Extra meta surfaced on the detail page's header strip. The
         # list templates ignore the keys they don't use, so widening
@@ -689,13 +673,11 @@ async def consolidated(
             continue
         rows: list[dict[str, object]] = []
         for r in refs:
-            title = (getattr(r, "title", "") or "").split("\n", 1)[0]
-            if len(title) > 80:
-                title = title[:80].rstrip() + "…"
             rows.append(
                 {
                     "id": r.id,
-                    "title": title or "(untitled)",
+                    "display_title": display_title(getattr(r, "title", ""))
+                    or "(untitled)",
                     "url": _consolidated_ref_url(kind, r.id),
                 }
             )

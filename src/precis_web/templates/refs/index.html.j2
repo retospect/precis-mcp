@@ -53,7 +53,7 @@
     <span class="text-xs text-slate-400 w-14 shrink-0 pt-0.5">#{{ r.id }}</span>
     <a href="/refs/{{ kind }}/{{ r.id }}"
        class="text-sm font-medium text-sky-700 hover:underline flex-1 break-words">
-      {{ r.title_preview }}
+      {{ r.display_title }}
     </a>
     {% if r.slug %}<span class="text-xs font-mono text-slate-400 truncate max-w-xs pt-0.5">{{ r.slug }}</span>{% endif %}
     <span class="text-xs text-slate-400 w-32 shrink-0 text-right pt-0.5">{{ r.updated }}</span>

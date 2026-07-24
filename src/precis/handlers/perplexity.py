@@ -668,9 +668,17 @@ def _format_perplexity_body(data: dict[str, Any]) -> tuple[str, list[str]]:
 
 
 def _title_for_query(query: str) -> str:
-    """Short ref title — first 80 chars of the query, single line."""
-    one_line = " ".join(query.split())
-    return one_line[:80] + ("…" if len(one_line) > 80 else "")
+    """Ref title — the full query on a single line.
+
+    Storage keeps the *whole* query so the web detail page can show it
+    verbatim (a truncated title is lossy: the original question is the
+    point of a search ref). Whitespace is collapsed so a multi-line
+    paste renders as one logical line, but nothing is dropped.
+    Truncation is a *display* concern — Drive/list rows lean on
+    ``item_view.display_title`` and the agent-facing ``/recent`` listing
+    caps at 80 chars — never a storage one.
+    """
+    return " ".join(query.split())
 
 
 _REASONING_TAG_RE = re.compile(

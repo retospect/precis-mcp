@@ -21,6 +21,7 @@ from precis.handlers.perplexity import (
     ThinkHandler,
     WebsearchHandler,
     _format_perplexity_body,
+    _title_for_query,
 )
 from precis.store import Store
 
@@ -366,6 +367,27 @@ def test_network_error_raises_upstream(websearch: WebsearchHandler) -> None:
     _StubClient.raise_on_post = httpx.ConnectError("dns fail")
     with pytest.raises(Upstream, match="transport error"):
         websearch.get(id="hello")
+
+
+# ── title storage — full query, not truncated ────────────────────────
+
+
+def test_title_for_query_keeps_full_query() -> None:
+    """The ref title stores the whole query — truncation is a display
+    concern, never a storage one (web detail renders ``ref.title``)."""
+    long_q = "why " * 60 + "does electrocatalytic CO2 reduction favour C2 products"
+    title = _title_for_query(long_q)
+    assert title.endswith("C2 products")
+    assert "…" not in title
+    assert len(title) > 80
+
+
+def test_title_for_query_collapses_whitespace_single_line() -> None:
+    """A multi-line paste still becomes one logical line, but nothing is
+    dropped — matches the migration's ``regexp_replace(..., '\\s+', ' ')``."""
+    assert _title_for_query("  who   is\n the CEO\tof Anthropic  ") == (
+        "who is the CEO of Anthropic"
+    )
 
 
 # ── response formatting ──────────────────────────────────────────────

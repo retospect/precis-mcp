@@ -96,6 +96,31 @@ class TestPutHappy:
         assert meta["verifier_confidence"] == 0.95
         assert meta.get("verified_at")
 
+    def test_long_claim_stored_in_full_not_truncated(self, store) -> None:
+        """A claim longer than the old 200-char cap is now stored whole in
+        refs.title — display truncation is the web layer's job."""
+        h = _make_handler(store)
+        store.insert_ref(kind="paper", slug="longp", title="Long Paper")
+        claim = (
+            "Across Cu, Ni, Pt and Pd catalysts the measured Faradaic "
+            "efficiency for the C2+ pathway climbs monotonically with "
+            "applied overpotential up to -0.9 V vs RHE, beyond which "
+            "hydrogen evolution dominates and the C2+ selectivity collapses "
+            "to below ten percent in every system we tested."
+        )
+        assert len(claim) > 200
+        resp = h.put(
+            text=claim,
+            source_handle="longp~2",
+            source_quote=claim[:40],
+            verifier_confidence=0.8,
+        )
+        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref = store.get_ref(kind="citation", id=ref_id)
+        assert ref is not None
+        assert ref.title == claim  # full, not clipped at 200
+        assert (ref.meta or {})["claim"] == claim
+
     def test_create_ack_carries_summary(self, store) -> None:
         h = _make_handler(store)
         store.insert_ref(kind="paper", slug="paperA", title="Paper A")

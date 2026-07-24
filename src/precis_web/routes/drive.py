@@ -41,7 +41,7 @@ from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
-from precis_web.item_view import artifact_kinds
+from precis_web.item_view import artifact_kinds, display_title
 from precis_web.routes.drafts import _DOC_TYPES
 from precis_web.routes.flags import (
     ACQUIRE_FLAG_DEFS,
@@ -187,7 +187,7 @@ def _row(r: tuple, *, kinds_with_slug: bool = True) -> dict[str, Any]:
         "ref_id": ref_id,
         "kind": kind,
         "icon": _KIND_ICON.get(kind, "▫️"),
-        "title": title,
+        "title": display_title(title),
         "ident": ident,
         # link() addresses slug kinds by slug, numeric kinds by int id.
         "handler_id": ident,

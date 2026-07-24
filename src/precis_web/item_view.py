@@ -36,6 +36,33 @@ _HOVER_CHARS = 600
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
+#: Max characters of a title shown in a list / Drive row. Generous
+#: enough that a normal title (paper, memory heading, gripe subject)
+#: passes through untouched — truncation only bites the kinds whose
+#: title *is* the body (websearch query, citation claim, digest bodies),
+#: exactly where a Drive row would otherwise blow out. Detail pages never
+#: use this; they render ``ref.title`` in full.
+DISPLAY_TITLE_LIMIT = 160
+
+
+def display_title(title: str | None, *, limit: int = DISPLAY_TITLE_LIMIT) -> str:
+    """Single-line, length-capped label for a ref in list / Drive views.
+
+    Storage keeps the whole title (the original query / claim / heading);
+    this is the *display* side of that split. Internal newlines — a title
+    that is really a whole document body — collapse to one line, then the
+    result is truncated to ``limit`` with an ellipsis. Returns ``""`` for
+    an empty title so each caller supplies its own fallback label.
+
+    Escaping is left to the template (Jinja autoescape), same as every
+    other title field on these pages — the return is plain text.
+    """
+    one_line = _WS_RE.sub(" ", title or "").strip()
+    if len(one_line) > limit:
+        one_line = one_line[: limit - 1].rstrip() + "…"
+    return one_line
+
+
 #: Kinds with a richer detail view than the generic ``/refs`` browser.
 #: ``{id}`` / ``{slug}`` are filled from the ref. Every other kind falls
 #: back to ``/refs/<kind>/<id>`` (which exists for all kinds), so the map
@@ -91,8 +118,9 @@ class ItemPresenter:
         self.kind = kind
 
     def name(self, ref: Any) -> str:
-        title = (getattr(ref, "title", None) or "").strip()
-        return title or f"{self.kind} #{getattr(ref, 'id', '?')}"
+        return display_title(getattr(ref, "title", None)) or (
+            f"{self.kind} #{getattr(ref, 'id', '?')}"
+        )
 
     def open_url(self, ref: Any) -> str:
         tmpl = _OPEN_URL_OVERRIDES.get(self.kind)

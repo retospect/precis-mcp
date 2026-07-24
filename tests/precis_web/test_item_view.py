@@ -30,6 +30,25 @@ def _block(text: str):
     return SimpleNamespace(id=1, pos=0, text=text)
 
 
+def test_name_caps_long_title_for_drive_row() -> None:
+    """A ref whose title *is* its body (long websearch query / citation
+    claim) is capped to one line for the /drive row — storage stays full,
+    display truncates."""
+    from precis_web.item_view import DISPLAY_TITLE_LIMIT
+
+    long_claim = "Across Cu Ni Pt and Pd catalysts the C2+ Faradaic efficiency " * 6
+    p = ItemPresenter("citation")
+    out = p.name(_ref(kind="citation", title=long_claim))
+    assert out.endswith("…")
+    assert "\n" not in out
+    assert len(out) <= DISPLAY_TITLE_LIMIT
+
+
+def test_name_falls_back_to_kind_and_id_when_title_empty() -> None:
+    p = ItemPresenter("web")
+    assert p.name(_ref(kind="web", id=7, title="")) == "web #7"
+
+
 def test_hover_preview_leads_with_abstract() -> None:
     """A kind carrying ``meta['abstract']`` gets a richer hover peek than
     the row preview — abstract first, then the matching chunk."""
