@@ -112,7 +112,9 @@ is continuously fed frontier results). A shareable "paper" is therefore a
 second artifact. The periodic **"bundle up and share"** (weekly/monthly
 digest/newsletter) is a **separate process** — 0060's digest cast — out of scope
 here. Remaining work if pursued: generalize `dossier.py`'s owner beyond quest so
-a non-quest living-review process can own one. Its own proposal.
+a non-quest living-review process can own one. Its own proposal —
+`docs/proposals/dossier-owner-generalization.md` (drafted + `ready`-gated
+2026-07-24; build deferred).
 
 ### C — Sim-level infra failures must not read as "dry" (follow-on)
 

@@ -52,12 +52,10 @@ items are removed (history is `git log`).
   high-water mark.
 
 ---
-## 🧵 ADR 0064 residuals — quest-loop rest-reason (RC1), paper-as-export (B), catpath infra-retry (§C mirror)
-- Status: open · Owner: `src/precis/quest/{loop,compute,dossier}.py` + `src/precis/workers/job_types/quest_tick.py` · ADR: `docs/decisions/0064-dossier-thinking-substrate-and-paper-projection.md`
-- Context: ADR 0064 §A (pinned dossier ledger) + RC2 self-rest + punt/dry split + §C infra-retry all SHIPPED+DEPLOYED (`710addb8`, `dae2ccc7`, 2026-07-24). These three are the deliberately-deferred remainder.
-- **RC1 (design pass first — Opus):** a loop that rested `STATUS:failed` via `_max_tick_failures` (persistent break, e.g. dead LLM endpoint) is terminal, so `reconcile_quest_loops`→`ensure_quest_loop` re-mints it every pass — unbounded, and invisible to nursery (no bubbled alert). Need a rest-reason distinction: a *failed*-rested loop should back off / surface to nursery, NOT be immediately re-minted — unlike a *dry*/*punt*-rested or reboot-orphan-reaped loop (those re-mint correctly). Likely an ADR + a `reaped:`-style marker or a failed-rest cooldown the reconciler reads. Distinct from the reboot-reap (`_reap_orphaned_loop`, which only touches `cancelled`, never `failed`).
-- **Deliverable B (proposal → build):** paper = on-demand render of a process's dossier, NOT a second artifact — the dossier already IS a `draft` so export/compile is free. Only work: generalize `dossier.py`'s hardcoded quest owner (`_RELATION='dossier-of'`, `meta.dossier_of_quest`, `ensure_dossier(store, quest_id)`) so a non-quest process (topic/living-review) can own one. Write as `docs/proposals/*.md`, run the `ready` gate. ADR 0064 §B is the design-of-record.
-- **§C catpath mirror (small — coder):** `harvest_measures`'s infra-retry-once-then-gripe covers the **relax** lane only; mirror it for a failed `catpath_explore` job (detect a `failed` catpath job — `_fresh_catpath_jobs` only harvests measures today, doesn't check failed status — re-dispatch once via `dispatch_catpath`, gripe on the 2nd). Bounded; `src/precis/quest/compute.py`.
+## 🧵 ADR 0064 Deliverable B — generalize the dossier owner beyond quest (build deferred)
+- Status: proposal drafted + `ready`-gated (blockers resolved), build deferred · Owner: `src/precis/quest/dossier.py` (+3 callers) · Proposal: `docs/proposals/dossier-owner-generalization.md` · ADR: `docs/decisions/0064-dossier-thinking-substrate-and-paper-projection.md` §B
+- Paper-as-export is already free (the dossier IS a `draft`). The one remaining piece: generalize `dossier.py`'s hardcoded quest owner (`quest_id`→`owner_id`; `store.get_ref(kind="quest",…)`→direct `refs` title read; `meta.dossier_of_quest`→dual-read `dossier_of_owner`) so a non-quest living-review process can own a dossier. Migration-free (the `dossier-of` relation is already owner-agnostic). The proposal has the full spec + acceptance criteria; flip it to `status: ready` when the build is actually scheduled.
+- (RC1 failed-rest backoff+nursery surfacing → shipped `539dc8dd`/ADR 0065; §C catpath infra-retry → shipped `a5cfedab`. Both shipped 2026-07-24, deploy pending — see the `catpath_integration` memory thread.)
 
 ---
 ## 📄 Elsevier preview-PDF remediation — ~2,800 prod papers, BLOCKED on pilot findings
