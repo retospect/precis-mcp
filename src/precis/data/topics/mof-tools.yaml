@@ -1,0 +1,16 @@
+slug: mof-tools
+description: >
+  MOF design tooling — AI/ML models and computational scripts for reticular
+  synthesis prediction, MOF screening, generation, and topology enumeration.
+keywords:
+  - MOF design software
+  - reticular synthesis prediction
+  - MOF machine learning
+  - MOF screening
+  - MOF generation
+  - topology enumeration
+  - PORMAKE
+sub_tags:
+  - mof-tools-ml
+  - mof-tools-screening
+  - mof-tools-generation

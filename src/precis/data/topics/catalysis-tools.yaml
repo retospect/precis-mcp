@@ -1,0 +1,18 @@
+slug: catalysis-tools
+description: >
+  Catalyst design tooling — AI/ML models and computational scripts (DFT,
+  microkinetic modeling, high-throughput screening) for catalyst discovery;
+  distinct from the existing ammonia-synthesis catalyst-discovery quest,
+  which runs its own active literature search.
+keywords:
+  - catalyst screening
+  - computational catalyst screening
+  - machine learning catalyst
+  - DFT catalyst screening
+  - microkinetic modeling
+  - high-throughput catalysis
+  - catalyst descriptor
+sub_tags:
+  - catalysis-tools-ml
+  - catalysis-tools-dft
+  - catalysis-tools-screening

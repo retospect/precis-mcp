@@ -42,10 +42,27 @@ class TestPure:
     def test_topics_load_with_required_fields(self) -> None:
         topics = _load_topics()
         slugs = {t["slug"] for t in topics}
-        assert {"healthspan", "molelec", "noxrr", "llm-improvements"} <= slugs
+        assert {
+            "healthspan",
+            "molelec",
+            "noxrr",
+            "llm-improvements",
+            "mof",
+            "nanobuds",
+            "carbon-cad",
+            "mof-tools",
+            "catalysis-tools",
+        } <= slugs
         for t in topics:
             assert t.get("description")
             assert isinstance(t.get("keywords"), list) and t["keywords"]
+
+    def test_tier0_candidates_matches_new_topic_keyword(self) -> None:
+        topics = _load_topics()
+        hits = _tier0_candidates(
+            topics, "A study of zeolitic imidazolate frameworks for gas storage"
+        )
+        assert "mof" in hits
 
     def test_tier0_candidates_matches_keyword(self) -> None:
         topics = _load_topics()
@@ -89,10 +106,10 @@ class TestPure:
 # ── end-to-end pass (real PG, fake client) ─────────────────────────────
 
 
-def _seed_paper(store: Any, title: str, body: str) -> int:
+def _seed_paper(store: Any, title: str, body: str, *, kind: str = "paper") -> int:
     from tests.workers._helpers import seed_chunk, seed_ref
 
-    ref_id = seed_ref(store, title=title)
+    ref_id = seed_ref(store, title=title, kind=kind)
     seed_chunk(store, ref_id=ref_id, text=body, ord=0)
     return ref_id
 
@@ -218,6 +235,44 @@ class TestPass:
 
         assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"healthspan": 1}}
         assert _topic_tags(store, ref_id) == {"topic:healthspan"}
+
+    def test_patent_ref_with_body_chunk_no_abstract_is_swept(self, store: Any) -> None:
+        # No card_abstract chunk — _abstract() must fall back to the first
+        # ord>=0 body chunk. kind='patent' must now be in the claim's scope.
+        ref_id = _seed_paper(
+            store,
+            "A metal-organic framework device for gas separation",
+            "This patent discloses a zeolitic imidazolate framework used "
+            "for selective gas separation.",
+            kind="patent",
+        )
+        client = _FakeClient('{"topics": ["mof"]}')
+
+        result = run_classify_topics_pass(
+            store, client=client, batch_size=10, ref_ids=[ref_id]
+        )
+
+        assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"mof": 1}}
+        assert len(client.calls) == 1  # tier-0 keyword hit reached the LLM
+        assert _topic_tags(store, ref_id) == {"topic:mof"}
+        assert _has_marker(store, ref_id)
+
+    def test_new_topic_tier0_hit_produces_topic_tag(self, store: Any) -> None:
+        ref_id = _seed_paper(
+            store,
+            "Reticular chemistry for porous coordination polymers",
+            "We report a new zeolitic imidazolate framework (ZIF) with "
+            "record surface area.",
+        )
+        client = _FakeClient('{"topics": ["mof"]}')
+
+        result = run_classify_topics_pass(
+            store, client=client, batch_size=10, ref_ids=[ref_id]
+        )
+
+        assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"mof": 1}}
+        assert _topic_tags(store, ref_id) == {"topic:mof"}
+        assert _has_marker(store, ref_id)
 
     def test_existing_open_tag_helper_matches_written_value(self, store: Any) -> None:
         # Sanity: our raw-SQL read of ref_tags/tags matches what Tag.open()

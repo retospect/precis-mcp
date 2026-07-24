@@ -2,7 +2,7 @@
 
 Self-contained ref-pass (shaped like ``classify`` / ``paper_glossary`` — DB
 reads + an outbound LLM call, not a pure ``WorkerHandler``). For each claimed
-``paper`` it runs a two-tier cascade against the curated topic taxonomy in
+``paper`` or ``patent`` it runs a two-tier cascade against the curated topic taxonomy in
 ``src/precis/data/topics/*.yaml`` (one file per top-level topic — a topic-dossier
 `quest`'s identity):
 
@@ -49,7 +49,7 @@ from precis.store.types import Tag
 
 log = logging.getLogger(__name__)
 
-CLASSIFY_TOPICS_VERSION = "1"
+CLASSIFY_TOPICS_VERSION = "2"
 MARKER_NAMESPACE = "TOPICCASCADE"
 _TOPICS_DIR = Path(__file__).resolve().parent.parent / "data" / "topics"
 _ABSTRACT_CHARS = 2000
@@ -161,16 +161,16 @@ def _classify_one(
 def _claim(
     conn: Any, *, limit: int, ref_ids: list[int] | None = None
 ) -> list[tuple[int, str]]:
-    """Papers with body content lacking a current-version marker tag. Existence
-    of a fresh ``TOPICCASCADE`` ref tag is the 'done' marker (no separate lease
-    table, mirroring ``paper_glossary``); idempotent + version-bumpable.
-    ``ref_ids`` optionally restricts the sweep to specific papers (targeted
-    backfill / tests)."""
+    """Papers or patents with body content lacking a current-version marker
+    tag. Existence of a fresh ``TOPICCASCADE`` ref tag is the 'done' marker
+    (no separate lease table, mirroring ``paper_glossary``); idempotent +
+    version-bumpable. ``ref_ids`` optionally restricts the sweep to specific
+    refs (targeted backfill / tests)."""
     ref_filter = "AND r.ref_id = ANY(%(ref_ids)s)" if ref_ids else ""
     sql = f"""
         SELECT r.ref_id, r.title
         FROM refs r
-        WHERE r.kind = 'paper' AND r.deleted_at IS NULL
+        WHERE r.kind = ANY(%(kinds)s) AND r.deleted_at IS NULL
           {ref_filter}
           AND EXISTS (
             SELECT 1 FROM chunks c
@@ -184,6 +184,7 @@ def _claim(
         LIMIT %(limit)s
     """
     params: dict[str, Any] = {
+        "kinds": ["paper", "patent"],
         "ns": MARKER_NAMESPACE,
         "ver": CLASSIFY_TOPICS_VERSION,
         "limit": limit,

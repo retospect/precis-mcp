@@ -24,13 +24,13 @@ def make_mock_bge_m3() -> MockEmbedder:
     return MockEmbedder(dim=1024, model="bge-m3")
 
 
-def seed_ref(store: Store, *, title: str = "seed paper") -> int:
+def seed_ref(store: Store, *, title: str = "seed paper", kind: str = "paper") -> int:
     """Insert a minimal ``refs`` row; return its ``ref_id``."""
     with store.pool.connection() as conn:
         row = conn.execute(
             "INSERT INTO refs (kind, set_by, title) "
-            "VALUES ('paper', 'system', %s) RETURNING ref_id",
-            (title,),
+            "VALUES (%s, 'system', %s) RETURNING ref_id",
+            (kind, title),
         ).fetchone()
         assert row is not None
         conn.commit()
