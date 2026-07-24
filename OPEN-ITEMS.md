@@ -576,18 +576,30 @@ minus-query, mig 0085); rung 3 (`chunk_review` memoized approval ledger — mig
 0086, `edit(review=)`, `view='review'`/`'review-diff'`, diff-since renderer);
 rung 4 (`edit(scaffold=)` MCP-expose + `book`/`summary` classes +
 `get(kind='draft', project=)`, `_SCAFFOLDS`→`src/precis/draft/scaffolds.py`).
-**Cost-attribution (`quest_tick cost=null`) is NOT a rung-6 pre-req** — the
-per-quest breaker meters on chars (gr162594); null cost is cosmetic (design doc
-failure-mode 7, corrected). Remaining, design-of-record only:
+**Rung 6 substrate shipped (6a–6c):** 6a `src/precis/quest/placement.py`
+(`place_papers` — paper→section by embedding centroid, floor 0.30, residual);
+6b `src/precis/quest/residual_cluster.py` (`cluster_residual` — agglomerative
+cosine over residual gists, keyword labels + exemplars, lazy sklearn); 6c
+`src/precis/quest/claims.py` (`extract_claims`/`own_chunks` — claims-v0 over
+`ROLE3:own`, injectable client, `pc`-handle grounded). **Cost-attribution
+(`quest_tick cost=null`) is NOT a rung-6 pre-req** — the per-quest breaker meters
+on chars (gr162594); null cost is cosmetic (design doc failure-mode 7,
+corrected). Remaining, design-of-record only:
 
-- **Rung 5 — claims (`citation` + demand-scoped `ROLE3:own` extractor)**
-  *(feature, open — gated)*. v0 is inline *at weave*, so it lands with rung 6,
-  not before; the v1 background table waits on the v0 measurement (Decision 3).
-- **Rung 6 — section-batch weave over `dc` edits + phase machine + per-weave
-  reviewers (flow + cites, ledger-gated)** *(feature, open)* — the core loop;
-  the ledger (rung 3) + integration view (rung 2) + scaffold (rung 4) are its
-  substrate. Then rung 7 (weekly/deep review + batching), rung 8 (freshness +
-  contradiction).
+- **Rung 6d — the frontier weave-apply** *(feature, open — the core)*. For a
+  `(section, batch-of-placed-papers)`: render the section at `fisheye+1hop` +
+  the papers' extracted claims → frontier model recomposes the section →
+  section-scoped `edit_text`/`add_chunks` + mint `citation`s + `add_link`
+  disposition edges + log. Needs a **code-callable citation minter** (only the
+  MCP handler exists today) and the recompose prompt. Consumes 6a/6b/6c.
+- **Rung 6e — the weave tick body + phase machine** *(feature, open)*. Wire
+  place→weave→residual→cluster as a new phase/job_type beside `quest_tick`'s
+  coordinator machine; phase gate via `blocked-by` + `auto_check`; batch
+  regime-scoped (Make = residual, Maintain = weekly window + manual trigger).
+- **Rung 6f — per-weave reviewers (flow + cites, ledger-gated)** *(feature,
+  open)*. Mint review-todos post-weave; the `chunk_review` ledger (rung 3) gates
+  the `cited-in` disposition. Then rung 7 (weekly/deep review + batching), rung 8
+  (freshness + contradiction).
 
 - **Stamp `topic:<slug>` on the dossier `draft` at creation/quest-binding**
   *(feature, open — rung-2 residual)*. `view='integration'`'s PENDING/gap half
