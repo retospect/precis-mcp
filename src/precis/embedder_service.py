@@ -87,6 +87,9 @@ class EmbedderService:
         revision: str | None = None,
         max_inflight: int = 4,
         warm: bool = True,
+        probe_interval_s: float = 30.0,
+        probe_timeout_s: float = 20.0,
+        probe_fail_threshold: int = 2,
     ) -> None:
         self._embedder = embedder
         self._revision = revision
@@ -99,16 +102,186 @@ class EmbedderService:
         self._encode_lock = threading.Lock()
         self._ready = threading.Event()
         self.metrics = _Metrics()
+        # Self-probe config (gripe 51394: "embedder health signals
+        # lie" — ``_ready`` used to be a set-once-never-cleared latch,
+        # so /readyz stayed 200 forever even after the embedder wedged
+        # or every real embed started failing). A background thread
+        # periodically performs a *real* tiny embed and flips
+        # ``_ready`` off after consecutive failures/hangs, back on
+        # after a subsequent success — so the signal reflects "I
+        # actually embedded recently", not just "I embedded once at
+        # boot".
+        self._probe_interval_s = probe_interval_s
+        self._probe_timeout_s = probe_timeout_s
+        self._probe_fail_threshold = probe_fail_threshold
+        self._probe_fail_count = 0
+        self._probe_stop = threading.Event()
+        self._probe_thread: threading.Thread | None = None
+        # The most recently spawned probe-encode thread (Fix for
+        # gripe 51394 review: at most ONE outstanding probe-encode
+        # thread at a time — see ``_run_probe_once``).
+        self._probe_encode_thread: threading.Thread | None = None
         if warm:
             threading.Thread(
                 target=self._warm, name="embedder-warm", daemon=True
             ).start()
         else:
             self._ready.set()
+            self._start_probe()
 
     @property
     def ready(self) -> bool:
         return self._ready.is_set()
+
+    def _start_probe(self) -> None:
+        """Start the background self-probe thread (idempotent).
+
+        Publishes ``self._probe_thread`` only *after* ``start()``
+        returns, so a concurrent ``stop_probe()`` (e.g. a test racing
+        the warm thread) never observes a thread object that hasn't
+        actually started yet — ``Thread.join()`` raises on that.
+        """
+        if self._probe_thread is not None:
+            return
+        thread = threading.Thread(
+            target=self._probe_loop, name="embedder-probe", daemon=True
+        )
+        thread.start()
+        self._probe_thread = thread
+
+    def stop_probe(self, timeout: float = 5.0) -> None:
+        """Signal the probe thread to stop and join it (best-effort)."""
+        self._probe_stop.set()
+        if self._probe_thread is not None:
+            self._probe_thread.join(timeout=timeout)
+
+    def _probe_loop(self) -> None:
+        while not self._probe_stop.wait(self._probe_interval_s):
+            self._run_probe_once()
+
+    def _run_probe_once(self) -> None:
+        """Perform one real, timeout-guarded probe embed and update
+        ``_ready``/failure count accordingly. Split out from
+        ``_probe_loop`` so tests can drive it synchronously.
+
+        Two things this deliberately gets right (2026-07 pre-ship
+        review of gripe 51394):
+
+        - **Bounded pileup.** At most ONE probe-encode thread is ever
+          outstanding. A genuinely wedged encode holds
+          ``_encode_lock`` forever; without this guard, every
+          subsequent tick would spawn another thread that also blocks
+          on the held lock forever — unbounded thread growth. If the
+          previous probe-encode thread is still alive when a new tick
+          fires, we don't spawn a second one — we just record the
+          tick as a failure.
+        - **Contention isn't a wedge.** The probe shares
+          ``_encode_lock`` with real traffic (so it also observes
+          genuine encode contention/GPU-serialisation issues, not
+          just "the model object raises"). But a *healthy*, busy
+          embedder legitimately holds that lock for large real
+          batches — that must NOT flip ``/readyz`` to 503 and get the
+          instance drained from the LB. So the probe first attempts
+          ``_encode_lock.acquire(timeout=...)``; failing to acquire
+          within the timeout means real traffic is actively encoding,
+          which is evidence the embedder IS alive — that tick is
+          treated as a healthy no-op (no failure counted, ``_ready``
+          left as-is). Only a probe that DOES acquire the lock and
+          then has the encode itself raise or hang past the timeout
+          counts as a failure.
+
+        Note: a genuinely wedged encode holding ``_encode_lock`` will
+        still block real ``embed()`` calls too — that's the
+        pre-existing failure mode and this probe does not (and
+        cannot) unwedge the lock. Its only job is to make
+        ``/readyz`` honest (503) so a supervisor restarts the
+        process.
+        """
+        prev = self._probe_encode_thread
+        if prev is not None and prev.is_alive():
+            # A previous probe-encode thread is still running past a
+            # full tick later. Its own lock-acquire attempt below is
+            # itself timeout-bounded, so "still alive" this much later
+            # can only mean it acquired the lock and the encode call
+            # itself is hung — a genuine wedge, not mere contention.
+            # Count it without spawning a second thread on top of it.
+            self._record_probe_failure(
+                "embedder self-probe: previous probe-encode thread "
+                "still hung — not spawning another"
+            )
+            return
+
+        result: dict[str, object] = {}
+
+        def _do_probe() -> None:
+            # Attempt the lock FIRST, with its own timeout, so we can
+            # tell "real traffic has it" (healthy) apart from "we got
+            # it and then hung/raised" (unhealthy).
+            acquired = self._encode_lock.acquire(timeout=self._probe_timeout_s)
+            if not acquired:
+                result["outcome"] = "contended"
+                return
+            try:
+                self._embedder.embed(["health probe"])
+                result["outcome"] = "ok"
+            except Exception as exc:
+                result["outcome"] = "error"
+                result["error"] = exc
+            finally:
+                self._encode_lock.release()
+
+        thread = threading.Thread(
+            target=_do_probe, name="embedder-probe-encode", daemon=True
+        )
+        thread.start()
+        self._probe_encode_thread = thread
+        # Slack over the lock-acquire budget so we don't race the
+        # thread's own acquire-timeout when classifying contended vs.
+        # hung — a "contended" outcome should already be set by the
+        # time we get here in the common case.
+        thread.join(self._probe_timeout_s * 1.5)
+
+        if thread.is_alive():
+            # Past the acquire budget (plus slack) and still running —
+            # it must have acquired the lock and the encode call
+            # itself is hung. Genuine wedge; the thread is abandoned
+            # (daemon) and the pileup guard above keeps it capped at
+            # one.
+            self._record_probe_failure(
+                f"embedder self-probe encode hung past {self._probe_timeout_s:.1f}s"
+            )
+            return
+
+        outcome = result.get("outcome")
+        if outcome == "contended":
+            log.debug(
+                "embedder self-probe: _encode_lock busy with real "
+                "traffic for %.1fs — treated as healthy, not a failure",
+                self._probe_timeout_s,
+            )
+            return
+        if outcome == "ok":
+            if self._probe_fail_count >= self._probe_fail_threshold and not self.ready:
+                log.info("embedder self-probe recovered; /readyz back to 200")
+            self._probe_fail_count = 0
+            self._ready.set()
+            return
+        self._record_probe_failure(f"embedder self-probe failed: {result.get('error')}")
+
+    def _record_probe_failure(self, message: str) -> None:
+        self._probe_fail_count += 1
+        log.warning(
+            "%s (failure %d/%d)",
+            message,
+            self._probe_fail_count,
+            self._probe_fail_threshold,
+        )
+        if self._probe_fail_count >= self._probe_fail_threshold and self.ready:
+            log.warning(
+                "embedder self-probe: %d consecutive failures, flipping /readyz to 503",
+                self._probe_fail_count,
+            )
+            self._ready.clear()
 
     def model_info(self) -> ModelInfo:
         return ModelInfo(
@@ -132,6 +305,7 @@ class EmbedderService:
                 self._embedder.model,
                 self._embedder.dim,
             )
+            self._start_probe()
         except Exception:  # pragma: no cover - depends on real model
             log.exception("embedder warmup failed; /readyz stays 503")
 
@@ -273,6 +447,7 @@ def serve(
     except KeyboardInterrupt:  # pragma: no cover
         log.info("shutting down embedder service")
     finally:
+        service.stop_probe()
         httpd.server_close()
 
 

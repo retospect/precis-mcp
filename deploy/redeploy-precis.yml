@@ -279,6 +279,26 @@
         excludes: "com.precis.embedder.plist"
       register: precis_plists
 
+    # gr162132: `kickstart -k` (next task) CANNOT load a daemon that was
+    # booted out of launchd. A dep-heavy deploy can trip jetsam and get the
+    # worker (and other precis daemons) fully evicted; the kickstart then
+    # silently no-ops and `failed_when: false` masks a dead worker as a green
+    # deploy — a cluster-wide fetch_oa/dispatch/nursery outage on 2026-07-24
+    # (every macOS node in the sweep left dark). Mirror the embedder handling
+    # above: `bootstrap` (load-if-unloaded) each remaining daemon FIRST — and
+    # unconditionally (not gated on precis_deploy_changed) so a no-op deploy
+    # still recovers a previously booted-out daemon — so the kickstart that
+    # follows restarts a guaranteed-loaded service.
+    - name: Bootstrap each remaining precis LaunchDaemon (macOS) — no-op if loaded
+      when: os_family == "darwin"
+      ansible.builtin.command:
+        cmd: launchctl bootstrap system {{ item.path }}
+      loop: "{{ precis_plists.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      changed_when: false
+      failed_when: false
+
     - name: Kickstart each remaining precis LaunchDaemon (macOS)
       when:
         - os_family == "darwin"
