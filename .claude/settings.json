@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/session-end-reap.sh\""
+            "command": "S=\"$CLAUDE_PROJECT_DIR/scripts/hooks/session-end-reap.sh\"; [ -f \"$S\" ] && bash \"$S\" || true"
           }
         ]
       }
