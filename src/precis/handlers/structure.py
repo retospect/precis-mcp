@@ -78,7 +78,28 @@ _NAV_VIEWS = (
     "pov",
 )
 _EXPORT_VIEWS = ("poscar", "extxyz", "cif")
-_VIEWS = (*_PROBE_VIEWS, *_NAV_VIEWS, "runs", "markers", "links", *_EXPORT_VIEWS)
+_VIEWS = (
+    *_PROBE_VIEWS,
+    *_NAV_VIEWS,
+    "runs",
+    "markers",
+    "links",
+    "literature",
+    *_EXPORT_VIEWS,
+)
+
+#: Host-metal candidates for the deterministic ``view='literature'`` query
+#: heuristic (gr161578) — mirrors the metal/support elements the catalysis-hub
+#: adapter's ``_SYMBOLS`` table carries (structure/importers/catalysis_hub.py),
+#: minus the light adsorbate/support elements that table also lists (H/C/N/O/
+#: Na/Al/Si/K). Kept as a local literal rather than importing the importer's
+#: private symbol map, so this module stays decoupled from that one.
+_HOST_METAL_ELEMENTS = frozenset(
+    {
+        "Ti", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Zr", "Mo",
+        "Ru", "Rh", "Pd", "Ag", "W", "Re", "Ir", "Pt", "Au",
+    }
+)  # fmt: skip
 
 
 @dataclass
@@ -377,6 +398,49 @@ def _resolve_catalysis_hub_filters(
     return filters
 
 
+# ── paper-provenance links (gr161577, structure → paper) ──────────────────
+#
+# Ordinary generic links (``link(kind='structure', target='paper:<slug>',
+# rel='cites')`` — or any other registered relation) already carry a
+# design's "why" — this is just the shared read side: pull the design's
+# outbound links whose target is a paper, with the paper's title/DOI and
+# the link's own rationale note (``links.meta['note']``, see
+# ``StructureHandler.link``'s ``note=``).
+#
+# NB: a ``motivated-by`` relation reading better for this use-case doesn't
+# exist yet — ``links.relation`` FKs against a seeded ``relations`` table
+# (ADR 0043 doesn't touch it), so minting it needs a migration. Deferred;
+# ``cites``/``related-to``/``derived-from`` already cover the "why" today.
+# Free-standing (not a method) so both the TOC (below) and the web detail
+# route (``precis_web/routes/structure.py``) can call it without importing
+# the handler class.
+
+
+def paper_provenance_rows(store: Any, ref_id: int) -> list[dict[str, str]]:
+    """Paper-provenance links off a structure design: ``[{rel, paper, slug,
+    doi, note}, ...]``, newest-link-first is not guaranteed — callers that
+    care about order should sort. Empty list when there are none."""
+    out_links = store.links_for(ref_id, direction="out")
+    if not out_links:
+        return []
+    endpoints = store.fetch_refs_by_ids({lk.dst_ref_id for lk in out_links})
+    rows: list[dict[str, str]] = []
+    for lk in out_links:
+        target = endpoints.get(lk.dst_ref_id)
+        if target is None or target.kind != "paper":
+            continue
+        rows.append(
+            {
+                "rel": lk.relation,
+                "paper": target.title or target.slug or str(target.id),
+                "slug": target.slug or str(target.id),
+                "doi": (target.meta or {}).get("doi") or "",
+                "note": (lk.meta or {}).get("note") or "",
+            }
+        )
+    return rows
+
+
 class StructureHandler(Handler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="structure",
@@ -389,11 +453,17 @@ class StructureHandler(Handler):
             "remove_bond/constrain, plus eye/measure/unmark/remove_measure "
             "markers); get lists designs, shows a TOC (id=slug), or probes "
             "(view='atom|neighborhood|bonds|find|validate|markers', args={...}); "
+            "view='literature' assembles a deterministic paper-search query "
+            "from the design's own composition/description (no LLM) and runs "
+            "it against the paper corpus (gr161578); "
             "get(args={'source':'catalysis-hub', 'surface_composition':.., "
             "'facet':.., 'config_id':..}) on-demand hydrates a config from an "
             "external catalyst DB (ADR 0053) into a cited, read-only design "
             "(a repeat call by config_id is a cache hit, no refetch); "
-            "link relates designs (rel='derived-from'); delete soft-retires. "
+            "link relates designs (rel='derived-from') or papers that "
+            "motivated the design (rel='cites', note='rationale…', "
+            "gr161577; surfaced in the TOC's Provenance: section); "
+            "delete soft-retires. "
             "Atoms are a<El><n>, addressed st<id>#a<El><n>. "
             "Postgres-canonical, in-memory probes, no pixels. "
             "See precis-structure-help."
@@ -645,6 +715,8 @@ class StructureHandler(Handler):
             return self._render_runs(ref)
         if view == "markers":
             return self._render_markers(scene)
+        if view == "literature":
+            return self._render_literature(scene, ref)
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
@@ -922,6 +994,118 @@ class StructureHandler(Handler):
             )
         )
 
+    # ── literature (gr161578: structure → paper search) ────────────────
+
+    def _literature_query(self, scene: Scene, ref: Any) -> str:
+        """Deterministic paper-search query built from the design's own data
+        (gr161578) — **no LLM step**. Assembled, in order:
+
+        1. the author's own ``description`` (meta), when set;
+        2. a host-metal/adsorbate/facet phrase over ``scene.composition()``
+           — ``surface_composition``/``facet`` from an external-provenance
+           method fingerprint when this design was hydrated from a catalyst
+           DB (ADR 0053 T6, mirroring the catalysis-hub adapter's fields)
+           and that string names an actual composition element, else a
+           heuristic over :data:`_HOST_METAL_ELEMENTS` — **every** recognised
+           host metal, not just the top-count one (a bimetallic/alloy host,
+           e.g. Pd/Ag, must not silently lose its minority metal), ordered
+           count-desc then alpha for determinism;
+        3. the bare formula (``probe.toc(scene)['formula']``) — **only** as
+           a last-resort fallback when the design has neither a description
+           nor any recognisable elements, so the query is never empty. It's
+           otherwise omitted from the searched string on purpose: the glued
+           token (e.g. ``O1Pd4``) is just a supercell atom count, not a real
+           stoichiometry a paper would ever quote verbatim, and the shared
+           paper-search engine's lexical leg is a strict AND
+           (``websearch_to_tsquery``) — one unmatchable glued token would
+           zero out an otherwise-good hit.
+
+        Same scene + ref meta ⇒ same string (composition/method dicts are
+        walked in a fixed sort order)."""
+        comp = scene.composition()
+        method = (self._external_provenance(ref.id) or {}).get("method") or {}
+        ext_host = method.get("surface_composition") or None
+        facet = method.get("facet") or None
+        # An alloy-formula string (e.g. "Ag3Pd") names no single composition
+        # element symbol — using it verbatim as "the host" produces a
+        # redundant query ("Ag Pd on Ag3Pd") instead of a useful one; fall
+        # back to the composition-derived host-metal list below.
+        if ext_host is not None and ext_host not in comp:
+            ext_host = None
+
+        if ext_host:
+            host_str: str | None = ext_host
+            adsorbates = sorted(
+                el for el in comp if el != ext_host and el not in _HOST_METAL_ELEMENTS
+            )
+        else:
+            # A bimetallic/alloy host keeps ALL recognised metals, not just
+            # the top-count one, so a Pd/Ag surface doesn't silently drop
+            # the Ag half of the query.
+            host_metals = sorted(
+                (el for el in comp if el in _HOST_METAL_ELEMENTS),
+                key=lambda el: (-comp[el], el),
+            )
+            host_str = " ".join(host_metals) if host_metals else None
+            adsorbates = sorted(el for el in comp if el not in _HOST_METAL_ELEMENTS)
+
+        parts: list[str] = []
+        desc = str((ref.meta or {}).get("description") or "").strip()
+        if desc:
+            parts.append(desc)
+        if host_str:
+            phrase = (
+                f"{' '.join(adsorbates)} on {host_str}"
+                if adsorbates
+                else f"{host_str} surface"
+            )
+            if facet:
+                phrase += f"({facet})"
+            parts.append(phrase)
+        elif adsorbates:
+            parts.append(" ".join(adsorbates))
+        if not parts:
+            parts.append(str(probe.toc(scene)["formula"]))
+        return " — ".join(p for p in parts if p)
+
+    def _render_literature(self, scene: Scene, ref: Any) -> Response:
+        """``view='literature'`` (gr161578): run the deterministic query above
+        against the paper corpus via ``PaperHandler.search_hits`` — the same
+        fused block-search engine ``kind='paper'`` search uses, called
+        in-process rather than hand-rolling SQL. Returns both the generated
+        query (so the caller can see/refine it) and the ranked hits. Pure
+        read: no writes, no LLM, no network beyond the existing paper-search
+        path."""
+        from precis.handlers.paper import PaperHandler
+
+        query = self._literature_query(scene, ref)
+        hub = (
+            self.hub
+            if self.hub is not None
+            else Hub(store=self.store, embedder=self.embedder)
+        )
+        hits = PaperHandler(hub=hub).search_hits(q=query, page_size=10)
+        head = f"# literature query for {ref.slug}:\n> {query}"
+        if not hits:
+            return Response(
+                body=f"{head}\n\nno matching papers\n\n"
+                "Next: enrich the design's description= for a sharper query, "
+                f"or search(kind='paper', q={query!r}) by hand for a wider net."
+            )
+        rows = [
+            {
+                "handle": hit.uhandle
+                or (f"paper:{hit.slug}" if hit.slug else str(hit.ref_id)),
+                "title": hit.title,
+                "score": f"{hit.score:.3f}",
+            }
+            for hit in hits
+        ]
+        return Response(
+            body=f"{head}\n\n"
+            + render_agent_table(rows, schema=["handle", "title", "score"])
+        )
+
     # ── link ─────────────────────────────────────────────────────────
     def link(  # type: ignore[override]
         self,
@@ -930,14 +1114,24 @@ class StructureHandler(Handler):
         target: str | None = None,
         mode: str = "add",
         rel: str | None = None,
+        note: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Add/remove a link from this design to another ref — e.g. a derived
-        design → its parent (``rel='derived-from'``, target ``structure:<slug>``).
+        design → its parent (``rel='derived-from'``, target ``structure:<slug>``),
+        or a paper that motivated it (``rel='cites'``, target ``paper:<slug>``;
+        any registered relation works — the TOC's provenance section picks up
+        every outbound link whose target is a paper, regardless of ``rel``).
 
         The reserved virtual ``rel='parent'`` is folder placement
         (ADR 0045) — a ``refs.parent_id`` write, never a stored link.
         Derivation (``derived-from``) and placement are orthogonal axes.
+
+        ``note=`` (add-only, gr161577) attaches a short "designed because…"
+        rationale to the link itself (``links.meta['note']`` — no migration,
+        that column already exists) — surfaced in the TOC's provenance
+        section and the web detail page. Re-linking the same (target, rel)
+        with a fresh ``note=`` updates it in place.
         """
         if rel == RESERVED_PARENT_REL:
             ref = resolve_live_slug_ref(
@@ -949,12 +1143,17 @@ class StructureHandler(Handler):
         target = require_link_target("structure", target)
         validate_link_mode(mode)
         ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
+        link_meta = {"note": note.strip()} if mode == "add" and note else None
         n_added, n_removed = apply_link_ops(
             self.store,
             ref.id,
             link=target if mode == "add" else None,
             unlink=target if mode == "remove" else None,
             rel=rel,
+            meta=link_meta,
+            # opt-in: re-linking with a fresh note= updates it in place
+            # (Store.add_link's merge_meta, scoped to this call site only).
+            merge_meta=link_meta is not None,
         )
         return Response(
             body=format_link_tag_ack(
@@ -1366,6 +1565,11 @@ class StructureHandler(Handler):
                 rows, schema=["atom", "element", "frac", "coord", "fixed"]
             )
         )
+        prov_rows = paper_provenance_rows(self.store, ref.id)
+        if prov_rows:
+            body += "\n\nProvenance:\n" + render_agent_table(
+                prov_rows, schema=["rel", "paper", "doi", "note"]
+            )
         return Response(body=body)
 
     def _render_probe(self, view: str, scene: Scene, args: dict[str, Any]) -> Response:

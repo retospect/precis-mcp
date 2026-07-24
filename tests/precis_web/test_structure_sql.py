@@ -12,11 +12,14 @@ from __future__ import annotations
 import json
 
 import pytest
+from fastapi.testclient import TestClient
 
 from precis.dispatch import Hub
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers.structure import StructureHandler
 from precis.store.types import Tag
+from precis_web.app import create_app
+from precis_web.config import WebConfig
 from precis_web.routes.structure import (
     _latest_proposal,
     _lineage,
@@ -26,7 +29,10 @@ from precis_web.routes.structure import (
     _run_count,
     _run_rows,
     _viewer,
+    paper_provenance_rows,
 )
+
+from .conftest import FakeRuntime
 
 _SI2 = json.dumps(
     {
@@ -311,3 +317,59 @@ def test_latest_proposal_reads_status_and_result(store):
     StructureHandler(hub=Hub(store=store)).put(id="sqlp_other", text=_PD_MARKS)
     other = resolve_live_slug_ref(store, kind="structure", id="sqlp_other")
     assert _latest_proposal(store, other.id) is None
+
+
+# ── paper provenance (gr161577) ────────────────────────────────────────────
+
+
+def test_paper_provenance_rows_helper(store):
+    h = StructureHandler(hub=Hub(store=store))
+    h.put(id="sqlprov_pd", text=_PD_MARKS)
+    ref = resolve_live_slug_ref(store, kind="structure", id="sqlprov_pd")
+    store.insert_ref(
+        kind="paper",
+        slug="yaghi2023",
+        title="Yaghi et al. 2023",
+        meta={"doi": "10.1000/yaghi2023"},
+    )
+    h.link(
+        id="sqlprov_pd",
+        target="paper:yaghi2023",
+        rel="cites",
+        note="doped this way because Yaghi 2023 showed X improves conductivity",
+    )
+    rows = paper_provenance_rows(store, ref.id)
+    assert len(rows) == 1
+    assert rows[0]["rel"] == "cites"
+    assert rows[0]["paper"] == "Yaghi et al. 2023"
+    assert rows[0]["doi"] == "10.1000/yaghi2023"
+    assert "improves conductivity" in rows[0]["note"]
+
+
+def test_structure_detail_route_renders_paper_provenance(store):
+    """The /structure/{slug} page's context + render surface a paper-
+    provenance link (title + DOI + rationale note) — gr161577, the web
+    half of the structure ↔ literature loop."""
+    h = StructureHandler(hub=Hub(store=store))
+    h.put(id="sqlprov_web_pd", text=_PD_MARKS)
+    store.insert_ref(
+        kind="paper",
+        slug="yaghi2023",
+        title="Yaghi et al. 2023",
+        meta={"doi": "10.1000/yaghi2023"},
+    )
+    h.link(
+        id="sqlprov_web_pd",
+        target="paper:yaghi2023",
+        rel="cites",
+        note="doped this way because Yaghi 2023 showed X improves conductivity",
+    )
+
+    rt = FakeRuntime(store)
+    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=None))
+    client = TestClient(app)
+    resp = client.get("/structure/sqlprov_web_pd")
+    assert resp.status_code == 200
+    assert "Yaghi et al. 2023" in resp.text
+    assert "10.1000/yaghi2023" in resp.text
+    assert "improves conductivity" in resp.text

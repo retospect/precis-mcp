@@ -261,6 +261,25 @@ link(kind="structure", id="pd111_h", target="structure:pd111", rel="derived-from
 e.g. an LLM-proposed edit branched to a new slug. Read both directions with
 the store's link queries; the web viewer renders the lineage.
 
+**Design provenance — link a design to the paper(s) that motivated it**, with a
+one-line rationale, so a material shows *why* it was made:
+
+```python
+link(
+    kind="structure",
+    id="pd111_cu",
+    target="paper:yaghi-2023",
+    rel="cites",
+    note="Cu-doped this facet because Yaghi 2023 showed it lowers the N–O scission barrier",
+)
+```
+
+The TOC and the web detail page surface these **paper-provenance** links (the
+paper, its DOI, and your `note`); re-linking the same edge with a fresh `note`
+updates it. Any paper-target link shows up, so you reason from design intent,
+not just a citation list. To *find* the papers in the first place, use the
+literature view below.
+
 ## Relax — the fidelity ladder (`{"op":"relax", …}`)
 
 One verb, a `fidelity` rung from fast-and-rough to slow-and-correct. Run it
@@ -400,6 +419,19 @@ Each design carries **one** embeddable card (title + composition + your
 `description`), so search lands on **intent**, not coordinates — and joins
 the cross-kind fan-out `search(kind='*', q='…')`. Hits are design-level
 (`st<id>`); open one with `get(id='<slug>')`.
+
+### From a structure to the literature — `get(view='literature')`
+
+```python
+get(kind="structure", id="pd111_cu", view="literature")
+```
+
+Assembles a query from the design itself — its `description` + host metal(s),
+adsorbate, and facet read off the composition (every metal of an alloy is
+kept) — and runs it against the **paper** corpus, returning the generated
+query (so you can refine it) plus the ranked hits. Deterministic: same design
+→ same query, no model call. Pair it with a paper-provenance `link` (above) to
+record which of the hits actually motivated the design.
 
 ## Export — `get(view='poscar'|'extxyz'|'cif')`
 

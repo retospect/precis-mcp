@@ -166,6 +166,7 @@ class LinksMixin:
         dst_pos: int | None = None,
         set_by: ActorSlug = "agent",
         meta: dict[str, Any] | None = None,
+        merge_meta: bool = False,
         conn: Connection | None = None,
     ) -> Link:
         """Insert a link row, idempotent on the unique tuple.
@@ -176,6 +177,18 @@ class LinksMixin:
         ``ON CONFLICT ... DO UPDATE SET set_by = links.set_by``, the
         same no-op-update trick used elsewhere so RETURNING fires on
         both insert and conflict paths.
+
+        ``merge_meta=True`` additionally merges ``meta`` into the
+        existing row's on a conflict (``links.meta || EXCLUDED.meta``)
+        instead of leaving it untouched. **Opt-in** — default ``False``
+        keeps today's behaviour byte-identical for every existing
+        caller; flipping it globally would silently change conflict
+        semantics for every other link-writing call site (cast_common,
+        paper.acquire_reason, inbound_chase, draft, numeric_ref, …) from
+        sticky-first-write to latest-wins-merge, which is out of scope
+        for any one feature. A structure design's paper-provenance
+        rationale note (gr161577) passes ``merge_meta=True`` so
+        re-linking the same edge updates the note.
 
         Self-loop CHECK: same ref + same chunk endpoint (both NULL or
         both same chunk_id) is rejected by the schema; app-layer
@@ -203,6 +216,9 @@ class LinksMixin:
                     ),
                 )
 
+            # ``meta_clause`` is a fixed literal (never interpolates caller
+            # data), toggled only by the ``merge_meta`` opt-in above.
+            meta_clause = ", meta = links.meta || EXCLUDED.meta" if merge_meta else ""
             sql = (
                 "INSERT INTO links "
                 "  (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, "
@@ -210,7 +226,7 @@ class LinksMixin:
                 "VALUES (%s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT "
                 "  (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, relation) "
-                "DO UPDATE SET set_by = links.set_by "
+                f"DO UPDATE SET set_by = links.set_by{meta_clause} "
                 "RETURNING link_id"
             )
             row = c.execute(

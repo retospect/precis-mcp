@@ -39,6 +39,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.handlers.structure import paper_provenance_rows
 from precis.structure import evaluate_measure
 from precis.structure.cache import apply_geometry
 from precis.structure.probe import coordination, detect_bonds
@@ -475,6 +476,7 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
             "viewer": viewer,
             "markers": _markers(scene),
             "lineage": _lineage(store, ref.id),
+            "provenance": paper_provenance_rows(store, ref.id),
             "proposal": _latest_proposal(store, ref.id),
         },
     )

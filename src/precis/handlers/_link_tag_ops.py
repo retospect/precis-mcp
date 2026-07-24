@@ -134,6 +134,8 @@ def apply_link_ops(
     link: str | None,
     unlink: str | None,
     rel: str | None,
+    meta: dict[str, Any] | None = None,
+    merge_meta: bool = False,
 ) -> tuple[int, int]:
     """Apply ``link=`` / ``unlink=`` operations against ``src_ref_id``.
 
@@ -144,7 +146,12 @@ def apply_link_ops(
 
     Caller passes either ``link=`` (add) or ``unlink=`` (remove);
     the seven-verb ``link()`` method enforces that they're not both
-    set at the call boundary.
+    set at the call boundary. ``meta=``/``merge_meta=`` (add-only) ride
+    straight through to :meth:`Store.add_link` — e.g. a structure
+    design's paper-provenance rationale note (gr161577,
+    ``links.meta['note']``, ``merge_meta=True`` so re-linking updates
+    it). ``merge_meta`` defaults to ``False`` — every other caller of
+    this function keeps today's no-op-on-conflict behaviour untouched.
     """
     relation = validate_relation(rel, store=store)
 
@@ -158,6 +165,8 @@ def apply_link_ops(
             dst_ref_id=target.ref_id,
             dst_pos=target.pos,
             relation=relation,
+            meta=meta,
+            merge_meta=merge_meta,
         )
         n_added = 1
 

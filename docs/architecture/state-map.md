@@ -1049,6 +1049,17 @@ The master kinds table lives in the `precis-overview` skill.
     a local `clean` (default) or opt-in `preflight='emt'` pre-relax, re-checking
     the cleaned geometry's `cache_key` for a completed run before dispatch. Cloud
     is last-resort; a plain local `clean`/`emt` edit is never gated.
+  - **Structure ↔ literature loop (gr161578/gr161577).** `view='literature'`
+    assembles a **deterministic** paper query from the design (description +
+    host-metal(s)/adsorbate/facet from `scene.composition()`, all host metals
+    kept for alloys; formula only as last-resort) and runs the shared paper
+    search (`PaperHandler.search_hits`, embed→lexical degrade). The TOC + web
+    `structure_detail` surface **paper-provenance** links (any paper-target link
+    + DOI + a rationale note) so a design shows *why* it was made;
+    `link(..., note=…)` stores the rationale on the edge (`links.meta`, opt-in
+    `add_link(merge_meta=True)` — no other link caller's conflict behavior
+    changes). `motivated-by` relation is a follow-up (only `cites`/`related-to`
+    seeded today; the surface is relation-agnostic).
   - **External DFT catalyst import (ADR 0053, Sequencing steps 0–2 shipped).**
     A new fidelity rung `emt` (`structure/relax.py::_relax_emt`) — ASE-EMT +
     FIRE, torch-free, gated behind the light `[dft]` extra (never `[dft-ml]`,

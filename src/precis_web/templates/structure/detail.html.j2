@@ -186,6 +186,25 @@
 </div>
 {% endif %}
 
+{# ── paper provenance (gr161577) ── #}
+{% if provenance %}
+<div class="mt-4">
+  <h2 class="text-sm font-semibold text-slate-700 mb-2">Provenance
+    <span class="text-xs font-normal text-slate-400">— papers that motivated this design</span>
+  </h2>
+  <div class="space-y-1">
+    {% for p in provenance %}
+    <div class="flex items-start gap-2 text-xs rounded px-2 py-1 border border-slate-200 bg-white">
+      <span class="text-slate-400 whitespace-nowrap">{{ p.rel }}</span>
+      <a class="text-emerald-700 hover:underline" href="/papers/{{ p.slug }}">{{ p.paper }}</a>
+      {% if p.doi %}<span class="text-slate-400 whitespace-nowrap">doi:{{ p.doi }}</span>{% endif %}
+      {% if p.note %}<span class="text-slate-500 italic">— {{ p.note }}</span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
 
   {# ── further instructions → LLM proposal ── #}
