@@ -868,6 +868,11 @@ The master kinds table lives in the `precis-overview` skill.
   **once** (`meta.quest_infra_retries`) so it goes non-terminal and the loop
   *awaits* it instead of drifting dry; a 2nd infra failure files a
   `quest-infra-failure` gripe and stops — never ruled out (no physical verdict).
+  The **barrier lane mirrors this** (§C completed): a failed `catpath_explore`
+  is *always* a crashed NEB (a compute failure, never a physical "no pathway"
+  verdict), so it retries once (`meta.quest_catpath_infra_retries`) then gripes
+  (`lane="catpath"`) and **never** rules out — `_latest_catpath_job` +
+  `dispatch_catpath` re-dispatch, same retry-once-then-gripe shape as relax.
   Reaction (slab) candidates relax the box **in-plane** (`cell="inplane"`
   — a/b + γ free, c-axis/vacuum pinned) so stability is judged on a relaxed slab
   (`quest/compute.py`; the `relax` op's variable-cell mode in `structure/relax.py`).

@@ -409,6 +409,33 @@ def _latest_relax_job(
     return str(row[0]), dict(row[1] or {})
 
 
+def _latest_catpath_job(
+    store: Store, structure_ref_id: int
+) -> tuple[str, dict[str, Any]] | None:
+    """The latest ``catpath_explore`` job's ``(STATUS, meta)`` under this candidate.
+
+    The sibling of :func:`_latest_relax_job` for the barrier lane. Unlike relax —
+    where a ``failed`` job may carry a genuine *physical* verdict (non-convergence
+    ⇒ rule the candidate out) — a failed ``catpath_explore`` is **always** a
+    compute/infra failure: the NEB/barrier run crashed, which says nothing about
+    whether the material has a viable pathway. So the harvest treats every catpath
+    failure as retry-eligible (ADR 0064 §C) and never rules out on it.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT t.value, j.meta FROM refs j "
+            "JOIN ref_tags rt ON rt.ref_id = j.ref_id "
+            "JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE j.parent_id = %s AND j.kind = 'job' AND j.deleted_at IS NULL "
+            "AND j.meta->>'job_type' = 'catpath_explore' AND t.namespace = 'STATUS' "
+            "ORDER BY j.ref_id DESC LIMIT 1",
+            (structure_ref_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return str(row[0]), dict(row[1] or {})
+
+
 def _mark_harvested(store: Store, structure_ref_id: int, upto_run_id: int) -> None:
     with store.tx() as conn:
         conn.execute(
@@ -432,10 +459,12 @@ def _file_infra_gripe(
     job_meta: dict[str, Any],
     *,
     hub: Any,
+    lane: str = "relax",
 ) -> None:
-    """File a bounded, visible gripe for a candidate whose relax has now
-    infra-failed twice — never rules the candidate out (still no physical
-    verdict), just surfaces the persistent executor problem for a human."""
+    """File a bounded, visible gripe for a candidate whose ``lane`` sim
+    (``relax`` or ``catpath``) has now infra-failed twice — never rules the
+    candidate out (still no physical verdict), just surfaces the persistent
+    executor problem for a human."""
     from precis.handlers.gripe import GripeHandler
 
     detail = {
@@ -445,9 +474,9 @@ def _file_infra_gripe(
     }
     GripeHandler(hub=hub).put(
         text=(
-            f"quest {quest_id} candidate {handle} relax sim infra-failing "
+            f"quest {quest_id} candidate {handle} {lane} sim infra-failing "
             "repeatedly (2×) — spark/executor. "
-            f"Latest relax job failure detail: {detail}"
+            f"Latest {lane} job failure detail: {detail}"
         ),
         tags=["quest-infra-failure"],
     )
@@ -497,6 +526,12 @@ def harvest_measures(
       neither sense (no third dispatch, never ruled out). ``hub=None``
       (dry preview / callers that don't exercise this) preserves the
       original note-only behaviour.
+    * a candidate whose latest **catpath** (`catpath_explore`) job failed gets
+      the *same* retry-once-then-gripe treatment on its own counter
+      (``meta.quest_catpath_infra_retries``), but **never** ruled out: a failed
+      catpath is always a crashed NEB (a compute/infra failure), never a
+      physical "no viable pathway" verdict, so — unlike relax non-convergence —
+      it carries no verdict on the material (ADR 0064 §C, barrier-lane mirror).
     """
     from precis.quest.gaps import _live_servers
     from precis.utils import handle_registry
@@ -604,6 +639,56 @@ def harvest_measures(
                 )
                 ruled_out += 1
                 notes.append(f"ruled-out {handle}")
+
+        # Catpath (barrier-lane) infra failure — the ADR 0064 §C mirror of the
+        # relax infra branch above, on the *barrier* lane. Unlike relax (where a
+        # failed job can be a physical non-convergence verdict → rule out), a
+        # failed ``catpath_explore`` is ALWAYS a compute/infra failure: the NEB
+        # run crashed, which says nothing about the material — so it NEVER rules
+        # out. Same retry-once-then-gripe shape on its own per-candidate counter
+        # (``quest_catpath_infra_retries``); the re-dispatch puts a fresh sim
+        # back in flight so the loop *awaits* it instead of reading the crash as
+        # a dry tick (the laundering §C names). Skipped for an already-ruled-out
+        # candidate (a dead geometry earns no more barrier compute), and — like
+        # relax — note-only when ``hub`` is absent (dry preview) or the quest
+        # has no reaction config to re-dispatch against.
+        cp_ruled_out = any(
+            str(t).startswith("ruled-out:") for t in store.tags_for(s.id)
+        )
+        catpath_job = _latest_catpath_job(store, s.id)
+        if not cp_ruled_out and catpath_job is not None and catpath_job[0] == "failed":
+            _cp_status, cp_job_meta = catpath_job
+            cp_retries = int((s.meta or {}).get("quest_catpath_infra_retries", 0) or 0)
+            reaction = _quest_reaction_config(store, quest_id)
+            if hub is None or reaction is None:
+                notes.append(
+                    f"catpath infra failure for {handle} "
+                    "(retry-eligible, not ruled out)"
+                )
+            elif cp_retries < _MAX_INFRA_RETRIES:
+                dispatch_catpath(store, s.id, reaction, hub=hub)
+                store.stamp_ref_meta(
+                    s.id, {"quest_catpath_infra_retries": cp_retries + 1}
+                )
+                notes.append(
+                    f"catpath infra failure for {handle} → re-dispatched "
+                    f"(retry {cp_retries + 1})"
+                )
+            elif cp_retries < _MAX_INFRA_RETRIES + 1:
+                _file_infra_gripe(
+                    store, quest_id, handle, cp_job_meta, hub=hub, lane="catpath"
+                )
+                store.stamp_ref_meta(
+                    s.id, {"quest_catpath_infra_retries": _MAX_INFRA_RETRIES + 1}
+                )
+                notes.append(
+                    f"catpath infra failure persists for {handle} → gripe filed"
+                )
+            else:
+                # Already gripe-filed on a prior harvest — dedup, no re-file.
+                notes.append(
+                    f"catpath infra failure persists for {handle} (gripe already filed)"
+                )
     return ComputeStep(
         candidates_created=0,
         sims_dispatched=0,

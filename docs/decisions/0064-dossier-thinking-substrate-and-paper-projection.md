@@ -127,6 +127,16 @@ absence count toward the dry/exhausted budget. Distinct from **honest
 no-improvement** (a sim that *ran* and lost to the front) → record the dominated
 point **truthfully**, no retry, no fabricated number. Its own proposal.
 
+**Built (2026-07-24).** Both lanes now implement the retry-once-then-gripe in
+`harvest_measures` (`quest/compute.py`): the **relax** lane keys on
+`failure_class='infra'` (a non-convergence failure stays a physical rule-out),
+tracked by `meta.quest_infra_retries`; the **barrier** lane treats *every* failed
+`catpath_explore` as retry-eligible (a crashed NEB is never a physical "no
+pathway" verdict, so it never rules out), tracked by
+`meta.quest_catpath_infra_retries`. Both re-dispatch the sim so it goes
+non-terminal and the loop *awaits* it instead of drifting dry; a second failure
+files a bounded `quest-infra-failure` gripe (`lane=` names which sim) and stops.
+
 ## Alternatives considered
 
 - **Keep the pure whole-rewrite; rely on model discipline to carry

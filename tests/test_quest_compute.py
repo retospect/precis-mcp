@@ -363,6 +363,137 @@ class TestHarvest:
         assert step2.ruled_out == 0
         assert len(gripe_calls) == 1  # unchanged
 
+    # ── catpath (barrier lane) — §C mirror; a crashed NEB never rules out ──
+
+    def _reaction_quest(self, store: Any) -> int:
+        """A quest with a reaction config so the catpath (barrier) lane is live."""
+        qid = _mk_quest(store, "A NO→NH₃ catalyst")
+        store.stamp_ref_meta(
+            qid, {"reaction_config": {"substrate": "NO", "target": "NH3"}}
+        )
+        return qid
+
+    def _failed_catpath(self, store: Any, sid: int) -> None:
+        from precis.store import Tag
+
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="catpath_explore",
+            meta={"job_type": "catpath_explore"},
+            parent_id=sid,
+        )
+        store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
+
+    def test_failed_catpath_never_rules_out_candidate(self, store: Any) -> None:
+        """A failed ``catpath_explore`` (a crashed NEB — a compute/infra failure)
+        must NOT rule out: a barrier crash is never a physical verdict on the
+        material, unlike a relax non-convergence (ADR 0064 §C). Note-only with
+        no hub (dry preview)."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._failed_catpath(store, sid)
+
+        step = compute_mod.harvest_measures(store, qid)  # no hub → note-only
+        assert step.ruled_out == 0
+        assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+
+    def test_failed_catpath_with_hub_retries_once(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Given a hub, a candidate's first catpath failure gets its barrier
+        re-dispatched (via ``dispatch_catpath`` against the quest's reaction
+        config), the per-lane counter set to 1, and it is NOT ruled out — the
+        re-dispatch is what keeps the loop awaiting instead of reading the crash
+        as a dry tick (ADR 0064 §C)."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._failed_catpath(store, sid)
+
+        calls: list[dict[str, Any]] = []
+
+        def _fake_catpath(
+            _s: Any,
+            structure_ref_id: int,
+            config: Any,
+            *,
+            hub: Any = None,
+            force_backend: Any = None,
+        ) -> str:
+            calls.append(
+                {"structure_ref_id": structure_ref_id, "hub": hub, "config": config}
+            )
+            return f"catpath[ml] dispatched for {structure_ref_id}"
+
+        monkeypatch.setattr(compute_mod, "dispatch_catpath", _fake_catpath)
+
+        hub = object()
+        step = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert step.ruled_out == 0
+        assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+        assert len(calls) == 1
+        assert calls[0]["structure_ref_id"] == sid
+        assert calls[0]["hub"] is hub
+        assert calls[0]["config"] == {"substrate": "NO", "target": "NH3"}
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_catpath_infra_retries") == 1
+
+    def test_failed_catpath_second_time_files_a_gripe_not_a_third_dispatch(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second consecutive catpath failure (retry already used) files a
+        bounded ``catpath``-lane gripe instead of retrying again — never rules
+        out, and a subsequent harvest doesn't re-file (dedup)."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"quest_catpath_infra_retries": 1})  # retried once
+        self._failed_catpath(store, sid)
+
+        dispatch_calls: list[int] = []
+
+        def _fake_dispatch_catpath(_s: Any, sid: int, _config: Any, **_kw: Any) -> str:
+            dispatch_calls.append(sid)
+            return "catpath[ml]"
+
+        monkeypatch.setattr(compute_mod, "dispatch_catpath", _fake_dispatch_catpath)
+
+        gripe_calls: list[dict[str, Any]] = []
+
+        class _FakeGripeHandler:
+            def __init__(self, *, hub: Any) -> None:
+                self.hub = hub
+
+            def put(self, *, text: str, tags: list[str] | None = None) -> None:
+                gripe_calls.append({"text": text, "tags": tags})
+
+        monkeypatch.setattr("precis.handlers.gripe.GripeHandler", _FakeGripeHandler)
+
+        hub = object()
+        step = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert step.ruled_out == 0
+        assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+        assert dispatch_calls == []  # no third dispatch
+        assert len(gripe_calls) == 1
+        assert "catpath" in gripe_calls[0]["text"]
+        assert f"quest {qid}" in gripe_calls[0]["text"]
+        assert gripe_calls[0]["tags"] == ["quest-infra-failure"]
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_catpath_infra_retries") == 2
+
+        # a re-harvest while still failed does not re-file (dedup)
+        step2 = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert step2.ruled_out == 0
+        assert len(gripe_calls) == 1  # unchanged
+
 
 # ── frontier over the store ───────────────────────────────────────────
 
