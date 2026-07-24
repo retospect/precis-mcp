@@ -1,9 +1,13 @@
-"""Tests for the /budget page + the settings/tote against real Postgres.
+"""Tests for the /budget writes + the settings/tote against real Postgres.
 
-Two layers:
+WS3 folded the ``/budget`` page itself into the Budget sub-tab of the
+merged System page (``/status?tab=budget`` — see ``tests/precis_web/
+test_routes.py``); ``GET /budget`` now just redirects there. What's left
+here:
 
-* Fake-store route smoke tests (the shared ``client`` fixture): the page
-  renders and the set/reset forms wire through without a DB.
+* Fake-store route smoke tests (the shared ``client`` fixture): the old
+  URL redirects, and the write endpoints (set/reset/resume) still wire
+  through and redirect to the new sub-tab, without a DB.
 * Live-PG tests (the ``store`` fixture): the ``app_settings`` round-trip, the
   meter's DB-override cap resolution, and the tote's by-model/by-source rollup
   exercise the real SQL that the fake store can't parse.
@@ -35,35 +39,29 @@ def _reset_meter() -> Any:
 # ── fake-store route smoke ───────────────────────────────────────────────
 
 
-def test_budget_page_renders(client: TestClient) -> None:
-    r = client.get("/budget")
-    assert r.status_code == 200
-    assert "Budget" in r.text
-    assert 'action="/budget/set"' in r.text
-    # Default caps surface (env defaults: $5 / $20).
-    assert "Hourly" in r.text
-    assert "24h" in r.text
-    # The claude-OAuth quota lane + resume control render even with no snapshot.
-    assert "Claude subscription" in r.text
-    assert 'action="/budget/resume"' in r.text
+def test_budget_old_url_redirects_to_system_budget_tab(client: TestClient) -> None:
+    """The retired ``GET /budget`` now redirects to the merged System page."""
+    r = client.get("/budget", follow_redirects=False)
+    assert r.status_code == 307
+    assert r.headers["location"] == "/status?tab=budget"
 
 
 def test_budget_resume_redirects(client: TestClient) -> None:
     r = client.post("/budget/resume", data={"hours": "2"}, follow_redirects=False)
     assert r.status_code == 303
-    assert r.headers["location"] == "/budget"
+    assert r.headers["location"] == "/status?tab=budget"
 
 
 def test_budget_resume_clear_redirects(client: TestClient) -> None:
     r = client.post("/budget/resume/clear", follow_redirects=False)
     assert r.status_code == 303
-    assert r.headers["location"] == "/budget"
+    assert r.headers["location"] == "/status?tab=budget"
 
 
 def test_budget_set_redirects(client: TestClient) -> None:
     r = client.post("/budget/set", data={"hourly_usd": "3.50"}, follow_redirects=False)
     assert r.status_code == 303
-    assert r.headers["location"] == "/budget"
+    assert r.headers["location"] == "/status?tab=budget"
 
 
 def test_budget_reset_redirects(client: TestClient) -> None:
@@ -73,7 +71,7 @@ def test_budget_reset_redirects(client: TestClient) -> None:
         follow_redirects=False,
     )
     assert r.status_code == 303
-    assert r.headers["location"] == "/budget"
+    assert r.headers["location"] == "/status?tab=budget"
 
 
 # ── live-PG: settings round-trip + meter override + tote ─────────────────

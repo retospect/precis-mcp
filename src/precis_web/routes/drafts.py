@@ -28,7 +28,9 @@ deep-links scroll the target block into the window before acting.
 
 Routes:
 
-* ``GET /drafts`` — list drafts.
+* ``GET /drafts`` — retired into Drive (nav restructure): redirects to the
+  ``kind=draft`` facet preset (``/drive?k=draft&submitted=1``), mirroring
+  ``routes/papers.py``'s WS1b retirement. The reader below is unaffected.
 * ``GET /drafts/{ident}`` — the reader (slug or numeric id); embeds the
   skeleton + the server-rendered first window.
 * ``GET /draft/{ident}`` — singular convenience alias → 303 to the reader.
@@ -72,6 +74,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import (
@@ -1252,41 +1255,20 @@ def _chunk_addr(store: Any, handle: str) -> str | None:
 
 
 @router.get("/drafts", response_class=HTMLResponse)
-async def index(request: Request) -> HTMLResponse:
-    store = get_store(request)
-    # Most recently *opened* (in the reader) first — see store.touch_viewed,
-    # stamped on the reader page-load below. Never-opened drafts fall to the
-    # bottom, then by last write.
-    refs = store.list_refs(kind="draft", order_by="viewed_desc", limit=200)
-    drafts = [
-        {
-            "ident": r.slug or r.id,
-            "title": (r.title or r.slug or "untitled").split("\n", 1)[0],
-            "slug": r.slug,
-        }
-        for r in refs
-    ]
-    doctypes = [
-        {"value": d["value"], "label": d["label"], "default": d["value"] == "paper"}
-        for d in _DOC_TYPES
-    ]
-    # Calls-for-proposal the user can attach to a proposal draft (drives
-    # the planner's required-sections + word-limit structure via the
-    # has-requirement link). Address by slug, falling back to ref id.
-    cfps = [
-        {"value": (c.slug or str(c.id)), "label": (c.title or c.slug or "untitled")}
-        for c in store.list_refs(kind="cfp", order_by="created_desc", limit=200)
-    ]
-    return templates.TemplateResponse(
-        request,
-        "drafts/index.html.j2",
-        {
-            "active_tab": "drafts",
-            "drafts": drafts,
-            "doctypes": doctypes,
-            "cfps": cfps,
-        },
-    )
+@router.get("/drafts/", response_class=HTMLResponse)
+async def index(q: str | None = None) -> Response:
+    """Retired into the unified Drive surface (nav restructure) — redirects
+    to the ``kind=draft`` facet preset, carrying a live query through so a
+    bare ``?q=`` bookmark keeps searching. Mirrors ``routes/papers.py``'s
+    WS1b retirement exactly. The reader (``/drafts/{ident}`` and
+    everything under it) and the "+ New draft" creation flow
+    (``POST /drafts/new``, still fed by :data:`_DOC_TYPES` via
+    ``drive.py::_doctypes``) are unaffected.
+    """
+    params: list[tuple[str, str]] = [("k", "draft"), ("submitted", "1")]
+    if q and q.strip():
+        params.append(("q", q.strip()))
+    return RedirectResponse(url="/drive?" + urlencode(params))
 
 
 def _slugify(title: str) -> str:

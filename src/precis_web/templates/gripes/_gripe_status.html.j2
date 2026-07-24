@@ -1,0 +1,29 @@
+{# Status control — closed STATUS: axis (replace-on-add, no explicit
+   remove). The active status renders as a badge; every other
+   vocabulary value gets a small "→ value" button that posts the
+   change. Caller provides: id, status, status_values, status_badge —
+   the same shape both the detail route and this fragment's own
+   htmx re-render supply.
+
+   Progressive enhancement: htmx swaps just this wrapper in place
+   (outerHTML), so the detail page doesn't reload. The plain
+   method/action remains the no-JS fallback (redirects back here). #}
+<div id="gripe-status-{{ id }}" class="flex flex-wrap items-center gap-1.5">
+  <span class="inline-block rounded border px-2 py-1 text-xs font-medium uppercase {{ status_badge }}">
+    {{ status }}
+  </span>
+  {% for v in status_values %}
+    {% if v != status %}
+    <form method="post" action="/gripes/{{ id }}/status" class="shrink-0"
+          hx-post="/gripes/{{ id }}/status"
+          hx-target="#gripe-status-{{ id }}"
+          hx-swap="outerHTML">
+      <input type="hidden" name="value" value="{{ v }}" />
+      <button type="submit"
+              class="text-xs px-2 py-1 rounded border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-700">
+        &rarr; {{ v }}
+      </button>
+    </form>
+    {% endif %}
+  {% endfor %}
+</div>

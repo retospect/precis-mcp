@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -730,7 +731,15 @@ def _consolidated_ref_url(kind: str, ref_id: int) -> str:
     return template.format(kind=kind, id=ref_id)
 
 
-@router.get("/{kind}", response_class=HTMLResponse)
+#: Per-kind lists folded into a Drive kind-facet preset (WS1b decision
+#: D2) — Oracle's "roll the dice" mint-a-new-reading affordance and
+#: Patents' OPS remote-search live in the MCP/CLI surface, not a web
+#: route, so there's no standalone UI feature to keep here; only the
+#: *list* retires. The detail readers (below) are unaffected.
+_FOLDED_TO_DRIVE: frozenset[str] = frozenset({"oracle", "patent"})
+
+
+@router.get("/{kind}", response_class=HTMLResponse, response_model=None)
 async def index(
     request: Request,
     kind: str,
@@ -739,8 +748,13 @@ async def index(
     since: str = "any",
     sort: str = "updated_desc",
     page: int = 1,
-) -> HTMLResponse:
+) -> HTMLResponse | RedirectResponse:
     """List / search one ref kind with date + tag filters and sort."""
+    if kind in _FOLDED_TO_DRIVE:
+        params: list[tuple[str, str]] = [("k", kind), ("submitted", "1")]
+        if q and q.strip():
+            params.append(("q", q.strip()))
+        return RedirectResponse(url="/drive?" + urlencode(params))
     _require_kind(kind)
     store = get_store(request)
 

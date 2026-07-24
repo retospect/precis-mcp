@@ -1,6 +1,6 @@
 """Global top-bar attention badges, injected into every page.
 
-The nav shows two live counts:
+The nav shows three live counts:
 
 * **Needs you** — open ``ask-user`` todos + papers tagged
   ``needs-triage``. Both are queues where *you* must act: the planner is
@@ -9,6 +9,11 @@ The nav shows two live counts:
   deliberately excluded — the fetcher works that automatically; it lives
   under Browse, not here.) The ``Needs you`` tab
   (:mod:`precis_web.routes.needs_you`) lands on both.
+* **Gripes** — live ``kind='gripe'`` rows (every ``STATUS:`` value but
+  ``wontfix`` — the workbench's default "live" filter,
+  :mod:`precis_web.routes.gripes`). A distinct colour from both other
+  badges — dev-bug-tracker attention, not an operator health signal or
+  a planner block.
 * **Alerts** — open ``kind='alert'`` rows (machine-detected ops /
   health conditions). A different colour from "Needs you" on purpose —
   system-flagged vs you-must-act, mirroring how ``alert`` is kept
@@ -78,14 +83,35 @@ def _alerts_count(store: Any) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
+def _gripes_count(store: Any) -> int:
+    """Live (non-``wontfix``) ``kind='gripe'`` rows.
+
+    Count-only mirror of ``gripes.py::_rows``'s default ``status='live'``
+    filter — keep the two in sync.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT count(DISTINCT r.ref_id)
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'gripe' AND r.deleted_at IS NULL
+               AND t.namespace = 'STATUS' AND t.value != 'wontfix'
+            """,
+        ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
 def nav_badges(request: Request) -> dict[str, Any]:
     """Context processor: live counts for the top-bar attention badges.
 
-    Returns ``{nav_needs_you, nav_alerts}`` — both default to 0 so the
-    template's ``{% if nav_needs_you %}`` simply hides the badge when
-    there's nothing waiting (or when the app is running stateless).
+    Returns ``{nav_needs_you, nav_gripes, nav_alerts}`` — all default to
+    0 so a template's ``{% if nav_alerts %}`` simply hides the badge
+    when there's nothing waiting (or when the app is running stateless).
     """
     needs_you = 0
+    gripes = 0
     alerts = 0
     try:
         from precis_web.deps import get_store
@@ -93,7 +119,7 @@ def nav_badges(request: Request) -> dict[str, Any]:
         store = get_store(request)
     except Exception:
         # No runtime / stateless app (e.g. /healthz before boot) — no badges.
-        return {"nav_needs_you": 0, "nav_alerts": 0}
+        return {"nav_needs_you": 0, "nav_gripes": 0, "nav_alerts": 0}
 
     try:
         needs_you += _asks_count(store)
@@ -106,8 +132,12 @@ def nav_badges(request: Request) -> dict[str, Any]:
     except Exception:
         log.debug("nav: triage count failed", exc_info=True)
     try:
+        gripes = _gripes_count(store)
+    except Exception:
+        log.debug("nav: gripes count failed", exc_info=True)
+    try:
         alerts = _alerts_count(store)
     except Exception:
         log.debug("nav: alerts count failed", exc_info=True)
 
-    return {"nav_needs_you": needs_you, "nav_alerts": alerts}
+    return {"nav_needs_you": needs_you, "nav_gripes": gripes, "nav_alerts": alerts}

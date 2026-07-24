@@ -1,0 +1,427 @@
+{# Health sub-tab — corpus / ingest / worker telemetry (the old Status
+   page). WS3 reconciled the two host strips that used to live on
+   separate pages (Status's heartbeat table + worker_logs liveness
+   pills, Factory's capability-chip cards) into the ONE strip below:
+   each heartbeat row now also carries Factory's resource-slot chips
+   and its 6h ERROR/CRITICAL-with-samples chip, alongside Status's own
+   24h WARNING+ERROR tally — both windows shown side by side rather
+   than collapsed to one, since they answer different questions ("how
+   noisy today" vs "what broke recently, in detail"). A host that only
+   shows up in worker_logs (no heartbeat row) still renders, as a plain
+   pill, same as before. #}
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+  <div class="rounded-lg border border-slate-200 bg-white p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-400">Papers</div>
+    <div class="mt-1 text-2xl font-semibold">{{ papers.get('total', 0) }}</div>
+    <div class="text-sm text-slate-500">
+      {{ papers.get('held', 0) }} held · {{ papers.get('stub', 0) }} stubs
+    </div>
+  </div>
+  <div class="rounded-lg border border-slate-200 bg-white p-4 md:col-span-2">
+    <div class="text-xs uppercase tracking-wide text-slate-400 mb-2">Refs by kind</div>
+    <div class="flex flex-wrap gap-2">
+      {% for k in kind_counts %}
+      <a href="/tags/refs?kind={{ k.kind | urlencode }}"
+         class="text-xs px-2 py-1 rounded bg-slate-100 text-slate-700 hover:bg-sky-100 hover:text-sky-800 transition">
+        {{ k.kind }} <span class="font-semibold">{{ k.count }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="rounded-lg border border-slate-200 bg-white p-4 mb-6 text-sm">
+  <span class="text-xs uppercase tracking-wide text-slate-400">PDF corpus root</span>
+  <span class="ml-2 font-mono text-slate-700 break-all">{{ corpus_dir }}</span>
+  <span class="text-slate-400">(set via <span class="font-mono">PRECIS_CORPUS_DIR</span>)</span>
+  <span class="ml-2 text-slate-300">·</span>
+  <span class="text-xs uppercase tracking-wide text-slate-400 ml-2">version</span>
+  <span class="ml-1 font-mono text-slate-700">{{ app_version }}</span>
+</div>
+
+<!-- Machines: the reconciled host strip (heartbeat sensors + capability
+     chips + both error windows). -->
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Machines</h2>
+  {% if not heartbeats %}
+  <p class="text-xs text-slate-500 rounded-lg border border-slate-200 bg-white px-4 py-3">
+    No heartbeats yet. Run <span class="font-mono">precis heartbeat</span> on each host (on a timer).
+  </p>
+  {% else %}
+  <div class="flex flex-wrap gap-2">
+    {% for h in heartbeats %}
+    <div class="rounded-lg border {% if h.stale %}border-slate-200 bg-slate-50{% else %}border-emerald-200 bg-emerald-50{% endif %} px-3 py-2 text-xs">
+      <div class="flex items-center gap-2">
+        <span class="font-mono font-semibold text-slate-800">{{ h.host }}</span>
+        {% if h.stale %}
+        <span class="text-slate-400">● stale</span>
+        {% else %}
+        <span class="text-emerald-700">● live</span>
+        {% endif %}
+        <span class="text-slate-400">{{ h.ago }}</span>
+      </div>
+      <div class="text-slate-500 mt-0.5">
+        {% if h.temp_c is not none %}
+        <span class="{% if h.temp_c >= 85 %}text-rose-700 font-semibold{% elif h.temp_c >= 70 %}text-amber-700{% endif %}">{{ '%.1f'|format(h.temp_c) }} °C</span> ·
+        {% endif %}
+        load
+        {% if h.load1 is not none %}
+        <span class="font-mono">{{ '%.2f'|format(h.load1) }} / {{ '%.2f'|format(h.load5) }} / {{ '%.2f'|format(h.load15) }}</span>
+        {% else %}<span class="font-mono">—</span>{% endif %}
+      </div>
+      {% if h.slots %}
+      <div class="mt-1 flex flex-wrap gap-1" title="Resources this host advertises (heartbeat self-probe). free/capacity slots.">
+        {% for sl in h.slots %}
+        {% if sl.pressure %}
+        <span class="rounded px-1 py-0.5 font-mono text-[11px] border
+          {% if sl.pressure == 'crit' %}bg-red-100 border-red-300 text-red-700
+          {% elif sl.pressure == 'warn' %}bg-amber-100 border-amber-300 text-amber-700
+          {% else %}bg-emerald-50 border-emerald-200 text-emerald-700{% endif %}"
+          title="{{ sl.ptitle }}">{{ sl.label }} {{ sl.free }}/{{ sl.capacity }}</span>
+        {% else %}
+        <span class="rounded bg-white/70 border border-slate-200 px-1 py-0.5 font-mono text-[11px] text-slate-600 cursor-help"
+          title="{{ sl.desc }}">{{ sl.resource }} {{ sl.free }}/{{ sl.capacity }}</span>
+        {% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+      {# ── both error windows: 24h tally (WARNING+ERROR, worker_logs
+         liveness) and 6h detail (ERROR/CRITICAL, with samples) ── #}
+      <div class="mt-1 flex flex-wrap items-center gap-1">
+        {% if h.problems %}
+        <span class="rounded px-1 py-0.5 text-[11px] bg-rose-100 text-rose-700">{{ h.problems }} err/warn 24h</span>
+        {% endif %}
+        {% if h.errors_6h %}
+        <span class="rounded px-1 py-0.5 text-[11px] bg-rose-100 border border-rose-300 text-rose-700 cursor-help"
+          title="{% for e in h.errors_6h.samples %}{{ e.ago }} · {{ e.pass }} · {{ e.msg }}&#10;{% endfor %}{% if h.errors_6h.count > h.errors_6h.samples|length %}…and {{ h.errors_6h.count - h.errors_6h.samples|length }} more{% endif %}">⚠ {{ h.errors_6h.count }} error{{ '' if h.errors_6h.count == 1 else 's' }} (6h)</span>
+        {% endif %}
+        {% if not h.problems and not h.errors_6h %}
+        <span class="text-emerald-600" title="No WARNING/ERROR worker logs from {{ h.host }} recently.">no recent errors</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if extra_hosts %}
+  {# hosts seen only in worker_logs (no heartbeat row) — same plain pill
+     the old page showed for these. #}
+  <div class="mt-2 flex flex-wrap gap-2">
+    {% for hl in extra_hosts %}
+    <span class="text-xs px-2 py-1 rounded {% if hl.stale %}bg-slate-100 text-slate-500{% else %}bg-emerald-50 text-emerald-700{% endif %}">
+      {{ hl.host }} · logged {{ hl.ago }}{% if hl.problems %} · <span class="text-rose-600 font-semibold">{{ hl.problems }} err/warn 24h</span>{% endif %}
+    </span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+<!-- Liveness — the "is it alive" heartbeat: last activity per pipeline
+     stage (ingest → extract → index → summarise) plus the scheduled
+     watches (news / briefing) and dreams. Scheduled signals turn amber
+     when overdue; pipeline stages are informational (idle is normal on
+     a quiet corpus). -->
+{% if liveness %}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Liveness</h2>
+  <div class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+    <table class="w-full text-sm">
+      <tbody class="divide-y divide-slate-100">
+        {% for s in liveness %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-2 text-slate-700">
+            <span class="inline-block w-2 h-2 rounded-full mr-1 align-middle
+              {% if s.unknown %}bg-slate-300{% elif s.stale %}bg-amber-500{% else %}bg-emerald-500{% endif %}"></span>
+            {{ s.label }}
+            {% if s.scheduled %}<span class="text-xs text-slate-400">· scheduled</span>{% endif %}
+          </td>
+          <td class="px-4 py-2 text-right tabular-nums {% if s.stale %}text-amber-700 font-semibold{% else %}text-slate-500{% endif %}">
+            {{ s.ago }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<!-- Background health — spin loops (a worker re-claiming the same ref
+     every pass) + failed worker passes, both over 24h. These are the
+     derived-queue failure modes that are otherwise invisible until
+     someone reads ref_events by hand. Green "all clear" when empty. -->
+{% set spin = bg_health.get('spin_loops', []) %}
+{% set fails = bg_health.get('failed_passes', []) %}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Background health</h2>
+  {% if not spin and not fails %}
+  <div class="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
+    <span class="inline-block w-2 h-2 rounded-full mr-1 align-middle bg-emerald-500"></span>
+    No spin loops or failed passes in the last 24h.
+  </div>
+  {% else %}
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    {% if spin %}
+    <div class="rounded-lg border border-rose-200 bg-white overflow-hidden">
+      <div class="px-4 py-2 text-xs uppercase tracking-wide text-rose-600 bg-rose-50 font-medium">
+        Spin loops ({{ spin|length }}) — same ref re-claimed every pass
+      </div>
+      <table class="w-full text-sm">
+        <tbody class="divide-y divide-slate-100">
+          {% for s in spin %}
+          <tr class="hover:bg-slate-50">
+            <td class="px-4 py-2 font-mono text-slate-700">#{{ s.ref_id }}</td>
+            <td class="px-4 py-2 font-mono text-slate-600">{{ s.source }}</td>
+            <td class="px-4 py-2 text-slate-500">{{ s.last_event }}</td>
+            <td class="px-4 py-2 text-right font-semibold text-rose-700 tabular-nums">{{ s.count }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    {% if fails %}
+    <div class="rounded-lg border border-amber-200 bg-white overflow-hidden">
+      <div class="px-4 py-2 text-xs uppercase tracking-wide text-amber-700 bg-amber-50 font-medium">
+        Failed passes ({{ fails|length }}) — 24h, by handler
+      </div>
+      <table class="w-full text-sm">
+        <tbody class="divide-y divide-slate-100">
+          {% for f in fails %}
+          <tr class="hover:bg-slate-50">
+            <td class="px-4 py-2 font-mono text-slate-700">{{ f.host }}</td>
+            <td class="px-4 py-2 font-mono text-slate-600">{{ f.handler }}</td>
+            <td class="px-4 py-2 text-right font-semibold text-amber-700 tabular-nums">{{ f.failed }}</td>
+            <td class="px-4 py-2 text-right text-slate-400">{{ f.ago }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+
+<!-- Claude usage rolled up from ref_events.cost_usd. -->
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Claude usage</h2>
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div class="rounded-lg border border-slate-200 bg-white p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-400">Last 24h</div>
+      <div class="mt-1 text-2xl font-semibold">${{ '%.2f'|format(usage.get('day', {}).get('cost', 0)) }}</div>
+      <div class="text-sm text-slate-500">{{ usage.get('day', {}).get('calls', 0) }} calls</div>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-white p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-400">Last 7d</div>
+      <div class="mt-1 text-2xl font-semibold">${{ '%.2f'|format(usage.get('week', {}).get('cost', 0)) }}</div>
+      <div class="text-sm text-slate-500">{{ usage.get('week', {}).get('calls', 0) }} calls</div>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-white p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">By model (7d)</div>
+      <ul class="text-sm divide-y divide-slate-100">
+        {% for m in usage.get('by_model', []) %}
+        <li class="py-1 flex justify-between gap-2">
+          <span class="font-mono text-slate-600 truncate">{{ m.label }}</span>
+          <span class="text-slate-500 shrink-0">{{ m.calls }} · ${{ '%.2f'|format(m.cost) }}</span>
+        </li>
+        {% else %}
+        <li class="py-1 text-slate-400">no LLM cost recorded</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+  <p class="mt-1 text-xs text-slate-400">
+    Whole-runtime spend (real dollars + claude quota) lives on the
+    <a href="/status?tab=budget" class="text-sky-600 hover:text-sky-700">Budget</a> sub-tab.
+  </p>
+</section>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+  <section>
+    <h2 class="text-sm font-semibold mb-2">Todos by status</h2>
+    <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+      {% for t in todo_status %}
+      {# Click-through → /tags/refs filters refs by tag, scoped to
+         kind=todo and namespace=STATUS for the relevant status. Each
+         count is the population landing on the filtered list. #}
+      <li class="px-4 py-2 flex justify-between text-sm hover:bg-slate-50">
+        <a href="/tags/refs?kind=todo&namespace=STATUS&value={{ t.status }}"
+           class="flex-1 text-slate-700 hover:text-emerald-700">{{ t.status }}</a>
+        <span class="font-semibold">{{ t.count }}</span>
+      </li>
+      {% else %}
+      <li class="px-4 py-2 text-sm text-slate-500">no todos</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section>
+    <h2 class="text-sm font-semibold mb-2">Recent activity
+      <span class="font-normal text-xs text-slate-400">(ref_events — per-ref)</span>
+    </h2>
+    <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+      {% for e in events %}
+      <li class="px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-slate-400 w-28 shrink-0">{{ e.ts }}</span>
+        <span class="font-mono text-slate-600">{{ e.event }}</span>
+        <span class="text-slate-400">{{ e.source }}</span>
+        {% if e.ref_id %}<span class="ml-auto text-slate-400">#{{ e.ref_id }}</span>{% endif %}
+      </li>
+      {% else %}
+      <li class="px-4 py-2 text-sm text-slate-500">no events</li>
+      {% endfor %}
+    </ul>
+    <p class="mt-1 text-xs text-slate-400">
+      Per-ref events only — chunk_keywords, embed, summarize batches
+      log to <code>worker_logs</code> instead (panel below).
+    </p>
+  </section>
+</div>
+
+{# Three focused recent-N panels: dreams, todo work-done, worker
+   passes. These exist so a quiet ref_events stream doesn't read
+   as "the cluster is dead" — dreams + pass batches keep ticking
+   even when no status flips. #}
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
+  <section>
+    <div class="flex items-baseline justify-between mb-2">
+      <h2 class="text-sm font-semibold">Recent dreams</h2>
+      {# Synthetic-insight badge: dreams promoted by the agent's own
+         Step-7 self-review (cited refs verified + cross-kind +
+         specific mechanism named). Click for the full filtered list. #}
+      {% if insight_count > 0 %}
+      <a href="/tags/refs?namespace=tier&value=synthetic-insight"
+         class="text-xs text-emerald-700 hover:underline">
+        ✨ {{ insight_count }} synthetic insight{{ '' if insight_count == 1 else 's' }} →
+      </a>
+      {% endif %}
+    </div>
+    <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+      {% for d in recent_dreams %}
+      <li class="px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-slate-400 w-16 shrink-0">{{ d.ago }}</span>
+        {% if d.is_insight %}<span class="text-emerald-600" title="agent-verified synthetic insight">✨</span>{% endif %}
+        <a class="text-slate-700 hover:underline truncate"
+           href="/refs/memory/{{ d.ref_id }}">{{ d.title }}</a>
+      </li>
+      {% else %}
+      <li class="px-4 py-2 text-sm text-slate-500">no dreams yet</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section>
+    <h2 class="text-sm font-semibold mb-2">Recent todo work-done</h2>
+    <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+      {% for t in recent_todo_done %}
+      <li class="px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-slate-400 w-16 shrink-0">{{ t.ago }}</span>
+        <span class="font-mono text-violet-600 w-20 shrink-0">{{ t.event }}</span>
+        <a class="text-slate-700 hover:underline truncate"
+           href="/tasks#row-{{ t.ref_id }}">{{ t.title }}</a>
+      </li>
+      {% else %}
+      <li class="px-4 py-2 text-sm text-slate-500">no completions recorded</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section>
+    <h2 class="text-sm font-semibold mb-2">Recent worker passes
+      <span class="font-normal text-xs text-slate-400">(productive)</span>
+    </h2>
+    <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+      {% for p in recent_passes %}
+      <li class="px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-slate-400 w-16 shrink-0">{{ p.ago }}</span>
+        <span class="font-mono text-slate-600 w-32 shrink-0">{{ p.pass }}</span>
+        <span class="text-slate-400 w-20 shrink-0">{{ p.host }}</span>
+        <span class="ml-auto tabular-nums text-slate-500">
+          claimed {{ p.claimed }} · ok {{ p.ok }}{% if p.failed %} · <span class="text-rose-600">failed {{ p.failed }}</span>{% endif %}
+        </span>
+      </li>
+      {% else %}
+      <li class="px-4 py-2 text-sm text-slate-500">no productive batches recorded</li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
+
+{# Recent LLM-agent fires: dream / structural reviewer / deep_review
+   / job_claude_inproc / quota_check. Each is one ``claude -p`` call
+   per row — failed rows render in red so silent-failure streaks
+   stand out. #}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2">Recent LLM agent activity
+    <span class="font-normal text-xs text-slate-400">(dream, reviewers, job runner, quota)</span>
+  </h2>
+  <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for a in recent_agents %}
+    <li class="px-4 py-2 text-xs flex items-center gap-2 {% if not a.ok_flag %}bg-rose-50{% endif %}">
+      <span class="text-slate-400 w-16 shrink-0">{{ a.ago }}</span>
+      <span class="font-mono {% if a.ok_flag %}text-violet-700{% else %}text-rose-700{% endif %} w-44 shrink-0">{{ a.pass }}</span>
+      <span class="text-slate-500 w-20 shrink-0">{{ a.host }}</span>
+      <span class="ml-auto tabular-nums {% if a.ok_flag %}text-emerald-700{% else %}text-rose-700 font-medium{% endif %}">
+        {% if a.ok_flag %}ok{% else %}FAILED{% endif %}
+        <span class="text-slate-400">·</span> claimed {{ a.claimed }} · ok {{ a.ok }} · failed {{ a.failed }}
+      </span>
+    </li>
+    {% else %}
+    <li class="px-4 py-2 text-sm text-slate-500">no agent fires recorded yet</li>
+    {% endfor %}
+  </ul>
+</section>
+
+{# Standing automations: level:recurring todos tagged ``automation`` — the
+   morning/evening podcast casts, the news briefing. ADR 0061 folded the
+   retired ``kind='cron'`` push mechanism onto ``level:recurring`` +
+   ``meta.deliver``; the recurring's title IS the prompt for a deliver-mode
+   tick — edit it to change behaviour. See precis-automations. #}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2">Automations
+    <span class="font-normal text-xs text-slate-400">(standing recurrings — the casts, the briefing)</span>
+  </h2>
+  <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for a in automations %}
+    <li class="px-4 py-2 text-xs flex items-center gap-2 {% if a.status == 'paused' %}bg-amber-50{% endif %}">
+      <span class="font-mono text-violet-700 w-28 shrink-0">{{ a.label }}</span>
+      <span class="text-slate-500 w-28 shrink-0">{{ a.recurring }}</span>
+      <span class="text-slate-700 truncate">{{ a.payload }}</span>
+      {% if a.produced %}
+      <a class="text-sky-700 hover:underline shrink-0 truncate max-w-xs"
+         href="/refs/{{ a.produced.kind }}/{{ a.produced.ref_id }}">→ {{ a.produced.kind }}: {{ a.produced.title }}</a>
+      {% endif %}
+      <span class="ml-auto tabular-nums text-slate-500 shrink-0">
+        {% if a.status == 'paused' %}<span class="text-amber-600">paused</span> · {% endif %}last {{ a.last_fired }} · fired {{ a.fire_count }}
+      </span>
+    </li>
+    {% else %}
+    <li class="px-4 py-2 text-sm text-slate-500">no automations tagged yet
+      <span class="text-slate-400">— tag a standing recurring with <code>automation</code></span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+
+{# Chunk-pipeline backlog: how many chunks are still waiting on each
+   pass. ``pending = 0`` means the worker is caught up; a growing
+   number means the embedder / keyword extractor / summarizer can't
+   keep up with ingest. -1 = query failed (schema drift).
+
+   This panel's counts are full-table aggregate scans over ``chunks``
+   (the slowest queries on the page), so we lazy-load them: the section
+   below streams in via htmx (``GET /status/backlog``) on page load
+   instead of blocking the initial render. #}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2">Chunk pipeline backlog
+    <span class="font-normal text-xs text-slate-400">(pending 0 = caught up)</span>
+  </h2>
+  <div hx-get="/status/backlog" hx-trigger="load" hx-swap="innerHTML">
+    <div class="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-400 flex items-center gap-2">
+      <span class="inline-block w-3 h-3 rounded-full border-2 border-slate-300 border-t-slate-500 animate-spin"></span>
+      loading backlog…
+    </div>
+  </div>
+</section>

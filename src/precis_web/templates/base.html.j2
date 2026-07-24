@@ -16,19 +16,23 @@
   <div class="min-h-full">
     <header class="bg-slate-900 text-slate-100">
       <div class="mx-auto max-w-6xl px-4">
-        {# Nav, by attention priority (ADR-less; see precis_web.nav):
-             • Zone 1  — daily-driver kinds, always visible.
-             • Needs you — the unified "waiting on you" queue (asks +
-               paper stubs), red badge = nav_needs_you.
-             • Browse ▾ — the corpus look-up long tail, behind a dropdown.
-             • Right — ops: Alerts (amber badge), Status, Ops ▾, search. #}
+        {# Nav, by attention priority (docs/proposals/web-ui-rationalization.md
+           "Target information architecture"; see also precis_web.nav):
+             • Daily — daily-driver kinds, always visible, left.
+             • Browse ▾ — the corpus look-up long tail (Drive's five
+               standalone kind-specific readers), behind a dropdown.
+             • Attention (right, badged) — Needs you, Gripes, Alerts.
+             • Ops ▾ — System + the admin/dev surfaces, right dropdown.
+             • 🔍 loupe — global search, submits to Drive. #}
         <nav class="flex flex-wrap items-center gap-0.5 py-1.5 text-xs">
           <span class="font-semibold tracking-tight text-emerald-400 mr-2">precis</span>
           {% set _tab_on = 'bg-slate-700 text-white' %}
           {% set _tab_off = 'text-slate-300 hover:bg-slate-800 hover:text-white' %}
 
-          {# ── Zone 1: daily work ── #}
-          {% set tabs = [('drive','Drive','/drive'), ('drafts','Drafts','/drafts'), ('tags','Tags','/tags'), ('tasks','ToDo','/tasks'), ('papers','Papers','/papers'), ('items','Items','/items')] %}
+          {# ── Daily: always-visible daily-driver kinds ──
+             Drafts/Papers/Items retired into Drive (WS1a/WS1b/nav
+             restructure) — their routes redirect, so no tab needed. #}
+          {% set tabs = [('drive','Drive','/drive'), ('tags','Tags','/tags'), ('tasks','ToDo','/tasks')] %}
           {% for key, label, href in tabs %}
           <a href="{{ href }}"
              class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == key %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
@@ -38,25 +42,16 @@
 
           <span class="mx-1 h-4 w-px bg-slate-700"></span>
 
-          {# ── Needs you: asks + needs-triage, red attention badge.
-               The full triage queue (active_tab 'triage') lands under
-               this tab, so it lights up there too. ── #}
-          {% set needs_you_keys = ['needs-you', 'triage'] %}
-          <a href="/needs-you"
-             class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab in needs_you_keys %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
-            Needs you
-            {% if nav_needs_you %}
-            <span class="ml-1 inline-flex items-center justify-center rounded-full bg-rose-600 text-white text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_needs_you }}</span>
-            {% endif %}
-          </a>
-
-          <span class="mx-1 h-4 w-px bg-slate-700"></span>
-
           {# ── Browse ▾: the corpus look-up long tail ──
-             Refs is the consolidated browser (memory/conv/gripe/pres
-             pre-checked + checkboxes for the rest); Oracle keeps its
-             "roll the dice" UX and Patents its OPS remote-search. #}
-          {% set browse = [('papers-needed','Papers Needed','/papers-needed'), ('clusters','Clusters','/clusters'), ('structure','Structures','/structure'), ('cad','CAD','/cad'), ('figure','Figures','/figure'), ('refs','Refs','/refs'), ('refs:oracle','Oracle','/refs/oracle'), ('refs:patent','Patents','/refs/patent'), ('cfp','CFPs','/cfp')] %}
+             WS1b folded Papers-Needed / Oracle / Patents / CFPs / Refs
+             per-kind lists into Drive kind/state facet presets (Oracle's
+             "roll the dice" and Patents' OPS remote-search are MCP/CLI
+             affordances, not web routes, so nothing web-facing was lost).
+             Structures/CAD/Figures/Mermaid keep their own tab: each
+             carries kind-specific columns (parts, atoms, energy, turns, …)
+             Drive's generic row rendering doesn't reproduce; Clusters is
+             likewise a bespoke visualization with no Drive equivalent. #}
+          {% set browse = [('clusters','Clusters','/clusters'), ('structure','Structures','/structure'), ('cad','CAD','/cad'), ('figure','Figures','/figure'), ('mermaid','Mermaid','/mermaid')] %}
           {% set browse_keys = browse | map(attribute=0) | list %}
           <div x-data="{open:false}" @click.outside="open=false" @keydown.escape="open=false" class="relative">
             <button type="button" @click="open=!open"
@@ -74,10 +69,29 @@
             </div>
           </div>
 
-          {# ── Right: ops + global search ── #}
-          {% set ops = [('factory','Factory','/factory'), ('agentlogs','Agent Logs','/agentlogs'), ('console','Console','/console'), ('budget','Budget','/budget'), ('env','Env','/env'), ('secrets','Secrets','/secrets')] %}
+          {# ── Right: Attention (Needs you / Gripes / Alerts, badged) +
+               Ops ▾ (System + admin surfaces) + global search. ── #}
+          {% set ops = [('status','System','/status'), ('agentlogs','Agent Logs','/agentlogs'), ('console','Console','/console'), ('env','Env','/env'), ('secrets','Secrets','/secrets')] %}
           {% set ops_keys = ops | map(attribute=0) | list %}
           <div class="ml-auto flex items-center gap-0.5">
+            {# Needs you: asks + needs-triage, red attention badge. The
+               full triage queue (active_tab 'triage') lands under this
+               tab, so it lights up there too. #}
+            {% set needs_you_keys = ['needs-you', 'triage'] %}
+            <a href="/needs-you"
+               class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab in needs_you_keys %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
+              Needs you
+              {% if nav_needs_you %}
+              <span class="ml-1 inline-flex items-center justify-center rounded-full bg-rose-600 text-white text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_needs_you }}</span>
+              {% endif %}
+            </a>
+            <a href="/gripes"
+               class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab == 'gripes' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
+              Gripes
+              {% if nav_gripes %}
+              <span class="ml-1 inline-flex items-center justify-center rounded-full bg-violet-500 text-white text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_gripes }}</span>
+              {% endif %}
+            </a>
             <a href="/alerts"
                class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab == 'alerts' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
               Alerts
@@ -85,10 +99,9 @@
               <span class="ml-1 inline-flex items-center justify-center rounded-full bg-amber-500 text-slate-900 text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_alerts }}</span>
               {% endif %}
             </a>
-            <a href="/status"
-               class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == 'status' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
-              Status
-            </a>
+            <span class="mx-1 h-4 w-px bg-slate-700"></span>
+            {# Ops ▾ — System (merged Status+Factory+Budget, WS3) + the
+               admin/dev surfaces. #}
             <div x-data="{open:false}" @click.outside="open=false" @keydown.escape="open=false" class="relative">
               <button type="button" @click="open=!open"
                       class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center gap-1 {% if active_tab in ops_keys %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
@@ -104,11 +117,12 @@
                 {% endfor %}
               </div>
             </div>
-            {# 🔍 loupe — global cross-kind search. Submits to /refs with
-               ``all=1`` so every browsable kind is in scope; the user can
-               then uncheck irrelevant ones on the results page. #}
-            <form method="get" action="/refs" class="ml-1 flex items-center gap-1">
-              <input type="hidden" name="all" value="1" />
+            {# 🔍 loupe — global cross-kind search. Submits to /drive (WS1b
+               repoint — the unified seek+manage surface), which runs the
+               same cross-kind chunk search over its default kind set; the
+               user can narrow/widen via the Source/Author kind chips on
+               the results page. #}
+            <form method="get" action="/drive" class="ml-1 flex items-center gap-1">
               <input name="q" placeholder="🔍 search everything…"
                      class="bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-400 text-sm px-3 py-1 rounded w-44 focus:w-72 focus:outline-none focus:ring-1 focus:ring-emerald-500 transition-all" />
             </form>

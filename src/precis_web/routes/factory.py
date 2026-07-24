@@ -1,4 +1,14 @@
-"""Factory console (``/factory``) — the window onto what the factory runs.
+"""Factory console — the window onto what the factory runs.
+
+WS3 (docs/proposals/web-ui-rationalization.md) folded the read/write
+console formerly served at ``GET /factory`` into the "Services" sub-tab
+of the merged System page (``/status?tab=services``); ``GET /factory``
+now just redirects there. The SQL helpers below (host strip, category
+tables, quests, ``service_config`` reads) still live here and are
+imported by ``status.py`` to build that sub-tab's context — only the
+*route* moved, not the logic. The ``POST /factory/{prio,model,clear}``
+write endpoints stay mounted at their original paths (their redirect
+target is now the Services sub-tab).
 
 Host strip (load / worker-alive per machine) over one list per category
 of services — every pass / job-type / compute / daemon / serving row from
@@ -21,16 +31,14 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 
-from precis.workers.registry import SERVICES, ServiceKind
 from precis.workers.service_config import (
-    DEFAULT_PRIO,
     clear_service_config,
     set_service_model,
     set_service_prio,
 )
-from precis_web.deps import get_store, templates
+from precis_web.deps import get_store
 from precis_web.timefmt import ago as _ago
 
 router = APIRouter(prefix="/factory", tags=["factory"])
@@ -363,79 +371,20 @@ def _host_options(hosts: list[dict[str, Any]], config: list[Any]) -> list[str]:
     return [_ALL, *sorted(known)]
 
 
-@router.get("", response_class=HTMLResponse)
-@router.get("/", response_class=HTMLResponse)
-async def index(request: Request, host: str = _ALL) -> HTMLResponse:
-    """Render the factory overview, scoped to ``?host=`` (default all)."""
-    store = get_store(request)
-    hosts = _hosts(store)
-    slots_by_host = _slots_by_host(store)
-    errors_by_host = _errors_by_host(store)
-    for h in hosts:
-        h["slots"] = slots_by_host.get(h["host"], [])
-        h["errors"] = errors_by_host.get(h["host"])
-    config = _config_rows(store)
-    activity = _activity(store)
-    models = _llm_models(store)
-    host_options = _host_options(hosts, config)
-    if host not in host_options:
-        host = _ALL
+@router.get("", response_model=None)
+@router.get("/", response_model=None)
+async def index(host: str = _ALL) -> RedirectResponse:
+    """``/factory`` is retired (WS3) — redirect to the Services sub-tab.
 
-    # Explicit rows for the selected host, and the cross-host override hints.
-    exact: dict[str, tuple[int, str | None]] = {
-        s: (p, m) for (s, h, p, m) in config if h == host
-    }
-    others: dict[str, list[str]] = {}
-    for s, h, p, _m in config:
-        if h != host:
-            others.setdefault(s, []).append(f"{h}={p}")
-
-    by_category: dict[str, list[dict[str, Any]]] = {}
-    for spec in SERVICES:
-        act = activity.get(spec.log_handler, {})
-        ex = exact.get(spec.name)
-        row = {
-            "name": spec.name,
-            "label": spec.label,
-            "kind": spec.kind.value,
-            "one_line": spec.one_line,
-            "profiles": ", ".join(sorted(spec.default_profiles)) or "—",
-            "enable_env": spec.enable_env,
-            "requires": sorted(spec.requires),
-            "uses_model": spec.uses_model,
-            "external": list(spec.uses_external),
-            "has_agent": spec.introspect is not None,
-            "prio": ex[0] if ex is not None else None,  # None → "default"
-            "model_pref": ex[1] if ex is not None else None,
-            "others": ", ".join(others.get(spec.name, [])),
-            "last_ok": _ago(act["last_ok"]) if act.get("last_ok") else None,
-            "last_fail": _ago(act["last_fail"]) if act.get("last_fail") else None,
-        }
-        by_category.setdefault(spec.category, []).append(row)
-
-    ordered = [c for c in _CATEGORY_ORDER if c in by_category]
-    ordered += sorted(c for c in by_category if c not in _CATEGORY_ORDER)
-    categories = [{"name": c, "services": by_category[c]} for c in ordered]
-
-    return templates.TemplateResponse(
-        request,
-        "factory/index.html.j2",
-        {
-            "active_tab": "factory",
-            "hosts": hosts,
-            "categories": categories,
-            "default_prio": DEFAULT_PRIO,
-            "selected_host": host,
-            "host_options": host_options,
-            "models": models,
-            "service_kinds": [k.value for k in ServiceKind],
-            "quests": _quests(store),
-        },
-    )
+    All the compute above (host strip, category tables, quests) is now
+    invoked from ``status.py``'s ``_services_ctx`` to build
+    ``/status?tab=services``; this route only preserves the old URL.
+    """
+    return RedirectResponse(url=f"/status?tab=services&host={host}", status_code=307)
 
 
 def _redirect(host: str) -> RedirectResponse:
-    return RedirectResponse(url=f"/factory?host={host}", status_code=303)
+    return RedirectResponse(url=f"/status?tab=services&host={host}", status_code=303)
 
 
 @router.post("/prio", response_model=None)

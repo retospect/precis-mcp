@@ -18,11 +18,32 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from precis.workers.registry import SERVICES, ServiceKind
+from precis.workers.service_config import DEFAULT_PRIO
 from precis_web.deps import get_store, get_web_config, templates
+from precis_web.routes.factory import _ALL, _CATEGORY_ORDER
+from precis_web.routes.factory import _activity as _factory_activity
+from precis_web.routes.factory import _config_rows as _factory_config_rows
+from precis_web.routes.factory import _errors_by_host as _factory_errors_by_host
+from precis_web.routes.factory import _host_options as _factory_host_options
+from precis_web.routes.factory import _hosts as _factory_hosts
+from precis_web.routes.factory import _llm_models as _factory_llm_models
+from precis_web.routes.factory import _quests as _factory_quests
+from precis_web.routes.factory import _slots_by_host as _factory_slots_by_host
 from precis_web.timefmt import age_seconds as _age_seconds
 from precis_web.timefmt import ago as _ago
 
 router = APIRouter(prefix="/status", tags=["status"])
+
+#: WS3 (docs/proposals/web-ui-rationalization.md) merged the read-only
+#: `/status`, the editable `/factory` console, and the `/budget` cap
+#: editor into one "System" page under these sub-tabs. `/status` stays
+#: the base URL (it's the most-deep-linked of the three); `?tab=`
+#: scopes which section's queries actually run so the page stays as
+#: fast as each formerly-standalone route. `/factory` and `/budget`
+#: now just redirect here (their POST endpoints stay mounted at their
+#: original paths — only the write path's redirect target moved).
+_TABS = ("health", "services", "budget")
 
 log = logging.getLogger(__name__)
 
@@ -1053,99 +1074,212 @@ def _app_version() -> str:
         return "unknown"
 
 
-_WINDOW_LABEL: dict[str, str] = {
-    "five_hour": "5-hour session",
-    "seven_day": "Week (all models)",
-    "seven_day_sonnet": "Week (Sonnet only)",
-    "seven_day_opus": "Week (Opus only)",
-    "overage": "Overage / pay-per-use",
-}
+def _quota_view(store: Any) -> dict[str, Any]:
+    """The claude-OAuth quota lane: the snapshot's windows + the live pause
+    decision (if any). Degrades to an empty view when no snapshot exists.
 
-
-def _claude_quota(store: Any) -> dict[str, Any]:
-    """Render the OAuth utilisation snapshot for the Status panel.
-
-    Reads the singleton ``claude_quota_snapshot`` row written by the
-    agent-worker ``quota_check`` pass. Returns ``{}`` when nothing has
-    been written yet (free tier, or first run before the pass has
-    fired). The template renders "snapshot unavailable" in that case.
+    Moved here from ``budget.py`` (WS3) — ``budget.py``'s own ``/budget``
+    GET route now just redirects to the Budget sub-tab, and this needed to
+    live somewhere that ``status.py`` could reach without a circular
+    import (``budget.py`` already imports :func:`_budget_tote` from here).
     """
-    row = store.read_claude_quota(scope="unified")
-    if row is None:
-        return {}
-    data = row.data or {}
-    windows = data.get("windows") or {}
-    rendered: list[dict[str, Any]] = []
-    for key, payload in windows.items():
-        if not isinstance(payload, dict):
-            continue
-        rendered.append(
-            {
-                "key": key,
-                "label": _WINDOW_LABEL.get(key, key),
-                "used_percentage": payload.get("used_percentage"),
-                "resets_at": payload.get("resets_at"),
-                # Stream-json rate_limit_event carries "active" /
-                # "warning" / "exceeded"; legacy --output-format json
-                # has no such field and we get None.
-                "status": payload.get("status"),
-            }
-        )
-    # Show 5h first, then weeklies, then overage; alphabetical within
-    # each tier matches Claude Code's own ordering in `/usage`.
-    _ORDER = ("five_hour", "seven_day", "seven_day_sonnet", "seven_day_opus", "overage")
-    rendered.sort(key=lambda w: _ORDER.index(w["key"]) if w["key"] in _ORDER else 99)
+    from precis.budget import quota as budget_quota
+
+    try:
+        row = store.read_claude_quota()
+    except Exception:
+        row = None
+    windows: list[dict[str, Any]] = []
+    ts = None
+    if row is not None:
+        ts = row.ts
+        raw = row.data.get("windows")
+        if isinstance(raw, dict):
+            for name, bucket in raw.items():
+                if not isinstance(bucket, dict):
+                    continue
+                windows.append(
+                    {
+                        "name": name,
+                        "status": str(bucket.get("status", "") or "—"),
+                        "used": bucket.get("used_percentage"),
+                        "resets_at": bucket.get("resets_at"),
+                    }
+                )
+    pause = budget_quota.evaluate(store)
     return {
-        "ts": row.ts.isoformat() if row.ts else None,
-        "representative_claim": data.get("representative_claim"),
-        "windows": rendered,
+        "ts": ts,
+        "windows": windows,
+        "paused": pause is not None,
+        "pause_reason": pause.reason if pause is not None else None,
+    }
+
+
+def _health_ctx(store: Any, cfg: Any) -> dict[str, Any]:
+    """Health sub-tab: the old Status page's telemetry + the reconciled
+    host strip (WS3 folds factory's capability chips + 6h error samples
+    onto the same heartbeat row instead of a second, separate strip on
+    ``/factory`` — see the module docstring on the host-strip merge)."""
+    heartbeats = _safe(lambda: _heartbeats(store)) or []
+    host_logs = {h["host"]: h for h in (_safe(lambda: _hosts(store)) or [])}
+    slots_by_host = _factory_slots_by_host(store)
+    errors_by_host = _factory_errors_by_host(store)
+    for hb in heartbeats:
+        hb["slots"] = slots_by_host.get(hb["host"], [])
+        hb["errors_6h"] = errors_by_host.get(hb["host"])
+        lg = host_logs.pop(hb["host"], None)
+        hb["log_ago"] = lg["ago"] if lg else None
+        hb["problems"] = lg["problems"] if lg else 0
+    # Hosts that only show up via worker_logs (no heartbeat row at all)
+    # still render, as a plain pill — same as the old status page.
+    extra_hosts = list(host_logs.values())
+    return {
+        "kind_counts": _safe(lambda: _kind_counts(store)) or [],
+        "papers": _safe(lambda: _paper_summary(store)) or {},
+        "todo_status": _safe(lambda: _todo_status(store)) or [],
+        "events": _safe(lambda: _recent_events(store)) or [],
+        "recent_dreams": _safe(lambda: _recent_dreams(store)) or [],
+        "insight_count": _safe(lambda: _synthetic_insights_count(store)) or 0,
+        "recent_todo_done": _safe(lambda: _recent_todo_done(store)) or [],
+        "recent_passes": _safe(lambda: _recent_passes(store)) or [],
+        "recent_agents": _safe(lambda: _recent_agent_activity(store)) or [],
+        "automations": _safe(lambda: _automations(store)) or [],
+        # NB ``backlog`` is intentionally absent here — it is the
+        # slowest section (full-table ``chunks`` scans) and is
+        # lazy-loaded by the template via ``GET /status/backlog``
+        # (the ``_backlog`` fragment below) so it never blocks the
+        # initial page render.
+        "liveness": _safe(lambda: _liveness(store)) or [],
+        "usage": _safe(lambda: _claude_usage(store)) or {},
+        "heartbeats": heartbeats,
+        "extra_hosts": extra_hosts,
+        "bg_health": _safe(lambda: _background_anomalies(store))
+        or {"spin_loops": [], "failed_passes": []},
+        "corpus_dir": "  ".join(str(p) for p in cfg.corpus_dirs),
+        "app_version": _app_version(),
+    }
+
+
+def _services_ctx(store: Any, host: str) -> dict[str, Any]:
+    """Services sub-tab: the retired ``/factory`` page's category tables +
+    editable prio/model_pref + Quests, unchanged (its SQL helpers already
+    degrade to empty on their own — see ``factory.py``).
+
+    The host *strip* (load/capability chips) moved to the Health sub-tab
+    (see :func:`_health_ctx`) — this only needs the host *list*, to
+    build the ``?host=`` selector that scopes prio/model_pref edits.
+    """
+    hosts = _factory_hosts(store)
+    config = _factory_config_rows(store)
+    activity = _factory_activity(store)
+    models = _factory_llm_models(store)
+    host_options = _factory_host_options(hosts, config)
+    if host not in host_options:
+        host = _ALL
+
+    # Explicit rows for the selected host, and the cross-host override hints.
+    exact: dict[str, tuple[int, str | None]] = {
+        s: (p, m) for (s, h2, p, m) in config if h2 == host
+    }
+    others: dict[str, list[str]] = {}
+    for s, h2, p, _m in config:
+        if h2 != host:
+            others.setdefault(s, []).append(f"{h2}={p}")
+
+    by_category: dict[str, list[dict[str, Any]]] = {}
+    for spec in SERVICES:
+        act = activity.get(spec.log_handler, {})
+        ex = exact.get(spec.name)
+        row = {
+            "name": spec.name,
+            "label": spec.label,
+            "kind": spec.kind.value,
+            "one_line": spec.one_line,
+            "profiles": ", ".join(sorted(spec.default_profiles)) or "—",
+            "enable_env": spec.enable_env,
+            "requires": sorted(spec.requires),
+            "uses_model": spec.uses_model,
+            "external": list(spec.uses_external),
+            "has_agent": spec.introspect is not None,
+            "prio": ex[0] if ex is not None else None,  # None → "default"
+            "model_pref": ex[1] if ex is not None else None,
+            "others": ", ".join(others.get(spec.name, [])),
+            "last_ok": _ago(act["last_ok"]) if act.get("last_ok") else None,
+            "last_fail": _ago(act["last_fail"]) if act.get("last_fail") else None,
+        }
+        by_category.setdefault(spec.category, []).append(row)
+
+    ordered = [c for c in _CATEGORY_ORDER if c in by_category]
+    ordered += sorted(c for c in by_category if c not in _CATEGORY_ORDER)
+    categories = [{"name": c, "services": by_category[c]} for c in ordered]
+
+    return {
+        "hosts": hosts,
+        "categories": categories,
+        "default_prio": DEFAULT_PRIO,
+        "selected_host": host,
+        "host_options": host_options,
+        "models": models,
+        "service_kinds": [k.value for k in ServiceKind],
+        "quests": _factory_quests(store),
+    }
+
+
+def _budget_ctx(store: Any) -> dict[str, Any]:
+    """Budget sub-tab: the retired ``/budget`` page folded in verbatim —
+    the tote, the quota live-pause banner, and the cap-editor state."""
+    from precis.budget import meter
+    from precis.budget import settings as budget_settings
+
+    tote = _safe(lambda: _budget_tote(store)) or {}
+    hourly_override = budget_settings.get_float(store, budget_settings.HOURLY_KEY)
+    daily_override = budget_settings.get_float(store, budget_settings.DAILY_KEY)
+    bstatus = meter.current_status(store, use_cache=False)
+    return {
+        "budget": tote,
+        "quota": _quota_view(store),
+        "hourly_cap": bstatus.hourly_cap if bstatus else None,
+        "daily_cap": bstatus.daily_cap if bstatus else None,
+        "hourly_custom": hourly_override is not None,
+        "daily_custom": daily_override is not None,
+        "resume_until": budget_settings.get_resume_until(store),
+        "resume_active": budget_settings.resume_active(store),
     }
 
 
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request) -> HTMLResponse:
+async def index(
+    request: Request, tab: str = "health", host: str = _ALL
+) -> HTMLResponse:
+    """Render the merged System page (WS3): Health / Services / Budget.
+
+    ``/status`` stays the base URL; ``?tab=`` scopes which sub-tab's
+    queries actually run, so a page-load only pays for the section it's
+    showing — same cost as when Health/Services/Budget were three
+    separate routes.
+    """
+    if tab not in _TABS:
+        tab = "health"
     store = get_store(request)
     cfg = get_web_config(request)
-    # Open ONE connection for the whole page and park it so every section
-    # reuses it (see ``_request_conn``) instead of checking out ~15
-    # separate pooled connections — that per-section round-trip fan-out,
-    # not any single query, was the bulk of the page's latency. Sections
-    # that don't touch SQL (``_claude_quota`` goes through a store method;
-    # ``_app_version`` is local) simply ignore it.
-    with store.pool.connection() as conn:
-        token = _request_conn.set(conn)
-        try:
-            ctx = {
-                "active_tab": "status",
-                "kind_counts": _safe(lambda: _kind_counts(store)) or [],
-                "papers": _safe(lambda: _paper_summary(store)) or {},
-                "todo_status": _safe(lambda: _todo_status(store)) or [],
-                "events": _safe(lambda: _recent_events(store)) or [],
-                "recent_dreams": _safe(lambda: _recent_dreams(store)) or [],
-                "insight_count": _safe(lambda: _synthetic_insights_count(store)) or 0,
-                "recent_todo_done": _safe(lambda: _recent_todo_done(store)) or [],
-                "recent_passes": _safe(lambda: _recent_passes(store)) or [],
-                "recent_agents": _safe(lambda: _recent_agent_activity(store)) or [],
-                "automations": _safe(lambda: _automations(store)) or [],
-                # NB ``backlog`` is intentionally absent here — it is the
-                # slowest section (full-table ``chunks`` scans) and is
-                # lazy-loaded by the template via ``GET /status/backlog``
-                # (the ``_backlog`` fragment below) so it never blocks the
-                # initial page render.
-                "liveness": _safe(lambda: _liveness(store)) or [],
-                "usage": _safe(lambda: _claude_usage(store)) or {},
-                "budget": _safe(lambda: _budget_tote(store)) or {},
-                "quota": _safe(lambda: _claude_quota(store)) or {},
-                "hosts": _safe(lambda: _hosts(store)) or [],
-                "heartbeats": _safe(lambda: _heartbeats(store)) or [],
-                "bg_health": _safe(lambda: _background_anomalies(store))
-                or {"spin_loops": [], "failed_passes": []},
-                "corpus_dir": "  ".join(str(p) for p in cfg.corpus_dirs),
-                "app_version": _app_version(),
-            }
-        finally:
-            _request_conn.reset(token)
+    ctx: dict[str, Any] = {"active_tab": "status", "tab": tab}
+    if tab == "health":
+        # One connection for the whole section, parked so every reader
+        # reuses it (see ``_request_conn``) instead of checking out ~15
+        # separate pooled connections — that per-section round-trip
+        # fan-out, not any single query, was the bulk of the page's
+        # latency.
+        with store.pool.connection() as conn:
+            token = _request_conn.set(conn)
+            try:
+                ctx.update(_health_ctx(store, cfg))
+            finally:
+                _request_conn.reset(token)
+    elif tab == "services":
+        ctx.update(_services_ctx(store, host))
+    else:
+        ctx.update(_budget_ctx(store))
     return templates.TemplateResponse(request, "status.html.j2", ctx)
 
 

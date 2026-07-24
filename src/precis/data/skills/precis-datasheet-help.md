@@ -59,9 +59,9 @@ reference from `datasheet_url` is still the planned automation.
 
 Datasheets have a dedicated two-pane reader at **`/datasheets/<slug>`**
 (vendored pdf.js on the right, Navigate/Jump/in-doc search on the left — the
-same reader as `/papers` and `/pres`). It's reached from Drive, cross-kind
-search (`/items`), or the part it documents — there is no standalone
-`/datasheets` list page (like `/pres`).
+same reader as `/papers` and `/pres`). It's reached from Drive (`/drive` — the unified cross-kind seek+manage
+surface; `/items` redirects there) or the part it documents — there is
+no standalone `/datasheets` list page (like `/pres`).
 
 The **Meta** tab is datasheet-shaped (not the paper's bibliographic form): it
 edits three `meta` fields —

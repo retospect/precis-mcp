@@ -1,7 +1,21 @@
 ---
-status: draft
+status: superseded
 title: One unified item view — DRY cross-kind list/search over source + authored things, with per-kind presenters
 ---
+
+> **Superseded** by
+> [`docs/proposals/web-ui-rationalization.md`](./web-ui-rationalization.md),
+> which subsumed and finished this proposal's Drive workstream: the
+> `/items` surface described below graduated into **Drive** (`/drive`),
+> folder tree + CRUD grafted on, and every legacy list route this doc's
+> "Legacy-route retirement" risk called "none are a clean 1:1" turned out
+> to reduce cleanly once Drive owned the folder tree + per-row actions
+> (see `OPEN-ITEMS.md`'s "Drive presenter completeness" for the residual
+> open work — presenter `@abstractmethod` promotion, the kind-taxonomy
+> audit, "write a document from this view"). Kept (not deleted) because
+> several code comments still cite it as the design rationale for
+> `item_view.py` / `routes/drive.py` / `routes/flags.py` /
+> `runtime/search.py` / `store/_blocks_ops.py`.
 
 # One unified item view — DRY cross-kind list/search over source + authored things
 

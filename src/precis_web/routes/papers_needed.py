@@ -1,56 +1,28 @@
-"""Papers-needed tab — chunkless paper stubs awaiting fetch.
+"""Papers-needed tab — retired into the unified Drive surface (WS1b).
 
-Also surfaces the cluster's drop-zone paths so the operator knows
-where to put files for manual ingest. The ``precis watch`` daemon
-on melchior monitors a watch-dir; sub-directories under it select
-the ingest kind (``papers/`` → paper pipeline, ``books/`` → book,
-``presentations/`` → slides). We read the watch daemon's plist to
-find the live path so the operator gets the actual path, not a
-guess.
+``/papers-needed`` (and its ``?awaiting=1`` narrowing) used to render the
+chunkless paper-stub backlog directly; per
+``docs/proposals/web-ui-rationalization.md`` decision D3 it now just
+redirects to Drive's ``state=stub`` facet (the "papers to get" queue) —
+fully folded, no retained nav badge (the fetcher works the backlog
+automatically; that was the original rationale for keeping it out of
+Needs-you too, see ``routes/needs_you.py``). The acquisition-provenance
+flag buttons (:data:`precis_web.routes.flags.ACQUIRE_FLAG_DEFS`) ride
+along on Drive's stub rows (``templates/drive/index.html.j2``).
 
-
-A *stub* is a ``kind='paper'`` ref minted with a DOI / arXiv / S2
-identifier but no PDF yet (``pdf_sha256 IS NULL``). The ``fetch_oa``
-worker cascades Unpaywall → arXiv → Semantic Scholar trying to land
-the PDF; this page surfaces the backlog so the operator can see
-what's still missing and intervene (manual upload, paywall pay-out,
-or mark won't-do).
-
-Two views:
-
-* ``/papers-needed`` — full backlog, oldest request first (the
-  longest-waiting stubs — most overdue for manual help — at the top)
-* ``/papers-needed?awaiting=1`` — only stubs the fetcher would
-  actually try on its next pass (never attempted or attempted >24h
-  ago and still pending)
-
-Shares ``store.stub_backlog()`` with the ``precis stubs`` CLI, so
-both views render the same data shape.
+This module still owns the watch-dir drop-zone helpers
+(:func:`_watch_dir_from_plist`, :data:`_KIND_DROPZONES`) — ``routes/drive.py``
+imports them for its own drop-zone panel (a WS1a graft), so they stay here
+rather than duplicating.
 """
 
 from __future__ import annotations
 
 import plistlib
 from pathlib import Path
-from typing import Any
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
-
-from precis_web.deps import get_store, templates
-from precis_web.paper_links import (
-    arxiv_pdf_url,
-    doi_url,
-    libkey_url,
-    scholar_url,
-    uol_url,
-)
-from precis_web.routes.flags import (
-    ACQUIRE_FLAG_DEFS,
-    FLAG_DEFS,
-    FLAG_NAMESPACE,
-    FLAG_VALUE_LIST,
-)
+from fastapi import APIRouter
+from fastapi.responses import RedirectResponse
 
 router = APIRouter(prefix="/papers-needed", tags=["papers-needed"])
 
@@ -119,109 +91,11 @@ _KIND_DROPZONES: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _title_for_ref(refs: dict[int, Any], ref_id: int) -> str:
-    """Best-effort title for a stub. Refs landed via DOI lookup carry
-    the publisher's title in ``refs.title``; refs minted from
-    arXiv-only sometimes have only an identifier and an empty title.
-    Fall back to the cite_key / identifier so the row is still
-    distinguishable.
-    """
-    ref = refs.get(ref_id)
-    if ref is None:
-        return ""
-    title = (getattr(ref, "title", None) or "").strip()
-    return title
-
-
-#: Rows per page on the backlog list.
-_PAGE_SIZE = 100
-
-
-@router.get("", response_class=HTMLResponse)
-@router.get("/", response_class=HTMLResponse)
-async def index(
-    request: Request, awaiting: int | None = None, page: int = 1
-) -> HTMLResponse:
-    """Backlog list. ``?awaiting=1`` narrows to fetcher's next-pass queue.
-
-    Paged via ``?page=N`` (offset-based, one-extra-row probe for "has
-    next"); the ``awaiting`` filter is preserved across pager links.
-    """
-    store = get_store(request)
-    awaiting_flag = bool(awaiting)
-    total = store.stub_backlog_count(awaiting=awaiting_flag)
-    total_pages = max(1, -(-total // _PAGE_SIZE))  # ceil-div
-    page = min(max(1, page), total_pages)
-    offset = (page - 1) * _PAGE_SIZE
-    rows = store.stub_backlog(limit=_PAGE_SIZE, offset=offset, awaiting=awaiting_flag)
-    has_next = page < total_pages
-    # Compact page window around the current page (…1 4 5 [6] 7 8 …last).
-    lo = max(1, page - 3)
-    hi = min(total_pages, page + 3)
-    page_window = list(range(lo, hi + 1))
-    row_ids = [row["ref_id"] for row in rows]
-    refs = store.fetch_refs_by_ids(row_ids, include_deleted=False)
-    # Batched flag state for the whole page (avoids an N+1 per row).
-    flag_state = store.ref_tag_values(row_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
-    display: list[dict[str, Any]] = []
-    for row in rows:
-        rid = row["ref_id"]
-        display.append(
-            {
-                "id": rid,
-                "flags": flag_state.get(rid, set()),
-                "title": _title_for_ref(refs, rid),
-                "cite_key": row["cite_key"],
-                "identifier": row["identifier"],
-                "identifier_url": doi_url(row["identifier"]),
-                "uol_url": uol_url(row["identifier"]),
-                "scholar_url": scholar_url(row["identifier"]),
-                "libkey_url": libkey_url(row["identifier"]),
-                "arxiv_pdf_url": arxiv_pdf_url(row["identifier"]),
-                "state": row["state"],
-                "last_attempt": row["last_attempt"],
-                "last_event": row["last_event"],
-                "created_at": row["created_at"],
-                "requested_by": row["requested_by"],
-                "attempts": row["attempts"],
-            }
-        )
-    # Where a flag toggle bounces back to — this exact filtered page.
-    _rt_params = []
-    if awaiting_flag:
-        _rt_params.append("awaiting=1")
-    if page > 1:
-        _rt_params.append(f"page={page}")
-    return_to = "/papers-needed" + ("?" + "&".join(_rt_params) if _rt_params else "")
-    watch_dir = _watch_dir_from_plist()
-    dropzones: list[dict[str, str]] = []
-    if watch_dir:
-        for label, sub, description in _KIND_DROPZONES:
-            dropzones.append(
-                {
-                    "label": label,
-                    "path": str(Path(watch_dir) / sub),
-                    "description": description,
-                }
-            )
-    return templates.TemplateResponse(
-        request,
-        "papers_needed/index.html.j2",
-        {
-            "active_tab": "papers-needed",
-            "rows": display,
-            "reading_flag_defs": FLAG_DEFS,
-            "acquire_flag_defs": ACQUIRE_FLAG_DEFS,
-            "return_to": return_to,
-            "awaiting": awaiting_flag,
-            "page": page,
-            "has_next": has_next,
-            "total": total,
-            "total_pages": total_pages,
-            "page_window": page_window,
-            "page_size": _PAGE_SIZE,
-            "offset": offset,
-            "watch_dir": watch_dir,
-            "dropzones": dropzones,
-        },
-    )
+@router.get("", response_class=RedirectResponse)
+@router.get("/", response_class=RedirectResponse)
+async def index() -> RedirectResponse:
+    """Retired into the unified Drive surface (WS1b, decision D3) —
+    redirects to the ``state=stub`` facet (the old ``?awaiting=1``
+    next-pass narrowing has no Drive equivalent and is dropped with the
+    list; the fetcher already works the whole backlog automatically)."""
+    return RedirectResponse(url="/drive?state=stub")

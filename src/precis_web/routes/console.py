@@ -343,11 +343,11 @@ def _smart_resolve(query: str) -> str | None:
             # No direct DOI resolver yet — search papers by DOI string.
             from urllib.parse import quote_plus
 
-            return f"/refs?q={quote_plus(q)}&kinds=paper&all=1"
+            return f"/drive?q={quote_plus(q)}&k=paper&submitted=1"
         if shape == "arxiv":
             from urllib.parse import quote_plus
 
-            return f"/refs?q={quote_plus(q)}&kinds=paper&all=1"
+            return f"/drive?q={quote_plus(q)}&k=paper&submitted=1"
         if shape == "youtube":
             return f"/r/youtube/{q}"
         if shape == "paper_cite":
@@ -680,7 +680,7 @@ async def resolve(
         from urllib.parse import quote_plus
 
         return RedirectResponse(
-            url=f"/refs?q={quote_plus(handle.strip())}&all=1",
+            url=f"/drive?q={quote_plus(handle.strip())}",
             status_code=303,
         )
     return templates.TemplateResponse(

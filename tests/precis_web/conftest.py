@@ -234,6 +234,18 @@ class FakeStore:
                 },
             ),
         ]
+        # A gripe for the /gripes workbench detail test. ``title`` is the
+        # full filed text verbatim (mirrors ``file_gripe_readonly`` —
+        # there's no separate title field); the body+comment chunks live
+        # in ``_conv_blocks`` below (a generic pos/text/meta/chunk_kind
+        # store, not conv-specific despite the attr name).
+        self.gripes = [
+            make_ref(
+                id=96,
+                kind="gripe",
+                title="the paper slug NotFound error doesn't suggest near matches",
+            ),
+        ]
         # A cached YouTube transcript for the /refs/youtube detail card.
         # The scraped watch-page meta lives in cache_state.meta (returned
         # by get_cache_entry_by_slug), not on the ref.
@@ -278,7 +290,23 @@ class FakeStore:
                     text="general kenobi",
                     meta={"author": "bob", "ts": "2026-06-14T20:01:00Z"},
                 ),
-            ]
+            ],
+            # Gripe 96's body (chunk_kind='gripe_body') + one comment
+            # (chunk_kind='gripe_comment') for the /gripes detail test.
+            96: [
+                SimpleNamespace(
+                    pos=0,
+                    text="the paper slug NotFound error doesn't suggest near matches",
+                    meta={},
+                    chunk_kind="gripe_body",
+                ),
+                SimpleNamespace(
+                    pos=1,
+                    text="only triggers when the slug has a hyphen",
+                    meta={},
+                    chunk_kind="gripe_comment",
+                ),
+            ],
         }
 
     def _for_kind(self, kind: str | None) -> list[Any]:
@@ -293,6 +321,7 @@ class FakeStore:
             "pres": self.press,
             "datasheet": self.datasheets,
             "youtube": self.youtubes,
+            "gripe": self.gripes,
         }
         if kind is None:
             return [r for pool in pools.values() for r in pool]
@@ -485,6 +514,7 @@ class FakeStore:
             + self.press
             + self.datasheets
             + self.youtubes
+            + self.gripes
         }
         return {i: pool[i] for i in ids if i in pool}
 
@@ -660,20 +690,37 @@ class FakeStore:
         return [(b, r, s) for (b, r, s) in hits if r.kind in want][offset:]
 
     def recent_refs(
-        self, kinds, *, tags=None, has_pdf=None, parent_id=None, limit=30, offset=0
+        self,
+        kinds,
+        *,
+        tags=None,
+        has_pdf=None,
+        parent_id=None,
+        deleted=False,
+        limit=30,
+        offset=0,
     ):
-        """Canned recent source refs for the /items default landing —
+        """Canned recent source refs for the /drive default landing —
         one paper (stub, no pdf) + one web, filtered to requested kinds.
         ``self.recent_tags`` / ``self.recent_has_pdf`` / ``self.recent_parent_id``
-        / ``self.recent_offset`` record the filters."""
+        / ``self.recent_deleted`` / ``self.recent_offset`` record the filters.
+        ``deleted=True`` serves ``self.deleted_recent_refs`` instead (empty
+        by default — tests populate it to exercise the "show deleted"
+        toggle)."""
         self.recent_tags = tags
         self.recent_has_pdf = has_pdf
         self.recent_parent_id = parent_id
+        self.recent_deleted = deleted
         self.recent_offset = offset
-        src = [
-            make_ref(id=10, kind="paper", slug="smith2024", title="A paper"),
-            make_ref(id=70, kind="web", slug="example.com/page", title="A web page"),
-        ]
+        if deleted:
+            src = list(getattr(self, "deleted_recent_refs", []))
+        else:
+            src = [
+                make_ref(id=10, kind="paper", slug="smith2024", title="A paper"),
+                make_ref(
+                    id=70, kind="web", slug="example.com/page", title="A web page"
+                ),
+            ]
         want = set(kinds)
         return [r for r in src if r.kind in want][offset:][:limit]
 

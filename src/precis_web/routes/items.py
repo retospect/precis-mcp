@@ -1,22 +1,19 @@
-"""Unified item view (``/items``) — one cross-kind search surface.
+"""``/items`` — retired into the unified Drive surface (WS1a).
 
-The Slice-3 front-end over the Slice-2 primitive
-(``Store.search_chunks_across_kinds``): one query box that searches the
-chunks of a *set* of kinds at once (semantic + lexical, RRF-fused),
-shows one best-matching chunk per ref, and orders by relevance or
-recency — the human twin of what the LLM gets from the ``search`` verb.
-Each row carries the reading-intent flag buttons, a hover peek + optional
-thumbnail (the ``ItemPresenter`` contract, ``precis_web/item_view.py``),
-and a click-through to the kind's own reader. ``page=`` pages past the
-30-item window; the kind chips split into a "Source" facet and an
-"Author" facet (``role='artifact'`` kinds); a folder facet narrows the
-no-query landing to one folder's direct children.
+The cross-kind search + facet + presenter engine this module built
+(Slice-3 of ``docs/proposals/unified-item-view.md``) is now served at
+``/drive`` (``routes/drive.py``), grafted onto Drive's folder tree +
+CRUD + per-row actions per
+``docs/proposals/web-ui-rationalization.md``'s Workstream 1. This
+module keeps the ``/items`` path alive as a redirect (old bookmarks,
+saved searches, in-flight links) — WS1b/WS4 own its final retirement,
+not this slice.
 
-Additive: this retires nothing yet — none of ``/drive`` /
-``/papers-needed`` / ``/papers/triage`` / ``/refs`` / ``/tags/refs``
-reduce to a clean filter-preset here without losing functionality this
-page doesn't have yet (folder CRUD, per-row quick-actions, watch-dir
-info, deleted-ref visibility — see ``OPEN-ITEMS.md``). Read-only.
+The query-independent helpers below (``_DEFAULT_SOURCE_KINDS``,
+``_parse_date``, ``_run_search``, ``_recent_rows``, ``_folder_options``,
+``_tag_filter_string``, ``_PAGE_SIZE``) are unit-tested directly and
+imported by ``routes/drive.py`` as the reusable engine — kept here
+rather than duplicated.
 """
 
 from __future__ import annotations
@@ -25,15 +22,14 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlencode
 
-from fastapi import APIRouter, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
-from precis_web.deps import get_runtime, get_store, templates
-from precis_web.item_view import artifact_kinds, item_row
-from precis_web.routes.flags import FLAG_DEFS, FLAG_NAMESPACE, FLAG_VALUE_LIST
+from precis_web.deps import get_store
+from precis_web.item_view import item_row
+from precis_web.routes.flags import FLAG_NAMESPACE, FLAG_VALUE_LIST
 
 router = APIRouter(prefix="/items", tags=["items"])
 log = logging.getLogger(__name__)
@@ -158,21 +154,26 @@ def _recent_rows(
     has_pdf: bool | None,
     folder_id: int | None,
     offset: int,
+    *,
+    deleted: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """The no-query landing: most-recently-added source items, newest
     first, optionally narrowed by the tag chips, the stub filter
-    (``has_pdf=False`` → only stubs, the "papers to get"), and the
+    (``has_pdf=False`` → only stubs, the "papers to get" queue), the
     folder facet (``folder_id`` — one folder's direct children; only
     artifact kinds carry a ``parent_id``, so this is a no-op for pure
-    source rows). Rows carry no preview (no query) — name, kind,
-    when-added, badges, tags, links, flags. Returns ``(rows, has_next)``
-    via the same over-fetch-one-extra probe as :func:`_run_search`.
+    source rows), and ``deleted`` (the "show deleted" toggle — soft-deleted
+    refs instead of live ones). Rows carry no preview (no query) — name,
+    kind, when-added, badges, tags, links, flags. Returns ``(rows,
+    has_next)`` via the same over-fetch-one-extra probe as
+    :func:`_run_search`.
     """
     refs = store.recent_refs(
         kinds,
         tags=tags or None,
         has_pdf=has_pdf,
         parent_id=folder_id,
+        deleted=deleted,
         limit=_PAGE_SIZE + 1,
         offset=offset,
     )
@@ -211,7 +212,7 @@ def _folder_options(store: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     # Guards a corrupted/cyclic parent_id chain (a folder that is its own
     # ancestor) from recursing forever and stack-overflowing the whole
-    # /items page — mirrors the visited-set style of drive._breadcrumb's
+    # /drive page — mirrors the visited-set style of drive._breadcrumb's
     # parent walk.
     seen: set[int] = set()
 
@@ -236,7 +237,9 @@ def _folder_options(store: Any) -> list[dict[str, Any]]:
 async def tags_suggest(request: Request, q: str = "") -> JSONResponse:
     """Autocomplete backend for the tag-filter chips — substring tag
     matches as JSON ``[{label, tag}]`` (``tag`` is the filter string to
-    submit). Empty/1-char queries return nothing."""
+    submit). Empty/1-char queries return nothing. Kept at both this
+    legacy path and ``/drive/tags/suggest`` (same function, two routes —
+    see ``routes/drive.py``)."""
     q = (q or "").strip()
     if len(q) < 2:
         return JSONResponse([])
@@ -250,145 +253,11 @@ async def tags_suggest(request: Request, q: str = "") -> JSONResponse:
     )
 
 
-@router.get("", response_class=HTMLResponse)
-@router.get("/", response_class=HTMLResponse)
-async def index(
-    request: Request,
-    q: str = "",
-    sort: str = "relevance",
-    since: str = "",
-    until: str = "",
-    k: list[str] = Query(default_factory=list),
-    tag: list[str] = Query(default_factory=list),
-    state: str = "all",
-    folder: str = "",
-    page: int = 1,
-    submitted: str = "",
-) -> HTMLResponse:
-    """Unified cross-kind search over the source + author kinds.
-
-    ``q=`` runs the search; ``k=`` (repeated, one per checked kind)
-    narrows the set — both the default "Source" chips and the "Author"
-    facet (artifact kinds: draft/cad/structure/…, per ``KindSpec.role``);
-    ``tag=`` (repeated) are the tag-filter chips; ``state=stub`` shows
-    only stubs (papers still to get — they behave like a to-do);
-    ``folder=`` (a folder ``ref_id``) narrows the no-query landing to one
-    folder's direct children (the Drive-style facet); ``sort=recency``
-    orders newest-first; ``since=`` / ``until=`` bound the date window;
-    ``page=`` pages past the ``_PAGE_SIZE`` cap. With no ``q`` the landing
-    shows the recent list.
-
-    Kind selection persists in an ``items_kinds`` cookie: an explicit
-    submit (``submitted=1``) sets it; a fresh visit reads it (or defaults
-    to every source kind). This is the "remembered checkboxes" behaviour.
+@router.get("")
+@router.get("/")
+async def index(request: Request) -> Response:
+    """Redirect to ``/drive``, preserving every filter verbatim — the
+    merged surface (WS1a of ``docs/proposals/web-ui-rationalization.md``).
     """
-    store = get_store(request)
-    q = (q or "").strip()
-
-    # Resolve the kind set: an explicit submit uses exactly the checked
-    # boxes (empty = none); a fresh visit uses the cookie, else all.
-    if submitted:
-        selected_kinds = [x.strip() for x in k if x.strip()]
-    else:
-        cookie = request.cookies.get("items_kinds", "")
-        selected_kinds = [x for x in cookie.split(",") if x] or list(
-            _DEFAULT_SOURCE_KINDS
-        )
-    tags = [t.strip() for t in tag if t.strip()]
-    sort = "recency" if (sort or "").strip().lower() == "recency" else "relevance"
-    state = (state or "all").strip().lower()
-    # ``state=stub`` → only PDF-less papers (the "to get" queue). Stubs have
-    # no chunks, so this only shapes the recent/browse view, not search.
-    has_pdf = False if state == "stub" else None
-    since_dt = _parse_date(since)
-    until_dt = _parse_date(until)
-    folder_raw = (folder or "").strip()
-    folder_id = int(folder_raw) if folder_raw.isdigit() else None
-    page = max(1, page)
-    offset = (page - 1) * _PAGE_SIZE
-
-    runtime = get_runtime(request)
-    hub = getattr(runtime, "hub", None)
-    artifact_kind_defs = artifact_kinds(hub)
-
-    rows: list[dict[str, Any]] = []
-    recent: list[dict[str, Any]] = []
-    has_next = False
-    if q:
-        embedder = getattr(hub, "embedder", None)
-        rows, has_next = await asyncio.to_thread(
-            _run_search,
-            store,
-            embedder,
-            kinds=selected_kinds,
-            q=q,
-            sort=sort,
-            since=since_dt,
-            until=until_dt,
-            tags=tags,
-            offset=offset,
-        )
-    else:
-        # Default landing: the recent list (narrowed by the tag chips,
-        # the stub filter, and the folder facet) under the search
-        # apparatus.
-        recent, has_next = await asyncio.to_thread(
-            _recent_rows, store, selected_kinds, tags, has_pdf, folder_id, offset
-        )
-
-    # Where a flag toggle bounces back to — this exact search.
-    return_to = request.url.path + (
-        f"?{request.url.query}" if request.url.query else ""
-    )
-
-    # Pager links preserve every filter, only ``page`` changes.
-    _pager_params: list[tuple[str, str]] = [("submitted", "1")]
-    if q:
-        _pager_params.append(("q", q))
-    _pager_params.append(("sort", sort))
-    if since:
-        _pager_params.append(("since", since))
-    if until:
-        _pager_params.append(("until", until))
-    if state != "all":
-        _pager_params.append(("state", state))
-    if folder_raw:
-        _pager_params.append(("folder", folder_raw))
-    for kk in selected_kinds:
-        _pager_params.append(("k", kk))
-    for t in tags:
-        _pager_params.append(("tag", t))
-
-    def _page_url(n: int) -> str:
-        return "/items?" + urlencode([*_pager_params, ("page", n)])
-
-    resp = templates.TemplateResponse(
-        request,
-        "items/index.html.j2",
-        {
-            "active_tab": "items",
-            "q": q,
-            "kind_defs": list(_DEFAULT_SOURCE_KINDS),
-            "artifact_kind_defs": artifact_kind_defs,
-            "selected_kinds": selected_kinds,
-            "tags": tags,
-            "sort": sort,
-            "since": since,
-            "until": until,
-            "state": state,
-            "folder": folder_raw,
-            "folder_options": await asyncio.to_thread(_folder_options, store),
-            "rows": rows,
-            "recent": recent,
-            "flag_defs": FLAG_DEFS,
-            "return_to": return_to,
-            "page": page,
-            "has_next": has_next,
-            "prev_url": _page_url(page - 1) if page > 1 else None,
-            "next_url": _page_url(page + 1) if has_next else None,
-        },
-    )
-    if submitted:
-        # Remember the kind selection for the next visit (90 days).
-        resp.set_cookie("items_kinds", ",".join(selected_kinds), max_age=90 * 24 * 3600)
-    return resp
+    suffix = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(url=f"/drive{suffix}")

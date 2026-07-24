@@ -1,0 +1,74 @@
+{% extends "base.html.j2" %}
+{% block title %}Gripe #{{ id }}{% endblock %}
+{% block content %}
+<a href="/gripes" class="text-sm text-slate-500 underline">&larr; Gripes</a>
+
+<div class="mt-2 mb-4 flex flex-wrap items-start justify-between gap-3">
+  <div>
+    <h1 class="text-lg font-semibold">Gripe #{{ id }}</h1>
+    <p class="text-sm text-slate-500">
+      {% if created %}filed {{ created | ago }}{% endif %}
+      {% if updated %}· updated {{ updated | ago }}{% endif %}
+      {% if set_by %}· by <span class="font-mono">{{ set_by }}</span>{% endif %}
+      {% if prio %}· <span class="font-mono">PRIO:{{ prio }}</span>{% endif %}
+    </p>
+  </div>
+  {% include "gripes/_gripe_status.html.j2" %}
+</div>
+
+{# Body is immutable by design (the audit-trail record of what was
+   filed) — no edit affordance here on purpose; corrections/context
+   are comments below. #}
+<div class="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{{ body | linkify_refs(markdown=True) }}</div>
+
+{% if comments %}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2 text-slate-700">
+    Comments <span class="text-slate-400 font-normal">({{ comments|length }})</span>
+  </h2>
+  <ul class="space-y-3">
+    {% for c in comments %}
+    <li class="rounded-lg border border-slate-200 bg-white">
+      <div class="px-4 py-1.5 border-b border-slate-100 bg-slate-50/60 rounded-t-lg text-xs font-mono text-slate-400">
+        ~{{ c.pos }}
+      </div>
+      <div class="px-4 py-3 text-sm whitespace-pre-wrap break-words text-slate-800">{{ c.text | linkify_refs(markdown=True) }}</div>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2 text-slate-700">Add a comment</h2>
+  <form method="post" action="/gripes/{{ id }}/comment" class="space-y-2">
+    <textarea name="text" rows="3" required placeholder="Append context — comments are append-only, corrections go in a new one…"
+              class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"></textarea>
+    <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-2 hover:bg-emerald-700">
+      Comment
+    </button>
+  </form>
+</section>
+
+{# Retire is deliberately distinct from STATUS:wontfix above: wontfix
+   keeps the gripe on record ("won't act, but not forgotten"); retire
+   soft-deletes it — the convention once a fix has actually merged.
+   Gated behind a confirm since it's destructive. #}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2 text-slate-700">Retire</h2>
+  <div class="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 flex flex-wrap items-center gap-3">
+    <p class="flex-1 min-w-[16rem]">
+      Soft-deletes this gripe (history preserved, dropped from default search) —
+      use once a fix has merged. Different from <span class="font-mono">STATUS:wontfix</span>
+      above, which keeps a won't-act gripe on record.
+    </p>
+    <form method="post" action="/gripes/{{ id }}/retire"
+          onsubmit="return confirm('Retire gripe #{{ id }}? This soft-deletes it.');">
+      <button type="submit"
+              class="rounded-md border border-rose-300 bg-white text-rose-700 text-sm px-4 py-2 hover:bg-rose-100">
+        Retire…
+      </button>
+    </form>
+  </div>
+</section>
+{% endblock %}

@@ -216,17 +216,17 @@ short-TTL cache) is read at boot (`_pass_enabled`) *and* per-cycle
 (`run_loop`'s `pass_gate`), so a flip disables an already-registered pass
 on the next cycle — no redeploy. CLI: `precis service prio|model|clear|list`.
 
-**Console — `/factory` (slice 3, read-only).** `precis_web/routes/factory.py`
-renders a host strip (`host_heartbeat` load + liveness) over one list per
-category of every registry service, joined to its live `service_config`
-prio and its last-ok/last-fail from `worker_logs` (keyed by the
-`BatchResult.handler` string via `ServiceSpec.log_handler`). Each section
-degrades to empty on a schema surprise (the status-tab pattern); agent
-rows link to the `/env` inspector. **Slice 4 (live edit):** a host
-selector scopes the page; each row's prio is editable (POST `/factory/prio`)
-and model-using rows get a model_pref dropdown (POST `/factory/model`)
-populated from the `llm` catalog — both write `service_config` straight,
-picked up next cycle.
+**Console — merged into System's Services tab.** The read-only host
+strip (`host_heartbeat` load + liveness) over one list per category of
+every registry service, joined to its live `service_config` prio and its
+last-ok/last-fail from `worker_logs` (keyed by the `BatchResult.handler`
+string via `ServiceSpec.log_handler`), now renders at
+`/status?tab=services` (`src/precis_web/routes/status.py::index`,
+`_services_ctx`). The live-edit prio/model_pref writes stay at their
+original paths (`POST /factory/prio` / `/factory/model` / `/factory/clear`,
+`src/precis_web/routes/factory.py::set_prio`) — only `GET /factory`
+retired to a redirect; see "Web UI" below for the full merged-surface
+story.
 
 **Capability universalization (slice 5).** The *incidental* kind gates —
 a raw-cache dir any host can create, edgar's descriptive User-Agent
@@ -1052,6 +1052,49 @@ The master kinds table lives in the `precis-overview` skill.
   root); capture is unconditional (every message asa sees, human or bot, plus
   its own replies); per-person memory reuses `asa_bot.preamble.build()`'s
   existing `user:<handle>` mechanism unchanged. ADR: `docs/decisions/0062-asa-slack-bridge.md`.
+
+## Web UI (`precis_web`)
+
+Rationalized 2026-07 (`docs/proposals/web-ui-rationalization.md`, now
+shipped): the nav collapsed from ~11 top-level entries + 2 dropdowns down
+to **Daily** (Drive, Tags, ToDo, always visible) · **Attention** (Needs
+you / Gripes / Alerts, badged, right) · **Ops ▾** (System, Agent Logs,
+Console, Env, Secrets) · a slimmed **Browse ▾** for the five
+kind-specific readers Drive's generic rows can't reproduce (Clusters,
+Structures, CAD, Figures, Mermaid). Nav template:
+`src/precis_web/templates/base.html.j2`; badge counts:
+`src/precis_web/nav.py::nav_badges`.
+
+**Drive — the unified seek+manage surface (`/drive`).**
+`src/precis_web/routes/drive.py::index` is Items' cross-kind chunk search
+(`q=`, kind/tag facets, `sort=relevance|recency`, `since/until`,
+`state=stub`, pagination) grafted onto Drive's folder tree (`_flatten_tree`)
++ CRUD (`POST /drive/new|create|{id}/rename|move|{id}/delete`) + per-row
+quick actions (`ItemPresenter.actions()`, `src/precis_web/item_view.py`).
+Every bespoke list this replaced — `/items`, `/papers` (+`/papers/triage`),
+`/drafts`, `/papers-needed`, `/refs/{oracle,patent}`, `/cfp` — is now a
+307-redirect to a Drive kind/tag/state preset (e.g.
+`/drive?k=paper&submitted=1`); each kind's **detail reader** (`/papers/{id}`,
+`/drafts/{id}`, …) is untouched — only the *list* retired. The 🔍 loupe and
+the flag-toggle bounce-back (`src/precis_web/routes/flags.py`) both
+default to `/drive` now.
+
+**Gripes workbench (`/gripes`, new).** `src/precis_web/routes/gripes.py`
+is the first write surface for the dev bug tracker (`kind='gripe'`):
+list (grouped by `STATUS`), detail + comment timeline, a status-change
+POST (closed-vocab `tag` verb — `open → triaged → ready_for_fix →
+in_review → wontfix`), and a `retire` (soft-delete, distinct from
+`wontfix`). Nav badge counts every non-`wontfix` gripe
+(`src/precis_web/nav.py::_gripes_count`).
+
+**System — merged Status+Factory+Budget (`/status?tab=health|services|budget`).**
+`src/precis_web/routes/status.py::index` dispatches on `tab=` to
+`_health_ctx` (host/liveness strip, was `/status`), `_services_ctx` (the
+old `/factory` category tables + live prio/model_pref edit), and
+`_budget_tote` (the spend cap/pause/resume controls, was `/budget`).
+`/factory` and `/budget`'s `GET` routes are bare redirects into the
+matching sub-tab; their `POST` write routes (`/factory/prio`, `/budget/set`,
+…) are unchanged — only the *page* merged, not the write paths.
 
 ## LLM-facing skill index
 

@@ -1,7 +1,6 @@
-{% extends "base.html.j2" %}
-{% block title %}Budget{% endblock %}
-{% block content %}
-<h1 class="text-lg font-semibold mb-1">Budget</h1>
+{# Budget sub-tab — the retired ``/budget`` page: the spend tote, the
+   claude-OAuth quota lane (with the live-pause banner from
+   quota.evaluate + a resume-now override), and the cap editor. #}
 <p class="text-sm text-slate-500 mb-5 max-w-2xl">
   Two rails, by what a call actually spends. <strong>Real dollars</strong> —
   OpenRouter/OSS LLMs and paid fetches — meter against the caps below. The
@@ -175,4 +174,3 @@
     </ul>
   </div>
 </div>
-{% endblock %}

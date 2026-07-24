@@ -242,25 +242,28 @@ def draft_client(draft_runtime: FakeRuntime, tmp_path) -> TestClient:
     return TestClient(app)
 
 
-def test_index_lists_drafts(draft_client: TestClient) -> None:
-    r = draft_client.get("/drafts")
-    assert r.status_code == 200
-    assert "Nano draft" in r.text and "/drafts/nt" in r.text
+def test_index_redirects_to_drive_kind_draft(draft_client: TestClient) -> None:
+    """``/drafts`` (the list) is retired into the unified Drive surface
+    (nav restructure, mirroring ``routes/papers.py``'s WS1b retirement) —
+    it 307-redirects to the ``kind=draft`` facet preset. The reader
+    (``/drafts/{ident}``) and "+ New draft" creation (``/drafts/new``,
+    tested below and via ``test_drive_new_dropdown_offers_draft_doctype``
+    in ``test_routes.py``) are unaffected."""
+    r = draft_client.get("/drafts", follow_redirects=False)
+    assert r.status_code in (302, 307, 308)
+    assert r.headers["location"] == "/drive?k=draft&submitted=1"
 
 
-def test_new_draft_form_toggles_and_offers_doctype(draft_client: TestClient) -> None:
-    """The '+ New draft' button drives an Alpine ``open`` flag on a shared
-    wrapper (not a stale ``$refs`` on a sibling), and the form offers the
-    document-type select."""
-    r = draft_client.get("/drafts")
-    assert r.status_code == 200
-    # the toggle is wired to a single x-data scope, not a dangling $ref.
-    assert "open = !open" in r.text
-    assert 'x-show="open"' in r.text
-    assert "$refs.newDraft" not in r.text
-    # document-type selector with the patent option present.
-    assert 'name="doctype"' in r.text
-    assert "Patent application" in r.text
+def test_index_slash_also_redirects_to_drive(draft_client: TestClient) -> None:
+    r = draft_client.get("/drafts/", follow_redirects=False)
+    assert r.status_code in (302, 307, 308)
+    assert r.headers["location"] == "/drive?k=draft&submitted=1"
+
+
+def test_index_redirect_preserves_query(draft_client: TestClient) -> None:
+    r = draft_client.get("/drafts", params={"q": "widget"}, follow_redirects=False)
+    assert r.status_code in (302, 307, 308)
+    assert r.headers["location"] == "/drive?k=draft&submitted=1&q=widget"
 
 
 def test_new_draft_seeds_planner_prompt_and_doctype_brief(

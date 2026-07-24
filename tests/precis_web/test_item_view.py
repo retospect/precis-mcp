@@ -4,7 +4,7 @@ Exercises the presenter methods directly (no FastAPI client needed) —
 ``hover_preview`` / ``thumbnail`` / ``actions`` are new surface on the
 Slice-3 contract (``docs/proposals/unified-item-view.md``); the
 per-kind registry and the ``artifact_kinds`` facet helper back the
-``/items`` route tests in ``test_routes.py``.
+``/drive`` route tests in ``test_routes.py``.
 """
 
 from __future__ import annotations
@@ -58,10 +58,15 @@ def test_hover_preview_truncates_long_combined_text() -> None:
     assert hv.endswith("…")
 
 
-def test_default_thumbnail_and_actions_are_empty() -> None:
+def test_default_thumbnail_is_empty_actions_are_universal() -> None:
+    """No default thumbnail, but the universal move/delete/tag quick
+    actions (WS1a) are always present, keyed to the ref's own kind + id
+    (falling back to the numeric ref_id when there's no slug)."""
     p = ItemPresenter("paper")
     assert p.thumbnail(_ref()) is None
-    assert p.actions(_ref()) == []
+    actions = p.actions(_ref())
+    assert [a["type"] for a in actions] == ["move", "delete", "tag"]
+    assert all(a["kind"] == "paper" and a["id"] == "1" for a in actions)
 
 
 def test_youtube_presenter_thumbnail_from_slug() -> None:
@@ -85,7 +90,12 @@ def test_item_row_carries_hover_thumbnail_actions() -> None:
     ref = _ref(kind="youtube", slug="abc123", title="A video")
     row = item_row(ref, _block("a caption line"), 0.5, set())
     assert row["thumbnail"] == "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
-    assert row["actions"] == []
+    # Universal per-row actions (WS1a) address by slug when the ref has one.
+    assert {a["type"]: a["id"] for a in row["actions"]} == {
+        "move": "abc123",
+        "delete": "abc123",
+        "tag": "abc123",
+    }
     assert "a caption line" in row["hover_preview"]
 
 

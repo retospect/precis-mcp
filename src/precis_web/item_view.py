@@ -136,12 +136,31 @@ class ItemPresenter:
         return None
 
     def actions(self, ref: Any) -> list[dict[str, str]]:
-        """Kind-specific actions beyond the universal flag buttons (e.g.
-        papers-needed's "re-chase stub", cad's "apply proposal" — per the
-        proposal). None are wired yet; the seam is here so a future
-        subclass has somewhere to put them without leaking back onto a
-        bespoke page."""
-        return []
+        """Universal per-row quick actions — move-to-folder, delete/unfile,
+        tag — rendered on every ``/drive`` row (WS1a). Kind-specific
+        actions beyond these (e.g. papers-needed's "re-chase stub", cad's
+        "apply proposal") still have this seam to extend without leaking
+        back onto a bespoke page; a subclass overriding this should
+        ``return [*super().actions(ref), {...}]`` to keep the universal set.
+
+        Each action is a small dict the ``/drive`` row template renders as
+        an inline form posting to ``routes/drive.py``'s generic per-ref
+        write routes (``/drive/move``, ``/drive/item/<kind>/<id>/delete``,
+        ``/drive/item/<kind>/<id>/tag``) — every write still rides the
+        seven-verb dispatch, no direct SQL. A handler that doesn't support
+        a verb (e.g. a kind with no ``delete``) surfaces the rejection via
+        the same ``redirect_or_error`` error page every other write route
+        uses — a clean stop, not a crash.
+        """
+        ref_id = getattr(ref, "id", None)
+        if ref_id is None:
+            return []
+        ident = getattr(ref, "slug", None) or str(ref_id)
+        return [
+            {"type": "move", "kind": self.kind, "id": ident, "label": "move"},
+            {"type": "delete", "kind": self.kind, "id": ident, "label": "delete"},
+            {"type": "tag", "kind": self.kind, "id": ident, "label": "tag"},
+        ]
 
     def state(self, ref: Any, *, has_chunks: bool) -> list[dict[str, str]]:
         """Pipeline-state badges for the row (paper-family kinds only).

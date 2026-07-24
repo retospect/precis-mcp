@@ -1,11 +1,16 @@
-"""Papers tab — search the corpus and read PDFs in-browser.
+"""Papers tab — read PDFs in-browser (list/triage folded into Drive, WS1b).
 
-List / search read off the DB (``store.list_refs`` /
-``store.search_refs_lexical``). The detail page embeds the browser's
-native PDF viewer pointed at ``/papers/{id}/pdf``, which streams the
-file from ``corpus_dir`` (the NFS mount on the cluster) using the
-ref's cite_key (``Ref.slug``) and the ``precis watch`` shard layout
-``<corpus_dir>/<letter>/<cite_key>.pdf``.
+The list (``/papers``) and triage-queue (``/papers/triage``) *browsing*
+folded into the unified Drive surface
+(``docs/proposals/web-ui-rationalization.md``, Workstream 1): both routes
+now just redirect to a Drive kind/tag preset (``/drive?k=paper…`` /
+``/drive?tag=needs-triage&k=paper…``) so old bookmarks keep working. The
+**reader** stays here in full: the detail page embeds the browser's native
+PDF viewer pointed at ``/papers/{id}/pdf``, which streams the file from
+``corpus_dir`` (the NFS mount on the cluster) using the ref's cite_key
+(``Ref.slug``) and the ``precis watch`` shard layout
+``<corpus_dir>/<letter>/<cite_key>.pdf`` — plus the metadata edit /
+triage-lookup / tag / delete affordances, none of which moved.
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import re
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import (
@@ -50,16 +56,13 @@ router = APIRouter(prefix="/papers", tags=["papers"])
 #: the triage queue works this set (set by ``precis fix-metadata``).
 _TRIAGE_TAG = "needs-triage"
 
+#: Drive kind-facet preset the retired ``/papers/triage`` list bounces to
+#: (WS1b) — narrows to the ``paper`` kind + the ``needs-triage`` tag chip.
+#: ``submitted=1`` makes ``k=`` authoritative (see ``routes/drive.py``).
+_TRIAGE_PRESET = f"/drive?tag={_TRIAGE_TAG}&k=paper&submitted=1"
+
 #: Cap on the abstract length shown in the hover card (chars).
 _ABSTRACT_PREVIEW = 900
-
-#: Rows per page on the recent-papers list (matches the Refs tab).
-_PAGE_SIZE = 50
-
-#: Chunk hits to pull for the semantic listing search before collapsing
-#: to distinct papers — generous fan-out (multiple chunks per paper) so a
-#: full page of distinct papers survives the collapse.
-_SEM_FANOUT = _PAGE_SIZE * 6
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -202,182 +205,33 @@ def _paper_row(ref: Any) -> dict[str, Any]:
     }
 
 
-def _semantic_paper_search(
-    request: Request, store: Any, q: str
-) -> tuple[list[Any], str]:
-    """Find papers by body content, ranked semantically.
-
-    Embeds the query and runs a cross-paper semantic block search
-    (including the per-paper ``card_combined`` so title/abstract is
-    reachable), then collapses chunk hits to distinct papers best-rank
-    first. Returns ``(refs, effective_mode)`` — ``effective_mode`` is
-    ``"keyword"`` when the embedder is down (the search-embed guard
-    returns ``None``), so the caller degrades to the lexical title
-    search exactly like the per-paper sidebar nav does.
-    """
-    hub = getattr(get_runtime(request), "hub", None)
-    embedder = getattr(hub, "embedder", None)
-    vec = embed_query(embedder, q)
-    if vec is None:
-        hits = store.search_refs_lexical(q=q, kind="paper", limit=_PAGE_SIZE)
-        return [ref for ref, _score in hits], "keyword"
-    block_hits = store.search_blocks_semantic(
-        query_vec=vec,
-        kind="paper",
-        limit=_SEM_FANOUT,
-        card_kinds=("card_combined",),
-        max_distance=None,
-    )
-    seen: set[int] = set()
-    refs: list[Any] = []
-    for _block, ref, _dist in block_hits:
-        if ref.id in seen:
-            continue
-        seen.add(ref.id)
-        refs.append(ref)
-        if len(refs) >= _PAGE_SIZE:
-            break
-    return refs, "semantic"
-
-
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
-async def index(
-    request: Request,
-    q: str | None = None,
-    has_pdf: int = 0,
-    has_chunks: int = 0,
-    page: int = 1,
-    mode: str = "keyword",
-) -> HTMLResponse:
-    """Search box + result list (recent papers when ``q`` is empty).
-
-    ``mode`` toggles the search leg (``q`` only): ``keyword`` (default)
-    is the literal title full-text search; ``semantic`` embeds the
-    query and ranks papers by **body content** (cross-paper chunk
-    search, collapsed to distinct papers), degrading to ``keyword``
-    when the embedder is down. The default stays literal so the page's
-    behaviour is unchanged unless the operator opts in.
-
-    ``has_pdf`` / ``has_chunks`` are 0/1 toggles. On the recent-list
-    path they push down into ``store.list_refs`` (SQL-side, so the
-    page cap counts only matching papers). On the search path they
-    post-filter the ranked hits (the ranked query can't take the extra
-    predicates), so a query + toggle may show fewer than a full page
-    even when more match — acceptable for a triage filter. The
-    recent-list path pages via ``?page=N`` (offset-based, one-extra-row
-    probe for "has next"); the ranked-search path shows the top window
-    only (relevance ordering doesn't page cleanly).
+async def index(q: str | None = None) -> Response:
+    """Retired into the unified Drive surface (WS1b) — redirects to the
+    ``kind=paper`` facet preset, carrying a live query through so a bare
+    ``?q=`` bookmark keeps searching. The keyword/semantic mode toggle and
+    the ``has_pdf``/``has_chunks`` list filters this route used to own
+    don't have a Drive equivalent and are dropped with the list (Drive's
+    own cross-kind search box replaces them); the reader (``/papers/{ident}``
+    and everything under it) is unaffected.
     """
-    store = get_store(request)
-    want_pdf = bool(has_pdf)
-    want_chunks = bool(has_chunks)
-    page = max(1, page)
-    offset = (page - 1) * _PAGE_SIZE
-    search_mode = (mode or "keyword").strip().lower()
-    if search_mode != "semantic":
-        search_mode = "keyword"
+    params: list[tuple[str, str]] = [("k", "paper"), ("submitted", "1")]
     if q and q.strip():
-        if search_mode == "semantic":
-            refs, search_mode = _semantic_paper_search(request, store, q)
-        else:
-            hits = store.search_refs_lexical(q=q, kind="paper", limit=_PAGE_SIZE)
-            refs = [ref for ref, _score in hits]
-        if want_pdf:
-            refs = [r for r in refs if r.pdf_sha256]
-        if want_chunks:
-            survivors = store.ref_ids_with_chunks([r.id for r in refs])
-            refs = [r for r in refs if r.id in survivors]
-        has_next = False
-    else:
-        refs = store.list_refs(
-            kind="paper",
-            has_pdf=True if want_pdf else None,
-            has_chunks=True if want_chunks else None,
-            limit=_PAGE_SIZE + 1,  # one extra row probes "has next page"
-            offset=offset,
-        )
-        has_next = len(refs) > _PAGE_SIZE
-        refs = refs[:_PAGE_SIZE]
-    rows = [_paper_row(r) for r in refs]
-    # Chunk-presence badge for every row, one batched query. (When
-    # ``want_chunks`` is set every row is True by construction, but the
-    # round-trip is cheap and keeps the badge correct otherwise.)
-    chunked = store.ref_ids_with_chunks([row["id"] for row in rows])
-    for row in rows:
-        row["has_chunks"] = row["id"] in chunked
-    # Most papers have no publisher abstract in meta; backfill the
-    # hover-card text from the leading body chunks in one batched query.
-    missing = [row for row in rows if not row["abstract"]]
-    if missing:
-        previews = store.abstract_previews([row["id"] for row in missing])
-        for row in missing:
-            row["abstract"] = previews.get(row["id"], "")
-    # DOI / arXiv links for the hover card, fetched in one batched
-    # query so quick verification doesn't cost N round-trips.
-    ids_map = store.identifiers_for_refs([row["id"] for row in rows])
-    for row in rows:
-        row["links"] = _links_from_ids(ids_map.get(row["id"], {}))
-    return templates.TemplateResponse(
-        request,
-        "papers/index.html.j2",
-        {
-            "active_tab": "papers",
-            "q": q or "",
-            "mode": search_mode,
-            "has_pdf": want_pdf,
-            "has_chunks": want_chunks,
-            "papers": rows,
-            "page": page,
-            "has_next": has_next,
-            "paged": not (q and q.strip()),
-        },
-    )
+        params.append(("q", q.strip()))
+    return RedirectResponse(url="/drive?" + urlencode(params))
 
 
 @router.get("/triage", response_class=HTMLResponse)
-async def triage_queue(request: Request, page: int = 1) -> HTMLResponse:
-    """Queue of papers tagged ``needs-triage`` (metadata automation gave up).
-
-    Registered before ``/{ref_id}`` so the literal ``triage`` segment
-    isn't swallowed by the int path param. Each row links to the paper
-    detail with ``?triage=1`` so the detail page opens the triage panel.
+async def triage_queue() -> Response:
+    """Retired into the unified Drive surface (WS1b) — redirects to the
+    ``needs-triage`` tag preset (:data:`_TRIAGE_PRESET`), narrowed to
+    ``kind=paper``. Registered before ``/{ident}`` so the literal
+    ``triage`` segment isn't swallowed by the path param. Reached from
+    Needs-you's "view all" / "+N more" links (Risk R5) — both keep working
+    through this redirect.
     """
-    store = get_store(request)
-    total = store.count_refs(kind="paper", tags=[_TRIAGE_TAG])
-    total_pages = max(1, -(-total // _PAGE_SIZE))  # ceil-div
-    page = min(max(1, page), total_pages)
-    offset = (page - 1) * _PAGE_SIZE
-    refs = store.list_refs(
-        kind="paper",
-        tags=[_TRIAGE_TAG],
-        limit=_PAGE_SIZE,
-        offset=offset,
-    )
-    has_next = page < total_pages
-    # Compact page window around the current page (…1 4 5 [6] 7 8 …last) —
-    # the same numbered pager the Papers Needed list uses.
-    lo = max(1, page - 3)
-    hi = min(total_pages, page + 3)
-    page_window = list(range(lo, hi + 1))
-    rows = [_paper_row(r) for r in refs]
-    ids_map = store.identifiers_for_refs([row["id"] for row in rows])
-    for row in rows:
-        row["links"] = _links_from_ids(ids_map.get(row["id"], {}))
-    return templates.TemplateResponse(
-        request,
-        "papers/triage.html.j2",
-        {
-            "active_tab": "triage",
-            "papers": rows,
-            "page": page,
-            "has_next": has_next,
-            "total": total,
-            "total_pages": total_pages,
-            "page_window": page_window,
-            "offset": offset,
-        },
-    )
+    return RedirectResponse(url=_TRIAGE_PRESET)
 
 
 def _detail_tags(store: Any, ref_id: int) -> list[dict[str, Any]]:
@@ -989,8 +843,14 @@ def _render_edit_conflict(
 
 
 def _safe_papers_redirect(return_to: str) -> str:
-    """Constrain a ``return_to`` to a local ``/papers`` path (no open redirect)."""
-    return return_to if return_to.startswith("/papers") else "/papers"
+    """Constrain a ``return_to`` to a local ``/papers`` or ``/drive`` path
+    (no open redirect). ``/drive`` joined the allow-list in WS1b — the
+    list/triage callers that used to default here now bounce to a Drive
+    preset, so a caller-supplied ``return_to`` pointing back at Drive must
+    survive too."""
+    if return_to.startswith("/papers") or return_to.startswith("/drive"):
+        return return_to
+    return "/drive"
 
 
 @router.post("/{ref_id}/edit", response_model=None)
@@ -1156,7 +1016,7 @@ def _rename_slug(
 async def delete(
     request: Request,
     ref_id: int,
-    return_to: str = Form("/papers"),
+    return_to: str = Form("/drive"),
 ) -> RedirectResponse | HTMLResponse:
     """Soft-delete this paper (sets ``refs.deleted_at = now()``).
 
@@ -1165,8 +1025,9 @@ async def delete(
     agent MCP surface. Soft delete is reversible at the DB level (toggle
     ``deleted_at`` back to NULL); the UX presents it as a one-way removal.
     ``return_to`` lands the operator back where they were (triage queue /
-    duplicate resolver), constrained to ``/papers*`` to avoid an open
-    redirect; it defaults to the papers list, not the (now-404) detail.
+    duplicate resolver), constrained to ``/papers*``/``/drive*`` to avoid
+    an open redirect; it defaults to Drive (WS1b — the papers list this
+    used to default to is now a redirect, not a real page).
     """
     store = get_store(request)
     ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
@@ -1299,7 +1160,7 @@ async def resolve_duplicate(
 async def untriage(
     request: Request,
     ref_id: int,
-    return_to: str = Form("/papers/triage"),
+    return_to: str = Form(_TRIAGE_PRESET),
 ) -> Response:
     """Manually clear the ``needs-triage`` tag (dismiss from the queue).
 
@@ -1314,7 +1175,9 @@ async def untriage(
     shared :func:`redirect_or_error` so a failed dispatch renders the
     handler's message instead of silently redirecting — the original bug
     here was a swallowed ``NotFound`` that made the button look like it
-    worked while the tag survived.
+    worked while the tag survived. ``return_to`` defaults to the Drive
+    triage preset (WS1b — the ``/papers/triage`` queue this used to
+    default to is now a redirect, not a real page).
     """
     return await redirect_or_error(
         request,

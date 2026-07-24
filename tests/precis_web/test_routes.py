@@ -22,9 +22,10 @@ def test_healthz(client) -> None:
 
 def test_drive_new_dropdown_offers_draft_doctype(client) -> None:
     """The Drive '+ New' dropdown lets you pick the draft genre (patent /
-    proposal / …), fed from the same ``_DOC_TYPES`` source the /drafts page
-    renders — so a draft born here lands the right ``doctype`` at
-    ``/drafts/new`` instead of silently defaulting to 'paper'."""
+    proposal / …), fed from the same ``_DOC_TYPES`` source ``/drafts/new``
+    consumes — so a draft born here lands the right ``doctype`` instead of
+    silently defaulting to 'paper'. (``/drafts`` itself is now a redirect
+    into Drive, so this dropdown is the only place to pick the genre.)"""
     r = client.get("/drive")
     assert r.status_code == 200
     # the doctype select, shown only for draft kind, with genres present.
@@ -136,104 +137,44 @@ def test_pres_edit_dispatches_edit_verb(client, runtime) -> None:
     assert args["venue"] == "CASTEP Workshop, Durham"
 
 
-# ── papers-needed (stub backlog) ───────────────────────────────────
+# ── papers-needed → folded into Drive's state=stub facet (WS1b, D3) ──
+# The rich backlog table (UoL/Scholar/LibKey links, the awaiting-filter
+# next-pass narrowing, the numbered pager) doesn't survive the fold — Drive
+# replaces it with the generic recent-list rendering (which still carries
+# the paper's UoL/Scholar find: links via ``ItemPresenter.links()``, see
+# test_drive_rows_show_paper_lookup_links). What must survive per D3 is the
+# redirect itself and the acquisition-provenance flag buttons on stub rows
+# (test_drive_stub_rows_show_acquire_flags below).
 
 
-def test_papers_needed_renders_backlog(client) -> None:
-    resp = client.get("/papers-needed")
-    assert resp.status_code == 200
-    # Titled stub
-    assert "Ballistic carbon nanotube" in resp.text
-    # DOI link wraps the identifier with the publisher URL
-    assert "https://doi.org/10.1038/nature01797" in resp.text
-    # arXiv link
-    assert "https://arxiv.org/abs/cond-mat/0410550" in resp.text
-    # State badge text from the fake stub_backlog
-    assert "never attempted" in resp.text
+def test_papers_needed_redirects_to_drive_stub(client) -> None:
+    resp = client.get("/papers-needed", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?state=stub"
 
 
-def test_papers_needed_uol_and_scholar_links(client) -> None:
-    """Each DOI / arXiv row gets a UoL Primo + Google Scholar search link
-    alongside the publisher link, with the identifier percent-encoded."""
-    resp = client.get("/papers-needed")
-    assert resp.status_code == 200
-    # DOI row → UoL Primo (institution-scoped) + Scholar, slash encoded.
-    # ``&`` query separators render as ``&amp;`` — Jinja autoescape in the
-    # href attribute (correct HTML; browsers decode it back to ``&``).
-    assert (
-        "uol.primo.exlibrisgroup.com/discovery/search?"
-        "vid=353UOL_INST:353UOL_VU1&amp;search_scope=MyInst_and_CI"
-        "&amp;lang=en&amp;sortby=rank&amp;tab=TAB1"
-        "&amp;query=any,contains,10.1038%2Fnature01797" in resp.text
-    )
-    assert (
-        "scholar.google.com/scholar?hl=en&amp;as_sdt=0%2C5"
-        "&amp;q=10.1038%2Fnature01797&amp;btnG=" in resp.text
-    )
-    # arXiv row → bare arXiv number searched (no 'arxiv:' prefix).
-    assert "q=cond-mat/0410550".replace("/", "%2F") in resp.text
-    assert ">UoL</a>" in resp.text
-    assert ">Scholar</a>" in resp.text
-
-
-def test_papers_needed_libkey_direct_link(client) -> None:
-    """Each DOI row gets a direct LibKey full-text link (skipping the
-    Primo search), and the page carries the 'open all downloads' button
-    that walks them. arXiv rows carry no LibKey link (they have a free
-    PDF)."""
-    resp = client.get("/papers-needed")
-    assert resp.status_code == 200
-    # DOI row → direct libkey.io library-scoped link + collectible marker.
-    assert "https://libkey.io/libraries/2545/10.1038/nature01797" in resp.text
-    assert "data-download" in resp.text
-    assert ">LibKey ↓</a>" in resp.text
-    # arXiv row → direct arxiv.org/pdf link, also in the batch.
-    assert "https://arxiv.org/pdf/cond-mat/0410550" in resp.text
-    assert ">arXiv ↓</a>" in resp.text
-    # The batch opener is present (script + button id).
-    assert 'id="open-all-libkey"' in resp.text
-
-
-def test_papers_needed_awaiting_filter(client) -> None:
-    resp = client.get("/papers-needed?awaiting=1")
-    assert resp.status_code == 200
-    assert "Ballistic carbon nanotube" in resp.text
-
-
-def test_papers_needed_relative_time_not_raw_iso(client) -> None:
-    """The last-attempt column renders a relative '…ago' string with the
-    absolute timestamp tucked into a hover title — not the raw ISO."""
-    resp = client.get("/papers-needed")
-    assert resp.status_code == 200
-    # Relative form is shown…
-    assert "ago" in resp.text
-    # …and the absolute timestamp lives in the hover tooltip, not as
-    # bare body text (the canned stub's last_attempt is 2026-06-13).
-    assert 'title="2026-06-13 10:00 UTC"' in resp.text
-    assert ">2026-06-13T10:00:00+00:00<" not in resp.text
-
-
-def test_papers_needed_pager_preserves_awaiting(client) -> None:
-    """Pager links carry the awaiting filter across pages."""
-    resp = client.get("/papers-needed?awaiting=1")
-    assert resp.status_code == 200
-    assert "Page 1 of 1" in resp.text
-    # Total stub count is surfaced, not just a next/prev probe.
-    assert "Showing" in resp.text
-    assert "stubs" in resp.text
+def test_papers_needed_awaiting_query_also_redirects_to_drive_stub(client) -> None:
+    """The old ``?awaiting=1`` next-pass narrowing has no Drive facet —
+    it still redirects to the plain stub queue rather than 404ing."""
+    resp = client.get("/papers-needed?awaiting=1", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?state=stub"
 
 
 # ── reading-intent flags (read-later / must-read / skim) ───────────
 
 
-def test_papers_needed_shows_flag_buttons(client) -> None:
-    """Each stub row carries the three reading-intent flag toggle forms
-    plus the acquisition-provenance group (No UoL / No Scholar /
-    Invalid), both posting to the kind-agnostic /flags/<kind>/<id>
-    route with a group discriminator."""
-    resp = client.get("/papers-needed")
+def test_drive_stub_rows_show_acquire_flags(client) -> None:
+    """Each stub row on Drive's ``state=stub`` facet carries the three
+    reading-intent flag toggle forms *plus* the acquisition-provenance
+    group (No UoL / No Scholar / Invalid / Book) — both posting to the
+    kind-agnostic /flags/<kind>/<id> route with a group discriminator
+    (WS1b, decision D3: the acquire flags must ride along after the
+    ``/papers-needed`` fold). Paper #10 ("A paper") is the FakeStore's
+    canned stub row (no pdf_sha256, no chunks)."""
+    resp = client.get("/drive?state=stub")
     assert resp.status_code == 200
-    assert 'action="/flags/paper/90"' in resp.text
+    assert 'action="/flags/paper/10"' in resp.text
     # Reading-intent group.
     assert "Read later" in resp.text
     assert "Must-read" in resp.text
@@ -244,14 +185,16 @@ def test_papers_needed_shows_flag_buttons(client) -> None:
     assert "Invalid" in resp.text
     assert "Book" in resp.text
     assert '<input type="hidden" name="group" value="acquire" />' in resp.text
-    assert 'id="flags-acquire-paper-90"' in resp.text
+    assert 'id="flags-acquire-paper-10"' in resp.text
 
 
-def test_papers_needed_active_flag_renders_pressed_and_removes(runtime, client) -> None:
-    """A ref already carrying OPEN:read-later renders that button active
-    (aria-pressed) and armed to remove on the next click."""
-    runtime.store.ref_open_values[90] = {"read-later"}
-    resp = client.get("/papers-needed")
+def test_drive_stub_row_active_flag_renders_pressed_and_removes(
+    runtime, client
+) -> None:
+    """A stub ref already carrying OPEN:read-later renders that button
+    active (aria-pressed) and armed to remove on the next click."""
+    runtime.store.ref_open_values[10] = {"read-later"}
+    resp = client.get("/drive?state=stub")
     assert resp.status_code == 200
     # The active button posts op=remove so a second click toggles off.
     assert 'aria-pressed="true"' in resp.text
@@ -392,25 +335,29 @@ def test_flag_toggle_surfaces_handler_error(runtime, client) -> None:
 
 
 def test_flag_toggle_blocks_open_redirect(runtime, client) -> None:
-    """A non-local return_to falls back to /papers-needed."""
+    """A non-local return_to falls back to /drive (WS1b — the flag's
+    default bounce-back target after the /papers-needed fold)."""
     resp = client.post(
         "/flags/paper/90",
         data={"flag": "read-later", "return_to": "https://evil.example/x"},
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/papers-needed"
+    assert resp.headers["location"] == "/drive"
 
 
-# ── unified item view (/items) ─────────────────────────────────────
+# ── unified Drive surface (/drive; WS1a of web-ui-rationalization.md) ──
+# Ported from the old /items suite (Slice-3 of unified-item-view.md) —
+# same assertions, new URL. /items itself now just redirects here (see
+# test_items_redirects_to_drive_preserving_query below).
 
 
-def test_items_empty_shows_form_and_recent(client) -> None:
+def test_drive_empty_shows_form_and_recent(client) -> None:
     """The no-query landing shows the search form and a 'recently added'
     list of source items (with their flag buttons). No tag cloud."""
-    resp = client.get("/items")
+    resp = client.get("/drive")
     assert resp.status_code == 200
-    assert 'action="/items"' in resp.text
+    assert 'action="/drive"' in resp.text
     assert "Recently added" in resp.text
     assert "A paper" in resp.text
     assert "A web page" in resp.text
@@ -418,42 +365,42 @@ def test_items_empty_shows_form_and_recent(client) -> None:
     assert "Browse by tag" not in resp.text  # cloud dropped
 
 
-def test_items_stub_filter(runtime, client) -> None:
+def test_drive_stub_filter(runtime, client) -> None:
     """state=stub narrows the landing to PDF-less papers (the to-get
     queue) and relabels the heading."""
-    resp = client.get("/items?state=stub")
+    resp = client.get("/drive?state=stub")
     assert resp.status_code == 200
     assert runtime.store.recent_has_pdf is False
     assert "Stubs — papers to get" in resp.text
 
 
-def test_items_rows_show_paper_lookup_links(client) -> None:
+def test_drive_rows_show_paper_lookup_links(client) -> None:
     """Paper rows carry off-site UoL + Scholar 'find:' links built from
     the paper's identifier."""
-    resp = client.get("/items")
+    resp = client.get("/drive")
     assert "uol.primo.exlibrisgroup.com" in resp.text
     assert "scholar.google.com" in resp.text
     assert "doi.org/10.1038/nature01797" in resp.text
 
 
-def test_items_stub_vs_ingested_badges(runtime, client) -> None:
+def test_drive_stub_vs_ingested_badges(runtime, client) -> None:
     """A recent paper with no chunks shows the 'stub' badge; once it has
     chunks it shows 'chunks' instead."""
-    resp = client.get("/items")
+    resp = client.get("/drive")
     assert ">stub<" in resp.text  # paper #10 has no pdf, no chunks
     runtime.store.ingested_ref_ids = {10}
-    resp2 = client.get("/items")
+    resp2 = client.get("/drive")
     assert ">chunks<" in resp2.text
     assert ">stub<" not in resp2.text
 
 
-def test_items_rows_show_per_item_tags(client) -> None:
+def test_drive_rows_show_per_item_tags(client) -> None:
     """Each row shows the item's own tags as chips — topical tags only;
     the reading-intent flags (buttons) and machine namespaces are hidden.
 
     Tested on the search view (?q=), which has no tag cloud, so the only
     source of these links is the per-row chips."""
-    resp = client.get("/items?q=query")
+    resp = client.get("/drive?q=query")
     assert resp.status_code == 200
     # Paper #10's topical tag renders as a chip linking to the pivot.
     assert "/tags/refs?namespace=topic&amp;value=co2-capture" in resp.text
@@ -462,18 +409,19 @@ def test_items_rows_show_per_item_tags(client) -> None:
     assert "namespace=DREAM&amp;value=spec" not in resp.text
 
 
-def test_items_has_new_button(client) -> None:
-    """The /items header carries a Drive-style '+ New' dropdown reusing
-    the existing /drafts/new + /drive/new creation flows."""
-    resp = client.get("/items")
+def test_drive_has_new_button(client) -> None:
+    """The /drive header carries the '+ New' dropdown (cad/structure/
+    figure/draft), reusing the existing /drafts/new + /drive/new creation
+    flows."""
+    resp = client.get("/drive")
     assert "+ New" in resp.text
     assert "/drafts/new" in resp.text
     assert "/drive/new" in resp.text
     assert "Draft (document)" in resp.text
 
 
-def test_items_search_renders_cross_kind_rows(client) -> None:
-    resp = client.get("/items?q=query")
+def test_drive_search_renders_cross_kind_rows(client) -> None:
+    resp = client.get("/drive?q=query")
     assert resp.status_code == 200
     # Both kinds surface through the one cross-kind primitive.
     assert "A paper" in resp.text
@@ -487,26 +435,26 @@ def test_items_search_renders_cross_kind_rows(client) -> None:
     assert 'action="/flags/paper/10"' in resp.text
 
 
-def test_items_kind_filter_narrows(client) -> None:
-    resp = client.get("/items?q=query&submitted=1&k=paper")
+def test_drive_kind_filter_narrows(client) -> None:
+    resp = client.get("/drive?q=query&submitted=1&k=paper")
     assert resp.status_code == 200
     assert "A paper" in resp.text
     assert "A web page" not in resp.text
 
 
-def test_items_recency_sort_accepted(client) -> None:
-    resp = client.get("/items?q=query&sort=recency")
+def test_drive_recency_sort_accepted(client) -> None:
+    resp = client.get("/drive?q=query&sort=recency")
     assert resp.status_code == 200
     assert "A paper" in resp.text
 
 
-def test_items_kind_checkboxes_and_cookie(client) -> None:
+def test_drive_kind_checkboxes_and_cookie(client) -> None:
     """Kinds render as toggle chips (checkboxes) with All/None; an explicit
     submit remembers the selection in a cookie."""
-    resp = client.get("/items")
+    resp = client.get("/drive")
     assert 'name="k"' in resp.text
     assert ">All<" in resp.text and ">None<" in resp.text
-    resp2 = client.get("/items?submitted=1&k=paper&k=web", follow_redirects=False)
+    resp2 = client.get("/drive?submitted=1&k=paper&k=web", follow_redirects=False)
     cookie = resp2.headers.get("set-cookie", "")
     # Starlette quotes the comma (round-trips fine on read); assert the
     # cookie is set and carries both chosen kinds.
@@ -514,69 +462,76 @@ def test_items_kind_checkboxes_and_cookie(client) -> None:
     assert "paper" in cookie and "web" in cookie
     # Round-trip: the cookie drives kind selection on a fresh (unsubmitted)
     # visit — the client persists the cookie across requests.
-    client.get("/items?submitted=1&k=paper", follow_redirects=False)
-    resp3 = client.get("/items")
+    client.get("/drive?submitted=1&k=paper", follow_redirects=False)
+    resp3 = client.get("/drive")
     assert '["paper"]' in resp3.text  # x-data seed reflects the remembered set
 
 
-def test_items_includes_memory_kind(runtime, client) -> None:
+def test_drive_includes_memory_kind(runtime, client) -> None:
     """Memories (reviewer digests + ``DREAM:*`` dream speculations, stored
     as the ``memory`` kind with an embedded body chunk) are a default,
-    selectable kind on /items — a fresh visit searches/browses them too."""
+    selectable kind on /drive — a fresh visit searches/browses them too."""
     from precis_web.routes.items import _DEFAULT_SOURCE_KINDS
 
     assert "memory" in _DEFAULT_SOURCE_KINDS
     # renders as a checkbox chip (kind_defs seed) on a fresh visit...
-    resp = client.get("/items")
+    resp = client.get("/drive")
     assert '"memory"' in resp.text
     # ...and a query passes it through to the cross-kind search primitive.
-    client.get("/items?q=anything")
+    client.get("/drive?q=anything")
     assert "memory" in runtime.store.search_kinds
 
 
-def test_items_tag_suggest_endpoint(client) -> None:
+def test_drive_tag_suggest_endpoint(client) -> None:
     """The autocomplete backend substring-matches tags; <2 chars is empty."""
-    assert client.get("/items/tags/suggest?q=c").json() == []
+    assert client.get("/drive/tags/suggest?q=c").json() == []
+    hits = client.get("/drive/tags/suggest?q=co2").json()
+    assert {"label": "topic:co2-capture", "tag": "topic:co2-capture"} in hits
+
+
+def test_items_tags_suggest_alias_still_works(client) -> None:
+    """The legacy ``/items/tags/suggest`` path (same function, two mounted
+    routes) still answers — old callers/bookmarks aren't broken."""
     hits = client.get("/items/tags/suggest?q=co2").json()
     assert {"label": "topic:co2-capture", "tag": "topic:co2-capture"} in hits
 
 
-def test_items_tag_filter_flows_to_search(runtime, client) -> None:
+def test_drive_tag_filter_flows_to_search(runtime, client) -> None:
     """Selected tag chips (?tag=) narrow the search."""
-    client.get("/items?q=query&tag=topic:co2-capture")
+    client.get("/drive?q=query&tag=topic:co2-capture")
     assert runtime.store.search_tags == ["topic:co2-capture"]
 
 
-def test_items_tag_filter_flows_to_recent(runtime, client) -> None:
+def test_drive_tag_filter_flows_to_recent(runtime, client) -> None:
     """On the no-query landing, tag chips narrow the recent list."""
-    client.get("/items?tag=topic:co2-capture")
+    client.get("/drive?tag=topic:co2-capture")
     assert runtime.store.recent_tags == ["topic:co2-capture"]
 
 
-def test_items_search_page_param_flows_to_offset(runtime, client) -> None:
+def test_drive_search_page_param_flows_to_offset(runtime, client) -> None:
     """``page=2`` passes ``offset=_PAGE_SIZE`` down to the search
     primitive (Slice-3 pagination past the 30-item cap)."""
-    resp = client.get("/items?q=query&page=2")
+    resp = client.get("/drive?q=query&page=2")
     assert resp.status_code == 200
     assert runtime.store.search_offset == 30
 
 
-def test_items_recent_page_param_flows_to_offset(runtime, client) -> None:
-    resp = client.get("/items?page=2")
+def test_drive_recent_page_param_flows_to_offset(runtime, client) -> None:
+    resp = client.get("/drive?page=2")
     assert resp.status_code == 200
     assert runtime.store.recent_offset == 30
 
 
-def test_items_no_next_link_when_only_two_canned_rows(client) -> None:
+def test_drive_no_next_link_when_only_two_canned_rows(client) -> None:
     """The canned two-row fixture never overflows ``_PAGE_SIZE`` — no
     live 'Next' link, and 'Prev' is inert on page 1."""
-    resp = client.get("/items?q=query")
+    resp = client.get("/drive?q=query")
     assert resp.status_code == 200
     assert "Next &rarr;</a>" not in resp.text
     assert "Prev</a>" not in resp.text  # inert (span, not a link) on page 1
 
 
-def test_items_has_next_shows_next_link_with_filters_preserved(runtime, client) -> None:
+def test_drive_has_next_shows_next_link_with_filters_preserved(runtime, client) -> None:
     """A ``has_next`` result renders a live 'Next' link carrying the
     filters + the incremented page number."""
     from types import SimpleNamespace
@@ -588,38 +543,38 @@ def test_items_has_next_shows_next_link_with_filters_preserved(runtime, client) 
     # 31 hits so the +1-over-fetch probe reports a next page.
     runtime.store.cross_kind_hits = [(blk, pref, 0.9)] * 31
 
-    resp = client.get("/items?q=query&submitted=1&k=paper&sort=recency")
+    resp = client.get("/drive?q=query&submitted=1&k=paper&sort=recency")
     assert resp.status_code == 200
     assert (
-        'href="/items?submitted=1&amp;q=query&amp;sort=recency&amp;k=paper&amp;page=2"'
+        'href="/drive?submitted=1&amp;q=query&amp;sort=recency&amp;k=paper&amp;page=2"'
         in resp.text
     )
 
 
-def test_items_author_facet_renders_artifact_chips(client) -> None:
+def test_drive_author_facet_renders_artifact_chips(client) -> None:
     """The kind chips split into a 'Source' group and an 'Author'
     (role='artifact') group — the facet from the proposal's decisions
     log. With ``hub=None`` in tests, the artifact facet falls back to
     the static kind list."""
-    resp = client.get("/items")
+    resp = client.get("/drive")
     assert resp.status_code == 200
     assert "Source" in resp.text
     assert "Author" in resp.text
     assert '"draft"' in resp.text  # artifact chip seed
 
 
-def test_items_folder_facet_dropdown_renders(client) -> None:
+def test_drive_folder_facet_dropdown_renders(client) -> None:
     """The folder-facet ``<select>`` lists the canned folders, indented
     by nesting depth."""
-    resp = client.get("/items")
+    resp = client.get("/drive")
     assert resp.status_code == 200
     assert 'name="folder"' in resp.text
     assert "Root folder" in resp.text
     assert "Sub folder" in resp.text
 
 
-def test_items_folder_filter_flows_to_recent(runtime, client) -> None:
-    resp = client.get("/items?folder=200")
+def test_drive_folder_filter_flows_to_recent(runtime, client) -> None:
+    resp = client.get("/drive?folder=200")
     assert resp.status_code == 200
     assert runtime.store.recent_parent_id == 200
 
@@ -627,7 +582,7 @@ def test_items_folder_filter_flows_to_recent(runtime, client) -> None:
 def test_folder_options_survives_cyclic_parent_chain() -> None:
     """A corrupted ``folder`` table where a folder is its own ancestor
     (300 -> parent 301 -> parent 300) must not stack-overflow the
-    /items page — the walk should skip the cyclic branch and return."""
+    /drive page — the walk should skip the cyclic branch and return."""
     from precis_web.routes.items import _folder_options
 
     class _CyclicStore:
@@ -658,7 +613,7 @@ def test_folder_options_skips_cyclic_branch_below_a_real_root() -> None:
     assert ids == [200, 300, 301]  # cyclic re-entry into 300 is skipped
 
 
-def test_items_thumbnail_renders_for_youtube_row(runtime, client) -> None:
+def test_drive_thumbnail_renders_for_youtube_row(runtime, client) -> None:
     """A row whose presenter has a thumbnail (youtube) renders an
     ``<img>``; the canned paper/web rows have none."""
     from types import SimpleNamespace
@@ -669,85 +624,173 @@ def test_items_thumbnail_renders_for_youtube_row(runtime, client) -> None:
     blk = SimpleNamespace(id=2001, pos=0, text="a caption")
     runtime.store.cross_kind_hits = [(blk, yref, 0.5)]
 
-    resp = client.get("/items?q=query&k=youtube")
+    resp = client.get("/drive?q=query&k=youtube")
     assert resp.status_code == 200
     assert "i.ytimg.com/vi/abc123/hqdefault.jpg" in resp.text
 
 
-def test_items_hover_preview_popover_renders(client) -> None:
+def test_drive_hover_preview_popover_renders(client) -> None:
     """Each row carries a hover popover with the richer peek text."""
-    resp = client.get("/items?q=query")
+    resp = client.get("/drive?q=query")
     assert resp.status_code == 200
     assert "passage about the query" in resp.text
 
 
-def _stub_paging_client(total: int):
-    """A TestClient whose store reports ``total`` stubs and pages them.
+def test_items_redirects_to_drive_preserving_query(client) -> None:
+    """``/items`` (WS1a's retired path) redirects to ``/drive``, carrying
+    every filter through verbatim — old bookmarks / saved searches keep
+    working."""
+    resp = client.get("/items?q=query&k=paper", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?q=query&k=paper"
 
-    Exercises the ``/papers-needed`` route's numbered pager: the route
-    calls ``stub_backlog_count`` (answered from ``total``) and
-    ``stub_backlog`` (sliced by limit/offset), so the page-window
-    arithmetic is what's under test.
-    """
-    from fastapi.testclient import TestClient
 
-    from precis_web.app import create_app
-    from precis_web.config import WebConfig
+def test_items_root_also_redirects_to_drive(client) -> None:
+    resp = client.get("/items", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive"
 
-    from .conftest import FakeRuntime, FakeStore
 
-    rows = [
-        {
-            "ref_id": rid,
-            "cite_key": f"key{rid}",
-            "identifier": f"10.1/{rid}",
-            "last_attempt": "",
-            "last_source": "",
-            "last_event": "",
-            "state": "never attempted",
-            "created_at": "2026-07-01T08:00:00+00:00",
-            "requested_by": "dream",
-            "attempts": 0,
-        }
-        for rid in range(total, 0, -1)
+# ── Drive graft: folder sidebar / deleted toggle / drop-zones / row actions ──
+
+
+def test_drive_folder_sidebar_renders(client) -> None:
+    """The persistent folder-tree sidebar (grafted from /drive) renders
+    alongside the item list; with the FakeStore's raw-SQL surface
+    returning nothing (real folder-tree SQL is PG-only, see
+    test_drive_sql.py), it shows the empty state."""
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert "Folders" in resp.text
+    assert "(no folders yet)" in resp.text
+    assert 'action="/drive/create"' in resp.text  # new-folder form
+
+
+def test_drive_stale_folder_bookmark_shows_notice(client) -> None:
+    """A ``folder=`` id that doesn't resolve (deleted, or — under the
+    FakeStore's empty raw-SQL tree — any id) degrades to a soft notice
+    instead of a dead end."""
+    resp = client.get("/drive?folder=999")
+    assert resp.status_code == 200
+    assert "folder #999 not found" in resp.text
+
+
+def test_drive_deleted_state_toggle(runtime, client) -> None:
+    """``state=deleted`` flips the landing to soft-deleted refs (the
+    lightweight trash view) and relabels the heading."""
+    from .conftest import make_ref
+
+    runtime.store.deleted_recent_refs = [
+        make_ref(id=55, kind="paper", slug="gone2020", title="A deleted paper")
     ]
-
-    class _Store(FakeStore):
-        def stub_backlog(self, *, limit=50, offset=0, awaiting=False):
-            return rows[offset : offset + limit]
-
-        def stub_backlog_count(self, *, awaiting=False):
-            return total
-
-        def fetch_refs_by_ids(self, ids, include_deleted=False):
-            return {}
-
-    rt = FakeRuntime(_Store())
-    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=None))
-    return TestClient(app)
-
-
-def test_papers_needed_numbered_pager_shows_total_and_last_page() -> None:
-    # 250 stubs at 100/page → 3 pages. First page shows the count, the
-    # numbered window, and a jump-to-last link.
-    client = _stub_paging_client(total=250)
-    resp = client.get("/papers-needed")
+    resp = client.get("/drive?state=deleted")
     assert resp.status_code == 200
-    assert "Page 1 of 3" in resp.text
-    assert "1–100" in resp.text
-    # Numbered links to pages 2 and 3 (the last page) are present.
-    assert "page=2" in resp.text
-    assert "page=3" in resp.text
+    assert runtime.store.recent_deleted is True
+    assert "Deleted — soft-deleted refs" in resp.text
+    assert "A deleted paper" in resp.text
 
 
-def test_papers_needed_clamps_overshoot_to_last_page() -> None:
-    # ?page far past the end clamps to the last page rather than 500ing
-    # or rendering an empty body.
-    client = _stub_paging_client(total=250)
-    resp = client.get("/papers-needed?page=99")
+def test_drive_watch_dir_panel_shows_dropzones(monkeypatch, client) -> None:
+    """The drop-zone panel (reused from papers_needed.py) shows the
+    watch-daemon's live paths when the plist is readable."""
+    monkeypatch.setattr(
+        "precis_web.routes.drive._watch_dir_from_plist",
+        lambda: "/Volumes/nas/watch",
+    )
+    resp = client.get("/drive")
     assert resp.status_code == 200
-    assert "Page 3 of 3" in resp.text
-    assert "201–250" in resp.text
+    assert "/Volumes/nas/watch/papers" in resp.text
+
+
+def test_drive_watch_dir_panel_degrades_without_plist(client) -> None:
+    """No readable plist (the normal test/dev-host case) → a plain
+    explanatory message, not a crash."""
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert "plist not readable" in resp.text
+
+
+def test_drive_row_actions_render_move_delete_tag_forms(client) -> None:
+    """Each row carries move / delete / tag quick actions
+    (``ItemPresenter.actions()``) as inline forms posting to the generic
+    per-ref routes — paper #10 addresses by its slug, matching the
+    move route's own numeric-else-slug convention."""
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert 'action="/drive/move"' in resp.text
+    assert 'action="/drive/item/paper/smith2024/delete"' in resp.text
+    assert 'action="/drive/item/paper/smith2024/tag"' in resp.text
+
+
+def test_drive_item_delete_dispatches_by_kind_and_id(runtime, client) -> None:
+    resp = client.post(
+        "/drive/item/paper/smith2024/delete",
+        data={"back": "/drive"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/drive"
+    assert ("delete", {"kind": "paper", "id": "smith2024"}) in runtime.calls
+
+
+def test_drive_item_delete_numeric_id_coerced_to_int(runtime, client) -> None:
+    resp = client.post(
+        "/drive/item/web/70/delete", data={"back": "/drive"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert ("delete", {"kind": "web", "id": 70}) in runtime.calls
+
+
+def test_drive_item_tag_dispatches_add(runtime, client) -> None:
+    resp = client.post(
+        "/drive/item/paper/smith2024/tag",
+        data={"value": "topic:graphene", "back": "/drive?q=query"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/drive?q=query"
+    assert (
+        "tag",
+        {"kind": "paper", "id": "smith2024", "add": ["topic:graphene"]},
+    ) in runtime.calls
+
+
+def test_drive_item_tag_blank_value_is_a_noop(runtime, client) -> None:
+    resp = client.post(
+        "/drive/item/paper/smith2024/tag",
+        data={"value": "  ", "back": "/drive"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/drive"
+    assert runtime.calls == []  # no dispatch for a blank tag box
+
+
+def test_drive_item_actions_block_open_redirect(runtime, client) -> None:
+    """A forged non-local ``back`` on the per-row action routes falls back
+    to /drive (same guard as the flag bounce-back — a mutating POST must
+    never bounce the browser off-site). The dispatch still happens; only
+    the redirect target is sanitised."""
+    for path, data in (
+        ("/drive/item/paper/smith2024/delete", {"back": "https://evil.example/x"}),
+        (
+            "/drive/item/paper/smith2024/tag",
+            {"value": "topic:x", "back": "//evil.example/x"},
+        ),
+        (
+            "/drive/move",
+            {"kind": "paper", "id": "smith2024", "back": "https://evil.example/x"},
+        ),
+    ):
+        resp = client.post(path, data=data, follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/drive"
+
+
+# The papers-needed numbered pager (stub_backlog_count/stub_backlog paging
+# arithmetic) retired with the list route (WS1b, D3) — Drive's own
+# prev/next pager (already covered by test_drive_has_next_shows_next_link_
+# with_filters_preserved) is the surviving pagination surface for stubs.
 
 
 # ── tags browser ───────────────────────────────────────────────────
@@ -993,54 +1036,24 @@ def test_move_empty_parent_detaches_to_root(client, runtime) -> None:
     assert args == {"kind": "todo", "id": 2, "rel": "parent", "mode": "remove"}
 
 
-# ── papers ─────────────────────────────────────────────────────────
+# ── papers → list folded into Drive's kind=paper facet (WS1b) ──────
+# The keyword/semantic mode toggle and has_pdf/has_chunks list filters
+# this route used to own don't have a Drive equivalent and are dropped
+# with the list (Drive's own cross-kind search box + Source kind chips
+# replace them); the reader below (``/papers/{ident}`` and everything
+# under it) is unaffected.
 
 
-def test_papers_index_lists(client) -> None:
-    resp = client.get("/papers")
-    assert resp.status_code == 200
-    assert "A paper" in resp.text
+def test_papers_redirects_to_drive_kind_paper(client) -> None:
+    resp = client.get("/papers", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?k=paper&submitted=1"
 
 
-def test_papers_search_query(client) -> None:
-    resp = client.get("/papers", params={"q": "anything"})
-    assert resp.status_code == 200
-    assert "A paper" in resp.text
-
-
-def test_papers_search_default_mode_is_keyword(client) -> None:
-    """The literal title search stays the default — the mode toggle
-    renders ``keyword`` selected when nothing is passed."""
-    resp = client.get("/papers", params={"q": "anything"})
-    assert resp.status_code == 200
-    assert 'value="keyword" selected' in resp.text
-
-
-def test_papers_search_semantic_ranks_by_body_content(client, runtime) -> None:
-    """``mode=semantic`` embeds the query and ranks papers via a
-    cross-paper block search, collapsing chunk hits to distinct papers."""
-    from types import SimpleNamespace
-
-    runtime.hub = SimpleNamespace(
-        embedder=SimpleNamespace(embed_one=lambda _q: [0.1, 0.2, 0.3])
-    )
-    paper = runtime.store.papers[0]  # id=10, "A paper"
-    block = SimpleNamespace(pos=0)
-    # Two chunk hits on the same paper → collapse dedups to one row.
-    runtime.store.nav_hits[None] = [(block, paper, 0.1), (block, paper, 0.2)]
-    resp = client.get("/papers", params={"q": "mof embedding", "mode": "semantic"})
-    assert resp.status_code == 200
-    assert "A paper" in resp.text
-    assert 'value="semantic" selected' in resp.text
-
-
-def test_papers_search_semantic_degrades_without_embedder(client, runtime) -> None:
-    """No embedder wired → the semantic leg degrades to the lexical
-    title search, and the toggle reflects the mode that actually ran."""
-    resp = client.get("/papers", params={"q": "anything", "mode": "semantic"})
-    assert resp.status_code == 200
-    # runtime.hub is None by default → embed_query returns None → keyword.
-    assert 'value="keyword" selected' in resp.text
+def test_papers_redirects_to_drive_preserving_query(client) -> None:
+    resp = client.get("/papers", params={"q": "anything"}, follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?k=paper&submitted=1&q=anything"
 
 
 def test_paper_detail_renders(client) -> None:
@@ -1180,11 +1193,12 @@ def test_paper_delete_missing_paper_surfaces_error(client, runtime) -> None:
 def test_paper_delete_soft_deletes_and_redirects_to_list(client, runtime) -> None:
     """The delete button POSTs to /papers/{id}/delete which soft-deletes
     via a DIRECT store call (web-only; not dispatched to the agent MCP
-    surface) and bounces to the papers list by default."""
+    surface) and bounces to Drive by default (WS1b — the papers list
+    this used to default to is now a redirect, not a real page)."""
     store = runtime.store
     resp = client.post("/papers/10/delete", follow_redirects=False)
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/papers"
+    assert resp.headers["location"] == "/drive"
     assert 10 in store.deleted_ref_ids
     # Deletion never went through dispatch.
     assert not any(verb == "delete" for verb, _ in runtime.calls)
@@ -1192,7 +1206,7 @@ def test_paper_delete_soft_deletes_and_redirects_to_list(client, runtime) -> Non
 
 def test_paper_delete_honours_return_to(client, runtime) -> None:
     """``return_to`` lands the operator back where they were (triage
-    queue), but only for local ``/papers`` paths."""
+    queue), but only for local ``/papers``/``/drive`` paths."""
     resp = client.post(
         "/papers/10/delete",
         data={"return_to": "/papers/triage?page=2"},
@@ -1210,15 +1224,16 @@ def test_paper_delete_rejects_offsite_return_to(client, runtime) -> None:
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/papers"
+    assert resp.headers["location"] == "/drive"
 
 
 def test_paper_untriage_clears_tag_and_redirects(client, runtime) -> None:
     """The untriage button dispatches a tag-remove of ``needs-triage``
-    and returns to the triage queue."""
+    and returns to the Drive triage preset (WS1b — the ``/papers/triage``
+    queue this used to default to is now a redirect, not a real page)."""
     resp = client.post("/papers/10/untriage", follow_redirects=False)
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/papers/triage"
+    assert resp.headers["location"] == "/drive?tag=needs-triage&k=paper&submitted=1"
     verb, args = runtime.calls[-1]
     assert verb == "tag"
     assert args == {"kind": "paper", "id": 10, "remove": ["needs-triage"]}
@@ -1335,15 +1350,15 @@ def test_resolve_duplicate_missing_owner_errors(client, runtime) -> None:
     assert (999, 10) not in runtime.store.merges
 
 
-def test_triage_queue_renders_numbered_pager(client) -> None:
-    """The triage queue carries the same windowed numbered pager as the
-    Papers Needed list — total count + 'Page N of M', not just Prev/Next."""
-    resp = client.get("/papers/triage")
-    assert resp.status_code == 200
-    assert "Page 1 of" in resp.text
-    assert "paper" in resp.text  # 'of N papers'
-    # The first/only page is the current page chip (bg-slate-800).
-    assert "bg-slate-800" in resp.text
+def test_papers_triage_redirects_to_drive_triage_preset(client) -> None:
+    """``/papers/triage`` folded into the Drive ``needs-triage`` tag
+    preset (WS1b) — the windowed numbered pager it used to carry retires
+    with the list; Drive's own prev/next pager takes over. Needs-you's
+    "view all"/"+N more" links (Risk R5) keep working through this
+    redirect."""
+    resp = client.get("/papers/triage", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?tag=needs-triage&k=paper&submitted=1"
 
 
 def test_triaged_detail_opens_meta_tab(client, runtime) -> None:
@@ -1482,11 +1497,12 @@ def test_paper_edit_nothing_to_change_is_rejected(client, runtime) -> None:
     assert "Nothing to change" in resp.text
 
 
-def test_triage_queue_renders(client) -> None:
-    """GET /papers/triage lists papers and highlights the Triage tab."""
-    resp = client.get("/papers/triage")
+def test_papers_triage_redirect_lands_on_drive(client) -> None:
+    """Following ``/papers/triage`` lands on the merged Drive surface (not
+    a 404/error) — the triage queue's actual content."""
+    resp = client.get("/papers/triage")  # follows the redirect by default
     assert resp.status_code == 200
-    assert "Triage queue" in resp.text
+    assert 'action="/drive"' in resp.text
 
 
 def test_paper_detail_shows_triage_panel_when_tagged(client, runtime) -> None:
@@ -1567,36 +1583,13 @@ def test_paper_detail_has_edit_and_delete_forms(client) -> None:
     assert 'action="/papers/10/delete"' in resp.text
 
 
-def test_papers_index_hover_card_has_authors_and_abstract(client) -> None:
-    resp = client.get("/papers")
-    assert resp.status_code == 200
-    # Author name (given + family) rendered in the hover card.
-    assert "Jane Smith" in resp.text
-    # Abstract with JATS/HTML tags stripped to plain text.
-    assert "We study X in depth." in resp.text
-    assert "<jats:p>" not in resp.text
-
-
-def test_papers_index_abstract_backfilled_from_chunks(client) -> None:
-    # Paper 11 has no meta abstract -> the body-chunk backfill fills the
-    # hover card so it doesn't read "No abstract on file."
-    resp = client.get("/papers")
-    assert resp.status_code == 200
-    assert "Body-derived abstract text for the second paper." in resp.text
-
-
-def test_papers_index_hover_card_has_doi_link(client) -> None:
-    # Paper 10 carries a DOI -> the hover card surfaces a clickable
-    # doi.org link for quick verification.
-    resp = client.get("/papers")
-    assert resp.status_code == 200
-    assert "https://doi.org/10.1234/example.2024" in resp.text
-
-
-def test_papers_index_hover_card_has_arxiv_link(client) -> None:
-    resp = client.get("/papers")
-    assert resp.status_code == 200
-    assert "https://arxiv.org/abs/2501.01234" in resp.text
+# The /papers list's own hover-card (authors + abstract + DOI/arXiv link,
+# built via papers.py's ``_paper_row``/``_links_from_ids``/
+# ``abstract_previews``) retired with the list (WS1b) — Drive's generic
+# ``ItemPresenter.hover_preview``/``.links()`` is the surviving hover-card
+# mechanism for a paper row (test_drive_rows_show_paper_lookup_links,
+# test_drive_hover_preview_popover_renders, test_drive_rows_show_per_
+# item_tags above cover it under the new engine).
 
 
 def test_paper_detail_shows_doi_link(client) -> None:
@@ -1955,17 +1948,29 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
 
 def test_refs_nav_tabs_present(client) -> None:
     """After T12.6 the nav collapses memory/conv/gripe/pres into one Refs
-    tab. Oracle and Patents keep their own tabs (per-kind UX they need).
-    The consolidated Refs tab also links to the per-kind list pages from
-    inside the kind sections.
-    """
+    tab. WS1b folded Oracle/Patents' own Browse-dropdown tabs into Drive
+    kind-facet presets (their per-kind list, not their detail reader) —
+    the consolidated Refs tab stays."""
     resp = client.get("/refs/memory")
-    for href in (
-        "/refs",  # consolidated browser
-        "/refs/oracle",  # oracle keeps its own tab (roll the dice)
-        "/refs/patent",  # patents keep their own tab (OPS remote search)
-    ):
-        assert href in resp.text
+    assert "/refs" in resp.text  # consolidated browser
+    assert "/refs/oracle" not in resp.text
+    assert "/refs/patent" not in resp.text
+
+
+def test_refs_oracle_list_redirects_to_drive_kind_facet(client) -> None:
+    """``/refs/oracle`` (decision D2) folds into a Drive kind-facet
+    preset — the detail reader (``/refs/oracle/{id}``) is unaffected."""
+    resp = client.get("/refs/oracle", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?k=oracle&submitted=1"
+
+
+def test_refs_patent_list_redirects_to_drive_kind_facet(client) -> None:
+    """``/refs/patent`` (decision D2) folds into a Drive kind-facet
+    preset — the detail reader (``/refs/patent/{id}``) is unaffected."""
+    resp = client.get("/refs/patent", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?k=patent&submitted=1"
 
 
 def test_refs_consolidated_default_renders(client) -> None:
@@ -2128,13 +2133,11 @@ def test_env_in_base_nav(client) -> None:
 
 
 def test_loupe_in_base_nav(client) -> None:
-    """The 🔍 loupe form posts to /refs?all=1 so cross-kind search lands
-    on the consolidated browser with everything lit."""
+    """The 🔍 loupe form posts to /drive (WS1b repoint) so cross-kind
+    search lands on the unified Drive surface."""
     resp = client.get("/tasks")  # any page; loupe is in base
     assert resp.status_code == 200
-    assert 'action="/refs"' in resp.text
-    # Hidden ``all=1`` field arms the cross-kind scope.
-    assert 'name="all" value="1"' in resp.text
+    assert 'action="/drive"' in resp.text
 
 
 # ── task tags ──────────────────────────────────────────────────────
@@ -2665,12 +2668,13 @@ def test_console_resolve_chunk_handle_carries_ord(client, runtime) -> None:
 
 def test_console_resolve_unknown_handle_falls_back_to_search(client, runtime) -> None:
     """A handle-shaped string with no live row (``me999``) falls through
-    to the cross-kind search rather than 404ing."""
+    to the cross-kind search rather than 404ing (WS1b repoints the
+    fallback at Drive, the new "search everything" surface)."""
     resp = client.post(
         "/console/resolve", data={"handle": "me999"}, follow_redirects=False
     )
     assert resp.status_code == 303
-    assert resp.headers["location"].startswith("/refs?q=me999")
+    assert resp.headers["location"].startswith("/drive?q=me999")
 
 
 def test_console_result_echoes_request(client, runtime) -> None:
@@ -2704,6 +2708,159 @@ def test_alerts_resolved_view_renders(client) -> None:
     # The resolved/open toggle is present and the resolved view is selected.
     assert "/alerts?state=resolved" in resp.text
     assert "No resolved alerts" in resp.text
+
+
+# ── gripes workbench ────────────────────────────────────────────────
+
+
+def test_gripes_page_renders_empty(client) -> None:
+    """Under the fake store (empty pool) the live view is all-clear."""
+    resp = client.get("/gripes")
+    assert resp.status_code == 200
+    assert "Gripes" in resp.text
+    assert "No live gripes" in resp.text
+    assert "0 live" in resp.text
+
+
+def test_gripes_detail_renders_body_and_comments(client) -> None:
+    resp = client.get("/gripes/96")
+    assert resp.status_code == 200
+    assert "Gripe #96" in resp.text
+    assert (
+        "the paper slug NotFound error doesn&#x27;t suggest near matches" in resp.text
+    )
+    assert "only triggers when the slug has a hyphen" in resp.text
+    # Default (no STATUS tag in the fake) falls back to 'open'.
+    assert 'id="gripe-status-96"' in resp.text
+    assert "open" in resp.text
+    # Every non-active status offers a transition button.
+    assert 'value="triaged"' in resp.text
+    assert 'value="wontfix"' in resp.text
+    # Comment box + distinctly-labelled retire action, both present.
+    assert 'action="/gripes/96/comment"' in resp.text
+    assert 'action="/gripes/96/retire"' in resp.text
+    assert "confirm(" in resp.text
+
+
+def test_gripes_detail_missing_is_a_precis_error(client) -> None:
+    # NotFound -> PrecisError handler, same 400 posture as /refs (see
+    # test_refs_detail_wrong_kind_404) — not a bare FastAPI 404.
+    resp = client.get("/gripes/999999")
+    assert resp.status_code == 400
+    assert "gripe id=999999 not found" in resp.text
+
+
+def test_gripes_status_change_dispatches_tag_and_redirects(runtime, client) -> None:
+    resp = client.post(
+        "/gripes/96/status", data={"value": "triaged"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/gripes/96"
+    assert (
+        "tag",
+        {"kind": "gripe", "id": 96, "add": ["STATUS:triaged"]},
+    ) in runtime.calls
+
+
+def test_gripes_status_change_htmx_swaps_fragment(runtime, client) -> None:
+    resp = client.post(
+        "/gripes/96/status",
+        data={"value": "wontfix"},
+        headers={"HX-Request": "true"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+    assert 'id="gripe-status-96"' in resp.text
+    assert "wontfix" in resp.text
+    # The now-active status no longer offers its own transition button.
+    assert 'value="wontfix"' not in resp.text
+    assert (
+        "tag",
+        {"kind": "gripe", "id": 96, "add": ["STATUS:wontfix"]},
+    ) in runtime.calls
+
+
+def test_gripes_status_change_rejects_unknown_value(runtime, client) -> None:
+    resp = client.post(
+        "/gripes/96/status", data={"value": "done"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert runtime.calls == []
+
+
+def test_gripes_status_change_surfaces_handler_error(runtime, client) -> None:
+    runtime.error_verbs.add("tag")
+    resp = client.post(
+        "/gripes/96/status", data={"value": "triaged"}, follow_redirects=False
+    )
+    assert resp.status_code == 400
+    assert "invalid tag" in resp.text
+
+
+def test_gripes_comment_appends_via_put_and_redirects(runtime, client) -> None:
+    resp = client.post(
+        "/gripes/96/comment",
+        data={"text": "retracting my earlier note"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/gripes/96"
+    assert (
+        "put",
+        {"kind": "gripe", "id": 96, "text": "retracting my earlier note"},
+    ) in runtime.calls
+
+
+def test_gripes_comment_blank_is_a_noop_redirect(runtime, client) -> None:
+    resp = client.post(
+        "/gripes/96/comment", data={"text": "   "}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert runtime.calls == []
+
+
+def test_gripes_retire_dispatches_delete_and_redirects_to_list(runtime, client) -> None:
+    resp = client.post("/gripes/96/retire", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/gripes"
+    assert ("delete", {"kind": "gripe", "id": 96}) in runtime.calls
+
+
+def test_gripes_nav_tab_renders_with_badge_hook(client) -> None:
+    """The Gripes tab is wired into the shared nav (badge count is 0
+    under the fake store's empty pool — see test_gripes_count below for
+    the counting logic itself)."""
+    resp = client.get("/gripes")
+    assert resp.status_code == 200
+    assert 'href="/gripes"' in resp.text
+    assert ">Gripes<" in resp.text
+
+
+def test_gripes_count_excludes_wontfix() -> None:
+    """``_gripes_count`` mirrors ``gripes.py``'s default 'live' filter —
+    a raw SQL count over non-wontfix STATUS rows."""
+    from contextlib import contextmanager
+
+    from precis_web.nav import _gripes_count
+
+    class _Cursor:
+        def fetchone(self):
+            return (3,)
+
+    class _Conn:
+        def execute(self, sql, params=None):
+            assert "t.value != 'wontfix'" in sql
+            return _Cursor()
+
+    class _Pool:
+        @contextmanager
+        def connection(self):
+            yield _Conn()
+
+    class _Store:
+        pool = _Pool()
+
+    assert _gripes_count(_Store()) == 3
 
 
 # ── status ─────────────────────────────────────────────────────────
@@ -2846,6 +3003,69 @@ def test_status_ago_formatter() -> None:
     assert _ago(now - timedelta(hours=5)).endswith("h ago")
     assert _ago(now - timedelta(days=3)).endswith("d ago")
     assert _ago(None) == ""
+
+
+# ── System (WS3: merged Status/Factory/Budget under /status?tab=) ──
+
+
+def test_nav_relabels_status_as_system(client) -> None:
+    """WS3 folded Factory + Budget under /status's sub-tabs — the nav no
+    longer exposes them as their own Ops entries, and the /status slot is
+    relabelled 'System'."""
+    body = client.get("/status").text
+    assert "System" in body
+    assert 'href="/factory"' not in body
+    assert 'href="/budget"' not in body
+
+
+def test_status_default_tab_is_health(client) -> None:
+    """No ``?tab=`` (or an unrecognised one) falls back to Health — the old
+    Status page's content, plus the sub-tab nav."""
+    resp = client.get("/status")
+    assert resp.status_code == 200
+    assert 'href="/status?tab=health"' in resp.text
+    assert 'href="/status?tab=services"' in resp.text
+    assert 'href="/status?tab=budget"' in resp.text
+    assert "Machines" in resp.text  # Health content renders by default
+
+    bogus = client.get("/status?tab=bogus")
+    assert bogus.status_code == 200
+    assert "Machines" in bogus.text  # unknown tab degrades to Health
+
+
+def test_status_services_tab_lists_registry_services(client) -> None:
+    """``?tab=services`` renders the retired Factory console's content."""
+    from precis.workers.registry import SERVICES
+
+    resp = client.get("/status?tab=services")
+    assert resp.status_code == 200
+    for name in ("embed", "chunk_keywords", "classify", "structural", "llama_swap"):
+        assert name in resp.text, name
+    for cat in ("discovery", "review", "serving"):
+        assert cat in resp.text
+    for spec in SERVICES:
+        assert spec.name in resp.text, spec.name
+    # host selector defaults to all hosts and echoes an explicit ?host=.
+    assert 'action="/factory/prio"' in resp.text
+
+
+def test_status_services_tab_host_selector_scopes_page(client) -> None:
+    resp = client.get("/status?tab=services&host=melchior")
+    assert resp.status_code == 200
+    assert "melchior" in resp.text
+
+
+def test_status_budget_tab_renders_tote_and_caps(client) -> None:
+    """``?tab=budget`` renders the retired Budget page's content."""
+    resp = client.get("/status?tab=budget")
+    assert resp.status_code == 200
+    assert 'action="/budget/set"' in resp.text
+    # Default caps surface (env defaults: $5 / $20).
+    assert "Hourly" in resp.text
+    assert "24h" in resp.text
+    # The claude-OAuth quota lane + resume control render even with no snapshot.
+    assert "Claude subscription" in resp.text
+    assert 'action="/budget/resume"' in resp.text
 
 
 # ── tasks tag filter ───────────────────────────────────────────────
@@ -3655,8 +3875,9 @@ def test_needs_you_renders_triage_section(client) -> None:
     # A paper title from the fake's canned set.
     assert "Ballistic carbon nanotube" in resp.text
     # Rows open the detail page with the triage panel; "view all" goes to
-    # the full triage queue. (``/papers-needed`` still appears once — in
-    # the Browse ▾ dropdown — but the queue content here is triage.)
+    # the full triage queue — /papers/triage, which now redirects to the
+    # Drive needs-triage preset (WS1b, Risk R5), but the link text here
+    # is unchanged so this stays a literal string match.
     assert "?triage=1" in resp.text
     assert "/papers/triage" in resp.text
 
@@ -3823,33 +4044,29 @@ def test_title_preview_handles_empty() -> None:
 
 
 # ---- Papers presence filters (has_pdf / has_chunks) -----------------
+# The /papers has_pdf/has_chunks toggles retired with the list (WS1b) —
+# Drive's ``state=stub`` facet is the surviving presence filter
+# (test_drive_stub_filter); a redirect ignores the now-meaningless params
+# rather than erroring.
 
 
-def test_papers_filter_params_render_toggles(client) -> None:
-    """The filter checkboxes reflect the query params (checked state)."""
-    resp = client.get("/papers", params={"has_pdf": "1", "has_chunks": "1"})
-    assert resp.status_code == 200
-    # Both toggles present and checked.
-    assert 'name="has_pdf"' in resp.text
-    assert 'name="has_chunks"' in resp.text
-    assert resp.text.count("checked") >= 2
+def test_papers_redirect_ignores_removed_filter_params(client) -> None:
+    resp = client.get(
+        "/papers", params={"has_pdf": "1", "has_chunks": "1"}, follow_redirects=False
+    )
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?k=paper&submitted=1"
 
 
-def test_papers_filter_has_pdf_pushes_to_list_refs(client, runtime) -> None:
-    """has_pdf=1 (no query) forwards has_pdf=True to store.list_refs."""
-    seen: dict[str, object] = {}
-    original = runtime.store.list_refs
+# ---- CFP list folded into Drive's kind=cfp facet (WS1b, decision D2) -
 
-    def _spy(**kw):
-        seen.update(kw)
-        return original(**kw)
 
-    runtime.store.list_refs = _spy  # type: ignore[method-assign]
-    resp = client.get("/papers", params={"has_pdf": "1"})
-    assert resp.status_code == 200
-    assert seen.get("has_pdf") is True
-    # has_chunks toggle off → None, not False (don't-filter).
-    assert seen.get("has_chunks") is None
+def test_cfp_index_redirects_to_drive_kind_facet(client) -> None:
+    """The CFP recent-list folds into a Drive kind-facet preset — the
+    two-pane reader (``/cfp/{ident}``) is unaffected."""
+    resp = client.get("/cfp", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?k=cfp&submitted=1"
 
 
 # ---- Ask a follow-up about a thought --------------------------------

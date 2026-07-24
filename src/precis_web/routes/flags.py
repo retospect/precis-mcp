@@ -5,9 +5,10 @@ The first slice of the unified-item-view proposal
 ``OPEN:`` tag carrying reading intent — ``read-later`` / ``must-read``
 / ``skim`` — that a person (or the LLM) can stick on any ref with one
 click. Because a paper stub and its eventually-ingested paper are the
-**same** ``ref_id``, a flag set on a stub in ``/papers-needed`` rides
-through fetch + ingest into the finished paper: flag now, read when it
-lands.
+**same** ``ref_id``, a flag set on a stub in Drive's ``state=stub`` facet
+(``/drive?state=stub`` — WS1b folded the old ``/papers-needed`` list in
+here) rides through fetch + ingest into the finished paper: flag now,
+read when it lands.
 
 Kind-agnostic on purpose: the same ``_flag_buttons`` partial and this
 one route serve every item list the unified view will grow, not just
@@ -62,7 +63,7 @@ FLAG_DEFS: tuple[dict[str, str], ...] = (
 )
 
 #: Acquisition-attempt provenance for paper stubs we can't auto-fetch —
-#: a second flag axis surfaced on ``/papers-needed``. Same one-click
+#: a second flag axis surfaced on Drive's ``state=stub`` rows. Same one-click
 #: ``OPEN:<value>`` tag mechanism as the reading-intent flags, but a
 #: distinct group so it doesn't leak onto every generic item list. The
 #: point is a visible record of which manual route was already tried
@@ -135,7 +136,7 @@ async def toggle(
     flag: str = Form(...),
     op: str = Form("add"),
     group: str = Form("reading"),
-    return_to: str = Form("/papers-needed"),
+    return_to: str = Form("/drive"),
 ) -> Response:
     """Add or remove one flag on a ref, then bounce back.
 
@@ -153,7 +154,7 @@ async def toggle(
     in place) so the list stays put — no full reload, no scroll-to-top.
     Non-htmx (no-JS fallback) still 303-redirects back to ``return_to``.
     """
-    redirect = _safe_local_redirect(return_to, "/papers-needed")
+    redirect = _safe_local_redirect(return_to, "/drive")
     defs = FLAG_GROUPS.get(group)
     if defs is None or flag not in {d["value"] for d in defs}:
         return RedirectResponse(url=redirect, status_code=303)

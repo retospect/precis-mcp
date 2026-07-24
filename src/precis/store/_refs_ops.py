@@ -1671,23 +1671,29 @@ class RefsMixin:
         tags: list[str] | None = None,
         has_pdf: bool | None = None,
         parent_id: int | None = None,
+        deleted: bool = False,
         limit: int = 30,
         offset: int = 0,
     ) -> list[Ref]:
-        """Most-recently-created live refs across a *set* of kinds, newest
-        first. Backs the ``/items`` default "recent things" browse (the
+        """Most-recently-created refs across a *set* of kinds, newest
+        first. Backs the ``/drive`` default "recent things" browse (the
         no-query landing); ``tags`` narrows it to refs carrying all of them
         (the tag-filter chips with no search query). ``has_pdf=False`` keeps
         only stubs (``pdf_sha256 IS NULL`` — the "papers to get" filter);
         ``True`` keeps only those with a PDF. ``parent_id`` narrows to one
-        folder's *direct* children (the ``/items`` folder facet — same
-        non-recursive semantics as ``/drive``'s per-folder listing). Kinds
-        with no rows simply don't appear; an empty ``kinds`` returns
-        nothing. ``offset`` pages past the first window.
+        folder's *direct* children (the ``/drive`` folder facet — same
+        non-recursive semantics as the folder-tree sidebar). ``deleted=True``
+        flips the polarity to soft-deleted refs only (the "show deleted"
+        toggle — a lightweight trash view; no undelete surface yet, just
+        visibility). Kinds with no rows simply don't appear; an empty
+        ``kinds`` returns nothing. ``offset`` pages past the first window.
         """
         if not kinds:
             return []
-        clauses = ["r.kind = ANY(%s)", "r.deleted_at IS NULL"]
+        clauses = [
+            "r.kind = ANY(%s)",
+            "r.deleted_at IS NOT NULL" if deleted else "r.deleted_at IS NULL",
+        ]
         params: list[Any] = [list(kinds)]
         if has_pdf is not None:
             clauses.append(

@@ -1,37 +1,72 @@
-"""Drive tab — browse and place authored artifacts in folders (ADR 0045).
+"""Drive — the unified seek+manage surface (WS1a of
+``docs/proposals/web-ui-rationalization.md``; ADR 0045).
 
-A thin surface over ``kind='folder'`` containment: the folder tree in a
-sidebar, a folder's contents (folders first, then artifacts with
-per-kind deep links into their readers), breadcrumbs, and the write
-actions — create / rename / move / unfile / delete. Every mutation
-dispatches a verb through the runtime (``put`` / ``edit`` / ``link
-rel='parent'`` / ``delete``) so the placement guards stay
-single-sourced in the handlers, mirroring the Tasks tab's move route
-(ADR 0027's no-surface-drift rule).
+Grafts Drive's folder tree + CRUD onto the Items cross-kind search/facet/
+presenter engine (``routes/items.py``, kept as the reusable
+query/row-building layer, now redirecting its own ``/items`` path here).
+One page: the search box + kind/tag/date/state facets, a persistent
+folder-tree sidebar (``folder=`` facet, driving the same
+``store.recent_refs``/``search_chunks_across_kinds`` the search bar
+uses), per-row quick actions (move / delete / tag — the
+``ItemPresenter.actions()`` seam, ``item_view.py``), a "show deleted"
+state toggle, and the cluster's watch-dir drop-zone info (reused from
+``routes/papers_needed.py``). ``state=stub`` rows (WS1b — the folded
+``/papers-needed`` queue) also carry the acquisition-provenance flag
+group (``ACQUIRE_FLAG_DEFS``, ``routes/flags.py``) alongside the usual
+reading-intent flags. Every mutation still dispatches a verb through the
+runtime — no direct SQL, no surface drift (ADR 0027).
 
-* ``GET  /drive``                 — folder tree + Unfiled artifacts.
-* ``GET  /drive/{ref_id}``        — one folder: path, contents, actions.
-* ``POST /drive/create``          — new folder (optionally inside one).
-* ``POST /drive/{ref_id}/rename`` — rename a folder.
-* ``POST /drive/move``            — place / unfile any artifact.
-* ``POST /drive/{ref_id}/delete`` — delete (handler refuses non-empty).
+* ``GET  /drive``                        — the merged list + sidebar.
+* ``GET  /drive/tags/suggest``            — tag-filter autocomplete.
+* ``POST /drive/new``                     — create a cad/structure/figure
+  artifact (draft creation stays on ``/drafts/new``).
+* ``POST /drive/create``                  — new folder (optionally nested).
+* ``POST /drive/{ref_id}/rename``         — rename a folder.
+* ``POST /drive/move``                    — place / unfile any artifact.
+* ``POST /drive/{ref_id}/delete``         — delete a folder (refuses
+  non-empty).
+* ``POST /drive/item/{kind}/{id}/delete`` — per-row delete (any kind).
+* ``POST /drive/item/{kind}/{id}/tag``    — per-row tag-add (any kind).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi import APIRouter, Form, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
+from precis_web.item_view import artifact_kinds
 from precis_web.routes.drafts import _DOC_TYPES
+from precis_web.routes.flags import (
+    ACQUIRE_FLAG_DEFS,
+    FLAG_DEFS,
+    _safe_local_redirect,
+)
+from precis_web.routes.items import (
+    _DEFAULT_SOURCE_KINDS,
+    _PAGE_SIZE,
+    _folder_options,
+    _parse_date,
+    _recent_rows,
+    _run_search,
+)
+from precis_web.routes.items import tags_suggest as _tags_suggest
+from precis_web.routes.papers_needed import _KIND_DROPZONES, _watch_dir_from_plist
 from precis_web.timefmt import ago as _ago
 
 router = APIRouter(prefix="/drive", tags=["drive"])
 
 log = logging.getLogger(__name__)
+
+#: Same autocomplete backend as the legacy ``/items/tags/suggest`` — one
+#: function, two mounted paths (no logic fork).
+router.add_api_route("/tags/suggest", _tags_suggest, methods=["GET"])
 
 #: Per-kind reader deep links. Kinds without a dedicated reader render
 #: as plain rows (the handle still tells the operator what to `get`).
@@ -226,53 +261,195 @@ def _breadcrumb(store: Any, folder_id: int) -> list[dict[str, Any]]:
 
 
 @router.get("", response_class=HTMLResponse)
-async def drive_index(request: Request) -> HTMLResponse:
+@router.get("/", response_class=HTMLResponse)
+async def index(
+    request: Request,
+    q: str = "",
+    sort: str = "relevance",
+    since: str = "",
+    until: str = "",
+    k: list[str] = Query(default_factory=list),
+    tag: list[str] = Query(default_factory=list),
+    state: str = "all",
+    folder: str = "",
+    page: int = 1,
+    submitted: str = "",
+) -> HTMLResponse:
+    """The merged Drive surface: Items' cross-kind search/facet engine
+    plus Drive's folder-tree sidebar, per-row quick actions, a "show
+    deleted" state, and the watch-dir drop-zone info.
+
+    ``q=`` runs the search; ``k=`` (repeated) narrows the kind set —
+    the "Source" chips and the "Author" facet (``role='artifact'``
+    kinds); ``tag=`` (repeated) are the tag-filter chips; ``state=stub``
+    shows only paper stubs (awaiting fetch), ``state=deleted`` shows
+    soft-deleted refs instead of live ones (a lightweight trash view —
+    no undelete surface yet, just visibility); ``folder=`` (a folder
+    ``ref_id``) narrows the no-query landing to one folder's direct
+    children — the same facet the sidebar tree's links drive;
+    ``sort=recency`` orders newest-first; ``since=``/``until=`` bound
+    the date window; ``page=`` pages past the ``_PAGE_SIZE`` cap. With
+    no ``q`` the landing shows the recent list.
+
+    Kind selection persists in an ``items_kinds`` cookie (unchanged
+    name — pre-dates the merge, no reason to churn a cookie key): an
+    explicit submit (``submitted=1``) sets it; a fresh visit reads it
+    (or defaults to every source kind).
+    """
     store = get_store(request)
+    q = (q or "").strip()
+
+    if submitted:
+        selected_kinds = [x.strip() for x in k if x.strip()]
+    else:
+        cookie = request.cookies.get("items_kinds", "")
+        selected_kinds = [x for x in cookie.split(",") if x] or list(
+            _DEFAULT_SOURCE_KINDS
+        )
+    tags = [t.strip() for t in tag if t.strip()]
+    sort = "recency" if (sort or "").strip().lower() == "recency" else "relevance"
+    state = (state or "all").strip().lower()
+    # ``state=stub`` → only PDF-less papers (the "to get" queue);
+    # ``state=deleted`` → soft-deleted refs (the "show deleted" toggle).
+    # Both only shape the recent/browse view, not search (a search hit
+    # matched a live chunk, so neither filter is meaningful there).
+    has_pdf = False if state == "stub" else None
+    show_deleted = state == "deleted"
+    since_dt = _parse_date(since)
+    until_dt = _parse_date(until)
+    folder_raw = (folder or "").strip()
+    folder_id = int(folder_raw) if folder_raw.isdigit() else None
+    page = max(1, page)
+    offset = (page - 1) * _PAGE_SIZE
+
+    runtime = get_runtime(request)
+    hub = getattr(runtime, "hub", None)
+    artifact_kind_defs = artifact_kinds(hub)
+
+    rows: list[dict[str, Any]] = []
+    recent: list[dict[str, Any]] = []
+    has_next = False
+    if q:
+        embedder = getattr(hub, "embedder", None)
+        rows, has_next = await asyncio.to_thread(
+            _run_search,
+            store,
+            embedder,
+            kinds=selected_kinds,
+            q=q,
+            sort=sort,
+            since=since_dt,
+            until=until_dt,
+            tags=tags,
+            offset=offset,
+        )
+    else:
+        recent, has_next = await asyncio.to_thread(
+            _recent_rows,
+            store,
+            selected_kinds,
+            tags,
+            has_pdf,
+            folder_id,
+            offset,
+            deleted=show_deleted,
+        )
+
+    # Where a flag toggle / row action bounces back to — this exact search.
+    return_to = request.url.path + (
+        f"?{request.url.query}" if request.url.query else ""
+    )
+
+    # Pager links preserve every filter, only ``page`` changes.
+    _pager_params: list[tuple[str, str]] = [("submitted", "1")]
+    if q:
+        _pager_params.append(("q", q))
+    _pager_params.append(("sort", sort))
+    if since:
+        _pager_params.append(("since", since))
+    if until:
+        _pager_params.append(("until", until))
+    if state != "all":
+        _pager_params.append(("state", state))
+    if folder_raw:
+        _pager_params.append(("folder", folder_raw))
+    for kk in selected_kinds:
+        _pager_params.append(("k", kk))
+    for t in tags:
+        _pager_params.append(("tag", t))
+
+    def _page_url(n: int) -> str:
+        return "/drive?" + urlencode([*_pager_params, ("page", n)])
+
+    # The folder-tree sidebar + (when one is selected) its breadcrumb.
     roots = _folder_tree(store)
     flat = _flatten_tree(roots)
-    ctx = {
-        "active_tab": "drive",
-        "folders": flat,
-        "current": None,
-        "crumbs": [],
-        "children": [],
-        "unfiled": _unfiled(store, _artifact_kinds(request)),
-        "doctypes": _doctypes(),
-    }
-    return templates.TemplateResponse(request, "drive/index.html.j2", ctx)
+    current = (
+        next((f for f in flat if f["ref_id"] == folder_id), None)
+        if folder_id is not None
+        else None
+    )
+    crumbs = _breadcrumb(store, folder_id) if current and folder_id else []
+    # A stale bookmark to a deleted folder shouldn't dead-end the operator
+    # — fall back to the unfiltered landing with a soft notice.
+    notice = (
+        f"folder #{folder_id} not found (deleted?)"
+        if folder_raw and current is None
+        else None
+    )
 
+    # Watch-dir drop-zone info (papers_needed.py:15-19's second gap) — the
+    # cluster's manual-ingest paths, when the web host can read the plist.
+    watch_dir = _watch_dir_from_plist()
+    dropzones: list[dict[str, str]] = []
+    if watch_dir:
+        for label, sub, description in _KIND_DROPZONES:
+            dropzones.append(
+                {
+                    "label": label,
+                    "path": str(Path(watch_dir) / sub),
+                    "description": description,
+                }
+            )
 
-@router.get("/{ref_id}", response_class=HTMLResponse)
-async def drive_folder(request: Request, ref_id: int) -> HTMLResponse:
-    store = get_store(request)
-    roots = _folder_tree(store)
-    flat = _flatten_tree(roots)
-    current = next((f for f in flat if f["ref_id"] == ref_id), None)
-    ctx: dict[str, Any]
-    if current is None:
-        # Render the index with a soft notice rather than a bare 404 —
-        # a stale bookmark shouldn't dead-end the operator.
-        ctx = {
+    resp = templates.TemplateResponse(
+        request,
+        "drive/index.html.j2",
+        {
             "active_tab": "drive",
+            "q": q,
+            "kind_defs": list(_DEFAULT_SOURCE_KINDS),
+            "artifact_kind_defs": artifact_kind_defs,
+            "selected_kinds": selected_kinds,
+            "tags": tags,
+            "sort": sort,
+            "since": since,
+            "until": until,
+            "state": state,
+            "folder": folder_raw,
+            "folder_options": await asyncio.to_thread(_folder_options, store),
             "folders": flat,
-            "current": None,
-            "crumbs": [],
-            "children": [],
-            "unfiled": _unfiled(store, _artifact_kinds(request)),
+            "current": current,
+            "crumbs": crumbs,
+            "notice": notice,
+            "rows": rows,
+            "recent": recent,
+            "flag_defs": FLAG_DEFS,
+            "acquire_flag_defs": ACQUIRE_FLAG_DEFS,
+            "return_to": return_to,
+            "page": page,
+            "has_next": has_next,
+            "prev_url": _page_url(page - 1) if page > 1 else None,
+            "next_url": _page_url(page + 1) if has_next else None,
             "doctypes": _doctypes(),
-            "notice": f"folder #{ref_id} not found (deleted?)",
-        }
-        return templates.TemplateResponse(request, "drive/index.html.j2", ctx)
-    ctx = {
-        "active_tab": "drive",
-        "folders": flat,
-        "current": current,
-        "crumbs": _breadcrumb(store, ref_id),
-        "children": _children(store, ref_id),
-        "unfiled": [],
-        "doctypes": _doctypes(),
-    }
-    return templates.TemplateResponse(request, "drive/index.html.j2", ctx)
+            "watch_dir": watch_dir,
+            "dropzones": dropzones,
+        },
+    )
+    if submitted:
+        # Remember the kind selection for the next visit (90 days).
+        resp.set_cookie("items_kinds", ",".join(selected_kinds), max_age=90 * 24 * 3600)
+    return resp
 
 
 #: Starter sources for the "+ New" dropdown (kind → put args builder). Draft
@@ -346,7 +523,10 @@ async def create_folder(
     """
     store = get_store(request)
     pid = parent_id.strip()
-    redirect = f"/drive/{int(pid)}" if pid else "/drive"
+    # The merged Drive page navigates folders via the ``folder=`` query
+    # facet, not a path segment (WS1a) — same destination the sidebar
+    # tree's own links use.
+    redirect = f"/drive?folder={int(pid)}" if pid else "/drive"
     if not name.strip():
         return await redirect_or_error(
             request,
@@ -397,7 +577,7 @@ async def rename_folder(
         request,
         "edit",
         {"kind": "folder", "id": ref_id, "text": name},
-        redirect=f"/drive/{ref_id}",
+        redirect=f"/drive?folder={ref_id}",
         error_title="Rename folder",
     )
 
@@ -411,6 +591,7 @@ async def move_artifact(
     back: str = Form("/drive"),
 ) -> Response:
     """Place (or unfile) any artifact via the guarded ``link`` surface."""
+    redirect = _safe_local_redirect(back, "/drive")
     tf = target_folder.strip()
     handler_id: str | int = int(id) if id.isdigit() else id
     if tf:
@@ -424,7 +605,7 @@ async def move_artifact(
     else:
         args = {"kind": kind, "id": handler_id, "rel": "parent", "mode": "remove"}
     return await redirect_or_error(
-        request, "link", args, redirect=back, error_title="Move"
+        request, "link", args, redirect=redirect, error_title="Move"
     )
 
 
@@ -437,4 +618,58 @@ async def delete_folder(request: Request, ref_id: int) -> Response:
         {"kind": "folder", "id": ref_id},
         redirect="/drive",
         error_title="Delete folder",
+    )
+
+
+#: Per-row quick actions (``ItemPresenter.actions()``, WS1a) — generic
+#: over every kind, so these two routes take ``kind`` on the path rather
+#: than living per-kind. Mirrors ``move_artifact`` above: any id that's
+#: all digits is treated as a numeric ref_id, else a slug (drafts/cad/…
+#: address by slug).
+
+
+@router.post("/item/{kind}/{ref_id}/delete")
+async def delete_item(
+    request: Request,
+    kind: str,
+    ref_id: str,
+    back: str = Form("/drive"),
+) -> Response:
+    """Delete any ref via its own kind's ``delete`` verb. A kind with no
+    delete support surfaces the rejection through the same error page
+    every other write route uses — a clean stop, not a crash."""
+    redirect = _safe_local_redirect(back, "/drive")
+    handler_id: str | int = int(ref_id) if ref_id.isdigit() else ref_id
+    return await redirect_or_error(
+        request,
+        "delete",
+        {"kind": kind, "id": handler_id},
+        redirect=redirect,
+        error_title="Delete",
+    )
+
+
+@router.post("/item/{kind}/{ref_id}/tag")
+async def tag_item(
+    request: Request,
+    kind: str,
+    ref_id: str,
+    value: str = Form(""),
+    back: str = Form("/drive"),
+) -> Response:
+    """Add one tag to any ref via the ``tag`` verb (closed axes still
+    round-trip their ``NAMESPACE:value`` string through the handler's own
+    vocabulary guard — this route doesn't parse it). A blank box is a
+    no-op redirect rather than a validation error."""
+    redirect = _safe_local_redirect(back, "/drive")
+    value = value.strip()
+    if not value:
+        return RedirectResponse(url=redirect, status_code=303)
+    handler_id: str | int = int(ref_id) if ref_id.isdigit() else ref_id
+    return await redirect_or_error(
+        request,
+        "tag",
+        {"kind": kind, "id": handler_id, "add": [value]},
+        redirect=redirect,
+        error_title="Tag",
     )
