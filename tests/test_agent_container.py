@@ -291,6 +291,37 @@ def test_containerize_wraps_host_argv_preserving_all_flags() -> None:
     ]
 
 
+def test_containerize_rebases_host_mcp_config_to_container_path(monkeypatch) -> None:
+    """The 2026-07-24 incident: the host's ``--mcp-config`` path (resolved from
+    ``PRECIS_MCP_CONFIG``, e.g. ``/Users/deploy/.claude/mcp.json``) doesn't exist
+    inside the container — only the image's baked-in
+    ``default_agent_mcp_config()`` does. Forwarding it verbatim fails every
+    containerized run with "MCP config file not found"."""
+    env = Envelope(egress="open", write="none")
+    host = [
+        "claude",
+        "-p",
+        "--model",
+        "opus",
+        "--mcp-config",
+        "/Users/deploy/.claude/mcp.json",
+        "--strict-mcp-config",
+        "the prompt",
+    ]
+    argv = ac.containerize_claude_argv(
+        host, env, name="agent-x", model="opus", image="precis-agent:x"
+    )
+    i = argv.index("--mcp-config")
+    assert argv[i + 1] == "/etc/precis/agent-mcp.json"
+    assert "/Users/deploy/.claude/mcp.json" not in argv
+
+    monkeypatch.setenv("PRECIS_AGENT_MCP_CONFIG", "/custom/mcp.json")
+    argv2 = ac.containerize_claude_argv(
+        host, env, name="agent-x", model="opus", image="precis-agent:x"
+    )
+    assert argv2[argv2.index("--mcp-config") + 1] == "/custom/mcp.json"
+
+
 # ── verified-capability probe + health latch (§15d/§15h) ───────────
 
 

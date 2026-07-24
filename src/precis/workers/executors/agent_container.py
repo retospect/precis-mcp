@@ -440,6 +440,25 @@ def build_agent_run(
     )
 
 
+def _rebase_mcp_config(args: list[str]) -> list[str]:
+    """Rewrite a host-built claude argv's ``--mcp-config <path>`` value onto
+    the container-internal path (:func:`default_agent_mcp_config`) — a host
+    absolute path has no meaning inside the container's filesystem. Every
+    other flag (including a bare ``--mcp-config`` with no following value,
+    left untouched) passes through unchanged."""
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--mcp-config" and i + 1 < len(args):
+            out.append("--mcp-config")
+            out.append(default_agent_mcp_config())
+            i += 2
+            continue
+        out.append(args[i])
+        i += 1
+    return out
+
+
 def containerize_claude_argv(
     host_argv: Sequence[str],
     env: _envelope.Envelope,
@@ -466,8 +485,19 @@ def containerize_claude_argv(
     The container inherits the runner's env for the by-key secrets
     (``CLAUDE_CODE_OAUTH_TOKEN`` / ``ANTHROPIC_API_KEY``, ``PRECIS_DATABASE_URL``),
     so the caller must pass its ``proc_env`` to the subprocess as today.
+
+    One flag is NOT passed through verbatim: ``--mcp-config <path>``. The
+    in-proc caller resolves that path on the HOST (e.g.
+    ``PRECIS_MCP_CONFIG=/Users/deploy/.claude/mcp.json``), which doesn't exist
+    inside the container — the image bakes its own equivalent config at
+    :func:`default_agent_mcp_config` (``docker/Dockerfile`` COPYs
+    ``docker/agent-mcp.json`` to that path). Forwarding the host path verbatim
+    fails every containerized run with "MCP config file not found" (the
+    2026-07-24 incident — a daemon restart flipped :func:`container_capability_ok`
+    to True for the first time since a redeploy, and host-argv's
+    ``--mcp-config`` had never round-tripped through this seam live before).
     """
-    command = ["claude", *list(host_argv)[1:]]
+    command = ["claude", *_rebase_mcp_config(list(host_argv)[1:])]
     return build_agent_run_argv(
         container_bin=_container_bin(),
         name=name,

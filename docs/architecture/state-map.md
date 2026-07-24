@@ -486,7 +486,15 @@ turns. Genuine errors still raise — now with the `terminal_reason`
 folded into the message, since stream-json errors leave stderr empty.
 **Container executor gate (§13/§15d).** When `PRECIS_AGENT_CONTAINER` is set
 the SAME `claude -p` runs in a throwaway `precis-agent` container
-(`workers/executors/agent_container.py`), but the opt-in is now gated behind a
+(`workers/executors/agent_container.py`) — every host-built flag passes
+through verbatim EXCEPT `--mcp-config`, which `_rebase_mcp_config()` rewrites
+onto the image's baked-in `default_agent_mcp_config()` (`/etc/precis/agent-mcp.json`,
+`docker/Dockerfile`); the host's `PRECIS_MCP_CONFIG` path (e.g.
+`/Users/deploy/.claude/mcp.json`) has no meaning inside the container
+filesystem (2026-07-24 incident: a daemon restart reset the health latch below,
+first live activation of this path forwarded the host path unrebased and every
+containerized pass 404'd on "MCP config file not found"). The opt-in is now
+gated behind a
 **verified-capability probe** (`container_capability_ok()`: auth token
 resolvable ∧ `<bin> info` ∧ `<bin> image inspect` — per-process ~60s-cached,
 fail-safe to in-proc), so an opted-in host that can't actually containerize
